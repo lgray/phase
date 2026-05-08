@@ -308,6 +308,7 @@ fn scan_delayed_condition_kind(text: &str) -> Option<DelayedConditionKind> {
 fn parse_delayed_subject_keyword(input: &str) -> nom::IResult<&str, TargetFilter, OracleError<'_>> {
     alt((
         // ParentTarget references (longer phrases first)
+        value(TargetFilter::ParentTarget, tag("an exiled ")),
         value(TargetFilter::ParentTarget, tag("the exiled ")),
         value(TargetFilter::ParentTarget, tag("the targeted ")),
         value(TargetFilter::ParentTarget, tag("the creature")),
@@ -371,6 +372,7 @@ fn scan_tracked_set_reference(text: &str) -> bool {
     nom_primitives::scan_at_word_boundaries(text, |input| {
         alt((
             tag::<_, _, OracleError<'_>>("that "),
+            tag("an exiled "),
             tag("the exiled "),
             tag("the targeted "),
         ))
@@ -852,7 +854,15 @@ fn try_parse_inline_delayed_trigger(
     // the parent's tracked set.
     let uses_tracked_set = scan_tracked_set_reference(condition_text);
 
-    let inner = parse_effect_chain(effect_text, AbilityKind::Spell);
+    let mut inner_ctx = ctx.clone();
+    inner_ctx.subject = match &condition {
+        DelayedTriggerCondition::WhenDies { filter }
+        | DelayedTriggerCondition::WhenLeavesPlayFiltered { filter }
+        | DelayedTriggerCondition::WhenEntersBattlefield { filter }
+        | DelayedTriggerCondition::WhenDiesOrExiled { filter } => Some(filter.clone()),
+        _ => None,
+    };
+    let inner = parse_effect_chain_with_context(effect_text, AbilityKind::Spell, &mut inner_ctx);
 
     Some(ParsedEffectClause {
         effect: Effect::CreateDelayedTrigger {
@@ -17458,6 +17468,31 @@ mod tests {
             "Expected CreateDelayedTrigger with WhenLeavesPlayFiltered, got {:?}",
             e
         );
+    }
+
+    #[test]
+    fn inline_delayed_trigger_an_exiled_card_enters_uses_tracked_set() {
+        let e = parse_effect(
+            "When an exiled card enters under your control this way, put two +1/+1 counters on it",
+        );
+        match e {
+            Effect::CreateDelayedTrigger {
+                condition:
+                    DelayedTriggerCondition::WhenEntersBattlefield {
+                        filter: TargetFilter::ParentTarget,
+                    },
+                effect,
+                uses_tracked_set: true,
+            } => match &*effect.effect {
+                Effect::PutCounter { target, .. } => assert_eq!(
+                    target,
+                    &TargetFilter::TriggeringSource,
+                    "delayed trigger body 'it' must bind to the entering card"
+                ),
+                other => panic!("expected PutCounter delayed effect, got {other:?}"),
+            },
+            other => panic!("Expected tracked-set enters delayed trigger, got {other:?}"),
+        }
     }
 
     // -----------------------------------------------------------------------

@@ -1681,45 +1681,35 @@ fn delayed_trigger_event(
             })
             .cloned(),
         // CR 603.7c: "when [object] dies" — zone change to graveyard from battlefield
-        DelayedTriggerCondition::WhenDies { .. } => events
-            .iter()
-            .find(|e| {
-                matches!(
-                    e,
-                    GameEvent::ZoneChanged {
-                        from: Some(Zone::Battlefield),
-                        to: Zone::Graveyard,
-                        ..
-                    }
-                )
-            })
-            .cloned(),
+        DelayedTriggerCondition::WhenDies { filter } => delayed_zone_change_event(
+            events,
+            state,
+            source_id,
+            controller,
+            Some(Zone::Battlefield),
+            Some(Zone::Graveyard),
+            filter,
+        ),
         // CR 603.7c: "when [object] leaves the battlefield" — any zone change from battlefield
-        DelayedTriggerCondition::WhenLeavesPlayFiltered { .. } => events
-            .iter()
-            .find(|e| {
-                matches!(
-                    e,
-                    GameEvent::ZoneChanged {
-                        from: Some(Zone::Battlefield),
-                        ..
-                    }
-                )
-            })
-            .cloned(),
+        DelayedTriggerCondition::WhenLeavesPlayFiltered { filter } => delayed_zone_change_event(
+            events,
+            state,
+            source_id,
+            controller,
+            Some(Zone::Battlefield),
+            None,
+            filter,
+        ),
         // CR 603.7c: "when [object] enters the battlefield" — zone change to battlefield
-        DelayedTriggerCondition::WhenEntersBattlefield { .. } => events
-            .iter()
-            .find(|e| {
-                matches!(
-                    e,
-                    GameEvent::ZoneChanged {
-                        to: Zone::Battlefield,
-                        ..
-                    }
-                )
-            })
-            .cloned(),
+        DelayedTriggerCondition::WhenEntersBattlefield { filter } => delayed_zone_change_event(
+            events,
+            state,
+            source_id,
+            controller,
+            None,
+            Some(Zone::Battlefield),
+            filter,
+        ),
         // "when [object] dies or is exiled" — zone change to graveyard OR exile from battlefield.
         DelayedTriggerCondition::WhenDiesOrExiled { filter } => events
             .iter()
@@ -1756,6 +1746,38 @@ fn delayed_trigger_event(
             }
         }
     }
+}
+
+fn delayed_zone_change_event(
+    events: &[GameEvent],
+    state: &GameState,
+    source_id: ObjectId,
+    controller: PlayerId,
+    from: Option<Zone>,
+    to: Option<Zone>,
+    filter: &crate::types::ability::TargetFilter,
+) -> Option<GameEvent> {
+    events
+        .iter()
+        .find(|event| {
+            matches!(
+                event,
+                GameEvent::ZoneChanged {
+                    object_id,
+                    from: event_from,
+                    to: event_to,
+                    ..
+                } if from.is_none_or(|zone| *event_from == Some(zone))
+                    && to.is_none_or(|zone| *event_to == zone)
+                    && crate::game::filter::matches_target_filter(
+                        state,
+                        *object_id,
+                        filter,
+                        &FilterContext::from_source_with_controller(source_id, controller),
+                    )
+            )
+        })
+        .cloned()
 }
 
 /// Check whether a trigger's constraint allows it to fire.
@@ -2553,17 +2575,17 @@ pub mod tests {
     use crate::game::filter::{matches_target_filter, FilterContext};
     use crate::game::zones::create_object;
     use crate::types::ability::{
-        AbilityDefinition, AbilityKind, Comparator, ControllerRef, Effect, FilterProp,
-        GainLifePlayer, KickerVariant, MultiTargetSpec, QuantityExpr, QuantityRef, SharedQuality,
-        SharedQualityRelation, StaticDefinition, TargetFilter, TriggerCondition, TriggerConstraint,
-        TriggerDefinition, TypeFilter, TypedFilter,
+        AbilityDefinition, AbilityKind, Comparator, ControllerRef, DelayedTriggerCondition, Effect,
+        FilterProp, GainLifePlayer, KickerVariant, MultiTargetSpec, QuantityExpr, QuantityRef,
+        ResolvedAbility, SharedQuality, SharedQualityRelation, StaticDefinition, TargetFilter,
+        TargetRef, TriggerCondition, TriggerConstraint, TriggerDefinition, TypeFilter, TypedFilter,
     };
     use crate::types::card_type::CoreType;
     use crate::types::events::GameEvent;
     use crate::types::game_state::{
-        GameState, SpellCastRecord, StackEntry, StackEntryKind, ZoneChangeRecord,
+        DelayedTrigger, GameState, SpellCastRecord, StackEntry, StackEntryKind, ZoneChangeRecord,
     };
-    use crate::types::identifiers::{CardId, ObjectId};
+    use crate::types::identifiers::{CardId, ObjectId, TrackedSetId};
     use crate::types::keywords::{Keyword, KeywordKind};
     use crate::types::mana::ManaColor;
     use crate::types::phase::Phase;
@@ -3141,6 +3163,91 @@ pub mod tests {
             p1p1, 4,
             "EventContextSourcePower must resolve to the entering creature's power (4), \
              yielding 4 +1/+1 counters on the source (got {p1p1})"
+        );
+    }
+
+    #[test]
+    fn delayed_enter_trigger_filters_tracked_set_and_targets_triggering_object() {
+        let mut state = setup();
+        let source = create_object(
+            &mut state,
+            CardId(1),
+            PlayerId(0),
+            "Lagrella".to_string(),
+            Zone::Battlefield,
+        );
+        let tracked = create_object(
+            &mut state,
+            CardId(2),
+            PlayerId(1),
+            "Tracked Creature".to_string(),
+            Zone::Battlefield,
+        );
+        let other = create_object(
+            &mut state,
+            CardId(3),
+            PlayerId(1),
+            "Other Creature".to_string(),
+            Zone::Battlefield,
+        );
+        state
+            .tracked_object_sets
+            .insert(TrackedSetId(1), vec![tracked]);
+        state.delayed_triggers.push(DelayedTrigger {
+            condition: DelayedTriggerCondition::WhenEntersBattlefield {
+                filter: TargetFilter::TrackedSet {
+                    id: TrackedSetId(1),
+                },
+            },
+            ability: ResolvedAbility::new(
+                Effect::PutCounter {
+                    counter_type: "P1P1".to_string(),
+                    count: QuantityExpr::Fixed { value: 2 },
+                    target: TargetFilter::TriggeringSource,
+                },
+                vec![],
+                source,
+                PlayerId(0),
+            ),
+            controller: PlayerId(0),
+            source_id: source,
+            one_shot: true,
+        });
+
+        let other_event = zone_changed_event(
+            other,
+            Zone::Exile,
+            Zone::Battlefield,
+            vec![CoreType::Creature],
+            Vec::new(),
+        );
+        assert!(
+            check_delayed_triggers(&mut state, &[other_event]).is_empty(),
+            "untracked entering objects must not fire tracked-set delayed triggers"
+        );
+        assert_eq!(state.stack.len(), 0);
+
+        let tracked_event = zone_changed_event(
+            tracked,
+            Zone::Exile,
+            Zone::Battlefield,
+            vec![CoreType::Creature],
+            Vec::new(),
+        );
+        let queued = check_delayed_triggers(&mut state, &[tracked_event]);
+        assert_eq!(queued.len(), 1);
+        assert_eq!(state.stack.len(), 1);
+
+        let mut events = Vec::new();
+        crate::game::stack::resolve_top(&mut state, &mut events);
+        let p1p1 = state.objects[&tracked]
+            .counters
+            .get(&crate::types::counter::CounterType::Plus1Plus1)
+            .copied()
+            .unwrap_or(0);
+        assert_eq!(
+            p1p1, 2,
+            "delayed trigger body must put counters on the object that entered"
         );
     }
 

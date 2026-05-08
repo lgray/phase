@@ -286,7 +286,7 @@ pub fn resolve_add(
             }
         }
     } else {
-        let targets = resolve_defined_or_targets(ability);
+        let targets = resolve_defined_or_targets(state, ability);
         for obj_id in targets {
             add_counter_with_replacement(
                 state,
@@ -373,7 +373,7 @@ pub fn resolve_multiply(
         _ => ("P1P1".to_string(), 2),
     };
 
-    let targets = resolve_defined_or_targets(ability);
+    let targets = resolve_defined_or_targets(state, ability);
     for obj_id in targets {
         let ct = parse_counter_type(&counter_type_str);
         let current = state
@@ -404,6 +404,7 @@ pub fn resolve_multiply(
 
 /// Resolve targeting to object IDs using the typed TargetFilter.
 fn resolve_defined_or_targets(
+    state: &GameState,
     ability: &ResolvedAbility,
 ) -> Vec<crate::types::identifiers::ObjectId> {
     let target_spec = match &ability.effect {
@@ -421,6 +422,20 @@ fn resolve_defined_or_targets(
     // If the filter is SelfRef, target the source
     if let Some(TargetFilter::SelfRef) = target_spec {
         return vec![ability.source_id];
+    }
+
+    if let Some(filter) = target_spec {
+        let event_targets =
+            crate::game::targeting::resolve_event_context_targets(state, filter, ability.source_id);
+        if !event_targets.is_empty() {
+            return event_targets
+                .into_iter()
+                .filter_map(|target| match target {
+                    TargetRef::Object(id) => Some(id),
+                    TargetRef::Player(_) => None,
+                })
+                .collect();
+        }
     }
 
     ability
@@ -651,7 +666,7 @@ pub fn resolve_remove(
     // CR 122.1: Empty counter_type means "all types" — collect each type on the object.
     let all_types = counter_type_str.is_empty();
 
-    let targets = resolve_defined_or_targets(ability);
+    let targets = resolve_defined_or_targets(state, ability);
     for obj_id in targets {
         // Build the list of (counter_type, count) pairs to remove.
         let removals: Vec<(CounterType, u32)> = if all_types {
