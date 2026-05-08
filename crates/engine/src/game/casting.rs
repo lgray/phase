@@ -660,7 +660,7 @@ fn has_alt_cost_permission(obj: &crate::game::game_object::GameObject) -> bool {
 }
 
 /// CR 604.3 + CR 601.2a: Find graveyard objects castable via static permission
-/// from battlefield permanents (Lurrus, Karador, etc.).
+/// from functioning static abilities (Lurrus, Karador, Gravecrawler, etc.).
 /// Returns (graveyard_object_id, source_permanent_id) pairs.
 /// CR 117.1c: Only during the controller's own turn.
 fn graveyard_objects_castable_by_permission(
@@ -673,40 +673,99 @@ fn graveyard_objects_castable_by_permission(
         None => return results,
     };
 
-    // Find all battlefield permanents controlled by player with GraveyardCastPermission
-    let sources: Vec<(ObjectId, &TargetFilter, CastFrequency)> = state
-        .battlefield
-        .iter()
-        .filter_map(|&obj_id| {
-            let obj = state.objects.get(&obj_id)?;
-            if obj.controller != player {
-                return None;
-            }
-            active_static_definitions(state, obj).find_map(|s| match s.mode {
-                StaticMode::GraveyardCastPermission { frequency, .. } => s
-                    .affected
-                    .as_ref()
-                    .map(|filter| (obj_id, filter, frequency)),
-                _ => None,
-            })
-        })
-        .collect();
-
-    for (source_id, filter, frequency) in &sources {
-        let ctx = super::filter::FilterContext::from_source_with_controller(*source_id, player);
+    let sources = graveyard_permission_sources(state, player, Some(CardPlayMode::Cast));
+    for source in &sources {
+        let ctx =
+            super::filter::FilterContext::from_source_with_controller(source.source_id, player);
         for &gy_obj_id in &player_data.graveyard {
+            if state.objects.get(&gy_obj_id).is_some_and(|obj| {
+                obj.card_types
+                    .core_types
+                    .contains(&crate::types::card_type::CoreType::Land)
+            }) {
+                continue;
+            }
             // CR 604.2 + CR 110.4: Per-source frequency slot check; for
             // `OncePerTurnPerPermanentType` this is per-(source, permanent-type),
             // so the per-object check must happen inside the inner loop.
-            if !frequency_slot_available(state, *source_id, gy_obj_id, *frequency) {
+            if !frequency_slot_available(state, source.source_id, gy_obj_id, source.frequency) {
                 continue;
             }
-            if super::filter::matches_target_filter(state, gy_obj_id, filter, &ctx) {
-                results.push((gy_obj_id, *source_id));
+            if super::filter::matches_target_filter(state, gy_obj_id, source.filter, &ctx) {
+                results.push((gy_obj_id, source.source_id));
             }
         }
     }
     results
+}
+
+#[derive(Clone, Copy)]
+struct GraveyardPermissionSource<'a> {
+    source_id: ObjectId,
+    filter: &'a TargetFilter,
+    frequency: CastFrequency,
+}
+
+fn graveyard_permission_sources(
+    state: &GameState,
+    player: PlayerId,
+    play_mode_filter: Option<CardPlayMode>,
+) -> Vec<GraveyardPermissionSource<'_>> {
+    let mut source_ids: Vec<ObjectId> = state.battlefield.iter().copied().collect();
+    if let Some(player_data) = state.players.iter().find(|p| p.id == player) {
+        source_ids.extend(player_data.graveyard.iter().copied());
+    }
+
+    source_ids
+        .into_iter()
+        .filter_map(|source_id| {
+            let obj = state.objects.get(&source_id)?;
+            let source_belongs_to_player = match obj.zone {
+                Zone::Battlefield => obj.controller == player,
+                _ => obj.owner == player,
+            };
+            if !source_belongs_to_player {
+                return None;
+            }
+            active_static_definitions(state, obj)
+                .filter(|definition| graveyard_permission_functions_in_zone(definition, obj.zone))
+                .find_map(|definition| match definition.mode {
+                    StaticMode::GraveyardCastPermission {
+                        frequency,
+                        play_mode,
+                    } if graveyard_permission_play_mode_matches(play_mode, play_mode_filter) => {
+                        definition
+                            .affected
+                            .as_ref()
+                            .map(|filter| GraveyardPermissionSource {
+                                source_id,
+                                filter,
+                                frequency,
+                            })
+                    }
+                    _ => None,
+                })
+        })
+        .collect()
+}
+
+fn graveyard_permission_functions_in_zone(definition: &StaticDefinition, zone: Zone) -> bool {
+    if zone == Zone::Battlefield {
+        definition.active_zones.is_empty() || definition.active_zones.contains(&Zone::Battlefield)
+    } else {
+        definition.active_zones.contains(&zone)
+    }
+}
+
+fn graveyard_permission_play_mode_matches(
+    play_mode: CardPlayMode,
+    play_mode_filter: Option<CardPlayMode>,
+) -> bool {
+    match play_mode_filter {
+        None => true,
+        Some(CardPlayMode::Play) => play_mode == CardPlayMode::Play,
+        Some(CardPlayMode::Cast) => true,
+    }
 }
 
 /// CR 110.4 + CR 601.2a: For a `OncePerTurnPerPermanentType` source (Muldrotha),
@@ -790,33 +849,34 @@ fn graveyard_permission_source(
     player: PlayerId,
     object_id: ObjectId,
 ) -> Option<(ObjectId, CastFrequency)> {
-    state.battlefield.iter().find_map(|&src_id| {
-        let obj = state.objects.get(&src_id)?;
-        if obj.controller != player {
-            return None;
-        }
-        let (filter, frequency) =
-            active_static_definitions(state, obj).find_map(|s| match s.mode {
-                StaticMode::GraveyardCastPermission { frequency, .. } => {
-                    s.affected.as_ref().map(|f| (f, frequency))
-                }
-                _ => None,
-            })?;
-        // CR 604.2 + CR 110.4: Skip if this source's slot has already been used.
-        if !frequency_slot_available(state, src_id, object_id, frequency) {
-            return None;
-        }
-        if super::filter::matches_target_filter(
-            state,
-            object_id,
-            filter,
-            &super::filter::FilterContext::from_source_with_controller(src_id, player),
-        ) {
-            Some((src_id, frequency))
-        } else {
-            None
-        }
-    })
+    if state.objects.get(&object_id).is_some_and(|obj| {
+        obj.card_types
+            .core_types
+            .contains(&crate::types::card_type::CoreType::Land)
+    }) {
+        return None;
+    }
+    graveyard_permission_sources(state, player, Some(CardPlayMode::Cast))
+        .into_iter()
+        .find_map(|source| {
+            // CR 604.2 + CR 110.4: Skip if this source's slot has already been used.
+            if !frequency_slot_available(state, source.source_id, object_id, source.frequency) {
+                return None;
+            }
+            if super::filter::matches_target_filter(
+                state,
+                object_id,
+                source.filter,
+                &super::filter::FilterContext::from_source_with_controller(
+                    source.source_id,
+                    player,
+                ),
+            ) {
+                Some((source.source_id, source.frequency))
+            } else {
+                None
+            }
+        })
 }
 
 /// CR 401.5 + CR 118.9 + CR 601.2a: Find the (single) top card of `player`'s
@@ -892,29 +952,10 @@ pub fn graveyard_lands_playable_by_permission(
         None => return results,
     };
 
-    let sources: Vec<(ObjectId, &TargetFilter, CastFrequency)> = state
-        .battlefield
-        .iter()
-        .filter_map(|&obj_id| {
-            let obj = state.objects.get(&obj_id)?;
-            if obj.controller != player {
-                return None;
-            }
-            active_static_definitions(state, obj).find_map(|s| match s.mode {
-                StaticMode::GraveyardCastPermission {
-                    frequency,
-                    play_mode: CardPlayMode::Play,
-                } => s
-                    .affected
-                    .as_ref()
-                    .map(|filter| (obj_id, filter, frequency)),
-                _ => None,
-            })
-        })
-        .collect();
-
-    for (source_id, filter, frequency) in &sources {
-        let ctx = super::filter::FilterContext::from_source_with_controller(*source_id, player);
+    let sources = graveyard_permission_sources(state, player, Some(CardPlayMode::Play));
+    for source in &sources {
+        let ctx =
+            super::filter::FilterContext::from_source_with_controller(source.source_id, player);
         for &gy_obj_id in &player_data.graveyard {
             if let Some(obj) = state.objects.get(&gy_obj_id) {
                 // CR 305.1: Only lands can be "played" (non-land cards require "cast")
@@ -928,11 +969,11 @@ pub fn graveyard_lands_playable_by_permission(
                 // CR 604.2 + CR 110.4: Per-source frequency slot check; for
                 // `OncePerTurnPerPermanentType` (Muldrotha) the land slot is
                 // its own per-permanent-type entry.
-                if !frequency_slot_available(state, *source_id, gy_obj_id, *frequency) {
+                if !frequency_slot_available(state, source.source_id, gy_obj_id, source.frequency) {
                     continue;
                 }
-                if super::filter::matches_target_filter(state, gy_obj_id, filter, &ctx) {
-                    results.push((gy_obj_id, *source_id));
+                if super::filter::matches_target_filter(state, gy_obj_id, source.filter, &ctx) {
+                    results.push((gy_obj_id, source.source_id));
                 }
             }
         }
@@ -15481,6 +15522,105 @@ mod tests {
         assert!(
             result.is_err(),
             "CR 601.2a: prepare_spell_cast must reject graveyard sorcery without permission"
+        );
+    }
+
+    #[test]
+    fn self_graveyard_cast_permission_only_allows_source_card_when_condition_met() {
+        let mut state = setup_game_at_main_phase();
+        let gravecrawler = create_object(
+            &mut state,
+            CardId(0x2080),
+            PlayerId(0),
+            "Gravecrawler".to_string(),
+            Zone::Graveyard,
+        );
+        let dark_ritual = create_object(
+            &mut state,
+            CardId(0x2081),
+            PlayerId(0),
+            "Dark Ritual".to_string(),
+            Zone::Graveyard,
+        );
+        let zombie = create_object(
+            &mut state,
+            CardId(0x2082),
+            PlayerId(0),
+            "Zombie".to_string(),
+            Zone::Battlefield,
+        );
+
+        {
+            let obj = state.objects.get_mut(&gravecrawler).unwrap();
+            obj.card_types.core_types.push(CoreType::Creature);
+            obj.card_types.subtypes.push("Zombie".to_string());
+            obj.mana_cost = ManaCost::Cost {
+                shards: vec![],
+                generic: 0,
+            };
+            obj.static_definitions.push(
+                parse_static_line(
+                    "You may cast this card from your graveyard as long as you control a Zombie.",
+                )
+                .unwrap(),
+            );
+        }
+        {
+            let obj = state.objects.get_mut(&dark_ritual).unwrap();
+            obj.card_types.core_types.push(CoreType::Instant);
+            obj.mana_cost = ManaCost::Cost {
+                shards: vec![],
+                generic: 0,
+            };
+        }
+        {
+            let obj = state.objects.get_mut(&zombie).unwrap();
+            obj.card_types.core_types.push(CoreType::Creature);
+            obj.card_types.subtypes.push("Zombie".to_string());
+        }
+
+        let available = spell_objects_available_to_cast(&state, PlayerId(0));
+        assert!(
+            available.contains(&gravecrawler),
+            "self-scoped graveyard permission must let Gravecrawler cast itself"
+        );
+        assert!(
+            !available.contains(&dark_ritual),
+            "self-scoped graveyard permission must not leak to other graveyard cards"
+        );
+    }
+
+    #[test]
+    fn self_graveyard_cast_permission_respects_condition() {
+        let mut state = setup_game_at_main_phase();
+        let gravecrawler = create_object(
+            &mut state,
+            CardId(0x2083),
+            PlayerId(0),
+            "Gravecrawler".to_string(),
+            Zone::Graveyard,
+        );
+
+        {
+            let obj = state.objects.get_mut(&gravecrawler).unwrap();
+            obj.card_types.core_types.push(CoreType::Creature);
+            obj.card_types.subtypes.push("Zombie".to_string());
+            obj.mana_cost = ManaCost::Cost {
+                shards: vec![],
+                generic: 0,
+            };
+            obj.static_definitions.push(
+                parse_static_line(
+                    "You may cast this card from your graveyard as long as you control a Zombie.",
+                )
+                .unwrap(),
+            );
+        }
+
+        let available = spell_objects_available_to_cast(&state, PlayerId(0));
+        assert!(
+            !available.contains(&gravecrawler),
+            "Gravecrawler's permission must be inactive without a Zombie controlled"
         );
     }
 

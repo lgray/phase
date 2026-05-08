@@ -7095,10 +7095,13 @@ fn try_parse_graveyard_cast_permission(text: &str, lower: &str) -> Option<Static
         Cow::Borrowed(filter_text)
     };
 
-    let (filter, _) = parse_type_phrase(&cleaned);
+    let (filter, self_ref_permission) = parse_graveyard_permission_filter(&cleaned);
 
     // Parse optional alt-cost rider from the text after "from your graveyard".
     let rider_kind = parse_alt_cost_rider(trailing).ok().map(|(_, k)| k);
+    let condition = parse_graveyard_permission_condition(trailing)
+        .ok()
+        .and_then(|(rest, condition)| rest.is_empty().then_some(condition));
 
     let affected = if let Some(kind) = rider_kind {
         inject_keyword_kind_filter_prop(filter, kind)
@@ -7106,14 +7109,36 @@ fn try_parse_graveyard_cast_permission(text: &str, lower: &str) -> Option<Static
         filter
     };
 
-    Some(
-        StaticDefinition::new(StaticMode::GraveyardCastPermission {
-            frequency,
-            play_mode,
-        })
-        .affected(affected)
-        .description(text.to_string()),
-    )
+    let mut def = StaticDefinition::new(StaticMode::GraveyardCastPermission {
+        frequency,
+        play_mode,
+    })
+    .affected(affected)
+    .description(text.to_string());
+    if let Some(condition) = condition {
+        def = def.condition(condition);
+    }
+    if self_ref_permission {
+        def = def.active_zones(vec![Zone::Graveyard]);
+    }
+    Some(def)
+}
+
+fn parse_graveyard_permission_filter(input: &str) -> (TargetFilter, bool) {
+    if let Ok((rest, _)) = tag::<_, _, OracleError<'_>>("this card").parse(input) {
+        if rest.is_empty() {
+            return (TargetFilter::SelfRef, true);
+        }
+    }
+    let (filter, _) = parse_type_phrase(input);
+    (filter, false)
+}
+
+fn parse_graveyard_permission_condition(input: &str) -> OracleResult<'_, StaticCondition> {
+    let (rest, condition) =
+        preceded(tag(" as long as "), nom_condition::parse_inner_condition).parse(input)?;
+    let (rest, _) = opt(tag(".")).parse(rest)?;
+    Ok((rest, condition))
 }
 
 /// CR 401.5 + CR 118.9 + CR 601.2a: Parse "you may [play|cast] [filter] from
@@ -10766,6 +10791,42 @@ mod tests {
             assert_eq!(tf.get_subtype(), Some("Zombie"));
         } else {
             panic!("Expected Typed filter with Zombie subtype");
+        }
+    }
+
+    #[test]
+    fn graveyard_cast_permission_gravecrawler_self_ref_condition() {
+        let text = "You may cast this card from your graveyard as long as you control a Zombie.";
+        let def = parse_static_line(text).expect("should parse Gravecrawler text");
+        assert!(matches!(
+            def.mode,
+            StaticMode::GraveyardCastPermission {
+                frequency: CastFrequency::Unlimited,
+                play_mode: CardPlayMode::Cast,
+            }
+        ));
+        assert_eq!(def.affected, Some(TargetFilter::SelfRef));
+        assert_eq!(def.active_zones, vec![Zone::Graveyard]);
+        match def.condition {
+            Some(StaticCondition::IsPresent {
+                filter: Some(TargetFilter::Typed(tf)),
+            }) => {
+                assert_eq!(tf.controller, Some(ControllerRef::You));
+                assert!(
+                    tf.type_filters
+                        .contains(&TypeFilter::Subtype("Zombie".to_string())),
+                    "expected Zombie subtype condition, got: {:?}",
+                    tf.type_filters
+                );
+                assert!(
+                    tf.properties.contains(&FilterProp::InZone {
+                        zone: Zone::Battlefield,
+                    }),
+                    "expected battlefield control condition, got: {:?}",
+                    tf.properties
+                );
+            }
+            other => panic!("expected Zombie presence condition, got {other:?}"),
         }
     }
 

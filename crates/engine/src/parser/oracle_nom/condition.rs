@@ -1033,7 +1033,19 @@ fn parse_filter_have_total_property(input: &str) -> OracleResult<'_, StaticCondi
 /// Inject `ControllerRef::You` into a TargetFilter produced by `parse_type_phrase`.
 fn inject_controller_you(filter: TargetFilter) -> TargetFilter {
     match filter {
-        TargetFilter::Typed(tf) => TargetFilter::Typed(tf.controller(ControllerRef::You)),
+        TargetFilter::Typed(mut tf) => {
+            tf.controller = Some(ControllerRef::You);
+            if !tf
+                .properties
+                .iter()
+                .any(|prop| matches!(prop, FilterProp::InZone { .. }))
+            {
+                tf.properties.push(FilterProp::InZone {
+                    zone: Zone::Battlefield,
+                });
+            }
+            TargetFilter::Typed(tf)
+        }
         other => other,
     }
 }
