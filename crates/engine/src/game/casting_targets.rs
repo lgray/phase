@@ -1,4 +1,6 @@
-use crate::types::ability::{AbilityTag, Effect, ModalChoice, QuantityExpr, TargetRef};
+use crate::types::ability::{
+    AbilityTag, Effect, ModalChoice, QuantityExpr, TargetRef, TargetSelectionMode,
+};
 use crate::types::events::GameEvent;
 use crate::types::game_state::{GameState, PendingCast, StackEntry, StackEntryKind, WaitingFor};
 use crate::types::identifiers::ObjectId;
@@ -8,8 +10,8 @@ use crate::types::player::PlayerId;
 use super::ability_utils::{
     assign_selected_slots_in_chain, assign_targets_in_chain, auto_select_targets_for_ability,
     begin_target_selection_for_ability, build_chained_resolved, build_target_slots,
-    choose_target_for_ability, flatten_targets_in_chain, validate_modal_indices,
-    validate_selected_targets_for_ability, TargetSelectionAdvance,
+    choose_target_for_ability, flatten_targets_in_chain, random_select_targets_for_ability,
+    validate_modal_indices, validate_selected_targets_for_ability, TargetSelectionAdvance,
 };
 use super::casting::{emit_targeting_events, pay_ability_cost};
 use super::casting_costs::finish_pending_cast_cost_or_pay;
@@ -67,6 +69,25 @@ pub(crate) fn handle_select_modes(
 
     let target_slots = build_target_slots(state, &resolved)?;
     if !target_slots.is_empty() {
+        // CR 115.1 + CR 701.9b: For abilities marked `Random`, the game (not the
+        // controller) selects targets uniformly from each slot's legal-target set.
+        // No `WaitingFor::TargetSelection` is emitted — the choice is made now
+        // using the seeded engine RNG. Checked before the auto-select degenerate
+        // path so multi-target-legal random spells (where there's a choice to
+        // make but the *controller* doesn't make it) take this branch.
+        if matches!(resolved.target_selection_mode, TargetSelectionMode::Random) {
+            let targets = random_select_targets_for_ability(
+                state,
+                &target_slots,
+                &pending.target_constraints,
+            )?;
+            let mut resolved = resolved;
+            assign_targets_in_chain(state, &mut resolved, &targets)?;
+            return finish_pending_cast_cost_or_pay(
+                state, player, pending, resolved, total_cost, events,
+            );
+        }
+
         if let Some(targets) = auto_select_targets_for_ability(
             state,
             &resolved,

@@ -792,11 +792,12 @@ mod diagnostic_snapshots {
     }
 
     #[test]
-    /// TargetFallback diagnostics from `parse_target` inside effect chains are not
-    /// yet captured in `ir.diagnostics` — the 100+ callers in oracle_effect/* use
-    /// the no-ctx `parse_target` wrapper. When those callers are migrated to
-    /// `parse_target_with_ctx`, this test should be updated to assert non-empty
-    /// diagnostics again.
+    /// TargetFallback diagnostics from `parse_target` inside effect chains are
+    /// captured in `ir.diagnostics` once the call site is migrated to
+    /// `parse_target_with_ctx` (the no-ctx wrapper drops them). The
+    /// `try_parse_damage` path was migrated as part of the
+    /// `TargetSelectionMode::Random` plumbing — the "instead" trailing fragment
+    /// in this test now surfaces a `TargetFallback`.
     fn diagnostic_target_fallback() {
         let diagnostics = parse_diagnostics(
             "Whenever this creature attacks, you may sacrifice another creature. When you do, this creature deals damage equal to the sacrificed creature's power to any target. If the sacrificed creature was a Giant, this creature deals twice that much damage instead.",
@@ -804,9 +805,6 @@ mod diagnostic_snapshots {
             &["Creature"],
             &["Giant", "Berserker"],
         );
-        // Currently empty — parse_target in effect chains uses the no-ctx wrapper.
-        // When effect chain callers migrate to parse_target_with_ctx, this will
-        // capture TargetFallback diagnostics again.
         insta::assert_json_snapshot!("diagnostic_target_fallback", &diagnostics);
     }
 

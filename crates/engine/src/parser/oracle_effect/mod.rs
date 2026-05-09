@@ -48,8 +48,8 @@ use crate::types::ability::{
     FilterProp, GainLifePlayer, GameRestriction, ManaProduction, MultiTargetSpec, ObjectScope,
     PlayerFilter, PlayerScope, PreventionAmount, PtValue, QuantityExpr, QuantityRef,
     ReplacementDefinition, RestrictionExpiry, RestrictionPlayerScope, RoundingMode,
-    StaticCondition, StaticDefinition, TargetChoiceTiming, TargetFilter, TriggerCondition,
-    TriggerDefinition, TypeFilter, TypedFilter, UnlessCost, UnlessPayModifier,
+    StaticCondition, StaticDefinition, TargetChoiceTiming, TargetFilter, TargetSelectionMode,
+    TriggerCondition, TriggerDefinition, TypeFilter, TypedFilter, UnlessCost, UnlessPayModifier,
 };
 use crate::types::card_type::{CoreType, Supertype};
 use crate::types::game_state::{DistributionUnit, NextSpellModifier, RetargetScope};
@@ -7674,6 +7674,7 @@ pub(crate) fn parse_effect_chain_ir(
                 unless_pay: None,
                 special: Some(SpecialClause::AltCostRider(cost)),
                 source_text: normalized_text.to_string(),
+                target_selection_mode: TargetSelectionMode::Chosen,
             });
             continue;
         }
@@ -7702,6 +7703,7 @@ pub(crate) fn parse_effect_chain_ir(
                     unless_pay: None,
                     special: Some(SpecialClause::ManaRetention(expiry)),
                     source_text: normalized_text.to_string(),
+                    target_selection_mode: TargetSelectionMode::Chosen,
                 });
                 continue;
             }
@@ -7757,6 +7759,7 @@ pub(crate) fn parse_effect_chain_ir(
                 unless_pay: None,
                 special: Some(special),
                 source_text: normalized_text.to_string(),
+                target_selection_mode: TargetSelectionMode::Chosen,
             });
             continue;
         }
@@ -7816,6 +7819,7 @@ pub(crate) fn parse_effect_chain_ir(
                     unless_pay: None,
                     special: Some(SpecialClause::DieExileRider(Box::new(rider_def))),
                     source_text: normalized_text.to_string(),
+                    target_selection_mode: TargetSelectionMode::Chosen,
                 });
                 continue;
             }
@@ -7847,6 +7851,7 @@ pub(crate) fn parse_effect_chain_ir(
                     unless_pay: None,
                     special: Some(SpecialClause::DrawnThisTurnPayOrTopdeck { life_payment }),
                     source_text: normalized_text.to_string(),
+                    target_selection_mode: TargetSelectionMode::Chosen,
                 });
                 continue;
             }
@@ -7895,6 +7900,7 @@ pub(crate) fn parse_effect_chain_ir(
                         unless_pay: None,
                         special: Some(SpecialClause::DigInsteadAlt(Box::new(alt_def))),
                         source_text: normalized_text.to_string(),
+                        target_selection_mode: TargetSelectionMode::Chosen,
                     });
                     continue;
                 }
@@ -7937,6 +7943,7 @@ pub(crate) fn parse_effect_chain_ir(
                 unless_pay: None,
                 special: None,
                 source_text: normalized_text.to_string(),
+                target_selection_mode: TargetSelectionMode::Chosen,
             });
             continue;
         }
@@ -7963,6 +7970,7 @@ pub(crate) fn parse_effect_chain_ir(
                 unless_pay: None,
                 special: None,
                 source_text: normalized_text.to_string(),
+                target_selection_mode: TargetSelectionMode::Chosen,
             });
             continue;
         }
@@ -7994,6 +8002,7 @@ pub(crate) fn parse_effect_chain_ir(
                     unless_pay: None,
                     special: Some(SpecialClause::InsteadClause(Box::new(instead_def))),
                     source_text: normalized_text.to_string(),
+                    target_selection_mode: TargetSelectionMode::Chosen,
                 });
                 continue;
             }
@@ -8190,6 +8199,7 @@ pub(crate) fn parse_effect_chain_ir(
                             unless_pay: None,
                             special: Some(SpecialClause::EntersTappedAttacking),
                             source_text: normalized_text.to_string(),
+                            target_selection_mode: TargetSelectionMode::Chosen,
                         });
                         continue;
                     }
@@ -8360,6 +8370,7 @@ pub(crate) fn parse_effect_chain_ir(
                 unless_pay: None,
                 special: None,
                 source_text: normalized_text.to_string(),
+                target_selection_mode: chunk_ctx.target_selection_mode,
             });
             continue;
         }
@@ -8417,6 +8428,7 @@ pub(crate) fn parse_effect_chain_ir(
                 unless_pay: None,
                 special: None,
                 source_text: normalized_text.to_string(),
+                target_selection_mode: TargetSelectionMode::Chosen,
             });
             continue;
         }
@@ -8568,6 +8580,7 @@ pub(crate) fn parse_effect_chain_ir(
                 unless_pay: None,
                 special: Some(SpecialClause::KeywordInsteadOverride),
                 source_text: normalized_text.to_string(),
+                target_selection_mode: TargetSelectionMode::Chosen,
             });
             continue;
         }
@@ -8626,6 +8639,7 @@ pub(crate) fn parse_effect_chain_ir(
                     unless_pay: None,
                     special: Some(SpecialClause::AdditionalCostInsteadSearch),
                     source_text: normalized_text.to_string(),
+                    target_selection_mode: TargetSelectionMode::Chosen,
                 });
                 continue;
             }
@@ -8839,6 +8853,7 @@ pub(crate) fn parse_effect_chain_ir(
                     unless_pay: None,
                     special: None,
                     source_text: normalized_text.to_string(),
+                    target_selection_mode: chunk_ctx.target_selection_mode,
                 });
             }
             continue;
@@ -8871,6 +8886,10 @@ pub(crate) fn parse_effect_chain_ir(
             unless_pay,
             special: None,
             source_text: normalized_text.to_string(),
+            // CR 115.1 + CR 701.9b: snapshot the parser's per-chunk selection
+            // mode. Set to `Random` by `parse_target_with_ctx` when "random "
+            // was stripped from this chunk's target phrase.
+            target_selection_mode: chunk_ctx.target_selection_mode,
         });
 
         // Drain chunk-ctx diagnostics into the accumulator (the outer `ctx` is
@@ -9120,6 +9139,10 @@ pub(crate) fn lower_effect_chain_ir(ir: &EffectChainIr) -> AbilityDefinition {
         let is_target_only = matches!(clause_ir.parsed.effect, Effect::TargetOnly { .. });
         let mut def = AbilityDefinition::new(kind, clause_ir.parsed.effect.clone());
         def.target_choice_timing = target_choice_timing_for_clause(clause_ir);
+        // CR 115.1 + CR 701.9b: copy the per-clause selection mode captured by
+        // `parse_target_with_ctx` during chunk parse. `Random` flips the engine
+        // off the controller-choice path at target-selection time.
+        def.target_selection_mode = clause_ir.target_selection_mode;
         let clause_sub = if is_target_only {
             def.sub_ability = clause_ir.parsed.sub_ability.clone();
             None
@@ -11331,7 +11354,7 @@ fn try_parse_damage_with_remainder<'a>(
         ));
     }
 
-    let (target, rem) = parse_target(after_to);
+    let (target, rem) = parse_target_with_ctx(after_to, ctx);
     let (target, rem) = refine_damage_target_remainder(target, rem);
     Some((
         Effect::DealDamage {

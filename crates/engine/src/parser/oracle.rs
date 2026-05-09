@@ -3490,6 +3490,73 @@ mod tests {
         assert_eq!(r.abilities[0].kind, AbilityKind::Spell);
     }
 
+    /// CR 115.1 + CR 701.9b: "random target X" — the parser stamps
+    /// `target_selection_mode = Random` on the produced `AbilityDefinition`.
+    /// The runtime then short-circuits `WaitingFor::TargetSelection` and picks
+    /// from `state.rng`. End-to-end check: text → parse → mode field.
+    ///
+    /// Uses an "a random target" prefix (article + random + target). The
+    /// article-stripping arm in `parse_target_with_ctx` recognises both
+    /// "a target" and "a random target" so the underlying filter parses
+    /// identically to the controller-choice case while `ctx` records the mode.
+    #[test]
+    fn random_target_creature_marks_ability_random_mode() {
+        use crate::types::ability::TargetSelectionMode;
+        let r = parse(
+            "~ deals 3 damage to a random target creature.",
+            "Test Card",
+            &[],
+            &["Instant"],
+            &[],
+        );
+        assert_eq!(r.abilities.len(), 1);
+        assert!(matches!(
+            r.abilities[0].target_selection_mode,
+            TargetSelectionMode::Random
+        ));
+    }
+
+    /// CR 115.1 + CR 701.9b: "random target X" without the leading article —
+    /// matches Power Struggle's "exchanges control of random target artifact".
+    /// The bare-"random " arm sets the selection mode on `ctx` directly.
+    #[test]
+    fn random_target_without_article_marks_random_mode() {
+        use crate::types::ability::TargetSelectionMode;
+        let r = parse(
+            "~ deals 3 damage to random target creature.",
+            "Test Card",
+            &[],
+            &["Instant"],
+            &[],
+        );
+        assert_eq!(r.abilities.len(), 1);
+        assert!(matches!(
+            r.abilities[0].target_selection_mode,
+            TargetSelectionMode::Random
+        ));
+    }
+
+    /// CR 115.1: Ordinary "target X" stays at `Chosen` (default), so existing
+    /// cards keep their controller-driven target prompt. Negative test for the
+    /// random-mode plumbing — this exists so a future regression that flips
+    /// the default cannot pass silently.
+    #[test]
+    fn ordinary_target_creature_keeps_chosen_mode() {
+        use crate::types::ability::TargetSelectionMode;
+        let r = parse(
+            "~ deals 3 damage to target creature.",
+            "Test Card",
+            &[],
+            &["Instant"],
+            &[],
+        );
+        assert_eq!(r.abilities.len(), 1);
+        assert!(matches!(
+            r.abilities[0].target_selection_mode,
+            TargetSelectionMode::Chosen
+        ));
+    }
+
     #[test]
     fn leadership_vacuum_returns_target_players_commanders_to_command_zone() {
         let r = parse(

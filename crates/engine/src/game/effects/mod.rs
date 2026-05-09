@@ -1965,6 +1965,33 @@ pub fn resolve_ability_chain(
                 let target_slots = crate::game::ability_utils::build_target_slots(state, sub)
                     .map_err(|e| EffectError::InvalidParam(e.to_string()))?;
                 if !target_slots.is_empty() {
+                    // CR 115.1 + CR 701.9b: Random-mode reflexive triggers (WhenYouDo /
+                    // QuantityCheck) auto-resolve via the seeded RNG. Same shape as
+                    // casting/activation: no `WaitingFor::TriggerTargetSelection` is
+                    // emitted; the chosen targets are assigned and the resolution
+                    // continues inline.
+                    if matches!(
+                        sub.target_selection_mode,
+                        crate::types::ability::TargetSelectionMode::Random
+                    ) {
+                        let chosen = crate::game::ability_utils::random_select_targets_for_ability(
+                            state,
+                            &target_slots,
+                            &[],
+                        )
+                        .map_err(|e| EffectError::InvalidParam(e.to_string()))?;
+                        let mut reflexive = sub.as_ref().clone();
+                        reflexive.context = ability.context.clone();
+                        crate::game::ability_utils::assign_targets_in_chain(
+                            state,
+                            &mut reflexive,
+                            &chosen,
+                        )
+                        .map_err(|e| EffectError::InvalidParam(e.to_string()))?;
+                        resolve_ability_chain(state, &reflexive, events, depth + 1)?;
+                        return Ok(());
+                    }
+
                     // Compute selection first — if this fails (no legal targets for a
                     // required slot), we skip the reflexive trigger cleanly without
                     // leaving an orphaned pending_trigger.

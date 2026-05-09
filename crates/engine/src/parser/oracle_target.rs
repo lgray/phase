@@ -8,7 +8,8 @@ use nom::Parser;
 
 use crate::types::ability::{
     AttachmentKind, Comparator, ControllerRef, FilterProp, ObjectScope, QuantityExpr, QuantityRef,
-    SharedQuality, SharedQualityRelation, TargetFilter, TypeFilter, TypedFilter,
+    SharedQuality, SharedQualityRelation, TargetFilter, TargetSelectionMode, TypeFilter,
+    TypedFilter,
 };
 use crate::types::card_type::Supertype;
 use crate::types::counter::CounterType;
@@ -131,7 +132,10 @@ pub fn parse_target_with_ctx<'a>(text: &'a str, ctx: &mut ParseContext) -> (Targ
     let lower = text.to_lowercase();
 
     // Strip leading article ("a "/"an ") before "target" to handle "a target creature".
-    // Guard: only strip when followed by "target " to avoid over-stripping.
+    // Guard: only strip when followed by "target " (controller-choice) or
+    // "random target " (random-selection, CR 115.1 + CR 701.9b) to avoid
+    // over-stripping. The recursion re-enters parse_target_with_ctx where the
+    // bare-"random " arm below sets the selection mode on `ctx`.
     if let Ok((after_article, _)) = alt((
         tag::<_, _, OracleError<'_>>("a second "),
         tag("a "),
@@ -139,20 +143,34 @@ pub fn parse_target_with_ctx<'a>(text: &'a str, ctx: &mut ParseContext) -> (Targ
     ))
     .parse(lower.as_str())
     {
-        if tag::<_, _, OracleError<'_>>("target ")
-            .parse(after_article)
-            .is_ok()
+        if alt((
+            tag::<_, _, OracleError<'_>>("target "),
+            tag("random target "),
+        ))
+        .parse(after_article)
+        .is_ok()
         {
             let original_rest = &text[lower.len() - after_article.len()..];
             return parse_target_with_ctx(original_rest, ctx);
         }
     }
 
-    if let Ok((rest, _)) = tag::<_, _, OracleError<'_>>("random ").parse(lower.as_str()) {
-        if tag::<_, _, OracleError<'_>>("target ").parse(rest).is_ok() {
-            let original_rest = &text[lower.len() - rest.len()..];
-            return parse_target_with_ctx(original_rest, ctx);
-        }
+    // CR 115.1 + CR 701.9b: "random target X" — the game (not the controller) selects
+    // the target. Strip the "random " modifier, mark the mode on the parse context,
+    // and recurse to parse the underlying target normally. The chunk loop in
+    // `parse_effect_chain_ir` snapshots the mode into the produced `ClauseIr`,
+    // which lowering then stamps onto the `AbilityDefinition`. The engine reads
+    // this field at target-selection time to short-circuit `WaitingFor::TargetSelection`
+    // and pick the target uniformly via `state.rng`.
+    if let Ok((rest, _)) = (
+        tag::<_, _, OracleError<'_>>("random "),
+        peek(tag("target ")),
+    )
+        .parse(lower.as_str())
+    {
+        ctx.target_selection_mode = TargetSelectionMode::Random;
+        let original_rest = &text[lower.len() - rest.len()..];
+        return parse_target_with_ctx(original_rest, ctx);
     }
 
     // Quantified target phrases routed here from callers that only need the filter,
@@ -3880,10 +3898,27 @@ mod tests {
     }
 
     #[test]
-    fn random_target_creature_strips_random_modifier() {
-        let (f, rest) = parse_target("random target creatures");
+    fn random_target_creature_marks_random_mode_on_context() {
+        // CR 115.1 + CR 701.9b: "random target X" — the inner filter is parsed
+        // exactly as a normal target, but the parse context records that the
+        // engine (not the controller) selects the target. The chunk loop in
+        // `parse_effect_chain_ir` snapshots `ctx.target_selection_mode` into the
+        // produced `ClauseIr`, which lowering stamps onto the `AbilityDefinition`.
+        let mut ctx = ParseContext::default();
+        let (f, rest) = parse_target_with_ctx("random target creatures", &mut ctx);
         assert_eq!(f, TargetFilter::Typed(TypedFilter::creature()));
         assert_eq!(rest, "");
+        assert_eq!(ctx.target_selection_mode, TargetSelectionMode::Random);
+    }
+
+    #[test]
+    fn target_creature_keeps_chosen_mode_on_context() {
+        // CR 115.1: ordinary "target X" leaves the default `Chosen` mode intact.
+        let mut ctx = ParseContext::default();
+        let (f, rest) = parse_target_with_ctx("target creature", &mut ctx);
+        assert_eq!(f, TargetFilter::Typed(TypedFilter::creature()));
+        assert_eq!(rest, "");
+        assert_eq!(ctx.target_selection_mode, TargetSelectionMode::Chosen);
     }
 
     #[test]

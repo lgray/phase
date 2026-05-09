@@ -8,7 +8,7 @@ use crate::types::player::PlayerId;
 
 use super::ability_utils::{
     assign_targets_in_chain, auto_select_targets_for_ability, begin_target_selection_for_ability,
-    build_target_slots, flatten_targets_in_chain,
+    build_target_slots, flatten_targets_in_chain, random_select_targets_for_ability,
 };
 use super::casting::emit_targeting_events;
 use super::engine::EngineError;
@@ -107,9 +107,23 @@ pub fn handle_activate_loyalty(
     // If this ability requires targets, prompt for selection first.
     let target_slots = build_target_slots(state, &resolved)?;
     if !target_slots.is_empty() {
-        if let Some(targets) =
+        // CR 115.1 + CR 701.9b: Random-target loyalty abilities — game picks via
+        // `state.rng`. Routes through finalize_loyalty_activation just like the
+        // controller-choice degenerate path.
+        let resolved_targets = if matches!(
+            resolved.target_selection_mode,
+            crate::types::ability::TargetSelectionMode::Random
+        ) {
+            Some(random_select_targets_for_ability(
+                state,
+                &target_slots,
+                &[],
+            )?)
+        } else {
             auto_select_targets_for_ability(state, &resolved, &target_slots, &[])?
-        {
+        };
+
+        if let Some(targets) = resolved_targets {
             let mut resolved = resolved;
             assign_targets_in_chain(state, &mut resolved, &targets)?;
             return Ok(finalize_loyalty_activation(

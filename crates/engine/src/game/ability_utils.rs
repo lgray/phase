@@ -60,6 +60,10 @@ pub fn build_resolved_from_def_with_targets(
     resolved.forward_result = def.forward_result;
     resolved.unless_pay = def.unless_pay.clone();
     resolved.player_scope = def.player_scope;
+    // CR 115.1 + CR 701.9b: Carry the parser-stamped target selection mode
+    // through to the resolved ability so target-selection sites can short-circuit
+    // `WaitingFor::TargetSelection` for `Random` abilities.
+    resolved.target_selection_mode = def.target_selection_mode;
     resolved
 }
 
@@ -460,6 +464,72 @@ pub fn has_legal_target_assignment_for_ability(
 ) -> bool {
     let specs = target_slot_specs(state, ability);
     has_legal_completion_with_specs(state, ability, &specs, target_slots, constraints, 0, &[])
+}
+
+/// CR 115.1 + CR 701.9b: Resolve a `Random`-mode ability's target slots by
+/// uniformly choosing from each slot's legal-target set using the engine's
+/// seeded RNG (`state.rng`). The game (not the controller) makes the selection;
+/// no `WaitingFor::TargetSelection` is emitted. Used by casting/activation
+/// dispatchers to short-circuit target prompting for "random target X" cards
+/// (Goblin Polka Band, Orcish Catapult, Power Struggle, etc.).
+///
+/// Determinism: uses `state.rng` (`ChaCha20Rng`, seeded per game), so given the
+/// same RNG state and legal-target set, the same target is chosen on every run.
+/// This preserves replay/test reproducibility.
+///
+/// Errors out if any slot has no legal target — the caller has already verified
+/// `target_slots.is_empty()` does not hold.
+///
+/// Limitation (out of scope for the H1 audit fix): when an ability has a
+/// `multi_target` spec ("any number of random target creatures") the slot
+/// builder produces one slot per max-target. This helper picks one random
+/// target per slot, effectively choosing `max` targets. A future enhancement
+/// would prompt the controller for the count N first, then pick N random
+/// targets — but the current single-slot single-pick behaviour matches
+/// Mana-Clash-style cards and the audit's primary bug (silent strip).
+pub fn random_select_targets_for_ability(
+    state: &mut GameState,
+    target_slots: &[TargetSelectionSlot],
+    constraints: &[TargetSelectionConstraint],
+) -> Result<Vec<TargetRef>, EngineError> {
+    use rand::seq::IndexedRandom; // rand 0.9: `choose` on `[T]` lives here.
+
+    let mut chosen: Vec<TargetRef> = Vec::with_capacity(target_slots.len());
+    for slot in target_slots {
+        // CR 115.3: The same target can't be chosen multiple times for one
+        // instance of "target". The interactive `legal_targets_for_slot`
+        // enforces this by filtering already-selected targets from each
+        // subsequent slot's legal pool; mirror that filter here so the random
+        // picker honours the same uniqueness rule.
+        let candidate_targets: Vec<TargetRef> = slot
+            .legal_targets
+            .iter()
+            .filter(|t| !chosen.contains(t))
+            .cloned()
+            .collect();
+        if candidate_targets.is_empty() {
+            // CR 115.6: A spell or ability that requires targets may allow zero
+            // targets to be chosen only when the slot is optional. For random
+            // selection there is no controller to skip, so an empty legal-target
+            // set (after CR 115.3 uniqueness filtering) cannot be satisfied
+            // unless the slot is optional.
+            if slot.optional {
+                continue;
+            }
+            return Err(EngineError::ActionNotAllowed(
+                "No legal targets available for random selection".to_string(),
+            ));
+        }
+        let pick = candidate_targets.choose(&mut state.rng).cloned().ok_or(
+            EngineError::ActionNotAllowed("Random selection failed to draw a target".to_string()),
+        )?;
+        chosen.push(pick);
+    }
+    // Multi-slot constraints (e.g., DifferentTargetPlayers) — reuse the same
+    // validator the controller-choice path uses so random selection respects
+    // every constraint declared on the ability.
+    validate_target_constraints(&chosen, constraints)?;
+    Ok(chosen)
 }
 
 /// CR 608.2b: When resolving, check that targets are still legal. If all targets are illegal,
@@ -4307,5 +4377,165 @@ mod tests {
                 TargetRef::Object(ObjectId(2))
             ]
         );
+    }
+
+    /// CR 115.1 + CR 701.9b: A `Random`-mode target slot resolves to one of the
+    /// legal targets without prompting the controller. With a seeded RNG, the
+    /// result is deterministic across runs (replay/test reproducibility).
+    #[test]
+    fn random_select_targets_picks_one_of_legal_targets() {
+        let mut state = GameState::new_two_player(42);
+        let slot = TargetSelectionSlot {
+            legal_targets: vec![
+                TargetRef::Object(ObjectId(7)),
+                TargetRef::Object(ObjectId(11)),
+            ],
+            optional: false,
+        };
+        let chosen =
+            random_select_targets_for_ability(&mut state, std::slice::from_ref(&slot), &[])
+                .expect("random selection succeeds when legal targets exist");
+        assert_eq!(chosen.len(), 1);
+        assert!(slot.legal_targets.contains(&chosen[0]));
+    }
+
+    /// CR 115.1 + CR 701.9b: Determinism check — two independent runs with the
+    /// same seeded RNG state and the same legal-target set must pick the same
+    /// target. This guarantees replays and recorded games behave identically.
+    #[test]
+    fn random_select_targets_is_deterministic_under_seeded_rng() {
+        let slot = TargetSelectionSlot {
+            legal_targets: vec![
+                TargetRef::Object(ObjectId(3)),
+                TargetRef::Object(ObjectId(5)),
+                TargetRef::Object(ObjectId(8)),
+            ],
+            optional: false,
+        };
+        let mut state_a = GameState::new_two_player(1234);
+        let mut state_b = GameState::new_two_player(1234);
+        let pick_a =
+            random_select_targets_for_ability(&mut state_a, std::slice::from_ref(&slot), &[])
+                .expect("seeded RNG run a");
+        let pick_b =
+            random_select_targets_for_ability(&mut state_b, std::slice::from_ref(&slot), &[])
+                .expect("seeded RNG run b");
+        assert_eq!(pick_a, pick_b, "same seed must yield same target");
+    }
+
+    /// CR 115.1 + CR 701.9b: A `Random`-mode slot with no legal targets fails
+    /// (parallel to the controller-choice "no legal targets" case, except the
+    /// game is the actor — there is no controller to skip the slot).
+    #[test]
+    fn random_select_targets_errors_when_no_legal_targets() {
+        let mut state = GameState::new_two_player(42);
+        let slot = TargetSelectionSlot {
+            legal_targets: vec![],
+            optional: false,
+        };
+        let result = random_select_targets_for_ability(&mut state, &[slot], &[]);
+        assert!(result.is_err(), "empty legal-target set must error");
+    }
+
+    /// CR 115.6: Optional `Random`-mode slots with empty legal-target sets are
+    /// skipped without producing a target — same shape as the controller-choice
+    /// optional path.
+    #[test]
+    fn random_select_targets_skips_optional_empty_slot() {
+        let mut state = GameState::new_two_player(42);
+        let slot = TargetSelectionSlot {
+            legal_targets: vec![],
+            optional: true,
+        };
+        let chosen = random_select_targets_for_ability(&mut state, &[slot], &[])
+            .expect("optional empty slot resolves to empty selection");
+        assert!(chosen.is_empty());
+    }
+
+    /// CR 115.1 + CR 701.9b: Multi-slot `Random`-mode resolves each slot
+    /// independently from `state.rng`. With two distinct legal targets per
+    /// slot, the chain produces two picks that each lie in their slot's
+    /// legal-target set.
+    #[test]
+    fn random_select_targets_resolves_each_slot_independently() {
+        let mut state = GameState::new_two_player(42);
+        let slot_a = TargetSelectionSlot {
+            legal_targets: vec![
+                TargetRef::Object(ObjectId(1)),
+                TargetRef::Object(ObjectId(2)),
+            ],
+            optional: false,
+        };
+        let slot_b = TargetSelectionSlot {
+            legal_targets: vec![
+                TargetRef::Object(ObjectId(10)),
+                TargetRef::Object(ObjectId(20)),
+            ],
+            optional: false,
+        };
+        let chosen =
+            random_select_targets_for_ability(&mut state, &[slot_a.clone(), slot_b.clone()], &[])
+                .expect("multi-slot random selection succeeds");
+        assert_eq!(chosen.len(), 2);
+        assert!(slot_a.legal_targets.contains(&chosen[0]));
+        assert!(slot_b.legal_targets.contains(&chosen[1]));
+    }
+
+    /// CR 115.3: Multi-slot random selection must not pick the same target
+    /// twice across slots — the random helper filters previously-chosen
+    /// targets from each subsequent slot's pool, mirroring the interactive
+    /// `legal_targets_for_slot` filter.
+    #[test]
+    fn random_select_targets_does_not_repeat_across_slots() {
+        let mut state = GameState::new_two_player(42);
+        // Two slots with the same single legal target — the second slot must
+        // either fail (required) or yield no pick (optional).
+        let shared = TargetRef::Object(ObjectId(99));
+        let slot_required = TargetSelectionSlot {
+            legal_targets: vec![shared.clone()],
+            optional: false,
+        };
+        let slot_optional = TargetSelectionSlot {
+            legal_targets: vec![shared.clone()],
+            optional: true,
+        };
+        // Required + required: second slot has no remaining legal target → error.
+        let err = random_select_targets_for_ability(
+            &mut state,
+            &[slot_required.clone(), slot_required.clone()],
+            &[],
+        );
+        assert!(
+            err.is_err(),
+            "duplicate-only legal set must not violate CR 115.3"
+        );
+
+        // Required + optional: optional slot yields no extra pick (skipped).
+        let chosen =
+            random_select_targets_for_ability(&mut state, &[slot_required, slot_optional], &[])
+                .expect("required + optional resolves with one target");
+        assert_eq!(chosen, vec![shared]);
+    }
+
+    /// CR 115.1: `build_resolved_from_def` propagates `target_selection_mode`
+    /// from `AbilityDefinition` to `ResolvedAbility` so the runtime branch in
+    /// `casting_targets` can route to the random path.
+    #[test]
+    fn build_resolved_from_def_carries_target_selection_mode() {
+        use crate::types::ability::TargetSelectionMode;
+        let mut def = AbilityDefinition::new(
+            AbilityKind::Spell,
+            Effect::DealDamage {
+                amount: QuantityExpr::Fixed { value: 3 },
+                target: TargetFilter::Typed(TypedFilter::creature()),
+                damage_source: None,
+            },
+        );
+        def.target_selection_mode = TargetSelectionMode::Random;
+        let resolved = build_resolved_from_def(&def, ObjectId(1), PlayerId(0));
+        assert!(matches!(
+            resolved.target_selection_mode,
+            TargetSelectionMode::Random
+        ));
     }
 }

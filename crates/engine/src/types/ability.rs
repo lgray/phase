@@ -1815,6 +1815,40 @@ impl From<TypedFilter> for TargetFilter {
     }
 }
 
+/// CR 115.1 + CR 701.9b: How a target slot's referent is selected.
+///
+/// CR 115.1: Default — the spell/ability's controller chooses each target.
+/// CR 701.9b: Some effects override the controller-choice default by requiring
+/// the game to make the selection (analogous to "random discard" — the affected
+/// player does not choose). Magic Oracle text expresses this with the modifier
+/// "random target [predicate]" appearing immediately before the target word
+/// (Mana Clash, Goblin Lyre, Pixie Queen, Vexing Sphinx, Maddening Hex, etc.).
+///
+/// Categorical-boundary check (per CLAUDE.md "Parameterize, don't proliferate"):
+/// this enum is the *selection-mode* axis — one level above the predicate
+/// (`TargetFilter`) and orthogonal to slot count (`MultiTargetSpec`). It does
+/// not belong on `TargetFilter` (which captures *what* matches), nor on
+/// `MultiTargetSpec` (which captures *how many*). It captures *who selects*.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(tag = "type")]
+pub enum TargetSelectionMode {
+    /// CR 115.1: The spell or ability's controller chooses each target.
+    #[default]
+    Chosen,
+    /// CR 701.9b (analogous): The game selects each target uniformly at random
+    /// from the legal-target set. The controller does not choose.
+    Random,
+}
+
+impl TargetSelectionMode {
+    /// Helper for `serde(skip_serializing_if = ...)` — the default `Chosen`
+    /// mode is omitted from card-data.json so existing card export shapes are
+    /// preserved exactly.
+    pub fn is_chosen(&self) -> bool {
+        matches!(self, TargetSelectionMode::Chosen)
+    }
+}
+
 /// Typed target filter replacing all Forge filter strings and TargetSpec.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type")]
@@ -6401,6 +6435,13 @@ pub struct AbilityDefinition {
     /// Produced by "each opponent discards", "each player draws", etc.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub player_scope: Option<PlayerFilter>,
+    /// CR 115.1 + CR 701.9b: Selection mode for this ability's target slot(s).
+    /// `Chosen` (default) = the controller chooses each target per CR 115.1.
+    /// `Random` = the game uniformly selects from each slot's legal-target set
+    /// (Mana Clash, Goblin Lyre, Pixie Queen, Vexing Sphinx, Maddening Hex, etc.).
+    /// Read at target-selection time to short-circuit `WaitingFor::TargetSelection`.
+    #[serde(default, skip_serializing_if = "TargetSelectionMode::is_chosen")]
+    pub target_selection_mode: TargetSelectionMode,
 }
 
 impl fmt::Debug for AbilityDefinition {
@@ -6454,6 +6495,7 @@ impl AbilityDefinition {
             cost_reduction: None,
             forward_result: false,
             player_scope: None,
+            target_selection_mode: TargetSelectionMode::Chosen,
         }
     }
 
@@ -8362,6 +8404,11 @@ pub struct ResolvedAbility {
     pub ability_index: Option<usize>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub may_trigger_origin: Option<MayTriggerOrigin>,
+    /// CR 115.1 + CR 701.9b: Selection mode carried through from the originating
+    /// `AbilityDefinition`. Read by `casting_targets`/`engine_modes`/`planeswalker`
+    /// to short-circuit `WaitingFor::TargetSelection` for `Random` abilities.
+    #[serde(default, skip_serializing_if = "TargetSelectionMode::is_chosen")]
+    pub target_selection_mode: TargetSelectionMode,
 }
 
 impl ResolvedAbility {
@@ -8400,6 +8447,7 @@ impl ResolvedAbility {
             cost_paid_object: None,
             ability_index: None,
             may_trigger_origin: None,
+            target_selection_mode: TargetSelectionMode::Chosen,
         }
     }
 

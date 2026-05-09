@@ -4,7 +4,7 @@
 //! All parser branches import from this single location (Phase 50, D-01).
 
 use super::diagnostic::OracleDiagnostic;
-use crate::types::ability::{ControllerRef, QuantityRef, TargetFilter};
+use crate::types::ability::{ControllerRef, QuantityRef, TargetFilter, TargetSelectionMode};
 
 /// Unified parsing context — threaded through all parser branches for
 /// pronoun/reference resolution ("it", "that creature", "that many").
@@ -36,6 +36,11 @@ pub(crate) struct ParseContext {
     /// CR 109.4 + CR 115.1: Relative-player scope for "that player controls"
     /// resolution inside trigger effects. Replaces thread-local oracle_target_scope.
     pub relative_player_scope: Option<ControllerRef>,
+    /// CR 115.1 + CR 701.9b: Target selection mode for the most recent target
+    /// phrase parsed via `parse_target_with_ctx`. The chunk loop in
+    /// `parse_effect_chain_ir` snapshots this into the produced `ClauseIr` and
+    /// resets it to `Chosen` for the next chunk so the marker is per-clause.
+    pub target_selection_mode: TargetSelectionMode,
 }
 
 impl ParseContext {

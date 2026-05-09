@@ -1280,12 +1280,29 @@ pub fn process_triggers(state: &mut GameState, events: &[GameEvent]) {
             continue;
         }
 
-        match super::ability_utils::auto_select_targets_for_ability(
-            state,
-            &trigger.ability,
-            &target_slots,
-            &trigger.target_constraints,
+        // CR 115.1 + CR 701.9b: Random-target triggered abilities short-circuit
+        // to RNG-driven selection. Falls back to controller-choice degenerate
+        // auto-select otherwise.
+        let auto_targets = if matches!(
+            trigger.ability.target_selection_mode,
+            crate::types::ability::TargetSelectionMode::Random
         ) {
+            super::ability_utils::random_select_targets_for_ability(
+                state,
+                &target_slots,
+                &trigger.target_constraints,
+            )
+            .map(Some)
+        } else {
+            super::ability_utils::auto_select_targets_for_ability(
+                state,
+                &trigger.ability,
+                &target_slots,
+                &trigger.target_constraints,
+            )
+        };
+
+        match auto_targets {
             Ok(Some(targets)) => {
                 if super::ability_utils::assign_targets_in_chain(
                     state,

@@ -2,4 +2,11 @@
 source: crates/engine/src/parser/oracle_ir/snapshot_tests.rs
 expression: "&diagnostics"
 ---
-[]
+[
+  {
+    "type": "TargetFallback",
+    "context": "parse_target could not classify",
+    "text": "instead",
+    "line_index": 0
+  }
+]

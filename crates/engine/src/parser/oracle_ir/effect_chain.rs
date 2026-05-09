@@ -12,7 +12,7 @@ use super::ast::{ClauseBoundary, ContinuationAst, ParsedEffectClause};
 use crate::types::ability::{
     AbilityCondition, AbilityCost, AbilityDefinition, AbilityKind, ControllerRef,
     DelayedTriggerCondition, MultiTargetSpec, OpponentMayScope, PlayerFilter, QuantityExpr,
-    RoundingMode, UnlessPayModifier,
+    RoundingMode, TargetSelectionMode, UnlessPayModifier,
 };
 use crate::types::mana::ManaExpiry;
 
@@ -112,6 +112,12 @@ pub(crate) struct ClauseIr {
     pub(crate) special: Option<SpecialClause>,
     /// The raw normalized text (for debug/diagnostic purposes).
     pub(crate) source_text: String,
+    /// CR 115.1 + CR 701.9b: Target selection mode captured from `ParseContext`
+    /// after this chunk was parsed. Stamped onto the produced `AbilityDefinition`
+    /// during lowering. `Chosen` (default) for ordinary "target X" phrases;
+    /// `Random` when the parser stripped a leading "random " modifier.
+    #[serde(default, skip_serializing_if = "TargetSelectionMode::is_chosen")]
+    pub(crate) target_selection_mode: TargetSelectionMode,
 }
 
 #[cfg(test)]
@@ -155,6 +161,7 @@ mod tests {
             unless_pay: None,
             special: None,
             source_text: "draw a card".to_string(),
+            target_selection_mode: TargetSelectionMode::Chosen,
         };
         assert_eq!(clause.source_text, "draw a card");
         assert!(!clause.is_optional);
@@ -187,6 +194,7 @@ mod tests {
                 unless_pay: None,
                 special: None,
                 source_text: "draw two cards".to_string(),
+                target_selection_mode: TargetSelectionMode::Chosen,
             }],
             kind: AbilityKind::Spell,
             chain_rounding: None,

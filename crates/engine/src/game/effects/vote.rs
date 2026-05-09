@@ -174,6 +174,7 @@ pub fn resolve_tally(
             cost_paid_object: None,
             ability_index: None,
             may_trigger_origin: None,
+            target_selection_mode: per_choice_effect[idx].target_selection_mode,
         };
         resolve_ability_chain(state, &chain, events, 0)?;
     }
@@ -223,6 +224,7 @@ fn resolved_from_def(
         cost_paid_object: None,
         ability_index: None,
         may_trigger_origin: None,
+        target_selection_mode: def.target_selection_mode,
     }
 }
 
@@ -355,6 +357,7 @@ mod tests {
             cost_paid_object: None,
             ability_index: None,
             may_trigger_origin: None,
+            target_selection_mode: crate::types::ability::TargetSelectionMode::Chosen,
         };
 
         let mut events = Vec::new();
