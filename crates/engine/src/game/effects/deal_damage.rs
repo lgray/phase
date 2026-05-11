@@ -528,10 +528,22 @@ pub fn resolve(
             .unwrap_or_else(|| DamageContext::fallback(ability.source_id, ability.controller)),
     };
 
-    // Resolve effective targets: use explicit targets if present, otherwise derive
-    // implicit target from the TargetFilter for non-targeted damage ("to you", "to itself").
+    // CR 120.1 + CR 608.2c: Resolve effective damage targets.
+    //
+    // `SelfRef` is the printed-name anaphor (`~`) — always resolves to the
+    // source object regardless of `ability.targets`. Short-circuit BEFORE the
+    // `ability.targets.is_empty()` fallback so chained
+    // `DealDamage { target: SelfRef }` sub-abilities don't inherit the
+    // parent's targets via chain propagation in
+    // `effects::mod.rs::resolve_ability_chain` (issue #323 class).
+    //
+    // Other implicit-target filters (`Controller`) keep the pre-existing
+    // "fall back when targets are empty" semantic.
     let implicit;
-    let effective_targets: &[TargetRef] = if !ability.targets.is_empty() {
+    let effective_targets: &[TargetRef] = if matches!(target_filter, TargetFilter::SelfRef) {
+        implicit = vec![TargetRef::Object(ability.source_id)];
+        &implicit
+    } else if !ability.targets.is_empty() {
         if matches!(damage_source, Some(DamageSource::Target)) && ability.targets.len() > 1 {
             &ability.targets[1..]
         } else {
@@ -540,7 +552,6 @@ pub fn resolve(
     } else {
         implicit = match target_filter {
             TargetFilter::Controller => vec![TargetRef::Player(ability.controller)],
-            TargetFilter::SelfRef => vec![TargetRef::Object(ability.source_id)],
             _ => vec![],
         };
         &implicit

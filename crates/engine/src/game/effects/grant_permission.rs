@@ -27,9 +27,17 @@ pub fn resolve(
         _ => return Err(EffectError::MissingParam("permission".to_string())),
     };
 
-    let target_ids: Vec<_> = if ability.targets.is_empty() {
+    // CR 608.2c (issue #323 class): `SelfRef` always resolves to the source
+    // object regardless of `ability.targets`. Short-circuit BEFORE the
+    // chosen-targets fallback so chained
+    // `GrantCastingPermission { target: SelfRef }` sub-abilities don't
+    // inherit the parent's targets via chain propagation in
+    // `effects::mod.rs::resolve_ability_chain`.
+    let target_ids: Vec<_> = if matches!(target_filter, TargetFilter::SelfRef) {
+        vec![ability.source_id]
+    } else if ability.targets.is_empty() {
         match target_filter {
-            TargetFilter::SelfRef | TargetFilter::Any | TargetFilter::None => {
+            TargetFilter::Any | TargetFilter::None => {
                 vec![ability.source_id]
             }
             TargetFilter::TrackedSet {

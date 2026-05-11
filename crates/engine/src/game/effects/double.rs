@@ -43,7 +43,7 @@ fn resolve_double_counters(
     target: &TargetFilter,
     counter_type: Option<&str>,
 ) -> Result<(), EffectError> {
-    let obj_ids = resolve_object_targets(ability, target);
+    let obj_ids = resolve_object_targets(ability, target, state);
 
     for obj_id in obj_ids {
         // Snapshot current counters to avoid borrow issues
@@ -217,21 +217,21 @@ fn resolve_double_mana(
 }
 
 /// Resolve object targets from ability targets or self-ref.
-fn resolve_object_targets(ability: &ResolvedAbility, target: &TargetFilter) -> Vec<ObjectId> {
-    match target {
-        TargetFilter::SelfRef | TargetFilter::None => vec![ability.source_id],
-        _ => ability
-            .targets
-            .iter()
-            .filter_map(|t| {
-                if let TargetRef::Object(id) = t {
-                    Some(*id)
-                } else {
-                    None
-                }
-            })
-            .collect(),
-    }
+///
+/// CR 608.2c + 603.10a: Delegates to the unified 3-tier dispatch
+/// (`targeting::resolved_targets`) so `SelfRef` always resolves to the source
+/// object regardless of `ability.targets` (issue #323 class — chained
+/// `Double { target: SelfRef }` sub-abilities would otherwise inherit the
+/// parent's targets via chain propagation in
+/// `effects::mod.rs::resolve_ability_chain`). `None` falls back to the
+/// source only when `ability.targets` is empty.
+fn resolve_object_targets(
+    ability: &ResolvedAbility,
+    target: &TargetFilter,
+    state: &GameState,
+) -> Vec<ObjectId> {
+    let effective_targets = crate::game::targeting::resolved_targets(ability, target, state);
+    super::effect_object_targets(target, &effective_targets)
 }
 
 /// Resolve a player target from the ability.

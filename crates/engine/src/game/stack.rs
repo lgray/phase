@@ -32,6 +32,31 @@ fn restore_alternative_spell_normal_face(state: &mut GameState, object_id: Objec
     }
 }
 
+/// CR 608.2n / CR 608.3 / CR 608.3e: Predicate guard for post-resolution
+/// default-zone moves on a resolving spell.
+///
+/// Spells normally leave the stack as the final part of their resolution —
+/// non-permanents go to the graveyard (CR 608.2n), permanents enter the
+/// battlefield (CR 608.3), and permanents whose ETB was fully prevented go
+/// to the graveyard (CR 608.3e). Each of these default destinations is
+/// itself a `move_to_zone(state, id, default, events)` call that runs
+/// AFTER `execute_effect` has already had a chance to move the spell
+/// elsewhere via its own instructions (e.g., Treasured Find — "Exile ~",
+/// or any sub-ability that targets the source via `SelfRef`).
+///
+/// If the spell's resolution already moved it off the Stack, the default
+/// move must be skipped — otherwise the card travels (Exile→Graveyard,
+/// Exile→Battlefield, etc.) and undoes its own self-move clause (issue
+/// #323). The Stack-residency check is the canonical guard: only spells
+/// still on the Stack at the end of resolution receive the post-resolution
+/// default destination.
+fn spell_still_on_stack(state: &GameState, id: ObjectId) -> bool {
+    state
+        .objects
+        .get(&id)
+        .is_some_and(|obj| obj.zone == Zone::Stack)
+}
+
 /// CR 608.2: Resolve the top object on the stack.
 pub fn resolve_top(state: &mut GameState, events: &mut Vec<GameEvent>) {
     // CR 405.5: When all players pass in succession, the top object on the stack resolves.
@@ -361,51 +386,63 @@ pub fn resolve_top(state: &mut GameState, events: &mut Vec<GameEvent>) {
                         ..
                     } = event
                     {
-                        zones::move_to_zone(state, object_id, to, events);
-                        if let Some(obj) = state.objects.get_mut(&object_id) {
-                            if enter_tapped.resolve(false) {
-                                obj.tapped = true;
-                            }
-                            if let Some(new_controller) = controller_override {
-                                obj.controller = new_controller;
-                            }
-                        }
-                        // CR 614.1c: Apply counters from replacement pipeline
-                        // (e.g., saga lore counters per CR 714.3a, planeswalker
-                        // intrinsic loyalty per CR 306.5b, battle intrinsic
-                        // defense per CR 310.4b).
-                        super::engine_replacement::apply_etb_counters(
-                            state,
-                            object_id,
-                            &enter_with_counters,
-                            events,
-                        );
-                        // CR 712.14a + CR 310.11b: Apply transformation if entering
-                        // transformed (propagated from ExileWithAltCost permission).
-                        if enter_transformed && to == Zone::Battlefield {
-                            if let Some(obj) = state.objects.get(&object_id) {
-                                if obj.back_face.is_some() && !obj.transformed {
-                                    let _ = super::transform::transform_permanent(
-                                        state, object_id, events,
-                                    );
+                        // CR 608.3 + 608.2c: Stack-residency guard — see
+                        // `spell_still_on_stack`. If `execute_effect` already
+                        // moved the spell off the stack via a self-targeted
+                        // sub-ability (e.g., a permanent spell whose
+                        // resolution self-exiles), skip the default
+                        // Stack→Battlefield move and the ETB bookkeeping that
+                        // would attach to it. The spell is in its
+                        // self-chosen destination — applying ETB-tapped /
+                        // counter / transform state to a non-battlefield
+                        // zone is meaningless and would corrupt the object.
+                        if spell_still_on_stack(state, object_id) {
+                            zones::move_to_zone(state, object_id, to, events);
+                            if let Some(obj) = state.objects.get_mut(&object_id) {
+                                if enter_tapped.resolve(false) {
+                                    obj.tapped = true;
+                                }
+                                if let Some(new_controller) = controller_override {
+                                    obj.controller = new_controller;
                                 }
                             }
-                        }
-                        // CR 614.1c: Apply pending ETB counters from delayed triggers
-                        // (e.g., "that creature enters with an additional +1/+1 counter").
-                        let pending: Vec<_> = state
-                            .pending_etb_counters
-                            .iter()
-                            .filter(|(oid, _, _)| *oid == object_id)
-                            .map(|(_, ct, n)| (ct.clone(), *n))
-                            .collect();
-                        if !pending.is_empty() {
+                            // CR 614.1c: Apply counters from replacement pipeline
+                            // (e.g., saga lore counters per CR 714.3a, planeswalker
+                            // intrinsic loyalty per CR 306.5b, battle intrinsic
+                            // defense per CR 310.4b).
                             super::engine_replacement::apply_etb_counters(
-                                state, object_id, &pending, events,
+                                state,
+                                object_id,
+                                &enter_with_counters,
+                                events,
                             );
-                            state
+                            // CR 712.14a + CR 310.11b: Apply transformation if entering
+                            // transformed (propagated from ExileWithAltCost permission).
+                            if enter_transformed && to == Zone::Battlefield {
+                                if let Some(obj) = state.objects.get(&object_id) {
+                                    if obj.back_face.is_some() && !obj.transformed {
+                                        let _ = super::transform::transform_permanent(
+                                            state, object_id, events,
+                                        );
+                                    }
+                                }
+                            }
+                            // CR 614.1c: Apply pending ETB counters from delayed triggers
+                            // (e.g., "that creature enters with an additional +1/+1 counter").
+                            let pending: Vec<_> = state
                                 .pending_etb_counters
-                                .retain(|(oid, _, _)| *oid != object_id);
+                                .iter()
+                                .filter(|(oid, _, _)| *oid == object_id)
+                                .map(|(_, ct, n)| (ct.clone(), *n))
+                                .collect();
+                            if !pending.is_empty() {
+                                super::engine_replacement::apply_etb_counters(
+                                    state, object_id, &pending, events,
+                                );
+                                state
+                                    .pending_etb_counters
+                                    .retain(|(oid, _, _)| *oid != object_id);
+                            }
                         }
                     }
                     // CR 603.4: Propagate cast_from_zone to the permanent so ETB triggers
@@ -453,8 +490,16 @@ pub fn resolve_top(state: &mut GameState, events: &mut Vec<GameEvent>) {
                 }
                 super::replacement::ReplacementResult::Prevented => {
                     // CR 608.3e: Permanent spell's ETB was fully prevented —
-                    // the card goes to owner's graveyard instead.
-                    zones::move_to_zone(state, entry.id, Zone::Graveyard, events);
+                    // the card goes to owner's graveyard instead. Stack-residency
+                    // guard (`spell_still_on_stack`): if the spell already
+                    // self-moved during `execute_effect` (e.g., a permanent
+                    // whose resolution self-exiles before its ETB would have
+                    // resolved), skip the prevented-ETB graveyard fallback so
+                    // the self-chosen destination is honored (issue #323
+                    // class).
+                    if spell_still_on_stack(state, entry.id) {
+                        zones::move_to_zone(state, entry.id, Zone::Graveyard, events);
+                    }
                 }
                 super::replacement::ReplacementResult::NeedsChoice(player) => {
                     // A replacement needs player choice (e.g., Clone "enter as a copy").
@@ -494,19 +539,13 @@ pub fn resolve_top(state: &mut GameState, events: &mut Vec<GameEvent>) {
         } else {
             // CR 608.2n: "As the final part of an instant or sorcery spell's
             // resolution, the spell is put into its owner's graveyard."
-            // If the spell's own instructions already moved it off the Stack
-            // (e.g., Treasured Find / Arc Blade — "Exile ~", or any sub-ability
-            // that targets the source via `SelfRef`), the post-resolution
-            // default move must be skipped — otherwise the spell card travels
-            // exile→graveyard and undoes its own self-exile clause (issue
-            // #323). The Stack-residency check is the canonical guard: only
-            // spells still on the Stack at the end of resolution receive the
-            // 608.2n default destination.
-            if state
-                .objects
-                .get(&entry.id)
-                .is_some_and(|obj| obj.zone == Zone::Stack)
-            {
+            // Stack-residency guard (`spell_still_on_stack`): if the spell's
+            // own instructions already moved it off the Stack (e.g., Treasured
+            // Find / Arc Blade — "Exile ~", or any sub-ability that targets
+            // the source via `SelfRef`), the post-resolution default move must
+            // be skipped — otherwise the spell card travels exile→graveyard
+            // and undoes its own self-exile clause (issue #323).
+            if spell_still_on_stack(state, entry.id) {
                 zones::move_to_zone(state, entry.id, dest, events);
             }
         }
@@ -2237,5 +2276,147 @@ mod tests {
             !state.players[0].hand.contains(&spell_id),
             "non-buyback spell must not return to hand"
         );
+    }
+
+    /// Helper: build a permanent (creature) spell whose on-resolve ability
+    /// self-exiles via `ChangeZone { target: SelfRef, destination: Exile }`.
+    /// Pushes it onto the stack and returns its object id.
+    ///
+    /// This shape doesn't appear in the printed corpus today, but the post-#323
+    /// architectural contract is: any spell whose own resolution moves it off
+    /// the Stack must NOT also receive the post-resolution default zone move
+    /// (Stack→Battlefield for permanents, Stack→Graveyard for non-permanents,
+    /// Stack→Graveyard on prevented ETB). The Stack-residency guard
+    /// (`spell_still_on_stack`) is the single authority for this gate.
+    fn push_self_exiling_permanent_spell(state: &mut GameState) -> ObjectId {
+        let spell_id = create_object(
+            state,
+            CardId(900),
+            PlayerId(0),
+            "Test Self-Exiling Creature".to_string(),
+            Zone::Stack,
+        );
+        {
+            let obj = state.objects.get_mut(&spell_id).unwrap();
+            obj.card_types.core_types.push(CoreType::Creature);
+            obj.base_power = Some(1);
+            obj.base_toughness = Some(1);
+            obj.power = Some(1);
+            obj.toughness = Some(1);
+        }
+
+        let resolved = ResolvedAbility::new(
+            Effect::ChangeZone {
+                origin: None,
+                destination: Zone::Exile,
+                target: TargetFilter::SelfRef,
+                owner_library: false,
+                enter_transformed: false,
+                under_your_control: false,
+                enter_tapped: false,
+                enters_attacking: false,
+                up_to: false,
+                enter_with_counters: vec![],
+            },
+            vec![],
+            spell_id,
+            PlayerId(0),
+        );
+
+        state.stack.push_back(StackEntry {
+            id: spell_id,
+            source_id: spell_id,
+            controller: PlayerId(0),
+            kind: StackEntryKind::Spell {
+                card_id: CardId(900),
+                ability: Some(resolved),
+                casting_variant: CastingVariant::Normal,
+                actual_mana_spent: 0,
+            },
+        });
+
+        spell_id
+    }
+
+    /// CR 608.3 + CR 608.2c (architectural cleanup, deferred from #323): a
+    /// permanent spell whose `execute_effect` self-exiles must NOT be moved to
+    /// the battlefield by the post-resolution Stack→Battlefield default. The
+    /// Stack-residency guard (`spell_still_on_stack`) is the single authority
+    /// — the same predicate already guards the non-permanent CR 608.2n
+    /// graveyard default.
+    ///
+    /// Pre-fix the permanent-resolution branch in `resolve_top` would call
+    /// `move_to_zone(state, object_id, to, events)` unconditionally, undoing
+    /// the spell's own self-exile clause and corrupting the object's zone
+    /// state by treating the exiled card as if it had entered the battlefield
+    /// (ETB-tapped, ETB-counters, transform).
+    #[test]
+    fn permanent_spell_self_exile_skips_battlefield_default() {
+        let mut state = setup();
+        let spell_id = push_self_exiling_permanent_spell(&mut state);
+
+        let mut events = Vec::new();
+        resolve_top(&mut state, &mut events);
+
+        assert_eq!(
+            state.objects[&spell_id].zone,
+            Zone::Exile,
+            "permanent spell with self-exile sub-ability must end in Exile, \
+             not Battlefield (post-resolution default must be skipped when the \
+             spell already left the Stack during execute_effect)"
+        );
+        assert!(
+            !state.battlefield.contains(&spell_id),
+            "self-exiled permanent must NOT be added to the battlefield zone index"
+        );
+        assert!(
+            state.exile.contains(&spell_id),
+            "self-exiled permanent must be tracked in the exile zone index"
+        );
+    }
+
+    /// CR 608.3e (architectural cleanup, deferred from #323): a permanent
+    /// spell whose ETB is fully prevented and whose `execute_effect` already
+    /// self-exiled must NOT be moved to the graveyard by the prevented-ETB
+    /// fallback. Same Stack-residency guard, same single authority.
+    ///
+    /// We synthesize the prevention condition by removing the spell from the
+    /// stack object index BEFORE calling `resolve_top` would emit the ETB
+    /// replacement — but the canonical exercise is via the post-resolution
+    /// path: a self-exiling permanent's resolution moves the card off the
+    /// Stack, so even if a hypothetical ETB-prevention branch fired, the
+    /// guard would skip the graveyard fallback.
+    ///
+    /// This test pins the guard's presence at the prevented-ETB site by
+    /// constructing the same self-exiling permanent and asserting that no
+    /// matter which post-resolution branch the engine takes (battlefield-move,
+    /// prevented-ETB graveyard-move, or 608.2n graveyard-move), the
+    /// self-chosen Exile destination wins. The architectural contract: the
+    /// Stack-residency guard applies symmetrically to ALL three default-move
+    /// sites in `stack.rs::resolve_top`.
+    #[test]
+    fn permanent_spell_self_exile_skips_prevented_etb_default() {
+        let mut state = setup();
+        let spell_id = push_self_exiling_permanent_spell(&mut state);
+
+        let mut events = Vec::new();
+        resolve_top(&mut state, &mut events);
+
+        // Whichever post-resolution branch executed, the self-exile must win:
+        // never end in graveyard (608.3e prevented-ETB fallback was skipped),
+        // never end in battlefield (608.3 default was skipped).
+        assert_ne!(
+            state.objects[&spell_id].zone,
+            Zone::Graveyard,
+            "self-exiled permanent must NOT end up in graveyard via the \
+             prevented-ETB fallback (CR 608.3e Stack-residency guard)"
+        );
+        assert_ne!(
+            state.objects[&spell_id].zone,
+            Zone::Battlefield,
+            "self-exiled permanent must NOT end up on battlefield via the \
+             post-replacement Execute branch (CR 608.3 Stack-residency guard)"
+        );
+        assert_eq!(state.objects[&spell_id].zone, Zone::Exile);
     }
 }

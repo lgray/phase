@@ -415,13 +415,24 @@ fn resolve_defined_or_targets(
         _ => None,
     };
 
-    if let Some(TargetFilter::None) = target_spec {
+    // CR 608.2c: SelfRef is the printed-name anaphor — always resolves to the
+    // source object regardless of `ability.targets`. Mirrors the post-#323
+    // short-circuit in `targeting::resolved_targets`. Without this, a chained
+    // `AddCounter { target: SelfRef }` sub-ability would inherit the parent's
+    // targets via chain propagation in `effects::mod.rs::resolve_ability_chain`.
+    if let Some(TargetFilter::SelfRef) = target_spec {
         return vec![ability.source_id];
     }
 
-    // If the filter is SelfRef, target the source
-    if let Some(TargetFilter::SelfRef) = target_spec {
-        return vec![ability.source_id];
+    // CR 603.10a (tier 2 of `resolved_targets`): `None` falls back to source
+    // only when no chosen targets were supplied — preserves the LTB
+    // self-trigger anaphor ("put a +1/+1 counter on it") while letting chain
+    // propagation populate the target slot for legitimately targeted
+    // sub-abilities.
+    if let Some(TargetFilter::None) = target_spec {
+        if ability.targets.is_empty() {
+            return vec![ability.source_id];
+        }
     }
 
     if let Some(filter) = target_spec {
