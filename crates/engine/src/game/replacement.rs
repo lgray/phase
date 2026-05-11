@@ -721,20 +721,25 @@ fn gain_life_applier(
         // qmod set but event isn't LifeGain — fall through (no-op).
     }
 
-    // Branch 2: legacy delta from execute body's `Effect::GainLife { amount: Fixed }`.
-    let Some(delta) = gain_life_replacement_delta(state, rid) else {
+    // Branch 2: parser-emitted `Effect::GainLife { amount: <expr> }` where
+    // `<expr>` describes the *replaced* amount (not a delta). E.g.,
+    // Alhammarret's Archive / Boon Reflection / Rhox Faithmender emit
+    // `Multiply { factor: 2, inner: EventContextAmount }` for "you gain twice
+    // that much life instead". Heron of Hope / Angel of Vitality emit
+    // `Offset { inner: EventContextAmount, offset: 1 }` for "you gain that
+    // much life plus 1 instead". CR 614.1a: the replacement substitutes a
+    // new event (the replaced amount), not an additive delta.
+    let Some(new_amount) = gain_life_replacement_amount(state, rid, &event) else {
         return ApplyResult::Modified(event);
     };
 
     if let ProposedEvent::LifeGain {
-        player_id,
-        amount,
-        applied,
+        player_id, applied, ..
     } = event
     {
         ApplyResult::Modified(ProposedEvent::LifeGain {
             player_id,
-            amount: amount.saturating_add(delta),
+            amount: new_amount,
             applied,
         })
     } else {
@@ -742,7 +747,15 @@ fn gain_life_applier(
     }
 }
 
-fn gain_life_replacement_delta(state: &GameState, rid: ReplacementId) -> Option<u32> {
+fn gain_life_replacement_amount(
+    state: &GameState,
+    rid: ReplacementId,
+    event: &ProposedEvent,
+) -> Option<u32> {
+    let ProposedEvent::LifeGain { amount, .. } = event else {
+        return None;
+    };
+
     let execute = state
         .objects
         .get(&rid.source)?
@@ -751,11 +764,15 @@ fn gain_life_replacement_delta(state: &GameState, rid: ReplacementId) -> Option<
         .execute
         .as_deref()?;
 
+    if execute.sub_ability.is_some() {
+        return None;
+    }
+
     match &*execute.effect {
-        Effect::GainLife {
-            amount: QuantityExpr::Fixed { value: delta },
-            ..
-        } if *delta > 0 && execute.sub_ability.is_none() => Some(*delta as u32),
+        Effect::GainLife { amount: qty, .. } => {
+            let resolved = resolve_event_replacement_quantity(qty, *amount)?;
+            Some(resolved.max(0) as u32)
+        }
         _ => None,
     }
 }
@@ -3216,12 +3233,56 @@ mod tests {
     }
 
     #[test]
-    fn gain_life_replacement_uses_execute_as_delta() {
+    fn gain_life_replacement_doubles_via_multiply_expr() {
+        // Alhammarret's Archive / Boon Reflection / Rhox Faithmender:
+        // "If you would gain life, you gain twice that much life instead."
+        // Parser emits `Multiply { factor: 2, inner: EventContextAmount }`.
         let repl =
             ReplacementDefinition::new(ReplacementEvent::GainLife).execute(AbilityDefinition::new(
                 crate::types::ability::AbilityKind::Spell,
                 Effect::GainLife {
-                    amount: QuantityExpr::Fixed { value: 1 },
+                    amount: QuantityExpr::Multiply {
+                        factor: 2,
+                        inner: Box::new(QuantityExpr::Ref {
+                            qty: crate::types::ability::QuantityRef::EventContextAmount,
+                        }),
+                    },
+                    player: GainLifePlayer::Controller,
+                },
+            ));
+        let mut state = test_state_with_object(ObjectId(10), Zone::Battlefield, vec![repl]);
+        let mut events = Vec::new();
+
+        let proposed = ProposedEvent::LifeGain {
+            player_id: PlayerId(0),
+            amount: 3,
+            applied: HashSet::new(),
+        };
+
+        let result = replace_event(&mut state, proposed, &mut events);
+        match result {
+            ReplacementResult::Execute(ProposedEvent::LifeGain { amount, .. }) => {
+                assert_eq!(amount, 6);
+            }
+            other => panic!("expected Execute with LifeGain, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn gain_life_replacement_offset_via_plus_expr() {
+        // Heron of Hope / Angel of Vitality:
+        // "If you would gain life, you gain that much life plus 1 instead."
+        // Parser emits `Offset { inner: EventContextAmount, offset: 1 }`.
+        let repl =
+            ReplacementDefinition::new(ReplacementEvent::GainLife).execute(AbilityDefinition::new(
+                crate::types::ability::AbilityKind::Spell,
+                Effect::GainLife {
+                    amount: QuantityExpr::Offset {
+                        inner: Box::new(QuantityExpr::Ref {
+                            qty: crate::types::ability::QuantityRef::EventContextAmount,
+                        }),
+                        offset: 1,
+                    },
                     player: GainLifePlayer::Controller,
                 },
             ));

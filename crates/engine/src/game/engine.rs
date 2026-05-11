@@ -11000,12 +11000,20 @@ mod phase_trigger_regression_tests {
         {
             let obj = state.objects.get_mut(&leyline).unwrap();
             obj.card_types.core_types.push(CoreType::Enchantment);
+            // Leyline of Hope: "If you would gain life, you gain that much
+            // life plus 1 instead." Parser emits the replaced amount as
+            // `Offset { inner: EventContextAmount, offset: 1 }`, not a delta.
             obj.replacement_definitions.push(
                 ReplacementDefinition::new(ReplacementEvent::GainLife).execute(
                     AbilityDefinition::new(
                         AbilityKind::Spell,
                         Effect::GainLife {
-                            amount: QuantityExpr::Fixed { value: 1 },
+                            amount: QuantityExpr::Offset {
+                                inner: Box::new(QuantityExpr::Ref {
+                                    qty: crate::types::ability::QuantityRef::EventContextAmount,
+                                }),
+                                offset: 1,
+                            },
                             player: GainLifePlayer::Controller,
                         },
                     ),
