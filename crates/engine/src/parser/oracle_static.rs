@@ -1796,6 +1796,14 @@ fn parse_static_line_inner(text: &str, inverted: InvertedAsLongAs) -> Option<Sta
         }
     }
 
+    // --- CR 601.2f: Cost-floor statics (Trinisphere class) ---
+    // Pattern: "each spell that would cost less than {N} mana to cast costs {N} mana to cast"
+    // Dispatched BEFORE the additive cost modifier branch because the floor's "less than"
+    // would otherwise be misclassified as a ReduceCost shape.
+    if let Some(def) = try_parse_cost_floor(&text, &lower) {
+        return Some(def);
+    }
+
     // --- CR 601.2f: Cost modification statics ---
     // Patterns: "[Type] spells [you/your opponents] cast cost {N} less/more to cast"
     // Also: "Noncreature spells cost {1} more to cast" (Thalia, no "you cast")
@@ -7928,6 +7936,81 @@ fn merge_cost_modifier_target_filter(
     }
 }
 
+/// CR 601.2f: Parse the Trinisphere-class cost-floor static.
+///
+/// Pattern (canonical form, with optional trailing "as long as <condition>"):
+///   "each spell that would cost less than <N> mana to cast costs <N> mana to cast"
+///
+/// Both numbers must be the same — that's the floor. Per the Trinisphere
+/// ruling, this is a "directly affect the total cost" effect applied after
+/// every additive/subtractive modifier, just before the cost is "locked in".
+///
+/// Returns a `StaticMode::MinimumCost` with `spell_filter = None` (the printed
+/// pattern affects all spells; future filtered variants would attach a filter
+/// here) and any trailing "as long as" / "if" condition lifted into the
+/// `StaticDefinition.condition` field (handles Trinisphere's "as long as this
+/// artifact is untapped" gate).
+fn try_parse_cost_floor(text: &str, lower: &str) -> Option<StaticDefinition> {
+    use nom::sequence::preceded;
+
+    // Strip optional trailing condition before matching the body — keeps the
+    // body combinator focused on the cost-floor shape only.
+    let (body_lower, condition_text) = if let Some((cond_pos, marker)) = [" as long as ", " if "]
+        .into_iter()
+        .filter_map(|marker| lower.rfind(marker).map(|pos| (pos, marker)))
+        .max_by_key(|(pos, _)| *pos)
+    {
+        let cond = lower[cond_pos + marker.len()..]
+            .trim()
+            .trim_end_matches('.')
+            .to_string();
+        (lower[..cond_pos].trim_end_matches('.'), Some(cond))
+    } else {
+        (lower.trim_end_matches('.'), None)
+    };
+
+    // Body combinator: "each spell that would cost less than <N> mana to cast costs <N> mana to cast"
+    let parse_body = (
+        tag::<_, _, OracleError<'_>>("each spell that would cost less than "),
+        nom_primitives::parse_number_or_x,
+        tag(" mana to cast costs "),
+        nom_primitives::parse_number_or_x,
+        tag(" mana to cast"),
+    );
+    let (rest, (_, n1, _, n2, _)) = preceded(
+        // Tolerate leading whitespace from the canonical-rewrite path.
+        nom::character::complete::space0,
+        parse_body,
+    )
+    .parse(body_lower)
+    .ok()?;
+    if !rest.trim().is_empty() {
+        return None;
+    }
+    if n1 != n2 {
+        return None;
+    }
+    let amount = ManaCost::generic(n1);
+
+    let mut definition = StaticDefinition::new(StaticMode::MinimumCost {
+        amount,
+        spell_filter: None,
+    })
+    .description(text.to_string());
+
+    if let Some(cond_text) = condition_text {
+        if let Some(sc) = parse_cost_modifier_condition(&cond_text) {
+            definition.condition = Some(sc);
+        } else if let Ok((rest_cond, sc)) = nom_condition::parse_inner_condition(&cond_text) {
+            if rest_cond.trim().is_empty() || rest_cond.trim() == "." {
+                definition.condition = Some(sc);
+            }
+        }
+    }
+
+    Some(definition)
+}
+
 /// CR 601.2f: Parse cost modification statics from Oracle text.
 /// Handles all four sub-patterns:
 /// 1. Type-filtered: "Creature spells you cast cost {1} less to cast"
@@ -9423,6 +9506,64 @@ mod tests {
                 _ => panic!("Expected Typed filter"),
             }
         }
+    }
+
+    /// CR 601.2f: Trinisphere — the cost-floor static. The line begins with
+    /// "As long as ~ is untapped," (inverted form) which the static parser
+    /// rewrites to canonical "<effect> as long as <condition>" before
+    /// re-dispatching. The cost-floor arm catches the rewritten body and
+    /// produces `MinimumCost { amount: {3}, spell_filter: None }` with the
+    /// `Not(SourceIsTapped)` condition lifted into `definition.condition`.
+    #[test]
+    fn static_trinisphere_cost_floor_with_untapped_condition() {
+        let def = parse_static_line(
+            "As long as ~ is untapped, each spell that would cost less than three mana to cast costs three mana to cast.",
+        )
+        .expect("Trinisphere line must parse");
+        match &def.mode {
+            StaticMode::MinimumCost {
+                amount,
+                spell_filter,
+            } => {
+                assert_eq!(amount, &ManaCost::generic(3), "floor must be {{3}}");
+                assert!(spell_filter.is_none(), "Trinisphere has no spell filter");
+            }
+            other => panic!("expected MinimumCost, got {other:?}"),
+        }
+        assert!(
+            matches!(
+                def.condition,
+                Some(StaticCondition::Not { ref condition })
+                    if matches!(**condition, StaticCondition::SourceIsTapped)
+            ),
+            "Trinisphere must carry Not(SourceIsTapped); got {:?}",
+            def.condition
+        );
+    }
+
+    /// CR 601.2f: Building-block — the cost-floor parser handles canonical
+    /// (non-inverted) form too, with no trailing condition.
+    #[test]
+    fn static_cost_floor_canonical_form_no_condition() {
+        let def = parse_static_line(
+            "Each spell that would cost less than three mana to cast costs three mana to cast.",
+        )
+        .expect("canonical cost-floor line must parse");
+        assert!(
+            matches!(
+                def.mode,
+                StaticMode::MinimumCost {
+                    amount: ManaCost::Cost { generic: 3, .. },
+                    spell_filter: None,
+                }
+            ),
+            "expected MinimumCost(3); got {:?}",
+            def.mode
+        );
+        assert!(
+            def.condition.is_none(),
+            "canonical form has no trailing condition"
+        );
     }
 
     #[test]

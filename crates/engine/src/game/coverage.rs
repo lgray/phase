@@ -37,6 +37,7 @@ fn is_data_carrying_static(mode: &StaticMode) -> bool {
             | StaticMode::AdditionalLandDrop { .. }
             | StaticMode::ReduceCost { .. }
             | StaticMode::RaiseCost { .. }
+            | StaticMode::MinimumCost { .. }
             | StaticMode::DefilerCostReduction { .. }
             | StaticMode::CantPayCost { .. }
             | StaticMode::CantBeCast { .. }
@@ -4894,9 +4895,12 @@ fn static_condition_feature(cond: &StaticCondition) -> (&'static str, FeatureSup
         // Variants below are parsed but not classified as handled by the prior registry.
         StaticCondition::HasMaxSpeed => ("HasMaxSpeed", Unhandled),
         StaticCondition::SpeedGE { .. } => ("SpeedGE", Unhandled),
-        StaticCondition::And { .. } => ("And", Unhandled),
-        StaticCondition::Or { .. } => ("Or", Unhandled),
-        StaticCondition::Not { .. } => ("Not", Unhandled),
+        // CR 608.2c: Compound conditions — resolved recursively by
+        // `layers::evaluate_condition`, which short-circuits And/Or and
+        // negates Not. Verified at layers.rs ~line 263.
+        StaticCondition::And { .. } => ("And", Handled),
+        StaticCondition::Or { .. } => ("Or", Handled),
+        StaticCondition::Not { .. } => ("Not", Handled),
         StaticCondition::DefendingPlayerControls { .. } => ("DefendingPlayerControls", Unhandled),
         StaticCondition::SourceAttackingAlone => ("SourceAttackingAlone", Unhandled),
         StaticCondition::SourceIsAttacking => ("SourceIsAttacking", Unhandled),
@@ -5908,6 +5912,13 @@ fn audit_card_lines(oracle_text: &str, face: &CardFace) -> Vec<SemanticFinding> 
             }
             StaticMode::RaiseCost { .. } => {
                 effective_lower.contains("cost") && effective_lower.contains("more")
+            }
+            // CR 601.2f: Trinisphere class — "each spell that would cost less than N
+            // mana to cast costs N mana to cast." Coverage marker: "would cost less than"
+            // is the discriminator from RaiseCost ("more"), ReduceCost ("less to cast").
+            StaticMode::MinimumCost { .. } => {
+                effective_lower.contains("would cost less than")
+                    && effective_lower.contains("mana to cast")
             }
             StaticMode::CantBeCountered => effective_lower.contains("can't be countered"),
             StaticMode::CantBeCopied => effective_lower.contains("can't be copied"),

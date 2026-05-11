@@ -982,6 +982,15 @@ pub(super) fn check_additional_cost_or_pay_with_distribute(
         &ability,
         &mut target_adjusted_cost,
     );
+    // CR 601.2f: Cost-floor statics (Trinisphere) apply last, after all
+    // additive/subtractive modifiers including target-dependent ones.
+    super::casting::apply_cost_floor_with_selected_targets(
+        state,
+        player,
+        object_id,
+        &ability,
+        &mut target_adjusted_cost,
+    );
     let cost = &target_adjusted_cost;
 
     let additional = state

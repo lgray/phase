@@ -438,6 +438,33 @@ pub enum StaticMode {
         spell_filter: Option<TargetFilter>,
         dynamic_count: Option<QuantityRef>,
     },
+    /// CR 601.2f: Floors the total mana cost of matching spells. Per CR 601.2f,
+    /// this belongs to the "any effects that directly affect the total cost"
+    /// step that runs after all additive/subtractive cost modifiers and just
+    /// before the cost is "locked in." Trinisphere class: "each spell that
+    /// would cost less than three mana to cast costs three mana to cast."
+    ///
+    /// Per the Trinisphere ruling: "apply Trinisphere's effect if the mana
+    /// component of the spell's cost is less than three mana" — applied last,
+    /// after RaiseCost / ReduceCost / pending reductions / Affinity have all
+    /// settled. The floor never reduces a cost.
+    ///
+    /// `amount` is the floor expressed as a `ManaCost` (always pure-generic in
+    /// printed cards; shape-shared with `RaiseCost`/`ReduceCost` for uniform
+    /// serialization). The runtime compares `mana_cost.mana_value()` against
+    /// `amount.mana_value()` and tops up generic mana to reach the floor —
+    /// colored requirements are never modified, per the Trinisphere reminder
+    /// text "Additional mana ... may be paid with any color of mana or
+    /// colorless mana."
+    ///
+    /// `spell_filter` narrows which spells are floored. `None` = all spells
+    /// (Trinisphere). No `dynamic_count` field — printed cost-floor effects
+    /// are always a fixed amount, distinguishing this variant's shape from
+    /// its `RaiseCost`/`ReduceCost` siblings.
+    MinimumCost {
+        amount: ManaCost,
+        spell_filter: Option<TargetFilter>,
+    },
     /// CR 118.3 + CR 601.2h + CR 602.2b: The scoped player can't pay a
     /// matching non-mana cost to cast spells or activate abilities.
     ///
@@ -766,6 +793,7 @@ impl Hash for StaticMode {
             // These are never used as HashMap keys (handled by is_data_carrying_static).
             StaticMode::ReduceCost { .. }
             | StaticMode::RaiseCost { .. }
+            | StaticMode::MinimumCost { .. }
             | StaticMode::CantPayCost { .. }
             | StaticMode::DefilerCostReduction { .. }
             | StaticMode::CantDraw { .. }
@@ -822,6 +850,7 @@ impl fmt::Display for StaticMode {
                 write!(f, "ActivateAsInstant({cost_category:?})")
             }
             StaticMode::RaiseCost { .. } => write!(f, "RaiseCost"),
+            StaticMode::MinimumCost { .. } => write!(f, "MinimumCost"),
             StaticMode::CantPayCost { who, cost } => write!(f, "CantPayCost({who},{cost})"),
             StaticMode::CantGainLife => write!(f, "CantGainLife"),
             StaticMode::CantLoseLife => write!(f, "CantLoseLife"),
@@ -1029,6 +1058,13 @@ impl FromStr for StaticMode {
                 amount: ManaCost::zero(),
                 spell_filter: None,
                 dynamic_count: None,
+            },
+            // CR 601.2f: Cost-floor static (Trinisphere class). Legacy unit-string
+            // defaults to a zero floor — meaningful instances are constructed via
+            // the parser with the printed amount.
+            "MinimumCost" => StaticMode::MinimumCost {
+                amount: ManaCost::zero(),
+                spell_filter: None,
             },
             "CantPayCost" => StaticMode::CantPayCost {
                 who: ProhibitionScope::AllPlayers,

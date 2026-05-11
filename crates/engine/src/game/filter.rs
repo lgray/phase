@@ -644,7 +644,12 @@ fn filter_inner_for_object(
         | TargetFilter::ParentTargetOwner
         | TargetFilter::PostReplacementSourceController
         | TargetFilter::PostReplacementDamageTarget => false,
-        // "card with the chosen name" — match against source's ChosenAttribute::CardName.
+        // CR 201.2 + CR 602.5: "card with the chosen name" — match against source's
+        // ChosenAttribute::CardName. The chosen name comes from a player UI prompt;
+        // the comparison must mirror the spell-cast prohibition path
+        // (`cant_cast_filter_matches`) which uses `eq_ignore_ascii_case`. Without
+        // parity, Pithing Needle's activation-prohibition leg would silently miss
+        // names that differ only by casing from the player's typed input.
         TargetFilter::HasChosenName => {
             let chosen_name = state.objects.get(&source_id).and_then(|obj| {
                 obj.chosen_attributes.iter().find_map(|a| match a {
@@ -652,7 +657,7 @@ fn filter_inner_for_object(
                     _ => None,
                 })
             });
-            chosen_name.is_some_and(|name| obj.name == name)
+            chosen_name.is_some_and(|name| obj.name.eq_ignore_ascii_case(name))
         }
         // CR 609.7a: "the chosen source" — match the ObjectId selected by
         // the prior damage-source choice while its continuation resolves.
@@ -818,6 +823,8 @@ fn zone_change_filter_inner(
         // SpecificPlayer scopes to players, not objects — a zone-change record
         // is always an object transition.
         TargetFilter::SpecificPlayer { .. } => false,
+        // CR 201.2: Zone-change record path mirrors the live-object path —
+        // case-insensitive comparison matches the player UI prompt's input.
         TargetFilter::HasChosenName => {
             let chosen_name = state.objects.get(&source_id).and_then(|obj| {
                 obj.chosen_attributes.iter().find_map(|a| match a {
@@ -825,7 +832,7 @@ fn zone_change_filter_inner(
                     _ => None,
                 })
             });
-            chosen_name.is_some_and(|name| record.name == name)
+            chosen_name.is_some_and(|name| record.name.eq_ignore_ascii_case(name))
         }
         TargetFilter::ChosenDamageSource => false,
         TargetFilter::Named { name } => record.name == *name,
@@ -4666,6 +4673,32 @@ mod tests {
         assert!(!matches_target_filter(
             &state,
             growth,
+            &TargetFilter::HasChosenName,
+            source,
+        ));
+    }
+
+    /// CR 201.2: HasChosenName must compare names case-insensitively to
+    /// match the spell-cast prohibition path (`cant_cast_filter_matches`).
+    /// Without parity Pithing Needle would silently miss target sources whose
+    /// name differs from the player UI prompt only by casing.
+    #[test]
+    fn has_chosen_name_matches_case_insensitively() {
+        let mut state = setup();
+        let source = add_creature(&mut state, PlayerId(0), "Sorcerer");
+        let bolt = add_creature(&mut state, PlayerId(0), "Lightning Bolt");
+
+        // Player typed all-lowercase — must still match the printed name "Lightning Bolt".
+        state
+            .objects
+            .get_mut(&source)
+            .unwrap()
+            .chosen_attributes
+            .push(ChosenAttribute::CardName("lightning bolt".to_string()));
+
+        assert!(matches_target_filter(
+            &state,
+            bolt,
             &TargetFilter::HasChosenName,
             source,
         ));

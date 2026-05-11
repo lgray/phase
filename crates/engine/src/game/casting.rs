@@ -1618,6 +1618,12 @@ fn prepare_spell_cast_with_variant_override(
     // CR 601.2f: Apply one-shot pending cost reductions ("the next spell costs {N} less").
     apply_pending_spell_cost_reductions(state, player, object_id, &mut mana_cost);
 
+    // CR 601.2f: Apply cost-floor statics (Trinisphere class). Per the Trinisphere
+    // ruling, this is the LAST step before the cost is "locked in" — it must run
+    // after every additive/subtractive modifier so the floor sees the final mana
+    // component of the cost.
+    apply_cost_floor(state, player, object_id, &mut mana_cost);
+
     // CR 702.96b-c: When casting with Overload, transform the spell's ability
     // tree so every target-bearing effect is promoted to its all-matching
     // counterpart (Destroy→DestroyAll, Pump→PumpAll, DealDamage→DamageAll,
@@ -2031,6 +2037,133 @@ fn apply_battlefield_cost_modifiers_inner(
 
             // Apply the cost modification.
             apply_cost_mod_to_mana(mana_cost, &base_amount, multiplier, is_raise);
+        }
+    }
+}
+
+/// CR 601.2f: Apply battlefield-based cost-floor statics (Trinisphere class).
+///
+/// Per CR 601.2f, the cost-floor is one of the "any effects that directly
+/// affect the total cost" applied after all RaiseCost / ReduceCost / pending
+/// reductions / Affinity have settled, just before the cost is "locked in."
+/// Trinisphere ruling (2020-08-07): "Finally, apply Trinisphere's effect if
+/// the mana component of the spell's cost is less than three mana."
+///
+/// The floor never reduces a cost. When the current `mana_cost.mana_value()`
+/// is below the floor, generic mana is added to bring the total to the floor —
+/// colored requirements are never modified, per the Trinisphere reminder text
+/// "Additional mana ... may be paid with any color of mana or colorless mana."
+fn apply_cost_floor(
+    state: &GameState,
+    caster: PlayerId,
+    spell_id: ObjectId,
+    mana_cost: &mut ManaCost,
+) {
+    apply_cost_floor_inner(state, caster, spell_id, None, false, mana_cost);
+}
+
+pub(super) fn apply_cost_floor_with_selected_targets(
+    state: &GameState,
+    caster: PlayerId,
+    spell_id: ObjectId,
+    ability: &ResolvedAbility,
+    mana_cost: &mut ManaCost,
+) {
+    apply_cost_floor_inner(state, caster, spell_id, Some(ability), true, mana_cost);
+}
+
+fn apply_cost_floor_inner(
+    state: &GameState,
+    caster: PlayerId,
+    spell_id: ObjectId,
+    selected_ability: Option<&ResolvedAbility>,
+    target_sensitive_only: bool,
+    mana_cost: &mut ManaCost,
+) {
+    // CR 702.26b + CR 604.1: Functioning gate owned by `battlefield_functioning_statics`.
+    for (bf_obj, def) in super::functioning_abilities::battlefield_functioning_statics(state) {
+        let bf_id = bf_obj.id;
+
+        let StaticMode::MinimumCost {
+            ref amount,
+            ref spell_filter,
+        } = def.mode
+        else {
+            continue;
+        };
+
+        let has_target_filter = spell_filter
+            .as_ref()
+            .is_some_and(cost_filter_has_target_ref);
+        if target_sensitive_only && !has_target_filter {
+            continue;
+        }
+        if selected_ability.is_none() && has_target_filter {
+            continue;
+        }
+
+        // CR 113.6: Statics that declare non-battlefield active_zones must not
+        // fire from the battlefield. Empty active_zones = battlefield default.
+        if !def.active_zones.is_empty() && !def.active_zones.contains(&Zone::Battlefield) {
+            continue;
+        }
+
+        // CR 601.2f: Optional caster-scope check via `def.affected`. Trinisphere
+        // emits `affected: None` (the floor applies to every spell), but a
+        // future filtered floor variant ("each spell your opponents cast that
+        // would cost less than ... ") could carry a `ControllerRef`-scoped
+        // affected filter; honor it here for forward-compatibility.
+        if let Some(crate::types::ability::TargetFilter::Typed(ref tf)) = def.affected {
+            use crate::types::ability::ControllerRef;
+            let source_controller = bf_obj.controller;
+            match tf.controller {
+                Some(ControllerRef::You) if caster != source_controller => continue,
+                Some(ControllerRef::Opponent) if caster == source_controller => continue,
+                _ => {}
+            }
+        }
+
+        // CR 601.2f: Evaluate the static's `condition` ("as long as this artifact
+        // is untapped") against the source permanent. Trinisphere's effect
+        // turns off entirely when the artifact is tapped.
+        if let Some(ref cond) = def.condition {
+            if !super::layers::evaluate_condition(state, cond, caster, bf_id) {
+                continue;
+            }
+        }
+
+        // CR 601.2f: Spell-type filter narrows which spells are floored.
+        if let Some(ref filter) = spell_filter {
+            let matches = if let Some(ability) = selected_ability {
+                spell_matches_cost_filter_with_selected_targets(
+                    state, caster, spell_id, filter, bf_id, ability,
+                )
+            } else {
+                spell_matches_cost_filter(state, caster, spell_id, filter, bf_id)
+            };
+            if !matches {
+                continue;
+            }
+        }
+
+        let floor = amount.mana_value();
+        if floor == 0 {
+            continue;
+        }
+        let current = mana_cost.mana_value();
+        if current >= floor {
+            continue;
+        }
+        let delta = floor - current;
+
+        // Top up generic mana to reach the floor. NoCost spells (e.g., free spells
+        // routed through alt-cost lanes) are not subject to the floor — Trinisphere
+        // affects only the *mana* component of the total cost (CR 601.2f).
+        if let ManaCost::Cost {
+            ref mut generic, ..
+        } = mana_cost
+        {
+            *generic = generic.saturating_add(delta);
         }
     }
 }
@@ -17197,5 +17330,252 @@ mod tests {
             8,
             "opponent must have 8 cards in graveyard from mill",
         );
+    }
+
+    // === CR 601.2f: cost-floor (Trinisphere class) ===
+
+    /// Build a Trinisphere on the battlefield for `owner` with the cost-floor
+    /// static gated by "as long as untapped". Returns the artifact's id.
+    fn add_trinisphere(state: &mut GameState, owner: PlayerId) -> ObjectId {
+        let id = create_object(
+            state,
+            CardId(0x71131),
+            owner,
+            "Trinisphere".to_string(),
+            Zone::Battlefield,
+        );
+        let obj = state.objects.get_mut(&id).unwrap();
+        obj.card_types.core_types.push(CoreType::Artifact);
+        obj.entered_battlefield_turn = Some(0);
+        obj.static_definitions.push(
+            StaticDefinition::new(StaticMode::MinimumCost {
+                amount: ManaCost::generic(3),
+                spell_filter: None,
+            })
+            .condition(StaticCondition::Not {
+                condition: Box::new(StaticCondition::SourceIsTapped),
+            }),
+        );
+        id
+    }
+
+    /// Place a spell on the stack with the given mana cost so the cost-floor
+    /// helper has a concrete spell object to evaluate against.
+    fn create_stack_spell(state: &mut GameState, owner: PlayerId, cost: ManaCost) -> ObjectId {
+        let id = create_object(
+            state,
+            CardId(0x59E11),
+            owner,
+            "TestSpell".to_string(),
+            Zone::Stack,
+        );
+        let obj = state.objects.get_mut(&id).unwrap();
+        obj.card_types.core_types.push(CoreType::Instant);
+        obj.mana_cost = cost;
+        id
+    }
+
+    /// CR 601.2f: Trinisphere floors a {R} spell (mv=1) to mv=3 by adding
+    /// generic mana — colored requirement preserved.
+    #[test]
+    fn trinisphere_floors_one_mana_spell_to_three() {
+        let mut state = setup_game_at_main_phase();
+        add_trinisphere(&mut state, PlayerId(0));
+        let bolt = create_stack_spell(
+            &mut state,
+            PlayerId(0),
+            ManaCost::Cost {
+                shards: vec![ManaCostShard::Red],
+                generic: 0,
+            },
+        );
+
+        let mut cost = state.objects[&bolt].mana_cost.clone();
+        apply_cost_floor(&state, PlayerId(0), bolt, &mut cost);
+
+        assert_eq!(
+            cost,
+            ManaCost::Cost {
+                shards: vec![ManaCostShard::Red],
+                generic: 2,
+            },
+            "Trinisphere must floor {{R}} (mv=1) to {{2}}{{R}} (mv=3)"
+        );
+    }
+
+    /// CR 601.2f: Trinisphere floors a {1}{B} spell (mv=2) to mv=3 by adding
+    /// one generic — matches the printed reminder text exactly.
+    #[test]
+    fn trinisphere_floors_two_mana_spell_to_three() {
+        let mut state = setup_game_at_main_phase();
+        add_trinisphere(&mut state, PlayerId(0));
+        let spell = create_stack_spell(
+            &mut state,
+            PlayerId(0),
+            ManaCost::Cost {
+                shards: vec![ManaCostShard::Black],
+                generic: 1,
+            },
+        );
+
+        let mut cost = state.objects[&spell].mana_cost.clone();
+        apply_cost_floor(&state, PlayerId(0), spell, &mut cost);
+
+        assert_eq!(
+            cost,
+            ManaCost::Cost {
+                shards: vec![ManaCostShard::Black],
+                generic: 2,
+            },
+            "Trinisphere reminder: {{1}}{{B}} (mv=2) → {{2}}{{B}} (mv=3)"
+        );
+    }
+
+    /// CR 601.2f: Trinisphere does not modify a spell already at or above the floor.
+    #[test]
+    fn trinisphere_does_not_affect_three_mana_spell() {
+        let mut state = setup_game_at_main_phase();
+        add_trinisphere(&mut state, PlayerId(0));
+        let spell = create_stack_spell(
+            &mut state,
+            PlayerId(0),
+            ManaCost::Cost {
+                shards: vec![ManaCostShard::Red],
+                generic: 2,
+            },
+        );
+
+        let original = state.objects[&spell].mana_cost.clone();
+        let mut cost = original.clone();
+        apply_cost_floor(&state, PlayerId(0), spell, &mut cost);
+
+        assert_eq!(
+            cost, original,
+            "Trinisphere must not modify a spell whose mv already meets the floor"
+        );
+    }
+
+    /// CR 601.2f + condition: tapping Trinisphere disables the floor entirely
+    /// (the static's condition is `Not(SourceIsTapped)`).
+    #[test]
+    fn trinisphere_disabled_when_tapped() {
+        let mut state = setup_game_at_main_phase();
+        let trinisphere = add_trinisphere(&mut state, PlayerId(0));
+        state.objects.get_mut(&trinisphere).unwrap().tapped = true;
+
+        let bolt = create_stack_spell(
+            &mut state,
+            PlayerId(0),
+            ManaCost::Cost {
+                shards: vec![ManaCostShard::Red],
+                generic: 0,
+            },
+        );
+
+        let original = state.objects[&bolt].mana_cost.clone();
+        let mut cost = original.clone();
+        apply_cost_floor(&state, PlayerId(0), bolt, &mut cost);
+
+        assert_eq!(
+            cost, original,
+            "Tapped Trinisphere must not floor any spell's cost"
+        );
+    }
+
+    /// CR 601.2f: The cost-floor applies to every spell on the table, including
+    /// opponents' spells — Trinisphere is not controller-scoped.
+    #[test]
+    fn trinisphere_floors_opponent_spell() {
+        let mut state = setup_game_at_main_phase();
+        add_trinisphere(&mut state, PlayerId(0));
+        let opp_spell = create_stack_spell(
+            &mut state,
+            PlayerId(1),
+            ManaCost::Cost {
+                shards: vec![ManaCostShard::Blue],
+                generic: 0,
+            },
+        );
+
+        let mut cost = state.objects[&opp_spell].mana_cost.clone();
+        apply_cost_floor(&state, PlayerId(1), opp_spell, &mut cost);
+
+        assert_eq!(
+            cost,
+            ManaCost::Cost {
+                shards: vec![ManaCostShard::Blue],
+                generic: 2,
+            },
+            "Trinisphere must floor an opponent's {{U}} spell to {{2}}{{U}}"
+        );
+    }
+
+    /// CR 601.2f: A Trinisphere in graveyard or hand has no effect — the
+    /// static defaults to battlefield-only via empty `active_zones`.
+    #[test]
+    fn trinisphere_in_graveyard_does_nothing() {
+        let mut state = setup_game_at_main_phase();
+        let trinisphere = add_trinisphere(&mut state, PlayerId(0));
+        // Move Trinisphere off the battlefield via the canonical zone-tracking
+        // path (mirrors how rules-driven moves update both the battlefield
+        // vector and the object's zone field).
+        state.battlefield.retain(|id| *id != trinisphere);
+        let owner = state.objects[&trinisphere].owner;
+        state
+            .players
+            .iter_mut()
+            .find(|p| p.id == owner)
+            .unwrap()
+            .graveyard
+            .push_back(trinisphere);
+        state.objects.get_mut(&trinisphere).unwrap().zone = Zone::Graveyard;
+
+        let bolt = create_stack_spell(
+            &mut state,
+            PlayerId(0),
+            ManaCost::Cost {
+                shards: vec![ManaCostShard::Red],
+                generic: 0,
+            },
+        );
+
+        let original = state.objects[&bolt].mana_cost.clone();
+        let mut cost = original.clone();
+        apply_cost_floor(&state, PlayerId(0), bolt, &mut cost);
+
+        assert_eq!(
+            cost, original,
+            "Off-battlefield Trinisphere must not floor any spell"
+        );
+    }
+
+    /// CR 601.2f: Building-block test — synthetic floor of {N} produced by the
+    /// `MinimumCost` variant correctly tops up generic mana to reach the floor.
+    /// Verifies the helper itself, independent of any printed card.
+    #[test]
+    fn cost_floor_building_block_tops_up_generic_to_floor() {
+        let mut state = setup_game_at_main_phase();
+        let id = create_object(
+            &mut state,
+            CardId(0xF100),
+            PlayerId(0),
+            "TestFloor".to_string(),
+            Zone::Battlefield,
+        );
+        {
+            let obj = state.objects.get_mut(&id).unwrap();
+            obj.card_types.core_types.push(CoreType::Artifact);
+            obj.entered_battlefield_turn = Some(0);
+            obj.static_definitions
+                .push(StaticDefinition::new(StaticMode::MinimumCost {
+                    amount: ManaCost::generic(5),
+                    spell_filter: None,
+                }));
+        }
+        let spell = create_stack_spell(&mut state, PlayerId(0), ManaCost::generic(2));
+
+        let mut cost = state.objects[&spell].mana_cost.clone();
+        apply_cost_floor(&state, PlayerId(0), spell, &mut cost);
+        assert_eq!(cost, ManaCost::generic(5), "floor of 5 must lift mv=2 to 5");
     }
 }
