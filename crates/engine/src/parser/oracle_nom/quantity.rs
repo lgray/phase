@@ -540,15 +540,17 @@ fn parse_number_of_inner(input: &str) -> OracleResult<'_, QuantityRef> {
             QuantityRef::DungeonsCompleted,
             tag("dungeons you've completed"),
         ),
-        // CR 202.2 + CR 601.2h: "the number of colors of mana spent to cast it"
-        // (Wildgrowth Archaic and the cousin-card family).
-        value(
-            QuantityRef::ManaSpentToCast {
-                scope: crate::types::ability::CastManaObjectScope::SelfObject,
-                metric: crate::types::ability::CastManaSpentMetric::DistinctColors,
-            },
-            tag("colors of mana spent to cast it"),
-        ),
+        // CR 202.2 + CR 601.2h: "the number of colors of mana spent to cast
+        // <self>" / "the amount of mana spent to cast <self>" / "the amount of
+        // mana from <source> spent to cast <self>". Delegates to the shared
+        // `parse_mana_spent_to_cast_ref` combinator that backs the "for each"
+        // path so all three metrics (DistinctColors, Total, FromSource) and
+        // every self-subject anaphor (`it`, `this spell`, `this creature`,
+        // `this permanent`, `them`, `~`) are covered. Class: Converge
+        // (Painful Truths, Bring to Light, Radiant Flames), Sunburst, and
+        // related "X is the number of colors of mana spent to cast this spell"
+        // riders.
+        parse_mana_spent_to_cast_ref,
         parse_number_of_object_name_words_tail,
         parse_number_of_object_colors_tail,
     )))
@@ -1505,7 +1507,7 @@ fn parse_for_each_clause_ref_with_they_controller(
         parse_for_each_recipient_shared_quality,
         parse_for_each_battlefield_type,
         parse_for_each_commander_cast_count,
-        parse_for_each_mana_spent,
+        parse_mana_spent_to_cast_ref,
         parse_for_each_controlled_type,
     )))
     .parse(input)
@@ -1595,11 +1597,24 @@ fn inject_controller(filter: TargetFilter, controller: ControllerRef) -> TargetF
     }
 }
 
-/// CR 601.2h + CR 202.2: Parse "color[s] of mana spent to cast <self>" and
-/// "mana spent to cast <self>" after "for each" into self-scoped cast-spend
-/// quantities. Used by Converge token creation and Sunburst/ETB-counter
-/// cousins.
-fn parse_for_each_mana_spent(input: &str) -> OracleResult<'_, QuantityRef> {
+/// CR 601.2h + CR 202.2: Parse a self-scoped mana-spent-to-cast reference in
+/// any of three metrics:
+///
+/// - `DistinctColors` — "color[s] of mana spent to cast <self>" (Converge,
+///   Sunburst class).
+/// - `FromSource { source_filter }` — "mana from <source-filter> [that was]
+///   spent to cast <self>" (Treasure/Cave/artifact-source cousins).
+/// - `Total` — bare "mana spent to cast <self>" (Wildgrowth Archaic family,
+///   Molten Note).
+///
+/// Recognized self-subjects come from `parse_mana_spent_self_subject`: `it`,
+/// `this spell`, `this creature`, `this permanent`, `them`, `~`.
+///
+/// The same combinator is used both after "for each" (where the input has
+/// already had the "for each " prefix stripped) and after "the number of"
+/// (where the input has had "the number of " stripped) — the trailing surface
+/// form is identical in both contexts, so a single combinator suffices.
+fn parse_mana_spent_to_cast_ref(input: &str) -> OracleResult<'_, QuantityRef> {
     if let Ok((rest, _)) = pair(tag::<_, _, OracleError<'_>>("color"), opt(tag("s"))).parse(input) {
         let (rest, _) = tag(" of mana spent to cast ").parse(rest)?;
         let (rest, _) = parse_mana_spent_self_subject(rest)?;
@@ -2593,6 +2608,64 @@ mod tests {
                 ..
             } => assert!(matches!(source_filter, TargetFilter::Or { .. })),
             other => panic!("expected source-qualified mana spent ref, got {other:?}"),
+        }
+    }
+
+    /// CR 202.2 + CR 601.2h + CR 207.2c: GitHub #307 — Painful Truths bug.
+    /// "the number of colors of mana spent to cast this spell" is the canonical
+    /// Converge ability-word phrase. It must produce
+    /// `ManaSpentToCast { metric: DistinctColors }` so that the where-X rewriter
+    /// rebinds the bare `Variable("X")` count in `Draw`/`LoseLife`/etc. to the
+    /// actual distinct-color count of the cast. Before the fix, the dispatcher
+    /// only matched the `it` subject and fell back to an empty `ObjectCount`
+    /// when the spell text used `this spell`, causing X to resolve to the
+    /// battlefield permanent count (~30 in the late game).
+    #[test]
+    fn parse_quantity_ref_the_number_of_colors_of_mana_spent_to_cast_this_spell() {
+        for input in [
+            "the number of colors of mana spent to cast this spell",
+            "the number of colors of mana spent to cast it",
+            "the number of colors of mana spent to cast this creature",
+            "the number of colors of mana spent to cast this permanent",
+            "the number of colors of mana spent to cast them",
+            "the number of color of mana spent to cast this spell",
+            "the number of colors of mana spent to cast ~",
+        ] {
+            let (rest, q) =
+                parse_quantity_ref(input).unwrap_or_else(|_| panic!("failed to parse {input:?}"));
+            assert_eq!(rest, "", "leftover input for {input:?}");
+            assert_eq!(
+                q,
+                QuantityRef::ManaSpentToCast {
+                    scope: CastManaObjectScope::SelfObject,
+                    metric: CastManaSpentMetric::DistinctColors,
+                },
+                "wrong ref for {input:?}"
+            );
+        }
+    }
+
+    /// CR 601.2h: Bare "the number of mana spent to cast …" → `Total` metric.
+    /// Less common than the colors form but covered by the same combinator —
+    /// the `parse_mana_spent_to_cast_ref` shared between the for-each and
+    /// number-of dispatch paths handles all three metrics uniformly.
+    #[test]
+    fn parse_quantity_ref_the_number_of_mana_spent_to_cast_self_subjects() {
+        for input in [
+            "the number of mana spent to cast this spell",
+            "the number of mana spent to cast it",
+        ] {
+            let (rest, q) =
+                parse_quantity_ref(input).unwrap_or_else(|_| panic!("failed to parse {input:?}"));
+            assert_eq!(rest, "", "leftover input for {input:?}");
+            assert_eq!(
+                q,
+                QuantityRef::ManaSpentToCast {
+                    scope: CastManaObjectScope::SelfObject,
+                    metric: CastManaSpentMetric::Total,
+                },
+                "wrong ref for {input:?}"
+            );
         }
     }
 

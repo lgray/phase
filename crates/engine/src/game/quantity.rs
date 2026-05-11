@@ -2495,6 +2495,59 @@ mod tests {
         assert_eq!(resolve_quantity(&state, &qty, PlayerId(1), creature), 0);
     }
 
+    /// CR 202.2 + CR 601.2h: GitHub #307 — Painful Truths bug regression.
+    /// `ManaSpentToCast { metric: DistinctColors }` reads
+    /// `GameObject::colors_spent_to_cast.distinct_colors()`, which is the
+    /// per-color tally populated during cost payment. This test verifies the
+    /// resolver returns the count of distinct colors with non-zero tallies —
+    /// the runtime contract Painful Truths' "draw X / lose X life" depends on.
+    /// Three distinct colors (W+U+B, e.g. Painful Truths cast for {1}{W}{U}{B})
+    /// must resolve to 3, while monocolored repeats (B+B+B) must resolve to 1.
+    #[test]
+    fn resolve_distinct_colors_of_mana_spent_to_cast_self() {
+        let mut state = GameState::new_two_player(42);
+        let spell = create_object(
+            &mut state,
+            CardId(100),
+            PlayerId(0),
+            "Painful Truths".to_string(),
+            Zone::Stack,
+        );
+
+        let qty = QuantityExpr::Ref {
+            qty: QuantityRef::ManaSpentToCast {
+                scope: CastManaObjectScope::SelfObject,
+                metric: CastManaSpentMetric::DistinctColors,
+            },
+        };
+
+        // Three distinct colors → 3 (Painful Truths cast for {1}{W}{U}{B})
+        {
+            let obj = state.objects.get_mut(&spell).unwrap();
+            obj.colors_spent_to_cast = crate::types::mana::ColoredManaCount::default();
+            obj.colors_spent_to_cast.add(ManaColor::White, 1);
+            obj.colors_spent_to_cast.add(ManaColor::Blue, 1);
+            obj.colors_spent_to_cast.add(ManaColor::Black, 1);
+        }
+        assert_eq!(resolve_quantity(&state, &qty, PlayerId(0), spell), 3);
+
+        // Monocolored repeats (B+B+B) → 1 distinct color
+        {
+            let obj = state.objects.get_mut(&spell).unwrap();
+            obj.colors_spent_to_cast = crate::types::mana::ColoredManaCount::default();
+            obj.colors_spent_to_cast.add(ManaColor::Black, 3);
+        }
+        assert_eq!(resolve_quantity(&state, &qty, PlayerId(0), spell), 1);
+
+        // No colored mana spent (would be 0 — alternate cast or all-colorless
+        // payment) → 0 distinct colors.
+        {
+            let obj = state.objects.get_mut(&spell).unwrap();
+            obj.colors_spent_to_cast = crate::types::mana::ColoredManaCount::default();
+        }
+        assert_eq!(resolve_quantity(&state, &qty, PlayerId(0), spell), 0);
+    }
+
     #[test]
     fn resolve_source_qualified_mana_spent_uses_entering_context() {
         let mut state = GameState::new_two_player(42);

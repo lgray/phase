@@ -13589,6 +13589,56 @@ mod tests {
         );
     }
 
+    /// CR 207.2c + CR 202.2 + CR 601.2h: GitHub #307 — Painful Truths bug.
+    /// Painful Truths' Oracle text is "Converge — You draw X cards and lose
+    /// X life, where X is the number of colors of mana spent to cast this
+    /// spell." Before the fix, the where-X expression collapsed to an empty
+    /// `ObjectCount` filter, so X resolved to "every battlefield permanent"
+    /// (~30 in the late game), causing the AI to draw 30 / lose 30 life and
+    /// freeze on discard. This test fixes the contract: the where-X
+    /// rewriter must yield `ManaSpentToCast { metric: DistinctColors }` so
+    /// the runtime reads the per-cast color count via
+    /// `GameObject::colors_spent_to_cast`. Class: every Converge card
+    /// (Painful Truths, Bring to Light, Radiant Flames, Kaleidoscorch,
+    /// Brilliant Spectrum, Infuse with the Elements, Arcane Omens,
+    /// Archaic's Agony, …) and any future card that uses the same rider.
+    #[test]
+    fn where_x_converge_colors_of_mana_spent_to_cast_this_spell() {
+        let expr = parse_where_x_quantity_expression(
+            "the number of colors of mana spent to cast this spell",
+        )
+        .expect("where-X quantity");
+        assert_eq!(
+            expr,
+            QuantityExpr::Ref {
+                qty: QuantityRef::ManaSpentToCast {
+                    scope: crate::types::ability::CastManaObjectScope::SelfObject,
+                    metric: crate::types::ability::CastManaSpentMetric::DistinctColors,
+                },
+            }
+        );
+    }
+
+    /// CR 601.2h: Mirror of the colors-spent fix for the bare-Total form.
+    /// "where X is the amount of mana spent to cast this creature" is the
+    /// pattern used by Astelli Reclaimer and Jeleva. The same combinator
+    /// (`parse_mana_spent_to_cast_ref`) covers all three metrics; this test
+    /// pins the `Total` arm.
+    #[test]
+    fn where_x_amount_of_mana_spent_to_cast_self_uses_total_metric() {
+        let expr = parse_where_x_quantity_expression("the number of mana spent to cast this spell")
+            .expect("where-X quantity");
+        assert_eq!(
+            expr,
+            QuantityExpr::Ref {
+                qty: QuantityRef::ManaSpentToCast {
+                    scope: crate::types::ability::CastManaObjectScope::SelfObject,
+                    metric: crate::types::ability::CastManaSpentMetric::Total,
+                },
+            }
+        );
+    }
+
     #[test]
     fn effect_lightning_bolt() {
         let e = parse_effect("Lightning Bolt deals 3 damage to any target");
