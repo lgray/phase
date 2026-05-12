@@ -1,7 +1,11 @@
+use std::collections::HashSet;
+
 use rand::Rng;
 
 use crate::pack_source::PackSource;
-use crate::set_pool::{LimitedSetPool, PackVariant, SheetDefinition, WeightedSheetChoice};
+use crate::set_pool::{
+    LimitedSetPool, PackVariant, SheetCard, SheetDefinition, WeightedSheetChoice,
+};
 use crate::types::{DraftCardInstance, DraftPack};
 
 /// Generates draft packs from a `LimitedSetPool` using weighted random selection.
@@ -50,40 +54,82 @@ impl PackGenerator {
         );
         &choices[idx].sheet
     }
+
+    /// Largest non-foil, non-empty sheet referenced by `variant` — the sheet to
+    /// pull a replacement card from when another slot's sheet came up short.
+    fn backfill_sheet(&self, variant: &PackVariant) -> Option<&SheetDefinition> {
+        variant
+            .contents
+            .iter()
+            .flat_map(|slot| slot.choices.iter())
+            .filter_map(|choice| self.set_pool.sheets.get(&choice.sheet))
+            .filter(|sheet| !sheet.foil && !sheet.cards.is_empty())
+            .max_by_key(|sheet| sheet.cards.len())
+    }
 }
 
 impl PackSource for PackGenerator {
     fn generate_pack(&self, rng: &mut dyn rand::RngCore, seat: u8, pack_number: u8) -> DraftPack {
         let variant = self.select_variant(rng);
-        let mut cards = Vec::new();
-        let mut card_index: u16 = 0;
 
+        // A booster always contains a fixed number of cards. Some sheets a variant
+        // references — e.g. "specialGuest", "theList", "mysticalArchive" — resolve
+        // to zero cards when their printings aren't part of this set's MTGJSON
+        // export; in real boosters that slot is just an extra card off the main
+        // sheet. Track the declared size and top up any shortfall so packs stay
+        // uniform — an unequal pack stalls the pick/pass rotation (every seat must
+        // exhaust its pack on the same pick).
+        let target_size: usize = variant.contents.iter().map(|s| s.count as usize).sum();
+
+        let mut picks: Vec<&SheetCard> = Vec::with_capacity(target_size);
         for slot in &variant.contents {
             let sheet_name = self.resolve_sheet_name(rng, &slot.choices);
-            let sheet = match self.set_pool.sheets.get(sheet_name) {
-                Some(s) => s,
-                None => continue,
+            let Some(sheet) = self.set_pool.sheets.get(sheet_name) else {
+                continue;
             };
-
-            let indices = weighted_select_n(rng, sheet, slot.count as usize);
-            for &idx in &indices {
-                let card = &sheet.cards[idx];
-                cards.push(DraftCardInstance {
-                    instance_id: format!(
-                        "{}-{}-{}-{}",
-                        self.set_pool.code, seat, pack_number, card_index
-                    ),
-                    name: card.name.clone(),
-                    set_code: card.set_code.clone(),
-                    collector_number: card.collector_number.clone(),
-                    rarity: format!("{:?}", card.rarity).to_lowercase(),
-                    colors: card.colors.clone(),
-                    cmc: card.cmc,
-                    type_line: card.type_line.clone(),
-                });
-                card_index += 1;
+            for idx in weighted_select_n(rng, sheet, slot.count as usize) {
+                picks.push(&sheet.cards[idx]);
             }
         }
+
+        if picks.len() < target_size {
+            // `backfill_sheet` returns `None` only if the variant references no
+            // non-foil non-empty sheet at all — impossible for real boosters
+            // (every variant has a `common` slot whose printings live in the
+            // set's own file). If it ever happened, the pack would stay short;
+            // the `draft-wasm` empty-pack `continue` is the bot-side backstop.
+            if let Some(sheet) = self.backfill_sheet(variant) {
+                let shortfall = target_size - picks.len();
+                let extra = {
+                    let used: HashSet<(&str, &str)> = picks
+                        .iter()
+                        .map(|c| (c.set_code.as_str(), c.collector_number.as_str()))
+                        .collect();
+                    weighted_select_n_excluding(rng, sheet, shortfall, &used)
+                };
+                for idx in extra {
+                    picks.push(&sheet.cards[idx]);
+                }
+            }
+        }
+
+        let cards = picks
+            .into_iter()
+            .enumerate()
+            .map(|(card_index, card)| DraftCardInstance {
+                instance_id: format!(
+                    "{}-{}-{}-{}",
+                    self.set_pool.code, seat, pack_number, card_index
+                ),
+                name: card.name.clone(),
+                set_code: card.set_code.clone(),
+                collector_number: card.collector_number.clone(),
+                rarity: format!("{:?}", card.rarity).to_lowercase(),
+                colors: card.colors.clone(),
+                cmc: card.cmc,
+                type_line: card.type_line.clone(),
+            })
+            .collect();
 
         DraftPack(cards)
     }
@@ -115,17 +161,28 @@ fn weighted_select_n(
     sheet: &SheetDefinition,
     count: usize,
 ) -> Vec<usize> {
-    let available = sheet.cards.len();
-    let count = count.min(available);
+    weighted_select_n_excluding(rng, sheet, count, &HashSet::new())
+}
 
-    // Build mutable pool of (original_index, weight).
+/// Like [`weighted_select_n`], but skips any card whose `(set_code, collector_number)`
+/// identity is in `exclude` — used to top up a short pack without duplicating a
+/// printing already in it.
+fn weighted_select_n_excluding(
+    rng: &mut dyn rand::RngCore,
+    sheet: &SheetDefinition,
+    count: usize,
+    exclude: &HashSet<(&str, &str)>,
+) -> Vec<usize> {
+    // Build mutable pool of (original_index, weight), dropping excluded cards.
     let mut pool: Vec<(usize, u64)> = sheet
         .cards
         .iter()
         .enumerate()
+        .filter(|(_, c)| !exclude.contains(&(c.set_code.as_str(), c.collector_number.as_str())))
         .map(|(i, c)| (i, c.weight))
         .collect();
-    let mut total: u64 = sheet.total_weight;
+    let count = count.min(pool.len());
+    let mut total: u64 = pool.iter().map(|&(_, w)| w).sum();
     let mut result = Vec::with_capacity(count);
 
     for _ in 0..count {
@@ -440,6 +497,114 @@ mod tests {
                 "Expected rare or mythic, got '{}' for card '{}'",
                 rare_card.rarity,
                 rare_card.name
+            );
+        }
+    }
+
+    /// DFT-shaped two-variant pool where the special slot's sheet resolved to
+    /// zero cards (its printings live in another set's MTGJSON file). Mirrors the
+    /// real "common count drops by 1 when the special slot is present" balance:
+    /// variant A = 13 common + 1 rare (14, no special); variant B = 12 common +
+    /// 1 rare + 1 specialGuest (14 declared, but specialGuest is empty so it
+    /// produces 13 — the generator must backfill it to 14). A and B must be
+    /// indistinguishable in size, exactly like Arena (a no-Special-Guest pack and
+    /// a backfilled one are both 14, 13 of them commons).
+    fn empty_special_sheet_pool() -> LimitedSetPool {
+        let common_cards = make_sheet_cards("ESS_common", "ESS", 30, Rarity::Common, 1);
+        let rare_cards = make_sheet_cards("ESS_rare", "ESS", 5, Rarity::Rare, 1);
+
+        let mut sheets = BTreeMap::new();
+        sheets.insert(
+            "common".to_string(),
+            SheetDefinition {
+                total_weight: 30,
+                foil: false,
+                balance_colors: false,
+                cards: common_cards,
+            },
+        );
+        sheets.insert(
+            "rareMythic".to_string(),
+            SheetDefinition {
+                total_weight: 5,
+                foil: false,
+                balance_colors: false,
+                cards: rare_cards,
+            },
+        );
+        // The empty sheet — present in the data, but no cards survived extraction.
+        sheets.insert(
+            "specialGuest".to_string(),
+            SheetDefinition {
+                total_weight: 0,
+                foil: false,
+                balance_colors: false,
+                cards: vec![],
+            },
+        );
+
+        let common_slot = |count| PackSlot {
+            slot: "common".to_string(),
+            count,
+            choices: single_choice("common"),
+        };
+        let rare_slot = PackSlot {
+            slot: "rareMythic".to_string(),
+            count: 1,
+            choices: single_choice("rareMythic"),
+        };
+
+        LimitedSetPool {
+            code: "ESS".to_string(),
+            name: "Empty Special Sheet Set".to_string(),
+            release_date: None,
+            pack_variants: vec![
+                PackVariant {
+                    contents: vec![common_slot(13), rare_slot.clone()],
+                    weight: 3,
+                },
+                PackVariant {
+                    contents: vec![
+                        common_slot(12),
+                        rare_slot,
+                        PackSlot {
+                            slot: "specialGuest".to_string(),
+                            count: 1,
+                            choices: single_choice("specialGuest"),
+                        },
+                    ],
+                    weight: 1,
+                },
+            ],
+            pack_variants_total_weight: 4,
+            sheets,
+            prints: vec![],
+            basic_lands: vec![],
+        }
+    }
+
+    #[test]
+    fn test_empty_sheet_slot_is_backfilled() {
+        let gen = PackGenerator::new(empty_special_sheet_pool());
+        // Variant B (specialGuest slot) is weight 1/4, so ~20 of 80 seeds roll it
+        // — its backfill path is exercised even though the result is, by design,
+        // indistinguishable from variant A's pack.
+        for seed in 0..80u64 {
+            let mut rng = ChaCha8Rng::seed_from_u64(seed);
+            let pack = gen.generate_pack(&mut rng, 0, 0);
+            assert_eq!(pack.0.len(), 14, "seed {seed}: pack size");
+            // 13 commons + 1 rare regardless of which variant was rolled — a
+            // broken backfill on variant B would leave 12 commons (and a 13-card
+            // pack, caught above).
+            let common_count = pack.0.iter().filter(|c| c.rarity == "common").count();
+            assert_eq!(common_count, 13, "seed {seed}: common count");
+            let names: HashSet<_> = pack.0.iter().map(|c| &c.name).collect();
+            assert_eq!(names.len(), pack.0.len(), "seed {seed}: duplicate card");
+            let instance_ids: HashSet<_> = pack.0.iter().map(|c| &c.instance_id).collect();
+            assert_eq!(
+                instance_ids.len(),
+                pack.0.len(),
+                "seed {seed}: duplicate id"
             );
         }
     }

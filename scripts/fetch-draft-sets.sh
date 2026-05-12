@@ -41,13 +41,20 @@ fi
 if [ ${#REQUESTED_SETS[@]} -gt 0 ]; then
     CODES=("${REQUESTED_SETS[@]}")
 else
-    # Extract draftable set codes from SetList.json
+    # Extract draftable set codes from SetList.json.
+    # `masterpiece` (SPG Special Guests, STA Mystical Archive, OTP Breaking News,
+    # FCA Through the Ages, PZA Source Material, …) and `eternal` (SPE) hold the
+    # printings referenced by supplemental booster sheets, so the pool generator
+    # can resolve `specialGuest`/`mysticalArchive`/etc. against them instead of
+    # producing short packs. `extract_set_pool` skips any set without a
+    # `booster.play` config, so an over-broad type here only costs download size.
     if command -v jq &>/dev/null; then
         mapfile -t CODES < <(jq -r '.data[]
-            | select(.type == "core" or .type == "expansion" or .type == "draft_innovation" or .type == "masters" or .type == "funny")
+            | select(.type | IN("core", "expansion", "draft_innovation", "masters", "masterpiece", "eternal", "funny"))
             | .code' "$SET_LIST" 2>/dev/null)
     else
-        # Fallback: extract codes for known draftable types using grep/sed
+        # Fallback (jq absent — local dev only): grep/sed can't filter by type,
+        # so this downloads more than needed. `booster.play` is still the gate.
         CODES=()
         while IFS= read -r code; do
             CODES+=("$code")

@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
 
 use serde::Deserialize;
@@ -115,32 +115,50 @@ fn parse_rarity(s: &str) -> Rarity {
 // Public API
 // ---------------------------------------------------------------------------
 
+/// Build a UUID → card index spanning one or more parsed set datas.
+///
+/// Supplemental booster sheets (`specialGuest`, `mysticalArchive`, `theList`,
+/// `breakingNews`, `sourceMaterial`, …) reference printings that live in *other*
+/// sets' MTGJSON files (`SPG`, `STA`, `OTP`, …), so resolving them needs an index
+/// over the whole downloaded corpus, not just the set being extracted.
+fn build_card_index(sets: &[MtgjsonSetData]) -> HashMap<&str, &MtgjsonCard> {
+    sets.iter()
+        .flat_map(|d| d.cards.iter())
+        .map(|c| (c.uuid.as_str(), c))
+        .collect()
+}
+
 /// Extract a [`LimitedSetPool`] from raw MTGJSON per-set JSON content.
 ///
 /// Returns `Ok(None)` if the set has no `booster.play` section (not draftable).
+/// Sheet UUIDs are resolved against this set's own cards only — use
+/// [`extract_all_set_pools`] when supplemental sheets need cross-set resolution.
 pub fn extract_set_pool(json_content: &str) -> Result<Option<LimitedSetPool>, ExtractionError> {
     let file: MtgjsonSetFile = serde_json::from_str(json_content)?;
-    let data = file.data;
+    let card_index = build_card_index(std::slice::from_ref(&file.data));
+    Ok(extract_set_pool_indexed(&file.data, &card_index))
+}
 
-    let play = match data.booster.and_then(|b| b.play) {
-        Some(p) => p,
-        None => return Ok(None),
-    };
+/// Extract a [`LimitedSetPool`] from one set's parsed data, resolving sheet UUIDs
+/// against `card_index` (which may span multiple sets). Returns `None` if the set
+/// has no `booster.play` config. `prints` and `basic_lands` stay set-local — they
+/// describe *this* set's print run, not the corpus.
+fn extract_set_pool_indexed(
+    data: &MtgjsonSetData,
+    card_index: &HashMap<&str, &MtgjsonCard>,
+) -> Option<LimitedSetPool> {
+    let play = data.booster.as_ref().and_then(|b| b.play.as_ref())?;
 
-    // Build UUID -> card lookup
-    let card_by_uuid: HashMap<&str, &MtgjsonCard> =
-        data.cards.iter().map(|c| (c.uuid.as_str(), c)).collect();
+    // Track which UUIDs appear in any sheet (for prints eligibility).
+    let mut uuids_in_sheets: HashSet<&str> = HashSet::new();
 
-    // Track which UUIDs appear in any sheet (for prints eligibility)
-    let mut uuids_in_sheets: std::collections::HashSet<&str> = std::collections::HashSet::new();
-
-    // Build sheets
+    // Build sheets, resolving UUIDs against the (possibly cross-set) index.
     let mut sheets = BTreeMap::new();
     for (sheet_name, mtg_sheet) in &play.sheets {
         let mut cards = Vec::new();
         for (uuid, &weight) in &mtg_sheet.cards {
             uuids_in_sheets.insert(uuid.as_str());
-            if let Some(card) = card_by_uuid.get(uuid.as_str()) {
+            if let Some(card) = card_index.get(uuid.as_str()) {
                 cards.push(SheetCard {
                     name: card.name.clone(),
                     set_code: card.set_code.clone(),
@@ -153,8 +171,9 @@ pub fn extract_set_pool(json_content: &str) -> Result<Option<LimitedSetPool>, Ex
                 });
             } else {
                 eprintln!(
-                    "Warning: UUID {} in sheet '{}' not found in cards array, skipping",
-                    uuid, sheet_name
+                    "Warning: UUID {uuid} in sheet '{sheet_name}' of set {} not found \
+                     in any downloaded set, skipping (pack generation will backfill)",
+                    data.code
                 );
             }
         }
@@ -197,7 +216,8 @@ pub fn extract_set_pool(json_content: &str) -> Result<Option<LimitedSetPool>, Ex
         })
         .collect();
 
-    // Build prints: cards that have boosterTypes containing "play" or appear in any sheet
+    // Build prints: cards that have boosterTypes containing "play" or appear in any sheet.
+    // Set-local: this is *this* set's print run, not the cross-set index.
     let prints: Vec<LimitedCardPrint> = data
         .cards
         .iter()
@@ -215,7 +235,7 @@ pub fn extract_set_pool(json_content: &str) -> Result<Option<LimitedSetPool>, Ex
         })
         .collect();
 
-    // Build basic_lands: cards with "Basic" in supertypes, deduplicated
+    // Build basic_lands: cards with "Basic" in supertypes, deduplicated (set-local).
     let mut basic_lands: Vec<String> = data
         .cards
         .iter()
@@ -243,56 +263,61 @@ pub fn extract_set_pool(json_content: &str) -> Result<Option<LimitedSetPool>, Ex
         basic_lands = land_names;
     }
 
-    Ok(Some(LimitedSetPool {
-        code: data.code,
-        name: data.name,
-        release_date: data.release_date,
+    Some(LimitedSetPool {
+        code: data.code.clone(),
+        name: data.name.clone(),
+        release_date: data.release_date.clone(),
         pack_variants,
         pack_variants_total_weight: play.boosters_total_weight,
         sheets,
         prints,
         basic_lands,
-    }))
+    })
 }
 
 /// Extract [`LimitedSetPool`]s from all JSON files in a directory.
 ///
-/// Returns a `BTreeMap` keyed by lowercase set code.
+/// Returns a `BTreeMap` keyed by lowercase set code. Parses every file once, then
+/// resolves all booster sheets against a single corpus-wide UUID index, so
+/// supplemental sheets (`specialGuest` etc.) that point at other sets' printings
+/// resolve as long as those sets' files are present in `sets_dir`.
 pub fn extract_all_set_pools(
     sets_dir: &Path,
 ) -> Result<BTreeMap<String, LimitedSetPool>, ExtractionError> {
-    let mut pools = BTreeMap::new();
-
     let entries: Vec<_> = std::fs::read_dir(sets_dir)
         .map_err(|e| ExtractionError::Other(format!("cannot read directory: {e}")))?
         .filter_map(|e| e.ok())
         .filter(|e| e.path().extension().is_some_and(|ext| ext == "json"))
         .collect();
-
     let total = entries.len();
+
+    // Pass 1: parse every set file once. A cross-set UUID index needs them all
+    // resident simultaneously (`specialGuest` etc. point at other sets' cards).
+    let mut datas: Vec<MtgjsonSetData> = Vec::with_capacity(total);
     for (i, entry) in entries.iter().enumerate() {
         let path = entry.path();
         let filename = path.file_stem().unwrap_or_default().to_string_lossy();
-        eprintln!("[{}/{}] Processing {}...", i + 1, total, filename);
-
+        eprintln!("[{}/{}] Parsing {filename}...", i + 1, total);
         let content = std::fs::read_to_string(&path)
             .map_err(|e| ExtractionError::Other(format!("cannot read {}: {e}", path.display())))?;
+        let file: MtgjsonSetFile = serde_json::from_str(&content)?;
+        datas.push(file.data);
+    }
 
-        match extract_set_pool(&content)? {
-            Some(pool) => {
-                let code = pool.code.to_lowercase();
-                eprintln!(
-                    "  -> {} ({}) — {} sheets, {} prints",
-                    pool.name,
-                    pool.code,
-                    pool.sheets.len(),
-                    pool.prints.len()
-                );
-                pools.insert(code, pool);
-            }
-            None => {
-                eprintln!("  -> skipped (no booster.play section)");
-            }
+    let card_index = build_card_index(&datas);
+
+    // Pass 2: extract a pool from each set whose booster has a `play` config.
+    let mut pools = BTreeMap::new();
+    for data in &datas {
+        if let Some(pool) = extract_set_pool_indexed(data, &card_index) {
+            eprintln!(
+                "  -> {} ({}) — {} sheets, {} prints",
+                pool.name,
+                pool.code,
+                pool.sheets.len(),
+                pool.prints.len()
+            );
+            pools.insert(pool.code.to_lowercase(), pool);
         }
     }
 
