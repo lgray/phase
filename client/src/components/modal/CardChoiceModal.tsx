@@ -841,12 +841,17 @@ function SearchModal({ data }: { data: SearchChoice["data"] }) {
 function OutsideGameModal({ data }: { data: OutsideGameChoice["data"] }) {
   const dispatch = useGameDispatch();
   const [selectedCounts, setSelectedCounts] = useState<Map<number, number>>(new Map());
+  const availableCounts = useMemo(
+    () => new Map(data.choices.map((choice) => [choice.sideboard_index, choice.entry.count])),
+    [data.choices],
+  );
   const selectedIndices = useMemo(
     () =>
-      Array.from(selectedCounts.entries()).flatMap(([sideboardIndex, count]) =>
-        Array.from({ length: count }, () => sideboardIndex),
-      ),
-    [selectedCounts],
+      Array.from(selectedCounts.entries()).flatMap(([sideboardIndex, count]) => {
+        const availableCount = availableCounts.get(sideboardIndex) ?? 0;
+        return Array.from({ length: Math.min(count, availableCount) }, () => sideboardIndex);
+      }),
+    [availableCounts, selectedCounts],
   );
   const minCount = data.up_to ? 0 : data.count;
   const countValid = selectedIndices.length >= minCount && selectedIndices.length <= data.count;
@@ -889,7 +894,10 @@ function OutsideGameModal({ data }: { data: OutsideGameChoice["data"] }) {
     >
       <div className="flex max-h-[60vh] min-w-[280px] flex-col gap-2 overflow-y-auto p-1">
         {data.choices.map((choice) => {
-          const selectedCount = selectedCounts.get(choice.sideboard_index) ?? 0;
+          const selectedCount = Math.min(
+            selectedCounts.get(choice.sideboard_index) ?? 0,
+            choice.entry.count,
+          );
           const isSelected = selectedCount > 0;
           return (
             <button

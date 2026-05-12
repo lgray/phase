@@ -324,8 +324,8 @@ fn fallback_action(state: &GameState) -> Option<GameAction> {
             Some(GameAction::ChooseOutsideGameCards {
                 sideboard_indices: choices
                     .iter()
+                    .flat_map(|choice| (0..choice.entry.count).map(move |_| choice.sideboard_index))
                     .take(*count)
-                    .map(|choice| choice.sideboard_index)
                     .collect(),
             })
         }
