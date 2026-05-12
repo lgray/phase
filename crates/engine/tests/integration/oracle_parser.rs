@@ -180,6 +180,50 @@ fn arcane_adaptation_full_oracle_splits_battlefield_static_and_unimplemented_tai
 }
 
 #[test]
+fn xenograft_full_oracle_applies_chosen_type_to_creatures_you_control() {
+    let result = parse(
+        "As Xenograft enters, choose a creature type.\nEach creature you control is the chosen type in addition to its other types.",
+        "Xenograft",
+        &[],
+        &["Enchantment"],
+        &[],
+    );
+
+    assert_eq!(result.statics.len(), 1);
+    let static_def = &result.statics[0];
+    assert_eq!(static_def.mode, StaticMode::Continuous);
+    assert!(static_def.modifications.iter().any(|modification| matches!(
+        modification,
+        ContinuousModification::AddChosenSubtype {
+            kind: ChosenSubtypeKind::CreatureType
+        }
+    )));
+    match &static_def.affected {
+        Some(TargetFilter::Typed(filter)) => {
+            assert_eq!(filter.controller, Some(ControllerRef::You));
+            assert!(filter.type_filters.contains(&TypeFilter::Creature));
+        }
+        other => panic!("expected battlefield creature filter, got {other:?}"),
+    }
+
+    let unimplemented: Vec<_> = result
+        .abilities
+        .iter()
+        .filter_map(|ability| match ability.effect.as_ref() {
+            Effect::Unimplemented {
+                description: Some(description),
+                ..
+            } => Some(description.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        unimplemented.is_empty(),
+        "Xenograft wording should not fall through to an unimplemented ability: {unimplemented:?}"
+    );
+}
+
+#[test]
 fn snapshot_goblin_chainwhirler() {
     let result = parse(
         "First strike\nWhen Goblin Chainwhirler enters the battlefield, it deals 1 damage to each opponent and each creature and planeswalker they control.",

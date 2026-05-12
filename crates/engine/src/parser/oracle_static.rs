@@ -2032,9 +2032,10 @@ fn parse_arcane_adaptation_chosen_type_static(
     description: &str,
 ) -> Option<StaticDefinition> {
     let ((), _) = nom_on_lower(tp.original, tp.lower, |input| {
-        let (input, _) =
-            tag("creatures you control are the chosen type in addition to their other types")
-                .parse(input)?;
+        let (input, pronoun) = parse_chosen_creature_type_static_subject(input)?;
+        let (input, _) = tag(" the chosen type in addition to ").parse(input)?;
+        let (input, _) = tag(pronoun).parse(input)?;
+        let (input, _) = tag(" other types").parse(input)?;
         let (input, _) = opt(tag(".")).parse(input)?;
         let (input, _) = eof.parse(input)?;
         Ok((input, ()))
@@ -2050,6 +2051,14 @@ fn parse_arcane_adaptation_chosen_type_static(
             }])
             .description(description.to_string()),
     )
+}
+
+fn parse_chosen_creature_type_static_subject(input: &str) -> OracleResult<'_, &'static str> {
+    alt((
+        value("their", tag("creatures you control are")),
+        value("its", tag("each creature you control is")),
+    ))
+    .parse(input)
 }
 
 fn parse_collection_counter_play_permission_static(
@@ -15523,6 +15532,35 @@ mod tests {
             def.description.as_deref(),
             Some("Creatures you control are the chosen type in addition to their other types."),
             "the unsupported creature-spell/nonbattlefield-card tail must not be represented by the battlefield-only static"
+        );
+        match &def.affected {
+            Some(TargetFilter::Typed(tf)) => {
+                assert_eq!(tf.controller, Some(ControllerRef::You));
+                assert!(tf
+                    .type_filters
+                    .iter()
+                    .any(|filter| matches!(filter, TypeFilter::Creature)));
+            }
+            other => panic!("Expected Some(Typed filter), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parser_shape_xenograft_chosen_type_applies_to_each_creature_you_control() {
+        let def = parse_static_line(
+            "Each creature you control is the chosen type in addition to its other types.",
+        )
+        .unwrap();
+        assert_eq!(def.mode, StaticMode::Continuous);
+        assert!(def.modifications.iter().any(|modification| matches!(
+            modification,
+            ContinuousModification::AddChosenSubtype {
+                kind: ChosenSubtypeKind::CreatureType
+            }
+        )));
+        assert_eq!(
+            def.description.as_deref(),
+            Some("Each creature you control is the chosen type in addition to its other types.")
         );
         match &def.affected {
             Some(TargetFilter::Typed(tf)) => {
