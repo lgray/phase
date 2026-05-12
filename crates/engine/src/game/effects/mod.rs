@@ -899,6 +899,7 @@ fn quantity_expr_references_tracked_set(qty: &QuantityExpr) -> bool {
         | QuantityExpr::DivideRounded { inner, .. } => quantity_expr_references_tracked_set(inner),
         QuantityExpr::Sum { exprs } => exprs.iter().any(quantity_expr_references_tracked_set),
         QuantityExpr::UpTo { max } => quantity_expr_references_tracked_set(max),
+        QuantityExpr::Power { exponent, .. } => quantity_expr_references_tracked_set(exponent),
     }
 }
 
