@@ -857,6 +857,12 @@ impl ManaPool {
     /// 1. Expiry-bound units (`EndOfTurn`, `EndOfCombat`) follow their
     ///    explicit expiry rule and bypass step-end handlers — the handlers
     ///    only react to the unbounded step-end empty event of CR 703.4q.
+    ///    Retention and transformation are symmetric on this eligibility
+    ///    (CR 614.6): both are replacement effects on the same loss event,
+    ///    and expiry-bound mana is leaving the pool through a different
+    ///    rule (its own expiry), so neither handler intercepts it. Without
+    ///    this guard a `Transform(_)` handler would otherwise rewrite
+    ///    temporary mana into permanent at cleanup.
     /// 2. Non-expiry units consult the per-player handler list. The first
     ///    handler whose `filter` matches wins:
     ///    - `Retain` keeps the unit (CR 614.6 — the loss event is replaced
@@ -1149,6 +1155,58 @@ mod tests {
         assert_eq!(pool.count_color(ManaType::Colorless), 2);
         assert_eq!(pool.count_color(ManaType::Red), 0);
         assert_eq!(pool.count_color(ManaType::Blue), 0);
+    }
+
+    #[test]
+    fn mana_pool_transform_does_not_promote_expiry_bound_mana_at_cleanup() {
+        // CR 614.6 + CR 703.4q: Symmetric with retention — a Transform
+        // handler must NOT rewrite expiry-bound mana into permanent. The
+        // EndOfTurn unit follows its own expiry rule at cleanup and is
+        // dropped; only the None-expiry unit is transformed.
+        let mut pool = ManaPool::default();
+        let mut expiry_bound = make_unit(ManaType::Red);
+        expiry_bound.expiry = Some(ManaExpiry::EndOfTurn);
+        pool.add(expiry_bound);
+        pool.add(make_unit(ManaType::Red));
+
+        // entering_cleanup = true: the expiry-bound unit's own rule fires.
+        pool.clear_step_transition(false, true, &[transform(ManaType::Colorless)]);
+
+        assert_eq!(pool.total(), 1);
+        assert_eq!(pool.count_color(ManaType::Colorless), 1);
+        assert_eq!(pool.count_color(ManaType::Red), 0);
+    }
+
+    #[test]
+    fn mana_pool_transform_leaves_expiry_bound_mana_alone_pre_cleanup() {
+        // CR 614.6 + CR 703.4q: An expiry-bound unit whose explicit rule
+        // hasn't fired yet (EndOfTurn at a non-cleanup transition) survives
+        // unchanged — its color is preserved, the transform handler does
+        // not touch it. The None-expiry unit transforms normally.
+        let mut pool = ManaPool::default();
+        let mut expiry_bound = make_unit(ManaType::Red);
+        expiry_bound.expiry = Some(ManaExpiry::EndOfTurn);
+        pool.add(expiry_bound);
+        pool.add(make_unit(ManaType::Red));
+
+        // entering_cleanup = false: expiry-bound rule has not yet fired.
+        pool.clear_step_transition(false, false, &[transform(ManaType::Colorless)]);
+
+        assert_eq!(pool.total(), 2);
+        // Expiry-bound unit is unchanged — still Red, still has expiry.
+        let expiry_survivor = pool
+            .mana
+            .iter()
+            .find(|u| u.expiry == Some(ManaExpiry::EndOfTurn))
+            .expect("expiry-bound unit survived");
+        assert_eq!(expiry_survivor.color, ManaType::Red);
+        // None-expiry unit transformed.
+        let transformed = pool
+            .mana
+            .iter()
+            .find(|u| u.expiry.is_none())
+            .expect("non-expiry unit survived");
+        assert_eq!(transformed.color, ManaType::Colorless);
     }
 
     #[test]
