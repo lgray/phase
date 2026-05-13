@@ -105,10 +105,15 @@ fn enter_phase(state: &mut GameState, next: Phase, events: &mut Vec<GameEvent>) 
             | Phase::EndCombat
     );
     let entering_cleanup = next == Phase::Cleanup;
-    for player in &mut state.players {
+    let retained_mana_colors: Vec<_> = state
+        .players
+        .iter()
+        .map(|player| super::static_abilities::player_retained_mana_colors(state, player.id))
+        .collect();
+    for (player, retained_by_static) in state.players.iter_mut().zip(retained_mana_colors.iter()) {
         player
             .mana_pool
-            .clear_step_transition(in_combat, entering_cleanup);
+            .clear_step_transition(in_combat, entering_cleanup, retained_by_static);
         // CR 121.1 + CR 504.1: `cards_drawn_this_step` resets on every step
         // transition so `ExceptFirstDrawInDrawStep` conditions can identify
         // the first card drawn during the new step (most importantly, the
@@ -1491,6 +1496,149 @@ mod tests {
         advance_phase(&mut state, &mut events);
 
         assert_eq!(state.players[0].mana_pool.total(), 0);
+    }
+
+    #[test]
+    fn advance_phase_retains_only_static_matching_controller_mana() {
+        use crate::types::ability::{StaticDefinition, TargetFilter};
+        use crate::types::mana::{ManaColor, ManaType, ManaUnit};
+        use crate::types::statics::StaticMode;
+
+        let mut state = setup();
+        state.phase = Phase::PreCombatMain;
+        let source = create_object(
+            &mut state,
+            CardId(1),
+            PlayerId(0),
+            "Electro, Assaulting Battery".to_string(),
+            Zone::Battlefield,
+        );
+        state
+            .objects
+            .get_mut(&source)
+            .unwrap()
+            .static_definitions
+            .push(
+                StaticDefinition::new(StaticMode::RetainUnspentMana {
+                    color: Some(ManaColor::Red),
+                })
+                .affected(TargetFilter::Controller),
+            );
+
+        state.players[0].mana_pool.add(ManaUnit::new(
+            ManaType::Red,
+            ObjectId(10),
+            false,
+            Vec::new(),
+        ));
+        state.players[0].mana_pool.add(ManaUnit::new(
+            ManaType::Blue,
+            ObjectId(11),
+            false,
+            Vec::new(),
+        ));
+        state.players[1].mana_pool.add(ManaUnit::new(
+            ManaType::Red,
+            ObjectId(12),
+            false,
+            Vec::new(),
+        ));
+
+        advance_phase(&mut state, &mut Vec::new());
+
+        assert_eq!(state.players[0].mana_pool.count_color(ManaType::Red), 1);
+        assert_eq!(state.players[0].mana_pool.count_color(ManaType::Blue), 0);
+        assert_eq!(state.players[1].mana_pool.count_color(ManaType::Red), 0);
+    }
+
+    #[test]
+    fn retained_mana_empties_after_static_source_stops_applying() {
+        use crate::types::ability::{StaticDefinition, TargetFilter};
+        use crate::types::mana::{ManaColor, ManaType, ManaUnit};
+        use crate::types::statics::StaticMode;
+
+        let mut state = setup();
+        state.phase = Phase::PreCombatMain;
+        let source = create_object(
+            &mut state,
+            CardId(1),
+            PlayerId(0),
+            "Electro, Assaulting Battery".to_string(),
+            Zone::Battlefield,
+        );
+        state
+            .objects
+            .get_mut(&source)
+            .unwrap()
+            .static_definitions
+            .push(
+                StaticDefinition::new(StaticMode::RetainUnspentMana {
+                    color: Some(ManaColor::Red),
+                })
+                .affected(TargetFilter::Controller),
+            );
+        state.players[0].mana_pool.add(ManaUnit::new(
+            ManaType::Red,
+            ObjectId(10),
+            false,
+            Vec::new(),
+        ));
+
+        advance_phase(&mut state, &mut Vec::new());
+        assert_eq!(state.players[0].mana_pool.count_color(ManaType::Red), 1);
+
+        let mut events = Vec::new();
+        crate::game::zones::move_to_zone(&mut state, source, Zone::Graveyard, &mut events);
+        advance_phase(&mut state, &mut Vec::new());
+
+        assert_eq!(state.players[0].mana_pool.total(), 0);
+    }
+
+    #[test]
+    fn static_all_mana_retention_survives_cleanup_step() {
+        use crate::types::ability::{StaticDefinition, TargetFilter};
+        use crate::types::mana::{ManaType, ManaUnit};
+        use crate::types::statics::StaticMode;
+
+        let mut state = setup();
+        state.phase = Phase::End;
+        let source = create_object(
+            &mut state,
+            CardId(1),
+            PlayerId(0),
+            "Upwelling".to_string(),
+            Zone::Battlefield,
+        );
+        state
+            .objects
+            .get_mut(&source)
+            .unwrap()
+            .static_definitions
+            .push(
+                StaticDefinition::new(StaticMode::RetainUnspentMana { color: None })
+                    .affected(TargetFilter::Controller),
+            );
+        state.players[0].mana_pool.add(ManaUnit::new(
+            ManaType::Red,
+            ObjectId(10),
+            false,
+            Vec::new(),
+        ));
+        state.players[0].mana_pool.add(ManaUnit::new(
+            ManaType::Colorless,
+            ObjectId(11),
+            false,
+            Vec::new(),
+        ));
+
+        advance_phase(&mut state, &mut Vec::new());
+
+        assert_eq!(state.phase, Phase::Cleanup);
+        assert_eq!(state.players[0].mana_pool.count_color(ManaType::Red), 1);
+        assert_eq!(
+            state.players[0].mana_pool.count_color(ManaType::Colorless),
+            1
+        );
     }
 
     #[test]

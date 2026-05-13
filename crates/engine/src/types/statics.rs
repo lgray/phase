@@ -726,6 +726,12 @@ pub enum StaticMode {
     /// CR 609.4b: "You may spend mana as though it were mana of any color."
     /// Allows the controller to pay colored mana costs with mana of any color.
     SpendManaAsAnyColor,
+    /// CR 106.4 + CR 500.5 + CR 703.4q: The affected player does not lose
+    /// matching unspent mana as steps and phases end. `None` means all mana,
+    /// including colorless; `Some(color)` means only that color.
+    RetainUnspentMana {
+        color: Option<ManaColor>,
+    },
     /// CR 702.3b: Allows creatures with defender to attack despite having the keyword.
     /// "can attack as though it didn't have defender" overrides the defender restriction.
     CanAttackWithDefender,
@@ -776,6 +782,7 @@ impl Hash for StaticMode {
             StaticMode::CantBeBlockedExceptBy { filter } => filter.hash(state),
             StaticMode::CantBeBlockedBy { .. } => {} // TargetFilter does not implement Hash; discriminant only
             StaticMode::AdditionalLandDrop { count } => count.hash(state),
+            StaticMode::RetainUnspentMana { color } => color.hash(state),
             StaticMode::Other(s) => s.hash(state),
             StaticMode::GraveyardCastPermission {
                 frequency,
@@ -968,6 +975,9 @@ impl fmt::Display for StaticMode {
             }
             StaticMode::SkipStep { step } => write!(f, "SkipStep({step:?})"),
             StaticMode::SpendManaAsAnyColor => write!(f, "SpendManaAsAnyColor"),
+            StaticMode::RetainUnspentMana { color } => {
+                write!(f, "RetainUnspentMana({color:?})")
+            }
             StaticMode::CanAttackWithDefender => write!(f, "CanAttackWithDefender"),
             StaticMode::AssignNoCombatDamage => write!(f, "AssignNoCombatDamage"),
             StaticMode::UntapsDuringEachOtherPlayersUntapStep => {
@@ -1190,6 +1200,7 @@ impl FromStr for StaticMode {
             "CantWinTheGame" => StaticMode::CantWinTheGame,
             "CantLoseTheGame" => StaticMode::CantLoseTheGame,
             "CanAttackWithDefender" => StaticMode::CanAttackWithDefender,
+            s if s.starts_with("RetainUnspentMana(") => StaticMode::Other(s.to_string()),
             "UntapsDuringEachOtherPlayersUntapStep" => {
                 StaticMode::UntapsDuringEachOtherPlayersUntapStep
             }

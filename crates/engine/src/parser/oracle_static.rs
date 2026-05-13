@@ -70,6 +70,33 @@ fn nom_tag_tp<'a>(tp: &TextPair<'a>, prefix: &str) -> Option<TextPair<'a>> {
         })
 }
 
+fn try_parse_retain_unspent_mana_static(text: &str, lower: &str) -> Option<StaticDefinition> {
+    nom_on_lower(text, lower, |input| {
+        let (input, _) = tag::<_, _, OracleError<'_>>("you ").parse(input)?;
+        let (input, _) = alt((tag("don't lose "), tag("don\u{2019}t lose "))).parse(input)?;
+        let (input, color) = alt((
+            value(None, tag("unspent mana")),
+            map(
+                preceded(
+                    tag("unspent "),
+                    terminated(nom_primitives::parse_color, tag(" mana")),
+                ),
+                Some,
+            ),
+        ))
+        .parse(input)?;
+        let (input, _) = tag(" as steps and phases end").parse(input)?;
+        let (input, _) = opt(tag(".")).parse(input)?;
+        eof(input)?;
+        Ok((input, color))
+    })
+    .map(|(color, _)| {
+        StaticDefinition::new(StaticMode::RetainUnspentMana { color })
+            .affected(TargetFilter::Controller)
+            .description(text.to_string())
+    })
+}
+
 fn parse_activated_cost_reduction_minimum_mana(lower: &str) -> Option<u32> {
     preceded(
         take_until::<_, _, OracleError<'_>>(
@@ -626,6 +653,10 @@ fn parse_static_line_inner(text: &str, inverted: InvertedAsLongAs) -> Option<Sta
     // "you may cast Dragon spells without paying their mana costs" relies on
     // CR 601.2's implicit hand zone.
     if let Some(result) = try_parse_cast_free_permission(&text, &lower) {
+        return Some(result);
+    }
+
+    if let Some(result) = try_parse_retain_unspent_mana_static(&text, &lower) {
         return Some(result);
     }
 
@@ -16310,6 +16341,42 @@ mod tests {
         assert_eq!(modes.len(), 2);
         assert!(modes.contains(&StaticMode::CantGainLife));
         assert!(modes.contains(&StaticMode::CantLoseLife));
+    }
+
+    #[test]
+    fn static_retain_unspent_colored_mana_across_steps_and_phases() {
+        let def =
+            parse_static_line("You don't lose unspent red mana as steps and phases end.").unwrap();
+
+        assert_eq!(
+            def.mode,
+            StaticMode::RetainUnspentMana {
+                color: Some(ManaColor::Red),
+            }
+        );
+        assert_eq!(def.affected, Some(TargetFilter::Controller));
+    }
+
+    #[test]
+    fn static_retain_all_unspent_mana_across_steps_and_phases() {
+        let def =
+            parse_static_line("You don't lose unspent mana as steps and phases end.").unwrap();
+
+        assert_eq!(def.mode, StaticMode::RetainUnspentMana { color: None });
+        assert_eq!(def.affected, Some(TargetFilter::Controller));
+    }
+
+    #[test]
+    fn static_retain_unspent_mana_accepts_curly_apostrophe() {
+        let def = parse_static_line("You don’t lose unspent green mana as steps and phases end.")
+            .unwrap();
+
+        assert_eq!(
+            def.mode,
+            StaticMode::RetainUnspentMana {
+                color: Some(ManaColor::Green),
+            }
+        );
     }
 
     #[test]

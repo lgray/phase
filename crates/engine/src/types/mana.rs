@@ -49,6 +49,18 @@ pub enum ManaType {
     Colorless,
 }
 
+impl From<ManaColor> for ManaType {
+    fn from(color: ManaColor) -> Self {
+        match color {
+            ManaColor::White => ManaType::White,
+            ManaColor::Blue => ManaType::Blue,
+            ManaColor::Black => ManaType::Black,
+            ManaColor::Red => ManaType::Red,
+            ManaColor::Green => ManaType::Green,
+        }
+    }
+}
+
 /// Display-layer projection of `ManaProduction` — typed pip descriptors the
 /// frontend renders verbatim. One variant per `ManaProduction` axis so no
 /// information is lost on the wire (e.g., colorless producers must surface as
@@ -796,13 +808,22 @@ impl ManaPool {
         self.mana.clear();
     }
 
-    /// CR 106.4: Clear mana on phase transition, retaining mana that carries an
-    /// explicit retention expiry until that expiry has been reached.
-    pub fn clear_step_transition(&mut self, in_combat: bool, entering_cleanup: bool) {
+    /// CR 106.4 + CR 500.5: Clear mana on phase transition, retaining mana that
+    /// either carries an explicit expiry or is covered by an active static rule
+    /// modifier such as "You don't lose unspent red mana as steps and phases end."
+    pub fn clear_step_transition(
+        &mut self,
+        in_combat: bool,
+        entering_cleanup: bool,
+        retained_by_static: &[Option<ManaColor>],
+    ) {
         self.mana.retain(|u| match u.expiry {
             Some(ManaExpiry::EndOfTurn) => !entering_cleanup,
             Some(ManaExpiry::EndOfCombat) => in_combat,
-            None => false,
+            None => retained_by_static.iter().any(|color| match color {
+                None => true,
+                Some(color) => ManaType::from(*color) == u.color,
+            }),
         });
     }
 
@@ -993,12 +1014,38 @@ mod tests {
         pool.add(retained);
         pool.add(make_unit(ManaType::Red));
 
-        pool.clear_step_transition(false, false);
+        pool.clear_step_transition(false, false, &[]);
         assert_eq!(pool.count_color(ManaType::Green), 1);
         assert_eq!(pool.count_color(ManaType::Red), 0);
 
-        pool.clear_step_transition(false, true);
+        pool.clear_step_transition(false, true, &[]);
         assert_eq!(pool.total(), 0);
+    }
+
+    #[test]
+    fn mana_pool_retains_static_selected_color() {
+        let mut pool = ManaPool::default();
+        pool.add(make_unit(ManaType::Red));
+        pool.add(make_unit(ManaType::Blue));
+        pool.add(make_unit(ManaType::Colorless));
+
+        pool.clear_step_transition(false, false, &[Some(ManaColor::Red)]);
+
+        assert_eq!(pool.count_color(ManaType::Red), 1);
+        assert_eq!(pool.count_color(ManaType::Blue), 0);
+        assert_eq!(pool.count_color(ManaType::Colorless), 0);
+    }
+
+    #[test]
+    fn mana_pool_retains_static_all_mana_including_colorless() {
+        let mut pool = ManaPool::default();
+        pool.add(make_unit(ManaType::Red));
+        pool.add(make_unit(ManaType::Colorless));
+
+        pool.clear_step_transition(false, false, &[None]);
+
+        assert_eq!(pool.count_color(ManaType::Red), 1);
+        assert_eq!(pool.count_color(ManaType::Colorless), 1);
     }
 
     #[test]

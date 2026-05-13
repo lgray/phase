@@ -6,6 +6,7 @@ use crate::game::layers::{evaluate_condition, evaluate_condition_with_recipient}
 use crate::types::ability::{TargetFilter, TypedFilter};
 use crate::types::game_state::GameState;
 use crate::types::identifiers::ObjectId;
+use crate::types::mana::ManaColor;
 use crate::types::player::PlayerId;
 use crate::types::statics::{CostPaymentProhibition, ProhibitionScope, StaticMode};
 
@@ -577,6 +578,32 @@ pub fn player_has_cant_lose_life(state: &GameState, player_id: PlayerId) -> bool
     )
 }
 
+/// CR 106.4 + CR 500.5 + CR 703.4q: Return active static mana-retention rules
+/// applying to `player_id` as step/phase-ending mana pools empty.
+pub fn player_retained_mana_colors(
+    state: &GameState,
+    player_id: PlayerId,
+) -> Vec<Option<ManaColor>> {
+    let context = StaticCheckContext {
+        player_id: Some(player_id),
+        ..Default::default()
+    };
+
+    battlefield_active_statics(state)
+        .filter_map(|(source_obj, def)| {
+            let StaticMode::RetainUnspentMana { color } = &def.mode else {
+                return None;
+            };
+            if let Some(ref affected) = def.affected {
+                if !static_filter_matches(state, &context, affected, source_obj.id) {
+                    return None;
+                }
+            }
+            Some(*color)
+        })
+        .collect()
+}
+
 /// CR 118.3 + CR 119.4b + CR 601.2h + CR 602.2b: Check whether a static
 /// ability prohibits `player_id` from paying life as a cost.
 ///
@@ -785,6 +812,7 @@ pub(crate) fn static_filter_matches(
                 // All players match
                 return true;
             }
+            TargetFilter::Controller => return source_controller == Some(player_id),
             TargetFilter::Typed(TypedFilter { controller, .. }) => {
                 if let Some(ctrl) = controller {
                     return match ctrl {
