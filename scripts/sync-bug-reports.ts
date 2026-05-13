@@ -368,7 +368,8 @@ async function cmdTriage(): Promise<void> {
   }
 
   console.log(`Triaging ${reports.length} report items...`);
-  const items = await triageReports(reports);
+  let items = await triageReports(reports);
+  items = applyGithubDedupe(items, await loadGithubIssueIndex());
 
   await mkdir("triage", { recursive: true });
   await writeJsonl(TRIAGE_ITEMS_PATH, items);
@@ -394,10 +395,9 @@ async function cmdTriage(): Promise<void> {
   console.log(`  Chatter: ${byClass.get("chatter") ?? 0}`);
   console.log(`  Evidence-only: ${byClass.get("evidence_only") ?? 0}`);
   console.log(`  ---`);
-  console.log(`  Proposed: create_issue: ${byAction.get("create_issue") ?? 0}`);
-  console.log(`  Proposed: append_to_existing: ${byAction.get("append_to_existing") ?? 0}`);
-  console.log(`  Proposed: skip: ${byAction.get("skip") ?? 0}`);
-  console.log(`  Proposed: needs_human_review: ${byAction.get("needs_human_review") ?? 0}`);
+  for (const action of [...byAction.keys()].sort()) {
+    console.log(`  Proposed: ${action}: ${byAction.get(action) ?? 0}`);
+  }
   console.log(`  ---`);
   console.log(
     `  Parser status: fully_parsed: ${byParserStatus.get("fully_parsed") ?? 0}, ` +
@@ -406,6 +406,117 @@ async function cmdTriage(): Promise<void> {
     `no_card: ${byParserStatus.get("no_card") ?? 0}`,
   );
   console.log(`  Written to ${TRIAGE_ITEMS_PATH}`);
+}
+
+interface GithubIssueIndexItem {
+  number: number;
+  title: string;
+  state: "OPEN" | "CLOSED";
+  body: string;
+  url: string;
+  closedAt: string | null;
+}
+
+async function loadGithubIssueIndex(): Promise<GithubIssueIndexItem[]> {
+  const ghResult = Bun.spawnSync([
+    "gh",
+    "issue",
+    "list",
+    "--repo",
+    "phase-rs/phase",
+    "--state",
+    "all",
+    "--limit",
+    "1000",
+    "--json",
+    "number,title,state,body,url,closedAt",
+  ]);
+
+  if (ghResult.exitCode !== 0) {
+    console.error("Warning: failed to fetch GitHub issue index for dedupe.");
+    return [];
+  }
+
+  const issues = JSON.parse(ghResult.stdout.toString()) as GithubIssueIndexItem[];
+  if (issues.length === 1000) {
+    console.error("Warning: GitHub issue dedupe index hit the 1000 issue limit.");
+  }
+  return issues;
+}
+
+function applyGithubDedupe(
+  items: TriageItem[],
+  issues: GithubIssueIndexItem[],
+): TriageItem[] {
+  if (issues.length === 0) return items;
+
+  const searchableIssues = issues.map((issue) => ({
+    issue,
+    text: `${issue.title}\n${issue.body}\n${issue.url}`,
+  }));
+
+  let matchedOpen = 0;
+  let matchedClosed = 0;
+
+  const deduped = items.map((item) => {
+    if (item.proposed_action !== "create_issue" && item.proposed_action !== "needs_human_review") {
+      return item;
+    }
+
+    const markers: Array<{
+      kind: NonNullable<TriageItem["github_issue"]>["match_kind"];
+      value: string;
+    }> = [
+      { kind: "report_id", value: item.report_id },
+      { kind: "source_url", value: item.source_url },
+      { kind: "discord_message", value: `${item.thread_id}/${item.message_id}` },
+    ];
+
+    const matches = searchableIssues
+      .flatMap(({ issue, text }) => {
+        const marker = markers.find(
+          (candidate) => candidate.value !== "" && text.includes(candidate.value),
+        );
+        return marker === undefined ? [] : [{ issue, marker }];
+      })
+      .sort((a, b) => {
+        if (a.issue.state !== b.issue.state) return a.issue.state === "OPEN" ? -1 : 1;
+        return a.issue.number - b.issue.number;
+      });
+    const match = matches[0];
+
+    if (match === undefined) return item;
+
+    const github_issue: NonNullable<TriageItem["github_issue"]> = {
+      number: match.issue.number,
+      title: match.issue.title,
+      state: match.issue.state,
+      url: match.issue.url,
+      closed_at: match.issue.closedAt,
+      match_kind: match.marker.kind,
+    };
+
+    if (match.issue.state === "OPEN") {
+      matchedOpen++;
+      return {
+        ...item,
+        proposed_action: "append_to_existing" as const,
+        github_issue,
+      };
+    }
+
+    matchedClosed++;
+    return {
+      ...item,
+      proposed_action: "skip_existing_closed" as const,
+      github_issue,
+    };
+  });
+
+  console.log(`  GitHub dedupe: matched open issues: ${matchedOpen}`);
+  console.log(`  GitHub dedupe: matched closed issues: ${matchedClosed}`);
+
+  return deduped;
 }
 
 async function cmdRender(): Promise<void> {

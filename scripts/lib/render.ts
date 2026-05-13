@@ -88,7 +88,9 @@ export function renderTriageDashboard(items: TriageItem[]): string {
   lines.push(``);
 
   // --- Skipped summary ---
-  const skipped = items.filter((i) => i.proposed_action === "skip");
+  const skipped = items.filter(
+    (i) => i.proposed_action === "skip" || i.proposed_action === "skip_existing_closed",
+  );
   const skipByClass = new Map<string, number>();
   for (const item of skipped) {
     skipByClass.set(item.classification, (skipByClass.get(item.classification) ?? 0) + 1);
