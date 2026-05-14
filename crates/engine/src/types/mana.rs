@@ -872,12 +872,33 @@ impl ManaPool {
     ///      pool, since the loss-triggering condition no longer holds).
     /// 3. Units with no matching handler empty as usual.
     ///
-    /// CR 616.1 ordering: multiple coexisting transformations would need
-    /// player-ordered replacement selection, but the four printed transform
-    /// cards each pin a different color and each player can hold at most one
-    /// applicable transformation in practice; the first-match policy is
-    /// stable for today's corpus. If a second transform variant ever
-    /// coexists, surface ordering through `WaitingFor::ChooseReplacementOrder`.
+    /// CR 616.1 (verified — known deferral, NOT compliance): when two or
+    /// more replacement effects attempt to modify the same event, the
+    /// affected player chooses one to apply. This implementation picks the
+    /// first handler in `step_end_handlers` whose `filter` matches the
+    /// unit — that is iteration-order-wins on
+    /// `player_step_end_mana_handlers`, not player-choice. For any single
+    /// unit that two handlers can replace, the engine MUST surface the
+    /// choice to the affected player; today it does not.
+    ///
+    /// Why this is acceptable as an interim state: every printed
+    /// transformation card pins a distinct color (Horizon Stone /
+    /// Kruphix → colorless, Omnath, Locus of All → black, Ozai → red) and
+    /// the retention class subsumes the transformation class for any
+    /// rational player (Retain is strictly at least as good as Transform on
+    /// any unit, and an unfiltered Retain handler is universally preferred
+    /// over an unfiltered Transform handler). For the matched-handler
+    /// conflicts that exist on the current corpus, the rational choice
+    /// happens to be the iteration order, so first-match-wins produces the
+    /// same observable outcome as CR-correct player-choice ordering — but
+    /// the equivalence is incidental, not architectural.
+    ///
+    /// Fix path: when a card prints a non-rational-default transformation
+    /// or a second-color transform handler that overlaps an existing
+    /// retention filter, route the conflict through the
+    /// engine's player-choice replacement-effect surface (the same
+    /// channel used for CR 616.1 ETB-tapped vs. shock-land ordering)
+    /// before relaxing this comment.
     pub fn clear_step_transition(
         &mut self,
         in_combat: bool,
