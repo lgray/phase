@@ -8156,7 +8156,7 @@ mod tests {
     fn x_cost_activated_minimum_rejects_zero_and_accepts_one() {
         use super::super::engine::apply_as_current;
         use crate::ai_support::candidate_actions_broad;
-        use crate::types::ability::{AbilityCost, QuantityRef};
+        use crate::types::ability::{AbilityCost, CopyRetargetPermission, QuantityRef};
 
         let mut state = setup_game_at_main_phase();
         let source = create_object(
@@ -8175,6 +8175,7 @@ mod tests {
                     target: TargetFilter::StackAbility {
                         controller: Some(ControllerRef::You),
                     },
+                    retarget: CopyRetargetPermission::MayChooseNewTargets,
                 },
             )
             .cost(AbilityCost::Composite {

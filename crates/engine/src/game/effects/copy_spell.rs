@@ -1,5 +1,6 @@
 use crate::types::ability::{
-    Effect, EffectError, EffectKind, ResolvedAbility, TargetFilter, TargetRef,
+    CopyRetargetPermission, Effect, EffectError, EffectKind, ResolvedAbility, TargetFilter,
+    TargetRef,
 };
 use crate::types::events::GameEvent;
 use crate::types::game_state::{CopyTargetSlot, GameState, StackEntry, StackEntryKind, WaitingFor};
@@ -90,7 +91,19 @@ pub fn resolve(
         .map(|a| a.targets.clone())
         .unwrap_or_default();
 
-    if !copy_targets.is_empty() {
+    // CR 707.10c / CR 115.1: arm retarget selection only when the copy effect
+    // explicitly granted "you may choose new targets". Otherwise the copy keeps
+    // the original spell's declared targets (already present on the cloned
+    // stack entry) and resolution proceeds without a player choice.
+    if !copy_targets.is_empty()
+        && matches!(
+            ability.effect,
+            Effect::CopySpell {
+                retarget: CopyRetargetPermission::MayChooseNewTargets,
+                ..
+            }
+        )
+    {
         // Compute legal alternatives for each slot so the UI can present valid
         // choices. If build_target_slots fails (no legal targets exist for the
         // copy), fall back to empty alternatives — the copy still goes on the
@@ -214,7 +227,9 @@ fn set_resolved_controller_recursive(ability: &mut ResolvedAbility, controller: 
 mod tests {
     use super::*;
     use crate::game::game_object::GameObject;
-    use crate::types::ability::{Effect, QuantityExpr, TargetFilter, TargetRef};
+    use crate::types::ability::{
+        CopyRetargetPermission, Effect, QuantityExpr, TargetFilter, TargetRef,
+    };
     use crate::types::game_state::{CastingVariant, StackEntry, StackEntryKind};
     use crate::types::identifiers::{CardId, ObjectId};
     use crate::types::player::PlayerId;
@@ -272,6 +287,7 @@ mod tests {
         let copy_ability = ResolvedAbility::new(
             Effect::CopySpell {
                 target: TargetFilter::Any,
+                retarget: CopyRetargetPermission::KeepOriginalTargets,
             },
             vec![],
             ObjectId(20),
@@ -324,6 +340,7 @@ mod tests {
         let ability = ResolvedAbility::new(
             Effect::CopySpell {
                 target: TargetFilter::Any,
+                retarget: CopyRetargetPermission::KeepOriginalTargets,
             },
             vec![],
             ObjectId(20),
@@ -363,6 +380,7 @@ mod tests {
         let copy_ability = ResolvedAbility::new(
             Effect::CopySpell {
                 target: TargetFilter::Any,
+                retarget: CopyRetargetPermission::MayChooseNewTargets,
             },
             vec![],
             ObjectId(20),
@@ -376,6 +394,64 @@ mod tests {
         assert!(matches!(state.waiting_for, WaitingFor::CopyRetarget { .. }));
         // Copy should still be on the stack
         assert_eq!(state.stack.len(), 2);
+    }
+
+    /// CR 115.1 / CR 707.10c: a copy effect WITHOUT the "you may choose new
+    /// targets" clause keeps the original spell's targets — even though the
+    /// copied spell has targets, no `CopyRetarget` choice is armed.
+    #[test]
+    fn test_copy_spell_keep_targets_skips_retarget_despite_targets() {
+        let mut state = GameState::new_two_player(42);
+
+        let original_ability = ResolvedAbility::new(
+            Effect::DealDamage {
+                amount: QuantityExpr::Fixed { value: 3 },
+                target: TargetFilter::Any,
+                damage_source: None,
+            },
+            vec![TargetRef::Object(ObjectId(50))],
+            ObjectId(10),
+            PlayerId(0),
+        );
+
+        push_spell(
+            &mut state,
+            ObjectId(10),
+            CardId(1),
+            PlayerId(0),
+            "Lightning Bolt",
+            original_ability,
+            CastingVariant::Normal,
+        );
+
+        let copy_ability = ResolvedAbility::new(
+            Effect::CopySpell {
+                target: TargetFilter::Any,
+                retarget: CopyRetargetPermission::KeepOriginalTargets,
+            },
+            vec![],
+            ObjectId(20),
+            PlayerId(0),
+        );
+        let mut events = Vec::new();
+
+        resolve(&mut state, &copy_ability, &mut events).unwrap();
+
+        // KeepOriginalTargets → no retarget choice, resolution completes.
+        assert!(!matches!(
+            state.waiting_for,
+            WaitingFor::CopyRetarget { .. }
+        ));
+        assert_eq!(state.stack.len(), 2);
+        // The copy retains the original's declared target.
+        let copy_entry = state.stack.back().unwrap();
+        assert_eq!(
+            copy_entry.ability().map(|a| a.targets.as_slice()),
+            Some([TargetRef::Object(ObjectId(50))].as_slice())
+        );
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, GameEvent::EffectResolved { .. })));
     }
 
     #[test]
@@ -405,6 +481,7 @@ mod tests {
         let copy_ability = ResolvedAbility::new(
             Effect::CopySpell {
                 target: TargetFilter::Any,
+                retarget: CopyRetargetPermission::KeepOriginalTargets,
             },
             vec![],
             ObjectId(20),
@@ -525,6 +602,7 @@ mod tests {
         let casualty_ability = ResolvedAbility::new(
             Effect::CopySpell {
                 target: TargetFilter::SelfRef,
+                retarget: CopyRetargetPermission::MayChooseNewTargets,
             },
             vec![],
             ObjectId(10), // source_id = original spell
@@ -565,6 +643,7 @@ mod tests {
                 target: TargetFilter::StackAbility {
                     controller: Some(crate::types::ability::ControllerRef::You),
                 },
+                retarget: CopyRetargetPermission::KeepOriginalTargets,
             },
             vec![],
             gogo_id,
@@ -587,6 +666,7 @@ mod tests {
                 target: TargetFilter::StackAbility {
                     controller: Some(crate::types::ability::ControllerRef::You),
                 },
+                retarget: CopyRetargetPermission::KeepOriginalTargets,
             },
             vec![TargetRef::Object(ObjectId(40))],
             other_id,
@@ -707,6 +787,7 @@ mod tests {
         let mut gogo_copy = ResolvedAbility::new(
             Effect::CopySpell {
                 target: gogo_target_filter,
+                retarget: CopyRetargetPermission::KeepOriginalTargets,
             },
             vec![TargetRef::Object(hope_trigger_entry)],
             gogo_id,

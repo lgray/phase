@@ -397,7 +397,8 @@ mod auto_pass_decision_tests {
 
     use crate::game::zones::create_object;
     use crate::types::ability::{
-        AbilityDefinition, AbilityKind, Effect, QuantityExpr, ResolvedAbility, TargetFilter,
+        AbilityDefinition, AbilityKind, CopyRetargetPermission, Effect, QuantityExpr,
+        ResolvedAbility, TargetFilter,
     };
     use crate::types::actions::GameAction;
     use crate::types::card_type::CoreType;
@@ -773,6 +774,7 @@ mod auto_pass_decision_tests {
         let copy_ability = ResolvedAbility::new(
             Effect::CopySpell {
                 target: TargetFilter::Any,
+                retarget: CopyRetargetPermission::KeepOriginalTargets,
             },
             Vec::new(),
             copy_id,

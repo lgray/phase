@@ -6,12 +6,12 @@ use crate::parser::oracle::{oracle_text_allows_commander, parse_oracle_text};
 use crate::types::ability::{
     AbilityCondition, AbilityCost, AbilityDefinition, AbilityKind, AdditionalCost,
     AggregateFunction, CardPlayMode, CastVariantPaid, ChoiceType, ContinuousModification,
-    ControllerRef, CounterTriggerFilter, Duration, Effect, FilterProp, KickerVariant,
-    ManaContribution, ManaProduction, ModalSelectionCondition, ModalSelectionConstraint,
-    NinjutsuVariant, ObjectScope, PtValue, QuantityExpr, QuantityRef, ReplacementCondition,
-    ReplacementDefinition, RuntimeHandler, SearchSelectionConstraint, StaticDefinition,
-    TargetChoiceTiming, TargetFilter, TriggerCondition, TriggerDefinition, TypeFilter, TypedFilter,
-    UnlessPayModifier,
+    ControllerRef, CopyRetargetPermission, CounterTriggerFilter, Duration, Effect, FilterProp,
+    KickerVariant, ManaContribution, ManaProduction, ModalSelectionCondition,
+    ModalSelectionConstraint, NinjutsuVariant, ObjectScope, PtValue, QuantityExpr, QuantityRef,
+    ReplacementCondition, ReplacementDefinition, RuntimeHandler, SearchSelectionConstraint,
+    StaticDefinition, TargetChoiceTiming, TargetFilter, TriggerCondition, TriggerDefinition,
+    TypeFilter, TypedFilter, UnlessPayModifier,
 };
 use crate::types::card::{CardFace, CardLayout};
 use crate::types::card_type::{CardType, CoreType, Supertype};
@@ -1087,8 +1087,11 @@ fn typecycling_subtype_to_filter(subtype: &str) -> TargetFilter {
 pub fn casualty_copy_ability_definition() -> AbilityDefinition {
     AbilityDefinition::new(
         AbilityKind::Spell,
+        // CR 702.153a: Casualty — "If the spell has any targets, you may choose
+        // new targets for the copy."
         Effect::CopySpell {
             target: TargetFilter::SelfRef,
+            retarget: CopyRetargetPermission::MayChooseNewTargets,
         },
     )
     .condition(AbilityCondition::additional_cost_paid_any())

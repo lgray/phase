@@ -2,9 +2,9 @@ use std::collections::HashSet;
 
 use crate::types::ability::{
     AbilityCost, AbilityDefinition, AbilityKind, ChosenAttribute, ControllerRef,
-    DelayedTriggerCondition, Effect, ModalChoice, PlayerFilter, QuantityExpr, ResolvedAbility,
-    TargetFilter, TargetRef, TributeOutcome, TriggerCondition, TriggerDefinition, TypeFilter,
-    TypedFilter,
+    CopyRetargetPermission, DelayedTriggerCondition, Effect, ModalChoice, PlayerFilter,
+    QuantityExpr, ResolvedAbility, TargetFilter, TargetRef, TributeOutcome, TriggerCondition,
+    TriggerDefinition, TypeFilter, TypedFilter,
 };
 use crate::types::card_type::CoreType;
 use crate::types::events::{GameEvent, ManaTapState};
@@ -1066,8 +1066,10 @@ pub fn process_triggers(state: &mut GameState, events: &[GameEvent]) {
                 let copy_count = storm_copy_count_before_cast(state);
                 for _ in 0..storm_instances {
                     let mut storm_ability = ResolvedAbility::new(
+                        // CR 707.10c: Storm — "You may choose new targets for the copies."
                         Effect::CopySpell {
                             target: TargetFilter::SelfRef,
+                            retarget: CopyRetargetPermission::MayChooseNewTargets,
                         },
                         Vec::new(),
                         *cast_obj_id,

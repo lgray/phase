@@ -24,9 +24,9 @@
 use super::oracle::ParsedAbilities;
 use super::oracle_ir::diagnostic::{CascadeSlot, OracleDiagnostic};
 use crate::types::ability::{
-    AbilityCondition, AbilityDefinition, ContinuousModification, Effect, FilterProp,
-    ModalSelectionConstraint, OpponentMayScope, PlayerFilter, QuantityExpr, ReplacementDefinition,
-    ReplacementMode, StaticDefinition, TargetFilter, TriggerDefinition,
+    AbilityCondition, AbilityDefinition, ContinuousModification, CopyRetargetPermission, Effect,
+    FilterProp, ModalSelectionConstraint, OpponentMayScope, PlayerFilter, QuantityExpr,
+    ReplacementDefinition, ReplacementMode, StaticDefinition, TargetFilter, TriggerDefinition,
 };
 use crate::types::statics::StaticMode;
 use crate::types::triggers::TriggerMode;
@@ -345,6 +345,14 @@ fn effect_has_internal_optionality(effect: &Effect) -> bool {
         }
         | Effect::RevealFromHand {
             on_decline: Some(_),
+            ..
+        }
+        // CR 707.10c: CopySpell with MayChooseNewTargets encodes the "you may
+        // choose new targets for the copy" opt-in at the runtime resolution
+        // layer (WaitingFor::CopyRetarget). The def-level `optional` flag is
+        // therefore not needed — analogous to Dig { up_to: true }.
+        | Effect::CopySpell {
+            retarget: CopyRetargetPermission::MayChooseNewTargets,
             ..
         } => true,
         Effect::ChooseOneOf { branches, .. } => branches.iter().any(def_tree_has_optional),
@@ -2100,6 +2108,53 @@ mod tests {
              [+1]: Put a +1/+1 counter on up to one target creature.",
             "The Wandering Emperor",
             &["Planeswalker"],
+        );
+
+        assert!(!has_swallowed_detector(&parsed, "Optional_YouMay"));
+    }
+
+    /// CR 707.10c: Mirrorpool's "you may choose new targets for the copy" is
+    /// represented as `CopySpell { retarget: MayChooseNewTargets }`, so no
+    /// `Optional_YouMay` swallowed-clause warning is emitted.
+    #[test]
+    fn optional_you_may_accepts_copy_retarget_clause() {
+        let parsed = parse_named(
+            "{T}, Sacrifice this land: Copy target instant or sorcery spell you control. \
+             You may choose new targets for the copy.",
+            "Mirrorpool",
+            &["Land"],
+        );
+
+        assert!(!has_swallowed_detector(&parsed, "Optional_YouMay"));
+    }
+
+    /// CR 707.10c (B3): Galvanic Iteration nests its CopySpell inside a delayed
+    /// trigger; the retarget clause is absorbed onto the inner CopySpell and
+    /// `effect_has_internal_optionality` detects it via the existing
+    /// `CreateDelayedTrigger` recursion.
+    #[test]
+    fn optional_you_may_accepts_copy_retarget_clause_in_delayed_trigger() {
+        let parsed = parse_named(
+            "When you next cast an instant or sorcery spell this turn, copy that spell. \
+             You may choose new targets for the copy.",
+            "Galvanic Iteration",
+            &["Instant"],
+        );
+
+        assert!(!has_swallowed_detector(&parsed, "Optional_YouMay"));
+    }
+
+    /// CR 707.10c: Thousand-Year Storm exercises the triggered-ability context
+    /// — the plural "for the copies" clause is absorbed onto the trigger's
+    /// inner CopySpell.
+    #[test]
+    fn optional_you_may_accepts_copy_retarget_clause_in_triggered_ability() {
+        let parsed = parse_named(
+            "Whenever you cast an instant or sorcery spell, copy it for each other \
+             instant and sorcery spell you've cast this turn. \
+             You may choose new targets for the copies.",
+            "Thousand-Year Storm",
+            &["Enchantment"],
         );
 
         assert!(!has_swallowed_detector(&parsed, "Optional_YouMay"));

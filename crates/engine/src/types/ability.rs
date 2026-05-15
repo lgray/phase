@@ -4691,6 +4691,9 @@ pub enum Effect {
     CopySpell {
         #[serde(default = "default_target_filter_any")]
         target: TargetFilter,
+        /// CR 707.10c: whether the controller may choose new targets for the copy.
+        #[serde(default = "default_copy_keep_targets")]
+        retarget: CopyRetargetPermission,
     },
     /// CR 707.2 / CR 707.5: Create a token that's a copy of a permanent.
     /// Copies copiable characteristics (name, mana cost, color, types, P/T, abilities, keywords)
@@ -5781,8 +5784,27 @@ fn default_two_i32() -> i32 {
     2
 }
 
+/// CR 707.10c: Whether a copy effect grants its controller the choice to pick
+/// new targets for the copy. Only effects whose Oracle text states "you may
+/// choose new targets for the copy/copies" permit retargeting; a bare "copy"
+/// keeps the original's targets unchanged (CR 115.1).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", content = "data")]
+pub enum CopyRetargetPermission {
+    /// No "choose new targets" clause — copy inherits the original's targets.
+    KeepOriginalTargets,
+    /// Oracle text grants "you may choose new targets for the copy."
+    MayChooseNewTargets,
+}
+
 pub(crate) fn default_target_filter_any() -> TargetFilter {
     TargetFilter::Any
+}
+
+/// CR 115.1: a copy keeps the original spell's declared targets unless an
+/// effect explicitly grants new-target choice (CR 707.10c).
+fn default_copy_keep_targets() -> CopyRetargetPermission {
+    CopyRetargetPermission::KeepOriginalTargets
 }
 
 fn default_target_filter_none() -> TargetFilter {

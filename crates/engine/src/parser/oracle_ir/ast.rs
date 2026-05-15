@@ -204,6 +204,10 @@ pub(crate) enum ContinuationAst {
     CounterSourceStatic {
         source_static: Box<StaticDefinition>,
     },
+    /// CR 707.10c: "You may choose new targets for the copy/copies." after a
+    /// CopySpell (possibly wrapped in a CreateDelayedTrigger) — patches
+    /// `retarget = MayChooseNewTargets` on the inner Effect::CopySpell.
+    CopyMayRetarget,
     /// "create a ... token and suspect it" → chain Suspect { target: LastCreated }
     SuspectLastCreated,
     /// "The flashback cost is equal to its mana cost." after a flashback grant.

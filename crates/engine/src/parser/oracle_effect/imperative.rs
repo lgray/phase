@@ -25,10 +25,10 @@ use crate::parser::oracle_static::{
 use crate::types::ability::TypeFilter;
 use crate::types::ability::{
     AbilityCost, AbilityDefinition, AbilityKind, CategoryChooserScope, ChoiceType, Chooser,
-    ContinuousModification, ControllerRef, Duration, Effect, FilterProp, GainLifePlayer,
-    LibraryPosition, MultiTargetSpec, PaymentCost, PlayerScope, PreventionAmount, PreventionScope,
-    PtValue, QuantityExpr, QuantityRef, SearchSelectionConstraint, StaticDefinition, TargetFilter,
-    TypedFilter,
+    ContinuousModification, ControllerRef, CopyRetargetPermission, Duration, Effect, FilterProp,
+    GainLifePlayer, LibraryPosition, MultiTargetSpec, PaymentCost, PlayerScope, PreventionAmount,
+    PreventionScope, PtValue, QuantityExpr, QuantityRef, SearchSelectionConstraint,
+    StaticDefinition, TargetFilter, TypedFilter,
 };
 use crate::types::card_type::CoreType;
 use crate::types::phase::Phase;
@@ -2534,7 +2534,12 @@ pub(super) fn lower_utility_imperative_ast(ast: UtilityImperativeAst) -> Effect 
             let (target, _) = parse_target(rest);
             Effect::Regenerate { target }
         }
-        UtilityImperativeAst::Copy { target } => Effect::CopySpell { target },
+        UtilityImperativeAst::Copy { target } => Effect::CopySpell {
+            target,
+            // Step 4 continuation absorption upgrades this to MayChooseNewTargets
+            // when "you may choose new targets for the copy" follows (CR 707.10c).
+            retarget: CopyRetargetPermission::KeepOriginalTargets,
+        },
         UtilityImperativeAst::Transform { target } => Effect::Transform { target },
         UtilityImperativeAst::Attach { attachment, target } => {
             Effect::Attach { attachment, target }

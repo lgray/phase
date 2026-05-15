@@ -14430,10 +14430,10 @@ mod tests {
     use super::*;
     use crate::types::ability::{
         AbilityCondition, CardTypeSetSource, CastVariantPaid, ChoiceType, Comparator,
-        ContinuousModification, ControllerRef, CountScope, DoublePTMode, Duration, FilterProp,
-        GainLifePlayer, LibraryPosition, LinkedExileScope, ManaContribution, ManaProduction,
-        ObjectScope, PaymentCost, QuantityExpr, QuantityRef, SearchSelectionConstraint, TypeFilter,
-        ZoneRef,
+        ContinuousModification, ControllerRef, CopyRetargetPermission, CountScope, DoublePTMode,
+        Duration, FilterProp, GainLifePlayer, LibraryPosition, LinkedExileScope, ManaContribution,
+        ManaProduction, ObjectScope, PaymentCost, QuantityExpr, QuantityRef,
+        SearchSelectionConstraint, TypeFilter, ZoneRef,
     };
     use crate::types::card_type::{CoreType, Supertype};
     use crate::types::keywords::Keyword;
@@ -17552,6 +17552,85 @@ mod tests {
                 controller: Some(ControllerRef::You)
             }
         ));
+    }
+
+    /// CR 707.10c: "you may choose new targets for the copy" is absorbed as a
+    /// continuation that sets `retarget = MayChooseNewTargets` on the CopySpell.
+    #[test]
+    fn effect_copy_spell_with_retarget_clause_sets_may_choose_new_targets() {
+        let def = parse_effect_chain(
+            "Copy target instant or sorcery spell you control. \
+             You may choose new targets for the copy.",
+            AbilityKind::Activated,
+        );
+        assert!(
+            matches!(
+                *def.effect,
+                Effect::CopySpell {
+                    retarget: CopyRetargetPermission::MayChooseNewTargets,
+                    ..
+                }
+            ),
+            "expected MayChooseNewTargets, got {:?}",
+            def.effect
+        );
+    }
+
+    /// CR 707.10c: the plural "for the copies" form is recognized identically.
+    #[test]
+    fn effect_copy_spell_with_retarget_clause_plural_sets_may_choose_new_targets() {
+        let def = parse_effect_chain(
+            "Copy target instant or sorcery spell. \
+             You may choose new targets for the copies.",
+            AbilityKind::Activated,
+        );
+        assert!(matches!(
+            *def.effect,
+            Effect::CopySpell {
+                retarget: CopyRetargetPermission::MayChooseNewTargets,
+                ..
+            }
+        ));
+    }
+
+    /// CR 115.1: a bare "copy" with no retarget clause keeps the original's
+    /// targets — `retarget` defaults to `KeepOriginalTargets`.
+    #[test]
+    fn effect_copy_spell_without_retarget_clause_keeps_original_targets() {
+        let def = parse_effect_chain("Copy target spell", AbilityKind::Spell);
+        assert!(matches!(
+            *def.effect,
+            Effect::CopySpell {
+                retarget: CopyRetargetPermission::KeepOriginalTargets,
+                ..
+            }
+        ));
+    }
+
+    /// CR 707.10c (B3): Galvanic Iteration — the retarget clause must be
+    /// absorbed through the `CreateDelayedTrigger` wrapper onto the inner
+    /// `CopySpell`.
+    #[test]
+    fn effect_copy_spell_retarget_descends_through_delayed_trigger() {
+        let def = parse_effect_chain(
+            "When you next cast an instant or sorcery spell this turn, \
+             copy that spell. You may choose new targets for the copy.",
+            AbilityKind::Spell,
+        );
+        let Effect::CreateDelayedTrigger { effect: inner, .. } = &*def.effect else {
+            panic!("expected CreateDelayedTrigger, got {:?}", def.effect);
+        };
+        assert!(
+            matches!(
+                *inner.effect,
+                Effect::CopySpell {
+                    retarget: CopyRetargetPermission::MayChooseNewTargets,
+                    ..
+                }
+            ),
+            "expected inner CopySpell with MayChooseNewTargets, got {:?}",
+            inner.effect
+        );
     }
 
     #[test]

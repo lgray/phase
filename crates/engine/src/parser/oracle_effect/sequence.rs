@@ -12,8 +12,8 @@ use crate::parser::oracle_ir::ast::*;
 use crate::parser::oracle_ir::context::ParseContext;
 use crate::parser::oracle_quantity::{parse_cda_quantity, parse_quantity_ref};
 use crate::types::ability::{
-    AbilityDefinition, AbilityKind, Chooser, Effect, QuantityExpr, QuantityRef, StaticDefinition,
-    TargetFilter,
+    AbilityDefinition, AbilityKind, Chooser, CopyRetargetPermission, Effect, QuantityExpr,
+    QuantityRef, StaticDefinition, TargetFilter,
 };
 use crate::types::counter::CounterType;
 use crate::types::zones::Zone;
@@ -999,6 +999,52 @@ pub(super) fn push_clause_chunk(
     });
 }
 
+/// CR 707.10c: A `CopySpell` may be the chain's effect directly (activated /
+/// spell / triggered contexts) or nested inside a `CreateDelayedTrigger`
+/// wrapper ("When you next cast ..., copy that spell"). Mirrors
+/// `def_tree_has_optional`'s descent through `CreateDelayedTrigger`.
+fn effect_wraps_copy_spell(effect: &Effect) -> bool {
+    match effect {
+        Effect::CopySpell { .. } => true,
+        Effect::CreateDelayedTrigger { effect: inner, .. } => {
+            effect_wraps_copy_spell(&inner.effect)
+        }
+        _ => false,
+    }
+}
+
+/// CR 707.10c: nom recognizer for the "you may choose new targets for the
+/// copy/copies" continuation clause that grants copy retargeting. Operates on
+/// lowercased text; tolerates a trailing period/whitespace.
+fn recognize_copy_retarget_clause(lower: &str) -> bool {
+    let clause = lower.trim().trim_end_matches('.').trim_end();
+    value(
+        (),
+        (
+            tag::<_, _, OracleError<'_>>("you may choose new targets for "),
+            alt((tag("the copies"), tag("the copy"))),
+            eof,
+        ),
+    )
+    .parse(clause)
+    .is_ok()
+}
+
+/// CR 707.10c: Set `retarget` on the (possibly delayed-trigger-wrapped)
+/// `CopySpell`. Returns true if a `CopySpell` was found and patched.
+fn set_copy_retarget(effect: &mut Effect, perm: CopyRetargetPermission) -> bool {
+    match effect {
+        Effect::CopySpell { retarget, .. } => {
+            *retarget = perm;
+            true
+        }
+        Effect::CreateDelayedTrigger { effect: inner, .. } => {
+            set_copy_retarget(&mut inner.effect, perm)
+        }
+        _ => false,
+    }
+}
+
 pub(super) fn apply_clause_continuation(
     defs: &mut Vec<AbilityDefinition>,
     continuation: ContinuationAst,
@@ -1107,6 +1153,17 @@ pub(super) fn apply_clause_continuation(
             } = &mut *previous.effect
             {
                 *existing = Some(*source_static);
+            }
+        }
+        ContinuationAst::CopyMayRetarget => {
+            // CR 707.10c: patch the preceding CopySpell (descending through a
+            // CreateDelayedTrigger wrapper for "When you next cast ..., copy
+            // that spell" — Galvanic Iteration).
+            if let Some(previous) = defs.last_mut() {
+                set_copy_retarget(
+                    &mut previous.effect,
+                    CopyRetargetPermission::MayChooseNewTargets,
+                );
             }
         }
         ContinuationAst::SuspectLastCreated => {
@@ -1487,6 +1544,10 @@ pub(super) fn continuation_absorbs_current(
         ContinuationAst::ManaRestriction { .. }
         | ContinuationAst::ManaGrant { .. }
         | ContinuationAst::CounterSourceStatic { .. } => true,
+        // CR 707.10c: recognition was already gated on a preceding CopySpell in
+        // parse_followup_continuation_ast, so absorption is unconditional —
+        // identical to the CounterSourceStatic precedent.
+        ContinuationAst::CopyMayRetarget => true,
         ContinuationAst::FlashbackCostEqualsManaCost => true,
         ContinuationAst::SearchDestination { .. } => false,
         ContinuationAst::SuspectLastCreated => matches!(current_effect, Effect::Suspect { .. }),
@@ -1812,6 +1873,16 @@ pub(super) fn parse_followup_continuation_ast(
                     crate::types::ability::ContinuousModification::RemoveAllAbilities,
                 ])),
             })
+        }
+        // CR 707.10c: "You may choose new targets for the copy/copies." after a
+        // CopySpell — directly, or wrapped in a CreateDelayedTrigger ("When you
+        // next cast ..., copy that spell"). The guard re-confirms the wrapper
+        // actually contains a CopySpell.
+        Effect::CopySpell { .. } | Effect::CreateDelayedTrigger { .. }
+            if effect_wraps_copy_spell(previous_effect)
+                && recognize_copy_retarget_clause(&lower) =>
+        {
+            Some(ContinuationAst::CopyMayRetarget)
         }
         // CR 201.2 + CR 608.2c: "[You may] put one of those cards onto the
         // battlefield if it has the same name as a permanent" after Dig —

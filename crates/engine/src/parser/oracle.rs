@@ -1383,7 +1383,6 @@ pub(crate) fn parse_oracle_ir(
         let min_x_value = x_annotation_min_value(&line);
         // Strip "X can't be 0." casting constraint suffix — annotation only, not an ability.
         let line = strip_x_cant_be_zero_suffix(&line);
-        let line = strip_copy_retarget_suffix(&line);
         if line.is_empty() {
             if min_x_value > 0 {
                 if let Some(previous) = result.abilities.last_mut() {
@@ -3592,25 +3591,6 @@ fn x_annotation_min_value(line: &str) -> u32 {
     } else {
         0
     }
-}
-
-/// Strip the reminder-like retarget sentence from copy effects. The runtime
-/// copy resolver implements CR 707.10c via `WaitingFor::CopyRetarget`; keeping
-/// this sentence as a separate effect would duplicate that behavior.
-fn strip_copy_retarget_suffix(line: &str) -> String {
-    let lower = line.to_lowercase();
-    let trimmed = lower.trim_end_matches('.');
-    for suffix in [
-        ". you may choose new targets for the copies",
-        ". you may choose new targets for the copy",
-    ] {
-        if let Some(pos) = trimmed.rfind(suffix) {
-            let mut result = line[..pos].to_string();
-            result.push('.');
-            return result.trim_end().to_string();
-        }
-    }
-    line.to_string()
 }
 
 /// Primary nom-based dispatcher for Oracle text lines.
