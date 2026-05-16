@@ -37,56 +37,16 @@ fn tracked_set_member_zone(state: &GameState, filter: &TargetFilter) -> Option<Z
         TargetFilter::TrackedSet { id } | TargetFilter::TrackedSetFiltered { id, .. } => *id,
         _ => return None,
     };
-    let members = if id == TrackedSetId(0) {
-        state
-            .tracked_object_sets
-            .iter()
-            .filter(|(_, objects)| !objects.is_empty())
-            .max_by_key(|(set_id, _)| set_id.0)
-            .map(|(_, objects)| objects)?
+    let id = if id == TrackedSetId(0) {
+        crate::game::targeting::latest_tracked_set_id(state)?
     } else {
-        state.tracked_object_sets.get(&id)?
+        id
     };
-    members
+    state
+        .tracked_object_sets
+        .get(&id)?
         .iter()
         .find_map(|obj_id| state.objects.get(obj_id).map(|obj| obj.zone))
-}
-
-/// CR 603.7: Bind the `TrackedSetId(0)` sentinel to the most recent non-empty
-/// tracked set. The parser emits `TrackedSet`/`TrackedSetFiltered` with id `0`
-/// for inline "the milled/revealed/exiled cards" continuations; the concrete
-/// set id is only known at resolution time. Leaves non-sentinel filters and
-/// non-tracked-set filters untouched.
-fn resolve_tracked_set_sentinel(state: &GameState, filter: TargetFilter) -> TargetFilter {
-    let latest = || {
-        state
-            .tracked_object_sets
-            .iter()
-            .filter(|(_, objects)| !objects.is_empty())
-            .max_by_key(|(id, _)| id.0)
-            .map(|(&id, _)| id)
-    };
-    match filter {
-        TargetFilter::TrackedSet {
-            id: TrackedSetId(0),
-        } => latest().map_or(
-            TargetFilter::TrackedSet {
-                id: TrackedSetId(0),
-            },
-            |id| TargetFilter::TrackedSet { id },
-        ),
-        TargetFilter::TrackedSetFiltered {
-            id: TrackedSetId(0),
-            filter,
-        } => latest().map_or(
-            TargetFilter::TrackedSetFiltered {
-                id: TrackedSetId(0),
-                filter: filter.clone(),
-            },
-            |id| TargetFilter::TrackedSetFiltered { id, filter },
-        ),
-        other => other,
-    }
 }
 
 /// Result of a single zone-move attempt through the replacement pipeline.
@@ -394,7 +354,9 @@ pub fn resolve(
     // `tracked_set_member_zone`) sees the bound id — `matches_target_filter`
     // looks the set up by exact id and would otherwise miss the sentinel.
     let target_filter: TargetFilter = match &ability.effect {
-        Effect::ChangeZone { target, .. } => resolve_tracked_set_sentinel(state, target.clone()),
+        Effect::ChangeZone { target, .. } => {
+            crate::game::targeting::resolve_tracked_set_sentinel(state, target.clone())
+        }
         _ => TargetFilter::Any,
     };
     let target_filter = &target_filter;
@@ -763,19 +725,9 @@ pub fn resolve_all(
     // chain: exile creature → search land → return the exiled card). The
     // delayed-trigger resolver performs the same binding at delayed-trigger
     // creation time; inline chains must bind here so `ChangeZoneAll` scans the
-    // correct set. Mirrors the sentinel handling in `grant_permission.rs`.
-    let effective_filter = match effective_filter {
-        TargetFilter::TrackedSet {
-            id: TrackedSetId(0),
-        } => state
-            .tracked_object_sets
-            .iter()
-            .filter(|(_, objects)| !objects.is_empty())
-            .max_by_key(|(id, _)| id.0)
-            .map(|(&real_id, _)| TargetFilter::TrackedSet { id: real_id })
-            .unwrap_or(effective_filter),
-        other => other,
-    };
+    // correct set.
+    let effective_filter =
+        crate::game::targeting::resolve_tracked_set_sentinel(state, effective_filter);
 
     let filter_controller =
         crate::game::effects::controller_for_relative_filter(ability, &effective_filter);

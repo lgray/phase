@@ -339,6 +339,12 @@ pub fn resolve_add_all(
         }
         _ => return Ok(()),
     };
+    // CR 608.2c: Bind the `TrackedSetId(0)` sentinel emitted by the parser for
+    // "put a counter on each [card] this way" continuations to the highest
+    // tracked set id — the set the immediately preceding effect in this chain
+    // published. Empty sets are *not* skipped here (unlike
+    // `targeting::resolve_tracked_set_sentinel`): a chained counter effect
+    // refers to the preceding effect's set even when it ended up empty.
     let target_filter = match crate::game::effects::resolved_object_filter(ability, &target_filter)
     {
         TargetFilter::TrackedSet {

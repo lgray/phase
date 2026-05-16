@@ -34,6 +34,14 @@ pub fn resolve(
     // `effects::mod.rs::resolve_ability_chain`.
     let target_ids: Vec<_> = match target_filter {
         TargetFilter::SelfRef => vec![ability.source_id],
+        // CR 608.2c: The `TrackedSetId(0)` sentinel binds to the highest tracked
+        // set id — the set the immediately preceding effect in this chain
+        // published. Empty sets are *not* skipped: an empty current set means
+        // the preceding effect affected nothing, not "fall back to a stale
+        // set." This deliberately differs from `targeting::latest_tracked_set_id`
+        // (which skips empties for inline "from among the milled cards"
+        // continuations) — see the regression test
+        // `tracked_set_sentinel_does_not_reuse_prior_non_empty_set_when_current_move_is_empty`.
         TargetFilter::TrackedSet {
             id: TrackedSetId(0),
         } => state

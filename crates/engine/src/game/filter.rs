@@ -621,10 +621,12 @@ fn filter_inner_for_object(
         // type filter. Used by Zimone's Experiment to route "X cards revealed
         // this way" — the Dig resolver populates a tracked set with the kept
         // (revealed) cards; this filter restricts the target space to the
-        // subset matching the inner type. `TrackedSetId(0)` is a sentinel
-        // resolved to the most recent tracked set by the same binding pass
-        // that handles plain `TrackedSet` continuations (see
-        // `effects::delayed_trigger::bind_tracked_set_to_effect`).
+        // subset matching the inner type. The `id` here is already concrete:
+        // the parser emits `TrackedSetId(0)` as a sentinel, but every resolver
+        // path binds it to a real set before this match is reached via
+        // `targeting::resolve_tracked_set_sentinel`. A still-sentinel `0`
+        // therefore matches no objects, which is the correct fallback when no
+        // tracked set is available.
         TargetFilter::TrackedSetFiltered { id, filter } => {
             let in_set = state
                 .tracked_object_sets

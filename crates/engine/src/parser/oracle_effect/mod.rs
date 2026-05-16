@@ -13884,6 +13884,50 @@ fn apply_where_x_effect_expression(effect: &mut Effect, where_x_expression: Opti
     }
 }
 
+/// CR 202.3 + CR 107.3i: Substitute the literal `X` inside a `TargetFilter`'s
+/// `FilterProp::Cmc` bounds with a trailing "where X is <expression>" defining
+/// clause. A `Cmc` bound parsed as `QuantityRef::Variable("X")` carries no
+/// defining expression until the where-clause is applied here — without this,
+/// the mana-value bound is effectively unbounded (Birthing Ritual: "creature
+/// card with mana value X or less ..., where X is 1 plus the sacrificed
+/// creature's mana value").
+///
+/// Walks the typed-filter property list, recursing through `AnyOf` nesting so
+/// composite "mana value N or M" bounds are covered. Non-`Cmc` props and
+/// non-typed filters pass through unchanged.
+fn apply_where_x_to_filter(filter: TargetFilter, where_x_expression: Option<&str>) -> TargetFilter {
+    if where_x_expression.is_none() {
+        return filter;
+    }
+    match filter {
+        TargetFilter::Typed(mut typed) => {
+            typed.properties = typed
+                .properties
+                .into_iter()
+                .map(|prop| apply_where_x_to_filter_prop(prop, where_x_expression))
+                .collect();
+            TargetFilter::Typed(typed)
+        }
+        other => other,
+    }
+}
+
+fn apply_where_x_to_filter_prop(prop: FilterProp, where_x_expression: Option<&str>) -> FilterProp {
+    match prop {
+        FilterProp::Cmc { comparator, value } => FilterProp::Cmc {
+            comparator,
+            value: apply_where_x_quantity_expression(value, where_x_expression),
+        },
+        FilterProp::AnyOf { props } => FilterProp::AnyOf {
+            props: props
+                .into_iter()
+                .map(|p| apply_where_x_to_filter_prop(p, where_x_expression))
+                .collect(),
+        },
+        other => other,
+    }
+}
+
 fn apply_where_x_ability_expression(def: &mut AbilityDefinition, where_x_expression: Option<&str>) {
     if let Some(repeat_for) = def.repeat_for.take() {
         def.repeat_for = Some(apply_where_x_quantity_expression(
@@ -14033,7 +14077,39 @@ fn try_parse_put_zone_change(lower: &str, text: &str) -> Option<Effect> {
             if target_text.is_empty() {
                 return None;
             }
+            // CR 701.20e + CR 608.2c: "from among those cards" / "from among
+            // them" / "from among the milled cards" is a prior-selection
+            // anaphor — the card is chosen from the set produced by an earlier
+            // Dig/Mill/Reveal in the same instruction, not from any zone. When
+            // it appears, the type filter is everything BEFORE the anaphor
+            // ("a creature card with mana value X or less"); the anaphor and
+            // the milled/those-cards noun must NOT be fed to `parse_target`.
+            // The selection set is bound at resolution via the sentinel
+            // `TrackedSetId(0)`.
+            let from_among_anaphor = ["from among those cards", "from among them"]
+                .iter()
+                .chain(["from among the milled cards"].iter())
+                .find_map(|phrase| {
+                    take_until::<_, _, OracleError<'_>>(*phrase)
+                        .parse(before.lower)
+                        .ok()
+                        .map(|(_, prefix): (&str, &str)| prefix.len())
+                });
+            let target_text = match from_among_anaphor {
+                Some(prefix_len) => before.original[..prefix_len].trim(),
+                None => target_text,
+            };
             let (target, _) = parse_target(target_text);
+            // CR 202.3 + CR 107.3i: A trailing "where X is <expression>"
+            // defining clause (Birthing Ritual: "...with mana value X or less
+            // ..., where X is 1 plus the sacrificed creature's mana value")
+            // binds the literal X in the type filter's `Cmc` bound. Without
+            // this substitution the bound stays `QuantityRef::Variable("X")`
+            // with no defining expression and the filter is effectively
+            // unbounded. The expression is parsed by the shared
+            // `parse_where_x_quantity_expression` building block.
+            let where_x_expression = strip_trailing_where_x(after_put_tp).1;
+            let target = apply_where_x_to_filter(target, where_x_expression.as_deref());
             // CR 701.33: Restrict the target to cards revealed by the preceding
             // Dig effect when the phrase "revealed this way" appears in the
             // target text. The Dig resolver populates `state.tracked_object_sets`
@@ -14046,7 +14122,9 @@ fn try_parse_put_zone_change(lower: &str, text: &str) -> Option<Effect> {
             // "Put all land cards revealed this way onto the battlefield
             // tapped and put all creature cards revealed this way into your
             // hand."
-            let target = if scan_contains_phrase(before.lower, "revealed this way") {
+            let target = if from_among_anaphor.is_some()
+                || scan_contains_phrase(before.lower, "revealed this way")
+            {
                 TargetFilter::TrackedSetFiltered {
                     id: crate::types::identifiers::TrackedSetId(0),
                     filter: Box::new(target),
@@ -29808,6 +29886,66 @@ mod tests {
             }
             other => panic!("expected ChangeZone, got {other:?}"),
         }
+    }
+
+    /// CR 701.20e + CR 202.3 — Birthing Ritual: "put a creature card with mana
+    /// value X or less from among those cards onto the battlefield, where X is
+    /// 1 plus the sacrificed creature's mana value."
+    ///
+    /// Asserts both halves of issue #420 are fixed:
+    /// - 420a: the target is `TrackedSetFiltered` (the looked-at cards), NOT
+    ///   `ParentTarget` (which would resolve to the sacrificed creature).
+    /// - 420b: the inner type filter carries a `Cmc` bound whose value is a
+    ///   dynamic `QuantityExpr` referencing the cost-paid (sacrificed) object's
+    ///   mana value plus 1 — not a dropped/unbounded filter.
+    #[test]
+    fn put_zone_change_birthing_ritual_from_among_with_dynamic_cmc_bound() {
+        let text = "put a creature card with mana value x or less from among those cards onto the battlefield, where x is 1 plus the sacrificed creature's mana value";
+        let lower = text.to_lowercase();
+        let effect = try_parse_put_zone_change(&lower, text)
+            .expect("expected ChangeZone for Birthing Ritual from-among clause");
+        let Effect::ChangeZone {
+            destination,
+            target,
+            ..
+        } = effect
+        else {
+            panic!("expected ChangeZone, got {effect:?}");
+        };
+        assert_eq!(destination, Zone::Battlefield);
+        let TargetFilter::TrackedSetFiltered { id, filter } = target else {
+            panic!("expected TrackedSetFiltered target, got {target:?}");
+        };
+        assert_eq!(id, crate::types::identifiers::TrackedSetId(0));
+        let TargetFilter::Typed(typed) = *filter else {
+            panic!("expected a typed inner filter, got {filter:?}");
+        };
+        assert!(
+            typed.type_filters.contains(&TypeFilter::Creature),
+            "inner filter must restrict to creature cards, got {:?}",
+            typed.type_filters
+        );
+        let cmc = typed
+            .properties
+            .iter()
+            .find_map(|p| match p {
+                FilterProp::Cmc { comparator, value } => Some((comparator, value)),
+                _ => None,
+            })
+            .expect("inner filter must carry a Cmc mana-value bound");
+        assert_eq!(*cmc.0, Comparator::LE);
+        assert_eq!(
+            *cmc.1,
+            QuantityExpr::Offset {
+                inner: Box::new(QuantityExpr::Ref {
+                    qty: QuantityRef::ObjectManaValue {
+                        scope: ObjectScope::CostPaidObject,
+                    },
+                }),
+                offset: 1,
+            },
+            "Cmc bound must be the sacrificed creature's mana value + 1"
+        );
     }
 
     /// CR 614.1 — Bare "tapped" without the "and attacking" continuation.

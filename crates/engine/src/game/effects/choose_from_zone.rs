@@ -30,12 +30,8 @@ pub fn resolve(
 
     // Read available cards from the most recent tracked set (same pattern as delayed_trigger.rs).
     // The tracked set was recorded by the preceding ChangeZone effect via next_sub_needs_tracked_set.
-    let cards: Vec<ObjectId> = state
-        .tracked_object_sets
-        .iter()
-        .filter(|(_, objects)| !objects.is_empty())
-        .max_by_key(|(id, _)| id.0)
-        .map(|(_, objects)| objects.clone())
+    let cards: Vec<ObjectId> = crate::game::targeting::latest_tracked_set_id(state)
+        .and_then(|id| state.tracked_object_sets.get(&id).cloned())
         .unwrap_or_default();
 
     // Fallback: if tracked set is empty, try ability targets filtered to objects.

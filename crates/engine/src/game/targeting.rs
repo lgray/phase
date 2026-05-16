@@ -3,7 +3,7 @@ use crate::types::ability::{
 };
 use crate::types::events::GameEvent;
 use crate::types::game_state::{GameState, StackEntry, StackEntryKind};
-use crate::types::identifiers::ObjectId;
+use crate::types::identifiers::{ObjectId, TrackedSetId};
 use crate::types::keywords::{HexproofFilter, Keyword};
 use crate::types::player::PlayerId;
 use crate::types::zones::Zone;
@@ -1124,6 +1124,69 @@ fn extract_explicit_zones(filter: &TargetFilter) -> Vec<Zone> {
         }
         TargetFilter::Not { filter } => extract_explicit_zones(filter),
         _ => vec![],
+    }
+}
+
+/// CR 608.2c: Find the id of the most recently published non-empty tracked
+/// object set.
+///
+/// The parser emits `TargetFilter::TrackedSet`/`TrackedSetFiltered` with the
+/// sentinel id `TrackedSetId(0)` for inline "the milled/revealed/exiled cards"
+/// continuations; the concrete set id is only known at resolution time. An
+/// effect that publishes its affected objects records them under a fresh,
+/// monotonically increasing `TrackedSetId`, so the highest non-empty id is the
+/// set the immediately following continuation refers to.
+///
+/// Empty sets are skipped because a continuation can only meaningfully refer to
+/// a set that still has members. Returns `None` when no non-empty set exists.
+pub(crate) fn latest_tracked_set_id(state: &GameState) -> Option<TrackedSetId> {
+    state
+        .tracked_object_sets
+        .iter()
+        .filter(|(_, objects)| !objects.is_empty())
+        .max_by_key(|(id, _)| id.0)
+        .map(|(&id, _)| id)
+}
+
+/// CR 608.2c: Bind the `TrackedSetId(0)` sentinel in a `TargetFilter` to the
+/// most recent non-empty tracked set.
+///
+/// Handles both the bare `TrackedSet` continuation ("the milled cards", "the
+/// exiled card") and its type-filtered intersection `TrackedSetFiltered` ("X
+/// cards revealed this way"). Filters that are not sentinel-backed — already
+/// bound tracked-set filters and every non-tracked-set filter — are returned
+/// unchanged. When no tracked set is available the sentinel is left in place so
+/// downstream resolution still sees a (vacuously matching nothing) filter
+/// rather than a silently mismatched concrete id.
+///
+/// This is the single authority for sentinel binding: `ChangeZone` resolution,
+/// chained-ability resolution, and the delayed-trigger / counter / permission
+/// resolvers all route through it so every path resolves the sentinel
+/// identically.
+pub(crate) fn resolve_tracked_set_sentinel(
+    state: &GameState,
+    filter: TargetFilter,
+) -> TargetFilter {
+    match filter {
+        TargetFilter::TrackedSet {
+            id: TrackedSetId(0),
+        } => match latest_tracked_set_id(state) {
+            Some(id) => TargetFilter::TrackedSet { id },
+            None => TargetFilter::TrackedSet {
+                id: TrackedSetId(0),
+            },
+        },
+        TargetFilter::TrackedSetFiltered {
+            id: TrackedSetId(0),
+            filter,
+        } => match latest_tracked_set_id(state) {
+            Some(id) => TargetFilter::TrackedSetFiltered { id, filter },
+            None => TargetFilter::TrackedSetFiltered {
+                id: TrackedSetId(0),
+                filter,
+            },
+        },
+        other => other,
     }
 }
 
