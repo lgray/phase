@@ -10189,6 +10189,19 @@ pub(crate) fn parse_effect_chain_ir(
             (None, text)
         };
         let condition = condition.or(leading_cond);
+        // CR 609.3: "[effect] a number of times equal to the difference" — when
+        // a leading comparison condition was just stripped, a trailing
+        // difference-repeat suffix repeats the effect by the unsigned magnitude
+        // gap between the condition's operands (Expand the Sphere's "If you put
+        // fewer than two lands onto the battlefield this way, proliferate a
+        // number of times equal to the difference"). Detected here, where both
+        // the parsed condition and the residual effect text are in scope; the
+        // resulting count merges into `repeat_for` below.
+        let (difference_repeat, text) =
+            match (condition.as_ref(), split_difference_repeat_suffix(&text)) {
+                (Some(cond), Some(head)) => (difference_expr(cond), head.to_string()),
+                _ => (None, text),
+            };
         let (if_you_do, text) = if condition.is_none() {
             strip_if_you_do_conditional(&text)
         } else {
@@ -10399,6 +10412,9 @@ pub(crate) fn parse_effect_chain_ir(
         };
         let repeat_for = repeat_for
             .or(repeat_count)
+            // CR 609.3: difference-repeat count detected after the leading
+            // conditional strip ("a number of times equal to the difference").
+            .or(difference_repeat)
             .or_else(|| pending_repeat_for.take());
         let (player_scope, text) = strip_player_scope_subject(&text);
         let carried_player_scope = if player_scope.is_none()
@@ -12227,6 +12243,22 @@ fn strip_optional_effect_prefix(
     } else {
         (false, None, None, text.to_string())
     }
+}
+
+/// CR 609.3: Detect and strip a trailing "a number of times equal to the
+/// difference" repeat suffix. On success returns the suffix-free head; the
+/// match itself confirms the difference-repeat pattern.
+///
+/// `strip_repeat_count_suffix` only recognizes numeric / `twice` / `three
+/// times` repeats via `parse_count_expr`, so this dedicated combinator owns
+/// the difference variant — it both detects and consumes the full suffix in
+/// one `terminated(take_until(..), tag(..))` operation.
+fn split_difference_repeat_suffix(text: &str) -> Option<&str> {
+    const SUFFIX: &str = " a number of times equal to the difference";
+    nom::sequence::terminated(take_until::<_, _, OracleError<'_>>(SUFFIX), tag(SUFFIX))
+        .parse(text)
+        .ok()
+        .map(|(_, head)| head)
 }
 
 /// CR 609.3: Strip "for each [X], " prefix from effect text.
@@ -18529,6 +18561,43 @@ mod tests {
                 qty: QuantityRef::EnteredThisTurn { .. },
             })
         ));
+    }
+
+    #[test]
+    fn expand_the_sphere_difference_repeat_threads_onto_proliferate_sub() {
+        // CR 609.3: "If you put fewer than two lands onto the battlefield this
+        // way, proliferate a number of times equal to the difference." — the
+        // leading comparison condition AND the difference-repeat count must
+        // both thread onto the Proliferate sub-ability.
+        let def = parse_effect_chain(
+            "Look at the top six cards of your library. Put up to two land cards from among \
+             them onto the battlefield tapped and the rest on the bottom of your library in a \
+             random order. If you put fewer than two lands onto the battlefield this way, \
+             proliferate a number of times equal to the difference.",
+            AbilityKind::Spell,
+        );
+        assert!(matches!(*def.effect, Effect::Dig { .. }));
+        let sub = def.sub_ability.expect("proliferate sub-ability");
+        assert!(matches!(*sub.effect, Effect::Proliferate));
+        assert_eq!(
+            sub.condition,
+            Some(AbilityCondition::QuantityCheck {
+                lhs: QuantityExpr::Ref {
+                    qty: QuantityRef::TrackedSetSize,
+                },
+                comparator: Comparator::LT,
+                rhs: QuantityExpr::Fixed { value: 2 },
+            }),
+        );
+        assert_eq!(
+            sub.repeat_for,
+            Some(QuantityExpr::Difference {
+                left: Box::new(QuantityExpr::Ref {
+                    qty: QuantityRef::TrackedSetSize,
+                }),
+                right: Box::new(QuantityExpr::Fixed { value: 2 }),
+            }),
+        );
     }
 
     #[test]

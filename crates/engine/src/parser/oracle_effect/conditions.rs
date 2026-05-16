@@ -1722,6 +1722,25 @@ fn counter_threshold_to_condition(
     }
 }
 
+/// CR 609.3: Compose a `QuantityExpr::Difference` from a two-operand quantity
+/// comparison condition — the unsigned magnitude gap between the operands, as
+/// referenced by "a number of times equal to the difference" repeat suffixes.
+///
+/// Class-general: any `AbilityCondition::QuantityCheck` yields the difference
+/// of its operands. Both `lhs` and `rhs` are already `QuantityExpr`, so they
+/// are cloned directly — no fresh `Ref`/`Fixed` reconstruction. `Difference`
+/// resolves via `.abs()` (`fold_compose`), so operand order and comparator
+/// direction are irrelevant. Returns `None` for non-comparison conditions.
+pub(super) fn difference_expr(cond: &AbilityCondition) -> Option<QuantityExpr> {
+    match cond {
+        AbilityCondition::QuantityCheck { lhs, rhs, .. } => Some(QuantityExpr::Difference {
+            left: Box::new(lhs.clone()),
+            right: Box::new(rhs.clone()),
+        }),
+        _ => None,
+    }
+}
+
 pub(crate) fn static_condition_to_ability_condition(
     sc: &StaticCondition,
     ctx: &mut ParseContext,
@@ -2822,6 +2841,30 @@ mod tests {
     use super::*;
     use crate::parser::oracle_nom::condition::parse_inner_condition;
     use crate::types::counter::{CounterMatch, CounterType};
+
+    #[test]
+    fn difference_expr_composes_unsigned_gap_from_quantity_check() {
+        // CR 609.3: a two-operand comparison yields the difference of its
+        // operands — class-general over any QuantityCheck.
+        let cond = AbilityCondition::QuantityCheck {
+            lhs: QuantityExpr::Ref {
+                qty: QuantityRef::TrackedSetSize,
+            },
+            comparator: Comparator::LT,
+            rhs: QuantityExpr::Fixed { value: 2 },
+        };
+        assert_eq!(
+            difference_expr(&cond),
+            Some(QuantityExpr::Difference {
+                left: Box::new(QuantityExpr::Ref {
+                    qty: QuantityRef::TrackedSetSize,
+                }),
+                right: Box::new(QuantityExpr::Fixed { value: 2 }),
+            }),
+        );
+        // Non-comparison conditions yield None.
+        assert_eq!(difference_expr(&AbilityCondition::IsYourTurn), None);
+    }
 
     #[test]
     fn leading_that_enchantment_is_aura_checks_zone_change_object() {

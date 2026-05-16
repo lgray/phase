@@ -202,9 +202,43 @@ fn parse_resolution_context_conditions(input: &str) -> OracleResult<'_, StaticCo
         parse_mana_spent_vs_source_pt,
         parse_mana_spent_threshold,
         parse_combat_context_conditions,
+        parse_put_onto_battlefield_this_way,
         parse_unless_pay_condition,
     ))
     .parse(input)
+}
+
+/// CR 608.2c: "you put fewer than/more than <N> <noun> onto the battlefield
+/// this way" — a resolution-context comparison gating a follow-up effect on
+/// how many objects the immediately preceding effect placed onto the
+/// battlefield (Expand the Sphere's "If you put fewer than two lands onto the
+/// battlefield this way, …").
+///
+/// The noun is parsed only to consume text — `QuantityRef::TrackedSetSize` is
+/// a unit reference to the count of objects moved by the preceding sub_ability
+/// effect, with no per-noun filter, so the noun threads nowhere.
+fn parse_put_onto_battlefield_this_way(input: &str) -> OracleResult<'_, StaticCondition> {
+    let (rest, _) = tag("you put ").parse(input)?;
+    let (rest, comparator) = alt((
+        value(Comparator::LT, tag("fewer than ")),
+        value(Comparator::GT, tag("more than ")),
+    ))
+    .parse(rest)?;
+    let (rest, n) = parse_number(rest)?;
+    let (rest, _) = tag(" ").parse(rest)?;
+    // CR 608.2c: "this way" scopes to objects moved by this resolution.
+    let (rest, _) = take_until(" onto the battlefield this way").parse(rest)?;
+    let (rest, _) = tag(" onto the battlefield this way").parse(rest)?;
+    Ok((
+        rest,
+        StaticCondition::QuantityComparison {
+            lhs: QuantityExpr::Ref {
+                qty: QuantityRef::TrackedSetSize,
+            },
+            comparator,
+            rhs: QuantityExpr::Fixed { value: n as i32 },
+        },
+    ))
 }
 
 /// CR 603.4: Parse "you control a/an [type] and a/an [type]" as a compound
@@ -4272,6 +4306,27 @@ mod tests {
         let (rest, c) = parse_condition("if it's your turn, do").unwrap();
         assert_eq!(rest, ", do");
         assert_eq!(c, StaticCondition::DuringYourTurn);
+    }
+
+    #[test]
+    fn parse_inner_condition_put_fewer_than_n_onto_battlefield_this_way() {
+        // CR 608.2c: Expand the Sphere's resolution-context comparison — gates
+        // a follow-up effect on how many objects the preceding effect placed
+        // onto the battlefield this resolution.
+        let (rest, c) =
+            parse_inner_condition("you put fewer than two lands onto the battlefield this way")
+                .unwrap();
+        assert_eq!(rest, "");
+        assert_eq!(
+            c,
+            StaticCondition::QuantityComparison {
+                lhs: QuantityExpr::Ref {
+                    qty: QuantityRef::TrackedSetSize,
+                },
+                comparator: Comparator::LT,
+                rhs: QuantityExpr::Fixed { value: 2 },
+            },
+        );
     }
 
     #[test]

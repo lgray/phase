@@ -5708,6 +5708,102 @@ mod tests {
         );
     }
 
+    /// CR 609.3 + CR 701.34a: Engine e2e for Expand the Sphere's swallowed
+    /// proliferate sub-ability (swallowed-clause plan unit 7e).
+    ///
+    /// The parser threads `repeat_for: Difference { Ref(TrackedSetSize),
+    /// Fixed(2) }` onto the Proliferate sub-ability — proven separately by the
+    /// `oracle_effect` parser test
+    /// `expand_the_sphere_difference_repeat_threads_onto_proliferate_sub`.
+    /// This helper proves the RUNTIME half: `fold_compose` resolves that
+    /// `Difference` against the Dig-published tracked set and the proliferate
+    /// loop honors the resulting count. Returns the +1/+1 counter total on the
+    /// sole proliferate-eligible creature after resolution.
+    fn run_expand_the_sphere_proliferate(lands_put: usize) -> u32 {
+        use crate::game::engine::apply;
+        use crate::types::actions::GameAction;
+
+        let mut state = GameState::new_two_player(42);
+
+        // One creature with a single +1/+1 counter — the only
+        // proliferate-eligible permanent, so each iteration is observable as
+        // exactly one added counter.
+        let creature = create_object(
+            &mut state,
+            CardId(1),
+            PlayerId(0),
+            "Counter Bearer".to_string(),
+            Zone::Battlefield,
+        );
+        state
+            .objects
+            .get_mut(&creature)
+            .unwrap()
+            .counters
+            .insert(CounterType::Plus1Plus1, 1);
+
+        // Simulate Expand the Sphere's Dig parent having published
+        // `lands_put` land objects as the chain tracked set (STEP 0 baseline:
+        // a choice-Dig publishes its kept cards). `QuantityRef::TrackedSetSize`
+        // reads this set's length.
+        let set_id = TrackedSetId(state.next_tracked_set_id);
+        state.next_tracked_set_id += 1;
+        let tracked: Vec<ObjectId> = (0..lands_put).map(|i| ObjectId(2000 + i as u64)).collect();
+        state.tracked_object_sets.insert(set_id, tracked);
+        state.chain_tracked_set_id = Some(set_id);
+
+        // The Proliferate sub-ability exactly as plan unit 7e's parser emits
+        // it: `repeat_for = Difference { Ref(TrackedSetSize), Fixed(2) }`.
+        let mut ability =
+            ResolvedAbility::new(Effect::Proliferate, vec![], ObjectId(100), PlayerId(0));
+        ability.repeat_for = Some(QuantityExpr::Difference {
+            left: Box::new(QuantityExpr::Ref {
+                qty: QuantityRef::TrackedSetSize,
+            }),
+            right: Box::new(QuantityExpr::Fixed { value: 2 }),
+        });
+
+        let mut events = Vec::new();
+        // Depth 1: the proliferate sub-ability runs inside Expand the Sphere's
+        // outer chain (the Dig parent publishes the tracked set first).
+        resolve_ability_chain(&mut state, &ability, &mut events, 1).unwrap();
+
+        // CR 701.34a: drive each iteration's ProliferateChoice by selecting the
+        // counter-bearing creature; the repeat loop resumes via drain.
+        let mut guard = 0;
+        while let WaitingFor::ProliferateChoice { player, .. } = state.waiting_for.clone() {
+            apply(
+                &mut state,
+                player,
+                GameAction::SelectTargets {
+                    targets: vec![TargetRef::Object(creature)],
+                },
+            )
+            .unwrap();
+            guard += 1;
+            assert!(guard < 10, "proliferate loop failed to terminate");
+        }
+
+        *state.objects[&creature]
+            .counters
+            .get(&CounterType::Plus1Plus1)
+            .unwrap_or(&0)
+    }
+
+    #[test]
+    fn expand_the_sphere_zero_lands_proliferates_twice() {
+        // 0 lands put this way → difference |0 - 2| = 2 → proliferate twice →
+        // the creature's +1/+1 counter total goes 1 → 2 → 3.
+        assert_eq!(run_expand_the_sphere_proliferate(0), 3);
+    }
+
+    #[test]
+    fn expand_the_sphere_two_lands_proliferates_zero_times() {
+        // CR 609.3: 2 lands put this way → difference |2 - 2| = 0 →
+        // proliferate zero times → the counter total stays at 1.
+        assert_eq!(run_expand_the_sphere_proliferate(2), 1);
+    }
+
     /// CR 603.7 + CR 109.5 + CR 701.23a: Winds of Abandon-shape — per-iteration
     /// parent-target rebinding for `repeat_for: TrackedSetSize` over a
     /// `ParentTargetController` search. Two creatures controlled by *different*
