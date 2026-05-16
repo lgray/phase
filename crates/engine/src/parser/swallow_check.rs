@@ -2192,16 +2192,21 @@ mod tests {
     }
 
     /// Regression guard #1: a "this turn" clause OUTSIDE Step 2's exemption
-    /// scope — no "activate only" line, no `Unrecognized` condition slot —
-    /// must STILL fire `Duration_ThisTurn`. Bloodcrazed Goblin's turn-history
-    /// `unless` clause is a genuine (non-duration) swallow that Step 2 must
-    /// leave untouched, proving the exemptions did not blanket-suppress.
+    /// scope — no "activate only" line, no `Unrecognized` condition slot, not a
+    /// quantity-suffix collocation — must STILL fire `Duration_ThisTurn`. A
+    /// genuine forward-looking effect-duration swallow must not be suppressed
+    /// by the exemptions, proving they do not blanket-suppress.
+    ///
+    /// (Bloodcrazed Goblin previously served as this guard's example, but Unit
+    /// 5d-D4 made its "an opponent has been dealt damage this turn" `unless`
+    /// clause parse into a typed `DamageDealtThisTurn` condition — it is no
+    /// longer a swallow, so the guard now uses a genuinely dropped duration.)
     #[test]
     fn duration_this_turn_still_fires_outside_exemption_scope() {
         let parsed = parse_named(
-            "This creature can't attack unless an opponent has been dealt damage this turn.",
-            "Bloodcrazed Goblin",
-            &["Creature"],
+            "Creatures you control can't block this turn.",
+            "Test Block Lock",
+            &["Land"],
         );
 
         assert!(has_swallowed_detector(&parsed, "Duration_ThisTurn"));

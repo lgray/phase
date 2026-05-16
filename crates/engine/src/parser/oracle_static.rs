@@ -3886,9 +3886,20 @@ fn rebind_source_object_quantity_ref_to_recipient(qty: QuantityRef) -> QuantityR
     }
 }
 
+/// Parse the trailing " unless [condition]" clause of a combat-restriction
+/// static. Delegates `Not`-wrapping (with the `UnlessPay` raw-passthrough
+/// exception) to the shared `parse_unless_condition` combinator so the static
+/// layer and the `parse_condition` "unless " dispatch share one polarity rule.
 fn parse_unless_static_condition(tp: &TextPair<'_>) -> Option<StaticCondition> {
     let (_, unless_text) = tp.split_around(" unless ")?;
-    parse_static_condition(unless_text.original)
+    let lower = unless_text
+        .original
+        .trim()
+        .trim_end_matches('.')
+        .to_lowercase();
+    nom_condition::parse_unless_condition(&lower)
+        .ok()
+        .map(|(_, c)| c)
 }
 
 /// CR 508.1 / CR 509.1c: Parse the trailing " if [condition]" clause of a
@@ -18276,6 +18287,101 @@ mod tests {
         assert!(matches!(payload.1, UnlessPayScaling::PerAffectedCreature));
         // CR 509.1c: block-side has no defender scope.
         assert_eq!(payload.2, None);
+    }
+
+    /// CR 508.1c: Bloodcrazed Goblin — "This creature can't attack unless an
+    /// opponent has been dealt damage this turn." The `unless`-form must store
+    /// `Not(condition)`: the restriction is ACTIVE while the inner condition is
+    /// FALSE. The inner condition is a `DamageDealtThisTurn` quantity comparison
+    /// targeting an opponent.
+    #[test]
+    fn cant_attack_unless_opponent_dealt_damage_stores_not() {
+        let def = parse_static_line(
+            "This creature can't attack unless an opponent has been dealt damage this turn.",
+        )
+        .expect("Bloodcrazed Goblin should parse");
+        assert_eq!(def.mode, StaticMode::CantAttack);
+
+        let Some(StaticCondition::Not { condition }) = def.condition.as_ref() else {
+            panic!("expected Not(QuantityComparison), got {:?}", def.condition);
+        };
+        let StaticCondition::QuantityComparison { lhs, .. } = condition.as_ref() else {
+            panic!("expected QuantityComparison inside Not, got {condition:?}");
+        };
+        let QuantityExpr::Ref {
+            qty: QuantityRef::DamageDealtThisTurn { target, .. },
+        } = lhs
+        else {
+            panic!("expected DamageDealtThisTurn ref, got {lhs:?}");
+        };
+        // Subject "an opponent" → opponent-controller target filter.
+        assert!(
+            matches!(
+                target.as_ref(),
+                TargetFilter::Typed(tf) if tf.controller == Some(ControllerRef::Opponent)
+            ),
+            "expected opponent-controller target, got {target:?}"
+        );
+    }
+
+    /// HAZARD regression — CR 118.12a. A self-referential pay-tax that falls
+    /// through to the generic `CantAttack` path ("~ can't attack unless their
+    /// controller pays {2}") must store `UnlessPay` RAW, NOT `Not(UnlessPay)`.
+    /// `UnlessPay` is inherently negative-polarity; wrapping it would double-
+    /// negate (the restriction would never be active).
+    #[test]
+    fn cant_attack_unless_pay_stores_raw_not_double_negated() {
+        let def = parse_static_line("This creature can't attack unless their controller pays {2}.")
+            .expect("self-referential pay-tax should parse");
+        assert_eq!(def.mode, StaticMode::CantAttack);
+        assert!(
+            matches!(def.condition, Some(StaticCondition::UnlessPay { .. })),
+            "expected raw UnlessPay (not Not-wrapped), got {:?}",
+            def.condition,
+        );
+    }
+
+    /// CR 508.1c: Regression for committed Unit-5a behavior — a `can't attack IF
+    /// X` static stores X RAW (convention: `if` => raw, `unless` => `Not`).
+    #[test]
+    fn cant_attack_if_condition_stores_raw() {
+        let def = parse_static_line(
+            "This creature can't attack if an opponent has been dealt damage this turn.",
+        )
+        .expect("can't-attack-if should parse");
+        assert_eq!(def.mode, StaticMode::CantAttack);
+        assert!(
+            matches!(
+                def.condition,
+                Some(StaticCondition::QuantityComparison { .. })
+            ),
+            "`if` condition must be raw (not Not-wrapped), got {:?}",
+            def.condition,
+        );
+    }
+
+    /// Building-block test for `parse_unless_condition`: `UnlessPay` inner →
+    /// raw passthrough; any other inner → `Not`-wrapped.
+    #[test]
+    fn parse_unless_condition_excludes_unless_pay_from_not_wrap() {
+        use crate::parser::oracle_nom::condition as nom_condition;
+
+        // UnlessPay inner → raw.
+        let (_, c) = nom_condition::parse_unless_condition("their controller pays {2}")
+            .expect("pay clause should parse");
+        assert!(
+            matches!(c, StaticCondition::UnlessPay { .. }),
+            "UnlessPay must pass through raw, got {c:?}"
+        );
+
+        // Non-UnlessPay inner → Not-wrapped.
+        let (_, c) =
+            nom_condition::parse_unless_condition("an opponent has been dealt damage this turn")
+                .expect("damage clause should parse");
+        assert!(
+            matches!(c, StaticCondition::Not { .. }),
+            "non-UnlessPay condition must be Not-wrapped, got {c:?}"
+        );
     }
 
     /// CR 113.6 + CR 113.6b: Anger (Onslaught / Incarnation cycle). The static

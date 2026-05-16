@@ -160,14 +160,30 @@ fn parse_source_dealt_damage_to_opponent_this_turn(
 }
 
 fn parse_source_was_dealt_damage_this_turn(input: &str) -> OracleResult<'_, StaticCondition> {
-    let (rest, _) = alt((tag("~"), tag("this creature"), tag("this permanent"))).parse(input)?;
-    let (rest, _) = tag(" was dealt damage this turn").parse(rest)?;
+    // Subject determines the damage target: the source itself, or an opponent.
+    let (rest, target) = alt((
+        value(
+            TargetFilter::SelfRef,
+            alt((tag("~"), tag("this creature"), tag("this permanent"))),
+        ),
+        value(
+            TargetFilter::Typed(TypedFilter::default().controller(ControllerRef::Opponent)),
+            tag("an opponent"),
+        ),
+    ))
+    .parse(input)?;
+    // Accept both passive-voice tense forms: "was dealt" and "has been dealt".
+    let (rest, _) = alt((
+        tag(" was dealt damage this turn"),
+        tag(" has been dealt damage this turn"),
+    ))
+    .parse(rest)?;
     Ok((
         rest,
         make_quantity_ge(
             QuantityRef::DamageDealtThisTurn {
                 source: Box::new(TargetFilter::Any),
-                target: Box::new(TargetFilter::SelfRef),
+                target: Box::new(target),
                 aggregate: AggregateFunction::Sum,
                 group_by: None,
             },
@@ -4083,14 +4099,28 @@ fn parse_unless_pay_condition(input: &str) -> OracleResult<'_, StaticCondition> 
 }
 
 /// Parse an "unless" condition, wrapping the inner condition in `Not`.
-fn parse_unless_condition(input: &str) -> OracleResult<'_, StaticCondition> {
+///
+/// `active_static_definitions` treats a static's `condition` as "restriction
+/// ACTIVE when TRUE", so "can't attack UNLESS X" must store `Not(X)`.
+///
+/// EXCEPTION — `StaticCondition::UnlessPay`: this condition is inherently
+/// negative-polarity (`layers::evaluate_condition` returns `false` for it — the
+/// restriction is active, the pay choice is taken at declaration). A condition
+/// parsed from text that began with "unless" into `UnlessPay` is ALREADY
+/// correctly polarized; wrapping it in `Not` would double-negate. `UnlessPay`
+/// is the only inherently-negative condition `parse_inner_condition` can emit
+/// today — if `parse_resolution_context_conditions` later gains another, this
+/// `match` is the single place that must exclude it.
+pub(crate) fn parse_unless_condition(input: &str) -> OracleResult<'_, StaticCondition> {
     let (rest, inner) = parse_inner_condition(input)?;
-    Ok((
-        rest,
-        StaticCondition::Not {
-            condition: Box::new(inner),
+    let condition = match inner {
+        // Already negative-polarity — leave raw, do not double-negate.
+        unless_pay @ StaticCondition::UnlessPay { .. } => unless_pay,
+        other => StaticCondition::Not {
+            condition: Box::new(other),
         },
-    ))
+    };
+    Ok((rest, condition))
 }
 
 /// CR 400.7 + CR 608.2c: Parse "a[n] [type] (is|was) [verb-phrase] this way"
@@ -6062,13 +6092,13 @@ mod tests {
     fn test_unless_condition_with_pay() {
         let (rest, c) = parse_condition("unless you pay {2}").unwrap();
         assert_eq!(rest, "");
-        // "unless X" wraps inner in Not
-        match c {
-            StaticCondition::Not { condition } => {
-                assert!(matches!(*condition, StaticCondition::UnlessPay { .. }));
-            }
-            other => panic!("expected Not(UnlessPay), got {other:?}"),
-        }
+        // "unless X" normally wraps inner in Not — but `UnlessPay` is already
+        // inherently negative-polarity, so it must pass through RAW (wrapping
+        // would double-negate). See `parse_unless_condition`.
+        assert!(
+            matches!(c, StaticCondition::UnlessPay { .. }),
+            "expected raw UnlessPay (not Not-wrapped), got {c:?}"
+        );
     }
 
     // -- Source power/toughness comparison conditions --
