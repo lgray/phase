@@ -1,7 +1,8 @@
 use crate::parser::oracle_nom::error::OracleError;
 use nom::branch::alt;
 use nom::bytes::complete::{tag, take_until};
-use nom::combinator::{all_consuming, opt, recognize, value};
+use nom::character::complete::one_of;
+use nom::combinator::{all_consuming, eof, opt, peek, recognize, value};
 use nom::multi::many1;
 use nom::sequence::{delimited, pair, preceded, terminated};
 use nom::Parser;
@@ -5501,8 +5502,30 @@ fn try_parse_player_trigger(lower: &str) -> Option<(TriggerMode, TriggerDefiniti
         return Some((TriggerMode::Drawn, def));
     }
 
-    // "whenever you attack" — player-centric attack trigger
-    if scan_contains(lower, "whenever you attack") || scan_contains(lower, "when you attack") {
+    // "whenever you attack" — player-centric attack trigger.
+    //
+    // CR 508.1 + CR 603.2: matches when the active player declares attackers.
+    // Anchored (NOT a substring scan): an optional "whenever "/"when " prefix
+    // followed by "you attack". The bare "you attack" form is the prefix-stripped
+    // delayed-trigger condition emitted by `try_parse_whenever_this_turn`
+    // (CR 603.7c) for cards like Dalkovan Encampment.
+    //
+    // The trailing `peek` is a word-boundary guard: "you attack" must be followed
+    // by end-of-input, a space, or a comma so that "you attacked this turn" (a
+    // condition, not a trigger) does not match. The more-specific arms
+    // ("whenever you attack with N or more creatures", "N or more creatures
+    // attack a player") are dispatched earlier via `try_parse_special_trigger_pattern`
+    // and `try_parse_n_or_more_attacks`, so this arm cannot shadow them.
+    if preceded(
+        opt(alt((
+            tag::<_, _, OracleError<'_>>("whenever "),
+            tag("when "),
+        ))),
+        terminated(tag("you attack"), peek(alt((eof, recognize(one_of(" ,")))))),
+    )
+    .parse(lower)
+    .is_ok()
+    {
         let mut def = make_base();
         def.mode = TriggerMode::YouAttack;
         return Some((TriggerMode::YouAttack, def));
@@ -9239,6 +9262,55 @@ mod tests {
             "Some Card",
         );
         assert_eq!(def.mode, TriggerMode::YouAttack);
+    }
+
+    // CR 508.1 + CR 603.7c: a delayed "Whenever you attack this turn" trigger is
+    // prefix-stripped to the bare condition "you attack" before reaching
+    // `parse_trigger_condition`. Bare "you attack" must resolve to YouAttack, not
+    // Unknown — the #433 root cause (Dalkovan Encampment).
+    #[test]
+    fn trigger_condition_bare_you_attack() {
+        let mut ctx = ParseContext::default();
+        let (mode, _def) = parse_trigger_condition("you attack", &mut ctx);
+        assert_eq!(mode, TriggerMode::YouAttack);
+    }
+
+    // The word-boundary guard: "you attacked this turn" is a condition, not a
+    // trigger, and must NOT be recognized as a YouAttack trigger.
+    #[test]
+    fn trigger_condition_you_attacked_is_not_a_trigger() {
+        let mut ctx = ParseContext::default();
+        let (mode, _def) = parse_trigger_condition("you attacked this turn", &mut ctx);
+        assert_ne!(mode, TriggerMode::YouAttack);
+    }
+
+    // CR 603.7c: the full Dalkovan Encampment activated ability — the inner
+    // "Whenever you attack this turn, ..." clause is an effect-body delayed
+    // trigger, so it builds a CreateDelayedTrigger whose WheneverEvent trigger
+    // has mode YouAttack (previously Unknown — the #433 bug).
+    #[test]
+    fn trigger_dalkovan_encampment_delayed_you_attack() {
+        use crate::parser::oracle::parse_oracle_text;
+
+        let parsed = parse_oracle_text(
+            "{2}{W}, {T}: Whenever you attack this turn, create two 1/1 red \
+             Warrior creature tokens that are tapped and attacking. Sacrifice \
+             them at the beginning of the next end step.",
+            "Dalkovan Encampment",
+            &[],
+            &["Land".to_string()],
+            &[],
+        );
+        assert_eq!(parsed.abilities.len(), 1);
+
+        let delayed_effect = parsed.abilities[0].effect.as_ref();
+        let Effect::CreateDelayedTrigger { condition, .. } = delayed_effect else {
+            panic!("expected CreateDelayedTrigger, got {delayed_effect:?}");
+        };
+        let DelayedTriggerCondition::WheneverEvent { trigger } = condition else {
+            panic!("expected WheneverEvent, got {condition:?}");
+        };
+        assert_eq!(trigger.mode, TriggerMode::YouAttack);
     }
 
     #[test]
