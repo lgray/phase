@@ -2681,6 +2681,32 @@ fn activation_zone_from_self_cost(cost: &AbilityCost) -> Option<Zone> {
     }
 }
 
+/// Effect-side companion to `activation_zone_from_self_cost`.
+///
+/// CR 113.6m + CR 602.1: an activated ability whose *effect* moves the object
+/// it's printed on out of a particular non-battlefield zone (e.g. "Put this
+/// card from your hand onto the battlefield") functions only from that zone.
+/// The cost-based derivation cannot see this because the zone lives in the
+/// effect, not the cost. This walks the parsed effect chain for a self-
+/// `ChangeZone` whose `origin` is a non-battlefield zone and `destination` is
+/// the battlefield, returning that origin as the activation zone.
+fn activation_zone_from_self_effect(def: &AbilityDefinition) -> Option<Zone> {
+    if let Effect::ChangeZone {
+        origin: Some(origin),
+        destination: Zone::Battlefield,
+        target: TargetFilter::SelfRef,
+        ..
+    } = *def.effect
+    {
+        if origin != Zone::Battlefield {
+            return Some(origin);
+        }
+    }
+    def.sub_ability
+        .as_deref()
+        .and_then(activation_zone_from_self_effect)
+}
+
 fn parse_activated_ability_definition(
     cost_text: &str,
     effect_text: &str,
@@ -2698,6 +2724,12 @@ fn parse_activated_ability_definition(
     normalize_activated_mana_instead_delta(&mut def);
     if def.activation_zone.is_none() {
         def.activation_zone = activation_zone_from_self_cost(&cost);
+    }
+    // CR 113.6m: fall back to the effect-side derivation — an ability whose
+    // effect moves the source out of a non-battlefield zone functions only
+    // from that zone. Cost-based derivation keeps priority.
+    if def.activation_zone.is_none() {
+        def.activation_zone = activation_zone_from_self_effect(&def);
     }
     def.cost = Some(cost);
     def.description = Some(description.to_string());
@@ -7762,6 +7794,67 @@ mod tests {
         assert_eq!(r.abilities.len(), 1);
         assert_eq!(r.abilities[0].kind, AbilityKind::Activated);
         assert_eq!(r.abilities[0].activation_zone, Some(Zone::Hand));
+    }
+
+    // -----------------------------------------------------------------------
+    // CR 113.6m — activation zone derived from a self-ChangeZone *effect*
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn put_self_from_hand_onto_battlefield_activates_from_hand() {
+        // Talon Gates of Madara — the {4}: Put this card from your hand onto
+        // the battlefield ability. The "from your hand" lives in the effect,
+        // not the cost, so activation_zone must be derived effect-side.
+        let r = parse(
+            "{4}: Put this card from your hand onto the battlefield.",
+            "Talon Gates of Madara",
+            &[],
+            &["Land"],
+            &[],
+        );
+        assert_eq!(r.abilities.len(), 1);
+        let ability = &r.abilities[0];
+        assert_eq!(ability.kind, AbilityKind::Activated);
+        // CR 113.6m: effect moves the source out of hand → functions from hand.
+        assert_eq!(ability.activation_zone, Some(Zone::Hand));
+    }
+
+    #[test]
+    fn put_self_from_graveyard_onto_battlefield_activates_from_graveyard() {
+        // Building-block test: the derivation generalizes across origin zones,
+        // not just Talon Gates' Hand. CR 113.6m example: Reassembling Skeleton.
+        let r = parse(
+            "{2}: Put this card from your graveyard onto the battlefield.",
+            "Test Recursion Land",
+            &[],
+            &["Land"],
+            &[],
+        );
+        assert_eq!(r.abilities.len(), 1);
+        let ability = &r.abilities[0];
+        assert_eq!(ability.kind, AbilityKind::Activated);
+        assert_eq!(ability.activation_zone, Some(Zone::Graveyard));
+    }
+
+    #[test]
+    fn battlefield_self_changezone_leaves_activation_zone_unset() {
+        // Negative control: a normal battlefield-activated ability whose effect
+        // does NOT move the source out of a non-battlefield zone must keep
+        // activation_zone == None (→ defaults to Battlefield at runtime).
+        let r = parse(
+            "{1}{U}: Return Test Bounce Creature to its owner's hand.",
+            "Test Bounce Creature",
+            &[],
+            &["Creature"],
+            &["Bird"],
+        );
+        assert_eq!(r.abilities.len(), 1);
+        let ability = &r.abilities[0];
+        assert_eq!(ability.kind, AbilityKind::Activated);
+        assert_eq!(
+            ability.activation_zone, None,
+            "a self-bounce (battlefield → hand) must not derive an activation zone"
+        );
     }
 
     // -----------------------------------------------------------------------

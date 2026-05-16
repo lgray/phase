@@ -43,6 +43,7 @@ mod ripples_of_undeath_regression;
 mod rules;
 mod springheart_nantuko_bestow_landfall;
 mod swans_prevention_followup;
+mod talon_gates_from_hand_activation;
 mod tempt_with_discovery;
 mod timely_ward_regression;
 mod tinybones_joins_up_multi_target;
