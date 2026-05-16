@@ -1278,12 +1278,20 @@ pub(crate) fn parse_unless_they_alt_cost_chain(after_unless: &str) -> Option<Abi
 /// pronoun (the target player) instead of "you" (the resolving ability's
 /// controller). Returns the cost and the unconsumed tail.
 fn parse_unless_they_single_alt_cost(input: &str) -> Option<(AbilityCost, &str)> {
-    // The first branch requires an explicit "they " pronoun — that pronoun
-    // is what anchors the unless-clause to the target player. The "they "
-    // is consumed; then dispatch on the verb. Continuation branches reuse
-    // the same verb dispatch via `parse_unless_they_branch_by_verb` but
-    // omit the "they " requirement (English elision).
-    let (rest, _) = tag::<_, _, OracleError<'_>>("they ").parse(input).ok()?;
+    // CR 118.12a: The first branch requires an explicit payer pronoun — it
+    // anchors the unless-clause to the paying player. The pronoun axis is
+    // parameterized: "they " (Tergrid's Lantern — a player target) and "that
+    // player " / "that opponent " (Nicol Bolas, Torment of Hailfire — the
+    // per-opponent scoped player). All forms resolve to the same payer, so
+    // only the verb dispatch downstream needs the remainder. Continuation
+    // branches omit the pronoun (English elision).
+    let (rest, _) = alt((
+        tag::<_, _, OracleError<'_>>("they "),
+        tag("that player "),
+        tag("that opponent "),
+    ))
+    .parse(input)
+    .ok()?;
     parse_unless_they_branch_by_verb(rest)
 }
 
@@ -1305,18 +1313,28 @@ fn parse_unless_they_continuation(input: &str) -> Option<(AbilityCost, &str)> {
 /// branches of a "unless they X [or Y]" chain. Operates on the slice
 /// immediately after the (consumed) "they " pronoun.
 fn parse_unless_they_branch_by_verb(input: &str) -> Option<(AbilityCost, &str)> {
-    // CR 701.21: "sacrifice a [filter] [of their choice]"
-    if let Ok((rest, _)) = tag::<_, _, OracleError<'_>>("sacrifice ").parse(input) {
+    // CR 118.12a: Accept both the base verb form ("they sacrifice") and the
+    // third-person singular "-s" form ("that player sacrifices") — the verb
+    // tense varies with the payer subject. Composed as a per-verb axis.
+    // CR 701.21: "sacrifice(s) a [filter] [of their choice]"
+    if let Ok((rest, _)) = alt((
+        tag::<_, _, OracleError<'_>>("sacrifices "),
+        tag("sacrifice "),
+    ))
+    .parse(input)
+    {
         let (cost, after) = parse_unless_they_sacrifice_filter(rest)?;
         return Some((cost, after));
     }
-    // CR 701.9: "discard a card[ at random]"
-    if let Ok((rest, _)) = tag::<_, _, OracleError<'_>>("discard ").parse(input) {
+    // CR 701.9: "discard(s) a card[ at random]"
+    if let Ok((rest, _)) =
+        alt((tag::<_, _, OracleError<'_>>("discards "), tag("discard "))).parse(input)
+    {
         let (cost, after) = parse_unless_they_discard_cost(rest)?;
         return Some((cost, after));
     }
-    // CR 119.4: "pay N life"
-    if let Ok((rest, _)) = tag::<_, _, OracleError<'_>>("pay ").parse(input) {
+    // CR 119.4: "pay(s) N life"
+    if let Ok((rest, _)) = alt((tag::<_, _, OracleError<'_>>("pays "), tag("pay "))).parse(input) {
         let (cost, after) = parse_unless_they_pay_life(rest)?;
         return Some((cost, after));
     }
@@ -1464,9 +1482,14 @@ fn unless_branch_boundary(input: &str) -> usize {
     // boundary scan must mirror that contract so its split point lines up.
     fn parse_continuation_verb_head(input: &str) -> OracleResult<'_, ()> {
         let (rest, _) = opt(tag::<_, _, OracleError<'_>>("they ")).parse(input)?;
+        // Mirror `parse_unless_they_branch_by_verb`'s base + "-s" verb axis so
+        // the boundary scan splits at the same point the chain combinator does.
         let (rest, _) = alt((
-            value((), tag::<_, _, OracleError<'_>>("sacrifice ")),
+            value((), tag::<_, _, OracleError<'_>>("sacrifices ")),
+            value((), tag("sacrifice ")),
+            value((), tag("discards ")),
             value((), tag("discard ")),
+            value((), tag("pays ")),
             value((), tag("pay ")),
         ))
         .parse(rest)?;

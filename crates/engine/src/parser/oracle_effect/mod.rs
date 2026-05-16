@@ -14081,6 +14081,19 @@ fn extract_resolution_unless_pay_modifier(text: &str) -> (String, Option<UnlessP
         return (text.to_string(), None);
     };
 
+    // CR 118.12a: "unless they pay ..." surfaces `they` as `TargetFilter::Player`
+    // provisionally. When the effect text before "unless" taxes a permanent's
+    // controller ("its controller", "that land's controller" — Fade Away, Stench
+    // of Evil) rather than a player target (Flay), `they` resolves to that
+    // controller. `Player` is unique to the "they pay" arm, so this rewrite is
+    // unambiguous.
+    let payer =
+        if payer == TargetFilter::Player && nom_primitives::scan_contains(before, "controller") {
+            TargetFilter::ParentTargetController
+        } else {
+            payer
+        };
+
     let cleaned = text[..before.trim_end().len()].trim().to_string();
     (cleaned, Some(UnlessPayModifier { cost, payer }))
 }
@@ -14110,6 +14123,13 @@ fn parse_resolution_unless_payer(input: &str) -> OracleResult<'_, TargetFilter> 
                 ),
             ),
             value(TargetFilter::Controller, tag("you pay ")),
+            // CR 118.12a: "unless they pay ..." — `they` is anaphoric to the
+            // effect's player subject. Emitted as `Player` provisionally;
+            // `extract_resolution_unless_pay_modifier` resolves it to
+            // `ParentTargetController` when the effect taxes a permanent's
+            // controller (Stench of Evil, Fade Away) rather than a player
+            // target (Flay).
+            value(TargetFilter::Player, tag("they pay ")),
         )),
     )
     .parse(input)
@@ -16289,6 +16309,73 @@ mod tests {
                 },
             }
         );
+    }
+
+    /// CR 118.12a: "unless they pay {N}" — `they` anaphors to the targeted
+    /// player when the effect targets a player (Flay).
+    #[test]
+    fn effect_resolution_unless_they_pay_player_target() {
+        let def = parse_effect_chain(
+            "Target player discards a card unless they pay {1}",
+            AbilityKind::Spell,
+        );
+        let unless_pay = def.unless_pay.expect("should attach unless_pay");
+        assert_eq!(unless_pay.payer, TargetFilter::Player);
+    }
+
+    /// CR 118.12a: "unless they pay {N}" — `they` anaphors to a permanent's
+    /// controller when the effect taxes that controller (Stench of Evil).
+    #[test]
+    fn effect_resolution_unless_they_pay_permanent_controller() {
+        let def = parse_effect_chain(
+            "~ deals 1 damage to that land's controller unless they pay {2}",
+            AbilityKind::Spell,
+        );
+        let unless_pay = def.unless_pay.expect("should attach unless_pay");
+        assert_eq!(unless_pay.payer, TargetFilter::ParentTargetController);
+    }
+
+    /// CR 118.12a: Nicol Bolas, the Deceiver [+3] — "Each opponent loses 3
+    /// life unless that player sacrifices ... or discards a card." The "that
+    /// player" payer pronoun + "-s" verb forms must route through the
+    /// disjunctive unless-cost chain, NOT the modal `ChooseOneOf` path.
+    #[test]
+    fn effect_unless_that_player_sacrifices_or_discards_is_disjunctive_cost() {
+        let def = parse_effect_chain(
+            "Each opponent loses 3 life unless that player sacrifices a nonland permanent of their choice or discards a card",
+            AbilityKind::Activated,
+        );
+        assert!(
+            matches!(*def.effect, Effect::LoseLife { .. }),
+            "expected LoseLife (NOT ChooseOneOf), got {:?}",
+            def.effect
+        );
+        let unless_pay = def.unless_pay.expect("should attach unless_pay");
+        match &unless_pay.cost {
+            AbilityCost::OneOf { costs } => {
+                assert_eq!(costs.len(), 2, "expected Sacrifice|Discard, got {costs:?}");
+                assert!(matches!(costs[0], AbilityCost::Sacrifice { .. }));
+                assert!(matches!(costs[1], AbilityCost::Discard { .. }));
+            }
+            other => panic!("expected OneOf disjunctive cost, got {other:?}"),
+        }
+    }
+
+    /// CR 118.12a regression: Tergrid's Lantern — "Target player loses 3 life
+    /// unless they sacrifice ... or discard a card." The base-form verbs +
+    /// "they" pronoun must still parse to the same `OneOf` shape.
+    #[test]
+    fn effect_unless_they_sacrifice_or_discard_still_disjunctive_cost() {
+        let def = parse_effect_chain(
+            "Target player loses 3 life unless they sacrifice a nonland permanent of their choice or discard a card",
+            AbilityKind::Activated,
+        );
+        assert!(matches!(*def.effect, Effect::LoseLife { .. }));
+        let unless_pay = def.unless_pay.expect("should attach unless_pay");
+        assert!(matches!(
+            &unless_pay.cost,
+            AbilityCost::OneOf { costs } if costs.len() == 2
+        ));
     }
 
     #[test]
