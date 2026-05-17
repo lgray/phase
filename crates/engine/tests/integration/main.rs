@@ -22,6 +22,7 @@ mod enlightened_tutor_regression;
 mod evelyn_regression;
 mod export_runtime_canaries;
 mod exquisite_blood_routing;
+mod flickerwisp_delayed_return;
 mod floodpits_drowner;
 mod foretell_pipeline;
 mod gatta_and_luzzu_regression;

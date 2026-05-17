@@ -950,10 +950,13 @@ pub fn execute_cleanup(state: &mut GameState, events: &mut Vec<GameEvent>) -> Op
         }
     });
 
-    // CR 603.7b + CR 603.7c: Remove "this turn" delayed triggers at cleanup.
+    // CR 603.7b + CR 513.2: Remove "this turn" delayed triggers at cleanup.
     // WheneverEvent (multi-fire, one_shot=false) triggers persist until cleanup.
     // WhenNextEvent (one-shot) triggers that didn't fire also expire — their
     // "this turn" duration means they must not carry over to the next turn.
+    // Per CR 513.2 an unfired `AtNextPhase{End}` delayed trigger is NOT a
+    // "this turn" trigger: the end step "doesn't back up", so it legitimately
+    // persists to the next turn's end step — it must survive this retain.
     state.delayed_triggers.retain(|dt| {
         dt.one_shot
             && !matches!(

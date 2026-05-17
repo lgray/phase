@@ -819,6 +819,24 @@ pub fn validate_targets_in_chain(state: &GameState, ability: &ResolvedAbility) -
                 validated.controller,
                 validated.source_id,
             ),
+            // CR 603.7c + CR 608.2b: A context-ref filter (`ParentTarget`,
+            // `TriggeringSource`, etc.) carries a resolution-time *snapshot*,
+            // not a player-chosen target. `extract_target_filter_from_effect`
+            // returns `None` for it via the `is_context_ref` guard, but unlike
+            // a genuinely target-less effect its `targets` must NOT be fizzle-
+            // filtered: CR 608.2b's "no longer in the zone" check applies only
+            // to abilities that *specify targets*. A delayed-return trigger
+            // (Flickerwisp) deliberately references an exiled card — filtering
+            // it to battlefield presence would wrongly fizzle the return. The
+            // resolution-time zone check (CR 603.7c) lives in
+            // `change_zone::resolve`'s `origin` guard, not here.
+            None if validated
+                .effect
+                .target_filter()
+                .is_some_and(|f| f.is_context_ref()) =>
+            {
+                validated.targets.clone()
+            }
             None => validated
                 .targets
                 .iter()
@@ -2798,6 +2816,64 @@ mod tests {
     use crate::types::player::PlayerId;
     use crate::types::zones::Zone;
     use crate::types::{FormatConfig, GameAction};
+    /// Issue #478 regression: a delayed-trigger return effect
+    /// (`ChangeZone { target: ParentTarget }`) carries a resolution-time
+    /// *snapshot* in `targets`, not a player-chosen target. CR 608.2b's
+    /// re-validation/fizzle applies only to abilities that *specify targets*;
+    /// a `ParentTarget` snapshot referencing an exiled card (Flickerwisp's
+    /// "return that card") must survive `validate_targets_in_chain` verbatim so
+    /// the return is not wrongly fizzled before `change_zone::resolve` runs.
+    #[test]
+    fn validate_targets_in_chain_preserves_parent_target_snapshot_off_battlefield() {
+        let format = FormatConfig::duel_commander();
+        let mut state = GameState::new(format, 2, 2);
+        let victim = create_object(
+            &mut state,
+            CardId(0),
+            PlayerId(1),
+            "Grizzly Bears".to_string(),
+            Zone::Exile,
+        );
+
+        // A delayed-return ability: ChangeZone -> Battlefield with a
+        // `ParentTarget` snapshot, the snapshot being the exiled victim.
+        let ability = ResolvedAbility::new(
+            Effect::ChangeZone {
+                origin: None,
+                destination: Zone::Battlefield,
+                target: TargetFilter::ParentTarget,
+                owner_library: false,
+                enter_transformed: false,
+                under_your_control: false,
+                enter_tapped: false,
+                enters_attacking: false,
+                up_to: false,
+                enter_with_counters: vec![],
+            },
+            vec![TargetRef::Object(victim)],
+            ObjectId(99),
+            PlayerId(0),
+        );
+
+        let validated = validate_targets_in_chain(&state, &ability);
+        // The snapshot must pass through unchanged — not filtered to
+        // battlefield presence, which would empty it and fizzle the return.
+        assert_eq!(
+            validated.targets,
+            vec![TargetRef::Object(victim)],
+            "a ParentTarget snapshot of an exiled card must survive target \
+             re-validation (CR 603.7c) — not be fizzle-filtered (CR 608.2b)"
+        );
+        assert!(
+            !crate::game::targeting::check_fizzle(
+                &flatten_targets_in_chain(&ability),
+                &flatten_targets_in_chain(&validated),
+            ),
+            "a delayed-return ParentTarget ability must not fizzle when its \
+             snapshotted object is off the battlefield"
+        );
+    }
+
     //mazes end test for self bounce lands
     #[test]
     fn mazes_end_search_resolves_after_self_bounce_cost() {

@@ -2120,6 +2120,9 @@ fn delayed_trigger_event(
     use crate::types::ability::DelayedTriggerCondition;
 
     match condition {
+        // CR 603.7b: An `AtNextPhase` delayed trigger fires once, the next time
+        // its `PhaseChanged` event occurs (e.g. Flickerwisp's "at the beginning
+        // of the next end step" return).
         DelayedTriggerCondition::AtNextPhase { phase } => events
             .iter()
             .find(|e| matches!(e, GameEvent::PhaseChanged { phase: p } if p == phase))
