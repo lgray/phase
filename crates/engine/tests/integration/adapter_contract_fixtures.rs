@@ -38,6 +38,18 @@ fn waiting_for_fixture_matches_curated_client_contract() {
 }
 
 #[test]
+fn waiting_for_priority_fixture_matches_curated_client_contract() {
+    let parsed: WaitingFor = serde_json::from_str(include_str!(
+        "../../../../fixtures/adapter-contract/waiting_for_priority.json"
+    ))
+    .unwrap();
+    match parsed {
+        WaitingFor::Priority { player } => assert_eq!(player.0, 0),
+        other => panic!("wrong variant: {other:?}"),
+    }
+}
+
+#[test]
 fn game_object_fixture_matches_curated_client_contract() {
     let parsed: GameObject = serde_json::from_str(include_str!(
         "../../../../fixtures/adapter-contract/game_object.json"
