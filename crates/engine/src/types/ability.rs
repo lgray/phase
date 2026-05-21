@@ -5689,8 +5689,8 @@ pub enum Effect {
     VentureInto {
         dungeon: crate::game::dungeon::DungeonId,
     },
-    /// CR 725.2: Take the initiative. Grants initiative designation and triggers
-    /// venture into the Undercity.
+    /// CR 726.1 + CR 726.2: Take the initiative. Grants the initiative
+    /// designation and triggers venture into Undercity.
     TakeTheInitiative,
     /// CR 728.1: Process rad counters — mill cards equal to rad counter count,
     /// lose 1 life and remove one rad counter per nonland card milled.

@@ -4802,7 +4802,7 @@ pub(super) fn parse_imperative_family_ast(
         .ok()
         .map(|(_, ast)| ast),
         // CR 500.7: "take an extra turn after this one"
-        // CR 725: "take the initiative"
+        // CR 726.1: "take the initiative"
         "take" | "takes" => {
             if alt((
                 value((), tag::<_, _, OracleError<'_>>("take the initiative")),

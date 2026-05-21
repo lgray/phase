@@ -2430,6 +2430,11 @@ pub(crate) const PREDICATE_VERBS: &[&str] = &[
     "search",
     "shuffle",
     "surveil",
+    // CR 726.1: "take the initiative" / CR 500.7: "take an extra turn" — the
+    // subject layer must recognize "take" so subject-prefixed forms ("you take
+    // the initiative", "they take an extra turn") split correctly; the bare
+    // imperative is already handled by first-word dispatch in imperative.rs.
+    "take",
     "tap",
     "transform",
     "convert",
@@ -2537,6 +2542,25 @@ mod tests {
             }
             other => panic!("expected BecomeCopy, got {other:?}"),
         }
+    }
+
+    /// CR 726.1: "you take the initiative" (Seasoned Dungeoneer's ETB). The
+    /// "you" subject must split off so the predicate "take the initiative"
+    /// reaches the imperative dispatcher — this requires "take" in
+    /// PREDICATE_VERBS. Without it, the whole clause falls to Unimplemented.
+    #[test]
+    fn you_take_the_initiative_subject_prefixed() {
+        let mut ctx = ParseContext::default();
+        let ability = crate::parser::oracle_effect::parse_effect_chain_with_context(
+            "you take the initiative",
+            AbilityKind::Spell,
+            &mut ctx,
+        );
+        assert!(
+            matches!(&*ability.effect, Effect::TakeTheInitiative),
+            "expected TakeTheInitiative, got {:?}",
+            ability.effect
+        );
     }
 
     #[test]
