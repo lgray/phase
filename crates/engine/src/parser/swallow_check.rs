@@ -1841,6 +1841,14 @@ fn detect_duration_this_turn(
         // remains visibly unsupported (`Unrecognized` is an explicit failure
         // node + coverage `supported=false`), so no gap is hidden.
         "\"condition\":{\"type\":\"Unrecognized\"",
+        // CR 101.2 + CR 604.1: `PerTurnCastLimit` / `PerTurnDrawLimit` static
+        // modes are themselves the per-turn enforcement window — the "this
+        // turn" / "each turn" scope is intrinsic to the variant and not a
+        // separate `duration` slot. Cards like Ethersworn Canonist phrase the
+        // subject as "...who has cast a [type] spell this turn..."; that
+        // "this turn" is consumed by the per-turn limit, not swallowed.
+        "PerTurnCastLimit",
+        "PerTurnDrawLimit",
     ];
     if json_has_any(ast_json, markers) {
         return;

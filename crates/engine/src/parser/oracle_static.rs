@@ -6302,10 +6302,84 @@ fn strip_casting_prohibition_subject(tp: &str) -> Option<(ProhibitionScope, &str
         })
 }
 
+/// CR 101.2 + CR 604.1: Parse the "Each player who has cast a [type] spell this turn
+/// can't cast additional [type] spells." phrasing (Ethersworn Canonist) into the
+/// equivalent `PerTurnCastLimit { max: 1, spell_filter: <type> }`.
+///
+/// The conditional subject ("who has cast a [type] spell this turn") combined with
+/// "can't cast additional [type] spells" is logically equivalent to "can't cast more
+/// than one [type] spell each turn" — once a player has cast a matching spell, every
+/// further matching spell is "additional" and prohibited.
+///
+/// Both the subject-clause type and the object-clause type must match. If they diverge
+/// (a hypothetical future card like "who has cast an artifact spell ... can't cast
+/// noncreature spells"), the `max=1` reduction is no longer sound and we return `None`
+/// so the line falls through to other parsers (or `Unimplemented`).
+fn parse_conditional_subject_per_turn_cast_limit(tp: &str, text: &str) -> Option<StaticDefinition> {
+    // Nom dispatch: assemble the full grammar as composed combinators.
+    //   "each player who has cast " ("a " | "an ") <SUBJECT_TYPE>
+    //   " spell this turn can't cast additional " <OBJECT_TYPE> " spells" "."?
+    //
+    // `take_until` is the canonical nom combinator for "everything up to delimiter",
+    // which is the structural counterpart to manually slicing on a found substring.
+    let mut parser = (
+        tag::<_, _, OracleError<'_>>("each player who has cast "),
+        alt((tag("a "), tag("an "))),
+        take_until(" spell this turn can't cast additional "),
+        tag(" spell this turn can't cast additional "),
+        take_until(" spells"),
+        tag(" spells"),
+        opt(tag(".")),
+    );
+    let (rest, (_, _, subject_type_text, _, object_type_text, _, _)) = parser.parse(tp).ok()?;
+    // Disallow trailing content — we matched the entire restriction sentence.
+    if !rest.trim().is_empty() {
+        return None;
+    }
+
+    // Both type phrases must canonicalize identically to preserve the `max=1` equivalence.
+    let (subject_filter, subject_rest) = parse_type_phrase(subject_type_text.trim());
+    let (object_filter, object_rest) = parse_type_phrase(object_type_text.trim());
+    if !subject_rest.trim().is_empty() || !object_rest.trim().is_empty() {
+        return None;
+    }
+    if subject_filter != object_filter {
+        return None;
+    }
+
+    // Verify a real type filter was extracted; mirrors the gate `parse_per_turn_cast_limit`
+    // uses on the standard "more than N" phrasing.
+    let spell_filter = match &subject_filter {
+        TargetFilter::Typed(tf) if !tf.type_filters.is_empty() => Some(subject_filter),
+        _ => None,
+    };
+    // Untyped "each player who has cast a spell" is not a real sentence in printed
+    // Magic; require a typed filter to avoid over-matching.
+    spell_filter.as_ref()?;
+
+    Some(
+        StaticDefinition::new(StaticMode::PerTurnCastLimit {
+            who: ProhibitionScope::AllPlayers,
+            max: 1,
+            spell_filter,
+        })
+        .description(text.to_string()),
+    )
+}
+
 /// CR 101.2 + CR 604.1: Parse per-turn casting limits from Oracle text.
 /// Handles "Each player/opponent can't cast more than N [type] spell(s) each turn"
 /// and the alternate phrasing "You can cast no more than N spells each turn."
 fn parse_per_turn_cast_limit(tp: &str, text: &str) -> Option<StaticDefinition> {
+    // CR 101.2 + CR 604.1: Conditional-subject phrasing — "Each player who has cast a
+    // [type] spell this turn can't cast additional [type] spells." Semantically
+    // equivalent to `max=1` per-turn cast limit on the same [type] (Ethersworn Canonist).
+    // The two type phrases must match — if they diverge, the equivalence breaks and we
+    // bail (defensive: future cards with mismatched types would need a different model).
+    if let Some(def) = parse_conditional_subject_per_turn_cast_limit(tp, text) {
+        return Some(def);
+    }
+
     // 1. Strip subject → scope, yielding the predicate
     let (who, predicate) = strip_casting_prohibition_subject(tp)?;
 
@@ -16053,6 +16127,52 @@ mod tests {
                 spell_filter: None,
             }
         );
+    }
+
+    #[test]
+    fn per_turn_cast_limit_ethersworn_canonist_nonartifact() {
+        // CR 101.2 + CR 604.1: Ethersworn Canonist — conditional-subject phrasing
+        // semantically equivalent to "Each player can't cast more than one nonartifact
+        // spell each turn." Reduces to PerTurnCastLimit{ AllPlayers, max=1, Non(Artifact) }.
+        let def = parse_static_line(
+            "Each player who has cast a nonartifact spell this turn can't cast additional nonartifact spells.",
+        )
+        .unwrap();
+        let StaticMode::PerTurnCastLimit {
+            who,
+            max,
+            spell_filter,
+        } = &def.mode
+        else {
+            panic!("expected PerTurnCastLimit, got {:?}", def.mode);
+        };
+        assert_eq!(*who, ProhibitionScope::AllPlayers);
+        assert_eq!(*max, 1);
+        let Some(TargetFilter::Typed(tf)) = spell_filter else {
+            panic!("expected typed spell filter, got {spell_filter:?}");
+        };
+        assert_eq!(
+            tf.type_filters,
+            vec![TypeFilter::Non(Box::new(TypeFilter::Artifact))]
+        );
+    }
+
+    #[test]
+    fn per_turn_cast_limit_conditional_subject_mismatched_types_rejected() {
+        // Defensive: if subject and object types diverge, the max=1 reduction is
+        // no longer sound. The parser must not silently mis-model such a card.
+        // (No known printed card uses this shape; the test guards future text.)
+        let def = parse_static_line(
+            "Each player who has cast a creature spell this turn can't cast additional noncreature spells.",
+        );
+        // Either falls through to a different parser (None preferred) or is not the
+        // conditional-subject mode. The key invariant: it must NOT produce a
+        // PerTurnCastLimit with one type's filter on the other.
+        if let Some(def) = def {
+            if let StaticMode::PerTurnCastLimit { .. } = def.mode {
+                panic!("mismatched-type conditional subject must not collapse to PerTurnCastLimit");
+            }
+        }
     }
 
     #[test]
