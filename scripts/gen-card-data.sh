@@ -166,8 +166,12 @@ track_tmp "$NAMES_OUTPUT_TMP"
 run_tool_with_recovery \
   "$OUTPUT_TMP" \
   "$TOOL_BIN/oracle-gen" "$DATA_DIR" --stats --names-out "$NAMES_OUTPUT_TMP"
-if [ ! -s "$OUTPUT_TMP" ] || ! jq -e 'type == "object" and length > 0' "$OUTPUT_TMP" >/dev/null 2>&1; then
-  echo "Generated $OUTPUT_TMP is empty or not a valid card object; aborting." >&2
+# Cheap presence guard only. The full JSON/object/non-empty/integrity
+# validation is done by card-data-validate below (CardDatabase::from_export),
+# which is strictly stronger than a jq shape check — so an extra jq parse of
+# the 90MB file here would be pure redundancy.
+if [ ! -s "$OUTPUT_TMP" ]; then
+  echo "Generated $OUTPUT_TMP is empty; aborting." >&2
   exit 1
 fi
 if [ ! -s "$NAMES_OUTPUT_TMP" ] || ! jq -e '.' "$NAMES_OUTPUT_TMP" >/dev/null 2>&1; then
