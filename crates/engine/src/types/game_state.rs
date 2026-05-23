@@ -1037,6 +1037,8 @@ impl PublicStateDirty {
 #[serde(tag = "type")]
 pub enum TargetSelectionConstraint {
     DifferentTargetPlayers,
+    /// CR 115.1 + CR 601.2c: Object targets must be controlled by different players.
+    DifferentObjectControllers,
 }
 
 /// CR 508.1d + CR 509.1c: Which combat step a `WaitingFor::CombatTaxPayment` belongs to.

@@ -11,6 +11,7 @@ use super::counter::{CounterMatch, CounterType};
 use super::events::BendingType;
 use super::game_state::{
     is_zero_usize, DistributionUnit, LKISnapshot, MayTriggerOrigin, RetargetScope,
+    TargetSelectionConstraint,
 };
 use super::identifiers::ObjectId;
 use super::keywords::{Keyword, KeywordKind};
@@ -7870,6 +7871,9 @@ pub struct AbilityDefinition {
     /// CR 601.2c + CR 115.1d.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub multi_target: Option<MultiTargetSpec>,
+    /// CR 115.1 + CR 601.2c: Additional legality constraints across selected targets.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub target_constraints: Vec<TargetSelectionConstraint>,
     /// CR 601.2c + CR 608.2d: Timing for object/player choices represented by
     /// this ability's target filter. Stack timing is true targeting; resolution
     /// timing is used for non-target instructions such as "return a land card
@@ -7983,6 +7987,8 @@ struct AbilityDefinitionRepr<'a> {
     optional_for: &'a Option<OpponentMayScope>,
     #[serde(skip_serializing_if = "Option::is_none")]
     multi_target: &'a Option<MultiTargetSpec>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    target_constraints: &'a Vec<TargetSelectionConstraint>,
     #[serde(skip_serializing_if = "TargetChoiceTiming::is_stack")]
     target_choice_timing: TargetChoiceTiming,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -8037,6 +8043,7 @@ impl Serialize for AbilityDefinition {
             optional,
             optional_for,
             multi_target,
+            target_constraints,
             target_choice_timing,
             distribute,
             unless_pay,
@@ -8072,6 +8079,7 @@ impl Serialize for AbilityDefinition {
             optional: *optional,
             optional_for,
             multi_target,
+            target_constraints,
             target_choice_timing: *target_choice_timing,
             distribute,
             unless_pay,
@@ -8195,6 +8203,7 @@ impl AbilityDefinition {
             optional: false,
             optional_for: None,
             multi_target: None,
+            target_constraints: Vec::new(),
             target_choice_timing: TargetChoiceTiming::Stack,
             distribute: None,
             unless_pay: None,
@@ -8240,6 +8249,11 @@ impl AbilityDefinition {
 
     pub fn multi_target(mut self, spec: MultiTargetSpec) -> Self {
         self.multi_target = Some(spec);
+        self
+    }
+
+    pub fn target_constraint(mut self, constraint: TargetSelectionConstraint) -> Self {
+        self.target_constraints.push(constraint);
         self
     }
 

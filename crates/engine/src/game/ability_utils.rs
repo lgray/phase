@@ -653,7 +653,7 @@ pub fn random_select_targets_for_ability(
     // Multi-slot constraints (e.g., DifferentTargetPlayers) — reuse the same
     // validator the controller-choice path uses so random selection respects
     // every constraint declared on the ability.
-    validate_target_constraints(&chosen, constraints)?;
+    validate_target_constraints(Some(state), &chosen, constraints)?;
     Ok(chosen)
 }
 
@@ -719,7 +719,7 @@ fn validate_target_prefix(
         }
     }
 
-    validate_target_constraints(targets, constraints)
+    validate_target_constraints(None, targets, constraints)
 }
 
 pub fn generate_target_assignments(
@@ -2294,7 +2294,7 @@ fn validate_selected_slot_prefix(
         }
     }
 
-    validate_target_constraints(&compact_targets, constraints)
+    validate_target_constraints(None, &compact_targets, constraints)
 }
 
 fn validate_target_prefix_for_ability(
@@ -2398,7 +2398,7 @@ fn validate_selected_slots_with_specs(
         }
     }
 
-    validate_target_constraints(&compact_targets, constraints)
+    validate_target_constraints(Some(state), &compact_targets, constraints)
 }
 
 fn assign_targets_recursive(
@@ -2803,6 +2803,7 @@ fn assign_selected_slots_after_deferred_effect(
 
 /// CR 115.3: Validate targeting constraints — e.g., different target players must be distinct.
 fn validate_target_constraints(
+    state: Option<&GameState>,
     targets: &[TargetRef],
     constraints: &[TargetSelectionConstraint],
 ) -> Result<(), EngineError> {
@@ -2824,6 +2825,30 @@ fn validate_target_constraints(
                     return Err(EngineError::InvalidAction(
                         "Selected player targets must be different".to_string(),
                     ));
+                }
+            }
+            TargetSelectionConstraint::DifferentObjectControllers => {
+                let Some(state) = state else {
+                    continue;
+                };
+                let mut controllers = std::collections::HashSet::new();
+                for target in targets {
+                    let TargetRef::Object(object_id) = target else {
+                        continue;
+                    };
+                    let controller = state
+                        .objects
+                        .get(object_id)
+                        .ok_or_else(|| {
+                            EngineError::InvalidAction("Selected object target is missing".into())
+                        })?
+                        .controller;
+                    if !controllers.insert(controller) {
+                        return Err(EngineError::InvalidAction(
+                            "Selected object targets must be controlled by different players"
+                                .to_string(),
+                        ));
+                    }
                 }
             }
         }
@@ -4151,6 +4176,79 @@ mod tests {
                 ],
             ]
         );
+    }
+
+    #[test]
+    fn target_selection_filters_objects_with_same_controller() {
+        let mut state = GameState::new_two_player(42);
+        let p0_a = create_object(
+            &mut state,
+            CardId(1),
+            PlayerId(0),
+            "P0 A".to_string(),
+            Zone::Battlefield,
+        );
+        let p0_b = create_object(
+            &mut state,
+            CardId(2),
+            PlayerId(0),
+            "P0 B".to_string(),
+            Zone::Battlefield,
+        );
+        let p1_a = create_object(
+            &mut state,
+            CardId(3),
+            PlayerId(1),
+            "P1 A".to_string(),
+            Zone::Battlefield,
+        );
+        for id in [p0_a, p0_b, p1_a] {
+            state
+                .objects
+                .get_mut(&id)
+                .unwrap()
+                .card_types
+                .core_types
+                .push(CoreType::Creature);
+        }
+
+        let mut ability = ResolvedAbility::new(
+            Effect::TargetOnly {
+                target: TargetFilter::Typed(TypedFilter::creature()),
+            },
+            Vec::new(),
+            ObjectId(100),
+            PlayerId(0),
+        );
+        ability.multi_target = Some(MultiTargetSpec::fixed(2, 2));
+        let slots = build_target_slots(&state, &ability).expect("target slots");
+        let progress = begin_target_selection_for_ability(
+            &state,
+            &ability,
+            &slots,
+            &[TargetSelectionConstraint::DifferentObjectControllers],
+        )
+        .expect("selection starts");
+
+        let TargetSelectionAdvance::InProgress(progress) = choose_target_for_ability(
+            &state,
+            &ability,
+            &slots,
+            &[TargetSelectionConstraint::DifferentObjectControllers],
+            &progress,
+            Some(TargetRef::Object(p0_a)),
+        )
+        .expect("first target accepted") else {
+            panic!("expected second target prompt");
+        };
+
+        assert_eq!(
+            progress.current_legal_targets,
+            vec![TargetRef::Object(p1_a)]
+        );
+        assert!(!progress
+            .current_legal_targets
+            .contains(&TargetRef::Object(p0_b)));
     }
 
     #[test]

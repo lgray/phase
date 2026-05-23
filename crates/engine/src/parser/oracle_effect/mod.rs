@@ -57,7 +57,9 @@ use crate::types::ability::{
 };
 use crate::types::card_type::{CoreType, Supertype};
 use crate::types::counter::CounterType;
-use crate::types::game_state::{DistributionUnit, NextSpellModifier, RetargetScope};
+use crate::types::game_state::{
+    DistributionUnit, NextSpellModifier, RetargetScope, TargetSelectionConstraint,
+};
 use crate::types::identifiers::{ObjectId, TrackedSetId};
 use crate::types::keywords::Keyword;
 use crate::types::mana::ManaCost;
@@ -12561,11 +12563,17 @@ pub(crate) fn lower_effect_chain_ir(ir: &EffectChainIr) -> AbilityDefinition {
                 def = def.condition(cond.clone());
             }
         }
-        // CR 115.1d: Apply multi-target spec — prefer strip result, fall back to clause-level.
-        if let Some(ref spec) = clause_ir.multi_target {
+        // CR 115.1d: Apply multi-target spec — prefer explicit choose-count text,
+        // then strip result, then clause-level propagation.
+        if let Some(spec) = extract_choose_numeric_target_multi_target(&clause_ir.source_text) {
+            def = def.multi_target(spec);
+        } else if let Some(ref spec) = clause_ir.multi_target {
             def = def.multi_target(spec.clone());
         } else if let Some(ref spec) = clause_ir.parsed.multi_target {
             def = def.multi_target(spec.clone());
+        }
+        if parse_controlled_by_different_players_target_constraint(&clause_ir.source_text) {
+            def = def.target_constraint(TargetSelectionConstraint::DifferentObjectControllers);
         }
         // CR 601.2d: Propagate distribute flag.
         if let Some(ref unit) = clause_ir.parsed.distribute {
@@ -14230,6 +14238,24 @@ fn extract_exile_multi_target(text: &str) -> Option<MultiTargetSpec> {
         .ok()?;
     let (count, _) = strip_numeric_target_prefix(after_verb)?;
     Some(MultiTargetSpec::fixed(count, count))
+}
+
+fn extract_choose_numeric_target_multi_target(text: &str) -> Option<MultiTargetSpec> {
+    let lower = text.to_lowercase();
+    let (after_choose, _) = tag::<_, _, OracleError<'_>>("choose ")
+        .parse(lower.as_str())
+        .ok()?;
+    let (count, _) = strip_numeric_target_prefix(after_choose)?;
+    Some(MultiTargetSpec::fixed(count, count))
+}
+
+fn parse_controlled_by_different_players_target_constraint(text: &str) -> bool {
+    let lower = text.to_lowercase();
+    let mut parser = preceded(
+        take_until::<_, _, OracleError<'_>>(" controlled by different players"),
+        tag(" controlled by different players"),
+    );
+    parser.parse(lower.as_str()).is_ok()
 }
 
 fn extract_deal_damage_multi_target(text: &str) -> Option<MultiTargetSpec> {
@@ -30125,6 +30151,28 @@ mod tests {
             }
             other => panic!("expected GainControl TargetPlayer permanent, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn choose_two_target_creatures_controlled_by_different_players_sets_target_constraints() {
+        let def = parse_effect_chain(
+            "Choose two target creatures controlled by different players. Return those creatures to their owners' hands.",
+            AbilityKind::Spell,
+        );
+
+        assert_eq!(def.multi_target, Some(MultiTargetSpec::fixed(2, 2)));
+        assert_eq!(
+            def.target_constraints,
+            vec![TargetSelectionConstraint::DifferentObjectControllers]
+        );
+        assert!(matches!(&*def.effect, Effect::TargetOnly { .. }));
+        assert!(matches!(
+            def.sub_ability.as_ref().map(|sub| &*sub.effect),
+            Some(Effect::Bounce {
+                target: TargetFilter::TrackedSet { .. },
+                ..
+            })
+        ));
     }
 
     #[test]

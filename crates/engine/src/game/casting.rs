@@ -4782,6 +4782,11 @@ fn continue_with_prepared(
 
     let target_slots = build_target_slots(state, &resolved)?;
     if !target_slots.is_empty() {
+        let target_constraints = prepared
+            .ability_def
+            .as_ref()
+            .map(|ability| ability.target_constraints.clone())
+            .unwrap_or_default();
         let has_kicker_cost = state
             .objects
             .get(&prepared.object_id)
@@ -4834,7 +4839,7 @@ fn continue_with_prepared(
         }
 
         if let Some(targets) =
-            auto_select_targets_for_ability(state, &resolved, &target_slots, &[])?
+            auto_select_targets_for_ability(state, &resolved, &target_slots, &target_constraints)?
         {
             let mut resolved = resolved;
             assign_targets_in_chain(state, &mut resolved, &targets)?;
@@ -4853,7 +4858,12 @@ fn continue_with_prepared(
             );
         }
 
-        let selection = begin_target_selection_for_ability(state, &resolved, &target_slots, &[])?;
+        let selection = begin_target_selection_for_ability(
+            state,
+            &resolved,
+            &target_slots,
+            &target_constraints,
+        )?;
         let mut pending_targets = PendingCast::new(
             prepared.object_id,
             prepared.card_id,
@@ -4866,6 +4876,7 @@ fn continue_with_prepared(
             .ability_def
             .as_ref()
             .and_then(|a| a.distribute.clone());
+        pending_targets.target_constraints = target_constraints;
         pending_targets.origin_zone = prepared.origin_zone;
         pending_targets.payment_mode = prepared.payment_mode;
         return Ok(WaitingFor::TargetSelection {
@@ -5041,7 +5052,12 @@ pub fn spell_has_legal_targets(
             if target_slots.is_empty() {
                 true
             } else {
-                has_legal_target_assignment_for_ability(&simulated, &resolved, &target_slots, &[])
+                has_legal_target_assignment_for_ability(
+                    &simulated,
+                    &resolved,
+                    &target_slots,
+                    &ability_def.target_constraints,
+                )
             }
         }
         Err(_) => false,
@@ -6825,7 +6841,7 @@ pub fn can_activate_ability_now(
                     &simulated,
                     &resolved,
                     &target_slots,
-                    &[],
+                    &ability_def.target_constraints,
                 )
         }
         Err(_) => false,
@@ -7120,8 +7136,9 @@ pub fn handle_activate_ability(
 
     let target_slots = build_target_slots(state, &resolved)?;
     if !target_slots.is_empty() {
+        let target_constraints = ability_def.target_constraints.clone();
         if let Some(targets) =
-            auto_select_targets_for_ability(state, &resolved, &target_slots, &[])?
+            auto_select_targets_for_ability(state, &resolved, &target_slots, &target_constraints)?
         {
             let mut resolved = resolved;
             assign_targets_in_chain(state, &mut resolved, &targets)?;
@@ -7178,7 +7195,12 @@ pub fn handle_activate_ability(
             return Ok(WaitingFor::Priority { player });
         }
 
-        let selection = begin_target_selection_for_ability(state, &resolved, &target_slots, &[])?;
+        let selection = begin_target_selection_for_ability(
+            state,
+            &resolved,
+            &target_slots,
+            &target_constraints,
+        )?;
         let mut pending_target = PendingCast::new(
             source_id,
             CardId(0),
@@ -7187,6 +7209,7 @@ pub fn handle_activate_ability(
         );
         pending_target.activation_cost = ability_def.cost.clone();
         pending_target.activation_ability_index = Some(ability_index);
+        pending_target.target_constraints = target_constraints;
         return Ok(WaitingFor::TargetSelection {
             player,
             pending_cast: Box::new(pending_target),
