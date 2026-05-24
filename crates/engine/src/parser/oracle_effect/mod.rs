@@ -6887,10 +6887,12 @@ fn try_parse_compound_object_player_damage(lower: &str) -> Option<ParsedEffectCl
 
 /// CR 120.2b + CR 608.2c: Multi-target damage split (Cone of Flame, Banshee,
 /// Serpentine Spike, Spinal Embrace class). One source emits N independent
-/// `DealDamage` events whose amounts and targets vary, separated by commas
-/// (with `and` introducing the final segment). Each segment after the first
-/// is bare-form — `"M damage to T2"` without a leading "deals" verb — and
-/// inherits the source object from the printed sentence.
+/// `DealDamage` events whose amounts and targets vary. Segments are separated
+/// either by commas (with `and` introducing the final segment) or — for the
+/// two-segment case — by a bare `and` with no comma (Char: "deals 4 damage to
+/// any target and 2 damage to you"). Each segment after the first is bare-form
+/// — `"M damage to T2"` without a leading "deals" verb — and inherits the
+/// source object from the printed sentence.
 ///
 /// Build shape:
 ///   primary = `DealDamage { amount_1, target_1 }`
@@ -6898,9 +6900,11 @@ fn try_parse_compound_object_player_damage(lower: &str) -> Option<ParsedEffectCl
 ///   primary.sub_ability.sub_ability = `DealDamage { amount_3, target_3 }`
 ///
 /// Each segment is parsed via [`parse_bare_damage_continuation`] and chained
-/// as a `sub_ability`. Returns `None` (and does not mutate `ctx`) if the text
-/// is not a multi-segment damage line — control returns to the caller for the
-/// single-and compound splitter and other paths.
+/// as a `sub_ability`. A non-damage continuation aborts the whole chain (the
+/// bare-damage parser returns `None`, propagated by `?`), so single-`and`
+/// compounds like "deals 3 damage to any target and you gain 3 life" fall
+/// through to the caller's compound splitter unharmed. Returns `None` (and
+/// does not mutate `ctx`) if the text is not a multi-segment damage line.
 fn try_parse_multi_target_damage_chain(
     text: &str,
     ctx: &mut ParseContext,
@@ -6909,12 +6913,17 @@ fn try_parse_multi_target_damage_chain(
     let (primary_effect, remainder) = try_parse_damage_with_remainder(text, &lower, ctx)?;
     let trimmed = remainder.trim_start();
     let trimmed_lower = trimmed.to_lowercase();
-    if tag::<_, _, OracleError<'_>>(", ")
-        .parse(trimmed_lower.as_str())
-        .is_err()
+    // A comma-delimited list ("..., M damage to T2, and K ...") or a bare
+    // two-segment "and" ("... and 2 damage to you", Char). Non-damage "and"
+    // continuations still reach the loop but abort it at the bare-damage parse,
+    // so they fall through to the caller's compound splitter.
+    if alt((
+        tag::<_, _, OracleError<'_>>(", "),
+        tag::<_, _, OracleError<'_>>("and "),
+    ))
+    .parse(trimmed_lower.as_str())
+    .is_err()
     {
-        // No comma after the primary recipient — fall back to single-and
-        // compound or single-target damage.
         return None;
     }
 
@@ -6932,6 +6941,12 @@ fn try_parse_multi_target_damage_chain(
         } else if let Ok((rest, _)) =
             tag::<_, _, OracleError<'_>>(", ").parse(cursor_lower.as_str())
         {
+            &cursor[cursor_lower.len() - rest.len()..]
+        } else if let Ok((rest, _)) =
+            tag::<_, _, OracleError<'_>>("and ").parse(cursor_lower.as_str())
+        {
+            // Bare two-segment "and" (Char) — `cursor` was trimmed of its
+            // leading space, so the connector is "and " with no comma.
             &cursor[cursor_lower.len() - rest.len()..]
         } else {
             // Trailing punctuation only — clean end of chain.
@@ -19083,6 +19098,47 @@ mod tests {
                 }
             ),
             "full pipeline: sub_ability should be GainLife(3), got: {:?}",
+            sub.effect
+        );
+    }
+
+    #[test]
+    fn damage_chain_bare_and_two_segments() {
+        // CR 120.2b + CR 608.2c: A two-segment damage line joined by a bare
+        // "and" with no comma — "Char deals 4 damage to any target and 2 damage
+        // to you" — is a degenerate damage chain. The verbless "2 damage to you"
+        // segment must chain as a second DealDamage to the controller, not be
+        // dropped.
+        let def = parse_effect_chain(
+            "~ deals 4 damage to any target and 2 damage to you.",
+            AbilityKind::Spell,
+        );
+        assert!(
+            matches!(
+                *def.effect,
+                Effect::DealDamage {
+                    amount: QuantityExpr::Fixed { value: 4 },
+                    target: TargetFilter::Any,
+                    ..
+                }
+            ),
+            "primary: {:?}",
+            def.effect
+        );
+        let sub = def
+            .sub_ability
+            .as_ref()
+            .expect("verbless second damage segment must chain a sub_ability");
+        assert!(
+            matches!(
+                *sub.effect,
+                Effect::DealDamage {
+                    amount: QuantityExpr::Fixed { value: 2 },
+                    target: TargetFilter::Controller,
+                    ..
+                }
+            ),
+            "sub_ability should be 2 damage to controller, got: {:?}",
             sub.effect
         );
     }
