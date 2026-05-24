@@ -25640,6 +25640,18 @@ mod tests {
     }
 
     #[test]
+    fn subject_prefixed_intransitive_keyword_actions_strip_to_imperatives() {
+        assert!(
+            matches!(parse_effect("you investigate"), Effect::Investigate),
+            "you investigate should strip the subject and parse as Investigate"
+        );
+        assert!(
+            matches!(parse_effect("you proliferate"), Effect::Proliferate),
+            "you proliferate should strip the subject and parse as Proliferate"
+        );
+    }
+
+    #[test]
     fn phase_out_those_creatures() {
         // Out of Time-class: "those creatures phase out" after subject
         // strip should produce PhaseOut with ParentTarget (the tracked set
