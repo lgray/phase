@@ -109,7 +109,9 @@
     "sideboardName": "Zaplecze",
     "maybeboardName": "Maybeboard",
     "maybeboard": "Maybeboard ({{count}})",
-    "maybeboardEmptyHint": "Karty, które rozważasz. Dotknij → Maybeboard na karcie talii, aby ją tu umieścić."
+    "maybeboardEmptyHint": "Karty, które rozważasz. Dotknij → Maybeboard na karcie talii, aby ją tu umieścić.",
+    "commanderHeading": "Dowódca",
+    "removeCommander": "Usuń {{name}} jako dowódcę"
   },
   "moveList": {
     "empty": "Pusto"

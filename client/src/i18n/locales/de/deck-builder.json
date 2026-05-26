@@ -109,7 +109,9 @@
     "sideboardName": "Sideboard",
     "maybeboardName": "Maybeboard",
     "maybeboard": "Maybeboard ({{count}})",
-    "maybeboardEmptyHint": "Karten, die du in Betracht ziehst. Tippe bei einer Deck-Karte auf → Maybeboard, um sie hier abzulegen."
+    "maybeboardEmptyHint": "Karten, die du in Betracht ziehst. Tippe bei einer Deck-Karte auf → Maybeboard, um sie hier abzulegen.",
+    "commanderHeading": "Kommandeur",
+    "removeCommander": "{{name}} als Kommandeur entfernen"
   },
   "moveList": {
     "empty": "Leer"

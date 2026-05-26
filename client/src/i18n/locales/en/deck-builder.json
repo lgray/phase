@@ -109,7 +109,9 @@
     "exportModalTitle": "Export Deck",
     "saveToFile": "Save to File",
     "copied": "Copied!",
-    "copy": "Copy"
+    "copy": "Copy",
+    "commanderHeading": "Commander",
+    "removeCommander": "Remove {{name}} as commander"
   },
   "moveList": {
     "empty": "Empty"

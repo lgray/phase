@@ -392,6 +392,8 @@ export function DeckBuilder({
                         onSetAsCommander={isCommander ? handleSetCommander : undefined}
                         isCommanderEligible={isCommander ? isCommanderEligible : undefined}
                         onOpenArtPicker={handleOpenArtPicker}
+                        commanders={commanders}
+                        onRemoveCommander={handleRemoveCommander}
                       />
                     </div>
                   ) : (

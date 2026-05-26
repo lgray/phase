@@ -109,7 +109,9 @@
     "sideboardName": "Sideboard",
     "maybeboardName": "Maybeboard",
     "maybeboard": "Maybeboard ({{count}})",
-    "maybeboardEmptyHint": "Cartas que você está considerando. Toque em → Maybeboard em uma carta do deck para guardá-la aqui."
+    "maybeboardEmptyHint": "Cartas que você está considerando. Toque em → Maybeboard em uma carta do deck para guardá-la aqui.",
+    "commanderHeading": "Comandante",
+    "removeCommander": "Remover {{name}} como comandante"
   },
   "moveList": {
     "empty": "Vazio"

@@ -109,7 +109,9 @@
     "sideboardName": "Réserve",
     "maybeboardName": "Maybeboard",
     "maybeboard": "Maybeboard ({{count}})",
-    "maybeboardEmptyHint": "Cartes que vous envisagez. Touchez → Maybeboard sur une carte du deck pour la placer ici."
+    "maybeboardEmptyHint": "Cartes que vous envisagez. Touchez → Maybeboard sur une carte du deck pour la placer ici.",
+    "commanderHeading": "Commandant",
+    "removeCommander": "Retirer {{name}} comme commandant"
   },
   "moveList": {
     "empty": "Vide"

@@ -6,6 +6,7 @@ import type { ExportFormat } from "../../services/deckParser";
 import type { DeckCompatibilityResult, UnsupportedCard } from "../../services/deckCompatibility";
 
 import { MoveList } from "./MoveList";
+import { mouseHoverPreview } from "./hoverPreview";
 import { isMaybeboardPolicy, useSideboardPolicy } from "./useSideboardPolicy";
 
 interface DeckListProps {
@@ -24,6 +25,14 @@ interface DeckListProps {
   isCommanderEligible?: (name: string) => boolean;
   /** Touch path for art selection — forwarded to each row's ✦ badge. */
   onOpenArtPicker?: (name: string) => void;
+  /** Designated commander(s). Rendered as a pinned section above the section
+   *  tabs (mirroring the visual stack's Commander lane) so the commander stays
+   *  visible/removable in list view — on mobile the Info-panel CommanderPanel
+   *  is on a different tab. Empty in non-commander formats, so the section
+   *  self-hides. */
+  commanders?: string[];
+  /** Demotes a commander back into the main deck. Paired with `commanders`. */
+  onRemoveCommander?: (name: string) => void;
 }
 
 
@@ -61,6 +70,8 @@ export function DeckList({
   onSetAsCommander,
   isCommanderEligible,
   onOpenArtPicker,
+  commanders = [],
+  onRemoveCommander,
 }: DeckListProps) {
   const { t } = useTranslation("deck-builder");
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -182,6 +193,47 @@ export function DeckList({
           />
         </div>
       </div>
+
+      {/* Commander section: pinned above the tabs (not inside one) so it's
+          visible on whichever tab is active. CR 903.5a — the commander lives in
+          the command zone, not the deck, so it's shown separately and excluded
+          from the main count. Self-hides outside commander formats (commanders
+          is empty). Designation still happens via the ♛ crown on eligible rows;
+          this section only displays + demotes the current commander(s). */}
+      {commanders.length > 0 && (
+        <div className="mb-2 rounded-xl border border-fuchsia-300/25 bg-fuchsia-500/8 p-2">
+          <div className="mb-1 flex items-center gap-1.5 text-[0.68rem] font-semibold uppercase tracking-[0.18em] text-fuchsia-200/80">
+            <span aria-hidden="true">♛</span>
+            {t("deckList.commanderHeading")}
+          </div>
+          {commanders.map((name) => (
+            <div
+              key={name}
+              data-card-name={name.toLowerCase()}
+              className="group flex items-center justify-between py-0.5 text-sm"
+            >
+              <span
+                className={`text-fuchsia-50 ${onCardHover ? "cursor-pointer" : ""}`}
+                onClick={() => onCardHover?.(name)}
+                {...mouseHoverPreview(onCardHover, name)}
+              >
+                {name}
+              </span>
+              {onRemoveCommander && (
+                <button
+                  type="button"
+                  onClick={() => onRemoveCommander(name)}
+                  className="ml-2 h-9 w-9 rounded text-red-400 hover:bg-red-900/40 lg:h-7 lg:w-7"
+                  aria-label={t("deckList.removeCommander", { name })}
+                  title={t("deckList.removeCommander", { name })}
+                >
+                  -
+                </button>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
 
       {/* Section selector: tab pair for Main / Sideboard (or Main / Maybeboard
           in Commander/Brawl). Full-width and prominent so the second section is
