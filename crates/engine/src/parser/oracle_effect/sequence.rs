@@ -54,6 +54,38 @@ fn strip_search_result_subject(lower: &str) -> &str {
     .unwrap_or(lower)
 }
 
+fn is_search_result_reveal_clause(lower: &str) -> bool {
+    matches!(
+        lower.trim().trim_end_matches('.'),
+        "reveal that card" | "reveal those cards" | "reveal the card" | "reveal them" | "reveal it"
+    )
+}
+
+fn has_conditional_search_result_destination(lower: &str) -> bool {
+    fn parse_clause(input: &str) -> Result<(&str, ()), nom::Err<OracleError<'_>>> {
+        let (input, _) = alt((
+            tag::<_, _, OracleError<'_>>("put that card onto the battlefield"),
+            tag("put it onto the battlefield"),
+            tag("put them onto the battlefield"),
+            tag("put those cards onto the battlefield"),
+        ))
+        .parse(input)?;
+        let (input, _) = opt(tag(" tapped")).parse(input)?;
+        let (input, _) = alt((tag(" if it's "), tag(" if it is "))).parse(input)?;
+        let (input, _) = take_until(" card").parse(input)?;
+        let (input, _) = tag(" card").parse(input)?;
+        let (input, _) = opt(tag(".")).parse(input)?;
+        Ok((input, ()))
+    }
+
+    let bare = strip_search_result_subject(lower.trim().trim_end_matches('.'));
+    parse_clause(bare).is_ok()
+        || nom_primitives::scan_at_word_boundaries(lower, |input| {
+            parse_clause(strip_search_result_subject(input))
+        })
+        .is_some()
+}
+
 /// Parse count from "choose one/two/three/N of them/those" text using nom combinator.
 /// Handles all chooser prefix forms: "choose ", "you choose ", "an opponent chooses ",
 /// "target opponent chooses ".
@@ -1672,6 +1704,14 @@ pub(super) fn apply_clause_continuation(
                 },
             ));
         }
+        ContinuationAst::SearchRevealResult => {
+            let Some(previous) = defs.last_mut() else {
+                return;
+            };
+            if let Effect::SearchLibrary { reveal, .. } = &mut *previous.effect {
+                *reveal = true;
+            }
+        }
         ContinuationAst::SearchResultClauseHandled => {}
         ContinuationAst::PutChoiceRemainderOnBottom => {
             let Some(previous) = defs.last_mut() else {
@@ -2002,6 +2042,7 @@ pub(super) fn continuation_absorbs_current(
         ContinuationAst::CantRegenerate => true,
         ContinuationAst::PutRest { .. } => true,
         ContinuationAst::ChooseFromExile { .. } => true,
+        ContinuationAst::SearchRevealResult => true,
         ContinuationAst::SearchResultClauseHandled => true,
         ContinuationAst::PutChoiceRemainderOnBottom => true,
         ContinuationAst::ChoicePartitionDestinations { .. } => true,
@@ -2030,9 +2071,17 @@ pub(super) fn parse_intrinsic_continuation_ast(
             // here so the found set is not collapsed to a single battlefield move
             // (mirrors the `has_positional_put` suppression below).
             if split.is_some() {
-                // MUTATION: suppression disabled
+                return None;
             }
             let full_lower = full_text.to_ascii_lowercase();
+            // CR 608.2c: Conditional result destinations ("put it onto the
+            // battlefield tapped if it's a land card. Otherwise, put it into
+            // your hand" — Archdruid's Charm) are represented by the parsed
+            // conditional ChangeZone/else branch. Do not synthesize the
+            // unconditional SearchDestination continuation ahead of that branch.
+            if has_conditional_search_result_destination(&full_lower) {
+                return None;
+            }
             // CR 701.24b: If later clauses contain "put on top", suppress the default
             // ChangeZone(→Hand) — the card stays in the library and a separate
             // PutAtLibraryPosition effect in the chain handles placement.
@@ -2560,6 +2609,9 @@ pub(super) fn parse_followup_continuation_ast(
     let lower = text.to_lowercase();
 
     match previous_effect {
+        Effect::SearchLibrary { .. } if is_search_result_reveal_clause(&lower) => {
+            Some(ContinuationAst::SearchRevealResult)
+        }
         Effect::RevealHand { .. }
             if nom_primitives::scan_contains(&lower, "card from it")
                 || nom_primitives::scan_contains(&lower, "card from among")

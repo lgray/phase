@@ -37833,6 +37833,65 @@ mod snapshot_tests {
     }
 
     #[test]
+    fn continuation_search_conditional_destination_does_not_insert_default_put() {
+        let def = parse_effect_chain(
+            "Search your library for a creature or land card and reveal it. Put it onto the battlefield tapped if it's a land card. Otherwise, put it into your hand. Then shuffle.",
+            AbilityKind::Spell,
+        );
+
+        match &*def.effect {
+            Effect::SearchLibrary {
+                reveal: true,
+                split: None,
+                ..
+            } => {}
+            other => panic!("expected revealed SearchLibrary without split, got {other:?}"),
+        }
+
+        let put_land = def
+            .sub_ability
+            .as_deref()
+            .expect("search should chain directly to conditional destination");
+        assert_eq!(
+            put_land.condition,
+            Some(AbilityCondition::RevealedHasCardType {
+                card_type: CoreType::Land,
+                additional_filter: None,
+            })
+        );
+        match &*put_land.effect {
+            Effect::ChangeZone {
+                origin: None,
+                destination: Zone::Battlefield,
+                target: TargetFilter::ParentTarget,
+                enter_tapped: true,
+                ..
+            } => {}
+            other => panic!("expected conditional battlefield put, got {other:?}"),
+        }
+
+        let put_nonland = put_land
+            .else_ability
+            .as_deref()
+            .expect("conditional destination should carry hand fallback");
+        match &*put_nonland.effect {
+            Effect::ChangeZone {
+                origin: None,
+                destination: Zone::Hand,
+                target: TargetFilter::ParentTarget,
+                ..
+            } => {}
+            other => panic!("expected hand fallback, got {other:?}"),
+        }
+
+        let shuffle = put_land
+            .sub_ability
+            .as_deref()
+            .expect("conditional destination should chain into shuffle");
+        assert!(matches!(&*shuffle.effect, Effect::Shuffle { .. }));
+    }
+
+    #[test]
     fn continuation_search_exile_then_shuffle() {
         let def = parse_effect_chain(
             "search your library for a card, exile it face down, then shuffle",

@@ -235,6 +235,10 @@ pub(crate) enum ContinuationAst {
     /// library-to-hand search continuation are already represented by the intrinsic
     /// SearchDestination + reveal flag and should be absorbed.
     SearchResultClauseHandled,
+    /// "reveal it" immediately after a SearchLibrary whose destination is handled
+    /// by a later conditional branch. Patches SearchLibrary.reveal without adding
+    /// a default ChangeZone.
+    SearchRevealResult,
     /// "Put the rest on the bottom of your library ..." after a tracked-set choice that
     /// already moved chosen cards out of the library. Appends a library-bottom placement
     /// step onto the preceding ChangeZone so the unchosen cards are handled by that chain.
