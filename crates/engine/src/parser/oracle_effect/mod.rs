@@ -24418,6 +24418,51 @@ mod tests {
     }
 
     #[test]
+    fn effect_add_colorless_instead_if_card_exiled_with_source() {
+        let def = parse_effect_chain(
+            "Add {C}. If a card is exiled with ~, add {C}{C} instead.",
+            AbilityKind::Activated,
+        );
+        assert!(matches!(
+            def.effect.as_ref(),
+            Effect::Mana {
+                produced: ManaProduction::Colorless {
+                    count: QuantityExpr::Fixed { value: 1 },
+                },
+                ..
+            }
+        ));
+
+        let sub = def
+            .sub_ability
+            .as_ref()
+            .expect("conditional instead mana should be chained");
+        match &sub.condition {
+            Some(AbilityCondition::ConditionInstead { inner }) => match inner.as_ref() {
+                AbilityCondition::QuantityCheck {
+                    lhs:
+                        QuantityExpr::Ref {
+                            qty: QuantityRef::CardsExiledBySource,
+                        },
+                    comparator: Comparator::GE,
+                    rhs: QuantityExpr::Fixed { value: 1 },
+                } => {}
+                other => panic!("expected CardsExiledBySource gate, got {other:?}"),
+            },
+            other => panic!("expected ConditionInstead, got {other:?}"),
+        }
+        assert!(matches!(
+            sub.effect.as_ref(),
+            Effect::Mana {
+                produced: ManaProduction::Colorless {
+                    count: QuantityExpr::Fixed { value: 2 },
+                },
+                ..
+            }
+        ));
+    }
+
+    #[test]
     fn effect_add_additional_mana_of_chosen_color_utopia_sprawl() {
         // CR 605.1a + CR 107.4a: Utopia Sprawl's "adds an additional one mana of
         // the chosen color" must parse as `ChosenColor { contribution: Additional }`
