@@ -271,7 +271,7 @@ impl GameSession {
         }
     }
 
-    pub fn apply_seat_delta(&mut self, new_state: SeatState, delta: &SeatDelta) {
+    pub fn apply_seat_delta(&mut self, new_state: SeatState, delta: &SeatDelta, db: &CardDatabase) {
         let old_player_count = self.player_count;
         let new_player_count = new_state.seats.len() as u8;
 
@@ -355,8 +355,36 @@ impl GameSession {
             }
         }
 
-        for &(seat_idx, _, ref deck) in &delta.new_ai {
-            self.decks[seat_idx as usize] = Some(deck.clone());
+        // SeatDelta carries name-only `PlayerDeckList` (see DeckResolver docs);
+        // server-core's `self.decks` stores the fully-resolved `PlayerDeckPayload`
+        // because `start_game` and the broadcast paths consume that shape.
+        // Resolve at the boundary using the live `CardDatabase`. `resolve_deck`
+        // takes a `DeckData` which has the same shape as `PlayerDeckList`.
+        for (seat_idx, _, ref deck) in &delta.new_ai {
+            let deck_data = crate::starter_decks::DeckData {
+                main_deck: deck.main_deck.clone(),
+                sideboard: deck.sideboard.clone(),
+                commander: deck.commander.clone(),
+            };
+            // The resolver (`ServerDeckResolver::resolve` in phase-server)
+            // has already validated these names against the same `db`, so
+            // this should never error in practice. The `Err` arm exists as
+            // defense-in-depth — if it does fire, log loudly: `start_game`
+            // below would otherwise substitute an empty deck and silently
+            // eliminate the player on their first draw step (CR 704.5b).
+            self.decks[*seat_idx as usize] = match crate::resolve_deck(db, &deck_data) {
+                Ok(payload) => Some(payload),
+                Err(err) => {
+                    warn!(
+                        seat = *seat_idx,
+                        error = %err,
+                        "AI deck failed re-resolution at apply_seat_delta despite \
+                         passing the resolver gate; seat will start with an empty \
+                         library — investigate the resolver/DB mismatch",
+                    );
+                    None
+                }
+            };
         }
         for &seat_idx in &delta.removed_ai {
             if seat_idx as usize >= self.decks.len() {
