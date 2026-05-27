@@ -1697,6 +1697,13 @@ fn affected_objects_from_events(
                 _ => None,
             })
             .collect(),
+        Effect::Sacrifice { .. } => events
+            .iter()
+            .filter_map(|event| match event {
+                GameEvent::PermanentSacrificed { object_id, .. } => Some(*object_id),
+                _ => None,
+            })
+            .collect(),
         Effect::AddCounter { .. }
         | Effect::PutCounter { .. }
         | Effect::PutCounterAll { .. }

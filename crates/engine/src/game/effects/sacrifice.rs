@@ -318,7 +318,8 @@ mod tests {
     use super::*;
     use crate::game::effects::resolve_ability_chain;
     use crate::game::zones::create_object;
-    use crate::types::ability::{Effect, QuantityRef, TargetFilter};
+    use crate::types::ability::{AbilityKind, Effect, QuantityRef, TargetFilter};
+    use crate::types::actions::GameAction;
     use crate::types::identifiers::{CardId, ObjectId};
     use crate::types::player::PlayerId;
 
@@ -577,6 +578,88 @@ mod tests {
         assert!(!state.battlefield.contains(&obj_id));
         assert!(state.players[0].graveyard.contains(&obj_id));
         assert_eq!(state.last_effect_count, Some(1));
+    }
+
+    #[test]
+    fn interactive_sacrifice_publishes_tracked_set_for_this_way_draw() {
+        let mut state = GameState::new_two_player(42);
+        let sacrifice_a = create_object(
+            &mut state,
+            CardId(1),
+            PlayerId(0),
+            "Permanent A".to_string(),
+            Zone::Battlefield,
+        );
+        let sacrifice_b = create_object(
+            &mut state,
+            CardId(2),
+            PlayerId(0),
+            "Permanent B".to_string(),
+            Zone::Battlefield,
+        );
+        for index in 0..2 {
+            create_object(
+                &mut state,
+                CardId(10 + index),
+                PlayerId(0),
+                format!("Library Card {index}"),
+                Zone::Library,
+            );
+        }
+
+        let mut ability = ResolvedAbility::new(
+            Effect::Sacrifice {
+                target: TargetFilter::Any,
+                count: QuantityExpr::up_to(QuantityExpr::Fixed { value: 2 }),
+                min_count: 0,
+            },
+            vec![],
+            ObjectId(100),
+            PlayerId(0),
+        );
+        ability.sub_ability = Some(Box::new(ResolvedAbility::new(
+            Effect::Draw {
+                count: QuantityExpr::Ref {
+                    qty: QuantityRef::TrackedSetSize,
+                },
+                target: TargetFilter::Controller,
+            },
+            vec![],
+            ObjectId(100),
+            PlayerId(0),
+        )));
+        ability.kind = AbilityKind::Spell;
+
+        let hand_before = state.players[0].hand.len();
+        let mut events = Vec::new();
+        resolve_ability_chain(&mut state, &ability, &mut events, 0).unwrap();
+
+        assert!(matches!(
+            state.waiting_for,
+            WaitingFor::EffectZoneChoice {
+                effect_kind: EffectKind::Sacrifice,
+                up_to: true,
+                ..
+            }
+        ));
+
+        crate::game::engine::apply(
+            &mut state,
+            PlayerId(0),
+            GameAction::SelectCards {
+                cards: vec![sacrifice_a, sacrifice_b],
+            },
+        )
+        .unwrap();
+
+        assert_eq!(state.last_effect_count, Some(2));
+        assert!(state.players[0].graveyard.contains(&sacrifice_a));
+        assert!(state.players[0].graveyard.contains(&sacrifice_b));
+        assert_eq!(
+            state.players[0].hand.len() - hand_before,
+            2,
+            "draw should read TrackedSetSize from permanents sacrificed this way"
+        );
     }
 
     #[test]
