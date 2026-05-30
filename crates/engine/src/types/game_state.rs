@@ -1189,6 +1189,79 @@ pub struct TargetSelectionProgress {
     pub current_legal_targets: Vec<TargetRef>,
 }
 
+/// Lattice tracking which battlefield objects need layer (continuous-effect)
+/// re-evaluation. Replaces the old `bool` flag so that a token / conjure / copy
+/// entry can request an INCREMENTAL re-derive of only the entering object(s)
+/// instead of a full battlefield reset+reapply.
+///
+/// CR 613.1: continuous effects are evaluated in layer order over the whole
+/// board. A full evaluation is always correct; the incremental path is a
+/// performance optimization that `flush_layers` only takes when it can prove
+/// (per-entered preconditions + a board-wide escalation scan) that re-deriving
+/// just the entered objects produces a board state identical to a full pass.
+/// `mark_full()` is the conservative escalation any non-entry mutation uses.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum LayersDirty {
+    /// Layers are up to date; nothing to flush.
+    #[default]
+    Clean,
+    /// Only these objects entered the battlefield since the last flush and no
+    /// other layer-affecting mutation occurred. Candidate for the incremental
+    /// fast path.
+    EnteredObjects(HashSet<ObjectId>),
+    /// A full battlefield re-evaluation is required.
+    Full,
+}
+
+impl LayersDirty {
+    /// Constructor used as the `#[serde(default)]` for the field: deserialized
+    /// snapshots conservatively rebuild fully on first flush.
+    pub fn full() -> Self {
+        Self::Full
+    }
+
+    pub fn is_dirty(&self) -> bool {
+        !matches!(self, Self::Clean)
+    }
+
+    pub fn mark_full(&mut self) {
+        *self = Self::Full;
+    }
+
+    pub fn mark_entered(&mut self, id: ObjectId) {
+        match self {
+            Self::Full => {}
+            Self::Clean => *self = Self::EnteredObjects(HashSet::from([id])),
+            Self::EnteredObjects(s) => {
+                s.insert(id);
+            }
+        }
+    }
+}
+
+/// Cache key for the source-level enabling-condition truth of a single
+/// CONTINUOUS static ability, used by the incremental layer-flush
+/// truth-delta short-circuit (`game/layers.rs`).
+///
+/// CR 611.3a + CR 611.3b: a static-ability continuous effect isn't "locked
+/// in"; it applies at all times the source is on the battlefield, re-evaluated
+/// against whatever its text indicates. When an object enters, an incremental
+/// flush re-derives only the entered objects. If a pre-existing source's
+/// population-sensitive, SOURCE-LEVEL (non-recipient-context) enabling
+/// condition would change truth, pre-existing recipients must be re-derived —
+/// so the flush must escalate to a full pass. This key indexes the recorded
+/// BEFORE truth so the consult can compare against a freshly-recomputed AFTER.
+///
+/// `def_index` indexes the LIVE post-layer `static_definitions` vec
+/// (`iter_all().enumerate()`), NOT `base_static_definitions`. The refresh and
+/// the consult both observe the identical live vec for pre-existing sources, so
+/// the index aligns (see invariant 5 in the plan / the consult below).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct StaticGateKey {
+    pub source: ObjectId,
+    pub def_index: usize,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct PublicStateDirty {
     pub all_objects_dirty: bool,
@@ -3800,6 +3873,35 @@ pub struct TriggerIndex {
     pub unclassified: smallvec::SmallVec<[ObjectId; 4]>,
 }
 
+/// CR 611.2 + CR 613.1: Candidate pre-filter for `for_each_static_effect_source`.
+/// Holds the ids of objects that GENERATE ≥1 continuous effect for the TWO
+/// `layers_dirty`-covered source categories: battlefield permanents with a
+/// continuous `static_definitions` entry (including `GrantStaticAbility` hosts)
+/// and command-zone emblems. The opt-in-zone / off-zone arm (Incarnation cycle —
+/// Anger/Brawn/Filth/Wonder/Valor, `active_zones`-gated statics functioning from
+/// the graveyard) is INTENTIONALLY NOT indexed: its generator-set changes (e.g.
+/// self-milling an Anger into the graveyard) do not all mark `layers_dirty`
+/// (`zones.rs` marks dirty only on battlefield/hand transitions; mill/effect
+/// movers add no mark), so a `layers_dirty`-gated cache of off-zone generators
+/// would go stale. That arm keeps its live `state.objects` scan in
+/// `for_each_static_effect_source`.
+///
+/// Backed by `im::Vector` so `GameState::clone()` stays O(1) structural share
+/// (and `GameState: Send` is preserved — no `Rc`). Rebuilt at the TOP of
+/// `evaluate_layers` / `apply_layers_incremental` (after the Step-1 base reset,
+/// before the first gather — unlike `TriggerIndex`, this index is consulted
+/// MID-pass, so it must be fresh before the gather) and lazily on first consult
+/// after deserialize via the empty-index direct-scan fallback.
+#[derive(Debug, Clone, Default)]
+pub struct StaticSourceIndex {
+    /// Battlefield generators, in `state.battlefield` order (preserves the
+    /// current gather order; phased-out objects are included here and skipped
+    /// at consult via `is_phased_out()`).
+    pub battlefield_sources: im::Vector<ObjectId>,
+    /// Command-zone emblem generators, in `state.command_zone` order.
+    pub command_sources: im::Vector<ObjectId>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GameState {
     pub turn_number: u32,
@@ -3810,8 +3912,11 @@ pub struct GameState {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub turn_decision_controller: Option<PlayerId>,
 
-    // Central object store
-    pub objects: im::HashMap<ObjectId, GameObject>,
+    // Central object store. Uses FxBuildHasher (fast, deterministic) instead of
+    // the default SipHash RandomState: ObjectId is a thin integer key and this
+    // map is looked up millions of times per large-board resolution — profiling
+    // showed SipHash hashing + HAMT lookup was ~35% of resolution CPU.
+    pub objects: im::HashMap<ObjectId, GameObject, rustc_hash::FxBuildHasher>,
     pub next_object_id: u64,
 
     // Shared zones
@@ -3922,7 +4027,26 @@ pub struct GameState {
     pub deferred_entry_events: Vec<GameEvent>,
 
     // Layer system
-    pub layers_dirty: bool,
+    // CONSERVATIVE: deserialized snapshots (e.g. the WASM-export repro) rebuild
+    // fully on first flush. The previous `bool` field serialized as `true`
+    // initially; skipping + defaulting to `Full` preserves that intent without
+    // serializing the (derived) entered-object set.
+    #[serde(skip, default = "LayersDirty::full")]
+    pub layers_dirty: LayersDirty,
+    /// CR 611.3a + CR 611.3b: truth of each CONTINUOUS static's SOURCE-LEVEL
+    /// (non-recipient-context) enabling condition as of the last full
+    /// `evaluate_layers`. Read by the incremental-flush truth-delta
+    /// short-circuit to skip escalation when an entry perturbs the gate but
+    /// does not flip it. Recipient-context conditions are NEVER stored here
+    /// (their truth is per-recipient; `source_condition_gate_passes` is only an
+    /// over-approximation for them) and always escalate. Refreshed wholesale
+    /// every full eval (`refresh_static_gate_truth`). `#[serde(skip)]` derived
+    /// state, like `layers_dirty`/`trigger_index`. NOTE: a plain
+    /// `std::collections::HashMap` (not `im`-backed), so it deep-clones on every
+    /// `GameState::clone()` — kept small by storing only source-level-gated
+    /// continuous statics (a small fraction of the board).
+    #[serde(skip)]
+    pub static_gate_truth: std::collections::HashMap<StaticGateKey, bool>,
     /// CR 603.2: Candidate pre-filter for `collect_pending_triggers`. Rebuilt
     /// lazily after deserialize via a sentinel check at the top of the consult
     /// site; rebuilt eagerly at the end of `evaluate_layers` (CR 611.2e) so the
@@ -3931,6 +4055,15 @@ pub struct GameState {
     /// `trigger_definitions` whenever needed.
     #[serde(skip)]
     pub trigger_index: TriggerIndex,
+    /// CR 611.2 + CR 613.1: Derived generator index for the layer gather.
+    /// `#[serde(skip)]` derived state (like `trigger_index`/`layers_dirty`);
+    /// reconstructed from `state.battlefield` + `state.command_zone` +
+    /// per-object `static_definitions` at the top of every layer pass, and
+    /// lazily on first consult after deserialize via the empty-index fallback.
+    /// INTENTIONALLY omitted from `impl PartialEq for GameState` — derived state
+    /// must not break AI-search dedup on semantically-identical positions.
+    #[serde(skip)]
+    pub static_source_index: StaticSourceIndex,
     pub next_timestamp: u64,
     #[serde(skip, default = "PublicStateDirty::all_dirty")]
     pub public_state_dirty: PublicStateDirty,
@@ -4949,7 +5082,7 @@ impl GameState {
             players,
             priority_player: PlayerId(0),
             turn_decision_controller: None,
-            objects: im::HashMap::new(),
+            objects: im::HashMap::default(),
             next_object_id: 1,
             battlefield: im::Vector::new(),
             stack: im::Vector::new(),
@@ -4975,8 +5108,10 @@ impl GameState {
             post_replacement_event_target: None,
             pending_spell_resolution: None,
             deferred_entry_events: Vec::new(),
-            layers_dirty: true,
+            layers_dirty: LayersDirty::full(),
+            static_gate_truth: std::collections::HashMap::new(),
             trigger_index: TriggerIndex::default(),
+            static_source_index: StaticSourceIndex::default(),
             next_timestamp: 1,
             public_state_dirty: PublicStateDirty::all_dirty(),
             state_revision: 0,
@@ -5202,7 +5337,7 @@ impl GameState {
                 condition,
                 source_name,
             });
-        self.layers_dirty = true;
+        self.layers_dirty.mark_full();
         id
     }
 
@@ -5265,6 +5400,13 @@ impl PartialEq for GameState {
             && self.pending_spell_resolution == other.pending_spell_resolution
             && self.deferred_entry_events == other.deferred_entry_events
             && self.layers_dirty == other.layers_dirty
+            // `static_gate_truth` is INTENTIONALLY excluded: unlike
+            // `layers_dirty`/`public_state_dirty` (which encode pending work),
+            // it is pure derived/self-healing state (reconstructed at the next
+            // full eval; implied entirely by objects + battlefield +
+            // static_definitions). Including it would break AI-search dedup on
+            // semantically-identical positions whose caches differ only in
+            // freshness.
             && self.next_timestamp == other.next_timestamp
             && self.public_state_dirty == other.public_state_dirty
             && self.state_revision == other.state_revision

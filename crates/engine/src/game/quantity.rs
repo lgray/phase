@@ -195,6 +195,304 @@ pub(crate) fn quantity_expr_uses_recipient(expr: &QuantityExpr) -> bool {
     }
 }
 
+/// True when the QuantityExpr's magnitude depends on the population of objects
+/// on the battlefield (a count/aggregate over a board-wide object set).
+///
+/// CR 611.3a: a static-ability continuous effect isn't locked in — it applies at
+/// any moment to whatever its text indicates. A magnitude that reads board
+/// population ("+1/+1 for each creature you control", Devotion, distinct colors
+/// among permanents, etc.) re-evaluates when ANY object enters or leaves, which
+/// changes the value applied to PRE-EXISTING recipients. The incremental
+/// layer-flush fast path must escalate to a full re-evaluation when an active
+/// effect carries such a magnitude. CR 613.7d / CR 613.8a: timestamp/dependency
+/// ordering operates on the live set, so a population change can also reorder.
+///
+/// Mirrors the structural recursion of `quantity_expr_uses_recipient`: composite
+/// arms recurse, the `QuantityRef` leaf classifies each variant exhaustively
+/// (NO wildcard tail) so a future population-reading variant forces a decision
+/// here at compile time.
+pub(crate) fn quantity_expr_uses_object_count(expr: &QuantityExpr) -> bool {
+    match expr {
+        QuantityExpr::Fixed { .. } => false,
+        QuantityExpr::Ref { qty } => quantity_ref_uses_object_count(qty),
+        QuantityExpr::DivideRounded { inner, .. }
+        | QuantityExpr::Offset { inner, .. }
+        | QuantityExpr::Multiply { inner, .. } => quantity_expr_uses_object_count(inner),
+        QuantityExpr::Sum { exprs } => exprs.iter().any(quantity_expr_uses_object_count),
+        QuantityExpr::UpTo { max } => quantity_expr_uses_object_count(max),
+        QuantityExpr::Power { exponent, .. } => quantity_expr_uses_object_count(exponent),
+        QuantityExpr::Difference { left, right } => {
+            quantity_expr_uses_object_count(left) || quantity_expr_uses_object_count(right)
+        }
+    }
+}
+
+/// CR 611.3a + CR 613.7d: Leaf classification for `quantity_expr_uses_object_count`.
+/// EXHAUSTIVE and wildcard-free — adding a `QuantityRef` variant forces a
+/// decision here. `true` for any reference that reads battlefield object
+/// population; `false` for single-object, player-level, history-record, and
+/// payment/choice references whose value is unaffected by another object
+/// entering or leaving the battlefield.
+fn quantity_ref_uses_object_count(qty: &QuantityRef) -> bool {
+    match qty {
+        // Read battlefield object population directly.
+        QuantityRef::ObjectCount { .. }
+        | QuantityRef::ObjectCountDistinct { .. }
+        | QuantityRef::CountersOnObjects { .. }
+        | QuantityRef::Aggregate { .. }
+        | QuantityRef::ControlledByEachPlayer { .. }
+        | QuantityRef::Devotion { .. }
+        | QuantityRef::BasicLandTypeCount { .. }
+        | QuantityRef::PartySize { .. }
+        | QuantityRef::DistinctColorsAmongPermanents { .. }
+        | QuantityRef::DistinctCounterKindsAmong { .. }
+        | QuantityRef::EnteredThisTurn { .. } => true,
+        // Distinct card types reads battlefield population ONLY when its source
+        // is the object-filter variant; zone / linked-exile sources do not.
+        QuantityRef::DistinctCardTypes { source } => match source {
+            CardTypeSetSource::Objects { .. } => true,
+            CardTypeSetSource::Zone { .. } | CardTypeSetSource::ExiledBySource => false,
+        },
+        // Player-level, single-object, history-record, payment, and choice
+        // references: unaffected by another object's battlefield entry/exit.
+        QuantityRef::HandSize { .. }
+        | QuantityRef::LifeTotal { .. }
+        | QuantityRef::GraveyardSize { .. }
+        | QuantityRef::LifeAboveStarting
+        | QuantityRef::StartingLifeTotal
+        | QuantityRef::PlayerCount { .. }
+        | QuantityRef::CountersOn { .. }
+        | QuantityRef::PlayerCounter { .. }
+        | QuantityRef::Variable { .. }
+        | QuantityRef::Power { .. }
+        | QuantityRef::Toughness { .. }
+        | QuantityRef::ObjectManaValue { .. }
+        | QuantityRef::ObjectColorCount { .. }
+        | QuantityRef::ObjectNameWordCount { .. }
+        | QuantityRef::ManaSymbolsInManaCost { .. }
+        | QuantityRef::SelfManaValue
+        | QuantityRef::TargetZoneCardCount { .. }
+        | QuantityRef::CardsExiledBySource
+        | QuantityRef::ZoneCardCount { .. }
+        | QuantityRef::TrackedSetSize
+        | QuantityRef::ExiledFromHandThisResolution
+        | QuantityRef::PreviousEffectAmount
+        | QuantityRef::LifeLostThisTurn { .. }
+        | QuantityRef::Speed { .. }
+        | QuantityRef::EventContextAmount
+        | QuantityRef::AttachmentsOnLeavingObject { .. }
+        | QuantityRef::EventContextSourceCostX
+        | QuantityRef::SpellsCastThisTurn { .. }
+        | QuantityRef::SacrificedThisTurn { .. }
+        | QuantityRef::CrimesCommittedThisTurn
+        | QuantityRef::LifeGainedThisTurn { .. }
+        | QuantityRef::CardsDrawnThisTurn { .. }
+        | QuantityRef::LandsPlayedThisTurn { .. }
+        | QuantityRef::TurnsTaken
+        | QuantityRef::ZoneChangeCountThisTurn { .. }
+        | QuantityRef::DamageDealtThisTurn { .. }
+        | QuantityRef::ChosenNumber
+        | QuantityRef::AttackedThisTurn
+        | QuantityRef::DescendedThisTurn
+        | QuantityRef::LoyaltyAbilitiesActivatedThisTurn { .. }
+        | QuantityRef::SpellsCastLastTurn
+        | QuantityRef::SpellsCastThisGame { .. }
+        | QuantityRef::CounterAddedThisTurn { .. }
+        | QuantityRef::CardsDiscardedThisTurn { .. }
+        | QuantityRef::TokensCreatedThisTurn { .. }
+        | QuantityRef::PlayerActionsThisTurn { .. }
+        | QuantityRef::DungeonsCompleted
+        | QuantityRef::CostXPaid
+        | QuantityRef::KickerCount
+        | QuantityRef::AdditionalCostPaymentCount
+        | QuantityRef::ConvokedCreatureCount
+        | QuantityRef::ManaSpentToCast { .. }
+        | QuantityRef::ColorsInCommandersColorIdentity
+        | QuantityRef::CommanderCastFromCommandZoneCount => false,
+    }
+}
+
+/// CR 611.3a + CR 700.5: ENTRY-AWARE narrowing for a population-sensitive
+/// magnitude. `quantity_expr_uses_object_count` proves an effect's magnitude
+/// *can* read board population; this proves a SPECIFIC entering object can
+/// actually perturb that population input.
+///
+/// Monotonicity (the correctness foundation): the `EnteredObjects` fast path is
+/// reached only for battlefield ENTRIES (leaves always escalate to `Full`).
+/// Entry only ADDS objects, so counts only increase, devotion only increases,
+/// and presence only flips false→true — the ONLY way an entry changes a
+/// population-dependent magnitude is if the entered object is a MEMBER of /
+/// CONTRIBUTES to that population. So an entry-membership test is sufficient.
+///
+/// Mirrors the structural recursion of `quantity_expr_uses_object_count`:
+/// composite arms recurse, the `QuantityRef` leaf classifies each variant.
+/// `ctx` is built from the EFFECT SOURCE (CR 109.5 controller rebinding), so
+/// "you control" filters resolve against the effect's controller — NOT the
+/// entered object's controller.
+pub(crate) fn entered_object_perturbs_quantity_expr(
+    state: &GameState,
+    entered: &crate::game::game_object::GameObject,
+    ctx: &FilterContext<'_>,
+    expr: &QuantityExpr,
+) -> bool {
+    match expr {
+        QuantityExpr::Fixed { .. } => false,
+        QuantityExpr::Ref { qty } => entered_object_perturbs_quantity_ref(state, entered, ctx, qty),
+        QuantityExpr::DivideRounded { inner, .. }
+        | QuantityExpr::Offset { inner, .. }
+        | QuantityExpr::Multiply { inner, .. } => {
+            entered_object_perturbs_quantity_expr(state, entered, ctx, inner)
+        }
+        QuantityExpr::Sum { exprs } => exprs
+            .iter()
+            .any(|e| entered_object_perturbs_quantity_expr(state, entered, ctx, e)),
+        QuantityExpr::UpTo { max } => {
+            entered_object_perturbs_quantity_expr(state, entered, ctx, max)
+        }
+        QuantityExpr::Power { exponent, .. } => {
+            entered_object_perturbs_quantity_expr(state, entered, ctx, exponent)
+        }
+        QuantityExpr::Difference { left, right } => {
+            entered_object_perturbs_quantity_expr(state, entered, ctx, left)
+                || entered_object_perturbs_quantity_expr(state, entered, ctx, right)
+        }
+    }
+}
+
+/// CR 611.3a + CR 700.5: entry-membership leaf for
+/// `entered_object_perturbs_quantity_expr`. EXHAUSTIVE and wildcard-free — the
+/// classification mirrors `quantity_ref_uses_object_count`: every `false` arm
+/// THERE is `false` HERE (an object entering can never perturb a value the
+/// classifier already proved population-independent), and every `true` arm
+/// there is narrowed HERE to "does THIS entered object join the population?".
+fn entered_object_perturbs_quantity_ref(
+    state: &GameState,
+    entered: &crate::game::game_object::GameObject,
+    ctx: &FilterContext<'_>,
+    qty: &QuantityRef,
+) -> bool {
+    match qty {
+        // Filter-bearing battlefield-population refs: perturbed iff the entered
+        // object matches the population filter (CR 109.5 controller via `ctx`).
+        QuantityRef::ObjectCount { filter }
+        | QuantityRef::ObjectCountDistinct { filter, .. }
+        | QuantityRef::CountersOnObjects { filter, .. }
+        | QuantityRef::Aggregate { filter, .. }
+        | QuantityRef::ControlledByEachPlayer { filter, .. }
+        | QuantityRef::DistinctColorsAmongPermanents { filter }
+        | QuantityRef::DistinctCounterKindsAmong { filter }
+        | QuantityRef::EnteredThisTurn { filter } => {
+            matches_target_filter(state, entered.id, filter, ctx)
+        }
+        QuantityRef::DistinctCardTypes { source } => match source {
+            CardTypeSetSource::Objects { filter } => {
+                matches_target_filter(state, entered.id, filter, ctx)
+            }
+            // Zone / linked-exile sources are not battlefield population — the
+            // classifier returns false for them, so they cannot be perturbed.
+            CardTypeSetSource::Zone { .. } | CardTypeSetSource::ExiledBySource => false,
+        },
+        // CR 700.5: devotion is perturbed iff the entered object's mana cost
+        // contributes a symbol for one of the fixed colors. `ChosenColor`'s
+        // color isn't statically known, so conservatively perturb (over-
+        // escalation is safe). LOW-1: controller-blind — escalate if ANY
+        // entered object contributes a shard regardless of controller.
+        QuantityRef::Devotion { colors } => match colors {
+            crate::types::ability::DevotionColors::Fixed(cols) => {
+                entered_object_contributes_devotion(entered, cols)
+            }
+            crate::types::ability::DevotionColors::ChosenColor => true,
+        },
+        // CR 305.6: a basic land entering can change the distinct-basic-land-type
+        // count. Synthesizing a precise "land controlled by `controller`" filter
+        // is awkward (the count is per-controller-rebound), so conservatively
+        // perturb whenever the entered object is a land at all.
+        QuantityRef::BasicLandTypeCount { .. } => {
+            entered.card_types.core_types.contains(&CoreType::Land)
+        }
+        // CR 700.8: party is composed of creatures the controller controls — any
+        // creature entry can change party size. Conservatively perturb on any
+        // creature entry rather than re-deriving the party-type maximization.
+        QuantityRef::PartySize { .. } => {
+            entered.card_types.core_types.contains(&CoreType::Creature)
+        }
+        // Player-level, single-object, history-record, payment, and choice refs:
+        // an object's battlefield entry/exit cannot change their value. Identical
+        // enumeration to the `false` arm of `quantity_ref_uses_object_count`.
+        QuantityRef::HandSize { .. }
+        | QuantityRef::LifeTotal { .. }
+        | QuantityRef::GraveyardSize { .. }
+        | QuantityRef::LifeAboveStarting
+        | QuantityRef::StartingLifeTotal
+        | QuantityRef::PlayerCount { .. }
+        | QuantityRef::CountersOn { .. }
+        | QuantityRef::PlayerCounter { .. }
+        | QuantityRef::Variable { .. }
+        | QuantityRef::Power { .. }
+        | QuantityRef::Toughness { .. }
+        | QuantityRef::ObjectManaValue { .. }
+        | QuantityRef::ObjectColorCount { .. }
+        | QuantityRef::ObjectNameWordCount { .. }
+        | QuantityRef::ManaSymbolsInManaCost { .. }
+        | QuantityRef::SelfManaValue
+        | QuantityRef::TargetZoneCardCount { .. }
+        | QuantityRef::CardsExiledBySource
+        | QuantityRef::ZoneCardCount { .. }
+        | QuantityRef::TrackedSetSize
+        | QuantityRef::ExiledFromHandThisResolution
+        | QuantityRef::PreviousEffectAmount
+        | QuantityRef::LifeLostThisTurn { .. }
+        | QuantityRef::Speed { .. }
+        | QuantityRef::EventContextAmount
+        | QuantityRef::AttachmentsOnLeavingObject { .. }
+        | QuantityRef::EventContextSourceCostX
+        | QuantityRef::SpellsCastThisTurn { .. }
+        | QuantityRef::SacrificedThisTurn { .. }
+        | QuantityRef::CrimesCommittedThisTurn
+        | QuantityRef::LifeGainedThisTurn { .. }
+        | QuantityRef::CardsDrawnThisTurn { .. }
+        | QuantityRef::LandsPlayedThisTurn { .. }
+        | QuantityRef::TurnsTaken
+        | QuantityRef::ZoneChangeCountThisTurn { .. }
+        | QuantityRef::DamageDealtThisTurn { .. }
+        | QuantityRef::ChosenNumber
+        | QuantityRef::AttackedThisTurn
+        | QuantityRef::DescendedThisTurn
+        | QuantityRef::LoyaltyAbilitiesActivatedThisTurn { .. }
+        | QuantityRef::SpellsCastLastTurn
+        | QuantityRef::SpellsCastThisGame { .. }
+        | QuantityRef::CounterAddedThisTurn { .. }
+        | QuantityRef::CardsDiscardedThisTurn { .. }
+        | QuantityRef::TokensCreatedThisTurn { .. }
+        | QuantityRef::PlayerActionsThisTurn { .. }
+        | QuantityRef::DungeonsCompleted
+        | QuantityRef::CostXPaid
+        | QuantityRef::KickerCount
+        | QuantityRef::AdditionalCostPaymentCount
+        | QuantityRef::ConvokedCreatureCount
+        | QuantityRef::ManaSpentToCast { .. }
+        | QuantityRef::ColorsInCommandersColorIdentity
+        | QuantityRef::CommanderCastFromCommandZoneCount => false,
+    }
+}
+
+/// CR 700.5: True when the entered object's mana cost carries at least one
+/// shard that contributes to devotion for any of `colors`. Mirrors the per-
+/// object inner loop of `count_devotion` so an entry that adds a matching
+/// symbol perturbs the running devotion total.
+fn entered_object_contributes_devotion(
+    entered: &crate::game::game_object::GameObject,
+    colors: &[ManaColor],
+) -> bool {
+    if let ManaCost::Cost { ref shards, .. } = entered.mana_cost {
+        shards
+            .iter()
+            .any(|shard| colors.iter().any(|c| shard.contributes_to(*c)))
+    } else {
+        false
+    }
+}
+
 pub(crate) fn filter_uses_recipient(filter: &TargetFilter) -> bool {
     match filter {
         TargetFilter::Typed(tf) => tf.properties.iter().any(filter_prop_uses_recipient),

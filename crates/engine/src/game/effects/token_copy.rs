@@ -303,7 +303,10 @@ pub fn resolve(
             // Step 6b: Inject predefined abilities, record entry, and mark layers dirty.
             // CR 111.10a-v: Predefined token abilities for known subtypes (Treasure, Food, etc.).
             super::token::inject_predefined_token_abilities(state, token_id);
-            state.layers_dirty = true;
+            // Battlefield entry of a copy token: request an incremental re-derive
+            // for just this token. `flush_layers` escalates to a full pass when
+            // the copied object sources a continuous effect, carries a CDA, etc.
+            crate::game::layers::mark_layers_entered(state, token_id);
             crate::game::restrictions::record_battlefield_entry(state, token_id);
             crate::game::restrictions::record_token_created(state, token_id);
 
@@ -344,6 +347,45 @@ pub fn resolve(
     });
 
     Ok(())
+}
+
+/// CR 707.2: Compute the longest contiguous prefix of `source_ids` (top-down
+/// resolution order) whose copy sources all share IDENTICAL copiable values.
+///
+/// Tier-3 batch support: a run of "create a token that's a copy of it"
+/// self-copy triggers from distinct sources produces N tokens with identical
+/// characteristics iff every source has the same CR 707.2 copiable values. This
+/// walks the run, snapshots the top source's copiable values, then extends the
+/// prefix while each subsequent source's values are `==` to the snapshot.
+///
+/// Conserves on a vanished source: if `compute_current_copiable_values` returns
+/// `None` for any source in the prefix walk, the prefix stops there (the top
+/// source returning `None` yields `None` overall — nothing to batch).
+///
+/// Returns `(prefix_values, prefix_len)`. `prefix_len` may be shorter than
+/// `source_ids.len()` (a divergent tail resolves later). Token art is read from
+/// the live source at resolution time (`token_copy::resolve`), so no display
+/// `PrintedCardRef` is threaded through the batch probe (CR 707.2: not a
+/// copiable characteristic).
+pub(crate) fn compute_copy_batch_prefix(
+    state: &GameState,
+    source_ids: &[ObjectId],
+) -> Option<(crate::types::ability::CopiableValues, u32)> {
+    let top_id = *source_ids.first()?;
+    // Conserve on a vanished top source.
+    let prefix_values = compute_current_copiable_values(state, top_id)?;
+
+    let mut prefix_len = 1u32;
+    for &id in source_ids.iter().skip(1) {
+        // CR 707.2: stop at the first source that vanished (None) or whose
+        // copiable values diverge from the prefix snapshot.
+        match compute_current_copiable_values(state, id) {
+            Some(values) if values == prefix_values => prefix_len += 1,
+            _ => break,
+        }
+    }
+
+    Some((prefix_values, prefix_len))
 }
 
 /// CR 707.2 + CR 707.9: Apply non-keyword `, except <body>` modifications to
@@ -781,7 +823,7 @@ mod tests {
         assert!(token.card_types.subtypes.contains(&"Snake".to_string()));
         assert!(token.is_token);
         assert!(token.zone == Zone::Battlefield);
-        assert!(state.layers_dirty);
+        assert!(state.layers_dirty.is_dirty());
         assert!(events.iter().any(
             |e| matches!(e, GameEvent::TokenCreated { name, .. } if name == "Mist-Syndicate Naga")
         ));
