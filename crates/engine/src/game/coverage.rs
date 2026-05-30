@@ -5134,6 +5134,10 @@ fn condition_feature(cond: &AbilityCondition) -> (&'static str, FeatureSupport) 
             ("CostPaidObjectMatchesFilter", Handled)
         }
         AbilityCondition::SourceLacksKeyword { .. } => ("SourceLacksKeyword", Handled),
+        // CR 101.3 + CR 109.5: per-iteration scoped-player filter check; handled by
+        // `evaluate_condition` (effects/mod.rs). Used by cross-scope decline-tail
+        // gates (Liliana, Waker of the Dead — parent `All`, decline `Opponent`).
+        AbilityCondition::ScopedPlayerMatches { .. } => ("ScopedPlayerMatches", Handled),
     }
 }
 

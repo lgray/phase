@@ -1072,6 +1072,7 @@ fn should_resolve_subability_on_optional_decline(ability: &ResolvedAbility) -> b
             | AbilityCondition::DayNightIs { .. }
             | AbilityCondition::NthResolutionThisTurn { .. }
             | AbilityCondition::SourceLacksKeyword { .. }
+            | AbilityCondition::ScopedPlayerMatches { .. }
             | AbilityCondition::EffectOutcome {
                 signal: EffectOutcomeSignal::CurrentScopeSucceeded,
             },
@@ -4556,6 +4557,81 @@ pub(crate) fn evaluate_condition(
             .objects
             .get(&ability.source_id)
             .is_some_and(|obj| !obj.has_keyword(keyword)),
+        // CR 101.3 + CR 109.5 + CR 608.2c: per-iteration scoped-player filter.
+        // The decline-tail body for a cross-scope decline clause (parent
+        // iterates a wider set than the decline-clause `PlayerFilter`) fires
+        // only when the iterated player matches the decline scope. Outside a
+        // `player_scope` iteration `scoped_player` is `None` and we fall back
+        // to the ability's controller — the canonical
+        // `ScopedPlayer`/`Controller` fallback semantics.
+        AbilityCondition::ScopedPlayerMatches { filter } => {
+            let candidate = ability.scoped_player.unwrap_or(ability.controller);
+            scoped_player_matches_filter(state, ability, candidate, filter)
+        }
+    }
+}
+
+/// CR 101.3 + CR 109.5: Evaluate a `PlayerFilter` against a single per-iteration
+/// candidate player. Mirrors the per-candidate predicates in
+/// `quantity::resolve_player_count`, but applied to one already-bound iteration
+/// player rather than a fold over all players. Set-valued / event-context
+/// variants that have no single-player semantic outside an iteration loop fail
+/// closed — `ScopedPlayerMatches` is only emitted by the parser for `All` /
+/// `Opponent` / `Controller` today (the canonical decline-tail scopes), so the
+/// fall-through is defensive rather than load-bearing.
+fn scoped_player_matches_filter(
+    state: &GameState,
+    ability: &ResolvedAbility,
+    candidate: PlayerId,
+    filter: &PlayerFilter,
+) -> bool {
+    // CR 109.5: During a `player_scope` iteration the driver rebinds
+    // `ability.controller = scoped_player` (effects/mod.rs:2884) so that
+    // body effects whose leaf target is `Controller` resolve to the
+    // iterated player. The decline-clause scope filter, however, evaluates
+    // "Opponent of whom" relative to the PRINTED controller — the canonical
+    // idiom used by `quantity.rs` (see `original_controller.unwrap_or(controller)`
+    // at quantity.rs:479,514,530,721). Without this fallback, `Opponent`
+    // here would evaluate `candidate != iterated_player` and short-circuit
+    // to false for every per-iteration call, silently dropping cross-scope
+    // bodies (e.g. Liliana, Waker of the Dead [+1]).
+    let controller = ability.original_controller.unwrap_or(ability.controller);
+    match filter {
+        PlayerFilter::Controller => candidate == controller,
+        PlayerFilter::Opponent => candidate != controller,
+        PlayerFilter::All => true,
+        PlayerFilter::OpponentLostLife => {
+            candidate != controller
+                && state
+                    .players
+                    .iter()
+                    .find(|p| p.id == candidate)
+                    .is_some_and(|p| p.life_lost_this_turn > 0)
+        }
+        PlayerFilter::OpponentGainedLife => {
+            candidate != controller
+                && state
+                    .players
+                    .iter()
+                    .find(|p| p.id == candidate)
+                    .is_some_and(|p| p.life_gained_this_turn > 0)
+        }
+        // Set-valued / event-context / aggregate variants: not used by
+        // decline-tail today. Fail closed (mirrors the
+        // `TriggerCondition::DuringPlayersTurn` fallthrough pattern at
+        // game/triggers.rs:3703-3723).
+        PlayerFilter::DefendingPlayer
+        | PlayerFilter::OpponentDealtCombatDamage
+        | PlayerFilter::HighestSpeed
+        | PlayerFilter::ZoneChangedThisWay
+        | PlayerFilter::PerformedActionThisWay { .. }
+        | PlayerFilter::OwnersOfCardsExiledBySource
+        | PlayerFilter::TriggeringPlayer
+        | PlayerFilter::OpponentOtherThanTriggering
+        | PlayerFilter::VotedFor { .. }
+        | PlayerFilter::ParentObjectTargetController
+        | PlayerFilter::ControlsCount { .. }
+        | PlayerFilter::PlayerAttribute { .. } => false,
     }
 }
 

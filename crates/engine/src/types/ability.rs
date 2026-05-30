@@ -9240,6 +9240,26 @@ pub enum AbilityCondition {
     /// CR 702.x: True when the source permanent does not have the specified keyword.
     /// Inverse of keyword presence check — used by "if ~ doesn't have [keyword]" gates.
     SourceLacksKeyword { keyword: Keyword },
+    /// CR 101.3 + CR 109.5 + CR 608.2c: True when the current per-iteration
+    /// scoped player (`ResolvedAbility.scoped_player`) matches `filter`
+    /// relative to the ability's controller. Used by cross-scope decline-tail
+    /// gates where the parent's `player_scope` iterates a wider set than the
+    /// decline clause's own `PlayerFilter` (Liliana, Waker of the Dead: parent
+    /// "each player discards a card" iterates `All`, decline clause "each
+    /// opponent who can't loses 3 life" filters to `Opponent`).
+    ///
+    /// Composed with `Not{IfCurrentScopeSucceeded}` via `AbilityCondition::And`
+    /// so the body fires only on iterations where (a) the parent action failed
+    /// AND (b) the scoped player matches the decline clause's own filter.
+    ///
+    /// For same-scope decline-tails (Plaguecrafter, Entropic Battlecruiser,
+    /// Momentum Breaker — parent and decline both iterate the same set) this
+    /// conjunct is trivially true for every iteration and acts as a no-op.
+    ///
+    /// Outside a `player_scope` iteration (no `scoped_player` bound) the
+    /// condition resolves against the ability's controller — the canonical
+    /// fallback semantics for the `ScopedPlayer`/`Controller` split.
+    ScopedPlayerMatches { filter: PlayerFilter },
 }
 
 impl AbilityCondition {
