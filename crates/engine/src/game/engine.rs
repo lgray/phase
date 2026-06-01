@@ -5736,7 +5736,7 @@ mod tests {
     use crate::game::zones::create_object;
     use crate::parser::oracle::parse_oracle_text;
     use crate::types::ability::{
-        AbilityCost, AbilityDefinition, AbilityKind, AbilityTag, ControllerRef, Effect,
+        AbilityCost, AbilityDefinition, AbilityKind, AbilityTag, ChoiceType, ControllerRef, Effect,
         ManaContribution, ManaProduction, ManaSpendRestriction, QuantityExpr, ResolvedAbility,
         StaticDefinition, TargetFilter, TriggerDefinition, TypeFilter, TypedFilter,
     };
@@ -7235,6 +7235,65 @@ mod tests {
             runner.state().objects[&grove].tapped,
             "issue #1581: Thriving Grove must ENTER TAPPED (enter_tapped replacement \
              applied), not just resolve the colour choice"
+        );
+    }
+
+    #[test]
+    fn thriving_grove_play_land_stays_tapped_after_color_choice() {
+        let mut state = setup_game_at_main_phase();
+        let grove = create_object(
+            &mut state,
+            CardId(1581),
+            PlayerId(0),
+            "Thriving Grove".to_string(),
+            Zone::Hand,
+        );
+        {
+            let obj = state.objects.get_mut(&grove).unwrap();
+            obj.card_types.core_types.push(CoreType::Land);
+        }
+        apply_oracle_to_object(
+            &mut state,
+            grove,
+            "Thriving Grove",
+            "This land enters tapped. As it enters, choose a color other than green.\n{T}: Add {G} or one mana of the chosen color.",
+        );
+
+        let result = apply_as_current(
+            &mut state,
+            GameAction::PlayLand {
+                object_id: grove,
+                card_id: CardId(1581),
+            },
+        )
+        .unwrap();
+
+        assert!(matches!(
+            result.waiting_for,
+            WaitingFor::NamedChoice {
+                choice_type: ChoiceType::Color { .. },
+                source_id: Some(id),
+                ..
+            } if id == grove
+        ));
+        assert!(
+            state.objects.get(&grove).unwrap().tapped,
+            "Thriving Grove must enter tapped before the as-enters color choice resolves"
+        );
+
+        apply_as_current(
+            &mut state,
+            GameAction::ChooseOption {
+                choice: "Red".to_string(),
+            },
+        )
+        .unwrap();
+
+        let obj = state.objects.get(&grove).unwrap();
+        assert_eq!(obj.chosen_color(), Some(ManaColor::Red));
+        assert!(
+            obj.tapped,
+            "Thriving Grove must remain tapped after choosing its color"
         );
     }
 
