@@ -50,6 +50,7 @@ pub fn trigger_matcher(mode: TriggerMode) -> Option<TriggerMatcher> {
         TriggerMode::Untaps | TriggerMode::UntapAll => match_untaps,
         TriggerMode::LifeGained => match_life_gained,
         TriggerMode::LifeLost | TriggerMode::LifeLostAll => match_life_lost,
+        TriggerMode::LifeChanged => match_life_changed,
         TriggerMode::Drawn => match_drawn,
         TriggerMode::Discarded | TriggerMode::DiscardedAll => match_discarded,
         TriggerMode::Sacrificed | TriggerMode::SacrificedOnce => match_sacrificed,
@@ -238,6 +239,7 @@ pub fn build_trigger_registry() -> HashMap<TriggerMode, TriggerMatcher> {
     r.insert(TriggerMode::LifeGained, match_life_gained);
     r.insert(TriggerMode::LifeLost, match_life_lost);
     r.insert(TriggerMode::LifeLostAll, match_life_lost);
+    r.insert(TriggerMode::LifeChanged, match_life_changed);
     r.insert(TriggerMode::Drawn, match_drawn);
     r.insert(TriggerMode::Discarded, match_discarded);
     r.insert(TriggerMode::DiscardedAll, match_discarded);
@@ -1704,6 +1706,23 @@ pub(super) fn match_life_lost(
 ) -> bool {
     if let GameEvent::LifeChanged { player_id, amount } = event {
         if *amount >= 0 {
+            return false;
+        }
+        valid_player_matches(trigger, state, *player_id, source_id)
+    } else {
+        false
+    }
+}
+
+/// CR 119.3: Match life changed events (gain or loss). Fires when `amount != 0`.
+pub(super) fn match_life_changed(
+    event: &GameEvent,
+    trigger: &TriggerDefinition,
+    source_id: ObjectId,
+    state: &GameState,
+) -> bool {
+    if let GameEvent::LifeChanged { player_id, amount } = event {
+        if *amount == 0 {
             return false;
         }
         valid_player_matches(trigger, state, *player_id, source_id)

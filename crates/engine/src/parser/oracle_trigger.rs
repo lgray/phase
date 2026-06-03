@@ -6121,14 +6121,18 @@ fn try_parse_event(
         return Some((def.mode.clone(), def));
     }
 
-    // CR 119.3 + CR 603.2: "Whenever [subject] loses life" — player-scoped life-loss
-    // trigger. Subject filter (`a player`, `an opponent`, etc.) becomes `valid_target`
-    // so the matcher's `valid_player_matches` honors the scoping.
+    // CR 119.3 + CR 603.2: "Whenever [subject] gains/loses/gains or loses life"
+    // — player-scoped life-change triggers. Subject filter (`a player`,
+    // `an opponent`, etc.) becomes `valid_target` so the matcher's
+    // `valid_player_matches` honors the scoping.
     // Covers Exquisite Blood ("Whenever an opponent loses life, ..."),
     // Vito, Thorn of the Dusk Rose ("Whenever you gain life, each opponent loses..."),
-    // Bloodchief Ascension-adjacent cards.
+    // Bloodchief Ascension-adjacent cards, and Moonstone Harbinger-style combined
+    // life-change triggers.
     fn parse_life_verb(input: &str) -> OracleResult<'_, TriggerMode> {
         alt((
+            value(TriggerMode::LifeChanged, tag("gains or loses life")),
+            value(TriggerMode::LifeChanged, tag("gain or lose life")),
             value(TriggerMode::LifeLost, tag("loses life")),
             value(TriggerMode::LifeLost, tag("lose life")),
             value(TriggerMode::LifeGained, tag("gains life")),
@@ -15452,6 +15456,88 @@ mod tests {
         assert_eq!(def.mode, TriggerMode::LifeLost);
         assert_eq!(def.valid_target, Some(TargetFilter::Controller));
         assert_eq!(def.constraint, Some(TriggerConstraint::OnlyDuringYourTurn));
+    }
+
+    #[test]
+    fn trigger_you_gain_or_lose_life_during_your_turn() {
+        let def = parse_trigger_line(
+            "Whenever you gain or lose life during your turn, this creature gets +1/+0 until end of turn.",
+            "Wax-Wane Witness",
+        );
+        assert_eq!(def.mode, TriggerMode::LifeChanged);
+        assert_eq!(def.valid_target, Some(TargetFilter::Controller));
+        // CR 603.4 + CR 102.1: "during your turn" becomes an intervening-if
+        // condition so it composes with a separate rate-limit constraint.
+        assert_eq!(
+            def.condition,
+            Some(TriggerCondition::DuringPlayersTurn {
+                player: PlayerFilter::Controller,
+            })
+        );
+    }
+
+    /// CR 603.4: Moonstone Harbinger — "during your turn" + "only once each turn"
+    /// must both survive lowering. The turn restriction is a condition; the rate
+    /// limit is a constraint.
+    #[test]
+    fn trigger_you_gain_or_lose_life_during_your_turn_once_each_turn() {
+        let def = parse_trigger_line(
+            "Whenever you gain or lose life during your turn, Bats you control get +1/+0 and gain deathtouch until end of turn. This ability triggers only once each turn.",
+            "Moonstone Harbinger",
+        );
+        assert_eq!(def.mode, TriggerMode::LifeChanged);
+        assert_eq!(def.valid_target, Some(TargetFilter::Controller));
+        assert_eq!(
+            def.condition,
+            Some(TriggerCondition::DuringPlayersTurn {
+                player: PlayerFilter::Controller,
+            })
+        );
+        assert_eq!(def.constraint, Some(TriggerConstraint::OncePerTurn));
+    }
+
+    #[test]
+    fn trigger_you_gain_or_lose_life_no_turn_constraint() {
+        let def = parse_trigger_line(
+            "Whenever you gain or lose life, put a +1/+1 counter on this creature.",
+            "Test Card",
+        );
+        assert_eq!(def.mode, TriggerMode::LifeChanged);
+        assert_eq!(def.valid_target, Some(TargetFilter::Controller));
+        assert_eq!(def.condition, None);
+        assert_eq!(def.constraint, None);
+    }
+
+    #[test]
+    fn trigger_opponent_gains_or_loses_life_scopes_to_opponent() {
+        let def = parse_trigger_line(
+            "Whenever an opponent gains or loses life during their turn, draw a card.",
+            "Test Card",
+        );
+        assert_eq!(def.mode, TriggerMode::LifeChanged);
+        assert_eq!(
+            def.valid_target,
+            Some(TargetFilter::Typed(
+                TypedFilter::default().controller(ControllerRef::Opponent)
+            ))
+        );
+        assert_eq!(
+            def.condition,
+            Some(TriggerCondition::DuringPlayersTurn {
+                player: PlayerFilter::TriggeringPlayer,
+            })
+        );
+    }
+
+    #[test]
+    fn trigger_a_player_gains_or_loses_life_is_unscoped() {
+        let def = parse_trigger_line(
+            "Whenever a player gains or loses life, each opponent loses 1 life.",
+            "Test Card",
+        );
+        assert_eq!(def.mode, TriggerMode::LifeChanged);
+        assert_eq!(def.valid_target, Some(TargetFilter::Player));
+        assert_eq!(def.condition, None);
     }
 
     #[test]
