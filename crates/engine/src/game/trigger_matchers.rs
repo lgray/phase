@@ -2746,20 +2746,37 @@ pub(super) fn match_becomes_blocked(
     source_id: ObjectId,
     state: &GameState,
 ) -> bool {
+    !matching_becomes_blocked_events(event, trigger, source_id, state).is_empty()
+}
+
+pub(super) fn matching_becomes_blocked_events(
+    event: &GameEvent,
+    trigger: &TriggerDefinition,
+    source_id: ObjectId,
+    state: &GameState,
+) -> Vec<GameEvent> {
     if let GameEvent::BlockersDeclared { assignments } = event {
-        if trigger.valid_card.is_some() {
-            // Filter: check if any blocked attacker matches the valid_card filter
-            assignments
-                .iter()
-                .any(|(_, attacker)| valid_card_matches(trigger, state, *attacker, source_id))
-        } else {
-            // Default: source itself must be among blocked attackers
-            assignments
-                .iter()
-                .any(|(_, attacker)| *attacker == source_id)
-        }
+        assignments
+            .iter()
+            .filter_map(|(blocker, attacker)| {
+                let attacker_matches = if trigger.valid_card.is_some() {
+                    valid_card_matches(trigger, state, *attacker, source_id)
+                } else {
+                    *attacker == source_id
+                };
+                let blocker_matches = match &trigger.valid_target {
+                    Some(filter) => {
+                        target_filter_matches_object(state, *blocker, filter, source_id)
+                    }
+                    None => true,
+                };
+                (attacker_matches && blocker_matches).then_some(GameEvent::BlockersDeclared {
+                    assignments: vec![(*blocker, *attacker)],
+                })
+            })
+            .collect()
     } else {
-        false
+        Vec::new()
     }
 }
 
@@ -3700,6 +3717,7 @@ mod tests {
         CastingVariant, GameState, StackEntry, StackEntryKind, ZoneChangeRecord,
     };
     use crate::types::identifiers::{CardId, ObjectId};
+    use crate::types::keywords::Keyword;
     use crate::types::player::{PlayerCounterKind, PlayerId};
     use crate::types::zones::Zone;
 
@@ -6502,6 +6520,82 @@ mod tests {
                 },
                 GameEvent::BlockersDeclared {
                     assignments: vec![(blocker, second_attacker)]
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn becomes_blocked_trigger_events_split_per_non_flanking_blocker() {
+        let mut state = setup();
+        let attacker = create_object(
+            &mut state,
+            CardId(1),
+            PlayerId(0),
+            "Knight of Valor".to_string(),
+            Zone::Battlefield,
+        );
+        let first_blocker = create_object(
+            &mut state,
+            CardId(2),
+            PlayerId(1),
+            "First Blocker".to_string(),
+            Zone::Battlefield,
+        );
+        let second_blocker = create_object(
+            &mut state,
+            CardId(3),
+            PlayerId(1),
+            "Second Blocker".to_string(),
+            Zone::Battlefield,
+        );
+        let flanking_blocker = create_object(
+            &mut state,
+            CardId(4),
+            PlayerId(1),
+            "Flanking Blocker".to_string(),
+            Zone::Battlefield,
+        );
+        for id in [attacker, first_blocker, second_blocker, flanking_blocker] {
+            state
+                .objects
+                .get_mut(&id)
+                .unwrap()
+                .card_types
+                .core_types
+                .push(CoreType::Creature);
+        }
+        state
+            .objects
+            .get_mut(&flanking_blocker)
+            .unwrap()
+            .keywords
+            .push(Keyword::Flanking);
+        let trigger = make_trigger(TriggerMode::BecomesBlocked)
+            .valid_card(TargetFilter::SelfRef)
+            .valid_target(TargetFilter::Typed(TypedFilter::creature().properties(
+                vec![FilterProp::WithoutKeyword {
+                    value: Keyword::Flanking,
+                }],
+            )));
+        let event = GameEvent::BlockersDeclared {
+            assignments: vec![
+                (first_blocker, attacker),
+                (second_blocker, attacker),
+                (flanking_blocker, attacker),
+            ],
+        };
+
+        let matched = matching_becomes_blocked_events(&event, &trigger, attacker, &state);
+
+        assert_eq!(
+            matched,
+            vec![
+                GameEvent::BlockersDeclared {
+                    assignments: vec![(first_blocker, attacker)]
+                },
+                GameEvent::BlockersDeclared {
+                    assignments: vec![(second_blocker, attacker)]
                 },
             ]
         );
