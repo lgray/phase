@@ -69,6 +69,7 @@ mod gluntch_choose_player_chain;
 mod gran_gran_integration;
 mod greater_good_activation;
 mod green_suns_zenith_regression;
+mod halana_alena_partners_where_x;
 mod harrow_regression;
 mod hunters_insight_combat_draw;
 mod inevitable_betrayal_no_mana_cost;
