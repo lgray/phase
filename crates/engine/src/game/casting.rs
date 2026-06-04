@@ -26596,6 +26596,7 @@ mod tests {
         obj_id
     }
 
+    /// Regression for Lunarch Veteran disturb from the graveyard (issue #2007).
     #[test]
     fn disturb_uses_disturb_cost_from_graveyard() {
         let mut state = setup_game_at_main_phase();
@@ -26626,6 +26627,7 @@ mod tests {
         );
     }
 
+    /// Luminous Phantom (back face) enters transformed after a Disturb cast (issue #2007).
     #[test]
     fn disturb_cast_uses_back_face_on_stack_and_battlefield() {
         let mut state = setup_game_at_main_phase();
