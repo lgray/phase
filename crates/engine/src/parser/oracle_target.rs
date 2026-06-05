@@ -623,6 +623,24 @@ pub fn parse_target_with_syntax<'a>(
                 syntax,
             );
         }
+        // CR 115.1: "target permanent or player" — the proliferate-style
+        // target pool (Skyship Plunderer, Maulfist Revolutionary).
+        // Matched before the bare "permanent" type phrase (longest-match-first)
+        // so the "or player" half is not dropped.
+        if let Ok((rest, _)) =
+            tag::<_, _, OracleError<'_>>("permanent or player").parse(after_target)
+        {
+            return (
+                TargetFilter::Or {
+                    filters: vec![
+                        typed(TypeFilter::Permanent, None, vec![], vec![]),
+                        TargetFilter::Player,
+                    ],
+                },
+                &text[lower.len() - rest.len()..],
+                syntax,
+            );
+        }
         // "target opponent"
         if let Ok((rest, _)) = tag::<_, _, OracleError<'_>>("opponent").parse(after_target) {
             return (
