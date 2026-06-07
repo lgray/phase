@@ -298,11 +298,6 @@ pub(crate) fn extract_keyword_line(
             // Prefix match: Oracle text has more detail (e.g. "protection from red").
             // Extract the full parameterized keyword.
             if let Some(kw) = parse_keyword_from_oracle(&lower) {
-                if matches!(kw, Keyword::Ripple(_))
-                    && mtgjson_keyword_names.contains(&keyword_display_name(&kw))
-                {
-                    continue;
-                }
                 new_keywords.push(kw);
                 continue;
             }
@@ -1995,15 +1990,16 @@ mod tests {
     }
 
     #[test]
-    fn extract_keyword_line_ripple_does_not_duplicate_mtgjson_keyword() {
+    fn extract_keyword_line_ripple_preserves_oracle_depth() {
         let mtgjson_kws = vec!["ripple".to_string()];
 
         let result = extract_keyword_line("Ripple 4", &mtgjson_kws)
             .expect("Ripple N line should be recognized as a keyword line");
 
-        assert!(
-            result.is_empty(),
-            "MTGJSON already carries Keyword::Ripple; Oracle validation must not add a duplicate"
+        assert_eq!(
+            result,
+            vec![Keyword::Ripple(4)],
+            "Oracle text carries the ripple depth that MTGJSON's bare keyword omits"
         );
     }
 

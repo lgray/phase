@@ -20131,6 +20131,20 @@ mod bloodthirst_synthesis_tests {
         );
     }
 
+    /// CR 702.60a: MTGJSON carries bare "Ripple", but Oracle carries "Ripple N".
+    /// The shared merge authority must replace the default with the parsed depth so
+    /// trigger collection sees a non-zero reveal count.
+    #[test]
+    fn merge_extracted_keywords_replaces_bare_ripple_default() {
+        let mut base = vec![Keyword::Ripple(1)];
+        merge_extracted_keywords(&mut base, vec![Keyword::Ripple(4)]);
+        assert_eq!(
+            base,
+            vec![Keyword::Ripple(4)],
+            "parser-extracted Ripple(4) must replace MTGJSON's bare Ripple default"
+        );
+    }
+
     /// Non-multiplicity parameterized keywords must be replaced, not duplicated,
     /// when the scenario harness supplies the same keyword as both the base hint
     /// and parser-extracted Oracle keyword.
