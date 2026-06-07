@@ -1652,6 +1652,7 @@ fn try_parse_multi_zone_same_name_exile(lower: &str) -> Option<()> {
         let (input, _) = tag::<_, _, OracleError<'_>>("search ").parse(input)?;
         let (input, _) = alt((
             tag::<_, _, OracleError<'_>>("its owner's "),
+            tag("its controller's "),
             tag("their "),
             tag("that player's "),
             tag("target player's "),
@@ -1676,15 +1677,35 @@ fn try_parse_multi_zone_same_name_exile(lower: &str) -> Option<()> {
             value((), tag("a card")),
         ))
         .parse(input)?;
-        // Match the trailing same-name suffix in either of two synonymous forms:
-        //   " with that name and exile them"            (Deadly Cover-Up, Lost Legacy)
-        //   " with the same name as that card and exile them"  (Surgical Extraction)
+        // Match the trailing same-name suffix. The name source is either a
+        // previously-named card ("with that name", Lost Legacy / Deadly Cover-Up)
+        // or the spell's exiled/countered target referenced by its card type
+        // ("with the same name as that card/creature/land/spell/…", Surgical
+        // Extraction / Eradicate / Crumble to Dust / Counterbore / Deicide). The
+        // card-type is composed as one `alt` axis rather than enumerated as full
+        // strings; all forms lower to the same `SameNameAsParentTarget` effect.
         let (input, _) = alt((
             value(
                 (),
                 tag::<_, _, OracleError<'_>>(" with that name and exile them"),
             ),
-            value((), tag(" with the same name as that card and exile them")),
+            value(
+                (),
+                (
+                    tag::<_, _, OracleError<'_>>(" with the same name as that "),
+                    alt((
+                        tag("creature"),
+                        tag("permanent"),
+                        tag("planeswalker"),
+                        tag("artifact"),
+                        tag("enchantment"),
+                        tag("land"),
+                        tag("spell"),
+                        tag("card"),
+                    )),
+                    tag(" and exile them"),
+                ),
+            ),
         ))
         .parse(input)?;
         Ok((input, ()))
@@ -10660,6 +10681,13 @@ mod tests {
             "search target player's graveyard, hand, and library for all cards with that name and exile them",
             "search its owner's graveyard, hand, and library for any number of cards with the same name as that card and exile them",
             "search their graveyard, hand, and library for a card with that name and exile them",
+            // CR 201.2a: "its controller's" possessive + card-type name source —
+            // Eradicate ("that creature"), Crumble to Dust ("that land"),
+            // Counterbore ("that spell"), Deicide ("its controller's … that card").
+            "search its controller's graveyard, hand, and library for all cards with the same name as that creature and exile them",
+            "search its controller's graveyard, hand, and library for any number of cards with the same name as that land and exile them",
+            "search its controller's graveyard, hand, and library for all cards with the same name as that spell and exile them",
+            "search its controller's graveyard, hand, and library for any number of cards with the same name as that card and exile them",
         ];
         for text in positives {
             assert!(
