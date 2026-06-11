@@ -16237,11 +16237,18 @@ pub(crate) fn parse_effect_chain_ir(
         }
         if inherits_carried_targeted_player_subject {
             if let Some(subject) = carried_targeted_player_subject.as_ref() {
+                // CR 601.2c: a single "target opponent" governs the whole verb
+                // list ("sacrifices …, discards …, and loses 3 life") — the
+                // target is chosen ONCE at announcement and every conjugated
+                // continuation applies to that same player. Inject
+                // `ParentTarget` (inherit the leading verb's chosen player) and
+                // NOT a fresh copy of the player filter, which would surface a
+                // second target slot and prompt the player again (#2344).
                 let subject = SubjectPhraseAst {
-                    affected: subject.affected.clone(),
-                    target: subject.target.clone(),
-                    multi_target: subject.multi_target.clone(),
-                    inherits_parent: subject.inherits_parent,
+                    affected: TargetFilter::ParentTarget,
+                    target: Some(TargetFilter::ParentTarget),
+                    multi_target: None,
+                    inherits_parent: true,
                     is_optional: subject.is_optional,
                 };
                 inject_subject_target(&mut clause.effect, &subject);
@@ -23989,18 +23996,15 @@ mod tests {
             Some(ControllerRef::TargetPlayer)
         );
 
+        // CR 601.2c (#2344): the single "target opponent" is chosen once at
+        // announcement; the conjugated continuations ("discards a card", "loses
+        // 3 life") apply to that SAME player and inherit it via `ParentTarget`,
+        // not a fresh `Opponent` slot (which would prompt the player again).
         let discard = def.sub_ability.as_ref().expect("expected discard link");
         let Effect::Discard { target, .. } = &*discard.effect else {
             panic!("expected Discard link, got {:?}", discard.effect);
         };
-        assert!(
-            target_filter_can_target_player(target),
-            "carried discard target must be a player target, got {target:?}"
-        );
-        assert_eq!(
-            target_filter_controller_ref(target),
-            Some(ControllerRef::Opponent)
-        );
+        assert_eq!(*target, TargetFilter::ParentTarget);
 
         let lose_life = discard
             .sub_ability
@@ -24013,14 +24017,7 @@ mod tests {
         else {
             panic!("expected LoseLife(3) link, got {:?}", lose_life.effect);
         };
-        assert!(
-            target_filter_can_target_player(target),
-            "carried life-loss target must be a player target, got {target:?}"
-        );
-        assert_eq!(
-            target_filter_controller_ref(target),
-            Some(ControllerRef::Opponent)
-        );
+        assert_eq!(*target, TargetFilter::ParentTarget);
 
         let draw = lose_life.sub_ability.as_ref().expect("expected draw link");
         assert!(matches!(
