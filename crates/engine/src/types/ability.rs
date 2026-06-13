@@ -2883,6 +2883,50 @@ pub mod source_exclusion_bool_compat {
     }
 }
 
+/// CR 608.2c: Producer-action provenance for a tracked-set member — the keyword
+/// action (or one-shot zone change) that made the object part of a "this way"
+/// set. This is the IDENTITY of a "<verb>ed this way" relationship: it is the
+/// ACTION performed on the member, NOT the zone the member finally landed in.
+///
+/// Binding "this way" consumers to the action rather than the destination zone
+/// is required for two reasons (issue #2932):
+///
+///   1. CR 608.2c ordering — multiple distinct producer actions share the same
+///      destination. Sacrifice (CR 701.21a), destroy (CR 701.8a), mill
+///      (CR 701.17a), and discard (CR 701.9a) all land in the graveyard, so a
+///      chain that mills AND sacrifices before a later "sacrificed this way"
+///      consumer cannot be disambiguated by zone alone.
+///   2. CR 614.1 / CR 614.6 replacement redirection — a replacement effect can
+///      change a member's destination. With a Rest-in-Peace-style replacement a
+///      sacrificed or discarded object lands in Exile, but it was still
+///      *sacrificed / discarded this way*. The cause is the action, so it
+///      survives the redirect; a zone binding would miss it.
+///
+/// Each variant cites the keyword action that produces it. `Returned` /
+/// `Bounced` are plain zone changes governed by CR 400.7 (no dedicated keyword
+/// action), distinguished by destination (battlefield vs. hand).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ThisWayCause {
+    /// CR 701.13a: the member was exiled this way.
+    Exiled,
+    /// CR 701.21a: the member was sacrificed this way (cause survives a
+    /// replacement that redirects the sacrifice to another zone — CR 614.6).
+    Sacrificed,
+    /// CR 701.8a: the member was destroyed this way.
+    Destroyed,
+    /// CR 701.17a: the member was milled this way.
+    Milled,
+    /// CR 701.9a: the member was discarded this way (cause survives a
+    /// replacement that redirects the discard to another zone — CR 614.6).
+    Discarded,
+    /// CR 608.2c + CR 400.7: the member was returned (put onto the battlefield)
+    /// this way by a one-shot put-onto-battlefield instruction.
+    Returned,
+    /// CR 608.2c + CR 400.7: the member was bounced (returned to its owner's
+    /// hand) this way by a mass-bounce instruction.
+    Bounced,
+}
+
 /// Typed target filter replacing all Forge filter strings and TargetSpec.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type")]
@@ -2978,10 +3022,24 @@ pub enum TargetFilter {
     ///
     /// Example: Zimone's Experiment produces `TrackedSetFiltered { id: 0
     /// /* sentinel resolved to the most recent tracked set */, filter:
-    /// Typed(Land) }` for the land-routing sub_ability.
+    /// Typed(Land), caused_by: None }` for the land-routing sub_ability.
+    ///
+    /// CR 608.2c: `caused_by` binds the consumer to the producer ACTION that
+    /// made each member part of the set — NOT its final landing zone. `None`
+    /// (the legacy default at every existing construction site) matches any
+    /// member of the set — selection sets ("revealed this way", dig anaphors)
+    /// carry no producer action, so they stay action-agnostic.
+    /// `Some(cause)` restricts the match to members whose recorded producer
+    /// action (`GameState::tracked_set_member_causes`) equals `cause`, so a
+    /// merged exile→sacrifice chain set can serve both "exiled this way"
+    /// (`Some(Exiled)`) and "sacrificed this way" (`Some(Sacrificed)`)
+    /// references disjointly — and a sacrifice that a replacement redirects to
+    /// Exile (CR 614.6) still counts as `Sacrificed` (issue #2932).
     TrackedSetFiltered {
         id: super::identifiers::TrackedSetId,
         filter: Box<TargetFilter>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        caused_by: Option<ThisWayCause>,
     },
     /// CR 610.3: Cards exiled by a specific source via "exile until ~ leaves" links.
     /// Resolves via relational `state.exile_links` lookup, not intrinsic object properties.
@@ -3523,7 +3581,21 @@ pub enum QuantityRef {
     /// additionally satisfy the inner filter. Used for "for each nontoken creature
     /// you controlled that was destroyed this way" patterns where the tracked set
     /// holds all affected objects but only a filtered subset is relevant.
-    FilteredTrackedSetSize { filter: Box<TargetFilter> },
+    ///
+    /// CR 608.2c: `caused_by` binds the count to the producer ACTION that made
+    /// each member part of the set, mirroring [`TargetFilter::TrackedSetFiltered`].
+    /// `None` (legacy default) counts every filtered member; `Some(cause)`
+    /// counts only members whose recorded producer action
+    /// (`GameState::tracked_set_member_causes`) equals `cause`. This lets "the
+    /// number of creatures sacrificed this way" (`Some(Sacrificed)`) read
+    /// exactly the sacrificed members of a merged exile→sacrifice chain set,
+    /// not the earlier exiled cards — and a sacrifice that a replacement
+    /// redirects to Exile (CR 614.6) still counts (#2932).
+    FilteredTrackedSetSize {
+        filter: Box<TargetFilter>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        caused_by: Option<ThisWayCause>,
+    },
     /// CR 400.7 + CR 608.2c: Number of cards exiled from a hand by the immediately
     /// preceding `Effect::ChangeZoneAll` resolution. Read by Deadly Cover-Up's
     /// "draws a card for each card exiled from their hand this way." The counter
@@ -9050,9 +9122,14 @@ impl TargetFilter {
                 filters: filters.into_iter().map(TargetFilter::normalized).collect(),
             },
             TargetFilter::And { filters } => normalize_and_filter(filters),
-            TargetFilter::TrackedSetFiltered { id, filter } => TargetFilter::TrackedSetFiltered {
+            TargetFilter::TrackedSetFiltered {
+                id,
+                filter,
+                caused_by,
+            } => TargetFilter::TrackedSetFiltered {
                 id,
                 filter: Box::new(filter.normalized()),
+                caused_by,
             },
             filter => filter,
         }

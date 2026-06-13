@@ -1461,19 +1461,41 @@ fn filter_inner_for_object(
         // `targeting::resolve_tracked_set_sentinel`. A still-sentinel `0`
         // therefore matches no objects, which is the correct fallback when no
         // tracked set is available.
-        TargetFilter::TrackedSetFiltered { id, filter } => {
-            let in_set = if id.0 == 0 {
+        TargetFilter::TrackedSetFiltered {
+            id,
+            filter,
+            caused_by,
+        } => {
+            // CR 608.2c: `TrackedSetId(0)` is a sentinel for "the most recent
+            // tracked set"; resolve it to the concrete set so the `caused_by`
+            // check can consult the same set's producer-action provenance.
+            let resolved = if id.0 == 0 {
                 state
                     .tracked_object_sets
                     .iter()
                     .max_by_key(|(tracked_id, _)| tracked_id.0)
-                    .is_some_and(|(_, set)| set.contains(&object_id))
+                    .map(|(tracked_id, set)| (*tracked_id, set))
             } else {
-                state
-                    .tracked_object_sets
-                    .get(id)
-                    .is_some_and(|set| set.contains(&object_id))
+                state.tracked_object_sets.get(id).map(|set| (*id, set))
             };
+            let in_set = resolved.is_some_and(|(set_id, set)| {
+                if !set.contains(&object_id) {
+                    return false;
+                }
+                // CR 608.2c + CR 614.6: an action-bound consumer ("exiled this
+                // way", "sacrificed this way", …) matches only members whose
+                // recorded producer action equals the bound cause — independent
+                // of the member's final zone. `None` keeps the legacy "any
+                // member" behavior (selection sets, dig anaphors).
+                match caused_by {
+                    None => true,
+                    Some(cause) => state
+                        .tracked_set_member_causes
+                        .get(&set_id)
+                        .and_then(|causes| causes.get(&object_id))
+                        .is_some_and(|member_cause| member_cause == cause),
+                }
+            });
             in_set
                 && filter_inner_for_object(
                     state,

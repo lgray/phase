@@ -967,6 +967,8 @@ pub fn resolve_all(
     // Clean up consumed tracked set after scanning.
     if let TargetFilter::TrackedSet { id } = &effective_filter {
         state.tracked_object_sets.remove(id);
+        // CR 608.2c: drop the consumed set's member-cause provenance in lockstep.
+        state.tracked_set_member_causes.remove(id);
     }
 
     // CR 614.12a + CR 614.13a: when a mass entry brings in one or more devourers
@@ -1179,12 +1181,17 @@ fn owner_scoped_nonbattlefield_mass_filter(
                 origin_zones,
             )),
         },
-        TargetFilter::TrackedSetFiltered { id, filter } => TargetFilter::TrackedSetFiltered {
+        TargetFilter::TrackedSetFiltered {
+            id,
+            filter,
+            caused_by,
+        } => TargetFilter::TrackedSetFiltered {
             id,
             filter: Box::new(owner_scoped_nonbattlefield_mass_filter(
                 *filter,
                 origin_zones,
             )),
+            caused_by,
         },
         other => other,
     }
@@ -5347,6 +5354,7 @@ mod tests {
                 target: TargetFilter::TrackedSetFiltered {
                     id: TrackedSetId(0),
                     filter: Box::new(land_filter),
+                    caused_by: None,
                 },
                 enters_under: None,
                 enter_tapped: crate::types::zones::EtbTapState::Tapped,
@@ -5426,6 +5434,7 @@ mod tests {
                 target: TargetFilter::TrackedSetFiltered {
                     id: TrackedSetId(0),
                     filter: Box::new(land_filter),
+                    caused_by: None,
                 },
                 enters_under: None,
                 enter_tapped: crate::types::zones::EtbTapState::Unspecified,
@@ -5497,6 +5506,7 @@ mod tests {
                 target: TargetFilter::TrackedSetFiltered {
                     id: TrackedSetId(0),
                     filter: Box::new(creature_filter),
+                    caused_by: None,
                 },
                 enters_under: Some(ControllerRef::You),
                 enter_tapped: crate::types::zones::EtbTapState::Unspecified,
@@ -5576,6 +5586,7 @@ mod tests {
                 target: TargetFilter::TrackedSetFiltered {
                     id: TrackedSetId(0),
                     filter: Box::new(TargetFilter::Typed(TypedFilter::land())),
+                    caused_by: None,
                 },
                 enters_under: None,
                 enter_tapped: EtbTapState::Tapped,
@@ -5644,6 +5655,7 @@ mod tests {
                 target: TargetFilter::TrackedSetFiltered {
                     id: TrackedSetId(0),
                     filter: Box::new(TargetFilter::Typed(TypedFilter::land())),
+                    caused_by: None,
                 },
                 enters_under: None,
                 enter_tapped: EtbTapState::Unspecified,
@@ -5680,6 +5692,7 @@ mod tests {
                         controller: None,
                         properties: vec![],
                     })),
+                    caused_by: None,
                 },
                 enters_under: Some(ControllerRef::You),
                 enter_tapped: crate::types::zones::EtbTapState::Unspecified,
@@ -6521,6 +6534,7 @@ mod tests {
                     filter: Box::new(TargetFilter::Typed(TypedFilter::new(
                         TypeFilter::Enchantment,
                     ))),
+                    caused_by: None,
                 },
                 owner_library: false,
                 enter_transformed: false,

@@ -98,8 +98,8 @@ use crate::types::ability::{
     PreventionAmount, PreventionScope, ProhibitedActivity, PtValue, QuantityExpr, QuantityRef,
     ReplacementDefinition, RestrictionExpiry, RestrictionPlayerScope, RoundingMode,
     StaticCondition, StaticDefinition, StepSkipTarget, SubAbilityLink, TapStateChange,
-    TargetFilter, TargetSelectionMode, TriggerCondition, TriggerDefinition, TypeFilter,
-    TypedFilter, UnlessPayModifier, UntilCondition, ZoneOwner,
+    TargetFilter, TargetSelectionMode, ThisWayCause, TriggerCondition, TriggerDefinition,
+    TypeFilter, TypedFilter, UnlessPayModifier, UntilCondition, ZoneOwner,
 };
 #[cfg(test)]
 use crate::types::ability::{AttackScope, AttackSubject};
@@ -17478,6 +17478,56 @@ fn try_fold_token_repeat_into_count(effect: &mut Effect, qty: &QuantityExpr) -> 
     false
 }
 
+/// CR 608.2c + CR 614.6: Classify a "<...> this way" put-continuation anaphor by
+/// the producer ACTION that made its members part of the set, returning the
+/// [`ThisWayCause`] the tracked-set consumer should bind to (`caused_by`):
+///
+///   - "exiled this way" → `Some(Exiled)` (CR 701.13a — exile).
+///   - "sacrificed this way" → `Some(Sacrificed)` (CR 701.21a).
+///   - "destroyed this way" → `Some(Destroyed)` (CR 701.8a).
+///   - "milled this way" → `Some(Milled)` (CR 701.17a).
+///   - "discarded this way" → `Some(Discarded)` (CR 701.9a).
+///   - "returned this way" / "put … onto the battlefield this way" →
+///     `Some(Returned)` (CR 608.2c + CR 400.7 — a one-shot put-onto-battlefield
+///     instruction; no dedicated keyword action governs the landing zone).
+///   - "revealed this way" / a dig-style "from among …" anaphor → `None`: these
+///     name a SELECTION set whose members never moved as part of the producer
+///     (Terra / Zimone / Dredger's Insight), so they stay action-agnostic.
+///
+/// Binding to the ACTION (not the destination zone) lets a merged
+/// exile→sacrifice chain set serve "exiled this way" and "sacrificed this way"
+/// disjointly even though both could touch the graveyard, and keeps a sacrifice
+/// that a replacement redirects to Exile counted as `Sacrificed` (issue #2932).
+///
+/// Returns the OUTER `Option`: `None` when no tracked-anaphor phrase is present
+/// (the put-continuation is an ordinary zone change), `Some(caused_by)` when one
+/// is. Verb arms are composed with `alt(tag(...))`, scanned at word boundaries,
+/// so the dimension is a single combinator rather than enumerated permutations.
+fn tracked_anaphor_cause(before_lower: &str, is_dig_anaphor: bool) -> Option<Option<ThisWayCause>> {
+    // A dig-style "from among …" anaphor is always a selection set.
+    if is_dig_anaphor {
+        return Some(None);
+    }
+    // CR 608.2c: each verb phrase maps to the producer action that made the
+    // member part of the set. `None` = selection set (reveal); `Some(cause)` =
+    // a producer keyword action.
+    nom_primitives::scan_at_word_boundaries(before_lower, |input| {
+        alt((
+            value(
+                Some(ThisWayCause::Exiled),
+                tag::<_, _, OracleError<'_>>("exiled this way"),
+            ),
+            value(Some(ThisWayCause::Sacrificed), tag("sacrificed this way")),
+            value(Some(ThisWayCause::Destroyed), tag("destroyed this way")),
+            value(Some(ThisWayCause::Milled), tag("milled this way")),
+            value(Some(ThisWayCause::Discarded), tag("discarded this way")),
+            value(Some(ThisWayCause::Returned), tag("returned this way")),
+            value(None, tag("revealed this way")),
+        ))
+        .parse(input)
+    })
+}
+
 #[cfg(test)]
 fn try_parse_put_zone_change(lower: &str, text: &str) -> Option<Effect> {
     try_parse_put_zone_change_parts(lower, text).map(|(effect, _)| effect)
@@ -17581,24 +17631,25 @@ fn try_parse_put_zone_change_parts(
             // tapped and put all creature cards revealed this way into your
             // hand", and Mind Roots: "Put up to one land card discarded this
             // way onto the battlefield tapped under your control."
-            let is_tracked_anaphor = from_among_anaphor.is_some()
-                || [
-                    "revealed this way",
-                    "discarded this way",
-                    "milled this way",
-                    "exiled this way",
-                    "sacrificed this way",
-                    "destroyed this way",
-                ]
-                .iter()
-                .any(|phrase| scan_contains_phrase(before.lower, phrase));
-            let target = if is_tracked_anaphor {
-                TargetFilter::TrackedSetFiltered {
+            // CR 608.2c + CR 614.6: a "<...> this way" anaphor names the affected
+            // set AND the producer action that made each member part of it.
+            // `caused_by` carries that action binding so a return reads only the
+            // members the matching verb produced (exiled this way → Exiled;
+            // sacrificed → Sacrificed; milled → Milled; discarded → Discarded;
+            // returned this way → Returned), while a reveal / dig anaphor stays
+            // action-agnostic (`None`). Binding to the action (not the zone)
+            // keeps a sacrifice redirected to Exile by a replacement counted.
+            // The outer `Option` is the tracked-anaphor flag.
+            let tracked_caused_by =
+                tracked_anaphor_cause(before.lower, from_among_anaphor.is_some());
+            let is_tracked_anaphor = tracked_caused_by.is_some();
+            let target = match tracked_caused_by {
+                Some(caused_by) => TargetFilter::TrackedSetFiltered {
                     id: crate::types::identifiers::TrackedSetId(0),
                     filter: Box::new(target),
-                }
-            } else {
-                target
+                    caused_by,
+                },
+                None => target,
             };
             // CR 608.2c: A tracked-set anaphor ("<filter> revealed/milled/…
             // this way", "from among them") already names the exact objects;
@@ -21954,6 +22005,11 @@ mod tests {
         );
         assert!(matches!(*def.effect, Effect::Counter { .. }));
         let unless_pay = def.unless_pay.expect("should attach unless_pay");
+        // CR 608.2c + CR 614.6: "for each card discarded this way" binds the
+        // count to the producer action `Discarded` (CR 701.9a). The discard
+        // producer stamps `caused_by: Discarded` at publish (independent of the
+        // member's final zone), so the per-card multiplier reads exactly the
+        // cards discarded this way.
         assert!(
             matches!(
                 &unless_pay.cost,
@@ -21965,11 +22021,15 @@ mod tests {
                 } if matches!(
                     inner.as_ref(),
                     QuantityExpr::Ref {
-                        qty: QuantityRef::TrackedSetSize
+                        qty: QuantityRef::FilteredTrackedSetSize {
+                            caused_by: Some(ThisWayCause::Discarded),
+                            ..
+                        }
                     }
                 )
             ),
-            "unless payment should multiply tracked-set count, got {:?}",
+            "unless payment should multiply the discarded-this-way tracked-set count, \
+             got {:?}",
             unless_pay.cost
         );
     }
@@ -24561,6 +24621,7 @@ mod tests {
             TargetFilter::TrackedSetFiltered {
                 id: crate::types::identifiers::TrackedSetId(0),
                 filter: Box::new(TargetFilter::Typed(TypedFilter::creature())),
+                caused_by: None,
             }
         );
     }
@@ -25378,13 +25439,32 @@ mod tests {
             }
             other => panic!("expected SearchLibrary, got {:?}", other),
         }
-        assert_eq!(
-            search.repeat_for,
+        // CR 608.2c + CR 614.6: "for each creature exiled this way" binds the
+        // iteration count to the producer action `Exiled`, so a merged chain set
+        // would count only the exiled members. The single top-level Exile
+        // producer stamps `caused_by: Exiled` into the side map at publish, so
+        // this counts exactly the creatures exiled this way (the Creature filter
+        // is retained so the iteration matches the named subject).
+        match &search.repeat_for {
             Some(QuantityExpr::Ref {
-                qty: QuantityRef::TrackedSetSize
-            }),
-            "SearchLibrary must iterate over the tracked-set size"
-        );
+                qty:
+                    QuantityRef::FilteredTrackedSetSize {
+                        filter,
+                        caused_by: Some(ThisWayCause::Exiled),
+                    },
+            }) => match filter.as_ref() {
+                TargetFilter::Typed(tf) => {
+                    assert!(
+                        tf.type_filters.contains(&TypeFilter::Creature),
+                        "iteration filter must require Creature"
+                    );
+                }
+                other => panic!("expected Typed creature filter, got {other:?}"),
+            },
+            other => panic!(
+                "SearchLibrary must iterate over the exiled-this-way tracked set, got {other:?}"
+            ),
+        }
         // Sub-sub: ChangeZone(Library→Battlefield, enter_tapped=true)
         let put = search
             .sub_ability
@@ -28458,7 +28538,7 @@ mod tests {
             "lands must enter battlefield tapped"
         );
         match target1 {
-            TargetFilter::TrackedSetFiltered { id: _, filter } => match filter.as_ref() {
+            TargetFilter::TrackedSetFiltered { filter, .. } => match filter.as_ref() {
                 TargetFilter::Typed(tf) => {
                     assert_eq!(tf.type_filters, vec![TypeFilter::Land]);
                 }
@@ -28485,7 +28565,7 @@ mod tests {
         };
         assert_eq!(*dest2, crate::types::zones::Zone::Hand);
         match target2 {
-            TargetFilter::TrackedSetFiltered { id: _, filter } => match filter.as_ref() {
+            TargetFilter::TrackedSetFiltered { filter, .. } => match filter.as_ref() {
                 TargetFilter::Typed(tf) => {
                     assert_eq!(tf.type_filters, vec![TypeFilter::Creature]);
                 }
@@ -28637,7 +28717,7 @@ mod tests {
         assert!(enter_tapped.is_tapped());
         assert!(*up_to);
         match target {
-            TargetFilter::TrackedSetFiltered { id, filter } => {
+            TargetFilter::TrackedSetFiltered { id, filter, .. } => {
                 assert_eq!(*id, TrackedSetId(0));
                 match filter.as_ref() {
                     TargetFilter::Typed(tf) => {
@@ -44209,7 +44289,7 @@ mod tests {
             panic!("expected ChangeZone, got {effect:?}");
         };
         assert_eq!(destination, Zone::Battlefield);
-        let TargetFilter::TrackedSetFiltered { id, filter } = target else {
+        let TargetFilter::TrackedSetFiltered { id, filter, .. } = target else {
             panic!("expected TrackedSetFiltered target, got {0:?}", target);
         };
         assert_eq!(id, crate::types::identifiers::TrackedSetId(0));

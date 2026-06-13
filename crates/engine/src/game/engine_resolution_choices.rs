@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use crate::types::ability::{
     AbilityCost, ChoiceType, ChoiceValue, ChosenAttribute, Effect, EffectKind, LibraryPosition,
-    QuantityExpr, QuantityRef, ResolvedAbility, TargetRef,
+    QuantityExpr, QuantityRef, ResolvedAbility, TargetRef, ThisWayCause,
 };
 use crate::types::actions::{GameAction, LearnOption, OutsideGameSelection};
 use crate::types::events::GameEvent;
@@ -2293,7 +2293,16 @@ pub(super) fn handle_resolution_choice(
                 })
                 .collect();
             if !discarded_to_graveyard.is_empty() {
-                effects::publish_tracked_set(state, discarded_to_graveyard);
+                // CR 701.9a + CR 608.2c: stamp these members with the producer
+                // action `Discarded` so a `caused_by: Some(Discarded)` "discarded
+                // this way" consumer counts them while a `caused_by: None`
+                // consumer still reads the whole id-only set. The cause is the
+                // action, independent of final zone (CR 614.6).
+                let with_causes = discarded_to_graveyard
+                    .into_iter()
+                    .map(|id| (id, Some(ThisWayCause::Discarded)))
+                    .collect();
+                effects::publish_tracked_set_with_causes(state, with_causes);
             }
 
             // CR 608.2c: "discard a card. If you do, [effect]" — the IfYouDo
