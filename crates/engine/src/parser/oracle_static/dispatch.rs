@@ -792,6 +792,14 @@ pub(crate) fn parse_static_line_inner(
 
     // --- "Each creature you control [with condition] assigns combat damage equal to its toughness" ---
     // CR 510.1c: Doran-class effects that cause creatures to use toughness for combat damage.
+    if let Some(rest_tp) = nom_tag_tp(&tp, "during your turn, ") {
+        if let Some(def) = parse_assigns_damage_from_toughness(rest_tp.lower, rest_tp.original) {
+            return Some(
+                def.condition(StaticCondition::DuringYourTurn)
+                    .description(text.to_string()),
+            );
+        }
+    }
     if let Some(def) = parse_assigns_damage_from_toughness(&lower, &text) {
         return Some(def);
     }
