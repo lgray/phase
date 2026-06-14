@@ -205,6 +205,7 @@ mod issue_2938_deflecting_swat;
 mod issue_2940_krark_thumbless;
 mod issue_2941_vivien_reid;
 mod issue_2943_kayas_wrath;
+mod issue_3127_reveal_otherwise_graveyard;
 mod issue_536_six_grants_retrace;
 mod issue_541_endurance_graveyard_to_bottom;
 mod issue_564_wishclaw_talisman_control;

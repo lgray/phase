@@ -18168,10 +18168,25 @@ fn try_parse_put_zone_change_parts(
             // graveyard") as a graveyard origin (Winding Way), so the move scans
             // the wrong zone and touches nothing. Leave `origin: None` and let
             // the resolver derive the scan zone from the tracked set's members.
+            // CR 400.7 + CR 608.2c + CR 701.20b: `infer_origin_zone` reads a
+            // ORIGIN zone from "from <zone>" phrases, but it also treats a bare
+            // "graveyard" mention (no "from") as a graveyard origin. The matched
+            // destination `needle` ("into your graveyard") contains that very
+            // word, so feeding the full post-`put` text would misread the
+            // DESTINATION as the ORIGIN — emitting `origin: Some(Graveyard)` for
+            // "put it into your graveyard" and tripping the resolver's
+            // origin-mismatch guard (the revealed card is still in the library
+            // per CR 701.20b, so the move scans the wrong zone and no-ops).
+            // Strip the already-typed destination `needle` so the origin
+            // heuristic only sees genuine ORIGIN phrases (e.g. "from a
+            // graveyard"); "into your graveyard" then yields `origin: None`,
+            // matching the hand branch and letting the injected reveal target
+            // drive the move uniformly across the whole destination class.
             let origin = if is_tracked_anaphor {
                 None
             } else {
-                infer_origin_zone(after_put_tp.lower)
+                let origin_text = format!("{}{}", before.lower, after.lower);
+                infer_origin_zone(&origin_text)
             };
             // CR 110.2a: "under your control" overrides the entering object's controller.
             let enters_under = scan_contains_phrase(after_put_tp.lower, "under your control")
@@ -39050,6 +39065,68 @@ mod tests {
         );
     }
 
+    /// CR 400.7 + CR 608.2c + CR 701.20b — Bloodline Shaman class
+    /// ("Reveal the top card of your library. If <cond>, put it into your hand.
+    /// Otherwise, put it into your graveyard."): the destination word
+    /// "graveyard" must NOT be misread as a graveyard ORIGIN. After the
+    /// destination-needle strip, both branches parse with `origin: None` (the
+    /// revealed card is moved from the library via the injected reveal target,
+    /// not scanned out of a "from <zone>" origin). Before the fix the else
+    /// branch produced `origin: Some(Zone::Graveyard)`, which tripped the
+    /// resolver's origin-mismatch guard and made the move a runtime no-op.
+    #[test]
+    fn reveal_otherwise_graveyard_branch_has_no_origin() {
+        let def = parse_effect_chain(
+            "Reveal the top card of your library. If that card is a creature card of the chosen type, put it into your hand. Otherwise, put it into your graveyard.",
+            crate::types::ability::AbilityKind::Activated,
+        );
+        assert!(
+            matches!(*def.effect, Effect::RevealTop { .. }),
+            "primary effect should be RevealTop, got {:?}",
+            def.effect
+        );
+        let sub = def
+            .sub_ability
+            .as_deref()
+            .expect("reveal should carry a conditional sub_ability for the hand branch");
+        // The hand branch (positive). After the destination-needle strip, "into
+        // your hand" carries no origin keyword -> origin: None.
+        match &*sub.effect {
+            Effect::ChangeZone {
+                origin,
+                destination,
+                ..
+            } => {
+                assert_eq!(*destination, Zone::Hand);
+                assert_eq!(
+                    *origin, None,
+                    "hand branch ChangeZone must have origin: None"
+                );
+            }
+            other => panic!("expected hand-branch ChangeZone, got {other:?}"),
+        }
+        // The Otherwise branch (the previously-broken path). "into your
+        // graveyard" must ALSO yield origin: None — not Some(Graveyard).
+        let else_ab = sub
+            .else_ability
+            .as_deref()
+            .expect("reveal/otherwise should carry an else_ability for the graveyard branch");
+        match &*else_ab.effect {
+            Effect::ChangeZone {
+                origin,
+                destination,
+                ..
+            } => {
+                assert_eq!(*destination, Zone::Graveyard);
+                assert_eq!(
+                    *origin, None,
+                    "graveyard branch ChangeZone must have origin: None, not Some(Zone::Graveyard)"
+                );
+            }
+            other => panic!("expected graveyard-branch ChangeZone, got {other:?}"),
+        }
+    }
+
     #[test]
     fn copy_token_suffix_condition_attaches_otherwise() {
         let (suffix_cond, suffix_text) = strip_suffix_conditional(
@@ -45716,6 +45793,7 @@ mod tests {
             .expect("expected ChangeZone for Chorale-of-the-Void shape");
         match effect {
             Effect::ChangeZone {
+                origin,
                 destination,
                 enter_tapped,
                 enters_attacking,
@@ -45723,6 +45801,10 @@ mod tests {
                 ..
             } => {
                 assert_eq!(destination, Zone::Battlefield);
+                // CR 400.7: The "from ... graveyard" origin phrase must still be
+                // inferred after the destination-needle strip removes only the
+                // " onto the battlefield" destination — not the origin clause.
+                assert_eq!(origin, Some(Zone::Graveyard));
                 assert_eq!(enters_under, Some(ControllerRef::You));
                 assert!(
                     enter_tapped.is_tapped(),
