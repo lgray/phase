@@ -978,8 +978,9 @@ pub(super) fn parse_subject_application(
             is_optional: false,
         });
     }
-    // "those creatures" / "those lands" — anaphoric reference to previous targets.
-    // Maps to ParentTarget so the restriction applies to the same objects.
+    // "those creatures" / "those lands" — anaphoric reference to previous
+    // targets. Maps to ParentTarget so the restriction applies to the same
+    // objects.
     if let Ok((_, _)) = tag::<_, _, OracleError<'_>>("those ").parse(lower.as_str()) {
         return subject_filter_application(TargetFilter::ParentTarget, false);
     }
