@@ -10857,6 +10857,124 @@ fn replace_fight_subject_with_parent_if_anaphoric_subject(
     }
 }
 
+/// CR 115.10a + CR 601.2c: A damage clause whose recipient is a FRESH typed
+/// "creature an opponent controls" / "creature you don't control" target (both
+/// canonicalize to `ControllerRef::Opponent`) declares its own target — it is
+/// not the anaphoric "It" subject that an earlier clause established. Per CR
+/// 601.2c each instance of the word "target" is a separate target, and per CR
+/// 115.10a being affected (the source's power feeding the amount) does not make
+/// that recipient the same object as the boosted creature. Recurses through
+/// `Or`/`And`/`Not` wrappers, mirroring `attach_controller_if_absent` /
+/// `rewrite_filter_controller`. Returns true only for the tight
+/// `Typed { controller: Some(Opponent), .. }` shape; `ParentTarget`/`SelfRef`/
+/// `Any`/`ParentTargetController` etc. are excluded (they are never
+/// Typed-with-Opponent anyway).
+fn target_filter_is_fresh_opponent_typed(filter: &TargetFilter) -> bool {
+    match filter {
+        TargetFilter::Typed(TypedFilter {
+            controller: Some(ControllerRef::Opponent),
+            ..
+        }) => true,
+        TargetFilter::Or { filters } | TargetFilter::And { filters } => {
+            filters.iter().any(target_filter_is_fresh_opponent_typed)
+        }
+        TargetFilter::Not { filter } => target_filter_is_fresh_opponent_typed(filter),
+        _ => false,
+    }
+}
+
+/// Returns true iff `effect` is a `DealDamage`/`DamageAll` whose recipient is a
+/// fresh opponent-controlled typed target (see
+/// `target_filter_is_fresh_opponent_typed`). Used to DECLINE the blanket
+/// anaphoric parent-rewrite for the "one-sided fight" class (Ambuscade, Clear
+/// Shot, Rabid Gnaw, ...): the recipient is parsed correctly upstream and must
+/// be preserved, not clobbered to `ParentTarget`.
+fn damage_clause_has_fresh_opponent_recipient(effect: &Effect) -> bool {
+    match effect {
+        Effect::DealDamage { target, .. } | Effect::DamageAll { target, .. } => {
+            target_filter_is_fresh_opponent_typed(target)
+        }
+        _ => false,
+    }
+}
+
+/// Coerce a per-object `QuantityRef` whose scope is `ObjectScope::Source` to
+/// `ObjectScope::Target`. The mirror of `rebind_anaphoric_ref` for the one-sided
+/// fight class: a "Then it deals damage equal to its power" sub-clause whose
+/// subject was classified as `SelfRef` gets its "its power" anaphor prematurely
+/// rebound to `Source` (the ability source) by the subject-stamping pass
+/// (~mod.rs:12278). For this class the "it" is the parent TARGET (the boosted
+/// creature, `targets[0]` once `damage_source = Target`), never the spell
+/// source — so the amount must read `Target`, not `Source`.
+fn rebind_source_ref_to_target(qty: &mut QuantityRef) {
+    let scope = match qty {
+        QuantityRef::Power { scope }
+        | QuantityRef::Toughness { scope }
+        | QuantityRef::ObjectManaValue { scope }
+        | QuantityRef::ObjectColorCount { scope }
+        | QuantityRef::ObjectNameWordCount { scope }
+        | QuantityRef::ObjectTypelineComponentCount { scope }
+        | QuantityRef::ManaSymbolsInManaCost { scope, .. }
+        | QuantityRef::CountersOn { scope, .. } => scope,
+        _ => return,
+    };
+    if *scope == ObjectScope::Source {
+        *scope = ObjectScope::Target;
+    }
+}
+
+/// `QuantityExpr` walker for `rebind_source_ref_to_target` (mirrors
+/// `rebind_anaphoric_object_scope`'s recursion).
+fn rebind_source_amount_to_target(expr: &mut QuantityExpr) {
+    match expr {
+        QuantityExpr::Ref { qty } => rebind_source_ref_to_target(qty),
+        QuantityExpr::DivideRounded { inner, .. }
+        | QuantityExpr::Multiply { inner, .. }
+        | QuantityExpr::ClampMin { inner, .. }
+        | QuantityExpr::Offset { inner, .. }
+        | QuantityExpr::UpTo { max: inner }
+        | QuantityExpr::Power {
+            exponent: inner, ..
+        } => rebind_source_amount_to_target(inner),
+        QuantityExpr::Sum { exprs } => {
+            for inner in exprs {
+                rebind_source_amount_to_target(inner);
+            }
+        }
+        QuantityExpr::Difference { left, right } => {
+            rebind_source_amount_to_target(left);
+            rebind_source_amount_to_target(right);
+        }
+        QuantityExpr::Fixed { .. } => {}
+    }
+}
+
+/// CR 120.1 + CR 608.2c: For a "one-sided fight" anaphoric damage clause
+/// ("It deals damage equal to its power to target creature an opponent
+/// controls") whose recipient is a FRESH opponent target, bind the damage
+/// SOURCE/amount to the parent-chosen boosted creature WITHOUT clobbering the
+/// recipient. CR 120.1: the object that deals damage is the source of that
+/// damage — here the boosted creature, which is the parent target, so
+/// `damage_source = Some(Target)` and the amount reads the parent target's
+/// power. CR 608.2c: read the whole text / apply English anaphora — "It" and
+/// "its power" refer to the boosted creature, but "target creature an opponent
+/// controls" is a distinct target. `bind_damage_clause_source` rebinds an
+/// `Anaphoric` amount (Ambuscade/Clear Shot/Rabid Gnaw) → `Target`; the
+/// follow-up coercion fixes the `Source` amount produced when the "Then it
+/// deals..." subject was classified `SelfRef` (Wolf Strike/Burrog Barrage),
+/// which would otherwise read the ability source (the spell, power 0). Returns
+/// true (= decline the blanket `replace_target_with_parent`) when handled.
+fn bind_anaphoric_damage_subject_keep_recipient(effect: &mut Effect) -> bool {
+    if !damage_clause_has_fresh_opponent_recipient(effect) {
+        return false;
+    }
+    bind_damage_clause_source(effect, DamageSource::Target, ObjectScope::Target);
+    if let Effect::DealDamage { amount, .. } | Effect::DamageAll { amount, .. } = effect {
+        rebind_source_amount_to_target(amount);
+    }
+    true
+}
+
 /// Check if an effect has a `Typed(...)` target filter (not SelfRef/ParentTarget/Any).
 /// Used to guard anaphoric replacement scope — prevents false positives when a
 /// pronoun clause follows a conditional effect without a typed target.
@@ -18012,6 +18130,11 @@ pub(crate) fn parse_effect_chain_ir(
                 &text_lower,
                 &mut clause.effect,
             )
+            // CR 115.10a + CR 601.2c: "one-sided fight" damage clause with a
+            // fresh opponent recipient binds its own source/amount instead of
+            // clobbering the recipient (Throw from the Saddle, Wolf Strike,
+            // Burrog Barrage — conditional-boost head).
+            && !bind_anaphoric_damage_subject_keep_recipient(&mut clause.effect)
         {
             replace_target_with_parent(&mut clause.effect);
         }
@@ -18029,6 +18152,11 @@ pub(crate) fn parse_effect_chain_ir(
                 &text_lower,
                 &mut clause.effect,
             )
+            // CR 115.10a + CR 601.2c: "one-sided fight" damage clause with a
+            // fresh opponent recipient binds its own source/amount instead of
+            // clobbering the recipient (Ambuscade, Clear Shot, Rabid Gnaw —
+            // unconditional-boost head).
+            && !bind_anaphoric_damage_subject_keep_recipient(&mut clause.effect)
         {
             replace_target_with_parent(&mut clause.effect);
         }
@@ -42820,6 +42948,191 @@ mod tests {
             }
             other => panic!("expected Fight sub-ability, got {other:?}"),
         }
+    }
+
+    // ── One-sided fight (#699): anaphoric damage clause keeps fresh opponent
+    //    recipient instead of clobbering it to ParentTarget ──
+
+    /// Walk a chain to the first `DealDamage` sub-clause (handles depth > 1).
+    #[cfg(test)]
+    fn find_deal_damage(def: &AbilityDefinition) -> &Effect {
+        let mut cur = def.sub_ability.as_deref();
+        while let Some(ab) = cur {
+            if matches!(ab.effect.as_ref(), Effect::DealDamage { .. }) {
+                return ab.effect.as_ref();
+            }
+            cur = ab.sub_ability.as_deref();
+        }
+        panic!("no DealDamage sub-clause found in chain: {def:?}");
+    }
+
+    /// #699 (Power{Anaphoric} variant). Ambuscade: the boosted creature deals
+    /// damage to a FRESH opponent target. The anaphoric rewrite must NOT clobber
+    /// the recipient to ParentTarget (that made the creature damage itself).
+    #[test]
+    fn one_sided_fight_dealdamage_keeps_fresh_opponent_recipient() {
+        let def = parse_effect_chain(
+            "Target creature you control gets +1/+0 until end of turn. It deals damage equal to its power to target creature an opponent controls.",
+            AbilityKind::Spell,
+        );
+
+        // Parent: pump the controller's creature.
+        assert!(
+            matches!(
+                def.effect.as_ref(),
+                Effect::Pump {
+                    target: TargetFilter::Typed(TypedFilter {
+                        controller: Some(ControllerRef::You),
+                        ..
+                    }),
+                    ..
+                }
+            ),
+            "expected Pump on a You-controlled creature, got {:?}",
+            def.effect
+        );
+
+        match find_deal_damage(&def) {
+            Effect::DealDamage {
+                target,
+                amount,
+                damage_source,
+            } => {
+                // Recipient must stay a fresh opponent target, NOT ParentTarget.
+                assert_ne!(
+                    target,
+                    &TargetFilter::ParentTarget,
+                    "#699: recipient clobbered to ParentTarget (creature damages itself)"
+                );
+                assert!(
+                    matches!(
+                        target,
+                        TargetFilter::Typed(TypedFilter {
+                            controller: Some(ControllerRef::Opponent),
+                            ..
+                        })
+                    ),
+                    "expected Typed opponent recipient, got {target:?}"
+                );
+                // Source bound to the boosted parent target; Anaphoric amount
+                // rebound to Power{Target}.
+                assert_eq!(damage_source, &Some(DamageSource::Target));
+                assert_eq!(
+                    amount,
+                    &QuantityExpr::Ref {
+                        qty: QuantityRef::Power {
+                            scope: ObjectScope::Target
+                        }
+                    },
+                    "expected Power{{Target}} (rebound from Anaphoric)"
+                );
+            }
+            other => panic!("expected DealDamage, got {other:?}"),
+        }
+    }
+
+    /// #699 ("Then it deals..." conditional-boost head — Wolf Strike). The boost
+    /// clause carries a condition, so the DealDamage follows a conditional prior
+    /// clause (conditional-prior slot). Because the sub-clause subject is
+    /// classified `SelfRef`, the upstream subject-stamping pass rebinds
+    /// "its power" Anaphoric → Source prematurely; for this class the "it" is the
+    /// parent TARGET (the boosted creature), so the amount must read Power{Target},
+    /// NOT Power{Source} (which at runtime would read the spell source, power 0).
+    /// The recipient ("you don't control" == Opponent) is preserved.
+    #[test]
+    fn one_sided_fight_power_source_variant() {
+        let def = parse_effect_chain(
+            "Target creature you control gets +2/+0 until end of turn if it's night. Then it deals damage equal to its power to target creature you don't control.",
+            AbilityKind::Spell,
+        );
+        match find_deal_damage(&def) {
+            Effect::DealDamage {
+                target,
+                amount,
+                damage_source,
+            } => {
+                assert_ne!(target, &TargetFilter::ParentTarget);
+                assert!(
+                    matches!(
+                        target,
+                        TargetFilter::Typed(TypedFilter {
+                            controller: Some(ControllerRef::Opponent),
+                            ..
+                        })
+                    ),
+                    "expected Typed opponent recipient, got {target:?}"
+                );
+                assert_eq!(damage_source, &Some(DamageSource::Target));
+                // SelfRef-subject Source amount coerced to Target (boosted
+                // creature == parent target == targets[0] at runtime).
+                assert_eq!(
+                    amount,
+                    &QuantityExpr::Ref {
+                        qty: QuantityRef::Power {
+                            scope: ObjectScope::Target
+                        }
+                    },
+                    "Power amount must be Target (parent boosted creature), not Source (spell)"
+                );
+            }
+            other => panic!("expected DealDamage, got {other:?}"),
+        }
+    }
+
+    /// #699 conditional-prior slot exercise (Burrog Barrage). The boost head
+    /// carries a `QuantityCheck` condition; the DealDamage clause must still
+    /// preserve its fresh opponent recipient.
+    #[test]
+    fn one_sided_fight_conditional_boost_variant() {
+        let def = parse_effect_chain(
+            "Target creature you control gets +1/+0 until end of turn if you've cast another instant or sorcery spell this turn. Then it deals damage equal to its power to up to one target creature an opponent controls.",
+            AbilityKind::Spell,
+        );
+        match find_deal_damage(&def) {
+            Effect::DealDamage {
+                target,
+                damage_source,
+                ..
+            } => {
+                assert_ne!(target, &TargetFilter::ParentTarget);
+                assert!(
+                    matches!(
+                        target,
+                        TargetFilter::Typed(TypedFilter {
+                            controller: Some(ControllerRef::Opponent),
+                            ..
+                        })
+                    ),
+                    "expected Typed opponent recipient, got {target:?}"
+                );
+                assert_eq!(damage_source, &Some(DamageSource::Target));
+            }
+            other => panic!("expected DealDamage, got {other:?}"),
+        }
+    }
+
+    /// NO-REGRESSION: a pronoun-only rider ("Destroy target creature. It can't
+    /// be regenerated.") is NOT a DealDamage-with-opponent-recipient, so the
+    /// #699 decline guard does not fire — the "it" still resolves to the parent
+    /// (the regen-prohibition rides the same destroyed creature). Here it is
+    /// folded into `Destroy { cant_regenerate: true }` with no stray sub target.
+    #[test]
+    fn one_sided_fight_guard_skips_pronoun_only_rider() {
+        let def = parse_effect_chain(
+            "Destroy target creature. It can't be regenerated.",
+            AbilityKind::Spell,
+        );
+        assert!(
+            matches!(
+                def.effect.as_ref(),
+                Effect::Destroy {
+                    cant_regenerate: true,
+                    target: TargetFilter::Typed(_),
+                }
+            ),
+            "expected Destroy{{cant_regenerate}} with typed target, got {:?}",
+            def.effect
+        );
     }
 
     // ── RevealUntil tests ──
