@@ -1245,6 +1245,21 @@ fn damage_done_applier(
     ApplyResult::Modified(event)
 }
 
+/// CR 614.5: Mark a one-shot replacement as consumed after it successfully applies.
+fn mark_replacement_consumed(state: &mut GameState, rid: ReplacementId) {
+    let repl = if rid.source == ObjectId(0) {
+        state.pending_damage_replacements.get_mut(rid.index)
+    } else {
+        state
+            .objects
+            .get_mut(&rid.source)
+            .and_then(|obj| obj.replacement_definitions.get_mut(rid.index))
+    };
+    if let Some(repl) = repl {
+        repl.is_consumed = true;
+    }
+}
+
 /// Consume or update a prevention shield on either an object or the game-state registry.
 /// If `new_amount` is `None`, marks the shield as consumed.
 /// If `new_amount` is `Some(amount)`, updates the remaining shield capacity.
@@ -4810,7 +4825,7 @@ fn apply_single_replacement(
     // the same resolution step, right after the ZoneChange completes. Without this,
     // the chooser would never be prompted. Optional replacements set
     // `post_replacement_continuation` in `continue_replacement` when the player accepts.
-    let (event_key, modifiers, mandatory_post_effect) = match repl_def_ref {
+    let (event_key, modifiers, mandatory_post_effect, consume_on_apply) = match repl_def_ref {
         Some(repl_def) => {
             let ability = match branch {
                 ReplacementBranch::Execute => repl_def.execute.as_deref(),
@@ -4919,7 +4934,12 @@ fn apply_single_replacement(
             // imperative `Effect::ChangeZone.enters_under` slot. Surface it as an
             // event modifier so it is written onto the `ZoneChange` below.
             modifiers.controller_override = repl_def.enters_under.clone();
-            (repl_def.event.clone(), modifiers, post_effect)
+            (
+                repl_def.event.clone(),
+                modifiers,
+                post_effect,
+                repl_def.consume_on_apply,
+            )
         }
         None => return Ok(proposed),
     };
@@ -4984,6 +5004,9 @@ fn apply_single_replacement(
                         _ => {}
                     }
                 }
+                if consume_on_apply {
+                    mark_replacement_consumed(state, rid);
+                }
                 // CR 614.12a: Stash the mandatory execute ability as a post-replacement
                 // effect when it has work beyond the event modifiers (e.g., a Choose
                 // prompt for Siege protector / Tribute opponent selection). Runs after
@@ -5003,6 +5026,9 @@ fn apply_single_replacement(
                 return Ok(new_event);
             }
             ApplyResult::Prevented => {
+                if consume_on_apply {
+                    mark_replacement_consumed(state, rid);
+                }
                 // CR 615.5: A prevention effect's additional effect (e.g.
                 // Phyrexian Hydra's "Put a -1/-1 counter on ~ for each 1 damage
                 // prevented this way") is stashed as a post-replacement effect
@@ -8929,6 +8955,26 @@ mod tests {
 
     fn damage_repl(modification: DamageModification) -> ReplacementDefinition {
         ReplacementDefinition::new(ReplacementEvent::DamageDone).damage_modification(modification)
+    }
+
+    #[test]
+    fn consume_on_apply_prevention_is_consumed_when_damage_fully_prevented() {
+        // CR 614.5 + CR 615.1a: A one-shot replacement that fully prevents damage
+        // still successfully applied, so the live replacement must be consumed.
+        let mut repl = ReplacementDefinition::new(ReplacementEvent::DamageDone)
+            .prevention_shield(PreventionAmount::All);
+        repl.consume_on_apply = true;
+        let mut state = test_state_with_object(ObjectId(10), Zone::Battlefield, vec![repl]);
+        let mut events = Vec::new();
+
+        let result = replace_event(&mut state, damage_event(3), &mut events);
+
+        assert!(matches!(result, ReplacementResult::Prevented));
+        let obj = state.objects.get(&ObjectId(10)).unwrap();
+        assert!(
+            obj.replacement_definitions[0].is_consumed,
+            "consume_on_apply replacement should be consumed after full prevention"
+        );
     }
 
     fn test_state_with_damage_repl(
