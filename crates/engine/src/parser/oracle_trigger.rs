@@ -177,6 +177,7 @@ fn becomes_target_source_filter(controller: ControllerRef) -> TargetFilter {
             TargetFilter::StackAbility {
                 controller: Some(controller),
                 tag: None,
+                kind: None,
             },
         ],
     }
@@ -7389,6 +7390,7 @@ fn try_parse_event(
                 def.valid_source = Some(TargetFilter::StackAbility {
                     controller: None,
                     tag: Some(AbilityTag::Backup),
+                    kind: None,
                 });
             }
             SimpleEvent::DealtCombatDamage => {
@@ -21701,6 +21703,7 @@ mod tests {
             Some(TargetFilter::StackAbility {
                 controller: None,
                 tag: Some(AbilityTag::Backup),
+                kind: None,
             })
         );
         // Subject: "another creature you control" → Typed creature / You / Another.

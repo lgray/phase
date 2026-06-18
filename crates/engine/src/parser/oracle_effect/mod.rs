@@ -9090,8 +9090,16 @@ fn try_parse_verb_and_target<'a>(
     // CR 701.6: Counter a spell or ability on the stack.
     if let Some((_, rest)) = nom_on_lower(text, lower, |i| value((), tag("counter ")).parse(i)) {
         let rest_lower = &lower[lower.len() - rest.len()..];
+        let stack_phrase = tag::<_, _, OracleError<'_>>("target ")
+            .parse(rest_lower)
+            .map(|(phrase, _)| phrase)
+            .unwrap_or(rest_lower);
         let (parsed_target, rem) = parse_target_with_ctx(rest, ctx);
-        let target = if scan_contains_phrase(rest_lower, "activated or triggered ability") {
+        let target = if let Ok((_, stack_target)) =
+            crate::parser::oracle_nom::target::parse_stack_object_target(stack_phrase)
+        {
+            stack_target
+        } else if scan_contains_phrase(rest_lower, "activated or triggered ability") {
             // CR 701.6: "activated or triggered ability" is a special-case target
             // that maps to StackAbility. We still use parse_target's remainder to
             // preserve the compound-detection contract.
@@ -20566,6 +20574,7 @@ fn try_parse_change_targets(lower: &str) -> Option<Effect> {
                 TargetFilter::StackAbility {
                     controller: None,
                     tag: None,
+                    kind: None,
                 },
             ],
         }
@@ -20575,6 +20584,7 @@ fn try_parse_change_targets(lower: &str) -> Option<Effect> {
         TargetFilter::StackAbility {
             controller: None,
             tag: None,
+            kind: None,
         }
     } else if scan_contains_phrase(spell_phrase_clean, "spell") {
         // Parse with parse_target for type-specific spells (e.g. "instant or sorcery spell")
@@ -26514,6 +26524,7 @@ mod tests {
                     target: TargetFilter::StackAbility {
                         controller: Some(ControllerRef::Opponent),
                         tag: None,
+                        kind: None,
                     },
                 }
             ),
@@ -26554,12 +26565,36 @@ mod tests {
                 Effect::Counter {
                     target: TargetFilter::StackAbility {
                         controller: None,
-                        tag: None
+                        tag: None,
+                        kind: None,
                     },
                     ..
                 }
             ),
             "single-target ability counter must stay Counter {{ StackAbility }}, got {e:?}"
+        );
+    }
+
+    #[test]
+    fn effect_counter_consign_to_memory_disjunction() {
+        let e = parse_effect("Counter target triggered ability or colorless spell");
+        assert!(
+            matches!(
+                e,
+                Effect::Counter {
+                    target: TargetFilter::Or { ref filters },
+                    ..
+                } if filters.len() == 2
+                    && filters.iter().any(|f| matches!(
+                        f,
+                        TargetFilter::StackAbility {
+                            kind: Some(crate::types::ability::StackAbilityKind::Triggered),
+                            ..
+                        }
+                    ))
+                    && filters.iter().any(|f| matches!(f, TargetFilter::Typed(_)))
+            ),
+            "Consign to Memory must parse triggered-or-colorless disjunction, got {e:?}"
         );
     }
 
@@ -27391,6 +27426,7 @@ mod tests {
             TargetFilter::StackAbility {
                 controller: Some(ControllerRef::You),
                 tag: None,
+                kind: None,
             }
         ));
     }
@@ -37444,7 +37480,8 @@ mod tests {
             filters[1],
             TargetFilter::StackAbility {
                 controller: None,
-                tag: None
+                tag: None,
+                kind: None,
             }
         ));
     }

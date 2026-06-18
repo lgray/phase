@@ -1871,6 +1871,7 @@ mod tests {
                 target: TargetFilter::StackAbility {
                     controller: Some(crate::types::ability::ControllerRef::You),
                     tag: None,
+                    kind: None,
                 },
                 retarget: CopyRetargetPermission::KeepOriginalTargets,
                 copier: None,
@@ -1898,6 +1899,7 @@ mod tests {
                 target: TargetFilter::StackAbility {
                     controller: Some(crate::types::ability::ControllerRef::You),
                     tag: None,
+                    kind: None,
                 },
                 retarget: CopyRetargetPermission::KeepOriginalTargets,
                 copier: None,
@@ -2200,6 +2202,7 @@ mod tests {
         let gogo_target_filter = TargetFilter::StackAbility {
             controller: Some(crate::types::ability::ControllerRef::You),
             tag: None,
+            kind: None,
         };
         assert_eq!(
             crate::game::targeting::find_legal_targets(

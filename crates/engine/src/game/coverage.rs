@@ -404,19 +404,41 @@ fn fmt_target(filter: &TargetFilter) -> String {
         TargetFilter::StackAbility {
             controller: None,
             tag: None,
+            kind: None,
         } => "ability on stack".into(),
+        TargetFilter::StackAbility {
+            controller: None,
+            tag: None,
+            kind: Some(crate::types::ability::StackAbilityKind::Triggered),
+        } => "triggered ability on stack".into(),
+        TargetFilter::StackAbility {
+            controller: None,
+            tag: None,
+            kind: Some(crate::types::ability::StackAbilityKind::Activated),
+        } => "activated ability on stack".into(),
         TargetFilter::StackAbility {
             controller: Some(ControllerRef::You),
             tag: None,
+            kind: None,
         } => "ability you control on stack".into(),
         TargetFilter::StackAbility {
             controller: Some(ControllerRef::Opponent),
             tag: None,
+            kind: None,
         } => "ability opponent controls on stack".into(),
         TargetFilter::StackAbility {
             controller: Some(controller),
             tag: None,
+            kind: None,
         } => format!("ability scoped to {controller:?} on stack"),
+        TargetFilter::StackAbility {
+            kind: Some(crate::types::ability::StackAbilityKind::Triggered),
+            ..
+        } => "triggered ability on stack".into(),
+        TargetFilter::StackAbility {
+            kind: Some(crate::types::ability::StackAbilityKind::Activated),
+            ..
+        } => "activated ability on stack".into(),
         TargetFilter::StackSpell => "spell on stack".into(),
         TargetFilter::AttachedTo => "attached permanent".into(),
         TargetFilter::LastCreated => "last created".into(),

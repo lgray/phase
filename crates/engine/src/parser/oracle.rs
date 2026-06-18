@@ -12588,6 +12588,7 @@ mod tests {
             TargetFilter::StackAbility {
                 controller: Some(ControllerRef::You),
                 tag: None,
+                kind: None,
             }
         ));
         assert!(

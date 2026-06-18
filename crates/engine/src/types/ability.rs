@@ -3033,6 +3033,14 @@ pub enum ThisWayCause {
     Bounced,
 }
 
+/// CR 113.3b / CR 113.3c: Which stack ability kinds a `StackAbility` filter accepts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+pub enum StackAbilityKind {
+    Activated,
+    Triggered,
+}
+
 /// Typed target filter replacing all Forge filter strings and TargetSpec.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type")]
@@ -3060,11 +3068,15 @@ pub enum TargetFilter {
     /// CR 113.7a: once activated or triggered, an ability exists on the stack
     /// independently of its source — `tag` matches by keyword-origin marker
     /// (e.g. `AbilityTag::Backup` for "becomes the target of a backup ability").
+    /// `kind` narrows to one ability class when the Oracle text does (Consign to
+    /// Memory's "triggered ability" leg); `None` accepts both.
     StackAbility {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         controller: Option<ControllerRef>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         tag: Option<AbilityTag>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        kind: Option<StackAbilityKind>,
     },
     /// Matches spells on the stack (not activated/triggered abilities).
     /// CR 115.1a: Used by "becomes the target of a spell" triggers to filter source type.
@@ -16263,7 +16275,8 @@ mod tests {
             filter,
             TargetFilter::StackAbility {
                 controller: None,
-                tag: None
+                tag: None,
+                kind: None,
             }
         );
         assert_eq!(
@@ -16280,7 +16293,8 @@ mod tests {
             filter,
             TargetFilter::StackAbility {
                 controller: Some(ControllerRef::You),
-                tag: None
+                tag: None,
+                kind: None,
             }
         );
         assert_eq!(

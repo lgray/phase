@@ -793,6 +793,7 @@ mod tests {
                 target: TargetFilter::StackAbility {
                     controller: None,
                     tag: None,
+                    kind: None,
                 },
                 destination: None,
                 selection: BounceSelection::Targeted,

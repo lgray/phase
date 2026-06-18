@@ -3687,6 +3687,7 @@ fn parse_copy_stack_ability_target(input: &str) -> Option<(TargetFilter, &str)> 
             TargetFilter::StackAbility {
                 controller: Some(ControllerRef::You),
                 tag: None,
+                kind: None,
             },
             rem,
         ));
@@ -3700,6 +3701,7 @@ fn parse_copy_stack_ability_target(input: &str) -> Option<(TargetFilter, &str)> 
             TargetFilter::StackAbility {
                 controller: None,
                 tag: None,
+                kind: None,
             },
             input,
         ));
@@ -3721,6 +3723,7 @@ pub(super) fn stack_ability_filter_from_text(input: &str) -> TargetFilter {
     TargetFilter::StackAbility {
         controller,
         tag: None,
+        kind: None,
     }
 }
 
@@ -9005,7 +9008,8 @@ mod tests {
                 f,
                 TargetFilter::StackAbility {
                     controller: None,
-                    tag: None
+                    tag: None,
+                    kind: None,
                 }
             )),
             "missing the activated/triggered ability disjunct: {target:?}"
@@ -9051,7 +9055,8 @@ mod tests {
                 f,
                 TargetFilter::StackAbility {
                     controller: None,
-                    tag: None
+                    tag: None,
+                    kind: Some(crate::types::ability::StackAbilityKind::Triggered),
                 }
             )),
             "missing the triggered-ability disjunct: {target:?}"
@@ -9103,7 +9108,8 @@ mod tests {
                 f,
                 TargetFilter::StackAbility {
                     controller: None,
-                    tag: None
+                    tag: None,
+                    kind: None,
                 }
             )),
             "missing the activated/triggered ability disjunct: {target:?}"
@@ -12709,6 +12715,7 @@ mod tests {
             TargetFilter::StackAbility {
                 controller: Some(ControllerRef::You),
                 tag: None,
+                kind: None,
             }
         ));
 
@@ -12719,7 +12726,8 @@ mod tests {
             unscoped.0,
             TargetFilter::StackAbility {
                 controller: None,
-                tag: None
+                tag: None,
+                kind: None,
             }
         ));
 
