@@ -5572,6 +5572,30 @@ fn parse_opponent_comparison_conditions(input: &str) -> OracleResult<'_, StaticC
         return Ok((rest2, condition));
     }
 
+    // CR 402.1 + CR 102.2: "an opponent has no cards in hand" — existential
+    // over opponents (at least one opponent's hand is empty), i.e. the minimum
+    // opponent hand size is 0. Mirrors the Min-aggregate existential the
+    // life-comparison arms use. Cards: Rekindled Flame, Avatar of Will, Guul
+    // Draz Specter. `HandSize` resolves per-player through the same scalar path
+    // as `LifeTotal` (game::quantity::resolve_per_player_scalar), so the
+    // Opponent{Min} scope is already evaluated at runtime.
+    if let Ok((rest2, _)) = tag::<_, _, OracleError<'_>>("has no cards in hand").parse(rest) {
+        return Ok((
+            rest2,
+            StaticCondition::QuantityComparison {
+                lhs: QuantityExpr::Ref {
+                    qty: QuantityRef::HandSize {
+                        player: PlayerScope::Opponent {
+                            aggregate: AggregateFunction::Min,
+                        },
+                    },
+                },
+                comparator: Comparator::EQ,
+                rhs: QuantityExpr::Fixed { value: 0 },
+            },
+        ));
+    }
+
     // "an opponent has more life than you"
     if let Ok((rest2, _)) = tag::<_, _, OracleError<'_>>("has more life than you").parse(rest) {
         return Ok((
@@ -9274,6 +9298,97 @@ mod tests {
                     },
             } => {}
             other => panic!("expected OpponentLifeTotal GT LifeTotal, got {other:?}"),
+        }
+    }
+
+    /// Production-path coverage: Guul Draz Specter's real static line reaches
+    /// this condition through `parse_static_line`, and the `Opponent { Min }`
+    /// hand-size gate must survive the static classifier/bridge — not just the
+    /// raw `parse_inner_condition` helper.
+    #[test]
+    fn test_guul_draz_static_gate_survives_production_path() {
+        let def = crate::parser::oracle_static::parse_static_line(
+            "This creature gets +3/+3 as long as an opponent has no cards in hand.",
+        )
+        .expect("Guul Draz static line must parse");
+        match def.condition {
+            Some(StaticCondition::QuantityComparison {
+                lhs:
+                    QuantityExpr::Ref {
+                        qty:
+                            QuantityRef::HandSize {
+                                player:
+                                    PlayerScope::Opponent {
+                                        aggregate: AggregateFunction::Min,
+                                    },
+                            },
+                    },
+                comparator: Comparator::EQ,
+                rhs: QuantityExpr::Fixed { value: 0 },
+            }) => {}
+            other => {
+                panic!("static gate must survive as OpponentHandSize(Min) EQ 0, got {other:?}")
+            }
+        }
+    }
+
+    /// Production-path coverage: Rekindled Flame's intervening-if reaches this
+    /// condition through `parse_trigger_lines`, and the gate must survive the
+    /// StaticCondition→TriggerCondition bridge.
+    #[test]
+    fn test_rekindled_flame_trigger_gate_survives_production_path() {
+        use crate::types::ability::TriggerCondition;
+        let defs = crate::parser::oracle_trigger::parse_trigger_lines(
+            "At the beginning of your upkeep, if an opponent has no cards in hand, \
+             you may return Rekindled Flame from your graveyard to your hand.",
+            "Rekindled Flame",
+        );
+        let def = defs.first().expect("Rekindled Flame trigger must parse");
+        match &def.condition {
+            Some(TriggerCondition::QuantityComparison {
+                lhs:
+                    QuantityExpr::Ref {
+                        qty:
+                            QuantityRef::HandSize {
+                                player:
+                                    PlayerScope::Opponent {
+                                        aggregate: AggregateFunction::Min,
+                                    },
+                            },
+                    },
+                comparator: Comparator::EQ,
+                rhs: QuantityExpr::Fixed { value: 0 },
+            }) => {}
+            other => {
+                panic!("trigger gate must survive as OpponentHandSize(Min) EQ 0, got {other:?}")
+            }
+        }
+    }
+
+    #[test]
+    fn test_an_opponent_has_no_cards_in_hand() {
+        // CR 402.1 + CR 102.2: existential "an opponent has no cards in hand" →
+        // min opponent hand size == 0. Real cards: Rekindled Flame, Avatar of
+        // Will, Guul Draz Specter. Before this fix the clause returned Err and
+        // the gating condition was silently dropped.
+        let (rest, c) = parse_inner_condition("an opponent has no cards in hand").unwrap();
+        assert_eq!(rest, "");
+        match c {
+            StaticCondition::QuantityComparison {
+                lhs:
+                    QuantityExpr::Ref {
+                        qty:
+                            QuantityRef::HandSize {
+                                player:
+                                    PlayerScope::Opponent {
+                                        aggregate: AggregateFunction::Min,
+                                    },
+                            },
+                    },
+                comparator: Comparator::EQ,
+                rhs: QuantityExpr::Fixed { value: 0 },
+            } => {}
+            other => panic!("expected OpponentHandSize(Min) EQ 0, got {other:?}"),
         }
     }
 
