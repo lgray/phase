@@ -16,7 +16,9 @@ use super::game_state::{
 };
 use super::identifiers::{ObjectId, TrackedSetId};
 use super::keywords::{Keyword, KeywordKind};
-use super::mana::{AbilityActivationScope, ManaColor, ManaCost, ManaType, SpellCostCriterion};
+use super::mana::{
+    AbilityActivationScope, ManaColor, ManaCost, ManaType, SpellCostCriterion, ZoneSpend,
+};
 use super::phase::Phase;
 use super::player::{PlayerCounterKind, PlayerId};
 use super::replacements::ReplacementEvent;
@@ -1491,10 +1493,16 @@ pub enum ManaSpendRestriction {
     /// [`Comparator`] — one variant per color-count reading. `count` is N.
     SpellWithColorCount { comparator: Comparator, count: u32 },
     /// CR 106.6 + CR 400.7: "Spend this mana only to cast spells from your
-    /// graveyard" / "from exile". Gates spending on the spell's cast-from zone
-    /// alone — a distinct axis from [`ManaSpendRestriction::SpellWithKeywordKindFromZone`],
-    /// which additionally requires a keyword. Resolved against `SpellMeta.cast_from_zone`.
-    SpellFromZone(Zone),
+    /// graveyard" / "from exile" ([`From`](super::mana::ZoneSpendPolarity::From))
+    /// and "from anywhere other than your hand"
+    /// ([`NotFrom`](super::mana::ZoneSpendPolarity::NotFrom), Mm'menon, the Right
+    /// Hand). Gates spending on the spell's cast-from zone alone — a distinct axis
+    /// from [`ManaSpendRestriction::SpellWithKeywordKindFromZone`], which
+    /// additionally requires a keyword. Resolved against `SpellMeta.cast_from_zone`.
+    /// Carried as a [`ZoneSpend`] newtype payload whose custom `Deserialize`
+    /// accepts the legacy bare-`Zone` serialized form for backward compatibility,
+    /// mapping it to the inclusion reading.
+    SpellFromZone(ZoneSpend),
     /// CR 106.6: Disjunction of spend restrictions ("cast X or Y or activate Z").
     /// Lowered to `ManaRestriction::OnlyForAny`.
     Any(Vec<ManaSpendRestriction>),

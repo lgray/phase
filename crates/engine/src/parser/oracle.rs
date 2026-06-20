@@ -14800,6 +14800,60 @@ At the beginning of your upkeep, add {C} for each artifact you control. This man
         );
     }
 
+    // CR 106.6 + CR 400.7: Mm'menon, the Right Hand grants its artifacts a mana
+    // ability whose produced mana is spend-restricted to spells cast from
+    // anywhere other than hand. The granted-ability text must parse end-to-end
+    // (no `Effect::Unimplemented`) and the inner mana effect must carry the
+    // `SpellFromZone { Hand, NotFrom }` restriction.
+    #[test]
+    fn mmmenon_granted_mana_carries_not_from_hand_restriction() {
+        let oracle = "Flying\n\
+You may look at the top card of your library any time.\n\
+You may cast artifact spells from the top of your library.\n\
+Artifacts you control have \"{T}: Add {U}. Spend this mana only to cast a spell from anywhere other than your hand.\"";
+        let parsed = super::parse_oracle_text(
+            oracle,
+            "Mm'menon, the Right Hand",
+            &[],
+            &["Legendary".to_string(), "Creature".to_string()],
+            &[],
+        );
+
+        // The granted mana ability lives inside a `GrantAbility` continuous
+        // modification of one of the parsed statics. Walk the typed tree and
+        // assert the granted ability's mana effect carries the not-from-hand
+        // restriction (and is not an `Unimplemented` gap).
+        use crate::types::ability::{ContinuousModification, Effect, ManaSpendRestriction};
+        use crate::types::mana::{ZoneSpend, ZoneSpendPolarity};
+        use crate::types::zones::Zone;
+
+        let expected = ManaSpendRestriction::SpellFromZone(ZoneSpend {
+            zone: Zone::Hand,
+            polarity: ZoneSpendPolarity::NotFrom,
+        });
+        let mut found = false;
+        for st in &parsed.statics {
+            for modification in &st.modifications {
+                if let ContinuousModification::GrantAbility { definition } = modification {
+                    assert!(
+                        !matches!(*definition.effect, Effect::Unimplemented { .. }),
+                        "Mm'menon's granted mana ability must not be Unimplemented: {definition:?}"
+                    );
+                    if let Effect::Mana { restrictions, .. } = &*definition.effect {
+                        if restrictions.contains(&expected) {
+                            found = true;
+                        }
+                    }
+                }
+            }
+        }
+        assert!(
+            found,
+            "Mm'menon's granted mana must carry the not-from-hand restriction; statics={:?}",
+            parsed.statics
+        );
+    }
+
     #[test]
     fn mana_spend_restriction_x_cost_only() {
         use crate::parser::oracle_effect::mana::parse_mana_spend_restriction;
@@ -15114,19 +15168,43 @@ At the beginning of your upkeep, add {C} for each artifact you control. This man
 
     #[test]
     fn mana_spend_restriction_from_graveyard() {
+        use crate::types::mana::{ZoneSpend, ZoneSpendPolarity};
         assert_eq!(
             crate::parser::oracle_effect::mana::parse_mana_spend_restriction(
                 "spend this mana only to cast a spell from your graveyard"
             )
             .map(|(r, _)| r),
-            Some(ManaSpendRestriction::SpellFromZone(Zone::Graveyard))
+            Some(ManaSpendRestriction::SpellFromZone(ZoneSpend {
+                zone: Zone::Graveyard,
+                polarity: ZoneSpendPolarity::From,
+            }))
         );
         assert_eq!(
             crate::parser::oracle_effect::mana::parse_mana_spend_restriction(
                 "spend this mana only to cast spells from exile"
             )
             .map(|(r, _)| r),
-            Some(ManaSpendRestriction::SpellFromZone(Zone::Exile))
+            Some(ManaSpendRestriction::SpellFromZone(ZoneSpend {
+                zone: Zone::Exile,
+                polarity: ZoneSpendPolarity::From,
+            }))
+        );
+    }
+
+    // CR 106.6 + CR 400.7: Mm'menon, the Right Hand — "from anywhere other than
+    // your hand" parses to the `NotFrom` polarity over `Zone::Hand`.
+    #[test]
+    fn mana_spend_restriction_not_from_hand() {
+        use crate::types::mana::{ZoneSpend, ZoneSpendPolarity};
+        assert_eq!(
+            crate::parser::oracle_effect::mana::parse_mana_spend_restriction(
+                "spend this mana only to cast a spell from anywhere other than your hand"
+            )
+            .map(|(r, _)| r),
+            Some(ManaSpendRestriction::SpellFromZone(ZoneSpend {
+                zone: Zone::Hand,
+                polarity: ZoneSpendPolarity::NotFrom,
+            }))
         );
     }
 
