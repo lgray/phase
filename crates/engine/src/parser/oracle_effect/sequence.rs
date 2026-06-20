@@ -4508,12 +4508,22 @@ pub(super) fn parse_followup_continuation_ast(
                     (Zone::Hand, false, false)
                 };
             let rest_destination = parse_reveal_until_rest_zone(&lower);
+            // "under your control" stamps the controller of the kept cards; absent
+            // the clause they enter under the revealing player's control by default.
+            // Mirrors the singular "put that card" arm so the set-disposition path
+            // inherits the same enters-under building block.
+            let enters_under = if nom_primitives::scan_contains(&lower, "under your control") {
+                Some(ControllerRef::You)
+            } else {
+                None
+            };
             Some(ContinuationAst::RevealUntilKept {
                 destination,
                 enter_tapped,
                 enters_attacking,
                 any_number: true,
                 rest_destination,
+                enters_under,
                 optional_decline: None,
             })
         }

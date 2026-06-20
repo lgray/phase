@@ -1606,6 +1606,7 @@ mod tests {
             cast_from_zone: None,
             mana_value: None,
             color_count: None,
+            has_x_in_cost: false,
         };
         let omen_spell = SpellMeta {
             types: vec!["Enchantment".to_string(), "Omen".to_string()],
@@ -1614,6 +1615,7 @@ mod tests {
             cast_from_zone: None,
             mana_value: None,
             color_count: None,
+            has_x_in_cost: false,
         };
         let goblin_spell = SpellMeta {
             types: vec!["Creature".to_string()],
@@ -1622,6 +1624,7 @@ mod tests {
             cast_from_zone: None,
             mana_value: None,
             color_count: None,
+            has_x_in_cost: false,
         };
         // Matches one branch each.
         assert!(restriction.allows_spell(&dragon_spell));

@@ -1441,13 +1441,10 @@ fn parse_single_cast_clause(rest: &str) -> Option<ManaSpendRestriction> {
     // MV-threshold arm because it begins with the same "spells with mana value"
     // prefix but continues with the " or … {X} …" disjunct.
     if let Some((spell_type, criteria)) = parse_mv_or_x_cost_criteria(rest) {
-        return Some((
-            ManaSpendRestriction::SpellMatchingCostCriteria {
-                spell_type,
-                criteria,
-            },
-            grants,
-        ));
+        return Some(ManaSpendRestriction::SpellMatchingCostCriteria {
+            spell_type,
+            criteria,
+        });
     }
 
     // CR 106.6: "spells with mana value N or greater" / "a spell with mana
