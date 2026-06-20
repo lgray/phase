@@ -165,6 +165,7 @@ pub mod ring;
 pub mod ripple;
 pub mod roll_die;
 pub mod sacrifice;
+pub mod saddle;
 pub mod scry;
 pub mod search_library;
 pub mod search_outside_game;
@@ -2665,6 +2666,7 @@ pub fn resolve_effect(
         Effect::BecomeUnprepared { .. } => {
             prepare::resolve_become_unprepared(state, ability, events)
         }
+        Effect::BecomeSaddled { .. } => saddle::resolve(state, ability, events),
         Effect::SetClassLevel { .. } => set_class_level::resolve(state, ability, events),
         Effect::CreateDelayedTrigger { .. } => delayed_trigger::resolve(state, ability, events),
         Effect::AddTargetReplacement { .. } => {

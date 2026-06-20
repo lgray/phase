@@ -2819,6 +2819,7 @@ fn effect_details(effect: &Effect) -> Vec<(String, String)> {
         }
         Effect::BecomePrepared { target }
         | Effect::BecomeUnprepared { target }
+        | Effect::BecomeSaddled { target }
         | Effect::PairWith { target } => {
             d.push(("target".into(), fmt_target(target)));
         }

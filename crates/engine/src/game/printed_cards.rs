@@ -988,6 +988,7 @@ fn walk_effect(effect: &Effect, out: &mut Vec<String>) {
         | Effect::SolveCase
         | Effect::BecomePrepared { .. }
         | Effect::BecomeUnprepared { .. }
+        | Effect::BecomeSaddled { .. }
         | Effect::SetClassLevel { .. }
         | Effect::AddRestriction { .. }
         | Effect::ReduceNextSpellCost { .. }
