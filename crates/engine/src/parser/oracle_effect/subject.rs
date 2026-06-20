@@ -24,6 +24,7 @@ use crate::types::phase::Phase;
 use crate::types::statics::{ProhibitionScope, StaticMode};
 
 use super::super::oracle_keyword::parse_keyword_from_oracle;
+use super::super::oracle_nom::bridge::nom_on_lower;
 use super::super::oracle_nom::duration::parse_duration;
 use super::super::oracle_nom::error::OracleResult;
 use super::super::oracle_nom::primitives as nom_primitives;
@@ -172,7 +173,12 @@ where
 
 fn extract_subject_text(text: &str) -> Option<String> {
     let verb_start = find_predicate_start(text)?;
-    let subject = text[..verb_start].trim();
+    // CR 608.2c: drop the additive "also" connector (see
+    // `strip_trailing_additive_adverb`) so the re-extracted subject phrase used
+    // by `subject_predicate_ast_from_clause` matches the one parsed inside
+    // `try_parse_subject_continuous_clause`. Without this the AST subject falls
+    // back to `TargetFilter::Any` (broadcasting the grant to every permanent).
+    let subject = strip_trailing_additive_adverb(text[..verb_start].trim());
     if subject.is_empty() {
         None
     } else {
@@ -254,7 +260,17 @@ fn try_parse_subject_continuous_clause(
     ctx: &mut ParseContext,
 ) -> Option<ParsedEffectClause> {
     let verb_start = find_predicate_start(text)?;
-    let subject = text[..verb_start].trim();
+    // CR 608.2c: An additive "also" sitting between a filter subject and its
+    // continuous verb ("Kithkin creatures you control *also* gain first strike
+    // until end of turn") is a natural-language connector with no semantic
+    // weight — it chains this grant onto a preceding effect (the pump in
+    // "creatures you control get +1/+0 ... . <subtype> creatures you control
+    // also gain <keyword> ..."). Strip it so the residual filter subject routes
+    // through the standard subject grammar; without the strip the trailing
+    // "also" leaks into `parse_target`, which rejects the subject and drops the
+    // whole grant to `Effect::Unimplemented`. Mirrors the self-ref additive
+    // strip in `parse_effect_clause_inner` ("~ also gains ...").
+    let subject = strip_trailing_additive_adverb(text[..verb_start].trim());
     let predicate = text[verb_start..].trim();
     // CR 109.5: "you" as a player subject never participates in continuous-
     // clause parsing — the predicate is always an imperative effect (draw,
@@ -3774,6 +3790,38 @@ pub(crate) const PREDICATE_VERBS: &[&str] = &[
     "win",
 ];
 
+/// CR 608.2c: Strip a trailing additive "also" connector from a filter-subject
+/// phrase. In a chained grant ("<subject> also gain <keyword> ...") the "also"
+/// is the additive adverb linking this continuous effect to a sibling clause and
+/// carries no selection semantics. `find_predicate_start` lands the verb split
+/// after the "also", so the residual subject is "<filter> also"; left intact the
+/// trailing word leaks into `parse_target` and fails the subject match. Returns
+/// the subject unchanged when no additive "also" is present, or when the head is
+/// empty (a bare "also" has no filter to grant against).
+///
+/// Pattern 2a (`oracle_nom/PATTERNS.md`): the whole subject is parsed and the
+/// fixed suffix is consumed last. `all_consuming` anchors " also" to the END, so
+/// a non-terminal "also" (e.g. "also creatures you control") is not matched. The
+/// lowercase head's byte length maps 1:1 onto `subject` for case preservation.
+fn strip_trailing_additive_adverb(subject: &str) -> &str {
+    let lower = subject.to_lowercase();
+    // Return the head's byte length (not a borrow of the temporary `lower`) so the
+    // closure result is owned; map it back onto `subject` for case preservation.
+    let parsed = nom_on_lower(subject, &lower, |input| {
+        all_consuming(terminated(
+            map(take_until::<_, _, OracleError<'_>>(" also"), str::len),
+            tag(" also"),
+        ))
+        .parse(input)
+    });
+    match parsed {
+        Some((head_len, _)) if !subject[..head_len].trim_end().is_empty() => {
+            subject[..head_len].trim_end()
+        }
+        _ => subject,
+    }
+}
+
 fn is_restriction_predicate_verb(token: &str) -> bool {
     // CR 613.1d: "isn't"/"aren't" head a layer-4 type-removal predicate ("~ isn't
     // a creature until end of turn", Blink's Alien Angel token). Recognizing the
@@ -3892,6 +3940,36 @@ mod tests {
     fn become_named_plain_captures_full_name() {
         let (_, name) = strip_become_name_override("becomes a creature named Serra Angel");
         assert_eq!(name.as_deref(), Some("Serra Angel"));
+    }
+
+    /// CR 608.2c: the additive-"also" strip is a building block — it removes the
+    /// trailing connector for any filter subject, is case-insensitive, leaves
+    /// non-additive subjects untouched, and refuses to strip a bare "also" that
+    /// would leave no filter.
+    #[test]
+    fn strip_trailing_additive_adverb_building_block() {
+        // Trailing additive "also" is stripped, original case preserved.
+        assert_eq!(
+            strip_trailing_additive_adverb("Kithkin creatures you control also"),
+            "Kithkin creatures you control"
+        );
+        // Case-insensitive on the connector.
+        assert_eq!(
+            strip_trailing_additive_adverb("Goblins you control ALSO"),
+            "Goblins you control"
+        );
+        // No trailing "also" → unchanged.
+        assert_eq!(
+            strip_trailing_additive_adverb("creatures you control"),
+            "creatures you control"
+        );
+        // A non-terminal "also" is not a trailing connector → unchanged.
+        assert_eq!(
+            strip_trailing_additive_adverb("also creatures you control"),
+            "also creatures you control"
+        );
+        // Bare "also" has no filter to grant against → not stripped to empty.
+        assert_eq!(strip_trailing_additive_adverb("also"), "also");
     }
 
     /// CR 702.3b: the subjectless conjunct recognizer accepts every grammatical
