@@ -84,6 +84,23 @@ fn try_parse_for_each_color_mana(text: &str, lower: &str) -> Option<Effect> {
     let (_, type_text_lower) = take_until::<_, _, OracleError<'_>>(", add one mana of that color")
         .parse(rest)
         .ok()?;
+    // CR 702.167c + CR 105.1: "For each color among the exiled cards used to craft
+    // this creature, add one mana of that color" (Sunbird Effigy) — the iteration
+    // source is the craft-material linked-exile pool, not a battlefield type
+    // phrase. Tried first so the craft noun phrase wins over `parse_type_phrase`.
+    if let Ok((craft_rest, filter)) =
+        crate::parser::oracle_nom::quantity::parse_craft_materials_filter(type_text_lower.trim())
+    {
+        if craft_rest.trim().is_empty() {
+            return Some(Effect::Mana {
+                produced: ManaProduction::DistinctColorsAmongPermanents { filter },
+                restrictions: vec![],
+                grants: vec![],
+                expiry: None,
+                target: None,
+            });
+        }
+    }
     // Recover original-cased slice for parse_type_phrase.
     let offset = lower_trimmed.len() - rest.len();
     let original_trimmed = text.trim_end_matches('.').trim();
