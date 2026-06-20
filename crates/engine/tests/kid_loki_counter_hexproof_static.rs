@@ -130,3 +130,77 @@ fn kid_loki_grants_hexproof_only_to_creatures_you_put_counters_on_this_turn() {
         "CR 109.5: Kid Loki's static is scoped to counters YOU put — an opponent's counter does not qualify"
     );
 }
+
+/// CR 122.6 + CR 514.2: the `CountersPutOnThisTurn` predicate is turn-scoped.
+/// When the turn ends, the `counter_added_this_turn` ledger is cleared, so a
+/// creature that gained hexproof from a +1/+1 counter placed THIS turn must LOSE
+/// hexproof on the next turn — the historical-action match no longer holds.
+///
+/// THE BUG this discriminates (the layer-cache-invalidation gap): the turn
+/// boundary (`start_next_turn`) clears the ledger but, before the fix, did NOT
+/// mark layers dirty. SBA only recomputes layers when the dirty flag is set
+/// (`sba.rs`) and `flush_layers` is a no-op for `LayersDirty::Clean`
+/// (`layers.rs`), so the object's keyword cache stayed STALE and the creature
+/// incorrectly KEPT hexproof into the next turn.
+///
+/// This test reads hexproof through the NORMAL cached path — `has_keyword` on the
+/// object's cached keyword set — and never calls `mark_full()`/`evaluate_layers`
+/// itself (unlike the `has_kw` helper above, which masked the bug by forcing a
+/// recompute before every read). The turn boundary is crossed via the real
+/// `advance_to_phase` turn machinery (production `auto_advance` + priority
+/// passing), so the only thing that can strip the stale hexproof is the fix:
+/// the ledger clear routing through `layers_dirty.mark_full()`.
+///
+/// Pre-fix: the final assertion fails (stale cache keeps hexproof).
+/// Post-fix: the ledger clear invalidates layers, the next-turn SBA recomputes,
+/// and hexproof is correctly gone.
+#[test]
+fn kid_loki_hexproof_expires_when_counter_history_clears_next_turn() {
+    let mut scenario = GameScenario::new();
+    // Start in the post-combat main phase so the turn can advance to End/Cleanup
+    // and across the boundary without surfacing the `DeclareAttackers` prompt the
+    // priority-pass helpers can't clear (combat is already behind us this turn).
+    scenario.at_phase(Phase::PostCombatMain);
+
+    let _kid_loki = scenario
+        .add_creature_from_oracle(P0, "Kid Loki", 1, 4, KID_LOKI)
+        .id();
+    let buffed = scenario.add_creature(P0, "Buffed Bear", 2, 2).id();
+
+    let mut runner = scenario.build();
+
+    // P0 puts a +1/+1 counter on `buffed` this turn (CR 122.6 history record).
+    put_counter(&mut runner, P0, buffed);
+
+    // Drive the production turn machinery to the end step. `auto_advance` +
+    // priority passing runs SBA, which flushes the (counter-dirtied) layers and
+    // installs hexproof in `buffed`'s cached keyword set — exactly as production
+    // does. Read through the cache directly (no manual recompute).
+    runner.advance_to_end_step();
+    assert!(
+        has_keyword(&runner.state().objects[&buffed], &Keyword::Hexproof),
+        "CR 122.6: while the counter-placement history holds this turn, the creature has Kid Loki's hexproof"
+    );
+
+    // Cross the turn boundary via the real turn-advance primitive: End → Cleanup
+    // → next turn's Untap → Upkeep. `start_next_turn` clears the
+    // `counter_added_this_turn` ledger, so the `CountersPutOnThisTurn` predicate
+    // no longer matches (the +1/+1 counter itself remains on the creature, but
+    // it was not placed THIS — the new — turn).
+    runner.advance_to_upkeep();
+    assert_ne!(
+        runner.state().active_player,
+        P0,
+        "sanity: the turn boundary was crossed into the next player's turn"
+    );
+
+    // The discriminating assertion: hexproof is gone, read through the NORMAL
+    // cached path. Pre-fix the cache is stale (no invalidation at the ledger
+    // clear) and this fails; post-fix the boundary invalidation forces the
+    // next-turn SBA to recompute and strip hexproof.
+    assert!(
+        !has_keyword(&runner.state().objects[&buffed], &Keyword::Hexproof),
+        "CR 514.2: once the turn ends the counter-this-turn history clears, so hexproof must expire — \
+         the keyword cache must not stay stale across the turn boundary"
+    );
+}
