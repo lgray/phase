@@ -606,28 +606,99 @@ pub(crate) fn parse_chosen_qualifier_subject(tp: &TextPair<'_>) -> Option<Target
     Some(TargetFilter::Typed(typed))
 }
 
-/// CR 613.1f + CR 113.3: Recognize the exact `ExiledBySource` forms of "all
-/// activated abilities of [source]" and return the provider `source` filter.
-/// Returns `None` for forms not yet supported (typed "creature cards exiled with
-/// it", counter-gated exile, battlefield filters) so they stay a loud gap rather
-/// than over-granting. `lower` is the already-lowercased predicate.
+/// CR 613.1f + CR 113.3: Recognize "[~ has] all activated abilities of [source]"
+/// and return the provider `source` filter for `GrantAllActivatedAbilitiesOf`.
+///
+/// The source-set axis is parameterized as a `TargetFilter` and composed from
+/// nom combinators along three independent dimensions: the optional leading verb
+/// (`has`/`have`, present in the real card path `"~ has all activated abilities
+/// of …"` but absent in the bare-predicate building-block path), the
+/// "all activated abilities of" grant phrase, and the source-set noun phrase:
+///
+/// - `the exiled card` / `all [creature] cards exiled with it/~` →
+///   `ExiledBySource`, narrowed to `And { [Typed(creature), ExiledBySource] }`
+///   when a card-type qualifies the exiled cards (Agatha's Soul Cauldron grants
+///   only *creature* cards' abilities; Myr Welder / Territory Forge are untyped).
+/// - `creatures you control that don't have the same name as it/~` →
+///   `Typed(creature, controller=You, [Not { SameName }])` (Marvin, Murderous
+///   Mimic). `SameName` reads the recipient's name at expansion time, so
+///   `Not { SameName }` excludes same-named creatures per Marvin's wording.
+///
+/// Returns `None` for forms still needing extra infrastructure ("the last chosen
+/// card" — needs persistent chosen-object tracking; counter-gated exile sets) so
+/// they stay a loud gap rather than over-granting.
 fn parse_grant_all_activated_abilities_source(
     lower: &str,
 ) -> Option<crate::types::ability::TargetFilter> {
     let p = lower.trim().trim_end_matches('.').trim();
     all_consuming(preceded(
-        tag::<_, _, OracleError<'_>>("all activated abilities of "),
-        alt((
-            value(TargetFilter::ExiledBySource, tag("the exiled card")),
-            value(
-                TargetFilter::ExiledBySource,
-                (tag("all cards exiled with "), alt((tag("it"), tag("~")))),
-            ),
-        )),
+        (
+            opt(alt((tag::<_, _, OracleError<'_>>("has "), tag("have ")))),
+            tag("all activated abilities of "),
+        ),
+        grant_source_noun_phrase,
     ))
     .parse(p)
     .ok()
     .map(|(_, source)| source)
+}
+
+/// CR 613.1f + CR 607.2a + CR 201.2: The source-set noun phrase of an
+/// ability-grant-by-reference static. Each arm is a leaf of the source-set axis;
+/// adding a new referenced set is one more `alt` arm here, never a new variant.
+fn grant_source_noun_phrase(input: &str) -> OracleResult<'_, crate::types::ability::TargetFilter> {
+    alt((
+        // CR 607.2a: cards exiled with the host. Optional card-type qualifier
+        // narrows the granted set (Agatha grants creature cards only).
+        grant_exiled_source,
+        // CR 201.2: "creatures you control that don't have the same name as
+        // it/~" (Marvin) — battlefield creatures you control, excluding ones
+        // sharing the recipient's name.
+        value(
+            TargetFilter::Typed(
+                TypedFilter::creature()
+                    .controller(ControllerRef::You)
+                    .properties(vec![FilterProp::Not {
+                        prop: Box::new(FilterProp::SameName),
+                    }]),
+            ),
+            (
+                tag("creatures you control that don't have the same name as "),
+                alt((tag("it"), tag("~"))),
+            ),
+        ),
+    ))
+    .parse(input)
+}
+
+/// CR 607.2a: "[the exiled card] | all [<card type>] cards exiled with it/~".
+/// The optional card-type qualifier intersects `ExiledBySource` with a typed
+/// filter so the grant tracks only matching exiled cards.
+fn grant_exiled_source(input: &str) -> OracleResult<'_, crate::types::ability::TargetFilter> {
+    alt((
+        value(TargetFilter::ExiledBySource, tag("the exiled card")),
+        // "all [creature] cards exiled with it/~". The optional "creature"
+        // qualifier intersects `ExiledBySource` with the Creature type filter
+        // (CR 205.3 — a creature card is type Creature in exile) so Agatha grants
+        // only creature cards' abilities; the untyped form (Myr Welder, Territory
+        // Forge) stays a bare `ExiledBySource`.
+        (
+            tag("all "),
+            opt(tag("creature ")),
+            tag("cards exiled with "),
+            alt((tag("it"), tag("~"))),
+        )
+            .map(|(_, creature_qualifier, _, _)| match creature_qualifier {
+                Some(_) => TargetFilter::And {
+                    filters: vec![
+                        TargetFilter::Typed(TypedFilter::creature()),
+                        TargetFilter::ExiledBySource,
+                    ],
+                },
+                None => TargetFilter::ExiledBySource,
+            }),
+    ))
+    .parse(input)
 }
 
 /// CR 613.1d: Parse a layer-4 type-removal predicate `"isn't a/an <core type>"`

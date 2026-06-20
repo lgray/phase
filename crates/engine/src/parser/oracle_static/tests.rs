@@ -5153,7 +5153,10 @@ fn parse_continuous_modifications_are_goaded_emits_goaded_static_mode() {
 
 /// CR 613.1f + CR 113.3: "all activated abilities of all cards exiled with it" /
 /// "the exiled card" → `GrantAllActivatedAbilitiesOf { ExiledBySource }` (Myr
-/// Welder, Territory Forge). Issue #3101.
+/// Welder, Territory Forge). Issue #3101. Both the bare-predicate building-block
+/// form and the verb-prefixed production form (`"has all activated abilities of
+/// …"`, the shape the static dispatch actually feeds via `parse_continuous_gets_has`)
+/// must resolve identically — the verb prefix is the leading axis of the grant.
 #[test]
 fn parse_continuous_modifications_grants_all_activated_abilities_of_exiled() {
     use crate::types::ability::TargetFilter;
@@ -5161,6 +5164,9 @@ fn parse_continuous_modifications_grants_all_activated_abilities_of_exiled() {
         "all activated abilities of all cards exiled with it",
         "all activated abilities of all cards exiled with ~",
         "all activated abilities of the exiled card",
+        // Production-path forms: the static dispatch prepends the verb.
+        "has all activated abilities of the exiled card",
+        "have all activated abilities of all cards exiled with it",
     ] {
         let mods = parse_continuous_modifications(predicate);
         assert_eq!(
@@ -5171,14 +5177,61 @@ fn parse_continuous_modifications_grants_all_activated_abilities_of_exiled() {
             "predicate: {predicate}"
         );
     }
-    // Typed/counter/battlefield forms stay a gap (no modification) for now.
-    assert!(
-        parse_continuous_modifications(
-            "all activated abilities of all creature cards exiled with it"
-        )
-        .is_empty(),
-        "typed 'creature cards exiled with it' must stay a gap (follow-up)"
-    );
+}
+
+/// CR 613.1f + CR 607.2a + CR 205.3: "all creature cards exiled with it/~" narrows
+/// the granted set to creature cards only (Agatha's Soul Cauldron) — the source
+/// filter intersects `ExiledBySource` with the Creature type filter.
+#[test]
+fn parse_continuous_modifications_grants_creature_cards_exiled() {
+    use crate::types::ability::{TargetFilter, TypedFilter};
+    let expected = ContinuousModification::GrantAllActivatedAbilitiesOf {
+        source: TargetFilter::And {
+            filters: vec![
+                TargetFilter::Typed(TypedFilter::creature()),
+                TargetFilter::ExiledBySource,
+            ],
+        },
+    };
+    for predicate in [
+        "all activated abilities of all creature cards exiled with it",
+        "all activated abilities of all creature cards exiled with ~",
+        "has all activated abilities of all creature cards exiled with ~",
+    ] {
+        assert_eq!(
+            parse_continuous_modifications(predicate),
+            vec![expected.clone()],
+            "predicate: {predicate}"
+        );
+    }
+}
+
+/// CR 613.1f + CR 201.2: "all activated abilities of creatures you control that
+/// don't have the same name as it/~" (Marvin, Murderous Mimic) — battlefield
+/// creatures you control, excluding ones sharing the recipient's name.
+#[test]
+fn parse_continuous_modifications_grants_creatures_you_control_not_same_name() {
+    use crate::types::ability::{ControllerRef, FilterProp, TargetFilter, TypedFilter};
+    let expected = ContinuousModification::GrantAllActivatedAbilitiesOf {
+        source: TargetFilter::Typed(
+            TypedFilter::creature()
+                .controller(ControllerRef::You)
+                .properties(vec![FilterProp::Not {
+                    prop: Box::new(FilterProp::SameName),
+                }]),
+        ),
+    };
+    for predicate in [
+        "all activated abilities of creatures you control that don't have the same name as it",
+        "all activated abilities of creatures you control that don't have the same name as ~",
+        "has all activated abilities of creatures you control that don't have the same name as ~",
+    ] {
+        assert_eq!(
+            parse_continuous_modifications(predicate),
+            vec![expected.clone()],
+            "predicate: {predicate}"
+        );
+    }
 }
 
 /// CR 305.6 + CR 305.7 + CR 205.3i: "gain all basic land types" (and the
