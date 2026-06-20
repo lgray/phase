@@ -707,23 +707,78 @@ fn parse_linked_exile_mana_value_ref(input: &str) -> OracleResult<'_, QuantityRe
         tag("the exiled card's converted mana cost"),
     ))
     .parse(input)?;
+    // CR 702.167c: "...the exiled card used to craft it." — the craft-material
+    // qualifier is the same linked-exile set, so consume the optional suffix and
+    // emit the same aggregate (Jadeheart Attendant).
+    let (rest, _) = opt(parse_craft_materials_suffix).parse(rest)?;
     Ok((
         rest,
         QuantityRef::Aggregate {
             function: AggregateFunction::Sum,
             property: ObjectProperty::ManaValue,
-            filter: TargetFilter::And {
-                filters: vec![
-                    TargetFilter::ExiledBySource,
-                    TargetFilter::Typed(TypedFilter::default().properties(vec![
-                        FilterProp::Owned {
-                            controller: ControllerRef::You,
-                        },
-                    ])),
-                ],
-            },
+            filter: linked_exile_owned_filter(),
         },
     ))
+}
+
+/// CR 702.167c: The `And { [ExiledBySource, Owned { You }] }` filter shared by
+/// every craft-material / linked-exile reference. `ExiledBySource` resolves the
+/// source's linked-exile pool (which includes `ExileLinkKind::CraftMaterial`);
+/// `Owned { You }` rebinds per owner under player-scope iteration, matching the
+/// existing Skyclave linked-exile precedent (`parse_linked_exile_mana_value_ref`).
+fn linked_exile_owned_filter() -> TargetFilter {
+    TargetFilter::And {
+        filters: vec![
+            TargetFilter::ExiledBySource,
+            TargetFilter::Typed(TypedFilter::default().properties(vec![FilterProp::Owned {
+                controller: ControllerRef::You,
+            }])),
+        ],
+    }
+}
+
+/// CR 702.167c: Consume the craft-material qualifier "used to craft <self>",
+/// where `<self>` is the source self-anaphor (`it` / `~` / `this creature` /
+/// `this permanent` / `this artifact` / …). "An ability of a permanent may refer
+/// to the exiled cards used to craft it." This is a pure suffix combinator —
+/// callers decide which linked-exile ref to emit; it only confirms the qualifier
+/// is present and returns the remainder.
+fn parse_craft_materials_suffix(input: &str) -> OracleResult<'_, ()> {
+    let (rest, _) = tag(" used to craft ").parse(input)?;
+    let (rest, _) = parse_source_self_anaphor(rest)?;
+    Ok((rest, ()))
+}
+
+/// CR 109.5: The source self-anaphor used by craft / linked-exile references:
+/// `it`, `~`, or `this <noun>` (creature / permanent / artifact / card). Mirrors
+/// the anaphor `alt` already used by `parse_cards_exiled_with_source`, factored
+/// out so the craft-suffix and the craft noun-phrase combinator share it.
+fn parse_source_self_anaphor(input: &str) -> OracleResult<'_, ()> {
+    value(
+        (),
+        alt((
+            tag("~"),
+            tag("it"),
+            preceded(
+                tag("this "),
+                take_while1(|c: char| c.is_ascii_alphabetic() || c == '-'),
+            ),
+        )),
+    )
+    .parse(input)
+}
+
+/// CR 702.167c: Parse the craft-material reference noun phrase
+/// "the exiled card[s] used to craft <self>" into the shared linked-exile
+/// filter. Single building block reused by the aggregate-property,
+/// distinct-colors, and for-each-color (mana) paths so "total power of …",
+/// "number of colors among …", and "for each color among …" all resolve over
+/// the same `ExileLinkKind::CraftMaterial` pool without per-card phrase tables.
+pub(crate) fn parse_craft_materials_filter(input: &str) -> OracleResult<'_, TargetFilter> {
+    let (rest, _) = tag("the exiled card").parse(input)?;
+    let (rest, _) = opt(tag("s")).parse(rest)?;
+    let (rest, _) = parse_craft_materials_suffix(rest)?;
+    Ok((rest, linked_exile_owned_filter()))
 }
 
 /// CR 202.3: Parse "mana value" or "converted mana cost" phrase.
@@ -926,6 +981,21 @@ fn parse_object_property_aggregate_ref(input: &str) -> OracleResult<'_, Quantity
         ),
     ))
     .parse(input)?;
+    // CR 702.167c: "the total power of the exiled cards used to craft it" — the
+    // craft-material aggregate (Mastercraft Raptor). Tried before the bare
+    // "the exiled cards" tracked-set anaphor because the craft form shares that
+    // prefix but reads the persistent `CraftMaterial` linked-exile pool, not the
+    // most-recent chain tracked set.
+    if let Ok((craft_rest, filter)) = parse_craft_materials_filter(rest) {
+        return Ok((
+            craft_rest,
+            QuantityRef::Aggregate {
+                function,
+                property,
+                filter,
+            },
+        ));
+    }
     if let Ok((anaphor_rest, _)) = alt((
         tag::<_, _, OracleError<'_>>("those exiled cards"),
         tag("the exiled cards"),
@@ -1075,6 +1145,15 @@ fn parse_number_of_distinct_colors_among_permanents_tail(
     input: &str,
 ) -> OracleResult<'_, QuantityRef> {
     let (rest, _) = tag("colors among ").parse(input)?;
+    // CR 702.167c + CR 105.1: "the number of colors among the exiled cards used
+    // to craft it" — distinct colors over the craft-material linked-exile pool
+    // (Sunbird Effigy P/T). Tried before the generic type-phrase filter so the
+    // craft noun phrase wins.
+    if let Ok((craft_rest, filter)) = parse_craft_materials_filter(rest) {
+        if matches!(craft_rest.trim(), "" | "." | ",") {
+            return Ok(("", QuantityRef::DistinctColorsAmongPermanents { filter }));
+        }
+    }
     let (remainder, filter) = super::target::parse_type_phrase(rest)?;
     if !matches!(remainder.trim(), "" | "." | ",")
         || !quantity_filter_has_meaningful_content(&filter)
@@ -3905,6 +3984,82 @@ mod tests {
             QuantityRef::Aggregate {
                 function: AggregateFunction::Max,
                 property: ObjectProperty::Power,
+                ..
+            }
+        ));
+    }
+
+    /// CR 702.167c: the craft-material noun phrase recognizes every self-anaphor
+    /// variant ("it" / "~" / "this <noun>") and rejects unrelated exile phrases.
+    #[test]
+    fn parse_craft_materials_filter_anaphors() {
+        for phrase in [
+            "the exiled card used to craft it",
+            "the exiled cards used to craft it",
+            "the exiled cards used to craft ~",
+            "the exiled cards used to craft this creature",
+            "the exiled cards used to craft this permanent",
+            "the exiled cards used to craft this artifact",
+        ] {
+            let (rest, filter) = parse_craft_materials_filter(phrase)
+                .unwrap_or_else(|e| panic!("craft phrase {phrase:?} should parse: {e:?}"));
+            assert_eq!(rest, "", "craft phrase {phrase:?} must fully consume");
+            assert_eq!(filter, linked_exile_owned_filter(), "phrase {phrase:?}");
+        }
+        // Bare exile anaphors (no "used to craft") must NOT match the craft form.
+        assert!(parse_craft_materials_filter("the exiled cards").is_err());
+        assert!(parse_craft_materials_filter("those exiled cards").is_err());
+    }
+
+    /// CR 702.167c + CR 208.1: "the total power of the exiled cards used to craft
+    /// it" routes to the linked-exile aggregate, NOT the tracked-set anaphor
+    /// (Mastercraft Raptor). The shared "the exiled cards" prefix must resolve to
+    /// the craft pool when the craft suffix follows.
+    #[test]
+    fn parse_total_power_of_craft_materials_is_aggregate() {
+        let (rest, q) =
+            parse_quantity_ref("the total power of the exiled cards used to craft it").unwrap();
+        assert_eq!(rest, "");
+        match q {
+            QuantityRef::Aggregate {
+                function: AggregateFunction::Sum,
+                property: ObjectProperty::Power,
+                filter,
+            } => assert_eq!(filter, linked_exile_owned_filter()),
+            other => panic!("expected craft-material power aggregate, got {other:?}"),
+        }
+    }
+
+    /// CR 702.167c + CR 105.1: "the number of colors among the exiled cards used
+    /// to craft it" routes to the distinct-colors ref over the craft pool
+    /// (Sunbird Effigy P/T).
+    #[test]
+    fn parse_colors_among_craft_materials_is_distinct_colors() {
+        let (rest, q) =
+            parse_quantity_ref("the number of colors among the exiled cards used to craft it")
+                .unwrap();
+        assert_eq!(rest, "");
+        match q {
+            QuantityRef::DistinctColorsAmongPermanents { filter } => {
+                assert_eq!(filter, linked_exile_owned_filter())
+            }
+            other => panic!("expected DistinctColorsAmongPermanents, got {other:?}"),
+        }
+    }
+
+    /// CR 702.167c + CR 202.3: "the mana value of the exiled card used to craft
+    /// it" still resolves to the linked-exile mana-value aggregate even with the
+    /// craft suffix appended (Jadeheart Attendant).
+    #[test]
+    fn parse_mana_value_of_craft_material_is_aggregate() {
+        let (rest, q) =
+            parse_quantity_ref("the mana value of the exiled card used to craft it").unwrap();
+        assert_eq!(rest, "");
+        assert!(matches!(
+            q,
+            QuantityRef::Aggregate {
+                function: AggregateFunction::Sum,
+                property: ObjectProperty::ManaValue,
                 ..
             }
         ));
