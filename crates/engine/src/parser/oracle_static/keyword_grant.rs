@@ -871,6 +871,19 @@ pub(crate) fn parse_continuous_modifications(text: &str) -> Vec<ContinuousModifi
         });
     }
 
+    // CR 701.60a + CR 701.60d: "can't become suspected" prohibition riding on a
+    // compound static (Airtight Alibi: "Enchanted creature gets +2/+2 and can't
+    // become suspected"). Confers a `CantBecomeSuspected` static onto the
+    // affected creature; the suspect resolver gates on it. Mirrors the goaded
+    // designation rider above.
+    if nom_primitives::scan_contains(unquoted_lower.as_str(), "can't become suspected")
+        || nom_primitives::scan_contains(unquoted_lower.as_str(), "cant become suspected")
+    {
+        modifications.push(ContinuousModification::AddStaticMode {
+            mode: StaticMode::CantBecomeSuspected,
+        });
+    }
+
     // CR 702.73a + CR 205.3 + CR 613.1d: Conjunctive "is/are every creature
     // type" predicate — the Changeling-class type grant when it appears as
     // one conjunct in an Aura/Equipment compound static ("Enchanted creature

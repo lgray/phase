@@ -981,6 +981,7 @@ fn walk_effect(effect: &Effect, out: &mut Vec<String>) {
         | Effect::Choose { .. }
         | Effect::ChooseDamageSource { .. }
         | Effect::Suspect { .. }
+        | Effect::Unsuspect { .. }
         | Effect::Connive { .. }
         | Effect::PhaseOut { .. }
         | Effect::PhaseIn { .. }

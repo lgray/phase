@@ -4614,6 +4614,95 @@ fn try_parse_that_many_counters(lower: &str, ctx: &mut ParseContext) -> Option<E
     })
 }
 
+/// CR 701.60a: Parse the "no longer suspected" un-designation transition into an
+/// `Effect::Unsuspect { target }`. The subject precedes the copula + phrase and
+/// varies by card:
+///   - "all suspected creatures are no longer suspected" (Absolving Lammasu)
+///   - "it's no longer suspected" / "it is no longer suspected" (Airtight Alibi)
+///   - "they're no longer suspected" / "they are no longer suspected"
+///     (Eliminate the Impossible)
+///   - "~ is no longer suspected" / "this creature is no longer suspected"
+///     (Frantic Scapegoat)
+///   - "become no longer suspected" (Deadly Complication, after the upstream
+///     "you may have it " causative is stripped — the referent is the prior
+///     clause's target)
+///
+/// Subject → filter mapping: anaphoric pronouns ("it"/"they"/"them") and the
+/// empty subject left by the "become" causative bind to `ParentTarget`; the
+/// printed-name anaphor ("~"/"this creature") binds to `SelfRef`; any other noun
+/// phrase ("all suspected creatures") is parsed by `parse_target`. Mirrors
+/// `parse_remove_from_combat_ast`.
+fn parse_no_longer_suspected_ast(lower: &str) -> Option<Effect> {
+    let input = lower.trim();
+    // Each alternative is `copula + " no longer suspected"`; `take_until` finds
+    // the subject preceding the first matching tail, and the tail must end the
+    // clause (optional trailing period). The copula axis is an ordered list so
+    // the longer contraction/word forms are tried before the bare phrase.
+    // CR 701.60a: "no longer suspected" is the un-designation transition.
+    for tail in [
+        "'s no longer suspected",
+        "'re no longer suspected",
+        " is no longer suspected",
+        " are no longer suspected",
+        "become no longer suspected",
+        " no longer suspected",
+        "no longer suspected",
+    ] {
+        let Ok((after, subject)) = take_until::<_, _, OracleError<'_>>(tail).parse(input) else {
+            continue;
+        };
+        // The tail must terminate the clause (optionally with a period) so a
+        // mid-sentence "no longer suspected" fragment doesn't false-match.
+        if all_consuming(terminated(
+            tag::<_, _, OracleError<'_>>(tail),
+            opt(tag(".")),
+        ))
+        .parse(after)
+        .is_err()
+        {
+            continue;
+        }
+
+        let subject = subject.trim();
+        // CR 701.60a applies the un-designation to *each* matching permanent, so
+        // the subject's shape selects the resolution scope:
+        //   - anaphors ("it"/"they"/"them"/causative residue) and the
+        //     printed-name anaphor ("~"/"this creature") act on the prior
+        //     clause's announced target(s) / the source permanent — `Single`,
+        //     resolved via `ability.targets`. (The plural "they"/"them" form
+        //     reads every announced object target, so a multi-target antecedent
+        //     is already covered. Eliminate the Impossible's "they're no longer
+        //     suspected" over a non-targeting `PumpAll` *population* — rather
+        //     than announced targets — is a separate population-anaphor +
+        //     swallowed-conditional gap, not wired here.)
+        //   - an explicit noun phrase ("all suspected creatures" — Absolving
+        //     Lammasu) is a non-targeting population filter (`All`), enumerated
+        //     over the battlefield at resolution with no announced target.
+        let (target, scope) = match subject {
+            // Anaphoric / causative pronouns → the prior clause's target(s).
+            "it" | "they" | "them" | "" => (TargetFilter::ParentTarget, EffectScope::Single),
+            // Printed-name anaphor → the source permanent.
+            "~" | "this creature" | "this permanent" => {
+                (TargetFilter::SelfRef, EffectScope::Single)
+            }
+            _ => {
+                let (tf, _) = parse_target(subject);
+                // `parse_target` returns `Any` for unrecognized phrases; bail
+                // rather than emit an over-broad Unsuspect against every object.
+                if matches!(tf, TargetFilter::Any) {
+                    return None;
+                }
+                // An explicit noun-phrase subject ("all suspected creatures") is
+                // a mass population filter, not an announced target — CR 701.60a
+                // removes the designation from every matching permanent.
+                (tf, EffectScope::All)
+            }
+        };
+        return Some(Effect::Unsuspect { target, scope });
+    }
+    None
+}
+
 /// CR 506.4: Parse "remove [target] from combat" patterns.
 /// Matches: "remove it from combat", "remove ~ from combat",
 /// "remove target [creature] from combat", "remove that creature from combat".
@@ -6332,6 +6421,15 @@ pub(super) fn parse_imperative_family_ast(
 ) -> Option<ImperativeFamilyAst> {
     let first_word = lower.split_whitespace().next().unwrap_or("");
 
+    // CR 701.60a: "[subject] no longer suspected" — the un-designation
+    // transition. The subject leads the clause (varying anaphor / noun phrase),
+    // so `first_word` is "all"/"it's"/"they're"/"~"/"become" rather than a verb
+    // keyword. Intercept it as an anchored whole-clause production before the
+    // first-word dispatch, alongside the other non-verb-led effects below.
+    if let Some(effect) = parse_no_longer_suspected_ast(lower) {
+        return Some(ImperativeFamilyAst::GainKeyword(effect));
+    }
+
     // CR 724.1: "end the turn" (Time Stop, Sundial of the Infinite, Obeka,
     // Glorious End, Discontinuity, Day's Undoing). Whole-phrase imperative
     // with no target; parse it as an anchored nom production rather than a
@@ -6816,7 +6914,10 @@ pub(super) fn parse_imperative_family_ast(
                 None
             }
         }
-        // CR 701.60a: "suspect it" / "suspect target creature"
+        // CR 701.60a: "suspect it" / "suspect target creature". Every printed
+        // suspect instruction designates a single chosen/anaphoric permanent, so
+        // the scope is always `Single`; no card mass-suspects via a population
+        // filter today.
         "suspect" | "suspects" => {
             let rest = lower[first_word.len()..].trim();
             let target = if !rest.is_empty() {
@@ -6825,7 +6926,10 @@ pub(super) fn parse_imperative_family_ast(
             } else {
                 crate::types::ability::TargetFilter::ParentTarget
             };
-            Some(ImperativeFamilyAst::GainKeyword(Effect::Suspect { target }))
+            Some(ImperativeFamilyAst::GainKeyword(Effect::Suspect {
+                target,
+                scope: EffectScope::Single,
+            }))
         }
         // CR 701.35a: "detain target creature an opponent controls"
         "detain" | "detains" => {
@@ -9202,6 +9306,100 @@ mod tests {
 
     fn has_prop(tf: &TypedFilter, prop: FilterProp) -> bool {
         tf.properties.iter().any(|candidate| candidate == &prop)
+    }
+
+    /// CR 701.60a: the "no longer suspected" un-designation parses to
+    /// `Effect::Unsuspect`, mapping each card's subject to the right filter +
+    /// scope:
+    ///   - anaphoric "it" / "they" / "become" residue → ParentTarget, Single
+    ///   - printed-name anaphor "~" / "this creature" → SelfRef, Single
+    ///   - "all suspected creatures" → a Suspected-creature filter, All (mass)
+    #[test]
+    fn parse_no_longer_suspected_subject_mapping() {
+        use crate::types::ability::EffectScope;
+
+        // Anaphoric pronouns → ParentTarget, single scope (read announced
+        // target(s)).
+        for text in [
+            "it's no longer suspected",
+            "it is no longer suspected",
+            "they're no longer suspected",
+            "they are no longer suspected",
+            // Deadly Complication causative residue after "you may have it ".
+            "become no longer suspected",
+        ] {
+            assert!(
+                matches!(
+                    parse_no_longer_suspected_ast(text),
+                    Some(Effect::Unsuspect {
+                        target: TargetFilter::ParentTarget,
+                        scope: EffectScope::Single,
+                    })
+                ),
+                "{text:?} should map to Unsuspect(ParentTarget, Single)"
+            );
+        }
+
+        // Printed-name anaphor → SelfRef, single scope.
+        for text in [
+            "~ is no longer suspected",
+            "this creature is no longer suspected",
+        ] {
+            assert!(
+                matches!(
+                    parse_no_longer_suspected_ast(text),
+                    Some(Effect::Unsuspect {
+                        target: TargetFilter::SelfRef,
+                        scope: EffectScope::Single,
+                    })
+                ),
+                "{text:?} should map to Unsuspect(SelfRef, Single)"
+            );
+        }
+
+        // "all suspected creatures" → a typed Suspected filter under the mass
+        // (All) scope — CR 701.60a removes the designation from every match.
+        let all = parse_no_longer_suspected_ast("all suspected creatures are no longer suspected");
+        match all {
+            Some(Effect::Unsuspect { target, scope }) => {
+                let tf = typed_leg(&target).expect("typed filter for 'all suspected creatures'");
+                assert!(
+                    has_prop(tf, FilterProp::Suspected),
+                    "filter should carry the Suspected property, got {target:?}"
+                );
+                assert_eq!(
+                    scope,
+                    EffectScope::All,
+                    "an explicit mass noun phrase must use the All scope"
+                );
+            }
+            other => panic!("expected Unsuspect for 'all suspected creatures', got {other:?}"),
+        }
+
+        // A non-clause-final "no longer suspected" fragment must NOT match.
+        assert!(
+            parse_no_longer_suspected_ast("it's no longer suspected and draws a card").is_none(),
+            "trailing clause must prevent a false match"
+        );
+    }
+
+    /// CR 701.60a: end-to-end through `parse_effect` — the same dispatch the card
+    /// loader uses — so the interception is reachable in production, not just via
+    /// the helper. Frantic Scapegoat's self-referential form lowers to SelfRef.
+    #[test]
+    fn parse_effect_self_no_longer_suspected_is_unsuspect_selfref() {
+        use crate::parser::oracle_effect::parse_effect;
+        let effect = parse_effect("~ is no longer suspected.");
+        assert!(
+            matches!(
+                effect,
+                Effect::Unsuspect {
+                    target: TargetFilter::SelfRef,
+                    scope: crate::types::ability::EffectScope::Single,
+                }
+            ),
+            "expected Unsuspect(SelfRef, Single), got {effect:?}"
+        );
     }
 
     /// CR 107.1a + CR 121.1: Change B — `parse_dynamic_count_phrase` routes a
