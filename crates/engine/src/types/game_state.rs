@@ -3593,6 +3593,21 @@ pub enum WaitingFor {
         player: PlayerId,
         candidates: Vec<ObjectId>,
     },
+    /// CR 709.5f-g: A resolving lock/unlock-door effect needs the player to
+    /// choose which door (half) of the targeted Room to act on. `options`
+    /// enumerates each legal (operation, door) pair from `room::eligible_doors`
+    /// — locked halves to unlock (CR 709.5f), unlocked halves to lock (CR
+    /// 709.5g). For a "lock or unlock" effect both operations can appear, so the
+    /// player chooses operation and door together. Answered with
+    /// `GameAction::ChooseRoomDoor { object_id, op, door }`.
+    ChooseRoomDoor {
+        player: PlayerId,
+        object_id: ObjectId,
+        options: Vec<(
+            crate::types::ability::DoorLockOp,
+            crate::game::game_object::RoomDoor,
+        )>,
+    },
     /// CR 701.49a: Player chooses which dungeon to venture into (no active dungeon).
     ChooseDungeon {
         player: PlayerId,
@@ -4272,6 +4287,7 @@ impl WaitingFor {
             WaitingFor::WardSacrificeChoice { .. } => "WardSacrificeChoice",
             WaitingFor::UnlessBounceChoice { .. } => "UnlessBounceChoice",
             WaitingFor::ChooseRingBearer { .. } => "ChooseRingBearer",
+            WaitingFor::ChooseRoomDoor { .. } => "ChooseRoomDoor",
             WaitingFor::ChooseDungeon { .. } => "ChooseDungeon",
             WaitingFor::ChooseDungeonRoom { .. } => "ChooseDungeonRoom",
             WaitingFor::SpecializeColor { .. } => "SpecializeColor",
@@ -4396,6 +4412,7 @@ impl WaitingFor {
             | WaitingFor::CastingVariantChoice { player, .. }
             | WaitingFor::ChoosePermanentTypeSlot { player, .. }
             | WaitingFor::ChooseRingBearer { player, .. }
+            | WaitingFor::ChooseRoomDoor { player, .. }
             | WaitingFor::ChooseDungeon { player, .. }
             | WaitingFor::ChooseDungeonRoom { player, .. }
             | WaitingFor::SpecializeColor { player, .. }

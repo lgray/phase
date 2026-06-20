@@ -4177,6 +4177,7 @@ pub(super) fn clause_is_dig_lookback_transparent(effect: &Effect) -> bool {
         | Effect::Goad { .. }
         | Effect::GoadAll { .. }
         | Effect::Detain { .. }
+        | Effect::SetRoomDoorLock { .. }
         | Effect::ExchangeControl { .. }
         | Effect::ChangeTargets { .. }
         | Effect::Manifest { .. }

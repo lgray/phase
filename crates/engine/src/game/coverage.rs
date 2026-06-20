@@ -2685,6 +2685,17 @@ fn effect_details(effect: &Effect) -> Vec<(String, String)> {
         Effect::Detain { target } => {
             d.push(("target".into(), fmt_target(target)));
         }
+        Effect::SetRoomDoorLock { op, target } => {
+            d.push((
+                "op".into(),
+                match op {
+                    crate::types::ability::DoorLockOp::Unlock => "unlock".into(),
+                    crate::types::ability::DoorLockOp::Lock => "lock".into(),
+                    crate::types::ability::DoorLockOp::LockOrUnlock => "lock or unlock".into(),
+                },
+            ));
+            d.push(("target".into(), fmt_target(target)));
+        }
         Effect::ExtraTurn { target } => {
             d.push(("player".into(), fmt_target(target)));
         }

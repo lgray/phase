@@ -1030,6 +1030,7 @@ fn walk_effect(effect: &Effect, out: &mut Vec<String>) {
         | Effect::Goad { .. }
         | Effect::GoadAll { .. }
         | Effect::Detain { .. }
+        | Effect::SetRoomDoorLock { .. }
         | Effect::ExchangeControl { .. }
         | Effect::ChangeTargets { .. }
         | Effect::Manifest { .. }

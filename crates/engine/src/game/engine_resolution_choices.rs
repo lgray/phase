@@ -122,6 +122,7 @@ pub(super) fn handles(waiting_for: &WaitingFor) -> bool {
             | WaitingFor::SpellbookDraft { .. }
             | WaitingFor::DamageSourceChoice { .. }
             | WaitingFor::ChooseRingBearer { .. }
+            | WaitingFor::ChooseRoomDoor { .. }
             | WaitingFor::ChooseDungeon { .. }
             | WaitingFor::ChooseDungeonRoom { .. }
             | WaitingFor::SpecializeColor { .. }
@@ -3366,6 +3367,40 @@ pub(super) fn handle_resolution_choice(
             // while ChooseRingBearer pauses spell resolution (issue #1017).
             if let Some(outcome) =
                 batch_or_drain_observer_triggers(state, events, events.len(), events.len())
+            {
+                return Ok(outcome);
+            }
+            ResolutionChoiceOutcome::WaitingFor(waiting_for)
+        }
+        // CR 709.5f-g: the controller picked which door (half) of the targeted
+        // Room to lock/unlock. Validate the (op, door) pair is one the prompt
+        // offered, apply the primitive (unlocking emits `RoomDoorUnlocked` so
+        // CR 709.5h-i triggers fire), then drain the parked continuation.
+        (
+            WaitingFor::ChooseRoomDoor {
+                player,
+                object_id,
+                options,
+            },
+            GameAction::ChooseRoomDoor {
+                object_id: chosen_object,
+                op,
+                door,
+            },
+        ) => {
+            if chosen_object != object_id || !options.contains(&(op, door)) {
+                return Err(EngineError::InvalidAction(
+                    "Invalid room-door choice — not an offered (operation, door)".to_string(),
+                ));
+            }
+            let events_before = events.len();
+            effects::set_room_door_lock::apply_door_op(state, object_id, player, op, door, events);
+            let waiting_for = finish_with_continuation(state, player, events);
+            // CR 603.2 + CR 709.5h-i: an effect-driven unlock can trigger
+            // "when you unlock"/"when you fully unlock" abilities; batch or
+            // dispatch them now that the choice has resolved.
+            if let Some(outcome) =
+                batch_or_drain_observer_triggers(state, events, events_before, events.len())
             {
                 return Ok(outcome);
             }

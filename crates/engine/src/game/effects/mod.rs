@@ -171,6 +171,7 @@ pub mod search_outside_game;
 pub mod seek;
 pub mod separate_piles;
 pub mod set_class_level;
+pub mod set_room_door_lock;
 pub mod shuffle;
 pub mod skip_next_step;
 pub mod skip_next_turn;
@@ -2573,6 +2574,7 @@ pub fn resolve_effect(
         Effect::GainControlAll { .. } => gain_control::resolve_all(state, ability, events),
         Effect::Goad { .. } | Effect::GoadAll { .. } => goad::resolve(state, ability, events),
         Effect::Detain { .. } => detain::resolve(state, ability, events),
+        Effect::SetRoomDoorLock { .. } => set_room_door_lock::resolve(state, ability, events),
         Effect::ExchangeControl { .. } => exchange_control::resolve(state, ability, events),
         Effect::Attach { .. } => attach::resolve(state, ability, events),
         Effect::UnattachAll { .. } => attach::resolve_unattach_all(state, ability, events),
