@@ -854,6 +854,24 @@ pub(super) fn parse_subject_application(
         return None;
     }
 
+    // CR 608.2c: A trailing "also" adverb is a natural-language additive
+    // connector ("it also has …", "that creature also gains …") with no
+    // semantic weight on the subject — it modifies the verb, not the
+    // referent. `find_predicate_start` leaves it on the subject side because
+    // it is not a predicate verb, so strip it here so the bare anaphor/typed
+    // subject resolves identically to its non-"also" form. Mirrors the
+    // self-ref "also" strip in `oracle_effect/mod.rs` (Expressive Firedancer),
+    // generalized to every subject the subject-predicate parser accepts.
+    let subject = subject
+        .trim()
+        // allow-noncombinator: structural adverb cleanup on already-isolated subject text (not parsing dispatch); mirrors the self-ref "also" strip in oracle_effect/mod.rs (PATTERNS.md §9)
+        .strip_suffix(" also")
+        .map(str::trim_end)
+        .unwrap_or(subject);
+    if subject.trim().is_empty() {
+        return None;
+    }
+
     let lower = subject.to_lowercase();
 
     if let Ok((_, _)) = all_consuming((

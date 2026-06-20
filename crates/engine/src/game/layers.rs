@@ -6886,6 +6886,201 @@ mod tests {
         );
     }
 
+    /// CR 611.2a + CR 613.1f + CR 613.4b (Azure Beastbinder): drive the REAL
+    /// parser + resolution pipeline. Azure Beastbinder's attack trigger is parsed
+    /// from its printed Oracle text, then resolved (via the same
+    /// `build_resolved_from_def_with_targets` the trigger system uses) against an
+    /// opponent's 5/5 creature that has a keyword and an activated ability. After
+    /// `resolve_ability_chain` registers the transient continuous effects and
+    /// `evaluate_layers` applies them, the target must have:
+    ///   - base power and toughness set to 2/2 (the historical Unimplemented gap),
+    ///   - all abilities and keywords removed.
+    ///
+    /// REVERT-PROOF: reverting either parser fix re-introduces the failure —
+    /// without the "it also" subject strip the base-P/T clause stays
+    /// `Unimplemented` (no SetPower/SetToughness → power/toughness remain 5/5);
+    /// without the `RevealedHasCardType → TargetMatchesFilter` conversion the
+    /// creature-gate evaluates always-false (no revealed card) so the base-P/T
+    /// sub-ability never runs (power/toughness remain 5/5).
+    #[test]
+    fn azure_beastbinder_attack_sets_target_base_pt_and_strips_abilities_e2e() {
+        use crate::game::ability_utils::build_resolved_from_def_with_targets;
+        use crate::game::effects::resolve_ability_chain;
+        use crate::types::ability::TargetRef;
+
+        let mut scenario = GameScenario::new();
+
+        // Source: Azure Beastbinder, parsed from its real Oracle text.
+        let beastbinder = scenario
+            .add_creature(PlayerId(0), "Azure Beastbinder", 3, 3)
+            .from_oracle_text_with_keywords(
+                &["Vigilance"],
+                "Vigilance\n\
+                 This creature can't be blocked by creatures with power 2 or greater.\n\
+                 Whenever this creature attacks, up to one target artifact, creature, or \
+                 planeswalker an opponent controls loses all abilities until your next turn. \
+                 If it's a creature, it also has base power and toughness 2/2 until your next turn.",
+            )
+            .id();
+
+        // Target: an opponent's 5/5 creature with a keyword + an activated ability.
+        let target = {
+            let mut card = scenario.add_creature(PlayerId(1), "Big Beater", 5, 5);
+            card.flying()
+                .with_ability_definition(AbilityDefinition::new(
+                    AbilityKind::Activated,
+                    Effect::GainLife {
+                        amount: QuantityExpr::Fixed { value: 1 },
+                        player: TargetFilter::Controller,
+                    },
+                ));
+            card.id()
+        };
+
+        let mut state = scenario.build().state().clone();
+
+        // Pull the parsed attack-trigger execute body off the source object.
+        let execute = state
+            .objects
+            .get(&beastbinder)
+            .unwrap()
+            .trigger_definitions
+            .iter_all()
+            .find(|t| matches!(t.mode, TriggerMode::Attacks))
+            .and_then(|t| t.execute.clone())
+            .expect("Azure Beastbinder must have a parsed Attacks trigger with an execute body");
+
+        // Resolve the trigger against the chosen target (the 5/5 creature),
+        // exactly as the trigger system would after target selection.
+        let ability = build_resolved_from_def_with_targets(
+            &execute,
+            beastbinder,
+            PlayerId(0),
+            vec![TargetRef::Object(target)],
+        );
+        let mut events = Vec::new();
+        resolve_ability_chain(&mut state, &ability, &mut events, 0)
+            .expect("attack-trigger chain must resolve");
+
+        state.layers_dirty.mark_full();
+        evaluate_layers(&mut state);
+
+        let obj = state.objects.get(&target).unwrap();
+        // CR 613.4b: base power and toughness set to 2/2.
+        assert_eq!(
+            obj.power,
+            Some(2),
+            "target power must be 2, got {:?}",
+            obj.power
+        );
+        assert_eq!(
+            obj.toughness,
+            Some(2),
+            "target toughness must be 2, got {:?}",
+            obj.toughness
+        );
+        // CR 613.1f: all abilities and keywords removed.
+        assert!(
+            obj.keywords.is_empty(),
+            "target keywords must be stripped, got {:?}",
+            obj.keywords
+        );
+        assert!(
+            obj.abilities.is_empty(),
+            "target abilities must be stripped, got {:?}",
+            obj.abilities
+        );
+    }
+
+    /// CR 109.2 + CR 613.4b: the creature-gate discriminates. When Azure
+    /// Beastbinder's attack targets an opponent's ARTIFACT (non-creature), the
+    /// "if it's a creature" sub-ability must NOT fire — abilities are still
+    /// stripped (head clause) but the base-P/T set does not apply (an artifact
+    /// has no P/T to set). This pins the `TargetMatchesFilter` gate as a real
+    /// discriminator rather than an always-true rider.
+    #[test]
+    fn azure_beastbinder_attack_artifact_target_skips_base_pt() {
+        use crate::game::ability_utils::build_resolved_from_def_with_targets;
+        use crate::game::effects::resolve_ability_chain;
+        use crate::types::ability::TargetRef;
+
+        let mut scenario = GameScenario::new();
+
+        let beastbinder = scenario
+            .add_creature(PlayerId(0), "Azure Beastbinder", 3, 3)
+            .from_oracle_text_with_keywords(
+                &["Vigilance"],
+                "Vigilance\n\
+                 This creature can't be blocked by creatures with power 2 or greater.\n\
+                 Whenever this creature attacks, up to one target artifact, creature, or \
+                 planeswalker an opponent controls loses all abilities until your next turn. \
+                 If it's a creature, it also has base power and toughness 2/2 until your next turn.",
+            )
+            .id();
+
+        // Opponent's noncreature Artifact with an activated ability. `add_creature`
+        // seeds base P/T 0/0; `as_artifact` makes it a noncreature artifact. The
+        // creature-gate must leave its (base) power/toughness at 0 — a fired
+        // base-P/T set would push it to 2.
+        let artifact = {
+            let mut card = scenario.add_creature(PlayerId(1), "Sol Ring", 0, 0);
+            card.as_artifact()
+                .with_ability_definition(AbilityDefinition::new(
+                    AbilityKind::Activated,
+                    Effect::GainLife {
+                        amount: QuantityExpr::Fixed { value: 1 },
+                        player: TargetFilter::Controller,
+                    },
+                ));
+            card.id()
+        };
+
+        let mut state = scenario.build().state().clone();
+
+        let execute = state
+            .objects
+            .get(&beastbinder)
+            .unwrap()
+            .trigger_definitions
+            .iter_all()
+            .find(|t| matches!(t.mode, TriggerMode::Attacks))
+            .and_then(|t| t.execute.clone())
+            .expect("parsed Attacks trigger");
+
+        let ability = build_resolved_from_def_with_targets(
+            &execute,
+            beastbinder,
+            PlayerId(0),
+            vec![TargetRef::Object(artifact)],
+        );
+        let mut events = Vec::new();
+        resolve_ability_chain(&mut state, &ability, &mut events, 0)
+            .expect("attack-trigger chain must resolve");
+
+        state.layers_dirty.mark_full();
+        evaluate_layers(&mut state);
+
+        let obj = state.objects.get(&artifact).unwrap();
+        // Head clause still strips abilities from the artifact target.
+        assert!(
+            obj.abilities.is_empty(),
+            "artifact target abilities must be stripped, got {:?}",
+            obj.abilities
+        );
+        // The creature-gated base-P/T set must NOT fire: the artifact keeps its
+        // base 0/0 (a fired SetPower/SetToughness would make it 2/2).
+        assert_eq!(
+            obj.power,
+            Some(0),
+            "artifact target must not gain power from the creature-gated clause"
+        );
+        assert_eq!(
+            obj.toughness,
+            Some(0),
+            "artifact target must not gain toughness from the creature-gated clause"
+        );
+    }
+
     #[test]
     fn muraganda_petroglyphs_buffs_only_abilityless_creatures_e2e() {
         // Drive the REAL parser end-to-end: Muraganda Petroglyphs' Oracle text

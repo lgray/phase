@@ -5143,6 +5143,168 @@ mod tests {
         }
     }
 
+    /// CR 611.2a + CR 613.1f + CR 613.4b: Azure Beastbinder's attack trigger —
+    /// "up to one target artifact, creature, or planeswalker an opponent
+    /// controls loses all abilities until your next turn. If it's a creature, it
+    /// also has base power and toughness 2/2 until your next turn." — must parse
+    /// with ZERO `Unimplemented`. The base-P/T-set sub-clause (the historical
+    /// gap, previously `Unimplemented { name: "have" }`) lowers to
+    /// `SetPower{2}`/`SetToughness{2}` on the parent target, and the anaphoric
+    /// "if it's a creature" gate lowers to `TargetMatchesFilter{creature}` (not a
+    /// reveal-context `RevealedHasCardType`, which would evaluate always-false at
+    /// runtime since there is no revealed card — the "it" is the chosen target).
+    #[test]
+    fn azure_beastbinder_attack_trigger_has_no_unimplemented() {
+        use crate::types::ability::{Duration, PlayerScope, TypeFilter};
+
+        // Recursive walk into sub/else chains AND nested GenericEffect grant defs.
+        fn def_has_unimplemented(def: &AbilityDefinition) -> bool {
+            if matches!(&*def.effect, Effect::Unimplemented { .. }) {
+                return true;
+            }
+            if let Effect::GenericEffect {
+                static_abilities, ..
+            } = &*def.effect
+            {
+                let nested = static_abilities
+                    .iter()
+                    .flat_map(|sd| sd.modifications.iter())
+                    .any(|m| match m {
+                        ContinuousModification::GrantAbility { definition } => {
+                            def_has_unimplemented(definition)
+                        }
+                        ContinuousModification::GrantTrigger { trigger } => trigger
+                            .execute
+                            .as_deref()
+                            .is_some_and(def_has_unimplemented),
+                        _ => false,
+                    });
+                if nested {
+                    return true;
+                }
+            }
+            def.sub_ability
+                .as_deref()
+                .is_some_and(def_has_unimplemented)
+                || def
+                    .else_ability
+                    .as_deref()
+                    .is_some_and(def_has_unimplemented)
+        }
+
+        let r = parse(
+            "Vigilance\n\
+             This creature can't be blocked by creatures with power 2 or greater.\n\
+             Whenever this creature attacks, up to one target artifact, creature, or \
+             planeswalker an opponent controls loses all abilities until your next turn. \
+             If it's a creature, it also has base power and toughness 2/2 until your next turn.",
+            "Azure Beastbinder",
+            &[Keyword::Vigilance],
+            &["Creature"],
+            &[],
+        );
+
+        assert_eq!(r.triggers.len(), 1, "exactly one attack trigger: {r:#?}");
+        let execute = r.triggers[0]
+            .execute
+            .as_ref()
+            .expect("attack trigger should have an execute body");
+        assert!(
+            !def_has_unimplemented(execute),
+            "attack trigger body must contain NO Unimplemented effect: {execute:#?}"
+        );
+
+        // Head clause: loses all abilities until your next turn, on the chosen
+        // (up-to-one) opponent-controlled artifact/creature/planeswalker.
+        match &*execute.effect {
+            Effect::GenericEffect {
+                static_abilities,
+                duration,
+                ..
+            } => {
+                assert_eq!(
+                    *duration,
+                    Some(Duration::UntilNextTurnOf {
+                        player: PlayerScope::Controller
+                    }),
+                    "head clause expires at the controller's next turn"
+                );
+                assert!(
+                    static_abilities
+                        .iter()
+                        .flat_map(|s| s.modifications.iter())
+                        .any(|m| matches!(m, ContinuousModification::RemoveAllAbilities)),
+                    "head clause removes all abilities: {static_abilities:?}"
+                );
+            }
+            other => panic!("expected GenericEffect head clause, got {other:?}"),
+        }
+
+        // Sub clause: gated on the target being a creature, sets base P/T 2/2.
+        let sub = execute
+            .sub_ability
+            .as_deref()
+            .expect("base-P/T sub-ability must be present");
+        assert!(
+            matches!(
+                &sub.condition,
+                Some(AbilityCondition::TargetMatchesFilter { filter, .. })
+                    if matches!(
+                        filter,
+                        TargetFilter::Typed(TypedFilter { type_filters, .. })
+                            if type_filters == &vec![TypeFilter::Creature]
+                    )
+            ),
+            "sub clause must gate on TargetMatchesFilter(creature), got {:?}",
+            sub.condition
+        );
+        match &*sub.effect {
+            Effect::GenericEffect {
+                static_abilities,
+                duration,
+                target,
+            } => {
+                assert_eq!(
+                    *target,
+                    Some(TargetFilter::ParentTarget),
+                    "base-P/T set applies to the parent (chosen) target"
+                );
+                assert_eq!(
+                    *duration,
+                    Some(Duration::UntilNextTurnOf {
+                        player: PlayerScope::Controller
+                    }),
+                    "base-P/T set expires at the controller's next turn"
+                );
+                let mods: Vec<_> = static_abilities
+                    .iter()
+                    .flat_map(|s| s.modifications.iter())
+                    .collect();
+                assert!(
+                    mods.iter()
+                        .any(|m| matches!(m, ContinuousModification::SetPower { value: 2 })),
+                    "must contain SetPower(2): {mods:?}"
+                );
+                assert!(
+                    mods.iter()
+                        .any(|m| matches!(m, ContinuousModification::SetToughness { value: 2 })),
+                    "must contain SetToughness(2): {mods:?}"
+                );
+            }
+            other => panic!("expected GenericEffect sub clause, got {other:?}"),
+        }
+
+        // Static line: can't be blocked by power-2+ creatures.
+        assert!(
+            r.statics.iter().any(|s| matches!(
+                s.mode,
+                crate::types::statics::StaticMode::CantBeBlockedBy { .. }
+            )),
+            "can't-be-blocked-by static must parse: {:#?}",
+            r.statics
+        );
+    }
+
     /// Issue #69 (Triad of Fates): "Exile target creature that has a fate counter
     /// on it, then return it to the battlefield…" — the exile target ChangeZone
     /// filter must carry the fate-counter restriction, and the "then return it"
