@@ -221,7 +221,7 @@ fn double_modifications(
         .get(&obj_id)
         .ok_or(EffectError::ObjectNotFound(obj_id))?;
     // CR 701.10b: "double" adds 1x the snapshot; generalize to (factor - 1)x.
-let added_copies = i32::try_from(factor).unwrap_or(i32::MAX).saturating_sub(1);
+    let added_copies = i32::try_from(factor).unwrap_or(i32::MAX).saturating_sub(1);
     let mut mods = Vec::new();
     let add_power = matches!(mode, DoublePTMode::Power | DoublePTMode::PowerAndToughness);
     let add_toughness = matches!(
