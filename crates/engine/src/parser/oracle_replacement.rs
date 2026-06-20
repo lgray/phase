@@ -518,9 +518,14 @@ fn parse_replacement_line_inner(text: &str, card_name: &str) -> Option<Replaceme
 
     // --- "[Subject] enters/escapes with N [type] counter(s)" ---
     // CR 614.1c: Handles "enters with", "escapes with" (CR 702.138), and
-    // kicker-conditional "if was kicked, it enters with" (CR 702.33d).
+    // kicker-conditional "if was kicked, it enters with" (CR 702.33d). The
+    // bare-verb plural-subject forms ("Other creatures you control enter with …"
+    // — Gev, Scaled Scorch) use "enter"/"escape" rather than the singular
+    // "enters"/"escapes", so accept both at word boundaries.
     if (nom_primitives::scan_contains(&lower, "enters")
-        || nom_primitives::scan_contains(&lower, "escapes"))
+        || nom_primitives::scan_contains(&lower, "escapes")
+        || nom_primitives::scan_contains(&lower, "enter with")
+        || nom_primitives::scan_contains(&lower, "escape with"))
         && nom_primitives::scan_contains(&lower, "counter")
     {
         if let Some(def) = parse_enters_with_counters(&norm_lower, &text) {
@@ -2695,9 +2700,16 @@ fn parse_enters_counter_for_each_suffix(after_counter: &str) -> Option<QuantityE
     let (rest, _) = opt(tag::<_, _, OracleError<'_>>("s"))
         .parse(after_counter)
         .ok()?;
-    let (rest, _) = tag::<_, _, OracleError<'_>>(" on it for each ")
-        .parse(rest)
-        .ok()?;
+    // CR 614.12: the self-referential recipient is "it" for a single permanent
+    // and "them" for a distributive subject (e.g. Gev, Scaled Scorch's "Other
+    // creatures you control enter with … counter on them for each …"). Both
+    // forms precede the per-each scaling clause identically.
+    let (rest, _) = alt((
+        tag::<_, _, OracleError<'_>>(" on it for each "),
+        tag(" on them for each "),
+    ))
+    .parse(rest)
+    .ok()?;
     if let Ok((rest, qty)) = parse_for_each_convoked_creature_clause(rest) {
         if rest.trim().is_empty() {
             return Some(qty);

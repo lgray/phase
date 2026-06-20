@@ -1471,9 +1471,12 @@ pub enum StaticMode {
     /// counters into the entry's counter list.
     ///
     /// Class members (fixed-count form): Kalain, Reclusive Painter; Bard Class;
-    /// Gorma the Gullet; Master Chef. The dynamic-count form (Gev, "for each
-    /// opponent who lost life") is intentionally NOT matched by the parser and
-    /// remains Unimplemented until a dynamic-count axis is added.
+    /// Gorma the Gullet; Master Chef. The dynamically *scaled* distributive form
+    /// (Gev, Scaled Scorch — "enter with … counter on them for each opponent who
+    /// lost life this turn") is NOT modeled here (this mode carries a fixed
+    /// `count`); it routes instead to the dynamic-capable
+    /// `ReplacementEvent::ChangeZone` + `Effect::PutCounter { count: QuantityExpr }`
+    /// path via the enters-with-counter replacement parser.
     EntersWithAdditionalCounters {
         counter_type: super::counter::CounterType,
         count: u32,

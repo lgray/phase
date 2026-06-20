@@ -41,10 +41,11 @@ use super::oracle_classifier::{
     is_alternative_keyword_cost_pattern, is_cant_win_lose_compound,
     is_cast_spells_alternative_cost_pattern, is_collect_evidence_alt_cost_pattern,
     is_compound_turn_limit, is_defiler_cost_pattern, is_enters_tapped_cant_untap_compound,
-    is_enters_with_counter_trigger, is_flashback_equal_mana_cost, is_granted_static_line,
-    is_instead_replacement_line, is_opening_hand_begin_game, is_pay_life_as_colored_mana_pattern,
-    is_replacement_pattern, is_spells_alternative_cost_pattern, is_static_pattern,
-    is_vehicle_tier_line, lower_starts_with, should_defer_spell_to_effect,
+    is_enters_with_counter_replacement_line, is_enters_with_counter_trigger,
+    is_flashback_equal_mana_cost, is_granted_static_line, is_instead_replacement_line,
+    is_opening_hand_begin_game, is_pay_life_as_colored_mana_pattern, is_replacement_pattern,
+    is_spells_alternative_cost_pattern, is_static_pattern, is_vehicle_tier_line, lower_starts_with,
+    should_defer_spell_to_effect,
 };
 use super::oracle_condition::parse_restriction_condition;
 use super::oracle_cost::{parse_oracle_cost, try_parse_cost_reduction};
@@ -2880,6 +2881,20 @@ pub(crate) fn parse_oracle_ir(
                     continue;
                 }
             } else if lower_starts_with(&lower, "as long as ") && is_replacement_pattern(&lower) {
+                if let Some(rep_def) = parse_replacement_line(&line, card_name) {
+                    result.replacements.push(rep_def);
+                    i += 1;
+                    continue;
+                }
+            } else if is_enters_with_counter_replacement_line(&lower) {
+                // CR 614.1c + CR 614.12: distributive "[Other/each] [type] you
+                // control enter(s) with [an additional] [counter] on them [for
+                // each …]" lines (Gev, Scaled Scorch) are ETB-with-counter
+                // replacement effects, but their leading "[type] you control …"
+                // subject also matches `is_static_pattern`. Route them to the
+                // replacement parser first; a line that is not actually an
+                // enters-with-counter replacement returns `None` and falls
+                // through to the static parser below.
                 if let Some(rep_def) = parse_replacement_line(&line, card_name) {
                     result.replacements.push(rep_def);
                     i += 1;

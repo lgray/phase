@@ -1612,7 +1612,10 @@ fn parse_number_of_opponents(input: &str) -> OracleResult<'_, QuantityRef> {
 fn parse_for_each_opponents_life_change(input: &str) -> OracleResult<'_, QuantityRef> {
     use crate::types::ability::PlayerFilter;
     let (rest, _) = opt(alt((tag("of your "), tag("of ")))).parse(input)?;
-    let (rest, _) = tag("opponents ").parse(rest)?;
+    // Singular "opponent who lost life this turn" (Gev, Scaled Scorch's per-each
+    // counter scaling) and plural "opponents who …" (Belbe, Corrupted Observer)
+    // resolve to the same `PlayerCount` over the qualifying-opponents set.
+    let (rest, _) = alt((tag("opponents "), tag("opponent "))).parse(rest)?;
     let (rest, filter) = alt((
         value(
             PlayerFilter::OpponentLostLife,
