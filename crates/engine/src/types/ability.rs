@@ -1485,6 +1485,9 @@ pub enum ManaSpendRestriction {
     /// alone — a distinct axis from [`ManaSpendRestriction::SpellWithKeywordKindFromZone`],
     /// which additionally requires a keyword. Resolved against `SpellMeta.cast_from_zone`.
     SpellFromZone(Zone),
+    /// CR 106.6: Disjunction of spend restrictions ("cast X or Y or activate Z").
+    /// Lowered to `ManaRestriction::OnlyForAny`.
+    Any(Vec<ManaSpendRestriction>),
 }
 
 /// Duration for temporary effects.
@@ -1610,6 +1613,13 @@ pub enum RestrictionPlayerScope {
     /// propagation, without declaring a second target slot.
     ParentTargetedPlayer,
     OpponentsOfSourceController,
+    /// CR 508.5 / CR 508.5a: The defending player for the source's attack
+    /// ("Whenever ~ attacks, defending player can't cast spells this turn." —
+    /// Xantid Swarm). Resolved to `SpecificPlayer` by `add_restriction` at
+    /// resolution time via `combat::defending_player_for_attacker`, capturing
+    /// the player as the restriction is created (the defending player is fixed
+    /// once attackers are declared and does not change for the turn).
+    DefendingPlayer,
 }
 
 // ---------------------------------------------------------------------------
@@ -4539,6 +4549,22 @@ pub enum QuantityExpr {
         left: Box<QuantityExpr>,
         right: Box<QuantityExpr>,
     },
+    /// The maximum of N independent quantity expressions. Powers the
+    /// "A or B, whichever is greater" / "the greatest of A, B, …" Oracle
+    /// templating class (Triumphant Chomp: `max(2, greatest power among
+    /// Dinosaurs you control)`). A general arithmetic peer of
+    /// `Sum`/`Offset`/`Multiply`/`Difference`: composes any "greater of"
+    /// card from existing `QuantityExpr` leaves. Mirrors `Sum`'s `Vec` shape
+    /// so it generalizes from two operands to N.
+    ///
+    /// CR 107.1: the only numbers Magic uses are integers — this maximizes
+    /// computed integer amounts. CR 120.4a / CR 120.10 establish the in-rules
+    /// "the greatest of the calculated amounts" precedent for taking a maximum
+    /// over multiple computed values. "Whichever is greater" itself has no
+    /// dedicated CR number (cf. `Difference`, likewise an Oracle templating
+    /// convention without a dedicated rule); CR 107.2 authorizes the empty
+    /// fallback to 0.
+    Max { exprs: Vec<QuantityExpr> },
 }
 
 /// CR 107: Back-compatible `Deserialize` for [`QuantityExpr`]. Accepts BOTH the
@@ -4608,6 +4634,9 @@ impl<'de> serde::Deserialize<'de> for QuantityExpr {
                         left: Box<QuantityExpr>,
                         right: Box<QuantityExpr>,
                     },
+                    Max {
+                        exprs: Vec<QuantityExpr>,
+                    },
                 }
                 let tagged: Tagged =
                     serde_json::from_value(value).map_err(serde::de::Error::custom)?;
@@ -4632,6 +4661,7 @@ impl<'de> serde::Deserialize<'de> for QuantityExpr {
                     Tagged::UpTo { max } => QuantityExpr::UpTo { max },
                     Tagged::Power { base, exponent } => QuantityExpr::Power { base, exponent },
                     Tagged::Difference { left, right } => QuantityExpr::Difference { left, right },
+                    Tagged::Max { exprs } => QuantityExpr::Max { exprs },
                 })
             }
             _ => Err(serde::de::Error::custom(
@@ -4681,7 +4711,9 @@ impl QuantityExpr {
             | QuantityExpr::Power {
                 exponent: inner, ..
             } => inner.contains_x(),
-            QuantityExpr::Sum { exprs } => exprs.iter().any(QuantityExpr::contains_x),
+            QuantityExpr::Sum { exprs } | QuantityExpr::Max { exprs } => {
+                exprs.iter().any(QuantityExpr::contains_x)
+            }
             QuantityExpr::Difference { left, right } => left.contains_x() || right.contains_x(),
             QuantityExpr::Fixed { .. } | QuantityExpr::Ref { .. } => false,
         }
@@ -4708,7 +4740,9 @@ impl QuantityExpr {
             | QuantityExpr::Power {
                 exponent: inner, ..
             } => inner.contains_vote_count(),
-            QuantityExpr::Sum { exprs } => exprs.iter().any(QuantityExpr::contains_vote_count),
+            QuantityExpr::Sum { exprs } | QuantityExpr::Max { exprs } => {
+                exprs.iter().any(QuantityExpr::contains_vote_count)
+            }
             QuantityExpr::Difference { left, right } => {
                 left.contains_vote_count() || right.contains_vote_count()
             }
@@ -7459,6 +7493,13 @@ pub enum Effect {
     TimeTravel,
     /// CR 725.1: Become the monarch. Sets GameState::monarch to the controller.
     BecomeMonarch,
+    /// CR 101.3 + CR 608.2: An instruction with no game action — "there's no
+    /// effect." Used as the resolved outcome for a choice that has no printed
+    /// clause, e.g. the losing/unlisted option of a single-conditional
+    /// Will-of-the-council threshold vote ("If guilty gets more votes, X" —
+    /// the "innocent"/tied outcome does nothing). Resolving this emits only an
+    /// `EffectResolved` so the chain continues.
+    NoOp,
     Proliferate,
     /// CR 701.34a (operation) + CR 122.1: "For each kind of counter on target
     /// permanent or player, give that permanent or player another counter of
@@ -7522,6 +7563,19 @@ pub enum Effect {
         /// emits `EffectResolved` with no tally and the chain continues.
         #[serde(default = "default_voter_scope_all")]
         voter_scope: VoterScope,
+        /// CR 701.38a: How the tally maps to effects. The CR defines only the
+        /// vote *procedure* (each player chooses one listed option in turn
+        /// order); the strict-majority / tie-break semantics below are
+        /// card-defined ("If <B> gets more votes or the vote is tied, …").
+        /// `VoteTally::PerVote` (Council's-dilemma classics — Tivit, Capital
+        /// Punishment) resolves `per_choice_effect[i]` once per vote tallied
+        /// for `choices[i]`. `VoteTally::Threshold { tie_breaker_index }`
+        /// (Will-of-the-council — Plea for Power, Split Decision, Coercive
+        /// Portal, Trial of a Time Lord IV) resolves exactly ONE
+        /// `per_choice_effect` — the choice with the most votes, with ties
+        /// broken in favor of `tie_breaker_index` ("...or the vote is tied").
+        #[serde(default)]
+        tally_mode: VoteTally,
     },
     /// CR 700.3 + CR 608: Separate objects into two piles, have another player
     /// choose one of them, and apply a sub-effect to the chosen pile. The
@@ -8071,6 +8125,10 @@ pub enum Effect {
         /// card selection optional while the hand reveal itself remains mandatory.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         choice_optional: bool,
+        /// CR 701.20a vs CR 701.20e: True = cards are revealed (public), false =
+        /// looked at (private to the ability controller).
+        #[serde(default = "default_reveal_public")]
+        reveal: bool,
     },
     /// CR 701.20a: "You may reveal a [FILTER] card from your hand" — optional self-reveal
     /// from the controller's own hand. Distinct from `RevealHand` (target player, used for
@@ -8806,12 +8864,46 @@ pub enum Effect {
         /// kept card unconditionally goes to `kept_destination` (mandatory).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         kept_optional_to: Option<Zone>,
+        /// CR 110.2a: When set, the kept card enters the battlefield under this
+        /// controller ("under your control" on Telemin Performance / Sméagol).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        enters_under: Option<ControllerRef>,
     },
     /// CR 701.57a: Discover N — exile from top until nonland with MV ≤ N,
     /// cast free or put to hand, rest to bottom in random order.
     Discover {
         mana_value_limit: QuantityExpr,
     },
+    /// Heist — designed-for-digital (MTG Arena) keyword action. NOT in the
+    /// Comprehensive Rules; operates per the Arena programmed rules (see
+    /// `docs/MagicCompRules.txt` — absent). Reminder text:
+    /// "Look at three random nonland cards from target opponent's library. Exile
+    /// one of them face down. You may cast that card for as long as it remains
+    /// exiled, and you may spend mana as though it were mana of any type to cast
+    /// that spell."
+    ///
+    /// This is the selection/look step: the resolver surfaces
+    /// `WaitingFor::ChooseFromZoneChoice` over `look_count` random nonland cards
+    /// from the targeted opponent's library and stashes an `Effect::HeistExile`
+    /// continuation. The chosen card is finalized by `HeistExile`; the unchosen
+    /// cards never leave the library. `target` is the targeted opponent player
+    /// (resolved from `ability.targets`).
+    Heist {
+        target: TargetFilter,
+        /// Number of random nonland cards to look at. Defaults to 3 per the
+        /// Arena reminder text; `serde(default)` keeps existing data loadable.
+        #[serde(default = "default_heist_look_count")]
+        look_count: u8,
+    },
+    /// Heist finalizer — continuation stashed by `Effect::Heist`. The chosen
+    /// card (carried on `ability.targets` by the `ChooseFromZoneChoice` answer
+    /// handler) is exiled from its owner's library, turned face down (CR 406.3),
+    /// linked to the source so the controller may look at it (mirrors Hideaway's
+    /// `ExileLinkKind::HideawayLookable`), and granted a permanent
+    /// `PlayFromExile` permission with any-type-or-color mana so it can be cast
+    /// for as long as it remains exiled. Unit variant — no fields; the target is
+    /// implicit in `ability.targets`.
+    HeistExile,
     /// CR 702.85a: Cascade — when you cast a spell with cascade, exile cards from
     /// the top of your library until you exile a nonland card whose mana value is
     /// less than the cascade spell's mana value. You may cast that card without
@@ -9376,6 +9468,10 @@ fn default_zone_hand() -> Zone {
     Zone::Hand
 }
 
+fn default_reveal_public() -> bool {
+    true
+}
+
 fn default_zone_graveyard() -> Zone {
     Zone::Graveyard
 }
@@ -9420,6 +9516,11 @@ pub enum CopyRetargetPermission {
 
 pub(crate) fn default_target_filter_any() -> TargetFilter {
     TargetFilter::Any
+}
+
+/// Default number of random nonland cards a Heist looks at (Arena reminder: 3).
+fn default_heist_look_count() -> u8 {
+    3
 }
 
 pub(crate) fn default_target_filter_permanent() -> TargetFilter {
@@ -9665,6 +9766,38 @@ pub enum VoterScope {
     /// Pir's Whim, Khorvath's Fury, Regna's Sanction, Virtus's Maneuver,
     /// and Zndrsplt's Judgment.
     ControllerLabels,
+}
+
+/// CR 701.38a: How a completed `Effect::Vote` tally maps onto its
+/// `per_choice_effect` slots. CR 701.38 defines only the vote procedure; the
+/// strict-majority / tie-break outcome semantics below are card-defined, not a
+/// CR subrule.
+///
+/// `PerVote` is the Council's-dilemma family (Tivit, Capital Punishment,
+/// Expropriate, Emissary Green): every per-choice sub-effect resolves, fanning
+/// out once per vote (or once per voter / once aggregate) tallied for that
+/// choice. This is the historical `Effect::Vote` behavior and the serde
+/// default, so pre-existing serialized votes deserialize unchanged.
+///
+/// `Threshold` is the Will-of-the-council family (Plea for Power, Split
+/// Decision, Coercive Portal, Magister of Worth, Tyrant's Choice, Trial of a
+/// Time Lord IV): the players vote between two named outcomes and exactly ONE
+/// `per_choice_effect` resolves — the choice with strictly more votes. Ties
+/// resolve to `tie_breaker_index`, matching the Oracle phrasing "If <B> gets
+/// more votes **or the vote is tied**, <effect-B>".
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(tag = "type")]
+pub enum VoteTally {
+    /// CR 701.38a: Every per-choice effect resolves, fanning out per the
+    /// tally for that choice. The historical default.
+    #[default]
+    PerVote,
+    /// CR 701.38a: The single winning choice's effect resolves once. The
+    /// strict-majority rule and tie behavior are card-defined (not a CR
+    /// subrule): on a tie, `tie_breaker_index` (the choice whose Oracle clause
+    /// reads "...or the vote is tied") wins. `u8` indexes `choices`; vote
+    /// cardinality is bounded by Magic card design.
+    Threshold { tie_breaker_index: u8 },
 }
 
 impl TargetFilter {
@@ -9993,6 +10126,9 @@ impl Effect {
             // resolution consistent.
             Effect::HideawayConceal { target } => Some(target),
 
+            // Heist targets the opponent whose library is heisted.
+            Effect::Heist { target, .. } => Some(target),
+
             // CR 109.4 + CR 115.1 + CR 707.2: `CopyTokenOf` has two
             // potentially-targetable axes — the copy *source* (`target`) and
             // the token *creator/owner* (`owner`). `target_filter()` surfaces
@@ -10125,6 +10261,7 @@ impl Effect {
             | Effect::Investigate
             | Effect::Tribute { .. }
             | Effect::BecomeMonarch
+            | Effect::NoOp
             | Effect::Proliferate
             | Effect::Populate
             | Effect::Clash
@@ -10155,8 +10292,8 @@ impl Effect {
             | Effect::ChooseFromZone { .. }
             | Effect::ChooseAndSacrificeRest { .. }
             | Effect::GainEnergy { .. }
-            | Effect::RevealUntil { .. }
             | Effect::Discover { .. }
+            | Effect::HeistExile
             | Effect::Cascade
             | Effect::Ripple { .. }
             | Effect::MiracleCast { .. }
@@ -10234,6 +10371,15 @@ impl Effect {
             // spell ability, not in a top-level `target` field.
             | Effect::EpicCopy { .. }
             | Effect::CreateDamageReplacement { .. } => None,
+            // CR 115.1: RevealUntil with a non-context player filter ("target
+            // opponent reveals...") requires a stack-time player target slot.
+            Effect::RevealUntil { player, .. } => {
+                if player.is_context_ref() {
+                    None
+                } else {
+                    Some(player)
+                }
+            }
             // CR 701.23a: SearchLibrary has an optional player target for opponent search.
             Effect::SearchLibrary { target_player, .. } => target_player.as_ref(),
             Effect::ChooseDrawnThisTurnPayOrTopdeck { player, .. } => Some(player),
@@ -10335,6 +10481,7 @@ impl Effect {
             | Effect::Tribute { .. }
             | Effect::TimeTravel
             | Effect::BecomeMonarch
+            | Effect::NoOp
             | Effect::Proliferate
             | Effect::ProliferateTarget { .. }
             | Effect::EndTheTurn
@@ -10406,6 +10553,8 @@ impl Effect {
             | Effect::CreateDelayedTrigger { .. }
             | Effect::CreateEmblem { .. }
             | Effect::Discover { .. }
+            | Effect::Heist { .. }
+            | Effect::HeistExile
             | Effect::DraftFromSpellbook { .. }
             | Effect::Endure { .. }
             | Effect::ExchangeControl { .. }
@@ -10537,6 +10686,7 @@ impl Effect {
             | Effect::Tribute { .. }
             | Effect::TimeTravel
             | Effect::BecomeMonarch
+            | Effect::NoOp
             | Effect::Proliferate
             | Effect::ProliferateTarget { .. }
             | Effect::EndTheTurn
@@ -10608,6 +10758,8 @@ impl Effect {
             | Effect::CreateDelayedTrigger { .. }
             | Effect::CreateEmblem { .. }
             | Effect::Discover { .. }
+            | Effect::Heist { .. }
+            | Effect::HeistExile
             | Effect::DraftFromSpellbook { .. }
             | Effect::Endure { .. }
             | Effect::ExchangeControl { .. }
@@ -10706,6 +10858,7 @@ pub fn effect_variant_name(effect: &Effect) -> &str {
         Effect::Tribute { .. } => "Tribute",
         Effect::TimeTravel => "TimeTravel",
         Effect::BecomeMonarch => "BecomeMonarch",
+        Effect::NoOp => "NoOp",
         Effect::Proliferate => "Proliferate",
         Effect::ProliferateTarget { .. } => "ProliferateTarget",
         Effect::EndTheTurn => "EndTheTurn",
@@ -10801,6 +10954,8 @@ pub fn effect_variant_name(effect: &Effect) -> &str {
         Effect::ExileFromTopUntil { .. } => "ExileFromTopUntil",
         Effect::RevealUntil { .. } => "RevealUntil",
         Effect::Discover { .. } => "Discover",
+        Effect::Heist { .. } => "Heist",
+        Effect::HeistExile => "HeistExile",
         Effect::Cascade => "Cascade",
         Effect::Ripple { .. } => "Ripple",
         Effect::MiracleCast { .. } => "MiracleCast",
@@ -10908,6 +11063,7 @@ pub enum EffectKind {
     Tribute,
     TimeTravel,
     BecomeMonarch,
+    NoOp,
     Proliferate,
     ProliferateTarget,
     Populate,
@@ -11003,6 +11159,8 @@ pub enum EffectKind {
     ExileFromTopUntil,
     RevealUntil,
     Discover,
+    Heist,
+    HeistExile,
     Cascade,
     Ripple,
     MiracleCast,
@@ -11117,6 +11275,7 @@ impl From<&Effect> for EffectKind {
             Effect::Tribute { .. } => EffectKind::Tribute,
             Effect::TimeTravel => EffectKind::TimeTravel,
             Effect::BecomeMonarch => EffectKind::BecomeMonarch,
+            Effect::NoOp => EffectKind::NoOp,
             Effect::Proliferate => EffectKind::Proliferate,
             Effect::ProliferateTarget { .. } => EffectKind::ProliferateTarget,
             Effect::EndTheTurn => EffectKind::EndTheTurn,
@@ -11216,6 +11375,8 @@ impl From<&Effect> for EffectKind {
             Effect::ExileFromTopUntil { .. } => EffectKind::ExileFromTopUntil,
             Effect::RevealUntil { .. } => EffectKind::RevealUntil,
             Effect::Discover { .. } => EffectKind::Discover,
+            Effect::Heist { .. } => EffectKind::Heist,
+            Effect::HeistExile => EffectKind::HeistExile,
             Effect::Cascade => EffectKind::Cascade,
             Effect::Ripple { .. } => EffectKind::Ripple,
             Effect::MiracleCast { .. } => EffectKind::MiracleCast,
@@ -17108,6 +17269,38 @@ mod tests {
         let json = serde_json::to_string(&effect).unwrap();
         let deserialized: Effect = serde_json::from_str(&json).unwrap();
         assert_eq!(effect, deserialized);
+    }
+
+    #[test]
+    fn reveal_hand_private_look_serializes_false_and_roundtrips() {
+        let effect = Effect::RevealHand {
+            target: TargetFilter::Player,
+            card_filter: TargetFilter::None,
+            count: None,
+            selection: CardSelectionMode::Chosen,
+            choice_optional: false,
+            reveal: false,
+        };
+        let json = serde_json::to_string(&effect).unwrap();
+        assert!(
+            json.contains("\"reveal\":false"),
+            "private look must serialize reveal:false, got {json}"
+        );
+        let deserialized: Effect = serde_json::from_str(&json).unwrap();
+        assert_eq!(effect, deserialized);
+    }
+
+    #[test]
+    fn reveal_hand_public_reveal_defaults_true_without_field() {
+        let json = r#"{"type":"RevealHand","target":{"type":"Any"},"card_filter":{"type":"Any"}}"#;
+        let effect: Effect = serde_json::from_str(json).unwrap();
+        let Effect::RevealHand { reveal, .. } = effect else {
+            panic!("expected RevealHand");
+        };
+        assert!(
+            reveal,
+            "legacy card data without reveal must default to public reveal"
+        );
     }
 
     #[test]

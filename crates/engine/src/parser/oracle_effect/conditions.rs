@@ -4376,6 +4376,23 @@ mod tests {
     use crate::types::counter::{CounterMatch, CounterType};
 
     #[test]
+    fn strip_target_keyword_instead_parses_toxic_as_typed_keyword() {
+        // "if that creature has toxic, ..." must lower to a real Toxic keyword,
+        // not Unknown("toxic"); runtime has_keyword matches by discriminant, so an
+        // Unknown variant would make the rider silently dead (Hexgold Slash,
+        // Compleat Devotion, Porcelain Zealot). Building-block test, not card-name
+        // hardcoded.
+        let (cond, body) = strip_target_keyword_instead("If that creature has toxic, draw a card.");
+        assert!(matches!(
+            cond,
+            Some(AbilityCondition::TargetHasKeywordInstead {
+                keyword: Keyword::Toxic(_)
+            })
+        ));
+        assert_eq!(body, "draw a card.");
+    }
+
+    #[test]
     fn parse_no_mana_spent_to_cast_target_condition_reads_ability_target_mana() {
         let cond =
             parse_no_mana_spent_to_cast_target_condition_text("no mana was spent to cast it")

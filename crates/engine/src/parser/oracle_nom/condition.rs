@@ -1290,15 +1290,28 @@ pub(crate) fn parse_source_has_counters(input: &str) -> OracleResult<'_, StaticC
     // it" (Ayara's Oathsworn) means the triggering source itself. The
     // recipient-bound "for as long as it has a counter" reading is the duration
     // grammar's job — see `parse_recipient_has_counters`.
-    let (rest, (_subject, counters, minimum, maximum)) = parse_has_counters_axes(input)?;
-    Ok((
-        rest,
-        StaticCondition::HasCounters {
-            counters,
-            minimum,
-            maximum,
-        },
-    ))
+    let (rest, (subject, counters, minimum, maximum)) = parse_has_counters_axes(input)?;
+    match subject {
+        // "~"/"this creature" and the bound pronoun "it" are both
+        // source-referential in this path (the intervening-"if" trigger /
+        // static-gate reading — #3084 Ayara's Oathsworn).
+        CounterConditionSubject::Source | CounterConditionSubject::RecipientPronoun => Ok((
+            rest,
+            StaticCondition::HasCounters {
+                counters,
+                minimum,
+                maximum,
+            },
+        )),
+        // A demonstrative subject ("that creature/land/permanent") is never
+        // source-referential — it names the affected object of a duration
+        // clause. Bail with a RECOVERABLE error so the enclosing `alt()`
+        // (parse_inner_condition) and the `.ok()?` caller in oracle_trigger
+        // fall through rather than silently coercing it to the source. The
+        // recipient-bound reading is produced by `parse_recipient_has_counters`
+        // in the duration grammar.
+        CounterConditionSubject::RecipientDemonstrative => Err(oracle_err(input)),
+    }
 }
 
 /// Recipient-bound counterpart to [`parse_source_has_counters`] for
@@ -1311,11 +1324,14 @@ pub(crate) fn parse_source_has_counters(input: &str) -> OracleResult<'_, StaticC
 pub(crate) fn parse_recipient_has_counters(input: &str) -> OracleResult<'_, StaticCondition> {
     let (rest, (subject, counters, minimum, maximum)) = parse_has_counters_axes(input)?;
     let condition = match subject {
-        CounterConditionSubject::Recipient => StaticCondition::RecipientHasCounters {
-            counters,
-            minimum,
-            maximum,
-        },
+        CounterConditionSubject::RecipientPronoun
+        | CounterConditionSubject::RecipientDemonstrative => {
+            StaticCondition::RecipientHasCounters {
+                counters,
+                minimum,
+                maximum,
+            }
+        }
         CounterConditionSubject::Source => StaticCondition::HasCounters {
             counters,
             minimum,
@@ -1355,16 +1371,27 @@ fn parse_has_counters_axes(
 }
 
 /// Subject axis for counter-has conditions. Accepts the canonical
-/// source-referential subjects and the bound pronoun `"it "` used in
-/// `"for as long as it has a counter on it"` style clauses. Kept separate
-/// from `parse_source_subject` because `"it "` would be ambiguous in the
-/// tapped/combat predicate family (which already uses `"it"` as part of
-/// longer phrases) — scoping the pronoun branch to this combinator avoids
-/// that coupling.
+/// source-referential subjects, the bound pronoun `"it "`, and the
+/// demonstrative anaphor `"that creature/land/permanent "` used in
+/// `"for as long as it/that creature has a counter on it"` style clauses.
+/// Kept separate from `parse_source_subject` because `"it "` would be
+/// ambiguous in the tapped/combat predicate family (which already uses
+/// `"it"` as part of longer phrases) — scoping the pronoun branch to this
+/// combinator avoids that coupling.
+///
+/// CR 611.3a: a continuous effect from a static ability "applies at any
+/// given moment to whatever its text indicates", so the demonstrative
+/// anaphor binds to the affected object (the recipient that received the
+/// counter) at evaluation time — the layer system resolves it, not this
+/// card's source. Both recipient subjects therefore lower to
+/// `RecipientHasCounters`; the discriminant is retained so
+/// `parse_source_has_counters` can reject the demonstrative (whose subject
+/// is never source-referential) rather than silently coercing it.
 #[derive(Clone, Copy)]
 enum CounterConditionSubject {
     Source,
-    Recipient,
+    RecipientPronoun,
+    RecipientDemonstrative,
 }
 
 fn parse_counter_condition_subject(input: &str) -> OracleResult<'_, CounterConditionSubject> {
@@ -1374,7 +1401,19 @@ fn parse_counter_condition_subject(input: &str) -> OracleResult<'_, CounterCondi
         value(CounterConditionSubject::Source, parse_source_subject),
         // The bound pronoun "it" — the recipient/affected object, e.g. the
         // creature controlled "for as long as it has a counter".
-        value(CounterConditionSubject::Recipient, tag("it ")),
+        value(CounterConditionSubject::RecipientPronoun, tag("it ")),
+        // CR 611.3a: demonstrative anaphor "that creature/land/permanent" — the
+        // ParentTarget that received the counter (recipient-bound; the layer
+        // system evaluates it against the affected object, not this card's
+        // source).
+        value(
+            CounterConditionSubject::RecipientDemonstrative,
+            alt((
+                tag("that creature "),
+                tag("that land "),
+                tag("that permanent "),
+            )),
+        ),
     ))
     .parse(input)
 }
@@ -1536,6 +1575,15 @@ fn parse_source_power_toughness_condition(input: &str) -> OracleResult<'_, Stati
 fn parse_possessive_property(input: &str) -> OracleResult<'_, QuantityRef> {
     let (rest, _) = alt((
         tag("its "),
+        // CR 201.5: a possessive pronoun in a self-referential ability refers to
+        // the object that has the ability (the source). Legendary creatures with
+        // she/he pronouns use the gendered possessive instead of "its" (e.g. "if
+        // her power is 4 or greater" — Viv Vision; "if her power is 1 or less" —
+        // Stature). Mirrors the "it " source pronoun already accepted by
+        // `parse_subject_has_property`. ("their" is intentionally omitted — it is
+        // ambiguous between a singular-they object and a player possessive.)
+        tag("her "),
+        tag("his "),
         tag("enchanted creature's "),
         tag("equipped creature's "),
     ))
@@ -2046,6 +2094,34 @@ fn parse_you_have_conditions(input: &str) -> OracleResult<'_, StaticCondition> {
         {
             return Ok((rest, make_quantity_ge(QuantityRef::LifeAboveStarting, n)));
         }
+    }
+
+    // CR 119: "you have more life than an opponent" — the
+    // controller's life total strictly exceeds at least one opponent's. "an
+    // opponent" is existential, so the predicate is "your life > the minimum
+    // opponent life". This is the mirror of the existing "an opponent has more
+    // life than you" arm in `parse_opponent_comparison_conditions` (which uses
+    // the Max aggregate for its existential). Cards: Glorious Enforcer,
+    // Survival Cache, Feudkiller's Verdict.
+    if let Ok((rest, _)) = tag::<_, _, OracleError<'_>>("more life than an opponent").parse(rest) {
+        return Ok((
+            rest,
+            StaticCondition::QuantityComparison {
+                lhs: QuantityExpr::Ref {
+                    qty: QuantityRef::LifeTotal {
+                        player: PlayerScope::Controller,
+                    },
+                },
+                comparator: Comparator::GT,
+                rhs: QuantityExpr::Ref {
+                    qty: QuantityRef::LifeTotal {
+                        player: PlayerScope::Opponent {
+                            aggregate: AggregateFunction::Min,
+                        },
+                    },
+                },
+            },
+        ));
     }
 
     // "you have N or more [you-only quantity-suffix]"
@@ -5533,6 +5609,30 @@ fn parse_opponent_comparison_conditions(input: &str) -> OracleResult<'_, StaticC
     // opponent permanents. Weathered Wayfarer, Land Tax.
     if let Ok((rest2, condition)) = parse_opponent_controls_more_than_you(rest) {
         return Ok((rest2, condition));
+    }
+
+    // CR 402.1 + CR 102.2: "an opponent has no cards in hand" — existential
+    // over opponents (at least one opponent's hand is empty), i.e. the minimum
+    // opponent hand size is 0. Mirrors the Min-aggregate existential the
+    // life-comparison arms use. Cards: Rekindled Flame, Avatar of Will, Guul
+    // Draz Specter. `HandSize` resolves per-player through the same scalar path
+    // as `LifeTotal` (game::quantity::resolve_per_player_scalar), so the
+    // Opponent{Min} scope is already evaluated at runtime.
+    if let Ok((rest2, _)) = tag::<_, _, OracleError<'_>>("has no cards in hand").parse(rest) {
+        return Ok((
+            rest2,
+            StaticCondition::QuantityComparison {
+                lhs: QuantityExpr::Ref {
+                    qty: QuantityRef::HandSize {
+                        player: PlayerScope::Opponent {
+                            aggregate: AggregateFunction::Min,
+                        },
+                    },
+                },
+                comparator: Comparator::EQ,
+                rhs: QuantityExpr::Fixed { value: 0 },
+            },
+        ));
     }
 
     // "an opponent has more life than you"
@@ -9240,6 +9340,133 @@ mod tests {
         }
     }
 
+    /// Production-path coverage: Guul Draz Specter's real static line reaches
+    /// this condition through `parse_static_line`, and the `Opponent { Min }`
+    /// hand-size gate must survive the static classifier/bridge — not just the
+    /// raw `parse_inner_condition` helper.
+    #[test]
+    fn test_guul_draz_static_gate_survives_production_path() {
+        let def = crate::parser::oracle_static::parse_static_line(
+            "This creature gets +3/+3 as long as an opponent has no cards in hand.",
+        )
+        .expect("Guul Draz static line must parse");
+        match def.condition {
+            Some(StaticCondition::QuantityComparison {
+                lhs:
+                    QuantityExpr::Ref {
+                        qty:
+                            QuantityRef::HandSize {
+                                player:
+                                    PlayerScope::Opponent {
+                                        aggregate: AggregateFunction::Min,
+                                    },
+                            },
+                    },
+                comparator: Comparator::EQ,
+                rhs: QuantityExpr::Fixed { value: 0 },
+            }) => {}
+            other => {
+                panic!("static gate must survive as OpponentHandSize(Min) EQ 0, got {other:?}")
+            }
+        }
+    }
+
+    /// Production-path coverage: Rekindled Flame's intervening-if reaches this
+    /// condition through `parse_trigger_lines`, and the gate must survive the
+    /// StaticCondition→TriggerCondition bridge.
+    #[test]
+    fn test_rekindled_flame_trigger_gate_survives_production_path() {
+        use crate::types::ability::TriggerCondition;
+        let defs = crate::parser::oracle_trigger::parse_trigger_lines(
+            "At the beginning of your upkeep, if an opponent has no cards in hand, \
+             you may return Rekindled Flame from your graveyard to your hand.",
+            "Rekindled Flame",
+        );
+        let def = defs.first().expect("Rekindled Flame trigger must parse");
+        match &def.condition {
+            Some(TriggerCondition::QuantityComparison {
+                lhs:
+                    QuantityExpr::Ref {
+                        qty:
+                            QuantityRef::HandSize {
+                                player:
+                                    PlayerScope::Opponent {
+                                        aggregate: AggregateFunction::Min,
+                                    },
+                            },
+                    },
+                comparator: Comparator::EQ,
+                rhs: QuantityExpr::Fixed { value: 0 },
+            }) => {}
+            other => {
+                panic!("trigger gate must survive as OpponentHandSize(Min) EQ 0, got {other:?}")
+            }
+        }
+    }
+
+    #[test]
+    fn test_an_opponent_has_no_cards_in_hand() {
+        // CR 402.1 + CR 102.2: existential "an opponent has no cards in hand" →
+        // min opponent hand size == 0. Real cards: Rekindled Flame, Avatar of
+        // Will, Guul Draz Specter. Before this fix the clause returned Err and
+        // the gating condition was silently dropped.
+        let (rest, c) = parse_inner_condition("an opponent has no cards in hand").unwrap();
+        assert_eq!(rest, "");
+        match c {
+            StaticCondition::QuantityComparison {
+                lhs:
+                    QuantityExpr::Ref {
+                        qty:
+                            QuantityRef::HandSize {
+                                player:
+                                    PlayerScope::Opponent {
+                                        aggregate: AggregateFunction::Min,
+                                    },
+                            },
+                    },
+                comparator: Comparator::EQ,
+                rhs: QuantityExpr::Fixed { value: 0 },
+            } => {}
+            other => panic!("expected OpponentHandSize(Min) EQ 0, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_you_have_more_life_than_an_opponent() {
+        // CR 119: mirror of "an opponent has more life than you".
+        // "you have more life than an opponent" → your life > the minimum
+        // opponent life (existential "an opponent"). Real cards: Glorious
+        // Enforcer, Survival Cache, Feudkiller's Verdict. Before this fix the
+        // clause was unmatched and the gating condition was silently dropped.
+        let (rest, c) = parse_inner_condition("you have more life than an opponent").unwrap();
+        assert_eq!(rest, "");
+        match c {
+            StaticCondition::QuantityComparison {
+                lhs:
+                    QuantityExpr::Ref {
+                        qty:
+                            QuantityRef::LifeTotal {
+                                player: PlayerScope::Controller,
+                            },
+                    },
+                comparator: Comparator::GT,
+                rhs:
+                    QuantityExpr::Ref {
+                        qty:
+                            QuantityRef::LifeTotal {
+                                player:
+                                    PlayerScope::Opponent {
+                                        aggregate: AggregateFunction::Min,
+                                    },
+                            },
+                    },
+            } => {}
+            other => panic!(
+                "expected LifeTotal{{Controller}} GT OpponentLifeTotal{{Min}}, got {other:?}"
+            ),
+        }
+    }
+
     #[test]
     fn test_opponent_has_n_cards_in_graveyard() {
         // CR 404 + CR 603.4: Merfolk Windrobber / See Double intervening-if.
@@ -9505,6 +9732,45 @@ mod tests {
                 rhs: QuantityExpr::Fixed { value: 3 },
             } => {}
             other => panic!("expected SelfPower LE 3, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_gendered_possessive_pronoun_power_condition() {
+        // CR 201.5: "her"/"his"/"their power is N" refers to the source creature,
+        // mirroring "its power is N". Real cards: Viv Vision ("if her power is 4
+        // or greater") and Stature, Size Shifter ("if her power is 1 or less").
+        // Before this fix the possessive-pronoun form was unmatched, so the gating
+        // condition was silently dropped and the ability fired unconditionally.
+        for (text, expected) in [
+            ("her power is 4 or greater", (Comparator::GE, 4)),
+            ("his power is 4 or greater", (Comparator::GE, 4)),
+            ("her toughness is 1 or less", (Comparator::LE, 1)),
+        ] {
+            let (rest, c) = parse_inner_condition(text)
+                .unwrap_or_else(|e| panic!("{text:?} must parse, got {e:?}"));
+            assert_eq!(rest, "", "{text:?} left remainder");
+            match c {
+                StaticCondition::QuantityComparison {
+                    lhs: QuantityExpr::Ref { qty },
+                    comparator,
+                    rhs: QuantityExpr::Fixed { value },
+                } => {
+                    assert!(
+                        matches!(
+                            qty,
+                            QuantityRef::Power {
+                                scope: crate::types::ability::ObjectScope::Source
+                            } | QuantityRef::Toughness {
+                                scope: crate::types::ability::ObjectScope::Source
+                            }
+                        ),
+                        "{text:?} wrong qty ref: {qty:?}"
+                    );
+                    assert_eq!((comparator, value), expected, "{text:?}");
+                }
+                other => panic!("{text:?} expected source P/T comparison, got {other:?}"),
+            }
         }
     }
 
@@ -11354,6 +11620,105 @@ mod tests {
                 maximum: None,
             }
         );
+    }
+
+    // --- Demonstrative subject (CR 611.3a recipient anaphor) ----------------
+    //
+    // "for as long as that creature/land has a [type] counter on it"
+    // (Mathas Fiend Seeker, Obsidian Fireheart, Minas Morgul, Ultima, etc.).
+    // The demonstrative is recipient-bound: it must lower to
+    // `RecipientHasCounters` so the granted ability expires when the counter
+    // is removed, NOT to `Unrecognized` (which evaluates true forever).
+
+    /// Mathas Fiend Seeker: "that creature has a bounty counter on it".
+    #[test]
+    fn has_counters_demonstrative_creature_bounty_is_recipient() {
+        let (rest, c) =
+            parse_recipient_has_counters("that creature has a bounty counter on it").unwrap();
+        assert_eq!(rest, "");
+        assert_eq!(
+            c,
+            StaticCondition::RecipientHasCounters {
+                counters: CounterMatch::OfType(CounterType::Generic("bounty".to_string())),
+                minimum: 1,
+                maximum: None,
+            }
+        );
+    }
+
+    /// Obsidian Fireheart: "that land has a blaze counter on it".
+    #[test]
+    fn has_counters_demonstrative_land_blaze_is_recipient() {
+        let (rest, c) =
+            parse_recipient_has_counters("that land has a blaze counter on it").unwrap();
+        assert_eq!(rest, "");
+        assert_eq!(
+            c,
+            StaticCondition::RecipientHasCounters {
+                counters: CounterMatch::OfType(CounterType::Generic("blaze".to_string())),
+                minimum: 1,
+                maximum: None,
+            }
+        );
+    }
+
+    /// "that permanent" demonstrative arm with a generic charge counter.
+    #[test]
+    fn has_counters_demonstrative_permanent_charge_is_recipient() {
+        let (rest, c) =
+            parse_recipient_has_counters("that permanent has a charge counter on it").unwrap();
+        assert_eq!(rest, "");
+        assert_eq!(
+            c,
+            StaticCondition::RecipientHasCounters {
+                counters: CounterMatch::OfType(CounterType::Generic("charge".to_string())),
+                minimum: 1,
+                maximum: None,
+            }
+        );
+    }
+
+    /// End-to-end: Minas Morgul "for as long as that creature has a shadow
+    /// counter on it" must lower to `ForAsLongAs { RecipientHasCounters }` —
+    /// NOT the `Unrecognized` fallback that never expires (game/layers.rs).
+    #[test]
+    fn for_as_long_as_demonstrative_counter_is_recipient_not_unrecognized() {
+        use crate::parser::oracle_nom::duration::parse_for_as_long_as_condition;
+        use crate::types::ability::Duration;
+        use crate::types::keywords::KeywordKind;
+        let (rest, dur) =
+            parse_for_as_long_as_condition("that creature has a shadow counter on it").unwrap();
+        assert_eq!(rest, "");
+        assert_eq!(
+            dur,
+            Duration::ForAsLongAs {
+                condition: StaticCondition::RecipientHasCounters {
+                    counters: CounterMatch::OfType(CounterType::Keyword(KeywordKind::Shadow)),
+                    minimum: 1,
+                    maximum: None,
+                }
+            }
+        );
+    }
+
+    /// Negative: the source-referential `parse_source_has_counters` must REJECT
+    /// a demonstrative subject (recoverable Err) rather than coercing "that
+    /// creature" to the source.
+    #[test]
+    fn source_has_counters_rejects_demonstrative() {
+        assert!(parse_source_has_counters("that creature has a bounty counter on it").is_err());
+    }
+
+    /// Negative: the demonstrative-Err guard makes `parse_inner_condition` fall
+    /// through — "that creature has a counter on it" must NOT yield a
+    /// source-referential `HasCounters` (it has no source-bound reading here).
+    #[test]
+    fn inner_condition_demonstrative_counter_does_not_yield_has_counters() {
+        if let Ok((_, StaticCondition::HasCounters { .. })) =
+            parse_inner_condition("that creature has a counter on it")
+        {
+            panic!("demonstrative subject must not parse as source-referential HasCounters");
+        }
     }
 
     /// "exactly N" variant.

@@ -21,6 +21,7 @@ use crate::parser::oracle_ir::ast::*;
 use crate::parser::oracle_ir::diagnostic::OracleDiagnostic;
 use crate::parser::oracle_nom::bridge::{nom_on_lower, nom_parse_lower, split_once_on_lower};
 use crate::parser::oracle_nom::primitives as nom_primitives;
+use crate::parser::oracle_nom::quantity as nom_quantity;
 use crate::parser::oracle_static::{
     parse_continuous_modifications, parse_quoted_ability_modifications,
 };
@@ -2591,6 +2592,7 @@ pub(super) fn lower_hand_reveal_ast(ast: HandRevealImperativeAst) -> Effect {
                 crate::types::ability::CardSelectionMode::Chosen
             },
             choice_optional: false,
+            reveal: false,
         },
         HandRevealImperativeAst::RevealAll {
             target,
@@ -2601,6 +2603,7 @@ pub(super) fn lower_hand_reveal_ast(ast: HandRevealImperativeAst) -> Effect {
             count: None,
             selection: crate::types::ability::CardSelectionMode::Chosen,
             choice_optional: false,
+            reveal: true,
         },
         HandRevealImperativeAst::RevealPartial { count } => Effect::RevealHand {
             target: TargetFilter::Any,
@@ -2608,6 +2611,7 @@ pub(super) fn lower_hand_reveal_ast(ast: HandRevealImperativeAst) -> Effect {
             count: Some(count),
             selection: crate::types::ability::CardSelectionMode::Chosen,
             choice_optional: false,
+            reveal: true,
         },
         // CR 701.20a: Back-reference reveal — distinct from RevealHand (zone-wide).
         // ParentTarget binds at runtime to the parent ability's affected IDs.
@@ -3337,6 +3341,7 @@ pub(super) fn lower_choose_ast(ast: ChooseImperativeAst) -> Effect {
             count: None,
             selection: crate::types::ability::CardSelectionMode::Chosen,
             choice_optional,
+            reveal: true,
         },
         // CR 700.2: Anaphoric "choose N of them/those" → select from the tracked set
         // populated by the preceding effect (RevealTop, RevealHand, ExileTop, etc.).
@@ -5772,6 +5777,46 @@ fn resolve_exile_top_where_x_binding(after_lib: &str, initial_count: QuantityExp
     initial_count
 }
 
+fn parse_counter_unless_pay(
+    rest: &str,
+) -> Option<Option<crate::types::ability::UnlessPayModifier>> {
+    match super::parse_unless_payment(rest) {
+        Some(cost) => Some(Some(super::counter_unless_pay_modifier(cost))),
+        None if counter_unless_has_partial_where_x_quantity(rest) => None,
+        None => Some(None),
+    }
+}
+
+fn counter_unless_has_partial_where_x_quantity(rest: &str) -> bool {
+    let Some(qty_text) = counter_unless_where_x_quantity(rest) else {
+        return false;
+    };
+    let Ok((remaining, _)) = nom_quantity::parse_quantity(qty_text) else {
+        return false;
+    };
+    !remaining.trim().trim_end_matches('.').is_empty()
+}
+
+fn counter_unless_where_x_quantity(rest: &str) -> Option<&str> {
+    let (_, _, after_unless) =
+        nom_primitives::scan_preceded(rest, |i| tag::<_, _, OracleError<'_>>("unless ").parse(i))?;
+    let (_, _, cost_str) = nom_primitives::scan_preceded(after_unless, |i| {
+        tag::<_, _, OracleError<'_>>("pays ").parse(i)
+    })?;
+    let cost_end = cost_str
+        .find(|c: char| c != '{' && c != '}' && !c.is_alphanumeric())
+        .unwrap_or(cost_str.len());
+    let cost_text = cost_str[..cost_end].trim();
+    if cost_text != "{X}" && cost_text != "{x}" {
+        return None;
+    }
+    let after_cost = cost_str[cost_end..].trim().trim_start_matches(',').trim();
+    let (qty_text, _) = tag::<_, _, OracleError<'_>>("where x is ")
+        .parse(after_cost)
+        .ok()?;
+    Some(qty_text.trim_end_matches('.').trim())
+}
+
 pub(super) fn parse_counter_ast(text: &str, lower: &str) -> Option<ZoneCounterImperativeAst> {
     // CR 701.6 + CR 405.1: "Counter all/each [filter] spells/abilities"
     // mass-counter precheck. Mirrors the `parse_destroy_ast` precheck +
@@ -5806,7 +5851,7 @@ pub(super) fn parse_counter_ast(text: &str, lower: &str) -> Option<ZoneCounterIm
         || (mass_consumed && abilities_head(rest).is_ok());
     if abilities_match {
         // CR 118.12: Parse "unless pays" even for ability counters.
-        let unless_pay = super::parse_unless_payment(rest).map(super::counter_unless_pay_modifier);
+        let unless_pay = parse_counter_unless_pay(rest)?;
         return Some(ZoneCounterImperativeAst::Counter {
             target: stack_ability_filter_from_text(rest),
             source_rider: None,
@@ -5831,7 +5876,7 @@ pub(super) fn parse_counter_ast(text: &str, lower: &str) -> Option<ZoneCounterIm
     if let Ok((_, stack_target)) =
         crate::parser::oracle_nom::target::parse_stack_object_target(stack_phrase)
     {
-        let unless_pay = super::parse_unless_payment(rest).map(super::counter_unless_pay_modifier);
+        let unless_pay = parse_counter_unless_pay(rest)?;
         return Some(ZoneCounterImperativeAst::Counter {
             target: stack_target,
             source_rider: None,
@@ -5860,7 +5905,7 @@ pub(super) fn parse_counter_ast(text: &str, lower: &str) -> Option<ZoneCounterIm
     // path on that building block and only apply the trailing X definition.
     let target = super::apply_where_x_to_filter(target, where_x_expression.as_deref());
     // CR 118.12: Parse "unless its controller pays {X}" for conditional counters
-    let unless_pay = super::parse_unless_payment(rest).map(super::counter_unless_pay_modifier);
+    let unless_pay = parse_counter_unless_pay(rest)?;
     Some(ZoneCounterImperativeAst::Counter {
         target,
         source_rider: None,
@@ -6509,8 +6554,9 @@ pub(super) fn parse_imperative_family_ast(
                 Some(ImperativeFamilyAst::Connive)
             }
         }
-        // CR 702.136: "investigate"
-        "investigate" => Some(ImperativeFamilyAst::Investigate),
+        // CR 701.16: "investigate" / third-person "investigates" (e.g. Blink's
+        // "Its owner shuffles it into their library, then investigates.").
+        "investigate" | "investigates" => Some(ImperativeFamilyAst::Investigate),
         // CR 701.48a: "learn"
         "learn" => Some(ImperativeFamilyAst::Learn),
         // CR 701.62a: "manifest dread" / CR 701.40a: "manifest the top card of your library"
@@ -7680,7 +7726,7 @@ fn try_parse_roll_die_with_modifier(
     ))
     .parse(after_and)
     .ok()?;
-    let value = crate::parser::oracle_quantity::parse_quantity_ref(modifier_text)?;
+    let (_, value) = nom_quantity::parse_quantity_ref_complete(modifier_text).ok()?;
     let modifier = if sign {
         crate::types::ability::DieRollModifier::Add {
             value: crate::types::ability::QuantityExpr::Ref { qty: value },
@@ -8298,6 +8344,12 @@ fn rebind_costpaid_scope_to_recipient(expr: QuantityExpr) -> QuantityExpr {
             rounding,
         },
         QuantityExpr::Sum { exprs } => QuantityExpr::Sum {
+            exprs: exprs
+                .into_iter()
+                .map(rebind_costpaid_scope_to_recipient)
+                .collect(),
+        },
+        QuantityExpr::Max { exprs } => QuantityExpr::Max {
             exprs: exprs
                 .into_iter()
                 .map(rebind_costpaid_scope_to_recipient)
@@ -13292,7 +13344,7 @@ mod tests {
     }
 
     /// CR 706.2: "Roll a d20 and add the number of cards in your hand" parses
-    /// to RollDie with an Add modifier referencing controller hand size.
+    /// to RollDie with an Add modifier referencing controller hand-zone count.
     #[test]
     fn roll_a_d20_with_add_modifier_parses_to_roll_die_with_modifier() {
         let def = super::super::parse_effect_chain(
@@ -13308,20 +13360,49 @@ mod tests {
                 match m {
                     crate::types::ability::DieRollModifier::Add { value } => match value {
                         QuantityExpr::Ref {
-                            qty: QuantityRef::HandSize { player },
+                            qty:
+                                QuantityRef::ZoneCardCount {
+                                    zone,
+                                    card_types,
+                                    filter,
+                                    scope,
+                                },
                         } => {
+                            assert!(matches!(zone, crate::types::ability::ZoneRef::Hand));
+                            assert!(card_types.is_empty());
+                            assert!(filter.is_none());
                             assert!(matches!(
-                                player,
-                                crate::types::ability::PlayerScope::Controller
+                                scope,
+                                crate::types::ability::CountScope::Controller
                             ));
                         }
-                        other => panic!("expected HandSize ref, got {other:?}"),
+                        other => {
+                            panic!("expected controller hand ZoneCardCount ref, got {other:?}")
+                        }
                     },
                     other => panic!("expected Add modifier, got {other:?}"),
                 }
             }
             other => panic!("expected RollDie, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn roll_a_d20_with_add_modifier_rejects_partial_quantity_tail() {
+        let def = super::super::parse_effect_chain(
+            "Roll a d20 and add the number of cards in your hand plus one.",
+            AbilityKind::Spell,
+        );
+        assert!(
+            !matches!(&*def.effect, Effect::RollDie { .. }),
+            "partial quantity tail must not silently parse as RollDie, got {:?}",
+            def.effect
+        );
+        assert!(
+            matches!(&*def.effect, Effect::Unimplemented { .. }),
+            "partial quantity tail should stay visible as Unimplemented, got {:?}",
+            def.effect
+        );
     }
 
     /// CR 706.1a + CR 706.2: The single-die parser accepts word-count "one"

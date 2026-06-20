@@ -574,6 +574,38 @@ fn build_token_spec(
     }
 }
 
+/// CR 702.6a + CR 111.4: Extract only unconditional intrinsic Equip activated
+/// abilities from token `static_abilities`. Equipment tokens such as
+/// Stoneforged Blade grant Equip via `GrantAbility(Attach SelfRef → creature)`.
+/// Conditional or non-equip `GrantAbility` statics remain layer-only.
+fn intrinsic_equip_abilities_from_token_statics(
+    static_abilities: &[crate::types::ability::StaticDefinition],
+) -> Vec<crate::types::ability::AbilityDefinition> {
+    use crate::types::ability::{ContinuousModification, Effect, TargetFilter};
+
+    static_abilities
+        .iter()
+        .filter(|static_def| {
+            static_def.condition.is_none()
+                && matches!(static_def.affected, None | Some(TargetFilter::SelfRef))
+        })
+        .flat_map(|static_def| {
+            static_def.modifications.iter().filter_map(|modification| {
+                let ContinuousModification::GrantAbility { definition } = modification else {
+                    return None;
+                };
+                match definition.effect.as_ref() {
+                    Effect::Attach {
+                        attachment: TargetFilter::SelfRef,
+                        ..
+                    } => Some(definition.as_ref().clone()),
+                    _ => None,
+                }
+            })
+        })
+        .collect()
+}
+
 /// CR 111.1 + CR 614.1a: Apply an accepted `CreateToken` proposed event.
 ///
 /// Extracted from `resolve` so `handle_replacement_choice` can deliver tokens
@@ -694,10 +726,26 @@ pub(crate) fn apply_create_token_after_replacement_with_created_ids(
             // layers-reset (`base_*` → `*`) at the start of each layers pass
             // doesn't wipe them before layer 7 reads dynamic P/T grants.
             if !spec.static_abilities.is_empty() {
+                let static_abilities: Vec<_> = spec
+                    .static_abilities
+                    .iter()
+                    .cloned()
+                    .map(normalized_token_static_definition)
+                    .collect();
                 Arc::make_mut(&mut obj.base_static_definitions)
-                    .extend(spec.static_abilities.iter().cloned());
-                for static_def in &spec.static_abilities {
-                    obj.static_definitions.push(static_def.clone());
+                    .extend(static_abilities.iter().cloned());
+                for static_def in static_abilities {
+                    obj.static_definitions.push(static_def);
+                }
+                // CR 702.6a + CR 111.4: Only intrinsic Equip activated abilities
+                // (unconditional SelfRef `GrantAbility(Attach SelfRef → …)`)
+                // are copied onto the token object. Other grants stay in the
+                // static/layer path only.
+                let equip_abilities =
+                    intrinsic_equip_abilities_from_token_statics(&spec.static_abilities);
+                if !equip_abilities.is_empty() {
+                    Arc::make_mut(&mut obj.abilities).extend(equip_abilities.iter().cloned());
+                    Arc::make_mut(&mut obj.base_abilities).extend(equip_abilities);
                 }
             }
         }
@@ -1372,6 +1420,29 @@ fn base_token_trigger_defs(spec: &TokenSpec) -> Vec<TriggerDefinition> {
         }
     }
     out
+}
+
+fn normalized_token_static_definition(mut static_def: StaticDefinition) -> StaticDefinition {
+    for modification in &mut static_def.modifications {
+        if let ContinuousModification::GrantTrigger { trigger } = modification {
+            normalize_token_self_lki_trigger(trigger.as_mut());
+        }
+    }
+    static_def
+}
+
+fn normalize_token_self_lki_trigger(trigger: &mut TriggerDefinition) {
+    if trigger.mode == TriggerMode::ChangesZone
+        && trigger.valid_card == Some(TargetFilter::SelfRef)
+        && trigger.origin == Some(Zone::Battlefield)
+        && trigger.destination == Some(Zone::Graveyard)
+    {
+        // CR 603.6c + CR 603.10a + CR 111.7: a token's own dies trigger
+        // functions from last-known battlefield information and triggers before
+        // the token ceases to exist. The runtime LKI scan therefore visits the
+        // departed token as a Battlefield source, not as a graveyard source.
+        trigger.trigger_zones = vec![Zone::Battlefield];
+    }
 }
 
 /// CR 111.1 + CR 111.4: Resolve a base `Effect::Token`'s per-resolution
@@ -2306,10 +2377,11 @@ fn wicked_role_spec() -> RoleSpec {
         .valid_card(TargetFilter::SelfRef)
         .origin(Zone::Battlefield)
         .destination(Zone::Graveyard)
-        // CR 603.6c: dies/leaves-battlefield triggers must look up the source
-        // in the LKI graveyard zone after the move; trigger_zones tells the
-        // matcher where to find the source object.
-        .trigger_zones(vec![Zone::Graveyard])
+        // CR 603.6c + CR 603.10a + CR 111.7: the token's own dies trigger
+        // functions from last-known battlefield information before the token
+        // ceases to exist, so the trigger scanner must visit it as a
+        // Battlefield source.
+        .trigger_zones(vec![Zone::Battlefield])
         .execute(opponents_lose_one)
         .description(
             "When this token is put into a graveyard from the battlefield, \
@@ -2410,7 +2482,11 @@ pub(super) fn inject_catalog_token_abilities(
     let mut keywords = Vec::new();
     for modification in modifications {
         match modification {
-            ContinuousModification::GrantTrigger { trigger } => triggers.push(*trigger),
+            ContinuousModification::GrantTrigger { trigger } => {
+                let mut trigger = *trigger;
+                normalize_token_self_lki_trigger(&mut trigger);
+                triggers.push(trigger);
+            }
             ContinuousModification::AddKeyword { keyword } => keywords.push(keyword),
             ContinuousModification::GrantAbility { definition } => abilities.push(*definition),
             other => static_mods.push(other),
@@ -3660,9 +3736,91 @@ mod tests {
             "catalog rules_text must install the attacks life trigger intrinsically"
         );
         assert_eq!(obj.trigger_definitions[0].mode, TriggerMode::Attacks);
+        assert!(
+            !obj.trigger_definitions
+                .iter_all()
+                .any(|trigger| trigger.mode == TriggerMode::ChangesZone),
+            "SOS Pest must keep its printed attack trigger, not the older Pest dies trigger"
+        );
         assert_eq!(
             obj.token_rules_text.as_deref(),
             Some("Whenever this token attacks, you gain 1 life.")
+        );
+    }
+
+    #[test]
+    fn catalog_pest_dies_trigger_uses_battlefield_lki_zone() {
+        let preset = crate::game::token_presets::known_token_preset_by_id(
+            "14c28cbd-1740-5c17-98ea-4aea094067f1",
+        )
+        .expect("BLC Pest preset");
+
+        let mut state = GameState::new(crate::types::format::FormatConfig::standard(), 2, 42);
+        let obj_id = create_object(
+            &mut state,
+            CardId(0),
+            PlayerId(0),
+            "Pest".to_string(),
+            Zone::Battlefield,
+        );
+        {
+            let obj = state.objects.get_mut(&obj_id).unwrap();
+            obj.is_token = true;
+            obj.token_image_ref = preset.token_image_ref.clone();
+        }
+        inject_catalog_token_abilities(&mut state, obj_id);
+
+        let obj = &state.objects[&obj_id];
+        assert_eq!(obj.trigger_definitions.len(), 1);
+        let trigger = &obj.trigger_definitions[0];
+        assert_eq!(trigger.mode, TriggerMode::ChangesZone);
+        assert_eq!(trigger.origin, Some(Zone::Battlefield));
+        assert_eq!(trigger.destination, Some(Zone::Graveyard));
+        assert_eq!(
+            trigger.trigger_zones,
+            vec![Zone::Battlefield],
+            "CR 603.10a LKI scans a dying token as a Battlefield source"
+        );
+    }
+
+    #[test]
+    fn catalog_pest_dies_trigger_fires_through_zone_pipeline() {
+        use crate::game::triggers::process_triggers;
+        use crate::game::zone_pipeline::{move_object, ZoneMoveRequest, ZoneMoveResult};
+
+        let preset = crate::game::token_presets::known_token_preset_by_id(
+            "14c28cbd-1740-5c17-98ea-4aea094067f1",
+        )
+        .expect("BLC Pest preset");
+
+        let mut state = GameState::new(crate::types::format::FormatConfig::standard(), 2, 42);
+        let obj_id = create_object(
+            &mut state,
+            CardId(0),
+            PlayerId(0),
+            "Pest".to_string(),
+            Zone::Battlefield,
+        );
+        {
+            let obj = state.objects.get_mut(&obj_id).unwrap();
+            obj.is_token = true;
+            obj.token_image_ref = preset.token_image_ref.clone();
+        }
+        inject_catalog_token_abilities(&mut state, obj_id);
+
+        let mut events = Vec::new();
+        let result = move_object(
+            &mut state,
+            ZoneMoveRequest::effect(obj_id, Zone::Graveyard, obj_id),
+            &mut events,
+        );
+        assert!(matches!(result, ZoneMoveResult::Done));
+        process_triggers(&mut state, &events);
+
+        assert_eq!(
+            state.stack.len(),
+            1,
+            "the Pest's own dies trigger must fire from CR 603.10a LKI"
         );
     }
 
@@ -4085,10 +4243,11 @@ mod tests {
             Some(TargetFilter::SelfRef),
             "self-trigger must filter to the Aura itself"
         );
-        assert!(
-            t.trigger_zones.contains(&Zone::Graveyard),
-            "trigger_zones must include Graveyard so the matcher can find \
-             the source after the move (CR 603.6c)"
+        assert_eq!(
+            t.trigger_zones,
+            vec![Zone::Battlefield],
+            "trigger_zones must use Battlefield so CR 603.10a LKI can find \
+             the token before it ceases to exist"
         );
 
         // Execute: per-opponent LoseLife 1.
@@ -4375,6 +4534,210 @@ mod tests {
             1,
             "base_static_definitions must mirror live so the layers reset (CR 613.1) preserves it"
         );
+    }
+
+    #[test]
+    fn apply_create_token_materializes_intrinsic_equip_ability() {
+        use crate::parser::oracle::try_parse_equip;
+        use crate::types::ability::{ContinuousModification, StaticDefinition};
+        use crate::types::card_type::CoreType;
+        use crate::types::proposed_event::TokenSpec;
+        use std::collections::HashSet;
+
+        let equip = try_parse_equip("Equip {0}").expect("equip static");
+        let equip_static = StaticDefinition::continuous()
+            .affected(TargetFilter::SelfRef)
+            .modifications(vec![ContinuousModification::GrantAbility {
+                definition: Box::new(equip),
+            }]);
+
+        use crate::types::proposed_event::TokenCharacteristics;
+        let mut state = GameState::new_two_player(42);
+        let spec = TokenSpec {
+            characteristics: TokenCharacteristics {
+                display_name: "Stoneforged Blade".to_string(),
+                power: Some(0),
+                toughness: Some(0),
+                core_types: vec![CoreType::Artifact],
+                subtypes: vec!["Equipment".to_string()],
+                supertypes: vec![],
+                colors: vec![],
+                keywords: vec![],
+            },
+            script_name: "Stoneforged Blade".to_string(),
+            static_abilities: vec![equip_static],
+            enter_with_counters: vec![],
+            tapped: false,
+            enters_attacking: false,
+            sacrifice_at: None,
+            source_id: ObjectId(100),
+            controller: PlayerId(0),
+            attach_to: None,
+        };
+
+        let event = ProposedEvent::CreateToken {
+            owner: PlayerId(0),
+            spec: Box::new(spec),
+            copy: None,
+            enter_tapped: crate::types::proposed_event::EtbTapState::Unspecified,
+            count: 1,
+            applied: HashSet::new(),
+        };
+
+        let mut events = vec![];
+        apply_create_token_after_replacement(&mut state, event, &mut events);
+
+        let id = state.last_created_token_ids[0];
+        let obj = &state.objects[&id];
+        assert!(
+            obj.abilities
+                .iter()
+                .any(|a| matches!(*a.effect, Effect::Attach { .. })),
+            "intrinsic equip must materialize onto obj.abilities"
+        );
+        assert!(
+            obj.base_abilities
+                .iter()
+                .any(|a| matches!(*a.effect, Effect::Attach { .. })),
+            "intrinsic equip must mirror onto base_abilities"
+        );
+    }
+
+    #[test]
+    fn apply_create_token_does_not_materialize_conditional_grant_ability() {
+        use crate::parser::oracle::try_parse_equip;
+        use crate::types::ability::{ContinuousModification, StaticCondition, StaticDefinition};
+        use crate::types::card_type::CoreType;
+        use crate::types::proposed_event::TokenSpec;
+        use std::collections::HashSet;
+
+        let equip = try_parse_equip("Equip {0}").expect("equip static");
+        let conditional_equip = StaticDefinition::continuous()
+            .affected(TargetFilter::SelfRef)
+            .condition(StaticCondition::IsPresent { filter: None })
+            .modifications(vec![ContinuousModification::GrantAbility {
+                definition: Box::new(equip),
+            }]);
+
+        use crate::types::proposed_event::TokenCharacteristics;
+        let mut state = GameState::new_two_player(42);
+        let spec = TokenSpec {
+            characteristics: TokenCharacteristics {
+                display_name: "Conditional Blade".to_string(),
+                power: Some(0),
+                toughness: Some(0),
+                core_types: vec![CoreType::Artifact],
+                subtypes: vec!["Equipment".to_string()],
+                supertypes: vec![],
+                colors: vec![],
+                keywords: vec![],
+            },
+            script_name: "Conditional Blade".to_string(),
+            static_abilities: vec![conditional_equip],
+            enter_with_counters: vec![],
+            tapped: false,
+            enters_attacking: false,
+            sacrifice_at: None,
+            source_id: ObjectId(101),
+            controller: PlayerId(0),
+            attach_to: None,
+        };
+
+        let event = ProposedEvent::CreateToken {
+            owner: PlayerId(0),
+            spec: Box::new(spec),
+            copy: None,
+            enter_tapped: crate::types::proposed_event::EtbTapState::Unspecified,
+            count: 1,
+            applied: HashSet::new(),
+        };
+
+        let mut events = vec![];
+        apply_create_token_after_replacement(&mut state, event, &mut events);
+
+        let id = state.last_created_token_ids[0];
+        let obj = &state.objects[&id];
+        assert_eq!(
+            obj.static_definitions.len(),
+            1,
+            "conditional grant must still live in static_definitions"
+        );
+        assert!(
+            obj.abilities.is_empty(),
+            "conditional GrantAbility must not leak into obj.abilities"
+        );
+        assert!(
+            obj.base_abilities.is_empty(),
+            "conditional GrantAbility must not leak into base_abilities"
+        );
+    }
+
+    #[test]
+    fn apply_create_token_does_not_materialize_non_equip_grant_ability() {
+        use crate::types::ability::{
+            AbilityDefinition, AbilityKind, ContinuousModification, StaticDefinition,
+        };
+        use crate::types::card_type::CoreType;
+        use crate::types::proposed_event::TokenSpec;
+        use std::collections::HashSet;
+
+        let tap_draw = AbilityDefinition::new(
+            AbilityKind::Activated,
+            Effect::Draw {
+                count: QuantityExpr::Fixed { value: 1 },
+                target: TargetFilter::Controller,
+            },
+        );
+        let grant_static = StaticDefinition::continuous()
+            .affected(TargetFilter::SelfRef)
+            .modifications(vec![ContinuousModification::GrantAbility {
+                definition: Box::new(tap_draw),
+            }]);
+
+        use crate::types::proposed_event::TokenCharacteristics;
+        let mut state = GameState::new_two_player(42);
+        let spec = TokenSpec {
+            characteristics: TokenCharacteristics {
+                display_name: "Meteorite".to_string(),
+                power: Some(0),
+                toughness: Some(0),
+                core_types: vec![CoreType::Artifact],
+                subtypes: vec![],
+                supertypes: vec![],
+                colors: vec![],
+                keywords: vec![],
+            },
+            script_name: "Meteorite".to_string(),
+            static_abilities: vec![grant_static],
+            enter_with_counters: vec![],
+            tapped: false,
+            enters_attacking: false,
+            sacrifice_at: None,
+            source_id: ObjectId(102),
+            controller: PlayerId(0),
+            attach_to: None,
+        };
+
+        let event = ProposedEvent::CreateToken {
+            owner: PlayerId(0),
+            spec: Box::new(spec),
+            copy: None,
+            enter_tapped: crate::types::proposed_event::EtbTapState::Unspecified,
+            count: 1,
+            applied: HashSet::new(),
+        };
+
+        let mut events = vec![];
+        apply_create_token_after_replacement(&mut state, event, &mut events);
+
+        let id = state.last_created_token_ids[0];
+        let obj = &state.objects[&id];
+        assert_eq!(obj.static_definitions.len(), 1);
+        assert!(
+            obj.abilities.is_empty(),
+            "non-equip GrantAbility must stay layer-only"
+        );
+        assert!(obj.base_abilities.is_empty());
     }
 
     #[test]

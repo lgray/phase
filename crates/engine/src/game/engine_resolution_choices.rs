@@ -1154,6 +1154,7 @@ pub(super) fn handle_resolution_choice(
                 controller,
                 source_id,
                 actor,
+                tally_mode,
             },
             GameAction::ChooseOption { choice },
         ) => {
@@ -1195,6 +1196,7 @@ pub(super) fn handle_resolution_choice(
                     controller,
                     source_id,
                     actor,
+                    tally_mode,
                 };
                 ResolutionChoiceOutcome::WaitingFor(state.waiting_for.clone())
             } else if let Some(((next_player, next_votes), rest)) = remaining_voters.split_first() {
@@ -1214,6 +1216,7 @@ pub(super) fn handle_resolution_choice(
                     controller,
                     source_id,
                     actor,
+                    tally_mode,
                 };
                 ResolutionChoiceOutcome::WaitingFor(state.waiting_for.clone())
             } else {
@@ -1236,6 +1239,7 @@ pub(super) fn handle_resolution_choice(
                     &per_choice_effect,
                     &new_tallies,
                     &new_ballots,
+                    tally_mode,
                     events,
                 );
                 ResolutionChoiceOutcome::WaitingFor(finish_with_continuation(
@@ -1653,6 +1657,8 @@ pub(super) fn handle_resolution_choice(
                 for &card_id in &cards {
                     state.revealed_cards.remove(&card_id);
                 }
+                state.private_look_ids.clear();
+                state.private_look_player = None;
                 set_priority(state, player);
                 if decline_runs_continuation {
                     effects::drain_pending_continuation(state, events);
@@ -1691,6 +1697,8 @@ pub(super) fn handle_resolution_choice(
             for &card_id in &cards {
                 state.revealed_cards.remove(&card_id);
             }
+            state.private_look_ids.clear();
+            state.private_look_player = None;
 
             set_priority(state, player);
             // CR 701.20a: For an optional reveal, the stashed continuation is the
@@ -2777,6 +2785,27 @@ pub(super) fn handle_resolution_choice(
                         }
                     }
                 },
+                // CR 608.2d + CR 301.5b: Resolution-time Equipment pick for
+                // deferred optional attach (Nahiri, the Lithomancer +2).
+                EffectKind::Attach => {
+                    let Some(cont) = state.pending_continuation.take() else {
+                        return Err(EngineError::InvalidAction(
+                            "Attach EffectZoneChoice missing stashed ability".to_string(),
+                        ));
+                    };
+                    effects::attach::complete_resolution_attachment_choice(
+                        &mut *state,
+                        *cont.chain,
+                        chosen[0],
+                        events,
+                    )
+                    .map_err(|e| EngineError::InvalidAction(e.to_string()))?;
+                    set_priority(state, player);
+                    resume_with_error_propagation(state, events)?;
+                    return Ok(ResolutionChoiceOutcome::WaitingFor(
+                        state.waiting_for.clone(),
+                    ));
+                }
                 // CR 601.2c + CR 115.1: Resolution-time hand pick for
                 // `CastFromZone` (Electrodominance, Baral's Expertise).
                 EffectKind::CastFromZone => {

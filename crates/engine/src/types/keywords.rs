@@ -2183,6 +2183,10 @@ impl FromStr for Keyword {
             "infect" => Ok(Keyword::Infect),
             "afflict" => Ok(Keyword::Afflict(1)),
             "frenzy" => Ok(Keyword::Frenzy(1)),
+            // CR 702.164: Toxic N — bare "toxic" (grant text / "if that creature has toxic"
+            // condition). Parameter defaults to 1; has_keyword matches by discriminant so N
+            // is irrelevant for presence. The colon form ("Toxic:N") is handled above.
+            "toxic" => Ok(Keyword::Toxic(1)),
             "prowess" => Ok(Keyword::Prowess),
             "undying" => Ok(Keyword::Undying),
             "persist" => Ok(Keyword::Persist),
@@ -3753,6 +3757,22 @@ mod tests {
             assert_eq!(counter_type, &CounterType::Plus1Plus1);
             assert_eq!(*count, 3);
         }
+    }
+
+    #[test]
+    fn parse_toxic_colon_and_bare() {
+        // CR 702.164: colon-form carries N (no-regression for the existing path).
+        assert_eq!(Keyword::from_str("Toxic:3").unwrap(), Keyword::Toxic(3));
+        // CR 702.164: bare "toxic" (grant text / "if that creature has toxic"
+        // condition) defaults to Toxic(1) and must NOT fall to Unknown — otherwise
+        // has_keyword (discriminant match) never sees a real Toxic(N) and the rider
+        // is silently dead. Case-insensitive via the from_str normalizer.
+        assert_eq!(Keyword::from_str("toxic").unwrap(), Keyword::Toxic(1));
+        assert_eq!(Keyword::from_str("Toxic").unwrap(), Keyword::Toxic(1));
+        assert_ne!(
+            Keyword::from_str("toxic").unwrap(),
+            Keyword::Unknown("toxic".to_string())
+        );
     }
 
     #[test]
