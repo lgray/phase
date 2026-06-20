@@ -6796,17 +6796,18 @@ pub enum DamageSource {
     /// and is deferred at the parser; see `is_compound_source_each_power_damage`).
     /// Unlike `Target`, the recipient is `targets.last()`, not `targets[1..]`.
     ///
-    /// SCOPE — sequential per-source, NOT a fused simultaneous event. Each
-    /// source's damage runs its own pass of the four-part damage sequence (the
-    /// resolver loops per source, `resolve_each_target_power_damage`) rather than
-    /// being accumulated into one CR 120.4a/CR 120.10 simultaneous batch. This is
-    /// correct ONLY for the current class: a single recipient, sources WITHOUT
-    /// deathtouch/wither/lifelink, and recipients WITHOUT combined-damage
-    /// ("dealt excess damage" / "dealt damage by one or more sources") triggers.
-    /// Do NOT reuse `EachTarget` for sources with deathtouch (CR 120.4a excess is
-    /// computed per-source here) or recipients with CR 120.10 combined-damage
-    /// triggers — those require a fused simultaneous batch (cf. `combat_damage.rs`,
-    /// CR 510.2), which is a future refinement.
+    /// SCOPE — SIMULTANEOUS multi-source batch (CR 120.4a + CR 120.6 + CR 120.10).
+    /// The resolver (`resolve_each_target_power_damage`) reuses the decomposed
+    /// damage primitives that `combat_damage.rs`'s simultaneous combat batch is
+    /// built from (`pre_replacement_damage_gate` → `replace_event` →
+    /// `apply_damage_after_replacement`), running all sources as one event set
+    /// against the shared recipient: each source carries its OWN `DamageContext`
+    /// (per-source deathtouch/wither/lifelink/infect/toxic), all marks accumulate
+    /// onto the recipient before SBAs (CR 704) so combined lethal (CR 120.6) and
+    /// combined excess (CR 120.10) are correct, and a replacement pause on the
+    /// recipient mid-batch resumes the remaining sources with PER-SOURCE identity
+    /// preserved (`stash_remaining_each_source_damage`, no flattening to a single
+    /// source id).
     EachTarget,
 }
 
