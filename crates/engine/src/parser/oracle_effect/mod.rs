@@ -97,10 +97,11 @@ use crate::types::ability::{
     ManaSpendPermission, MultiTargetSpec, ObjectProperty, ObjectScope, OriginConstraint,
     PlayerFilter, PlayerRelation, PlayerScope, PreventionAmount, PreventionScope,
     ProhibitedActivity, PtValue, QuantityExpr, QuantityRef, ReplacementCondition,
-    ReplacementDefinition, RestrictionExpiry, RestrictionPlayerScope, RoundingMode, SharedQuality,
-    SharedQualityRelation, StaticCondition, StaticDefinition, StepSkipTarget, SubAbilityLink,
-    TapStateChange, TargetFilter, TargetSelectionMode, ThisWayCause, TriggerCondition,
-    TriggerDefinition, TypeFilter, TypedFilter, UnlessPayModifier, UntilCondition, ZoneOwner,
+    ReplacementDefinition, RestrictionExpiry, RestrictionPlayerScope, RevealUntilDisposition,
+    RoundingMode, SharedQuality, SharedQualityRelation, StaticCondition, StaticDefinition,
+    StepSkipTarget, SubAbilityLink, TapStateChange, TargetFilter, TargetSelectionMode,
+    ThisWayCause, TriggerCondition, TriggerDefinition, TypeFilter, TypedFilter, UnlessPayModifier,
+    UntilCondition, ZoneOwner,
 };
 #[cfg(test)]
 use crate::types::ability::{AttackScope, AttackSubject};
@@ -6532,6 +6533,10 @@ fn parse_reveal_cards_from_library_until(input: &str) -> nom::IResult<&str, (), 
     value((), tag("library until ")).parse(input)
 }
 
+/// CR 701.20a: Parse the active-voice prefix `"reveal[s] cards from the top of
+/// <possessive> library until <pronoun> reveal[s] "`, stopping *before* the
+/// count/article. The caller parses the count (article → `Fixed(1)`, or a
+/// number / `X` for "reveal X [filter] cards") and the filter phrase.
 fn parse_reveal_until_prefix(input: &str) -> nom::IResult<&str, (), OracleError<'_>> {
     let (input, _) = parse_reveal_cards_from_library_until(input)?;
     // Active-voice pronoun + matching verb form.
@@ -6543,8 +6548,40 @@ fn parse_reveal_until_prefix(input: &str) -> nom::IResult<&str, (), OracleError<
         tag("it reveals "),
     ))
     .parse(input)?;
-    let (input, _) = nom_primitives::parse_article(input)?;
     Ok((input, ()))
+}
+
+/// CR 701.20a + CR 608.2c: Parse the count phrase that follows
+/// "…until you reveal " — either the singular article ("a"/"an") for the
+/// dominant "reveal a [filter] card" form (yielding `Fixed(1)`), a spelled or
+/// numeric literal ("two"/"2"), or the variable `X` ("reveal X [filter] cards",
+/// bound by a trailing "where X is …" clause). Returns the count expression and
+/// the remaining input positioned at the filter phrase.
+fn parse_reveal_until_count(input: &str) -> OracleResult<'_, QuantityExpr> {
+    alt((
+        // CR 701.20a: singular article → exactly one match (the legacy form).
+        value(
+            QuantityExpr::Fixed { value: 1 },
+            nom_primitives::parse_article,
+        ),
+        // "reveal X [filter] cards" — bound later by "where X is …".
+        value(
+            QuantityExpr::Ref {
+                qty: QuantityRef::Variable {
+                    name: "X".to_string(),
+                },
+            },
+            (tag("x"), tag(" ")),
+        ),
+        // "reveal two [filter] cards" / "reveal 2 [filter] cards".
+        map(
+            terminated(nom_primitives::parse_number, tag(" ")),
+            |value| QuantityExpr::Fixed {
+                value: value as i32,
+            },
+        ),
+    ))
+    .parse(input)
 }
 
 /// CR 701.20a: Parse the **passive-voice** prefix `"reveal[s] cards from the top of
@@ -6559,14 +6596,21 @@ fn parse_reveal_until_passive_prefix(input: &str) -> nom::IResult<&str, (), Orac
 }
 
 fn parse_reveal_until_active_filter_text(input: &str) -> OracleResult<'_, &str> {
-    // Each arm is individually `all_consuming` so that when the leading
-    // `take_until(" card")` arm leaves a remainder (the filter is a disjunctive
-    // list with MORE THAN ONE `" card"`, e.g. An Unearthly Child's "doctor card,
-    // a card with doctor's companion, or a vehicle card."), `alt` backtracks to
-    // the period-terminated arm that captures the whole phrase. Wrapping the
-    // *whole* alt in one `all_consuming` would NOT backtrack: `alt` commits to
-    // the first matching arm before `all_consuming` checks the remainder.
+    // Each arm is individually `all_consuming` so that when a leading `take_until`
+    // arm leaves a remainder (the filter is a disjunctive list with MORE THAN ONE
+    // `" card"`, e.g. An Unearthly Child's "doctor card, a card with doctor's
+    // companion, or a vehicle card."), `alt` backtracks to the period-terminated
+    // arm that captures the whole phrase. Wrapping the *whole* alt in one
+    // `all_consuming` would NOT backtrack: `alt` commits to the first matching arm
+    // before `all_consuming` checks the remainder.
+    // CR 701.20a: the plural "cards" arm (the "reveal X [filter] cards" multi-match
+    // form) is tried before singular " card" so "permanent cards" strips the full
+    // noun, not "permanent" + a stray "s".
     alt((
+        all_consuming(terminated(
+            take_until(" cards"),
+            (tag(" cards"), opt(tag("."))),
+        )),
         all_consuming(terminated(
             take_until(" card"),
             (tag(" card"), opt(tag("."))),
@@ -6694,15 +6738,31 @@ fn build_reveal_until_filter(filter_text: &str) -> TargetFilter {
 /// passive voice (`"until a/an <filter> [card] is revealed [and exiles that card]"`).
 /// Builds [`Effect::RevealUntil`] with `player` identifying whose library is revealed.
 fn try_parse_reveal_until(tp: TextPair, player: TargetFilter) -> Option<ParsedEffectClause> {
-    // CR 701.20a: Active-voice form — "…until they reveal a <filter>".
-    let active_result = nom_on_lower(tp.original, tp.lower, parse_reveal_until_prefix);
+    // CR 701.20a + CR 608.2c: strip a trailing "where X is …" binding first so a
+    // dynamic count ("reveal X [filter] cards, where X is the number of colors
+    // among permanents you control" — Aurora Awakener, Sanar) is rewritten from
+    // the placeholder `Variable("X")` into its concrete `QuantityExpr` (e.g.
+    // `DistinctColorsAmongPermanents`). Mirrors the Discover "where X is …" wiring.
+    let (count_tp, where_x_expression) = strip_trailing_where_x(tp);
+
+    // CR 701.20a: Active-voice form — "…until they reveal a <filter>" (count =
+    // Fixed(1)) or "…until you reveal X [filter] cards" (dynamic count).
+    let active_result = nom_on_lower(count_tp.original, count_tp.lower, parse_reveal_until_prefix);
     if let Some((_, rest_orig)) = active_result {
-        let rest_lower = &tp.lower[tp.lower.len() - rest_orig.len()..];
-        let (_, filter_text) = parse_reveal_until_active_filter_text(rest_lower).ok()?;
+        let rest_lower = &count_tp.lower[count_tp.lower.len() - rest_orig.len()..];
+        let (after_count_lower, raw_count) = parse_reveal_until_count(rest_lower).ok()?;
+        let (_, filter_text) = parse_reveal_until_active_filter_text(after_count_lower).ok()?;
         let filter = build_reveal_until_filter(filter_text);
+        let count = apply_where_x_quantity_expression(raw_count, where_x_expression.as_deref());
         return Some(parsed_clause(Effect::RevealUntil {
             player,
             filter,
+            count,
+            // The matched-set disposition is refined by a following "Put any
+            // number of those [filter] cards onto the battlefield" continuation
+            // (`ContinuationAst::RevealUntilKept` with `any_number`); the default
+            // `KeepEach` covers the single-hit forms.
+            matched_disposition: RevealUntilDisposition::KeepEach,
             kept_destination: Zone::Hand,
             rest_destination: Zone::Library,
             enter_tapped: crate::types::zones::EtbTapState::Unspecified,
@@ -6753,6 +6813,8 @@ fn try_parse_reveal_until(tp: TextPair, player: TargetFilter) -> Option<ParsedEf
     Some(parsed_clause(Effect::RevealUntil {
         player,
         filter,
+        count: QuantityExpr::Fixed { value: 1 },
+        matched_disposition: RevealUntilDisposition::KeepEach,
         kept_destination,
         rest_destination: Zone::Library,
         enter_tapped: crate::types::zones::EtbTapState::Unspecified,
@@ -45291,6 +45353,7 @@ mod tests {
                     enters_attacking: false,
                     kept_optional_to: None,
                     enters_under: None,
+                    ..
                 } if type_filters.contains(&TypeFilter::Creature)
             ),
             "expected RevealUntil player=Controller, creature->hand, rest->library, got: {:?}",
@@ -45358,6 +45421,7 @@ mod tests {
                     enters_attacking: false,
                     kept_optional_to: None,
                     enters_under: None,
+                    ..
                 } if type_filters.contains(&TypeFilter::Creature)
             ),
             "expected RevealUntil player=ParentTargetController, got: {:?}",
@@ -45435,6 +45499,7 @@ mod tests {
                     enters_attacking: false,
                     kept_optional_to: None,
                     enters_under: None,
+                    ..
                 } if type_filters.contains(&TypeFilter::Land)
             ),
             "expected RevealUntil(kept=Graveyard, rest=Graveyard), got: {:?}",
@@ -45513,6 +45578,7 @@ mod tests {
                     enters_attacking: false,
                     kept_optional_to: None,
                     enters_under: None,
+                    ..
                 } if type_filters.contains(&TypeFilter::Artifact)
             ),
             "expected RevealUntil player=Controller, artifact->battlefield, got: {:?}",
@@ -45824,6 +45890,108 @@ mod tests {
             "expected RevealUntil nonland, got: {:?}",
             def.effect
         );
+    }
+
+    /// CR 701.20a + CR 608.2c: "reveal until you reveal X permanent cards, where
+    /// X is the number of colors among permanents you control. Put any number of
+    /// those permanent cards onto the battlefield, then put the rest of the
+    /// revealed cards on the bottom of your library in a random order." (Aurora
+    /// Awakener) — the multi-match `count` + `ChooseAnyNumber` disposition.
+    /// Runtime semantics for this AST shape are covered by the
+    /// `aurora_awakener_reveal_until_n_permanents` integration test (the parser
+    /// shape test alone does not satisfy the discriminating-test gate).
+    #[test]
+    fn reveal_until_x_permanent_cards_choose_any_number_aurora() {
+        let def = parse_effect_chain(
+            "Reveal cards from the top of your library until you reveal X permanent cards, \
+             where X is the number of colors among permanents you control. Put any number of \
+             those permanent cards onto the battlefield, then put the rest of the revealed \
+             cards on the bottom of your library in a random order.",
+            AbilityKind::Spell,
+        );
+        let Effect::RevealUntil {
+            count,
+            matched_disposition,
+            kept_destination,
+            rest_destination,
+            ..
+        } = &*def.effect
+        else {
+            panic!("expected RevealUntil, got {:?}", def.effect);
+        };
+        assert!(
+            matches!(
+                count,
+                QuantityExpr::Ref {
+                    qty: QuantityRef::DistinctColorsAmongPermanents { .. }
+                }
+            ),
+            "count must bind to DistinctColorsAmongPermanents via the where-X clause, got {count:?}"
+        );
+        assert_eq!(
+            *matched_disposition,
+            RevealUntilDisposition::ChooseAnyNumber
+        );
+        assert_eq!(*kept_destination, Zone::Battlefield);
+        assert_eq!(*rest_destination, Zone::Library);
+    }
+
+    /// CR 701.20a: "reveal until you reveal X nonland cards, where X is the
+    /// number of colors among permanents you control" (Sanar core). The
+    /// per-color exile + cast-this-turn tail is intentionally NOT yet parsed; the
+    /// CORE reveal-until-N-nonland must still bind the dynamic count.
+    #[test]
+    fn reveal_until_x_nonland_cards_binds_dynamic_count_sanar_core() {
+        let def = parse_effect_chain(
+            "Reveal cards from the top of your library until you reveal X nonland cards, \
+             where X is the number of colors among permanents you control.",
+            AbilityKind::Spell,
+        );
+        let Effect::RevealUntil {
+            count,
+            filter: TargetFilter::Typed(TypedFilter { type_filters, .. }),
+            ..
+        } = &*def.effect
+        else {
+            panic!(
+                "expected RevealUntil with a typed nonland filter, got {:?}",
+                def.effect
+            );
+        };
+        assert!(
+            matches!(
+                count,
+                QuantityExpr::Ref {
+                    qty: QuantityRef::DistinctColorsAmongPermanents { .. }
+                }
+            ),
+            "Sanar's count must bind to DistinctColorsAmongPermanents, got {count:?}"
+        );
+        assert!(
+            matches!(&type_filters[..], [TypeFilter::Non(inner)] if matches!(**inner, TypeFilter::Land)),
+            "filter must be nonland, got {type_filters:?}"
+        );
+    }
+
+    /// The single-article form must still yield `Fixed(1)` and `KeepEach` — the
+    /// parameterization default preserves every existing single-hit reveal-until.
+    #[test]
+    fn reveal_until_single_article_stays_fixed_one_keep_each() {
+        let def = parse_effect_chain(
+            "Reveal cards from the top of your library until you reveal a creature card. \
+             Put that card into your hand and the rest on the bottom of your library in a random order.",
+            AbilityKind::Spell,
+        );
+        let Effect::RevealUntil {
+            count,
+            matched_disposition,
+            ..
+        } = &*def.effect
+        else {
+            panic!("expected RevealUntil, got {:?}", def.effect);
+        };
+        assert_eq!(*count, QuantityExpr::Fixed { value: 1 });
+        assert_eq!(*matched_disposition, RevealUntilDisposition::KeepEach);
     }
 
     #[test]

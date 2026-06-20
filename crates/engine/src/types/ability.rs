@@ -6730,6 +6730,48 @@ pub enum LibraryPosition {
     },
 }
 
+/// CR 701.20a + CR 608.2c: How the *set* of matching cards found by an
+/// [`Effect::RevealUntil`] is dispensed once the until-loop terminates.
+///
+/// The default `KeepEach` preserves the historical single-hit / each-hit
+/// behavior: every matching card is routed to `kept_destination` (or paused on
+/// `WaitingFor::RevealUntilKeptChoice` when `kept_optional_to` is set) and the
+/// non-matching cards go to `rest_destination`. With the dominant `count =
+/// Fixed(1)` this is exactly "reveal until you reveal a [filter] card".
+///
+/// `ChooseAnyNumber` covers the Aurora Awakener class — "reveal until you
+/// reveal X [filter] cards. Put any number of those [filter] cards onto the
+/// battlefield, then put the rest of the revealed cards on the bottom of your
+/// library in a random order." The controller selects any subset of the matched
+/// cards for `kept_destination`; every other revealed card (non-selected matches
+/// AND the interleaved non-matching cards) flows to `rest_destination`. This is
+/// the `Effect::Dig` "put any number onto the battlefield, rest on the bottom in
+/// a random order" disposition (`WaitingFor::DigChoice`, CR 401.4 owner-arranged
+/// random bottom placement), reused over the reveal-until matched set.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(tag = "type")]
+pub enum RevealUntilDisposition {
+    /// CR 701.20a: Route every matched card to `kept_destination`
+    /// (or `kept_optional_to`); non-matches to `rest_destination`. The legacy
+    /// single-hit behavior; default so the JSON shape and every existing call
+    /// site stay unchanged.
+    #[default]
+    KeepEach,
+    /// CR 701.20a + CR 608.2c: Offer the controller a `WaitingFor::DigChoice`
+    /// over the matched cards — any number go to `kept_destination`, every other
+    /// revealed card goes to `rest_destination` (CR 401.4 random bottom when
+    /// `rest_destination == Library`).
+    ChooseAnyNumber,
+}
+
+impl RevealUntilDisposition {
+    /// Helper for `#[serde(skip_serializing_if = ...)]` so the dominant
+    /// `KeepEach` disposition keeps the on-disk JSON shape unchanged.
+    pub fn is_keep_each(&self) -> bool {
+        matches!(self, Self::KeepEach)
+    }
+}
+
 /// CR 120.3: Override for which object is the source of damage.
 /// By default, the source is the ability's source object (`ability.source_id`).
 /// `Target` means the first resolved target is the damage source (e.g.,
@@ -8873,6 +8915,23 @@ pub enum Effect {
         #[serde(default = "default_target_filter_controller")]
         player: TargetFilter,
         filter: TargetFilter,
+        /// CR 701.20a + CR 608.2c: How many matching cards to reveal before the
+        /// until-loop terminates. Defaults to `Fixed(1)` ("until you reveal a
+        /// [filter] card") so every existing call site and on-disk record keeps
+        /// the single-hit behavior. A dynamic `count` (e.g.
+        /// `DistinctColorsAmongPermanents`) drives the "reveal until you reveal
+        /// X [filter] cards" class (Aurora Awakener, Sanar). When the library is
+        /// exhausted before `count` matches are found, the loop stops with the
+        /// matches found so far (CR 701.20a — reveal as far as the library
+        /// allows).
+        #[serde(default = "default_quantity_one")]
+        count: QuantityExpr,
+        /// CR 701.20a + CR 608.2c: How the matched-card set is dispensed once
+        /// the until-loop terminates. Defaults to `KeepEach` (route each match
+        /// to `kept_destination`/`kept_optional_to`), preserving the historical
+        /// single-hit behavior.
+        #[serde(default, skip_serializing_if = "RevealUntilDisposition::is_keep_each")]
+        matched_disposition: RevealUntilDisposition,
         /// Where the matching card goes (Hand or Battlefield). When
         /// `kept_optional_to` is `Some`, this is repurposed as the *decline*
         /// zone (where the kept card goes if the controller declines).
@@ -10470,6 +10529,9 @@ impl Effect {
             | Effect::Renown { count, .. }
             | Effect::Bolster { count, .. }
             | Effect::Adapt { count, .. }
+            // CR 701.20a: how many matching cards to reveal before the
+            // until-loop terminates ("reveal until you reveal X [filter] cards").
+            | Effect::RevealUntil { count, .. }
             | Effect::Seek { count, .. } => Some(count),
 
             // --- Effects whose magnitude is an `amount: QuantityExpr` ---
@@ -10616,7 +10678,6 @@ impl Effect {
             | Effect::ProcessRadCounters
             | Effect::ReduceNextSpellCost { .. }
             | Effect::RevealFromHand { .. }
-            | Effect::RevealUntil { .. }
             | Effect::RingTemptsYou
             | Effect::Ripple { .. }
             | Effect::RollToVisitAttractions
@@ -10675,6 +10736,9 @@ impl Effect {
             | Effect::Renown { count, .. }
             | Effect::Bolster { count, .. }
             | Effect::Adapt { count, .. }
+            // CR 701.20a: how many matching cards to reveal before the
+            // until-loop terminates ("reveal until you reveal X [filter] cards").
+            | Effect::RevealUntil { count, .. }
             | Effect::Seek { count, .. } => Some(count),
 
             // --- Effects whose magnitude is an `amount: QuantityExpr` ---
@@ -10821,7 +10885,6 @@ impl Effect {
             | Effect::ProcessRadCounters
             | Effect::ReduceNextSpellCost { .. }
             | Effect::RevealFromHand { .. }
-            | Effect::RevealUntil { .. }
             | Effect::RingTemptsYou
             | Effect::Ripple { .. }
             | Effect::RollToVisitAttractions

@@ -10848,6 +10848,8 @@ mod tests {
         let effect = Effect::RevealUntil {
             player: TargetFilter::Controller,
             filter: TargetFilter::Typed(TypedFilter::new(TypeFilter::Artifact)),
+            count: crate::types::ability::QuantityExpr::Fixed { value: 1 },
+            matched_disposition: crate::types::ability::RevealUntilDisposition::KeepEach,
             kept_destination: Zone::Exile,
             rest_destination: Zone::Library,
             enter_tapped: crate::types::zones::EtbTapState::Unspecified,
