@@ -8934,13 +8934,17 @@ pub(super) fn must_attack_or_block_static_definitions() -> Vec<StaticDefinition>
 
 /// CR 508.1d / CR 509.1c: True iff `lower` (already lowercased, trimmed) is a
 /// recognized *standalone* combat requirement — "attack(s) [player] this
-/// turn/combat if able" or "must be blocked [this turn] [if able]". Used by
-/// `split_clause_sequence` to gate the trailing-conjunct split of
+/// turn/combat if able", "attack(s) or block(s) this turn/combat if able", or
+/// "must be blocked [this turn] [if able]". Used by `split_clause_sequence` to
+/// gate the trailing-conjunct split of
 /// "gains <keyword> until end of turn and <combat requirement>" so the
 /// requirement reaches its existing standalone parser. Composes the existing
 /// recognizers as Some/None classifiers; their produced AST is discarded.
 pub(crate) fn is_standalone_combat_requirement(lower: &str) -> bool {
     let trimmed = lower.trim().trim_end_matches('.').trim();
+    if try_parse_attack_or_block_if_able(trimmed).is_some() {
+        return true;
+    }
     if try_parse_attack_if_able(trimmed).is_some() {
         return true;
     }
@@ -12589,6 +12593,12 @@ mod tests {
         ));
         assert!(is_standalone_combat_requirement(
             "attacks this turn if able"
+        ));
+        assert!(is_standalone_combat_requirement(
+            "attacks or blocks this turn if able"
+        ));
+        assert!(is_standalone_combat_requirement(
+            "attack or block this combat if able"
         ));
         assert!(is_standalone_combat_requirement(
             "must be blocked this turn if able"
