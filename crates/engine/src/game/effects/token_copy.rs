@@ -5,8 +5,8 @@ use crate::game::printed_cards::intrinsic_copiable_values;
 use crate::game::quantity::resolve_quantity;
 use crate::game::{targeting, zones};
 use crate::types::ability::{
-    ContinuousModification, Effect, EffectError, EffectKind, ResolvedAbility, TargetFilter,
-    TargetRef, TriggerCondition, TriggerDefinition,
+    ContinuousModification, Effect, EffectError, EffectKind, ResolvedAbility, StaticDefinition,
+    TargetFilter, TargetRef, TriggerCondition, TriggerDefinition,
 };
 use crate::types::card_type::SubtypeSet;
 #[cfg(test)]
@@ -1090,12 +1090,59 @@ fn apply_token_modifications(
                     token.loyalty = Some(*value);
                 }
             }
-            // CR 707.2 + CR 702 keyword grants flow through `extra_keywords`,
-            // not here. Other layered-only modifications (CopyValues,
-            // ChangeController, etc.) are intentionally skipped — their
-            // "stamp at copy time" interpretation is ambiguous, and a
-            // future except body needing them should route through the
-            // BecomeCopy layered path instead.
+            // CR 707.9a + CR 603.1: "except it has \"<triggered ability>\""
+            // (Chandra, Flameshaper [+1]: "…and \"At the beginning of the end
+            // step, sacrifice this token.\""). The granted trigger becomes part
+            // of the copy's copiable values, so stamp it onto both the live and
+            // base trigger sets. `SelfRef`/`This`-anchored triggers in the
+            // grant resolve against the token because they fire with the token
+            // as their source.
+            ContinuousModification::GrantTrigger { trigger } => {
+                if let Some(token) = state.objects.get_mut(&token_id) {
+                    token.trigger_definitions.push((**trigger).clone());
+                    Arc::make_mut(&mut token.base_trigger_definitions).push((**trigger).clone());
+                }
+            }
+            // CR 707.9a: "except it has \"<activated/static ability>\"" — the
+            // granted ability is part of the copy's copiable values. Mirrors the
+            // GrantTrigger arm for the `obj.abilities` list.
+            ContinuousModification::GrantAbility { definition } => {
+                if let Some(token) = state.objects.get_mut(&token_id) {
+                    Arc::make_mut(&mut token.abilities).push((**definition).clone());
+                    Arc::make_mut(&mut token.base_abilities).push((**definition).clone());
+                }
+            }
+            // CR 707.9a + CR 604.1: quoted static text in a copy exception is
+            // also part of the token's copiable values. Mirror predefined token
+            // rules text by carrying static-rule modifications on a self static.
+            ContinuousModification::GrantStaticAbility { .. }
+            | ContinuousModification::AddStaticMode { .. } => {
+                if let Some(token) = state.objects.get_mut(&token_id) {
+                    let static_def = StaticDefinition::continuous()
+                        .affected(TargetFilter::SelfRef)
+                        .modifications(vec![modification.clone()]);
+                    Arc::make_mut(&mut token.base_static_definitions).push(static_def.clone());
+                    token.static_definitions.push(static_def);
+                }
+            }
+            // CR 707.9a + CR 702: a keyword granted via an except body that
+            // landed in `additional_modifications` (rather than `extra_keywords`)
+            // — e.g. a keyword adjacent to a quoted-ability grant. Apply it to
+            // the copiable keyword set, idempotently, mirroring `extra_keywords`.
+            ContinuousModification::AddKeyword { keyword } => {
+                if let Some(token) = state.objects.get_mut(&token_id) {
+                    if !token.keywords.contains(keyword) {
+                        token.keywords.push(keyword.clone());
+                    }
+                    if !token.base_keywords.contains(keyword) {
+                        token.base_keywords.push(keyword.clone());
+                    }
+                }
+            }
+            // Other layered-only modifications (CopyValues, ChangeController,
+            // etc.) are intentionally skipped — their "stamp at copy time"
+            // interpretation is ambiguous, and a future except body needing
+            // them should route through the BecomeCopy layered path instead.
             _ => {}
         }
     }

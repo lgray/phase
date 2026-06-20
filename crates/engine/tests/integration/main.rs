@@ -43,6 +43,7 @@ mod coalition_relic_integration;
 mod combat_celebrant_exert;
 mod combat_damage_order_triggers_no_hang;
 mod consuming_vapors_rebound;
+mod copy_token_except_keyword_and_quoted_ability;
 mod council_of_four_nth_per_turn;
 mod counter_double_redirect_choice;
 mod cr_annotations;
