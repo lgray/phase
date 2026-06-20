@@ -7952,6 +7952,150 @@ pub mod tests {
         );
     }
 
+    /// CR 603.5 + CR 613.4b + CR 608.2h + CR 208.1: Belligerent Yearling's
+    /// optional ETB trigger — "Whenever another Dinosaur you control enters, you
+    /// may have this creature's base power become equal to that creature's power
+    /// until end of turn." Drives the real pipeline: parse the Oracle text into a
+    /// trigger, install it, enter a power-5 Dinosaur, fire the ETB, take the "you
+    /// may" choice through the engine, then evaluate layers. Accepting must set
+    /// the source's base power to the entering Dinosaur's power (5, snapshotted at
+    /// resolution per CR 608.2h); declining leaves it at 1.
+    ///
+    /// The assertion `power == 5` flips to `power == 1` if the snapshot/set is
+    /// reverted (a re-evaluated `SetPowerDynamic { Power { CostPaidObject } }`
+    /// resolves to 0 once the trigger event is gone, and reverting the parser
+    /// leaves `Effect::Unimplemented`, which never touches power).
+    fn build_belligerent_yearling_trigger() -> TriggerDefinition {
+        let parsed = crate::parser::parse_oracle_text(
+            "Trample\nWhenever another Dinosaur you control enters, you may have this creature's base power become equal to that creature's power until end of turn.",
+            "Belligerent Yearling",
+            &["Trample".to_string()],
+            &["Creature".to_string()],
+            &["Dinosaur".to_string()],
+        );
+        // No trigger effect may be Unimplemented (the GAP this fix closes).
+        for t in &parsed.triggers {
+            if let Some(execute) = t.execute.as_ref() {
+                assert!(
+                    !matches!(execute.effect.as_ref(), Effect::Unimplemented { .. }),
+                    "trigger effect must not be Unimplemented: {execute:?}"
+                );
+            }
+        }
+        parsed
+            .triggers
+            .into_iter()
+            .find(|t| {
+                t.execute
+                    .as_ref()
+                    .is_some_and(|e| matches!(e.effect.as_ref(), Effect::Animate { .. }))
+            })
+            .expect("parsed Animate-set ETB trigger")
+    }
+
+    fn setup_belligerent_yearling_board() -> (GameState, ObjectId, ObjectId) {
+        let mut state = setup();
+        state.active_player = PlayerId(0);
+        state.priority_player = PlayerId(0);
+
+        // Source: Belligerent Yearling, a Dinosaur with base power 1.
+        let yearling = make_creature(&mut state, PlayerId(0), "Belligerent Yearling", 1, 3);
+        {
+            let obj = state.objects.get_mut(&yearling).unwrap();
+            obj.base_power = Some(1);
+            obj.power = Some(1);
+            obj.card_types.subtypes.push("Dinosaur".to_string());
+            obj.base_card_types = obj.card_types.clone();
+            obj.entered_battlefield_turn = Some(0);
+            obj.trigger_definitions
+                .push(build_belligerent_yearling_trigger());
+        }
+
+        // Entering: another Dinosaur with power 5.
+        let entering = make_creature(&mut state, PlayerId(0), "Big Dino", 5, 5);
+        {
+            let obj = state.objects.get_mut(&entering).unwrap();
+            obj.base_power = Some(5);
+            obj.power = Some(5);
+            obj.card_types.subtypes.push("Dinosaur".to_string());
+            obj.base_card_types = obj.card_types.clone();
+            obj.entered_battlefield_turn = Some(1);
+        }
+
+        (state, yearling, entering)
+    }
+
+    fn fire_yearling_etb(state: &mut GameState, entering: ObjectId) {
+        process_triggers(
+            state,
+            &[zone_changed_event(
+                entering,
+                Zone::Hand,
+                Zone::Battlefield,
+                vec![CoreType::Creature],
+                vec!["Dinosaur"],
+            )],
+        );
+        assert_eq!(
+            state.stack.len(),
+            1,
+            "optional ETB trigger should be on the stack"
+        );
+    }
+
+    #[test]
+    fn belligerent_yearling_accept_sets_base_power_to_entering_dinosaur_power() {
+        let (mut state, yearling, entering) = setup_belligerent_yearling_board();
+        fire_yearling_etb(&mut state, entering);
+
+        resolve_stack_to_optional_choice(&mut state);
+        accept_optional_effect(&mut state);
+
+        // Drain the stack so the Animate effect fully resolves.
+        for _ in 0..20 {
+            if state.stack.is_empty() {
+                break;
+            }
+            crate::game::engine::apply_as_current(&mut state, GameAction::PassPriority)
+                .expect("pass priority");
+        }
+        crate::game::layers::evaluate_layers(&mut state);
+
+        assert_eq!(
+            state.objects[&yearling].power,
+            Some(5),
+            "accepting must set Belligerent Yearling's base power to the entering Dinosaur's power (5)"
+        );
+    }
+
+    #[test]
+    fn belligerent_yearling_decline_leaves_base_power_unchanged() {
+        let (mut state, yearling, entering) = setup_belligerent_yearling_board();
+        fire_yearling_etb(&mut state, entering);
+
+        resolve_stack_to_optional_choice(&mut state);
+        crate::game::engine::apply_as_current(
+            &mut state,
+            GameAction::DecideOptionalEffect { accept: false },
+        )
+        .expect("decline optional effect");
+
+        for _ in 0..20 {
+            if state.stack.is_empty() {
+                break;
+            }
+            crate::game::engine::apply_as_current(&mut state, GameAction::PassPriority)
+                .expect("pass priority");
+        }
+        crate::game::layers::evaluate_layers(&mut state);
+
+        assert_eq!(
+            state.objects[&yearling].power,
+            Some(1),
+            "declining the may-trigger must leave base power at its printed 1"
+        );
+    }
+
     #[test]
     fn delayed_enter_trigger_filters_tracked_set_and_targets_triggering_object() {
         let mut state = setup();

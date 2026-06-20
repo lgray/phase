@@ -3515,7 +3515,87 @@ fn try_parse_have_causative(
         return Some(rebind_controller_to_original(clause));
     }
 
+    // Pattern C: "have <subject>'s base power become equal to <quantity>"
+    if let Some(clause) = try_parse_have_base_pt_become(tp) {
+        return Some(clause);
+    }
+
     None
+}
+
+/// CR 613.4b + CR 208.1 + CR 608.2h + CR 611.2: Parse the causative
+/// "have <subject>'s base power become equal to <quantity>" construction
+/// (Belligerent Yearling: "you may have this creature's base power become equal
+/// to that creature's power until end of turn").
+///
+/// This is a base-P/T *set* effect (CR 613.4b, layer 7b), not an additive pump:
+/// the subject's base power is overwritten with the resolution-time value of the
+/// quantity (CR 608.2h — the value is determined once when the effect applies).
+/// It composes from the existing `Effect::Animate` building block, which already
+/// routes `PtValue::Quantity` to a `SetPowerDynamic`/`SetToughnessDynamic` layer
+/// modification; the `animate` resolver snapshots resolution-only-scoped
+/// quantities ("that creature's power" → `Power { CostPaidObject }`) into a fixed
+/// `SetPower` at resolution because such referents cannot be re-resolved at later
+/// layer-evaluation passes.
+///
+/// `base power` / `base power and base toughness` are each an independent `alt()`
+/// arm so the whole class — any "have ~'s base power [and base toughness] become
+/// equal to <quantity>" — is covered, not just one card. The subject is the
+/// ability source (the self-ref "~" / "this creature" / "it" left by the trigger
+/// frame), so the resulting `Effect::Animate` targets `TargetFilter::None`
+/// (= the source).
+fn try_parse_have_base_pt_become(tp: TextPair<'_>) -> Option<ParsedEffectClause> {
+    // Strip a trailing duration first so the quantity parser sees a clean tail.
+    let (body, duration) = strip_trailing_duration(tp.original);
+    let body_lower = body.to_lowercase();
+
+    let parsed = nom_on_lower(body, &body_lower, |i| {
+        let (i, _) = tag("have ").parse(i)?;
+        // CR 113.7 + CR 201.4b: self-referential subject (the ability source).
+        let (i, _) = alt((
+            tag("~"),
+            tag("this creature"),
+            tag("this permanent"),
+            tag("it"),
+        ))
+        .parse(i)?;
+        // CR 208.1: which base characteristic(s) are set (power and toughness are
+        // the two numbers a creature card carries). Each form is a single `alt()`
+        // arm — base power only, or base power and base toughness.
+        let (i, set_toughness) = alt((
+            value(
+                true,
+                tag("'s base power and base toughness become equal to "),
+            ),
+            value(true, tag("'s base power and toughness become equal to ")),
+            value(false, tag("'s base power becomes equal to ")),
+            value(false, tag("'s base power become equal to ")),
+        ))
+        .parse(i)?;
+        let (i, qty) = nom_quantity::parse_quantity_ref(i)?;
+        let (i, _) = eof.parse(i)?;
+        Ok((i, (set_toughness, qty)))
+    })?;
+
+    let (set_toughness, qty) = parsed.0;
+    let value_expr = PtValue::Quantity(QuantityExpr::Ref { qty });
+    let effect = Effect::Animate {
+        power: Some(value_expr.clone()),
+        toughness: set_toughness.then_some(value_expr),
+        types: vec![],
+        remove_types: vec![],
+        target: TargetFilter::None,
+        keywords: vec![],
+    };
+
+    // CR 611.2 + CR 514.2: this set is a continuous effect from the resolution of
+    // a (triggered) ability. The card's "until end of turn" suffix is normally
+    // stripped onto the ability frame before this body parses; default to end of
+    // turn when no explicit suffix reaches here, an explicit suffix wins.
+    let duration = duration.or(Some(Duration::UntilEndOfTurn));
+    let mut clause = parsed_clause(effect);
+    clause.duration = duration;
+    Some(clause)
 }
 
 /// CR 109.5 + CR 121.3a: Rebind a recursed clause's `TargetFilter::Controller`
@@ -30041,6 +30121,105 @@ mod tests {
             value: expected.clone(),
         }));
         assert!(mods.contains(&ContinuousModification::SetToughnessDynamic { value: expected }));
+    }
+
+    /// CR 613.4b + CR 208.1 + CR 608.2h: "have ~'s base power become equal to
+    /// <quantity>" — the base-power set causative (Belligerent Yearling class).
+    /// Parses to a self-targeted `Effect::Animate` whose `power` is the dynamic
+    /// quantity and whose `toughness` stays `None` (power only).
+    #[test]
+    fn effect_have_base_power_become_equal_to_that_creatures_power() {
+        let def = parse_effect_chain(
+            "have ~'s base power become equal to that creature's power until end of turn",
+            AbilityKind::Spell,
+        );
+        let Effect::Animate {
+            power: Some(PtValue::Quantity(power)),
+            toughness,
+            target,
+            types,
+            ..
+        } = def.effect.as_ref()
+        else {
+            panic!("expected Animate set-base-power, got {:?}", def.effect);
+        };
+        assert_eq!(
+            power,
+            &QuantityExpr::Ref {
+                qty: QuantityRef::Power {
+                    scope: ObjectScope::CostPaidObject,
+                },
+            },
+            "base power set value must read the triggering creature's power"
+        );
+        assert!(toughness.is_none(), "only base power is set, not toughness");
+        assert!(types.is_empty(), "no type change");
+        assert!(
+            matches!(target, TargetFilter::None),
+            "self-targeted (source), got {target:?}"
+        );
+        assert_eq!(def.duration, Some(Duration::UntilEndOfTurn));
+    }
+
+    /// The "base power and base toughness" axis sets both characteristics from
+    /// the same dynamic quantity — proves the class is parameterized, not a
+    /// single-card special case.
+    #[test]
+    fn effect_have_base_power_and_toughness_become_equal_parses_both() {
+        let def = parse_effect_chain(
+            "have ~'s base power and base toughness become equal to that creature's power",
+            AbilityKind::Spell,
+        );
+        let Effect::Animate {
+            power: Some(PtValue::Quantity(power)),
+            toughness: Some(PtValue::Quantity(toughness)),
+            ..
+        } = def.effect.as_ref()
+        else {
+            panic!(
+                "expected Animate setting both base P/T, got {:?}",
+                def.effect
+            );
+        };
+        let expected = QuantityExpr::Ref {
+            qty: QuantityRef::Power {
+                scope: ObjectScope::CostPaidObject,
+            },
+        };
+        assert_eq!(power, &expected);
+        assert_eq!(toughness, &expected);
+    }
+
+    /// Full-card parse: Belligerent Yearling produces zero `Unimplemented`
+    /// trigger effects (the GAP this change closes), with the optional ETB
+    /// trigger carrying the base-power-set `Effect::Animate`.
+    #[test]
+    fn belligerent_yearling_full_card_parses_without_unimplemented() {
+        let parsed = crate::parser::parse_oracle_text(
+            "Trample\nWhenever another Dinosaur you control enters, you may have this creature's base power become equal to that creature's power until end of turn.",
+            "Belligerent Yearling",
+            &["Trample".to_string()],
+            &["Creature".to_string()],
+            &["Dinosaur".to_string()],
+        );
+        for ability in &parsed.abilities {
+            assert!(
+                !matches!(ability.effect.as_ref(), Effect::Unimplemented { .. }),
+                "spell ability must not be Unimplemented: {ability:?}"
+            );
+        }
+        let trigger = parsed
+            .triggers
+            .iter()
+            .find(|t| {
+                t.execute
+                    .as_ref()
+                    .is_some_and(|e| matches!(e.effect.as_ref(), Effect::Animate { .. }))
+            })
+            .expect("optional base-power-set ETB trigger");
+        let execute = trigger.execute.as_ref().unwrap();
+        assert!(execute.optional, "the \"you may\" trigger must be optional");
+        assert_eq!(execute.duration, Some(Duration::UntilEndOfTurn));
     }
 
     #[test]

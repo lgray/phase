@@ -202,6 +202,72 @@ pub(crate) fn quantity_expr_uses_recipient(expr: &QuantityExpr) -> bool {
     }
 }
 
+/// CR 608.2h + CR 608.2k + CR 608.2c: True when the QuantityExpr reads an object
+/// characteristic through a scope whose referent only exists during the resolving
+/// ability's resolution — the triggering/cost/instruction-order object
+/// (`EventSource`, `EventTarget`, `CostPaidObject`, `Anaphoric`, `Demonstrative`)
+/// or a chosen target (`Target`).
+///
+/// Such a value MUST be snapshotted to a fixed number at resolution: CR 608.2h
+/// determines the information once, when the effect applies, and the layer system
+/// cannot re-resolve these scopes on later evaluation passes (no resolving
+/// ability / trigger event is in context then — `object_id_for_scope` returns
+/// `None` for them). A `SetPowerDynamic { Power { CostPaidObject } }` left
+/// un-snapshotted would silently read 0 every layer tick.
+///
+/// `Source` / `Recipient` are deliberately NOT included: the layer evaluator
+/// resolves them per-effect (`effect.source_id`) / per-recipient, so CDA-style
+/// "becomes an X/X creature where X is its power" set effects stay dynamic.
+/// `Variable` (CostXPaid) is a number snapshotted onto the resolving ability, not
+/// an object scope, and is likewise left dynamic.
+///
+/// Mirrors the structural recursion of `quantity_expr_uses_recipient`; the
+/// `QuantityRef` leaf classifies the object-scoped variants exhaustively so a new
+/// object-scoped reference forces a decision here.
+pub(crate) fn quantity_expr_uses_resolution_only_object_scope(expr: &QuantityExpr) -> bool {
+    fn scope_is_resolution_only(scope: ObjectScope) -> bool {
+        match scope {
+            ObjectScope::Source | ObjectScope::Recipient => false,
+            ObjectScope::Target
+            | ObjectScope::EventSource
+            | ObjectScope::EventTarget
+            | ObjectScope::CostPaidObject
+            | ObjectScope::Anaphoric
+            | ObjectScope::Demonstrative => true,
+        }
+    }
+    match expr {
+        QuantityExpr::Fixed { .. } => false,
+        QuantityExpr::Ref { qty } => match qty {
+            QuantityRef::Power { scope }
+            | QuantityRef::Toughness { scope }
+            | QuantityRef::ObjectManaValue { scope }
+            | QuantityRef::ObjectColorCount { scope }
+            | QuantityRef::ObjectNameWordCount { scope }
+            | QuantityRef::ObjectTypelineComponentCount { scope }
+            | QuantityRef::ManaSymbolsInManaCost { scope, .. } => scope_is_resolution_only(*scope),
+            _ => false,
+        },
+        QuantityExpr::DivideRounded { inner, .. }
+        | QuantityExpr::Offset { inner, .. }
+        | QuantityExpr::ClampMin { inner, .. }
+        | QuantityExpr::Multiply { inner, .. } => {
+            quantity_expr_uses_resolution_only_object_scope(inner)
+        }
+        QuantityExpr::Sum { exprs } => exprs
+            .iter()
+            .any(quantity_expr_uses_resolution_only_object_scope),
+        QuantityExpr::UpTo { max } => quantity_expr_uses_resolution_only_object_scope(max),
+        QuantityExpr::Power { exponent, .. } => {
+            quantity_expr_uses_resolution_only_object_scope(exponent)
+        }
+        QuantityExpr::Difference { left, right } => {
+            quantity_expr_uses_resolution_only_object_scope(left)
+                || quantity_expr_uses_resolution_only_object_scope(right)
+        }
+    }
+}
+
 /// True when the QuantityExpr's magnitude depends on the population of objects
 /// on the battlefield (a count/aggregate over a board-wide object set).
 ///
