@@ -2184,6 +2184,115 @@ mod tests {
         )));
     }
 
+    /// CR 305.6 + CR 305.7 + CR 611.2a: Energybending end-to-end. Parsing the
+    /// full Oracle text and resolving the land-type clause against a Forest must
+    /// give that Forest all five basic land subtypes AND the intrinsic mana
+    /// ability for every color (CR 305.6). Drives the real parse → lower →
+    /// resolve → layer pipeline: the `GenericEffect { AddAllBasicLandTypes }`
+    /// over "lands you control" binds a transient continuous effect to the
+    /// Forest, and `apply_intrinsic_basic_land_mana_abilities` grants the five
+    /// `{T}: Add <color>` abilities during layer evaluation.
+    ///
+    /// Revert guard: without the parser change the land-type clause lowers to
+    /// `Effect::Unimplemented`, no GenericEffect is found, and the subtype /
+    /// per-color mana-ability assertions below all fail.
+    #[test]
+    fn energybending_grants_a_forest_all_basic_land_types_and_mana() {
+        use crate::game::layers::evaluate_layers;
+        use crate::parser::oracle::parse_oracle_text;
+        use crate::types::ability::{AbilityCost, AbilityKind, BasicLandType, ManaProduction};
+        use crate::types::mana::ManaColor;
+
+        let parsed = parse_oracle_text(
+            "Lands you control gain all basic land types until end of turn.\nDraw a card.",
+            "Energybending",
+            &[],
+            &["Sorcery".to_string()],
+            &[],
+        );
+        let land_type_effect = parsed
+            .abilities
+            .iter()
+            .map(|ability| (*ability.effect).clone())
+            .find(|effect| {
+                matches!(
+                    effect,
+                    Effect::GenericEffect { static_abilities, .. }
+                        if static_abilities.iter().any(|sd| sd
+                            .modifications
+                            .iter()
+                            .any(|m| matches!(m, ContinuousModification::AddAllBasicLandTypes)))
+                )
+            })
+            .expect("Energybending must lower to a GenericEffect adding all basic land types");
+
+        let mut state = GameState::new_two_player(42);
+        let p0 = PlayerId(0);
+
+        // A single basic Forest under the spell controller's control.
+        let forest = create_object(
+            &mut state,
+            CardId(0),
+            p0,
+            "Forest".to_string(),
+            Zone::Battlefield,
+        );
+        {
+            let ts = state.next_timestamp();
+            let obj = state.objects.get_mut(&forest).unwrap();
+            obj.card_types.core_types.push(CoreType::Land);
+            obj.card_types.subtypes.push("Forest".to_string());
+            obj.base_card_types = obj.card_types.clone();
+            obj.timestamp = ts;
+        }
+
+        let source = create_object(
+            &mut state,
+            CardId(1),
+            p0,
+            "Energybending".to_string(),
+            Zone::Stack,
+        );
+
+        let ability = ResolvedAbility::new(land_type_effect, vec![], source, p0);
+        let mut events = Vec::new();
+        resolve(&mut state, &ability, &mut events).unwrap();
+        evaluate_layers(&mut state);
+
+        let obj = state.objects.get(&forest).unwrap();
+        for land_type in BasicLandType::all() {
+            let subtype = land_type.as_subtype_str().to_string();
+            assert!(
+                obj.card_types.subtypes.contains(&subtype),
+                "Forest must gain the {subtype} basic land type, got {:?}",
+                obj.card_types.subtypes
+            );
+        }
+
+        // CR 305.6: each basic land type grants its intrinsic `{T}: Add <color>`.
+        for color in ManaColor::ALL {
+            let count = obj
+                .abilities
+                .iter()
+                .filter(|a| {
+                    matches!(a.kind, AbilityKind::Activated)
+                        && matches!(a.cost, Some(AbilityCost::Tap))
+                        && matches!(
+                            &*a.effect,
+                            Effect::Mana {
+                                produced: ManaProduction::Fixed { colors, .. },
+                                ..
+                            } if colors.as_slice() == [color]
+                        )
+                })
+                .count();
+            assert_eq!(
+                count, 1,
+                "Forest must produce {color:?} via its intrinsic mana ability after gaining all basic land types"
+            );
+        }
+    }
+
     // ── Issue #444: in-effect "if" gate on GenericEffect StaticDefinitions ──
 
     use crate::game::layers::evaluate_layers;
