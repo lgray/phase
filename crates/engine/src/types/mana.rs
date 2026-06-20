@@ -1926,6 +1926,55 @@ mod tests {
         assert!(restriction.allows_activation(&["Land".to_string()], &["Forest".to_string()]));
     }
 
+    // CR 106.6: Hydraulic Helper — "{T}: Add {U}. This mana can't be spent to
+    // cast a nonartifact spell." The negated phrasing lowers to
+    // `OnlyForSpellType("Artifact")`; the produced {U} may pay for an artifact
+    // spell but not for any nonartifact spell (here, an instant). This is the
+    // runtime half of the discriminating coverage: it exercises the same
+    // `PaymentContext::Spell` → `allows_spell` gate the engine spend path uses.
+    #[test]
+    fn hydraulic_helper_artifact_mana_pays_for_artifacts_only() {
+        let restriction = ManaRestriction::OnlyForSpellType("Artifact".to_string());
+        let artifact_spell = SpellMeta {
+            types: vec!["Artifact".to_string()],
+            subtypes: vec!["Equipment".to_string()],
+            keyword_kinds: vec![],
+            cast_from_zone: None,
+            mana_value: None,
+            color_count: None,
+        };
+        let artifact_creature_spell = SpellMeta {
+            types: vec!["Artifact".to_string(), "Creature".to_string()],
+            subtypes: vec!["Golem".to_string()],
+            keyword_kinds: vec![],
+            cast_from_zone: None,
+            mana_value: None,
+            color_count: None,
+        };
+        let instant_spell = SpellMeta {
+            types: vec!["Instant".to_string()],
+            subtypes: vec![],
+            keyword_kinds: vec![],
+            cast_from_zone: None,
+            mana_value: None,
+            color_count: None,
+        };
+        let creature_spell = SpellMeta {
+            types: vec!["Creature".to_string()],
+            subtypes: vec!["Human".to_string()],
+            keyword_kinds: vec![],
+            cast_from_zone: None,
+            mana_value: None,
+            color_count: None,
+        };
+        // Permitted: any artifact spell (incl. artifact creatures).
+        assert!(restriction.allows(&PaymentContext::Spell(&artifact_spell)));
+        assert!(restriction.allows(&PaymentContext::Spell(&artifact_creature_spell)));
+        // Rejected: nonartifact spells.
+        assert!(!restriction.allows(&PaymentContext::Spell(&instant_spell)));
+        assert!(!restriction.allows(&PaymentContext::Spell(&creature_spell)));
+    }
+
     #[test]
     fn restriction_artifact_spell_or_activation_uses_both_payment_contexts() {
         let restriction = ManaRestriction::OnlyForTypeSpellsOrAbilities {
