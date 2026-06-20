@@ -4031,6 +4031,8 @@ pub(super) fn clause_is_dig_lookback_transparent(effect: &Effect) -> bool {
         | Effect::EpicCopy { .. }
         | Effect::ChangeSpeed { .. }
         | Effect::DealDamage { .. }
+        | Effect::ApplyPostReplacementDamage { .. }
+        | Effect::EachDealsDamageEqualToPower { .. }
         | Effect::Draw { .. }
         | Effect::Pump { .. }
         | Effect::PairWith { .. }

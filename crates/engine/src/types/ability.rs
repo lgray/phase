@@ -5210,6 +5210,11 @@ pub enum StaticCondition {
     /// CR 301.5a: True when at least one Equipment is attached to the source object.
     /// Used for "as long as ~ is equipped" statics (Auriok Steelshaper, etc.).
     SourceIsEquipped,
+    /// CR 303.4: True when at least one Aura is attached to the source object.
+    /// Aura-twin of `SourceIsEquipped` (CR 301.5). Used for "as long as this
+    /// creature is enchanted" statics (Pillar of War, Thran Golem, Gate Hound,
+    /// Freewind Equenaut).
+    SourceIsEnchanted,
     /// CR 701.37: True when the source permanent is monstrous.
     /// Read from `GameObject::monstrous` (existing bool field).
     /// Used for "as long as this creature is monstrous" statics (Fleecemane Lion, etc.).
@@ -6811,6 +6816,21 @@ pub enum DamageSource {
     EachTarget,
 }
 
+/// CR 120.3: Source characteristics captured before applying an already-replaced
+/// damage event. Used only by internal continuations that resume Phase C damage
+/// application after a nested replacement choice.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DamageContextSnapshot {
+    pub source_id: ObjectId,
+    pub controller: PlayerId,
+    pub source_is_creature: bool,
+    pub has_deathtouch: bool,
+    pub has_lifelink: bool,
+    pub has_wither: bool,
+    pub has_infect: bool,
+    pub combat_damage_poison: u32,
+}
+
 /// A single conjured card entry: card source + quantity.
 /// Used by `Effect::Conjure` to support multi-card conjure patterns
 /// (e.g., "conjure a card named X and a card named Y into your hand")
@@ -7075,6 +7095,46 @@ pub enum Effect {
         /// CR 120.3: Override damage source. None = ability source (default).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         damage_source: Option<DamageSource>,
+    },
+    /// CR 120.3 + CR 120.4b: Internal continuation for applying a damage event
+    /// that has already passed through replacement/prevention selection. This
+    /// must not be emitted by the parser; it exists so a Phase C damage batch can
+    /// pause on a nested life/lifelink replacement choice and resume remaining
+    /// post-replacement survivors without running CR 614/615 replacement logic a
+    /// second time.
+    ApplyPostReplacementDamage {
+        context: DamageContextSnapshot,
+        target: TargetRef,
+        amount: u32,
+        #[serde(default)]
+        is_combat: bool,
+    },
+    /// CR 120.1 + CR 120.3: "Team-up" damage — each of up to two chosen source
+    /// creatures (controlled by the caster / their team) deals damage equal to
+    /// ITS OWN power to a single recipient creature, with each source creature
+    /// as the damage source (CR 120.1: the object dealing the damage is its
+    /// source). Both axes are TARGETED: the source set is "up to two target
+    /// creatures you control" (CR 115.1d, 0..=2) and the recipient is one
+    /// "target creature" (CR 115.1). Distinct from `DealDamage` because the
+    /// amount and the damage source vary per source object — a single
+    /// `DealDamage { amount, damage_source }` cannot express N independent
+    /// (power, source) pairs aimed at one recipient.
+    ///
+    /// Covers Band Together, Allies at Last, Friendly Rivalry, and Graceful
+    /// Takedown — the count ("up to two") and the recipient's controller
+    /// restriction are encoded in `sources` / `recipient` filters plus the
+    /// ability's `multi_target` spec. Combo Attack ("two target creatures *your
+    /// team* controls") is out of scope: the Two-Headed Giant team scope (CR
+    /// 810) has no model, so it fails closed to `Unimplemented` rather than
+    /// mis-targeting a single player's creatures.
+    EachDealsDamageEqualToPower {
+        /// CR 115.1d: The targeted source creatures ("up to two target creatures
+        /// you control"). The count bound (0..=2 or exactly 2) lives in the
+        /// ability's `multi_target` spec; this filter pins the per-object
+        /// legality (creature you control).
+        sources: TargetFilter,
+        /// CR 115.1: The single targeted recipient that each source damages.
+        recipient: TargetFilter,
     },
     /// CR 121.1: Draw a card.
     /// CR 115.1 + CR 601.2c: When `target` is `TargetFilter::Player` (or any
@@ -10308,6 +10368,11 @@ impl Effect {
             // every classic mana ability (Cabal Coffers, Reflecting Pool, etc.).
             Effect::Mana { target, .. } => target.as_ref(),
 
+            // CR 120.4b: Internal post-replacement damage continuations carry a
+            // concrete target already chosen by an earlier effect; no new target
+            // slot is exposed.
+            Effect::ApplyPostReplacementDamage { .. } => None,
+
             // CR 701.26a/b: `SetTapState` exposes its target only for the
             // single-permanent scope (legacy `Tap`/`Untap`). The `All` scope
             // (legacy `TapAll`/`UntapAll`) is a non-targeting population filter.
@@ -10395,6 +10460,11 @@ impl Effect {
             | Effect::MadnessCast { .. }
             | Effect::GiftDelivery { .. }
             | Effect::ExchangeControl { .. }
+            // CR 115.1d + CR 115.1: the source set and the recipient are surfaced
+            // as dual target slots by `ability_utils::collect_target_slots` (the
+            // "up to two" sources slot is driven by the ability's `multi_target`
+            // spec, the recipient is one mandatory slot), not by `target_filter()`.
+            | Effect::EachDealsDamageEqualToPower { .. }
             // CR 701.12a: player targets (player_a/player_b) are surfaced as
             // dual target slots by ability_utils, not by `target_filter()`.
             | Effect::ExchangeLifeTotals { .. }
@@ -10554,6 +10624,7 @@ impl Effect {
 
             // --- Effects with no QuantityExpr count/amount ---
             Effect::StartYourEngines { .. }
+            | Effect::ApplyPostReplacementDamage { .. }
             | Effect::Pump { .. }
             | Effect::PairWith { .. }
             | Effect::Destroy { .. }
@@ -10572,6 +10643,7 @@ impl Effect {
             | Effect::Attach { .. }
             | Effect::UnattachAll { .. }
             | Effect::Fight { .. }
+            | Effect::EachDealsDamageEqualToPower { .. }
             | Effect::Bounce { .. }
             | Effect::Explore
             | Effect::ExploreAll { .. }
@@ -10761,6 +10833,7 @@ impl Effect {
 
             // --- Effects with no QuantityExpr count/amount ---
             Effect::StartYourEngines { .. }
+            | Effect::ApplyPostReplacementDamage { .. }
             | Effect::Pump { .. }
             | Effect::PairWith { .. }
             | Effect::Destroy { .. }
@@ -10779,6 +10852,7 @@ impl Effect {
             | Effect::Attach { .. }
             | Effect::UnattachAll { .. }
             | Effect::Fight { .. }
+            | Effect::EachDealsDamageEqualToPower { .. }
             | Effect::Bounce { .. }
             | Effect::Explore
             | Effect::ExploreAll { .. }
@@ -10912,6 +10986,8 @@ pub fn effect_variant_name(effect: &Effect) -> &str {
         Effect::StartYourEngines { .. } => "StartYourEngines",
         Effect::ChangeSpeed { .. } => "ChangeSpeed",
         Effect::DealDamage { .. } => "DealDamage",
+        Effect::ApplyPostReplacementDamage { .. } => "ApplyPostReplacementDamage",
+        Effect::EachDealsDamageEqualToPower { .. } => "EachDealsDamageEqualToPower",
         Effect::Draw { .. } => "Draw",
         Effect::Pump { .. } => "Pump",
         Effect::PairWith { .. } => "PairWith",
@@ -11121,6 +11197,8 @@ pub enum EffectKind {
     StartYourEngines,
     ChangeSpeed,
     DealDamage,
+    ApplyPostReplacementDamage,
+    EachDealsDamageEqualToPower,
     Draw,
     Pump,
     PairWith,
@@ -11329,6 +11407,8 @@ impl From<&Effect> for EffectKind {
             Effect::StartYourEngines { .. } => EffectKind::StartYourEngines,
             Effect::ChangeSpeed { .. } => EffectKind::ChangeSpeed,
             Effect::DealDamage { .. } => EffectKind::DealDamage,
+            Effect::ApplyPostReplacementDamage { .. } => EffectKind::ApplyPostReplacementDamage,
+            Effect::EachDealsDamageEqualToPower { .. } => EffectKind::EachDealsDamageEqualToPower,
             Effect::Draw { .. } => EffectKind::Draw,
             Effect::Pump { .. } => EffectKind::Pump,
             Effect::PairWith { .. } => EffectKind::PairWith,

@@ -2838,6 +2838,7 @@ pub(crate) fn static_condition_to_ability_condition(
         | StaticCondition::SourceIsBlocking
         | StaticCondition::SourceIsBlocked
         | StaticCondition::SourceIsEquipped
+        | StaticCondition::SourceIsEnchanted
         | StaticCondition::SourceIsPaired
         | StaticCondition::SourceIsMonstrous
         | StaticCondition::OpponentPoisonAtLeast { .. }

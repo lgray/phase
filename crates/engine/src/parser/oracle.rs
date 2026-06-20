@@ -5143,6 +5143,168 @@ mod tests {
         }
     }
 
+    /// CR 611.2a + CR 613.1f + CR 613.4b: Azure Beastbinder's attack trigger —
+    /// "up to one target artifact, creature, or planeswalker an opponent
+    /// controls loses all abilities until your next turn. If it's a creature, it
+    /// also has base power and toughness 2/2 until your next turn." — must parse
+    /// with ZERO `Unimplemented`. The base-P/T-set sub-clause (the historical
+    /// gap, previously `Unimplemented { name: "have" }`) lowers to
+    /// `SetPower{2}`/`SetToughness{2}` on the parent target, and the anaphoric
+    /// "if it's a creature" gate lowers to `TargetMatchesFilter{creature}` (not a
+    /// reveal-context `RevealedHasCardType`, which would evaluate always-false at
+    /// runtime since there is no revealed card — the "it" is the chosen target).
+    #[test]
+    fn azure_beastbinder_attack_trigger_has_no_unimplemented() {
+        use crate::types::ability::{Duration, PlayerScope, TypeFilter};
+
+        // Recursive walk into sub/else chains AND nested GenericEffect grant defs.
+        fn def_has_unimplemented(def: &AbilityDefinition) -> bool {
+            if matches!(&*def.effect, Effect::Unimplemented { .. }) {
+                return true;
+            }
+            if let Effect::GenericEffect {
+                static_abilities, ..
+            } = &*def.effect
+            {
+                let nested = static_abilities
+                    .iter()
+                    .flat_map(|sd| sd.modifications.iter())
+                    .any(|m| match m {
+                        ContinuousModification::GrantAbility { definition } => {
+                            def_has_unimplemented(definition)
+                        }
+                        ContinuousModification::GrantTrigger { trigger } => trigger
+                            .execute
+                            .as_deref()
+                            .is_some_and(def_has_unimplemented),
+                        _ => false,
+                    });
+                if nested {
+                    return true;
+                }
+            }
+            def.sub_ability
+                .as_deref()
+                .is_some_and(def_has_unimplemented)
+                || def
+                    .else_ability
+                    .as_deref()
+                    .is_some_and(def_has_unimplemented)
+        }
+
+        let r = parse(
+            "Vigilance\n\
+             This creature can't be blocked by creatures with power 2 or greater.\n\
+             Whenever this creature attacks, up to one target artifact, creature, or \
+             planeswalker an opponent controls loses all abilities until your next turn. \
+             If it's a creature, it also has base power and toughness 2/2 until your next turn.",
+            "Azure Beastbinder",
+            &[Keyword::Vigilance],
+            &["Creature"],
+            &[],
+        );
+
+        assert_eq!(r.triggers.len(), 1, "exactly one attack trigger: {r:#?}");
+        let execute = r.triggers[0]
+            .execute
+            .as_ref()
+            .expect("attack trigger should have an execute body");
+        assert!(
+            !def_has_unimplemented(execute),
+            "attack trigger body must contain NO Unimplemented effect: {execute:#?}"
+        );
+
+        // Head clause: loses all abilities until your next turn, on the chosen
+        // (up-to-one) opponent-controlled artifact/creature/planeswalker.
+        match &*execute.effect {
+            Effect::GenericEffect {
+                static_abilities,
+                duration,
+                ..
+            } => {
+                assert_eq!(
+                    *duration,
+                    Some(Duration::UntilNextTurnOf {
+                        player: PlayerScope::Controller
+                    }),
+                    "head clause expires at the controller's next turn"
+                );
+                assert!(
+                    static_abilities
+                        .iter()
+                        .flat_map(|s| s.modifications.iter())
+                        .any(|m| matches!(m, ContinuousModification::RemoveAllAbilities)),
+                    "head clause removes all abilities: {static_abilities:?}"
+                );
+            }
+            other => panic!("expected GenericEffect head clause, got {other:?}"),
+        }
+
+        // Sub clause: gated on the target being a creature, sets base P/T 2/2.
+        let sub = execute
+            .sub_ability
+            .as_deref()
+            .expect("base-P/T sub-ability must be present");
+        assert!(
+            matches!(
+                &sub.condition,
+                Some(AbilityCondition::TargetMatchesFilter { filter, .. })
+                    if matches!(
+                        filter,
+                        TargetFilter::Typed(TypedFilter { type_filters, .. })
+                            if type_filters == &vec![TypeFilter::Creature]
+                    )
+            ),
+            "sub clause must gate on TargetMatchesFilter(creature), got {:?}",
+            sub.condition
+        );
+        match &*sub.effect {
+            Effect::GenericEffect {
+                static_abilities,
+                duration,
+                target,
+            } => {
+                assert_eq!(
+                    *target,
+                    Some(TargetFilter::ParentTarget),
+                    "base-P/T set applies to the parent (chosen) target"
+                );
+                assert_eq!(
+                    *duration,
+                    Some(Duration::UntilNextTurnOf {
+                        player: PlayerScope::Controller
+                    }),
+                    "base-P/T set expires at the controller's next turn"
+                );
+                let mods: Vec<_> = static_abilities
+                    .iter()
+                    .flat_map(|s| s.modifications.iter())
+                    .collect();
+                assert!(
+                    mods.iter()
+                        .any(|m| matches!(m, ContinuousModification::SetPower { value: 2 })),
+                    "must contain SetPower(2): {mods:?}"
+                );
+                assert!(
+                    mods.iter()
+                        .any(|m| matches!(m, ContinuousModification::SetToughness { value: 2 })),
+                    "must contain SetToughness(2): {mods:?}"
+                );
+            }
+            other => panic!("expected GenericEffect sub clause, got {other:?}"),
+        }
+
+        // Static line: can't be blocked by power-2+ creatures.
+        assert!(
+            r.statics.iter().any(|s| matches!(
+                s.mode,
+                crate::types::statics::StaticMode::CantBeBlockedBy { .. }
+            )),
+            "can't-be-blocked-by static must parse: {:#?}",
+            r.statics
+        );
+    }
+
     /// Issue #69 (Triad of Fates): "Exile target creature that has a fate counter
     /// on it, then return it to the battlefield…" — the exile target ChangeZone
     /// filter must carry the fate-counter restriction, and the "then return it"
@@ -8235,6 +8397,72 @@ mod tests {
             ),
             "Expected GenericEffect with MustAttack bound to ParentTarget + Typed(Creature) target, got {:?}",
             r.abilities[0].effect
+        );
+    }
+
+    /// CR 508.1d + CR 509.1c + CR 608.2c + CR 611.2c: Hustle —
+    /// "Target creature attacks or blocks this turn if able." The combined
+    /// requirement must bind BOTH a MustAttack and a MustBlock transient static
+    /// to the targeted creature (`affected == ParentTarget`), carry a typed
+    /// creature target, and emit ZERO `Unimplemented` effects. On reverted main
+    /// the "or blocks" conjunct is unrecognized and the whole line falls to
+    /// `Effect::Unimplemented`.
+    #[test]
+    fn hustle_attacks_or_blocks_this_turn_if_able_binds_both_requirements() {
+        use crate::types::ability::TargetFilter;
+        use crate::types::statics::StaticMode;
+
+        let r = parse(
+            "Target creature attacks or blocks this turn if able.",
+            "Hustle",
+            &[],
+            &["Instant"],
+            &[],
+        );
+        assert!(!r.abilities.is_empty(), "Hustle should parse an ability");
+
+        // No effect anywhere in the parsed abilities may be Unimplemented.
+        for ability in &r.abilities {
+            let mut node = Some(ability);
+            while let Some(d) = node {
+                assert!(
+                    !matches!(&*d.effect, Effect::Unimplemented { .. }),
+                    "Hustle must not emit Unimplemented, got {:?}",
+                    d.effect
+                );
+                node = d.sub_ability.as_deref();
+            }
+        }
+
+        let Effect::GenericEffect {
+            static_abilities,
+            target,
+            ..
+        } = &*r.abilities[0].effect
+        else {
+            panic!("Expected GenericEffect, got {:?}", r.abilities[0].effect);
+        };
+
+        assert!(
+            matches!(target, Some(TargetFilter::Typed(_))),
+            "Hustle must carry a typed creature target, got {target:?}"
+        );
+
+        // Both the attack requirement (CR 508.1d) and the block requirement
+        // (CR 509.1c) must be present, each bound to the chosen creature.
+        let has_must_attack = static_abilities.iter().any(|sd| {
+            sd.mode == StaticMode::MustAttack && sd.affected == Some(TargetFilter::ParentTarget)
+        });
+        let has_must_block = static_abilities.iter().any(|sd| {
+            sd.mode == StaticMode::MustBlock && sd.affected == Some(TargetFilter::ParentTarget)
+        });
+        assert!(
+            has_must_attack,
+            "Hustle must bind MustAttack to ParentTarget, got {static_abilities:?}"
+        );
+        assert!(
+            has_must_block,
+            "Hustle must bind MustBlock to ParentTarget, got {static_abilities:?}"
         );
     }
 
@@ -14340,6 +14568,118 @@ mod tests {
     }
 
     #[test]
+    fn mana_spend_restriction_negative_nonartifact() {
+        // CR 106.6: "this mana can't be spent to cast nonartifact spells" (Karn,
+        // Legacy Reforged) restricts spell-casting to artifact spells but leaves
+        // ability activation unrestricted — so it lowers to the OR variant with
+        // `ability: Any`, NOT a spells-only `SpellType` (which would wrongly
+        // forbid paying for abilities).
+        use crate::parser::oracle_effect::mana::parse_mana_spend_restriction;
+        use crate::types::ability::ManaSpendRestriction;
+        use crate::types::mana::AbilityActivationScope;
+        let result =
+            parse_mana_spend_restriction("this mana can't be spent to cast nonartifact spells");
+        assert_eq!(
+            result.map(|(r, _)| r),
+            Some(ManaSpendRestriction::SpellTypeOrAbilityActivation {
+                spell_type: "Artifact".to_string(),
+                ability: AbilityActivationScope::Any,
+            })
+        );
+    }
+
+    #[test]
+    fn mana_spend_restriction_negative_article_singular_nonartifact() {
+        // CR 106.6: singular/article wording is the same restriction class
+        // (Hydraulic Helper: "a nonartifact spell"), and ability activation is
+        // still unrestricted because the clause only forbids casting spells.
+        let result = crate::parser::oracle_effect::mana::parse_mana_spend_restriction(
+            "this mana can't be spent to cast a nonartifact spell",
+        );
+        assert_eq!(
+            result.map(|(r, _)| r),
+            Some(
+                crate::types::ability::ManaSpendRestriction::SpellTypeOrAbilityActivation {
+                    spell_type: "Artifact".to_string(),
+                    ability: crate::types::mana::AbilityActivationScope::Any,
+                }
+            )
+        );
+    }
+
+    #[test]
+    fn mana_spend_restriction_negative_noncreature() {
+        // CR 106.6: the negative form generalizes across spell types — "non<TYPE>"
+        // strips to "<TYPE>" so the same combinator covers the whole class.
+        use crate::parser::oracle_effect::mana::parse_mana_spend_restriction;
+        use crate::types::ability::ManaSpendRestriction;
+        use crate::types::mana::AbilityActivationScope;
+        let result =
+            parse_mana_spend_restriction("this mana can't be spent to cast noncreature spells");
+        assert_eq!(
+            result.map(|(r, _)| r),
+            Some(ManaSpendRestriction::SpellTypeOrAbilityActivation {
+                spell_type: "Creature".to_string(),
+                ability: AbilityActivationScope::Any,
+            })
+        );
+    }
+
+    #[test]
+    fn karn_legacy_reforged_mana_carries_negative_spend_restriction() {
+        // End-to-end: the full Karn, Legacy Reforged Oracle text must lower the
+        // upkeep "add {C} for each artifact … this mana can't be spent to cast
+        // nonartifact spells" clause to an `Effect::Mana` carrying the restriction
+        // (no `Effect::Unimplemented`). Issue #3893.
+        use crate::types::ability::{Effect, ManaSpendRestriction};
+        use crate::types::mana::AbilityActivationScope;
+        let oracle = "Karn's power and toughness are each equal to the greatest mana value among artifacts you control.\n\
+At the beginning of your upkeep, add {C} for each artifact you control. This mana can't be spent to cast nonartifact spells. Until end of turn, you don't lose this mana as steps and phases end.";
+        let parsed = super::parse_oracle_text(
+            oracle,
+            "Karn, Legacy Reforged",
+            &[],
+            &["Legendary".to_string(), "Artifact".to_string()],
+            &[],
+        );
+        let mut found = false;
+        fn walk(effect: &Effect, found: &mut bool) {
+            if let Effect::Mana { restrictions, .. } = effect {
+                if restrictions.contains(&ManaSpendRestriction::SpellTypeOrAbilityActivation {
+                    spell_type: "Artifact".to_string(),
+                    ability: AbilityActivationScope::Any,
+                }) {
+                    *found = true;
+                }
+            }
+        }
+        fn walk_ability(ab: &crate::types::ability::AbilityDefinition, found: &mut bool) {
+            walk(&ab.effect, found);
+            if let Some(sub) = ab.sub_ability.as_deref() {
+                walk_ability(sub, found);
+            }
+            if let Some(els) = ab.else_ability.as_deref() {
+                walk_ability(els, found);
+            }
+        }
+        for ab in &parsed.abilities {
+            walk_ability(ab, &mut found);
+        }
+        // The upkeep mana production is a triggered ability — walk each trigger's
+        // `execute` chain too.
+        for trig in &parsed.triggers {
+            if let Some(exec) = trig.execute.as_deref() {
+                walk_ability(exec, &mut found);
+            }
+        }
+        assert!(
+            found,
+            "Karn's upkeep mana must carry the nonartifact spend restriction, triggers={:?}",
+            parsed.triggers
+        );
+    }
+
+    #[test]
     fn mana_spend_restriction_x_cost_only() {
         use crate::parser::oracle_effect::mana::parse_mana_spend_restriction;
         use crate::types::ability::ManaSpendRestriction;
@@ -17491,6 +17831,85 @@ mod tests {
         }
     }
 
+    /// CR 608.2c + CR 611.2a + CR 702.7: Gallant Fowlknight's ETB — the
+    /// pump's "also gain first strike" continuation on a subtype-filtered
+    /// controlled set ("Kithkin creatures you control also gain first strike
+    /// until end of turn") must parse end-to-end with ZERO `Unimplemented`. The
+    /// chain must carry both the all-creatures `PumpAll` and a
+    /// `GenericEffect { AddKeyword(FirstStrike) }` whose `affected` filter is
+    /// restricted to Kithkin creatures you control. Reverting the additive-"also"
+    /// strip in `strip_trailing_additive_adverb` regresses the second sentence to
+    /// an unimplemented "kithkin" effect and fails the zero-unimpl walk.
+    #[test]
+    fn gallant_fowlknight_subtype_also_grant_parses_without_unimplemented() {
+        let oracle = "When this creature enters, creatures you control get +1/+0 \
+                      until end of turn. Kithkin creatures you control also gain \
+                      first strike until end of turn.";
+        let parsed = parse(
+            oracle,
+            "Gallant Fowlknight",
+            &[],
+            &["Creature"],
+            &["Kithkin"],
+        );
+
+        let etb = parsed
+            .triggers
+            .iter()
+            .find_map(|t| t.execute.as_deref())
+            .expect("ETB trigger must carry an execute chain");
+
+        // Walk the whole effect chain collecting every effect node.
+        let mut effects: Vec<&Effect> = Vec::new();
+        let mut node = Some(etb);
+        while let Some(d) = node {
+            assert!(
+                !matches!(*d.effect, Effect::Unimplemented { .. }),
+                "Gallant Fowlknight chain must have no Unimplemented, got {:?}",
+                d.effect
+            );
+            effects.push(&d.effect);
+            node = d.sub_ability.as_deref();
+        }
+
+        // First clause: pump every creature you control +1/+0.
+        assert!(
+            effects
+                .iter()
+                .any(|e| matches!(e, Effect::PumpAll { power, .. } if *power == PtValue::Fixed(1))),
+            "expected a PumpAll(+1/+0) clause, got {effects:?}"
+        );
+
+        // Second clause: first strike grant restricted to Kithkin creatures you control.
+        let first_strike_grant = effects.iter().find_map(|e| match e {
+            Effect::GenericEffect {
+                static_abilities, ..
+            } => static_abilities.iter().find(|sd| {
+                sd.modifications
+                    .contains(&ContinuousModification::AddKeyword {
+                        keyword: Keyword::FirstStrike,
+                    })
+            }),
+            _ => None,
+        });
+        let grant = first_strike_grant.unwrap_or_else(|| {
+            panic!("expected a GenericEffect granting first strike, got {effects:?}")
+        });
+        let Some(TargetFilter::Typed(tf)) = &grant.affected else {
+            panic!(
+                "first strike grant must carry a Typed affected filter, got {:?}",
+                grant.affected
+            );
+        };
+        assert_eq!(tf.controller, Some(ControllerRef::You), "{tf:?}");
+        assert!(tf.type_filters.contains(&TypeFilter::Creature), "{tf:?}");
+        assert!(
+            tf.type_filters
+                .contains(&TypeFilter::Subtype("Kithkin".to_string())),
+            "first strike grant must be restricted to Kithkin, got {tf:?}"
+        );
+    }
+
     /// hand-grant line through the full `parse_oracle_text` pipeline.
     #[test]
     fn hand_grant_reaches_statics_through_full_pipeline() {
@@ -19547,5 +19966,125 @@ mod pipeline_snapshot_tests {
             def.sub_ability
         );
         assert!(!has_unimplemented(&def));
+    }
+
+    /// CR 120.1 + CR 208.3 + CR 115.4: Iron Fist, Living Weapon — the cast
+    /// trigger grants "{T}: ~ deals damage equal to his power to any other
+    /// target". The granted ability's inner effect must parse to a concrete
+    /// `DealDamage { Power{Source}, Another }`, not `Effect::Unimplemented`.
+    #[test]
+    fn iron_fist_living_weapon_grants_damage_equal_to_power_any_other_target() {
+        use crate::types::ability::{
+            ContinuousModification, Effect, FilterProp, ObjectScope, QuantityExpr, QuantityRef,
+            TargetFilter, TypedFilter,
+        };
+
+        let p = parse_oracle_text(
+            "Whenever you cast a spell that targets a creature you control, Iron Fist gains \
+             \"{T}: Iron Fist deals damage equal to his power to any other target\" until end of turn.",
+            "Iron Fist, Living Weapon",
+            &[],
+            &["Creature".into()],
+            &[],
+        );
+
+        let execute = p.triggers[0]
+            .execute
+            .as_ref()
+            .expect("cast trigger has an execute ability");
+        assert!(!has_unimplemented(execute), "no Unimplemented in Iron Fist");
+
+        let Effect::GenericEffect {
+            static_abilities, ..
+        } = &*execute.effect
+        else {
+            panic!("expected GenericEffect, got {:?}", execute.effect);
+        };
+        let granted = static_abilities
+            .iter()
+            .flat_map(|s| s.modifications.iter())
+            .find_map(|m| match m {
+                ContinuousModification::GrantAbility { definition } => Some(definition),
+                _ => None,
+            })
+            .expect("a GrantAbility modification");
+
+        assert!(
+            matches!(
+                &*granted.effect,
+                Effect::DealDamage {
+                    amount: QuantityExpr::Ref {
+                        qty: QuantityRef::Power {
+                            scope: ObjectScope::Source,
+                        },
+                    },
+                    target: TargetFilter::Typed(TypedFilter { properties, .. }),
+                    ..
+                } if properties.iter().any(|prop| matches!(prop, FilterProp::Another))
+            ),
+            "granted ability must deal damage equal to source power to any other target, got {:?}",
+            granted.effect
+        );
+    }
+
+    /// CR 120.1 + CR 122.1 + CR 115.4: Red Hulk — the Enrage trigger puts a
+    /// +1/+1 counter on the source, then a reflexive "when you do" deals damage
+    /// equal to the number of +1/+1 counters on the source to any other target.
+    /// The reflexive damage must parse concretely, not to `Effect::Unimplemented`.
+    #[test]
+    fn red_hulk_enrage_reflex_damage_equal_to_counters_any_other_target() {
+        use crate::types::ability::{
+            Effect, FilterProp, ObjectScope, QuantityExpr, QuantityRef, TargetFilter, TypedFilter,
+        };
+        use crate::types::counter::CounterType;
+
+        let p = parse_oracle_text(
+            "Reach, trample\nEnrage — Whenever Red Hulk is dealt damage, put a +1/+1 \
+             counter on him. When you do, he deals damage equal to the number of +1/+1 \
+             counters on him to any other target.",
+            "Red Hulk",
+            &["Reach".into(), "Trample".into()],
+            &["Creature".into()],
+            &[],
+        );
+
+        let execute = p.triggers[0]
+            .execute
+            .as_ref()
+            .expect("enrage trigger has an execute ability");
+        assert!(!has_unimplemented(execute), "no Unimplemented in Red Hulk");
+
+        // Head: put a +1/+1 counter on the source.
+        assert!(
+            matches!(
+                &*execute.effect,
+                Effect::PutCounter {
+                    counter_type: CounterType::Plus1Plus1,
+                    target: TargetFilter::SelfRef,
+                    ..
+                }
+            ),
+            "enrage head must put a +1/+1 counter on the source, got {:?}",
+            execute.effect
+        );
+
+        // Reflexive sub: deal damage equal to +1/+1 counters on source to any other target.
+        let reflex = execute
+            .sub_ability
+            .as_deref()
+            .expect("reflexive when-you-do sub-ability");
+        assert!(matches!(
+            &*reflex.effect,
+            Effect::DealDamage {
+                amount: QuantityExpr::Ref {
+                    qty: QuantityRef::CountersOn {
+                        scope: ObjectScope::Source,
+                        counter_type: Some(CounterType::Plus1Plus1),
+                    },
+                },
+                target: TargetFilter::Typed(TypedFilter { properties, .. }),
+                ..
+            } if properties.iter().any(|prop| matches!(prop, FilterProp::Another))
+        ), "reflex must deal damage equal to source's +1/+1 counters to any other target, got {:?}", reflex.effect);
     }
 }
