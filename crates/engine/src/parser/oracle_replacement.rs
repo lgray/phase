@@ -2346,11 +2346,10 @@ fn parse_enters_with_counters(
     // CR 702.33d: kicker condition gates the replacement effect.
     let (kicker_condition, work_text) = extract_kicker_enters_condition(norm_lower);
 
-    // CR 702.138c: "escapes with" is semantically "enters with" gated on escape.
-    // Use nom take_until to scan for the "escapes with" phrase at word boundaries.
-    let is_escape = take_until::<_, _, OracleError<'_>>("escapes with")
-        .parse(work_text)
-        .is_ok();
+    // CR 702.138c: "escapes with" / plural-subject "escape with" is
+    // semantically "enters with" gated on escape.
+    let is_escape = nom_primitives::scan_contains(work_text, "escapes with")
+        || nom_primitives::scan_contains(work_text, "escape with");
 
     // Find "with [N] [type] counter" to extract count and counter type.
     // For escape, the "with" follows "escapes"; for enters, it follows "enters".
@@ -9980,6 +9979,27 @@ mod tests {
         )
         .unwrap();
         assert_eq!(def.event, ReplacementEvent::Moved);
+        assert!(matches!(
+            *def.execute.as_ref().unwrap().effect,
+            Effect::PutCounter {
+                ref counter_type,
+                count: QuantityExpr::Fixed { value: 1 },
+                ..
+            } if *counter_type == CounterType::Plus1Plus1
+        ));
+        assert_eq!(def.condition, Some(ReplacementCondition::CastViaEscape));
+    }
+
+    #[test]
+    fn plural_subject_escape_with_counter_keeps_escape_condition() {
+        // CR 702.138c: plural-subject "escape with" is still escape-gated, not
+        // an unconditional battlefield-entry counter replacement.
+        let def = parse_replacement_line(
+            "Creatures you control escape with a +1/+1 counter on them.",
+            "Escape Anthem",
+        )
+        .unwrap();
+        assert_eq!(def.event, ReplacementEvent::ChangeZone);
         assert!(matches!(
             *def.execute.as_ref().unwrap().effect,
             Effect::PutCounter {
