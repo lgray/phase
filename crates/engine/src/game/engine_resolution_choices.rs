@@ -2394,6 +2394,16 @@ pub(super) fn handle_resolution_choice(
                 })
                 .collect();
             if !discarded_to_graveyard.is_empty() {
+                // CR 608.2c: A `ZoneChangedThisWay` reflexive gate ("When you
+                // discard a card this way, …" — Talion's Messenger, The Ancient
+                // One) reads `last_zone_changed_ids`. The synchronous resolve path
+                // populates that ledger from the discard's `ZoneChanged` events
+                // (`effects/mod.rs`), but a discard that paused for an interactive
+                // `DiscardChoice` (hand > 1) moves the chosen card HERE, after the
+                // parent effect already returned. Re-publish the just-moved cards
+                // into the ledger so the deferred gate, re-evaluated when the
+                // stashed continuation drains, sees the discarded objects.
+                state.last_zone_changed_ids = discarded_to_graveyard.clone();
                 // CR 701.9a + CR 608.2c: stamp these members with the producer
                 // action `Discarded` so a `caused_by: Some(Discarded)` "discarded
                 // this way" consumer counts them while a `caused_by: None`
@@ -2414,6 +2424,23 @@ pub(super) fn handle_resolution_choice(
             if !chosen.is_empty() {
                 if let Some(cont) = state.pending_continuation.as_mut() {
                     cont.chain.set_optional_effect_performed_recursive(true);
+                }
+            }
+
+            // CR 608.2c + CR 400.7j: A reflexive sub deferred across this
+            // interactive discard may name the discarded card anaphorically —
+            // "When you discard a card this way, target player mills cards equal
+            // to ITS mana value" (The Ancient One). The synchronous resolve path
+            // captures that referent via `parent_referent_context_from_events`
+            // (`effects/mod.rs`); the interactive path moves the card here, after
+            // the parent returned, so capture it now and stamp it onto the stashed
+            // continuation. The discarded card is in the public graveyard, so its
+            // characteristics are read live. Mirrors the `EffectZoneChoice` path.
+            if let Some(snapshot) =
+                effects::parent_referent_context_from_events(state, &events[events_before_effect..])
+            {
+                if let Some(cont) = state.pending_continuation.as_mut() {
+                    cont.chain.set_effect_context_object_recursive(snapshot);
                 }
             }
 

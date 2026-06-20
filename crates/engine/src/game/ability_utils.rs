@@ -8114,6 +8114,8 @@ mod tests {
                     TypedFilter::default().controller(ControllerRef::Opponent),
                 ),
                 filter: TargetFilter::Typed(TypedFilter::default().with_type(TypeFilter::Land)),
+                count: crate::types::ability::QuantityExpr::Fixed { value: 1 },
+                matched_disposition: crate::types::ability::RevealUntilDisposition::KeepEach,
                 kept_destination: Zone::Battlefield,
                 rest_destination: Zone::Graveyard,
                 enter_tapped: crate::types::zones::EtbTapState::Tapped,

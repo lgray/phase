@@ -1,4 +1,4 @@
-use crate::parser::oracle_nom::error::OracleError;
+use crate::parser::oracle_nom::error::{oracle_err, OracleError};
 use nom::branch::alt;
 use nom::bytes::complete::{tag, take_until};
 use nom::character::complete::{anychar, char};
@@ -14,7 +14,9 @@ use crate::types::ability::{
     ManaSpendRestriction, QuantityExpr, QuantityRef,
 };
 use crate::types::keywords::KeywordKind;
-use crate::types::mana::{AbilityActivationScope, ManaColor, ManaRestriction, ManaSpellGrant};
+use crate::types::mana::{
+    AbilityActivationScope, ManaColor, ManaRestriction, ManaSpellGrant, SpellCostCriterion,
+};
 use crate::types::zones::Zone;
 
 use super::super::oracle_keyword::parse_keyword_from_oracle;
@@ -1470,6 +1472,18 @@ fn parse_single_cast_clause(rest: &str) -> Option<ManaSpendRestriction> {
         return Some(ManaSpendRestriction::SpellOnly);
     }
 
+    // CR 106.6 + CR 107.3 + CR 202.3: "[creature ]spells with mana value N or
+    // greater or [creature ]spells with {X} in their mana costs" — the
+    // disjunctive MV/X reading (Helga, Troyan). Checked before the single
+    // MV-threshold arm because it begins with the same "spells with mana value"
+    // prefix but continues with the " or … {X} …" disjunct.
+    if let Some((spell_type, criteria)) = parse_mv_or_x_cost_criteria(rest) {
+        return Some(ManaSpendRestriction::SpellMatchingCostCriteria {
+            spell_type,
+            criteria,
+        });
+    }
+
     // CR 106.6: "spells with mana value N or greater" / "a spell with mana
     // value N or less" — parameterized over Comparator by the threshold suffix.
     if let Some((comparator, value)) = parse_mana_value_threshold(rest) {
@@ -1760,6 +1774,95 @@ fn parse_mana_value_threshold(rest: &str) -> Option<(Comparator, u32)> {
         return None;
     };
     Some((comparator, value_n))
+}
+
+/// CR 106.6 + CR 107.3 + CR 202.3: Parse the disjunctive "[<type> ]spells with
+/// mana value N <threshold> or [<type> ]spells with {X} in their mana cost[s]"
+/// spend restriction (Helga, Skittish Seer — `Some("Creature")`; Troyan, Gutsy
+/// Explorer — `None`). Returns `(optional spell type, criteria)` where the
+/// criteria are `[ManaValue { .. }, HasXInCost]` in oracle order.
+///
+/// The optional type word that prefixes "spells" must be identical on both
+/// disjuncts (both "creature spells" or both bare "spells"); a mismatch is an
+/// unsupported compound and yields `None` so the clause stays a loud gap.
+fn parse_mv_or_x_cost_criteria(rest: &str) -> Option<(Option<String>, Vec<SpellCostCriterion>)> {
+    let rest_lower = rest.to_lowercase();
+    nom_on_lower(rest, &rest_lower, |i| {
+        all_consuming(parse_mv_or_x_cost_criteria_inner).parse(i)
+    })
+    .map(|(parsed, _)| parsed)
+}
+
+/// CR 202.3: Comparator suffix shared by mana-value thresholds within the
+/// disjunctive criteria combinator. `or greater`/`or more` → `GE`,
+/// `or less`/`or fewer` → `LE`.
+fn parse_mana_value_comparator(input: &str) -> OracleResult<'_, Comparator> {
+    alt((
+        value(Comparator::GE, alt((tag("or greater"), tag("or more")))),
+        value(Comparator::LE, alt((tag("or less"), tag("or fewer")))),
+    ))
+    .parse(input)
+}
+
+/// CR 106.6: Consume the optional article, optional shared type word, and the
+/// "spell(s) with " opener of one disjunct. Returns the captured type word
+/// (`None` for bare "spells with "). Reuses `parse_article` so "a creature spell
+/// with" and "creature spells with" both reduce to the bare type word.
+///
+/// The bare "spell(s) with " opener is tried first; only when it does not match
+/// is a single non-"spell" type word captured ahead of the opener. This keeps a
+/// type-less disjunct from swallowing later " spell" occurrences via `take_until`.
+fn parse_typed_spells_with_opener(input: &str) -> OracleResult<'_, Option<String>> {
+    let (input, _) = opt(nom_primitives::parse_article).parse(input)?;
+    let spells_with = || alt((tag(" spells with "), tag(" spell with ")));
+    // Bare opener (no type word). `take_until` over the empty-type case would
+    // otherwise consume across the disjunct, so handle it explicitly first.
+    if let Ok((rest, _)) = alt((
+        tag::<_, _, OracleError<'_>>("spells with "),
+        tag("spell with "),
+    ))
+    .parse(input)
+    {
+        return Ok((rest, None));
+    }
+    let (input, type_word) = map(take_until(" spell"), |t: &str| t.to_string()).parse(input)?;
+    let (input, _) = spells_with().parse(input)?;
+    Ok((input, Some(type_word)))
+}
+
+/// CR 106.6 + CR 107.3 + CR 202.3: Inner all-consuming combinator for
+/// [`parse_mv_or_x_cost_criteria`]. Parses both disjuncts and validates that the
+/// optional type prefix matches across them.
+fn parse_mv_or_x_cost_criteria_inner(
+    input: &str,
+) -> OracleResult<'_, (Option<String>, Vec<SpellCostCriterion>)> {
+    // First disjunct: "[<type> ]spell(s) with mana value N <threshold>".
+    let (input, type_a) = parse_typed_spells_with_opener(input)?;
+    let (input, _) = tag("mana value ").parse(input)?;
+    let (input, value) = nom_primitives::parse_number(input)?;
+    let (input, _) = char(' ').parse(input)?;
+    let (input, comparator) = parse_mana_value_comparator(input)?;
+    // Connective.
+    let (input, _) = tag(" or ").parse(input)?;
+    // Second disjunct: "[<type> ]spell(s) with {x} in their mana cost[s]".
+    let (input, type_b) = parse_typed_spells_with_opener(input)?;
+    let (input, _) = (
+        tag("{x} in "),
+        alt((tag("their"), tag("its"))),
+        tag(" mana cost"),
+        opt(tag("s")),
+    )
+        .parse(input)?;
+
+    if type_a != type_b {
+        return Err(oracle_err(input));
+    }
+    let spell_type = type_a.map(|t| super::capitalize(t.trim()));
+    let criteria = vec![
+        SpellCostCriterion::ManaValue { comparator, value },
+        SpellCostCriterion::HasXInCost,
+    ];
+    Ok((input, (spell_type, criteria)))
 }
 
 /// CR 105.2 + CR 106.6: Parse the "[spells|a spell] with [exactly] N [or more|or
@@ -3130,6 +3233,77 @@ mod tests {
                 }
             ),
             "expected ChosenColor with fixed_alternative Black, got {effect:?}"
+        );
+    }
+
+    // CR 106.6 + CR 107.3 + CR 202.3: Troyan, Gutsy Explorer — any-type
+    // disjunctive MV/X spend restriction.
+    #[test]
+    fn mana_spend_restriction_troyan_mv_or_x_any_type() {
+        let result = parse_mana_spend_restriction(
+            "spend this mana only to cast spells with mana value 5 or greater or spells with {x} in their mana costs",
+        );
+        assert_eq!(
+            result.map(|(r, _)| r),
+            Some(ManaSpendRestriction::SpellMatchingCostCriteria {
+                spell_type: None,
+                criteria: vec![
+                    SpellCostCriterion::ManaValue {
+                        comparator: Comparator::GE,
+                        value: 5,
+                    },
+                    SpellCostCriterion::HasXInCost,
+                ],
+            })
+        );
+    }
+
+    // CR 106.6 + CR 107.3 + CR 202.3: Helga, Skittish Seer — creature-narrowed
+    // disjunctive MV/X spend restriction.
+    #[test]
+    fn mana_spend_restriction_helga_creature_mv_or_x() {
+        let result = parse_mana_spend_restriction(
+            "spend this mana only to cast creature spells with mana value 4 or greater or creature spells with {x} in their mana costs",
+        );
+        assert_eq!(
+            result.map(|(r, _)| r),
+            Some(ManaSpendRestriction::SpellMatchingCostCriteria {
+                spell_type: Some("Creature".to_string()),
+                criteria: vec![
+                    SpellCostCriterion::ManaValue {
+                        comparator: Comparator::GE,
+                        value: 4,
+                    },
+                    SpellCostCriterion::HasXInCost,
+                ],
+            })
+        );
+    }
+
+    // A type-mismatched disjunct ("creature spells … or spells with {x}") is an
+    // unsupported compound: the combinator returns None so the clause stays a
+    // loud gap rather than silently dropping the narrowing on one disjunct.
+    #[test]
+    fn mana_spend_restriction_mv_or_x_type_mismatch_is_gap() {
+        let result = parse_mana_spend_restriction(
+            "spend this mana only to cast creature spells with mana value 4 or greater or spells with {x} in their mana costs",
+        );
+        assert_eq!(result.map(|(r, _)| r), None);
+    }
+
+    // The single MV-threshold arm must still parse when there is no X disjunct,
+    // confirming the disjunction arm doesn't shadow the plain reading.
+    #[test]
+    fn mana_spend_restriction_plain_mv_threshold_still_parses() {
+        let result = parse_mana_spend_restriction(
+            "spend this mana only to cast spells with mana value 5 or greater",
+        );
+        assert_eq!(
+            result.map(|(r, _)| r),
+            Some(ManaSpendRestriction::SpellWithManaValue {
+                comparator: Comparator::GE,
+                value: 5,
+            })
         );
     }
 }

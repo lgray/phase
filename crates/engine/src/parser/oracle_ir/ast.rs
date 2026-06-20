@@ -342,6 +342,12 @@ pub(crate) enum ContinuationAst {
         /// CR 508.4: the kept card enters the battlefield attacking
         /// ("tapped and attacking"). Absorbs into `enters_attacking`.
         enters_attacking: bool,
+        /// CR 701.20a + CR 608.2c: `true` when the disposition is "put any number
+        /// of those [filter] cards onto [destination]" over the *set* of matched
+        /// cards (Aurora Awakener), absorbing into
+        /// `RevealUntilDisposition::ChooseAnyNumber`. `false` is the single-hit
+        /// "put that card …" form (`KeepEach`).
+        any_number: bool,
         rest_destination: Option<Zone>,
         /// CR 110.2a: "under your control" on the kept-card clause.
         enters_under: Option<ControllerRef>,

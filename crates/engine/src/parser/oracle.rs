@@ -9630,6 +9630,42 @@ mod tests {
         );
     }
 
+    /// CR 106.6 + CR 107.3 + CR 202.3: Troyan, Gutsy Explorer — the full mana
+    /// ability line routes the disjunctive "spells with mana value 5 or greater
+    /// or spells with {X} in their mana costs" continuation onto the produced
+    /// mana effect's `restrictions` as `SpellMatchingCostCriteria`. Drives the
+    /// production sequence-continuation path (`Effect::Mana` arm of
+    /// `parse_continuation_from_sentence`), not just the standalone helper.
+    #[test]
+    fn troyan_full_mana_line_attaches_mv_or_x_restriction() {
+        use crate::types::ability::ManaSpendRestriction;
+        use crate::types::mana::SpellCostCriterion;
+        let r = parse(
+            "{T}: Add {G}{U}. Spend this mana only to cast spells with mana value 5 or greater or spells with {X} in their mana costs.",
+            "Troyan, Gutsy Explorer",
+            &[],
+            &["Legendary", "Creature"],
+            &["Frog", "Citizen"],
+        );
+        assert_eq!(r.abilities.len(), 1, "abilities: {:?}", r.abilities);
+        let Effect::Mana { restrictions, .. } = &*r.abilities[0].effect else {
+            panic!("expected Effect::Mana, got {:?}", r.abilities[0].effect);
+        };
+        assert_eq!(
+            restrictions,
+            &vec![ManaSpendRestriction::SpellMatchingCostCriteria {
+                spell_type: None,
+                criteria: vec![
+                    SpellCostCriterion::ManaValue {
+                        comparator: Comparator::GE,
+                        value: 5,
+                    },
+                    SpellCostCriterion::HasXInCost,
+                ],
+            }]
+        );
+    }
+
     /// CR 106.6 + CR 205.3m + CR 903.3: Path of Ancestry — the passive-voice
     /// "When that mana is spent to cast a creature spell that shares a creature
     /// type with your commander, scry 1" clause folds into the

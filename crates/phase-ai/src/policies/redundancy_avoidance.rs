@@ -301,6 +301,7 @@ fn redundancy_delta(
             KIND_DEAL_DAMAGE_ZERO,
             /* delta= */ -3.0,
         ),
+        Effect::ApplyPostReplacementDamage { .. } => None,
         Effect::Draw { count, .. } => zero_quantity_redundancy(
             state,
             source_id,

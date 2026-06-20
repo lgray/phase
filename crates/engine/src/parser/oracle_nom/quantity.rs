@@ -621,9 +621,13 @@ pub fn parse_quantity_ref(input: &str) -> OracleResult<'_, QuantityRef> {
         // prepositional "the mana value of the sacrificed permanent" —
         // Morbid Curiosity) are nested to keep the outer `alt` within nom 8.0's
         // 21-item tuple arity; both resolve the same `ObjectScope::CostPaidObject`.
+        // The chosen/revealed prepositional power/toughness form (the beheld
+        // cost-paid object — Close Encounter, Monstrous Emergence) shares the
+        // same `ObjectScope::CostPaidObject` referent, so it joins this nest.
         alt((
             parse_cost_paid_object_ref,
             parse_cost_paid_object_prepositional_ref,
+            parse_cost_paid_object_chosen_revealed_ref,
         )),
         parse_event_context_refs,
     ))
@@ -2247,6 +2251,62 @@ fn parse_cost_paid_object_prepositional_ref(input: &str) -> OracleResult<'_, Qua
             scope: ObjectScope::CostPaidObject,
         },
     ))
+}
+
+/// CR 208.1 + CR 608.2 + CR 608.2k + CR 400.7j: Prepositional power/toughness of
+/// the additional-cost CHOSEN-or-REVEALED (beheld) object.
+///
+/// Covers the "behold an object as a cost, then deal damage equal to its power"
+/// class where the spell body refers to the beheld object by the choose/reveal
+/// verbs rather than the sacrifice/exile/mill participles handled by
+/// `parse_cost_paid_object_ref`:
+///   - "the power of the chosen creature or card"               (Close Encounter)
+///   - "the power of the creature you chose or the card you revealed" (Monstrous Emergence)
+///
+/// The beheld object is stamped as this ability's `cost_paid_object` by
+/// `handle_behold_for_cost` (CR 400.7j: a cost that reveals/moves an object in a
+/// public zone makes that object findable by the spell's effects), so the
+/// referent resolves to `ObjectScope::CostPaidObject`. CR 208.1 + CR 608.2:
+/// power/toughness are read at resolution from that snapshot. The leading
+/// "the {power|toughness} of " preposition mirrors
+/// `parse_cost_paid_object_prepositional_ref` (mana value); the object phrase is
+/// its own `alt()` axis so a new beheld-object phrasing extends one branch.
+fn parse_cost_paid_object_chosen_revealed_ref(input: &str) -> OracleResult<'_, QuantityRef> {
+    let (rest, _) = opt(tag("the ")).parse(input)?;
+    let (rest, property) = alt((
+        value(ObjectProperty::Power, tag("power of ")),
+        value(ObjectProperty::Toughness, tag("toughness of ")),
+    ))
+    .parse(rest)?;
+    let (rest, _) = parse_chosen_revealed_object_phrase(rest)?;
+    let qty = match property {
+        ObjectProperty::Power => QuantityRef::Power {
+            scope: ObjectScope::CostPaidObject,
+        },
+        ObjectProperty::Toughness => QuantityRef::Toughness {
+            scope: ObjectScope::CostPaidObject,
+        },
+        // The leading `alt` only emits Power/Toughness; ManaValue is unreachable.
+        ObjectProperty::ManaValue => return Err(oracle_err(input)),
+    };
+    Ok((rest, qty))
+}
+
+/// Object phrase for the choose/reveal behold referent. Each form names the same
+/// single beheld object (CR 608.2k) via the disjunction printed on the card:
+///   - "the chosen creature or card"                     (Close Encounter)
+///   - "the creature you chose or the card you revealed" (Monstrous Emergence)
+///
+/// The two legs of each disjunction are alternative descriptions of the SAME
+/// stamped `cost_paid_object` (a creature chosen on the battlefield OR a card
+/// chosen/revealed elsewhere), so the whole phrase collapses to one referent
+/// rather than a multi-object set.
+fn parse_chosen_revealed_object_phrase(input: &str) -> OracleResult<'_, ()> {
+    alt((
+        value((), tag("the chosen creature or card")),
+        value((), tag("the creature you chose or the card you revealed")),
+    ))
+    .parse(input)
 }
 
 /// Shared participle + noun matcher for the cost-paid / event-context object
@@ -5000,6 +5060,38 @@ mod tests {
             );
             assert_eq!(rest, "", "phrase: {phrase}");
         }
+    }
+
+    /// CR 208.1 + CR 608.2k + CR 400.7j: "the power/toughness of the
+    /// chosen/revealed (beheld) object" resolves the same `CostPaidObject`
+    /// referent as the sacrifice/exile possessives — the additional-cost-chosen
+    /// object's power read at resolution (Close Encounter, Monstrous Emergence).
+    #[test]
+    fn parse_quantity_ref_cost_paid_object_chosen_revealed_power() {
+        for phrase in [
+            "the power of the chosen creature or card",
+            "power of the chosen creature or card",
+            "the power of the creature you chose or the card you revealed",
+        ] {
+            let (rest, q) = parse_quantity_ref(phrase).unwrap();
+            assert_eq!(
+                q,
+                QuantityRef::Power {
+                    scope: crate::types::ability::ObjectScope::CostPaidObject,
+                },
+                "phrase: {phrase}"
+            );
+            assert_eq!(rest, "", "phrase: {phrase}");
+        }
+        // Toughness axis composes through the same combinator.
+        let (rest, q) = parse_quantity_ref("the toughness of the chosen creature or card").unwrap();
+        assert_eq!(
+            q,
+            QuantityRef::Toughness {
+                scope: crate::types::ability::ObjectScope::CostPaidObject,
+            }
+        );
+        assert_eq!(rest, "");
     }
 
     /// CR 506.2 + CR 402: "cards in defending player's hand" → defending-player
