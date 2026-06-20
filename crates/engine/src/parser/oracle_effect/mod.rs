@@ -4464,6 +4464,17 @@ fn parse_effect_clause_inner(text: &str, ctx: &mut ParseContext) -> ParsedEffect
             description: None,
         });
     }
+    // CR 601.2c + CR 115.1: A heterogeneous compound source set ("<group A> and
+    // up to one other target <group B> each deal damage equal to their power …",
+    // Graceful Takedown) cannot be represented by the single-filter `TargetOnly`
+    // source picker — the second group would be silently dropped. Defer the whole
+    // clause honestly so coverage stays red rather than claiming partial support.
+    if is_compound_source_each_power_damage(text) {
+        return parsed_clause(Effect::unimplemented(
+            "multi_source_compound_each_power_damage",
+            text,
+        ));
+    }
     if let Some(clause) = try_parse_player_draws_and_gains_control(text, ctx) {
         return clause;
     }
@@ -11648,6 +11659,38 @@ fn rebind_source_amount(expr: &mut QuantityExpr, target: ObjectScope) {
     }
 }
 
+/// CR 603.6 + CR 608.2k + CR 208.1: Restore a reflexive zone-change trigger
+/// body's per-object anaphor ("it deals damage equal to its power") from the
+/// `ObjectScope::Source` the bare-pronoun subject-stamping pass produced back to
+/// `ObjectScope::Anaphoric`.
+///
+/// In "When a creature is put onto the battlefield this way, it deals damage
+/// equal to its power …" (Vivien's Invocation), the body's "it"/"its" is the
+/// object the trigger condition introduced — the creature that changed zones
+/// "this way" (CR 608.2k: an effect referring to an untargeted object the
+/// trigger condition referred to still affects that object; CR 603.6:
+/// zone-change triggers act on the moved object). It is NOT the resolving
+/// ability's source (the spell, which has no power). But `resolve_it_pronoun`
+/// classifies a bare "it" with no `ctx.subject` as `SelfRef`, so the
+/// subject-injection pass (`inject_subject_target`) rebinds "its power" to
+/// `Power{Source}` — reading the spell, power 0. `Anaphoric` is the correct
+/// scope: the runtime resolves it through the trigger-event-source slot
+/// (`game/quantity.rs` `object_id_for_scope(EventSource)`) to the entering
+/// creature's current power (CR 208.1: power is a modifiable characteristic).
+///
+/// Gated to a `ZoneChangedThisWay` condition so only the reflexive-trigger body
+/// pronoun is touched; a true self-reference ("~ deals damage equal to its
+/// power") never carries this condition and keeps its `Source` scope. Mirrors
+/// the one-sided-fight `Source → Anaphoric` coercion (`rebind_source_amount`).
+fn restore_this_way_trigger_anaphor(effect: &mut Effect) {
+    match effect {
+        Effect::DealDamage { amount, .. } | Effect::DamageEachPlayer { amount, .. } => {
+            rebind_source_amount(amount, ObjectScope::Anaphoric);
+        }
+        _ => {}
+    }
+}
+
 /// CR 120.1 + CR 608.2c: For a "one-sided fight" anaphoric damage clause
 /// ("It deals damage equal to its power to target creature an opponent
 /// controls") whose recipient is a FRESH opponent target, attribute the damage
@@ -12624,6 +12667,88 @@ fn rebind_anaphoric_ref(qty: &mut QuantityRef, target: ObjectScope) {
     }
 }
 
+/// CR 120.1: True when a damage clause already carries the multi-source
+/// `EachTarget` marker (set by the parser for "their power" forms). Used to keep
+/// `wrap_target_subject_damage` from collapsing it to the single-source `Target`.
+fn damage_clause_is_each_target(effect: &Effect) -> bool {
+    matches!(
+        effect,
+        Effect::DealDamage {
+            damage_source: Some(DamageSource::EachTarget),
+            ..
+        } | Effect::DamageAll {
+            damage_source: Some(DamageSource::EachTarget),
+            ..
+        }
+    )
+}
+
+/// CR 601.2c + CR 115.1: True when the subject of a multi-source per-power
+/// damage clause is a HETEROGENEOUS compound source set — two distinct targeted
+/// groups joined by "and", where the second is introduced by an "other target"
+/// quantifier (Graceful Takedown: "any number of target enchanted creatures you
+/// control **and up to one other target creature you control** each deal damage
+/// equal to their power …"). The single-`target` `TargetOnly` source picker can
+/// represent only ONE filter + ONE `MultiTargetSpec`, so the second group's
+/// targets would be silently dropped (unreachable as damage sources). This is a
+/// distinct targeting shape (two cardinality-constrained heterogeneous target
+/// slots), not a leaf parameterization of the single-group picker, so the clause
+/// is deferred to an honest `Unimplemented` rather than parsed wrong-but-green.
+///
+/// `text` is the full (original-case) clause text. Matches only when BOTH the
+/// multi-source per-power tail ("each deal damage equal to their power") AND a
+/// preceding "and <up-to-N / another / any number of> other target …" group are
+/// present, so single-group forms (Allies at Last, Coordinated Clobbering,
+/// Terrific Team-Up) are untouched.
+fn is_compound_source_each_power_damage(text: &str) -> bool {
+    let lower = text.to_ascii_lowercase();
+    // The multi-source per-power tail must be present (this is the `EachTarget`
+    // class). Without it, a stray "and up to one other target …" belongs to some
+    // other effect and is not our concern.
+    if nom_primitives::scan_split_at_phrase(&lower, |i| {
+        tag::<_, _, OracleError<'_>>("each deal damage equal to their power").parse(i)
+    })
+    .is_none()
+    {
+        return false;
+    }
+    // A second targeted source group joined to the first by "and", introduced by
+    // an explicit cardinality quantifier and the "other target" marker. The
+    // quantifier alt covers the attested forms ("up to one/two …", "another",
+    // "any number of"); the trailing "other target" is the distinguishing token
+    // that separates a second source GROUP from an intra-filter "and" (e.g.
+    // "creature and planeswalker").
+    nom_primitives::scan_split_at_phrase(&lower, |i| {
+        preceded(
+            tag::<_, _, OracleError<'_>>("and "),
+            preceded(
+                alt((
+                    recognize(pair(tag("up to "), take_until(" other target"))),
+                    tag("another"),
+                    tag("any number of"),
+                )),
+                preceded(opt(tag(" ")), tag("other target ")),
+            ),
+        )
+        .parse(i)
+    })
+    .is_some()
+}
+
+/// CR 208.1 + CR 608.2: Rebind a multi-source damage clause's anaphoric
+/// per-object amount ("their power" → `Power{Anaphoric}`) to `power_scope`
+/// (`Target`) so each source's own power (a modifiable characteristic) is read at
+/// resolution. Leaves the `EachTarget` source marker intact (the runtime iterates
+/// every source slot).
+fn rebind_each_target_damage_amount(effect: &mut Effect, power_scope: ObjectScope) {
+    match effect {
+        Effect::DealDamage { amount, .. } | Effect::DamageAll { amount, .. } => {
+            rebind_anaphoric_object_scope(amount, power_scope);
+        }
+        _ => {}
+    }
+}
+
 fn bind_damage_clause_source(
     effect: &mut Effect,
     damage_source_ref: DamageSource,
@@ -12738,16 +12863,26 @@ fn wrap_target_subject_damage(
         return None;
     }
 
-    // CR 608.2c + CR 120.1: "target creature deals damage equal to its
-    // power..." makes the chosen source object, not the spell card, deal the
-    // damage. "Its power" is therefore the first target's current power.
-    // Both `DealDamage` (single recipient) and `DamageAll` (multi-recipient
-    // batch) carry this shape uniformly — `damage_source = Some(Target)` is
-    // honored by the resolver in `game/effects/deal_damage.rs` for protection
-    // (CR 702.16), wither/infect (CR 120.3b/d), and damage-source replacements
-    // (CR 614). The 2015-06-22 Chandra's Ignition rulings codify this for
-    // the multi-recipient case (DamageAll).
-    if !bind_damage_clause_source(
+    // CR 120.1 + CR 601.2c: "up to N / any number of target creatures you
+    // control each deal damage equal to their power..." — the parser already
+    // tagged the clause `EachTarget` (every chosen source deals its OWN power to
+    // the shared recipient). Preserve that source while still rebinding the
+    // anaphoric "their power" amount to the per-source `Target` scope; do NOT
+    // collapse it to the single-source `Target`. The `multi_target` source count
+    // flows onto the outer `TargetOnly` picker below.
+    if damage_clause_is_each_target(&clause.effect) {
+        rebind_each_target_damage_amount(&mut clause.effect, ObjectScope::Target);
+    } else if !bind_damage_clause_source(
+        // CR 608.2c + CR 120.1: "target creature deals damage equal to its
+        // power..." (single source) makes the chosen object, not the spell card,
+        // deal the damage. "Its power" is therefore the first target's current
+        // power. Both `DealDamage` (single recipient) and `DamageAll`
+        // (multi-recipient batch) carry this shape uniformly — `damage_source =
+        // Some(Target)` is honored by the resolver in
+        // `game/effects/deal_damage.rs` for protection (CR 702.16),
+        // wither/infect (CR 120.3b/d), and damage-source replacements (CR 614).
+        // The 2015-06-22 Chandra's Ignition rulings codify this for the
+        // multi-recipient case (DamageAll).
         &mut clause.effect,
         DamageSource::Target,
         ObjectScope::Target,
@@ -15688,6 +15823,9 @@ pub(crate) fn each_target_filter_mut(effect: &mut Effect, f: &mut impl FnMut(&mu
         | Effect::RevealTop { player: target, .. }
         | Effect::ExileTop { player: target, .. }
         | Effect::Manifest { target, .. }
+        // CR 701.60a: Suspect acts on a target permanent; expose its filter so
+        // anaphor rewrites (e.g. self-targeting "Otherwise, suspect it") reach it.
+        | Effect::Suspect { target }
         | Effect::TargetOnly { target, .. } => f(target),
         Effect::PutCounter { target, .. } | Effect::RemoveCounter { target, .. } => f(target),
         Effect::GoadAll { target } => f(target),
@@ -19452,6 +19590,19 @@ pub(crate) fn parse_effect_chain_ir(
             None
         };
 
+        // CR 603.6 + CR 608.2k: A reflexive zone-change trigger body ("When a
+        // creature is put onto the battlefield this way, it deals damage equal to
+        // its power …" — Vivien's Invocation) refers to the object the trigger
+        // condition introduced, not the resolving spell. The bare-pronoun "it"
+        // was classified `SelfRef` (no `ctx.subject`), so its "its power" anaphor
+        // was rebound to `Power{Source}` (the spell, power 0). Restore it to
+        // `Anaphoric` so the runtime reads the entering creature's power via the
+        // trigger-event-source slot. Gated to `ZoneChangedThisWay` so a true
+        // self-reference clause is untouched.
+        if matches!(condition, Some(AbilityCondition::ZoneChangedThisWay { .. })) {
+            restore_this_way_trigger_anaphor(&mut clause.effect);
+        }
+
         clauses.push(ClauseIr {
             parsed: clause,
             boundary: chunk.boundary_after,
@@ -21029,6 +21180,124 @@ fn extract_effect_verb(effect: &Effect) -> Option<&'static str> {
 mod tests {
     use super::*;
     use crate::parser::parse_oracle_text;
+
+    /// CR 601.2c + CR 115.1: HONEST DEFERRAL — Graceful Takedown's heterogeneous
+    /// compound source set ("any number of target enchanted creatures you control
+    /// AND up to one other target creature you control each deal damage equal to
+    /// their power …") cannot be represented by the single-filter `TargetOnly`
+    /// source picker, so the whole clause must lower to `Effect::Unimplemented`
+    /// rather than a partial (wrong-but-green) parse that drops the second group.
+    /// Guards the coverage-honesty fix: if the compound were silently folded to
+    /// the enchanted-creature group, this asserts the gap node is still present.
+    #[test]
+    fn graceful_takedown_compound_source_is_honest_unimplemented() {
+        let parsed = parse_oracle_text(
+            "Any number of target enchanted creatures you control and up to one other target creature you control each deal damage equal to their power to target creature you don't control.",
+            "Graceful Takedown",
+            &[],
+            &["Instant".to_string()],
+            &[],
+        );
+        assert_eq!(parsed.abilities.len(), 1, "expected one ability");
+        assert!(
+            matches!(*parsed.abilities[0].effect, Effect::Unimplemented { .. }),
+            "compound source group must defer to Unimplemented, got {:?}",
+            parsed.abilities[0].effect
+        );
+    }
+
+    /// CR 601.2c: the honest-deferral guard must NOT trip the single-group forms.
+    /// Allies at Last ("up to two target creatures you control each deal damage
+    /// equal to their power …") has no "and … other target" second group, so it
+    /// must still lower to the `EachTarget` source picker, not `Unimplemented`.
+    #[test]
+    fn single_group_each_power_damage_not_deferred() {
+        let clause = parse_effect_clause(
+            "up to two target creatures you control each deal damage equal to their power to target creature an opponent controls",
+            &mut ParseContext::default(),
+        );
+        assert!(
+            !matches!(clause.effect, Effect::Unimplemented { .. }),
+            "single-group form must not be deferred, got {:?}",
+            clause.effect
+        );
+        assert!(
+            !is_compound_source_each_power_damage(
+                "up to two target creatures you control each deal damage equal to their power to target creature an opponent controls"
+            ),
+            "single-group form must not match the compound-source detector"
+        );
+    }
+
+    /// CR 120.1 + CR 601.2c: SHAPE — the multi-source building block. "Up to N /
+    /// any number of target creatures you control each deal damage equal to
+    /// their power to <recipient>" lowers to a `TargetOnly { target: <source
+    /// set> }` picker carrying the count `multi_target`, with a sub-ability
+    /// `DealDamage { amount: Power{Target}, damage_source: EachTarget }`. The
+    /// plural possessive "their power" routes to `EachTarget` (each source deals
+    /// its own power), distinct from the single-source "its power" → `Target`.
+    /// Runtime damage semantics are covered by the cast-pipeline integration test
+    /// `tests/multi_source_each_power_damage.rs`.
+    #[test]
+    fn multi_source_each_power_damage_direct_subject_shape() {
+        let clause = parse_effect_clause(
+            "up to two target creatures you control each deal damage equal to their power to target creature an opponent controls",
+            &mut ParseContext::default(),
+        );
+        let Effect::TargetOnly { target } = &clause.effect else {
+            panic!("expected TargetOnly source picker, got {:?}", clause.effect);
+        };
+        assert!(matches!(target, TargetFilter::Typed(_)));
+        // The count quantifier flows onto the outer picker, not the damage sub.
+        assert!(
+            clause.multi_target.is_some(),
+            "multi_target source count must flow onto the TargetOnly picker"
+        );
+        let sub = clause
+            .sub_ability
+            .as_ref()
+            .expect("damage in sub-ability after source picker");
+        assert!(
+            matches!(
+                sub.effect.as_ref(),
+                Effect::DealDamage {
+                    amount: QuantityExpr::Ref {
+                        qty: QuantityRef::Power {
+                            scope: ObjectScope::Target
+                        },
+                    },
+                    damage_source: Some(DamageSource::EachTarget),
+                    ..
+                }
+            ),
+            "expected EachTarget per-power damage, got {:?}",
+            sub.effect
+        );
+    }
+
+    /// CR 120.1: SHAPE — the "They each deal …" back-reference form (Coordinated
+    /// Clobbering, Terrific Team-Up). The damage sub carries `EachTarget`; the
+    /// source set is supplied at resolution by the prior sentence's chosen
+    /// targets (verified end-to-end in the integration test).
+    #[test]
+    fn multi_source_each_power_damage_back_reference_shape() {
+        let def = parse_effect_chain(
+            "Tap one or two target untapped creatures you control. They each deal damage equal to their power to target creature an opponent controls.",
+            AbilityKind::Spell,
+        );
+        let sub = def.sub_ability.as_ref().expect("damage sub-ability");
+        assert!(
+            matches!(
+                sub.effect.as_ref(),
+                Effect::DealDamage {
+                    damage_source: Some(DamageSource::EachTarget),
+                    ..
+                }
+            ),
+            "expected EachTarget damage in the 'They each' sub-ability, got {:?}",
+            sub.effect
+        );
+    }
 
     // CR 701.20a: a comma+or disjunctive reveal-until filter list ("X card, a Y,
     // or a Z card") must split into an Or of three distinct filters. Building

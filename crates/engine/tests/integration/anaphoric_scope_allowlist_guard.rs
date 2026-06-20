@@ -345,6 +345,7 @@ const DEMONSTRATIVE_SCOPE_CARDS: &[&str] = &[
     "breeches, the blastmaker",
     "brightmare",
     "calibrated blast",
+    "caustic bronco",
     "cinder cloud",
     "cleric class",
     "consuming vapors",
@@ -599,18 +600,22 @@ fn demonstrative_scope_set_is_frozen() {
     // spell's mana value." — surfacing its "that spell's mana value" bare
     // demonstrative (+1) and taking the count to 115. The nom quantity
     // call-site migration resolves Nightmares and Daydreams out of the retained
-    // demonstrative set, taking the count to 114.
+    // demonstrative set, taking the count to 114. The Otherwise if/else
+    // feature (saddle-gated reveal-then-act) then parses Caustic Bronco's "You
+    // lose life equal to that card's mana value if ~ isn't saddled. Otherwise,
+    // each opponent loses that much life." — surfacing its "that card's mana
+    // value" bare demonstrative (+1) and taking the count to 115.
     assert_eq!(
         observed.len(),
-        114,
-        "Expected exactly 114 cards retaining ObjectScope::Demonstrative. Count \
+        115,
+        "Expected exactly 115 cards retaining ObjectScope::Demonstrative. Count \
          moved to {}.",
         observed.len()
     );
     assert_eq!(
         DEMONSTRATIVE_SCOPE_CARDS.len(),
-        114,
-        "DEMONSTRATIVE_SCOPE_CARDS must list exactly 114 cards."
+        115,
+        "DEMONSTRATIVE_SCOPE_CARDS must list exactly 115 cards."
     );
 }
 

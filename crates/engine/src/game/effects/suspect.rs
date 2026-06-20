@@ -22,6 +22,13 @@ pub fn resolve(
     let target_ids: Vec<_> = match &ability.effect {
         crate::types::ability::Effect::Suspect { target } => match target {
             TargetFilter::LastCreated => state.last_created_token_ids.clone(),
+            // CR 608.2c + CR 701.60a: `SelfRef` is the printed-name anaphor ("~"
+            // / "it" on a self-targeting ability) — it always resolves to the
+            // source permanent, regardless of `ability.targets`. Mirrors the
+            // `resolve_defined_or_targets` short-circuit so a self-targeting
+            // "Otherwise, suspect it" (Repeat Offender) suspects its own source
+            // rather than no-op against an empty announced-target list.
+            TargetFilter::SelfRef => vec![ability.source_id],
             _ => ability
                 .targets
                 .iter()

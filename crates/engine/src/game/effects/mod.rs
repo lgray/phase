@@ -1488,6 +1488,23 @@ fn is_one_sided_fight_damage_sub(effect: &Effect) -> bool {
     )
 }
 
+/// CR 120.1 + CR 601.2c: True when a sub-ability is the multi-source per-power
+/// damage clause ("each deal damage equal to their power to <recipient>"). The
+/// parent's whole object-target set is prepended ahead of the sub's recipient so
+/// every source deals its own power (see the `EachTarget` resolver).
+fn is_each_target_damage_sub(effect: &Effect) -> bool {
+    matches!(
+        effect,
+        Effect::DealDamage {
+            damage_source: Some(crate::types::ability::DamageSource::EachTarget),
+            ..
+        } | Effect::DamageAll {
+            damage_source: Some(crate::types::ability::DamageSource::EachTarget),
+            ..
+        }
+    )
+}
+
 /// The first `TargetRef::Object` in a target list (the chain head's chosen
 /// creature for the one-sided-fight prepend).
 fn first_object_target(targets: &[TargetRef]) -> Option<ObjectId> {
@@ -6014,6 +6031,41 @@ fn resolve_chain_body(
                     resolve_ability_chain(state, &sub_with_source, events, depth + 1)?;
                     return Ok(());
                 }
+            }
+        }
+
+        // CR 120.1 + CR 601.2c: multi-source-fight chain — the parent (the
+        // `TargetOnly` source picker for the direct "up to N target creatures you
+        // control each deal damage equal to their power …" form, or the prior
+        // `SetTapState`/`Pump` sentence for the "They each …" back-reference)
+        // chose the WHOLE source set. The trailing `DealDamage { damage_source =
+        // EachTarget }` sub carries only its fresh recipient slot, so prepend
+        // every parent object target ahead of it: the resolver then reads
+        // `targets = [source_0, …, source_{n-1}, recipient]` and each source
+        // deals its own power (CR 208.1 modifiable characteristic, CR 608.2 read
+        // at resolution) to the recipient. Guarded on the parent carrying object
+        // targets the sub does not already hold, so it is a no-op for any other
+        // chain shape.
+        if is_each_target_damage_sub(&sub.effect) {
+            let parent_sources: Vec<TargetRef> = ability
+                .targets
+                .iter()
+                .filter(|t| matches!(t, TargetRef::Object(_)))
+                .cloned()
+                .collect();
+            if !parent_sources.is_empty() && parent_sources.iter().all(|s| !sub.targets.contains(s))
+            {
+                let mut sub_with_sources = sub.as_ref().clone();
+                for (i, source) in parent_sources.into_iter().enumerate() {
+                    sub_with_sources.targets.insert(i, source);
+                }
+                apply_parent_chain_context(
+                    &mut sub_with_sources,
+                    ability,
+                    effect_context_object.as_ref(),
+                );
+                resolve_ability_chain(state, &sub_with_sources, events, depth + 1)?;
+                return Ok(());
             }
         }
 

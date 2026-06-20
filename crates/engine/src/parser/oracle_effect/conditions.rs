@@ -44,6 +44,17 @@ fn maybe_negate(cond: AbilityCondition, negated: bool) -> AbilityCondition {
     }
 }
 
+/// CR 702.171b: The runtime filter matching the saddled designation. Shared by
+/// the affirmative and negated `SourceIsSaddled` bridges in
+/// `static_condition_to_ability_condition` so both compose the same
+/// `SourceMatchesFilter { Typed([IsSaddled]) }` shape.
+fn source_saddled_filter() -> TargetFilter {
+    TargetFilter::Typed(TypedFilter {
+        properties: vec![FilterProp::IsSaddled],
+        ..Default::default()
+    })
+}
+
 fn parse_creature_subtype_or_list_prefix(lower: &str) -> Option<(TargetFilter, &str)> {
     crate::parser::oracle_static::parse_subtype_or_list_insensitive_prefix(lower)
 }
@@ -2684,6 +2695,17 @@ pub(crate) fn static_condition_to_ability_condition(
                     filter: filter.clone(),
                 }),
             }),
+            // CR 702.171b + CR 601.2b: "~ isn't saddled" → the source does NOT
+            // match the saddled-designation filter. Mirrors the affirmative
+            // `SourceIsSaddled` bridge (the source's saddled status is a runtime
+            // `FilterProp::IsSaddled` property, so the negation composes as
+            // `Not { SourceMatchesFilter { Typed([IsSaddled]) } }`). Drives
+            // Caustic Bronco's "you lose life … if ~ isn't saddled" attack trigger.
+            StaticCondition::SourceIsSaddled => Some(AbilityCondition::Not {
+                condition: Box::new(AbilityCondition::SourceMatchesFilter {
+                    filter: source_saddled_filter(),
+                }),
+            }),
             StaticCondition::DayNightIs { state } => Some(AbilityCondition::Not {
                 condition: Box::new(AbilityCondition::DayNightIs { state: *state }),
             }),
@@ -2709,6 +2731,17 @@ pub(crate) fn static_condition_to_ability_condition(
             })
         }
         StaticCondition::SourceIsTapped => Some(AbilityCondition::SourceIsTapped),
+        // CR 702.171b + CR 601.2b: Bridge the source's saddled designation to the
+        // effect-resolution seam. The static-layer predicate (`SourceIsSaddled`)
+        // has no dedicated `AbilityCondition` variant, but the designation is a
+        // permanent property the runtime filter already evaluates
+        // (`FilterProp::IsSaddled` → `obj.is_saddled`), so the present-tense gate
+        // composes as `SourceMatchesFilter { Typed([IsSaddled]) }` against the
+        // ability's source. Drives Caustic Bronco's "if ~ isn't saddled" attack
+        // trigger (via the `Not` sub-match below).
+        StaticCondition::SourceIsSaddled => Some(AbilityCondition::SourceMatchesFilter {
+            filter: source_saddled_filter(),
+        }),
         // CR 301.5 + CR 303.4: Bridge the source-attached predicate to the
         // effect-resolution seam. Used by bestow triggers whose optional
         // payment / copy-token branch must only fire when the Aura is
@@ -2792,9 +2825,6 @@ pub(crate) fn static_condition_to_ability_condition(
         | StaticCondition::SourceIsEquipped
         | StaticCondition::SourceIsPaired
         | StaticCondition::SourceIsMonstrous
-        // CR 702.171b: the saddled designation is a static-only predicate with no
-        // effect-resolution (`AbilityCondition`) equivalent.
-        | StaticCondition::SourceIsSaddled
         | StaticCondition::OpponentPoisonAtLeast { .. }
         | StaticCondition::UnlessPay { .. }
         | StaticCondition::Unrecognized { .. }
@@ -3046,6 +3076,91 @@ fn parse_attacked_with_filter_condition(text: &str) -> Option<AbilityCondition> 
         return make(Some(filter), 1);
     }
     None
+}
+
+/// Subject of an anaphoric status predicate ("it's tapped" / "~ is suspected").
+/// Distinguishes the two condition seams the status maps to: the chosen target
+/// (`Anaphoric` → `TargetMatchesFilter`, evaluated against the ability's first
+/// object target / triggering subject) versus the ability's own permanent
+/// (`SelfSource` → `SourceMatchesFilter`, evaluated against `ability.source_id`).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum StatusSubject {
+    /// "it" / "that creature" — the trigger/ability's chosen object target.
+    Anaphoric,
+    /// "~" / "this creature" — the ability's own source permanent.
+    SelfSource,
+}
+
+/// Map a self-subject permanent-status `FilterProp` to its dedicated precise
+/// `AbilityCondition` variant, if one exists. Returns `None` for predicates that
+/// the engine only models as a runtime filter property (no precise variant), so
+/// the caller falls back to `SourceMatchesFilter`.
+///
+/// CLAUDE.md prefers the precise typed variant over a generic filter. The
+/// anaphoric self-subject status arm (Repeat Offender's "~ is suspected", etc.)
+/// must therefore NOT shadow the established `parse_inner_condition` →
+/// `static_condition_to_ability_condition` mapping that produces these precise
+/// variants for the same printed text. "tapped" has `SourceIsTapped`
+/// (CR 110.5: tapped/untapped is a permanent status); "suspected" has no
+/// `SourceIsSuspected` (CR 701.60b), so it returns `None`.
+fn precise_source_condition_for_prop(prop: &FilterProp) -> Option<AbilityCondition> {
+    match prop {
+        // CR 110.5: "~ is tapped" reads the source's tapped status → the
+        // dedicated tapped predicate.
+        FilterProp::Tapped => Some(AbilityCondition::SourceIsTapped),
+        _ => None,
+    }
+}
+
+/// CR 608.2c + CR 601.2b: Categorical anaphoric/self status recognizer for the
+/// "if <subject> is[n't] <status>" intervening clause that gates an `else`
+/// branch. Composes three orthogonal axes — none enumerated as full-string
+/// `tag()`s:
+///   - subject: "it" / "that creature" (the chosen target, longest-first to
+///     absorb the "it's" / "it isn't" contractions) vs. "~" / "this creature"
+///     (the source). The subject choice selects which condition seam is used.
+///   - copula/polarity: affirmative ("is " / "'s ") vs. negated ("isn't " /
+///     "is not ").
+///   - predicate: a permanent-status `FilterProp` the runtime filter already
+///     evaluates (CR 701.60b suspected, CR 110.5 tapped).
+///
+/// Returns the typed `(StatusSubject, negated, FilterProp)` triple; the caller
+/// builds the `Typed([prop])` filter, picks `TargetMatchesFilter` (Anaphoric) or
+/// `SourceMatchesFilter` (SelfSource), and wraps in `Not` when negated. Covers
+/// Shackle Slinger ("it's tapped"), Agrus Kos ("it's suspected"), and Repeat
+/// Offender ("~ is suspected" on a self-targeting activated ability).
+fn parse_anaphoric_status_predicate(
+    input: &str,
+) -> OracleResult<'_, (StatusSubject, bool, FilterProp)> {
+    let (rest, subject) = alt((
+        // The "it's"/"it isn't" contractions share the "it" stem; consume the
+        // bare subject token here (no trailing space) and let the copula axis
+        // below absorb the separator uniformly via `opt(char(' '))`.
+        value(
+            StatusSubject::Anaphoric,
+            alt((tag("that creature"), tag("it"))),
+        ),
+        value(
+            StatusSubject::SelfSource,
+            alt((tag("this creature"), tag("~"))),
+        ),
+    ))
+    .parse(input)?;
+    // Single optional separator between subject and copula — handles both the
+    // contracted "it's" (no space) and the spaced "it is" / "~ is" forms.
+    let (rest, _) = opt(char(' ')).parse(rest)?;
+    let (rest, negated) = alt((
+        value(true, alt((tag("isn't "), tag("is not ")))),
+        value(false, alt((tag("'s "), tag("is ")))),
+    ))
+    .parse(rest)?;
+    let (rest, prop) = alt((
+        // CR 701.60b: suspected designation. CR 110.5: tapped status.
+        value(FilterProp::Suspected, tag("suspected")),
+        value(FilterProp::Tapped, tag("tapped")),
+    ))
+    .parse(rest)?;
+    Ok((rest, (subject, negated, prop)))
 }
 
 pub(super) fn try_nom_condition_as_ability_condition(
@@ -3508,6 +3623,46 @@ pub(super) fn try_nom_condition_as_ability_condition(
                 use_lki: false,
             });
         }
+    }
+
+    // CR 608.2c + CR 601.2b: anaphoric/self permanent-status gate — "if it's
+    // tapped, …" / "if it's suspected, …" / "if ~ is suspected, …". Tried just
+    // before the generic `parse_inner_condition` fall-through and after the
+    // "it's a [type]" arm so type phrases keep their dedicated routing. The
+    // subject axis selects the condition seam: a chosen-target anaphor binds the
+    // status to `TargetMatchesFilter` (the ability's first object target / the
+    // triggering subject), while a self-reference binds it to
+    // `SourceMatchesFilter` (the ability's own permanent) — Repeat Offender's
+    // activated ability carries no chosen target, so its "~ is suspected" gate
+    // must read the source, not an absent target.
+    if let Ok((_, (subject, negated, prop))) =
+        all_consuming(parse_anaphoric_status_predicate).parse(lower.as_str())
+    {
+        let cond =
+            match subject {
+                StatusSubject::Anaphoric => AbilityCondition::TargetMatchesFilter {
+                    filter: TargetFilter::Typed(TypedFilter {
+                        properties: vec![prop],
+                        ..Default::default()
+                    }),
+                    use_lki: false,
+                },
+                // CR 611.2b: a self-subject predicate with a dedicated precise
+                // `AbilityCondition` variant (e.g. "tapped" → `SourceIsTapped`) must
+                // route to that variant rather than the generic
+                // `SourceMatchesFilter`, per the codebase preference for the typed
+                // variant over a filter. Only predicates with no precise variant
+                // (e.g. "suspected" — there is no `SourceIsSuspected`) fall back to
+                // `SourceMatchesFilter { Typed([prop]) }`.
+                StatusSubject::SelfSource => precise_source_condition_for_prop(&prop)
+                    .unwrap_or_else(|| AbilityCondition::SourceMatchesFilter {
+                        filter: TargetFilter::Typed(TypedFilter {
+                            properties: vec![prop],
+                            ..Default::default()
+                        }),
+                    }),
+            };
+        return Some(maybe_negate(cond, negated));
     }
 
     let (rest, condition) = parse_inner_condition(&lower).ok()?;
@@ -5671,5 +5826,138 @@ mod tests {
             AbilityCondition::ConditionInstead { inner }
                 if matches!(inner.as_ref(), AbilityCondition::Or { .. })
         ));
+    }
+
+    /// CR 611.2b + CR 115.1: Shackle Slinger's "it's tapped" binds the tapped
+    /// status to the chosen target (CR 115.1: targets) via `TargetMatchesFilter`.
+    #[test]
+    fn anaphoric_status_its_tapped_targets_chosen_creature() {
+        let cond =
+            try_nom_condition_as_ability_condition("it's tapped", &mut ParseContext::default())
+                .expect("'it's tapped' should parse");
+        match cond {
+            AbilityCondition::TargetMatchesFilter { filter, use_lki } => {
+                assert!(!use_lki, "present-tense status uses current state");
+                assert_eq!(
+                    filter,
+                    TargetFilter::Typed(TypedFilter {
+                        properties: vec![FilterProp::Tapped],
+                        ..Default::default()
+                    })
+                );
+            }
+            other => panic!("expected TargetMatchesFilter, got {other:?}"),
+        }
+    }
+
+    /// CR 701.60b + CR 115.1: Agrus Kos's "it's suspected" binds the suspected
+    /// designation to the chosen target (CR 115.1: targets) via `TargetMatchesFilter`.
+    #[test]
+    fn anaphoric_status_its_suspected_targets_chosen_creature() {
+        let cond =
+            try_nom_condition_as_ability_condition("it's suspected", &mut ParseContext::default())
+                .expect("'it's suspected' should parse");
+        assert_eq!(
+            cond,
+            AbilityCondition::TargetMatchesFilter {
+                filter: TargetFilter::Typed(TypedFilter {
+                    properties: vec![FilterProp::Suspected],
+                    ..Default::default()
+                }),
+                use_lki: false,
+            }
+        );
+    }
+
+    /// CR 701.60b + CR 601.2b: Repeat Offender's self-referential "~ is suspected"
+    /// (an activated ability that carries no chosen target) binds to the SOURCE via
+    /// `SourceMatchesFilter`, not `TargetMatchesFilter` — an absent target would
+    /// never satisfy the gate. "this creature is suspected" resolves identically.
+    #[test]
+    fn anaphoric_status_self_suspected_reads_source() {
+        let expected = AbilityCondition::SourceMatchesFilter {
+            filter: TargetFilter::Typed(TypedFilter {
+                properties: vec![FilterProp::Suspected],
+                ..Default::default()
+            }),
+        };
+        for text in ["~ is suspected", "this creature is suspected"] {
+            let cond = try_nom_condition_as_ability_condition(text, &mut ParseContext::default())
+                .unwrap_or_else(|| panic!("{text} should parse"));
+            assert_eq!(cond, expected, "{text}");
+        }
+    }
+
+    /// The anaphoric-status arm must not poach type phrases: "it's a Goblin" still
+    /// routes to the `TargetMatchesFilter` subtype arm (a `Goblin` subtype filter),
+    /// not the status recognizer (which only knows tapped/suspected).
+    #[test]
+    fn anaphoric_status_does_not_poach_its_a_type() {
+        let cond =
+            try_nom_condition_as_ability_condition("it's a Goblin", &mut ParseContext::default())
+                .expect("'it's a Goblin' should still parse via the type arm");
+        match cond {
+            AbilityCondition::TargetMatchesFilter { filter, .. } => match filter {
+                TargetFilter::Typed(typed) => {
+                    assert!(
+                        typed
+                            .type_filters
+                            .iter()
+                            .any(type_filter_references_subtype),
+                        "expected a subtype filter, got {typed:?}"
+                    );
+                    assert!(
+                        !typed.properties.contains(&FilterProp::Tapped)
+                            && !typed.properties.contains(&FilterProp::Suspected),
+                        "type arm must not carry a status prop"
+                    );
+                }
+                other => panic!("expected Typed filter, got {other:?}"),
+            },
+            other => panic!("expected TargetMatchesFilter, got {other:?}"),
+        }
+    }
+
+    /// CR 702.171b: Caustic Bronco's "~ isn't saddled" lowers to
+    /// `Not { SourceMatchesFilter { Typed([IsSaddled]) } }` — the runtime seam the
+    /// saddled designation is evaluated through (no dedicated `AbilityCondition`).
+    #[test]
+    fn source_isnt_saddled_lowers_to_not_source_matches_filter() {
+        let cond =
+            try_nom_condition_as_ability_condition("~ isn't saddled", &mut ParseContext::default())
+                .expect("'~ isn't saddled' should parse");
+        match cond {
+            AbilityCondition::Not { condition } => match *condition {
+                AbilityCondition::SourceMatchesFilter { filter } => {
+                    assert_eq!(
+                        filter,
+                        TargetFilter::Typed(TypedFilter {
+                            properties: vec![FilterProp::IsSaddled],
+                            ..Default::default()
+                        })
+                    );
+                }
+                other => panic!("expected SourceMatchesFilter, got {other:?}"),
+            },
+            other => panic!("expected Not, got {other:?}"),
+        }
+    }
+
+    /// CR 702.171b: the affirmative "~ is saddled" lowers to the bare
+    /// `SourceMatchesFilter` (un-negated sibling of the test above).
+    #[test]
+    fn source_is_saddled_lowers_to_source_matches_filter() {
+        let cond =
+            try_nom_condition_as_ability_condition("~ is saddled", &mut ParseContext::default())
+                .expect("'~ is saddled' should parse");
+        assert_eq!(
+            cond,
+            AbilityCondition::SourceMatchesFilter {
+                filter: TargetFilter::Typed(TypedFilter {
+                    properties: vec![FilterProp::IsSaddled],
+                    ..Default::default()
+                }),
+            }
+        );
     }
 }

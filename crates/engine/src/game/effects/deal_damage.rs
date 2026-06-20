@@ -7,7 +7,7 @@ use crate::game::filter;
 use crate::game::keywords;
 use crate::game::quantity::{
     quantity_expr_uses_recipient, resolve_quantity_with_targets,
-    resolve_quantity_with_targets_and_recipient,
+    resolve_quantity_with_targets_and_recipient, resolve_quantity_with_targets_slice,
 };
 use crate::game::replacement::{self, ReplacementResult};
 use crate::types::ability::{
@@ -697,6 +697,19 @@ pub fn resolve(
             _ => return Err(EffectError::MissingParam("DealDamage amount".to_string())),
         };
 
+    // CR 120.1 + CR 601.2c + CR 208.1 + CR 608.2: Multi-source per-power damage —
+    // "up to N / any number of target creatures you control each deal damage
+    // equal to their power to <recipient>". Every leading object target is an
+    // independent source; the LAST object target is the shared recipient. Each
+    // source deals damage equal to its OWN power (CR 208.1: power is a modifiable
+    // characteristic; CR 608.2: read as the effect resolves), re-resolved against
+    // a single-source target slice so `Power{Target}` reads that member, not the
+    // first slot. Diverges from the single-source `Target` path (which reads
+    // `targets[0]` and damages `targets[1..]`), so it is handled separately.
+    if matches!(damage_source, Some(DamageSource::EachTarget)) {
+        return resolve_each_target_power_damage(state, ability, target_filter, events);
+    }
+
     // CR 120.3: Determine damage source.
     let ctx = match damage_source {
         // "Target creature deals damage..." — the first resolved object target
@@ -719,6 +732,12 @@ pub fn resolve(
             .unwrap_or_else(|| DamageContext::fallback(ability.source_id, ability.controller)),
         None => DamageContext::from_source(state, ability.source_id)
             .unwrap_or_else(|| DamageContext::fallback(ability.source_id, ability.controller)),
+        // CR 120.1: multi-source per-power damage is dispatched to
+        // `resolve_each_target_power_damage` above (each source has its own
+        // `DamageContext`), so this single-source `ctx` match is never reached.
+        Some(DamageSource::EachTarget) => {
+            unreachable!("EachTarget handled by resolve_each_target_power_damage")
+        }
     };
 
     // CR 120.1 + CR 608.2c: Resolve effective damage targets.
@@ -782,6 +801,130 @@ pub fn resolve(
                     stash_remaining_damage_chain(state, ability, ctx.source_id, remaining);
                     return Ok(());
                 }
+            }
+        }
+    }
+
+    events.push(GameEvent::EffectResolved {
+        kind: EffectKind::from(&ability.effect),
+        source_id: ability.source_id,
+    });
+
+    Ok(())
+}
+
+/// CR 120.1 + CR 601.2c + CR 208.1 + CR 608.2: Resolve "each [of N target
+/// creatures] deals damage equal to their power to <recipient>"
+/// (`DamageSource::EachTarget`).
+///
+/// `ability.targets` is laid out `[source_0, …, source_{n-1}, recipient]` — the
+/// variable-count source set (chosen via `multi_target` on the `TargetOnly`
+/// picker or the prior sentence) followed by the single shared recipient slot.
+/// Every source object deals damage equal to ITS OWN power: the amount is
+/// re-resolved for each source against a one-element target slice so the
+/// `Power{Target}` ref reads that member (CR 208.1: power is a modifiable
+/// characteristic; CR 608.2: current value at resolution), then routed through
+/// the full replacement/prevention pipeline against the recipient (CR 120.4b).
+///
+/// CR 120.1: each member is an independent damage source, so each builds its own
+/// `DamageContext` (its own deathtouch/wither/infect/lifelink keywords apply).
+///
+/// SCOPE — sequential per-source, NOT a fused simultaneous event. Each source's
+/// damage runs its own pass of `apply_damage_to_target` rather than being
+/// accumulated into one CR 120.4a/CR 120.10 simultaneous batch (cf. the combat
+/// simultaneous-damage primitive in `combat_damage.rs`, CR 510.2). This is
+/// correct ONLY for the current class — a single recipient, sources without
+/// deathtouch/wither, and recipients without combined-damage ("dealt excess
+/// damage" / "dealt damage by one or more sources") triggers — because for those
+/// cards per-source and fused processing produce the same result. Do NOT reuse
+/// `EachTarget` for sources that carry deathtouch (CR 120.4a excess is computed
+/// per-source here, so 2 from a deathtoucher would not be "excess") or for
+/// recipients with CR 120.10 combined-damage triggers; that needs a fused batch.
+fn resolve_each_target_power_damage(
+    state: &mut GameState,
+    ability: &ResolvedAbility,
+    target_filter: &TargetFilter,
+    events: &mut Vec<GameEvent>,
+) -> Result<(), EffectError> {
+    let amount = match &ability.effect {
+        Effect::DealDamage { amount, .. } => amount,
+        _ => return Err(EffectError::MissingParam("DealDamage amount".to_string())),
+    };
+
+    // Partition the object targets into sources (all but the last) and the
+    // shared recipient (the last object target). A non-object implicit recipient
+    // (e.g. "deal damage to <player>") is resolved via `player_context_target`.
+    let object_targets: Vec<ObjectId> = ability
+        .targets
+        .iter()
+        .filter_map(|t| match t {
+            TargetRef::Object(id) => Some(*id),
+            TargetRef::Player(_) => None,
+        })
+        .collect();
+
+    let (recipient, source_ids): (TargetRef, &[ObjectId]) =
+        if let Some(player_recipient) = player_context_target(state, ability, target_filter) {
+            // CR 120.3a: implicit/context player recipient (damage to a player
+            // causes life loss) — every object target is a source.
+            (player_recipient, object_targets.as_slice())
+        } else if let Some((last, sources)) = object_targets.split_last() {
+            (TargetRef::Object(*last), sources)
+        } else {
+            // No targets chosen ("up to N" with zero chosen) — nothing happens.
+            events.push(GameEvent::EffectResolved {
+                kind: EffectKind::from(&ability.effect),
+                source_id: ability.source_id,
+            });
+            return Ok(());
+        };
+
+    // CR 120.4a / CR 120.10 (scope): sources are processed sequentially, one
+    // `apply_damage_to_target` pass each — NOT accumulated into a single
+    // simultaneous batch. Safe only for the current class (single recipient, no
+    // deathtouch/wither sources, no combined-damage recipient triggers); see the
+    // SCOPE note on this fn before extending `EachTarget` to other shapes.
+    for &source_id in source_ids {
+        let ctx = DamageContext::from_source(state, source_id)
+            .unwrap_or_else(|| DamageContext::fallback(source_id, ability.controller));
+        // CR 208.1 + CR 608.2: read THIS source's own power (modifiable
+        // characteristic, current value at resolution) — resolve the amount
+        // against a single-element slice so `Power{Target}` binds to `source_id`.
+        let source_slice = [TargetRef::Object(source_id)];
+        let num_dmg = resolve_quantity_with_targets_slice(
+            state,
+            amount,
+            ability.controller,
+            source_id,
+            &source_slice,
+        )
+        .max(0) as u32;
+        match apply_damage_to_target(state, &ctx, recipient.clone(), num_dmg, false, events)? {
+            DamageResult::Applied(_) => {}
+            DamageResult::NeedsChoice => {
+                // CR 120.4b + CR 616.1e: A replacement choice on the recipient
+                // pauses the batch. The remaining sources resume keyed to this
+                // source's id (the chain stash uses one source id; per-source
+                // keyword nuance for the tail is a rare edge beyond these cards).
+                let remaining = source_ids
+                    .iter()
+                    .skip_while(|&&id| id != source_id)
+                    .skip(1)
+                    .map(|&id| {
+                        let slice = [TargetRef::Object(id)];
+                        let amt = resolve_quantity_with_targets_slice(
+                            state,
+                            amount,
+                            ability.controller,
+                            id,
+                            &slice,
+                        )
+                        .max(0) as u32;
+                        (recipient.clone(), amt)
+                    })
+                    .collect::<Vec<_>>();
+                stash_remaining_damage_chain(state, ability, source_id, remaining);
+                return Ok(());
             }
         }
     }
@@ -888,6 +1031,12 @@ pub fn resolve_all(
             .unwrap_or_else(|| DamageContext::fallback(ability.source_id, ability.controller)),
         None => DamageContext::from_source(state, ability.source_id)
             .unwrap_or_else(|| DamageContext::fallback(ability.source_id, ability.controller)),
+        // CR 120.1: `EachTarget` (multi-source per-power) is only produced by the
+        // parser for the single-recipient `DealDamage` shape; the batch
+        // `DamageAll` form is never constructed with it.
+        Some(DamageSource::EachTarget) => {
+            unreachable!("EachTarget is only produced for DealDamage, not DamageAll")
+        }
     };
 
     // CR 120.3 + CR 609.7: Assemble the full simultaneous recipient list as a

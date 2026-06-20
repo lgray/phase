@@ -446,6 +446,7 @@ mod urzas_tower_conditional_mana;
 mod veteran_armorsmith_soldier_anthem;
 mod vigor_regression;
 mod virulent_emissary_trigger;
+mod vivien_invocation_reflexive_power;
 mod volatile_fault_that_player_search;
 mod wedding_ring_etb_token_copy;
 mod well_of_lost_dreams_may_pay_x;

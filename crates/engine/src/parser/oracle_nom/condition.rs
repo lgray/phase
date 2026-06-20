@@ -1126,12 +1126,28 @@ fn parse_source_is_monstrous(input: &str) -> OracleResult<'_, StaticCondition> {
     value(StaticCondition::SourceIsMonstrous, tag("is monstrous")).parse(rest)
 }
 
-/// CR 702.171b: Parse "<subject> is saddled" → SourceIsSaddled.
-/// Affirmative only — Saddle has no negated Oracle idiom; "as long as ~ is not
-/// saddled" would compose `Not { SourceIsSaddled }` but no current card prints it.
+/// CR 702.171b: Parse "<subject> is[n't] saddled" → SourceIsSaddled, wrapping the
+/// negated idiom in `Not { SourceIsSaddled }`. The polarity is a single `alt()`
+/// axis over the affirmative ("is saddled") and the two negated spellings
+/// ("isn't saddled" / "is not saddled"), longest-match first so "is not" wins over
+/// "is " before the predicate. Caustic Bronco's attack trigger ("you lose life …
+/// if ~ isn't saddled") drives the negated branch (subject "this creature"
+/// normalizes to ~).
 fn parse_source_is_saddled(input: &str) -> OracleResult<'_, StaticCondition> {
     let (rest, _) = parse_source_subject(input)?;
-    value(StaticCondition::SourceIsSaddled, tag("is saddled")).parse(rest)
+    let (rest, negated) = alt((
+        value(true, alt((tag("isn't saddled"), tag("is not saddled")))),
+        value(false, tag("is saddled")),
+    ))
+    .parse(rest)?;
+    let condition = if negated {
+        StaticCondition::Not {
+            condition: Box::new(StaticCondition::SourceIsSaddled),
+        }
+    } else {
+        StaticCondition::SourceIsSaddled
+    };
+    Ok((rest, condition))
 }
 
 /// CR 301.5 + CR 303.4: Parse "<subject> is attached to a creature [you control]"
@@ -1189,7 +1205,8 @@ fn parse_source_state_conditions(input: &str) -> OracleResult<'_, StaticConditio
         parse_source_is_equipped,
         // CR 701.37: "~ is monstrous" / "this creature is monstrous" / etc.
         parse_source_is_monstrous,
-        // CR 702.171b: "~ is saddled" / "this creature is saddled" / etc.
+        // CR 702.171b: "~ is saddled" / "this creature isn't saddled" / etc.
+        // (negation composes Not { SourceIsSaddled }).
         parse_source_is_saddled,
         // CR 301.5 + CR 303.4: "~ is attached to a creature" / "this equipment is attached to a creature".
         // Must precede `parse_source_is_type` so the specific "is attached to a creature"
@@ -3666,6 +3683,22 @@ fn add_owned_you_with_props(filter: TargetFilter, extras: &[FilterProp]) -> Targ
 
 fn parse_life_history_condition(input: &str) -> OracleResult<'_, StaticCondition> {
     alt((
+        // CR 119.3 + CR 115.1 + CR 603.4: "they lost life this turn" — the anaphor
+        // "they" names the ability's first player target (CR 115.1: targets may be
+        // players) (Thought-Stalker Warlock: "choose target opponent. If they lost
+        // life this turn, …"). Scoped to
+        // `PlayerScope::Target` (the single chosen player), not summed across
+        // opponents, so the gate stays correct in multiplayer where the chosen
+        // opponent and other opponents diverge.
+        value(
+            make_quantity_ge(
+                QuantityRef::LifeLostThisTurn {
+                    player: PlayerScope::Target,
+                },
+                1,
+            ),
+            tag("they lost life this turn"),
+        ),
         // "an opponent lost life this turn"
         value(
             make_quantity_ge(
@@ -12720,5 +12753,54 @@ mod tests {
         let (rest, c) = parse_inner_condition("it was cast").unwrap();
         assert!(rest.is_empty());
         assert_eq!(c, StaticCondition::WasCast { zone: None });
+    }
+
+    /// CR 702.171b: the affirmative saddled idiom still parses to the bare
+    /// `SourceIsSaddled` after the negation axis was added.
+    #[test]
+    fn parse_inner_condition_source_is_saddled_affirmative() {
+        let (rest, c) = parse_inner_condition("~ is saddled").unwrap();
+        assert!(rest.is_empty());
+        assert_eq!(c, StaticCondition::SourceIsSaddled);
+    }
+
+    /// CR 702.171b: Caustic Bronco's "~ isn't saddled" composes
+    /// `Not { SourceIsSaddled }` (negation is a parameterized polarity axis, not a
+    /// new variant). The "is not saddled" spelling resolves identically.
+    #[test]
+    fn parse_inner_condition_source_isnt_saddled_negates() {
+        let expected = StaticCondition::Not {
+            condition: Box::new(StaticCondition::SourceIsSaddled),
+        };
+        for text in [
+            "~ isn't saddled",
+            "~ is not saddled",
+            "this creature isn't saddled",
+        ] {
+            let (rest, c) = parse_inner_condition(text).unwrap_or_else(|e| panic!("{text}: {e:?}"));
+            assert!(rest.is_empty(), "{text}: leftover {rest:?}");
+            assert_eq!(c, expected, "{text}");
+        }
+    }
+
+    /// CR 119.3 + CR 109.4: Thought-Stalker Warlock's "they lost life this turn"
+    /// scopes the life-loss gate to the chosen target player (`PlayerScope::Target`),
+    /// not summed across all opponents.
+    #[test]
+    fn parse_inner_condition_they_lost_life_this_turn_targets_chosen_player() {
+        let (rest, c) = parse_inner_condition("they lost life this turn").unwrap();
+        assert!(rest.is_empty());
+        assert_eq!(
+            c,
+            StaticCondition::QuantityComparison {
+                lhs: QuantityExpr::Ref {
+                    qty: QuantityRef::LifeLostThisTurn {
+                        player: PlayerScope::Target,
+                    },
+                },
+                comparator: Comparator::GE,
+                rhs: QuantityExpr::Fixed { value: 1 },
+            }
+        );
     }
 }

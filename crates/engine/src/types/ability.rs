@@ -6731,6 +6731,31 @@ pub enum DamageSource {
     /// CR 120.3 + CR 603.7c: The triggering event's source object is the
     /// damage source.
     TriggeringSource,
+    /// CR 120.1 + CR 601.2c: Every leading object target is an independent
+    /// damage source; each deals damage to the shared recipient (the final
+    /// object target). The amount (`QuantityExpr::Power { scope: Target }`) is
+    /// re-resolved per source so each member deals damage equal to ITS OWN power
+    /// (CR 208.1: power is a modifiable characteristic; CR 608.2: read at
+    /// resolution). Generalizes `Target` (one source) to the variable-count
+    /// "up to N / any number of target creatures you control each deal damage
+    /// equal to their power to <recipient>" class (Allies at Last, Coordinated
+    /// Clobbering, Terrific Team-Up — Graceful Takedown's heterogeneous compound
+    /// source set "<group A> and up to one other target <group B>" is NOT covered
+    /// and is deferred at the parser; see `is_compound_source_each_power_damage`).
+    /// Unlike `Target`, the recipient is `targets.last()`, not `targets[1..]`.
+    ///
+    /// SCOPE — sequential per-source, NOT a fused simultaneous event. Each
+    /// source's damage runs its own pass of the four-part damage sequence (the
+    /// resolver loops per source, `resolve_each_target_power_damage`) rather than
+    /// being accumulated into one CR 120.4a/CR 120.10 simultaneous batch. This is
+    /// correct ONLY for the current class: a single recipient, sources WITHOUT
+    /// deathtouch/wither/lifelink, and recipients WITHOUT combined-damage
+    /// ("dealt excess damage" / "dealt damage by one or more sources") triggers.
+    /// Do NOT reuse `EachTarget` for sources with deathtouch (CR 120.4a excess is
+    /// computed per-source here) or recipients with CR 120.10 combined-damage
+    /// triggers — those require a fused simultaneous batch (cf. `combat_damage.rs`,
+    /// CR 510.2), which is a future refinement.
+    EachTarget,
 }
 
 /// A single conjured card entry: card source + quantity.
