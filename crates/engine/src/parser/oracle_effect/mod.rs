@@ -3592,19 +3592,18 @@ fn try_parse_have_base_pt_become(tp: TextPair<'_>) -> Option<ParsedEffectClause>
             tag("it"),
         ))
         .parse(i)?;
-        // CR 208.1: which base characteristic(s) are set (power and toughness are
-        // the two numbers a creature card carries). Each form is a single `alt()`
-        // arm — base power only, or base power and base toughness.
-        let (i, set_toughness) = alt((
-            value(
-                true,
-                tag("'s base power and base toughness become equal to "),
-            ),
-            value(true, tag("'s base power and toughness become equal to ")),
-            value(false, tag("'s base power becomes equal to ")),
-            value(false, tag("'s base power become equal to ")),
-        ))
-        .parse(i)?;
+        // CR 208.1: which base characteristic(s) are set. Factored per the nom
+        // mandate (PATTERNS.md §8b) into independent axes — shared prefix
+        // "'s base power", an optional " and [base] toughness" axis, the
+        // become/becomes copula, and the shared " equal to " suffix — so the arm
+        // count is the SUM of per-axis choices, not their product.
+        let (i, _) = tag("'s base power").parse(i)?;
+        let (i, toughness) =
+            opt(alt((tag(" and base toughness"), tag(" and toughness")))).parse(i)?;
+        let set_toughness = toughness.is_some();
+        let (i, _) = tag(" become").parse(i)?;
+        let (i, _) = opt(tag("s")).parse(i)?;
+        let (i, _) = tag(" equal to ").parse(i)?;
         let (i, qty) = nom_quantity::parse_quantity_ref(i)?;
         let (i, _) = eof.parse(i)?;
         Ok((i, (set_toughness, qty)))
