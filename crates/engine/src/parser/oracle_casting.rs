@@ -47,6 +47,16 @@ pub fn parse_additional_cost_line(lower: &str, raw: &str) -> Option<AdditionalCo
     let body_lower = tp.lower;
     let body_raw = tp.original;
 
+    // CR 701.4a: A spelled-out "choose … you control or reveal … from your hand"
+    // behold cost (Monstrous Emergence) is a single cohesive cost whose internal
+    // " or " separates the two legs of ONE behold action — not two independent
+    // alternative costs. It must be recognized as a whole BEFORE the general
+    // "X or Y" split below would fragment it into a spurious `Choice`.
+    let behold = super::oracle_cost::parse_single_cost(body_raw);
+    if matches!(behold, AbilityCost::Behold { .. }) {
+        return Some(AdditionalCost::Required(behold));
+    }
+
     // "you may [cost]" → Optional wrapping
     if let Ok((opt_lower, _)) = tag::<_, _, OracleError<'_>>("you may ").parse(body_lower) {
         let opt_raw = &body_raw[body_raw.len() - opt_lower.len()..];
@@ -947,6 +957,34 @@ mod tests {
                     .any(|tf| matches!(tf, TypeFilter::Subtype(name) if name == "Elemental")));
             }
             other => panic!("Expected Required(Behold Elemental exile), got {other:?}"),
+        }
+    }
+
+    /// CR 701.4a + CR 601.2b/f: the SPELLED-OUT choose-or-reveal behold cost
+    /// printed without the "behold" keyword (Monstrous Emergence) parses to the
+    /// same `Behold { ChooseOrReveal }` shape as the keyword form.
+    #[test]
+    fn parse_additional_cost_spelled_out_choose_or_reveal_behold() {
+        let lower =
+            "as an additional cost to cast this spell, choose a creature you control or reveal a creature card from your hand.";
+        let raw =
+            "As an additional cost to cast this spell, choose a creature you control or reveal a creature card from your hand.";
+        let result = parse_additional_cost_line(lower, raw);
+        match result {
+            Some(AdditionalCost::Required(AbilityCost::Behold {
+                count: 1,
+                filter: TargetFilter::Typed(filter),
+                action: BeholdCostAction::ChooseOrReveal,
+            })) => {
+                assert!(
+                    filter
+                        .type_filters
+                        .iter()
+                        .any(|tf| matches!(tf, TypeFilter::Creature)),
+                    "spelled-out behold must carry the bare creature type filter: {filter:?}"
+                );
+            }
+            other => panic!("Expected Required(Behold creature ChooseOrReveal), got {other:?}"),
         }
     }
 

@@ -210,6 +210,72 @@ fn parse_behold_cost(lower: &str) -> Option<AbilityCost> {
     })
 }
 
+/// CR 701.4a (behold) + CR 601.2b/f (additional cost) + CR 400.7j: Parse the
+/// SPELLED-OUT choose-or-reveal behold cost printed without the "behold" keyword.
+///
+/// CR 701.4a: "Behold a [quality]" means "Reveal a [quality] card from your hand
+/// or choose a [quality] permanent you control on the battlefield." Some cards
+/// print this action longhand in the cost line itself rather than as reminder
+/// text after a "behold" keyword:
+///   - "choose a creature you control or reveal a creature card from your hand"
+///     (Monstrous Emergence)
+///
+/// This is the exact action of `BeholdCostAction::ChooseOrReveal`: choose a
+/// matching permanent you control OR reveal a matching card from your hand,
+/// without moving it. `eligible_behold_choices` already scopes the controlled
+/// leg to "you control" and the revealed leg to your hand, so the emitted
+/// `Behold` filter is the bare type shared by both legs. The two legs must name
+/// the same type (always true on printed cards); a mismatch falls through to the
+/// generic cost parser.
+///
+/// The "warped creature card you own in exile" leg (Close Encounter) is NOT this
+/// shape — exile-zone selection and the "warped" property are unsupported by
+/// `eligible_behold_choices`, so that card is handled by honest deferral, not
+/// here.
+fn parse_choose_or_reveal_behold_cost(lower: &str) -> Option<AbilityCost> {
+    type E<'a> = super::oracle_nom::error::OracleError<'a>;
+    let (input, _) = tag::<_, _, E<'_>>("choose ").parse(lower).ok()?;
+    let (input, _) = alt((tag::<_, _, E<'_>>("a "), tag("an ")))
+        .parse(input)
+        .ok()?;
+    // First leg type phrase, bounded by " you control or reveal ".
+    let (_, choose_type_text) = take_until::<_, _, E<'_>>(" you control or reveal ")
+        .parse(input)
+        .ok()?;
+    let (after_choose, _) = terminated(
+        take_until::<_, _, E<'_>>(" you control or reveal "),
+        tag(" you control or reveal "),
+    )
+    .parse(input)
+    .ok()?;
+    // Second leg: "a/an <type> card from your hand".
+    let (after_article, _) = alt((tag::<_, _, E<'_>>("a "), tag("an ")))
+        .parse(after_choose)
+        .ok()?;
+    let (_, reveal_type_text) = all_consuming(terminated(
+        take_until::<_, _, E<'_>>(" card from your hand"),
+        tag(" card from your hand"),
+    ))
+    .parse(after_article)
+    .ok()?;
+
+    let (choose_filter, choose_rem) = parse_type_phrase(choose_type_text.trim());
+    let (reveal_filter, reveal_rem) = parse_type_phrase(reveal_type_text.trim());
+    if !choose_rem.trim().is_empty()
+        || !reveal_rem.trim().is_empty()
+        || matches!(choose_filter, TargetFilter::Any)
+        || choose_filter != reveal_filter
+    {
+        return None;
+    }
+
+    Some(AbilityCost::Behold {
+        count: 1,
+        filter: choose_filter,
+        action: BeholdCostAction::ChooseOrReveal,
+    })
+}
+
 fn parse_remove_counter_kind(
     input: &str,
 ) -> super::oracle_nom::error::OracleResult<'_, crate::types::counter::CounterMatch> {
@@ -317,6 +383,12 @@ pub fn parse_single_cost(text: &str) -> AbilityCost {
     let lower = text.to_lowercase();
 
     if let Some(cost) = parse_behold_cost(&lower) {
+        return cost;
+    }
+
+    // CR 701.4a + CR 601.2b/f: spelled-out "choose … or reveal …" behold cost
+    // (Monstrous Emergence). Tried after the keyword form; both yield `Behold`.
+    if let Some(cost) = parse_choose_or_reveal_behold_cost(&lower) {
         return cost;
     }
 
