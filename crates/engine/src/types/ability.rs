@@ -16,7 +16,7 @@ use super::game_state::{
 };
 use super::identifiers::{ObjectId, TrackedSetId};
 use super::keywords::{Keyword, KeywordKind};
-use super::mana::{AbilityActivationScope, ManaColor, ManaCost, ManaType};
+use super::mana::{AbilityActivationScope, ManaColor, ManaCost, ManaType, SpellCostCriterion};
 use super::phase::Phase;
 use super::player::{PlayerCounterKind, PlayerId};
 use super::replacements::ReplacementEvent;
@@ -1476,6 +1476,16 @@ pub enum ManaSpendRestriction {
     /// `value` is the printed threshold N; `comparator` applies
     /// `spell_mana_value <cmp> value`.
     SpellWithManaValue { comparator: Comparator, value: u32 },
+    /// CR 106.6 + CR 107.3 + CR 202.3: "Spend this mana only to cast [creature]
+    /// spells with mana value N or greater **or** [creature] spells with {X} in
+    /// their mana costs" (Helga, Skittish Seer; Troyan, Gutsy Explorer). Disjunction
+    /// of cost criteria with optional spell-type narrowing — see
+    /// [`ManaRestriction::OnlyForSpellMatchingCostCriteria`](super::mana::ManaRestriction::OnlyForSpellMatchingCostCriteria).
+    SpellMatchingCostCriteria {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        spell_type: Option<String>,
+        criteria: Vec<SpellCostCriterion>,
+    },
     /// CR 105.2 + CR 106.6: "Spend this mana only to cast spells with exactly N
     /// colors" (also "N or more / N or fewer"; colorless = 0). Parameterized over
     /// [`Comparator`] — one variant per color-count reading. `count` is N.
