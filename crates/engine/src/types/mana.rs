@@ -1927,14 +1927,22 @@ mod tests {
     }
 
     // CR 106.6: Hydraulic Helper — "{T}: Add {U}. This mana can't be spent to
-    // cast a nonartifact spell." The negated phrasing lowers to
-    // `OnlyForSpellType("Artifact")`; the produced {U} may pay for an artifact
-    // spell but not for any nonartifact spell (here, an instant). This is the
-    // runtime half of the discriminating coverage: it exercises the same
-    // `PaymentContext::Spell` → `allows_spell` gate the engine spend path uses.
+    // cast a nonartifact spell." The negative phrasing lowers to
+    // `OnlyForTypeSpellsOrAbilities { spell_type: "Artifact", ability: Any }`:
+    // the produced {U} may pay for an artifact spell but not for any nonartifact
+    // spell (here, an instant), while leaving EVERY ability activation payable.
+    // This is the runtime half of the discriminating coverage — it exercises the
+    // single-authority `allows` dispatch (`allows_spell` for spells,
+    // `allows_activation` for abilities) every engine spend path funnels through.
+    // The discriminating assertion is the activation check: the buggy
+    // `OnlyForSpellType("Artifact")` lowering returns `false` from
+    // `allows_activation`, wrongly forbidding ability payment.
     #[test]
-    fn hydraulic_helper_artifact_mana_pays_for_artifacts_only() {
-        let restriction = ManaRestriction::OnlyForSpellType("Artifact".to_string());
+    fn hydraulic_helper_artifact_mana_casts_artifacts_and_pays_any_ability() {
+        let restriction = ManaRestriction::OnlyForTypeSpellsOrAbilities {
+            spell_type: "Artifact".to_string(),
+            ability: AbilityActivationScope::Any,
+        };
         let artifact_spell = SpellMeta {
             types: vec!["Artifact".to_string()],
             subtypes: vec!["Equipment".to_string()],
@@ -1973,6 +1981,16 @@ mod tests {
         // Rejected: nonartifact spells.
         assert!(!restriction.allows(&PaymentContext::Spell(&instant_spell)));
         assert!(!restriction.allows(&PaymentContext::Spell(&creature_spell)));
+        // DISCRIMINATING: ability activation stays unrestricted regardless of the
+        // source's types — the restriction governs only what spells may be cast.
+        assert!(restriction.allows(&PaymentContext::Activation {
+            source_types: &["Creature".to_string()],
+            source_subtypes: &["Human".to_string()],
+        }));
+        assert!(restriction.allows(&PaymentContext::Activation {
+            source_types: &["Land".to_string()],
+            source_subtypes: &[],
+        }));
     }
 
     #[test]

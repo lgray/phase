@@ -5491,19 +5491,20 @@ mod tests {
 
     /// CR 106.6 + CR 702.6a: Hydraulic Helper — the full card must parse with
     /// zero `Effect::Unimplemented` parts. "Defender" extracts as a keyword and
-    /// the `{T}: Add {U}` mana ability carries the negated spend restriction
+    /// the `{T}: Add {U}` mana ability carries the negative spend restriction
     /// ("This mana can't be spent to cast a nonartifact spell") lowered to
-    /// `ManaSpendRestriction::SpellType("Artifact")`. This is the discriminating
-    /// assertion: pre-fix the restriction sentence fell through to
-    /// `Effect::Unimplemented` and the produced {U} carried no restriction at all
-    /// (silently spendable on any spell). Reverting the negated-phrasing parser
-    /// flips the restriction back to absent and this `assert_eq!` fails.
+    /// `ManaSpendRestriction::SpellTypeOrAbilityActivation { spell_type:
+    /// "Artifact", ability: Any }`. The restriction governs only what *spells*
+    /// the mana may cast (artifact spells); it must leave ability activation
+    /// UNRESTRICTED. This is the discriminating assertion: a `SpellType("Artifact")`
+    /// lowering would wrongly forbid paying for any ability, so the `ability: Any`
+    /// scope is exactly what keeps ability activation payable.
     #[test]
     fn hydraulic_helper_full_card_supported_with_artifact_spend_restriction() {
         use crate::types::ability::{ManaProduction, ManaSpendRestriction};
-        use crate::types::mana::ManaColor;
+        use crate::types::mana::{AbilityActivationScope, ManaColor};
         let r = parse_oracle_text(
-            "Defender\n{T}: Add {U}. This mana can\u{2019}t be spent to cast a nonartifact spell.",
+            "Defender\n{T}: Add {U}. This mana can't be spent to cast a nonartifact spell.",
             "Hydraulic Helper",
             &["Defender".to_string()],
             &["Artifact".to_string(), "Creature".to_string()],
@@ -5538,8 +5539,12 @@ mod tests {
         ));
         assert_eq!(
             restrictions,
-            &[ManaSpendRestriction::SpellType("Artifact".to_string())],
-            "negated nonartifact restriction must lower to SpellType(Artifact)"
+            &[ManaSpendRestriction::SpellTypeOrAbilityActivation {
+                spell_type: "Artifact".to_string(),
+                ability: AbilityActivationScope::Any,
+            }],
+            "negative nonartifact restriction must lower to \
+             SpellTypeOrAbilityActivation so ability activation stays unrestricted"
         );
     }
 

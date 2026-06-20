@@ -1280,7 +1280,11 @@ fn parse_restricted_spell_type_phrase(spell_part: &str) -> Option<String> {
 /// untouched.
 fn parse_negative_mana_spend_restriction(lower: &str) -> Option<ManaSpendRestriction> {
     let (_, rest) = nom_on_lower(lower, lower, |i| {
-        let (i, _) = tag("this mana can't be spent to cast ").parse(i)?;
+        // MTGJSON Oracle text is not apostrophe-normalized, so accept both the
+        // ASCII (') and curly (U+2019) apostrophe forms of "can't".
+        let (i, _) = tag("this mana ca").parse(i)?;
+        let (i, _) = alt((tag("n't"), tag("n\u{2019}t"))).parse(i)?;
+        let (i, _) = tag(" be spent to cast ").parse(i)?;
         let (i, _) = opt(nom_primitives::parse_article).parse(i)?;
         value((), alt((tag("non-"), tag("non")))).parse(i)
     })?;
@@ -3134,17 +3138,21 @@ mod tests {
     }
 
     #[test]
-    fn negated_nonartifact_spend_maps_to_artifact_spell_type() {
+    fn negated_nonartifact_spend_maps_to_artifact_spell_or_ability() {
         // CR 106.6: Hydraulic Helper — "This mana can't be spent to cast a
-        // nonartifact spell" is the negated form of "spend this mana only to
-        // cast artifact spells" and must produce the same SpellType("Artifact")
-        // restriction the positive parser does. ASCII apostrophe form.
+        // nonartifact spell" restricts spell-casting to artifact spells while
+        // leaving ability activation unrestricted, so it lowers to the OR variant
+        // with `ability: Any` (NOT a spells-only `SpellType`, which would wrongly
+        // forbid paying for abilities). ASCII apostrophe form.
         let (restriction, grants) =
             parse_mana_spend_restriction("this mana can't be spent to cast a nonartifact spell")
                 .expect("negated nonartifact restriction must parse");
         assert_eq!(
             restriction,
-            ManaSpendRestriction::SpellType("Artifact".to_string())
+            ManaSpendRestriction::SpellTypeOrAbilityActivation {
+                spell_type: "Artifact".to_string(),
+                ability: AbilityActivationScope::Any,
+            }
         );
         assert!(grants.is_empty());
     }
@@ -3152,27 +3160,33 @@ mod tests {
     #[test]
     fn negated_nonartifact_spend_curly_apostrophe_parses() {
         // CR 106.6: MTGJSON Oracle text is not apostrophe-normalized — the curly
-        // (U+2019) apostrophe form of "can't" must parse identically.
+        // (U+2019) apostrophe form of "can't" must parse identically to ASCII.
         let (restriction, _) = parse_mana_spend_restriction(
             "this mana can\u{2019}t be spent to cast a nonartifact spell",
         )
         .expect("curly-apostrophe negated restriction must parse");
         assert_eq!(
             restriction,
-            ManaSpendRestriction::SpellType("Artifact".to_string())
+            ManaSpendRestriction::SpellTypeOrAbilityActivation {
+                spell_type: "Artifact".to_string(),
+                ability: AbilityActivationScope::Any,
+            }
         );
     }
 
     #[test]
-    fn negated_noncreature_spend_maps_to_creature_spell_type() {
+    fn negated_noncreature_spend_maps_to_creature_spell_or_ability() {
         // CR 106.6: Builds for the class — any non<TYPE> exclusion resolves to
-        // the positive <TYPE> restriction, not just artifact.
+        // the same OR variant over <TYPE>, not just artifact.
         let (restriction, _) =
             parse_mana_spend_restriction("this mana can't be spent to cast a noncreature spell")
                 .expect("negated noncreature restriction must parse");
         assert_eq!(
             restriction,
-            ManaSpendRestriction::SpellType("Creature".to_string())
+            ManaSpendRestriction::SpellTypeOrAbilityActivation {
+                spell_type: "Creature".to_string(),
+                ability: AbilityActivationScope::Any,
+            }
         );
     }
 }
