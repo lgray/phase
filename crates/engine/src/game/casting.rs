@@ -12168,9 +12168,7 @@ pub fn handle_activate_ability(
             pending_tap.activation_ability_index = Some(ability_index);
             return Ok(WaitingFor::PayCost {
                 player,
-                kind: PayCostKind::TapCreatures {
-                    power_threshold: None,
-                },
+                kind: PayCostKind::TapCreatures { aggregate: None },
                 choices: eligible,
                 count: count as usize,
                 min_count: 0,

@@ -1089,9 +1089,7 @@ pub(super) fn advance_mana_ability_activation(
             }
             return Ok(WaitingFor::PayCost {
                 player: pending.player,
-                kind: PayCostKind::TapCreatures {
-                    power_threshold: None,
-                },
+                kind: PayCostKind::TapCreatures { aggregate: None },
                 choices: creatures,
                 count,
                 min_count: 0,

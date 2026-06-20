@@ -2354,13 +2354,13 @@ fn apply_action(
                         &mut events,
                     )?
                 }
-                PayCostKind::TapCreatures { power_threshold } => {
+                PayCostKind::TapCreatures { aggregate } => {
                     engine_casting::handle_tap_creatures_for_spell_cost(
                         state,
                         *player,
                         *pending_cast.clone(),
                         *count,
-                        *power_threshold,
+                        *aggregate,
                         choices,
                         &chosen,
                         &mut events,
@@ -2389,7 +2389,7 @@ fn apply_action(
                 mana_ability: pending_mana_ability,
             } => match kind {
                 // CR 605.1a: mana-ability tap costs are always fixed-count; the
-                // aggregate power_threshold form never resumes a mana ability.
+                // aggregate form never resumes a mana ability.
                 PayCostKind::TapCreatures { .. } => {
                     engine_casting::handle_tap_creatures_for_mana_ability(
                         state,

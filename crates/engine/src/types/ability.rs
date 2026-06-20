@@ -5804,6 +5804,28 @@ pub enum TapCreaturesAggregateStat {
     TotalPower,
 }
 
+/// CR 601.2f + CR 208.1: The aggregate constraint a `TapCreatures` cost payment
+/// must satisfy (Crew CR 702.122a / Saddle CR 702.171a / Teamwork). Snapshots
+/// the `TapCreaturesRequirement::Aggregate` `{ stat, comparator, value }` triple
+/// into the interactive payment state (`PayCostKind::TapCreatures`) so the
+/// candidate enumerator and selection validator honor the advertised comparator
+/// instead of hard-coding `>=`. Bundling the three fields keeps them from
+/// desyncing (a lone `value` cannot drift from its comparator/stat).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TapCreaturesAggregate {
+    pub stat: TapCreaturesAggregateStat,
+    pub comparator: Comparator,
+    pub value: i32,
+}
+
+impl TapCreaturesAggregate {
+    /// CR 208.1: Evaluate whether a chosen set's summed current power satisfies
+    /// this aggregate constraint.
+    pub fn satisfied_by(&self, total_power: i32) -> bool {
+        self.comparator.evaluate(total_power, self.value)
+    }
+}
+
 /// How many creatures must be tapped, or what aggregate constraint the chosen
 /// set must satisfy, for a `TapCreatures` cost.
 ///
@@ -6419,6 +6441,12 @@ pub enum AdditionalCostOrigin {
     Offspring,
     Squad,
     Replicate,
+    /// CR 601.2b/f: Teamwork's optional "tap any number of creatures with total
+    /// power N or more" additional cost. A dedicated origin lets "this spell was
+    /// cast using teamwork" riders test the Teamwork payment specifically (not
+    /// any optional additional cost) and lets Teamwork compose with another
+    /// object additional cost in the announcement queue.
+    Teamwork,
     #[default]
     Other,
 }
@@ -13201,6 +13229,21 @@ impl AbilityCondition {
             subject: ObjectScope::Source,
             source: AdditionalCostPaymentSource::Any,
             origin: None,
+            origin_ordinal: None,
+            variant: None,
+            kicker_cost: None,
+            min_count: 1,
+        }
+    }
+
+    /// CR 601.2b/f: "if this spell was cast using [keyword]" — gates on a
+    /// specific additional-cost origin (e.g. Teamwork) being paid, so the rider
+    /// is not satisfied by an unrelated optional additional cost on the spell.
+    pub fn additional_cost_paid_origin(origin: AdditionalCostOrigin) -> Self {
+        AbilityCondition::AdditionalCostPaid {
+            subject: ObjectScope::Source,
+            source: AdditionalCostPaymentSource::Any,
+            origin: Some(origin),
             origin_ordinal: None,
             variant: None,
             kicker_cost: None,

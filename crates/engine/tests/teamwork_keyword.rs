@@ -16,7 +16,8 @@ use engine::game::layers::evaluate_layers;
 use engine::game::scenario::{GameRunner, GameScenario};
 use engine::parser::oracle::parse_oracle_text;
 use engine::types::ability::{
-    AbilityCost, AdditionalCost, Effect, TapCreaturesAggregateStat, TapCreaturesRequirement,
+    AbilityCost, AdditionalCost, Comparator, Effect, TapCreaturesAggregateStat,
+    TapCreaturesRequirement,
 };
 use engine::types::actions::GameAction;
 use engine::types::game_state::{CastPaymentMode, PayCostKind, WaitingFor};
@@ -263,14 +264,19 @@ fn team_tactics_with_teamwork_grants_double_strike_and_trample() {
     // Tap the 3/3 (total power 3 >= Teamwork 1) to pay the aggregate cost.
     match runner.state().waiting_for.clone() {
         WaitingFor::PayCost {
-            kind: PayCostKind::TapCreatures { power_threshold },
+            kind: PayCostKind::TapCreatures { aggregate },
             choices,
             ..
         } => {
+            let aggregate = aggregate.expect("Teamwork surfaces an aggregate constraint");
             assert_eq!(
-                power_threshold,
-                Some(1),
+                aggregate.value, 1,
                 "Teamwork 1 must surface an aggregate power threshold of 1"
+            );
+            assert_eq!(
+                aggregate.comparator,
+                Comparator::GE,
+                "Teamwork's aggregate constraint is total power >= N"
             );
             assert!(
                 choices.contains(&target),
