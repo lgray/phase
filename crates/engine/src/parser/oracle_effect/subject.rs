@@ -454,6 +454,35 @@ fn try_parse_subject_restriction_clause(
     if let Some(verb_start) = find_predicate_start(text) {
         let subject = text[..verb_start].trim();
         let predicate = deconjugate_verb(text[verb_start..].trim());
+        // CR 508.1d + CR 509.1c: "[subject] attacks or blocks this turn/combat if
+        // able" (Hustle) — the combined requirement re-binds BOTH MustAttack and
+        // MustBlock statics to the subject. Tried before the plain attack
+        // recognizer since both share the "attacks" verb prefix; the combined
+        // form is the strict superset and must win.
+        if let Some(ImperativeFamilyAst::GainKeyword(Effect::GenericEffect { duration, .. })) =
+            imperative::try_parse_attack_or_block_if_able(&predicate)
+        {
+            let application = parse_subject_application(subject, ctx)?;
+            let affected = static_affected_for_application(&application);
+            let static_abilities = imperative::must_attack_or_block_static_definitions()
+                .into_iter()
+                .map(|def| def.affected(affected.clone()))
+                .collect();
+            return Some(ParsedEffectClause {
+                effect: Effect::GenericEffect {
+                    static_abilities,
+                    duration: duration.clone(),
+                    target: application.target,
+                },
+                distribute: None,
+                multi_target: application.multi_target,
+                duration,
+                sub_ability: None,
+                condition: None,
+                optional: application.is_optional,
+                unless_pay: None,
+            });
+        }
         // Classify via the existing recognizer. Only the bare GenericEffect form
         // (MustAttack) is re-bound here; the player-bound `ForceAttack` form
         // ("attacks you/that player …") has its own targeted handling and must

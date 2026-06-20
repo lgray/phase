@@ -6783,9 +6783,13 @@ pub(super) fn parse_imperative_family_ast(
             let is_other = ctx.subject.is_some();
             Some(ImperativeFamilyAst::Support { count, is_other })
         }
+        // CR 508.1d + CR 509.1c: "attacks or blocks this turn/combat if able" —
+        // combined forced attack-or-block requirement (Hustle). Tried before the
+        // plain attack recognizer since both share the "attacks" first word.
         // CR 508.1d: "attacks/attack this turn/combat if able" — forced attack requirement.
-        // CR 508.1d: "attacks/attack this turn/combat if able" — forced attack requirement.
-        "attacks" | "attack" => try_parse_attack_if_able(lower),
+        "attacks" | "attack" => {
+            try_parse_attack_or_block_if_able(lower).or_else(|| try_parse_attack_if_able(lower))
+        }
         // CR 509.1b / CR 508.1d: "can't be blocked [this turn]", "can't attack", etc.
         // These appear as subjectless clauses in compound effects (e.g., "gets +2/+0 and can't be blocked this turn").
         "can't" | "cannot" => try_parse_subjectless_cant(lower),
@@ -8828,6 +8832,59 @@ pub(super) fn try_parse_attack_if_able(lower: &str) -> Option<ImperativeFamilyAs
     None
 }
 
+/// CR 508.1d + CR 509.1c: Parse the combined "attacks or blocks ... if able"
+/// requirement (Hustle: "Target creature attacks or blocks this turn if able.").
+///
+/// This is the imperative one-shot analogue of the continuous "attacks or blocks
+/// each combat if able" static. It is the composition of an attack requirement
+/// (CR 508.1d) and a block requirement (CR 509.1c): the creature must attack if
+/// able during its controller's declare-attackers step, and must block if able
+/// during a later declare-blockers step. The combined form emits both
+/// `MustAttack` and `MustBlock` transient statics for the requested duration,
+/// mirroring the bare-form `try_parse_attack_if_able` `MustAttack` path.
+///
+/// Verb axis × phase axis: factor the "attack(s) or block(s)" verb pair out front
+/// (a single `alt()` over the conjugation variants), then map the phase clause to
+/// its duration. Bare/source-granted forms (empty subject) carry `target: None`;
+/// the targeted subject form binds the target via `subject.rs`.
+pub(super) fn try_parse_attack_or_block_if_able(lower: &str) -> Option<ImperativeFamilyAst> {
+    let trimmed = lower.trim_end_matches('.');
+
+    // Each verb's conjugation varies independently: the bare imperative path
+    // passes the raw text ("attacks or blocks …") while the subject path passes a
+    // predicate whose leading verb was already deconjugated ("attack or blocks
+    // …"). Match each verb with its own `alt()` so both arrive here.
+    let result: Result<(&str, Duration), nom::Err<OracleError<'_>>> = (
+        alt((tag("attacks"), tag("attack"))),
+        tag(" or "),
+        alt((tag("blocks"), tag("block"))),
+        preceded(
+            tag(" "),
+            alt((
+                value(Duration::UntilEndOfTurn, tag("this turn if able")),
+                value(
+                    Duration::UntilEndOfCombat,
+                    alt((tag("this combat if able"), tag("that combat if able"))),
+                ),
+            )),
+        ),
+    )
+        .map(|(_, _, _, duration)| duration)
+        .parse(trimmed);
+
+    if let Ok((rest, duration)) = result {
+        if rest.is_empty() {
+            return Some(ImperativeFamilyAst::GainKeyword(Effect::GenericEffect {
+                static_abilities: must_attack_or_block_static_definitions(),
+                duration: Some(duration),
+                target: None,
+            }));
+        }
+    }
+
+    None
+}
+
 /// CR 508.1d: Build the `StaticDefinition` for a transient "attacks if able"
 /// requirement. `Effect::GenericEffect` resolution snapshots only
 /// `static_def.modifications` (the `mode` field is inert for a transient grant —
@@ -8842,6 +8899,37 @@ pub(super) fn must_attack_static_definition() -> StaticDefinition {
             mode: StaticMode::MustAttack,
         },
     ])
+}
+
+/// CR 509.1c: Build the `StaticDefinition` for a transient "blocks if able"
+/// requirement. Mirrors [`must_attack_static_definition`]: the `MustBlock` mode
+/// must be carried by an explicit `AddStaticMode` modification so the transient
+/// `Effect::GenericEffect` grant reaches the layer system and `combat.rs`
+/// declare-blockers enforcement (the `mode` field on `StaticDefinition` is inert
+/// for transient grants — `snapshot_transient_modifications` reads only
+/// `modifications`).
+pub(super) fn must_block_static_definition() -> StaticDefinition {
+    use crate::types::statics::StaticMode;
+    StaticDefinition::new(StaticMode::MustBlock).modifications(vec![
+        ContinuousModification::AddStaticMode {
+            mode: StaticMode::MustBlock,
+        },
+    ])
+}
+
+/// CR 508.1d + CR 509.1c: Build both static definitions for the combined
+/// "attacks or blocks ... if able" requirement (Hustle). The requirement is the
+/// composition of an attack requirement (CR 508.1d, obeyed during the
+/// controller's declare-attackers step) and a block requirement (CR 509.1c,
+/// obeyed during a later declare-blockers step) — each is checked independently
+/// at its own step, exactly as the continuous "attacks or blocks each combat if
+/// able" static (`try_parse_scoped_must_attack_block`) emits both
+/// `MustAttack` and `MustBlock`.
+pub(super) fn must_attack_or_block_static_definitions() -> Vec<StaticDefinition> {
+    vec![
+        must_attack_static_definition(),
+        must_block_static_definition(),
+    ]
 }
 
 /// CR 508.1d / CR 509.1c: True iff `lower` (already lowercased, trimmed) is a

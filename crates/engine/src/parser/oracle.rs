@@ -8238,6 +8238,72 @@ mod tests {
         );
     }
 
+    /// CR 508.1d + CR 509.1c + CR 608.2c + CR 611.2c: Hustle —
+    /// "Target creature attacks or blocks this turn if able." The combined
+    /// requirement must bind BOTH a MustAttack and a MustBlock transient static
+    /// to the targeted creature (`affected == ParentTarget`), carry a typed
+    /// creature target, and emit ZERO `Unimplemented` effects. On reverted main
+    /// the "or blocks" conjunct is unrecognized and the whole line falls to
+    /// `Effect::Unimplemented`.
+    #[test]
+    fn hustle_attacks_or_blocks_this_turn_if_able_binds_both_requirements() {
+        use crate::types::ability::TargetFilter;
+        use crate::types::statics::StaticMode;
+
+        let r = parse(
+            "Target creature attacks or blocks this turn if able.",
+            "Hustle",
+            &[],
+            &["Instant"],
+            &[],
+        );
+        assert!(!r.abilities.is_empty(), "Hustle should parse an ability");
+
+        // No effect anywhere in the parsed abilities may be Unimplemented.
+        for ability in &r.abilities {
+            let mut node = Some(ability);
+            while let Some(d) = node {
+                assert!(
+                    !matches!(&*d.effect, Effect::Unimplemented { .. }),
+                    "Hustle must not emit Unimplemented, got {:?}",
+                    d.effect
+                );
+                node = d.sub_ability.as_deref();
+            }
+        }
+
+        let Effect::GenericEffect {
+            static_abilities,
+            target,
+            ..
+        } = &*r.abilities[0].effect
+        else {
+            panic!("Expected GenericEffect, got {:?}", r.abilities[0].effect);
+        };
+
+        assert!(
+            matches!(target, Some(TargetFilter::Typed(_))),
+            "Hustle must carry a typed creature target, got {target:?}"
+        );
+
+        // Both the attack requirement (CR 508.1d) and the block requirement
+        // (CR 509.1c) must be present, each bound to the chosen creature.
+        let has_must_attack = static_abilities.iter().any(|sd| {
+            sd.mode == StaticMode::MustAttack && sd.affected == Some(TargetFilter::ParentTarget)
+        });
+        let has_must_block = static_abilities.iter().any(|sd| {
+            sd.mode == StaticMode::MustBlock && sd.affected == Some(TargetFilter::ParentTarget)
+        });
+        assert!(
+            has_must_attack,
+            "Hustle must bind MustAttack to ParentTarget, got {static_abilities:?}"
+        );
+        assert!(
+            has_must_block,
+            "Hustle must bind MustBlock to ParentTarget, got {static_abilities:?}"
+        );
+    }
+
     #[test]
     fn no_maximum_hand_size_routes_to_static_parser() {
         let r = parse(
