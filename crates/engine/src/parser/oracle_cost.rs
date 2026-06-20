@@ -1073,13 +1073,15 @@ pub(crate) fn try_parse_cost_reduction(text: &str) -> Option<CostReduction> {
 
     let after_mana = after_mana.trim_start();
 
-    // CR 602.2b + CR 601.2f + CR 102.1 timing-gated flat form:
-    // "... less to activate during your turn[s]" / "... less to cast during your
-    // turn[s]". CR 102.1 makes "your turn" the controller-is-active-player test,
-    // so this is exactly the `IsYourTurn` flat conditional (count = Fixed(1)).
-    // Checked before the generic "if [condition]" form because "during your turn"
-    // is not introduced by "if". Hylda's Crown of Winter: "This ability costs {1}
-    // less to activate during your turn."
+    // CR 602.2b: An activated ability's analog to a spell's mana cost is its activation cost.
+    // CR 601.2f: Cost reductions reduce that cost, with the mana component floored at {0}.
+    // CR 102.1: The active player is the player whose turn it is, so "during your
+    //           turn" is the controller-is-active-player test.
+    // Timing-gated flat form ("... less to activate during your turn[s]" / "... less
+    // to cast during your turn[s]") is therefore exactly the `IsYourTurn` flat
+    // conditional (count = Fixed(1)). Checked before the generic "if [condition]"
+    // form because "during your turn" is not introduced by "if". Hylda's Crown of
+    // Winter: "This ability costs {1} less to activate during your turn."
     if nom_on_lower(after_mana, after_mana, |i| {
         value(
             (),

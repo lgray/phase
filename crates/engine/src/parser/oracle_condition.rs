@@ -3,6 +3,7 @@ use std::str::FromStr;
 use crate::parser::oracle_nom::error::OracleError;
 use nom::branch::alt;
 use nom::bytes::complete::{tag, take_until};
+use nom::character::complete::{multispace0, one_of};
 use nom::combinator::{all_consuming, opt, value};
 use nom::sequence::terminated;
 use nom::Parser;
@@ -220,15 +221,20 @@ fn parse_you_attacked_with_filter(text: &str) -> Option<ParsedCondition> {
     if matches!(filter, TargetFilter::Any) {
         return None;
     }
-    // Consume an optional trailing " this turn" with a combinator, then require
-    // the phrase to be fully consumed so unrecognized qualifiers stay an honest
-    // gap. The duration suffix may already be stripped upstream, so it is
-    // optional.
-    let remainder = remainder.trim();
-    let (after, _) = opt(tag::<_, _, OracleError<'_>>("this turn"))
+    // Consume an optional trailing " this turn" and any trailing punctuation with
+    // combinators (no manual string trimming), then require the phrase to be fully
+    // consumed so unrecognized qualifiers stay an honest gap. The duration suffix
+    // may already be stripped upstream, so it is optional.
+    let (remainder, _) = multispace0::<_, OracleError<'_>>(remainder).ok()?;
+    let (remainder, _) = opt(tag::<_, _, OracleError<'_>>("this turn"))
         .parse(remainder)
         .ok()?;
-    if !after.trim().is_empty() {
+    let (remainder, _) = multispace0::<_, OracleError<'_>>(remainder).ok()?;
+    let (remainder, _) = opt(one_of::<_, _, OracleError<'_>>(".,;"))
+        .parse(remainder)
+        .ok()?;
+    let (remainder, _) = multispace0::<_, OracleError<'_>>(remainder).ok()?;
+    if !remainder.is_empty() {
         return None;
     }
     Some(ParsedCondition::YouAttackedWithAtLeast {
