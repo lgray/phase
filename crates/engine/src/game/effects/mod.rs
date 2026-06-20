@@ -18645,4 +18645,120 @@ mod tests {
             "exiled card must receive play-this-turn permission"
         );
     }
+
+    /// CR 122.1 + CR 701.10e + CR 608.2c: Turtle Van's attack trigger — "put a
+    /// +1/+1 counter on target creature that crewed it this turn. Then if that
+    /// creature is a Mutant, Ninja, or Turtle, double the number of +1/+1 counters
+    /// on it." Drives the REAL parser (`parse_oracle_text`) and the REAL chain
+    /// resolver (`resolve_ability_chain`) with the crewing creature as the chosen
+    /// target.
+    ///
+    /// Helper returns the crewing creature's final +1/+1 counter total after the
+    /// chain resolves. `subtype` selects whether the conditional doubling fires.
+    fn run_turtle_van_chain(subtype: &str, starting_counters: u32) -> u32 {
+        use crate::parser::oracle::parse_oracle_text;
+
+        let mut state = GameState::new_two_player(11);
+        // The crewing creature targeted by the trigger.
+        let crewer = create_object(
+            &mut state,
+            CardId(1),
+            PlayerId(0),
+            "Crewer".to_string(),
+            Zone::Battlefield,
+        );
+        {
+            let obj = state.objects.get_mut(&crewer).unwrap();
+            obj.card_types.core_types.push(CoreType::Creature);
+            obj.card_types.subtypes.push(subtype.to_string());
+            obj.power = Some(2);
+            obj.toughness = Some(2);
+            if starting_counters > 0 {
+                obj.counters
+                    .insert(CounterType::Plus1Plus1, starting_counters);
+            }
+        }
+        // The Vehicle is the ability source.
+        let vehicle = create_object(
+            &mut state,
+            CardId(2),
+            PlayerId(0),
+            "Turtle Van".to_string(),
+            Zone::Battlefield,
+        );
+        state
+            .objects
+            .get_mut(&vehicle)
+            .unwrap()
+            .card_types
+            .core_types
+            .push(CoreType::Artifact);
+
+        let parsed = parse_oracle_text(
+            "Whenever this Vehicle attacks, put a +1/+1 counter on target creature that crewed it this turn. Then if that creature is a Mutant, Ninja, or Turtle, double the number of +1/+1 counters on it.\nCrew 1",
+            "Turtle Van",
+            &[],
+            &["Artifact".to_string()],
+            &["Vehicle".to_string()],
+        );
+        let trigger = parsed
+            .triggers
+            .first()
+            .expect("Turtle Van must parse an attack trigger");
+        let execute = trigger
+            .execute
+            .as_deref()
+            .expect("attack trigger must carry an execute ability");
+
+        let ability = crate::game::ability_utils::build_resolved_from_def_with_targets(
+            execute,
+            vehicle,
+            PlayerId(0),
+            vec![TargetRef::Object(crewer)],
+        );
+
+        let mut events = Vec::new();
+        resolve_ability_chain(&mut state, &ability, &mut events, 0).unwrap();
+
+        state.objects[&crewer]
+            .counters
+            .get(&CounterType::Plus1Plus1)
+            .copied()
+            .unwrap_or(0)
+    }
+
+    #[test]
+    fn turtle_van_doubles_counters_on_matching_crewer() {
+        // Turtle crewer starting with 2 counters: PutCounter → 3, then double → 6.
+        // 6 is distinct from the no-double result (3) AND a no-op (2), so reverting
+        // either the condition wiring or the MultiplyCounter→ParentTarget rewrite
+        // flips this assertion.
+        assert_eq!(
+            run_turtle_van_chain("Turtle", 2),
+            6,
+            "Turtle crewer: 2 + 1 = 3, doubled to 6"
+        );
+        // Ninja and Mutant must match the same subtype disjunction.
+        assert_eq!(
+            run_turtle_van_chain("Ninja", 0),
+            2,
+            "Ninja: 0 + 1 = 1, doubled to 2"
+        );
+        assert_eq!(
+            run_turtle_van_chain("Mutant", 1),
+            4,
+            "Mutant: 1 + 1 = 2, doubled to 4"
+        );
+    }
+
+    #[test]
+    fn turtle_van_does_not_double_counters_on_nonmatching_crewer() {
+        // A Wizard is none of Mutant/Ninja/Turtle: the conditional doubling must
+        // NOT fire. Only the PutCounter applies: 2 + 1 = 3 (no double to 6).
+        assert_eq!(
+            run_turtle_van_chain("Wizard", 2),
+            3,
+            "non-matching crewer: only the +1/+1 counter is added, no doubling"
+        );
+    }
 }

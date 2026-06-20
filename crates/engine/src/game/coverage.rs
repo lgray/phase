@@ -2146,12 +2146,26 @@ fn effect_details(effect: &Effect) -> Vec<(String, String)> {
             ));
             d.push(("target".into(), fmt_target(target)));
         }
-        Effect::DoublePT { mode, target } => {
+        Effect::DoublePT {
+            mode,
+            target,
+            factor,
+        } => {
             d.push(("mode".into(), fmt_double_pt_mode(mode).into()));
+            if *factor != 2 {
+                d.push(("factor".into(), factor.to_string()));
+            }
             d.push(("target".into(), fmt_target(target)));
         }
-        Effect::DoublePTAll { mode, target } => {
+        Effect::DoublePTAll {
+            mode,
+            target,
+            factor,
+        } => {
             d.push(("mode".into(), fmt_double_pt_mode(mode).into()));
+            if *factor != 2 {
+                d.push(("factor".into(), factor.to_string()));
+            }
             d.push(("filter".into(), fmt_target(target)));
         }
         Effect::DiscardCard { count, target } => {

@@ -11447,7 +11447,15 @@ fn replace_target_with_parent(effect: &mut Effect) {
         Effect::UnattachAll { target, .. } if !matches!(target, TargetFilter::LastCreated) => {
             *target = TargetFilter::ParentTarget;
         }
-        Effect::PutCounter { target, .. } | Effect::RemoveCounter { target, .. } => {
+        // CR 122.1 + CR 701.10e + CR 608.2c: the counter-target anaphor family.
+        // A bare "it"/"that creature" on a counter put/remove/multiply clause that
+        // follows a typed targeted clause binds to that parent target (Turtle Van:
+        // "put a +1/+1 counter on target creature …, then … double the number of
+        // +1/+1 counters on it"). `MultiplyCounter` shares the same anaphor as its
+        // `PutCounter`/`RemoveCounter` siblings.
+        Effect::PutCounter { target, .. }
+        | Effect::RemoveCounter { target, .. }
+        | Effect::MultiplyCounter { target, .. } => {
             *target = TargetFilter::ParentTarget;
         }
         // CR 608.2c: a self-referential zone change ("Exile Venture Forth with
@@ -27130,6 +27138,7 @@ mod tests {
             Effect::DoublePT {
                 mode: DoublePTMode::Power,
                 target: TargetFilter::Typed(_),
+                factor: 2,
             }
         ));
     }
@@ -27142,6 +27151,7 @@ mod tests {
             Effect::DoublePTAll {
                 mode: DoublePTMode::PowerAndToughness,
                 target: TargetFilter::Typed(_),
+                factor: 2,
             }
         ));
     }
@@ -27154,6 +27164,7 @@ mod tests {
             Effect::DoublePTAll {
                 mode: DoublePTMode::Toughness,
                 target: TargetFilter::Typed(_),
+                factor: 2,
             }
         ));
     }
@@ -27166,6 +27177,7 @@ mod tests {
             Effect::DoublePT {
                 mode: DoublePTMode::Power,
                 target: TargetFilter::SelfRef,
+                factor: 2,
             }
         ));
     }
@@ -27178,6 +27190,7 @@ mod tests {
             Effect::DoublePT {
                 mode: DoublePTMode::PowerAndToughness,
                 target: TargetFilter::SelfRef,
+                factor: 2,
             }
         ));
     }
@@ -27193,6 +27206,7 @@ mod tests {
             Effect::DoublePT {
                 mode: DoublePTMode::Power,
                 target: TargetFilter::SelfRef,
+                factor: 2,
             }
         ));
     }
@@ -27205,6 +27219,7 @@ mod tests {
             Effect::DoublePT {
                 mode: DoublePTMode::PowerAndToughness,
                 target: TargetFilter::SelfRef,
+                factor: 2,
             }
         ));
     }
@@ -27218,6 +27233,7 @@ mod tests {
             Effect::DoublePT {
                 mode: DoublePTMode::Power,
                 target: TargetFilter::Typed(_),
+                factor: 2,
             }
         ));
     }

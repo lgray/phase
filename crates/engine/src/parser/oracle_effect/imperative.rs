@@ -9,7 +9,7 @@ use nom::Parser;
 
 use super::counter::{
     parse_counter_anaphor, try_parse_double_effect, try_parse_move_counters_from,
-    try_parse_put_counter, try_parse_remove_counter,
+    try_parse_multiply_pt_effect, try_parse_put_counter, try_parse_remove_counter,
 };
 use super::lower::parse_for_each_multiplier_prefix;
 use super::mana::{try_parse_activate_only_condition, try_parse_add_mana_effect};
@@ -6423,6 +6423,12 @@ pub(super) fn parse_imperative_family_ast(
 
         // CR 701.10: "double the power/toughness" or "double the number of counters"
         "double" => try_parse_double_effect(lower, ctx).map(ImperativeFamilyAst::GainKeyword),
+
+        // CR 613.4c: "triple target creature's power and toughness" (Tifa's Limit
+        // Break — Final Heaven). "Triple" only applies to P/T (no counter/life/mana
+        // triple cards exist), so it routes straight to the shared P/T-multiply arm.
+        // allow-noncombinator: first-word verb dispatch arm (sibling of "double" above)
+        "triple" => try_parse_multiply_pt_effect(lower, ctx).map(ImperativeFamilyAst::GainKeyword),
 
         // Zone-change/counter verbs (CR 701)
         "destroy" => parse_zone_counter_ast(text, lower, ctx).map(ImperativeFamilyAst::ZoneCounter),

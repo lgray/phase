@@ -5499,6 +5499,83 @@ mod tests {
     /// UNRESTRICTED. This is the discriminating assertion: a `SpellType("Artifact")`
     /// lowering would wrongly forbid paying for any ability, so the `ability: Any`
     /// scope is exactly what keeps ability activation payable.
+    /// CR 613.4c + CR 701.10a: Tifa's Limit Break (Tiered) — all three tiers
+    /// parse with zero Unimplemented. Somersault → `Pump`, Meteor Strikes →
+    /// `DoublePT factor:2`, Final Heaven → `DoublePT factor:3`. The discriminating
+    /// assertion is the factor-3 ability: reverting the multiplier parameterization
+    /// drops the "Triple" tier to `Unimplemented`.
+    #[test]
+    fn tifas_limit_break_tiers_parse_double_and_triple() {
+        let r = parse_oracle_text(
+            "Tiered (Choose one additional cost.)\n\u{2022} Somersault \u{2014} {0} \u{2014} Target creature gets +2/+2 until end of turn.\n\u{2022} Meteor Strikes \u{2014} {2} \u{2014} Double target creature's power and toughness until end of turn.\n\u{2022} Final Heaven \u{2014} {6}{G} \u{2014} Triple target creature's power and toughness until end of turn.",
+            "Tifa's Limit Break",
+            &[],
+            &["Sorcery".to_string()],
+            &[],
+        );
+        let unimpl = r
+            .abilities
+            .iter()
+            .filter(|ab| matches!(&*ab.effect, Effect::Unimplemented { .. }))
+            .count();
+        assert_eq!(unimpl, 0, "Tifa's Limit Break must have zero Unimplemented");
+        let factors: Vec<u32> = r
+            .abilities
+            .iter()
+            .filter_map(|ab| match &*ab.effect {
+                Effect::DoublePT { factor, .. } => Some(*factor),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            factors.contains(&2) && factors.contains(&3),
+            "expected a factor-2 (double) and a factor-3 (triple) DoublePT, got {factors:?}"
+        );
+    }
+
+    /// CR 122.1 + CR 701.10e + CR 608.2c: Turtle Van's attack trigger — the
+    /// reflexive "Then if that creature is a Mutant, Ninja, or Turtle, double the
+    /// number of +1/+1 counters on it" must parse as a conditional `MultiplyCounter`
+    /// sub-ability targeting the parent (the crewing creature), not silently drop.
+    #[test]
+    fn turtle_van_attack_trigger_conditional_double_counters() {
+        let r = parse_oracle_text(
+            "Whenever this Vehicle attacks, put a +1/+1 counter on target creature that crewed it this turn. Then if that creature is a Mutant, Ninja, or Turtle, double the number of +1/+1 counters on it.\nCrew 1",
+            "Turtle Van",
+            &[],
+            &["Artifact".to_string()],
+            &["Vehicle".to_string()],
+        );
+        let trigger = r.triggers.first().expect("attack trigger");
+        let execute = trigger.execute.as_deref().expect("execute ability");
+        assert!(
+            matches!(&*execute.effect, Effect::PutCounter { .. }),
+            "head clause must be PutCounter, got {:?}",
+            execute.effect
+        );
+        let sub = execute
+            .sub_ability
+            .as_deref()
+            .expect("conditional sub-ability");
+        // The doubling effect targets the parent (crewing creature), not the source.
+        let Effect::MultiplyCounter { target, .. } = &*sub.effect else {
+            panic!("expected MultiplyCounter sub-ability, got {:?}", sub.effect);
+        };
+        assert_eq!(
+            *target,
+            TargetFilter::ParentTarget,
+            "the doubling must bind to the parent target (crewing creature)"
+        );
+        // The subtype gate must be the full Mutant/Ninja/Turtle disjunction.
+        let Some(AbilityCondition::TargetMatchesFilter { filter, .. }) = &sub.condition else {
+            panic!("expected TargetMatchesFilter gate, got {:?}", sub.condition);
+        };
+        assert!(
+            matches!(filter, TargetFilter::Or { filters } if filters.len() == 3),
+            "gate must be an Or of three subtypes, got {filter:?}"
+        );
+    }
+
     #[test]
     fn hydraulic_helper_full_card_supported_with_artifact_spend_restriction() {
         use crate::types::ability::{ManaProduction, ManaSpendRestriction};
