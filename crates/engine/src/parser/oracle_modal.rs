@@ -520,8 +520,15 @@ fn parse_modal_static_condition(
 fn parse_modal_additional_cost_condition(
     input: &str,
 ) -> nom::IResult<&str, ModalSelectionCondition, OracleError<'_>> {
-    if let Ok((rest, _)) =
-        tag::<_, _, OracleError<'_>>("this spell's additional cost was paid").parse(input)
+    if let Ok((rest, _)) = alt((
+        tag::<_, _, OracleError<'_>>("this spell's additional cost was paid"),
+        // CR 601.2b/f: Teamwork is an optional additional cast cost; the modal
+        // "choose both instead" upgrade gates on the same `additional_cost_paid`
+        // flag (read via `AdditionalCostPaymentSource::Any`) as kicker/bargain.
+        tag("this spell was cast using teamwork"),
+        tag("it was cast using teamwork"),
+    ))
+    .parse(input)
     {
         return Ok((
             rest,

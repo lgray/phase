@@ -133,11 +133,13 @@ pub(super) fn handle_return_to_hand_for_cost(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn handle_tap_creatures_for_spell_cost(
     state: &mut GameState,
     player: PlayerId,
     pending_cast: PendingCast,
     count: usize,
+    power_threshold: Option<i32>,
     creatures: &[ObjectId],
     chosen: &[ObjectId],
     events: &mut Vec<GameEvent>,
@@ -147,6 +149,7 @@ pub(super) fn handle_tap_creatures_for_spell_cost(
         player,
         pending_cast,
         count,
+        power_threshold,
         creatures,
         chosen,
         events,

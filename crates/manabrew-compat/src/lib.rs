@@ -2001,7 +2001,9 @@ mod tests {
             choosable_objects(
                 &WaitingFor::PayCost {
                     player: PlayerId(0),
-                    kind: PayCostKind::TapCreatures,
+                    kind: PayCostKind::TapCreatures {
+                        power_threshold: None,
+                    },
                     choices: vec![ObjectId(30)],
                     count: 1,
                     min_count: 0,

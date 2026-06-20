@@ -1773,27 +1773,51 @@ pub(crate) fn handle_blight_choice(
 }
 
 /// CR 702.34a: Tap creatures cost — complete the tap-creatures cost after player selection.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn handle_tap_creatures_for_spell_cost(
     state: &mut GameState,
     player: PlayerId,
     pending: PendingCast,
     count: usize,
+    power_threshold: Option<i32>,
     legal_creatures: &[ObjectId],
     chosen: &[ObjectId],
     events: &mut Vec<GameEvent>,
 ) -> Result<WaitingFor, EngineError> {
-    if chosen.len() != count {
-        return Err(EngineError::InvalidAction(format!(
-            "Must tap exactly {} creature(s), got {}",
-            count,
-            chosen.len()
-        )));
-    }
+    // CR 601.2b: Validate the chosen set against the cost's requirement shape.
+    // `power_threshold == None` is fixed-count (tap exactly `count`); `Some(n)`
+    // is the aggregate Crew/Saddle/Teamwork form (tap any number whose total
+    // positive power, CR 208.1, is at least `n`).
     for id in chosen {
         if !legal_creatures.contains(id) {
             return Err(EngineError::InvalidAction(
                 "Selected creature not eligible for tapping".to_string(),
             ));
+        }
+    }
+    match power_threshold {
+        None => {
+            if chosen.len() != count {
+                return Err(EngineError::InvalidAction(format!(
+                    "Must tap exactly {} creature(s), got {}",
+                    count,
+                    chosen.len()
+                )));
+            }
+        }
+        Some(threshold) => {
+            let total_positive_power: i32 = chosen
+                .iter()
+                .filter_map(|id| state.objects.get(id))
+                .map(|obj| obj.power.unwrap_or(0))
+                .filter(|&p| p > 0)
+                .sum();
+            if total_positive_power < threshold {
+                return Err(EngineError::InvalidAction(format!(
+                    "Tapped creatures' total power {total_positive_power} is less than the \
+                     required {threshold}"
+                )));
+            }
         }
     }
 
@@ -4061,9 +4085,12 @@ fn pay_additional_cost_with_source(
                 state, player, amount, pending,
             );
         }
-        AbilityCost::TapCreatures { count, ref filter } => {
-            // CR 702.34a: Tap untapped creatures matching filter as a cost.
-            // The source is eligible unless a {T} cost is also present in the
+        AbilityCost::TapCreatures {
+            ref requirement,
+            ref filter,
+        } => {
+            // CR 601.2b: Tap untapped creatures matching filter as a cost. The
+            // source is eligible unless a {T} cost is also present in the
             // activation cost (in which case the source was already tapped, so
             // !obj.tapped naturally excludes it).
             let eligible: Vec<ObjectId> = state
@@ -4086,17 +4113,56 @@ fn pay_additional_cost_with_source(
                     })
                 })
                 .collect();
-            if eligible.len() < count as usize {
-                return Err(EngineError::ActionNotAllowed(
-                    "Not enough eligible creatures to tap".into(),
-                ));
-            }
+            // CR 601.2b: The two requirement shapes drive different prompts.
+            // Fixed-count taps exactly `count`; aggregate (Crew/Saddle/Teamwork)
+            // taps any number whose total positive power (CR 208.1) meets the
+            // threshold, so the player may select up to every eligible creature.
+            let (kind, count, min_count) = match requirement {
+                crate::types::ability::TapCreaturesRequirement::Count { count } => {
+                    if eligible.len() < *count as usize {
+                        return Err(EngineError::ActionNotAllowed(
+                            "Not enough eligible creatures to tap".into(),
+                        ));
+                    }
+                    (
+                        PayCostKind::TapCreatures {
+                            power_threshold: None,
+                        },
+                        *count as usize,
+                        0,
+                    )
+                }
+                crate::types::ability::TapCreaturesRequirement::Aggregate {
+                    stat: crate::types::ability::TapCreaturesAggregateStat::TotalPower,
+                    comparator,
+                    value,
+                } => {
+                    let total_positive_power: i32 = eligible
+                        .iter()
+                        .filter_map(|id| state.objects.get(id))
+                        .map(|obj| obj.power.unwrap_or(0))
+                        .filter(|&p| p > 0)
+                        .sum();
+                    if !comparator.evaluate(total_positive_power, *value) {
+                        return Err(EngineError::ActionNotAllowed(
+                            "Not enough total creature power to pay this cost".into(),
+                        ));
+                    }
+                    (
+                        PayCostKind::TapCreatures {
+                            power_threshold: Some(*value),
+                        },
+                        eligible.len(),
+                        0,
+                    )
+                }
+            };
             return Ok(WaitingFor::PayCost {
                 player,
-                kind: PayCostKind::TapCreatures,
+                kind,
                 choices: eligible,
-                count: count as usize,
-                min_count: 0,
+                count,
+                min_count,
                 resume: CostResume::Spell {
                     spell: Box::new(pending),
                 },
@@ -4410,7 +4476,7 @@ pub(super) fn effective_conspire_additional_cost(
         .any(|keyword| matches!(keyword, Keyword::Conspire))
         .then(|| AdditionalCost::Optional {
             cost: AbilityCost::TapCreatures {
-                count: 2,
+                requirement: crate::types::ability::TapCreaturesRequirement::count(2),
                 filter: crate::database::synthesis::conspire_tap_filter(),
             },
             repeatability: crate::types::ability::AdditionalCostRepeatability::Once,
@@ -9120,10 +9186,18 @@ mod tests {
         match waiting {
             WaitingFor::OptionalCostChoice { cost, .. } => match cost {
                 AdditionalCost::Optional {
-                    cost: AbilityCost::TapCreatures { count, filter },
+                    cost:
+                        AbilityCost::TapCreatures {
+                            requirement,
+                            filter,
+                        },
                     repeatability: crate::types::ability::AdditionalCostRepeatability::Once,
                 } => {
-                    assert_eq!(count, 2, "conspire taps exactly two creatures");
+                    assert_eq!(
+                        requirement.fixed_count(),
+                        Some(2),
+                        "conspire taps exactly two creatures"
+                    );
                     match filter {
                         TargetFilter::Typed(tf) => {
                             assert!(tf.type_filters.contains(&TypeFilter::Creature));

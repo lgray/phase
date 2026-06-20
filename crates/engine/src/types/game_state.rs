@@ -2460,7 +2460,17 @@ pub enum PayCostKind {
         #[serde(default)]
         selection: CounterCostSelection,
     },
-    TapCreatures,
+    /// CR 601.2b: Tap creatures as a cost. `power_threshold` distinguishes the
+    /// two `TapCreaturesRequirement` shapes at the interactive payment layer:
+    /// `None` is the fixed-count form (player taps exactly `WaitingFor::PayCost`
+    /// `count` creatures; Conspire/Convoke), while `Some(n)` is the aggregate
+    /// "tap any number with total power n or greater" form (Crew CR 702.122a /
+    /// Saddle CR 702.171a / Teamwork) — the chosen set may be any size whose
+    /// total positive power (CR 208.1) is at least `n`.
+    TapCreatures {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        power_threshold: Option<i32>,
+    },
     Behold {
         action: BeholdCostAction,
     },
@@ -8316,7 +8326,9 @@ mod tests {
         // variant here does not lose mid-cast tracking.
         let tap_mana = WaitingFor::PayCost {
             player: PlayerId(0),
-            kind: PayCostKind::TapCreatures,
+            kind: PayCostKind::TapCreatures {
+                power_threshold: None,
+            },
             choices: vec![ObjectId(1)],
             count: 1,
             min_count: 0,
