@@ -1332,6 +1332,17 @@
     "red": "Red",
     "green": "Green"
   },
+  "roomDoor": {
+    "title": "Choose a Door",
+    "subtitle": "Pick which door of the Room to act on",
+    "confirm": "Confirm",
+    "option": "{{op}} {{door}}",
+    "unlock": "Unlock",
+    "lock": "Lock",
+    "lockOrUnlock": "Lock or unlock",
+    "left": "left door",
+    "right": "right door"
+  },
   "dialogShell": {
     "eyebrow": "Game Choice",
     "restoreDialog": "Restore dialog",

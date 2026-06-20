@@ -1298,6 +1298,17 @@
     "red": "Rosso",
     "green": "Verde"
   },
+  "roomDoor": {
+    "title": "Scegli una porta",
+    "subtitle": "Scegli su quale porta della Stanza agire",
+    "confirm": "Conferma",
+    "option": "{{op}} {{door}}",
+    "unlock": "Sblocca",
+    "lock": "Blocca",
+    "lockOrUnlock": "Blocca o sblocca",
+    "left": "porta sinistra",
+    "right": "porta destra"
+  },
   "dialogShell": {
     "eyebrow": "Scelta di gioco",
     "restoreDialog": "Ripristina finestra",

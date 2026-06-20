@@ -1298,6 +1298,17 @@
     "red": "Rot",
     "green": "Grün"
   },
+  "roomDoor": {
+    "title": "Wähle eine Tür",
+    "subtitle": "Wähle, auf welche Tür des Raums du einwirkst",
+    "confirm": "Bestätigen",
+    "option": "{{op}} {{door}}",
+    "unlock": "Aufschließen",
+    "lock": "Abschließen",
+    "lockOrUnlock": "Auf- oder abschließen",
+    "left": "linke Tür",
+    "right": "rechte Tür"
+  },
   "dialogShell": {
     "eyebrow": "Spielentscheidung",
     "restoreDialog": "Dialog wiederherstellen",

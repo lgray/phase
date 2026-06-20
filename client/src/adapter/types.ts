@@ -349,6 +349,16 @@ export type ManaType = "White" | "Blue" | "Black" | "Red" | "Green" | "Colorless
 export type ConvokeMode = "Convoke" | "Waterbend" | "Improvise" | "Delve";
 export type RoomDoor = "Left" | "Right";
 
+// CR 709.5f-g: Operation a lock/unlock-door effect performs on a Room door
+// (half). Mirrors the engine `DoorLockOp` enum (`#[serde(tag = "type")]` —
+// internally tagged, so serializes as `{ "type": "Unlock" }`). `LockOrUnlock`
+// is the "lock or unlock a door" disjunction where the player chooses both the
+// operation and the half at resolution (Keys to the House, Marina Vendrell).
+export type DoorLockOp =
+  | { type: "Unlock" }
+  | { type: "Lock" }
+  | { type: "LockOrUnlock" };
+
 /**
  * Display-layer projection of the engine's `ManaProduction` enum. One variant
  * per producer shape so colorless and commander-identity producers reach the
@@ -1317,6 +1327,13 @@ export type WaitingFor =
   | { type: "ChooseDungeon"; data: { player: PlayerId; options: DungeonId[] } }
   | { type: "ChooseDungeonRoom"; data: { player: PlayerId; dungeon: DungeonId; options: number[]; option_names: string[] } }
   | { type: "SpecializeColor"; data: { player: PlayerId; object_id: ObjectId; options: ManaColor[] } }
+  // CR 709.5f-g: Resolving lock/unlock-door effect needs the player to choose
+  // which door (half) of the targeted Room to act on. `options` is the engine's
+  // `Vec<(DoorLockOp, RoomDoor)>` — each tuple serializes as a JSON array
+  // `[op, door]`. A fixed-op effect (Unlock / Lock) lists one operation across
+  // eligible doors; a "lock or unlock" effect lists both. Answered with
+  // `GameAction::ChooseRoomDoor`.
+  | { type: "ChooseRoomDoor"; data: { player: PlayerId; object_id: ObjectId; options: [DoorLockOp, RoomDoor][] } }
   | { type: "CategoryChoice"; data: {
       player: PlayerId;
       target_player: PlayerId;
@@ -1622,6 +1639,9 @@ export type GameAction =
   | { type: "ChooseDungeonRoom"; data: { room_index: number } }
   | { type: "ChooseSpecializeColor"; data: { color: ManaColor } }
   | { type: "UnlockRoomDoor"; data: { object_id: ObjectId; door: RoomDoor } }
+  // CR 709.5f-g: Answer to WaitingFor::ChooseRoomDoor — the chosen (op, door)
+  // pair, which must be one of the prompt's `options`.
+  | { type: "ChooseRoomDoor"; data: { object_id: ObjectId; op: DoorLockOp; door: RoomDoor } }
   | { type: "TapForConvoke"; data: { object_id: ObjectId; mana_type: ManaType } }
   | { type: "SelectCategoryPermanents"; data: { choices: (ObjectId | null)[] } }
   | { type: "ChooseX"; data: { value: number } }
