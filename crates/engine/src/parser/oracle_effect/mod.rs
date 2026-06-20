@@ -134,7 +134,10 @@ use self::sequence::{
     parse_followup_continuation_ast, parse_intrinsic_continuation_ast, split_clause_sequence,
     try_parse_repeat_process_for_keywords, try_parse_same_is_true_continuation,
 };
-use self::subject::{try_parse_subject_predicate_ast, try_parse_targeted_controller_gain_life};
+use self::subject::{
+    try_parse_each_deals_damage_equal_to_power, try_parse_subject_predicate_ast,
+    try_parse_targeted_controller_gain_life,
+};
 use crate::parser::oracle_ir::ast::*;
 pub(crate) use crate::parser::oracle_ir::context::ParseContext;
 use crate::parser::oracle_ir::effect_chain::{ClauseIr, EffectChainIr, SpecialClause};
@@ -3548,7 +3551,86 @@ fn try_parse_have_causative(
         return Some(rebind_controller_to_original(clause));
     }
 
+    // Pattern C: "have <subject>'s base power become equal to <quantity>"
+    if let Some(clause) = try_parse_have_base_pt_become(tp) {
+        return Some(clause);
+    }
+
     None
+}
+
+/// CR 613.4b + CR 208.1 + CR 608.2h + CR 611.2: Parse the causative
+/// "have <subject>'s base power become equal to <quantity>" construction
+/// (Belligerent Yearling: "you may have this creature's base power become equal
+/// to that creature's power until end of turn").
+///
+/// This is a base-P/T *set* effect (CR 613.4b, layer 7b), not an additive pump:
+/// the subject's base power is overwritten with the resolution-time value of the
+/// quantity (CR 608.2h — the value is determined once when the effect applies).
+/// It composes from the existing `Effect::Animate` building block, which already
+/// routes `PtValue::Quantity` to a `SetPowerDynamic`/`SetToughnessDynamic` layer
+/// modification; the `animate` resolver snapshots resolution-only-scoped
+/// quantities ("that creature's power" → `Power { CostPaidObject }`) into a fixed
+/// `SetPower` at resolution because such referents cannot be re-resolved at later
+/// layer-evaluation passes.
+///
+/// `base power` / `base power and base toughness` are each an independent `alt()`
+/// arm so the whole class — any "have ~'s base power [and base toughness] become
+/// equal to <quantity>" — is covered, not just one card. The subject is the
+/// ability source (the self-ref "~" / "this creature" / "it" left by the trigger
+/// frame), so the resulting `Effect::Animate` targets `TargetFilter::None`
+/// (= the source).
+fn try_parse_have_base_pt_become(tp: TextPair<'_>) -> Option<ParsedEffectClause> {
+    // Strip a trailing duration first so the quantity parser sees a clean tail.
+    let (body, duration) = strip_trailing_duration(tp.original);
+    let body_lower = body.to_lowercase();
+
+    let parsed = nom_on_lower(body, &body_lower, |i| {
+        let (i, _) = tag("have ").parse(i)?;
+        // CR 113.7 + CR 201.4b: self-referential subject (the ability source).
+        let (i, _) = alt((
+            tag("~"),
+            tag("this creature"),
+            tag("this permanent"),
+            tag("it"),
+        ))
+        .parse(i)?;
+        // CR 208.1: which base characteristic(s) are set. Factored per the nom
+        // mandate (PATTERNS.md §8b) into independent axes — shared prefix
+        // "'s base power", an optional " and [base] toughness" axis, the
+        // become/becomes copula, and the shared " equal to " suffix — so the arm
+        // count is the SUM of per-axis choices, not their product.
+        let (i, _) = tag("'s base power").parse(i)?;
+        let (i, toughness) =
+            opt(alt((tag(" and base toughness"), tag(" and toughness")))).parse(i)?;
+        let set_toughness = toughness.is_some();
+        let (i, _) = tag(" become").parse(i)?;
+        let (i, _) = opt(tag("s")).parse(i)?;
+        let (i, _) = tag(" equal to ").parse(i)?;
+        let (i, qty) = nom_quantity::parse_quantity_ref(i)?;
+        let (i, _) = eof.parse(i)?;
+        Ok((i, (set_toughness, qty)))
+    })?;
+
+    let (set_toughness, qty) = parsed.0;
+    let value_expr = PtValue::Quantity(QuantityExpr::Ref { qty });
+    let effect = Effect::Animate {
+        power: Some(value_expr.clone()),
+        toughness: set_toughness.then_some(value_expr),
+        types: vec![],
+        remove_types: vec![],
+        target: TargetFilter::None,
+        keywords: vec![],
+    };
+
+    // CR 611.2 + CR 514.2: this set is a continuous effect from the resolution of
+    // a (triggered) ability. The card's "until end of turn" suffix is normally
+    // stripped onto the ability frame before this body parses; default to end of
+    // turn when no explicit suffix reaches here, an explicit suffix wins.
+    let duration = duration.or(Some(Duration::UntilEndOfTurn));
+    let mut clause = parsed_clause(effect);
+    clause.duration = duration;
+    Some(clause)
 }
 
 /// CR 109.5 + CR 121.3a: Rebind a recursed clause's `TargetFilter::Controller`
@@ -4466,6 +4548,21 @@ fn parse_effect_clause_inner(text: &str, ctx: &mut ParseContext) -> ParsedEffect
     }
     if let Some(clause) = try_parse_player_draws_and_gains_control(text, ctx) {
         return clause;
+    }
+
+    // CR 810: the "two target creatures your team controls each deal damage equal
+    // to their power to target creature" shape (Combo Attack). Two-Headed Giant
+    // team control is not the caster's controller, so this is unmodeled and
+    // `try_parse_each_deals_damage_equal_to_power` returns an explicit
+    // `Unimplemented`. Intercept it HERE, before the generic exactly-two-targets
+    // parser further down would mis-accept the leading "two target creatures …" as
+    // a bare `TargetOnly` clause. The supported "you control" variants return the
+    // real `EachDealsDamageEqualToPower` effect (not `Unimplemented`) and fall
+    // through to their dedicated dispatch in `lower_imperative_clause`.
+    if let Some(clause) = try_parse_each_deals_damage_equal_to_power(text) {
+        if matches!(clause.effect, Effect::Unimplemented { .. }) {
+            return clause;
+        }
     }
 
     // CR 608.2c: Deconjugate bare third-person verbs that appear after ", then" splits
@@ -8857,6 +8954,14 @@ fn lower_imperative_clause(text: &str, ctx: &mut ParseContext) -> ParsedEffectCl
     // "Its controller gains life equal to its power/toughness" — subject must be preserved
     // because the life recipient is not the caster but the targeted permanent's controller.
     if let Some(clause) = try_parse_targeted_controller_gain_life(text) {
+        return clause;
+    }
+
+    // CR 120.1 + CR 115.1d: "Up to two target creatures you control each deal
+    // damage equal to their power to target creature." The targeted source set
+    // and the recipient must both be preserved as independent targets, so this
+    // runs before generic subject stripping / damage-compound splitting.
+    if let Some(clause) = try_parse_each_deals_damage_equal_to_power(text) {
         return clause;
     }
 
@@ -21030,6 +21135,77 @@ mod tests {
     use super::*;
     use crate::parser::parse_oracle_text;
 
+    // CR 120.1 + CR 115.1d: "Up to two target creatures you control each deal
+    // damage equal to their power to target creature" (Band Together) parses to
+    // `EachDealsDamageEqualToPower` with a you-control creature source filter and
+    // a creature recipient, and an "up to two" (0..=2) multi-target spec.
+    #[test]
+    fn each_deals_damage_equal_to_power_up_to_two() {
+        use crate::types::ability::ControllerRef;
+        let def = parse_effect_chain(
+            "Up to two target creatures you control each deal damage equal to their power to another target creature.",
+            AbilityKind::Spell,
+        );
+        let Effect::EachDealsDamageEqualToPower { sources, recipient } = &*def.effect else {
+            panic!("expected EachDealsDamageEqualToPower, got {:?}", def.effect);
+        };
+        // CR 115.1: the source set is a creature controlled by the caster.
+        let TargetFilter::Typed(tf) = sources else {
+            panic!("expected Typed source filter, got {sources:?}");
+        };
+        assert!(tf.type_filters.contains(&TypeFilter::Creature));
+        assert_eq!(tf.controller, Some(ControllerRef::You));
+        // CR 115.1: the recipient is a creature ("another target creature").
+        assert!(matches!(recipient, TargetFilter::Typed(rt)
+            if rt.type_filters.contains(&TypeFilter::Creature)));
+        // CR 115.1d: "up to two" → 0..=2.
+        assert_eq!(def.multi_target, Some(MultiTargetSpec::fixed(0, 2)));
+    }
+
+    // CR 120.1: The in-scope cards' damage lines parse to the new effect (not
+    // `Unimplemented`), with the recipient's controller restriction carried on
+    // the recipient filter. Combo Attack ("Two target creatures *your team*
+    // controls") is intentionally out of scope — the Two-Headed Giant team scope
+    // is a separate, niche axis and is left as a known gap rather than mismodeled.
+    #[test]
+    fn each_deals_damage_equal_to_power_all_in_scope_cards() {
+        let lines = [
+            // Allies at Last
+            "Up to two target creatures you control each deal damage equal to their power to target creature an opponent controls.",
+            // Band Together
+            "Up to two target creatures you control each deal damage equal to their power to another target creature.",
+            // Friendly Rivalry / Graceful Takedown
+            "Up to two target creatures you control each deal damage equal to their power to target creature you don't control.",
+        ];
+        for line in lines {
+            let effect = parse_effect(line);
+            assert!(
+                matches!(effect, Effect::EachDealsDamageEqualToPower { .. }),
+                "line did not parse to EachDealsDamageEqualToPower: {line:?} -> {effect:?}"
+            );
+        }
+    }
+
+    // CR 810: Combo Attack's "two target creatures *your team* controls" must
+    // FAIL CLOSED (Unimplemented), not silently collapse to "you control" —
+    // Two-Headed Giant team control is not the caster's controller, so parsing
+    // it as one-player targeting would damage the wrong objects. Guards against
+    // re-introducing the team→you normalization.
+    #[test]
+    fn each_deals_damage_team_scope_fails_closed_not_mistargeted() {
+        let effect = parse_effect(
+            "Two target creatures your team controls each deal damage equal to their power to target creature.",
+        );
+        assert!(
+            !matches!(effect, Effect::EachDealsDamageEqualToPower { .. }),
+            "team-scope source must not be parsed as the each-deals effect, got {effect:?}"
+        );
+        assert!(
+            matches!(effect, Effect::Unimplemented { .. }),
+            "team-scope line must fall through to Unimplemented, got {effect:?}"
+        );
+    }
+
     // CR 701.20a: a comma+or disjunctive reveal-until filter list ("X card, a Y,
     // or a Z card") must split into an Or of three distinct filters. Building
     // block exercised with a non-WHO 3-element list; An Unearthly Child is the
@@ -30493,6 +30669,105 @@ mod tests {
             value: expected.clone(),
         }));
         assert!(mods.contains(&ContinuousModification::SetToughnessDynamic { value: expected }));
+    }
+
+    /// CR 613.4b + CR 208.1 + CR 608.2h: "have ~'s base power become equal to
+    /// <quantity>" — the base-power set causative (Belligerent Yearling class).
+    /// Parses to a self-targeted `Effect::Animate` whose `power` is the dynamic
+    /// quantity and whose `toughness` stays `None` (power only).
+    #[test]
+    fn effect_have_base_power_become_equal_to_that_creatures_power() {
+        let def = parse_effect_chain(
+            "have ~'s base power become equal to that creature's power until end of turn",
+            AbilityKind::Spell,
+        );
+        let Effect::Animate {
+            power: Some(PtValue::Quantity(power)),
+            toughness,
+            target,
+            types,
+            ..
+        } = def.effect.as_ref()
+        else {
+            panic!("expected Animate set-base-power, got {:?}", def.effect);
+        };
+        assert_eq!(
+            power,
+            &QuantityExpr::Ref {
+                qty: QuantityRef::Power {
+                    scope: ObjectScope::CostPaidObject,
+                },
+            },
+            "base power set value must read the triggering creature's power"
+        );
+        assert!(toughness.is_none(), "only base power is set, not toughness");
+        assert!(types.is_empty(), "no type change");
+        assert!(
+            matches!(target, TargetFilter::None),
+            "self-targeted (source), got {target:?}"
+        );
+        assert_eq!(def.duration, Some(Duration::UntilEndOfTurn));
+    }
+
+    /// The "base power and base toughness" axis sets both characteristics from
+    /// the same dynamic quantity — proves the class is parameterized, not a
+    /// single-card special case.
+    #[test]
+    fn effect_have_base_power_and_toughness_become_equal_parses_both() {
+        let def = parse_effect_chain(
+            "have ~'s base power and base toughness become equal to that creature's power",
+            AbilityKind::Spell,
+        );
+        let Effect::Animate {
+            power: Some(PtValue::Quantity(power)),
+            toughness: Some(PtValue::Quantity(toughness)),
+            ..
+        } = def.effect.as_ref()
+        else {
+            panic!(
+                "expected Animate setting both base P/T, got {:?}",
+                def.effect
+            );
+        };
+        let expected = QuantityExpr::Ref {
+            qty: QuantityRef::Power {
+                scope: ObjectScope::CostPaidObject,
+            },
+        };
+        assert_eq!(power, &expected);
+        assert_eq!(toughness, &expected);
+    }
+
+    /// Full-card parse: Belligerent Yearling produces zero `Unimplemented`
+    /// trigger effects (the GAP this change closes), with the optional ETB
+    /// trigger carrying the base-power-set `Effect::Animate`.
+    #[test]
+    fn belligerent_yearling_full_card_parses_without_unimplemented() {
+        let parsed = crate::parser::parse_oracle_text(
+            "Trample\nWhenever another Dinosaur you control enters, you may have this creature's base power become equal to that creature's power until end of turn.",
+            "Belligerent Yearling",
+            &["Trample".to_string()],
+            &["Creature".to_string()],
+            &["Dinosaur".to_string()],
+        );
+        for ability in &parsed.abilities {
+            assert!(
+                !matches!(ability.effect.as_ref(), Effect::Unimplemented { .. }),
+                "spell ability must not be Unimplemented: {ability:?}"
+            );
+        }
+        let trigger = parsed
+            .triggers
+            .iter()
+            .find(|t| {
+                t.execute
+                    .as_ref()
+                    .is_some_and(|e| matches!(e.effect.as_ref(), Effect::Animate { .. }))
+            })
+            .expect("optional base-power-set ETB trigger");
+        let execute = trigger.execute.as_ref().unwrap();
+        assert!(execute.optional, "the \"you may\" trigger must be optional");
+        assert_eq!(execute.duration, Some(Duration::UntilEndOfTurn));
     }
 
     #[test]
