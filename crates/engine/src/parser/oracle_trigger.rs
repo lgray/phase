@@ -40,9 +40,9 @@ use crate::types::ability::{
     CoinFlipResult, Comparator, ControllerRef, CounterTriggerFilter, DamageKindFilter,
     DestinationConstraint, Effect, FilterProp, ObjectScope, OriginConstraint, ParsedCondition,
     PlayerFilter, PlayerScope, PtStat, PtValueScope, QuantityExpr, QuantityRef, RenownSubject,
-    SacrificeAggregateStat, SacrificeCost, SacrificeRequirement, StaticCondition, TargetFilter,
-    TriggerCondition, TriggerConstraint, TriggerDefinition, TypeFilter, TypedFilter,
-    UnlessPayModifier, ZoneChangeClause,
+    SacrificeAggregateStat, SacrificeCost, SacrificeRequirement, StaticCondition,
+    TapCreaturesRequirement, TargetFilter, TriggerCondition, TriggerConstraint, TriggerDefinition,
+    TypeFilter, TypedFilter, UnlessPayModifier, ZoneChangeClause,
 };
 use crate::types::card_type::{is_land_subtype, CoreType};
 use crate::types::counter::CounterType;
@@ -1967,7 +1967,10 @@ fn parse_unless_alt_cost(after_unless: &str) -> Option<AbilityCost> {
 /// the shared target parser.
 fn parse_unless_tap_untapped_cost(rest: &str) -> Option<AbilityCost> {
     let (count, filter) = parse_unless_counted_target_filter(rest)?;
-    Some(AbilityCost::TapCreatures { count, filter })
+    Some(AbilityCost::TapCreatures {
+        requirement: TapCreaturesRequirement::count(count),
+        filter,
+    })
 }
 
 /// CR 118.12 + CR 701.7: Parse the tail of "you exile ..." unless costs.
@@ -21011,8 +21014,11 @@ mod tests {
         );
         let unless_pay = def.unless_pay.as_ref().expect("should have unless_pay");
         match &unless_pay.cost {
-            AbilityCost::TapCreatures { count, filter } => {
-                assert_eq!(*count, 1);
+            AbilityCost::TapCreatures {
+                requirement,
+                filter,
+            } => {
+                assert_eq!(requirement.fixed_count(), Some(1));
                 let is_creature = match filter {
                     TargetFilter::Typed(tf) => {
                         tf.type_filters.contains(&TypeFilter::Creature)
@@ -21047,8 +21053,11 @@ mod tests {
         );
         let unless_pay = def.unless_pay.as_ref().expect("should have unless_pay");
         match &unless_pay.cost {
-            AbilityCost::TapCreatures { count, filter: _ } => {
-                assert_eq!(*count, 1);
+            AbilityCost::TapCreatures {
+                requirement,
+                filter: _,
+            } => {
+                assert_eq!(requirement.fixed_count(), Some(1));
             }
             other => panic!("cost should be TapCreatures, got {:?}", other),
         }
@@ -21067,8 +21076,11 @@ mod tests {
         );
         let unless_pay = def.unless_pay.as_ref().expect("should have unless_pay");
         match &unless_pay.cost {
-            AbilityCost::TapCreatures { count, filter } => {
-                assert_eq!(*count, 2);
+            AbilityCost::TapCreatures {
+                requirement,
+                filter,
+            } => {
+                assert_eq!(requirement.fixed_count(), Some(2));
                 let has_creature = match filter {
                     TargetFilter::Typed(tf) => tf.type_filters.contains(&TypeFilter::Creature),
                     TargetFilter::And { filters } => filters.iter().any(|f| {
