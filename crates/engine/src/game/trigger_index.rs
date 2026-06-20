@@ -692,6 +692,7 @@ fn keys_from_effect_kind(kind: EffectKind, push: &mut impl FnMut(TriggerEventKey
         EffectKind::StartYourEngines
         | EffectKind::ChangeSpeed
         | EffectKind::DealDamage
+        | EffectKind::ApplyPostReplacementDamage
         | EffectKind::EachDealsDamageEqualToPower
         | EffectKind::Draw
         | EffectKind::Pump

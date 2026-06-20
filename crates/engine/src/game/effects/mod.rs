@@ -1489,6 +1489,23 @@ fn is_one_sided_fight_damage_sub(effect: &Effect) -> bool {
     )
 }
 
+/// CR 120.1 + CR 601.2c: True when a sub-ability is the multi-source per-power
+/// damage clause ("each deal damage equal to their power to <recipient>"). The
+/// parent's whole object-target set is prepended ahead of the sub's recipient so
+/// every source deals its own power (see the `EachTarget` resolver).
+fn is_each_target_damage_sub(effect: &Effect) -> bool {
+    matches!(
+        effect,
+        Effect::DealDamage {
+            damage_source: Some(crate::types::ability::DamageSource::EachTarget),
+            ..
+        } | Effect::DamageAll {
+            damage_source: Some(crate::types::ability::DamageSource::EachTarget),
+            ..
+        }
+    )
+}
+
 /// The first `TargetRef::Object` in a target list (the chain head's chosen
 /// creature for the one-sided-fight prepend).
 fn first_object_target(targets: &[TargetRef]) -> Option<ObjectId> {
@@ -1688,6 +1705,27 @@ fn condition_depends_on_effect_performed(condition: &AbilityCondition) -> bool {
         AbilityCondition::And { conditions } | AbilityCondition::Or { conditions } => {
             conditions.iter().any(condition_depends_on_effect_performed)
         }
+        _ => false,
+    }
+}
+
+/// CR 603.12 + CR 608.2c: Whether a reflexive condition reads the per-resolution
+/// `last_zone_changed_ids` ledger ("if a [noun] was [verb]ed this way"). Unlike
+/// `condition_depends_on_effect_performed` (which gates on the
+/// `optional_effect_performed` flag), this class is evaluated against the set of
+/// objects the parent effect MOVED — a set that does not exist yet when the move
+/// pauses for an interactive choice (e.g. a `discard a card` with hand > 1, or a
+/// `sacrifice a permanent` pick). It must therefore be deferred across the choice
+/// alongside the `WhenYouDo` reflexive, then re-evaluated once the choice
+/// resolves and `last_zone_changed_ids` reflects the moved objects. Predicate
+/// helper, not rule-implementing code.
+fn condition_depends_on_zone_change_this_way(condition: &AbilityCondition) -> bool {
+    match condition {
+        AbilityCondition::ZoneChangedThisWay { .. } => true,
+        AbilityCondition::Not { condition } => condition_depends_on_zone_change_this_way(condition),
+        AbilityCondition::And { conditions } | AbilityCondition::Or { conditions } => conditions
+            .iter()
+            .any(condition_depends_on_zone_change_this_way),
         _ => false,
     }
 }
@@ -2500,6 +2538,9 @@ pub fn resolve_effect(
         Effect::StartYourEngines { .. } => speed_effects::resolve_start(state, ability, events),
         Effect::ChangeSpeed { .. } => speed_effects::resolve_change_speed(state, ability, events),
         Effect::DealDamage { .. } => deal_damage::resolve(state, ability, events),
+        Effect::ApplyPostReplacementDamage { .. } => {
+            deal_damage::resolve_post_replacement(state, ability, events)
+        }
         Effect::EachDealsDamageEqualToPower { .. } => {
             deal_damage::resolve_each_deals_equal_to_power(state, ability, events)
         }
@@ -5835,8 +5876,18 @@ fn resolve_chain_body(
             // checked explicitly here (not folded into
             // `condition_depends_on_effect_performed`) so the condition-false
             // descent at the parent-skipped path is left unchanged.
+            //
+            // CR 608.2c: A `ZoneChangedThisWay` reflexive gate ("When you discard
+            // a card this way, …" — Talion's Messenger, The Ancient One) reads
+            // `last_zone_changed_ids`, which is empty while the parent's discard
+            // pauses at `WaitingFor::DiscardChoice` (hand > 1). Evaluating it here
+            // would read the empty ledger and drop the sub. Defer it on the same
+            // path; the `DiscardChoice` resume populates `last_zone_changed_ids`
+            // from the cards that reached the graveyard before draining, so the
+            // re-evaluation at chain top sees the discarded objects.
             if waits_for_resolution_choice(&state.waiting_for)
                 && (condition_depends_on_effect_performed(condition)
+                    || condition_depends_on_zone_change_this_way(condition)
                     || matches!(condition, AbilityCondition::WhenYouDo))
             {
                 let mut sub_clone = sub.as_ref().clone();
@@ -6045,6 +6096,41 @@ fn resolve_chain_body(
                     resolve_ability_chain(state, &sub_with_source, events, depth + 1)?;
                     return Ok(());
                 }
+            }
+        }
+
+        // CR 120.1 + CR 601.2c: multi-source-fight chain — the parent (the
+        // `TargetOnly` source picker for the direct "up to N target creatures you
+        // control each deal damage equal to their power …" form, or the prior
+        // `SetTapState`/`Pump` sentence for the "They each …" back-reference)
+        // chose the WHOLE source set. The trailing `DealDamage { damage_source =
+        // EachTarget }` sub carries only its fresh recipient slot, so prepend
+        // every parent object target ahead of it: the resolver then reads
+        // `targets = [source_0, …, source_{n-1}, recipient]` and each source
+        // deals its own power (CR 208.1 modifiable characteristic, CR 608.2 read
+        // at resolution) to the recipient. Guarded on the parent carrying object
+        // targets the sub does not already hold, so it is a no-op for any other
+        // chain shape.
+        if is_each_target_damage_sub(&sub.effect) {
+            let parent_sources: Vec<TargetRef> = ability
+                .targets
+                .iter()
+                .filter(|t| matches!(t, TargetRef::Object(_)))
+                .cloned()
+                .collect();
+            if !parent_sources.is_empty() && parent_sources.iter().all(|s| !sub.targets.contains(s))
+            {
+                let mut sub_with_sources = sub.as_ref().clone();
+                for (i, source) in parent_sources.into_iter().enumerate() {
+                    sub_with_sources.targets.insert(i, source);
+                }
+                apply_parent_chain_context(
+                    &mut sub_with_sources,
+                    ability,
+                    effect_context_object.as_ref(),
+                );
+                resolve_ability_chain(state, &sub_with_sources, events, depth + 1)?;
+                return Ok(());
             }
         }
 
@@ -10796,6 +10882,8 @@ mod tests {
         let effect = Effect::RevealUntil {
             player: TargetFilter::Controller,
             filter: TargetFilter::Typed(TypedFilter::new(TypeFilter::Artifact)),
+            count: crate::types::ability::QuantityExpr::Fixed { value: 1 },
+            matched_disposition: crate::types::ability::RevealUntilDisposition::KeepEach,
             kept_destination: Zone::Exile,
             rest_destination: Zone::Library,
             enter_tapped: crate::types::zones::EtbTapState::Unspecified,

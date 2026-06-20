@@ -252,6 +252,11 @@ pub struct SpellMeta {
     /// color-count spend restrictions (`OnlyForSpellWithColorCount`). `None` at
     /// payment sites with no associated spell.
     pub color_count: Option<u32>,
+    /// CR 107.3 + CR 202.3e: Whether the spell's printed mana cost contains an
+    /// `{X}` symbol. Consulted by the "with {X} in their mana costs" disjunct of
+    /// MV/X spend restrictions (`OnlyForSpellMatchingCostCriteria`). `false` at
+    /// payment sites with no associated spell, or when the spell has no `{X}`.
+    pub has_x_in_cost: bool,
 }
 
 /// CR 106.6: Context for a mana-payment decision. Distinguishes "paying for a
@@ -293,6 +298,38 @@ pub enum AbilityActivationScope {
     /// "… or to activate an ability" — any ability activation is permitted
     /// (e.g. Sage of the Unknowable, "a colorless spell or to activate an ability").
     Any,
+}
+
+/// CR 106.6 + CR 107.3 + CR 202.3: A single qualifying criterion on the cost of
+/// the spell a restricted mana may be spent on. Used by
+/// [`ManaRestriction::OnlyForSpellMatchingCostCriteria`] to express the
+/// disjunctive "spells with mana value N or greater **or** spells with {X} in
+/// their mana costs" reading (Helga, Skittish Seer; Troyan, Gutsy Explorer)
+/// without proliferating one variant per (threshold × X-disjunct) combination.
+///
+/// Both criteria are properties of the spell's *cost* (CR 202.3 mana value /
+/// CR 107.3 X symbol), so they share a single categorical axis and belong to one
+/// typed predicate rather than a raw bool flag bolted onto the mana-value variant.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SpellCostCriterion {
+    /// CR 202.3: The spell's mana value satisfies `spell_mana_value <cmp> value`.
+    ManaValue { comparator: Comparator, value: u32 },
+    /// CR 107.3 + CR 202.3e: The spell's printed mana cost contains an `{X}`
+    /// symbol. Detected structurally (X contributes 0 to mana value off the
+    /// stack), via `SpellMeta.has_x_in_cost`.
+    HasXInCost,
+}
+
+impl SpellCostCriterion {
+    /// CR 106.6: Whether the described spell satisfies this single cost criterion.
+    pub fn matches(&self, meta: &SpellMeta) -> bool {
+        match self {
+            SpellCostCriterion::ManaValue { comparator, value } => meta
+                .mana_value
+                .is_some_and(|mv| comparator.evaluate(mv as i32, *value as i32)),
+            SpellCostCriterion::HasXInCost => meta.has_x_in_cost,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -337,6 +374,19 @@ pub enum ManaRestriction {
     /// greater" (or "or less"). `comparator` applies `spell_mana_value <cmp>
     /// value`. Parameterized over [`Comparator`] — one variant per threshold reading.
     OnlyForSpellWithManaValue { comparator: Comparator, value: u32 },
+    /// CR 106.6 + CR 107.3 + CR 202.3: "Spend this mana only to cast [creature]
+    /// spells with mana value N or greater **or** [creature] spells with {X} in
+    /// their mana costs" (Helga, Skittish Seer — creature-narrowed; Troyan, Gutsy
+    /// Explorer — any spell). A spell qualifies when it matches **any** listed
+    /// [`SpellCostCriterion`] (disjunction) AND, if `spell_type` is `Some`, also
+    /// has that type. Parameterized over the optional type narrowing and the
+    /// criteria set rather than proliferating one variant per
+    /// (type × threshold × X-disjunct) combination.
+    OnlyForSpellMatchingCostCriteria {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        spell_type: Option<String>,
+        criteria: Vec<SpellCostCriterion>,
+    },
     /// CR 105.2 + CR 106.6: "Spend this mana only to cast spells with exactly N
     /// colors" (also "N or more / N or fewer"). `comparator` applies
     /// `spell_color_count <cmp> count`. Colorless spells have color_count 0.
@@ -450,6 +500,22 @@ impl ManaRestriction {
             ManaRestriction::OnlyForSpellWithManaValue { comparator, value } => meta
                 .mana_value
                 .is_some_and(|mv| comparator.evaluate(mv as i32, *value as i32)),
+            // CR 106.6 + CR 107.3 + CR 202.3: Disjunctive cost-criteria spend.
+            // The spell must satisfy the optional type narrowing AND at least one
+            // listed criterion ("MV ≥ N" OR "has {X} in cost"). An empty criteria
+            // set never authorizes a spend (no criterion can be satisfied).
+            ManaRestriction::OnlyForSpellMatchingCostCriteria {
+                spell_type,
+                criteria,
+            } => {
+                let type_ok = spell_type.as_deref().is_none_or(|required| {
+                    Self::matches_required_quality(
+                        required,
+                        meta.types.iter().chain(meta.subtypes.iter()),
+                    )
+                });
+                type_ok && criteria.iter().any(|c| c.matches(meta))
+            }
             // CR 105.2: Color-count-gated spend. Colorless spells have a color
             // count of 0. A spell with no recorded color count (None) is ineligible.
             ManaRestriction::OnlyForSpellWithColorCount { comparator, count } => meta
@@ -478,6 +544,7 @@ impl ManaRestriction {
             | ManaRestriction::OnlyForSpellWithKeywordKind(_)
             | ManaRestriction::OnlyForSpellWithKeywordKindFromZone(_, _)
             | ManaRestriction::OnlyForSpellWithManaValue { .. }
+            | ManaRestriction::OnlyForSpellMatchingCostCriteria { .. }
             | ManaRestriction::OnlyForSpellWithColorCount { .. }
             | ManaRestriction::OnlyForSpellFromZone(_) => false,
             // CR 106.6: The ability-activation half of the OR. `OfSpellType`
@@ -934,6 +1001,20 @@ impl ManaCost {
                 let shard_total: u32 = shards.iter().map(|s| s.mana_value_contribution()).sum();
                 shard_total + generic
             }
+        }
+    }
+
+    /// CR 107.3 + CR 202.3e: Whether this printed mana cost contains an `{X}`
+    /// symbol. Independent of mana value (X contributes 0 to mana value off the
+    /// stack per CR 202.3e), so "has {X} in its cost" must be detected from the
+    /// shards directly — it is a structural property of the cost, not of its
+    /// mana value. Consulted by spend restrictions whose Oracle text reads
+    /// "spells with {X} in their mana costs" (Helga, Skittish Seer; Troyan,
+    /// Gutsy Explorer).
+    pub fn has_x(&self) -> bool {
+        match self {
+            ManaCost::NoCost | ManaCost::SelfManaCost => false,
+            ManaCost::Cost { shards, .. } => shards.iter().any(|s| matches!(s, ManaCostShard::X)),
         }
     }
 
@@ -1482,6 +1563,7 @@ mod tests {
             cast_from_zone: None,
             mana_value: None,
             color_count: None,
+            has_x_in_cost: false,
         };
         let instant_spell = SpellMeta {
             types: vec!["Instant".to_string()],
@@ -1490,6 +1572,7 @@ mod tests {
             cast_from_zone: None,
             mana_value: None,
             color_count: None,
+            has_x_in_cost: false,
         };
         let legendary_spell = SpellMeta {
             types: vec!["Legendary".to_string(), "Creature".to_string()],
@@ -1498,6 +1581,7 @@ mod tests {
             cast_from_zone: None,
             mana_value: None,
             color_count: None,
+            has_x_in_cost: false,
         };
         assert!(restriction.allows_spell(&creature_spell));
         assert!(!restriction.allows_spell(&instant_spell));
@@ -1522,6 +1606,7 @@ mod tests {
             cast_from_zone: None,
             mana_value: None,
             color_count: None,
+            has_x_in_cost: false,
         };
         let omen_spell = SpellMeta {
             types: vec!["Enchantment".to_string(), "Omen".to_string()],
@@ -1530,6 +1615,7 @@ mod tests {
             cast_from_zone: None,
             mana_value: None,
             color_count: None,
+            has_x_in_cost: false,
         };
         let goblin_spell = SpellMeta {
             types: vec!["Creature".to_string()],
@@ -1538,6 +1624,7 @@ mod tests {
             cast_from_zone: None,
             mana_value: None,
             color_count: None,
+            has_x_in_cost: false,
         };
         // Matches one branch each.
         assert!(restriction.allows_spell(&dragon_spell));
@@ -1576,6 +1663,7 @@ mod tests {
             cast_from_zone: None,
             mana_value: None,
             color_count: None,
+            has_x_in_cost: false,
         };
         let turtle_creature = SpellMeta {
             types: vec!["Creature".to_string()],
@@ -1584,6 +1672,7 @@ mod tests {
             cast_from_zone: None,
             mana_value: None,
             color_count: None,
+            has_x_in_cost: false,
         };
         let goblin_creature = SpellMeta {
             types: vec!["Creature".to_string()],
@@ -1592,6 +1681,7 @@ mod tests {
             cast_from_zone: None,
             mana_value: None,
             color_count: None,
+            has_x_in_cost: false,
         };
         assert!(restriction.allows_spell(&ninja_creature));
         assert!(!restriction.allows_spell(&turtle_creature));
@@ -1608,6 +1698,7 @@ mod tests {
             cast_from_zone: None,
             mana_value: None,
             color_count: None,
+            has_x_in_cost: false,
         };
         let source_types = vec!["Artifact".to_string()];
         let source_subtypes = Vec::new();
@@ -1630,6 +1721,7 @@ mod tests {
             cast_from_zone: None,
             mana_value: None,
             color_count: None,
+            has_x_in_cost: false,
         };
         let goblin_creature = SpellMeta {
             types: vec!["Creature".to_string()],
@@ -1638,6 +1730,7 @@ mod tests {
             cast_from_zone: None,
             mana_value: None,
             color_count: None,
+            has_x_in_cost: false,
         };
         let elf_instant = SpellMeta {
             types: vec!["Instant".to_string()],
@@ -1646,6 +1739,7 @@ mod tests {
             cast_from_zone: None,
             mana_value: None,
             color_count: None,
+            has_x_in_cost: false,
         };
         assert!(restriction.allows_spell(&elf_creature));
         assert!(!restriction.allows_spell(&goblin_creature));
@@ -1667,6 +1761,7 @@ mod tests {
             cast_from_zone: None,
             mana_value: None,
             color_count: None,
+            has_x_in_cost: false,
         };
         assert!(!restriction.allows_spell(&elf_creature));
         let source_types = vec!["Creature".to_string()];
@@ -1692,6 +1787,7 @@ mod tests {
             cast_from_zone: None,
             mana_value: None,
             color_count: None,
+            has_x_in_cost: false,
         };
         let spent = pool
             .spend_for(ManaType::Green, &PaymentContext::Spell(&spell))
@@ -1717,6 +1813,7 @@ mod tests {
             cast_from_zone: None,
             mana_value: None,
             color_count: None,
+            has_x_in_cost: false,
         };
         assert!(pool
             .spend_for(ManaType::Green, &PaymentContext::Spell(&elf_spell))
@@ -1776,6 +1873,7 @@ mod tests {
             cast_from_zone: None,
             mana_value: None,
             color_count: None,
+            has_x_in_cost: false,
         };
         assert!(pool
             .spend_for(ManaType::Green, &PaymentContext::Spell(&goblin_spell))
@@ -1799,6 +1897,7 @@ mod tests {
             cast_from_zone: None,
             mana_value: None,
             color_count: None,
+            has_x_in_cost: false,
         };
         let tribal_elemental_instant = SpellMeta {
             types: vec!["Tribal".to_string(), "Instant".to_string()],
@@ -1807,6 +1906,7 @@ mod tests {
             cast_from_zone: None,
             mana_value: None,
             color_count: None,
+            has_x_in_cost: false,
         };
         let goblin_creature = SpellMeta {
             types: vec!["Creature".to_string()],
@@ -1815,6 +1915,7 @@ mod tests {
             cast_from_zone: None,
             mana_value: None,
             color_count: None,
+            has_x_in_cost: false,
         };
         let plain_instant = SpellMeta {
             types: vec!["Instant".to_string()],
@@ -1823,6 +1924,7 @@ mod tests {
             cast_from_zone: None,
             mana_value: None,
             color_count: None,
+            has_x_in_cost: false,
         };
         assert!(restriction.allows_spell(&elemental_creature));
         assert!(restriction.allows_spell(&tribal_elemental_instant));
@@ -1845,6 +1947,7 @@ mod tests {
             cast_from_zone: None,
             mana_value: None,
             color_count: None,
+            has_x_in_cost: false,
         };
         let colored_eldrazi = SpellMeta {
             types: vec!["Creature".to_string()],
@@ -1853,6 +1956,7 @@ mod tests {
             cast_from_zone: None,
             mana_value: None,
             color_count: None,
+            has_x_in_cost: false,
         };
         let colorless_construct = SpellMeta {
             types: vec!["Artifact".to_string(), "Colorless".to_string()],
@@ -1861,6 +1965,7 @@ mod tests {
             cast_from_zone: None,
             mana_value: None,
             color_count: None,
+            has_x_in_cost: false,
         };
         assert!(restriction.allows_spell(&colorless_eldrazi));
         assert!(!restriction.allows_spell(&colored_eldrazi));
@@ -1909,6 +2014,7 @@ mod tests {
             cast_from_zone: None,
             mana_value: None,
             color_count: None,
+            has_x_in_cost: false,
         };
         let colored_spell = SpellMeta {
             types: vec!["Creature".to_string()],
@@ -1917,6 +2023,7 @@ mod tests {
             cast_from_zone: None,
             mana_value: None,
             color_count: None,
+            has_x_in_cost: false,
         };
         // Spell half: still gated to the named type.
         assert!(restriction.allows_spell(&colorless_spell));
@@ -1950,6 +2057,7 @@ mod tests {
             cast_from_zone: None,
             mana_value: None,
             color_count: None,
+            has_x_in_cost: false,
         };
         let artifact_creature_spell = SpellMeta {
             types: vec!["Artifact".to_string(), "Creature".to_string()],
@@ -1958,6 +2066,7 @@ mod tests {
             cast_from_zone: None,
             mana_value: None,
             color_count: None,
+            has_x_in_cost: false,
         };
         let instant_spell = SpellMeta {
             types: vec!["Instant".to_string()],
@@ -1966,6 +2075,7 @@ mod tests {
             cast_from_zone: None,
             mana_value: None,
             color_count: None,
+            has_x_in_cost: false,
         };
         let creature_spell = SpellMeta {
             types: vec!["Creature".to_string()],
@@ -1974,6 +2084,7 @@ mod tests {
             cast_from_zone: None,
             mana_value: None,
             color_count: None,
+            has_x_in_cost: false,
         };
         // Permitted: any artifact spell (incl. artifact creatures).
         assert!(restriction.allows(&PaymentContext::Spell(&artifact_spell)));
@@ -2006,6 +2117,7 @@ mod tests {
             cast_from_zone: None,
             mana_value: None,
             color_count: None,
+            has_x_in_cost: false,
         };
         let creature_spell = SpellMeta {
             types: vec!["Creature".to_string()],
@@ -2014,6 +2126,7 @@ mod tests {
             cast_from_zone: None,
             mana_value: None,
             color_count: None,
+            has_x_in_cost: false,
         };
         let artifact_types = vec!["Artifact".to_string()];
         let creature_types = vec!["Creature".to_string()];
@@ -2052,6 +2165,7 @@ mod tests {
             cast_from_zone: None,
             mana_value: None,
             color_count: None,
+            has_x_in_cost: false,
         };
         let sorcery = SpellMeta {
             types: vec!["Sorcery".to_string()],
@@ -2060,6 +2174,7 @@ mod tests {
             cast_from_zone: None,
             mana_value: None,
             color_count: None,
+            has_x_in_cost: false,
         };
         let creature = SpellMeta {
             types: vec!["Creature".to_string()],
@@ -2068,6 +2183,7 @@ mod tests {
             cast_from_zone: None,
             mana_value: None,
             color_count: None,
+            has_x_in_cost: false,
         };
         // Manamorphose is an instant — the {R}{R} restricted mana must pay for it.
         assert!(restriction.allows_spell(&instant));
@@ -2104,6 +2220,7 @@ mod tests {
             cast_from_zone: None,
             mana_value: None,
             color_count: None,
+            has_x_in_cost: false,
         };
         let normal_spell = SpellMeta {
             types: vec!["Instant".to_string()],
@@ -2112,6 +2229,7 @@ mod tests {
             cast_from_zone: None,
             mana_value: None,
             color_count: None,
+            has_x_in_cost: false,
         };
         assert!(restriction.allows_spell(&flashback_spell));
         assert!(!restriction.allows_spell(&normal_spell));
@@ -2128,11 +2246,13 @@ mod tests {
         let mv_six = SpellMeta {
             mana_value: Some(6),
             color_count: None,
+            has_x_in_cost: false,
             ..SpellMeta::default()
         };
         let mv_four = SpellMeta {
             mana_value: Some(4),
             color_count: None,
+            has_x_in_cost: false,
             ..SpellMeta::default()
         };
         let no_mv = SpellMeta::default();
@@ -2153,11 +2273,13 @@ mod tests {
         let mv_two = SpellMeta {
             mana_value: Some(2),
             color_count: None,
+            has_x_in_cost: false,
             ..SpellMeta::default()
         };
         let mv_four = SpellMeta {
             mana_value: Some(4),
             color_count: None,
+            has_x_in_cost: false,
             ..SpellMeta::default()
         };
         assert!(restriction.allows_spell(&mv_two));
@@ -2179,6 +2301,7 @@ mod tests {
         let mv_four = SpellMeta {
             mana_value: Some(4),
             color_count: None,
+            has_x_in_cost: false,
             ..SpellMeta::default()
         };
         assert!(pool
@@ -2189,6 +2312,7 @@ mod tests {
         let mv_five = SpellMeta {
             mana_value: Some(5),
             color_count: None,
+            has_x_in_cost: false,
             ..SpellMeta::default()
         };
         assert!(pool
@@ -2221,10 +2345,12 @@ mod tests {
         };
         let three_colors = SpellMeta {
             color_count: Some(3),
+            has_x_in_cost: false,
             ..SpellMeta::default()
         };
         let two_colors = SpellMeta {
             color_count: Some(2),
+            has_x_in_cost: false,
             ..SpellMeta::default()
         };
         assert!(restriction.allows_spell(&three_colors));
@@ -2246,10 +2372,12 @@ mod tests {
         };
         let colorless = SpellMeta {
             color_count: Some(0),
+            has_x_in_cost: false,
             ..SpellMeta::default()
         };
         let one_color = SpellMeta {
             color_count: Some(1),
+            has_x_in_cost: false,
             ..SpellMeta::default()
         };
         assert!(restriction.allows_spell(&colorless));
@@ -2270,10 +2398,12 @@ mod tests {
         };
         let three_colors = SpellMeta {
             color_count: Some(3),
+            has_x_in_cost: false,
             ..SpellMeta::default()
         };
         let one_color = SpellMeta {
             color_count: Some(1),
+            has_x_in_cost: false,
             ..SpellMeta::default()
         };
         assert!(two_or_more.allows_spell(&three_colors));
@@ -2296,6 +2426,7 @@ mod tests {
 
         let one_color = SpellMeta {
             color_count: Some(1),
+            has_x_in_cost: false,
             ..SpellMeta::default()
         };
         assert!(pool
@@ -2305,6 +2436,7 @@ mod tests {
 
         let two_colors = SpellMeta {
             color_count: Some(2),
+            has_x_in_cost: false,
             ..SpellMeta::default()
         };
         assert!(pool

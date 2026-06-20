@@ -16,7 +16,7 @@ use super::game_state::{
 };
 use super::identifiers::{ObjectId, TrackedSetId};
 use super::keywords::{Keyword, KeywordKind};
-use super::mana::{AbilityActivationScope, ManaColor, ManaCost, ManaType};
+use super::mana::{AbilityActivationScope, ManaColor, ManaCost, ManaType, SpellCostCriterion};
 use super::phase::Phase;
 use super::player::{PlayerCounterKind, PlayerId};
 use super::replacements::ReplacementEvent;
@@ -1476,6 +1476,16 @@ pub enum ManaSpendRestriction {
     /// `value` is the printed threshold N; `comparator` applies
     /// `spell_mana_value <cmp> value`.
     SpellWithManaValue { comparator: Comparator, value: u32 },
+    /// CR 106.6 + CR 107.3 + CR 202.3: "Spend this mana only to cast [creature]
+    /// spells with mana value N or greater **or** [creature] spells with {X} in
+    /// their mana costs" (Helga, Skittish Seer; Troyan, Gutsy Explorer). Disjunction
+    /// of cost criteria with optional spell-type narrowing — see
+    /// [`ManaRestriction::OnlyForSpellMatchingCostCriteria`](super::mana::ManaRestriction::OnlyForSpellMatchingCostCriteria).
+    SpellMatchingCostCriteria {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        spell_type: Option<String>,
+        criteria: Vec<SpellCostCriterion>,
+    },
     /// CR 105.2 + CR 106.6: "Spend this mana only to cast spells with exactly N
     /// colors" (also "N or more / N or fewer"; colorless = 0). Parameterized over
     /// [`Comparator`] — one variant per color-count reading. `count` is N.
@@ -6725,6 +6735,48 @@ pub enum LibraryPosition {
     },
 }
 
+/// CR 701.20a + CR 608.2c: How the *set* of matching cards found by an
+/// [`Effect::RevealUntil`] is dispensed once the until-loop terminates.
+///
+/// The default `KeepEach` preserves the historical single-hit / each-hit
+/// behavior: every matching card is routed to `kept_destination` (or paused on
+/// `WaitingFor::RevealUntilKeptChoice` when `kept_optional_to` is set) and the
+/// non-matching cards go to `rest_destination`. With the dominant `count =
+/// Fixed(1)` this is exactly "reveal until you reveal a [filter] card".
+///
+/// `ChooseAnyNumber` covers the Aurora Awakener class — "reveal until you
+/// reveal X [filter] cards. Put any number of those [filter] cards onto the
+/// battlefield, then put the rest of the revealed cards on the bottom of your
+/// library in a random order." The controller selects any subset of the matched
+/// cards for `kept_destination`; every other revealed card (non-selected matches
+/// AND the interleaved non-matching cards) flows to `rest_destination`. This is
+/// the `Effect::Dig` "put any number onto the battlefield, rest on the bottom in
+/// a random order" disposition (`WaitingFor::DigChoice`, CR 401.4 owner-arranged
+/// random bottom placement), reused over the reveal-until matched set.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(tag = "type")]
+pub enum RevealUntilDisposition {
+    /// CR 701.20a: Route every matched card to `kept_destination`
+    /// (or `kept_optional_to`); non-matches to `rest_destination`. The legacy
+    /// single-hit behavior; default so the JSON shape and every existing call
+    /// site stay unchanged.
+    #[default]
+    KeepEach,
+    /// CR 701.20a + CR 608.2c: Offer the controller a `WaitingFor::DigChoice`
+    /// over the matched cards — any number go to `kept_destination`, every other
+    /// revealed card goes to `rest_destination` (CR 401.4 random bottom when
+    /// `rest_destination == Library`).
+    ChooseAnyNumber,
+}
+
+impl RevealUntilDisposition {
+    /// Helper for `#[serde(skip_serializing_if = ...)]` so the dominant
+    /// `KeepEach` disposition keeps the on-disk JSON shape unchanged.
+    pub fn is_keep_each(&self) -> bool {
+        matches!(self, Self::KeepEach)
+    }
+}
+
 /// CR 120.3: Override for which object is the source of damage.
 /// By default, the source is the ability's source object (`ability.source_id`).
 /// `Target` means the first resolved target is the damage source (e.g.,
@@ -6736,6 +6788,47 @@ pub enum DamageSource {
     /// CR 120.3 + CR 603.7c: The triggering event's source object is the
     /// damage source.
     TriggeringSource,
+    /// CR 120.1 + CR 601.2c: Every leading object target is an independent
+    /// damage source; each deals damage to the shared recipient (the final
+    /// object target). The amount (`QuantityExpr::Power { scope: Target }`) is
+    /// re-resolved per source so each member deals damage equal to ITS OWN power
+    /// (CR 208.1: power is a modifiable characteristic; CR 608.2: read at
+    /// resolution). Generalizes `Target` (one source) to the variable-count
+    /// "up to N / any number of target creatures you control each deal damage
+    /// equal to their power to <recipient>" class (Allies at Last, Coordinated
+    /// Clobbering, Terrific Team-Up — Graceful Takedown's heterogeneous compound
+    /// source set "<group A> and up to one other target <group B>" is NOT covered
+    /// and is deferred at the parser; see `is_compound_source_each_power_damage`).
+    /// Unlike `Target`, the recipient is `targets.last()`, not `targets[1..]`.
+    ///
+    /// SCOPE — SIMULTANEOUS multi-source batch (CR 120.4a + CR 120.6 + CR 120.10).
+    /// The resolver (`resolve_each_target_power_damage`) reuses the decomposed
+    /// damage primitives that `combat_damage.rs`'s simultaneous combat batch is
+    /// built from (`pre_replacement_damage_gate` → `replace_event` →
+    /// `apply_damage_after_replacement`), running all sources as one event set
+    /// against the shared recipient: each source carries its OWN `DamageContext`
+    /// (per-source deathtouch/wither/lifelink/infect/toxic), all marks accumulate
+    /// onto the recipient before SBAs (CR 704) so combined lethal (CR 120.6) and
+    /// combined excess (CR 120.10) are correct, and a replacement pause on the
+    /// recipient mid-batch resumes the remaining sources with PER-SOURCE identity
+    /// preserved (`stash_remaining_each_source_damage`, no flattening to a single
+    /// source id).
+    EachTarget,
+}
+
+/// CR 120.3: Source characteristics captured before applying an already-replaced
+/// damage event. Used only by internal continuations that resume Phase C damage
+/// application after a nested replacement choice.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DamageContextSnapshot {
+    pub source_id: ObjectId,
+    pub controller: PlayerId,
+    pub source_is_creature: bool,
+    pub has_deathtouch: bool,
+    pub has_lifelink: bool,
+    pub has_wither: bool,
+    pub has_infect: bool,
+    pub combat_damage_poison: u32,
 }
 
 /// A single conjured card entry: card source + quantity.
@@ -7002,6 +7095,19 @@ pub enum Effect {
         /// CR 120.3: Override damage source. None = ability source (default).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         damage_source: Option<DamageSource>,
+    },
+    /// CR 120.3 + CR 120.4b: Internal continuation for applying a damage event
+    /// that has already passed through replacement/prevention selection. This
+    /// must not be emitted by the parser; it exists so a Phase C damage batch can
+    /// pause on a nested life/lifelink replacement choice and resume remaining
+    /// post-replacement survivors without running CR 614/615 replacement logic a
+    /// second time.
+    ApplyPostReplacementDamage {
+        context: DamageContextSnapshot,
+        target: TargetRef,
+        amount: u32,
+        #[serde(default)]
+        is_combat: bool,
     },
     /// CR 120.1 + CR 120.3: "Team-up" damage — each of up to two chosen source
     /// creatures (controlled by the caster / their team) deals damage equal to
@@ -8870,6 +8976,23 @@ pub enum Effect {
         #[serde(default = "default_target_filter_controller")]
         player: TargetFilter,
         filter: TargetFilter,
+        /// CR 701.20a + CR 608.2c: How many matching cards to reveal before the
+        /// until-loop terminates. Defaults to `Fixed(1)` ("until you reveal a
+        /// [filter] card") so every existing call site and on-disk record keeps
+        /// the single-hit behavior. A dynamic `count` (e.g.
+        /// `DistinctColorsAmongPermanents`) drives the "reveal until you reveal
+        /// X [filter] cards" class (Aurora Awakener, Sanar). When the library is
+        /// exhausted before `count` matches are found, the loop stops with the
+        /// matches found so far (CR 701.20a — reveal as far as the library
+        /// allows).
+        #[serde(default = "default_quantity_one")]
+        count: QuantityExpr,
+        /// CR 701.20a + CR 608.2c: How the matched-card set is dispensed once
+        /// the until-loop terminates. Defaults to `KeepEach` (route each match
+        /// to `kept_destination`/`kept_optional_to`), preserving the historical
+        /// single-hit behavior.
+        #[serde(default, skip_serializing_if = "RevealUntilDisposition::is_keep_each")]
+        matched_disposition: RevealUntilDisposition,
         /// Where the matching card goes (Hand or Battlefield). When
         /// `kept_optional_to` is `Some`, this is repurposed as the *decline*
         /// zone (where the kept card goes if the controller declines).
@@ -10245,6 +10368,11 @@ impl Effect {
             // every classic mana ability (Cabal Coffers, Reflecting Pool, etc.).
             Effect::Mana { target, .. } => target.as_ref(),
 
+            // CR 120.4b: Internal post-replacement damage continuations carry a
+            // concrete target already chosen by an earlier effect; no new target
+            // slot is exposed.
+            Effect::ApplyPostReplacementDamage { .. } => None,
+
             // CR 701.26a/b: `SetTapState` exposes its target only for the
             // single-permanent scope (legacy `Tap`/`Untap`). The `All` scope
             // (legacy `TapAll`/`UntapAll`) is a non-targeting population filter.
@@ -10472,6 +10600,9 @@ impl Effect {
             | Effect::Renown { count, .. }
             | Effect::Bolster { count, .. }
             | Effect::Adapt { count, .. }
+            // CR 701.20a: how many matching cards to reveal before the
+            // until-loop terminates ("reveal until you reveal X [filter] cards").
+            | Effect::RevealUntil { count, .. }
             | Effect::Seek { count, .. } => Some(count),
 
             // --- Effects whose magnitude is an `amount: QuantityExpr` ---
@@ -10493,6 +10624,7 @@ impl Effect {
 
             // --- Effects with no QuantityExpr count/amount ---
             Effect::StartYourEngines { .. }
+            | Effect::ApplyPostReplacementDamage { .. }
             | Effect::Pump { .. }
             | Effect::PairWith { .. }
             | Effect::Destroy { .. }
@@ -10619,7 +10751,6 @@ impl Effect {
             | Effect::ProcessRadCounters
             | Effect::ReduceNextSpellCost { .. }
             | Effect::RevealFromHand { .. }
-            | Effect::RevealUntil { .. }
             | Effect::RingTemptsYou
             | Effect::Ripple { .. }
             | Effect::RollToVisitAttractions
@@ -10678,6 +10809,9 @@ impl Effect {
             | Effect::Renown { count, .. }
             | Effect::Bolster { count, .. }
             | Effect::Adapt { count, .. }
+            // CR 701.20a: how many matching cards to reveal before the
+            // until-loop terminates ("reveal until you reveal X [filter] cards").
+            | Effect::RevealUntil { count, .. }
             | Effect::Seek { count, .. } => Some(count),
 
             // --- Effects whose magnitude is an `amount: QuantityExpr` ---
@@ -10699,6 +10833,7 @@ impl Effect {
 
             // --- Effects with no QuantityExpr count/amount ---
             Effect::StartYourEngines { .. }
+            | Effect::ApplyPostReplacementDamage { .. }
             | Effect::Pump { .. }
             | Effect::PairWith { .. }
             | Effect::Destroy { .. }
@@ -10825,7 +10960,6 @@ impl Effect {
             | Effect::ProcessRadCounters
             | Effect::ReduceNextSpellCost { .. }
             | Effect::RevealFromHand { .. }
-            | Effect::RevealUntil { .. }
             | Effect::RingTemptsYou
             | Effect::Ripple { .. }
             | Effect::RollToVisitAttractions
@@ -10852,6 +10986,7 @@ pub fn effect_variant_name(effect: &Effect) -> &str {
         Effect::StartYourEngines { .. } => "StartYourEngines",
         Effect::ChangeSpeed { .. } => "ChangeSpeed",
         Effect::DealDamage { .. } => "DealDamage",
+        Effect::ApplyPostReplacementDamage { .. } => "ApplyPostReplacementDamage",
         Effect::EachDealsDamageEqualToPower { .. } => "EachDealsDamageEqualToPower",
         Effect::Draw { .. } => "Draw",
         Effect::Pump { .. } => "Pump",
@@ -11062,6 +11197,7 @@ pub enum EffectKind {
     StartYourEngines,
     ChangeSpeed,
     DealDamage,
+    ApplyPostReplacementDamage,
     EachDealsDamageEqualToPower,
     Draw,
     Pump,
@@ -11271,6 +11407,7 @@ impl From<&Effect> for EffectKind {
             Effect::StartYourEngines { .. } => EffectKind::StartYourEngines,
             Effect::ChangeSpeed { .. } => EffectKind::ChangeSpeed,
             Effect::DealDamage { .. } => EffectKind::DealDamage,
+            Effect::ApplyPostReplacementDamage { .. } => EffectKind::ApplyPostReplacementDamage,
             Effect::EachDealsDamageEqualToPower { .. } => EffectKind::EachDealsDamageEqualToPower,
             Effect::Draw { .. } => EffectKind::Draw,
             Effect::Pump { .. } => EffectKind::Pump,

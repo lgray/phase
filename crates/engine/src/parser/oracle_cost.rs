@@ -12,6 +12,7 @@ use super::oracle_nom::bridge::nom_on_lower;
 use super::oracle_nom::primitives as nom_primitives;
 use super::oracle_nom::primitives::{scan_contains, split_once_on};
 use super::oracle_nom::quantity as nom_quantity;
+use super::oracle_static::parse_dynamic_x_clause;
 use super::oracle_target::{parse_target, parse_type_phrase};
 use super::oracle_util::parse_count_expr;
 use super::oracle_util::parse_mana_symbols;
@@ -209,6 +210,72 @@ fn parse_behold_cost(lower: &str) -> Option<AbilityCost> {
     })
 }
 
+/// CR 701.4a (behold) + CR 601.2b/f (additional cost) + CR 400.7j: Parse the
+/// SPELLED-OUT choose-or-reveal behold cost printed without the "behold" keyword.
+///
+/// CR 701.4a: "Behold a [quality]" means "Reveal a [quality] card from your hand
+/// or choose a [quality] permanent you control on the battlefield." Some cards
+/// print this action longhand in the cost line itself rather than as reminder
+/// text after a "behold" keyword:
+///   - "choose a creature you control or reveal a creature card from your hand"
+///     (Monstrous Emergence)
+///
+/// This is the exact action of `BeholdCostAction::ChooseOrReveal`: choose a
+/// matching permanent you control OR reveal a matching card from your hand,
+/// without moving it. `eligible_behold_choices` already scopes the controlled
+/// leg to "you control" and the revealed leg to your hand, so the emitted
+/// `Behold` filter is the bare type shared by both legs. The two legs must name
+/// the same type (always true on printed cards); a mismatch falls through to the
+/// generic cost parser.
+///
+/// The "warped creature card you own in exile" leg (Close Encounter) is NOT this
+/// shape — exile-zone selection and the "warped" property are unsupported by
+/// `eligible_behold_choices`, so that card is handled by honest deferral, not
+/// here.
+fn parse_choose_or_reveal_behold_cost(lower: &str) -> Option<AbilityCost> {
+    type E<'a> = super::oracle_nom::error::OracleError<'a>;
+    let (input, _) = tag::<_, _, E<'_>>("choose ").parse(lower).ok()?;
+    let (input, _) = alt((tag::<_, _, E<'_>>("a "), tag("an ")))
+        .parse(input)
+        .ok()?;
+    // First leg type phrase, bounded by " you control or reveal ".
+    let (_, choose_type_text) = take_until::<_, _, E<'_>>(" you control or reveal ")
+        .parse(input)
+        .ok()?;
+    let (after_choose, _) = terminated(
+        take_until::<_, _, E<'_>>(" you control or reveal "),
+        tag(" you control or reveal "),
+    )
+    .parse(input)
+    .ok()?;
+    // Second leg: "a/an <type> card from your hand".
+    let (after_article, _) = alt((tag::<_, _, E<'_>>("a "), tag("an ")))
+        .parse(after_choose)
+        .ok()?;
+    let (_, reveal_type_text) = all_consuming(terminated(
+        take_until::<_, _, E<'_>>(" card from your hand"),
+        tag(" card from your hand"),
+    ))
+    .parse(after_article)
+    .ok()?;
+
+    let (choose_filter, choose_rem) = parse_type_phrase(choose_type_text.trim());
+    let (reveal_filter, reveal_rem) = parse_type_phrase(reveal_type_text.trim());
+    if !choose_rem.trim().is_empty()
+        || !reveal_rem.trim().is_empty()
+        || matches!(choose_filter, TargetFilter::Any)
+        || choose_filter != reveal_filter
+    {
+        return None;
+    }
+
+    Some(AbilityCost::Behold {
+        count: 1,
+        filter: choose_filter,
+        action: BeholdCostAction::ChooseOrReveal,
+    })
+}
+
 fn parse_remove_counter_kind(
     input: &str,
 ) -> super::oracle_nom::error::OracleResult<'_, crate::types::counter::CounterMatch> {
@@ -316,6 +383,12 @@ pub fn parse_single_cost(text: &str) -> AbilityCost {
     let lower = text.to_lowercase();
 
     if let Some(cost) = parse_behold_cost(&lower) {
+        return cost;
+    }
+
+    // CR 701.4a + CR 601.2b/f: spelled-out "choose … or reveal …" behold cost
+    // (Monstrous Emergence). Tried after the keyword form; both yield `Behold`.
+    if let Some(cost) = parse_choose_or_reveal_behold_cost(&lower) {
         return cost;
     }
 
@@ -979,6 +1052,16 @@ pub(crate) fn try_parse_cost_reduction(text: &str) -> Option<CostReduction> {
     let (mana_cost, after_mana) = parse_mana_symbols(&rest_lower)?;
     let amount_per = match mana_cost {
         crate::types::mana::ManaCost::Cost { generic, shards } if shards.is_empty() => generic,
+        // CR 107.3c: When the cost reduction is "{X}" and X is *defined by the
+        // text* ("..., where X is <count>"), the reduction is a dynamic amount,
+        // not a player-chosen one. Route to the where-X branch; any other shard
+        // shape (colored/colorless reductions) stays an honest gap — CR 118.7a
+        // limits cost reduction to the generic component.
+        crate::types::mana::ManaCost::Cost { generic: 0, shards }
+            if shards.as_slice() == [crate::types::mana::ManaCostShard::X] =>
+        {
+            return try_parse_dynamic_x_cost_reduction(after_mana.trim_start());
+        }
         _ => return None, // Only generic mana reduction supported
     };
 
@@ -1039,6 +1122,38 @@ pub(crate) fn try_parse_cost_reduction(text: &str) -> Option<CostReduction> {
         count: QuantityExpr::Ref {
             qty: QuantityRef::ObjectCount { filter },
         },
+        condition: None,
+    })
+}
+
+/// CR 601.2f + CR 602.2b + CR 107.3c: Parse the dynamic-{X} activated-ability
+/// cost-reduction tail "less to activate, where X is <count>" (verb axis also
+/// accepts "less to cast"). `input` is the already-lowercase slice immediately
+/// after the leading "{X}" amount.
+///
+/// CR 107.3c: because X is defined by the ability's own text ("where X is ..."),
+/// the controller does not choose it — the reduction is a dynamic amount. This
+/// maps to `CostReduction { amount_per: 1, count: Ref(<qty>), .. }` so the
+/// runtime `apply_cost_reduction` computes `reduce_by = 1 * count` and resolves
+/// `count` from game state. CR 118.7a/CR 601.2f then reduce only the generic
+/// component, flooring at {0}.
+///
+/// Covers the entire "{X} less to activate, where X is <any QuantityRef>" class
+/// (Survey Mechan, The Dominion Bracelet, and any future card of this shape) by
+/// delegating the count phrase to `parse_dynamic_x_clause`. Returns `None` when
+/// the where-X clause does not parse so the clause stays an honest gap rather
+/// than a misparse.
+fn try_parse_dynamic_x_cost_reduction(input: &str) -> Option<CostReduction> {
+    // Strip the verb. No trailing space: the where-X clause begins with ", ".
+    let ((), after_verb) = nom_on_lower(input, input, |i| {
+        value((), alt((tag("less to activate"), tag("less to cast")))).parse(i)
+    })?;
+
+    // Delegate ", where x is <phrase>" to the shared dynamic-X combinator.
+    let (_, qty) = parse_dynamic_x_clause(after_verb).ok()?;
+    Some(CostReduction {
+        amount_per: 1,
+        count: QuantityExpr::Ref { qty },
         condition: None,
     })
 }
@@ -1345,7 +1460,9 @@ fn parse_mana_cost_nom(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::ability::{ControllerRef, TypeFilter, TypedFilter};
+    use crate::types::ability::{
+        ControllerRef, ObjectScope, SharedQuality, TypeFilter, TypedFilter,
+    };
     use crate::types::counter::CounterMatch;
     use crate::types::mana::{ManaCost, ManaCostShard};
 
@@ -2493,5 +2610,106 @@ mod tests {
             "creatures you control get +1/+1"
         ));
         assert!(!is_self_cost_reduction_prefix("draw a card"));
+    }
+
+    /// CR 107.3c: The dynamic-{X} head still routes through the self
+    /// cost-reduction prefix recognizer so the upstream suffix splitter keeps
+    /// the whole "..., where X is ..." sentence intact (it must reach
+    /// `try_parse_cost_reduction`). Verifies the assumption that no change to
+    /// `is_self_cost_reduction_prefix` is needed.
+    #[test]
+    fn is_self_cost_reduction_prefix_matches_dynamic_x_head() {
+        assert!(is_self_cost_reduction_prefix(
+            "this ability costs {x} less to activate, where x is the number of differently named lands you control"
+        ));
+        assert!(is_self_cost_reduction_prefix(
+            "this ability costs {x} less to activate, where x is this creature's power"
+        ));
+    }
+
+    /// CR 107.3c: Survey Mechan — "{X} less to activate, where X is the number
+    /// of differently named lands you control" maps to a dynamic count
+    /// (`amount_per: 1`, `count = Ref(ObjectCountDistinct[Name])`), not a
+    /// player-chosen X. Discriminating: a revert (no {X} arm) returns `None`,
+    /// flipping the `expect`.
+    #[test]
+    fn cost_reduction_dynamic_x_differently_named_lands() {
+        let reduction = try_parse_cost_reduction(
+            "this ability costs {x} less to activate, where x is the number of differently named lands you control",
+        )
+        .expect("dynamic-X cost reduction should parse");
+        assert_eq!(reduction.amount_per, 1);
+        assert_eq!(reduction.condition, None);
+        match &reduction.count {
+            QuantityExpr::Ref {
+                qty: QuantityRef::ObjectCountDistinct { qualities, filter },
+            } => {
+                assert_eq!(qualities.as_slice(), [SharedQuality::Name]);
+                assert!(
+                    matches!(
+                        filter,
+                        TargetFilter::Typed(TypedFilter {
+                            controller: Some(ControllerRef::You),
+                            ..
+                        })
+                    ),
+                    "expected lands you control, got {filter:?}"
+                );
+            }
+            other => panic!("Expected ObjectCountDistinct[Name], got {other:?}"),
+        }
+    }
+
+    /// CR 107.3c: The Dominion Bracelet (granted ability) — "{X} less to
+    /// activate, where X is this creature's power" maps to `Power { scope:
+    /// Source }`. Confirms the arm covers the whole `parse_quantity_ref`
+    /// vocabulary, not just object counts.
+    #[test]
+    fn cost_reduction_dynamic_x_this_creatures_power() {
+        let reduction = try_parse_cost_reduction(
+            "this ability costs {x} less to activate, where x is this creature's power",
+        )
+        .expect("dynamic-X power cost reduction should parse");
+        assert_eq!(reduction.amount_per, 1);
+        assert_eq!(reduction.condition, None);
+        assert!(
+            matches!(
+                reduction.count,
+                QuantityExpr::Ref {
+                    qty: QuantityRef::Power {
+                        scope: ObjectScope::Source
+                    }
+                }
+            ),
+            "expected Power(Source), got {:?}",
+            reduction.count
+        );
+    }
+
+    /// Honesty: an unrecognized where-X phrase stays an honest gap (`None`),
+    /// never a misparse. Discriminating against an "always Some" arm.
+    #[test]
+    fn cost_reduction_dynamic_x_unrecognized_returns_none() {
+        assert!(try_parse_cost_reduction(
+            "this ability costs {x} less to activate, where x is the florble"
+        )
+        .is_none());
+    }
+
+    /// The dynamic-X arm also accepts the "less to cast" verb (spell form),
+    /// covering both activation and cast cost-reduction families.
+    #[test]
+    fn cost_reduction_dynamic_x_spell_verb() {
+        let reduction = try_parse_cost_reduction(
+            "this spell costs {x} less to cast, where x is the number of differently named lands you control",
+        )
+        .expect("dynamic-X spell cost reduction should parse");
+        assert_eq!(reduction.amount_per, 1);
+        assert!(matches!(
+            reduction.count,
+            QuantityExpr::Ref {
+                qty: QuantityRef::ObjectCountDistinct { .. }
+            }
+        ));
     }
 }

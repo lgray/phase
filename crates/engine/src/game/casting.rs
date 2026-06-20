@@ -1358,6 +1358,10 @@ pub(super) fn build_spell_meta(
         cast_from_zone: Some(pending_cast_origin_zone_for(state, object_id).unwrap_or(obj.zone)),
         mana_value: Some(obj.mana_cost.mana_value()),
         color_count: Some(obj.color.len() as u32),
+        // CR 107.3 + CR 202.3e: structural "has {X}" property of the printed cost,
+        // detected from shards (mana value alone can't reveal it — X contributes 0
+        // off the stack).
+        has_x_in_cost: obj.mana_cost.has_x(),
     })
 }
 

@@ -1871,6 +1871,7 @@ fn effect_details(effect: &Effect) -> Vec<(String, String)> {
             d.push(("amount".into(), fmt_quantity(amount)));
             d.push(("target".into(), fmt_target(target)));
         }
+        Effect::ApplyPostReplacementDamage { .. } => {}
         Effect::EachDealsDamageEqualToPower { sources, recipient } => {
             d.push(("sources".into(), fmt_target(sources)));
             d.push(("recipient".into(), fmt_target(recipient)));
@@ -5561,6 +5562,7 @@ fn extract_effect_quantity_features(
 ) {
     match effect {
         Effect::DealDamage { amount, .. } => extract_quantity_features(amount, features),
+        Effect::ApplyPostReplacementDamage { .. } => {}
         Effect::Draw { count, .. } => extract_quantity_features(count, features),
         Effect::Mill { count, .. } => extract_quantity_features(count, features),
         Effect::GainLife { amount, .. } => extract_quantity_features(amount, features),

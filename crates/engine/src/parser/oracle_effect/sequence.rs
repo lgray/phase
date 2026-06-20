@@ -19,7 +19,8 @@ use crate::types::ability::{
     AbilityDefinition, AbilityKind, CastingPermission, Chooser, ContinuousModification,
     ControllerRef, CopyRetargetPermission, CounterSourceRider, Duration, Effect, FaceDownBody,
     FaceDownProfile, LibraryPosition, MultiTargetSpec, PermissionGrantee, PtValue, QuantityExpr,
-    QuantityRef, StaticDefinition, TargetChoiceTiming, TargetFilter, TypeFilter, TypedFilter,
+    QuantityRef, RevealUntilDisposition, StaticDefinition, TargetChoiceTiming, TargetFilter,
+    TypeFilter, TypedFilter,
 };
 use crate::types::card_type::CoreType;
 use crate::types::counter::CounterType;
@@ -2895,6 +2896,7 @@ pub(super) fn apply_clause_continuation(
             destination,
             enter_tapped: tapped,
             enters_attacking: attacking,
+            any_number,
             rest_destination: rest_dest,
             enters_under,
             optional_decline,
@@ -2908,10 +2910,28 @@ pub(super) fn apply_clause_continuation(
                 enters_attacking,
                 rest_destination,
                 kept_optional_to,
+                matched_disposition,
                 enters_under: effect_enters_under,
                 ..
             } = &mut *previous.effect
             {
+                // CR 701.20a + CR 608.2c: "put any number of those [filter] cards
+                // onto [destination]" dispenses the *matched set* through a
+                // controller choice (Aurora Awakener). Set the disposition and the
+                // kept/rest destinations directly — the single-hit optional/decline
+                // refinement below does not apply to a set selection.
+                if any_number {
+                    *matched_disposition = RevealUntilDisposition::ChooseAnyNumber;
+                    *kept_destination = destination;
+                    if destination == Zone::Battlefield {
+                        *enter_tapped = crate::types::zones::EtbTapState::from_legacy_bool(tapped);
+                        *enters_attacking = attacking;
+                    }
+                    if let Some(rest) = rest_dest {
+                        *rest_destination = rest;
+                    }
+                    return;
+                }
                 match optional_decline {
                     // CR 701.20a + CR 608.2c: optional kept clause ("you may put
                     // that card onto the battlefield"). `destination` is the
@@ -4011,6 +4031,7 @@ pub(super) fn clause_is_dig_lookback_transparent(effect: &Effect) -> bool {
         | Effect::EpicCopy { .. }
         | Effect::ChangeSpeed { .. }
         | Effect::DealDamage { .. }
+        | Effect::ApplyPostReplacementDamage { .. }
         | Effect::EachDealsDamageEqualToPower { .. }
         | Effect::Draw { .. }
         | Effect::Pump { .. }
@@ -4463,6 +4484,51 @@ pub(super) fn parse_followup_continuation_ast(
                 reorder_all: false,
             })
         }
+        // CR 701.20a + CR 608.2c: "Put any number of those [filter] cards onto the
+        // battlefield, then put the rest … on the bottom … in a random order"
+        // (Aurora Awakener). This is the multi-match disposition over the *set* of
+        // matched cards: the controller chooses any subset for the battlefield and
+        // every other revealed card goes to the rest pile. Absorbs into
+        // `RevealUntilDisposition::ChooseAnyNumber` via the `any_number` flag.
+        // Checked before "put that card" because "any number of those" is a
+        // distinct disposition and never contains the singular "that card".
+        Effect::RevealUntil { .. }
+            if nom_primitives::scan_contains(&lower, "put any number of those")
+                || nom_primitives::scan_contains(&lower, "puts any number of those") =>
+        {
+            // CR 701.20a: the only destination this disposition currently targets
+            // is the battlefield ("put any number of those permanent cards onto
+            // the battlefield"); a hand variant would slot in here identically.
+            let (destination, enter_tapped, enters_attacking) =
+                if nom_primitives::scan_contains(&lower, "onto the battlefield") {
+                    (
+                        Zone::Battlefield,
+                        nom_primitives::scan_contains(&lower, "tapped"),
+                        nom_primitives::scan_contains(&lower, "attacking"),
+                    )
+                } else {
+                    (Zone::Hand, false, false)
+                };
+            let rest_destination = parse_reveal_until_rest_zone(&lower);
+            // "under your control" stamps the controller of the kept cards; absent
+            // the clause they enter under the revealing player's control by default.
+            // Mirrors the singular "put that card" arm so the set-disposition path
+            // inherits the same enters-under building block.
+            let enters_under = if nom_primitives::scan_contains(&lower, "under your control") {
+                Some(ControllerRef::You)
+            } else {
+                None
+            };
+            Some(ContinuationAst::RevealUntilKept {
+                destination,
+                enter_tapped,
+                enters_attacking,
+                any_number: true,
+                rest_destination,
+                enters_under,
+                optional_decline: None,
+            })
+        }
         // CR 701.20a: "put that card into your hand / onto the battlefield" after RevealUntil
         // — overrides kept_destination. Also extracts rest_destination from a compound
         // rest clause merged on "and" (suppressed split because the rest-subject — "the
@@ -4511,6 +4577,7 @@ pub(super) fn parse_followup_continuation_ast(
                 destination,
                 enter_tapped,
                 enters_attacking,
+                any_number: false,
                 rest_destination: rest,
                 enters_under,
                 optional_decline,

@@ -293,6 +293,16 @@ pub(crate) fn resolve_restrictions(
                     value: *value,
                 })
             }
+            // CR 106.6 + CR 107.3 + CR 202.3: Lower the disjunctive MV/X cost
+            // criteria (with optional type narrowing) into the runtime gate
+            // checked against `SpellMeta` by `allows_spell`.
+            ManaSpendRestriction::SpellMatchingCostCriteria {
+                spell_type,
+                criteria,
+            } => Some(ManaRestriction::OnlyForSpellMatchingCostCriteria {
+                spell_type: spell_type.clone(),
+                criteria: criteria.clone(),
+            }),
             // CR 105.2 + CR 106.6: Lower color-count spend restrictions into the
             // runtime gate checked against `SpellMeta.color_count`.
             ManaSpendRestriction::SpellWithColorCount { comparator, count } => {

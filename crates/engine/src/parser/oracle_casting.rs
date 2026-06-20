@@ -47,6 +47,35 @@ pub fn parse_additional_cost_line(lower: &str, raw: &str) -> Option<AdditionalCo
     let body_lower = tp.lower;
     let body_raw = tp.original;
 
+    // CR 701.4a: A spelled-out "choose … you control or reveal … from your hand"
+    // behold cost (Monstrous Emergence) is a single cohesive cost whose internal
+    // " or " separates the two legs of ONE behold action — not two independent
+    // alternative costs. It must be recognized as a whole BEFORE the general
+    // "X or Y" split below would fragment it into a spurious `Choice`.
+    let behold = super::oracle_cost::parse_single_cost(body_raw);
+    if matches!(behold, AbilityCost::Behold { .. }) {
+        return Some(AdditionalCost::Required(behold));
+    }
+
+    // CR 701.4a + CR 601.2b/f: A line that unambiguously opens the spelled-out
+    // choose-behold cost ("choose a/an <type> you control or ...") but whose
+    // alternative leg is NOT a recognized behold-reveal alternative is NOT a real
+    // `Behold` (the behold check above declined it) and must not be allowed to
+    // misparse. Without this guard the general "X or Y" split below — or the
+    // single-cost effect fallback — silently swallows only the "choose ... you
+    // control" leg as a `TargetOnly` cost and drops the alternative entirely
+    // (Close Encounter's "or a warped creature card you own in exile":
+    // exile-zone selection plus the "warped" property are unsupported by
+    // `eligible_behold_choices`). That leaves the card falsely green while the
+    // damage clause references a chosen object no cost ever produces. Surface an
+    // honest unimplemented cost so coverage stays red. Scoped to exactly this
+    // prefix shape so ordinary "X or Y" alternative costs are unaffected.
+    if is_choose_behold_prefix(body_lower) {
+        return Some(AdditionalCost::Required(AbilityCost::Unimplemented {
+            description: body_raw.to_string(),
+        }));
+    }
+
     // "you may [cost]" → Optional wrapping
     if let Ok((opt_lower, _)) = tag::<_, _, OracleError<'_>>("you may ").parse(body_lower) {
         let opt_raw = &body_raw[body_raw.len() - opt_lower.len()..];
@@ -95,6 +124,29 @@ pub fn parse_additional_cost_line(lower: &str, raw: &str) -> Option<AdditionalCo
     }
 
     None
+}
+
+/// CR 701.4a: Detect the *opening* of a spelled-out choose-behold cost —
+/// "choose a/an <type> you control or " — on an already-lowercase body slice.
+///
+/// `parse_choose_or_reveal_behold_cost` (oracle_cost.rs) recognizes the FULL
+/// shape "choose a/an <type> you control or reveal a/an <type> card from your
+/// hand" and yields a `Behold`. When only this prefix matches but the full
+/// behold parse declined (an unrecognized alternative leg such as Close
+/// Encounter's "a warped creature card you own in exile"), the line is
+/// unambiguously a choose-behold cost the engine cannot model. This guard lets
+/// the caller surface an honest unimplemented cost instead of misparsing the
+/// fragment. The bare `take_until` for the type phrase keeps the prefix as
+/// narrow as possible — any line lacking " you control or " falls through.
+fn is_choose_behold_prefix(body_lower: &str) -> bool {
+    fn parse(i: &str) -> nom::IResult<&str, (), OracleError<'_>> {
+        let (i, _) = tag("choose ").parse(i)?;
+        let (i, _) = alt((tag("a "), tag("an "))).parse(i)?;
+        let (i, _) = take_until(" you control or ").parse(i)?;
+        let (i, _) = tag(" you control or ").parse(i)?;
+        Ok((i, ()))
+    }
+    parse(body_lower).is_ok()
 }
 
 pub(crate) fn parse_spell_casting_option_line(
@@ -947,6 +999,60 @@ mod tests {
                     .any(|tf| matches!(tf, TypeFilter::Subtype(name) if name == "Elemental")));
             }
             other => panic!("Expected Required(Behold Elemental exile), got {other:?}"),
+        }
+    }
+
+    /// CR 701.4a + CR 601.2b/f: the SPELLED-OUT choose-or-reveal behold cost
+    /// printed without the "behold" keyword (Monstrous Emergence) parses to the
+    /// same `Behold { ChooseOrReveal }` shape as the keyword form.
+    #[test]
+    fn parse_additional_cost_spelled_out_choose_or_reveal_behold() {
+        let lower =
+            "as an additional cost to cast this spell, choose a creature you control or reveal a creature card from your hand.";
+        let raw =
+            "As an additional cost to cast this spell, choose a creature you control or reveal a creature card from your hand.";
+        let result = parse_additional_cost_line(lower, raw);
+        match result {
+            Some(AdditionalCost::Required(AbilityCost::Behold {
+                count: 1,
+                filter: TargetFilter::Typed(filter),
+                action: BeholdCostAction::ChooseOrReveal,
+            })) => {
+                assert!(
+                    filter
+                        .type_filters
+                        .iter()
+                        .any(|tf| matches!(tf, TypeFilter::Creature)),
+                    "spelled-out behold must carry the bare creature type filter: {filter:?}"
+                );
+            }
+            other => panic!("Expected Required(Behold creature ChooseOrReveal), got {other:?}"),
+        }
+    }
+
+    /// CR 701.4a + CR 601.2b/f (coverage honesty): a choose-behold cost whose
+    /// alternative leg is NOT a recognized behold-reveal alternative (Close
+    /// Encounter: "or a warped creature card you own in exile") must surface an
+    /// honest unimplemented cost — NOT silently drop the alternative leg and
+    /// misparse only "choose a creature you control" as a `TargetOnly` cost.
+    /// Reverting the prefix guard regresses this assertion: the line would parse
+    /// to `Required(EffectCost { TargetOnly { .. } })` (false green).
+    #[test]
+    fn parse_additional_cost_choose_behold_unrecognized_alternative_is_unimplemented() {
+        let lower =
+            "as an additional cost to cast this spell, choose a creature you control or a warped creature card you own in exile.";
+        let raw =
+            "As an additional cost to cast this spell, choose a creature you control or a warped creature card you own in exile.";
+        let result = parse_additional_cost_line(lower, raw);
+        match result {
+            Some(AdditionalCost::Required(AbilityCost::Unimplemented { description })) => {
+                assert_eq!(
+                    description,
+                    "choose a creature you control or a warped creature card you own in exile",
+                    "unimplemented cost must preserve the full unrecognized line"
+                );
+            }
+            other => panic!("Close Encounter must surface Required(Unimplemented), got {other:?}"),
         }
     }
 
