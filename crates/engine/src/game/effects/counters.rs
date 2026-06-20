@@ -1353,6 +1353,18 @@ fn resolve_defined_or_targets(
         _ => None,
     };
 
+    // Whether the ability carries any chosen *object* target. The branch
+    // resolver in `choose_one_of::resolve_branch` injects a bookkeeping
+    // `TargetRef::Player(chooser)` into `ability.targets`, so a plain
+    // `is_empty()` check would miss the "no object target was chosen" case for a
+    // `ChooseOneOf` branch. Counter placement targets objects, so the
+    // source-fallback below keys off the absence of object targets, not raw
+    // emptiness.
+    let has_object_target = ability
+        .targets
+        .iter()
+        .any(|t| matches!(t, TargetRef::Object(_)));
+
     // CR 608.2c: SelfRef is the printed-name anaphor — always resolves to the
     // source object regardless of `ability.targets`. Mirrors the post-#323
     // short-circuit in `targeting::resolved_targets`. Without this, a chained
@@ -1362,15 +1374,23 @@ fn resolve_defined_or_targets(
         return vec![ability.source_id];
     }
 
-    // CR 603.10a (tier 2 of `resolved_targets`): `None` falls back to source
-    // only when no chosen targets were supplied — preserves the LTB
-    // self-trigger anaphor ("put a +1/+1 counter on it") while letting chain
-    // propagation populate the target slot for legitimately targeted
-    // sub-abilities.
-    if let Some(TargetFilter::None) = target_spec {
-        if ability.targets.is_empty() {
-            return vec![ability.source_id];
-        }
+    // CR 608.2c (tier 2 of `resolved_targets`): `None` and `ParentTarget` both
+    // fall back to the source object when no chosen targets were supplied. For
+    // `None` this preserves the LTB self-trigger anaphor ("put a +1/+1 counter
+    // on it"); for `ParentTarget` it covers a `ChooseOneOf` of `PutCounter`
+    // branches lifted under a `TargetOnly { target: SelfRef }` parent (Reluctant
+    // Role Model: "put a flying, lifelink, or +1/+1 counter on it"), where the
+    // SelfRef parent surfaces no target slot, so the propagated `ability.targets`
+    // is empty and the branch's `ParentTarget` must resolve to the source. This
+    // mirrors the `None | ParentTarget` empty-targets arm in
+    // `targeting::resolved_targets`; legitimately targeted sub-abilities still
+    // have their slot populated by chain propagation and never reach this arm.
+    if matches!(
+        target_spec,
+        Some(TargetFilter::None | TargetFilter::ParentTarget)
+    ) && !has_object_target
+    {
+        return vec![ability.source_id];
     }
 
     // CR 608.2k: "the exiled card" — an untargeted reference to the object
