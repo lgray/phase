@@ -9999,7 +9999,7 @@ mod tests {
             "Escape Anthem",
         )
         .unwrap();
-        assert_eq!(def.event, ReplacementEvent::ChangeZone);
+        assert_eq!(def.event, ReplacementEvent::Moved);
         assert!(matches!(
             *def.execute.as_ref().unwrap().effect,
             Effect::PutCounter {
