@@ -1708,6 +1708,27 @@ fn condition_depends_on_effect_performed(condition: &AbilityCondition) -> bool {
     }
 }
 
+/// CR 603.12 + CR 608.2c: Whether a reflexive condition reads the per-resolution
+/// `last_zone_changed_ids` ledger ("if a [noun] was [verb]ed this way"). Unlike
+/// `condition_depends_on_effect_performed` (which gates on the
+/// `optional_effect_performed` flag), this class is evaluated against the set of
+/// objects the parent effect MOVED — a set that does not exist yet when the move
+/// pauses for an interactive choice (e.g. a `discard a card` with hand > 1, or a
+/// `sacrifice a permanent` pick). It must therefore be deferred across the choice
+/// alongside the `WhenYouDo` reflexive, then re-evaluated once the choice
+/// resolves and `last_zone_changed_ids` reflects the moved objects. Predicate
+/// helper, not rule-implementing code.
+fn condition_depends_on_zone_change_this_way(condition: &AbilityCondition) -> bool {
+    match condition {
+        AbilityCondition::ZoneChangedThisWay { .. } => true,
+        AbilityCondition::Not { condition } => condition_depends_on_zone_change_this_way(condition),
+        AbilityCondition::And { conditions } | AbilityCondition::Or { conditions } => conditions
+            .iter()
+            .any(condition_depends_on_zone_change_this_way),
+        _ => false,
+    }
+}
+
 /// CR 603.12: Whether a sub-ability is a *reflexive* trigger — its "do"
 /// depends on whether the just-prompted action actually occurred during this
 /// resolution. A reflexive sub MUST NOT resolve when the optional parent was
@@ -5821,8 +5842,18 @@ fn resolve_chain_body(
             // checked explicitly here (not folded into
             // `condition_depends_on_effect_performed`) so the condition-false
             // descent at the parent-skipped path is left unchanged.
+            //
+            // CR 608.2c: A `ZoneChangedThisWay` reflexive gate ("When you discard
+            // a card this way, …" — Talion's Messenger, The Ancient One) reads
+            // `last_zone_changed_ids`, which is empty while the parent's discard
+            // pauses at `WaitingFor::DiscardChoice` (hand > 1). Evaluating it here
+            // would read the empty ledger and drop the sub. Defer it on the same
+            // path; the `DiscardChoice` resume populates `last_zone_changed_ids`
+            // from the cards that reached the graveyard before draining, so the
+            // re-evaluation at chain top sees the discarded objects.
             if waits_for_resolution_choice(&state.waiting_for)
                 && (condition_depends_on_effect_performed(condition)
+                    || condition_depends_on_zone_change_this_way(condition)
                     || matches!(condition, AbilityCondition::WhenYouDo))
             {
                 let mut sub_clone = sub.as_ref().clone();

@@ -6061,6 +6061,46 @@ pub fn parse_you_put_onto_battlefield_this_way_clause(
     Ok((rest, (filter, false)))
 }
 
+/// CR 603.12 + CR 701.9a: Parse "you discard [quantifier] [type] card[s] this
+/// way" — the active-voice reflexive gate created by a preceding "discard a
+/// card" instruction in the same ability (Talion's Messenger: "draw a card,
+/// then discard a card. When you discard a card this way, put a +1/+1 counter
+/// on target Faerie you control"; The Ancient One: "Draw a card, then discard
+/// a card. When you discard a card this way, target player mills cards equal to
+/// its mana value").
+///
+/// CR 701.9a defines discard as a hand → graveyard move, so the discarded card
+/// is published into `state.last_zone_changed_ids` (and, since the graveyard is
+/// a public zone, into `effect_context_object` per CR 400.7j) by the parent
+/// `Discard` effect. Semantically identical to the passive
+/// `parse_zone_changed_this_way_clause` / active
+/// `parse_you_put_onto_battlefield_this_way_clause` existential check, differing
+/// only in the active verb ("discard") and its fixed-graveyard destination.
+///
+/// The bare "a card" form parses to `TypeFilter::Card` (matches any card in any
+/// zone), which is the intended existential semantics — any card discarded this
+/// way. A leading type qualifier ("a creature card") narrows the filter via the
+/// shared `parse_type_phrase` helper, covering the whole class.
+pub fn parse_you_discard_this_way_clause(input: &str) -> OracleResult<'_, (TargetFilter, bool)> {
+    let (rest, _) = tag("you discard ").parse(input)?;
+    let (rest, _) = alt((
+        value((), tag::<_, _, OracleError<'_>>("at least one ")),
+        value((), tag("one or more ")),
+        parse_article,
+    ))
+    .parse(rest)?;
+    let (filter, after_filter) = parse_type_phrase(rest);
+    if matches!(filter, TargetFilter::Any) {
+        return Err(nom::Err::Error(nom::error::Error::new(
+            input,
+            nom::error::ErrorKind::Fail,
+        )));
+    }
+    let after_filter = after_filter.trim_start();
+    let (rest, _) = tag("this way").parse(after_filter)?;
+    Ok((rest, (filter, false)))
+}
+
 /// CR 603.12 + CR 608.2c: Recognize a leading reflexive-conditional connector
 /// and return the corresponding AbilityCondition with the connector consumed.
 /// Single authority for this set; consumed by both

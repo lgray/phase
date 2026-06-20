@@ -614,6 +614,21 @@ pub(super) fn strip_if_you_do_conditional(text: &str) -> (Option<AbilityConditio
                     text[offset..].to_string(),
                 );
             }
+            // CR 603.12 + CR 701.9a: "when you discard a card this way, [body]" —
+            // the reflexive gate created by a preceding "discard a card"
+            // instruction (Talion's Messenger, The Ancient One). The discard's
+            // hand → graveyard move publishes the card into
+            // `state.last_zone_changed_ids`, which `ZoneChangedThisWay` checks.
+            if let Ok((after_clause, (filter, _negated))) =
+                crate::parser::oracle_nom::condition::parse_you_discard_this_way_clause(rest)
+            {
+                let body_lower = strip_reflexive_conditional_body_separator(after_clause);
+                let offset = text.len() - body_lower.len();
+                return (
+                    Some(AbilityCondition::ZoneChangedThisWay { filter }),
+                    text[offset..].to_string(),
+                );
+            }
         }
     }
     (None, text.to_string())
@@ -4899,6 +4914,32 @@ mod tests {
                 ));
             }
             other => panic!("expected Typed Equipment filter, got {other:?}"),
+        }
+    }
+
+    /// CR 603.12 + CR 701.9a: "When you discard a card this way, [body]" — the
+    /// reflexive gate created by a preceding "discard a card" instruction
+    /// (Talion's Messenger, The Ancient One). The bare "a card" form parses to a
+    /// `TypeFilter::Card` existential filter, mirroring the active-voice
+    /// put-onto-battlefield gate. Runtime semantics are covered end-to-end by
+    /// `crates/engine/tests/reflexive_discard_this_way.rs`.
+    #[test]
+    fn strip_if_you_do_conditional_when_you_discard_a_card_this_way() {
+        let (condition, body) = strip_if_you_do_conditional(
+            "when you discard a card this way, target player mills cards equal to its mana value",
+        );
+        assert_eq!(body, "target player mills cards equal to its mana value");
+        let Some(AbilityCondition::ZoneChangedThisWay { filter }) = condition else {
+            panic!("expected ZoneChangedThisWay condition, got {condition:?}");
+        };
+        match filter {
+            TargetFilter::Typed(TypedFilter { type_filters, .. }) => {
+                assert!(
+                    type_filters.iter().any(|f| matches!(f, TypeFilter::Card)),
+                    "bare 'a card' must yield a Card type filter, got {type_filters:?}"
+                );
+            }
+            other => panic!("expected Typed Card filter, got {other:?}"),
         }
     }
 
