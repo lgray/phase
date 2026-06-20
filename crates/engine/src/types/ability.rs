@@ -8577,6 +8577,19 @@ pub enum Effect {
         #[serde(default = "default_target_filter_any")]
         target: TargetFilter,
     },
+    /// CR 702.171b: the target permanent becomes saddled until end of turn.
+    /// Distinct from the Saddle keyword's activated ability (CR 702.171a,
+    /// `KeywordAction::Saddle`) which is paid by tapping creatures: this is the
+    /// effect-level designation toggle used by "becomes saddled" instructions
+    /// (Guidelight Matrix, Kolodin, Alacrian Armory) that grant the designation
+    /// without paying the saddle cost. Idempotent: if already saddled, no event
+    /// fires. CR 702.171b: only permanents can become saddled, the designation
+    /// is cleared at end of turn / when the permanent leaves the battlefield,
+    /// and it is not part of the permanent's copiable values.
+    BecomeSaddled {
+        #[serde(default = "default_target_filter_any")]
+        target: TargetFilter,
+    },
     /// CR 716.2a: Set the class level on the source Class enchantment.
     SetClassLevel {
         level: u8,
@@ -10430,6 +10443,7 @@ impl Effect {
             | Effect::ForceAttack { target, .. }
             | Effect::BecomePrepared { target, .. }
             | Effect::BecomeUnprepared { target, .. }
+            | Effect::BecomeSaddled { target, .. }
             | Effect::CastFromZone { target, .. }
             | Effect::PreventDamage { target, .. }
             | Effect::Exploit { target, .. }
@@ -10884,6 +10898,7 @@ impl Effect {
             | Effect::ForceAttack { .. }
             | Effect::BecomePrepared { .. }
             | Effect::BecomeUnprepared { .. }
+            | Effect::BecomeSaddled { .. }
             | Effect::CastFromZone { .. }
             | Effect::PreventDamage { .. }
             | Effect::Exploit { .. }
@@ -11093,6 +11108,7 @@ impl Effect {
             | Effect::ForceAttack { .. }
             | Effect::BecomePrepared { .. }
             | Effect::BecomeUnprepared { .. }
+            | Effect::BecomeSaddled { .. }
             | Effect::CastFromZone { .. }
             | Effect::PreventDamage { .. }
             | Effect::Exploit { .. }
@@ -11277,6 +11293,7 @@ pub fn effect_variant_name(effect: &Effect) -> &str {
         Effect::SolveCase => "SolveCase",
         Effect::BecomePrepared { .. } => "BecomePrepared",
         Effect::BecomeUnprepared { .. } => "BecomeUnprepared",
+        Effect::BecomeSaddled { .. } => "BecomeSaddled",
         Effect::SetClassLevel { .. } => "SetClassLevel",
         Effect::CreateDelayedTrigger { .. } => "CreateDelayedTrigger",
         Effect::AddTargetReplacement { .. } => "AddTargetReplacement",
@@ -11483,6 +11500,8 @@ pub enum EffectKind {
     BecomePrepared,
     /// CR 702.xxx: Prepare (Strixhaven) — clear prepared state on target.
     BecomeUnprepared,
+    /// CR 702.171b: mark the target permanent as saddled until end of turn.
+    BecomeSaddled,
     SetClassLevel,
     CreateDelayedTrigger,
     AddTargetReplacement,
@@ -11700,6 +11719,7 @@ impl From<&Effect> for EffectKind {
             Effect::SolveCase => EffectKind::SolveCase,
             Effect::BecomePrepared { .. } => EffectKind::BecomePrepared,
             Effect::BecomeUnprepared { .. } => EffectKind::BecomeUnprepared,
+            Effect::BecomeSaddled { .. } => EffectKind::BecomeSaddled,
             Effect::SetClassLevel { .. } => EffectKind::SetClassLevel,
             Effect::CreateDelayedTrigger { .. } => EffectKind::CreateDelayedTrigger,
             Effect::AddTargetReplacement { .. } => EffectKind::AddTargetReplacement,

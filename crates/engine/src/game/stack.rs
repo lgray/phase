@@ -1514,21 +1514,10 @@ fn resolve_keyword_action(
             mount_id,
             paid_creature_ids,
         } => {
-            if let Some(mount) = state.objects.get_mut(&mount_id) {
-                if mount.zone == Zone::Battlefield {
-                    mount.is_saddled = true;
-                    // CR 702.171c: record the creatures that saddled this permanent.
-                    for creature_id in &paid_creature_ids {
-                        if !mount.saddled_by.contains(creature_id) {
-                            mount.saddled_by.push(*creature_id);
-                        }
-                    }
-                }
-            }
-            events.push(GameEvent::Saddled {
-                mount_id,
-                creatures: paid_creature_ids,
-            });
+            // CR 702.171b + CR 702.171c: single authority shared with the
+            // effect-level `BecomeSaddled` path — set the designation, record the
+            // saddling creatures, and emit `GameEvent::Saddled`.
+            crate::game::effects::saddle::mark_saddled(state, mount_id, paid_creature_ids, events);
             events.push(GameEvent::EffectResolved {
                 kind: EffectKind::Saddle,
                 source_id: mount_id,

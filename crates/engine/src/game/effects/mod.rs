@@ -165,6 +165,7 @@ pub mod ring;
 pub mod ripple;
 pub mod roll_die;
 pub mod sacrifice;
+pub mod saddle;
 pub mod scry;
 pub mod search_library;
 pub mod search_outside_game;
@@ -1794,6 +1795,10 @@ fn effect_writes_last_revealed_ids(effect: &Effect) -> bool {
             | Effect::RevealUntil { .. }
             | Effect::Clash
             | Effect::TurnFaceUp { .. }
+            // CR 701.20: a targeted object reveal records the revealed object so
+            // a chained "If it's a creature card, …" rider and an anaphoric
+            // "turn it face up" follow-up read it (Hauntwoods Shrieker).
+            | Effect::Reveal { .. }
     )
 }
 
@@ -2665,6 +2670,7 @@ pub fn resolve_effect(
         Effect::BecomeUnprepared { .. } => {
             prepare::resolve_become_unprepared(state, ability, events)
         }
+        Effect::BecomeSaddled { .. } => saddle::resolve(state, ability, events),
         Effect::SetClassLevel { .. } => set_class_level::resolve(state, ability, events),
         Effect::CreateDelayedTrigger { .. } => delayed_trigger::resolve(state, ability, events),
         Effect::AddTargetReplacement { .. } => {

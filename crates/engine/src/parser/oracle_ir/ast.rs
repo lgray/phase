@@ -1017,6 +1017,12 @@ pub(crate) enum HandRevealImperativeAst {
     /// effect's affected IDs (e.g. "look at top → reveal it" patterns).
     /// Lowers to `Effect::Reveal { target: ParentTarget }`.
     RevealBackRef,
+    /// CR 701.20: Reveal a specific object selected by a target phrase —
+    /// "Reveal target face-down permanent" (Hauntwoods Shrieker). Lowers to
+    /// `Effect::Reveal { target }`. Distinct from `RevealBackRef` (anaphoric
+    /// "it"/"that card") and `RevealAll`/`RevealPartial` (hand reveals): this
+    /// reveals a battlefield/zone object chosen via the targeting pipeline.
+    RevealObject { target: TargetFilter },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]

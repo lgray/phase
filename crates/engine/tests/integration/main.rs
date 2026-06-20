@@ -401,6 +401,7 @@ mod rite_of_consumption_damage;
 mod roots_of_wisdom_if_you_cant_draw;
 mod roughshod_mentor_green_trample_grant;
 mod rules;
+mod saddle_become_effect;
 mod saddle_state_model;
 mod saruman_white_hand_amass;
 mod sba_lethal_damage_redirect_single_application;

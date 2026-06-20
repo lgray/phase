@@ -2619,6 +2619,32 @@ fn build_become_clause(
         return Some(super::parsed_clause(effect));
     }
 
+    // CR 702.171b: "becomes saddled" toggles the saddled designation on the
+    // target permanent. Must intercept before parse_animation_spec which would
+    // mis-classify "saddled" as a subtype. The designation always clears at end
+    // of turn / when the permanent leaves the battlefield (handled by the
+    // engine's cleanup pass), so the trailing "until end of turn" duration that
+    // `strip_trailing_duration` already peeled is not re-attached — the effect
+    // carries no duration. Unlike a `GenericEffect` animation (whose typed
+    // selection filter lives on the effect's `target` field and whose static's
+    // `affected` is `ParentTarget`), `BecomeSaddled` is a single targeted effect
+    // whose `target` IS the selection slot: a "Target Mount you control"
+    // subject (Guidelight Matrix) carries its real `Typed(Mount, You)` filter so
+    // `build_target_slots` surfaces a target slot; an anaphoric subject ("it
+    // becomes saddled" — Kolodin's Mount-enters trigger lowers "it" to a
+    // `TriggeringSource` context ref) carries `affected`, which the resolver
+    // resolves from event context.
+    if all_consuming(tag::<_, _, OracleError<'_>>("saddled"))
+        .parse(become_lower.as_str())
+        .is_ok()
+    {
+        let target = application
+            .target
+            .clone()
+            .unwrap_or_else(|| application.affected.clone());
+        return Some(super::parsed_clause(Effect::BecomeSaddled { target }));
+    }
+
     // CR 707.2 / CR 613.1a: "become a copy of [target]" — copy copiable characteristics.
     // Must intercept before parse_animation_spec which rejects "copy of" patterns.
     //
