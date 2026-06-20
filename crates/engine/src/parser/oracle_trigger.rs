@@ -2822,6 +2822,7 @@ fn static_condition_to_trigger_condition(sc: &StaticCondition) -> Option<Trigger
         | StaticCondition::SourceIsBlocking
         | StaticCondition::SourceIsBlocked
         | StaticCondition::SourceIsEquipped
+        | StaticCondition::SourceIsEnchanted
         | StaticCondition::SourceIsPaired
         | StaticCondition::SourceIsMonstrous
         // CR 110.5b + CR 611.2b: `IsTapped { scope }` is a duration-only
@@ -4736,9 +4737,17 @@ fn split_cross_subject_event_compound(cond_lower: &str, condition: &str) -> Opti
 
     // Check if what follows " or " starts with a valid subject phrase
     // (a/an/the + type word, or "a player", "an opponent", etc.)
-    if parse_cross_subject_phrase_start(after_lower.trim_start()).is_err() {
+    let after_trimmed = after_lower.trim_start();
+    if parse_cross_subject_phrase_start(after_trimmed).is_err() {
         return None;
     }
+
+    // CR 508.3a: The second half must contain an event verb to be a genuine
+    // cross-subject compound trigger. Without this guard, attack-target scope
+    // extensions ("attacks you or a planeswalker you control") are mis-split
+    // because "a planeswalker you control" starts with an article but has no
+    // event verb — it extends the attack target, not the trigger event.
+    scan_preceded(after_trimmed, |i| parse_event_verb_start(i))?;
 
     let (_, keyword) = parse_trigger_keyword_prefix(cond_lower).ok()?;
 
@@ -10513,10 +10522,16 @@ fn try_parse_player_trigger(lower: &str) -> Option<(TriggerMode, TriggerDefiniti
         return Some((TriggerMode::Cycled, def));
     }
 
-    // CR 120.1: "whenever you're dealt combat damage" — must precede generic "dealt damage"
+    // CR 120.2a (combat damage) + CR 120.1 (damage): the player is dealt combat
+    // damage. Both active ("you're dealt combat damage") and passive ("combat
+    // damage is dealt to you") voice describe the same event; this arm must
+    // precede the generic "dealt damage" arm below.
     if matches!(
         lower,
-        "whenever you're dealt combat damage" | "when you're dealt combat damage"
+        "whenever you're dealt combat damage"
+            | "when you're dealt combat damage"
+            | "whenever combat damage is dealt to you"
+            | "when combat damage is dealt to you"
     ) {
         let mut def = make_base();
         def.mode = TriggerMode::DamageReceived;
@@ -14857,6 +14872,28 @@ mod tests {
             attack_trigger.valid_card,
             Some(TargetFilter::Typed(_))
         ));
+    }
+
+    /// CR 508.3a: "attacks you or a planeswalker you control" is a single
+    /// attack-target scope (PlayerOrPlaneswalker), NOT a cross-subject compound.
+    /// The production path (`parse_trigger_lines`) must produce exactly one
+    /// trigger — not mis-split at " or ".
+    #[test]
+    fn trigger_attacks_you_or_planeswalker_not_split() {
+        let triggers = parse_trigger_lines(
+            "Whenever a creature attacks you or a planeswalker you control, that creature's controller loses 1 life.",
+            "Revenge of Ravens",
+        );
+        assert_eq!(
+            triggers.len(),
+            1,
+            "attack-target scope extension must not be split into two triggers"
+        );
+        assert_eq!(triggers[0].mode, TriggerMode::Attacks);
+        assert_eq!(
+            triggers[0].attack_target_filter,
+            Some(AttackTargetFilter::PlayerOrPlaneswalker)
+        );
     }
 
     #[test]
@@ -25700,7 +25737,7 @@ mod tests {
 
     #[test]
     fn trigger_you_dealt_combat_damage() {
-        // CR 120.1a: "whenever you're dealt combat damage" — combat-only variant.
+        // CR 120.2a: "whenever you're dealt combat damage" — combat-only variant.
         let def = parse_trigger_line(
             "Whenever you're dealt combat damage, draw a card.",
             "Test Card",
@@ -25708,6 +25745,56 @@ mod tests {
         assert_eq!(def.mode, TriggerMode::DamageReceived);
         assert_eq!(def.damage_kind, DamageKindFilter::CombatOnly);
         assert_eq!(def.valid_target, Some(TargetFilter::Controller));
+    }
+
+    #[test]
+    fn trigger_combat_damage_dealt_to_you_passive() {
+        // CR 120.2a: passive voice "combat damage is dealt to you" is the same
+        // event as the active "you're dealt combat damage" (Risona, Asari
+        // Commander; I Am Untouchable).
+        let def = parse_trigger_line(
+            "Whenever combat damage is dealt to you, draw a card.",
+            "Test Card",
+        );
+        assert_eq!(def.mode, TriggerMode::DamageReceived);
+        assert_eq!(def.damage_kind, DamageKindFilter::CombatOnly);
+        assert_eq!(def.valid_target, Some(TargetFilter::Controller));
+    }
+
+    #[test]
+    fn trigger_combat_damage_dealt_to_you_passive_when() {
+        // CR 120.2a: "When" variant of the passive combat-damage form.
+        let def = parse_trigger_line(
+            "When combat damage is dealt to you, create a 4/4 Scarecrow.",
+            "I Am Untouchable",
+        );
+        assert_eq!(def.mode, TriggerMode::DamageReceived);
+        assert_eq!(def.damage_kind, DamageKindFilter::CombatOnly);
+        assert_eq!(def.valid_target, Some(TargetFilter::Controller));
+    }
+
+    #[test]
+    fn trigger_combat_damage_dealt_to_you_compound_unsupported() {
+        // GUARD: the compound "to you or a planeswalker you control" form
+        // (Vengeful Pharaoh) is not the bare literal; it stays Unknown — an
+        // honest gap, since the compound splitter is out of scope here.
+        let def = parse_trigger_line(
+            "Whenever combat damage is dealt to you or a planeswalker you control, return ~ from your graveyard to the battlefield.",
+            "Vengeful Pharaoh",
+        );
+        assert!(matches!(def.mode, TriggerMode::Unknown(_)));
+    }
+
+    #[test]
+    fn trigger_you_deal_combat_damage_to_player_not_intercepted() {
+        // NO-REGRESSION: the active deal-form ("deals combat damage to a
+        // player") is DamageDone, not DamageReceived — the new passive
+        // receive-literals must not capture it.
+        let def = parse_trigger_line(
+            "Whenever Risona deals combat damage to a player, you draw a card.",
+            "Risona, Asari Commander",
+        );
+        assert_eq!(def.mode, TriggerMode::DamageDone);
     }
 
     #[test]

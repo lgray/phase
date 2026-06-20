@@ -440,7 +440,7 @@ pub(crate) fn keys_from_trigger_def(def: &TriggerDefinition) -> (Keys, bool) {
 /// consult time. Exhaustive `match` on `GameEvent` — adding a new variant is
 /// a compile error until classified. The nested `EffectResolved { kind }`
 /// dispatch on `EffectKind` is similarly exhaustive (no `_` arm).
-fn keys_from_event(event: &GameEvent, state: &GameState) -> Keys {
+pub(crate) fn keys_from_event(event: &GameEvent, state: &GameState) -> Keys {
     let mut out: Keys = SmallVec::new();
     let mut push = |k: TriggerEventKey| {
         if !out.contains(&k) {
@@ -692,6 +692,7 @@ fn keys_from_effect_kind(kind: EffectKind, push: &mut impl FnMut(TriggerEventKey
         EffectKind::StartYourEngines
         | EffectKind::ChangeSpeed
         | EffectKind::DealDamage
+        | EffectKind::EachDealsDamageEqualToPower
         | EffectKind::Draw
         | EffectKind::Pump
         | EffectKind::PairWith

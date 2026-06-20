@@ -1054,6 +1054,43 @@ pub(crate) fn parse_passive_cant_be_cast(tp: &str, text: &str) -> Option<StaticD
         );
     }
 
+    // --- "[Type] spells with {X} in their mana costs can't be cast" (passive voice) ---
+    // CR 101.2 + CR 107.3: Gaddock Teeg class — prohibits casting spells whose
+    // printed mana cost contains an {X} symbol. Combines an optional type prefix
+    // ("noncreature") with the `HasXInManaCost` filter property. Resolved at cast
+    // time by `cant_cast_filter_matches` → `SpellCastRecord.has_x_in_cost`.
+    fn parse_passive_x_mana_cost_prefix(input: &str) -> OracleResult<'_, &str> {
+        let (input, type_text) = terminated(
+            take_until(" spells with {x} in "),
+            tag(" spells with {x} in "),
+        )
+        .parse(input)?;
+        let (input, _) = alt((tag("their mana costs"), tag("their mana cost"))).parse(input)?;
+        let (input, _) = opt(tag(".")).parse(input)?;
+        let (input, _) = eof(input)?;
+        Ok((input, type_text))
+    }
+    if let Ok((_, type_text)) = parse_passive_x_mana_cost_prefix(before_cant) {
+        let (filter, remainder) = parse_type_phrase(type_text);
+        if remainder.trim().is_empty() {
+            // Only accept Typed filters with concrete type_filters; reject
+            // unsupported shapes (AnyOf, bare Any) to avoid silently broadening
+            // the prohibition scope.
+            let tf = match filter {
+                TargetFilter::Typed(tf) if !tf.type_filters.is_empty() => tf,
+                _ => return None,
+            };
+            let tf = tf.properties(vec![FilterProp::HasXInManaCost]);
+            return Some(
+                StaticDefinition::new(StaticMode::CantBeCast {
+                    who: ProhibitionScope::AllPlayers,
+                })
+                .affected(TargetFilter::Typed(tf))
+                .description(text.to_string()),
+            );
+        }
+    }
+
     // --- "Spells with the chosen name can't be cast" (passive voice) ---
     // CR 101.2 + CR 201.2: the name-lock hatebears — Meddling Mage, Nevermore,
     // Voidstone Gargoyle. The active-voice equivalent ("[subject] can't cast

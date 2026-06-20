@@ -1378,6 +1378,11 @@ fn detect_dynamic_qty(
     // `"Variable"`/`"Multiply"`/etc.
     let dynamic_markers: &[&str] = &[
         "\"type\":\"Ref\"",
+        // CR 120.1: "each deal damage equal to their power" — the per-source
+        // power is an implicit dynamic quantity carried by the effect variant
+        // itself (no separate QuantityExpr field), so the variant name is the
+        // coverage marker. Band Together / Allies at Last class.
+        "EachDealsDamageEqualToPower",
         "\"type\":\"Multiply\"",
         "\"type\":\"DivideRounded\"",
         "\"type\":\"Offset\"",

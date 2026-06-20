@@ -626,6 +626,39 @@ pub(crate) fn lower_effect_chain_ir(ir: &EffectChainIr) -> AbilityDefinition {
             .condition
             .as_ref()
             .or(clause_ir.parsed.condition.as_ref());
+        // CR 608.2c + CR 109.2: When a "if it's a [type], it ..." card-type gate
+        // sits on a clause whose effect acts on the parent target (the anaphoric
+        // "it" resolved to the previously-targeted object — e.g. Azure Beastbinder's
+        // "If it's a creature, it also has base power and toughness 2/2"), the
+        // type description refers to that *permanent*, not a revealed card. The
+        // chunk parser emits `RevealedHasCardType` for every "if it's a [type]"
+        // head, but that variant evaluates against the last revealed/zone-changed
+        // card and would be ALWAYS-FALSE here (no reveal context), silently
+        // dropping the rider. Convert it to `TargetMatchesFilter` (the same
+        // conversion the Disintegrate/Carbonize damage-rider path performs via
+        // `card_type_condition_as_target_match`) so the gate evaluates against the
+        // bound parent target.
+        //
+        // Two guards keep genuine reveal-context gates (Goblin Guide:
+        // "defending player reveals the top card of their library. If it's a
+        // land card, that player puts it into their hand."; Delver-class)
+        // untouched:
+        //   1. The gated effect must target `ParentTarget` (the "it" anaphor).
+        //   2. No prior clause in the chain may publish a revealed/zone-changed
+        //      subject — that is exactly the source `RevealedHasCardType` reads
+        //      at resolution (`last_revealed_ids` / `last_zone_changed_ids`), so
+        //      when such a publisher exists the "it" really is the revealed card
+        //      and the original variant is correct.
+        let chain_has_revealed_subject = defs
+            .iter()
+            .any(|d| effect_publishes_revealed_subject(&d.effect));
+        let converted_condition = effective_condition.and_then(|cond| {
+            (!chain_has_revealed_subject
+                && matches!(def.effect.target_filter(), Some(TargetFilter::ParentTarget)))
+            .then(|| super::conditions::card_type_condition_as_target_match(cond))
+            .flatten()
+        });
+        let effective_condition = converted_condition.as_ref().or(effective_condition);
         if let Some(cond) = effective_condition {
             // CR 603.4 + CR 608.2h: An in-effect `if` on a continuous
             // keyword-grant clause (Odric, Lunarch Marshal) must gate each
@@ -1645,6 +1678,36 @@ pub(crate) fn rewrite_token_created_this_way_unimplemented(
             .or(Some(Duration::UntilEndOfTurn)),
         target: Some(TargetFilter::LastCreated),
     })
+}
+
+/// CR 608.2c + CR 701.20: True when this effect publishes a revealed or
+/// zone-changed subject at resolution — i.e. it populates the
+/// `last_revealed_ids` / `last_zone_changed_ids` trackers that
+/// `AbilityCondition::RevealedHasCardType` reads. When a prior clause in a
+/// chain is such a publisher, a following "if it's a [type]" gate refers to
+/// THAT card (Goblin Guide: reveal-then-conditional-recall), so the
+/// `RevealedHasCardType` reading is correct and must not be rewritten to a
+/// `TargetMatchesFilter` parent-target reading. Reveal-class effects populate
+/// `last_revealed_ids` directly; zone-change-class effects emit `ZoneChanged`
+/// events that populate `last_zone_changed_ids`.
+fn effect_publishes_revealed_subject(effect: &Effect) -> bool {
+    matches!(
+        effect,
+        // Reveal-class (populate last_revealed_ids).
+        Effect::Reveal { .. }
+            | Effect::RevealTop { .. }
+            | Effect::RevealHand { .. }
+            | Effect::Dig { .. }
+            | Effect::ExileFromTopUntil { .. }
+            | Effect::Clash
+            | Effect::TurnFaceUp { .. }
+            // Zone-change-class (emit ZoneChanged → last_zone_changed_ids).
+            | Effect::ChangeZone { .. }
+            | Effect::ChangeZoneAll { .. }
+            | Effect::ExileTop { .. }
+            | Effect::Mill { .. }
+            | Effect::SearchLibrary { .. }
+    )
 }
 
 /// Rewrite any `TargetFilter::ParentTarget` sitting in the target slot of

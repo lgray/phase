@@ -654,6 +654,45 @@ fn parse_isnt_a_core_type(lower: &str) -> Option<CoreType> {
         .and_then(|(_, clause)| predicate(clause).ok().map(|(_, ct)| ct))
 }
 
+/// CR 305.6 + CR 305.7 + CR 205.3i: Recognize a "gain all basic land types" /
+/// "gain all land types" predicate (and the `has`/`have`/`are`/`is` copula
+/// variants) and map it to the matching all-land-type continuous modification.
+///
+/// `AddAllBasicLandTypes` adds the five basic land subtypes (Plains, Island,
+/// Swamp, Mountain, Forest — CR 305.6) in addition to a land's existing types;
+/// each grants its intrinsic mana ability per CR 305.6 / CR 305.7.
+/// `AddAllLandTypes` adds every one of the 17 land subtypes (CR 205.3i). Built
+/// for the whole "[lands you control] gain all basic land types until <duration>"
+/// class (Energybending), not a single card. The verb/copula is matched but
+/// otherwise discarded — the affected filter and duration are owned by the
+/// caller (`build_continuous_clause` / the static/anthem parsers).
+fn parse_all_land_types_modification(text: &str) -> Option<ContinuousModification> {
+    let lower = text.trim().trim_end_matches('.').trim().to_lowercase();
+    super::oracle_nom::bridge::nom_parse_lower(&lower, |i| {
+        let (i, _) = opt(alt((
+            tag::<_, _, OracleError<'_>>("gains "),
+            tag("gain "),
+            tag("has "),
+            tag("have "),
+            tag("are "),
+            tag("is "),
+        )))
+        .parse(i)?;
+        // Longer phrase first so "all basic land types" wins over "all land types".
+        all_consuming(alt((
+            value(
+                ContinuousModification::AddAllBasicLandTypes,
+                tag("all basic land types"),
+            ),
+            value(
+                ContinuousModification::AddAllLandTypes,
+                tag("all land types"),
+            ),
+        )))
+        .parse(i)
+    })
+}
+
 pub(crate) fn parse_continuous_modifications(text: &str) -> Vec<ContinuousModification> {
     // Strip "where X is [quantity]" before parsing modifications,
     // but only if the text doesn't contain quoted abilities (which have their
@@ -678,6 +717,14 @@ pub(crate) fn parse_continuous_modifications(text: &str) -> Vec<ContinuousModifi
     // it"), counter-gated, and battlefield sources stay a gap (follow-ups).
     if let Some(source) = parse_grant_all_activated_abilities_source(unquoted_tp.lower) {
         return vec![ContinuousModification::GrantAllActivatedAbilitiesOf { source }];
+    }
+
+    // CR 305.6 + CR 305.7 + CR 205.3i: "gain all basic land types" / "gain all
+    // land types" (and the copula variants) — the whole predicate maps to a
+    // single all-land-type modification. Checked early so the trailing "types"
+    // noun is never mistaken for a P/T or keyword token by the parsers below.
+    if let Some(modification) = parse_all_land_types_modification(unquoted_tp.original) {
+        return vec![modification];
     }
 
     let mut modifications = Vec::new();

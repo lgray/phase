@@ -391,6 +391,7 @@ fn redundancy_delta(
         | Effect::UnattachAll { .. }
         | Effect::Surveil { .. }
         | Effect::Fight { .. }
+        | Effect::EachDealsDamageEqualToPower { .. }
         | Effect::Explore
         | Effect::ExploreAll { .. }
         | Effect::Investigate

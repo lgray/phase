@@ -42,8 +42,8 @@ use super::mulligan;
 use super::planeswalker;
 use super::priority;
 use super::public_state::{
-    bump_state_revision, finalize_public_state, mark_public_state_all_dirty,
-    mark_public_state_from_events, sync_waiting_for,
+    bump_state_revision, finalize_display_state, finalize_public_state, finalize_rules_state,
+    mark_public_state_all_dirty, mark_public_state_from_events, sync_waiting_for,
 };
 use super::sba;
 use super::splice;
@@ -51,6 +51,10 @@ use super::triggers;
 use super::turn_control;
 use super::turns;
 use super::zones;
+
+pub use super::engine_resolve_batch::{
+    resolve_all_fast_forward, ResolveAllCallbackDecision, ResolveAllFastForwardResult,
+};
 
 #[derive(Debug, Clone, Error)]
 pub enum EngineError {
@@ -62,6 +66,12 @@ pub enum EngineError {
     NotYourPriority,
     #[error("Action not allowed: {0}")]
     ActionNotAllowed(String),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PublicFinalizeMode {
+    Immediate,
+    DeferredDisplay,
 }
 
 fn handle_unlock_room_door(
@@ -144,6 +154,25 @@ pub fn apply(
     actor: PlayerId,
     action: GameAction,
 ) -> Result<ActionResult, EngineError> {
+    apply_action_boundary(state, actor, action, PublicFinalizeMode::Immediate)
+}
+
+pub(super) fn apply_action_boundary(
+    state: &mut GameState,
+    actor: PlayerId,
+    action: GameAction,
+    mode: PublicFinalizeMode,
+) -> Result<ActionResult, EngineError> {
+    apply_action_boundary_with_stack_limit(state, actor, action, mode, None)
+}
+
+pub(super) fn apply_action_boundary_with_stack_limit(
+    state: &mut GameState,
+    actor: PlayerId,
+    action: GameAction,
+    mode: PublicFinalizeMode,
+    stack_resolution_limit: Option<u32>,
+) -> Result<ActionResult, EngineError> {
     // Clear transient inter-effect state at the start of each player action.
     // last_effect_count is set by interactive handlers (e.g., DiscardChoice) and
     // consumed by sub_ability continuations via EventContextAmount fallback.
@@ -152,7 +181,7 @@ pub fn apply(
     state.exiled_from_hand_this_resolution = 0;
     state.die_result_this_resolution = None;
     check_actor_authorization(state, actor, &action)?;
-    let mut result = apply_action(state, actor, action)?;
+    let mut result = apply_action(state, actor, action, stack_resolution_limit)?;
     reconcile_terminal_result(state, &mut result);
     bump_state_revision(state);
     sync_waiting_for(state, &result.waiting_for);
@@ -168,7 +197,10 @@ pub fn apply(
     // consumer of `public_state_dirty`, so marking once here over the complete
     // event stream is correct and cheapest.
     mark_public_state_from_events(state, &result.events);
-    finalize_public_state(state);
+    finalize_rules_state(state);
+    if matches!(mode, PublicFinalizeMode::Immediate) {
+        finalize_display_state(state);
+    }
     result.log_entries = super::log::resolve_log_entries(&result.events, state);
     Ok(result)
 }
@@ -356,6 +388,7 @@ fn phase_stop_hit(state: &GameState, player: PlayerId) -> bool {
 fn pass_priority_once_with_pipeline(
     state: &mut GameState,
     events: &mut Vec<GameEvent>,
+    stack_resolution_limit: Option<u32>,
 ) -> Result<WaitingFor, EngineError> {
     state.cancelled_casts.clear();
     // CR 117.4 + 608.1: When all players pass in succession the stack begins
@@ -369,7 +402,12 @@ fn pass_priority_once_with_pipeline(
     // submitter (the controller), which would mis-count consecutive passes and
     // soft-lock the game.
     let current_seat = turn_control::priority_seat(state);
-    let wf = priority::handle_priority_pass(current_seat, state, events);
+    let wf = priority::handle_priority_pass_with_limit(
+        current_seat,
+        state,
+        events,
+        stack_resolution_limit,
+    );
     sync_waiting_for(state, &wf);
 
     // CR 608.2 + CR 117.4: Drain any pending continuation queued during the
@@ -1111,7 +1149,7 @@ fn run_auto_pass_loop(state: &mut GameState, result: &mut ActionResult) {
                 }
 
                 let mut events = Vec::new();
-                match pass_priority_once_with_pipeline(state, &mut events) {
+                match pass_priority_once_with_pipeline(state, &mut events, None) {
                     Ok(wf) => {
                         let stack_empty_or_grew =
                             finish_completed_or_interrupted_until_stack_empty_sessions(state);
@@ -1320,6 +1358,7 @@ fn apply_action(
     state: &mut GameState,
     actor: PlayerId,
     action: GameAction,
+    stack_resolution_limit: Option<u32>,
 ) -> Result<ActionResult, EngineError> {
     // Clear stale revealed_cards from the previous action.
     // RevealTop reveals (e.g. Goblin Guide) are momentary — shown for one state update.
@@ -1575,7 +1614,7 @@ fn apply_action(
             {
                 return Err(EngineError::NotYourPriority);
             }
-            let wf = pass_priority_once_with_pipeline(state, &mut events)?;
+            let wf = pass_priority_once_with_pipeline(state, &mut events, stack_resolution_limit)?;
             return Ok(ActionResult {
                 events,
                 waiting_for: wf,
@@ -4400,7 +4439,7 @@ fn apply_action(
                 AutoPassRequest::UntilEndOfTurn => AutoPassMode::UntilEndOfTurn,
             };
             state.auto_pass.insert(*player, stored_mode);
-            let wf = pass_priority_once_with_pipeline(state, &mut events)?;
+            let wf = pass_priority_once_with_pipeline(state, &mut events, None)?;
             return Ok(ActionResult {
                 events,
                 waiting_for: wf,

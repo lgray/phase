@@ -173,6 +173,12 @@ fn is_data_carrying_static(mode: &StaticMode) -> bool {
             // modifier kind + action list (Giant Ox, Hotshot Mechanic). Runtime
             // enforcement is in static_abilities.rs::object_crew_power_contribution.
             | StaticMode::CrewContribution { .. }
+            // CR 702 + CR 613.1f: CantHaveKeyword carries the denied Keyword
+            // discriminant (Archetype cycle). Runtime enforcement is in
+            // layers.rs::apply_cant_have_keyword_denials (layer 6, ability-
+            // removing effects). Parameterized — no registry entry; coverage
+            // support here.
+            | StaticMode::CantHaveKeyword { .. }
     )
 }
 
@@ -1864,6 +1870,10 @@ fn effect_details(effect: &Effect) -> Vec<(String, String)> {
         Effect::DealDamage { amount, target, .. } => {
             d.push(("amount".into(), fmt_quantity(amount)));
             d.push(("target".into(), fmt_target(target)));
+        }
+        Effect::EachDealsDamageEqualToPower { sources, recipient } => {
+            d.push(("sources".into(), fmt_target(sources)));
+            d.push(("recipient".into(), fmt_target(recipient)));
         }
         Effect::SearchOutsideGame {
             filter,
@@ -5926,9 +5936,11 @@ fn static_condition_feature(cond: &StaticCondition) -> (&'static str, FeatureSup
         StaticCondition::Not { .. } => ("Not", Handled),
         StaticCondition::DefendingPlayerControls { .. } => ("DefendingPlayerControls", Unhandled),
         StaticCondition::SourceAttackingAlone => ("SourceAttackingAlone", Unhandled),
-        StaticCondition::SourceIsAttacking => ("SourceIsAttacking", Unhandled),
-        StaticCondition::SourceIsBlocking => ("SourceIsBlocking", Unhandled),
-        StaticCondition::SourceIsBlocked => ("SourceIsBlocked", Unhandled),
+        // CR 508.1k / 509.1g / 509.1h: runtime-evaluated against the live combat
+        // attacker/blocker sets (conditions.rs:81 / layers.rs:1118 / layers.rs:1123).
+        StaticCondition::SourceIsAttacking => ("SourceIsAttacking", Handled),
+        StaticCondition::SourceIsBlocking => ("SourceIsBlocking", Handled),
+        StaticCondition::SourceIsBlocked => ("SourceIsBlocked", Handled),
         StaticCondition::IsMonarch => ("IsMonarch", Handled),
         StaticCondition::IsInitiative => ("IsInitiative", Handled),
         StaticCondition::NoMonarch => ("NoMonarch", Handled),
@@ -5945,6 +5957,7 @@ fn static_condition_feature(cond: &StaticCondition) -> (&'static str, FeatureSup
         StaticCondition::UnlessPay { .. } => ("UnlessPay", Handled),
         StaticCondition::ControlsCommander { .. } => ("ControlsCommander", Unhandled),
         StaticCondition::SourceIsEquipped => ("SourceIsEquipped", Unhandled),
+        StaticCondition::SourceIsEnchanted => ("SourceIsEnchanted", Unhandled),
         StaticCondition::SourceIsMonstrous => ("SourceIsMonstrous", Unhandled),
         StaticCondition::SourceAttachedToCreature => ("SourceAttachedToCreature", Unhandled),
         StaticCondition::SourceMatchesFilter { .. } => ("SourceMatchesFilter", Unhandled),
@@ -11129,6 +11142,38 @@ mod tests {
         assert!(
             is_static_supported(&supported, &trigger_registry, &static_registry),
             "a plain keyword-grant continuous static must be supported"
+        );
+    }
+
+    /// CR 113.11: CantHaveKeyword is a data-carrying static (parameterized by
+    /// keyword). Archetype of Imagination et al. must be covered once this arm
+    /// is present in `is_data_carrying_static()`.
+    #[test]
+    fn cant_have_keyword_static_has_no_coverage_gap() {
+        let mut face = make_face();
+        let oracle = "Creatures your opponents control lose flying and can't have or gain flying.";
+        face.oracle_text = Some(oracle.to_string());
+        face.static_abilities.push(StaticDefinition {
+            mode: StaticMode::CantHaveKeyword {
+                keyword: Keyword::Flying,
+            },
+            affected: Some(TargetFilter::Typed(
+                TypedFilter::creature().controller(ControllerRef::Opponent),
+            )),
+            modifications: vec![],
+            condition: None,
+            per_player_condition: None,
+            affected_zone: None,
+            effect_zone: None,
+            active_zones: vec![],
+            characteristic_defining: false,
+            description: Some(oracle.to_string()),
+            attack_defended: None,
+        });
+
+        assert!(
+            card_face_gaps(&face).is_empty(),
+            "CantHaveKeyword(Flying) should be covered by is_data_carrying_static()"
         );
     }
 }

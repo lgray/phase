@@ -860,10 +860,19 @@ fn parse_number_of_counters_on_object(input: &str) -> OracleResult<'_, QuantityR
 }
 
 /// Parse the object scope for counter references: "it", "that creature", "that permanent", etc.
+///
+/// CR 122.1 + CR 608.2k: A creature's ability that counts "+1/+1 counters on
+/// him" / "on her" / "on them" refers to that same source object's counters
+/// (Red Hulk's Enrage reflex). The gendered/plural objective pronouns are
+/// interchangeable with the neuter "it" for the source — same rationale as
+/// `parse_self_possessive`.
 fn parse_counter_object_scope(input: &str) -> OracleResult<'_, ObjectScope> {
     alt((
         value(ObjectScope::Source, tag("it")),
         value(ObjectScope::Source, tag("~")),
+        value(ObjectScope::Source, tag("him")),
+        value(ObjectScope::Source, tag("her")),
+        value(ObjectScope::Source, tag("them")),
         value(ObjectScope::Target, tag("that creature")),
         value(ObjectScope::Target, tag("that permanent")),
         value(ObjectScope::Target, tag("that artifact")),
@@ -1781,74 +1790,66 @@ fn parse_scoped_zone_ref(input: &str) -> OracleResult<'_, (ZoneRef, CountScope)>
     .parse(input)
 }
 
-/// Parse "its power" / "~'s power" / "this creature's power" / "this card's power".
+/// Parse the possessive form of a source self-reference: "its", "~'s",
+/// "this creature's", "this card's", or a gendered/plural pronoun ("his",
+/// "her", "their").
+///
+/// CR 208.3 + CR 608.2k: A creature's ability that says "his power" / "her
+/// power" / "their power" refers to that same source object's power (recently
+/// templated this way on Marvel's Spider-Man cards such as Iron Fist, Living
+/// Weapon). The gendered/plural pronouns are interchangeable with the neuter
+/// "its" for the purpose of referencing the ability's own source — modern
+/// templating used "its" exclusively, so admitting the gendered forms here
+/// keeps the whole "his/her/their <characteristic>" class on one path rather
+/// than special-casing one card.
+fn parse_self_possessive(input: &str) -> OracleResult<'_, ()> {
+    value(
+        (),
+        alt((
+            tag("its"),
+            tag("~'s"),
+            tag("this creature's"),
+            tag("this card's"),
+            tag("his"),
+            tag("her"),
+            tag("their"),
+        )),
+    )
+    .parse(input)
+}
+
+/// Parse "its power" / "~'s power" / "this creature's power" / "this card's
+/// power" / "his power" / "her power" / "their power".
 ///
 /// CR 400.7 + CR 208.3: Scavenge and other graveyard-activated effects reference
 /// the source via "this card's power" because the source is a card (not a
 /// creature) when the ability is activated. `SelfPower` is LKI-aware at
-/// resolution time (see `game/quantity.rs`), so all four phrasings resolve
-/// identically.
+/// resolution time (see `game/quantity.rs`), so all phrasings resolve
+/// identically. See `parse_self_possessive` for the gendered-pronoun rationale.
 fn parse_self_power_ref(input: &str) -> OracleResult<'_, QuantityRef> {
-    alt((
-        value(
-            QuantityRef::Power {
-                scope: crate::types::ability::ObjectScope::Source,
-            },
-            tag("its power"),
-        ),
-        value(
-            QuantityRef::Power {
-                scope: crate::types::ability::ObjectScope::Source,
-            },
-            tag("~'s power"),
-        ),
-        value(
-            QuantityRef::Power {
-                scope: crate::types::ability::ObjectScope::Source,
-            },
-            tag("this creature's power"),
-        ),
-        value(
-            QuantityRef::Power {
-                scope: crate::types::ability::ObjectScope::Source,
-            },
-            tag("this card's power"),
-        ),
+    let (rest, _) = parse_self_possessive(input)?;
+    let (rest, _) = tag(" power").parse(rest)?;
+    Ok((
+        rest,
+        QuantityRef::Power {
+            scope: crate::types::ability::ObjectScope::Source,
+        },
     ))
-    .parse(input)
 }
 
 /// Parse "its toughness" / "~'s toughness" / "this creature's toughness" /
-/// "this card's toughness". See `parse_self_power_ref` for the card-vs-creature
-/// rationale.
+/// "this card's toughness" / "his toughness" / "her toughness" /
+/// "their toughness". See `parse_self_power_ref` for the card-vs-creature
+/// rationale and `parse_self_possessive` for the gendered-pronoun rationale.
 fn parse_self_toughness_ref(input: &str) -> OracleResult<'_, QuantityRef> {
-    alt((
-        value(
-            QuantityRef::Toughness {
-                scope: crate::types::ability::ObjectScope::Source,
-            },
-            tag("its toughness"),
-        ),
-        value(
-            QuantityRef::Toughness {
-                scope: crate::types::ability::ObjectScope::Source,
-            },
-            tag("~'s toughness"),
-        ),
-        value(
-            QuantityRef::Toughness {
-                scope: crate::types::ability::ObjectScope::Source,
-            },
-            tag("this creature's toughness"),
-        ),
-        value(
-            QuantityRef::Toughness {
-                scope: crate::types::ability::ObjectScope::Source,
-            },
-            tag("this card's toughness"),
-        ),
+    let (rest, _) = parse_self_possessive(input)?;
+    let (rest, _) = tag(" toughness").parse(rest)?;
+    Ok((
+        rest,
+        QuantityRef::Toughness {
+            scope: crate::types::ability::ObjectScope::Source,
+        },
     ))
-    .parse(input)
 }
 
 /// Parse damage-history references such as Chandra's Incinerator's
@@ -5282,12 +5283,59 @@ mod tests {
             "~'s power",
             "this creature's power",
             "this card's power",
+            // CR 208.3 + CR 608.2k: gendered/plural possessive pronouns are
+            // interchangeable with "its" for the source's own power (Iron Fist,
+            // Living Weapon — "deals damage equal to his power").
+            "his power",
+            "her power",
+            "their power",
         ] {
             let (rest, q) = parse_quantity_ref(phrase).unwrap();
             assert_eq!(
                 q,
                 QuantityRef::Power {
                     scope: crate::types::ability::ObjectScope::Source
+                },
+                "phrase: {phrase}"
+            );
+            assert_eq!(rest, "", "phrase: {phrase}");
+        }
+    }
+
+    /// CR 208.3 + CR 608.2k: gendered/plural possessive pronouns reference the
+    /// source's own toughness, mirroring the power phrasings.
+    #[test]
+    fn test_parse_quantity_ref_self_toughness_gendered_pronouns() {
+        for phrase in ["his toughness", "her toughness", "their toughness"] {
+            let (rest, q) = parse_quantity_ref(phrase).unwrap();
+            assert_eq!(
+                q,
+                QuantityRef::Toughness {
+                    scope: crate::types::ability::ObjectScope::Source
+                },
+                "phrase: {phrase}"
+            );
+            assert_eq!(rest, "", "phrase: {phrase}");
+        }
+    }
+
+    /// CR 122.1 + CR 608.2k: "the number of +1/+1 counters on him/her/them"
+    /// counts counters on the ability's own source — the gendered/plural
+    /// objective pronouns are interchangeable with "it" (Red Hulk's Enrage
+    /// reflex: "damage equal to the number of +1/+1 counters on him").
+    #[test]
+    fn test_parse_quantity_ref_counters_on_source_gendered_pronouns() {
+        for phrase in [
+            "the number of +1/+1 counters on him",
+            "the number of +1/+1 counters on her",
+            "the number of +1/+1 counters on them",
+        ] {
+            let (rest, q) = parse_quantity_ref(phrase).unwrap();
+            assert_eq!(
+                q,
+                QuantityRef::CountersOn {
+                    scope: crate::types::ability::ObjectScope::Source,
+                    counter_type: Some(crate::types::counter::CounterType::Plus1Plus1),
                 },
                 "phrase: {phrase}"
             );

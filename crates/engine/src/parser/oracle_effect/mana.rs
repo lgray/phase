@@ -1270,40 +1270,29 @@ fn parse_restricted_spell_type_phrase(spell_part: &str) -> Option<String> {
     )
 }
 
-/// CR 106.6: Parse the negated spend-restriction phrasing "this mana can't be
-/// spent to cast a non<TYPE> spell" into the equivalent positive
-/// [`ManaSpendRestriction::SpellType`] (`<TYPE>`). "Can't cast a non-X spell"
-/// and "can only cast X spells" are logically identical permissions over a
-/// single core type, so the negated form maps onto the same restriction the
-/// positive parser produces — no separate runtime variant is required.
-///
-/// Builds for the class: any `non<TYPE>` exclusion (nonartifact, noncreature,
-/// nonland, …) resolves to the positive `<TYPE>` restriction. Returns `None`
-/// for unions ("noncreature, nonartifact spell") and any non-negated remainder,
-/// which fall through to the positive parser. Hydraulic Helper.
-fn parse_negated_spell_spend_restriction(lower: &str) -> Option<ManaSpendRestriction> {
-    let lower = lower.trim_end_matches(['.', '"']);
-    // "this mana can't be spent to cast " — Oracle text is not
-    // apostrophe-normalized, so accept both the ASCII (') and curly (U+2019)
-    // apostrophe forms of "can't".
-    let (rest, _) = preceded(
-        (
-            tag::<_, _, OracleError<'_>>("this mana ca"),
-            alt((tag("n't"), tag("n\u{2019}t"))),
-            tag(" be spent to cast "),
-        ),
-        opt(nom_primitives::parse_article),
-    )
-    .parse(lower)
-    .ok()?;
-    // "non<type> spell(s)" → strip the "non" prefix (with optional hyphen) and
-    // reuse the positive type-phrase extractor so the result matches what
-    // "spend this mana only to cast <type> spells" produces.
-    let (type_phrase, _) = preceded(tag::<_, _, OracleError<'_>>("non"), opt(char('-')))
-        .parse(rest)
-        .ok()?;
-    let spell_type = parse_restricted_spell_type_phrase(type_phrase)?;
-    Some(ManaSpendRestriction::SpellType(spell_type))
+/// CR 106.6: Parse the negative spend restriction "this mana can't be spent to
+/// cast [a/an] non<TYPE> spell(s)" into a `SpellTypeOrAbilityActivation` whose
+/// `spell_type` is `<TYPE>` (the phrase with the leading "non" stripped) and
+/// whose ability scope is `Any`. The double-negative restricts spell-casting to
+/// `<TYPE>` spells while leaving every ability activation payable (CR 605/602) —
+/// Karn, Legacy Reforged; Hydraulic Helper. Returns `None` for any other
+/// phrasing so the positive-form parser and the existing gap behavior are
+/// untouched.
+fn parse_negative_mana_spend_restriction(lower: &str) -> Option<ManaSpendRestriction> {
+    let (_, rest) = nom_on_lower(lower, lower, |i| {
+        let (i, _) = tag("this mana can't be spent to cast ").parse(i)?;
+        let (i, _) = opt(nom_primitives::parse_article).parse(i)?;
+        value((), alt((tag("non-"), tag("non")))).parse(i)
+    })?;
+    let rest = rest.trim().trim_end_matches(['.', '"']).trim();
+    // `rest` is now "<type> spell(s)" (the article and "non" prefix already
+    // consumed); reuse the shared type-phrase combinator to canonicalize the
+    // spell type.
+    let spell_type = parse_restricted_spell_type_phrase(rest)?;
+    Some(ManaSpendRestriction::SpellTypeOrAbilityActivation {
+        spell_type,
+        ability: AbilityActivationScope::Any,
+    })
 }
 
 fn normalize_restricted_source_phrase(phrase: &str) -> String {
@@ -1401,12 +1390,15 @@ fn split_restricted_spell_and_activation(rest: &str) -> (&str, ActivationTail) {
 pub(crate) fn parse_mana_spend_restriction(
     lower: &str,
 ) -> Option<(ManaSpendRestriction, Vec<ManaSpellGrant>)> {
-    // CR 106.6: Negated spend restrictions ("This mana can't be spent to cast a
-    // non<TYPE> spell") are logically equivalent to the positive
-    // "spend this mana only to cast <TYPE> spells" form — cast permission for a
-    // single core type. Recognized before the "spend this mana only" prefix
-    // strip, which they don't carry. Hydraulic Helper: "nonartifact" → Artifact.
-    if let Some(restriction) = parse_negated_spell_spend_restriction(lower) {
+    // CR 106.6: Negative spend restriction — "this mana can't be spent to cast
+    // non<TYPE> spells" (Karn, Legacy Reforged). The double negative ("can't
+    // cast non<TYPE>") is the spell-side equivalent of "only to cast <TYPE>",
+    // but — unlike the positive "spend this mana only …" form — it places NO
+    // restriction on ability activation: the clause forbids only the *casting*
+    // of non-<TYPE> spells. Lower it to `SpellTypeOrAbilityActivation` (any
+    // ability stays payable) rather than `SpellType` (spells-only), which would
+    // wrongly forbid paying for abilities.
+    if let Some(restriction) = parse_negative_mana_spend_restriction(lower) {
         return Some((restriction, vec![]));
     }
 
