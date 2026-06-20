@@ -90,7 +90,7 @@ fn exhaust_ability_resolves_its_effect_on_first_activation() {
     );
 
     let idx = exhaust_ability_index(&runner, id);
-    add_mana(&mut runner, ManaType::Green, 2); // {1}{G} -> one funds {G}, one funds the {1}
+    add_mana(&mut runner, P0, ManaType::Green, 2); // {1}{G} -> one funds {G}, one funds the {1}
     runner.activate(id, idx).resolve();
 
     // CR 702.177a: the exhaust effect ("put a +1/+1 counter on this creature")
@@ -114,7 +114,7 @@ fn exhaust_ability_cannot_be_activated_a_second_time() {
     let idx = exhaust_ability_index(&runner, id);
 
     // First activation: legal, resolves, records the per-game activation.
-    add_mana(&mut runner, ManaType::Green, 2);
+    add_mana(&mut runner, P0, ManaType::Green, 2);
     runner.activate(id, idx).resolve();
     assert_eq!(
         plus_one_counters(&runner, id),
@@ -125,7 +125,7 @@ fn exhaust_ability_cannot_be_activated_a_second_time() {
 
     // Fund the pool again so the rejection is attributable to the OnlyOnce
     // restriction, NOT to an unpayable cost.
-    add_mana(&mut runner, ManaType::Green, 2);
+    add_mana(&mut runner, P0, ManaType::Green, 2);
 
     // CR 702.177a + CR 602.5b: the SECOND activation must be rejected by the
     // engine. This is the discriminating assertion — it flips to Ok(_) if the
@@ -176,9 +176,9 @@ fn x_cost_exhaust_ability_is_also_once_per_permanent() {
 
     // {X}{G}{G}{U} with X=2 -> 2 generic (X) + GG + U. Fund generously: 2 green
     // cover {G}{G}, 1 blue covers {U}, 2 colorless cover X=2.
-    add_mana(&mut runner, ManaType::Green, 2);
-    add_mana(&mut runner, ManaType::Blue, 1);
-    add_mana(&mut runner, ManaType::Colorless, 2);
+    add_mana(&mut runner, P0, ManaType::Green, 2);
+    add_mana(&mut runner, P0, ManaType::Blue, 1);
+    add_mana(&mut runner, P0, ManaType::Colorless, 2);
     runner.activate(id, idx).x(2).resolve();
 
     // CR 702.177a: the X-scaled PutCounter half resolves (X=2 counters).
@@ -190,9 +190,9 @@ fn x_cost_exhaust_ability_is_also_once_per_permanent() {
     runner.advance_until_stack_empty();
 
     // Second activation rejected even though the cost would be payable.
-    add_mana(&mut runner, ManaType::Green, 2);
-    add_mana(&mut runner, ManaType::Blue, 1);
-    add_mana(&mut runner, ManaType::Colorless, 2);
+    add_mana(&mut runner, P0, ManaType::Green, 2);
+    add_mana(&mut runner, P0, ManaType::Blue, 1);
+    add_mana(&mut runner, P0, ManaType::Colorless, 2);
     let second = runner.act(GameAction::ActivateAbility {
         source_id: id,
         ability_index: idx,
