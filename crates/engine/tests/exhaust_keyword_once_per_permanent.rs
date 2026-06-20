@@ -37,10 +37,10 @@ const P0: PlayerId = PlayerId(0);
 
 /// Add `n` units of `ty` mana to P0's pool (deterministic payment without
 /// modelling lands — the activation driver finalizes the pool via PassPriority).
-fn add_mana(runner: &mut GameRunner, ty: ManaType, n: usize) {
+fn add_mana(runner: &mut GameRunner, player: PlayerId, ty: ManaType, n: usize) {
     for _ in 0..n {
         let unit = ManaUnit::new(ty, ObjectId(0), false, vec![]);
-        runner.state_mut().players[0].mana_pool.add(unit);
+        runner.state_mut().players[usize::from(player.0)].mana_pool.add(unit);
     }
 }
 
