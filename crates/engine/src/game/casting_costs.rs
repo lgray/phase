@@ -5333,6 +5333,16 @@ pub(super) fn finalize_cast_with_phyrexian_choices(
     } else {
         None
     };
+    // CR 601.2a + CR 401.5: Capture the `OncePerTurn`
+    // `StaticMode::TopOfLibraryCastPermission` source authorizing this cast
+    // BEFORE the card leaves the library for the stack (Assemble the Players,
+    // Johann). `Unlimited` permissions (Realmwalker, Future Sight) return
+    // `None` and never consume a slot.
+    let top_of_library_permission_source = if source_zone == Zone::Library {
+        super::casting::top_of_library_once_per_turn_source(state, player, object_id)
+    } else {
+        None
+    };
     // CR 601.2a + CR 603.7 + CR 611.2a: Capture the tracked-set group of a
     // single-use `PlayFromExile` grant authorizing this cast BEFORE the object
     // leaves exile for the stack.
@@ -5537,6 +5547,13 @@ pub(super) fn finalize_cast_with_phyrexian_choices(
         exile_play_permission_source
     {
         state.exile_play_permissions_used.insert(source);
+    }
+    // CR 601.2a + CR 401.5: Consume the per-turn slot for a `OncePerTurn`
+    // top-of-library permission (Assemble the Players, Johann). The capture
+    // helper already filtered to `OncePerTurn` sources, so any `Some` here is a
+    // slot to stamp.
+    if let Some(source) = top_of_library_permission_source {
+        state.top_of_library_cast_permissions_used.insert(source);
     }
     // CR 601.2a + CR 603.7 + CR 611.2a: A single-use exile-cast grant is spent
     // on this cast. Record the group and strip the now-void `PlayFromExile` grant from

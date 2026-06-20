@@ -2355,6 +2355,7 @@ pub(crate) fn top_of_library_permission_source(
             active_static_definitions(state, obj).find_map(|s| match &s.mode {
                 StaticMode::TopOfLibraryCastPermission {
                     play_mode,
+                    frequency,
                     alt_cost,
                 } => {
                     // Gate by play_mode: Cast permissions cover only spells;
@@ -2367,6 +2368,16 @@ pub(crate) fn top_of_library_permission_source(
                         Some(CardPlayMode::Cast) => true,
                     };
                     if !mode_matches {
+                        return None;
+                    }
+                    // CR 601.2a: A `OncePerTurn` permission winks out for the rest
+                    // of the turn once a spell has been cast through this source
+                    // (Assemble the Players, Johann). `Unlimited` permissions
+                    // (Realmwalker, Future Sight, Bolas's Citadel) never consult
+                    // the used-set.
+                    if matches!(frequency, CastFrequency::OncePerTurn)
+                        && state.top_of_library_cast_permissions_used.contains(&src_id)
+                    {
                         return None;
                     }
                     s.affected.as_ref().map(|f| (f, alt_cost.clone()))
@@ -2436,6 +2447,55 @@ pub(crate) fn top_of_library_alt_ability_cost_for_object(
             }
         },
     )
+}
+
+/// CR 601.2a + CR 401.5: When `object_id` is the current top of `player`'s
+/// library and a `OncePerTurn` `TopOfLibraryCastPermission` static authorizes
+/// casting it, return the granting permanent's `ObjectId` so the cast pipeline
+/// can stamp the per-turn slot in `top_of_library_cast_permissions_used`
+/// (Assemble the Players, Johann). `Unlimited` permissions (Realmwalker,
+/// Future Sight, Bolas's Citadel) return `None` — they never consume a slot.
+///
+/// The source identification mirrors `top_of_library_permission_source`: only a
+/// battlefield permanent the player controls whose active static both matches
+/// the top card's filter and carries `frequency: OncePerTurn` qualifies. When
+/// multiple sources could authorize the cast, the first `OncePerTurn` one found
+/// is the slot consumed (CR 601.2a: each casting consumes exactly one slot).
+pub(crate) fn top_of_library_once_per_turn_source(
+    state: &GameState,
+    player: PlayerId,
+    object_id: ObjectId,
+) -> Option<ObjectId> {
+    let player_data = state.players.iter().find(|p| p.id == player)?;
+    let &top_id = player_data.library.front()?;
+    if top_id != object_id {
+        return None;
+    }
+    state.battlefield.iter().copied().find(|&src_id| {
+        let Some(obj) = state.objects.get(&src_id) else {
+            return false;
+        };
+        if obj.controller != player {
+            return false;
+        }
+        active_static_definitions(state, obj).any(|s| {
+            let StaticMode::TopOfLibraryCastPermission {
+                frequency: CastFrequency::OncePerTurn,
+                ..
+            } = &s.mode
+            else {
+                return false;
+            };
+            s.affected.as_ref().is_some_and(|filter| {
+                super::filter::matches_target_filter(
+                    state,
+                    top_id,
+                    filter,
+                    &super::filter::FilterContext::from_source_with_controller(src_id, player),
+                )
+            })
+        })
+    })
 }
 
 /// CR 604.2 + CR 305.1 + CR 701.17d: Find lands in the player's graveyard that
@@ -40253,7 +40313,7 @@ mod tests {
             CardPlayMode, StaticDefinition, TargetFilter, TypeFilter, TypedFilter,
         };
         use crate::types::card_type::CoreType;
-        use crate::types::statics::StaticMode;
+        use crate::types::statics::{CastFrequency, StaticMode};
 
         fn put_creature_on_top_of_library(
             state: &mut GameState,
@@ -40295,6 +40355,7 @@ mod tests {
             );
             let def = StaticDefinition::new(StaticMode::TopOfLibraryCastPermission {
                 play_mode: CardPlayMode::Cast,
+                frequency: CastFrequency::Unlimited,
                 alt_cost: None,
             })
             .affected(TargetFilter::Typed(TypedFilter {
@@ -40375,6 +40436,150 @@ mod tests {
             let top = put_creature_on_top_of_library(&mut state, PlayerId(0), CardId(903));
             let available = spell_objects_available_to_cast(&state, PlayerId(0));
             assert!(!available.contains(&top));
+        }
+
+        /// Install a `OncePerTurn` top-of-library permission (Assemble the
+        /// Players / Johann shape) whose `affected` filter admits any creature.
+        fn install_once_per_turn_creature_static(
+            state: &mut GameState,
+            controller: PlayerId,
+        ) -> ObjectId {
+            let src = create_object(
+                state,
+                CardId(8811),
+                controller,
+                "Assemble (test)".to_string(),
+                Zone::Battlefield,
+            );
+            let def = StaticDefinition::new(StaticMode::TopOfLibraryCastPermission {
+                play_mode: CardPlayMode::Cast,
+                frequency: CastFrequency::OncePerTurn,
+                alt_cost: None,
+            })
+            .affected(TargetFilter::Typed(TypedFilter {
+                type_filters: vec![TypeFilter::Creature],
+                controller: None,
+                properties: vec![],
+            }));
+            state
+                .objects
+                .get_mut(&src)
+                .unwrap()
+                .static_definitions
+                .push(def);
+            src
+        }
+
+        /// CR 601.2a + CR 401.5: A `OncePerTurn` top-of-library permission
+        /// (Assemble the Players, Johann) prunes its offer from
+        /// `spell_objects_available_to_cast` once its per-turn slot is consumed,
+        /// and comes back at turn cleanup. This is the discriminating test for
+        /// the new `frequency` axis: reverting the frequency gate in
+        /// `top_of_library_permission_source` makes the `after_consumed`
+        /// assertion fail (the slot would never be honored, so the card stays
+        /// castable). Mirrors the Maralen exile-permission frequency test.
+        #[test]
+        fn once_per_turn_top_of_library_frequency_gates_offer() {
+            let mut state = setup_game_at_main_phase();
+            let player = PlayerId(0);
+            let src = install_once_per_turn_creature_static(&mut state, player);
+            let top = put_creature_on_top_of_library(&mut state, player, CardId(904));
+
+            let before = spell_objects_available_to_cast(&state, player);
+            assert!(
+                before.contains(&top),
+                "OncePerTurn permission must surface the top card before its slot is consumed"
+            );
+
+            // Consume the OncePerTurn slot for this source.
+            state.top_of_library_cast_permissions_used.insert(src);
+            let after_consumed = spell_objects_available_to_cast(&state, player);
+            assert!(
+                !after_consumed.contains(&top),
+                "card must be pruned once the OncePerTurn slot is consumed"
+            );
+
+            // Turn cleanup resets the slot — top card castable again.
+            state.top_of_library_cast_permissions_used.clear();
+            let after_reset = spell_objects_available_to_cast(&state, player);
+            assert!(
+                after_reset.contains(&top),
+                "card returns after the per-turn slot resets at turn cleanup"
+            );
+        }
+
+        /// CR 601.2a: An `Unlimited` top-of-library permission (Realmwalker,
+        /// Future Sight, Mm'menon, Vizier) NEVER consults the per-turn used-set,
+        /// so it keeps offering the top card even after the set is polluted with
+        /// its source id. Guards against accidentally gating the Unlimited shape.
+        #[test]
+        fn unlimited_top_of_library_ignores_used_set() {
+            let mut state = setup_game_at_main_phase();
+            install_realmwalker_static(&mut state, PlayerId(0), "Elf");
+            let top = put_creature_on_top_of_library(&mut state, PlayerId(0), CardId(905));
+
+            // Pollute the used-set with the (Unlimited) source — must be ignored.
+            for &bf in &state.battlefield {
+                state.top_of_library_cast_permissions_used.insert(bf);
+            }
+            let available = spell_objects_available_to_cast(&state, PlayerId(0));
+            assert!(
+                available.contains(&top),
+                "Unlimited permission must ignore the per-turn used-set"
+            );
+        }
+
+        /// CR 601.2a + CR 401.5: The cast-time capture helper
+        /// `top_of_library_once_per_turn_source` returns the granting source for
+        /// a `OncePerTurn` permission (so `finalize_cast` stamps the slot) and
+        /// `None` for the `Unlimited` shape (which never consumes a slot). This
+        /// is the discriminating test for the recording seam: reverting the
+        /// `OncePerTurn` filter in the helper makes the Unlimited case wrongly
+        /// return `Some`, flipping the second assertion.
+        #[test]
+        fn once_per_turn_capture_helper_identifies_source_and_skips_unlimited() {
+            // OncePerTurn source is captured.
+            let mut state = setup_game_at_main_phase();
+            let player = PlayerId(0);
+            let src = install_once_per_turn_creature_static(&mut state, player);
+            let top = put_creature_on_top_of_library(&mut state, player, CardId(906));
+            assert_eq!(
+                top_of_library_once_per_turn_source(&state, player, top),
+                Some(src),
+                "OncePerTurn permission source must be captured for slot consumption"
+            );
+
+            // Unlimited source is NOT captured.
+            let mut state2 = setup_game_at_main_phase();
+            install_realmwalker_static(&mut state2, player, "Elf");
+            let top2 = put_creature_on_top_of_library(&mut state2, player, CardId(907));
+            assert_eq!(
+                top_of_library_once_per_turn_source(&state2, player, top2),
+                None,
+                "Unlimited permission must not be captured — it never consumes a slot"
+            );
+
+            // Capture only applies to the actual top card. Place a second
+            // creature BELOW the top so it is in the library but not on top.
+            let below = create_object(
+                &mut state,
+                CardId(908),
+                player,
+                "Below Top".to_string(),
+                Zone::Library,
+            );
+            {
+                let obj = state.objects.get_mut(&below).unwrap();
+                obj.card_types.core_types = vec![CoreType::Creature];
+            }
+            let pd = state.players.iter_mut().find(|p| p.id == player).unwrap();
+            pd.library.retain(|id| *id != below);
+            pd.library.push_back(below);
+            assert_eq!(
+                top_of_library_once_per_turn_source(&state, player, below),
+                None,
+                "only the current top card is authorized by the top-of-library permission"
+            );
         }
     }
 

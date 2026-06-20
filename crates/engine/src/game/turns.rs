@@ -571,6 +571,9 @@ pub fn start_next_turn(state: &mut GameState, events: &mut Vec<GameEvent>) {
     // open-ended "cards exiled with ~" filter for sources without a per-turn
     // cap.
     state.exile_cast_permissions_used.clear();
+    // CR 601.2a + CR 401.5: Reset per-turn TopOfLibraryCastPermission
+    // once-per-turn tracking (Assemble the Players, Johann, Apprentice Sorcerer).
+    state.top_of_library_cast_permissions_used.clear();
     state.cards_exiled_with_source_this_turn.clear();
     // CR 702.94a: Reset per-player first-card-drawn-this-turn tracking for miracle.
     state.first_card_drawn_this_turn.clear();
