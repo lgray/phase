@@ -437,6 +437,7 @@ mod timely_ward_regression;
 mod tinybones_joins_up_multi_target;
 mod tobita_master_of_winds_flying_grant;
 mod tombstone_stairwell_per_player_tokens;
+mod top_of_library_mixed_permission;
 mod treasured_find_regression;
 mod true_conviction_double_keyword_grant;
 mod turn_control_priority_softlock;
