@@ -2627,6 +2627,24 @@ pub enum FilterProp {
     /// CR 508.1a + CR 509.1a: Creature attacked or blocked this turn.
     /// Compound check used by "that attacked or blocked this turn" Oracle text.
     AttackedOrBlockedThisTurn,
+    /// CR 122.1 + CR 122.6: Matches an object onto which `actor` put counters
+    /// matching `counters` this turn, where the total count satisfies
+    /// `comparator` against `count`. This is a *historical-action* predicate
+    /// (CR 122.6: "counters being put on an object"), not a current-counter
+    /// query — the object stays matched even if those counters are later
+    /// removed, which is what distinguishes it from `FilterProp::Counters`.
+    /// Evaluated against `GameState::counter_added_this_turn`. Covers the class
+    /// "[permanents] that [you've / an opponent has] put [one or more] [+1/+1 /
+    /// any] counters on this turn" (Kid Loki's hexproof static, and the broader
+    /// counter-this-turn conditional-static class). The `actor` and `counters`
+    /// axes mirror `QuantityRef::CounterAddedThisTurn` so both the count and the
+    /// membership predicate share one parameterization.
+    CountersPutOnThisTurn {
+        actor: CountScope,
+        counters: crate::types::counter::CounterMatch,
+        comparator: Comparator,
+        count: u32,
+    },
     /// CR 707.2: Matches face-down objects on the battlefield.
     /// Used for "face-down creature" trigger subjects.
     FaceDown,
