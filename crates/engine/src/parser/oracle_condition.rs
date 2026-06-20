@@ -148,6 +148,7 @@ fn parse_condition_text(text: &str) -> Option<ParsedCondition> {
     {
         return Some(ParsedCondition::YouAttackedWithAtLeast {
             count: count as u32,
+            filter: None,
         });
     }
     if let Some(count) =
@@ -155,7 +156,18 @@ fn parse_condition_text(text: &str) -> Option<ParsedCondition> {
     {
         return Some(ParsedCondition::YouAttackedWithAtLeast {
             count: count as u32,
+            filter: None,
         });
+    }
+    // CR 508.1a: "you attacked with a/an <filter> this turn" — at least one
+    // attacker of the given kind. Distinct from the numeric "N creatures"
+    // thresholds above (which carry no type qualifier). The trailing "this turn"
+    // may already be stripped upstream (e.g. an activated-ability duration
+    // parser peels it before the cost-reduction condition is reparsed), so both
+    // the suffixed and bare forms are accepted. Thaumaton Torpedo: "...if you
+    // attacked with a Spacecraft this turn".
+    if let Some(condition) = parse_you_attacked_with_filter(text) {
+        return Some(condition);
     }
     if all_consuming(alt((
         value(
@@ -187,6 +199,42 @@ fn parse_condition_text(text: &str) -> Option<ParsedCondition> {
         return Some(condition);
     }
     None
+}
+
+/// CR 508.1a: Parse "you attacked with a/an <filter>[ this turn]" into a
+/// `ParsedCondition::YouAttackedWithAtLeast { count: 1, filter }`. The `<filter>`
+/// is delegated to `parse_type_phrase` so the whole class of attacker qualifiers
+/// (Spacecraft, Vehicle, a specific creature type, …) is covered by the shared
+/// type-phrase combinator rather than a per-card literal. Returns `None` unless
+/// the entire phrase after the filter is consumed (modulo an optional " this
+/// turn"), keeping unrecognized qualifiers an honest gap.
+fn parse_you_attacked_with_filter(text: &str) -> Option<ParsedCondition> {
+    let (rest, _) = tag::<_, _, OracleError<'_>>("you attacked with ")
+        .parse(text)
+        .ok()?;
+    let (filter, remainder) = parse_type_phrase(rest);
+    // Reject the bare/untyped case: `parse_type_phrase` returns `Any` when no
+    // type word matched, which would over-match "you attacked with three or more
+    // creatures this turn" (handled by the numeric thresholds above). Require a
+    // concrete typed filter here.
+    if matches!(filter, TargetFilter::Any) {
+        return None;
+    }
+    // Consume an optional trailing " this turn" with a combinator, then require
+    // the phrase to be fully consumed so unrecognized qualifiers stay an honest
+    // gap. The duration suffix may already be stripped upstream, so it is
+    // optional.
+    let remainder = remainder.trim();
+    let (after, _) = opt(tag::<_, _, OracleError<'_>>("this turn"))
+        .parse(remainder)
+        .ok()?;
+    if !after.trim().is_empty() {
+        return None;
+    }
+    Some(ParsedCondition::YouAttackedWithAtLeast {
+        count: 1,
+        filter: Some(filter),
+    })
 }
 
 fn parse_quantity_restriction_condition(text: &str) -> Option<ParsedCondition> {
@@ -1245,6 +1293,43 @@ mod tests {
     use crate::types::ability::{
         ControllerRef, CountScope, FilterProp, QuantityExpr, TargetFilter, TypeFilter,
     };
+
+    /// CR 508.1a: "you attacked with a/an <filter>[ this turn]" parses to a
+    /// filtered `YouAttackedWithAtLeast { count: 1 }`, both with and without the
+    /// trailing "this turn" (the latter is the shape reaching the parser after an
+    /// upstream duration strip). The unfiltered numeric thresholds remain
+    /// `filter: None`, and the bare-creature numeric form must NOT be captured by
+    /// the typed arm.
+    #[test]
+    fn attacked_with_filter_condition_parses_typed_and_preserves_numeric() {
+        for text in [
+            "you attacked with a spacecraft this turn",
+            "you attacked with a spacecraft",
+        ] {
+            match parse_restriction_condition(text) {
+                Some(ParsedCondition::YouAttackedWithAtLeast {
+                    count: 1,
+                    filter: Some(TargetFilter::Typed(tf)),
+                }) => assert!(
+                    tf.type_filters
+                        .iter()
+                        .any(|f| matches!(f, TypeFilter::Subtype(s) if s == "Spacecraft")),
+                    "expected Spacecraft subtype, got {:?} for {text}",
+                    tf.type_filters
+                ),
+                other => panic!("expected filtered attacked-with for {text}, got {other:?}"),
+            }
+        }
+        // Numeric thresholds stay unfiltered.
+        assert_eq!(
+            parse_restriction_condition("you attacked with 3 or more creatures this turn"),
+            Some(ParsedCondition::YouAttackedWithAtLeast {
+                count: 3,
+                filter: None,
+            }),
+            "numeric attacker threshold must stay filter: None"
+        );
+    }
 
     /// CR 508.1 + CR 601.3: a presence-style restriction condition ("Cast this
     /// spell only if a creature is attacking you" — Confront the Assault)

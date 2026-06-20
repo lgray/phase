@@ -5489,6 +5489,123 @@ mod tests {
         parse_oracle_text(text, name, &keyword_names, &types, &subtypes)
     }
 
+    /// Build a single-face `CardFace` from an oracle `text` through the real
+    /// synthesis path (`build_oracle_face`), so coverage checks recurse into
+    /// granted abilities and effect payloads exactly as production does.
+    #[cfg(test)]
+    fn oracle_face_for(
+        name: &str,
+        text: &str,
+        types: &[&str],
+        subtypes: &[&str],
+    ) -> crate::types::card::CardFace {
+        use crate::database::mtgjson::{AtomicCard, AtomicIdentifiers};
+        let card = AtomicCard {
+            name: name.to_string(),
+            mana_cost: Some("{4}{B}".to_string()),
+            colors: vec!["B".to_string()],
+            color_identity: vec!["B".to_string()],
+            power: Some("3".to_string()),
+            toughness: Some("3".to_string()),
+            loyalty: None,
+            defense: None,
+            text: Some(text.to_string()),
+            layout: "normal".to_string(),
+            type_line: Some(types.join(" ")),
+            types: types.iter().map(|s| s.to_string()).collect(),
+            subtypes: subtypes.iter().map(|s| s.to_string()).collect(),
+            supertypes: Vec::new(),
+            keywords: None,
+            side: None,
+            face_name: None,
+            mana_value: 5.0,
+            legalities: Default::default(),
+            leadership_skills: None,
+            printings: Vec::new(),
+            rulings: Vec::new(),
+            is_game_changer: false,
+            identifiers: AtomicIdentifiers {
+                scryfall_oracle_id: Some(format!("{}-oracle", name.to_lowercase())),
+                scryfall_id: Some(format!("{}-face", name.to_lowercase())),
+            },
+            foreign_data: Vec::new(),
+        };
+        crate::database::synthesis::build_oracle_face(&card, None)
+    }
+
+    /// CR 602.2b + CR 601.2f + CR 102.1: Hylda's Crown of Winter parses with zero
+    /// unimplemented parts. The whole card is two activated abilities; the only
+    /// previously-failing fragment was the "This ability costs {1} less to
+    /// activate during your turn" cost-reduction clause, now extracted as
+    /// `cost_reduction` with `condition: IsYourTurn`. (Runtime under/over-the-gate
+    /// discrimination lives in `game::casting::tests::
+    /// hyldas_crown_cost_reduction_applies_only_during_your_turn`.)
+    #[test]
+    fn hyldas_crown_full_card_supported_with_during_your_turn_cost_reduction() {
+        let face = oracle_face_for(
+            "Hylda's Crown of Winter",
+            "{1}, {T}: Tap target creature. This ability costs {1} less to activate during your turn.\n{3}, Sacrifice Hylda's Crown of Winter: Draw a card for each tapped creature your opponents control.",
+            &["Legendary", "Artifact"],
+            &[],
+        );
+        let gaps = crate::game::coverage::card_face_gaps(&face);
+        assert!(
+            gaps.is_empty(),
+            "Hylda's Crown must be fully supported, gaps: {gaps:?}"
+        );
+        let tap_ability = face
+            .abilities
+            .iter()
+            .find(|a| a.cost_reduction.is_some())
+            .expect("the tap ability must carry the extracted cost reduction");
+        assert_eq!(
+            tap_ability.cost_reduction.as_ref().unwrap().condition,
+            Some(crate::types::ability::ParsedCondition::IsYourTurn),
+            "cost reduction must gate on IsYourTurn"
+        );
+    }
+
+    /// CR 602.2b + CR 601.2f + CR 508.1a: Thaumaton Torpedo parses with zero
+    /// unimplemented parts. The card is a single activated ability; the only
+    /// previously-failing fragment was the "This ability costs {3} less to
+    /// activate if you attacked with a Spacecraft this turn" cost-reduction
+    /// clause, now extracted with a filtered `YouAttackedWithAtLeast` gate.
+    /// (Runtime discrimination — Spacecraft attacker required, opponent's
+    /// Spacecraft excluded — lives in `game::casting::tests::
+    /// thaumaton_torpedo_cost_reduction_requires_spacecraft_attacker`.)
+    #[test]
+    fn thaumaton_torpedo_full_card_supported_with_spacecraft_attacked_cost_reduction() {
+        let face = oracle_face_for(
+            "Thaumaton Torpedo",
+            "{6}, {T}, Sacrifice this artifact: Destroy target nonland permanent. This ability costs {3} less to activate if you attacked with a Spacecraft this turn.",
+            &["Artifact"],
+            &[],
+        );
+        let gaps = crate::game::coverage::card_face_gaps(&face);
+        assert!(
+            gaps.is_empty(),
+            "Thaumaton Torpedo must be fully supported, gaps: {gaps:?}"
+        );
+        let ability = face
+            .abilities
+            .iter()
+            .find(|a| a.cost_reduction.is_some())
+            .expect("the destroy ability must carry the extracted cost reduction");
+        assert!(
+            matches!(
+                ability.cost_reduction.as_ref().unwrap().condition,
+                Some(
+                    crate::types::ability::ParsedCondition::YouAttackedWithAtLeast {
+                        count: 1,
+                        filter: Some(_)
+                    }
+                )
+            ),
+            "cost reduction must gate on a filtered attacked-with condition, got {:?}",
+            ability.cost_reduction
+        );
+    }
+
     /// CR 106.6 + CR 702.6a: Hydraulic Helper — the full card must parse with
     /// zero `Effect::Unimplemented` parts. "Defender" extracts as a keyword and
     /// the `{T}: Add {U}` mana ability carries the negative spend restriction
