@@ -305,6 +305,7 @@ const ANAPHORIC_SCOPE_CARDS: &[&str] = &[
     "teval, arbiter of virtue",
     "teyo, aegis adept",
     "the aesir escape valhalla",
+    "the ancient one",
     "the bears of littjara",
     "the creation of avacyn",
     "the great aerie",
@@ -543,18 +544,21 @@ fn anaphoric_scope_set_is_frozen() {
     // deals damage equal to its power" self-source clause correctly resolves to
     // Source, not Anaphoric (-1) — taking the count to 172. The nom quantity
     // call-site migration resolves Vivien's Invocation's "its mana value" out
-    // of the retained anaphoric set, taking the count to 171.
+    // of the retained anaphoric set, taking the count to 171. The reflexive
+    // "When you discard a card this way" feature surfaced The Ancient One's
+    // "mills cards equal to its mana value" anaphor (the discarded card),
+    // taking the count to 172.
     assert_eq!(
         observed.len(),
-        171,
-        "Expected exactly 171 cards retaining ObjectScope::Anaphoric (pronoun \
+        172,
+        "Expected exactly 172 cards retaining ObjectScope::Anaphoric (pronoun \
          'its' antecedents). Count moved to {}.",
         observed.len()
     );
     assert_eq!(
         ANAPHORIC_SCOPE_CARDS.len(),
-        171,
-        "ANAPHORIC_SCOPE_CARDS must list exactly 171 cards."
+        172,
+        "ANAPHORIC_SCOPE_CARDS must list exactly 172 cards."
     );
 }
 
