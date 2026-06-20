@@ -5,8 +5,8 @@ use crate::game::printed_cards::intrinsic_copiable_values;
 use crate::game::quantity::resolve_quantity;
 use crate::game::{targeting, zones};
 use crate::types::ability::{
-    ContinuousModification, Effect, EffectError, EffectKind, ResolvedAbility, TargetFilter,
-    TargetRef, TriggerCondition, TriggerDefinition,
+    ContinuousModification, Effect, EffectError, EffectKind, ResolvedAbility, StaticDefinition,
+    TargetFilter, TargetRef, TriggerCondition, TriggerDefinition,
 };
 use crate::types::card_type::SubtypeSet;
 #[cfg(test)]
@@ -1110,6 +1110,19 @@ fn apply_token_modifications(
                 if let Some(token) = state.objects.get_mut(&token_id) {
                     Arc::make_mut(&mut token.abilities).push((**definition).clone());
                     Arc::make_mut(&mut token.base_abilities).push((**definition).clone());
+                }
+            }
+            // CR 707.9a + CR 604.1: quoted static text in a copy exception is
+            // also part of the token's copiable values. Mirror predefined token
+            // rules text by carrying static-rule modifications on a self static.
+            ContinuousModification::GrantStaticAbility { .. }
+            | ContinuousModification::AddStaticMode { .. } => {
+                if let Some(token) = state.objects.get_mut(&token_id) {
+                    let static_def = StaticDefinition::continuous()
+                        .affected(TargetFilter::SelfRef)
+                        .modifications(vec![modification.clone()]);
+                    Arc::make_mut(&mut token.base_static_definitions).push(static_def.clone());
+                    token.static_definitions.push(static_def);
                 }
             }
             // CR 707.9a + CR 702: a keyword granted via an except body that

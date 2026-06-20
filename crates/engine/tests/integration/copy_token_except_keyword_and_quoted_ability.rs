@@ -117,6 +117,57 @@ fn copy_token_except_keyword_then_quoted_sacrifice_grants_both() {
     );
 }
 
+/// CR 707.9a + CR 604.1: a token copy whose except clause grants a quoted
+/// static ability must carry that static onto the copy as part of its copiable
+/// values, so the granted static immediately affects the objects it describes.
+#[test]
+fn copy_token_except_quoted_static_grants_static_ability() {
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(Phase::PreCombatMain);
+
+    let source = scenario
+        .add_creature(P0, "Bear", 3, 3)
+        .with_subtypes(vec!["Bear"])
+        .id();
+
+    let sorcery = scenario
+        .add_spell_to_hand_from_oracle(
+            P0,
+            "Synthetic Static Copier",
+            false,
+            "Create a token that's a copy of target creature you control, except it has \
+             \"Other Bears you control get +1/+1.\"",
+        )
+        .id();
+
+    let mut runner = scenario.build();
+    runner.cast(sorcery).target_object(source).resolve();
+
+    let state = runner.state();
+    let source_obj = state.objects.get(&source).expect("source Bear exists");
+    assert_eq!(
+        source_obj.power,
+        Some(4),
+        "CR 707.9a: the token's quoted static ability must grant +1/+1 to other Bears"
+    );
+    assert_eq!(
+        source_obj.toughness,
+        Some(4),
+        "CR 707.9a: the token's quoted static ability must grant +1/+1 to other Bears"
+    );
+
+    let token = state
+        .battlefield
+        .iter()
+        .filter_map(|id| state.objects.get(id))
+        .find(|o| o.is_token && o.name == "Bear")
+        .expect("copy token exists");
+    assert!(
+        !token.static_definitions.is_empty(),
+        "CR 707.9a: the quoted static must be stamped onto the copy token"
+    );
+}
+
 /// CR 707.9a + CR 707.2: a token copy whose except clause is a comma-anded body
 /// list ending in ", and has <keyword>" must apply every body — including the
 /// trailing keyword — so the token is non-legendary, gains the added subtype,
