@@ -3,8 +3,8 @@ use serde::Serialize;
 use crate::types::ability::MultiTargetSpec;
 use crate::types::ability::{
     AbilityCondition, AbilityCost, AbilityDefinition, ActivationRestriction, BounceSelection,
-    CastingPermission, ControllerRef, CopyRetargetPermission, CounterSourceRider, Duration, Effect,
-    FaceDownProfile, LibraryPosition, ManaProduction, ManaSpendRestriction,
+    CastingPermission, ControllerRef, CopyRetargetPermission, CounterSourceRider, DoorLockOp,
+    Duration, Effect, FaceDownProfile, LibraryPosition, ManaProduction, ManaSpendRestriction,
     ModalSelectionConstraint, OutsideGameSourcePool, PlayerFilter, PtStat, PtValue, QuantityExpr,
     SearchDestinationSplit, SearchSelectionConstraint, StaticDefinition, TargetFilter,
 };
@@ -730,6 +730,14 @@ pub(crate) enum TargetedImperativeAst {
         target: TargetFilter,
     },
     GoadAll {
+        target: TargetFilter,
+    },
+    /// CR 709.5f-g + CR 709.5j: "lock"/"unlock"/"lock or unlock" a door of a
+    /// target Room permanent. The eligible half is chosen at resolution from the
+    /// Room's runtime unlock state, so only the operation and the target Room
+    /// filter are captured here. Lowers to `Effect::SetRoomDoorLock`.
+    SetRoomDoorLock {
+        op: DoorLockOp,
         target: TargetFilter,
     },
     Sacrifice {

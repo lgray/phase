@@ -5087,7 +5087,7 @@ fn normalize_activated_mana_instead_delta(def: &mut AbilityDefinition) {
 mod tests {
     use super::*;
     use crate::parser::oracle_effect::parse_effect_chain;
-    use crate::types::ability::CountScope;
+    use crate::types::ability::{CountScope, DoorLockOp};
 
     /// Issue #69 (Banewhip Punisher): "Destroy target creature that has a -1/-1
     /// counter on it" — the relative-clause counter restriction was dropped, so
@@ -5342,6 +5342,151 @@ mod tests {
             )),
             "can't-be-blocked-by static must parse: {:#?}",
             r.statics
+        );
+    }
+
+    /// Recursive Unimplemented walker for whole-card 0-Unimplemented checks:
+    /// recurses into `sub_ability`/`else_ability` chains AND nested
+    /// `GenericEffect` grant definitions/triggers (the shapes `has_unimplemented`
+    /// alone does not reach). Used by the Rooms lock/unlock-door card tests.
+    fn def_chain_has_unimplemented(def: &AbilityDefinition) -> bool {
+        if matches!(&*def.effect, Effect::Unimplemented { .. }) {
+            return true;
+        }
+        if let Effect::GenericEffect {
+            static_abilities, ..
+        } = &*def.effect
+        {
+            let nested = static_abilities
+                .iter()
+                .flat_map(|sd| sd.modifications.iter())
+                .any(|m| match m {
+                    ContinuousModification::GrantAbility { definition } => {
+                        def_chain_has_unimplemented(definition)
+                    }
+                    ContinuousModification::GrantTrigger { trigger } => trigger
+                        .execute
+                        .as_deref()
+                        .is_some_and(def_chain_has_unimplemented),
+                    _ => false,
+                });
+            if nested {
+                return true;
+            }
+        }
+        def.sub_ability
+            .as_deref()
+            .is_some_and(def_chain_has_unimplemented)
+            || def
+                .else_ability
+                .as_deref()
+                .is_some_and(def_chain_has_unimplemented)
+    }
+
+    /// True iff any ability/trigger of a parsed card reaches an Unimplemented
+    /// effect.
+    fn parsed_has_unimplemented(r: &ParsedAbilities) -> bool {
+        r.abilities.iter().any(def_chain_has_unimplemented)
+            || r.triggers
+                .iter()
+                .filter_map(|t| t.execute.as_deref())
+                .any(def_chain_has_unimplemented)
+    }
+
+    /// CR 709.5f + CR 709.5j: Ghostly Keybearer's combat-damage trigger
+    /// ("unlock a locked door of up to one target Room you control") must reach
+    /// zero Unimplemented effects now that the door-lock effect parser arm
+    /// exists. The trigger itself already parsed pre-Stage-2; only the effect
+    /// body was gapped (`Effect::unimplemented("unlock", ...)`).
+    #[test]
+    fn ghostly_keybearer_unlock_door_no_unimplemented() {
+        let r = parse(
+            "Flying\n\
+             Whenever this creature deals combat damage to a player, unlock a locked door of up to one target Room you control.",
+            "Ghostly Keybearer",
+            &[Keyword::Flying],
+            &["Creature"],
+            &[],
+        );
+        assert_eq!(r.triggers.len(), 1, "one combat-damage trigger: {r:#?}");
+        let execute = r.triggers[0]
+            .execute
+            .as_ref()
+            .expect("trigger should have an execute body");
+        assert!(
+            matches!(
+                &*execute.effect,
+                Effect::SetRoomDoorLock {
+                    op: DoorLockOp::Unlock,
+                    ..
+                }
+            ),
+            "trigger body must lower to SetRoomDoorLock{{Unlock}}: {execute:#?}"
+        );
+        assert!(
+            !parsed_has_unimplemented(&r),
+            "Ghostly Keybearer must have zero Unimplemented effects: {r:#?}"
+        );
+    }
+
+    /// CR 709.5f + CR 709.5g: Keys to the House — the sacrifice-tutor first
+    /// ability already parsed; the second ("Lock or unlock a door of target Room
+    /// you control. Activate only as a sorcery.") must now lower to
+    /// `SetRoomDoorLock{LockOrUnlock}` with zero Unimplemented effects.
+    #[test]
+    fn keys_to_the_house_lock_or_unlock_no_unimplemented() {
+        let r = parse(
+            "{1}, {T}, Sacrifice this artifact: Search your library for a basic land card, reveal it, put it into your hand, then shuffle.\n\
+             {3}, {T}, Sacrifice this artifact: Lock or unlock a door of target Room you control. Activate only as a sorcery.",
+            "Keys to the House",
+            &[],
+            &["Artifact"],
+            &[],
+        );
+        assert_eq!(r.abilities.len(), 2, "two activated abilities: {r:#?}");
+        assert!(
+            r.abilities.iter().any(|a| matches!(
+                &*a.effect,
+                Effect::SetRoomDoorLock {
+                    op: DoorLockOp::LockOrUnlock,
+                    ..
+                }
+            )),
+            "one ability must lower to SetRoomDoorLock{{LockOrUnlock}}: {r:#?}"
+        );
+        assert!(
+            !parsed_has_unimplemented(&r),
+            "Keys to the House must have zero Unimplemented effects: {r:#?}"
+        );
+    }
+
+    /// CR 709.5f + CR 709.5g: Marina Vendrell — the ETB reveal/dig trigger
+    /// already parsed; the activated "{T}: Lock or unlock a door of target Room
+    /// you control. Activate only as a sorcery." must now lower to
+    /// `SetRoomDoorLock{LockOrUnlock}` with zero Unimplemented effects.
+    #[test]
+    fn marina_vendrell_lock_or_unlock_no_unimplemented() {
+        let r = parse(
+            "When Marina Vendrell enters, reveal the top seven cards of your library. Put all enchantment cards from among them into your hand and the rest on the bottom of your library in a random order.\n\
+             {T}: Lock or unlock a door of target Room you control. Activate only as a sorcery.",
+            "Marina Vendrell",
+            &[],
+            &["Creature"],
+            &[],
+        );
+        assert!(
+            r.abilities.iter().any(|a| matches!(
+                &*a.effect,
+                Effect::SetRoomDoorLock {
+                    op: DoorLockOp::LockOrUnlock,
+                    ..
+                }
+            )),
+            "an activated ability must lower to SetRoomDoorLock{{LockOrUnlock}}: {r:#?}"
+        );
+        assert!(
+            !parsed_has_unimplemented(&r),
+            "Marina Vendrell must have zero Unimplemented effects: {r:#?}"
         );
     }
 
