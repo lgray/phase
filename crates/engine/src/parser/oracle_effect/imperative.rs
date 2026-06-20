@@ -2489,6 +2489,22 @@ pub(super) fn parse_hand_reveal_ast(
         return Some(HandRevealImperativeAst::RevealBackRef);
     }
 
+    // CR 701.20: "Reveal target <object>" — reveal a specific object selected by
+    // a target phrase (Hauntwoods Shrieker — "Reveal target face-down
+    // permanent"). The "target"/"a"/"each" determiner distinguishes an object
+    // reveal from the hand reveals handled below; "hand" forms are excluded so
+    // possessive-hand phrases ("reveal your hand") keep their RevealHand path.
+    if !nom_primitives::scan_contains(after_reveal_lower, "hand")
+        && alt((tag::<_, _, OracleError<'_>>("target "), tag("each ")))
+            .parse(after_reveal_lower)
+            .is_ok()
+    {
+        let (target, _) = parse_target(after_reveal);
+        if !matches!(target, TargetFilter::None) {
+            return Some(HandRevealImperativeAst::RevealObject { target });
+        }
+    }
+
     // CR 701.20a: "reveals a number of cards from their hand equal to X"
     if nom_primitives::scan_contains(lower, "hand")
         && nom_primitives::scan_contains(lower, "equal to ")
@@ -2618,6 +2634,8 @@ pub(super) fn lower_hand_reveal_ast(ast: HandRevealImperativeAst) -> Effect {
         HandRevealImperativeAst::RevealBackRef => Effect::Reveal {
             target: TargetFilter::ParentTarget,
         },
+        // CR 701.20: Reveal a targeted object (Hauntwoods Shrieker).
+        HandRevealImperativeAst::RevealObject { target } => Effect::Reveal { target },
     }
 }
 
@@ -6457,11 +6475,76 @@ pub(super) fn parse_imperative_family_ast(
             .parse(lower.trim())
             .is_ok();
             if matched {
-                Some(ImperativeFamilyAst::TurnFaceUp {
+                return Some(ImperativeFamilyAst::TurnFaceUp {
                     target: TargetFilter::ExiledBySource,
+                });
+            }
+
+            // CR 708.7 + CR 708.8: General "turn <target> face up" resolving
+            // effect — the rules that allow a permanent to be face down may also
+            // allow turning it face up (708.7), and as it is turned face up its
+            // copiable values revert (708.8). Covers
+            // "turn a creature you control face up" (Bustle), "turn target
+            // face-down creature face up" (Expose the Culprit), "turn it face
+            // up" (Hauntwoods Shrieker's reveal follow-up). Distinct from the
+            // morph/disguise/manifest *special action* ("turn this permanent
+            // face up"), which is the controller's own special action parsed as
+            // an activated ability elsewhere — those self-referential
+            // "this"/"~"-subject forms are deliberately NOT matched here. Parse
+            // the lowercase form, then slice the original-cased middle for
+            // `parse_target`. Anchored/all-consuming on the lowercase clause so
+            // a trailing follow-up sentence is left for the chain splitter.
+            let text_trim = text.trim();
+            let lower_trim = lower.trim();
+            // The all-consuming clause extracts the target phrase between the
+            // verb prefix and " face up"; any trailing sentence (Hauntwoods's
+            // full reveal text) fails it and falls through to the chain splitter.
+            let parsed = (|| {
+                let (rest, _) = alt((
+                    tag::<_, _, OracleError<'_>>("turn "),
+                    tag("turns "),
+                ))
+                .parse(lower_trim)?;
+                if alt((
+                    tag::<_, _, OracleError<'_>>("this "),
+                    tag("~ "),
+                ))
+                .parse(rest)
+                .is_ok()
+                {
+                    return Err(nom::Err::Error(OracleError::new(
+                        rest,
+                        nom::error::ErrorKind::Fail,
+                    )));
+                }
+                all_consuming(terminated(
+                    take_until::<_, _, OracleError<'_>>(" face up"),
+                    preceded(tag(" face up"), opt(tag("."))),
+                ))
+                .parse(rest)
+                .and_then(|(_, mid)| {
+                    // Slice the original-cased middle by the byte offsets the
+                    // lowercase parse produced. `to_lowercase()` can change byte
+                    // length for non-ASCII input (accented card names, smart
+                    // quotes), so the offset may not land on a char boundary —
+                    // `.get()` returns None instead of panicking, which we map
+                    // to a nom error so the clause falls through cleanly.
+                    let start = lower_trim.len() - rest.len();
+                    text_trim.get(start..start + mid.len()).ok_or_else(|| {
+                        nom::Err::Error(OracleError::new(rest, nom::error::ErrorKind::Fail))
+                    })
                 })
-            } else {
-                None
+            })();
+            match parsed {
+                Ok(mid_orig) if !mid_orig.trim().is_empty() => {
+                    let (target, _) = parse_target(mid_orig);
+                    if matches!(target, TargetFilter::None) {
+                        None
+                    } else {
+                        Some(ImperativeFamilyAst::TurnFaceUp { target })
+                    }
+                }
+                _ => None,
             }
         }
 
@@ -11362,6 +11445,84 @@ mod tests {
                     "{oracle:?} should parse to GivePlayerCounter, not {other:?} (regression: was Unimplemented)"
                 ),
             }
+        }
+    }
+
+    #[test]
+    fn parse_turn_target_face_up_resolving_effect() {
+        // CR 708.7 + CR 708.8: "turn <target> face up" resolving effect (not the
+        // morph special action). Three target axes the cluster needs: a controlled
+        // descriptor (Bustle), a targeted face-down creature (Expose the
+        // Culprit), and an anaphoric "it" (Hauntwoods Shrieker reveal follow-up).
+        for (text, expect_face_down) in [
+            ("turn a creature you control face up", false),
+            ("turn target face-down creature face up", true),
+            ("turn it face up", false),
+        ] {
+            let lower = text.to_lowercase();
+            let ast = parse_imperative_family_ast(text, &lower, &mut ParseContext::default())
+                .unwrap_or_else(|| panic!("{text:?} should parse to a turn-face-up effect"));
+            match lower_imperative_family_effect(ast) {
+                Effect::TurnFaceUp { target } => {
+                    if expect_face_down {
+                        // The face-down property must ride the parsed target so
+                        // only face-down creatures are legal targets.
+                        let has_face_down = matches!(
+                            &target,
+                            TargetFilter::Typed(t)
+                                if t.properties
+                                    .iter()
+                                    .any(|p| matches!(p, FilterProp::FaceDown))
+                        );
+                        assert!(
+                            has_face_down,
+                            "{text:?} target must carry FaceDown, got {target:?}"
+                        );
+                    }
+                }
+                other => panic!("{text:?} expected TurnFaceUp, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn parse_turn_this_permanent_face_up_is_not_a_resolving_effect() {
+        // CR 116.2b / CR 702.37e: "turn this permanent face up" is the morph
+        // special action (controller's own action), not a resolving TurnFaceUp
+        // effect. The general resolving-effect arm must NOT swallow it.
+        for text in ["turn this permanent face up", "turn this creature face up"] {
+            let lower = text.to_lowercase();
+            let ast = parse_imperative_family_ast(text, &lower, &mut ParseContext::default());
+            let is_turn_face_up = ast
+                .map(lower_imperative_family_effect)
+                .is_some_and(|e| matches!(e, Effect::TurnFaceUp { .. }));
+            assert!(
+                !is_turn_face_up,
+                "{text:?} (special action) must not parse as a TurnFaceUp resolving effect"
+            );
+        }
+    }
+
+    #[test]
+    fn parse_reveal_target_object_emits_reveal_effect() {
+        // CR 701.20: "reveal target face-down permanent" (Hauntwoods Shrieker)
+        // reveals a targeted object, distinct from hand reveals and back-refs.
+        let text = "reveal target face-down permanent";
+        let lower = text.to_lowercase();
+        let ast = parse_imperative_family_ast(text, &lower, &mut ParseContext::default())
+            .expect("reveal target object should parse");
+        match lower_imperative_family_effect(ast) {
+            Effect::Reveal { target } => {
+                assert!(
+                    matches!(
+                        &target,
+                        TargetFilter::Typed(t)
+                            if t.properties.iter().any(|p| matches!(p, FilterProp::FaceDown))
+                    ),
+                    "reveal target must carry FaceDown, got {target:?}"
+                );
+            }
+            other => panic!("expected Reveal, got {other:?}"),
         }
     }
 

@@ -1794,6 +1794,10 @@ fn effect_writes_last_revealed_ids(effect: &Effect) -> bool {
             | Effect::RevealUntil { .. }
             | Effect::Clash
             | Effect::TurnFaceUp { .. }
+            // CR 701.20: a targeted object reveal records the revealed object so
+            // a chained "If it's a creature card, …" rider and an anaphoric
+            // "turn it face up" follow-up read it (Hauntwoods Shrieker).
+            | Effect::Reveal { .. }
     )
 }
 
