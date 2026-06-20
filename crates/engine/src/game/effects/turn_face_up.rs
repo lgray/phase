@@ -87,9 +87,11 @@ fn target_object_ids(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::game::engine::apply_as_current;
     use crate::game::zones::create_object;
     use crate::types::ability::{AbilityCondition, ControllerRef, TargetRef};
-    use crate::types::card_type::CoreType;
+    use crate::types::actions::GameAction;
+    use crate::types::card_type::{CardType, CoreType};
     use crate::types::game_state::{ExileLink, ExileLinkKind};
     use crate::types::identifiers::CardId;
     use crate::types::player::PlayerId;
@@ -198,7 +200,7 @@ mod tests {
 
     #[test]
     fn turn_face_up_targets_battlefield_face_down_creature_via_filter() {
-        // CR 708.x (Bustle / Expose the Culprit class): a resolving "turn
+        // CR 708.7 + CR 708.8 (Bustle / Expose the Culprit class): a resolving "turn
         // <target> face up" effect aimed at a battlefield face-down creature
         // restores that permanent's real characteristics. No explicit target is
         // pre-resolved — the resolver must locate it by the face-down filter on
@@ -273,10 +275,6 @@ mod tests {
         // Reverting the reveal's `last_revealed_ids` write (or removing Reveal
         // from `effect_writes_last_revealed_ids`) leaves the permanent face down
         // and flips the `!face_down` / name assertions.
-        use crate::game::engine::apply_as_current;
-        use crate::types::actions::GameAction;
-        use crate::types::card_type::CardType;
-
         let mut state = GameState::new_two_player(42);
         let player = PlayerId(0);
         let source = create_object(

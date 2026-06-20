@@ -1761,9 +1761,9 @@ const KEYWORD_ACTION_PLACEHOLDER: &str = "\u{E0001}";
 /// narrow guard avoids touching every other card. The phrase is restored after
 /// normalization so the dispatcher sees the real keyword-action text.
 fn mask_card_name_keyword_action(text: &str, card_name: &str) -> Option<(String, Vec<String>)> {
-    // CR 701.x keyword actions whose phrasing can be an entire card name. These
-    // are full keyword-action verb phrases, not bare nouns, so an exact
-    // (case-insensitive) card-name match is unambiguous.
+    // CR 701.40a / CR 701.58a / CR 701.62a: keyword actions whose phrasing can
+    // be an entire card name. These are full keyword-action verb phrases, not
+    // bare nouns, so an exact (case-insensitive) card-name match is unambiguous.
     const KEYWORD_ACTIONS: &[&str] = &["manifest dread", "cloak", "manifest"];
     let name_lower = card_name.trim().to_ascii_lowercase();
     // allow-noncombinator: Iterator::find over the keyword-action table (slice
