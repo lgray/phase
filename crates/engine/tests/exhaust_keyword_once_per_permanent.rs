@@ -40,7 +40,9 @@ const P0: PlayerId = PlayerId(0);
 fn add_mana(runner: &mut GameRunner, player: PlayerId, ty: ManaType, n: usize) {
     for _ in 0..n {
         let unit = ManaUnit::new(ty, ObjectId(0), false, vec![]);
-        runner.state_mut().players[usize::from(player.0)].mana_pool.add(unit);
+        runner.state_mut().players[usize::from(player.0)]
+            .mana_pool
+            .add(unit);
     }
 }
 
