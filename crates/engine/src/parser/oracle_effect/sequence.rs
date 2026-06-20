@@ -942,6 +942,27 @@ fn split_comma_clause_boundary(current: &str, remainder: &str) -> Option<(Clause
         return None;
     }
 
+    // CR 707.9a: ", except <body>, [and] <body> [, …]" — inside a copy-effect
+    // (BecomeCopy / CopyTokenOf) except clause, a comma (with or without a
+    // following "and") between recognised body shapes is an internal delimiter,
+    // not a clause boundary. Suppress the split so the whole except body reaches
+    // the shared `become_copy_except` parser. Without this, a trailing keyword
+    // body like ", and has haste" (The Apprentice's Folly: "create a token
+    // that's a copy of it, except it isn't legendary, is a Reflection in
+    // addition to its other types, and has haste") is bisected at the comma —
+    // "has haste" deconjugates to the clause verb "have" — and orphaned as an
+    // Unimplemented sub_ability instead of becoming an `AddKeyword` modification.
+    // Mirrors the `inside_except_clause` guard on the bare-`and` chunk path.
+    //
+    // `scan_contains` matches at word boundaries, so probing for the bare word
+    // "except " (a leading comma never sits at a word start) detects the clause
+    // regardless of the leading "[,] " before "except".
+    if nom_primitives::scan_contains(&current_lower, "except ")
+        && starts_except_body_continuation(trimmed_lower.as_str())
+    {
+        return None;
+    }
+
     // CR 701.18a: "search [library] for X, put/reveal Y" is a single compound action.
     // The search verb may follow a sequence connector like "Then" from a prior sentence.
     // CR 701.18a: Enumerated "search" prefixes — do NOT use contains(" search ").
@@ -1101,6 +1122,41 @@ fn starts_with_damage_amount_continuation(trimmed_lower: &str) -> bool {
         return false;
     };
     tag::<_, _, OracleError<'_>>("damage").parse(rest).is_ok()
+}
+
+/// CR 707.9a: True when `trimmed_lower` (post-comma text) begins with a
+/// recognised "except ..." body continuation. Only meaningful when the
+/// chunk-so-far is already inside a copy-effect except clause (the caller gates
+/// on that). The leading "and " connector is optional — "..., and has haste"
+/// and "..., is a Reflection" are both internal except-body continuations.
+///
+/// The recognised heads mirror the body shapes in
+/// `become_copy_except::parse_except_body` (keyword grants, type additions,
+/// supertype removal, "has this ability", possessive name/loyalty overrides) so
+/// this gate stays in lockstep with what that parser actually consumes.
+fn starts_except_body_continuation(trimmed_lower: &str) -> bool {
+    let body = tag::<_, _, OracleError<'_>>("and ")
+        .parse(trimmed_lower)
+        .map(|(rest, _)| rest)
+        .unwrap_or(trimmed_lower);
+    alt((
+        value((), tag::<_, _, OracleError<'_>>("has ")),
+        value((), tag("have ")),
+        value((), tag("it has ")),
+        value((), tag("it's ")),
+        value((), tag("is ")),
+        value((), tag("isn't ")),
+        value((), tag("isnt ")),
+        value((), tag("doesn't ")),
+        value((), tag("doesnt ")),
+        value((), tag("its ")),
+        value((), tag("his ")),
+        value((), tag("her ")),
+        value((), tag("they're ")),
+        value((), tag("theyre ")),
+    ))
+    .parse(body)
+    .is_ok()
 }
 
 fn starts_prefix_clause(current_lower: &str) -> bool {
@@ -4126,6 +4182,7 @@ pub(super) fn clause_is_dig_lookback_transparent(effect: &Effect) -> bool {
         | Effect::SolveCase
         | Effect::BecomePrepared { .. }
         | Effect::BecomeUnprepared { .. }
+        | Effect::BecomeSaddled { .. }
         | Effect::SetClassLevel { .. }
         | Effect::CreateDelayedTrigger { .. }
         | Effect::AddTargetReplacement { .. }
@@ -5357,6 +5414,26 @@ mod tests {
             .into_iter()
             .map(|c| c.text)
             .collect()
+    }
+
+    // CR 707.9a: a copy-effect except clause that ends in ", and has <keyword>"
+    // must NOT be bisected at the comma. "has" deconjugates to the clause verb
+    // "have", so without the `inside_except_clause` guard in the comma splitter
+    // the trailing keyword body is orphaned (The Apprentice's Folly I/II:
+    // "create a token that's a copy of it, except it isn't legendary, is a
+    // Reflection in addition to its other types, and has haste").
+    #[test]
+    fn copy_except_comma_and_keyword_body_stays_one_chunk() {
+        let chunks = clause_texts(
+            "create a token that's a copy of it, except it isn't legendary, is a Reflection in addition to its other types, and has haste",
+        );
+        assert_eq!(
+            chunks,
+            vec![
+                "create a token that's a copy of it, except it isn't legendary, is a Reflection in addition to its other types, and has haste"
+            ],
+            "the entire except clause must remain a single chunk so the trailing \", and has haste\" body reaches the except parser"
+        );
     }
 
     #[test]
