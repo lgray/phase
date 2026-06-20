@@ -19512,4 +19512,124 @@ mod pipeline_snapshot_tests {
         );
         assert!(!has_unimplemented(&def));
     }
+
+    /// CR 120.1 + CR 208.3 + CR 115.4: Iron Fist, Living Weapon — the cast
+    /// trigger grants "{T}: ~ deals damage equal to his power to any other
+    /// target". The granted ability's inner effect must parse to a concrete
+    /// `DealDamage { Power{Source}, Another }`, not `Effect::Unimplemented`.
+    #[test]
+    fn iron_fist_living_weapon_grants_damage_equal_to_power_any_other_target() {
+        use crate::types::ability::{
+            ContinuousModification, Effect, FilterProp, ObjectScope, QuantityExpr, QuantityRef,
+            TargetFilter, TypedFilter,
+        };
+
+        let p = parse_oracle_text(
+            "Whenever you cast a spell that targets a creature you control, Iron Fist gains \
+             \"{T}: Iron Fist deals damage equal to his power to any other target\" until end of turn.",
+            "Iron Fist, Living Weapon",
+            &[],
+            &["Creature".into()],
+            &[],
+        );
+
+        let execute = p.triggers[0]
+            .execute
+            .as_ref()
+            .expect("cast trigger has an execute ability");
+        assert!(!has_unimplemented(execute), "no Unimplemented in Iron Fist");
+
+        let Effect::GenericEffect {
+            static_abilities, ..
+        } = &*execute.effect
+        else {
+            panic!("expected GenericEffect, got {:?}", execute.effect);
+        };
+        let granted = static_abilities
+            .iter()
+            .flat_map(|s| s.modifications.iter())
+            .find_map(|m| match m {
+                ContinuousModification::GrantAbility { definition } => Some(definition),
+                _ => None,
+            })
+            .expect("a GrantAbility modification");
+
+        assert!(
+            matches!(
+                &*granted.effect,
+                Effect::DealDamage {
+                    amount: QuantityExpr::Ref {
+                        qty: QuantityRef::Power {
+                            scope: ObjectScope::Source,
+                        },
+                    },
+                    target: TargetFilter::Typed(TypedFilter { properties, .. }),
+                    ..
+                } if properties.iter().any(|prop| matches!(prop, FilterProp::Another))
+            ),
+            "granted ability must deal damage equal to source power to any other target, got {:?}",
+            granted.effect
+        );
+    }
+
+    /// CR 120.1 + CR 122.1 + CR 115.4: Red Hulk — the Enrage trigger puts a
+    /// +1/+1 counter on the source, then a reflexive "when you do" deals damage
+    /// equal to the number of +1/+1 counters on the source to any other target.
+    /// The reflexive damage must parse concretely, not to `Effect::Unimplemented`.
+    #[test]
+    fn red_hulk_enrage_reflex_damage_equal_to_counters_any_other_target() {
+        use crate::types::ability::{
+            Effect, FilterProp, ObjectScope, QuantityExpr, QuantityRef, TargetFilter, TypedFilter,
+        };
+        use crate::types::counter::CounterType;
+
+        let p = parse_oracle_text(
+            "Reach, trample\nEnrage — Whenever Red Hulk is dealt damage, put a +1/+1 \
+             counter on him. When you do, he deals damage equal to the number of +1/+1 \
+             counters on him to any other target.",
+            "Red Hulk",
+            &["Reach".into(), "Trample".into()],
+            &["Creature".into()],
+            &[],
+        );
+
+        let execute = p.triggers[0]
+            .execute
+            .as_ref()
+            .expect("enrage trigger has an execute ability");
+        assert!(!has_unimplemented(execute), "no Unimplemented in Red Hulk");
+
+        // Head: put a +1/+1 counter on the source.
+        assert!(
+            matches!(
+                &*execute.effect,
+                Effect::PutCounter {
+                    counter_type: CounterType::Plus1Plus1,
+                    target: TargetFilter::SelfRef,
+                    ..
+                }
+            ),
+            "enrage head must put a +1/+1 counter on the source, got {:?}",
+            execute.effect
+        );
+
+        // Reflexive sub: deal damage equal to +1/+1 counters on source to any other target.
+        let reflex = execute
+            .sub_ability
+            .as_deref()
+            .expect("reflexive when-you-do sub-ability");
+        assert!(matches!(
+            &*reflex.effect,
+            Effect::DealDamage {
+                amount: QuantityExpr::Ref {
+                    qty: QuantityRef::CountersOn {
+                        scope: ObjectScope::Source,
+                        counter_type: Some(CounterType::Plus1Plus1),
+                    },
+                },
+                target: TargetFilter::Typed(TypedFilter { properties, .. }),
+                ..
+            } if properties.iter().any(|prop| matches!(prop, FilterProp::Another))
+        ), "reflex must deal damage equal to source's +1/+1 counters to any other target, got {:?}", reflex.effect);
+    }
 }
