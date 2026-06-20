@@ -17455,6 +17455,85 @@ mod tests {
         }
     }
 
+    /// CR 608.2c + CR 611.2a + CR 702.7: Gallant Fowlknight's ETB — the
+    /// pump's "also gain first strike" continuation on a subtype-filtered
+    /// controlled set ("Kithkin creatures you control also gain first strike
+    /// until end of turn") must parse end-to-end with ZERO `Unimplemented`. The
+    /// chain must carry both the all-creatures `PumpAll` and a
+    /// `GenericEffect { AddKeyword(FirstStrike) }` whose `affected` filter is
+    /// restricted to Kithkin creatures you control. Reverting the additive-"also"
+    /// strip in `strip_trailing_additive_adverb` regresses the second sentence to
+    /// an unimplemented "kithkin" effect and fails the zero-unimpl walk.
+    #[test]
+    fn gallant_fowlknight_subtype_also_grant_parses_without_unimplemented() {
+        let oracle = "When this creature enters, creatures you control get +1/+0 \
+                      until end of turn. Kithkin creatures you control also gain \
+                      first strike until end of turn.";
+        let parsed = parse(
+            oracle,
+            "Gallant Fowlknight",
+            &[],
+            &["Creature"],
+            &["Kithkin"],
+        );
+
+        let etb = parsed
+            .triggers
+            .iter()
+            .find_map(|t| t.execute.as_deref())
+            .expect("ETB trigger must carry an execute chain");
+
+        // Walk the whole effect chain collecting every effect node.
+        let mut effects: Vec<&Effect> = Vec::new();
+        let mut node = Some(etb);
+        while let Some(d) = node {
+            assert!(
+                !matches!(*d.effect, Effect::Unimplemented { .. }),
+                "Gallant Fowlknight chain must have no Unimplemented, got {:?}",
+                d.effect
+            );
+            effects.push(&d.effect);
+            node = d.sub_ability.as_deref();
+        }
+
+        // First clause: pump every creature you control +1/+0.
+        assert!(
+            effects
+                .iter()
+                .any(|e| matches!(e, Effect::PumpAll { power, .. } if *power == PtValue::Fixed(1))),
+            "expected a PumpAll(+1/+0) clause, got {effects:?}"
+        );
+
+        // Second clause: first strike grant restricted to Kithkin creatures you control.
+        let first_strike_grant = effects.iter().find_map(|e| match e {
+            Effect::GenericEffect {
+                static_abilities, ..
+            } => static_abilities.iter().find(|sd| {
+                sd.modifications
+                    .contains(&ContinuousModification::AddKeyword {
+                        keyword: Keyword::FirstStrike,
+                    })
+            }),
+            _ => None,
+        });
+        let grant = first_strike_grant.unwrap_or_else(|| {
+            panic!("expected a GenericEffect granting first strike, got {effects:?}")
+        });
+        let Some(TargetFilter::Typed(tf)) = &grant.affected else {
+            panic!(
+                "first strike grant must carry a Typed affected filter, got {:?}",
+                grant.affected
+            );
+        };
+        assert_eq!(tf.controller, Some(ControllerRef::You), "{tf:?}");
+        assert!(tf.type_filters.contains(&TypeFilter::Creature), "{tf:?}");
+        assert!(
+            tf.type_filters
+                .contains(&TypeFilter::Subtype("Kithkin".to_string())),
+            "first strike grant must be restricted to Kithkin, got {tf:?}"
+        );
+    }
+
     /// hand-grant line through the full `parse_oracle_text` pipeline.
     #[test]
     fn hand_grant_reaches_statics_through_full_pipeline() {

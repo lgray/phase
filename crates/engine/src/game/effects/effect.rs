@@ -1634,6 +1634,121 @@ mod tests {
             .contains(&Keyword::Flying));
     }
 
+    /// CR 608.2c + CR 611.2a + CR 702.7: Gallant Fowlknight ETB end-to-end —
+    /// "creatures you control get +1/+0 until end of turn. Kithkin creatures you
+    /// control also gain first strike until end of turn." After resolving the
+    /// full parsed chain (PumpAll + the subtype-filtered first-strike grant)
+    /// through the production effect resolver and layer evaluation, BOTH
+    /// controlled creatures gain +1/+0, but ONLY the Kithkin gains first strike.
+    /// Reverting `strip_trailing_additive_adverb` drops the second sentence to
+    /// `Effect::Unimplemented`, leaving the non-Kithkin and the Kithkin alike
+    /// without first strike — the Kithkin first-strike assertion then fails.
+    #[test]
+    fn gallant_fowlknight_first_strike_only_on_kithkin_after_resolution() {
+        use crate::game::layers::evaluate_layers;
+        use crate::parser::oracle_effect::parse_effect_chain;
+        use crate::types::ability::AbilityKind;
+
+        let mut state = GameState::new_two_player(42);
+        let source = create_object(
+            &mut state,
+            CardId(1),
+            PlayerId(0),
+            "Gallant Fowlknight".to_string(),
+            Zone::Battlefield,
+        );
+        let kithkin = create_object(
+            &mut state,
+            CardId(2),
+            PlayerId(0),
+            "Kithkin Ally".to_string(),
+            Zone::Battlefield,
+        );
+        let non_kithkin = create_object(
+            &mut state,
+            CardId(3),
+            PlayerId(0),
+            "Plain Bear".to_string(),
+            Zone::Battlefield,
+        );
+        for id in [kithkin, non_kithkin] {
+            let obj = state.objects.get_mut(&id).unwrap();
+            obj.card_types.core_types.push(CoreType::Creature);
+            obj.base_power = Some(2);
+            obj.base_toughness = Some(2);
+            obj.power = Some(2);
+            obj.toughness = Some(2);
+        }
+        // Only the first creature is a Kithkin.
+        state
+            .objects
+            .get_mut(&kithkin)
+            .unwrap()
+            .card_types
+            .subtypes
+            .push("Kithkin".to_string());
+
+        // Parse the real ETB effect body (the two chained sentences).
+        let parsed = parse_effect_chain(
+            "creatures you control get +1/+0 until end of turn. Kithkin creatures \
+             you control also gain first strike until end of turn.",
+            AbilityKind::Spell,
+        );
+
+        // Resolve every clause in the chain through the production resolver.
+        let mut node: Option<&crate::types::ability::AbilityDefinition> = Some(&parsed);
+        let mut resolved_any_unimplemented = false;
+        while let Some(def) = node {
+            if matches!(*def.effect, Effect::Unimplemented { .. }) {
+                resolved_any_unimplemented = true;
+            }
+            let ability = ResolvedAbility::new((*def.effect).clone(), vec![], source, PlayerId(0))
+                .duration(def.duration.clone().unwrap_or(Duration::UntilEndOfTurn));
+            let mut events = Vec::new();
+            // Drive through the top-level effect dispatcher so `PumpAll` routes to
+            // `pump::resolve_all` and the `GenericEffect` first-strike grant
+            // routes to `effect::resolve` — the same dispatch the stack uses.
+            crate::game::effects::resolve_effect(&mut state, &ability, &mut events).unwrap();
+            node = def.sub_ability.as_deref();
+        }
+        assert!(
+            !resolved_any_unimplemented,
+            "the parsed chain must not contain Unimplemented clauses"
+        );
+
+        evaluate_layers(&mut state);
+
+        // Both controlled creatures gain +1/+0 from the PumpAll clause.
+        assert_eq!(
+            state.objects.get(&kithkin).unwrap().power,
+            Some(3),
+            "Kithkin must get +1/+0"
+        );
+        assert_eq!(
+            state.objects.get(&non_kithkin).unwrap().power,
+            Some(3),
+            "non-Kithkin must also get +1/+0"
+        );
+
+        // Only the Kithkin gains first strike from the subtype-filtered grant.
+        assert!(
+            state
+                .objects
+                .get(&kithkin)
+                .unwrap()
+                .has_keyword(&Keyword::FirstStrike),
+            "Kithkin must gain first strike"
+        );
+        assert!(
+            !state
+                .objects
+                .get(&non_kithkin)
+                .unwrap()
+                .has_keyword(&Keyword::FirstStrike),
+            "non-Kithkin must NOT gain first strike"
+        );
+    }
+
     // CR 305.1 + CR 611.1 + CR 611.2c + CR 115.1: A `GenericEffect` whose target
     // slot resolves to a player (Pardic Miner: "Target player can't play lands
     // this turn") must register a transient continuous effect bound to
