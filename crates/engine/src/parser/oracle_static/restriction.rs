@@ -2061,10 +2061,9 @@ pub(crate) fn try_parse_top_of_library_cast_permission(
 
     // CR 601.2a: Optional once-per-turn frequency prefix. "Once each turn, …"
     // (Assemble the Players) and the longer "Once during each of your turns, …"
-    // synonym both lower to `OncePerTurn`; absence keeps the `Unlimited` shape
-    // (Realmwalker, Future Sight). The prefix consumes the leading "you may"
-    // anchor, so after stripping it the verb-dispatch below re-anchors on the
-    // bare "play "/"cast " token.
+    // synonym both lower to OncePerTurn; absence keeps the Unlimited shape
+    // (Realmwalker, Future Sight). After stripping the prefix, the standard
+    // "you may play/cast" verb-dispatch below is matched.
     let (lower, frequency) = if let Some(r) = nom_tag_lower(lower, lower, "once each turn, ")
         .or_else(|| nom_tag_lower(lower, lower, "once during each of your turns, "))
     {
