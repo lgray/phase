@@ -179,7 +179,7 @@ fn is_spend_mana_as_any_color_rider(clause: &ClauseIr) -> bool {
     }
 
     let lower = clause.source_text.to_ascii_lowercase();
-    all_consuming((
+    let parsed = all_consuming((
         opt(alt((
             tag::<_, _, OracleError<'_>>("if you cast a spell this way, "),
             tag("if you cast it this way, "),
@@ -197,7 +197,8 @@ fn is_spend_mana_as_any_color_rider(clause: &ClauseIr) -> bool {
         opt(tag(".")),
     ))
     .parse(lower.trim())
-    .is_ok()
+    .is_ok();
+    parsed
 }
 
 fn attach_any_color_mana_rider_to_previous_play_from_exile(defs: &mut [AbilityDefinition]) -> bool {

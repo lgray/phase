@@ -37177,7 +37177,7 @@ mod tests {
     fn parse_brainstealer_dragon_play_grant_folds_mana_rider() {
         let def = parse_effect_chain(
             "Exile the top card of each opponent's library. You may play those cards for as long as they remain exiled. If you cast a spell this way, you may spend mana as though it were mana of any color to cast it.",
-            AbilityKind::Triggered,
+            AbilityKind::Spell,
         );
         let grant = def
             .sub_ability
