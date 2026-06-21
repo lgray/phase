@@ -341,6 +341,17 @@ fn parse_replacement_line_inner(text: &str, card_name: &str) -> Option<Replaceme
         }
     }
 
+    // --- Connive replacement: "If a creature you control would connive, instead …"
+    // (Leader, Super-Genius class). CR 701.50a + CR 614.1a. Checked BEFORE the
+    // draw-replacement dispatch below — the execute clause ("you draw a card,
+    // then that creature connives") contains "would"/"draw" text that the draw
+    // arm would otherwise mis-claim.
+    if nom_primitives::scan_contains(&lower, "would connive") {
+        if let Some(def) = parse_connive_replacement(&lower, &text) {
+            return Some(def);
+        }
+    }
+
     // --- Untap-step replacement: "If [filter] would untap during [its
     // controller's | your] untap step, [effect] instead" (Freyalise's Winds,
     // Edge of Malacol). CR 502.3 + CR 502.4 + CR 614.1a.
@@ -5265,6 +5276,29 @@ fn parse_explore_replacement(lower: &str, original_text: &str) -> Option<Replace
 
     Some(
         ReplacementDefinition::new(ReplacementEvent::Explore)
+            .valid_card(TargetFilter::Typed(
+                TypedFilter::creature().controller(ControllerRef::You),
+            ))
+            .execute(parse_effect_chain(execute_text, AbilityKind::Spell))
+            .description(original_text.to_string()),
+    )
+}
+
+/// CR 701.50a + CR 614.1a: "If a creature you control would connive, instead
+/// [chain]" (Leader, Super-Genius — "instead you draw a card, then that creature
+/// connives"). Structurally parallel to `parse_explore_replacement`: the
+/// `valid_card` filter scopes the conniving permanent ("a creature you control")
+/// and the `execute` chain after "instead" is the modified action the connive
+/// applier runs in place of the bare connive.
+fn parse_connive_replacement(lower: &str, original_text: &str) -> Option<ReplacementDefinition> {
+    if !nom_primitives::scan_contains(lower, "if a creature you control would connive") {
+        return None;
+    }
+    let (_, execute_text) = split_once_on_lower(original_text, lower, "instead ")?;
+    let execute_text = execute_text.trim().trim_end_matches('.');
+
+    Some(
+        ReplacementDefinition::new(ReplacementEvent::Connive)
             .valid_card(TargetFilter::Typed(
                 TypedFilter::creature().controller(ControllerRef::You),
             ))

@@ -292,6 +292,23 @@ pub(super) fn handle_replacement_choice(
                 // CR 701.37a: Explore accepted after replacement choice — the
                 // explore resolver handles the actual explore logic; this is a no-op here.
                 ProposedEvent::Explore { .. } => {}
+                // CR 701.50a + CR 616.1: Connive surviving as an `Execute`
+                // payload after a replacement-ordering choice (the count-modifier
+                // case — a full-substitution connive replacement returns
+                // `Prevented` and never reaches here). The connive keyword action
+                // still has to run with the surviving count; resolve its internals
+                // directly so it does not re-enter the propose pipeline (CR 614.5).
+                // CR 616.1f: this is the TERMINAL survivor — `pipeline_loop`
+                // already repeated over and exhausted every applicable connive
+                // replacement, so no connive replacement remains to apply here and
+                // a direct `resolve_connive_effect` is correct.
+                ProposedEvent::Connive {
+                    object_id, count, ..
+                } => {
+                    let _ = crate::game::effects::connive::resolve_connive_effect(
+                        state, object_id, count, events,
+                    );
+                }
                 // CR 701.34a: Proliferate accepted after replacement choice.
                 proliferate @ ProposedEvent::Proliferate { .. } => {
                     crate::game::effects::proliferate::apply_proliferate_after_replacement(
@@ -627,6 +644,36 @@ pub(super) fn handle_replacement_choice(
             ))
         }
         super::replacement::ReplacementResult::Prevented => {
+            // CR 616.1f + CR 701.50a: a full-substitution applier (the Leader,
+            // Super-Genius connive replacement) can park its OWN interactive
+            // choice while running the replacing action. Two shapes occur:
+            //  - a `ConniveDiscard` prompt — the surviving plain connive pauses
+            //    when the controller must choose which card to discard, or
+            //  - a FRESH `ReplacementChoice` — the nested "then that creature
+            //    connives" re-entry found two or more OTHER still-applicable
+            //    connive replacements, so CR 616.1f repeats over them and the
+            //    controller must order the next one (the 3+ co-applicable case).
+            // `continue_replacement` returned `Prevented` (the original event was
+            // fully replaced), but the applier already set `state.waiting_for` to
+            // that live prompt. Surface it instead of clobbering it with
+            // `Priority`; the prompt's own resolution finishes the parked work.
+            //
+            // A bare `ReplacementChoice` whitelist is insufficient: it cannot
+            // tell the JUST-RESOLVED ordering prompt (already consumed) from a
+            // freshly-parked nested one. `continue_replacement` `.take()`-consumed
+            // the prior pending record at its start, so a `pending_replacement`
+            // that is still `Some` here is necessarily the applier's freshly-
+            // parked nested ordering choice — surface it so the next
+            // `ChooseReplacement` resumes the CR 616.1f repeat instead of orphaning
+            // the record and dropping replacements C onward.
+            if state.pending_replacement.is_some()
+                || !matches!(
+                    state.waiting_for,
+                    WaitingFor::Priority { .. } | WaitingFor::ReplacementChoice { .. }
+                )
+            {
+                return Ok(state.waiting_for.clone());
+            }
             if state.pending_counter_additions.is_some() {
                 state.waiting_for = WaitingFor::Priority {
                     player: state.active_player,

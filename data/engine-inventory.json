@@ -27,7 +27,7 @@
     "crates/engine/src/types/card_type.rs"
   ],
   "enum_count": 314,
-  "variant_count": 3286,
+  "variant_count": 3288,
   "smell_summary": [
     {
       "enum_name": "AbilityCondition",
@@ -26052,8 +26052,23 @@
           ]
         },
         {
+          "name": "Connive",
+          "line": 268,
+          "kind": "struct",
+          "field_names": [
+            "object_id",
+            "count",
+            "applied"
+          ],
+          "doc": "CR 701.50a + CR 614.1a: A creature is about to connive (draw N, discard N, +1/+1 per nonland discarded). Carried through the replacement pipeline so effects that intercept the connive keyword action (Leader, Super-Genius — \"instead you draw a card, then that creature connives\") see the event before the draw/discard/counter steps run. `count` is the connive N value, already resolved from `QuantityExpr` at propose time.",
+          "cr_refs": [
+            "CR 614.1a",
+            "CR 701.50a"
+          ]
+        },
+        {
           "name": "Proliferate",
-          "line": 265,
+          "line": 276,
           "kind": "struct",
           "field_names": [
             "player_id",
@@ -26068,7 +26083,7 @@
         },
         {
           "name": "LifeGain",
-          "line": 270,
+          "line": 281,
           "kind": "struct",
           "field_names": [
             "player_id",
@@ -26080,7 +26095,7 @@
         },
         {
           "name": "LifeLoss",
-          "line": 275,
+          "line": 286,
           "kind": "struct",
           "field_names": [
             "player_id",
@@ -26092,7 +26107,7 @@
         },
         {
           "name": "AddCounter",
-          "line": 280,
+          "line": 291,
           "kind": "struct",
           "field_names": [
             "placement",
@@ -26104,7 +26119,7 @@
         },
         {
           "name": "RemoveCounter",
-          "line": 289,
+          "line": 300,
           "kind": "struct",
           "field_names": [
             "object_id",
@@ -26117,7 +26132,7 @@
         },
         {
           "name": "MoveCounter",
-          "line": 298,
+          "line": 309,
           "kind": "struct",
           "field_names": [
             "actor",
@@ -26136,7 +26151,7 @@
         },
         {
           "name": "CreateToken",
-          "line": 318,
+          "line": 329,
           "kind": "struct",
           "field_names": [
             "owner",
@@ -26154,7 +26169,7 @@
         },
         {
           "name": "Discard",
-          "line": 337,
+          "line": 348,
           "kind": "struct",
           "field_names": [
             "player_id",
@@ -26168,7 +26183,7 @@
         },
         {
           "name": "Tap",
-          "line": 349,
+          "line": 360,
           "kind": "struct",
           "field_names": [
             "object_id",
@@ -26179,7 +26194,7 @@
         },
         {
           "name": "Untap",
-          "line": 353,
+          "line": 364,
           "kind": "struct",
           "field_names": [
             "object_id",
@@ -26190,7 +26205,7 @@
         },
         {
           "name": "TurnFaceUp",
-          "line": 359,
+          "line": 370,
           "kind": "struct",
           "field_names": [
             "object_id",
@@ -26204,7 +26219,7 @@
         },
         {
           "name": "Destroy",
-          "line": 363,
+          "line": 374,
           "kind": "struct",
           "field_names": [
             "object_id",
@@ -26217,7 +26232,7 @@
         },
         {
           "name": "Sacrifice",
-          "line": 370,
+          "line": 381,
           "kind": "struct",
           "field_names": [
             "object_id",
@@ -26229,7 +26244,7 @@
         },
         {
           "name": "BeginTurn",
-          "line": 381,
+          "line": 392,
           "kind": "struct",
           "field_names": [
             "player_id",
@@ -26246,7 +26261,7 @@
         },
         {
           "name": "BeginPhase",
-          "line": 391,
+          "line": 402,
           "kind": "struct",
           "field_names": [
             "player_id",
@@ -26261,7 +26276,7 @@
         },
         {
           "name": "ProduceMana",
-          "line": 400,
+          "line": 411,
           "kind": "struct",
           "field_names": [
             "source_id",
@@ -26279,7 +26294,7 @@
         },
         {
           "name": "EmptyManaPool",
-          "line": 429,
+          "line": 440,
           "kind": "struct",
           "field_names": [
             "player_id",
@@ -28519,8 +28534,19 @@
           ]
         },
         {
+          "name": "Connive",
+          "line": 78,
+          "kind": "unit",
+          "field_names": [],
+          "doc": "CR 701.50a + CR 614.1a: Replaces a connive keyword action. Lets a replacement effect intercept \"a creature would connive\" and substitute a modified action (Leader, Super-Genius — \"instead you draw a card, then that creature connives\").",
+          "cr_refs": [
+            "CR 614.1a",
+            "CR 701.50a"
+          ]
+        },
+        {
           "name": "AssembleContraption",
-          "line": 76,
+          "line": 81,
           "kind": "unit",
           "field_names": [],
           "doc": "",
@@ -28528,7 +28554,7 @@
         },
         {
           "name": "BeginPhase",
-          "line": 78,
+          "line": 83,
           "kind": "unit",
           "field_names": [],
           "doc": "CR 614.1b: Replaces the beginning of a phase (skip effects).",
@@ -28538,7 +28564,7 @@
         },
         {
           "name": "BeginTurn",
-          "line": 80,
+          "line": 85,
           "kind": "unit",
           "field_names": [],
           "doc": "CR 614.1b: Replaces the beginning of a turn (skip effects, CR 614.10).",
@@ -28549,46 +28575,6 @@
         },
         {
           "name": "Cascade",
-          "line": 81,
-          "kind": "unit",
-          "field_names": [],
-          "doc": "",
-          "cr_refs": []
-        },
-        {
-          "name": "CopySpell",
-          "line": 82,
-          "kind": "unit",
-          "field_names": [],
-          "doc": "",
-          "cr_refs": []
-        },
-        {
-          "name": "DeclareBlocker",
-          "line": 83,
-          "kind": "unit",
-          "field_names": [],
-          "doc": "",
-          "cr_refs": []
-        },
-        {
-          "name": "GameLoss",
-          "line": 84,
-          "kind": "unit",
-          "field_names": [],
-          "doc": "",
-          "cr_refs": []
-        },
-        {
-          "name": "GameWin",
-          "line": 85,
-          "kind": "unit",
-          "field_names": [],
-          "doc": "",
-          "cr_refs": []
-        },
-        {
-          "name": "Learn",
           "line": 86,
           "kind": "unit",
           "field_names": [],
@@ -28596,8 +28582,48 @@
           "cr_refs": []
         },
         {
+          "name": "CopySpell",
+          "line": 87,
+          "kind": "unit",
+          "field_names": [],
+          "doc": "",
+          "cr_refs": []
+        },
+        {
+          "name": "DeclareBlocker",
+          "line": 88,
+          "kind": "unit",
+          "field_names": [],
+          "doc": "",
+          "cr_refs": []
+        },
+        {
+          "name": "GameLoss",
+          "line": 89,
+          "kind": "unit",
+          "field_names": [],
+          "doc": "",
+          "cr_refs": []
+        },
+        {
+          "name": "GameWin",
+          "line": 90,
+          "kind": "unit",
+          "field_names": [],
+          "doc": "",
+          "cr_refs": []
+        },
+        {
+          "name": "Learn",
+          "line": 91,
+          "kind": "unit",
+          "field_names": [],
+          "doc": "",
+          "cr_refs": []
+        },
+        {
           "name": "LoseMana",
-          "line": 95,
+          "line": 100,
           "kind": "unit",
           "field_names": [],
           "doc": "CR 703.4q + CR 614.1a + CR 614.6: Replaces the CR 703.4q \"any unspent mana in a player's mana pool empties\" event at end of each step or phase. The replacement-effect family covers two leaf actions: `Retain` (CR 614.6 — the loss event is replaced with nothing, e.g. Upwelling, Omnath Locus of Mana) and `Transform(_)` (CR 614.1a — the loss event is replaced with a recolor, e.g. Horizon Stone, Kruphix). Matched against `ProposedEvent::EmptyManaPool` via the `empty_mana_pool_matcher` registered in `build_replacement_registry`.",
@@ -28609,7 +28635,7 @@
         },
         {
           "name": "PlanarDiceResult",
-          "line": 96,
+          "line": 101,
           "kind": "unit",
           "field_names": [],
           "doc": "",
@@ -28617,7 +28643,7 @@
         },
         {
           "name": "Planeswalk",
-          "line": 97,
+          "line": 102,
           "kind": "unit",
           "field_names": [],
           "doc": "",
@@ -28625,7 +28651,7 @@
         },
         {
           "name": "Proliferate",
-          "line": 100,
+          "line": 105,
           "kind": "unit",
           "field_names": [],
           "doc": "CR 701.34a + CR 614.1a: Replaces a proliferate action (count-modifying \"proliferate twice instead\" effects such as Tekuthal, Inquiry Dominus).",
@@ -28636,7 +28662,7 @@
         },
         {
           "name": "Other",
-          "line": 103,
+          "line": 108,
           "kind": "tuple",
           "field_names": [],
           "doc": "Fallback for truly unknown event strings.",
