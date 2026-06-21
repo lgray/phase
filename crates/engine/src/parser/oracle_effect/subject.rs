@@ -4,7 +4,7 @@ use nom::bytes::complete::{tag, take_till, take_until};
 use nom::character::complete::multispace0;
 use nom::combinator::{all_consuming, map, opt, rest, value, verify};
 use nom::multi::separated_list1;
-use nom::sequence::{delimited, pair, preceded, terminated};
+use nom::sequence::{delimited, preceded, terminated};
 use nom::Parser;
 
 use super::animation::{
@@ -376,20 +376,90 @@ fn try_parse_subject_become_clause(
     build_become_clause(application, &predicate, ctx)
 }
 
-/// CR 613.4b + CR 613.1f: "[subject]'s base power and toughness become N/M [and
-/// (it/they) gain(s)/has/have <keywords>]" — a set-base-P/T plus keyword-grant
-/// continuous effect on the possessor, with NO type/subtype change.
+/// CR 208.1: which base characteristic(s) a "base power [and toughness] become"
+/// clause overwrites. `set_power`/`set_toughness` are independent so the
+/// power-only axis (Pupu UFO) and the both-axes axis (Moon Girl, Porcelain
+/// Gallery, Sita Varma) share one parser rather than proliferating arms.
+struct BasePtSetAxes {
+    set_power: bool,
+    set_toughness: bool,
+}
+
+/// CR 208.1: Parse the "base power [and [base] toughness]" characteristic axes
+/// after the possessive marker, returning the axes and the remainder positioned
+/// at the "become[s] " copula. Factored per the nom mandate so the optional
+/// "base " on the second noun and the optional "and toughness" conjunct are each
+/// a single combinator.
+fn parse_base_pt_axes(input: &str) -> OracleResult<'_, BasePtSetAxes> {
+    let (input, _) = tag("base power").parse(input)?;
+    let (input, toughness) =
+        opt(alt((tag(" and base toughness"), tag(" and toughness")))).parse(input)?;
+    Ok((
+        input,
+        BasePtSetAxes {
+            set_power: true,
+            set_toughness: toughness.is_some(),
+        },
+    ))
+}
+
+/// CR 208.1 + CR 613.4b: The dynamic-or-fixed value side of a "base power …
+/// become[s] <value>" clause, resolved into per-axis layer-7b modifications.
+enum BasePtSetValue {
+    /// Fixed "N/M" — `SetPower`/`SetToughness`.
+    Fixed { power: i32, toughness: i32 },
+    /// Dynamic "[each] equal to <quantity>" — `SetPowerDynamic`/`SetToughnessDynamic`.
+    Dynamic(QuantityExpr),
+}
+
+/// CR 208.1: Parse the value following the "become[s] " copula of a base-P/T-set
+/// clause. Tries the fixed "N/M" form first (so "6/6" is not mis-routed through
+/// the quantity grammar), then the dynamic "[each] equal to <quantity>" form,
+/// which routes through the shared CDA quantity grammar so every recognized
+/// count/aggregate/possessive-power phrase composes ("the number of Towns you
+/// control", "~'s power", …).
+fn parse_base_pt_set_value(remainder: &str) -> Option<(BasePtSetValue, &str)> {
+    if let Some((power, toughness, after_pt)) =
+        super::animation::parse_fixed_become_pt_prefix(remainder)
+    {
+        return Some((BasePtSetValue::Fixed { power, toughness }, after_pt));
+    }
+    // CR 208.1: "[each] equal to <quantity>" dynamic value. "each equal to" and
+    // "equal to" are the two surface forms (each/each-not are not independent
+    // axes here — the optional "each " is the only variation).
+    let lower = remainder.to_lowercase();
+    // Return `()` (owned) from the closure so its result does not borrow the
+    // temporary `lower`; `nom_on_lower` hands back the post-match remainder in
+    // original case.
+    let (_, after_copula) = nom_on_lower(remainder, &lower, |i| {
+        let (i, _) = opt(tag::<_, _, OracleError<'_>>("each ")).parse(i)?;
+        value((), tag::<_, _, OracleError<'_>>("equal to ")).parse(i)
+    })?;
+    let tail = after_copula.trim().trim_end_matches('.').trim();
+    let expr = oracle_quantity::parse_cda_quantity(tail)
+        .or_else(|| oracle_quantity::parse_event_context_quantity(tail))?;
+    Some((BasePtSetValue::Dynamic(expr), ""))
+}
+
+/// CR 613.4b + CR 613.1f: "[subject]'s base power [and toughness] become[s]
+/// <value> [and (it/they) gain(s)/has/have <keywords>]" — a set-base-P/T plus
+/// keyword-grant continuous effect on the possessor, with NO type/subtype
+/// change. Also handles the inverted-genitive surface form "the base power and
+/// toughness of [subject] become[s] <value>" (Sita Varma).
 ///
 /// This differs grammatically from the `becomes a [type] with base power and
 /// toughness N/M` animation form (handled by `parse_animation_spec`): here the
 /// grammatical subject is the *possessive* "[subject]'s base power and
 /// toughness", and the verb "become" acts on the P/T characteristics, not on the
 /// permanent's card type. So it produces a `GenericEffect` carrying
-/// `SetPower`/`SetToughness` (Layer 7b, CR 613.4b) and `AddKeyword` (Layer 6,
-/// CR 613.1f) modifications, without any `AddType`/`AddSubtype`. Covers Moon
-/// Girl and Devil Dinosaur ("~'s base power and toughness become 6/6 and they
-/// gain trample") and the class of "<permanent>'s base power and toughness
-/// become N/M …" effects.
+/// `SetPower`/`SetToughness` (fixed) or `SetPowerDynamic`/`SetToughnessDynamic`
+/// (dynamic, Layer 7b, CR 613.4b) and `AddKeyword` (Layer 6, CR 613.1f)
+/// modifications, without any `AddType`/`AddSubtype`. Covers Moon Girl and Devil
+/// Dinosaur ("~'s base power and toughness become 6/6 and they gain trample"),
+/// Pupu UFO ("this creature's base power becomes equal to the number of Towns you
+/// control"), Sita Varma ("the base power and toughness of each other creature
+/// you control become equal to ~'s power"), and the broader class of
+/// "<permanent>'s base power [and toughness] become[s] <value> …" effects.
 fn try_parse_subject_base_pt_set_clause_ast(
     text: &str,
     ctx: &mut ParseContext,
@@ -403,28 +473,65 @@ fn try_parse_subject_base_pt_set_clause_ast(
     let (body, leading_duration) = strip_leading_duration(text);
 
     let lower = body.to_lowercase();
-    // Split at the possessive characteristic phrase. The possessive marker may be
-    // ASCII `'s` or the Unicode right single quote `\u{2019}s`. `rest_lower` is the
-    // text after the marker; `to_lowercase` preserves byte offsets for this text
-    // (ASCII letters + apostrophes), so the same offsets index `body`.
-    let (rest_lower, (subject_lower, _marker)) = alt((
-        pair(
-            take_until::<_, _, VE>("'s base power and toughness become "),
-            tag("'s base power and toughness become "),
-        ),
-        pair(
-            take_until::<_, _, VE>("\u{2019}s base power and toughness become "),
-            tag("\u{2019}s base power and toughness become "),
-        ),
-    ))
-    .parse(lower.as_str())
-    .ok()?;
 
-    let subject = body[..subject_lower.len()].trim();
-    let remainder = &body[body.len() - rest_lower.len()..];
+    // Two surface forms, each yielding `(subject_text, axes, value_remainder)`:
+    //   1. Possessive:  "<subject>'s base power [and toughness] become[s] <value>"
+    //   2. Inverted:    "the base power and toughness of <subject> become[s] <value>"
+    // The possessive marker may be ASCII `'s` or the Unicode right single quote
+    // `\u{2019}s`. `to_lowercase` preserves byte length/offsets for this text
+    // (ASCII letters, apostrophes, digits, slashes), so a span taken from `lower`
+    // indexes the same bytes in `body`.
+    let (subject, axes, remainder) = if let Ok((rest_lower, (axes, _, subject_lower, _, _, _))) =
+        // Inverted genitive: "the base power and toughness of <subject> become[s] "
+        (
+                preceded(tag::<_, _, VE>("the "), parse_base_pt_axes),
+                tag(" of "),
+                take_until::<_, _, VE>(" become"),
+                tag(" become"),
+                opt(tag("s")),
+                tag(" "),
+            )
+                .parse(lower.as_str())
+    {
+        // `subject_lower` is a sub-slice of `lower`; its byte offset is the
+        // pointer delta. Recover original case at the same span in `body`.
+        let subject_start = subject_lower.as_ptr() as usize - lower.as_ptr() as usize;
+        let subject = body
+            .get(subject_start..subject_start + subject_lower.len())?
+            .trim();
+        let remainder = &body[body.len() - rest_lower.len()..];
+        (subject, axes, remainder)
+    } else {
+        // Possessive: "<subject>'s base power [and toughness] become[s] "
+        let (rest_lower, (subject_lower, axes)) = alt((
+            (
+                take_until::<_, _, VE>("'s base power"),
+                tag("'s "),
+                parse_base_pt_axes,
+                tag(" become"),
+                opt(tag("s")),
+                tag(" "),
+            )
+                .map(|(subject, _, axes, _, _, _)| (subject, axes)),
+            (
+                take_until::<_, _, VE>("\u{2019}s base power"),
+                tag("\u{2019}s "),
+                parse_base_pt_axes,
+                tag(" become"),
+                opt(tag("s")),
+                tag(" "),
+            )
+                .map(|(subject, _, axes, _, _, _)| (subject, axes)),
+        ))
+        .parse(lower.as_str())
+        .ok()?;
+        let subject = body[..subject_lower.len()].trim();
+        let remainder = &body[body.len() - rest_lower.len()..];
+        (subject, axes, remainder)
+    };
 
-    // Parse the fixed N/M P/T values.
-    let (power, toughness, after_pt) = super::animation::parse_fixed_become_pt_prefix(remainder)?;
+    // Parse the value side (fixed N/M or dynamic "[each] equal to <quantity>").
+    let (value, after_pt) = parse_base_pt_set_value(remainder)?;
 
     // Parse the optional trailing keyword-grant conjunct ("and they gain trample").
     let keywords = parse_base_pt_set_trailing_keywords(after_pt);
@@ -432,10 +539,34 @@ fn try_parse_subject_base_pt_set_clause_ast(
     let application = parse_subject_application(subject, ctx)?;
     let affected = static_affected_for_application(&application);
 
-    let mut modifications = vec![
-        ContinuousModification::SetPower { value: power },
-        ContinuousModification::SetToughness { value: toughness },
-    ];
+    // CR 208.1 + CR 613.4b: emit per-axis layer-7b set modifications. Fixed
+    // values stay `SetPower`/`SetToughness`; dynamic values use the
+    // `SetPowerDynamic`/`SetToughnessDynamic` variants the layer system
+    // re-evaluates each tick.
+    let mut modifications = Vec::new();
+    match value {
+        BasePtSetValue::Fixed { power, toughness } => {
+            if axes.set_power {
+                modifications.push(ContinuousModification::SetPower { value: power });
+            }
+            if axes.set_toughness {
+                modifications.push(ContinuousModification::SetToughness { value: toughness });
+            }
+        }
+        BasePtSetValue::Dynamic(expr) => {
+            if axes.set_power {
+                modifications.push(ContinuousModification::SetPowerDynamic {
+                    value: expr.clone(),
+                });
+            }
+            if axes.set_toughness {
+                modifications.push(ContinuousModification::SetToughnessDynamic { value: expr });
+            }
+        }
+    }
+    if modifications.is_empty() {
+        return None;
+    }
     modifications.extend(
         keywords
             .into_iter()

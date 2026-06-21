@@ -19263,3 +19263,50 @@ fn top_of_library_frequency_display_roundtrip() {
         unlimited
     );
 }
+
+/// CR 613.4b + CR 208.1: Porcelain Gallery's "Creatures you control have base
+/// power and toughness each equal to the number of creatures you control" is a
+/// layer-7b dynamic base-P/T set on a controller-scoped group. The dynamic
+/// value routes through the shared CDA quantity grammar to an `ObjectCount`,
+/// proving the base-P/T set composes with arbitrary count quantities (not just
+/// "its mana value"). Each tick re-evaluates the count via the layer system.
+#[test]
+fn porcelain_gallery_base_pt_equal_to_creature_count() {
+    let def = parse_static_line(
+        "Creatures you control have base power and toughness each equal to the number of creatures you control.",
+    )
+    .expect("Porcelain Gallery static must parse");
+
+    // Group scope: creatures you control.
+    match &def.affected {
+        Some(TargetFilter::Typed(tf)) => {
+            assert!(tf.type_filters.contains(&TypeFilter::Creature));
+            assert_eq!(tf.controller, Some(ControllerRef::You));
+        }
+        other => panic!("expected creatures-you-control scope, got {other:?}"),
+    }
+
+    let expected = QuantityExpr::Ref {
+        qty: QuantityRef::ObjectCount {
+            filter: TargetFilter::Typed(
+                TypedFilter::default()
+                    .with_type(TypeFilter::Creature)
+                    .controller(ControllerRef::You),
+            ),
+        },
+    };
+    assert!(
+        def.modifications
+            .contains(&ContinuousModification::SetPowerDynamic {
+                value: expected.clone(),
+            }),
+        "missing SetPowerDynamic(creature count) in {:?}",
+        def.modifications
+    );
+    assert!(
+        def.modifications
+            .contains(&ContinuousModification::SetToughnessDynamic { value: expected }),
+        "missing SetToughnessDynamic(creature count) in {:?}",
+        def.modifications
+    );
+}
