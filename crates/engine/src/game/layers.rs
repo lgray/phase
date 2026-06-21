@@ -4688,6 +4688,93 @@ mod tests {
         ));
     }
 
+    /// Cavernous Maw (std BATCH 12): the `{2}` animation turns the land into a
+    /// 3/3 Elemental creature while "It's still a Cave land" (CR 205.1b, CR 305.7)
+    /// retains the Land card type and Cave subtype. This drives the parsed
+    /// modification set through the real layer engine and asserts the composition
+    /// is runtime-sound: the animated permanent is a 3/3 Creature that is STILL a
+    /// Cave Land (CR 613.1d Layer 4 additive type/subtype ordering). The
+    /// animation's `RemoveAllSubtypes { Creature }` (CR 205.1a) wipes only the
+    /// creature-type set, so the Cave land subtype survives.
+    #[test]
+    fn cavernous_maw_animation_retains_cave_land_through_layers() {
+        let mut state = setup();
+        let id = create_object(
+            &mut state,
+            CardId(0),
+            PlayerId(0),
+            "Cavernous Maw".to_string(),
+            Zone::Battlefield,
+        );
+        let ts = state.next_timestamp();
+        {
+            let obj = state.objects.get_mut(&id).unwrap();
+            obj.card_types.core_types.push(CoreType::Land);
+            obj.card_types.subtypes.push("Cave".to_string());
+            obj.base_card_types = obj.card_types.clone();
+            obj.timestamp = ts;
+        }
+
+        // The full `{2}` activated-ability animation as parsed: the
+        // "becomes a 3/3 Elemental creature" modifications followed by the
+        // "It's still a Cave land" retention re-assertions.
+        let animation = StaticDefinition::continuous()
+            .affected(TargetFilter::SelfRef)
+            .modifications(vec![
+                ContinuousModification::SetPower { value: 3 },
+                ContinuousModification::SetToughness { value: 3 },
+                ContinuousModification::AddType {
+                    core_type: CoreType::Creature,
+                },
+                ContinuousModification::RemoveAllSubtypes {
+                    set: crate::types::card_type::SubtypeSet::Creature,
+                },
+                ContinuousModification::AddSubtype {
+                    subtype: "Elemental".to_string(),
+                },
+                // "It's still a Cave land" — the clause this batch unblocks.
+                ContinuousModification::AddType {
+                    core_type: CoreType::Land,
+                },
+                ContinuousModification::AddSubtype {
+                    subtype: "Cave".to_string(),
+                },
+            ]);
+        {
+            let obj = state.objects.get_mut(&id).unwrap();
+            Arc::make_mut(&mut obj.base_static_definitions).push(animation.clone());
+            obj.static_definitions.push(animation);
+        }
+
+        evaluate_layers(&mut state);
+
+        let obj = &state.objects[&id];
+        assert_eq!(obj.power, Some(3), "animated to 3 power");
+        assert_eq!(obj.toughness, Some(3), "animated to 3 toughness");
+        assert!(
+            obj.card_types.core_types.contains(&CoreType::Creature),
+            "must be a creature, got {:?}",
+            obj.card_types.core_types
+        );
+        // CR 205.1b: "still a Cave land" — both the Land card type and the Cave
+        // land subtype must survive the animation.
+        assert!(
+            obj.card_types.core_types.contains(&CoreType::Land),
+            "must still be a Land, got {:?}",
+            obj.card_types.core_types
+        );
+        assert!(
+            obj.card_types.subtypes.iter().any(|s| s == "Cave"),
+            "must still be a Cave, got {:?}",
+            obj.card_types.subtypes
+        );
+        assert!(
+            obj.card_types.subtypes.iter().any(|s| s == "Elemental"),
+            "must gain the Elemental creature type, got {:?}",
+            obj.card_types.subtypes
+        );
+    }
+
     /// CR 613.4c + CR 704.5f: A runaway `+X/+X` chain (e.g. from a `ObjectCount`
     /// quantity resolving against an extremely large collection) must clamp at
     /// `i32::MAX` rather than wrapping to negative. If it wrapped, the creature's

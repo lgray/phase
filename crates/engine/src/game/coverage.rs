@@ -2670,8 +2670,12 @@ fn effect_details(effect: &Effect) -> Vec<(String, String)> {
             d.push(("kept".into(), format!("{:?}", kept_destination)));
             d.push(("rest".into(), format!("{:?}", rest_destination)));
         }
-        Effect::Discover { mana_value_limit } => {
+        Effect::Discover {
+            mana_value_limit,
+            player,
+        } => {
             d.push(("mv limit".into(), format!("{:?}", mana_value_limit)));
+            d.push(("player".into(), format!("{player:?}")));
         }
         // Heist (Arena digital-only): look step records the look count.
         Effect::Heist { look_count, .. } => {
@@ -2804,8 +2808,9 @@ fn effect_details(effect: &Effect) -> Vec<(String, String)> {
         Effect::Endure { amount } => {
             d.push(("amount".into(), amount.to_string()));
         }
-        Effect::BlightEffect { count } => {
+        Effect::BlightEffect { count, player } => {
             d.push(("count".into(), count.to_string()));
+            d.push(("player".into(), format!("{player:?}")));
         }
         Effect::Seek {
             filter,

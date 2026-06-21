@@ -2699,6 +2699,17 @@ pub(super) fn parse_choose_ast(
         return Some(ast);
     }
 
+    // CR 608.2c + CR 603.7 / CR 610.3 + CR 406.6: "choose a card [at random]
+    // exiled this way / exiled with ~" — the impulse-exile choose anaphor. The
+    // "exiled this way" referent is the chain's tracked set (the cards exiled by
+    // a preceding clause in this resolution, e.g. End-Blaze Epiphany); the
+    // "exiled with ~/it" referent is the source's linked-exile set, scanned in
+    // Exile by `TargetFilter::ExiledBySource` (Omenpath Journey). Checked before
+    // the bare "choose " strip so it never misroutes to the targeting fallback.
+    if let Some(ast) = try_parse_choose_exiled_anaphor(lower) {
+        return Some(ast);
+    }
+
     if let Some((_, rest)) =
         nom_on_lower(text, lower, |input| value((), tag("choose ")).parse(input))
     {
@@ -2826,6 +2837,73 @@ fn try_parse_choose_owned_by_voter(
         // CR 608.2d: per-ballot voter choice is controller-directed, never random.
         selection: crate::types::ability::CardSelectionMode::Chosen,
     })
+}
+
+/// CR 608.2c + CR 603.7 / CR 610.3 + CR 406.6: Parse "choose a card [at random]
+/// exiled this way / exiled with ~ / exiled with it" — the impulse-exile choose
+/// anaphor.
+///
+/// Two referents, distinguished by the anaphor tail:
+/// - "exiled this way" → the chain's tracked set (cards exiled by a preceding
+///   clause this resolution). Lowered via [`ChooseImperativeAst::FromTrackedSet`]
+///   → `Effect::ChooseFromZone` reading the chain tracked set (End-Blaze
+///   Epiphany).
+/// - "exiled with ~" / "exiled with it" → the source's linked-exile set,
+///   scanned in `Zone::Exile` by [`TargetFilter::ExiledBySource`]. Lowered via
+///   [`ChooseImperativeAst::FromZone`] so the runtime applies the linked-exile
+///   filter (Omenpath Journey).
+///
+/// The optional "at random" qualifier sets [`CardSelectionMode::Random`]
+/// (CR 608.2d override): the game selects, the controller does not.
+fn try_parse_choose_exiled_anaphor(lower: &str) -> Option<ChooseImperativeAst> {
+    type E<'a> = OracleError<'a>;
+
+    // "choose " / "you choose ", then the singular card anaphor "a card" / "one
+    // card" / "a [type] card". Only the bare card forms are handled here; typed
+    // restrictions on impulse-exile choices are not yet attested and would fall
+    // through to the honest fallback.
+    let (rest_after, ()) = preceded(
+        alt((tag::<_, _, E>("choose "), tag("you choose "))),
+        value((), alt((tag("a card"), tag("one card")))),
+    )
+    .parse(lower)
+    .ok()?;
+
+    // Optional " at random" qualifier (CR 608.2d override).
+    let (rest_after, selection) = match tag::<_, _, E>(" at random").parse(rest_after) {
+        Ok((rest, _)) => (rest, CardSelectionMode::Random),
+        Err(_) => (rest_after, CardSelectionMode::Chosen),
+    };
+
+    // "exiled this way" — the chain tracked set.
+    if let Ok((tail, _)) = tag::<_, _, E>(" exiled this way").parse(rest_after) {
+        if tail.is_empty() {
+            return Some(ChooseImperativeAst::FromTrackedSet {
+                count: 1,
+                chooser: Chooser::Controller,
+                selection,
+            });
+        }
+    }
+
+    // "exiled with ~" / "exiled with it" — the source's linked-exile set.
+    if let Ok((tail, _)) =
+        alt((tag::<_, _, E>(" exiled with ~"), tag(" exiled with it"))).parse(rest_after)
+    {
+        if tail.is_empty() {
+            return Some(ChooseImperativeAst::FromZone {
+                count: 1,
+                zones: vec![Zone::Exile],
+                zone_owner: ZoneOwner::Controller,
+                filter: TargetFilter::ExiledBySource,
+                chooser: Chooser::Controller,
+                up_to: false,
+                selection,
+            });
+        }
+    }
+
+    None
 }
 
 fn try_parse_choose_from_zone(lower: &str, ctx: &mut ParseContext) -> Option<ChooseImperativeAst> {
@@ -6954,6 +7032,8 @@ pub(super) fn parse_imperative_family_ast(
                 .unwrap_or(1);
             Some(ImperativeFamilyAst::GainKeyword(Effect::BlightEffect {
                 count,
+                // CR 701.68a: bare "blight N" is the controller blighting.
+                player: crate::types::ability::TargetFilter::Controller,
             }))
         }
         // Forage keyword action (CR 701.61a)
