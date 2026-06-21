@@ -640,6 +640,7 @@ pub fn parse_quantity_ref(input: &str) -> OracleResult<'_, QuantityRef> {
         // "they control" binds to a target player here (not a for-each scope).
         |i| parse_basic_land_types_among_lands_controlled_by_ref(i, ControllerRef::TargetPlayer),
         parse_devotion_ref,
+        parse_chroma_devotion_ref,
         parse_counters_among_ref,
         // CR 402.1: "the player with the {most|fewest} cards in hand" — the
         // cross-player hand-size extremum, the hand-zone peer of the life
@@ -2659,6 +2660,23 @@ fn parse_devotion_ref(input: &str) -> OracleResult<'_, QuantityRef> {
             ));
         }
     }
+    Ok((
+        rest,
+        QuantityRef::Devotion {
+            colors: DevotionColors::Fixed(vec![color]),
+        },
+    ))
+}
+
+/// CR 700.5: Chroma — "the number of \<color\> mana symbols in the mana costs of
+/// permanents you control" counts the same colored mana symbols among permanents
+/// you control as devotion, so it maps to the existing `Devotion` quantity
+/// (Outrage Shaman, Primalcrux). The graveyard-scope and single-object Chroma
+/// forms are a different population and intentionally not matched here.
+fn parse_chroma_devotion_ref(input: &str) -> OracleResult<'_, QuantityRef> {
+    let (rest, _) = tag("the number of ").parse(input)?;
+    let (rest, color) = super::primitives::parse_color(rest)?;
+    let (rest, _) = tag(" mana symbols in the mana costs of permanents you control").parse(rest)?;
     Ok((
         rest,
         QuantityRef::Devotion {
@@ -6944,6 +6962,36 @@ mod tests {
             }
         );
         assert_eq!(rest, "");
+    }
+
+    /// CR 700.5: the Chroma wording for devotion — "the number of <color> mana
+    /// symbols in the mana costs of permanents you control" (Outrage Shaman,
+    /// Primalcrux) — maps to the same `Devotion` quantity as "your devotion to
+    /// <color>".
+    #[test]
+    fn test_parse_chroma_devotion() {
+        let (rest, q) = parse_quantity_ref(
+            "the number of green mana symbols in the mana costs of permanents you control",
+        )
+        .unwrap();
+        assert_eq!(
+            q,
+            QuantityRef::Devotion {
+                colors: DevotionColors::Fixed(vec![ManaColor::Green])
+            }
+        );
+        assert_eq!(rest, "");
+
+        let (_, red) = parse_quantity_ref(
+            "the number of red mana symbols in the mana costs of permanents you control",
+        )
+        .unwrap();
+        assert_eq!(
+            red,
+            QuantityRef::Devotion {
+                colors: DevotionColors::Fixed(vec![ManaColor::Red])
+            }
+        );
     }
 
     #[test]
