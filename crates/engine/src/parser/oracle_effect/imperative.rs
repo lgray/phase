@@ -2858,6 +2858,30 @@ fn try_parse_choose_owned_by_voter(
 fn try_parse_choose_exiled_anaphor(lower: &str) -> Option<ChooseImperativeAst> {
     type E<'a> = OracleError<'a>;
 
+    // CR 608.2c + CR 700.2: A standalone "Choose one." / "Choose one card."
+    // clause (empty tail) in a resolution chain is the impulse-exile reduction
+    // idiom — a preceding clause exiled one or more cards and a following clause
+    // grants permission to play one of them ("Exile the top three cards of your
+    // library. Choose one. You may play that card this turn." — Chandra,
+    // Flameshaper). The anaphor referent is the chain's tracked set, mirroring
+    // "choose one of them" but without the explicit anaphor suffix. The modal
+    // header "Choose one —" is consumed earlier by the modal-block dispatch, so
+    // any "choose one" reaching the effect parser is this reduction form.
+    if let Ok((tail, ())) = preceded(
+        alt((tag::<_, _, E>("choose "), tag("you choose "))),
+        value((), alt((tag::<_, _, E>("one card"), tag("one")))),
+    )
+    .parse(lower)
+    {
+        if tail.is_empty() {
+            return Some(ChooseImperativeAst::FromTrackedSet {
+                count: 1,
+                chooser: Chooser::Controller,
+                selection: CardSelectionMode::Chosen,
+            });
+        }
+    }
+
     // "choose " / "you choose ", then the singular card anaphor "a card" / "one
     // card" / "a [type] card". Only the bare card forms are handled here; typed
     // restrictions on impulse-exile choices are not yet attested and would fall

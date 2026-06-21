@@ -3111,6 +3111,27 @@ pub(crate) fn parse_oracle_ir(
                 i += 1;
                 continue;
             }
+            // CR 207.2c: An ability word (e.g. "Venom Blast —") is an italicized
+            // flavor marker with no rules meaning — its replacement body must
+            // parse through the ordinary replacement machinery. Strip the
+            // prefix and retry so named static-replacement ability words
+            // (Spider-Woman's "Venom Blast — Artifacts and creatures your
+            // opponents control enter tapped.") reach the external-entry parser
+            // exactly as the unprefixed Blind Obedience / Authority of the
+            // Consuls lines do.
+            if let Some(effect_text) = strip_ability_word(&line) {
+                if let Some(rep_defs) = parse_replacement_sentence_sequence(&effect_text, card_name)
+                {
+                    result.replacements.extend(rep_defs);
+                    i += 1;
+                    continue;
+                }
+                if let Some(rep_def) = parse_replacement_line(&effect_text, card_name) {
+                    result.replacements.push(rep_def);
+                    i += 1;
+                    continue;
+                }
+            }
         }
 
         if let Some(def) = try_parse_opening_hand_reveal_delayed_trigger(&line, &lower) {

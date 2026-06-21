@@ -1081,6 +1081,7 @@ fn target_filter_variant_name(f: &TargetFilter) -> &'static str {
         TargetFilter::ExiledBySource => "ExiledBySource",
         TargetFilter::TriggeringSpellController => "TriggeringSpellController",
         TargetFilter::TriggeringSpellOwner => "TriggeringSpellOwner",
+        TargetFilter::TriggeringSourceController => "TriggeringSourceController",
         TargetFilter::TriggeringPlayer => "TriggeringPlayer",
         TargetFilter::TriggeringSource => "TriggeringSource",
         TargetFilter::ParentTarget => "ParentTarget",

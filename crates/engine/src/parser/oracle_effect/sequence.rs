@@ -1667,6 +1667,15 @@ fn starts_bare_and_clause_lower(s: &str) -> bool {
     // exceeds the 2-word cap.
     .or(value((), tag("reveal ")))
     .or(value((), tag("returns ")))
+    // CR 701.26b + CR 701.26a + CR 608.2c: third-person "untaps"/"taps"
+    // conjugation. Control-handoff class: "the attacking player gains control
+    // of ~ and untaps it" (Contested Game Ball) — the followup tap-state clause
+    // must split as its own conjunct so it deconjugates ("untaps it" → "untap
+    // it") and reaches the tap dispatcher. Mirrors the imperative `untap `/`tap
+    // ` axis above, different conjugation; sits in the `.or()` chain because the
+    // first `alt()` tuple is at nom's 21-arm limit.
+    .or(value((), tag("untaps ")))
+    .or(value((), tag("taps ")))
     // CR 122.1 + CR 608.2c: third-person "puts" conjugation. Oversimplify
     // class: "Each player creates a … token and puts a number of +1/+1
     // counters on it equal to …" — the subject ("Each player") iterates and
