@@ -369,6 +369,29 @@ fn parse_replacement_line_inner(text: &str, card_name: &str) -> Option<Replaceme
         let effect_text = extract_replacement_effect(&normalized);
         let mut def =
             ReplacementDefinition::new(ReplacementEvent::Draw).description(text.to_string());
+        // CR 614.6 + CR 121.6: "skip that draw instead" fully suppresses the
+        // draw (Living Conundrum: "If you would draw a card while your library
+        // has no cards in it, skip that draw instead"). The body lowers to a
+        // bare "skip that draw" which `parse_effect_chain` would turn into an
+        // `Unimplemented` no-op (a silent runtime passthrough that still draws).
+        // Instead, emit the structured `Prevent` quantity modification — the
+        // same negation surface the lifegain-negation arm uses — which the draw
+        // pipeline honors via `ReplacementResult::Prevented` (no draw happens).
+        // A `Prevent` replacement carries no `execute`, so no stray
+        // `Unimplemented` pollutes the AST.
+        let body_skips_draw = effect_text
+            .as_deref()
+            .is_some_and(|e| body_is_draw_skip(&e.to_lowercase()));
+        if body_skips_draw {
+            def = def.quantity_modification(QuantityModification::Prevent);
+            apply_draw_player_scope(&lower, &mut def);
+            match parse_while_antecedent(&lower, "would draw a card") {
+                WhileAntecedent::Parsed(condition) => def = def.condition(condition),
+                WhileAntecedent::Unparsed => return None,
+                WhileAntecedent::Absent => {}
+            }
+            return Some(def);
+        }
         if let Some(e) = effect_text {
             // CR 614.1a + CR 614.6 + CR 121.6: "you may instead {effect}" makes
             // the draw replacement optional. The player is offered an
@@ -4892,6 +4915,39 @@ fn body_is_lifegain_negation(lower_body: &str) -> bool {
         value((), alt((tag("gains no life"), tag("gain no life")))),
     );
     combinator.parse(lower_body.trim()).is_ok()
+}
+
+/// CR 614.6 + CR 121.6: Recognize a PURE draw-suppression replacement body
+/// "[subject] skip[s] that/the draw" (Living Conundrum). The optional subject
+/// prefix mirrors `body_is_lifegain_negation`; "that draw" and "the draw" are
+/// leaf variants of the same anaphor back to the replaced draw event.
+///
+/// `all_consuming` (modulo a trailing period) is load-bearing: a compound body
+/// that only *begins* with a skip and then adds a follow-on effect — Notion
+/// Thief / Hullbreacher's "that player skips that draw AND you draw a card" —
+/// must NOT collapse to a bare `Prevent`, which would drop the "you draw a card"
+/// execute (and the except-first-draw condition). Those compound bodies fall
+/// through to the normal `execute` path.
+fn body_is_draw_skip(lower_body: &str) -> bool {
+    let subject = opt(alt((
+        tag::<_, _, OracleError<'_>>("that player "),
+        tag("the player "),
+        tag("you "),
+        tag("they "),
+    )));
+    let mut combinator = all_consuming(preceded(
+        subject,
+        value(
+            (),
+            (
+                alt((tag("skips "), tag("skip "))),
+                alt((tag("that draw"), tag("the draw"))),
+            ),
+        ),
+    ));
+    combinator
+        .parse(lower_body.trim().trim_end_matches('.').trim_end())
+        .is_ok()
 }
 
 /// CR 614.1a: Assign the replacement's player scope from the antecedent subject

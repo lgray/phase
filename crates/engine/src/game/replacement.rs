@@ -1552,6 +1552,22 @@ fn draw_applier(
     state: &mut GameState,
     _events: &mut Vec<GameEvent>,
 ) -> ApplyResult {
+    use crate::types::ability::QuantityModification;
+    // CR 614.6 + CR 121.6: A `Prevent` draw replacement ("skip that draw
+    // instead", Living Conundrum) fully suppresses the draw — the replaced
+    // event never happens. Carried as a structured `quantity_modification`
+    // (no `execute`), mirroring the lifegain-negation / counter-prevention
+    // surface. Checked before the count-substitution path because a prevented
+    // draw has no surviving count to scale.
+    let prevents = state
+        .objects
+        .get(&rid.source)
+        .and_then(|obj| obj.replacement_definitions.get(rid.index))
+        .and_then(|def| def.quantity_modification.as_ref())
+        .is_some_and(|m| matches!(m, QuantityModification::Prevent));
+    if prevents {
+        return ApplyResult::Prevented;
+    }
     // CR 614.6 + CR 614.11: Count-modifying replacements (Alhammarret's Archive:
     // `count -> 2 * count`) substitute the count via `draw_replacement_count`.
     // Full-substitution replacements (Jace WinTheGame, Abundance reveal-until)
