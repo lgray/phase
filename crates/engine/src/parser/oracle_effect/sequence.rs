@@ -1688,8 +1688,14 @@ fn starts_bare_and_clause_lower(s: &str) -> bool {
     // 21-arm limit; adding it inline would push the cluster over and trip
     // the `Choice<...>` trait-bound check at compile time.
     .or(value((), tag("puts ")))
-    // CR 608.2c: "put … and attach an Equipment that was attached …" (Zack Fair).
-    .or(value((), tag("attach an equipment that was attached ")))
+    // CR 301.5b + CR 608.2c: these attach forms are imperative game actions,
+    // not noun-phrase continuations. Keep the matcher narrow so name-based
+    // chains like "put counters on it and attach Fractal Harness to it" stay
+    // available to the token-counter attach rewriter.
+    .or(alt((
+        value((), tag("attach this equipment ")),
+        value((), tag("attach an equipment that was attached ")),
+    )))
     .or(alt((
         // CR 608.2c: Subject-prefixed verb patterns — "you [verb]" is always a clause start.
         value((), tag("you gain ")),
@@ -5629,6 +5635,25 @@ mod tests {
         // Lotho: "you lose 1 life and create a Treasure token"
         let chunks = clause_texts("you lose 1 life and create a Treasure token");
         assert_eq!(chunks, vec!["you lose 1 life", "create a Treasure token"]);
+    }
+
+    #[test]
+    fn bare_and_splits_create_token_and_attach() {
+        // Field-Tested Frying Pan (#835): "create a 1/1 white Halfling creature
+        // token and attach this Equipment to it" — "attach " is an imperative game
+        // action, so the conjunct must peel into its own clause and lower to a
+        // Token -> Attach sibling (rewire_token_attach_sibling rebinds onto
+        // LastCreated). Without the split the attach is silently dropped.
+        let chunks = clause_texts(
+            "create a 1/1 white Halfling creature token and attach this Equipment to it",
+        );
+        assert_eq!(
+            chunks,
+            vec![
+                "create a 1/1 white Halfling creature token",
+                "attach this Equipment to it"
+            ]
+        );
     }
 
     #[test]
