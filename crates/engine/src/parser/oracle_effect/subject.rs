@@ -8,7 +8,8 @@ use nom::sequence::{delimited, pair, preceded, terminated};
 use nom::Parser;
 
 use super::animation::{
-    animation_modifications_with_replacement, has_in_addition_to_other_types, parse_animation_spec,
+    animation_modifications_with_replacement, has_in_addition_to_other_colors,
+    has_in_addition_to_other_types, parse_animation_spec,
 };
 use super::imperative;
 use super::lower::BOUNDED_TARGET_PHRASES;
@@ -2546,6 +2547,39 @@ fn build_become_clause(
         return Some(clause);
     }
 
+    // CR 105.2 + CR 105.3 + CR 613.1e (Layer 5): "becomes all colors" (Tam,
+    // Mindful First-Year) and "becomes the chosen color" (Puca's Eye) set the
+    // affected object's color. "All colors" maps to the full WUBRG set
+    // (CR 105.2: a multicolored object can be each of the five colors); "the
+    // chosen color" reads the source's `ChosenAttribute::Color` chosen upstream
+    // (preceding `Effect::Choose { ChoiceType::Color }`) via `AddChosenColor`.
+    // Both are non-additive (CR 105.3: a new color replaces all previous
+    // colors) — the additive "in addition to its other colors" form is handled
+    // by the animation path below. Must intercept before `parse_animation_spec`,
+    // which bails on " all colors" and would mis-tokenize "chosen"/"color" as a
+    // subtype.
+    if let Some(modification) = try_parse_become_color_modification(become_text) {
+        let affected = static_affected_for_application(&application);
+        let effect = Effect::GenericEffect {
+            static_abilities: vec![StaticDefinition::continuous()
+                .affected(affected)
+                .modifications(vec![modification])
+                .description(become_text.to_string())],
+            duration: duration.clone(),
+            target: application.target.clone(),
+        };
+        return Some(ParsedEffectClause {
+            effect,
+            duration,
+            sub_ability: None,
+            distribute: None,
+            multi_target: None,
+            condition: None,
+            optional: false,
+            unless_pay: None,
+        });
+    }
+
     // CR 205.3e + CR 607.2d: "becomes that type" applies the creature type chosen
     // by the preceding "Choose a creature type" instruction in the same ability
     // (Imagecrafter, Unnatural Selection, Mistform Mutant, Standardize). Unlike
@@ -2716,6 +2750,23 @@ fn build_become_clause(
     // static type-change path's suffix detection.
     let is_additive = has_in_addition_to_other_types(&become_text);
     let mut modifications = animation_modifications_with_replacement(&animation, is_additive);
+    // CR 105.3: "in addition to its other colors" makes the granted color
+    // ADDITIVE — Possessed Goat "becomes a black Demon in addition to its other
+    // colors and types". The animation path emits `SetColor` (the CR 105.3
+    // replacement default); convert it to one `AddColor` per color so the
+    // existing colors are preserved.
+    if has_in_addition_to_other_colors(&become_text) {
+        modifications = modifications
+            .into_iter()
+            .flat_map(|m| match m {
+                ContinuousModification::SetColor { colors } => colors
+                    .into_iter()
+                    .map(|color| ContinuousModification::AddColor { color })
+                    .collect::<Vec<_>>(),
+                other => vec![other],
+            })
+            .collect();
+    }
     for modification in parse_continuous_modifications(predicate) {
         if !modifications.contains(&modification) {
             modifications.push(modification);
@@ -2974,8 +3025,71 @@ fn try_parse_set_day_night(become_text: &str) -> Option<ParsedEffectClause> {
     Some(super::parsed_clause(Effect::SetDayNight { to }))
 }
 
-/// CR 205.3 / CR 305.7: Parse "become the creature type of your choice" and similar
-/// patterns into a Choose → GenericEffect(AddChosenSubtype) chain.
+/// CR 105.2 + CR 105.3 + CR 613.1e (Layer 5): map a "becomes [color]" predicate
+/// to its color-setting `ContinuousModification`, for the forms that do NOT
+/// prompt the controller for a choice. Two cases:
+///
+/// - "all colors" / "every color" → `SetColor(WUBRG)` (CR 105.2: a multicolored
+///   object can be each of the five colors). The new color set replaces all
+///   previous colors (CR 105.3).
+/// - "the chosen color" → `AddChosenColor`, reading the source's
+///   `ChosenAttribute::Color` bound by a preceding `Effect::Choose` in the same
+///   ability (Puca's Eye: "draw a card, then choose a color. This artifact
+///   becomes the chosen color"). Despite the additive-sounding `Add` prefix,
+///   `AddChosenColor` SETS the color at Layer 5 (CR 105.3) — see its definition.
+///
+/// Returns `None` for any other predicate so the caller falls through to the
+/// fixed-color animation path (which already handles single named colors) and to
+/// `try_parse_become_choice` (the prompting "of your choice" form).
+fn try_parse_become_color_modification(become_text: &str) -> Option<ContinuousModification> {
+    let lower = become_text.trim().to_lowercase();
+    if let Ok((rest, _)) = all_consuming(alt((
+        tag::<_, _, OracleError<'_>>("all colors"),
+        tag("every color"),
+    )))
+    .parse(lower.as_str())
+    {
+        let _ = rest;
+        return Some(ContinuousModification::SetColor {
+            colors: crate::types::mana::ManaColor::ALL.to_vec(),
+        });
+    }
+    if all_consuming(alt((
+        tag::<_, _, OracleError<'_>>("the chosen color"),
+        tag("the color chosen this way"),
+    )))
+    .parse(lower.as_str())
+    .is_ok()
+    {
+        return Some(ContinuousModification::AddChosenColor);
+    }
+    None
+}
+
+/// True when `lower` ends with the "of your choice" anchor. Pattern 2 (whole
+/// input parsed, trailing fixed phrase consumed last): `take_until` skips to the
+/// final occurrence and `all_consuming` requires the suffix to terminate the
+/// input. Replaces a bare `ends_with` so the dispatch stays combinator-driven.
+fn ends_with_of_your_choice(lower: &str) -> bool {
+    all_consuming(terminated(
+        take_until::<_, _, OracleError<'_>>("of your choice"),
+        tag("of your choice"),
+    ))
+    .parse(lower)
+    .is_ok()
+}
+
+/// CR 205.3 / CR 305.7 / CR 105.3: Parse "become the [creature type / basic land
+/// type / color] of your choice [and <keyword grant>]" into a Choose →
+/// GenericEffect(apply) chain.
+///
+/// The optional trailing "and <keyword grant>" clause (Mondo Gecko: "becomes the
+/// color of your choice and gains hexproof from that color") composes the chosen
+/// attribute with one or more keyword grants on the same recipient. The keyword
+/// clause is parsed by the shared `parse_continuous_modifications` building block,
+/// which resolves "hexproof from that color" to `HexproofFrom(ChosenColor)`
+/// (CR 702.11d) — the same `ChosenAttribute::Color` the `AddChosenColor`
+/// modification reads, so the protection tracks the chosen color.
 fn try_parse_become_choice(
     become_text: &str,
     application: &SubjectApplication,
@@ -2983,8 +3097,26 @@ fn try_parse_become_choice(
 ) -> Option<ParsedEffectClause> {
     use crate::types::ability::{ChoiceType, ChosenSubtypeKind, ContinuousModification};
 
-    let lower = become_text.to_lowercase();
-    if !lower.ends_with("of your choice") {
+    // CR 608.2c: split off a trailing "and <continuous-modification clause>" so
+    // the "of your choice" anchor below sees only the choice phrase. The residual
+    // (e.g. "gains hexproof from that color") is reparsed as continuous
+    // modifications and appended to the apply-half. A subject like "the color of
+    // your choice and gains hexproof from that color" splits at " and " into the
+    // choice phrase and the grant phrase; absent the conjunction the whole text
+    // is the choice phrase and there is no grant. The choice phrase is anchored
+    // by the "of your choice" suffix combinator (Pattern 2: whole input parsed,
+    // fixed suffix consumed last).
+    let lower_full = become_text.to_lowercase();
+    let tp = TextPair::new(become_text, &lower_full);
+    let (choice_text, grant_text) = match tp.split_around(" and ") {
+        Some((before, after)) if ends_with_of_your_choice(before.lower) => {
+            (before.original.trim(), Some(after.original.trim()))
+        }
+        _ => (become_text.trim(), None),
+    };
+
+    let lower = choice_text.to_lowercase();
+    if !ends_with_of_your_choice(lower.as_str()) {
         return None;
     }
 
@@ -3009,12 +3141,21 @@ fn try_parse_become_choice(
         return None;
     };
 
+    // CR 608.2c + CR 702.11d: append any trailing keyword grant ("and gains
+    // hexproof from that color") onto the apply-half. `parse_continuous_modifications`
+    // is the shared keyword-grant building block; it maps "gains hexproof from
+    // that color" → `AddKeyword(HexproofFrom(ChosenColor))`.
+    let mut modifications = vec![modification];
+    if let Some(grant) = grant_text {
+        modifications.extend(parse_continuous_modifications(grant));
+    }
+
     // Two-step: Choose (prompts player) → GenericEffect (applies chosen subtype).
     let affected = static_affected_for_application(application);
     let apply_effect = Effect::GenericEffect {
         static_abilities: vec![StaticDefinition::continuous()
             .affected(affected)
-            .modifications(vec![modification])
+            .modifications(modifications)
             .description(become_text.to_string())],
         duration: duration.clone(),
         target: application.target.clone(),

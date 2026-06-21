@@ -657,6 +657,12 @@ fn parse_in_addition_other_types_marker(input: &str) -> OracleResult<'_, &str> {
         tag("in addition to "),
         alt((tag("its"), tag("their"), tag("his"), tag("her"))),
         tag(" other "),
+        // CR 105.3 + CR 205.1b: the "in addition" clause can enumerate colors
+        // and/or types — "in addition to its other colors and types" (Possessed
+        // Goat), "in addition to its other types". `opt(tag("colors and "))`
+        // makes the color scope an independent axis (compose, don't enumerate);
+        // `opt(tag("creature "))` keeps the type-scope axis order-independent.
+        opt(tag("colors and ")),
         opt(tag("creature ")),
         tag("types"),
     ))
@@ -674,6 +680,17 @@ fn locate_in_addition_other_types_marker(input: &str) -> OracleResult<'_, &str> 
         parse_in_addition_other_types_marker,
     )
     .parse(input)
+}
+
+/// CR 105.3: detect the additive-color reading of a "becomes" descriptor —
+/// "in addition to its other colors [and types]". When present, the granted
+/// color is ADDED to the object's existing colors (CR 105.3 "in addition")
+/// rather than replacing them. Used by `build_become_clause` to convert the
+/// default `SetColor` (CR 105.3 replacement) into per-color `AddColor`.
+pub(crate) fn has_in_addition_to_other_colors(text: &str) -> bool {
+    let lower = text.to_lowercase();
+    nom_primitives::scan_contains(&lower, "in addition to ")
+        && nom_primitives::scan_contains(&lower, "other colors")
 }
 
 pub(crate) fn has_in_addition_to_other_types(text: &str) -> bool {

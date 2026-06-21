@@ -1717,6 +1717,16 @@ fn starts_bare_and_clause_lower(s: &str) -> bool {
         value((), tag("it gets ")),
         value((), tag("it has ")),
         value((), tag("it loses ")),
+        // CR 105.3 + CR 205.1a + CR 613.1d/e: "it becomes <descriptor>" is always
+        // a subject (anaphor) + animation predicate, never a noun-phrase
+        // continuation. Possessed Goat: "Put three +1/+1 counters on this creature
+        // and it becomes a black Demon in addition to its other colors and types"
+        // — without this split the conjunct is fed to the imperative-only path,
+        // where it fails closed to an unimplemented effect named "it". Splitting
+        // routes it through `parse_clause_ast` → `try_parse_subject_become_clause`,
+        // where "it" resolves to the anaphoric/self subject and
+        // `build_become_clause` produces the additive color/type modifications.
+        value((), tag("it becomes ")),
         value((), tag("this creature gets ")),
         value((), tag("~ gets ")),
         // CR 104.3 + CR 119.7 + CR 119.8: Bare-plural-player subject + restriction

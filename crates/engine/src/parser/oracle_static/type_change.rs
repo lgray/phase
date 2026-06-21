@@ -1311,6 +1311,94 @@ pub(crate) fn parse_all_subject_are_color(
     )
 }
 
+/// CR 613.1e (Layer 5) + CR 105.2 / CR 105.3: Parse a color-defining static of
+/// the form "[subject] is/are [color expression]." for an ARBITRARY filter
+/// subject — generalizing [`parse_all_subject_are_color`] (which only accepts the
+/// `"All ..."` quantifier) to the full subject grammar via
+/// `parse_continuous_subject_filter` (handles "Each", "All", controller suffixes,
+/// "nonland permanent you control", etc.).
+///
+/// Two predicate families compose here:
+/// - Fixed colors / "all colors" / "colorless" via `parse_color_predicate`
+///   (Leyline of the Guildpact: "Each nonland permanent you control is all
+///   colors" → `SetColor(WUBRG)`).
+/// - "the chosen color" → `AddChosenColor`, reading the source's
+///   `ChosenAttribute::Color` (Shimmerwilds Growth: "Enchanted land is the chosen
+///   color" — a preceding `As ~ enters, choose a color` binds the attribute).
+///
+/// The copula is " is " (singular subject) or " are " (plural subject); both
+/// route to the same color modification. Dispatched AFTER the specialized
+/// `parse_all_subject_are_color` ("All ..." quantifier, with correct
+/// artifact/land subtype core-type routing) and `parse_self_subject_is_color_cda`
+/// (self-referential CDA color lines, all-zone + `characteristic_defining`), so
+/// those keep ownership of their cases and this branch only claims the residual
+/// general-filter subjects. A self-referential subject is declined here outright
+/// (it must be a CDA, never a plain Layer-5 static).
+pub(crate) fn parse_subject_is_color(
+    tp: &TextPair<'_>,
+    description: &str,
+) -> Option<StaticDefinition> {
+    // Split on the copula. " are " is tried first so a plural subject ending in
+    // "...s is..." cannot be mis-split (there is no such grammatical form for
+    // these statics; the copula is always a whole word with surrounding spaces).
+    let (subject_tp, predicate_tp) = tp
+        .split_around(" is ")
+        .or_else(|| tp.split_around(" are "))?;
+    let subject = subject_tp.original.trim();
+    let predicate = predicate_tp.original.trim().trim_end_matches('.');
+    let predicate_lower = predicate.to_lowercase();
+
+    // The subject must resolve to a concrete filter — otherwise this is not a
+    // color-defining static (a bare "It is ..." / "this is ..." anaphor falls
+    // through to other dispatch branches). Attached subjects ("Enchanted land",
+    // Shimmerwilds Growth) carry the `EnchantedBy` filter; the general subject
+    // grammar covers controller-scoped/quantified filters (Leyline of the
+    // Guildpact: "Each nonland permanent you control").
+    let subject_lower = subject.to_lowercase();
+    // `attached_subject_filter` matches "enchanted <type> " WITH a trailing
+    // space, so probe a space-suffixed copy and require the remainder to be empty.
+    let subject_with_space = format!("{subject} ");
+    let subject_space_lower = format!("{subject_lower} ");
+    let attached = attached_subject_filter(&TextPair::new(
+        subject_with_space.as_str(),
+        subject_space_lower.as_str(),
+    ));
+    let affected = match attached {
+        Some((filter, rest)) if rest.trim().is_empty() => filter,
+        _ => parse_continuous_subject_filter(subject)?,
+    };
+
+    // CR 604.3: a self-referential color line ("~ is colorless") is a
+    // characteristic-defining ability owned by `parse_self_subject_is_color_cda`
+    // (it sets `characteristic_defining` and functions in all zones). Decline so
+    // it is never emitted as a plain Layer-5 static.
+    if matches!(affected, TargetFilter::SelfRef) {
+        return None;
+    }
+
+    // CR 105.3: "the chosen color" reads the source's chosen color attribute.
+    if all_consuming(tag::<_, _, OracleError<'_>>("the chosen color"))
+        .parse(predicate_lower.as_str())
+        .is_ok()
+    {
+        return Some(
+            StaticDefinition::continuous()
+                .affected(affected)
+                .modifications(vec![ContinuousModification::AddChosenColor])
+                .description(description.to_string()),
+        );
+    }
+
+    // Fixed colors / "all colors" / "colorless" (CR 105.1 / CR 105.2 / CR 105.2c).
+    let colors = parse_color_predicate(&predicate_lower)?;
+    Some(
+        StaticDefinition::continuous()
+            .affected(affected)
+            .modifications(vec![ContinuousModification::SetColor { colors }])
+            .description(description.to_string()),
+    )
+}
+
 /// CR 305.7: Parse "[Subject] lands are [type]" land type-changing static abilities.
 /// Handles replacement ("Nonbasic lands are Mountains"), additive ("Each land is a
 /// Swamp in addition to its other land types"), and all-basic-types ("Lands you control
