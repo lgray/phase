@@ -3137,16 +3137,17 @@ pub(super) fn parse_for_each_player_choose_from_zone(
     // The body's zone reference is "that player's <zone>", which
     // `parse_choose_zone_connector` maps to `TargetedPlayer`; the "for each
     // player" prefix promotes it to per-player iteration (`EachPlayer`).
-    match try_parse_choose_from_zone(body, ctx)? {
-        ChooseImperativeAst::FromZone {
-            count,
-            zones,
-            zone_owner: ZoneOwner::TargetedPlayer,
-            filter,
-            chooser,
-            up_to,
-            selection,
-        } => Some(ChooseImperativeAst::FromZone {
+    if let Some(ChooseImperativeAst::FromZone {
+        count,
+        zones,
+        zone_owner: ZoneOwner::TargetedPlayer,
+        filter,
+        chooser,
+        up_to,
+        selection,
+    }) = try_parse_choose_from_zone(body, ctx)
+    {
+        return Some(ChooseImperativeAst::FromZone {
             count,
             zones,
             zone_owner: ZoneOwner::EachPlayer,
@@ -3154,8 +3155,158 @@ pub(super) fn parse_for_each_player_choose_from_zone(
             chooser,
             up_to,
             selection,
-        }),
-        _ => None,
+        });
+    }
+
+    // NOTE: the battlefield-control choose-only form ("for each player, choose
+    // [up to one] <type> that player controls" — Winnowing, Unstable Glyphbridge,
+    // Kitesail Larcenist) is intentionally NOT handled here. Their CHOOSE clause
+    // parses cleanly via `parse_controlled_battlefield_body`, but each card's
+    // downstream PAYLOAD is not yet supported end-to-end (Winnowing: per-player
+    // `ParentTarget` binding in the sacrifice sweep; Glyphbridge: "destroy all
+    // except creatures chosen this way" tracked-set exclusion; Kitesail: a
+    // duration-bound continuous effect on the chosen set). Emitting the choose
+    // here would yield a silently-wrong chain (the payload over-acts), which is
+    // strictly worse than an honest residual gap — so these stay Unimplemented
+    // until their payloads land. The combined choose+exile form (Kaya, below) is
+    // verified end-to-end and IS handled.
+    None
+}
+
+/// CR 601.2c + CR 608.2k: Parse the body shared by the per-player
+/// battlefield-control choose ("choose [up to one] [other] [target] `<type>`
+/// that player controls") and exile ("exile [up to one] [target] `<type>` that
+/// player controls", Kaya) forms — everything AFTER the verb head. Returns
+/// `(up_to, filter)`.
+///
+/// "up to one" → `up_to = true` (zero-or-one); a bare article ("a"/"an"/"one")
+/// is the mandatory single pick. The printed "other "/"target " modifiers are
+/// non-semantic for a resolution-scoped per-player choice: "other " folds into
+/// the filter (`FilterProp::Another`, excluding the source); "target " is the
+/// printed word, resolved as the interactive choice rather than an
+/// announced-at-cast target. The trailing "that player controls" relative-control
+/// clause is required (it is what distinguishes the battlefield-control form from
+/// the zone-noun form).
+fn parse_controlled_battlefield_body(
+    after_verb: &str,
+    ctx: &mut ParseContext,
+) -> Option<(bool, TargetFilter)> {
+    type E<'a> = OracleError<'a>;
+
+    let (after_qty, up_to) = alt((
+        value(true, tag::<_, _, E>("up to one ")),
+        value(false, tag("a ")),
+        value(false, tag("an ")),
+        value(false, tag("one ")),
+    ))
+    .parse(after_verb)
+    .ok()?;
+
+    let (after_other, exclude_source) = opt(value((), tag::<_, _, E>("other ")))
+        .parse(after_qty)
+        .ok()?;
+    let after_target = opt(tag::<_, _, E>("target "))
+        .parse(after_other)
+        .ok()
+        .map(|(rest, _)| rest)?;
+
+    let (control_clause_start, _) = nom_primitives::scan_split_at_phrase(after_target, |i| {
+        value((), tag::<_, _, E>("that player controls")).parse(i)
+    })?;
+    let type_phrase = control_clause_start.trim_end();
+    if type_phrase.is_empty() {
+        return None;
+    }
+
+    let mut filter = super::search::parse_search_filter(type_phrase, ctx);
+    if matches!(filter, TargetFilter::Any) {
+        return None;
+    }
+    if exclude_source.is_some() {
+        filter = add_filter_prop(filter, FilterProp::Another);
+    }
+    Some((up_to, filter))
+}
+
+/// CR 101.4 + CR 102.2 + CR 608.2c: "For each [other] player, exile [up to one]
+/// [target] `<type-phrase>` that player controls" — Kaya, Spirits' Justice's −2.
+/// The combined choose+exile per-iterated-player form: each iterated player's
+/// controlled permanent matching `<type-phrase>` is chosen (one per player,
+/// optionally zero via "up to one"), accumulated into the chain's tracked set,
+/// then ALL chosen permanents are exiled (`ChangeZoneAll { TrackedSet }`).
+///
+/// "for each player" iterates every player (`ZoneOwner::EachPlayer`); "for each
+/// other player" excludes the controller (`ZoneOwner::EachOpponent`). Emitted as
+/// a `ChooseFromZone { EachPlayer/EachOpponent }` clause with the mass-exile as
+/// its `sub_ability`, mirroring how the choose-only cards chain a separate
+/// "exile those" sentence.
+pub(super) fn parse_for_each_player_exile_controlled(
+    lower: &str,
+    ctx: &mut ParseContext,
+) -> Option<ParsedEffectClause> {
+    type E<'a> = OracleError<'a>;
+
+    let (after_prefix, iter_scope) = alt((
+        value(
+            ZoneOwner::EachOpponent,
+            tag::<_, _, E>("for each other player, "),
+        ),
+        value(ZoneOwner::EachOpponent, tag("for each other player ")),
+        value(ZoneOwner::EachPlayer, tag("for each player, ")),
+        value(ZoneOwner::EachPlayer, tag("for each player ")),
+    ))
+    .parse(lower)
+    .ok()?;
+
+    let (after_verb, _) = tag::<_, _, E>("exile ").parse(after_prefix).ok()?;
+    let (up_to, filter) = parse_controlled_battlefield_body(after_verb, ctx)?;
+
+    let choose = Effect::ChooseFromZone {
+        count: 1,
+        zone: Zone::Battlefield,
+        additional_zones: Vec::new(),
+        zone_owner: iter_scope,
+        filter: Some(filter),
+        chooser: Chooser::Controller,
+        up_to,
+        selection: CardSelectionMode::Chosen,
+        constraint: None,
+    };
+    // CR 400.7 + CR 608.2c: exile EVERY chosen permanent (`ChangeZoneAll` over
+    // the tracked set the per-player choose accumulated).
+    let exile_all = Effect::ChangeZoneAll {
+        origin: Some(Zone::Battlefield),
+        destination: Zone::Exile,
+        target: TargetFilter::TrackedSet {
+            id: crate::types::identifiers::TrackedSetId(0),
+        },
+        enters_under: None,
+        enter_tapped: crate::types::zones::EtbTapState::Unspecified,
+        enter_with_counters: vec![],
+        face_down_profile: None,
+        library_position: None,
+        random_order: false,
+    };
+    let sub = AbilityDefinition::new(AbilityKind::Spell, exile_all);
+
+    let mut clause = parsed_clause(choose);
+    clause.sub_ability = Some(Box::new(sub));
+    Some(clause)
+}
+
+/// Append a `FilterProp` (deduplicated) to a `Typed` filter. Non-`Typed` filters
+/// (`Any`, etc.) are returned unchanged — the callers only inject `Another` onto
+/// an already-typed `<type> that player controls` filter. Mirrors the
+/// property-injection idiom in `try_parse_choose_owned_by_voter`.
+fn add_filter_prop(filter: TargetFilter, prop: FilterProp) -> TargetFilter {
+    match filter {
+        TargetFilter::Typed(mut tf) => {
+            if !tf.properties.contains(&prop) {
+                tf.properties.push(prop);
+            }
+            TargetFilter::Typed(tf)
+        }
+        other => other,
     }
 }
 

@@ -66,6 +66,14 @@ pub enum ZoneOwner {
     /// Building block for Breach the Multiverse ("For each player, choose a
     /// creature or planeswalker card in that player's graveyard").
     EachPlayer,
+    /// CR 101.4 + CR 102.2 + CR 608.2c: Every OPPONENT of the controller owns a
+    /// referenced zone, iterated in APNAP order (the controller is excluded).
+    /// The each-opponent leaf of the per-player iteration axis — same
+    /// accumulate-into-tracked-set machinery as [`ZoneOwner::EachPlayer`], but
+    /// the controller's own permanents are never offered. Building block for
+    /// Kaya, Spirits' Justice's −2 ("For each other player, exile up to one
+    /// target creature that player controls").
+    EachOpponent,
 }
 
 /// CR 105.1 + CR 205.2: A fixed, closed enumeration whose members an effect

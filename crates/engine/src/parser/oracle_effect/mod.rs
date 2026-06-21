@@ -5397,6 +5397,16 @@ fn parse_effect_clause_inner(text: &str, ctx: &mut ParseContext) -> ParsedEffect
         }
     }
 
+    // CR 101.4 + CR 102.2 + CR 608.2c: "For each [other] player, exile [up to
+    // one] [target] <type> that player controls" — Kaya, Spirits' Justice's −2.
+    // The combined per-iterated-player choose + mass-exile-those form. Checked
+    // before the choose-from-zone dispatcher because its verb is "exile", and it
+    // returns a `ChooseFromZone { EachPlayer/EachOpponent }` clause whose
+    // `sub_ability` is the `ChangeZoneAll { TrackedSet }` exile.
+    if let Some(clause) = imperative::parse_for_each_player_exile_controlled(tp.lower, ctx) {
+        return clause;
+    }
+
     // CR 101.4 + CR 608.2c: "For each player, choose a <filter> card in that
     // player's <zone>" — the controller picks one card from EVERY player's zone
     // (Breach the Multiverse). Lowers to `ChooseFromZone { zone_owner:

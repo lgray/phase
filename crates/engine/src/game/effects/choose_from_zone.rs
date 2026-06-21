@@ -52,8 +52,17 @@ pub fn resolve(
     // accumulating each pick into the chain's tracked set. Routed here before
     // the single-pool path so the per-player prompts never collapse into one
     // candidate scan. Building block for Breach the Multiverse.
-    if matches!(zone_owner, ZoneOwner::EachPlayer) {
-        let players = crate::game::players::apnap_order(state);
+    // CR 102.2: `EachOpponent` is the same iteration with the controller
+    // excluded ("for each OTHER player" — Kaya, Spirits' Justice).
+    if matches!(zone_owner, ZoneOwner::EachPlayer | ZoneOwner::EachOpponent) {
+        let players = if matches!(zone_owner, ZoneOwner::EachOpponent) {
+            crate::game::players::apnap_order(state)
+                .into_iter()
+                .filter(|&p| p != ability.controller)
+                .collect()
+        } else {
+            crate::game::players::apnap_order(state)
+        };
         // No pick has accumulated yet — the first one must start a fresh set.
         return prompt_next_each_player(state, ability, players, false, events);
     }
@@ -619,11 +628,12 @@ fn resolve_zone_owner(
             .ok_or_else(|| EffectError::MissingParam("ChooseFromZone opponent".to_string())),
         // CR 701.38d: The scoped player (voter) supplies the zone.
         ZoneOwner::ScopedPlayer => Ok(ability.scoped_player.unwrap_or(ability.controller)),
-        // CR 101.4: `EachPlayer` resolves a *set* of zone owners, not one — it
-        // is handled by `prompt_next_each_player`, which scans each player's
-        // zone directly via `collect_direct_zone_cards` and never routes here.
-        ZoneOwner::EachPlayer => Err(EffectError::MissingParam(
-            "ChooseFromZone EachPlayer resolves per-player, not via single owner".to_string(),
+        // CR 101.4: `EachPlayer` / `EachOpponent` resolve a *set* of zone
+        // owners, not one — they are handled by `prompt_next_each_player`, which
+        // scans each iterated player's zone directly and never routes here.
+        ZoneOwner::EachPlayer | ZoneOwner::EachOpponent => Err(EffectError::MissingParam(
+            "ChooseFromZone EachPlayer/EachOpponent resolves per-player, not via single owner"
+                .to_string(),
         )),
     }
 }

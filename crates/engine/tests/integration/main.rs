@@ -366,6 +366,7 @@ mod issue_941_champions_full_party;
 mod jace_wielder_empty_library_win;
 mod json_smoke_test;
 mod kaito_integration;
+mod kaya_spirits_justice_per_opponent_exile;
 mod kaysa_green_anthem;
 mod knighthood_first_strike_grant;
 mod knollspine_dragon_target_damage_draw;
