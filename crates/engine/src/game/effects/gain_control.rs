@@ -301,11 +301,18 @@ fn unique_recipient_from_filter(
         ));
     }
 
-    // CR 603.7c + CR 608.2c: "that player" on triggered abilities lowers to
-    // `TargetFilter::TriggeringPlayer`. The stateless player matcher cannot
-    // resolve event-context refs, so bind the recipient from the active trigger
-    // event (Coveted Jewel: the attacking opponent).
-    if matches!(filter, TargetFilter::TriggeringPlayer) {
+    // CR 603.7c + CR 608.2c: Event-context player anaphors on triggered
+    // abilities. `TriggeringPlayer` ("that player") binds to the player involved
+    // in the trigger (Coveted Jewel: the attacking opponent);
+    // `TriggeringSourceController` ("the attacking player") binds to the
+    // controller of the triggering event's source object (Contested Game Ball:
+    // the player whose creature dealt combat damage). The stateless player
+    // matcher cannot resolve event-context refs, so bind from the active trigger
+    // event.
+    if matches!(
+        filter,
+        TargetFilter::TriggeringPlayer | TargetFilter::TriggeringSourceController
+    ) {
         return crate::game::targeting::resolve_event_context_target(
             state,
             filter,

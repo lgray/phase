@@ -610,16 +610,29 @@ fn parse_token_count_prefix(text: &str) -> Option<(QuantityExpr, &str)> {
 }
 
 fn parse_named_token_preamble(text: &str) -> Option<(String, &str)> {
-    let comma = text.find(',')?;
-    let name = text[..comma].trim().trim_matches('"');
-    if name.is_empty() {
-        return None;
+    // CR 111.4: A named-token preamble is "<Name>, a/an <characteristics> token".
+    // The token name may itself contain a comma ("Primo, the Indivisible";
+    // "Tibalt, the Fiend-Blooded"), so the FIRST comma is not necessarily the
+    // name/body boundary. The boundary is the comma immediately followed by the
+    // article that introduces the token's characteristics (", a "/", an "). Scan
+    // every comma and pick the one whose remainder begins with an article, so
+    // the full epithet stays in the name. Mirrors the article guard already used
+    // for the single-comma case.
+    for (idx, _) in text.match_indices(',') {
+        let after_comma = text[idx + 1..].trim_start();
+        let after_lower = after_comma.to_lowercase();
+        let Some((_, rest)) =
+            nom_on_lower(after_comma, &after_lower, nom_primitives::parse_article)
+        else {
+            continue;
+        };
+        let name = text[..idx].trim().trim_matches('"');
+        if name.is_empty() {
+            continue;
+        }
+        return Some((name.to_string(), rest));
     }
-
-    let after_comma = text[comma + 1..].trim_start();
-    let after_lower = after_comma.to_lowercase();
-    let (_, rest) = nom_on_lower(after_comma, &after_lower, nom_primitives::parse_article)?;
-    Some((name.to_string(), rest))
+    None
 }
 
 /// CR 205.4a: Strip leading supertype words from the token description and

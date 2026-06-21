@@ -767,6 +767,27 @@ pub(crate) fn resolve_event_context_target_for_event_or_state(
             let obj_id = extract_source_from_event(event)?;
             Some(TargetRef::Object(obj_id))
         }
+        // CR 603.7c + CR 109.4 + CR 110.2: "the attacking player" / "its
+        // controller" — the controller of the triggering event's source object
+        // (the player-level counterpart of `TriggeringSource`, mirroring
+        // `TriggeringSpellController`). Contested Game Ball's DamageReceived
+        // trigger needs the controller of the creature that dealt combat
+        // damage, not the damaged player.
+        TargetFilter::TriggeringSourceController => {
+            let event = event?;
+            let source_obj_id = extract_source_from_event(event)?;
+            let controller = state
+                .objects
+                .get(&source_obj_id)
+                .map(|obj| obj.controller)
+                .or_else(|| {
+                    state
+                        .lki_cache
+                        .get(&source_obj_id)
+                        .map(|lki| lki.controller)
+                })?;
+            Some(TargetRef::Player(controller))
+        }
         TargetFilter::ParentTarget => {
             let event = event?;
             blocked_attacker_from_event(event, source_id).map(TargetRef::Object)

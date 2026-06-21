@@ -359,6 +359,16 @@ pub fn parse_event_context_ref(input: &str) -> OracleResult<'_, TargetFilter> {
         // CR 506.3d: "defending player" / "the defending player"
         value(TargetFilter::DefendingPlayer, tag("the defending player")),
         value(TargetFilter::DefendingPlayer, tag("defending player")),
+        // CR 603.7c + CR 109.4: "the attacking player" on a DamageReceived
+        // trigger — the controller of the creature that dealt combat damage
+        // (Contested Game Ball). Distinct from "that attacking player" (an
+        // attack-declared referent → TriggeringPlayer): the wanted player here
+        // is the controller of the triggering damage *source*, not the
+        // damaged player. Ordered before the bare "the player" arm.
+        value(
+            TargetFilter::TriggeringSourceController,
+            tag("the attacking player"),
+        ),
         // CR 608.2k: "the player" in trigger context is synonymous with
         // "that player" — anaphoric reference to the triggering player.
         // Ordered after "the defending player" so longest-match-first is

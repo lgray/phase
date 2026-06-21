@@ -11,10 +11,11 @@ use serde::{Deserialize, Serialize};
 use crate::types::ability::{
     AbilityCondition, AbilityCost, AbilityDefinition, AbilityKind, AbilityTag,
     ActivationRestriction, AdditionalCost, CastTimingPermission, CastingRestriction, ChoiceType,
-    ChosenSubtypeKind, ContinuousModification, CostReduction, DelayedTriggerCondition, Effect,
-    FilterProp, ManaProduction, ModalChoice, ParsedCondition, PlayerFilter, QuantityExpr,
-    QuantityRef, ReplacementDefinition, SolveCondition, SpellCastingOption, StaticCondition,
-    StaticDefinition, TargetFilter, TriggerCondition, TriggerDefinition, TypedFilter,
+    ChosenSubtypeKind, ContinuousModification, ControllerRef, CostReduction,
+    DelayedTriggerCondition, Effect, FilterProp, ManaProduction, ModalChoice, ParsedCondition,
+    PlayerFilter, QuantityExpr, QuantityRef, ReplacementDefinition, SolveCondition,
+    SpellCastingOption, StaticCondition, StaticDefinition, TargetFilter, TriggerCondition,
+    TriggerDefinition, TypedFilter,
 };
 use crate::types::format::DeckCopyLimit;
 use crate::types::keywords::{EscapeCost, FlashbackCost, Keyword, KeywordKind};
@@ -477,38 +478,46 @@ fn try_parse_opening_hand_reveal_delayed_trigger(
 /// "exile a card from your hand" tail).
 fn parse_begin_game_clause(line: &str, lower: &str) -> Option<AbilityDefinition> {
     // Closure consumes the structural prefix on the lowercased view. It returns
-    // the parsed entry counters; the original-case remainder (mapped back by
-    // `nom_on_lower`) is the "If you do, [effect]" tail — empty when absent.
-    let (enter_with_counters, effect_text) = nom_on_lower(line, lower, |input| {
-        // Preamble — explicit known forms, each ending in "you may ".
-        // CR 103.6a (begin the game with that card on the battlefield);
-        // Gemstone Caverns additionally gates on not being the starting player.
-        let (input, _) = alt((
-            tag(
-                "if this card is in your opening hand and you're not the starting player, you may ",
-            ),
-            tag("if this card is in your opening hand, you may "),
-            tag("if ~ is in your opening hand, you may "),
-        ))
-        .parse(input)?;
-        let (input, _) = tag("begin the game with ").parse(input)?;
-        // Self-reference: `~` after normalization, or an object pronoun.
-        let (input, _) =
-            alt((tag("~"), tag("it"), tag("him"), tag("her"), tag("them"))).parse(input)?;
-        let (input, _) = tag(" on the battlefield").parse(input)?;
+    // (not_starting_player, counters); the original-case remainder (mapped back
+    // by `nom_on_lower`) is the "If you do, [effect]" tail — empty when absent.
+    let ((not_starting_player, enter_with_counters), effect_text) = nom_on_lower(
+        line,
+        lower,
+        |input| {
+            // Preamble — explicit known forms, each ending in "you may ".
+            // CR 103.6a (begin the game with that card on the battlefield);
+            // Gemstone Caverns additionally gates on not being the starting player
+            // (CR 103.1), captured as a bool so the condition is encoded below.
+            let (input, not_starting_player) = alt((
+                value(
+                    true,
+                    tag(
+                        "if this card is in your opening hand and you're not the starting player, you may ",
+                    ),
+                ),
+                value(false, tag("if this card is in your opening hand, you may ")),
+                value(false, tag("if ~ is in your opening hand, you may ")),
+            ))
+            .parse(input)?;
+            let (input, _) = tag("begin the game with ").parse(input)?;
+            // Self-reference: `~` after normalization, or an object pronoun.
+            let (input, _) =
+                alt((tag("~"), tag("it"), tag("him"), tag("her"), tag("them"))).parse(input)?;
+            let (input, _) = tag(" on the battlefield").parse(input)?;
 
-        // Optional "with [N] [type] counter(s) on it" clause (CR 122.1).
-        let (input, counters) = opt(parse_begin_game_counter_clause).parse(input)?;
+            // Optional "with [N] [type] counter(s) on it" clause (CR 122.1).
+            let (input, counters) = opt(parse_begin_game_counter_clause).parse(input)?;
 
-        // First sentence terminator.
-        let (input, _) = tag(".").parse(input)?;
+            // First sentence terminator.
+            let (input, _) = tag(".").parse(input)?;
 
-        // Optional "If you do, " follow-up prefix. When present, the remainder
-        // is the dependent effect text; when absent, the remainder is empty.
-        let (input, _) = opt(alt((tag(" if you do, "), tag(" if you do ")))).parse(input)?;
+            // Optional "If you do, " follow-up prefix. When present, the remainder
+            // is the dependent effect text; when absent, the remainder is empty.
+            let (input, _) = opt(alt((tag(" if you do, "), tag(" if you do ")))).parse(input)?;
 
-        Ok((input, counters.unwrap_or_default()))
-    })?;
+            Ok((input, (not_starting_player, counters.unwrap_or_default())))
+        },
+    )?;
 
     let mut def = AbilityDefinition::new(
         AbilityKind::BeginGame,
@@ -530,6 +539,16 @@ fn parse_begin_game_clause(line: &str, lower: &str) -> Option<AbilityDefinition>
     )
     .description(line.to_string());
     def.optional = true;
+
+    // CR 103.1: the starting player is determined before mulligans. Gemstone
+    // Caverns gates its begin-game ability on NOT being the starting player.
+    if not_starting_player {
+        def = def.condition(AbilityCondition::Not {
+            condition: Box::new(AbilityCondition::WasStartingPlayer {
+                controller: ControllerRef::You,
+            }),
+        });
+    }
 
     // Optional "If you do, [effect]" dependent sub-ability. A non-empty
     // remainder means the line carried a follow-up sentence.
@@ -3110,6 +3129,27 @@ pub(crate) fn parse_oracle_ir(
                 result.replacements.push(rep_def);
                 i += 1;
                 continue;
+            }
+            // CR 207.2c: An ability word (e.g. "Venom Blast —") is an italicized
+            // flavor marker with no rules meaning — its replacement body must
+            // parse through the ordinary replacement machinery. Strip the
+            // prefix and retry so named static-replacement ability words
+            // (Spider-Woman's "Venom Blast — Artifacts and creatures your
+            // opponents control enter tapped.") reach the external-entry parser
+            // exactly as the unprefixed Blind Obedience / Authority of the
+            // Consuls lines do.
+            if let Some(effect_text) = strip_ability_word(&line) {
+                if let Some(rep_defs) = parse_replacement_sentence_sequence(&effect_text, card_name)
+                {
+                    result.replacements.extend(rep_defs);
+                    i += 1;
+                    continue;
+                }
+                if let Some(rep_def) = parse_replacement_line(&effect_text, card_name) {
+                    result.replacements.push(rep_def);
+                    i += 1;
+                    continue;
+                }
             }
         }
 
@@ -8854,10 +8894,11 @@ mod tests {
         assert!(!reveal);
     }
 
-    /// CR 103.6a + CR 122.1 + CR 701.13a: Gemstone Caverns' begin-game line must
-    /// capture BOTH the "with a luck counter on it" entry counter AND the
+    /// CR 103.6a + CR 122.1 + CR 701.13a + CR 103.1: Gemstone Caverns' begin-game
+    /// line must capture BOTH the "with a luck counter on it" entry counter AND the
     /// "If you do, exile a card from your hand" dependent sub-ability gated by
-    /// `IfYouDo` — neither may be silently dropped.
+    /// `IfYouDo` — and must emit `Not(WasStartingPlayer)` because the ability is
+    /// only available to the non-starting player.
     #[test]
     fn gemstone_caverns_begin_game_captures_counter_and_exile_sub_ability() {
         let r = parse(
@@ -8872,6 +8913,19 @@ mod tests {
         let begin_game = &r.abilities[0];
         assert_eq!(begin_game.kind, AbilityKind::BeginGame);
         assert!(begin_game.optional);
+
+        // CR 103.1: the starting player cannot use this ability — the parser must
+        // emit Not(WasStartingPlayer) so the engine gates it correctly.
+        use crate::types::ability::ControllerRef;
+        assert_eq!(
+            begin_game.condition,
+            Some(AbilityCondition::Not {
+                condition: Box::new(AbilityCondition::WasStartingPlayer {
+                    controller: ControllerRef::You,
+                }),
+            }),
+            "Gemstone Caverns must carry Not(WasStartingPlayer) condition"
+        );
 
         let Effect::ChangeZone {
             destination,
@@ -8934,6 +8988,11 @@ mod tests {
             .expect("Leyline begin-game ability must parse");
         assert!(begin_game.optional);
         assert!(begin_game.sub_ability.is_none());
+        // Leylines carry no not-starting-player restriction.
+        assert!(
+            begin_game.condition.is_none(),
+            "Leyline must have no not-starting-player condition"
+        );
         let Effect::ChangeZone {
             enter_with_counters,
             ..

@@ -38501,6 +38501,34 @@ mod tests {
     }
 
     #[test]
+    fn create_token_and_attach_equipment_lowers_attach_to_last_created() {
+        // Field-Tested Frying Pan (#835): "create a Food token, then create a 1/1
+        // white Halfling creature token and attach this Equipment to it." The
+        // fused "and attach this Equipment to it" conjunct must survive as an
+        // Attach sub-ability bound to the just-created Halfling token (LastCreated),
+        // not be dropped (which left the equipment unattached).
+        let def = parse_effect_chain(
+            "Create a Food token, then create a 1/1 white Halfling creature token and attach this Equipment to it.",
+            AbilityKind::Spell,
+        );
+
+        fn find_attach_target(def: &AbilityDefinition) -> Option<&TargetFilter> {
+            match def.effect.as_ref() {
+                Effect::Attach { target, .. } => Some(target),
+                _ => def.sub_ability.as_deref().and_then(find_attach_target),
+            }
+        }
+
+        let target = find_attach_target(&def)
+            .expect("expected an Attach sub-ability for the fused token+attach clause");
+        assert_eq!(
+            *target,
+            TargetFilter::LastCreated,
+            "attach host anaphor must rebind to the just-created token"
+        );
+    }
+
+    #[test]
     fn dread_fugue_choose_from_revealed_hand_includes_cmc_leq_2() {
         // CR 702.148a: Cleave's bracketed text is removed at build time, so the
         // parser receives the bracket-stripped (KeepContent) base text — the
@@ -38535,6 +38563,42 @@ mod tests {
                     ))
             ),
             "expected nonland + CMC<=2 reveal choice filter, got {card_filter:?}"
+        );
+    }
+
+    #[test]
+    fn fused_reveal_hand_and_choose_populates_card_filter() {
+        // Biting-Palm Ninja (#842): the choose clause is fused to the reveal
+        // sentence with "and" ("that player reveals their hand and you choose a
+        // nonland card from it"), so the separate-sentence RevealHandFilter
+        // continuation never fires. The fused choose must still populate the
+        // RevealHand `card_filter` — otherwise the empty `None` filter matches no
+        // cards and the reveal/choose/exile silently does nothing.
+        let def = parse_effect_chain(
+            "That player reveals their hand and you choose a nonland card from it. Exile that card.",
+            AbilityKind::Spell,
+        );
+
+        fn reveal_hand_parts(def: &AbilityDefinition) -> Option<(&TargetFilter, &TargetFilter)> {
+            match def.effect.as_ref() {
+                Effect::RevealHand {
+                    target,
+                    card_filter,
+                    ..
+                } => Some((target, card_filter)),
+                _ => def.sub_ability.as_deref().and_then(reveal_hand_parts),
+            }
+        }
+
+        let (target, card_filter) = reveal_hand_parts(&def).expect("RevealHand in chain");
+        assert_eq!(*target, TargetFilter::TriggeringPlayer);
+        assert!(
+            matches!(
+                card_filter,
+                TargetFilter::Typed(tf)
+                    if tf.type_filters.iter().any(|t| matches!(t, TypeFilter::Non(inner) if **inner == TypeFilter::Land))
+            ),
+            "expected nonland reveal-choice filter, got {card_filter:?}"
         );
     }
 

@@ -1586,6 +1586,13 @@ pub(super) fn parse_subject_application(
             ("that attacking player", true),
             tag::<_, _, OracleError<'_>>("that attacking player may"),
         ),
+        // CR 603.7c: "the attacking player" on a DamageReceived trigger — the
+        // controller of the creature that dealt combat damage (Contested Game
+        // Ball). Longest-match before "the player".
+        value(
+            ("the attacking player", true),
+            tag("the attacking player may"),
+        ),
         value(
             ("that player", true),
             tag::<_, _, OracleError<'_>>("that player may"),
@@ -1595,6 +1602,7 @@ pub(super) fn parse_subject_application(
             ("that attacking player", false),
             tag("that attacking player"),
         ),
+        value(("the attacking player", false), tag("the attacking player")),
         value(("that player", false), tag("that player")),
         value(("the player", false), tag("the player")),
     )))
@@ -1606,7 +1614,9 @@ pub(super) fn parse_subject_application(
         };
         if matches!(
             ctx_filter,
-            TargetFilter::TriggeringPlayer | TargetFilter::DefendingPlayer
+            TargetFilter::TriggeringPlayer
+                | TargetFilter::DefendingPlayer
+                | TargetFilter::TriggeringSourceController
         ) {
             // CR 608.2c + CR 109.4 (issue #534): "That player" after a
             // `Choose(Player)`/`Choose(Opponent)` clause binds to the
@@ -4307,6 +4317,11 @@ pub(crate) fn starts_with_subject_prefix(lower: &str) -> bool {
             value((), tag("target ")),
             value((), tag("that ")),
             value((), tag("the chosen ")),
+            // CR 506.2 + CR 603.7c: "the attacking player" as a control-handoff
+            // subject on a DamageReceived trigger (Contested Game Ball) — the
+            // controller of the creature that dealt combat damage. Longest-match
+            // before the bare "the player " arm.
+            value((), tag("the attacking player ")),
             value((), tag("the player ")),
             // CR 609.7 + CR 615.5: "the source's controller" / "the source's
             // owner" as a subject in a damage-prevention follow-up (Swans of
