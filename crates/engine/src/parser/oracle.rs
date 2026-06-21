@@ -4476,9 +4476,32 @@ pub(super) fn find_activated_colon(line: &str) -> Option<usize> {
     let colon_pos = find_top_level_colon(line)?;
     let prefix = &line[..colon_pos];
 
+    if cost_prefix_is_activated(prefix) {
+        return Some(colon_pos);
+    }
+
+    // CR 207.2c + CR 602.1: an ability-word label may precede the activation
+    // cost ("Mental Organism — Pay 3 life: ~ connives" — M.O.D.O.K.). Ability
+    // words have no rules meaning, so strip the italic 1–4 word label and re-test
+    // the remaining cost prefix. `split_short_label_prefix` already guards against
+    // matching real cost text (it rejects prefixes containing `{` or `:`), so this
+    // never misclassifies an em-dash that lives inside the cost itself.
+    if let Some(after_word) = strip_ability_word(prefix) {
+        if cost_prefix_is_activated(&after_word) {
+            return Some(colon_pos);
+        }
+    }
+
+    None
+}
+
+/// Whether the text preceding a top-level colon reads as an activation cost
+/// (mana symbols or a cost-starter verb). Shared by `find_activated_colon` so
+/// the bare and ability-word-prefixed paths apply identical cost recognition.
+fn cost_prefix_is_activated(prefix: &str) -> bool {
     // Contains mana symbols
     if prefix.contains('{') {
-        return Some(colon_pos);
+        return true;
     }
 
     // Starts with cost-like words (all ASCII — case-insensitive prefix check)
@@ -4496,11 +4519,7 @@ pub(super) fn find_activated_colon(line: &str) -> Option<usize> {
     ];
     // Only lowercase when needed (skipped entirely if '{' was found above)
     let lower_prefix = trimmed.to_lowercase();
-    if cost_starters.iter().any(|s| lower_prefix.starts_with(s)) {
-        return Some(colon_pos);
-    }
-
-    None
+    cost_starters.iter().any(|s| lower_prefix.starts_with(s))
 }
 
 fn find_top_level_colon(line: &str) -> Option<usize> {
@@ -5260,6 +5279,96 @@ mod tests {
     use super::*;
     use crate::parser::oracle_effect::parse_effect_chain;
     use crate::types::ability::{CountScope, DoorLockOp};
+
+    /// CR 207.2c + CR 602.1: an activated ability may carry an italic ability-word
+    /// label before its cost ("Mental Organism — Pay 3 life: ~ connives" —
+    /// M.O.D.O.K.). The ability word has no rules meaning, so `find_activated_colon`
+    /// must look past it and still classify the line as `[Cost]: [Effect]`.
+    ///
+    /// This is the building-block test for the whole class
+    /// `[ability-word] — [cost]: [effect] [restriction]` — it asserts the cost,
+    /// effect, and restriction all survive the label. The card-specific runtime
+    /// discrimination lives in `tests/connive_trigger_msh_wave1.rs`.
+    ///
+    /// Revert-discriminating: with the ability-word strip removed from
+    /// `find_activated_colon`, this line falls through to `Effect::Unimplemented`
+    /// and `abilities` is empty — every assertion below fails.
+    #[test]
+    fn ability_word_labeled_activated_ability_parses_cost_effect_restriction() {
+        use crate::types::ability::QuantityExpr;
+        let r = parse(
+            "Mental Organism — Pay 3 life: M.O.D.O.K. connives. Activate only during your turn.",
+            "M.O.D.O.K.",
+            &[],
+            &["Creature"],
+            &[],
+        );
+        assert_eq!(
+            r.abilities.len(),
+            1,
+            "ability-word-labeled line must parse to one activated ability, got {:#?}",
+            r.abilities
+        );
+        let def = &r.abilities[0];
+        assert_eq!(def.kind, AbilityKind::Activated);
+        assert!(
+            !has_unimplemented(def),
+            "no residual Unimplemented node, got {:#?}",
+            def.effect
+        );
+        assert_eq!(
+            def.cost,
+            Some(AbilityCost::PayLife {
+                amount: QuantityExpr::Fixed { value: 3 },
+            }),
+            "ability word must be stripped from the cost, leaving Pay 3 life"
+        );
+        assert!(
+            matches!(
+                def.effect.as_ref(),
+                Effect::Connive {
+                    target: TargetFilter::SelfRef,
+                    ..
+                }
+            ),
+            "'~ connives' must lower to a self-targeted Connive, got {:?}",
+            def.effect
+        );
+        assert!(
+            def.activation_restrictions
+                .contains(&ActivationRestriction::DuringYourTurn),
+            "'Activate only during your turn' must yield DuringYourTurn, got {:?}",
+            def.activation_restrictions
+        );
+    }
+
+    /// The static half of M.O.D.O.K. ("Designed Only for Killing — Creatures your
+    /// opponents control get -1/-1") already parses on its own ability-word label;
+    /// this guards that the activated-ability fix above doesn't regress it.
+    #[test]
+    fn modok_static_minus_one_to_opponents_creatures() {
+        use crate::types::statics::StaticMode;
+        let r = parse(
+            "Designed Only for Killing — Creatures your opponents control get -1/-1.",
+            "M.O.D.O.K.",
+            &[],
+            &["Creature"],
+            &[],
+        );
+        assert_eq!(r.statics.len(), 1, "got {:#?}", r.statics);
+        let st = &r.statics[0];
+        assert_eq!(st.mode, StaticMode::Continuous);
+        let Some(TargetFilter::Typed(tf)) = &st.affected else {
+            panic!("expected typed affected filter, got {:?}", st.affected);
+        };
+        assert_eq!(tf.controller, Some(ControllerRef::Opponent));
+        assert!(st
+            .modifications
+            .contains(&ContinuousModification::AddPower { value: -1 }));
+        assert!(st
+            .modifications
+            .contains(&ContinuousModification::AddToughness { value: -1 }));
+    }
 
     /// Issue #69 (Banewhip Punisher): "Destroy target creature that has a -1/-1
     /// counter on it" — the relative-clause counter restriction was dropped, so
