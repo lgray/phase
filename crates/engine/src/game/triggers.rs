@@ -3044,7 +3044,7 @@ fn dispatch_collected_triggers(state: &mut GameState, pending: Vec<PendingTrigge
     let mut events_out = Vec::new();
     let mut iter = pending.into_iter();
     while let Some(trigger_context) = iter.next() {
-        if dispatch_pending_trigger_context(state, trigger_context, &mut events_out) {
+        if dispatch_pending_trigger_context(state, trigger_context, &mut events_out).paused() {
             // Active trigger paused on player input. Stash the remaining
             // contexts to be drained by `drain_deferred_trigger_queue` after
             // the active trigger is finalized.
@@ -3794,6 +3794,58 @@ fn assign_pending_trigger_entry_ability(
     *ability = source_ability.clone();
 }
 
+/// Outcome of dispatching one pending-trigger context through
+/// [`dispatch_pending_trigger_context`]. Replaces the prior `bool` (which only
+/// distinguished "paused" from "everything else") so callers — in particular
+/// `check_delayed_triggers` — can tell a trigger that *legitimately left no
+/// stack object* (CR 603.3c no-legal-mode removal, CR 605.1b inline mana
+/// resolution) apart from a trigger that was *dropped on a resolution-time
+/// filter slot* and must still reach the stack (CR 603.3).
+///
+/// The variants are mutually exclusive terminal classifications of a single
+/// dispatch call; ordering carries no meaning.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TriggerDispatchDisposition {
+    /// The trigger paused on player input (modal mode choice, target
+    /// selection, or distribute-among). `state.pending_trigger` /
+    /// `state.waiting_for` are set; the entry is already on the stack
+    /// mid-construction. Callers must stash any remaining queue into
+    /// `state.deferred_triggers`.
+    Paused,
+    /// The trigger reached the stack as its own object (CR 603.3) with no
+    /// further player input required — degenerate auto-selected targets, no
+    /// target slots, or a random-modal mode that resolved without prompting.
+    Pushed,
+    /// CR 605.1b: a triggered mana ability resolved immediately without using
+    /// the stack. Terminal — never re-pushed.
+    ResolvedInline,
+    /// CR 603.3c: the ability is modal and no legal mode could be chosen, so it
+    /// was removed before reaching (or while on) the stack. Terminal — never
+    /// re-pushed.
+    DroppedNoLegalMode,
+    /// A target/resolution slot could not be auto-resolved (`build_target_slots`,
+    /// `auto_select_targets_for_ability`, or `assign_targets_in_chain` returned
+    /// `Err`). For a genuine CR 115.1d target with no legal option this matches
+    /// CR 603.3d removal; but `build_target_slots` also surfaces resolution-time
+    /// filter slots that are *not* CR 115.1d targets (e.g. Good King Mog's "a
+    /// token that's a copy of a non-Saga token you control" copy-source), and
+    /// those must still reach the stack per CR 603.3. The
+    /// `check_delayed_triggers` fallback re-pushes this case to preserve the
+    /// pre-dispatch unconditional-push contract for delayed triggers; the
+    /// regular collected-trigger paths treat it as a drop, matching their prior
+    /// `false` behavior.
+    DroppedTargetUnresolved,
+}
+
+impl TriggerDispatchDisposition {
+    /// `true` only for [`Self::Paused`]. Callers that previously branched on the
+    /// raw `bool` ("did dispatch pause on input?") use this to keep identical
+    /// behavior.
+    pub(crate) fn paused(self) -> bool {
+        matches!(self, Self::Paused)
+    }
+}
+
 /// CR 603.2 + CR 603.3b + CR 309.4c: Dispatch a synthetic
 /// single trigger (game-rule trigger queued mid-resolution, e.g. dungeon
 /// room ability from `effects::venture::queue_room_trigger`). Delegates
@@ -3808,14 +3860,20 @@ pub(crate) fn dispatch_synthetic_trigger(
     events_out: &mut Vec<GameEvent>,
 ) -> bool {
     dispatch_pending_trigger_context(state, PendingTriggerContext::single(trigger), events_out)
+        .paused()
 }
 
 /// CR 113.2c + CR 603.2 + CR 603.3b: Drive a single collected trigger through
-/// its disposition. Returns `true` when the trigger paused on player input
-/// (modal mode choice, target selection, or division-among) — callers must
-/// then stash the remaining queue into `state.deferred_triggers`. Returns
-/// `false` when the trigger reached the stack (or resolved inline as a mana
-/// ability, or was dropped because targets became illegal).
+/// its disposition. Returns a [`TriggerDispatchDisposition`] classifying the
+/// terminal outcome: [`Paused`](TriggerDispatchDisposition::Paused) when the
+/// trigger paused on player input (modal mode choice, target selection, or
+/// division-among) — callers must then stash the remaining queue into
+/// `state.deferred_triggers`; [`Pushed`](TriggerDispatchDisposition::Pushed)
+/// when it reached the stack; [`ResolvedInline`](TriggerDispatchDisposition::ResolvedInline)
+/// for a CR 605.1b mana ability; [`DroppedNoLegalMode`](TriggerDispatchDisposition::DroppedNoLegalMode)
+/// for CR 603.3c no-legal-mode removal; or
+/// [`DroppedTargetUnresolved`](TriggerDispatchDisposition::DroppedTargetUnresolved)
+/// when a target/resolution slot could not be auto-resolved.
 ///
 /// All three pause paths set `state.pending_trigger` / `state.waiting_for`
 /// (where appropriate) before returning so the engine's existing
@@ -3825,7 +3883,7 @@ fn dispatch_pending_trigger_context(
     state: &mut GameState,
     trigger_context: PendingTriggerContext,
     events_out: &mut Vec<GameEvent>,
-) -> bool {
+) -> TriggerDispatchDisposition {
     let PendingTriggerContext {
         pending: mut trigger,
         trigger_events,
@@ -3875,7 +3933,7 @@ fn dispatch_pending_trigger_context(
             restore_trigger_event_context(state, context_snapshot);
             if unavailable_modes.len() >= modal_for_player.mode_count {
                 // CR 603.3c: No legal mode; drop the trigger entirely.
-                return false;
+                return TriggerDispatchDisposition::DroppedNoLegalMode;
             }
             let mode_abilities = trigger.mode_abilities.clone();
             let controller = trigger.controller;
@@ -3911,24 +3969,25 @@ fn dispatch_pending_trigger_context(
                         // mode; surface it through `state.waiting_for` the same
                         // way the DistributeAmong branch does. A `Priority`
                         // result means the trigger reached the stack with no
-                        // further input — report "not paused".
+                        // further input — report it as pushed (the entry was
+                        // already placed on the stack above).
                         if matches!(
                             waiting_for,
                             crate::types::game_state::WaitingFor::Priority { .. }
                         ) {
-                            return false;
+                            return TriggerDispatchDisposition::Pushed;
                         }
                         state.waiting_for = waiting_for;
-                        return true;
+                        return TriggerDispatchDisposition::Paused;
                     }
                     // CR 603.3c: No mode could be chosen — trigger already
                     // dropped and stack entry removed inside the resolver.
-                    Ok(None) => return false,
-                    Err(_) => return false,
+                    Ok(None) => return TriggerDispatchDisposition::DroppedNoLegalMode,
+                    Err(_) => return TriggerDispatchDisposition::DroppedNoLegalMode,
                 }
             }
 
-            return true;
+            return TriggerDispatchDisposition::Paused;
         }
     }
 
@@ -3945,7 +4004,7 @@ fn dispatch_pending_trigger_context(
         Ok(target_slots) => target_slots,
         Err(_) => {
             restore_trigger_event_context(state, context_snapshot);
-            return false;
+            return TriggerDispatchDisposition::DroppedTargetUnresolved;
         }
     };
 
@@ -3965,11 +4024,11 @@ fn dispatch_pending_trigger_context(
                 events_out,
             );
             restore_trigger_event_context(state, context_snapshot);
-            return false;
+            return TriggerDispatchDisposition::ResolvedInline;
         }
         push_pending_trigger_to_stack_with_event_batch(state, trigger, trigger_events, events_out);
         restore_trigger_event_context(state, context_snapshot);
-        return false;
+        return TriggerDispatchDisposition::Pushed;
     }
 
     // CR 115.1 + CR 701.9b: Random-target triggered abilities short-circuit
@@ -4000,7 +4059,7 @@ fn dispatch_pending_trigger_context(
                 .is_err()
             {
                 restore_trigger_event_context(state, context_snapshot);
-                return false;
+                return TriggerDispatchDisposition::DroppedTargetUnresolved;
             }
             super::casting::emit_targeting_events(
                 state,
@@ -4046,7 +4105,7 @@ fn dispatch_pending_trigger_context(
                             unit,
                         };
                         restore_trigger_event_context(state, context_snapshot);
-                        return true;
+                        return TriggerDispatchDisposition::Paused;
                     }
                 }
             }
@@ -4057,7 +4116,7 @@ fn dispatch_pending_trigger_context(
                 events_out,
             );
             restore_trigger_event_context(state, context_snapshot);
-            false
+            TriggerDispatchDisposition::Pushed
         }
         Ok(None) => {
             // CR 601.2c + CR 603.3d: Manual target selection pending. Push the
@@ -4076,11 +4135,11 @@ fn dispatch_pending_trigger_context(
             state.pending_trigger = Some(pending_for_state);
             state.pending_trigger_entry = Some(entry_id);
             restore_trigger_event_context(state, context_snapshot);
-            true
+            TriggerDispatchDisposition::Paused
         }
         Err(_) => {
             restore_trigger_event_context(state, context_snapshot);
-            false
+            TriggerDispatchDisposition::DroppedTargetUnresolved
         }
     }
 }
@@ -4210,7 +4269,7 @@ fn dispatch_deferred_triggers_in_order(
 ) -> Option<crate::types::game_state::WaitingFor> {
     let mut iter = pending.into_iter();
     while let Some(trigger_context) = iter.next() {
-        if dispatch_pending_trigger_context(state, trigger_context, events_out) {
+        if dispatch_pending_trigger_context(state, trigger_context, events_out).paused() {
             state.deferred_triggers.extend(iter);
             if matches!(
                 state.waiting_for,
@@ -4496,6 +4555,15 @@ pub fn check_delayed_triggers(state: &mut GameState, events: &[GameEvent]) -> Ve
     let mut to_fire: Vec<(DelayedTrigger, Option<GameEvent>)> = Vec::new();
     let mut to_remove: Vec<(usize, GameEvent)> = Vec::new();
 
+    // CR 603.12: A reflexive coin-flip trigger ("when you win/lose the flip") is
+    // checked immediately after creation and triggers based on whether the flip
+    // occurred during the creating resolution. If the flip happened but its
+    // result did not match the trigger's filter (the "win" reflexive on a lost
+    // flip, or vice versa), the reflexive simply does not trigger — and, being
+    // tied to that one flip, must be discarded rather than left to fire on a
+    // later coin flip this turn (which a bare CR 603.7 `WhenNextEvent` would do).
+    let mut to_discard: Vec<usize> = Vec::new();
+
     for (idx, delayed) in state.delayed_triggers.iter().enumerate() {
         if let Some(trigger_event) = delayed_trigger_event(
             &delayed.condition,
@@ -4509,6 +4577,15 @@ pub fn check_delayed_triggers(state: &mut GameState, events: &[GameEvent]) -> Ve
             } else {
                 to_fire.push((delayed.clone(), Some(trigger_event)));
             }
+        } else if reflexive_coin_flip_resolved_without_match(
+            &delayed.condition,
+            events,
+            state,
+            delayed.source_id,
+        ) {
+            // CR 603.12: the creating flip occurred but the result was opposite —
+            // discard this reflexive trigger; it never gets a "next" flip.
+            to_discard.push(idx);
         }
     }
 
@@ -4529,10 +4606,26 @@ pub fn check_delayed_triggers(state: &mut GameState, events: &[GameEvent]) -> Ve
         }
     }
 
-    // Remove one-shot triggers in reverse order to preserve indices, collecting into to_fire
-    for (idx, trigger_event) in to_remove.into_iter().rev() {
+    // Remove fired one-shot triggers AND discarded non-matching reflexive
+    // coin-flip triggers from `delayed_triggers` in a single descending-index
+    // pass so every index stays valid (a `to_remove`-then-`to_discard` two-pass
+    // removal would invalidate the discard indices once the vec shrinks). Fired
+    // one-shots are collected into `to_fire`; discarded reflexives (CR 603.12)
+    // are dropped without firing. The two index sets are disjoint — a trigger
+    // either matched (fire) or resolved-without-match (discard), never both.
+    let mut fired_events: std::collections::HashMap<usize, GameEvent> =
+        to_remove.iter().cloned().collect();
+    let mut combined: Vec<usize> = to_remove
+        .iter()
+        .map(|(idx, _)| *idx)
+        .chain(to_discard.iter().copied())
+        .collect();
+    combined.sort_unstable();
+    for idx in combined.into_iter().rev() {
         let trigger = state.delayed_triggers.remove(idx);
-        to_fire.push((trigger, Some(trigger_event)));
+        if let Some(trigger_event) = fired_events.remove(&idx) {
+            to_fire.push((trigger, Some(trigger_event)));
+        }
     }
 
     if to_fire.is_empty() {
@@ -4549,7 +4642,20 @@ pub fn check_delayed_triggers(state: &mut GameState, events: &[GameEvent]) -> Ve
     let apnap = crate::game::players::apnap_order(state);
     to_fire.sort_by_key(|(trigger, _)| apnap_rank(&apnap, trigger.controller));
 
-    for (trigger, trigger_event) in to_fire {
+    // CR 603.3 + CR 603.3d + CR 601.2c: Dispatch each firing delayed trigger
+    // through the shared trigger dispatcher rather than a bare stack push. The
+    // dispatcher sets up `pending_trigger` / `pending_trigger_entry` and begins
+    // target selection (`WaitingFor::TriggerTargetSelection`) for a delayed
+    // trigger whose ability needs a player-chosen target — e.g. Breeches, the
+    // Blastmaker's reflexive "When you lose the flip, ~ deals damage … to any
+    // target" (CR 603.12). Context-ref-only delayed triggers (Flickerwisp's
+    // `ParentTarget` return, dies/leaves triggers using `TriggeringSource`)
+    // report `Pushed` and reach the stack with no input, identical to the prior
+    // bare push. When a trigger pauses for input, the remaining triggers are
+    // stashed into `deferred_triggers` and reach the stack once the active one
+    // resolves, mirroring `dispatch_collected_triggers` (issue #416).
+    let mut iter = to_fire.into_iter();
+    for (trigger, trigger_event) in iter.by_ref() {
         let pending = PendingTrigger {
             source_id: trigger.source_id,
             controller: trigger.controller,
@@ -4566,10 +4672,107 @@ pub fn check_delayed_triggers(state: &mut GameState, events: &[GameEvent]) -> Ve
             subject_match_count: None,
             die_result: None,
         };
-        push_pending_trigger_to_stack(state, pending, &mut new_events);
+        let context = PendingTriggerContext::single(pending);
+        let context_pending = context.pending.clone();
+        let context_events = context.trigger_events.clone();
+        match dispatch_pending_trigger_context(state, context, &mut new_events) {
+            TriggerDispatchDisposition::Paused => {
+                // The active delayed trigger paused on player input (target /
+                // mode / distribution). Stash the remaining firing triggers so
+                // they reach the stack once the active one is finalized.
+                state
+                    .deferred_triggers
+                    .extend(iter.map(|(trigger, trigger_event)| {
+                        PendingTriggerContext::single(PendingTrigger {
+                            source_id: trigger.source_id,
+                            controller: trigger.controller,
+                            condition: None,
+                            ability: trigger.ability,
+                            timestamp: state.turn_number,
+                            target_constraints: Vec::new(),
+                            distribute: None,
+                            trigger_event,
+                            modal: None,
+                            mode_abilities: vec![],
+                            description: None,
+                            may_trigger_origin: None,
+                            subject_match_count: None,
+                            die_result: None,
+                        })
+                    }));
+                break;
+            }
+            // CR 603.3: A delayed triggered ability goes on the stack the next
+            // time a player would receive priority. The dispatcher already
+            // placed it there (`Pushed`) or it pauses for input (`Paused`
+            // above) — nothing more to do.
+            TriggerDispatchDisposition::Pushed => {}
+            // CR 603.3d: The dispatcher dropped the trigger because a slot could
+            // not be auto-resolved. For a delayed trigger this is the Good King
+            // Mog case — the unresolved slot is a *resolution-time filter* ("a
+            // token that's a copy of a non-Saga token you control"), NOT a
+            // CR 115.1d target (it uses no "target" keyword), so CR 603.3d does
+            // not remove it; place it on the stack directly per CR 603.3.
+            // Resolution-time selection then handles the empty filter set (e.g.
+            // copies no token). This restores the pre-dispatch unconditional-push
+            // contract for the non-targeted resolution-filter case. Breeches'
+            // lose branch ("deals damage … to any target") always has a legal
+            // target, so it pauses through the dispatcher and never reaches here.
+            TriggerDispatchDisposition::DroppedTargetUnresolved => {
+                push_pending_trigger_to_stack_with_event_batch(
+                    state,
+                    context_pending,
+                    context_events,
+                    &mut new_events,
+                );
+            }
+            // CR 603.3c: no legal mode — the modal ability is removed from the
+            // stack and is a terminal no-stack outcome; do NOT resurrect it.
+            // CR 605.1b: a triggered mana ability resolved inline without using
+            // the stack; re-pushing it would duplicate the produced mana.
+            TriggerDispatchDisposition::DroppedNoLegalMode
+            | TriggerDispatchDisposition::ResolvedInline => {}
+        }
     }
 
     new_events
+}
+
+/// CR 603.12: True when `condition` is a reflexive coin-flip trigger
+/// (`WhenNextEvent` wrapping a `FlippedCoin` trigger with a `coin_flip_result`
+/// filter) whose creating flip occurred this batch but came up the opposite way,
+/// so the reflexive does not trigger and must be discarded rather than left
+/// pending for a later flip. Returns `false` for any other condition shape and
+/// for a `FlippedCoin` reflexive whose result filter *did* match (that case is
+/// handled by the normal fire/remove path) or whose flipper did not flip.
+fn reflexive_coin_flip_resolved_without_match(
+    condition: &crate::types::ability::DelayedTriggerCondition,
+    events: &[GameEvent],
+    state: &GameState,
+    source_id: ObjectId,
+) -> bool {
+    use crate::types::ability::DelayedTriggerCondition;
+    let DelayedTriggerCondition::WhenNextEvent {
+        trigger,
+        or_trigger: None,
+    } = condition
+    else {
+        return false;
+    };
+    // Scope strictly to coin-flip reflexives with a result filter — generic
+    // `WhenNextEvent` delayed triggers keep their "next time" CR 603.7 semantics.
+    if trigger.mode != TriggerMode::FlippedCoin || trigger.coin_flip_result.is_none() {
+        return false;
+    }
+    // The creating flip occurred this batch iff a `CoinFlipped` event by the
+    // trigger's eligible flipper is present, regardless of won/lost. Reuse the
+    // matcher with the result filter cleared so only the flipper scope is checked.
+    let mut flipper_only = (**trigger).clone();
+    flipper_only.coin_flip_result = None;
+    events.iter().any(|event| {
+        matches!(event, GameEvent::CoinFlipped { .. })
+            && super::trigger_matchers::match_flipped_coin(event, &flipper_only, source_id, state)
+    })
 }
 
 /// CR 603.7: Check if a delayed trigger condition is met by recent events.
@@ -24758,7 +24961,8 @@ mod push_first_contract_tests {
             &mut state,
             super::PendingTriggerContext::single(trigger),
             &mut events,
-        );
+        )
+        .paused();
 
         // CR 603.3c "If no mode can be chosen, the ability is removed from
         // the stack": dispatcher reports no pause; nothing pushed; no cursor.
@@ -24866,7 +25070,8 @@ mod push_first_contract_tests {
             &mut state,
             super::PendingTriggerContext::single(trigger),
             &mut events,
-        );
+        )
+        .paused();
 
         // The game chose the mode — neither modes need targets, so dispatch
         // reports "not paused" and never raises an interactive prompt.

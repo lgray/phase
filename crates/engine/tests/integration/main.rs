@@ -28,6 +28,7 @@ mod bolas_citadel_regression;
 mod boon_reflection_gain_life_drain;
 mod bounce_destination_redirect;
 mod braids_arisen_nightmare_decline;
+mod breeches_blastmaker_coin_flip_copy;
 mod brigid_mana_ability;
 mod bring_to_light_free_cast_2880;
 mod cascade_intervening_if_pipeline;

@@ -754,6 +754,56 @@ fn try_parse_when_next_spell_or_activate_disjunction(
     Some((spell_filter, ability_filter))
 }
 
+/// CR 603.12 + CR 705.2: Build the reflexive coin-flip-result trigger clause
+/// for "When you win/lose the flip, [effect]" (Breeches, the Blastmaker).
+///
+/// The branch becomes an `Effect::CreateDelayedTrigger` whose one-shot
+/// `WhenNextEvent` condition embeds a `TriggerMode::FlippedCoin` trigger filtered
+/// by `coin_flip_result` (Won/Lost) and scoped to the controller (`valid_target:
+/// Controller` — "when YOU win/lose"). Lowered as a sequential continuation of
+/// the preceding `FlipCoin`, this registers the delayed trigger during the flip's
+/// resolution; the `CoinFlipped` event emitted earlier in that same resolution
+/// then fires it through `check_delayed_triggers`, placing the branch on the
+/// stack as its own object with a CR 603.3 priority window — never inline.
+///
+/// `inner` carries the branch effect (the win clause's `CopySpell` — its "you may
+/// choose new targets for the copy" rider patches in via the existing
+/// `CreateDelayedTrigger`-aware `set_copy_retarget` descent — or the lose clause's
+/// `DealDamage`). Parent-resolution-dependent quantities like "that spell's mana
+/// value" are snapshotted to `Fixed` at delayed-trigger creation by the
+/// `CreateDelayedTrigger` resolver (CR 603.7c).
+fn build_reflexive_coin_flip_trigger(is_win: bool, inner: AbilityDefinition) -> ParsedEffectClause {
+    use crate::types::ability::CoinFlipResult;
+    use crate::types::triggers::TriggerMode;
+
+    let mut trigger_def = crate::types::ability::TriggerDefinition::new(TriggerMode::FlippedCoin);
+    trigger_def.coin_flip_result = Some(if is_win {
+        CoinFlipResult::Won
+    } else {
+        CoinFlipResult::Lost
+    });
+    // CR 705.2: "when YOU win/lose the flip" — only the controller's own flip.
+    trigger_def.valid_target = Some(TargetFilter::Controller);
+
+    ParsedEffectClause {
+        effect: Effect::CreateDelayedTrigger {
+            condition: DelayedTriggerCondition::WhenNextEvent {
+                trigger: Box::new(trigger_def),
+                or_trigger: None,
+            },
+            effect: Box::new(inner),
+            uses_tracked_set: false,
+        },
+        duration: None,
+        sub_ability: None,
+        distribute: None,
+        multi_target: None,
+        condition: None,
+        optional: false,
+        unless_pay: None,
+    }
+}
+
 fn build_when_next_delayed_trigger(
     mode: crate::types::triggers::TriggerMode,
     valid_card: TargetFilter,
@@ -5349,6 +5399,23 @@ fn parse_effect_clause_inner(text: &str, ctx: &mut ParseContext) -> ParsedEffect
         return clause;
     }
 
+    // CR 603.12: "When you win/lose the flip, [effect]" — a REFLEXIVE triggered
+    // ability (Breeches, the Blastmaker), not the inline "if you win/lose the
+    // flip" form below. It follows delayed-triggered-ability rules (CR 603.3 /
+    // CR 603.7): the branch effect goes on the stack and resolves with its own
+    // priority window, not inline during the flip's own resolution. Lower it to a
+    // one-shot `CreateDelayedTrigger` whose embedded `FlippedCoin` trigger
+    // (filtered by `coin_flip_result`) fires on the `CoinFlipped` event emitted
+    // earlier in this resolution — the existing delayed-trigger machinery places
+    // it on the stack. The inline "if you win/lose the flip" form (CR 705) is
+    // handled below and folds into the preceding flip.
+    if let Some((is_win, effect_text)) =
+        imperative::try_parse_reflexive_coin_flip_branch(text, &lower)
+    {
+        let inner = parse_effect_chain(effect_text, AbilityKind::Spell);
+        return build_reflexive_coin_flip_trigger(is_win, inner);
+    }
+
     // CR 705: "If you win/lose the flip, [effect]" — coin flip branch.
     // Returns a FlipCoin with the appropriate branch filled in.
     // consolidate_die_and_coin_defs merges these into the preceding FlipCoin.
@@ -5501,6 +5568,18 @@ fn parse_effect_clause_inner(text: &str, ctx: &mut ParseContext) -> ParsedEffect
             target: TargetFilter::ParentTarget,
             grantee: Default::default(),
         });
+    }
+
+    // CR 707.10c: A standalone "You may choose new targets for the copy/copies."
+    // sentence normally patches the immediately-preceding `CopySpell` via
+    // `parse_followup_continuation_ast` (which descends a `CreateDelayedTrigger`
+    // wrapper — Breeches' reflexive "When you win the flip, copy that spell").
+    // If it instead reaches clause-level dispatch, no preceding copy was produced
+    // for it to bind to. Without a copy to retarget, this orphaned clause fails
+    // closed rather than becoming a stray, unconditionally-resolving
+    // `ChangeTargets`.
+    if sequence::recognize_copy_retarget_clause(tp.lower) {
+        return parsed_clause(Effect::unimplemented("orphaned_copy_retarget", text));
     }
 
     // CR 115.7: "change the target of" / "you may choose new targets for" —

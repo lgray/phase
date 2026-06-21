@@ -8300,8 +8300,22 @@ pub(crate) fn try_parse_die_result_line(text: &str) -> Option<(u8, u8, &str)> {
     Some((min, max, effect_text))
 }
 
-/// CR 705: Try to parse "if you win the flip, [effect]" / "if you lose the flip, [effect]"
-/// from Oracle text. Returns `(is_win, effect_text)`.
+/// CR 705: Try to parse "if you win the flip, [effect]" / "if you lose the flip,
+/// [effect]" from Oracle text. Returns `(is_win, effect_text)`.
+///
+/// Only the "if you win/lose the flip" wording is matched here. This phrasing is
+/// part of the same one-shot resolution as the flip itself (Krark, the
+/// Thumbless), so it folds into the preceding `FlipCoin`'s
+/// `win_effect`/`lose_effect` and resolves inline.
+///
+/// The superficially-similar "WHEN you win/lose the flip, [effect]" wording
+/// (Breeches, the Blastmaker) is deliberately NOT matched here: per CR 603.12 it
+/// creates a *reflexive triggered ability* that follows delayed-triggered-ability
+/// rules (CR 603.3 / CR 603.7), so it must be put on the stack the next time a
+/// player would receive priority — giving a priority window before the branch
+/// effect resolves — rather than running inline during the flip's resolution.
+/// `try_parse_reflexive_coin_flip_branch` owns that "when" wording and lowers it
+/// to a `CreateDelayedTrigger`; this function is strictly the inline-fold path.
 pub(crate) fn try_parse_coin_flip_branch(text: &str) -> Option<(bool, &str)> {
     const WIN: &str = "if you win the flip, ";
     const LOSE: &str = "if you lose the flip, ";
@@ -8316,6 +8330,38 @@ pub(crate) fn try_parse_coin_flip_branch(text: &str) -> Option<(bool, &str)> {
         }
     }
     None
+}
+
+/// CR 603.12: Parse the reflexive coin-flip-result trigger wording
+/// "when you win the flip, [effect]" / "when you lose the flip, [effect]"
+/// (Breeches, the Blastmaker). Returns `(is_win, effect_text)` with `effect_text`
+/// in its original case, or `None` when the clause does not open with this
+/// wording.
+///
+/// Unlike `try_parse_coin_flip_branch`'s inline "if you win/lose the flip"
+/// (Krark, the Thumbless — CR 705), this "when" wording creates a *reflexive
+/// triggered ability* (CR 603.12) that follows delayed-triggered-ability rules
+/// (CR 603.3 / CR 603.7): the branch effect must go on the stack and resolve with
+/// a priority window, NOT inline during the flip's own resolution. The clause
+/// dispatcher lowers this to an `Effect::CreateDelayedTrigger` whose embedded
+/// `TriggerMode::FlippedCoin` trigger (filtered by `coin_flip_result`) fires on
+/// the `CoinFlipped` event emitted earlier in the flip's resolution — exactly the
+/// CR 603.12 "checked immediately after being created, triggering on whether the
+/// event occurred during this resolution" model — and goes on the stack with its
+/// own priority window via the existing `check_delayed_triggers` path.
+pub(crate) fn try_parse_reflexive_coin_flip_branch<'a>(
+    text: &'a str,
+    lower: &str,
+) -> Option<(bool, &'a str)> {
+    nom_on_lower(text, lower, |input| {
+        let (rest, is_win) = preceded(
+            tag("when you "),
+            alt((value(true, tag("win")), value(false, tag("lose")))),
+        )
+        .parse(input)?;
+        let (rest, _) = tag(" the flip, ").parse(rest)?;
+        Ok((rest, is_win))
+    })
 }
 
 pub(super) fn lower_imperative_family_ast(ast: ImperativeFamilyAst) -> ParsedEffectClause {
