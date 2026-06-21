@@ -726,7 +726,14 @@ fn try_parse_when_next_event(tp: TextPair) -> Option<ParsedEffectClause> {
     // Article choice depends on the payload — "a creature spell" vs "an instant or sorcery spell".
     let article_result: nom::IResult<&str, &str, OracleError<'_>> =
         alt((tag("when you next cast a "), tag("when you next cast an "))).parse(tp.lower);
-    let (_, matched_prefix) = article_result.ok()?;
+    let Ok((_, matched_prefix)) = article_result else {
+        // CR 603.7: non-cast "when you next <event> this turn" one-shot delayed
+        // triggers (e.g. All-Out Assault "When you next attack this turn, ...").
+        // The spell-cast arm above owns the rich spell-filter / disjunction
+        // grammar; this generic fallback reuses the trigger-condition parser so
+        // the whole "when you next <condition>" class is covered, not one card.
+        return try_parse_when_next_generic_event(tp);
+    };
 
     // Must contain "this turn, " to delimit condition from effect
     let (before_this_turn, after) = tp.rsplit_around(" this turn, ")?;
@@ -767,6 +774,70 @@ fn try_parse_when_next_event(tp: TextPair) -> Option<ParsedEffectClause> {
     trigger_def.valid_card = Some(combined_filter);
     // "when YOU next cast" — scope to the source's controller.
     trigger_def.valid_target = Some(TargetFilter::Controller);
+
+    Some(ParsedEffectClause {
+        effect: Effect::CreateDelayedTrigger {
+            condition: DelayedTriggerCondition::WhenNextEvent {
+                trigger: Box::new(trigger_def),
+                or_trigger: None,
+            },
+            effect: Box::new(inner),
+            uses_tracked_set: false,
+        },
+        duration: None,
+        sub_ability: None,
+        distribute: None,
+        multi_target: None,
+        condition: None,
+        optional: false,
+        unless_pay: None,
+    })
+}
+
+/// CR 603.7: Parse a generic non-cast "when you next <condition> this turn,
+/// <effect>" one-shot delayed trigger. Delegates condition recognition to the
+/// shared trigger-condition parser (`parse_trigger_condition`) so the whole
+/// class is covered — "When you next attack this turn" (All-Out Assault),
+/// "When you next <other matchable event> this turn", etc. — rather than a
+/// single card.
+///
+/// The cast-spell variant (`try_parse_when_next_event`) keeps its dedicated
+/// spell-filter / disjunction grammar; this fallback runs only when the cast
+/// prefix did not match. Builds a `WhenNextEvent` delayed trigger (one-shot),
+/// mirroring `try_parse_whenever_this_turn`'s `WheneverEvent` (multi-fire)
+/// construction but with one-shot semantics.
+fn try_parse_when_next_generic_event(tp: TextPair) -> Option<ParsedEffectClause> {
+    // The condition is bounded by " this turn, " — the same delimiter the
+    // spell-cast arm uses. Everything between "when you next " and the
+    // delimiter is the matchable trigger condition.
+    let (before_this_turn, after) = tp.rsplit_around(" this turn, ")?;
+    // Consume the "when you next " prefix with the combinator; the remainder is
+    // the bare trigger condition (e.g. "attack").
+    let (condition_text, _) = tag::<_, _, OracleError<'_>>("when you next ")
+        .parse(before_this_turn.lower)
+        .ok()?;
+    if condition_text.is_empty() {
+        return None;
+    }
+
+    // Reuse the shared trigger-condition parser. Re-prefix "you " so the bare
+    // condition (e.g. "attack") matches the "you attack" production; the parser
+    // accepts an optional "whenever "/"when " prefix but expects the subject.
+    let mut inner_ctx = ParseContext::default();
+    let condition_for_parser = format!("you {condition_text}");
+    let (mode, mut trigger_def) = crate::parser::oracle_trigger::parse_trigger_condition(
+        &condition_for_parser,
+        &mut inner_ctx,
+    );
+    // Only accept conditions the trigger matcher registry actually supports as a
+    // delayed event; an unrecognized condition lowers to Unknown and must not
+    // silently produce a never-firing delayed trigger.
+    if matches!(mode, crate::types::triggers::TriggerMode::Unknown(_)) {
+        return None;
+    }
+    trigger_def.execute = None;
+
+    let inner = parse_effect_chain_with_context(after.original, AbilityKind::Spell, &mut inner_ctx);
 
     Some(ParsedEffectClause {
         effect: Effect::CreateDelayedTrigger {
@@ -10947,8 +11018,15 @@ fn parse_bare_damage_continuation<'a>(
                 },
                 consumed,
             )
-        } else if let Ok((rest, _)) =
-            tag::<_, _, OracleError<'_>>("that much damage").parse(lower.as_str())
+        } else if let Ok((rest, _)) = alt((
+            tag::<_, _, OracleError<'_>>("that much damage"),
+            // CR 120.1: "that amount of damage" is the synonym used when the
+            // antecedent is "N damage" (Fear of Burning Alive's "deals that
+            // amount of damage to target creature that player controls"). Both
+            // anaphors resolve to the just-dealt damage amount.
+            tag("that amount of damage"),
+        ))
+        .parse(lower.as_str())
         {
             let consumed = lower.len() - rest.len();
             (

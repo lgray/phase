@@ -3126,6 +3126,7 @@ pub(crate) fn ability_condition_to_static_condition(
         // No `StaticCondition` counterpart exists for these game-state
         // predicates.
         AbilityCondition::FirstCombatPhaseOfTurn
+        | AbilityCondition::FirstEndStepOfTurn
         | AbilityCondition::DayNightIsNeither
         | AbilityCondition::SourceLacksKeyword { .. } => None,
 
@@ -3454,6 +3455,15 @@ pub(super) fn try_nom_condition_as_ability_condition(
         .is_ok()
     {
         return Some(AbilityCondition::FirstCombatPhaseOfTurn);
+    }
+
+    // CR 500.8 + CR 513.1: "it's the first end step of the turn" — end-step
+    // sibling of the combat-phase gate above (Y'shtola Rhul's loop guard).
+    if tag::<_, _, OracleError<'_>>("it's the first end step of the turn")
+        .parse(lower.as_str())
+        .is_ok()
+    {
+        return Some(AbilityCondition::FirstEndStepOfTurn);
     }
 
     // CR 603.4: "if this is the [Nth] time this ability has resolved this turn"

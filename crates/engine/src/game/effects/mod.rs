@@ -1894,6 +1894,7 @@ fn should_resolve_subability_on_optional_decline(ability: &ResolvedAbility) -> b
             | AbilityCondition::WasStartingPlayer { .. }
             | AbilityCondition::SpellCastWithVariantThisTurn { .. }
             | AbilityCondition::FirstCombatPhaseOfTurn
+            | AbilityCondition::FirstEndStepOfTurn
             | AbilityCondition::ZoneChangedThisWay { .. }
             | AbilityCondition::CostPaidObjectMatchesFilter { .. }
             | AbilityCondition::SourceIsTapped
@@ -6900,6 +6901,10 @@ pub(crate) fn evaluate_condition(
         // CR 500.8 + CR 506.1 + CR 608.2c: "if it's the first combat phase
         // of the turn" gates follow-up effects such as additional combats.
         AbilityCondition::FirstCombatPhaseOfTurn => state.combat_phases_started_this_turn == 1,
+        // CR 500.8 + CR 513.1 + CR 608.2c: "if it's the first end step of the
+        // turn" gates the additional-end-step follow-up (Y'shtola Rhul); only
+        // the first end step schedules another, preventing an infinite loop.
+        AbilityCondition::FirstEndStepOfTurn => state.end_steps_started_this_turn == 1,
         // CR 608.2c: "If a [noun] was [verb]ed this way" — check if any zone-changed
         // object matches the type filter. For optional-targeting parents with no targets
         // chosen, last_zone_changed_ids is empty → returns false.
