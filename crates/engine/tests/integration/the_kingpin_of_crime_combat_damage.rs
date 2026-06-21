@@ -27,14 +27,17 @@
 //! rule-modifying effect), CR 611.2a (the effect lasts until end of turn),
 //! CR 119.3 (paying 2 life). Filter axis: "toughness greater than their power".
 
+use engine::game::combat::AttackTarget;
 use engine::game::layers::evaluate_layers;
 use engine::game::scenario::{GameRunner, GameScenario, P0, P1};
+use engine::parser::oracle_effect::parse_effect_chain;
+use engine::types::ability::{
+    AbilityKind, ContinuousModification, ControllerRef, Duration, Effect, FilterProp, TargetFilter,
+};
 use engine::types::actions::GameAction;
 use engine::types::game_state::WaitingFor;
 use engine::types::identifiers::ObjectId;
 use engine::types::phase::Phase;
-
-use engine::game::combat::AttackTarget;
 
 const KINGPIN_ATTACK_ABILITY: &str = "Whenever you attack, you may pay 2 life. If you do, until end of turn, creatures you control with toughness greater than their power assign combat damage equal to their toughness rather than their power.";
 
@@ -244,12 +247,6 @@ fn kingpin_effect_lapses_after_end_of_turn() {
 /// runtime tests above (which carry the semantics).
 #[test]
 fn kingpin_clause_lowers_to_assign_damage_from_toughness() {
-    use engine::parser::oracle_effect::parse_effect_chain;
-    use engine::types::ability::{
-        AbilityKind, ContinuousModification, ControllerRef, Duration, Effect, FilterProp,
-        TargetFilter,
-    };
-
     let def = parse_effect_chain(
         "Until end of turn, creatures you control with toughness greater than their power assign combat damage equal to their toughness rather than their power.",
         AbilityKind::Activated,
