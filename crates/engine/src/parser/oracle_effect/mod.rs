@@ -55,8 +55,6 @@ use lower::{
 pub(crate) use self::token::parse_token_description;
 pub(crate) use self::token::try_parse_token;
 
-use std::str::FromStr;
-
 use crate::parser::oracle_nom::error::{oracle_err, OracleError};
 #[cfg(test)]
 use crate::parser::oracle_trigger::parse_trigger_line;
@@ -5978,36 +5976,37 @@ fn try_parse_mass_forced_block(tp: TextPair, ctx: &mut ParseContext) -> Option<P
 
 fn try_parse_still_a_type(tp: TextPair) -> Option<ParsedEffectClause> {
     // Match singular "it's still a/an [type]" / "that's still a/an [type]"
-    // or plural "they're still [type]s" — CR 205.1a type retention after animation.
-    let (is_plural, rest_orig) = nom_on_lower(tp.original, tp.lower, |input| {
+    // or plural "they're still [type]s" — CR 205.1a type retention after
+    // animation. The descriptor is purely additive: a permanent animated into
+    // a creature retains its prior types/subtypes (CR 613.1d ordering), so the
+    // "still a …" clause is confirmatory and emits the same `AddType`/
+    // `AddSubtype` Layer-4 modifications the animation already implies.
+    let (_, descriptor_orig) = nom_on_lower(tp.original, tp.lower, |input| {
         alt((
-            value(false, alt((tag("it's still "), tag("that's still ")))),
-            value(true, tag("they're still ")),
+            value((), tag("it's still ")),
+            value((), tag("that's still ")),
+            value((), tag("they're still ")),
         ))
         .parse(input)
     })?;
-    let rest_lower = &tp.lower[tp.lower.len() - rest_orig.len()..];
 
-    let type_name_lower = if is_plural {
-        // Plural: "they're still lands" — no article, strip trailing 's'
-        rest_lower
-    } else {
-        // Singular: strip article "a " / "an "
-        let ((), after_article) = nom_on_lower(rest_orig, rest_lower, |input| {
-            nom_primitives::parse_article(input)
-        })?;
-        &rest_lower[rest_lower.len() - after_article.len()..]
-    };
-
-    // Strip plural 's' if present (e.g., "lands" → "land", "creatures" → "creature")
-    let singular = type_name_lower.strip_suffix('s').unwrap_or(type_name_lower);
-    let core_type = CoreType::from_str(&capitalize(singular)).ok()?;
+    // CR 205.1b + CR 305.7: parse the type descriptor ("a Cave land", "lands",
+    // "a planeswalker") through the shared animation building block so a subtype
+    // *and* core type are both retained ("It's still a Cave land" → AddType{Land}
+    // + AddSubtype{Cave}, Cavernous Maw), not just a bare core type. Strip a
+    // trailing period so the descriptor parses cleanly.
+    let descriptor = descriptor_orig.trim().trim_end_matches('.');
+    let spec = animation::parse_animation_spec(descriptor, &mut ParseContext::default())?;
+    let modifications = animation::animation_modifications(&spec);
+    if modifications.is_empty() {
+        return None;
+    }
 
     Some(ParsedEffectClause {
         effect: Effect::GenericEffect {
             static_abilities: vec![StaticDefinition::continuous()
                 .affected(TargetFilter::SelfRef)
-                .modifications(vec![ContinuousModification::AddType { core_type }])
+                .modifications(modifications)
                 .description(tp.original.to_string())],
             duration: Some(Duration::Permanent),
             target: None,
@@ -54335,6 +54334,93 @@ mod snapshot_tests {
                 )
             })
         }));
+    }
+
+    /// std BATCH 12 (Brilliance Unleashed class): a returned permanent followed by
+    /// a non-additive copula animation — "Return target X ... It's a 3/3 Robot
+    /// artifact creature with flying" — must lower the animation to a `GenericEffect`
+    /// bound to `ParentTarget` (the returned object), NOT `Effect::Unimplemented`
+    /// and NOT `SelfRef`. CR 205.1a + CR 613.1d (Layer 4 type set + Layer 7b base
+    /// P/T). Revert-discriminating on the `try_parse_contracted_subject_additive_type_clause`
+    /// animation fallback: without it the followup is `Effect::Unimplemented`.
+    #[test]
+    fn returned_target_receives_non_additive_animation_bound_to_parent() {
+        let def = parse_effect_chain(
+            "Return target artifact card from your graveyard to the battlefield. It's a 3/3 Robot artifact creature with flying.",
+            AbilityKind::Activated,
+        );
+        assert!(
+            matches!(&*def.effect, Effect::ChangeZone { .. }),
+            "expected ChangeZone head, got {:?}",
+            def.effect
+        );
+        let followup = def
+            .sub_ability
+            .as_ref()
+            .expect("expected animation followup");
+        let Effect::GenericEffect {
+            static_abilities,
+            target,
+            ..
+        } = &*followup.effect
+        else {
+            panic!("expected GenericEffect followup, got {:?}", followup.effect);
+        };
+        assert_eq!(*target, Some(TargetFilter::ParentTarget));
+        assert!(static_abilities
+            .iter()
+            .all(|sd| matches!(sd.affected, Some(TargetFilter::ParentTarget))));
+        let mods = &static_abilities[0].modifications;
+        assert!(mods
+            .iter()
+            .any(|m| matches!(m, ContinuousModification::SetPower { value: 3 })));
+        assert!(mods.iter().any(|m| matches!(
+            m,
+            ContinuousModification::AddKeyword {
+                keyword: crate::types::keywords::Keyword::Flying
+            }
+        )));
+        assert!(mods.iter().any(|m| matches!(
+            m,
+            ContinuousModification::AddSubtype { subtype } if subtype == "Robot"
+        )));
+    }
+
+    /// std BATCH 12 honest-defer gate: the same non-additive copula animation
+    /// joined by a bare "and" to an *anaphoric* "Return it" (no fresh typed
+    /// referent in scope — Brilliance Unleashed's modal-else branch) must NOT
+    /// silently animate the source permanent. The animation fallback's
+    /// ParentTarget-bind gate declines, so the conjunct honest-defers to
+    /// `Effect::unimplemented` rather than producing a wrong `SelfRef` binding.
+    #[test]
+    fn anaphoric_return_then_animation_honest_defers_when_no_parent_referent() {
+        let def = parse_effect_chain(
+            "Otherwise, return it to the battlefield and it's a 3/3 Robot artifact creature with flying.",
+            AbilityKind::Activated,
+        );
+        let mut found_unimplemented = false;
+        let mut cursor: Option<&AbilityDefinition> = Some(&def);
+        while let Some(node) = cursor {
+            if matches!(&*node.effect, Effect::Unimplemented { .. }) {
+                found_unimplemented = true;
+            }
+            // Walk both the sequential sub_ability chain and any else_ability.
+            if let Some(else_ab) = &node.else_ability {
+                let mut else_cursor: Option<&AbilityDefinition> = Some(else_ab);
+                while let Some(en) = else_cursor {
+                    if matches!(&*en.effect, Effect::Unimplemented { .. }) {
+                        found_unimplemented = true;
+                    }
+                    else_cursor = en.sub_ability.as_deref();
+                }
+            }
+            cursor = node.sub_ability.as_deref();
+        }
+        assert!(
+            found_unimplemented,
+            "anaphoric return + animation with no parent referent must honest-defer \
+             to Effect::Unimplemented (not a wrong SelfRef animation), got {def:#?}"
+        );
     }
 
     #[test]

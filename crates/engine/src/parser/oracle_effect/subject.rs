@@ -259,8 +259,53 @@ fn try_parse_contracted_subject_additive_type_clause(
     let rest_original = &text[prefix_len..];
     let predicate = format!("is {rest_original}");
     let application = additive_type_subject_application(subject_text, ctx)?;
-    let clause = build_additive_type_continuous_clause(&application, &predicate)?;
 
+    // CR 205.1b: additive form first — "it's a [type] in addition to its other
+    // types" retains prior types (AddType/AddSubtype only).
+    if let Some(clause) = build_additive_type_continuous_clause(&application, &predicate) {
+        return Some(ClauseAst::SubjectPredicate {
+            subject: Box::new(SubjectPhraseAst {
+                affected: application.affected,
+                target: application.target,
+                multi_target: application.multi_target,
+                inherits_parent: application.inherits_parent,
+                is_optional: application.is_optional,
+            }),
+            predicate: Box::new(PredicateAst::Continuous {
+                effect: clause.effect,
+                duration: clause.duration,
+                sub_ability: clause.sub_ability,
+            }),
+        });
+    }
+
+    // CR 205.1a + CR 613.1d: non-additive animation — "it's a 3/3 Robot artifact
+    // creature with flying" sets the referenced permanent's base P/T, card types,
+    // and keywords. The copula "is" form is equivalent to the verb "become" here,
+    // so reuse the shared animation builder rather than re-deriving the spec.
+    // Routes through `build_become_clause`, which delegates to
+    // `parse_animation_spec`/`animation_modifications`.
+    //
+    // Honest-bind gate: a non-additive animation joined by "and it's a …" /
+    // ". It's a …" is an anaphor to the permanent the *preceding* clause acted
+    // on (a returned/created object), never the source permanent itself. Only
+    // emit when the subject application resolves to a real prior referent
+    // (`ParentTarget` — set when the chain carries a typed referent the
+    // `parent_target_available` ctx propagates onto the "it" anaphor). If it
+    // would bind to `SelfRef` (no prior typed referent in scope — e.g. the
+    // anaphoric "Return it … and it's a 3/3 …" or modal-else branch), decline so
+    // the clause honest-defers to `Effect::unimplemented` rather than silently
+    // animating the wrong object. The additive "… in addition to its other
+    // types" form above is unaffected (it is a type *addition* and stays on the
+    // referenced subject regardless).
+    if !matches!(
+        static_affected_for_application(&application),
+        TargetFilter::ParentTarget
+    ) {
+        return None;
+    }
+    let become_predicate = format!("becomes {rest_original}");
+    let clause = build_become_clause(application.clone(), &become_predicate, ctx)?;
     Some(ClauseAst::SubjectPredicate {
         subject: Box::new(SubjectPhraseAst {
             affected: application.affected,
@@ -269,7 +314,7 @@ fn try_parse_contracted_subject_additive_type_clause(
             inherits_parent: application.inherits_parent,
             is_optional: application.is_optional,
         }),
-        predicate: Box::new(PredicateAst::Continuous {
+        predicate: Box::new(PredicateAst::Become {
             effect: clause.effect,
             duration: clause.duration,
             sub_ability: clause.sub_ability,

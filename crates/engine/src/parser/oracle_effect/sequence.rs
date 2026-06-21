@@ -1727,6 +1727,19 @@ fn starts_bare_and_clause_lower(s: &str) -> bool {
         // where "it" resolves to the anaphoric/self subject and
         // `build_become_clause` produces the additive color/type modifications.
         value((), tag("it becomes ")),
+        // CR 205.1a + CR 205.1b + CR 613.1d: the copula form "it's <descriptor>"
+        // ("it's" = "it is") is always a subject (anaphor) + animation/type
+        // predicate, never a noun-phrase continuation. Brilliance Unleashed:
+        // "Otherwise, return it to the battlefield and it's a 3/3 Robot artifact
+        // creature with flying" — without this split the conjunct is fed to the
+        // imperative-only path and fails closed to an Unimplemented effect named
+        // "it's". Splitting routes it through `parse_clause_ast` →
+        // `try_parse_subject_clause` → the contracted "it's a …" handler, which
+        // emits the animation (non-additive) or AddType/AddSubtype (additive)
+        // modifications on the referenced (ParentTarget) permanent. The
+        // straight-apostrophe and typographic-apostrophe forms are leaf variants
+        // of the same contraction (CLAUDE.md "don't nest leaf variants").
+        value((), alt((tag("it's "), tag("it’s ")))),
         value((), tag("this creature gets ")),
         value((), tag("~ gets ")),
         // CR 104.3 + CR 119.7 + CR 119.8: Bare-plural-player subject + restriction
