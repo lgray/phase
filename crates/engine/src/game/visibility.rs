@@ -277,8 +277,7 @@ pub fn filter_state_for_viewer(state: &GameState, viewer: PlayerId) -> GameState
             // face-down [filter] any time" static (CR 708.5 exception) whose
             // affected filter matches this permanent.
             let viewer_may_look = can_view_private_for_player(controller)
-                || (can_view_private_for_player(viewer)
-                    && viewer_may_look_at_face_down(state, viewer, obj_id));
+                || viewer_may_look_at_face_down(state, obj_id, &can_view_private_for_player);
             if let Some(obj) = filtered.objects.get_mut(&obj_id) {
                 if viewer_may_look {
                     reveal_face_down_identity_to_controller(obj);
@@ -709,13 +708,17 @@ pub fn filter_state_for_viewer(state: &GameState, viewer: PlayerId) -> GameState
 /// Lumbering Laundry) whose affected filter matches the permanent. The affected
 /// filter is resolved from the static's source controller (the viewer), so
 /// `controller: Opponent` correctly scopes to the viewer's opponents.
-fn viewer_may_look_at_face_down(state: &GameState, viewer: PlayerId, obj_id: ObjectId) -> bool {
+fn viewer_may_look_at_face_down(
+    state: &GameState,
+    obj_id: ObjectId,
+    can_view_private_for_player: &impl Fn(PlayerId) -> bool,
+) -> bool {
     use crate::types::statics::StaticMode;
     for (source, def) in super::functioning_abilities::battlefield_active_statics(state) {
         if !matches!(def.mode, StaticMode::MayLookAtFaceDown) {
             continue;
         }
-        if source.controller != viewer {
+        if !can_view_private_for_player(source.controller) {
             continue;
         }
         let Some(filter) = def.affected.as_ref() else {
@@ -2104,9 +2107,10 @@ mod tests {
         };
         use crate::types::statics::StaticMode;
 
-        let mut state = GameState::new(FormatConfig::standard(), 2, 42);
+        let mut state = GameState::new(FormatConfig::standard(), 3, 42);
         let looker = PlayerId(0);
         let opponent = PlayerId(1);
+        let turn_controller = PlayerId(2);
 
         // The opponent manifests a creature face down on the battlefield.
         let secret = create_object(
@@ -2173,6 +2177,16 @@ mod tests {
             .expect("with Found Footage, the looker must see the opponent's face-down identity");
         assert_eq!(found_back.name, "Opposing Spy");
         assert_eq!(found_back.power, Some(5));
+
+        // A player controlling the looker's turn gets the same private view the
+        // looker would get, matching the rest of `filter_state_for_viewer`.
+        state.active_player = looker;
+        state.turn_decision_controller = Some(turn_controller);
+        let controlled_turn_view = filter_state_for_viewer(&state, turn_controller);
+        assert!(
+            controlled_turn_view.objects[&secret].back_face.is_some(),
+            "the turn controller must inherit the active player's look permission"
+        );
 
         // The opponent (controller) still sees their own permanent regardless.
         let owner_view = filter_state_for_viewer(&state, opponent);
