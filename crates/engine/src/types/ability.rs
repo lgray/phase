@@ -12851,11 +12851,13 @@ impl SubAbilityLink {
 /// `repeat_for` (a fixed `QuantityExpr` count) — this predicate decides
 /// per-iteration whether to re-follow the resolving ability's instructions.
 ///
-/// Currently a single-variant enum: only the controller-decision form ("you
-/// may repeat this process any number of times") is modeled. The game-state
-/// predicate form ("if you do, repeat this process" — Primal Surge) is a
-/// separately-tracked deferred unit; it will add a `While(...)` variant once
-/// the optional-put pause semantics it depends on are designed.
+/// Three forms are modeled: the controller-decision form ("you may repeat this
+/// process any number of times", `ControllerChoice`), the stop-predicate form
+/// ("repeat this process until …", `UntilStopConditions`, Tainted Pact), and
+/// the game-state-predicate form ("[if condition,] repeat this process
+/// [once]", `WhileCondition`). The optional-put pause semantics that the
+/// `WhileCondition` loop depends on are shared with `UntilStopConditions` via
+/// the `pending_repeat_until` resume path.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", content = "data")]
 pub enum RepeatContinuation {
@@ -12871,6 +12873,22 @@ pub enum RepeatContinuation {
     UntilStopConditions {
         stop_on_put_to_hand: bool,
         stop_on_duplicate_exiled_names: bool,
+    },
+    /// CR 608.2c: "[if <condition>,] repeat this process [once]" — after each
+    /// iteration fully resolves, the engine re-evaluates `condition` against the
+    /// just-resolved game state (the same `evaluate_condition` path used by
+    /// sub-ability gates) and auto-repeats while it holds. `condition` references
+    /// the iteration's freshly-resolved state (e.g. `RevealedHasCardType` reads
+    /// the card moved this iteration via `last_zone_changed_ids`; `QuantityCheck`
+    /// reads current battlefield counts). `max_iterations` caps the number of
+    /// *additional* iterations beyond the first ("once" → `Some(1)`, bare →
+    /// `None`). Sin, Spira's Punishment ("if the exiled card is a land card,
+    /// repeat this process"); Claim Jumper ("if an opponent controls more lands
+    /// than you, repeat this process once").
+    WhileCondition {
+        condition: Box<AbilityCondition>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        max_iterations: Option<u32>,
     },
 }
 

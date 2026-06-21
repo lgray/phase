@@ -898,8 +898,42 @@ fn parse_if_revealed_card_type_conditional(text: &str) -> Option<(AbilityConditi
     ))
 }
 
+/// CR 608.2c + CR 406.6: "If the exiled card is a [type] card, ..." — gates a
+/// sub_ability / repeat-process loop on the type of the card just moved by the
+/// preceding step. `RevealedHasCardType` falls back to `last_zone_changed_ids`
+/// when no reveal occurred, so the demonstrative "the exiled card" resolves to
+/// the card the preceding `ChangeZone` step moved this resolution (Sin, Spira's
+/// Punishment exiles a graveyard card, then this gates the repeat on its type).
+fn parse_if_exiled_card_type_conditional(text: &str) -> Option<(AbilityCondition, String)> {
+    let lower = text.to_lowercase();
+    let (type_filters, remainder) = nom_on_lower(text, &lower, |input| {
+        let (rest, _) = tag::<_, _, OracleError<'_>>("if the exiled card is a ").parse(input)?;
+        let (rest, type_filters) = nom_quantity::parse_type_filter_list(rest)?;
+        let (rest, _) = tag::<_, _, OracleError<'_>>(" card").parse(rest)?;
+        Ok((rest, type_filters))
+    })?;
+    let core_types: Vec<CoreType> = type_filters
+        .iter()
+        .filter_map(type_filter_to_core_type)
+        .collect();
+    if core_types.is_empty() {
+        return None;
+    }
+    Some((
+        AbilityCondition::RevealedHasCardType {
+            card_types: core_types,
+            additional_filter: None,
+            subtype_filter: None,
+        },
+        remainder_after_optional_comma(remainder).to_string(),
+    ))
+}
+
 pub(super) fn strip_card_type_conditional(text: &str) -> (Option<AbilityCondition>, String) {
     if let Some((condition, remainder)) = parse_if_revealed_card_type_conditional(text) {
+        return (Some(condition), remainder);
+    }
+    if let Some((condition, remainder)) = parse_if_exiled_card_type_conditional(text) {
         return (Some(condition), remainder);
     }
     let lower = text.to_lowercase();
