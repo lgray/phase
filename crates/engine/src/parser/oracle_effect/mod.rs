@@ -3921,6 +3921,8 @@ fn parse_effect_clause(text: &str, ctx: &mut ParseContext) -> ParsedEffectClause
     let original_lower = text.to_lowercase();
     if scan_contains_phrase(&original_lower, "this turn")
         || scan_contains_phrase(&original_lower, "until ")
+        || scan_contains_phrase(&original_lower, "remain exiled")
+        || scan_contains_phrase(&original_lower, "remains exiled")
     {
         if let Some(mut clause) =
             try_parse_play_from_exile(TextPair::new(text, &original_lower), ctx)
