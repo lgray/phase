@@ -44758,6 +44758,134 @@ mod tests {
         );
     }
 
+    /// CR 601.2f + CR 602.1 + CR 109.5: Boom Scholar — "Exhaust abilities of
+    /// other permanents you control cost {2} less to activate." The generalized
+    /// "<keyword> abilities of [subject]" static parser keys the reduction on the
+    /// "exhaust" `AbilityTag` (`ReduceAbilityCost { keyword: "exhaust" }`), and
+    /// the runtime gate `apply_static_activated_ability_cost_reduction` matches it
+    /// against the activating ability's `AbilityTag::keyword_str()`.
+    ///
+    /// Drives the production seam `apply_cost_reduction` (reached by
+    /// `can_activate_ability`). Discriminating assertions:
+    ///   - Another permanent's exhaust ability ({6} generic) reduces to {4}.
+    ///   - A non-exhaust activated ability on that permanent is NOT reduced
+    ///     (keyword mismatch — `active_keyword != "exhaust"`).
+    ///   - Boom Scholar's OWN exhaust ability is NOT reduced (FilterProp::Another
+    ///     self-exclusion).
+    ///
+    /// Reverting the generalized parser arm yields no static (the line stays
+    /// Unimplemented), so the first assertion would read {6} and fail. Reverting
+    /// the "exhaust"-keyword match would leave every assertion at full cost.
+    #[test]
+    fn boom_scholar_reduces_other_permanents_exhaust_ability_cost() {
+        use crate::types::ability::{
+            AbilityTag, Effect, FilterProp, StaticDefinition, TypedFilter,
+        };
+        use crate::types::identifiers::CardId;
+        use crate::types::mana::ManaCost;
+        use crate::types::statics::StaticMode;
+
+        let mut state = GameState::new_two_player(7);
+
+        // Boom Scholar carries the parsed reduction static.
+        let scholar = create_object(
+            &mut state,
+            CardId(1),
+            PlayerId(0),
+            "Boom Scholar".to_string(),
+            Zone::Battlefield,
+        );
+        {
+            let obj = state.objects.get_mut(&scholar).unwrap();
+            obj.card_types
+                .core_types
+                .push(crate::types::card_type::CoreType::Creature);
+            obj.static_definitions = vec![StaticDefinition::new(StaticMode::ReduceAbilityCost {
+                keyword: "exhaust".to_string(),
+                amount: 2,
+                minimum_mana: None,
+                dynamic_count: None,
+            })
+            .affected(TargetFilter::Typed(
+                TypedFilter::permanent()
+                    .controller(ControllerRef::You)
+                    .properties(vec![FilterProp::Another]),
+            ))]
+            .into();
+        }
+
+        // A second permanent the same player controls, holding an exhaust ability.
+        let other = create_object(
+            &mut state,
+            CardId(2),
+            PlayerId(0),
+            "Other Exhaust Permanent".to_string(),
+            Zone::Battlefield,
+        );
+        {
+            let obj = state.objects.get_mut(&other).unwrap();
+            obj.card_types
+                .core_types
+                .push(crate::types::card_type::CoreType::Creature);
+        }
+
+        let make_exhaust_def = || {
+            let mut def = AbilityDefinition::new(
+                AbilityKind::Activated,
+                Effect::Unimplemented {
+                    name: "exhaust-effect".to_string(),
+                    description: None,
+                },
+            );
+            def.cost = Some(AbilityCost::Mana {
+                cost: ManaCost::Cost {
+                    shards: vec![],
+                    generic: 6,
+                },
+            });
+            def.ability_tag = Some(AbilityTag::Exhaust);
+            def
+        };
+        let make_plain_def = || {
+            let mut def = make_exhaust_def();
+            def.ability_tag = None; // untagged activated ability
+            def
+        };
+        let generic_of = |def: &AbilityDefinition| match def.cost.as_ref().unwrap() {
+            AbilityCost::Mana {
+                cost: ManaCost::Cost { generic, .. },
+            } => *generic,
+            other => panic!("expected Mana cost, got {other:?}"),
+        };
+
+        // Other permanent's exhaust ability: {6} → {4}.
+        let mut def_other = make_exhaust_def();
+        apply_cost_reduction(&state, &mut def_other, PlayerId(0), other);
+        assert_eq!(
+            generic_of(&def_other),
+            4,
+            "another permanent's exhaust ability must be reduced by {{2}}"
+        );
+
+        // Same permanent, but a non-exhaust (untagged) activated ability: unchanged.
+        let mut def_plain = make_plain_def();
+        apply_cost_reduction(&state, &mut def_plain, PlayerId(0), other);
+        assert_eq!(
+            generic_of(&def_plain),
+            6,
+            "a non-exhaust activated ability must not be reduced by the exhaust-keyed static"
+        );
+
+        // Boom Scholar's OWN exhaust ability: self-excluded by FilterProp::Another.
+        let mut def_self = make_exhaust_def();
+        apply_cost_reduction(&state, &mut def_self, PlayerId(0), scholar);
+        assert_eq!(
+            generic_of(&def_self),
+            6,
+            "\"other permanents\" must exclude the static's own source"
+        );
+    }
+
     // --- cluster-04: first-qualifying-spell keyword grant, cast-time snapshot
     // (CR 611.2f). These tests would FAIL if the Cascade/Demonstrate seams
     // re-queried the grant post-record (the `SpellsCastThisTurn == 0` gate would

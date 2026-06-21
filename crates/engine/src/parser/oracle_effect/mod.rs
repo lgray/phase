@@ -2982,9 +2982,25 @@ fn try_parse_put_counter_choice(
     tp: TextPair<'_>,
     ctx: &mut ParseContext,
 ) -> Option<ParsedEffectClause> {
-    let ((), after_choice_original) = nom_on_lower(tp.original, tp.lower, |i| {
+    // CR 122.1b + CR 608.2d: two surface forms select a counter kind. The
+    // explicit "put your choice of <list> on TARGET" form (Inspirit, Invoke the
+    // Ancients) and the bare "put a <X>, <Y>, or <Z> counter on TARGET" form
+    // (Reluctant Role Model: "put a flying, lifelink, or +1/+1 counter on it").
+    // Both resolve to the same `ChooseOneOf` of `PutCounter` branches — the
+    // controller still picks one kind at resolution. The bare form is allowed
+    // ONLY for the strictly-validated SharedNoun/FromAmong shapes (every item
+    // must name a real counter type), so noun-phrase disjunctions like "put a
+    // creature or a land into play" never misclassify as a counter choice.
+    let explicit_choice;
+    let after_choice_original = if let Some(((), rest)) = nom_on_lower(tp.original, tp.lower, |i| {
         value((), tag("put your choice of ")).parse(i)
-    })?;
+    }) {
+        explicit_choice = true;
+        rest
+    } else {
+        explicit_choice = false;
+        nom_on_lower(tp.original, tp.lower, |i| value((), tag("put ")).parse(i))?.1
+    };
 
     let consumed = tp.original.len() - after_choice_original.len();
     let after_choice = TextPair::new(after_choice_original, &tp.lower[consumed..]);
@@ -3021,6 +3037,12 @@ fn try_parse_put_counter_choice(
                 {
                     (ChoiceListShape::SharedNoun, items)
                 }
+                // The bare "put <list> on ..." form has no "your choice of"
+                // disambiguator, so it must NOT fall through to the permissive
+                // Distributed shape — that would let arbitrary "A or B" noun
+                // phrases reach the counter-branch builder. Require the strict
+                // SharedNoun/FromAmong shapes for the bare form.
+                _ if !explicit_choice => return None,
                 _ => (
                     ChoiceListShape::Distributed,
                     split_choice_list_items(choices_text)?,
