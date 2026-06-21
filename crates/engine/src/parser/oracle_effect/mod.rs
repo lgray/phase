@@ -7445,9 +7445,18 @@ fn try_parse_play_from_exile(tp: TextPair, ctx: &ParseContext) -> Option<ParsedE
         return None;
     }
 
-    // Duration: extract from trailing text, defaulting to UntilEndOfTurn for impulse draw
+    // Duration: extract from trailing text, defaulting to UntilEndOfTurn for impulse draw.
+    // CR 400.7i + CR 611.2a: "for as long as ... remain[s] exiled" persists until
+    // zone-exit cleanup clears the exile-scoped permission, matching the existing
+    // any-mana remains-exiled grant path.
     let (_, dur) = strip_trailing_duration(tp.original);
-    let duration = dur.unwrap_or(Duration::UntilEndOfTurn);
+    let duration = if scan_contains_phrase(tp.lower, "remain exiled")
+        || scan_contains_phrase(tp.lower, "remains exiled")
+    {
+        Duration::Permanent
+    } else {
+        dur.unwrap_or(Duration::UntilEndOfTurn)
+    };
 
     Some(parsed_clause(Effect::GrantCastingPermission {
         permission: CastingPermission::PlayFromExile {

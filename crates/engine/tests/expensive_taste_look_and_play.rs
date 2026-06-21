@@ -21,7 +21,7 @@
 //! CR 400.7i: the controller may play the exiled cards.
 
 use engine::game::scenario::{GameScenario, P0, P1};
-use engine::types::ability::CastingPermission;
+use engine::types::ability::{CastingPermission, Duration};
 use engine::types::mana::ManaCost;
 use engine::types::phase::Phase;
 use engine::types::zones::Zone;
@@ -62,7 +62,11 @@ fn expensive_taste_grants_play_permission_on_exiled_opponent_cards() {
         assert!(
             object.casting_permissions.iter().any(|permission| matches!(
                 permission,
-                CastingPermission::PlayFromExile { granted_to: P0, .. }
+                CastingPermission::PlayFromExile {
+                    granted_to: P0,
+                    duration: Duration::Permanent,
+                    ..
+                }
             )),
             "exiled opponent card must carry P0's PlayFromExile permission, got {:?}",
             object.casting_permissions
