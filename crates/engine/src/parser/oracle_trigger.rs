@@ -2699,6 +2699,7 @@ fn static_condition_to_trigger_condition(sc: &StaticCondition) -> Option<Trigger
         StaticCondition::WasCast { zone } => Some(TriggerCondition::WasCast {
             zone: *zone,
             controller: None,
+            owner: None,
         }),
 
         // CR 702.176a + CR 603.4: Impending's battlefield trigger checks the
@@ -2919,6 +2920,13 @@ fn static_condition_to_trigger_condition(sc: &StaticCondition) -> Option<Trigger
 /// graveyard (`WasCast`). `owner` carries the graveyard's owner scope: "your
 /// graveyard" (Prized Amalgam) restricts the entered-from filter to objects you
 /// own; "a graveyard" (any graveyard) leaves it unrestricted.
+///
+/// The "your graveyard" form (Prized Amalgam) is templated "entered from your
+/// graveyard or you cast it from your graveyard" — the cast arm carries an
+/// explicit "you cast it" caster clause AND a "your graveyard" owner clause, so
+/// the `WasCast` arm scopes BOTH the caster (`cast_controller`) and the
+/// origin-zone owner (`owner`, CR 400.3 + CR 404.1). The compact "a graveyard"
+/// form (Twilight Diviner) carries neither caster nor owner constraint.
 fn graveyard_origin_or_condition(owner: Option<ControllerRef>) -> TriggerCondition {
     let filter = match owner {
         Some(ref controller) => with_owner_scope(TargetFilter::Any, controller.clone()),
@@ -2933,7 +2941,8 @@ fn graveyard_origin_or_condition(owner: Option<ControllerRef>) -> TriggerConditi
             },
             TriggerCondition::WasCast {
                 zone: Some(Zone::Graveyard),
-                controller: owner,
+                controller: owner.clone(),
+                owner,
             },
         ],
     }
@@ -2969,7 +2978,30 @@ fn parse_graveyard_origin_intervening_if(input: &str) -> OracleResult<'_, Trigge
         tag("entered from your graveyard or you cast it from your graveyard"),
         |_| graveyard_origin_or_condition(Some(ControllerRef::You)),
     );
-    alt((compact, split_your)).parse(rest)
+    // CR 601.2 + CR 603.4: bare "(was|were) cast from [a|your] graveyard" with no
+    // "entered" disjunction (Rocket-Powered Goblin Glider's Mayhem-gated ETB
+    // attach: "if it was cast from your graveyard"). This is the cast-origin
+    // check alone — `WasCast`, not the entered/cast `Or` the disjunctive forms
+    // above build. CR 400.3 + CR 404.1: a graveyard is owner-specific, and this
+    // wording carries NO "you cast it" caster clause, so "your graveyard" scopes
+    // the origin-zone OWNER (`owner = You`), never the caster. "a graveyard" is
+    // unscoped on both axes.
+    let bare_cast = map(
+        (
+            alt((tag("was"), tag("were"))),
+            tag(" cast from "),
+            alt((
+                value(Some(ControllerRef::You), tag("your graveyard")),
+                value(None, tag("a graveyard")),
+            )),
+        ),
+        |(_, _, owner)| TriggerCondition::WasCast {
+            zone: Some(Zone::Graveyard),
+            controller: None,
+            owner,
+        },
+    );
+    alt((compact, split_your, bare_cast)).parse(rest)
 }
 
 /// CR 701.26 + CR 603.4: "if it's the first time that creature/permanent has become
@@ -3040,6 +3072,7 @@ fn extract_if_condition(text: &str) -> (String, Option<TriggerCondition>) {
                 Some(TriggerCondition::WasCast {
                     zone: None,
                     controller: None,
+                    owner: None,
                 }),
             );
         }
@@ -3074,6 +3107,7 @@ fn extract_if_condition(text: &str) -> (String, Option<TriggerCondition>) {
                         condition: Box::new(TriggerCondition::WasCast {
                             zone: None,
                             controller: None,
+                            owner: None,
                         }),
                     },
                     TriggerCondition::ManaSpentCondition {
@@ -3145,6 +3179,7 @@ fn extract_if_condition(text: &str) -> (String, Option<TriggerCondition>) {
             Some(TriggerCondition::WasCast {
                 zone: None,
                 controller: None,
+                owner: None,
             }),
         );
     }
@@ -3157,6 +3192,7 @@ fn extract_if_condition(text: &str) -> (String, Option<TriggerCondition>) {
                 condition: Box::new(TriggerCondition::WasCast {
                     zone: None,
                     controller: None,
+                    owner: None,
                 }),
             }),
         );
@@ -5375,6 +5411,13 @@ fn continues_player_action_list(after_comma: &str) -> bool {
         .unwrap_or(trimmed)
         .trim();
     if parse_player_action_phrase(candidate).is_some() {
+        return true;
+    }
+    // Avatar crossover: a comma-separated bending-verb disjunction
+    // ("whenever you waterbend, earthbend, firebend, or airbend") is a single
+    // batched trigger event, so the comma after each verb is a list separator,
+    // not the condition/effect boundary.
+    if all_consuming(parse_bend_verb).parse(candidate).is_ok() {
         return true;
     }
 
@@ -9995,8 +10038,99 @@ fn try_parse_phase_trigger(lower: &str) -> Option<(TriggerMode, TriggerDefinitio
     Some((TriggerMode::Phase, def))
 }
 
+/// Avatar crossover: recognize a single bending verb and map it to its
+/// specific `TriggerMode`. The full four-verb disjunction is collapsed by
+/// `try_parse_bend_trigger` to `TriggerMode::ElementalBend` (which matches any of
+/// the four bending `GameEvent`s for the source's controller); a partial
+/// disjunction fails closed (see `try_parse_bend_trigger`). Single source of
+/// truth for both the trigger-mode dispatch and the `continues_player_action_list`
+/// condition/effect boundary check.
+fn parse_bend_verb(input: &str) -> OracleResult<'_, TriggerMode> {
+    alt((
+        value(TriggerMode::Waterbend, tag("waterbend")),
+        value(TriggerMode::Earthbend, tag("earthbend")),
+        value(TriggerMode::Firebend, tag("firebend")),
+        value(TriggerMode::Airbend, tag("airbend")),
+    ))
+    .parse(input)
+}
+
+/// Avatar crossover (CR 603.2): "whenever you {waterbend|earthbend|firebend|
+/// airbend}[, {verb}]*[, or {verb}]" — a single bending verb fires its specific
+/// bend trigger; the full four-verb batch (Avatar Aang) fires on ANY of the four
+/// bend events via `TriggerMode::ElementalBend`, whose matcher
+/// `match_elemental_bend` already scopes to the source's controller.
+///
+/// A PARTIAL disjunction (a strict subset of two or three distinct verbs, e.g.
+/// "whenever you waterbend or earthbend") has no faithful runtime representation:
+/// the only any-bend matcher is `match_elemental_bend`, which fires on all four,
+/// and there is no parameterized bend-set matcher yet. Collapsing a partial set to
+/// `ElementalBend` would over-fire on the unlisted bend events. So this parser
+/// returns `None` for any partial set, leaving such cards to fail closed
+/// (strict-failure `Unknown`) rather than ship a trigger broader than its
+/// semantics. When a partial-bend card actually appears, add a parameterized
+/// bend-set matcher and route the parsed set through to it. `valid_target =
+/// Controller` is redundant with the matcher's controller scoping but kept for
+/// consistency with the other player-action bend-adjacent triggers.
+fn try_parse_bend_trigger(lower: &str) -> Option<(TriggerMode, TriggerDefinition)> {
+    let rest = alt((
+        value((), tag::<_, _, OracleError<'_>>("whenever you ")),
+        value((), tag("when you ")),
+    ))
+    .parse(lower)
+    .map(|(rest, ())| rest)
+    .ok()?;
+
+    let mut modes: Vec<TriggerMode> = Vec::new();
+    let mut remaining = rest.trim();
+    loop {
+        let (after_verb, mode) = parse_bend_verb(remaining).ok()?;
+        modes.push(mode);
+        // Consume an optional list separator: ", or ", ", ", " or " — or stop at
+        // the end of the condition clause.
+        let next = alt((
+            value((), tag::<_, _, OracleError<'_>>(", or ")),
+            value((), tag(", ")),
+            value((), tag(" or ")),
+        ))
+        .parse(after_verb);
+        match next {
+            Ok((tail, ())) => remaining = tail.trim_start(),
+            Err(_) => {
+                if !after_verb.trim().is_empty() {
+                    return None;
+                }
+                break;
+            }
+        }
+    }
+
+    let distinct: std::collections::HashSet<&TriggerMode> = modes.iter().collect();
+    let mode = match modes.as_slice() {
+        [] => return None,
+        [single] => single.clone(),
+        // CR 603.2: only the complete four-verb batch maps to the any-bend matcher.
+        // Anything narrower (partial subset, or repeated verbs) lacks a faithful
+        // runtime matcher and must fail closed rather than over-fire.
+        _ if distinct.len() == 4 => TriggerMode::ElementalBend,
+        _ => return None,
+    };
+
+    let mut def = make_base();
+    def.mode = mode.clone();
+    def.valid_target = Some(TargetFilter::Controller);
+    Some((mode, def))
+}
+
 /// Parse player-centric triggers: "you gain life", "you cast a/an ...", "you draw a card"
 fn try_parse_player_trigger(lower: &str) -> Option<(TriggerMode, TriggerDefinition)> {
+    // Avatar crossover: bending-verb triggers ("whenever you waterbend, …") must
+    // run before the generic player-action dispatch, which does not recognize the
+    // bend verbs and would fall through to `TriggerMode::Unknown`.
+    if let Some(result) = try_parse_bend_trigger(lower) {
+        return Some(result);
+    }
+
     if let Some(result) = try_parse_player_action_trigger(lower) {
         return Some(result);
     }
@@ -10864,6 +10998,11 @@ fn try_parse_player_action_trigger(lower: &str) -> Option<(TriggerMode, TriggerD
                 def.mode = TriggerMode::CollectEvidence;
                 return Some((TriggerMode::CollectEvidence, def));
             }
+            // CR 701.16a: Investigate — create a Clue artifact token.
+            [PlayerActionKind::Investigate] => {
+                def.mode = TriggerMode::Investigated;
+                return Some((TriggerMode::Investigated, def));
+            }
             // CR 701.24a: Shuffle — player-action trigger, scoped by
             // valid_target so "you", "an opponent", and "a player" forms all
             // use the same matcher path.
@@ -10909,6 +11048,8 @@ fn parse_player_action_phrase(text: &str) -> Option<PlayerActionKind> {
         "surveil" | "surveils" => Some(PlayerActionKind::Surveil),
         // CR 701.59a: Collect evidence — exile cards from your graveyard with total mana value N or more.
         "collect evidence" | "collects evidence" => Some(PlayerActionKind::CollectEvidence),
+        // CR 701.16a: Investigate — create a Clue artifact token.
+        "investigate" | "investigates" => Some(PlayerActionKind::Investigate),
         "shuffle your library"
         | "shuffles their library"
         | "shuffle their library"
@@ -20571,6 +20712,31 @@ mod tests {
     }
 
     #[test]
+    fn trigger_you_investigate() {
+        // Erdwal Illuminator (SOI): "Whenever you investigate for the first time
+        // each turn, investigate an additional time." The "for the first time
+        // each turn" qualifier becomes OncePerTurn; the trigger itself must be
+        // Investigated (not the inert Unknown that never fires).
+        let def = parse_trigger_line(
+            "Whenever you investigate for the first time each turn, investigate an additional time.",
+            "Erdwal Illuminator",
+        );
+        assert_eq!(def.mode, TriggerMode::Investigated);
+        assert_eq!(def.valid_target, Some(TargetFilter::Controller));
+        assert_eq!(def.constraint, Some(TriggerConstraint::OncePerTurn));
+    }
+
+    #[test]
+    fn trigger_you_investigate_bare() {
+        let def = parse_trigger_line(
+            "Whenever you investigate, draw a card.",
+            "Test Investigator",
+        );
+        assert_eq!(def.mode, TriggerMode::Investigated);
+        assert_eq!(def.valid_target, Some(TargetFilter::Controller));
+    }
+
+    #[test]
     fn trigger_you_collect_evidence() {
         // Surveillance Monitor (MKM): "Whenever you collect evidence, create a 1/1 colorless
         // Thopter artifact creature token with flying."
@@ -28599,6 +28765,7 @@ mod tests {
                         condition: Box::new(TriggerCondition::WasCast {
                             zone: None,
                             controller: None,
+                            owner: None,
                         }),
                     }
                 );
@@ -28632,6 +28799,7 @@ mod tests {
                 condition: Box::new(TriggerCondition::WasCast {
                     zone: None,
                     controller: None,
+                    owner: None,
                 }),
             })
         );
@@ -32202,7 +32370,8 @@ mod snapshot_tests {
                     conditions[1],
                     TriggerCondition::WasCast {
                         zone: Some(Zone::Graveyard),
-                        controller: None
+                        controller: None,
+                        owner: None,
                     }
                 );
             }
@@ -32231,7 +32400,8 @@ mod snapshot_tests {
                     conditions[1],
                     TriggerCondition::WasCast {
                         zone: Some(Zone::Graveyard),
-                        controller: None
+                        controller: None,
+                        owner: None,
                     }
                 );
             }
@@ -32732,9 +32902,11 @@ mod slicer_control_handoff_tests {
                         TriggerCondition::WasCast {
                             zone: Some(Zone::Graveyard),
                             controller: Some(ControllerRef::You),
+                            owner: Some(ControllerRef::You),
                         }
                     ),
-                    "cast-from-your-graveyard branch must be caster-scoped to you, got {condition:?}"
+                    "cast-from-your-graveyard branch must scope BOTH caster (\"you cast it\") \
+                     and origin-zone owner (\"your graveyard\") to you, got {condition:?}"
                 );
             }
             other => panic!("expected Or condition, got {other:?}"),

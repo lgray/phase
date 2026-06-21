@@ -48,7 +48,11 @@
     "clone": "Clone",
     "cloneTitle": "Save a copy under a new name",
     "loadDeck": "Load deck...",
-    "nameToSave": "Name the deck to save it"
+    "nameToSave": "Name the deck to save it",
+    "savedToastTitle": "Deck saved",
+    "savedToastDescription": "\"{{name}}\" was saved to your decks.",
+    "clonedToastTitle": "Deck cloned",
+    "clonedToastDescription": "A copy was saved as \"{{name}}\"."
   },
   "unsaved": {
     "title": "Unsaved changes",

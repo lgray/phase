@@ -1090,9 +1090,21 @@ pub(crate) fn parse_static_line_inner(
     // "Creatures" from falling through to the subtype path (A1 fix: 162+ cards).
     if let Some(rest_tp) = nom_tag_tp(&tp, "creatures you control ") {
         let after_prefix = rest_tp.original;
-        let (filter, predicate_text) = if let Some((prop, rest)) =
-            strip_counter_condition_prefix(after_prefix)
+        let (filter, predicate_text) = if let Some((owned_prop, rest)) =
+            strip_negated_ownership_qualifier(after_prefix)
         {
+            // CR 108.3 + CR 109.4: "Creatures you control but don't own …"
+            // (Laughing Jasper Flint). Preserve the negated-ownership axis the
+            // controller-prefix arm would otherwise drop.
+            (
+                TargetFilter::Typed(
+                    TypedFilter::creature()
+                        .controller(ControllerRef::You)
+                        .properties(vec![owned_prop]),
+                ),
+                rest,
+            )
+        } else if let Some((prop, rest)) = strip_counter_condition_prefix(after_prefix) {
             (
                 TargetFilter::Typed(
                     TypedFilter::creature()

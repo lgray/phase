@@ -48,7 +48,11 @@
     "clone": "Clonar",
     "cloneTitle": "Guardar una copia con un nombre nuevo",
     "loadDeck": "Cargar mazo...",
-    "nameToSave": "Pon un nombre al mazo para guardarlo"
+    "nameToSave": "Pon un nombre al mazo para guardarlo",
+    "savedToastTitle": "Mazo guardado",
+    "savedToastDescription": "\"{{name}}\" se guardó en tus mazos.",
+    "clonedToastTitle": "Mazo clonado",
+    "clonedToastDescription": "Se guardó una copia como \"{{name}}\"."
   },
   "unsaved": {
     "title": "Cambios sin guardar",

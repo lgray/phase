@@ -732,6 +732,10 @@ pub(crate) fn lower_effect_chain_ir(ir: &EffectChainIr) -> AbilityDefinition {
                     ..
                 } if crate::game::casting_costs::cost_has_x(cost)
             );
+        let is_pay_to_end_effect_termination =
+            crate::parser::clause_shell::is_you_may_pay_to_end_effect_phrase(
+                &clause_ir.source_text.to_ascii_lowercase(),
+            );
         if clause_ir.is_optional
             && !matches!(&clause_ir.parsed.effect, Effect::SearchOutsideGame { .. })
             && !matches!(
@@ -740,6 +744,7 @@ pub(crate) fn lower_effect_chain_ir(ir: &EffectChainIr) -> AbilityDefinition {
             )
             && !is_lingering_cast_from_zone
             && !is_join_forces_pay_any_amount_mana_cost
+            && !is_pay_to_end_effect_termination
         {
             def.optional = true;
             def.optional_for = clause_ir.opponent_may_scope;
@@ -752,6 +757,7 @@ pub(crate) fn lower_effect_chain_ir(ir: &EffectChainIr) -> AbilityDefinition {
             )
             && !is_lingering_cast_from_zone
             && !is_join_forces_pay_any_amount_mana_cost
+            && !is_pay_to_end_effect_termination
         {
             def.optional = true;
         }
@@ -3521,11 +3527,29 @@ pub(crate) fn extract_verb_up_to_multi_target(text: &str) -> Option<MultiTargetS
     multi_target
 }
 
+/// CR 115.1: the "controlled by different players" target-set constraint phrase.
+/// Single source of truth shared by the detector
+/// (`parse_controlled_by_different_players_target_constraint`) and the per-slot
+/// stripper (`strip_controlled_by_different_players` →
+/// `try_parse_exchange_control_targets`).
+pub(crate) const CONTROLLED_BY_DIFFERENT_PLAYERS: &str = " controlled by different players";
+
+/// Locate the `CONTROLLED_BY_DIFFERENT_PLAYERS` constraint with a `take_until`
+/// combinator and return the span BEFORE it (trimmed). Returns `None` when the
+/// constraint is absent, so callers keep the original span. Composed from the
+/// shared constraint phrase so the detector and the stripper can never drift.
+pub(crate) fn strip_controlled_by_different_players(span: &str) -> Option<&str> {
+    take_until::<_, _, OracleError<'_>>(CONTROLLED_BY_DIFFERENT_PLAYERS)
+        .parse(span)
+        .ok()
+        .map(|(_, before)| before.trim_end())
+}
+
 fn parse_controlled_by_different_players_target_constraint(text: &str) -> bool {
     let lower = text.to_lowercase();
     let mut parser = preceded(
-        take_until::<_, _, OracleError<'_>>(" controlled by different players"),
-        tag(" controlled by different players"),
+        take_until::<_, _, OracleError<'_>>(CONTROLLED_BY_DIFFERENT_PLAYERS),
+        tag(CONTROLLED_BY_DIFFERENT_PLAYERS),
     );
     parser.parse(lower.as_str()).is_ok()
 }
@@ -4742,11 +4766,21 @@ pub(super) fn try_parse_damage_with_remainder<'a>(
                 nom::combinator::all_consuming(tag::<_, _, OracleError<'_>>("defending player"))
                     .parse(target_phrase)
                     .is_ok();
+            // CR 120.3: "deals damage to each player equal to the number of [X]
+            // THEY control" — the third-person "they" binds to the iterating
+            // player (DamageEachPlayer resolves per recipient), NOT the caster.
+            // Classify the recipient scope BEFORE parsing the amount so the
+            // count's controller threads to `ScopedPlayer` (Acidic Soil).
+            let each_player_scope = parse_damage_each_player_scope(target_phrase).is_some();
             // Parse amount using existing helpers
             let qty = crate::parser::oracle_quantity::parse_event_context_quantity(amount_phrase)
                 .or_else(|| {
                     if references_defending_player {
                         ctx.with_player_scope(ControllerRef::DefendingPlayer, |amount_ctx| {
+                            parse_cda_quantity_with_context(amount_phrase, amount_ctx)
+                        })
+                    } else if each_player_scope {
+                        ctx.with_player_scope(ControllerRef::ScopedPlayer, |amount_ctx| {
                             parse_cda_quantity_with_context(amount_phrase, amount_ctx)
                         })
                     } else {

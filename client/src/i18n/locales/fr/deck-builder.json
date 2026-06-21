@@ -48,7 +48,11 @@
     "clone": "Cloner",
     "cloneTitle": "Enregistrer une copie sous un nouveau nom",
     "loadDeck": "Charger un deck...",
-    "nameToSave": "Nommez le deck pour l'enregistrer"
+    "nameToSave": "Nommez le deck pour l'enregistrer",
+    "savedToastTitle": "Deck enregistré",
+    "savedToastDescription": "« {{name}} » a été enregistré dans vos decks.",
+    "clonedToastTitle": "Deck dupliqué",
+    "clonedToastDescription": "Une copie a été enregistrée sous « {{name}} »."
   },
   "unsaved": {
     "title": "Modifications non enregistrées",

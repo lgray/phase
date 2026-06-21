@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next";
 import type { ScryfallCard } from "../../services/scryfall";
 import { resolveOracleIdSync } from "../../services/scryfall";
 import { usePreferencesStore } from "../../stores/preferencesStore";
+import { useAppNotificationStore } from "../../stores/appToastStore";
 import type { ParsedDeck, DeckEntry } from "../../services/deckParser";
 import { deduplicateEntries, resolveCommander } from "../../services/deckParser";
 import { evaluateDeckCompatibility, type DeckCompatibilityResult } from "../../services/deckCompatibility";
@@ -63,6 +64,7 @@ export function useDeckBuilder({
   searchFilters,
 }: UseDeckBuilderParams) {
   const { t } = useTranslation("deck-builder");
+  const showNotification = useAppNotificationStore((s) => s.showNotification);
   const [deck, setDeck] = useState<ParsedDeck>({ main: [], sideboard: [] });
   const [searchResults, setSearchResults] = useState<ScryfallCard[]>([]);
   const [deckName, setDeckName] = useState("");
@@ -412,7 +414,7 @@ export function useDeckBuilder({
     setDirty(true);
   }, [applyDeckToEditor]);
 
-  const handleSave = async () => {
+  const handleSave = useCallback(async () => {
     if (!deckName.trim()) return;
     // Save-time commander inference: when a Commander-format deck is shaped
     // like a 100-singleton list with no explicit commander, ask the engine
@@ -449,7 +451,21 @@ export function useDeckBuilder({
     setSavedDecks(listSavedDecks());
     setJustSaved(true);
     setDirty(false);
-  };
+    showNotification({
+      title: t("toolbar.savedToastTitle"),
+      description: t("toolbar.savedToastDescription", { name: nextName }),
+    });
+  }, [
+    deckName,
+    isCommander,
+    currentDeck,
+    applyDeckToEditor,
+    format,
+    bracket,
+    savedDeckName,
+    showNotification,
+    t,
+  ]);
 
   // Clone = explicit duplicate. Unlike Save (which renames the current deck in
   // place), this always writes a NEW key and leaves the original untouched, then
@@ -470,7 +486,11 @@ export function useDeckBuilder({
     setSavedDecks(listSavedDecks());
     setJustSaved(true);
     setDirty(false);
-  }, [deckName, currentDeck, format, bracket]);
+    showNotification({
+      title: t("toolbar.clonedToastTitle"),
+      description: t("toolbar.clonedToastDescription", { name: cloneName }),
+    });
+  }, [deckName, currentDeck, format, bracket, showNotification, t]);
 
   useEffect(() => {
     if (!justSaved) return;

@@ -48,7 +48,11 @@
     "clone": "Klonuj",
     "cloneTitle": "Zapisz kopię pod nową nazwą",
     "loadDeck": "Wczytaj talię...",
-    "nameToSave": "Nazwij talię, aby ją zapisać"
+    "nameToSave": "Nazwij talię, aby ją zapisać",
+    "savedToastTitle": "Talia zapisana",
+    "savedToastDescription": "„{{name}}” została zapisana w twoich taliach.",
+    "clonedToastTitle": "Talia sklonowana",
+    "clonedToastDescription": "Kopia została zapisana jako „{{name}}”."
   },
   "unsaved": {
     "title": "Niezapisane zmiany",

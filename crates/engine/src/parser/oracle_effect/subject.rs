@@ -417,7 +417,19 @@ fn try_parse_subject_become_clause(
     tag::<_, _, OracleError<'_>>("become ")
         .parse(predicate_lower.as_str())
         .ok()?;
-    let application = parse_subject_application(subject, ctx)?;
+    // CR 608.2c: a bare "becomes <descriptor>" conjunct (no leading subject) is
+    // the second half of a compound-become instruction whose subject carried over
+    // from the prior conjunct — Alacrian Armory's "that permanent becomes saddled
+    // if it's a Mount and becomes an artifact creature if it's a Vehicle", where
+    // the sequence splitter peels "becomes an artifact creature …" off as its own
+    // chunk. Resolve the empty subject through the same context-dependent "it"
+    // anaphor the explicit "it becomes …" form uses (parent target / triggering
+    // source), so the second animation binds to the same object as the first.
+    let application = if subject.is_empty() {
+        parse_subject_application("it", ctx)?
+    } else {
+        parse_subject_application(subject, ctx)?
+    };
     build_become_clause(application, &predicate, ctx)
 }
 
@@ -830,6 +842,33 @@ fn try_parse_subject_restriction_clause(
                 distribute: None,
                 multi_target: application.multi_target,
                 duration,
+                sub_ability: None,
+                condition: None,
+                optional: application.is_optional,
+                unless_pay: None,
+            });
+        }
+        // CR 701.15a + CR 701.15b: "[subject] attacks each combat if able and
+        // attacks a player other than you if able" is the printed goad definition
+        // (Maximum Carnage chapter I). Map it to `Effect::GoadAll` over the subject
+        // population so the goad mechanic (goaded_by mark, "attack a player other
+        // than the goading player", goading-player next-turn cleanup) handles it.
+        // Tried before the plain attack recognizer since the goad compound is the
+        // strict superset and must win. The subject is a population ("each
+        // creature"), so the GoadAll target is `application.affected`.
+        if imperative::try_parse_goad_equivalent(&predicate) {
+            let application = parse_subject_application(subject, ctx)?;
+            let goad_target = application
+                .target
+                .clone()
+                .unwrap_or_else(|| application.affected.clone());
+            return Some(ParsedEffectClause {
+                effect: Effect::GoadAll {
+                    target: goad_target,
+                },
+                distribute: None,
+                multi_target: application.multi_target,
+                duration: None,
                 sub_ability: None,
                 condition: None,
                 optional: application.is_optional,
@@ -2717,7 +2756,7 @@ fn build_become_clause(
 
     // CR 119.5: "life total becomes N" — set life total to a specific number.
     // Must intercept before parse_animation_spec which tokenizes each word as a subtype.
-    if let Some(clause) = try_parse_set_life_total(become_text, &application) {
+    if let Some(clause) = try_parse_set_life_total(become_text, &application, ctx) {
         return Some(clause);
     }
 
@@ -3137,6 +3176,7 @@ fn parse_attack_if_able_duration(input: &str) -> OracleResult<'_, Duration> {
 fn try_parse_set_life_total(
     become_text: &str,
     application: &SubjectApplication,
+    ctx: &mut ParseContext,
 ) -> Option<ParsedEffectClause> {
     let full_lower = become_text.to_lowercase();
     // CR 119.5: "life total becomes equal to <quantity>" — strip the optional
@@ -3175,7 +3215,25 @@ fn try_parse_set_life_total(
         // "life total becomes <quantity>" card composes. `parse_cda_quantity`
         // returns `Some` only when it fully consumes the phrase, so an
         // unrecognized trailer yields `None` here — no false positives.
-        oracle_quantity::parse_cda_quantity(lower)?
+        //
+        // CR 119.5 + CR 109.5: the untargeted "each player's life total becomes
+        // the number of [X] THEY control" form (Biorhythm, Shaman of Forgotten
+        // Ways) resolves per player — the third-person "they" binds to the
+        // iterating player, not the caster. Thread `ScopedPlayer` so the count's
+        // controller resolves per-recipient. Gate strictly to the AllPlayers
+        // each-player form: the targeted form ("target player's life total",
+        // `application.target = Some`), the cross-player extremum (Repay in Kind
+        // → `LifeTotal{AllPlayers{Min/Max}}`, which carries no "they control"
+        // count to rebind), "your life total" (Controller), and the numeric arm
+        // (Worldfire) are all left at the default controller scope.
+        if application.target.is_none() && matches!(application.affected, TargetFilter::AllPlayers)
+        {
+            ctx.with_player_scope(ControllerRef::ScopedPlayer, |c| {
+                oracle_quantity::parse_cda_quantity_with_context(lower, c)
+            })?
+        } else {
+            oracle_quantity::parse_cda_quantity_with_context(lower, ctx)?
+        }
     };
 
     // CR 119.5: Use the parsed target if targeted ("target player's life total"),

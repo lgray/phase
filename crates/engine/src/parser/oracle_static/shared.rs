@@ -1753,6 +1753,38 @@ pub(crate) fn find_continuous_predicate_start(lower: &str) -> Option<usize> {
     .min()
 }
 
+/// CR 108.3 + CR 109.4: Strip a leading negated-ownership qualifier ("but don't
+/// own", "but do not own") from a "<subject> you control" predicate tail.
+///
+/// The "<X> you control" dispatch arms (`creatures you control `, `other
+/// creatures you control `) consume the `you control` controller anchor before
+/// the predicate, so a trailing "but don't own" qualifier would otherwise be
+/// silently dropped from the affected filter. Returns the
+/// `FilterProp::Owned { Opponent }` property ("controller doesn't own it") and
+/// the remaining predicate text when the qualifier is present. The companion
+/// "but don't own" handling in `parse_type_phrase` covers the full-subject path
+/// (Laughing Jasper Flint's "Creatures you control but don't own are
+/// Mercenaries …"); this is the controller-prefix-consumed sibling.
+pub(crate) fn strip_negated_ownership_qualifier(after_prefix: &str) -> Option<(FilterProp, &str)> {
+    type VE<'a> = OracleError<'a>;
+    for qualifier in [
+        "but don't own ",
+        "but do not own ",
+        "but doesn't own ",
+        "but does not own ",
+    ] {
+        if let Ok((rest, _)) = tag::<_, _, VE>(qualifier).parse(after_prefix) {
+            return Some((
+                FilterProp::Owned {
+                    controller: ControllerRef::Opponent,
+                },
+                rest,
+            ));
+        }
+    }
+    None
+}
+
 pub(crate) fn parse_qualified_creatures_you_control_suffix<'a>(
     subject_prefix: &str,
     after_prefix: &'a str,
@@ -2856,6 +2888,15 @@ pub(crate) fn parse_rule_static_predicate_nom(
             RuleStaticPredicate::CantBeSacrificed,
             tag("can't be sacrificed"),
         ),
+        // NOTE: "can't become untapped" / "can't be untapped" (CR 701.26b) is the
+        // BROAD untap prohibition and is NOT a rule-static predicate. It would
+        // conflate with `StaticMode::CantUntap`, which is the untap-step-only
+        // class (CR 502.3, "doesn't untap during its untap step") enforced only by
+        // the untap-step turn-based-action loop — a spell/ability untap would
+        // bypass it. The broad form is parsed as an unconditional
+        // `ProposedEvent::Untap` prevention by
+        // `oracle_replacement::parse_cant_become_untapped_replacement` (mirroring
+        // CR 122.1d stun counters), so every untap path consults it.
         value(
             RuleStaticPredicate::LoseAllAbilities,
             alt((tag("loses all abilities"), tag("lose all abilities"))),

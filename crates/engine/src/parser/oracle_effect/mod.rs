@@ -2665,8 +2665,12 @@ fn try_parse_airbend_clause(tp: TextPair<'_>) -> Option<ParsedEffectClause> {
 }
 
 fn try_parse_earthbend_clause(tp: TextPair<'_>) -> Option<ParsedEffectClause> {
+    // CR 608.2c: the optional leading "you " subject ("you earthbend 4" — Fatal
+    // Fissure's delayed trigger) names the controller performing the keyword
+    // action. Earthbend is a player action with no extra targeting, so the
+    // subject is simply consumed before the count/target parse.
     let (_, rest) = nom_on_lower(tp.original, tp.lower, |i| {
-        value((), tag("earthbend ")).parse(i)
+        value((), preceded(opt(tag("you ")), tag("earthbend "))).parse(i)
     })?;
     // `rest` is the original-case remainder; lowercase it for the nom-based
     // dispatcher inside `parse_earthbend_count_expr`, which expects already-lowered
@@ -8029,6 +8033,12 @@ fn clause_is_additional_land_permission(clause: &ParsedEffectClause) -> bool {
             definition.mode,
             StaticMode::MayPlayAdditionalLand | StaticMode::AdditionalLandDrop { .. }
         ))
+    )
+}
+
+fn clause_is_pay_to_end_effect_termination(source_text: &str) -> bool {
+    crate::parser::clause_shell::is_you_may_pay_to_end_effect_phrase(
+        &source_text.to_ascii_lowercase(),
     )
 }
 
@@ -19539,6 +19549,22 @@ pub(crate) fn parse_effect_chain_ir(
             chain_parent_target_controller_scope = None;
         }
         let leading_subject_application = subject::parse_leading_subject_application(&text, ctx);
+        // CR 608.2c + CR 109.5: A chained clause whose explicit subject is the caster
+        // ("you"/"you may") switches the acting player back to the ability controller
+        // (CR 109.5: "you"/"your" refer to the object's controller). A non-caster
+        // `anchor_subject` from an earlier clause (e.g. ParentTargetController from
+        // "that land's controller may search") must NOT bleed across this switch —
+        // clause (2)'s "search your library"/"then shuffle" route to the activator,
+        // not the opponent. Two parse shapes carry the caster subject: non-optional
+        // "You search ..." surfaces as leading_subject_application.affected == Controller
+        // (subject.rs); optional "You may search ..." has "you may " peeled by
+        // peel_optional_slots BEFORE subject extraction, surfacing only as
+        // `is_optional && opponent_may_scope.is_none() && player_scope.is_none()`.
+        let chunk_declares_caster_subject =
+            matches!(
+                leading_subject_application.as_ref().map(|s| &s.affected),
+                Some(TargetFilter::Controller)
+            ) || (is_optional && opponent_may_scope.is_none() && player_scope.is_none());
         let inherits_carried_targeted_player_subject = leading_subject_application.is_none()
             && player_scope.is_none()
             && !sequence::starts_clause_text(&text)
@@ -19911,6 +19937,15 @@ pub(crate) fn parse_effect_chain_ir(
                 }
             }
         }
+        // CR 608.2c: disarm a stale non-caster anchor before applying it to this
+        // chunk's caster-default effects, so the caster's SearchLibrary{target_player:
+        // None} and Shuffle{Controller} are not rewritten to the earlier subject. The
+        // following extract_player_anchor_in_chain re-arms only on a fresh non-caster
+        // subject (it excludes Controller/Any), so a later subject-less continuation
+        // ("...then shuffle") still inherits the caster.
+        if chunk_declares_caster_subject {
+            anchor_subject = None;
+        }
         if let Some(ref anchor) = anchor_subject {
             apply_anchor_subject(&mut clause.effect, anchor);
         }
@@ -20072,6 +20107,7 @@ pub(crate) fn parse_effect_chain_ir(
         // permission grants as mandatory so resolution installs the permission.
         let is_optional = if matches!(&clause.effect, Effect::FreeCastFromZones { .. })
             || clause_is_additional_land_permission(&clause)
+            || clause_is_pay_to_end_effect_termination(normalized_text)
         {
             false
         } else {
@@ -30816,6 +30852,121 @@ mod tests {
         );
     }
 
+    /// CR 608.2c + CR 109.5 + CR 701.23a + CR 701.24a (issue #900): Demolition
+    /// Field — two consecutive subject-anchored search chains in one body. The
+    /// first ("That land's controller may search …, then shuffle") anchors the
+    /// destroyed land's controller as `ParentTargetController`. The second ("You
+    /// may search …, then shuffle") is a CASTER-subject switch (CR 109.5: "you"
+    /// is the activator), so its `SearchLibrary`/`Shuffle` must route to the
+    /// activator — NOT inherit the prior clause's `ParentTargetController` anchor.
+    /// Pre-fix, `anchor_subject` was set once by clause (1) and never reset, so
+    /// clause (2)'s caster-default search wrongly inherited the opponent.
+    #[test]
+    fn demolition_field_you_clause_routes_search_to_activator_not_opponent() {
+        use crate::types::ability::AbilityKind;
+        // Demolition Field's second activated ability body (cost stripped).
+        let def = parse_effect_chain(
+            "Destroy target nonbasic land an opponent controls. That land's controller may search their library for a basic land card, put it onto the battlefield, then shuffle. You may search your library for a basic land card, put it onto the battlefield, then shuffle.",
+            AbilityKind::Activated,
+        );
+        // Collect every (SearchLibrary.target_player, Shuffle.target) down the chain.
+        let mut searches: Vec<Option<TargetFilter>> = Vec::new();
+        let mut shuffles: Vec<TargetFilter> = Vec::new();
+        let mut node: Option<&AbilityDefinition> = Some(&def);
+        while let Some(d) = node {
+            match &*d.effect {
+                Effect::SearchLibrary { target_player, .. } => {
+                    searches.push(target_player.clone());
+                }
+                Effect::Shuffle { target } => {
+                    shuffles.push(target.clone());
+                }
+                _ => {}
+            }
+            node = d.sub_ability.as_deref();
+        }
+        assert_eq!(
+            searches.len(),
+            2,
+            "expected two SearchLibrary clauses, got {searches:?}"
+        );
+        assert_eq!(
+            shuffles.len(),
+            2,
+            "expected two Shuffle clauses, got {shuffles:?}"
+        );
+        // Clause (1): "that land's controller" — routes to the opponent's controller.
+        assert_eq!(
+            searches[0].as_ref(),
+            Some(&TargetFilter::ParentTargetController),
+            "clause (1) search must route to the destroyed land's controller"
+        );
+        assert_eq!(
+            shuffles[0],
+            TargetFilter::ParentTargetController,
+            "clause (1) shuffle must route to the destroyed land's controller"
+        );
+        // Clause (2): "you" — caster subject. The fix resets the stale anchor so
+        // this stays a caster-default search (None) or explicit Controller — and
+        // crucially NOT ParentTargetController (the pre-fix bug).
+        assert!(
+            matches!(searches[1].as_ref(), None | Some(TargetFilter::Controller)),
+            "clause (2) search must route to the activator (None/Controller), got {:?}",
+            searches[1]
+        );
+        assert_ne!(
+            searches[1].as_ref(),
+            Some(&TargetFilter::ParentTargetController),
+            "clause (2) search must NOT inherit the opponent's-controller anchor (issue #900)"
+        );
+        assert_eq!(
+            shuffles[1],
+            TargetFilter::Controller,
+            "clause (2) shuffle must route to the activator, not the opponent"
+        );
+    }
+
+    /// CR 608.2c + CR 109.5 + CR 701.23a (issue #900): card-agnostic regression
+    /// for the caster-subject anchor reset using the NON-optional caster form
+    /// ("You search your library …"). This exercises the
+    /// `leading_subject_application.affected == Controller` arm of the reset
+    /// trigger (the Demolition Field card form uses the optional "You may"
+    /// shape, which is peeled to `is_optional` before subject extraction). After
+    /// a non-caster subject chain establishes `ParentTargetController`, the
+    /// caster-subject clause must reset the anchor so its search routes to the
+    /// activator, not the earlier subject.
+    #[test]
+    fn caster_subject_switch_resets_chain_anchor_for_search() {
+        use crate::types::ability::AbilityKind;
+        let def = parse_effect_chain(
+            "Destroy target nonbasic land an opponent controls. That land's controller searches their library for a basic land card, puts it onto the battlefield, then shuffles. You search your library for a basic land card, put it onto the battlefield, then shuffle.",
+            AbilityKind::Spell,
+        );
+        let mut searches: Vec<Option<TargetFilter>> = Vec::new();
+        let mut node: Option<&AbilityDefinition> = Some(&def);
+        while let Some(d) = node {
+            if let Effect::SearchLibrary { target_player, .. } = &*d.effect {
+                searches.push(target_player.clone());
+            }
+            node = d.sub_ability.as_deref();
+        }
+        assert_eq!(
+            searches.len(),
+            2,
+            "expected exactly two SearchLibrary clauses, got {searches:?}"
+        );
+        assert_eq!(
+            searches[0].as_ref(),
+            Some(&TargetFilter::ParentTargetController),
+            "clause (1) search must route to the prior non-caster subject"
+        );
+        assert!(
+            matches!(searches[1].as_ref(), None | Some(TargetFilter::Controller)),
+            "clause (2) caster-subject search must route to the activator, got {:?}",
+            searches[1]
+        );
+    }
+
     #[test]
     fn parse_search_basic_land_to_hand() {
         let e = parse_effect(
@@ -38258,6 +38409,38 @@ mod tests {
                 "{label} must not be Unimplemented/CastFromZone, got {eff:?}"
             );
         }
+    }
+
+    /// Issue #4000: Dominating Licid's "you may pay {U} to end this effect" is a
+    /// separate termination permission, not an optional accept/decline on the
+    /// licid activation itself.
+    #[test]
+    fn dominating_licid_activation_is_not_optional() {
+        fn ability_tree_has_optional(def: &AbilityDefinition) -> bool {
+            if def.optional {
+                return true;
+            }
+            def.sub_ability
+                .as_ref()
+                .is_some_and(|sub| ability_tree_has_optional(sub))
+                || def
+                    .else_ability
+                    .as_ref()
+                    .is_some_and(|sub| ability_tree_has_optional(sub))
+        }
+
+        let def = parse_effect_chain(
+            "This creature loses this ability and becomes an Aura enchantment with enchant creature. Attach it to target creature. You may pay {U} to end this effect.",
+            AbilityKind::Activated,
+        );
+        assert!(
+            !def.optional,
+            "licid activation root must not be optional, got {def:?}"
+        );
+        assert!(
+            !ability_tree_has_optional(&def),
+            "no sub_ability in the licid chain may carry optional=true"
+        );
     }
 
     #[test]

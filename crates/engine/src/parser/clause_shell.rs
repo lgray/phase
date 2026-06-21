@@ -69,7 +69,7 @@
 use crate::parser::oracle_nom::error::OracleError;
 use nom::branch::alt;
 use nom::bytes::complete::{tag, take_until};
-use nom::combinator::value;
+use nom::combinator::{opt, value};
 use nom::Parser;
 
 use super::oracle_effect::conditions::{
@@ -346,7 +346,10 @@ fn peel_you_may_prefix(text: &str, blocklist: YouMayBlocklist) -> Option<String>
     let rest_lower = rest.to_lowercase();
     let blocked = match blocklist {
         YouMayBlocklist::PeelClause => is_specialized_you_may_phrase(&rest_lower),
-        YouMayBlocklist::ChunkLoop => is_specialized_you_may_retarget_phrase(&rest_lower),
+        YouMayBlocklist::ChunkLoop => {
+            is_specialized_you_may_retarget_phrase(&rest_lower)
+                || is_you_may_pay_to_end_effect_phrase(&rest_lower)
+        }
     };
     if blocked {
         return None;
@@ -451,6 +454,28 @@ pub(crate) fn is_specialized_you_may_retarget_phrase(rest_lower: &str) -> bool {
         value((), tag("choose new target ")),
     ))
     .parse(rest_lower)
+    .is_ok()
+}
+
+/// CR 611.2 + CR 702.5a: Licid-class "you may pay {U} to end this effect" grants a
+/// separate activated way to terminate the ongoing enchantment. The "may" is the
+/// later payment permission, not an optional resolution choice on the licid
+/// activation itself (issue #4000).
+///
+/// Accepts either the post-optional-strip body (`pay {U} to end this effect`) or
+/// the full clause surface (`you may pay {U} to end this effect`) so chunk-loop
+/// and full-clause carve-out call sites share one detector.
+pub(crate) fn is_you_may_pay_to_end_effect_phrase(text_lower: &str) -> bool {
+    value(
+        (),
+        (
+            opt(tag::<_, _, OracleError<'_>>("you may ")),
+            tag("pay "),
+            take_until(" to end this effect"),
+            tag(" to end this effect"),
+        ),
+    )
+    .parse(text_lower)
     .is_ok()
 }
 
@@ -785,6 +810,34 @@ mod tests {
             peel_optional_slots("you may cast the exiled card without paying its mana cost");
         assert!(is_optional);
         assert_eq!(rest, "cast the exiled card without paying its mana cost");
+    }
+
+    #[test]
+    fn is_you_may_pay_to_end_effect_phrase_matches_body_and_full_clause() {
+        assert!(is_you_may_pay_to_end_effect_phrase(
+            "pay {u} to end this effect"
+        ));
+        assert!(is_you_may_pay_to_end_effect_phrase(
+            "you may pay {u} to end this effect"
+        ));
+        assert!(!is_you_may_pay_to_end_effect_phrase(
+            "you may pay {u} rather than pay this spell's mana cost"
+        ));
+    }
+
+    #[test]
+    fn peel_optional_slots_chunk_loop_licid_pay_to_end_does_not_strip() {
+        let text = "you may pay {U} to end this effect";
+        let (is_optional, _, _, rest) = peel_optional_slots(text);
+        assert!(
+            !is_optional,
+            "licid pay-to-end must keep full surface form, not become optional"
+        );
+        assert_eq!(rest, text);
+        assert!(is_you_may_pay_to_end_effect_phrase(text));
+        assert!(is_you_may_pay_to_end_effect_phrase(
+            "pay {u} to end this effect"
+        ));
     }
 
     #[test]

@@ -5142,6 +5142,12 @@ pub(crate) fn parse_that_clause_suffix<'a>(
         ),
         ("attacked this turn", FilterProp::AttackedThisTurn),
         ("blocked this turn", FilterProp::BlockedThisTurn),
+        // CR 702.171c: "that saddled it [this turn]" — the creature was tapped to
+        // pay the source's saddle cost (recorded in the source's `saddled_by`,
+        // cleared at end of turn so "this turn" is implicit). "it" refers to the
+        // ability source. Calamity, Galloping Inferno. Longest match first.
+        ("saddled it this turn", FilterProp::SaddledSource),
+        ("saddled it", FilterProp::SaddledSource),
     ];
 
     for (phrase, prop) in VERB_PHRASES {

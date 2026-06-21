@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useEffect } from "react";
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -8,6 +8,7 @@ import { loadPreconDeckMap } from "../../../hooks/useDecks";
 import { resolveCommander } from "../../../services/deckParser";
 import { useIsMobile } from "../../../hooks/useIsMobile";
 import { ACTIVE_DECK_KEY, STORAGE_KEY_PREFIX } from "../../../constants/storage";
+import { useAppNotificationStore } from "../../../stores/appToastStore";
 
 const cacheCardsMock = vi.fn();
 
@@ -93,6 +94,10 @@ vi.mock("../CommanderPanel", () => ({
 }));
 
 describe("DeckBuilder", () => {
+  beforeEach(() => {
+    useAppNotificationStore.setState({ notification: null, expiresAt: 0 });
+  });
+
   afterEach(() => {
     cleanup();
     cacheCardsMock.mockClear();
@@ -206,6 +211,10 @@ describe("DeckBuilder", () => {
       expect(localStorage.getItem(STORAGE_KEY_PREFIX + "Renamed Deck")).not.toBeNull();
     });
     expect(localStorage.getItem(ACTIVE_DECK_KEY)).toBe("Renamed Deck");
+    expect(useAppNotificationStore.getState().notification).toEqual({
+      title: "Deck saved",
+      description: '"Renamed Deck" was saved to your decks.',
+    });
   });
 
   it("warns about unsaved changes when leaving after an edit", async () => {
@@ -391,6 +400,10 @@ describe("DeckBuilder", () => {
       expect(localStorage.getItem(STORAGE_KEY_PREFIX + "My Deck copy")).not.toBeNull();
     });
     expect(nameInput).toHaveValue("My Deck copy");
+    expect(useAppNotificationStore.getState().notification).toEqual({
+      title: "Deck cloned",
+      description: 'A copy was saved as "My Deck copy".',
+    });
   });
 
   it("does not reactively auto-resolve a commander mid-edit", async () => {

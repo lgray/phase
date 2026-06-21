@@ -48,7 +48,11 @@
     "clone": "Klonen",
     "cloneTitle": "Eine Kopie unter neuem Namen speichern",
     "loadDeck": "Deck laden...",
-    "nameToSave": "Benenne das Deck, um es zu speichern"
+    "nameToSave": "Benenne das Deck, um es zu speichern",
+    "savedToastTitle": "Deck gespeichert",
+    "savedToastDescription": "„{{name}}“ wurde in deinen Decks gespeichert.",
+    "clonedToastTitle": "Deck dupliziert",
+    "clonedToastDescription": "Eine Kopie wurde als „{{name}}“ gespeichert."
   },
   "unsaved": {
     "title": "Ungespeicherte Änderungen",
