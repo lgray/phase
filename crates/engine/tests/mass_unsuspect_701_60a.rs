@@ -16,8 +16,11 @@
 //! `game/effects/suspect.rs::resolve_object_targets` flips the two `assert!`s
 //! that the suspected creatures are cleared back to `true`.
 
+use engine::game::effects::resolve_effect;
 use engine::game::scenario::GameScenario;
+use engine::types::ability::{Effect, EffectScope, ResolvedAbility, TargetFilter, TargetRef};
 use engine::types::keywords::Keyword;
+use engine::types::phase::Phase;
 use engine::types::player::PlayerId;
 use engine::types::statics::StaticMode;
 use engine::types::ObjectId;
@@ -66,9 +69,6 @@ fn has_cant_block(runner: &engine::game::scenario::GameRunner, id: ObjectId) -> 
 /// the designation + CR 701.60c menace / "can't block" abilities are present
 /// exactly as production would set them.
 fn suspect(runner: &mut engine::game::scenario::GameRunner, id: ObjectId) {
-    use engine::game::effects::resolve_effect;
-    use engine::types::ability::{Effect, EffectScope, ResolvedAbility, TargetFilter, TargetRef};
-
     let ability = ResolvedAbility::new(
         Effect::Suspect {
             target: TargetFilter::Any,
@@ -94,8 +94,6 @@ fn suspect(runner: &mut engine::game::scenario::GameRunner, id: ObjectId) {
 /// while leaving a never-suspected creature untouched.
 #[test]
 fn mass_no_longer_suspected_clears_all_matching_creatures() {
-    use engine::types::phase::Phase;
-
     let mut scenario = GameScenario::new_n_player(2, 7);
     scenario.at_phase(Phase::PreCombatMain);
 

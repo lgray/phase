@@ -16,6 +16,8 @@
 //! Reverting `layers::derive_suspected_abilities` (or reverting the resolvers to
 //! mutate `base_*`) flips the "printed menace survives the round-trip" assertion.
 
+use engine::game::combat::can_block_pair;
+use engine::game::effects::resolve_effect;
 use engine::game::scenario::GameScenario;
 use engine::types::ability::{Effect, EffectScope, ResolvedAbility, TargetFilter, TargetRef};
 use engine::types::keywords::Keyword;
@@ -45,7 +47,6 @@ fn is_suspected(runner: &Runner, id: ObjectId) -> bool {
 /// Suspect a battlefield creature through the real `Effect::Suspect`, then run a
 /// full layer pass so the CR 701.60c derivation is applied exactly as production.
 fn suspect(runner: &mut Runner, id: ObjectId) {
-    use engine::game::effects::resolve_effect;
     let ability = ResolvedAbility::new(
         Effect::Suspect {
             target: TargetFilter::SelfRef,
@@ -65,7 +66,6 @@ fn suspect(runner: &mut Runner, id: ObjectId) {
 /// Un-suspect a battlefield creature through the real `Effect::Unsuspect`, then
 /// run a full layer pass so the derived grant lapses.
 fn unsuspect(runner: &mut Runner, id: ObjectId) {
-    use engine::game::effects::resolve_effect;
     let ability = ResolvedAbility::new(
         Effect::Unsuspect {
             target: TargetFilter::SelfRef,
@@ -172,8 +172,6 @@ fn vanilla_creature_gains_then_loses_derived_abilities() {
 /// static-definition list.
 #[test]
 fn suspected_printed_menace_block_legality_round_trip() {
-    use engine::game::combat::can_block_pair;
-
     let mut scenario = GameScenario::new_n_player(2, 7);
     let blocker = scenario
         .add_creature_from_oracle(P0, "Menace Blocker", 2, 2, "Menace")
