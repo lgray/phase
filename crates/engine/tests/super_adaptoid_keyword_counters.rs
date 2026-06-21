@@ -43,6 +43,7 @@ use engine::game::layers::evaluate_layers;
 use engine::game::scenario::{GameRunner, GameScenario};
 use engine::parser::oracle::parse_oracle_text;
 use engine::types::ability::{AbilityDefinition, TargetRef};
+use engine::types::card_type::Supertype;
 use engine::types::counter::CounterType;
 use engine::types::identifiers::ObjectId;
 use engine::types::keywords::{Keyword, KeywordKind};
@@ -263,7 +264,6 @@ fn super_adaptoid_power_tracks_legendary_creature_count() {
     // the supertype survives the layer reset (the layer system reverts
     // `card_types` to `base_card_types` at the top of each evaluation).
     {
-        use engine::types::card_type::Supertype;
         let obj = runner.state_mut().objects.get_mut(&plain).unwrap();
         obj.base_card_types.supertypes.push(Supertype::Legendary);
         obj.card_types.supertypes.push(Supertype::Legendary);
