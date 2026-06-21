@@ -153,6 +153,7 @@ pub mod rad_counters;
 pub mod rebound;
 pub mod regenerate;
 pub mod register_bending;
+pub mod remove_all_damage;
 pub mod remove_from_combat;
 pub mod renown;
 pub mod return_as_aura;
@@ -165,6 +166,7 @@ pub mod ring;
 pub mod ripple;
 pub mod roll_die;
 pub mod sacrifice;
+pub mod saddle;
 pub mod scry;
 pub mod search_library;
 pub mod search_outside_game;
@@ -497,7 +499,7 @@ pub(crate) fn candidate_player_scalar_with_state(
                     .filter(|record| {
                         record.controller == candidate.id
                             && crate::game::restrictions::battlefield_entry_matches_filter(
-                                record, filter, controller,
+                                record, filter, controller, None,
                             )
                     })
                     .count(),
@@ -1660,9 +1662,14 @@ pub(super) fn resolve_optional_effect_decision(
                         // declined, so it must NOT fire even though it is a
                         // separate sentence (issue #3179: Swashbuckler
                         // Extraordinaire's declined Treasure sacrifice must not
-                        // resolve the double-strike reflexive).
+                        // resolve the double-strike reflexive). CastFromZone's
+                        // graveyard-exile rider is not a printed follow-up to
+                        // execute on decline; it is permission metadata consumed
+                        // only if the graveyard spell is actually cast.
                         || (sub.sub_link == SubAbilityLink::SequentialSibling
-                            && !sub_ability_is_reflexive(sub))
+                            && !sub_ability_is_reflexive(sub)
+                            && !(matches!(&ability.effect, Effect::CastFromZone { .. })
+                                && cast_from_zone::is_graveyard_exile_rider_subability(sub)))
                 })
             });
             if let Some(branch) = decline_branch {
@@ -1795,6 +1802,10 @@ fn effect_writes_last_revealed_ids(effect: &Effect) -> bool {
             | Effect::RevealUntil { .. }
             | Effect::Clash
             | Effect::TurnFaceUp { .. }
+            // CR 701.20: a targeted object reveal records the revealed object so
+            // a chained "If it's a creature card, …" rider and an anaphoric
+            // "turn it face up" follow-up read it (Hauntwoods Shrieker).
+            | Effect::Reveal { .. }
     )
 }
 
@@ -2550,6 +2561,7 @@ pub fn resolve_effect(
         Effect::PairWith { .. } => pair_with::resolve(state, ability, events),
         Effect::Destroy { .. } => destroy::resolve(state, ability, events),
         Effect::Regenerate { .. } => regenerate::resolve(state, ability, events),
+        Effect::RemoveAllDamage { .. } => remove_all_damage::resolve(state, ability, events),
         Effect::Counter { .. } => counter::resolve(state, ability, events),
         Effect::CounterAll { .. } => counter::resolve_all(state, ability, events),
         Effect::Token { .. } => token::resolve(state, ability, events),
@@ -2667,6 +2679,7 @@ pub fn resolve_effect(
         Effect::BecomeUnprepared { .. } => {
             prepare::resolve_become_unprepared(state, ability, events)
         }
+        Effect::BecomeSaddled { .. } => saddle::resolve(state, ability, events),
         Effect::SetClassLevel { .. } => set_class_level::resolve(state, ability, events),
         Effect::CreateDelayedTrigger { .. } => delayed_trigger::resolve(state, ability, events),
         Effect::AddTargetReplacement { .. } => {
@@ -4164,6 +4177,7 @@ fn extract_event_context_filter(effect: &Effect) -> Option<&TargetFilter> {
         | Effect::PairWith { target }
         | Effect::Destroy { target, .. }
         | Effect::Regenerate { target, .. }
+        | Effect::RemoveAllDamage { target, .. }
         | Effect::Bounce { target, .. }
         | Effect::GainControl { target, .. }
         | Effect::Counter { target, .. }
@@ -5194,6 +5208,24 @@ fn resolve_chain_body(
                         cost: ManaCost::generic(amount.max(0) as u32),
                     }
                 }
+                // CR 118.12 + CR 202.1: "unless you pay its mana cost" — materialize
+                // the ability source's OWN printed mana cost at resolution time. The
+                // cost is dynamic because the granting Aura can be attached to any
+                // permanent (Pendrell Flux, Disruption Aura). An absent source or a
+                // costless source (land, token, other permanent with no mana cost)
+                // resolves to `ManaCost::NoCost`, which CR 118.6 / CR 202.1b define
+                // as an UNPAYABLE cost; the dedicated unpayable branch below handles
+                // it (kept distinct from the `{0}` "always payable" short-circuit).
+                AbilityCost::Mana {
+                    cost: ManaCost::SelfManaCost,
+                } => {
+                    let cost = state
+                        .objects
+                        .get(&ability.source_id)
+                        .map(|obj| obj.mana_cost.clone())
+                        .unwrap_or(ManaCost::NoCost);
+                    AbilityCost::Mana { cost }
+                }
                 other => other.clone(),
             };
             // CR 118.5 + CR 118.12a: Zero-mana unless cost short-circuit.
@@ -5207,7 +5239,17 @@ fn resolve_chain_body(
             //     effect anyway (no opt-out offered).
             // The fold preserves both behaviors verbatim to keep this batch
             // strictly architectural; harmonizing them is tracked separately.
-            if matches!(&resolved_cost, AbilityCost::Mana { cost } if *cost == ManaCost::zero()) {
+            // CR 118.6 + CR 202.1b: A cost based on the mana cost of an object
+            // that has no mana cost (lands, tokens, other costless permanents)
+            // is UNPAYABLE — attempting to pay it is an illegal action. No
+            // payment is offered and the unless-effect always resolves; even a
+            // Counter is not prevented (its controller cannot pay). This is the
+            // inverse of the `{0}` "players can always pay 0" branch below, and
+            // the two must stay distinct: `ManaCost::NoCost != ManaCost::zero()`.
+            if matches!(&resolved_cost, AbilityCost::Mana { cost } if *cost == ManaCost::NoCost) {
+                // Unpayable: fall through to execute the effect unconditionally.
+            } else if matches!(&resolved_cost, AbilityCost::Mana { cost } if *cost == ManaCost::zero())
+            {
                 if matches!(ability.effect, Effect::Counter { .. }) {
                     // Counter is prevented — spell survives.
                     events.push(GameEvent::EffectResolved {
@@ -9239,6 +9281,7 @@ mod tests {
             Effect::Counter {
                 target: TargetFilter::StackSpell,
                 source_rider: None,
+                countered_spell_zone: None,
             },
             vec![TargetRef::Object(spell)],
             ObjectId(100),
@@ -15476,6 +15519,7 @@ mod tests {
             Effect::Counter {
                 target: TargetFilter::Any,
                 source_rider: None,
+                countered_spell_zone: None,
             },
             vec![TargetRef::Object(ObjectId(7))],
             ObjectId(99),
@@ -15490,6 +15534,7 @@ mod tests {
             Effect::Counter {
                 target: TargetFilter::Any,
                 source_rider: None,
+                countered_spell_zone: None,
             },
             vec![TargetRef::Object(ObjectId(8))],
             ObjectId(99),
@@ -18645,6 +18690,122 @@ mod tests {
                     }
                 )),
             "exiled card must receive play-this-turn permission"
+        );
+    }
+
+    /// CR 122.1 + CR 701.10e + CR 608.2c: Turtle Van's attack trigger — "put a
+    /// +1/+1 counter on target creature that crewed it this turn. Then if that
+    /// creature is a Mutant, Ninja, or Turtle, double the number of +1/+1 counters
+    /// on it." Drives the REAL parser (`parse_oracle_text`) and the REAL chain
+    /// resolver (`resolve_ability_chain`) with the crewing creature as the chosen
+    /// target.
+    ///
+    /// Helper returns the crewing creature's final +1/+1 counter total after the
+    /// chain resolves. `subtype` selects whether the conditional doubling fires.
+    fn run_turtle_van_chain(subtype: &str, starting_counters: u32) -> u32 {
+        use crate::parser::oracle::parse_oracle_text;
+
+        let mut state = GameState::new_two_player(11);
+        // The crewing creature targeted by the trigger.
+        let crewer = create_object(
+            &mut state,
+            CardId(1),
+            PlayerId(0),
+            "Crewer".to_string(),
+            Zone::Battlefield,
+        );
+        {
+            let obj = state.objects.get_mut(&crewer).unwrap();
+            obj.card_types.core_types.push(CoreType::Creature);
+            obj.card_types.subtypes.push(subtype.to_string());
+            obj.power = Some(2);
+            obj.toughness = Some(2);
+            if starting_counters > 0 {
+                obj.counters
+                    .insert(CounterType::Plus1Plus1, starting_counters);
+            }
+        }
+        // The Vehicle is the ability source.
+        let vehicle = create_object(
+            &mut state,
+            CardId(2),
+            PlayerId(0),
+            "Turtle Van".to_string(),
+            Zone::Battlefield,
+        );
+        state
+            .objects
+            .get_mut(&vehicle)
+            .unwrap()
+            .card_types
+            .core_types
+            .push(CoreType::Artifact);
+
+        let parsed = parse_oracle_text(
+            "Whenever this Vehicle attacks, put a +1/+1 counter on target creature that crewed it this turn. Then if that creature is a Mutant, Ninja, or Turtle, double the number of +1/+1 counters on it.\nCrew 1",
+            "Turtle Van",
+            &[],
+            &["Artifact".to_string()],
+            &["Vehicle".to_string()],
+        );
+        let trigger = parsed
+            .triggers
+            .first()
+            .expect("Turtle Van must parse an attack trigger");
+        let execute = trigger
+            .execute
+            .as_deref()
+            .expect("attack trigger must carry an execute ability");
+
+        let ability = crate::game::ability_utils::build_resolved_from_def_with_targets(
+            execute,
+            vehicle,
+            PlayerId(0),
+            vec![TargetRef::Object(crewer)],
+        );
+
+        let mut events = Vec::new();
+        resolve_ability_chain(&mut state, &ability, &mut events, 0).unwrap();
+
+        state.objects[&crewer]
+            .counters
+            .get(&CounterType::Plus1Plus1)
+            .copied()
+            .unwrap_or(0)
+    }
+
+    #[test]
+    fn turtle_van_doubles_counters_on_matching_crewer() {
+        // Turtle crewer starting with 2 counters: PutCounter → 3, then double → 6.
+        // 6 is distinct from the no-double result (3) AND a no-op (2), so reverting
+        // either the condition wiring or the MultiplyCounter→ParentTarget rewrite
+        // flips this assertion.
+        assert_eq!(
+            run_turtle_van_chain("Turtle", 2),
+            6,
+            "Turtle crewer: 2 + 1 = 3, doubled to 6"
+        );
+        // Ninja and Mutant must match the same subtype disjunction.
+        assert_eq!(
+            run_turtle_van_chain("Ninja", 0),
+            2,
+            "Ninja: 0 + 1 = 1, doubled to 2"
+        );
+        assert_eq!(
+            run_turtle_van_chain("Mutant", 1),
+            4,
+            "Mutant: 1 + 1 = 2, doubled to 4"
+        );
+    }
+
+    #[test]
+    fn turtle_van_does_not_double_counters_on_nonmatching_crewer() {
+        // A Wizard is none of Mutant/Ninja/Turtle: the conditional doubling must
+        // NOT fire. Only the PutCounter applies: 2 + 1 = 3 (no double to 6).
+        assert_eq!(
+            run_turtle_van_chain("Wizard", 2),
+            3,
+            "non-matching crewer: only the +1/+1 counter is added, no doubling"
         );
     }
 }

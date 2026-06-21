@@ -1916,6 +1916,26 @@ fn parse_unless_discard_cost(discard_tail: &str) -> Option<AbilityCost> {
 /// 2026-05-09 fold, the `random: bool` field on `AbilityCost::Discard` is
 /// the natural home for this; wiring it into the runtime is future work.
 fn parse_unless_alt_cost(after_unless: &str) -> Option<AbilityCost> {
+    // CR 118.12 + CR 202.1: "you pay its mana cost" / "you pay ~'s mana cost" —
+    // the unless cost is the ability source's OWN printed mana cost, which is
+    // dynamic: it depends on the permanent the granting Aura is attached to
+    // (Pendrell Flux, Disruption Aura, Pendrell Mists). Represent it with
+    // `ManaCost::SelfManaCost`; the unless-pay resolver materializes it to the
+    // source's `mana_cost` at resolution time. Checked before the "you pay N
+    // life" arm below, with which it shares the "you pay " prefix.
+    if let Ok((rest, _)) = tag::<_, _, OracleError<'_>>("you pay ").parse(after_unless) {
+        let tail = rest.trim_end_matches('.').trim();
+        let is_self_mana_cost = tag::<_, _, OracleError<'_>>("its mana cost")
+            .parse(tail)
+            .or_else(|_| tag::<_, _, OracleError<'_>>("~'s mana cost").parse(tail))
+            .map(|(after, _)| after.trim().is_empty())
+            .unwrap_or(false);
+        if is_self_mana_cost {
+            return Some(AbilityCost::Mana {
+                cost: crate::types::mana::ManaCost::SelfManaCost,
+            });
+        }
+    }
     // "you discard a card" — match prefix, accept any trailing modifiers
     // ("at random", trailing punctuation) since the caller strips the entire
     // unless-clause wholesale.
@@ -2922,6 +2942,22 @@ fn parse_graveyard_origin_intervening_if(input: &str) -> OracleResult<'_, Trigge
     alt((compact, split_your)).parse(rest)
 }
 
+/// CR 701.26 + CR 603.4: "if it's the first time that creature/permanent has become
+/// tapped this turn" — intervening-if gating a tap trigger on the triggering
+/// object's first tap of the turn (Captain America, Living Legend). The "it's" is
+/// the expletive subject; the real object is "that creature" / "that permanent" /
+/// "it", which binds to the tapped object carried by the `PermanentTapped` event.
+fn parse_first_time_tapped_intervening_if(input: &str) -> OracleResult<'_, TriggerCondition> {
+    let (rest, _) = alt((
+        tag("if it's the first time "),
+        tag("if it is the first time "),
+    ))
+    .parse(input)?;
+    let (rest, _) = alt((tag("that creature"), tag("that permanent"), tag("it"))).parse(rest)?;
+    let (rest, _) = tag(" has become tapped this turn").parse(rest)?;
+    Ok((rest, TriggerCondition::FirstTimeObjectTappedThisTurn))
+}
+
 /// Extract an intervening-if condition from effect text.
 /// Returns (cleaned effect text, optional condition).
 ///
@@ -3040,6 +3076,20 @@ fn extract_if_condition(text: &str) -> (String, Option<TriggerCondition>) {
     // is a prefix of "if it was cast using web-slinging" and would shadow it.
     if let Some((before, condition, rest)) =
         scan_preceded(&lower, parse_cast_using_variant_intervening_if)
+    {
+        let pos = before.len();
+        let clause_len = lower.len() - before.len() - rest.len();
+        return (
+            strip_condition_clause(text, pos, clause_len),
+            Some(condition),
+        );
+    }
+
+    // CR 701.26 + CR 603.4: "if it's the first time that creature has become tapped
+    // this turn" — first-tap intervening-if (Captain America, Living Legend). Source/
+    // triggering-object-referential, so it cannot lower through a StaticCondition.
+    if let Some((before, condition, rest)) =
+        scan_preceded(&lower, parse_first_time_tapped_intervening_if)
     {
         let pos = before.len();
         let clause_len = lower.len() - before.len() - rest.len();
@@ -6240,6 +6290,7 @@ fn parse_damage_to_qualifier_with_rest(after_verb: &str) -> OracleResult<'_, Tar
             alt((
                 preceded(tag("an "), tag("opponent")),
                 preceded(tag("one of your "), tag("opponents")),
+                preceded(tag("one or more of your "), tag("opponents")),
                 preceded(tag("another "), tag("player")),
             )),
         )
@@ -7799,10 +7850,26 @@ fn try_parse_event(
         ))
         .parse(input)
     }
-    if let Ok((tail, ())) = parse_draws_card.parse(rest) {
+    // CR 702.5a + CR 303.4 + CR 121.1: "enchanted player/opponent draws a card"
+    // (Curse of Fool's Wisdom, Psychic Possession). Recognized ONLY in the draws
+    // path — NOT in the shared parse_attached_to_prefix/_exact combinators, which
+    // feed every verb. Containing it here keeps "enchanted player is dealt damage"
+    // (Grievous Wound) honestly Unknown rather than a parses-but-dead
+    // DamageReceived/valid_card=AttachedTo trigger. The Enchant keyword already
+    // restricts attachment to the right player, so bare AttachedTo suffices.
+    let enchanted_player_subject: OracleResult<'_, ()> = alt((
+        value((), tag("enchanted player ")),
+        value((), tag("enchanted opponent ")),
+    ))
+    .parse(rest);
+    let (draws_subject, draws_rest) = match enchanted_player_subject {
+        Ok((after_prefix, ())) => (TargetFilter::AttachedTo, after_prefix),
+        Err(_) => (subject.clone(), rest),
+    };
+    if let Ok((tail, ())) = parse_draws_card.parse(draws_rest) {
         let mut def = make_base();
         def.mode = TriggerMode::Drawn;
-        def.valid_target = Some(subject.clone());
+        def.valid_target = Some(draws_subject.clone());
         // CR 603.4 + CR 102.1: "draws a card during their turn" — the trailing
         // timing tail restricts the trigger to the acting player's own turn.
         // Composed with the shared typed `parse_timing_tail` combinator.
@@ -8279,6 +8346,13 @@ fn parse_damage_source_subject(input: &str) -> OracleResult<'_, TargetFilter> {
     )))
     .parse(rest)?;
 
+    // Optional "with <property>" clause on the damage source — delegates to the
+    // shared `parse_with_property` inner-clause combinator so every "with X" the
+    // filter grammar supports (P/T constraints, keywords, etc.) attaches to the
+    // source. CR 208.1 + CR 613.4b: Ms. Marvel, Elastic Ally — "a creature you
+    // control with power greater than its base power deals combat damage…".
+    let (rest, with_prop) = opt(preceded(space1, parse_with_property)).parse(rest)?;
+
     // Require trailing space before the "deals" verb so we don't match
     // "sourceless" / "sourced".
     let (rest, _) = tag::<_, _, OracleError<'_>>(" ").parse(rest)?;
@@ -8296,6 +8370,9 @@ fn parse_damage_source_subject(input: &str) -> OracleResult<'_, TargetFilter> {
     }
     if let Some(col) = color {
         props.push(FilterProp::HasColor { color: col });
+    }
+    if let Some(p) = with_prop {
+        props.push(p);
     }
     if !props.is_empty() {
         typed.properties = props;
@@ -13955,6 +14032,30 @@ mod tests {
         ));
     }
 
+    /// MSH Wave 2 (Molten Lavamancer): the batched "one or more of your opponents"
+    /// recipient must parse as a noncombat damage trigger whose recipient is an
+    /// opponent. Without the new `parse_opponent_player_recipient` arm, the
+    /// recipient is unmatched, `try_parse_source_deals_damage_trigger` bails on the
+    /// `valid_target.is_none()` guard, and `mode != DamageDone`.
+    #[test]
+    fn molten_lavamancer_one_or_more_opponents_recipient_parses() {
+        let def = parse_trigger_line(
+            "Whenever a source you control deals noncombat damage to one or more of your \
+             opponents during your turn, you create a 1/1 red Elemental creature token. \
+             This ability triggers only once each turn.",
+            "Molten Lavamancer",
+        );
+        assert_eq!(def.mode, TriggerMode::DamageDone);
+        assert_eq!(def.damage_kind, DamageKindFilter::NoncombatOnly);
+        assert_eq!(
+            def.valid_target,
+            Some(TargetFilter::Typed(
+                TypedFilter::default().controller(ControllerRef::Opponent)
+            )),
+            "recipient must be an opponent-controlled player filter"
+        );
+    }
+
     #[test]
     fn hunters_insight_class_builds_whenever_event_delayed_trigger() {
         use crate::parser::oracle::parse_oracle_text;
@@ -19103,6 +19204,50 @@ mod tests {
         );
     }
 
+    /// CR 702.5a + CR 303.4 + CR 121.1: "Whenever enchanted player draws a card"
+    /// (Curse of Fool's Wisdom) lowers to a Drawn trigger scoped to the enchanted
+    /// player via `AttachedTo` — NOT `TriggerMode::Unknown` (which never fires).
+    #[test]
+    fn trigger_enchanted_player_draws_is_attached_to() {
+        let def = parse_trigger_line(
+            "Whenever enchanted player draws a card, they lose 2 life and you gain 2 life.",
+            "Curse of Fool's Wisdom",
+        );
+        assert_eq!(def.mode, TriggerMode::Drawn);
+        assert_eq!(def.valid_target, Some(TargetFilter::AttachedTo));
+    }
+
+    /// CR 702.5a: "Whenever enchanted opponent draws a card" (Psychic Possession).
+    /// "Enchant opponent" already restricts the attachment, so bare `AttachedTo`
+    /// resolves the enchanted opponent at runtime.
+    #[test]
+    fn trigger_enchanted_opponent_draws_is_attached_to() {
+        let def = parse_trigger_line(
+            "Whenever enchanted opponent draws a card, you may draw a card.",
+            "Psychic Possession",
+        );
+        assert_eq!(def.mode, TriggerMode::Drawn);
+        assert_eq!(def.valid_target, Some(TargetFilter::AttachedTo));
+    }
+
+    /// Containment guard: the "enchanted player/opponent" recognition lives ONLY
+    /// in the draws path, so "Whenever enchanted player is dealt damage" (Grievous
+    /// Wound) stays honestly `Unknown` rather than flipping to a parses-but-dead
+    /// `DamageReceived` trigger with `valid_card = AttachedTo` (which the runtime
+    /// rejects for player-recipient damage, so it would never fire).
+    #[test]
+    fn trigger_enchanted_player_is_dealt_damage_stays_unknown() {
+        let def = parse_trigger_line(
+            "Whenever enchanted player is dealt damage, they lose 2 life.",
+            "Grievous Wound",
+        );
+        assert!(
+            matches!(def.mode, TriggerMode::Unknown(_)),
+            "expected Unknown, got {:?}",
+            def.mode
+        );
+    }
+
     /// CR 603.4 + CR 102.1: "draws a card during their turn" — the trailing
     /// timing tail restricts the trigger to the drawing player's own turn
     /// (issue #403 defect 2a).
@@ -19750,6 +19895,22 @@ mod tests {
         );
         assert!(cond.is_some(), "condition must be extracted");
         assert_eq!("~ deals 1 damage to you", cleaned);
+    }
+
+    /// CR 701.26 + CR 603.4: Captain America, Living Legend — the first-tap
+    /// intervening-if lowers to `TriggerCondition::FirstTimeObjectTappedThisTurn`
+    /// and is stripped from the effect text, leaving the bare "untap it" effect.
+    #[test]
+    fn extract_if_condition_first_time_tapped_pattern() {
+        let (cleaned, cond) = super::extract_if_condition(
+            "if it's the first time that creature has become tapped this turn, untap it.",
+        );
+        assert_eq!(
+            cond,
+            Some(TriggerCondition::FirstTimeObjectTappedThisTurn),
+            "first-tap intervening-if must extract FirstTimeObjectTappedThisTurn"
+        );
+        assert_eq!("untap it", cleaned);
     }
 
     #[test]
@@ -21471,15 +21632,26 @@ mod tests {
     }
 
     #[test]
-    fn trigger_unless_you_pay_mana_cost_is_not_unless_pay() {
+    fn trigger_unless_you_pay_its_mana_cost_is_self_mana_cost() {
+        // #3791: "unless you pay its mana cost" is now recognized — the cost is
+        // the ability source's own printed mana cost, represented as
+        // `ManaCost::SelfManaCost` and materialized to the source's mana_cost at
+        // resolution time (Pendrell Flux, Disruption Aura, Pendrell Mists).
         let def = parse_trigger_line(
             "When this creature enters, draw a card unless you pay its mana cost.",
             "Test Card",
         );
-        assert!(
-            def.unless_pay.is_none(),
-            "\"pay its mana cost\" is not a recognized unless-cost, got {:?}",
-            def.unless_pay
+        let unless = def
+            .unless_pay
+            .as_ref()
+            .expect("\"pay its mana cost\" must be recognized as an unless-cost");
+        assert_eq!(
+            unless.cost,
+            AbilityCost::Mana {
+                cost: crate::types::mana::ManaCost::SelfManaCost,
+            },
+            "\"pay its mana cost\" must lower to Mana{{SelfManaCost}}, got {:?}",
+            unless.cost
         );
     }
 

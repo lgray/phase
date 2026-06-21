@@ -4920,6 +4920,40 @@ pub(super) fn apply_battlefield_cost_modifiers_with_selected_targets(
     apply_cost_modifications_in_order(mana_cost, &collected);
 }
 
+/// CR 601.2f + CR 109.5: Cost-mod static conditions mix two player scopes.
+/// `DuringYourTurn` binds to the source permanent's controller (Paladin Class),
+/// while `SpellsCastThisTurn` / first-spell quantity gates bind to the spell
+/// caster (Heartwood Storyteller Avatar's opponent-first tax).
+fn evaluate_cost_mod_static_condition(
+    state: &GameState,
+    condition: &crate::types::ability::StaticCondition,
+    caster: PlayerId,
+    source_controller: PlayerId,
+    source_id: ObjectId,
+) -> bool {
+    use crate::types::ability::StaticCondition;
+
+    match condition {
+        StaticCondition::DuringYourTurn => {
+            super::layers::evaluate_condition(state, condition, source_controller, source_id)
+        }
+        StaticCondition::And { conditions } => conditions.iter().all(|c| {
+            evaluate_cost_mod_static_condition(state, c, caster, source_controller, source_id)
+        }),
+        StaticCondition::Or { conditions } => conditions.iter().any(|c| {
+            evaluate_cost_mod_static_condition(state, c, caster, source_controller, source_id)
+        }),
+        StaticCondition::Not { condition } => !evaluate_cost_mod_static_condition(
+            state,
+            condition,
+            caster,
+            source_controller,
+            source_id,
+        ),
+        _ => super::layers::evaluate_condition(state, condition, caster, source_id),
+    }
+}
+
 fn collect_battlefield_cost_modifiers(
     state: &GameState,
     caster: PlayerId,
@@ -4932,10 +4966,8 @@ fn collect_battlefield_cost_modifiers(
     // CR 702.26b + CR 114.4 + CR 113.6b: Functioning gate (phased-out /
     // command-zone with Eminence-style opt-in) owned by
     // `game_functioning_statics`. We deliberately use the non-condition-
-    // filtered helper here — CR 604.1 condition evaluation must run against
-    // `caster` (so `SpellsCastThisTurn`-style conditions resolve against the
-    // casting player's history), not against the static's controller. The
-    // inline `evaluate_condition(... caster, ...)` call below does that work.
+    // filtered helper here — CR 604.1 condition evaluation uses per-clause player
+    // scope via `evaluate_cost_mod_static_condition`.
     //
     // CR 113.6b: cost-reduction statics that opt into the command zone via
     // `active_zones.contains(Command)` (Eminence — The Ur-Dragon, Edgar Markov)
@@ -5010,10 +5042,17 @@ fn collect_battlefield_cost_modifiers(
                 }
             }
 
-            // CR 601.2f: Check static condition — "as long as" clauses gate cost modification.
-            // Uses `caster` so SpellsCastThisTurn resolves against the casting player's history.
+            // CR 601.2f: Check static condition — "as long as" / "during your turn"
+            // clauses gate cost modification. `DuringYourTurn` uses the source
+            // controller; spell-history quantity gates use the caster.
             if let Some(ref cond) = def.condition {
-                if !super::layers::evaluate_condition(state, cond, caster, bf_id) {
+                if !evaluate_cost_mod_static_condition(
+                    state,
+                    cond,
+                    caster,
+                    source_controller,
+                    bf_id,
+                ) {
                     continue;
                 }
             }
@@ -6129,11 +6168,9 @@ pub fn handle_prototype_cost_choice_with_payment_mode(
 /// `bestow_form` is set to `Some(BestowFormState)` to mark the object as in
 /// bestow form; `revert_bestow_aura_form` is the inverse operation.
 ///
-/// Idempotent: a no-op if the object is already in bestow form.
-fn apply_bestow_aura_form(obj: &mut crate::game::game_object::GameObject) {
-    if obj.bestow_form.is_some() {
-        return;
-    }
+/// Idempotent: safe to re-run after printed-face rehydration or layer resets
+/// re-anchor `card_types` from a refreshed `base_card_types`.
+pub(crate) fn apply_bestow_aura_form(obj: &mut crate::game::game_object::GameObject) {
     use crate::types::card_type::CoreType;
     // CR 702.103b: Remove the Creature core type while bestowed.
     obj.card_types
@@ -20655,6 +20692,7 @@ mod tests {
             Effect::Counter {
                 target: TargetFilter::StackSpell,
                 source_rider: None,
+                countered_spell_zone: None,
             },
             vec![TargetRef::Object(opposing_bolt)],
             spell_id,
@@ -20704,6 +20742,7 @@ mod tests {
                     kind: None,
                 },
                 source_rider: None,
+                countered_spell_zone: None,
             },
             vec![TargetRef::Object(stack_ability_id)],
             spell_id,
@@ -31975,6 +32014,7 @@ mod tests {
                 Effect::Counter {
                     target: TargetFilter::Typed(crate::types::ability::TypedFilter::card()),
                     source_rider: None,
+                    countered_spell_zone: None,
                 },
             ));
             obj.mana_cost = ManaCost::Cost {

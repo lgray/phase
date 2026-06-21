@@ -13,13 +13,13 @@ use crate::types::ability::{
     AbilityCondition, AbilityCost, AbilityDefinition, AbilityKind, ActivationRestriction,
     AdditionalCost, AggregateFunction, AttackScope, AttackSubject, CardTypeSetSource, ChoiceType,
     Comparator, ContinuousModification, ControllerRef, CountScope, CounterSourceRider,
-    DelayedTriggerCondition, DieRollModifier, DoublePTMode, Duration, Effect, EffectOutcomeSignal,
-    EffectScope, FilterProp, GameRestriction, ManaProduction, ObjectProperty, ObjectScope,
-    PlayerFilter, PlayerScope, PtStat, PtValue, PtValueScope, QuantityExpr, QuantityRef,
-    ReplacementCondition, ReplacementDefinition, ReplacementMode, SeatDirection, SharedQuality,
-    SharedQualityRelation, SpeedDelta, SpellCastingOption, SpellCastingOptionKind, StaticCondition,
-    StaticDefinition, TapStateChange, TargetFilter, TriggerDefinition, TypeFilter, TypedFilter,
-    ZoneRef,
+    CounteredSpellDestination, DelayedTriggerCondition, DieRollModifier, DoublePTMode, Duration,
+    Effect, EffectOutcomeSignal, EffectScope, FilterProp, GameRestriction, LibraryPosition,
+    ManaProduction, ObjectProperty, ObjectScope, PlayerFilter, PlayerScope, PtStat, PtValue,
+    PtValueScope, QuantityExpr, QuantityRef, ReplacementCondition, ReplacementDefinition,
+    ReplacementMode, SeatDirection, SharedQuality, SharedQualityRelation, SpeedDelta,
+    SpellCastingOption, SpellCastingOptionKind, StaticCondition, StaticDefinition, TapStateChange,
+    TargetFilter, TriggerDefinition, TypeFilter, TypedFilter, ZoneRef,
 };
 use crate::types::card::CardFace;
 use crate::types::card_type::CoreType;
@@ -724,6 +724,7 @@ fn fmt_typed_filter(tf: &TypedFilter) -> String {
             // CR 903.3d
             FilterProp::IsCommander => parts.push("commander".into()),
             FilterProp::ToughnessGTPower => parts.push("toughness > power".into()),
+            FilterProp::PowerExceedsBase => parts.push("power > base power".into()),
             FilterProp::DifferentNameFrom { .. } => parts.push("different name".into()),
             FilterProp::Other { value } => parts.push(value.clone()),
             FilterProp::InAnyZone { zones } => {
@@ -1989,7 +1990,8 @@ fn effect_details(effect: &Effect) -> Vec<(String, String)> {
         | Effect::Transform { target }
         | Effect::Shuffle { target }
         | Effect::Reveal { target }
-        | Effect::Regenerate { target } => {
+        | Effect::Regenerate { target }
+        | Effect::RemoveAllDamage { target } => {
             d.push(("target".into(), fmt_target(target)));
         }
         // CR 702.50a: EpicCopy's parameters live in its snapshotted ability.
@@ -2047,7 +2049,7 @@ fn effect_details(effect: &Effect) -> Vec<(String, String)> {
         Effect::Counter {
             target,
             source_rider,
-            ..
+            countered_spell_zone,
         } => {
             d.push(("target".into(), fmt_target(target)));
             match source_rider {
@@ -2056,6 +2058,22 @@ fn effect_details(effect: &Effect) -> Vec<(String, String)> {
                 }
                 Some(CounterSourceRider::Destroy) => {
                     d.push(("+ destroy".into(), "source".into()));
+                }
+                None => {}
+            }
+            // CR 701.6a + CR 614.1a: countered-spell destination redirect.
+            match countered_spell_zone {
+                Some(CounteredSpellDestination::Library {
+                    position: LibraryPosition::Top,
+                }) => d.push(("redirect".into(), "library top".into())),
+                Some(CounteredSpellDestination::Library {
+                    position: LibraryPosition::Bottom,
+                }) => d.push(("redirect".into(), "library bottom".into())),
+                Some(CounteredSpellDestination::Library {
+                    position: LibraryPosition::NthFromTop { n },
+                }) => d.push(("redirect".into(), format!("library #{n} from top"))),
+                Some(CounteredSpellDestination::Hand) => {
+                    d.push(("redirect".into(), "hand".into()))
                 }
                 None => {}
             }
@@ -2146,12 +2164,26 @@ fn effect_details(effect: &Effect) -> Vec<(String, String)> {
             ));
             d.push(("target".into(), fmt_target(target)));
         }
-        Effect::DoublePT { mode, target } => {
+        Effect::DoublePT {
+            mode,
+            target,
+            factor,
+        } => {
             d.push(("mode".into(), fmt_double_pt_mode(mode).into()));
+            if *factor != 2 {
+                d.push(("factor".into(), factor.to_string()));
+            }
             d.push(("target".into(), fmt_target(target)));
         }
-        Effect::DoublePTAll { mode, target } => {
+        Effect::DoublePTAll {
+            mode,
+            target,
+            factor,
+        } => {
             d.push(("mode".into(), fmt_double_pt_mode(mode).into()));
+            if *factor != 2 {
+                d.push(("factor".into(), factor.to_string()));
+            }
             d.push(("filter".into(), fmt_target(target)));
         }
         Effect::DiscardCard { count, target } => {
@@ -2830,6 +2862,7 @@ fn effect_details(effect: &Effect) -> Vec<(String, String)> {
         }
         Effect::BecomePrepared { target }
         | Effect::BecomeUnprepared { target }
+        | Effect::BecomeSaddled { target }
         | Effect::PairWith { target } => {
             d.push(("target".into(), fmt_target(target)));
         }

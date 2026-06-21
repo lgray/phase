@@ -9,7 +9,9 @@ use nom::sequence::{preceded, terminated};
 use nom::Parser;
 
 use super::super::oracle_nom::bridge::{nom_on_lower, nom_parse_lower};
-use super::super::oracle_nom::condition::inject_controller_you;
+use super::super::oracle_nom::condition::{
+    inject_controller_you, parse_cast_using_teamwork_phrase,
+};
 use super::super::oracle_nom::primitives as nom_primitives;
 use super::super::oracle_nom::quantity as nom_quantity;
 use super::super::oracle_quantity::{canonicalize_quantity_ref, parse_cda_quantity};
@@ -158,17 +160,46 @@ fn comma_inside_if_creature_subtype_list(lower: &str, comma_idx: usize) -> bool 
     let Some(after_prefix) = parse_leading_conditional_prefix(lower) else {
         return false;
     };
-    let (after_intro, _) =
-        match alt((tag::<_, _, OracleError<'_>>("it's a "), tag("it's an "))).parse(after_prefix) {
-            Ok(parsed) => parsed,
-            Err(_) => return false,
-        };
-    let subtype_start = lower.len() - after_intro.len();
-    let Some((_, after_type)) = parse_creature_subtype_card_tail(after_intro) else {
-        return false;
-    };
-    let subtype_end = lower.len() - after_type.len();
-    (subtype_start..subtype_end).contains(&comma_idx)
+    // CR 205.3m: "if it's a Kraken, Leviathan, ... creature card" — the legacy
+    // `it's a [subtype] card` intro form, whose subtype span ends at " card".
+    if let Ok((after_intro, _)) =
+        alt((tag::<_, _, OracleError<'_>>("it's a "), tag("it's an "))).parse(after_prefix)
+    {
+        if let Some((_, after_type)) = parse_creature_subtype_card_tail(after_intro) {
+            let subtype_start = lower.len() - after_intro.len();
+            let subtype_end = lower.len() - after_type.len();
+            if (subtype_start..subtype_end).contains(&comma_idx) {
+                return true;
+            }
+        }
+    }
+    // CR 205.3m + CR 608.2c: target-anaphoric "that creature is a Mutant, Ninja,
+    // or Turtle" (Turtle Van). The subtype-list commas separate disjuncts, not
+    // the condition from the effect body. Compose the same subject + tense +
+    // article + `parse_type_phrase` span used by
+    // `parse_target_type_membership_condition` and test whether the comma falls
+    // inside the matched span. The trailing predicate has no " card" anchor, so
+    // the span ends where `parse_type_phrase` stops consuming type words.
+    target_anaphoric_subtype_span(lower, after_prefix)
+        .is_some_and(|(start, end)| (start..end).contains(&comma_idx))
+}
+
+/// CR 205.3m: Find the byte span of the subtype-disjunction predicate in a
+/// target-anaphoric "<subject> is a <subtype list>" condition. Returns the
+/// `[start, end)` offsets (relative to `lower`) of the parsed type phrase, or
+/// `None` when the text is not this shape. `after_prefix` is `lower` with the
+/// leading conditional prefix ("then if " / "if ") already stripped.
+fn target_anaphoric_subtype_span(lower: &str, after_prefix: &str) -> Option<(usize, usize)> {
+    let (after_subject, _) = parse_target_demonstrative_subject(after_prefix).ok()?;
+    let (after_tense, _) = parse_target_anaphoric_tense_polarity(after_subject).ok()?;
+    let (after_article, _) = opt(nom_primitives::parse_article).parse(after_tense).ok()?;
+    let (filter, remainder) = crate::parser::oracle_target::parse_type_phrase(after_article);
+    if remainder.len() == after_article.len() || matches!(filter, TargetFilter::Any) {
+        return None;
+    }
+    let start = lower.len() - after_article.len();
+    let end = lower.len() - remainder.len();
+    Some((start, end))
 }
 
 fn is_thousands_separator_comma(bytes: &[u8], idx: usize) -> bool {
@@ -1059,6 +1090,78 @@ fn parse_target_color_condition(
     ))
 }
 
+/// Demonstrative target-anaphoric subject — "that creature" / "that permanent" /
+/// "that card". Deliberately EXCLUDES the bare "it" pronoun: the "it's a [type]
+/// card" / "it's a [subtype] creature card" reveal-conditional forms are already
+/// owned by `RevealedHasCardType` (via `parse_if_revealed_card_type_conditional`
+/// and `strip_card_type_conditional`). Accepting "it" here would preempt those
+/// paths and reclassify reveal gates as `TargetMatchesFilter` (Goblin Guide,
+/// Kenessos, chosen-type forms). The demonstrative subjects are unambiguous —
+/// they always denote a previously-targeted object.
+fn parse_target_demonstrative_subject(
+    input: &str,
+) -> super::super::oracle_nom::error::OracleResult<'_, ()> {
+    value(
+        (),
+        alt((
+            tag::<_, _, OracleError<'_>>("that creature"),
+            tag("that permanent"),
+            tag("that card"),
+        )),
+    )
+    .parse(input)
+}
+
+/// CR 608.2c + CR 205.3m: target-anaphoric card-type / subtype-membership gate —
+/// "that creature is a Mutant, Ninja, or Turtle" (Turtle Van), "that permanent
+/// is an artifact", "that creature was a Zombie". Composes three orthogonal axes:
+///
+///   - subject: `that creature`, `that permanent`, `that card` (NOT "it" — see
+///     `parse_target_demonstrative_subject` for why)
+///   - tense: present (`is`/`'s`) → current state, past (`was`) → LKI (CR 400.7)
+///   - polarity: positive (`is`/`was`) vs. negative (`isn't`/`wasn't`/…)
+///
+/// The predicate tail is parsed by the shared `parse_type_phrase` building block,
+/// so the full comma + "or" subtype-disjunction grammar (CR 205.3m) is covered:
+/// "a Mutant, Ninja, or Turtle" lowers to `Or[Subtype(Mutant), Subtype(Ninja),
+/// Subtype(Turtle)]`. Emits `TargetMatchesFilter` (wrapped in `Not` when negated)
+/// resolving against the ability's first object target.
+fn parse_target_type_membership_condition(
+    input: &str,
+) -> super::super::oracle_nom::error::OracleResult<'_, AbilityCondition> {
+    let (rest, _) = parse_target_demonstrative_subject(input)?;
+    let (rest, (negated, use_lki)) = parse_target_anaphoric_tense_polarity(rest)?;
+    // CR 205.3: an optional "a"/"an" article precedes a single type/subtype word
+    // ("is a Goblin"); a leading core type with no article ("is artifact") is not
+    // real Oracle wording, so the article guard stays inside the combinator.
+    let (rest, _) = opt(nom_primitives::parse_article).parse(rest)?;
+    let (filter, remainder) = crate::parser::oracle_target::parse_type_phrase(rest);
+    // Reject when no type word was consumed (parse_type_phrase echoes its input
+    // unchanged on failure) so the alt backtracks to the color / quantity arms.
+    if remainder.len() == rest.len() || matches!(filter, TargetFilter::Any) {
+        return Err(nom::Err::Error(nom::error::Error::new(
+            input,
+            nom::error::ErrorKind::Fail,
+        )));
+    }
+    Ok((
+        remainder,
+        maybe_negate(
+            AbilityCondition::TargetMatchesFilter { filter, use_lki },
+            negated,
+        ),
+    ))
+}
+
+fn parse_target_type_membership_condition_text(text: &str) -> Option<AbilityCondition> {
+    let lower = text.trim().trim_end_matches('.').to_ascii_lowercase();
+    let parsed = all_consuming(parse_target_type_membership_condition)
+        .parse(lower.as_str())
+        .ok()
+        .map(|(_, condition)| condition);
+    parsed
+}
+
 /// Consume a target-anaphoric noun phrase used as the subject of an "instead"
 /// gating condition. `it` is a special pronoun case (the only one that
 /// contracts to `it's`); the noun-phrase forms always take a space before
@@ -1872,6 +1975,10 @@ pub(super) fn strip_suffix_conditional(
         return (Some(cond), effect_text);
     }
 
+    if let Some(cond) = parse_cast_using_teamwork_condition_text(condition_core) {
+        return (Some(cond), effect_text);
+    }
+
     if let Some(cond) = parse_mana_spent_vs_mana_value_target_condition_text(condition_core) {
         return (Some(cond), effect_text);
     }
@@ -1955,6 +2062,27 @@ fn parse_was_kicked_condition(input: &str) -> OracleResult<'_, AbilityCondition>
     )
         .parse(input)?;
     Ok((rest, AbilityCondition::additional_cost_paid_any()))
+}
+
+/// CR 601.2f + CR 608.2c: "<effect> if (this spell was | it was | it's) cast
+/// using teamwork" trailing rider — gates the preceding effect specifically on
+/// the Teamwork additional-cost payment (origin Teamwork), so a different
+/// optional/imposed additional cost on the same spell does not satisfy it.
+/// Mirrors `parse_was_kicked_condition_text`; reuses the shared phrase
+/// combinator so the subject/tense axes live in one place.
+fn parse_cast_using_teamwork_condition_text(text: &str) -> Option<AbilityCondition> {
+    let lower = text.to_ascii_lowercase();
+    nom_parse_lower(&lower, |input| {
+        all_consuming(parse_cast_using_teamwork_condition).parse(input)
+    })
+}
+
+fn parse_cast_using_teamwork_condition(input: &str) -> OracleResult<'_, AbilityCondition> {
+    let (rest, ()) = parse_cast_using_teamwork_phrase(input)?;
+    Ok((
+        rest,
+        AbilityCondition::additional_cost_paid_origin(AdditionalCostOrigin::Teamwork),
+    ))
 }
 
 /// CR 601.2h + CR 608.2c: "if the amount of mana spent to cast it/that spell
@@ -2482,10 +2610,16 @@ pub(super) fn try_parse_dig_instead_alternative(
         crate::parser::oracle_ir::ast::PutCount::Exactly(n) => (Some(n), false),
     };
 
+    // CR 601.2f + CR 608.2c: a teamwork-gated "put ... from among them ...
+    // instead" alternative reuses the preceding Dig's source; the base
+    // selection runs from else_ability when Teamwork wasn't paid. Appended
+    // last — the teamwork phrase is disjoint from all four arms above, so the
+    // ordering is purely defensive.
     let condition = parse_additional_cost_instead_condition_fragment(cond_text)
         .or_else(|| try_nom_condition_as_ability_condition(cond_text, ctx))
         .or_else(|| parse_condition_text(cond_text))
-        .or_else(|| parse_control_count_as_ability_condition(cond_text))?;
+        .or_else(|| parse_control_count_as_ability_condition(cond_text))
+        .or_else(|| parse_cast_using_teamwork_condition_text(cond_text))?;
 
     // Clone the preceding Dig's source (top N) and reveal-mode, apply alternative
     // selection parameters. `rest_destination` prefers the alternative's inline value
@@ -3227,6 +3361,15 @@ pub(super) fn try_nom_condition_as_ability_condition(
     // Tried after the controller-scoped "you attacked with" form above, whose
     // subject parser cannot match the anaphoric "it"/"that creature".
     if let Some(condition) = parse_target_attacked_this_turn_condition_text(lower.as_str()) {
+        return Some(condition);
+    }
+
+    // CR 608.2c + CR 205.3m: target-anaphoric type / subtype-membership gate
+    // ("that creature is a Mutant, Ninja, or Turtle" — Turtle Van). Tried after
+    // the more specific anaphoric combat-history form above; its predicate tail is
+    // a type/subtype phrase, so it does not collide with the bare-color form
+    // (which `parse_condition_text` handles separately).
+    if let Some(condition) = parse_target_type_membership_condition_text(lower.as_str()) {
         return Some(condition);
     }
 
@@ -5549,6 +5692,62 @@ mod tests {
             })
         );
         assert_eq!(body, "transform this creature.");
+    }
+
+    /// CR 205.3m + CR 608.2c: "that creature is a Mutant, Ninja, or Turtle"
+    /// (Turtle Van) → `TargetMatchesFilter` over an `Or` of the three subtypes.
+    /// The comma + "or" disjunction is parsed via the shared `parse_type_phrase`
+    /// building block, so the condition covers the whole class of multi-subtype
+    /// target-anaphoric gates, not just this card.
+    #[test]
+    fn target_type_membership_subtype_disjunction() {
+        let cond = parse_target_type_membership_condition_text(
+            "that creature is a Mutant, Ninja, or Turtle",
+        );
+        let Some(AbilityCondition::TargetMatchesFilter { filter, use_lki }) = cond else {
+            panic!("expected TargetMatchesFilter, got {cond:?}");
+        };
+        assert!(
+            !use_lki,
+            "present-tense 'is' must read current state, not LKI"
+        );
+        let TargetFilter::Or { filters } = filter else {
+            panic!("expected Or of subtypes, got {filter:?}");
+        };
+        let subtypes: Vec<String> = filters
+            .iter()
+            .filter_map(|f| match f {
+                TargetFilter::Typed(tf) => tf.type_filters.iter().find_map(|t| match t {
+                    TypeFilter::Subtype(s) => Some(s.clone()),
+                    _ => None,
+                }),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(subtypes, vec!["Mutant", "Ninja", "Turtle"]);
+    }
+
+    /// CR 400.7 + CR 608.2c: past-tense "that creature was a Goblin" reads LKI.
+    #[test]
+    fn target_type_membership_past_tense_uses_lki() {
+        let cond = parse_target_type_membership_condition_text("that creature was a Goblin");
+        let Some(AbilityCondition::TargetMatchesFilter { use_lki, .. }) = cond else {
+            panic!("expected TargetMatchesFilter, got {cond:?}");
+        };
+        assert!(use_lki, "past-tense 'was' must use LKI per CR 400.7");
+    }
+
+    /// Negated form "that creature isn't a Turtle" wraps in `Not`.
+    #[test]
+    fn target_type_membership_negated() {
+        let cond = parse_target_type_membership_condition_text("that creature isn't a Turtle");
+        let Some(AbilityCondition::Not { condition }) = cond else {
+            panic!("expected Not, got {cond:?}");
+        };
+        assert!(matches!(
+            *condition,
+            AbilityCondition::TargetMatchesFilter { .. }
+        ));
     }
 
     /// CR 608.2c: "permanent" is not a CoreType — strip_card_type_conditional must

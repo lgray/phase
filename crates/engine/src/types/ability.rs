@@ -977,6 +977,28 @@ pub enum CounterSourceRider {
     Destroy,
 }
 
+/// CR 701.6a + CR 614.1a: "put it <zone> instead of into that player's
+/// graveyard" — a replacement redirect on the destination of a countered
+/// *spell* (Memory Lapse, Remand, Spell Crumple). Distinct from
+/// [`CounterSourceRider`], which acts on a countered *ability*'s source
+/// permanent.
+///
+/// CR 701.6a says a countered spell is put into its owner's graveyard; CR
+/// 614.1a makes the "instead" clause a replacement that redirects that move to
+/// the named zone. Exile is deliberately excluded — that case is already
+/// handled by the existing graveyard-exile sub-ability rider in
+/// `game::effects::counter` (Force of Negation, No More Lies).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type")]
+pub enum CounteredSpellDestination {
+    /// "put it on top/bottom of its owner's library" (Memory Lapse,
+    /// Spell Crumple).
+    Library { position: LibraryPosition },
+    /// "return it to its owner's hand" / "put it into its owner's hand"
+    /// (Remand).
+    Hand,
+}
+
 /// Power/toughness value -- either a fixed integer or a variable reference (e.g. "*", "X").
 ///
 /// Custom Deserialize: accepts both the tagged format `{"type":"Fixed","value":2}` (new)
@@ -2566,6 +2588,14 @@ pub enum FilterProp {
     Renowned,
     /// CR 510.1c: Matches creatures whose toughness is greater than their power.
     ToughnessGTPower,
+    /// CR 208.1 + CR 613.4a + CR 613.4b: Matches a creature whose current
+    /// (post-layer) power exceeds its base power. Base power is established by
+    /// layer 7a CDAs (CR 613.4a) and layer 7b set effects (CR 613.4b), before
+    /// the counters and pumps applied in layers 7c–7e. True for a creature
+    /// pumped above its base by +1/+1 counters, auras, or anthems; false when
+    /// power == base or power < base. Consolidation target if a 3rd same-object
+    /// P/T self-comparison appears: `PtSelfComparison { lhs, comparator, rhs }`.
+    PowerExceedsBase,
     /// Disjunctive composite: the object matches if ANY inner prop matches.
     /// Used for natural-language OR within a property suffix — e.g.
     /// "creature with power or toughness N or less" decomposes to
@@ -3781,7 +3811,12 @@ pub enum QuantityRef {
     /// 0 outside cost/trigger resolution, whereas this one is correct any time
     /// the resolver has a `source_id` (cost payment, ability resolution, etc.).
     SelfManaValue,
-    /// CR 107.3e: Aggregate query (max/min/sum) over a property of battlefield objects.
+    /// CR 202.3: Aggregate query (max/min/sum) over a property of objects in the
+    /// zones the `filter` declares (battlefield by default; e.g. an `InZone`
+    /// graveyard filter aggregates over the graveyard). The resolver scans
+    /// `filter.extract_zones()`, so the query is zone-general.
+    // TODO: no dedicated CR governs the extremum/aggregation itself; CR 202.3 is
+    // cited for the mana-value property — the most common aggregated property.
     Aggregate {
         function: AggregateFunction,
         property: ObjectProperty,
@@ -7361,6 +7396,16 @@ pub enum Effect {
         #[serde(default = "default_target_filter_any")]
         target: TargetFilter,
     },
+    /// CR 120.6 + CR 120.3: Remove all damage marked on the target creature(s)
+    /// ("all damage already dealt to him is healed"). Unlike `Regenerate`, this
+    /// does not create a shield, tap, or remove from combat — it only clears
+    /// marked damage (and the deathtouch flag) early, before the cleanup step
+    /// (CR 514.2) at which damage would otherwise wear off. Used by Wolverine,
+    /// Fierce Fighter's heal-on-damage replacement.
+    RemoveAllDamage {
+        #[serde(default = "default_target_filter_any")]
+        target: TargetFilter,
+    },
     Counter {
         #[serde(default = "default_target_filter_any")]
         target: TargetFilter,
@@ -7372,6 +7417,15 @@ pub enum Effect {
         /// countered spell is not a permanent (CR 701.8a / CR 110.1).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         source_rider: Option<CounterSourceRider>,
+        /// CR 701.6a + CR 614.1a: Redirect for a countered *spell*'s
+        /// destination — "if that spell is countered this way, put it <zone>
+        /// instead of into that player's graveyard" (Memory Lapse, Remand,
+        /// Spell Crumple). When `None`, the countered spell follows the default
+        /// CR 701.6a graveyard rule. Resolved at counter-resolution time on the
+        /// countered spell (not its source); has no effect when an ability is
+        /// countered (an ability is not a card and has no zone — CR 110.1).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        countered_spell_zone: Option<CounteredSpellDestination>,
     },
     /// CR 701.6 + CR 405.1: Mass counter — counter every spell or ability on
     /// the stack matching `target`. Mirrors `Effect::DestroyAll` /
@@ -8178,17 +8232,32 @@ pub enum Effect {
         #[serde(default = "default_target_filter_any")]
         target: TargetFilter,
     },
-    /// CR 701.10a: Double power/toughness of target creature.
+    /// CR 701.10a + CR 613.4c: Multiply power/toughness of target creature by
+    /// `factor` via a layer-7c continuous modification. `factor: 2` is "double"
+    /// (CR 701.10a/b); `factor: 3` is "triple" (Tifa's Limit Break — Final
+    /// Heaven). Higher factors compose the same way: each adds `(factor-1)x` the
+    /// snapshot value (CR 701.10b templating generalized — "double" gives +X,
+    /// "triple" gives +2X). The `factor` axis parameterizes the multiplier so
+    /// "double"/"triple"/… share one P/T-modifying effect rather than a
+    /// Double/Triple sibling cluster.
     DoublePT {
         mode: DoublePTMode,
         #[serde(default = "default_target_filter_any")]
         target: TargetFilter,
+        /// Multiplier applied to the snapshot P/T. Defaults to 2 ("double") for
+        /// forward compatibility with hand-authored fixtures and pre-`factor`
+        /// serialized card data.
+        #[serde(default = "default_pt_factor")]
+        factor: u32,
     },
-    /// CR 701.10a: Double power/toughness of all matching creatures.
+    /// CR 701.10a + CR 613.4c: Multiply power/toughness of all matching creatures
+    /// by `factor` (see `DoublePT` for the `factor` semantics).
     DoublePTAll {
         mode: DoublePTMode,
         #[serde(default = "default_target_filter_any")]
         target: TargetFilter,
+        #[serde(default = "default_pt_factor")]
+        factor: u32,
     },
     /// CR 122.5 + CR 122.8: Transfer counters from source onto target.
     /// `mode` records whether Oracle says to move counters (remove then put)
@@ -8594,6 +8663,19 @@ pub enum Effect {
     /// target creature. Idempotent: if not prepared, no event fires. Assign
     /// when WotC publishes SOS CR update.
     BecomeUnprepared {
+        #[serde(default = "default_target_filter_any")]
+        target: TargetFilter,
+    },
+    /// CR 702.171b: the target permanent becomes saddled until end of turn.
+    /// Distinct from the Saddle keyword's activated ability (CR 702.171a,
+    /// `KeywordAction::Saddle`) which is paid by tapping creatures: this is the
+    /// effect-level designation toggle used by "becomes saddled" instructions
+    /// (Guidelight Matrix, Kolodin, Alacrian Armory) that grant the designation
+    /// without paying the saddle cost. Idempotent: if already saddled, no event
+    /// fires. CR 702.171b: only permanents can become saddled, the designation
+    /// is cleared at end of turn / when the permanent leaves the battlefield,
+    /// and it is not part of the permanent's copiable values.
+    BecomeSaddled {
         #[serde(default = "default_target_filter_any")]
         target: TargetFilter,
     },
@@ -9696,6 +9778,14 @@ fn default_one() -> u32 {
     1
 }
 
+/// CR 701.10a: A bare "double power/toughness" effect multiplies by 2. Used as
+/// the `serde` default for `Effect::DoublePT`/`DoublePTAll` `factor` so existing
+/// serialized card data (no `factor` key) and hand-authored fixtures keep the
+/// historical doubling behavior.
+fn default_pt_factor() -> u32 {
+    2
+}
+
 /// Deserialize a `TapCreaturesRequirement`, accepting both the current tagged
 /// map form (`{"requirement":"count","count":N}` /
 /// `{"requirement":"aggregate","stat":"TotalPower","comparator":"GE","value":N}`)
@@ -10427,6 +10517,7 @@ impl Effect {
             | Effect::PairWith { target }
             | Effect::Destroy { target, .. }
             | Effect::Regenerate { target, .. }
+            | Effect::RemoveAllDamage { target, .. }
             | Effect::Counter { target, .. }
             | Effect::RemoveCounter { target, .. }
             | Effect::Sacrifice { target, .. }
@@ -10463,6 +10554,7 @@ impl Effect {
             | Effect::ForceAttack { target, .. }
             | Effect::BecomePrepared { target, .. }
             | Effect::BecomeUnprepared { target, .. }
+            | Effect::BecomeSaddled { target, .. }
             | Effect::CastFromZone { target, .. }
             | Effect::PreventDamage { target, .. }
             | Effect::Exploit { target, .. }
@@ -10853,6 +10945,7 @@ impl Effect {
             | Effect::PairWith { .. }
             | Effect::Destroy { .. }
             | Effect::Regenerate { .. }
+            | Effect::RemoveAllDamage { .. }
             | Effect::Counter { .. }
             | Effect::CounterAll { .. }
             // CR 701.26a/b: tap/untap carry no QuantityExpr in any scope.
@@ -10922,6 +11015,7 @@ impl Effect {
             | Effect::ForceAttack { .. }
             | Effect::BecomePrepared { .. }
             | Effect::BecomeUnprepared { .. }
+            | Effect::BecomeSaddled { .. }
             | Effect::CastFromZone { .. }
             | Effect::PreventDamage { .. }
             | Effect::Exploit { .. }
@@ -11063,6 +11157,7 @@ impl Effect {
             | Effect::PairWith { .. }
             | Effect::Destroy { .. }
             | Effect::Regenerate { .. }
+            | Effect::RemoveAllDamage { .. }
             | Effect::Counter { .. }
             | Effect::CounterAll { .. }
             // CR 701.26a/b: tap/untap carry no QuantityExpr in any scope.
@@ -11132,6 +11227,7 @@ impl Effect {
             | Effect::ForceAttack { .. }
             | Effect::BecomePrepared { .. }
             | Effect::BecomeUnprepared { .. }
+            | Effect::BecomeSaddled { .. }
             | Effect::CastFromZone { .. }
             | Effect::PreventDamage { .. }
             | Effect::Exploit { .. }
@@ -11219,6 +11315,7 @@ pub fn effect_variant_name(effect: &Effect) -> &str {
         Effect::PairWith { .. } => "PairWith",
         Effect::Destroy { .. } => "Destroy",
         Effect::Regenerate { .. } => "Regenerate",
+        Effect::RemoveAllDamage { .. } => "RemoveAllDamage",
         Effect::Counter { .. } => "Counter",
         Effect::CounterAll { .. } => "CounterAll",
         Effect::Token { .. } => "Token",
@@ -11316,6 +11413,7 @@ pub fn effect_variant_name(effect: &Effect) -> &str {
         Effect::SolveCase => "SolveCase",
         Effect::BecomePrepared { .. } => "BecomePrepared",
         Effect::BecomeUnprepared { .. } => "BecomeUnprepared",
+        Effect::BecomeSaddled { .. } => "BecomeSaddled",
         Effect::SetClassLevel { .. } => "SetClassLevel",
         Effect::CreateDelayedTrigger { .. } => "CreateDelayedTrigger",
         Effect::AddTargetReplacement { .. } => "AddTargetReplacement",
@@ -11523,6 +11621,8 @@ pub enum EffectKind {
     BecomePrepared,
     /// CR 702.xxx: Prepare (Strixhaven) — clear prepared state on target.
     BecomeUnprepared,
+    /// CR 702.171b: mark the target permanent as saddled until end of turn.
+    BecomeSaddled,
     SetClassLevel,
     CreateDelayedTrigger,
     AddTargetReplacement,
@@ -11538,6 +11638,7 @@ pub enum EffectKind {
     PreventDamage,
     CreateDamageReplacement,
     Regenerate,
+    RemoveAllDamage,
     LoseTheGame,
     WinTheGame,
     RollDie,
@@ -11642,6 +11743,7 @@ impl From<&Effect> for EffectKind {
             Effect::PairWith { .. } => EffectKind::PairWith,
             Effect::Destroy { .. } => EffectKind::Destroy,
             Effect::Regenerate { .. } => EffectKind::Regenerate,
+            Effect::RemoveAllDamage { .. } => EffectKind::RemoveAllDamage,
             Effect::Counter { .. } => EffectKind::Counter,
             Effect::CounterAll { .. } => EffectKind::CounterAll,
             Effect::Token { .. } => EffectKind::Token,
@@ -11741,6 +11843,7 @@ impl From<&Effect> for EffectKind {
             Effect::SolveCase => EffectKind::SolveCase,
             Effect::BecomePrepared { .. } => EffectKind::BecomePrepared,
             Effect::BecomeUnprepared { .. } => EffectKind::BecomeUnprepared,
+            Effect::BecomeSaddled { .. } => EffectKind::BecomeSaddled,
             Effect::SetClassLevel { .. } => EffectKind::SetClassLevel,
             Effect::CreateDelayedTrigger { .. } => EffectKind::CreateDelayedTrigger,
             Effect::AddTargetReplacement { .. } => EffectKind::AddTargetReplacement,
@@ -13751,6 +13854,13 @@ pub enum TriggerCondition {
     /// dealt damage this turn by a source matching the filter (e.g. Shelob's Spider gate).
     DealtDamageThisTurnBySource { source: TargetFilter },
 
+    /// CR 701.26 + CR 603.4: True iff the triggering object (the permanent that
+    /// became tapped) has become tapped exactly once so far this turn — i.e. this
+    /// is the first time. Read from `GameState.object_tap_count_this_turn` against
+    /// the tapped object's id. Per CR 603.4 it is checked at both trigger time and
+    /// resolution; the count model lets the resolution-time re-check stay correct.
+    FirstTimeObjectTappedThisTurn,
+
     /// CR 400.7 + CR 603.10: "if it was a [type]" — true when the trigger source's
     /// last known information includes the specified core type. Used by the Glimmer cycle
     /// ("when this dies, if it was a creature, return it").
@@ -14182,6 +14292,15 @@ pub enum ReplacementCondition {
     /// `subtypes` is `Vec<String>` to mirror the existing `TokenSpec.subtypes`
     /// shape; introducing a typed `Subtype` enum is a separate, broader refactor.
     TokenSubtypeMatches { subtypes: Vec<String> },
+    /// CR 614.1a + CR 111.1: Gate a `CreateToken` replacement on whether the
+    /// proposed event creates a token whose core card types overlap a fixed set.
+    /// Used by Divine Visitation ("If one or more creature tokens would be
+    /// created under your control, …") — the substitution applies only to
+    /// CREATURE tokens. Sibling of `TokenSubtypeMatches` but on the orthogonal
+    /// core-type axis (CR 111.1 token characteristics); distinct fields, so the
+    /// two are NOT a sibling-cluster smell. Matched case-exactly against the
+    /// proposed `TokenSpec.characteristics.core_types`.
+    TokenCoreTypeMatches { core_types: Vec<CoreType> },
     /// CR 121.1 + CR 504.1 + CR 614.6: "except the first one you draw in each
     /// of your draw steps" — the replacement applies to every card-draw EXCEPT
     /// the draw step's mandatory first draw (the active player's CR 504.1

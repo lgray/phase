@@ -708,23 +708,78 @@ fn parse_linked_exile_mana_value_ref(input: &str) -> OracleResult<'_, QuantityRe
         tag("the exiled card's converted mana cost"),
     ))
     .parse(input)?;
+    // CR 702.167c: "...the exiled card used to craft it." — the craft-material
+    // qualifier is the same linked-exile set, so consume the optional suffix and
+    // emit the same aggregate (Jadeheart Attendant).
+    let (rest, _) = opt(parse_craft_materials_suffix).parse(rest)?;
     Ok((
         rest,
         QuantityRef::Aggregate {
             function: AggregateFunction::Sum,
             property: ObjectProperty::ManaValue,
-            filter: TargetFilter::And {
-                filters: vec![
-                    TargetFilter::ExiledBySource,
-                    TargetFilter::Typed(TypedFilter::default().properties(vec![
-                        FilterProp::Owned {
-                            controller: ControllerRef::You,
-                        },
-                    ])),
-                ],
-            },
+            filter: linked_exile_owned_filter(),
         },
     ))
+}
+
+/// CR 702.167c: The `And { [ExiledBySource, Owned { You }] }` filter shared by
+/// every craft-material / linked-exile reference. `ExiledBySource` resolves the
+/// source's linked-exile pool (which includes `ExileLinkKind::CraftMaterial`);
+/// `Owned { You }` rebinds per owner under player-scope iteration, matching the
+/// existing Skyclave linked-exile precedent (`parse_linked_exile_mana_value_ref`).
+fn linked_exile_owned_filter() -> TargetFilter {
+    TargetFilter::And {
+        filters: vec![
+            TargetFilter::ExiledBySource,
+            TargetFilter::Typed(TypedFilter::default().properties(vec![FilterProp::Owned {
+                controller: ControllerRef::You,
+            }])),
+        ],
+    }
+}
+
+/// CR 702.167c: Consume the craft-material qualifier "used to craft <self>",
+/// where `<self>` is the source self-anaphor (`it` / `~` / `this creature` /
+/// `this permanent` / `this artifact` / …). "An ability of a permanent may refer
+/// to the exiled cards used to craft it." This is a pure suffix combinator —
+/// callers decide which linked-exile ref to emit; it only confirms the qualifier
+/// is present and returns the remainder.
+fn parse_craft_materials_suffix(input: &str) -> OracleResult<'_, ()> {
+    let (rest, _) = tag(" used to craft ").parse(input)?;
+    let (rest, _) = parse_source_self_anaphor(rest)?;
+    Ok((rest, ()))
+}
+
+/// CR 109.5: The source self-anaphor used by craft / linked-exile references:
+/// `it`, `~`, or `this <noun>` (creature / permanent / artifact / card). Mirrors
+/// the anaphor `alt` already used by `parse_cards_exiled_with_source`, factored
+/// out so the craft-suffix and the craft noun-phrase combinator share it.
+fn parse_source_self_anaphor(input: &str) -> OracleResult<'_, ()> {
+    value(
+        (),
+        alt((
+            tag("~"),
+            tag("it"),
+            preceded(
+                tag("this "),
+                take_while1(|c: char| c.is_ascii_alphabetic() || c == '-'),
+            ),
+        )),
+    )
+    .parse(input)
+}
+
+/// CR 702.167c: Parse the craft-material reference noun phrase
+/// "the exiled card[s] used to craft <self>" into the shared linked-exile
+/// filter. Single building block reused by the aggregate-property,
+/// distinct-colors, and for-each-color (mana) paths so "total power of …",
+/// "number of colors among …", and "for each color among …" all resolve over
+/// the same `ExileLinkKind::CraftMaterial` pool without per-card phrase tables.
+pub(crate) fn parse_craft_materials_filter(input: &str) -> OracleResult<'_, TargetFilter> {
+    let (rest, _) = tag("the exiled card").parse(input)?;
+    let (rest, _) = opt(tag("s")).parse(rest)?;
+    let (rest, _) = parse_craft_materials_suffix(rest)?;
+    Ok((rest, linked_exile_owned_filter()))
 }
 
 /// CR 202.3: Parse "mana value" or "converted mana cost" phrase.
@@ -927,6 +982,21 @@ fn parse_object_property_aggregate_ref(input: &str) -> OracleResult<'_, Quantity
         ),
     ))
     .parse(input)?;
+    // CR 702.167c: "the total power of the exiled cards used to craft it" — the
+    // craft-material aggregate (Mastercraft Raptor). Tried before the bare
+    // "the exiled cards" tracked-set anaphor because the craft form shares that
+    // prefix but reads the persistent `CraftMaterial` linked-exile pool, not the
+    // most-recent chain tracked set.
+    if let Ok((craft_rest, filter)) = parse_craft_materials_filter(rest) {
+        return Ok((
+            craft_rest,
+            QuantityRef::Aggregate {
+                function,
+                property,
+                filter,
+            },
+        ));
+    }
     if let Ok((anaphor_rest, _)) = alt((
         tag::<_, _, OracleError<'_>>("those exiled cards"),
         tag("the exiled cards"),
@@ -1076,6 +1146,15 @@ fn parse_number_of_distinct_colors_among_permanents_tail(
     input: &str,
 ) -> OracleResult<'_, QuantityRef> {
     let (rest, _) = tag("colors among ").parse(input)?;
+    // CR 702.167c + CR 105.1: "the number of colors among the exiled cards used
+    // to craft it" — distinct colors over the craft-material linked-exile pool
+    // (Sunbird Effigy P/T). Tried before the generic type-phrase filter so the
+    // craft noun phrase wins.
+    if let Ok((craft_rest, filter)) = parse_craft_materials_filter(rest) {
+        if matches!(craft_rest.trim(), "" | "." | ",") {
+            return Ok(("", QuantityRef::DistinctColorsAmongPermanents { filter }));
+        }
+    }
     let (remainder, filter) = super::target::parse_type_phrase(rest)?;
     if !matches!(remainder.trim(), "" | "." | ",")
         || !quantity_filter_has_meaningful_content(&filter)
@@ -1613,7 +1692,10 @@ fn parse_number_of_opponents(input: &str) -> OracleResult<'_, QuantityRef> {
 fn parse_for_each_opponents_life_change(input: &str) -> OracleResult<'_, QuantityRef> {
     use crate::types::ability::PlayerFilter;
     let (rest, _) = opt(alt((tag("of your "), tag("of ")))).parse(input)?;
-    let (rest, _) = tag("opponents ").parse(rest)?;
+    // Singular "opponent who lost life this turn" (Gev, Scaled Scorch's per-each
+    // counter scaling) and plural "opponents who …" (Belbe, Corrupted Observer)
+    // resolve to the same `PlayerCount` over the qualifying-opponents set.
+    let (rest, _) = alt((tag("opponents "), tag("opponent "))).parse(rest)?;
     let (rest, filter) = alt((
         value(
             PlayerFilter::OpponentLostLife,
@@ -3097,6 +3179,9 @@ fn parse_counter_word(input: &str) -> OracleResult<'_, ()> {
 fn parse_counter_added_target(input: &str) -> OracleResult<'_, TargetFilter> {
     let (rest, _) = opt(alt((tag("a "), tag("an ")))).parse(input)?;
     alt((
+        // CR 201.5: self-reference ("on ~" ← "on Beast") binds the counter-added
+        // filter to the source object (Beast, Erudite Aerialist).
+        value(TargetFilter::SelfRef, tag("~")),
         value(
             TargetFilter::Typed(TypedFilter::creature().controller(ControllerRef::You)),
             // number axis × controller-phrase axis (PATTERNS.md §8b) — "creatures"
@@ -3358,13 +3443,17 @@ pub(crate) fn parse_died_this_turn_suffix(input: &str) -> OracleResult<'_, Optio
 /// phrasing. Engine tracking is per-turn-only, so the trailing "this turn"
 /// qualifier is semantically redundant when present.
 ///
-/// Returns `Some(ControllerRef::You)` for forms qualified by "under your
-/// control" or "your graveyard" (CR 109.5: "your" graveyard = the source's
-/// controller), and `None` for unqualified forms that count every player's
-/// deaths. The longer qualified tags MUST precede the bare "that died" /
+/// Returns `(controller scope, nontoken-only)` where controller is
+/// `Some(ControllerRef::You)` for forms qualified by "under your control" /
+/// "your graveyard" (CR 109.5: "your" graveyard = the source's controller),
+/// and `None` for unqualified forms that count every player's deaths. The
+/// longer qualified tags MUST precede the bare "that died" /
 /// "a graveyard" tags so the qualified suffix isn't shadowed by `alt`.
-fn parse_creatures_died_this_turn_tail(input: &str) -> OracleResult<'_, Option<ControllerRef>> {
-    alt((
+fn parse_creatures_died_this_turn_tail(
+    input: &str,
+) -> OracleResult<'_, (Option<ControllerRef>, bool)> {
+    let (rest, nontoken) = opt(tag("nontoken ")).parse(input)?;
+    let (rest, controller) = alt((
         value(
             Some(ControllerRef::You),
             tag("creatures that died under your control this turn"),
@@ -3422,21 +3511,22 @@ fn parse_creatures_died_this_turn_tail(input: &str) -> OracleResult<'_, Option<C
             tag("creature put into a graveyard from the battlefield"),
         ),
     ))
-    .parse(input)
+    .parse(rest)?;
+    Ok((rest, (controller, nontoken.is_some())))
 }
 
 /// CR 700.4: Parse "creature(s) that died" → filtered zone-change count for
 /// "for each creature that died this turn" iteration sources.
 fn parse_for_each_creature_died_this_turn(input: &str) -> OracleResult<'_, QuantityRef> {
-    let (rest, controller) = parse_creatures_died_this_turn_tail(input)?;
-    Ok((rest, creatures_died_this_turn_ref(controller)))
+    let (rest, (controller, nontoken)) = parse_creatures_died_this_turn_tail(input)?;
+    Ok((rest, creatures_died_this_turn_ref(controller, nontoken)))
 }
 
 /// CR 700.4: Parse "the number of creature(s) that died this turn" → the same
 /// `ZoneChangeCountThisTurn` quantity ref used by for-each iteration.
 fn parse_number_of_creatures_died_this_turn(input: &str) -> OracleResult<'_, QuantityRef> {
-    let (rest, controller) = parse_creatures_died_this_turn_tail(input)?;
-    Ok((rest, creatures_died_this_turn_ref(controller)))
+    let (rest, (controller, nontoken)) = parse_creatures_died_this_turn_tail(input)?;
+    Ok((rest, creatures_died_this_turn_ref(controller, nontoken)))
 }
 
 /// CR 701.21a: Parse "[type] you['ve] sacrificed this turn" -> `TargetFilter`.
@@ -3555,10 +3645,13 @@ fn parse_for_each_subtype_died_this_turn(input: &str) -> OracleResult<'_, Quanti
 /// graveyard", `controller` is `Some(ControllerRef::You)` and the count is
 /// scoped to creatures controlled by the source's controller when they died;
 /// otherwise it is `None` and every player's deaths are counted.
-fn creatures_died_this_turn_ref(controller: Option<ControllerRef>) -> QuantityRef {
+fn creatures_died_this_turn_ref(controller: Option<ControllerRef>, nontoken: bool) -> QuantityRef {
     let mut tf = TypedFilter::creature();
     if let Some(c) = controller {
         tf = tf.controller(c);
+    }
+    if nontoken {
+        tf = tf.properties(vec![FilterProp::NonToken]);
     }
     QuantityRef::ZoneChangeCountThisTurn {
         from: Some(Zone::Battlefield),
@@ -3918,6 +4011,82 @@ mod tests {
             QuantityRef::Aggregate {
                 function: AggregateFunction::Max,
                 property: ObjectProperty::Power,
+                ..
+            }
+        ));
+    }
+
+    /// CR 702.167c: the craft-material noun phrase recognizes every self-anaphor
+    /// variant ("it" / "~" / "this <noun>") and rejects unrelated exile phrases.
+    #[test]
+    fn parse_craft_materials_filter_anaphors() {
+        for phrase in [
+            "the exiled card used to craft it",
+            "the exiled cards used to craft it",
+            "the exiled cards used to craft ~",
+            "the exiled cards used to craft this creature",
+            "the exiled cards used to craft this permanent",
+            "the exiled cards used to craft this artifact",
+        ] {
+            let (rest, filter) = parse_craft_materials_filter(phrase)
+                .unwrap_or_else(|e| panic!("craft phrase {phrase:?} should parse: {e:?}"));
+            assert_eq!(rest, "", "craft phrase {phrase:?} must fully consume");
+            assert_eq!(filter, linked_exile_owned_filter(), "phrase {phrase:?}");
+        }
+        // Bare exile anaphors (no "used to craft") must NOT match the craft form.
+        assert!(parse_craft_materials_filter("the exiled cards").is_err());
+        assert!(parse_craft_materials_filter("those exiled cards").is_err());
+    }
+
+    /// CR 702.167c + CR 208.1: "the total power of the exiled cards used to craft
+    /// it" routes to the linked-exile aggregate, NOT the tracked-set anaphor
+    /// (Mastercraft Raptor). The shared "the exiled cards" prefix must resolve to
+    /// the craft pool when the craft suffix follows.
+    #[test]
+    fn parse_total_power_of_craft_materials_is_aggregate() {
+        let (rest, q) =
+            parse_quantity_ref("the total power of the exiled cards used to craft it").unwrap();
+        assert_eq!(rest, "");
+        match q {
+            QuantityRef::Aggregate {
+                function: AggregateFunction::Sum,
+                property: ObjectProperty::Power,
+                filter,
+            } => assert_eq!(filter, linked_exile_owned_filter()),
+            other => panic!("expected craft-material power aggregate, got {other:?}"),
+        }
+    }
+
+    /// CR 702.167c + CR 105.1: "the number of colors among the exiled cards used
+    /// to craft it" routes to the distinct-colors ref over the craft pool
+    /// (Sunbird Effigy P/T).
+    #[test]
+    fn parse_colors_among_craft_materials_is_distinct_colors() {
+        let (rest, q) =
+            parse_quantity_ref("the number of colors among the exiled cards used to craft it")
+                .unwrap();
+        assert_eq!(rest, "");
+        match q {
+            QuantityRef::DistinctColorsAmongPermanents { filter } => {
+                assert_eq!(filter, linked_exile_owned_filter())
+            }
+            other => panic!("expected DistinctColorsAmongPermanents, got {other:?}"),
+        }
+    }
+
+    /// CR 702.167c + CR 202.3: "the mana value of the exiled card used to craft
+    /// it" still resolves to the linked-exile mana-value aggregate even with the
+    /// craft suffix appended (Jadeheart Attendant).
+    #[test]
+    fn parse_mana_value_of_craft_material_is_aggregate() {
+        let (rest, q) =
+            parse_quantity_ref("the mana value of the exiled card used to craft it").unwrap();
+        assert_eq!(rest, "");
+        assert!(matches!(
+            q,
+            QuantityRef::Aggregate {
+                function: AggregateFunction::Sum,
+                property: ObjectProperty::ManaValue,
                 ..
             }
         ));
@@ -4705,6 +4874,30 @@ mod tests {
                 target: TargetFilter::Typed(
                     TypedFilter::permanent().controller(ControllerRef::You)
                 ),
+            }
+        );
+    }
+
+    /// MSH Wave 2 (Beast, Erudite Aerialist): "you've put one or more +1/+1
+    /// counters on ~ this turn" (self-ref normalized from "on Beast") must parse
+    /// the counter-added target as `TargetFilter::SelfRef`, so the runtime quantity
+    /// resolver counts only counters placed on the source object (CR 201.5). Without
+    /// the `~` arm the target is unmatched and the whole condition fails to parse.
+    #[test]
+    fn parse_counter_added_condition_accepts_self_ref_target() {
+        let (rest, q) = parse_counter_added_this_turn_condition(
+            "you've put one or more +1/+1 counters on ~ this turn",
+        )
+        .unwrap();
+        assert_eq!(rest, "");
+        assert_eq!(
+            q,
+            QuantityRef::CounterAddedThisTurn {
+                actor: CountScope::Controller,
+                counters: crate::types::counter::CounterMatch::OfType(
+                    crate::types::counter::CounterType::Plus1Plus1,
+                ),
+                target: TargetFilter::SelfRef,
             }
         );
     }
@@ -7666,5 +7859,19 @@ mod tests {
                 damage_kind: DamageKindFilter::NoncombatOnly,
             }
         );
+    }
+
+    #[test]
+    fn parse_nontoken_creature_died_this_turn_for_each() {
+        let (_, q) =
+            parse_for_each_creature_died_this_turn("nontoken creature that died this turn")
+                .unwrap();
+        let QuantityRef::ZoneChangeCountThisTurn { filter, .. } = q else {
+            panic!("expected ZoneChangeCountThisTurn, got {q:?}");
+        };
+        let TargetFilter::Typed(tf) = filter else {
+            panic!("expected typed filter");
+        };
+        assert!(tf.properties.contains(&FilterProp::NonToken));
     }
 }

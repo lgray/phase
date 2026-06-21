@@ -1753,7 +1753,9 @@ fn collect_target_slots(
         if is_per_opponent_target_fanout(ability) {
             collect_per_opponent_target_fanout_slots(state, ability, acc)?;
             if let Some(sub_ability) = ability.sub_ability.as_deref() {
-                if !defers_conditional_target_selection(sub_ability) {
+                if !defers_conditional_target_selection(sub_ability)
+                    && !sub_ability_inherits_parent_creature_target_only(ability, sub_ability)
+                {
                     collect_target_slots(state, sub_ability, acc)?;
                 }
             }
@@ -1869,7 +1871,9 @@ fn collect_target_slots(
         // `resolve_ability_chain`, not here. They are intentionally left
         // UNLABELLED for the modal targeting banner: no slot is surfaced at
         // mode-selection time, so there is no slot to attach a mode label to.
-        if !defers_conditional_target_selection(sub_ability) {
+        if !defers_conditional_target_selection(sub_ability)
+            && !sub_ability_inherits_parent_creature_target_only(ability, sub_ability)
+        {
             collect_target_slots(state, sub_ability, acc)?;
         }
     }
@@ -2474,6 +2478,47 @@ fn effect_needs_target_creature_quantity_slot(effect: &Effect) -> bool {
         && !effect_primary_target_supplies_creature_target(effect)
 }
 
+/// CR 608.2c + CR 115.1: Chained riders like Swords to Plowshares ("Exile target
+/// creature. Its controller gains life equal to its power.") reuse the parent's
+/// chosen object for the life-gain magnitude. They must not surface a second
+/// creature target slot for the `Power {{ Target }}` quantity ref — the parent's
+/// slot is the only player choice (issue #3864; same class as #3310 Condemn).
+fn sub_ability_inherits_parent_creature_target_only(
+    parent: &ResolvedAbility,
+    sub: &ResolvedAbility,
+) -> bool {
+    if !chain_has_target_sink(parent) {
+        return false;
+    }
+    if triggers::extract_target_filter_from_effect(&sub.effect).is_some() {
+        return false;
+    }
+    if sub.multi_target.is_some() {
+        return false;
+    }
+    if ability_needs_companion_target_player_slot(sub) {
+        return false;
+    }
+    if matches!(
+        &sub.effect,
+        Effect::Attach { .. } | Effect::ExchangeControl { .. }
+    ) {
+        return false;
+    }
+    effect_needs_target_creature_quantity_slot(&sub.effect)
+        && effect_player_filter_is_parent_target_anaphor(&sub.effect)
+}
+
+fn effect_player_filter_is_parent_target_anaphor(effect: &Effect) -> bool {
+    match effect {
+        Effect::GainLife { player, .. } => matches!(
+            player,
+            TargetFilter::ParentTargetController | TargetFilter::ParentTargetOwner
+        ),
+        _ => false,
+    }
+}
+
 fn effect_references_parent_target_combat_relation(effect: &Effect) -> bool {
     if effect
         .target_filter()
@@ -3009,7 +3054,9 @@ fn collect_target_slot_specs(
         return;
     }
     if let Some(sub_ability) = ability.sub_ability.as_deref() {
-        if !defers_conditional_target_selection(sub_ability) {
+        if !defers_conditional_target_selection(sub_ability)
+            && !sub_ability_inherits_parent_creature_target_only(ability, sub_ability)
+        {
             collect_target_slot_specs(state, sub_ability, specs, next_instance);
         }
     }
@@ -4520,11 +4567,25 @@ fn assign_targets_recursive(
         )?;
         return Ok(());
     }
+    let inherits_parent_creature_target = ability
+        .sub_ability
+        .as_ref()
+        .is_some_and(|sub| sub_ability_inherits_parent_creature_target_only(ability, sub));
+    let parent_creature_target = ability.targets.iter().find_map(|t| match t {
+        TargetRef::Object(id) => Some(TargetRef::Object(*id)),
+        _ => None,
+    });
     if let Some(sub_ability) = ability.sub_ability.as_mut() {
         if defers_conditional_target_selection(sub_ability) {
             return Ok(());
         }
-        assign_targets_recursive(state, sub_ability, targets, next_target)?;
+        if inherits_parent_creature_target {
+            if let Some(creature) = parent_creature_target {
+                sub_ability.targets.push(creature);
+            }
+        } else {
+            assign_targets_recursive(state, sub_ability, targets, next_target)?;
+        }
     }
     Ok(())
 }
@@ -4779,11 +4840,25 @@ fn assign_selected_slots_recursive(
         )?;
         return Ok(());
     }
+    let inherits_parent_creature_target = ability
+        .sub_ability
+        .as_ref()
+        .is_some_and(|sub| sub_ability_inherits_parent_creature_target_only(ability, sub));
+    let parent_creature_target = ability.targets.iter().find_map(|t| match t {
+        TargetRef::Object(id) => Some(TargetRef::Object(*id)),
+        _ => None,
+    });
     if let Some(sub_ability) = ability.sub_ability.as_mut() {
         if defers_conditional_target_selection(sub_ability) {
             return Ok(());
         }
-        assign_selected_slots_recursive(state, sub_ability, selected_slots, next_slot)?;
+        if inherits_parent_creature_target {
+            if let Some(creature) = parent_creature_target {
+                sub_ability.targets.push(creature);
+            }
+        } else {
+            assign_selected_slots_recursive(state, sub_ability, selected_slots, next_slot)?;
+        }
     }
     Ok(())
 }
@@ -5097,6 +5172,7 @@ fn minimum_targets_in_chain(state: &GameState, ability: &ResolvedAbility) -> usi
         ability
             .sub_ability
             .as_deref()
+            .filter(|sub| !sub_ability_inherits_parent_creature_target_only(ability, sub))
             .map(|sub| minimum_targets_in_chain(state, sub))
             .unwrap_or(0)
     };

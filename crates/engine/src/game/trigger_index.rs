@@ -795,6 +795,7 @@ fn keys_from_effect_kind(kind: EffectKind, push: &mut impl FnMut(TriggerEventKey
         | EffectKind::PreventDamage
         | EffectKind::CreateDamageReplacement
         | EffectKind::Regenerate
+        | EffectKind::RemoveAllDamage
         | EffectKind::LoseTheGame
         | EffectKind::WinTheGame
         | EffectKind::RollDie
@@ -866,6 +867,10 @@ fn keys_from_effect_kind(kind: EffectKind, push: &mut impl FnMut(TriggerEventKey
         | EffectKind::Crew
         | EffectKind::Station
         | EffectKind::Saddle
+        // CR 702.171b: the BecomeSaddled effect fires the saddled trigger via the
+        // separately-emitted `GameEvent::Saddled`, mirroring the keyword `Saddle`
+        // action; its own `EffectResolved` dispatches no trigger key.
+        | EffectKind::BecomeSaddled
         | EffectKind::Transform
         | EffectKind::TurnFaceUp
         // Added on origin/main after this branch point. No production

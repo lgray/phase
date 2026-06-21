@@ -1288,6 +1288,61 @@ fn full_dispatch_alt_cost_routing_and_deferrals() {
     }
 }
 
+/// CR 202.3 + CR 208.2a + CR 604.3: Dragon Man, Reformed Robot's CDA —
+/// "~'s power is equal to the greatest mana value among noncreature permanents
+/// you control and noncreature cards in your graveyard" — must produce a
+/// `SetDynamicPower` CDA whose value is a `Max` over two single-zone
+/// `Aggregate`s (battlefield arm + graveyard arm). Revert-failing: without the
+/// "A and B" conjunction arm in `parse_cda_quantity`, the clause falls to the
+/// `static_structure` strict marker and no CDA static is produced.
+#[test]
+fn dragon_man_cda_power_is_greatest_mana_value_across_zones() {
+    use crate::parser::oracle::parse_oracle_text;
+
+    let parsed = parse_oracle_text(
+        "Flying\nDragon Man, Reformed Robot's power is equal to the greatest mana value among noncreature permanents you control and noncreature cards in your graveyard.",
+        "Dragon Man, Reformed Robot",
+        &[],
+        &["Artifact".to_string(), "Creature".to_string()],
+        &[],
+    );
+
+    let cda = parsed
+        .statics
+        .iter()
+        .find_map(|d| {
+            d.modifications.iter().find_map(|m| match m {
+                ContinuousModification::SetDynamicPower {
+                    value: QuantityExpr::Max { exprs },
+                } => Some(exprs.clone()),
+                _ => None,
+            })
+        })
+        .unwrap_or_else(|| {
+            panic!(
+                "expected SetDynamicPower(Max[..]) CDA static, got {:?}",
+                parsed.statics
+            )
+        });
+
+    assert_eq!(cda.len(), 2, "expected two zone arms, got {cda:?}");
+    for arm in &cda {
+        assert!(
+            matches!(
+                arm,
+                QuantityExpr::Ref {
+                    qty: QuantityRef::Aggregate {
+                        function: AggregateFunction::Max,
+                        property: ObjectProperty::ManaValue,
+                        ..
+                    }
+                }
+            ),
+            "each arm must be a Max/ManaValue Aggregate, got {arm:?}"
+        );
+    }
+}
+
 /// CR 205.1a + CR 205.2 + CR 205.3 + CR 613.1c: "becomes a [subtype]*
 /// [core-type]+ in addition to its other types" must decompose into
 /// typed `AddType`/`AddSubtype` modifications. Jump Scare regression.
@@ -2762,6 +2817,62 @@ fn static_opponent_spells_cost_more() {
             ..
         }
     ));
+}
+
+#[test]
+fn static_opponent_spells_cost_more_during_your_turn() {
+    let def =
+        parse_static_line("Spells your opponents cast during your turn cost {1} more to cast.")
+            .unwrap();
+    assert!(matches!(
+        def.mode,
+        StaticMode::ModifyCost {
+            mode: CostModifyMode::Raise,
+            amount: ManaCost::Cost { generic: 1, .. },
+            ..
+        }
+    ));
+    assert_eq!(def.condition, Some(StaticCondition::DuringYourTurn));
+    assert!(matches!(
+        def.affected,
+        Some(TargetFilter::Typed(TypedFilter {
+            controller: Some(ControllerRef::Opponent),
+            ..
+        }))
+    ));
+}
+
+#[test]
+fn static_opponent_creature_spells_cost_more_during_your_turn() {
+    let def = parse_static_line(
+        "Creature spells your opponents cast during your turn cost {1} more to cast.",
+    )
+    .unwrap();
+    assert_eq!(def.condition, Some(StaticCondition::DuringYourTurn));
+    assert!(matches!(
+        def.affected,
+        Some(TargetFilter::Typed(TypedFilter {
+            controller: Some(ControllerRef::Opponent),
+            ..
+        }))
+    ));
+    let StaticMode::ModifyCost {
+        mode: CostModifyMode::Raise,
+        ref spell_filter,
+        ..
+    } = def.mode
+    else {
+        panic!("expected RaiseCost");
+    };
+    let TargetFilter::Typed(tf) = spell_filter.as_ref().expect("expected typed spell filter")
+    else {
+        panic!("expected typed spell filter");
+    };
+    assert!(
+        tf.type_filters.contains(&TypeFilter::Creature),
+        "typed during-your-turn cost mod must preserve creature spell filter, got {:?}",
+        tf.type_filters
+    );
 }
 
 #[test]

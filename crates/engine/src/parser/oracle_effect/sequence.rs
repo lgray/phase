@@ -17,10 +17,10 @@ use crate::parser::oracle_ir::context::ParseContext;
 use crate::parser::oracle_quantity::{parse_cda_quantity, parse_quantity_ref};
 use crate::types::ability::{
     AbilityDefinition, AbilityKind, CastingPermission, Chooser, ContinuousModification,
-    ControllerRef, CopyRetargetPermission, CounterSourceRider, Duration, Effect, FaceDownBody,
-    FaceDownProfile, LibraryPosition, MultiTargetSpec, PermissionGrantee, PtValue, QuantityExpr,
-    QuantityRef, RevealUntilDisposition, StaticDefinition, TargetChoiceTiming, TargetFilter,
-    TypeFilter, TypedFilter,
+    ControllerRef, CopyRetargetPermission, CounterSourceRider, CounteredSpellDestination, Duration,
+    Effect, FaceDownBody, FaceDownProfile, LibraryPosition, MultiTargetSpec, PermissionGrantee,
+    PtValue, QuantityExpr, QuantityRef, RevealUntilDisposition, StaticDefinition,
+    TargetChoiceTiming, TargetFilter, TypeFilter, TypedFilter,
 };
 use crate::types::card_type::CoreType;
 use crate::types::counter::CounterType;
@@ -942,6 +942,27 @@ fn split_comma_clause_boundary(current: &str, remainder: &str) -> Option<(Clause
         return None;
     }
 
+    // CR 707.9a: ", except <body>, [and] <body> [, …]" — inside a copy-effect
+    // (BecomeCopy / CopyTokenOf) except clause, a comma (with or without a
+    // following "and") between recognised body shapes is an internal delimiter,
+    // not a clause boundary. Suppress the split so the whole except body reaches
+    // the shared `become_copy_except` parser. Without this, a trailing keyword
+    // body like ", and has haste" (The Apprentice's Folly: "create a token
+    // that's a copy of it, except it isn't legendary, is a Reflection in
+    // addition to its other types, and has haste") is bisected at the comma —
+    // "has haste" deconjugates to the clause verb "have" — and orphaned as an
+    // Unimplemented sub_ability instead of becoming an `AddKeyword` modification.
+    // Mirrors the `inside_except_clause` guard on the bare-`and` chunk path.
+    //
+    // `scan_contains` matches at word boundaries, so probing for the bare word
+    // "except " (a leading comma never sits at a word start) detects the clause
+    // regardless of the leading "[,] " before "except".
+    if nom_primitives::scan_contains(&current_lower, "except ")
+        && starts_except_body_continuation(trimmed_lower.as_str())
+    {
+        return None;
+    }
+
     // CR 701.18a: "search [library] for X, put/reveal Y" is a single compound action.
     // The search verb may follow a sequence connector like "Then" from a prior sentence.
     // CR 701.18a: Enumerated "search" prefixes — do NOT use contains(" search ").
@@ -1101,6 +1122,41 @@ fn starts_with_damage_amount_continuation(trimmed_lower: &str) -> bool {
         return false;
     };
     tag::<_, _, OracleError<'_>>("damage").parse(rest).is_ok()
+}
+
+/// CR 707.9a: True when `trimmed_lower` (post-comma text) begins with a
+/// recognised "except ..." body continuation. Only meaningful when the
+/// chunk-so-far is already inside a copy-effect except clause (the caller gates
+/// on that). The leading "and " connector is optional — "..., and has haste"
+/// and "..., is a Reflection" are both internal except-body continuations.
+///
+/// The recognised heads mirror the body shapes in
+/// `become_copy_except::parse_except_body` (keyword grants, type additions,
+/// supertype removal, "has this ability", possessive name/loyalty overrides) so
+/// this gate stays in lockstep with what that parser actually consumes.
+fn starts_except_body_continuation(trimmed_lower: &str) -> bool {
+    let body = tag::<_, _, OracleError<'_>>("and ")
+        .parse(trimmed_lower)
+        .map(|(rest, _)| rest)
+        .unwrap_or(trimmed_lower);
+    alt((
+        value((), tag::<_, _, OracleError<'_>>("has ")),
+        value((), tag("have ")),
+        value((), tag("it has ")),
+        value((), tag("it's ")),
+        value((), tag("is ")),
+        value((), tag("isn't ")),
+        value((), tag("isnt ")),
+        value((), tag("doesn't ")),
+        value((), tag("doesnt ")),
+        value((), tag("its ")),
+        value((), tag("his ")),
+        value((), tag("her ")),
+        value((), tag("they're ")),
+        value((), tag("theyre ")),
+    ))
+    .parse(body)
+    .is_ok()
 }
 
 fn starts_prefix_clause(current_lower: &str) -> bool {
@@ -2172,6 +2228,51 @@ fn recognize_counter_destroy_rider(lower: &str) -> bool {
     .is_ok()
 }
 
+/// CR 701.6a + CR 614.1a: nom recognizer for the "if that spell is countered
+/// this way, put it <zone> instead of into that player's graveyard"
+/// continuation clause (Memory Lapse, Remand, Spell Crumple). Operates on
+/// lowercased text; tolerates a trailing period/whitespace. Returns the parsed
+/// [`CounteredSpellDestination`], or `None` for an unsupported destination
+/// (Hinder's "your choice of the top or bottom", Transcendent Dragon's "exile
+/// it instead") so those cards are honestly gapped rather than misparsed.
+///
+/// Composed from independent axes rather than enumerated as full strings:
+///   - spell anaphor ("that spell" / "that card" / "it").
+///   - destination ("on top of its owner's library" / "on the bottom of its
+///     owner's library" / "into its owner's hand").
+fn recognize_counter_spell_zone_redirect(lower: &str) -> Option<CounteredSpellDestination> {
+    let clause = lower.trim().trim_end_matches('.').trim_end();
+    let mut parser = (
+        tag::<_, _, OracleError<'_>>("if "),
+        alt((tag("that spell"), tag("that card"), tag("it"))),
+        tag(" is countered this way, put it "),
+        alt((
+            value(
+                CounteredSpellDestination::Library {
+                    position: LibraryPosition::Top,
+                },
+                tag("on top of its owner's library"),
+            ),
+            value(
+                CounteredSpellDestination::Library {
+                    position: LibraryPosition::Bottom,
+                },
+                tag("on the bottom of its owner's library"),
+            ),
+            value(
+                CounteredSpellDestination::Hand,
+                tag("into its owner's hand"),
+            ),
+        )),
+        tag(" instead of into that player's graveyard"),
+        eof,
+    );
+    parser
+        .parse(clause)
+        .ok()
+        .map(|(_, (_, _, _, destination, _, _))| destination)
+}
+
 /// CR 707.10c: nom parser for the "[you] may choose [a] new target[s] for
 /// {the,that} copy/copies" continuation clause that grants copy retargeting.
 pub(super) fn parse_copy_retarget_clause(input: &str) -> OracleResult<'_, ()> {
@@ -2379,6 +2480,21 @@ pub(super) fn apply_clause_continuation(
                 // CR 701.8: "If a permanent's ability is countered this way,
                 // destroy that permanent." rider (Teferi's Response, Green Slime).
                 *existing = Some(CounterSourceRider::Destroy);
+            }
+        }
+        ContinuationAst::CounterSpellZoneRedirect { destination } => {
+            let Some(previous) = defs.last_mut() else {
+                return;
+            };
+            if let Effect::Counter {
+                countered_spell_zone,
+                ..
+            } = &mut *previous.effect
+            {
+                // CR 701.6a + CR 614.1a: "put it <zone> instead of into that
+                // player's graveyard" redirect (Memory Lapse, Remand, Spell
+                // Crumple).
+                *countered_spell_zone = Some(destination);
             }
         }
         ContinuationAst::CopyMayRetarget => {
@@ -3165,7 +3281,8 @@ pub(super) fn continuation_absorbs_current(
         ContinuationAst::ManaRestriction { .. }
         | ContinuationAst::ManaGrant { .. }
         | ContinuationAst::CounterSourceStatic { .. }
-        | ContinuationAst::CounterSourceRiderDestroy => true,
+        | ContinuationAst::CounterSourceRiderDestroy
+        | ContinuationAst::CounterSpellZoneRedirect { .. } => true,
         // CR 707.10c: recognition was already gated on a preceding CopySpell in
         // parse_followup_continuation_ast, so absorption is unconditional —
         // identical to the CounterSourceStatic precedent.
@@ -4038,6 +4155,7 @@ pub(super) fn clause_is_dig_lookback_transparent(effect: &Effect) -> bool {
         | Effect::PairWith { .. }
         | Effect::Destroy { .. }
         | Effect::Regenerate { .. }
+        | Effect::RemoveAllDamage { .. }
         | Effect::Counter { .. }
         | Effect::CounterAll { .. }
         | Effect::Token { .. }
@@ -4126,6 +4244,7 @@ pub(super) fn clause_is_dig_lookback_transparent(effect: &Effect) -> bool {
         | Effect::SolveCase
         | Effect::BecomePrepared { .. }
         | Effect::BecomeUnprepared { .. }
+        | Effect::BecomeSaddled { .. }
         | Effect::SetClassLevel { .. }
         | Effect::CreateDelayedTrigger { .. }
         | Effect::AddTargetReplacement { .. }
@@ -4326,6 +4445,18 @@ pub(super) fn parse_followup_continuation_ast(
         // from emitting a stray chained `Destroy { ParentTarget }`.
         Effect::Counter { .. } if recognize_counter_destroy_rider(&lower) => {
             Some(ContinuationAst::CounterSourceRiderDestroy)
+        }
+        // CR 701.6a + CR 614.1a: "If that spell is countered this way, put it
+        // <zone> instead of into that player's graveyard." (Memory Lapse,
+        // Remand, Spell Crumple). The `scan_contains` pre-guard mirrors the
+        // source-rider arms above; the real classification is the combinator
+        // recognizer, which returns `None` for unsupported destinations
+        // (Hinder, Transcendent Dragon) so those cards stay honestly gapped.
+        Effect::Counter { .. }
+            if nom_primitives::scan_contains(&lower, "countered this way") => // allow-noncombinator
+        {
+            recognize_counter_spell_zone_redirect(&lower)
+                .map(|destination| ContinuationAst::CounterSpellZoneRedirect { destination })
         }
         // CR 707.10c: "You may choose new targets for the copy/copies." after a
         // CopySpell — directly, or wrapped in a CreateDelayedTrigger ("When you
@@ -5358,6 +5489,26 @@ mod tests {
             .into_iter()
             .map(|c| c.text)
             .collect()
+    }
+
+    // CR 707.9a: a copy-effect except clause that ends in ", and has <keyword>"
+    // must NOT be bisected at the comma. "has" deconjugates to the clause verb
+    // "have", so without the `inside_except_clause` guard in the comma splitter
+    // the trailing keyword body is orphaned (The Apprentice's Folly I/II:
+    // "create a token that's a copy of it, except it isn't legendary, is a
+    // Reflection in addition to its other types, and has haste").
+    #[test]
+    fn copy_except_comma_and_keyword_body_stays_one_chunk() {
+        let chunks = clause_texts(
+            "create a token that's a copy of it, except it isn't legendary, is a Reflection in addition to its other types, and has haste",
+        );
+        assert_eq!(
+            chunks,
+            vec![
+                "create a token that's a copy of it, except it isn't legendary, is a Reflection in addition to its other types, and has haste"
+            ],
+            "the entire except clause must remain a single chunk so the trailing \", and has haste\" body reaches the except parser"
+        );
     }
 
     #[test]
