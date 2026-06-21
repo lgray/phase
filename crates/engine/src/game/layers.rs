@@ -2622,14 +2622,14 @@ fn expand_granted_static_effects(
 
 /// CR 613.1f + CR 113.3: Expand a `GrantAllActivatedAbilitiesOf { source }` host
 /// modification into one `GrantAbility` effect per activated ability of each
-/// object matching `source`. `source` is resolved relative to each recipient
-/// matching the host static's `affected_filter` (so `ExiledBySource` reads the
-/// recipient's own linked exiles). Provider objects are scanned across all zones
-/// — the granted-from cards are typically in exile, not on the battlefield — in
-/// deterministic `ObjectId` order. Both mana and non-mana activated abilities are
-/// granted. Synthesized effects target the recipient via `SelfRef`, reusing the
-/// layer-6 `GrantAbility` apply and its structural dedup, and are recomputed each
-/// pass so the granted set tracks the current `source` membership.
+/// object matching `source`. Object-self references in `source` are resolved
+/// relative to the host static, while controller-relative references use each
+/// recipient's controller. Provider objects are scanned across all zones — the
+/// granted-from cards are typically in exile, not on the battlefield — in
+/// deterministic `ObjectId` order. Both mana and non-mana activated abilities
+/// are granted. Synthesized effects target the recipient via `SelfRef`, reusing
+/// the layer-6 `GrantAbility` apply and its structural dedup, and are recomputed
+/// each pass so the granted set tracks the current `source` membership.
 fn expand_granted_activated_abilities(
     state: &GameState,
     host_source_id: ObjectId,
