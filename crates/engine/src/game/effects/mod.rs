@@ -2268,6 +2268,7 @@ fn collect_effect_quantity_exprs<'a>(effect: &'a Effect, out: &mut Vec<&'a Quant
         | Effect::GainEnergy { amount, .. }
         | Effect::Discover {
             mana_value_limit: amount,
+            ..
         }
         | Effect::PutAtLibraryPosition { count: amount, .. }
         | Effect::GrantExtraLoyaltyActivations { amount, .. }

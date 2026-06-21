@@ -9290,8 +9290,21 @@ pub enum Effect {
     },
     /// CR 701.57a: Discover N — exile from top until nonland with MV ≤ N,
     /// cast free or put to hand, rest to bottom in random order.
+    ///
+    /// `player` is the player who performs the discover. CR 701.57a is written
+    /// from the controller's perspective ("exile cards from the top of *your*
+    /// library"), so the default is `TargetFilter::Controller` and existing JSON
+    /// (which omits the field) keeps the controller-discovers reading. Cards like
+    /// Zoyowa's Justice ("Then *that player* discovers X") redirect the action to
+    /// another player by carrying a player `TargetFilter` here; the resolver maps
+    /// it through `resolve_player_for_context_ref`.
     Discover {
         mana_value_limit: QuantityExpr,
+        #[serde(
+            default = "default_target_filter_controller",
+            skip_serializing_if = "is_target_filter_controller"
+        )]
+        player: TargetFilter,
     },
     /// Heist — designed-for-digital (MTG Arena) keyword action. NOT in the
     /// Comprehensive Rules; operates per the Arena programmed rules (see
@@ -9635,10 +9648,25 @@ pub enum Effect {
     Endure {
         amount: u32,
     },
-    /// CR 701.68a: Blight N as an effect — the controller of this ability puts
-    /// N -1/-1 counters on a creature they control. Non-targeted controller choice.
+    /// CR 701.68a: Blight N as an effect — the blighting player puts N -1/-1
+    /// counters on a creature *they* control. Non-targeted: the player choosing
+    /// which of their own creatures to blight is a choice, not a target
+    /// (CR 701.68a — hexproof/shroud are irrelevant).
+    ///
+    /// `player` is the player instructed to blight. The default
+    /// `TargetFilter::Controller` keeps the common "you blight" reading and lets
+    /// existing JSON (which omits the field) deserialize unchanged. Cards like
+    /// Champion of the Weird ("Target opponent blights 2") redirect the action to
+    /// a chosen player by carrying a player `TargetFilter` here; the resolver maps
+    /// it through `resolve_player_for_context_ref` and scopes eligible creatures
+    /// to that player.
     BlightEffect {
         count: u32,
+        #[serde(
+            default = "default_target_filter_controller",
+            skip_serializing_if = "is_target_filter_controller"
+        )]
+        player: TargetFilter,
     },
     /// Alchemy digital-only: randomly pick card(s) from library matching filter,
     /// put to destination (default hand). No reveal, no shuffle, no player choice.
@@ -10638,7 +10666,15 @@ impl Effect {
             // CR 119.3: `GainLife.player` is a TargetFilter. `extract_target_filter_from_effect`
             // drops context-refs (Controller) via `.filter(|t| !t.is_context_ref())`, so the
             // default "you gain life" still surfaces no target slot.
-            | Effect::GainLife { player, .. } => Some(player),
+            | Effect::GainLife { player, .. }
+            // CR 701.57a: Discover's discovering player. CR 701.68a: Blight's
+            // blighting player. Both default to `TargetFilter::Controller` (a
+            // context ref), so bare "discover N" / "blight N" surface no target
+            // slot; "Target opponent blights N" surfaces the opponent as a real
+            // target via the same `is_context_ref()` filter the other player-axis
+            // effects use.
+            | Effect::Discover { player, .. }
+            | Effect::BlightEffect { player, .. } => Some(player),
 
             // CR 115.1a + CR 601.2c: "Create a [Role/Aura] token attached to
             // target creature" targets its host — surface `attach_to` as the
@@ -10768,7 +10804,6 @@ impl Effect {
             | Effect::ChooseFromZone { .. }
             | Effect::ChooseAndSacrificeRest { .. }
             | Effect::GainEnergy { .. }
-            | Effect::Discover { .. }
             | Effect::HeistExile
             | Effect::Cascade
             | Effect::Ripple { .. }
@@ -10817,10 +10852,6 @@ impl Effect {
             | Effect::Forage
             | Effect::CollectEvidence { .. }
             | Effect::Endure { .. }
-            // CR 701.68a: BlightEffect is a non-targeted controller choice — no
-            // targeting slot. The chosen creature is picked at resolution time
-            // via WaitingFor::EffectZoneChoice, not declared as a target.
-            | Effect::BlightEffect { .. }
             | Effect::ExploreAll { .. }
             | Effect::Seek { .. }
             | Effect::SetDayNight { .. }

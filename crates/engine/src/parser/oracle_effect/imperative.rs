@@ -6850,6 +6850,8 @@ pub(super) fn parse_imperative_family_ast(
                 .unwrap_or(1);
             Some(ImperativeFamilyAst::GainKeyword(Effect::BlightEffect {
                 count,
+                // CR 701.68a: bare "blight N" is the controller blighting.
+                player: crate::types::ability::TargetFilter::Controller,
             }))
         }
         // Forage keyword action (CR 701.61a)

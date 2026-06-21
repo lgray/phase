@@ -5229,33 +5229,31 @@ fn parse_effect_clause_inner(text: &str, ctx: &mut ParseContext) -> ParsedEffect
         });
     }
 
-    // CR 701.57a: "discover N" / "discover X" — effect variant.
+    // CR 701.57a: "[player] discover[s] N" / "[player] discover[s] X" — effect
+    // variant. An optional leading player subject ("you", "that player", "target
+    // opponent", …) redirects who performs the discover (Zoyowa's Justice: "Then
+    // that player discovers X"). Bare "discover N" defaults to the controller.
     let (discover_tp, discover_where_x) = strip_trailing_where_x(tp);
-    if let Some((limit, rest_orig)) =
-        super::oracle_nom::bridge::nom_on_lower(discover_tp.original, discover_tp.lower, |i| {
-            let (rest, _) = tag("discover ").parse(i)?;
-            let (rest, limit) = alt((
-                map(nom_primitives::parse_number, |value| QuantityExpr::Fixed {
-                    value: value as i32,
-                }),
-                value(
-                    QuantityExpr::Ref {
-                        qty: QuantityRef::Variable {
-                            name: "X".to_string(),
-                        },
-                    },
-                    tag("x"),
-                ),
-            ))
-            .parse(rest)?;
-            let (rest, _) = opt(tag(".")).parse(rest)?;
-            Ok((rest, limit))
-        })
-    {
+    if let Some((discover_player, limit, rest_orig)) = parse_discover_with_player(discover_tp) {
         if rest_orig.trim().is_empty() {
             let limit = apply_where_x_quantity_expression(limit, discover_where_x.as_deref());
             return parsed_clause(Effect::Discover {
                 mana_value_limit: limit,
+                player: discover_player,
+            });
+        }
+    }
+
+    // CR 701.68a: "[player] blight[s] N" — blight with a redirected player.
+    // "Target opponent blights 2" (Champion of the Weird) makes the targeted
+    // player put the -1/-1 counters on a creature *they* control. Bare
+    // "blight N" (controller blights) is handled by the imperative parser's
+    // first-word dispatch; this arm covers the leading-player-subject form.
+    if let Some((blight_player, count, rest_orig)) = parse_blight_with_player(tp) {
+        if rest_orig.trim().is_empty() {
+            return parsed_clause(Effect::BlightEffect {
+                count,
+                player: blight_player,
             });
         }
     }
@@ -6351,6 +6349,117 @@ fn try_parse_put_on_top_or_bottom(
     }
 
     None
+}
+
+/// CR 701.57a: Parse "[player] discover[s] N/X" and return the discovering
+/// player, the mana-value limit, and the unconsumed remainder.
+///
+/// The optional leading player subject redirects who performs the discover:
+/// - no subject / "you " → `TargetFilter::Controller` (the common case).
+/// - "that player " → `TargetFilter::ParentTargetOwner`. In the only printed
+///   pattern (Zoyowa's Justice: "The owner of target … shuffles it into their
+///   library. Then that player discovers X"), "that player" is the owner of the
+///   parent target established by the preceding clause, so it binds to the
+///   parent target's owner at resolution via `resolve_player_for_context_ref`.
+/// - any other leading "target …"/"each …" player phrase → the parsed
+///   `TargetFilter` (e.g. "target opponent" surfaces as a real target).
+///
+/// The verb is matched as "discover" or "discovers" so both the imperative
+/// ("discover N") and third-person ("that player discovers N") forms parse.
+fn parse_discover_with_player(tp: TextPair) -> Option<(TargetFilter, QuantityExpr, String)> {
+    // A `fn` item (rather than a closure) so it is generic over the input
+    // lifetime and can be invoked inside the `nom_on_lower` closures below.
+    fn limit_parser(i: &str) -> super::oracle_nom::error::OracleResult<'_, QuantityExpr> {
+        let (rest, _) = alt((tag("discovers "), tag("discover "))).parse(i)?;
+        let (rest, limit) = alt((
+            map(nom_primitives::parse_number, |value| QuantityExpr::Fixed {
+                value: value as i32,
+            }),
+            value(
+                QuantityExpr::Ref {
+                    qty: QuantityRef::Variable {
+                        name: "X".to_string(),
+                    },
+                },
+                tag("x"),
+            ),
+        ))
+        .parse(rest)?;
+        let (rest, _) = opt(tag(".")).parse(rest)?;
+        Ok((rest, limit))
+    }
+
+    // No leading player subject (or "you …") → the controller discovers.
+    if let Some((limit, rest_orig)) = nom_on_lower(tp.original, tp.lower, |i| {
+        let (rest, _) = opt(tag("you ")).parse(i)?;
+        limit_parser(rest)
+    }) {
+        return Some((TargetFilter::Controller, limit, rest_orig.to_string()));
+    }
+
+    // "that player discovers …" — binds to the owner of the parent target
+    // established by the preceding clause (Zoyowa's Justice).
+    if let Some((limit, rest_orig)) = nom_on_lower(tp.original, tp.lower, |i| {
+        let (rest, _) = tag("that player ").parse(i)?;
+        limit_parser(rest)
+    }) {
+        return Some((
+            TargetFilter::ParentTargetOwner,
+            limit,
+            rest_orig.to_string(),
+        ));
+    }
+
+    // "target opponent discovers …" and similar explicit player targets.
+    let (filter, remainder) = parse_target(tp.original);
+    let remainder = remainder.trim_start();
+    if remainder.eq_ignore_ascii_case(tp.original.trim_start()) {
+        return None;
+    }
+    let remainder_lower = remainder.to_ascii_lowercase();
+    nom_on_lower(remainder, &remainder_lower, limit_parser)
+        .map(|(limit, rest_orig)| (filter, limit, rest_orig.to_string()))
+}
+
+/// CR 701.68a: Parse "[player] blight[s] N" where a leading player subject
+/// redirects who blights, and return that player, the count, and the remainder.
+///
+/// Only the leading-player-subject form is handled here ("target opponent
+/// blights 2", "that player blights N"). Bare "blight N" (the controller
+/// blights) is dispatched by the imperative first-word parser, so this helper
+/// returns `None` when there is no player subject — leaving the bare form to its
+/// owner.
+fn parse_blight_with_player(tp: TextPair) -> Option<(TargetFilter, u32, String)> {
+    // A `fn` item (rather than a closure) so it is generic over the input
+    // lifetime and can be invoked inside the `nom_on_lower` closures below.
+    fn count_parser(i: &str) -> super::oracle_nom::error::OracleResult<'_, u32> {
+        let (rest, _) = alt((tag("blights "), tag("blight "))).parse(i)?;
+        let (rest, count) = nom_primitives::parse_number.parse(rest)?;
+        let (rest, _) = opt(tag(".")).parse(rest)?;
+        Ok((rest, count))
+    }
+
+    // "that player blights …" — binds to the owner of the parent target.
+    if let Some((count, rest_orig)) = nom_on_lower(tp.original, tp.lower, |i| {
+        let (rest, _) = tag("that player ").parse(i)?;
+        count_parser(rest)
+    }) {
+        return Some((
+            TargetFilter::ParentTargetOwner,
+            count,
+            rest_orig.to_string(),
+        ));
+    }
+
+    // "target opponent blights …" and similar explicit player targets.
+    let (filter, remainder) = parse_target(tp.original);
+    let remainder = remainder.trim_start();
+    if remainder.eq_ignore_ascii_case(tp.original.trim_start()) {
+        return None;
+    }
+    let remainder_lower = remainder.to_ascii_lowercase();
+    nom_on_lower(remainder, &remainder_lower, count_parser)
+        .map(|(count, rest_orig)| (filter, count, rest_orig.to_string()))
 }
 
 /// CR 701.24a + CR 400.3: Parse "the owner of target [filter] shuffles it into their library".
@@ -50831,12 +50940,73 @@ mod tests {
                         qty: QuantityRef::ObjectManaValue {
                             scope: ObjectScope::EventSource
                         }
-                    }
+                    },
+                    ..
                 }
             ),
             "expected dynamic Discover limit, got {:?}",
             def.effect
         );
+    }
+
+    /// CR 701.68a: "Target opponent blights N" (Champion of the Weird) parses to
+    /// a `BlightEffect` whose `player` carries the Opponent target, so the
+    /// resolver redirects the blight away from the controller.
+    #[test]
+    fn blight_target_opponent_carries_opponent_player() {
+        let def = parse_effect_chain("Target opponent blights 2.", AbilityKind::Spell);
+        match def.effect.as_ref() {
+            Effect::BlightEffect { count, player } => {
+                assert_eq!(*count, 2);
+                assert!(
+                    matches!(player, TargetFilter::Typed(f) if f.controller == Some(ControllerRef::Opponent)),
+                    "expected Opponent player filter, got {player:?}"
+                );
+            }
+            other => panic!("expected BlightEffect, got {other:?}"),
+        }
+    }
+
+    /// CR 701.57a: "that player discovers X" (Zoyowa's Justice) parses to a
+    /// `Discover` whose `player` binds to the parent target's owner and whose
+    /// limit is the parent target's mana value.
+    #[test]
+    fn discover_that_player_binds_parent_target_owner() {
+        let def = parse_effect_chain(
+            "The owner of target creature with mana value 1 or greater shuffles it into their library. Then that player discovers X, where X is its mana value.",
+            AbilityKind::Spell,
+        );
+        // Walk to the Discover sub-clause.
+        let mut cur = def.sub_ability.as_deref();
+        let mut discover: Option<&Effect> = None;
+        while let Some(ab) = cur {
+            if matches!(ab.effect.as_ref(), Effect::Discover { .. }) {
+                discover = Some(ab.effect.as_ref());
+                break;
+            }
+            cur = ab.sub_ability.as_deref();
+        }
+        match discover.expect("expected a Discover sub-clause") {
+            Effect::Discover {
+                player,
+                mana_value_limit,
+            } => {
+                assert!(
+                    matches!(player, TargetFilter::ParentTargetOwner),
+                    "expected ParentTargetOwner, got {player:?}"
+                );
+                assert!(
+                    matches!(
+                        mana_value_limit,
+                        QuantityExpr::Ref {
+                            qty: QuantityRef::ObjectManaValue { .. }
+                        }
+                    ),
+                    "expected dynamic MV limit, got {mana_value_limit:?}"
+                );
+            }
+            other => panic!("expected Discover, got {other:?}"),
+        }
     }
 
     #[test]
