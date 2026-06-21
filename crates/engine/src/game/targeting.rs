@@ -776,7 +776,16 @@ pub(crate) fn resolve_event_context_target_for_event_or_state(
         TargetFilter::TriggeringSourceController => {
             let event = event?;
             let source_obj_id = extract_source_from_event(event)?;
-            let controller = state.objects.get(&source_obj_id)?.controller;
+            let controller = state
+                .objects
+                .get(&source_obj_id)
+                .map(|obj| obj.controller)
+                .or_else(|| {
+                    state
+                        .lki_cache
+                        .get(&source_obj_id)
+                        .map(|lki| lki.controller)
+                })?;
             Some(TargetRef::Player(controller))
         }
         TargetFilter::ParentTarget => {
