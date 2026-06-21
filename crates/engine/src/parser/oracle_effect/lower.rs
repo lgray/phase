@@ -24,15 +24,17 @@ use crate::parser::oracle_ir::diagnostic::OracleDiagnostic;
 use crate::parser::oracle_ir::effect_chain::{ClauseIr, EffectChainIr, SpecialClause};
 use crate::types::ability::{
     AbilityCondition, AbilityCost, AbilityDefinition, AbilityKind, AttackScope, AttackSubject,
-    CastFromZoneDriver, Comparator, ContinuousModification, ControllerRef, DamageSource,
-    DelayedTriggerCondition, Duration, Effect, EffectScope, FilterProp, LibraryPosition,
-    MultiTargetSpec, ObjectScope, PlayerFilter, PreventionAmount, PreventionScope, PtValue,
-    QuantityExpr, QuantityRef, RoundingMode, StaticCondition, StaticDefinition, SubAbilityLink,
-    TargetChoiceTiming, TargetFilter, TypeFilter, TypedFilter,
+    CastFromZoneDriver, CastingPermission, Comparator, ContinuousModification, ControllerRef,
+    DamageSource, DelayedTriggerCondition, Duration, Effect, EffectScope, FilterProp,
+    LibraryPosition, ManaSpendPermission, MultiTargetSpec, ObjectScope, PlayerFilter,
+    PreventionAmount, PreventionScope, PtValue, QuantityExpr, QuantityRef, RoundingMode,
+    StaticCondition, StaticDefinition, SubAbilityLink, TargetChoiceTiming, TargetFilter,
+    TypeFilter, TypedFilter,
 };
 use crate::types::counter::CounterType;
 use crate::types::game_state::{DistributionUnit, TargetSelectionConstraint};
 use crate::types::phase::Phase;
+use crate::types::statics::StaticMode;
 use crate::types::zones::Zone;
 
 // Parse-phase functions from the parent module (oracle_effect/mod.rs).
@@ -163,6 +165,59 @@ pub(super) fn normalize_linked_exile_cast_bottom_cleanup(effect: &mut Effect) {
             *count = QuantityExpr::Fixed { value: 0 };
         }
     }
+}
+
+fn is_spend_mana_as_any_color_rider(clause: &ClauseIr) -> bool {
+    let Effect::GenericEffect {
+        static_abilities, ..
+    } = &clause.parsed.effect
+    else {
+        return false;
+    };
+    if static_abilities.len() != 1 || static_abilities[0].mode != StaticMode::SpendManaAsAnyColor {
+        return false;
+    }
+
+    let lower = clause.source_text.to_ascii_lowercase();
+    all_consuming((
+        opt(alt((
+            tag::<_, _, OracleError<'_>>("if you cast a spell this way, "),
+            tag("if you cast it this way, "),
+        ))),
+        tag("you may spend mana as though it were mana of any "),
+        alt((tag("color"), tag("type"))),
+        tag(" to cast "),
+        alt((
+            tag("it"),
+            tag("that spell"),
+            tag("a spell this way"),
+            tag("spells this way"),
+            tag("those spells"),
+        )),
+        opt(tag(".")),
+    ))
+    .parse(lower.trim())
+    .is_ok()
+}
+
+fn attach_any_color_mana_rider_to_previous_play_from_exile(defs: &mut [AbilityDefinition]) -> bool {
+    let Some(previous) = defs.last_mut() else {
+        return false;
+    };
+    let Effect::GrantCastingPermission {
+        permission:
+            CastingPermission::PlayFromExile {
+                mana_spend_permission,
+                ..
+            },
+        ..
+    } = previous.effect.as_mut()
+    else {
+        return false;
+    };
+
+    *mana_spend_permission = Some(ManaSpendPermission::AnyTypeOrColor);
+    true
 }
 
 pub(super) fn is_linked_exile_cast_bottom_cleanup(
@@ -575,6 +630,18 @@ pub(crate) fn lower_effect_chain_ir(ir: &EffectChainIr) -> AbilityDefinition {
         // normal clause stamps its `sub_link` from the boundary AFTER this
         // clause, not the stale boundary that preceded it.
         if handled_as_special {
+            prev_boundary = clause_ir.boundary;
+            continue;
+        }
+
+        // CR 609.4b + CR 608.2c: Brainstealer/Daxos-class any-color mana
+        // riders may be split into their own sentence or comma sibling after a
+        // `PlayFromExile` grant. They scope the existing exile-play
+        // permission, so fold the rider into the prior grant instead of
+        // emitting a broad standalone `SpendManaAsAnyColor` effect.
+        if is_spend_mana_as_any_color_rider(clause_ir)
+            && attach_any_color_mana_rider_to_previous_play_from_exile(&mut defs)
+        {
             prev_boundary = clause_ir.boundary;
             continue;
         }

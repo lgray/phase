@@ -37150,6 +37150,53 @@ mod tests {
     }
 
     #[test]
+    fn parse_play_from_exile_while_exiled_with_spend_mana_as_any_color_permission() {
+        let def = parse_effect_chain(
+            "You may look at and play that card for as long as it remains exiled, and you may spend mana as though it were mana of any color to cast that spell.",
+            AbilityKind::Spell,
+        );
+        assert!(matches!(
+            &*def.effect,
+            Effect::GrantCastingPermission {
+                permission: CastingPermission::PlayFromExile {
+                    duration: Duration::Permanent,
+                    mana_spend_permission: Some(ManaSpendPermission::AnyTypeOrColor),
+                    ..
+                },
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn parse_brainstealer_dragon_play_grant_folds_mana_rider() {
+        let def = parse_effect_chain(
+            "Exile the top card of each opponent's library. You may play those cards for as long as they remain exiled. If you cast a spell this way, you may spend mana as though it were mana of any color to cast it.",
+            AbilityKind::Triggered,
+        );
+        let grant = def
+            .sub_ability
+            .as_deref()
+            .expect("exile instruction must chain to play grant");
+        assert!(matches!(
+            &*grant.effect,
+            Effect::GrantCastingPermission {
+                permission: CastingPermission::PlayFromExile {
+                    duration: Duration::Permanent,
+                    mana_spend_permission: Some(ManaSpendPermission::AnyTypeOrColor),
+                    ..
+                },
+                target: TargetFilter::TrackedSet { .. },
+                ..
+            }
+        ));
+        assert!(
+            grant.sub_ability.is_none(),
+            "mana rider must fold into the play grant instead of emitting a standalone sub-ability: {grant:#?}"
+        );
+    }
+
+    #[test]
     fn parse_play_from_exile_next_turn() {
         let def = parse_effect_chain(
             "You may play that card until the end of your next turn.",
