@@ -2119,6 +2119,26 @@ pub(super) fn handle_resolution_choice(
                     state.waiting_for.clone(),
                 ));
             }
+            // CR 608.2c: When the parked continuation consumes the chain's
+            // tracked set (a `GrantCastingPermission { target: TrackedSet }` /
+            // any `TrackedSet`-referencing downstream effect — e.g. End-Blaze
+            // Epiphany's "choose a card exiled this way … you may play that
+            // card"), the interactive choose is the producer of that set, so the
+            // chosen cards must be published as the fresh tracked set the
+            // continuation reads. This mirrors the per-player drain
+            // (`publish_fresh_tracked_set`) and the random-choose path
+            // (`apply_parent_chain_context`); without it the grant's
+            // `TrackedSet(0)` sentinel binds to a stale/empty set and the
+            // permission lands nowhere. Gated on the continuation actually
+            // referencing a tracked set so non-consuming continuations
+            // (partition sub-abilities reading `ParentTarget`) are unaffected.
+            let continuation_consumes_tracked_set = state
+                .pending_continuation
+                .as_ref()
+                .is_some_and(|cont| effects::chain_references_tracked_set(&cont.chain));
+            if continuation_consumes_tracked_set {
+                effects::publish_fresh_tracked_set(state, chosen.clone());
+            }
             if let Some(cont) = state.pending_continuation.as_mut() {
                 cont.chain.targets = chosen.iter().map(|&id| TargetRef::Object(id)).collect();
                 // CR 700.2 + CR 608.2c: The "unchosen" partition is forwarded

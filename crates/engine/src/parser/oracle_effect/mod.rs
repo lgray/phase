@@ -7318,8 +7318,25 @@ fn try_parse_play_from_exile(tp: TextPair, ctx: &ParseContext) -> Option<ParsedE
 
     // Try full forms first: "you may play/cast that card/it/those cards ..."
     // Then bare forms (after "you may" has been stripped): "play that card ..."
+    // CR 406.6 + CR 400.7i: "you may look at and play those cards for as long as
+    // they remain exiled" (Expensive Taste) grants the same impulse-style
+    // PlayFromExile permission; the "look at" conjunct is a private-information
+    // grant that the permission already implies (the controller can always see
+    // a card they may play). Folded in as a verb-prefix variant so the no-mana-
+    // conjunct form reaches the same grant as the bare "you may play those
+    // cards" path (the with-mana form is handled earlier by
+    // `try_parse_exile_play_grant_with_any_mana`).
     let full_rest = nom_on_lower(tp.original, tp.lower, |input| {
-        value((), alt((tag("you may play "), tag("you may cast ")))).parse(input)
+        value(
+            (),
+            alt((
+                tag("you may look at and play "),
+                tag("you may look at and cast "),
+                tag("you may play "),
+                tag("you may cast "),
+            )),
+        )
+        .parse(input)
     })
     .map(|((), rest_orig)| {
         let rest_lower = &tp.lower[tp.lower.len() - rest_orig.len()..];
@@ -7358,33 +7375,54 @@ fn try_parse_play_from_exile(tp: TextPair, ctx: &ParseContext) -> Option<ParsedE
             return None;
         }
     } else {
-        // Bare form (after "you may" was stripped by parse_effect_chain):
-        // Only match when temporal context exists ("this turn", "until"),
-        // otherwise it's a CastFromZone, not impulse draw permission.
-        let has_temporal =
-            scan_contains_phrase(tp.lower, "this turn") || scan_contains_phrase(tp.lower, "until ");
-        if !has_temporal {
-            return None;
-        }
+        // Bare form (after "you may" was stripped by parse_effect_chain).
         if scan_contains_phrase(tp.lower, "without paying") {
             return None;
         }
-        // CR 400.7i + CR 603.7: "(the) cards exiled this way" bare anaphor
-        // (Escape to the Wilds, after `you may ` is peeled by the chunk loop).
-        if alt((
-            tag::<_, _, OracleError<'_>>("play that card"),
-            tag("cast that card"),
-            tag("play it"),
-            tag("cast it"),
-            tag("play the cards exiled this way"),
-            tag("play cards exiled this way"),
-            tag("cast the cards exiled this way"),
-            tag("cast cards exiled this way"),
+        // CR 406.6 + CR 400.7i + CR 603.7: the "those cards" / "the cards exiled
+        // this way" anaphor is an UNAMBIGUOUS impulse-set referent — it can
+        // never bind to a `CastFromZone` of a chosen target. When the bare
+        // fragment is one of these mass-anaphor "look at and play"/"play" forms,
+        // accept it WITHOUT requiring temporal context: the chunk loop peeled
+        // the "for as long as they remain exiled" duration into the wrapper
+        // (Expensive Taste), so `tp.lower` carries no "this turn"/"until" signal
+        // even though the grant is duration-scoped. `strip_trailing_duration`
+        // below resolves the window (defaulting to UntilEndOfTurn when absent).
+        let mass_anaphor_form = alt((
+            tag::<_, _, OracleError<'_>>("look at and play those cards"),
+            tag("look at and cast those cards"),
+            tag("play those cards"),
+            tag("cast those cards"),
         ))
         .parse(tp.lower)
-        .is_err()
-        {
-            return None;
+        .is_ok();
+        if mass_anaphor_form {
+            // fall through to the grant builder.
+        } else {
+            // Only match when temporal context exists ("this turn", "until"),
+            // otherwise it's a CastFromZone, not impulse draw permission.
+            let has_temporal = scan_contains_phrase(tp.lower, "this turn")
+                || scan_contains_phrase(tp.lower, "until ");
+            if !has_temporal {
+                return None;
+            }
+            // CR 400.7i + CR 603.7: "(the) cards exiled this way" bare anaphor
+            // (Escape to the Wilds, after `you may ` is peeled by the chunk loop).
+            if alt((
+                tag::<_, _, OracleError<'_>>("play that card"),
+                tag("cast that card"),
+                tag("play it"),
+                tag("cast it"),
+                tag("play the cards exiled this way"),
+                tag("play cards exiled this way"),
+                tag("cast the cards exiled this way"),
+                tag("cast cards exiled this way"),
+            ))
+            .parse(tp.lower)
+            .is_err()
+            {
+                return None;
+            }
         }
     }
 
@@ -20111,6 +20149,13 @@ fn try_parse_put_zone_change_parts(
         (" into their hand", Zone::Hand),
         (" into its owner's hand", Zone::Hand),
         (" into their owner's hand", Zone::Hand),
+        // CR 400.3 + CR 110.1: plural possessive — a mass move where each card
+        // goes to its OWN owner's hand/graveyard ("Put all cards exiled with ~
+        // into their owners' hands" — Connecting the Dots). `execute_zone_move`
+        // already keys the destination by each object's owner for non-
+        // battlefield zones, so the plural form needs no separate routing.
+        (" into their owners' hands", Zone::Hand),
+        (" into their owners' graveyards", Zone::Graveyard),
         (" into your graveyard", Zone::Graveyard),
         (" into its owner's graveyard", Zone::Graveyard),
         (" into their owner's graveyard", Zone::Graveyard),
