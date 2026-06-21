@@ -7401,24 +7401,30 @@ fn try_parse_play_from_exile(tp: TextPair, ctx: &ParseContext) -> Option<ParsedE
         if scan_contains_phrase(tp.lower, "without paying") {
             return None;
         }
-        // CR 406.6 + CR 400.7i + CR 603.7: the "those cards" / "the cards exiled
-        // this way" anaphor is an UNAMBIGUOUS impulse-set referent — it can
-        // never bind to a `CastFromZone` of a chosen target. When the bare
-        // fragment is one of these mass-anaphor "look at and play"/"play" forms,
-        // accept it WITHOUT requiring temporal context: the chunk loop peeled
-        // the "for as long as they remain exiled" duration into the wrapper
-        // (Expensive Taste), so `tp.lower` carries no "this turn"/"until" signal
-        // even though the grant is duration-scoped. `strip_trailing_duration`
-        // below resolves the window (defaulting to UntilEndOfTurn when absent).
-        let mass_anaphor_form = alt((
+        // CR 406.6 + CR 400.7i + CR 603.7: these exile anaphors are
+        // unambiguous impulse-set referents when paired with the "look at and
+        // play/cast" surface. Accept them without requiring an in-body temporal
+        // marker: the clause shell may have peeled the "for as long as ...
+        // remain[s] exiled" duration into the wrapper, so `tp.lower` no longer
+        // carries the duration text even though `with_clause_duration` will patch
+        // it onto the grant.
+        let look_at_play_anaphor_form = alt((
             tag::<_, _, OracleError<'_>>("look at and play those cards"),
             tag("look at and cast those cards"),
-            tag("play those cards"),
+            tag("look at and play that card"),
+            tag("look at and cast that card"),
+            tag("look at and play it"),
+            tag("look at and cast it"),
+        ))
+        .parse(tp.lower)
+        .is_ok();
+        let mass_anaphor_form = alt((
+            tag::<_, _, OracleError<'_>>("play those cards"),
             tag("cast those cards"),
         ))
         .parse(tp.lower)
         .is_ok();
-        if mass_anaphor_form {
+        if look_at_play_anaphor_form || mass_anaphor_form {
             // fall through to the grant builder.
         } else {
             // Only match when temporal context exists ("this turn", "until"),
@@ -37160,17 +37166,20 @@ mod tests {
             "You may look at and play that card for as long as it remains exiled, and you may spend mana as though it were mana of any color to cast that spell.",
             AbilityKind::Spell,
         );
-        assert!(matches!(
-            &*def.effect,
-            Effect::GrantCastingPermission {
-                permission: CastingPermission::PlayFromExile {
-                    duration: Duration::Permanent,
-                    mana_spend_permission: Some(ManaSpendPermission::AnyTypeOrColor),
+        assert!(
+            matches!(
+                &*def.effect,
+                Effect::GrantCastingPermission {
+                    permission: CastingPermission::PlayFromExile {
+                        duration: Duration::Permanent,
+                        mana_spend_permission: Some(ManaSpendPermission::AnyTypeOrColor),
+                        ..
+                    },
                     ..
-                },
-                ..
-            }
-        ));
+                }
+            ),
+            "expected PlayFromExile grant with any-color mana permission, got {def:#?}"
+        );
     }
 
     #[test]

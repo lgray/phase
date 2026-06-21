@@ -2249,6 +2249,7 @@ fn detect_condition_as_long_as(
         "as long as it remains exiled",
         "as long as that card remains exiled",
         "as long as those cards remain exiled",
+        "as long as they remain exiled",
     ]
     .iter()
     .any(|phrase| cleaned.contains(phrase));
@@ -3037,6 +3038,24 @@ mod tests {
             parsed.statics
         );
         assert!(!has_swallowed_detector(&parsed, "Optional_YouMay"));
+    }
+
+    #[test]
+    fn condition_as_long_as_accepts_play_from_exile_they_remain_exiled() {
+        // CR 400.7i + CR 609.4b: Brainstealer Dragon's tracked-set
+        // PlayFromExile permission represents the "for as long as they remain
+        // exiled" duration; the following any-color mana rider folds into that
+        // same permission, not a swallowed condition.
+        let parsed = parse_named(
+            "Flying\n\
+             At the beginning of your end step, exile the top card of each opponent's library. \
+             You may play those cards for as long as they remain exiled. \
+             If you cast a spell this way, you may spend mana as though it were mana of any color to cast it.",
+            "Brainstealer Dragon",
+            &["Creature", "Dragon"],
+        );
+
+        assert!(!has_swallowed_detector(&parsed, "Condition_AsLongAs"));
     }
 
     #[test]
