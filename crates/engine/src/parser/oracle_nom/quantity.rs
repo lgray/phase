@@ -3443,13 +3443,17 @@ pub(crate) fn parse_died_this_turn_suffix(input: &str) -> OracleResult<'_, Optio
 /// phrasing. Engine tracking is per-turn-only, so the trailing "this turn"
 /// qualifier is semantically redundant when present.
 ///
-/// Returns `Some(ControllerRef::You)` for forms qualified by "under your
-/// control" or "your graveyard" (CR 109.5: "your" graveyard = the source's
-/// controller), and `None` for unqualified forms that count every player's
-/// deaths. The longer qualified tags MUST precede the bare "that died" /
+/// Returns `(controller scope, nontoken-only)` where controller is
+/// `Some(ControllerRef::You)` for forms qualified by "under your control" /
+/// "your graveyard" (CR 109.5: "your" graveyard = the source's controller),
+/// and `None` for unqualified forms that count every player's deaths. The
+/// longer qualified tags MUST precede the bare "that died" /
 /// "a graveyard" tags so the qualified suffix isn't shadowed by `alt`.
-fn parse_creatures_died_this_turn_tail(input: &str) -> OracleResult<'_, Option<ControllerRef>> {
-    alt((
+fn parse_creatures_died_this_turn_tail(
+    input: &str,
+) -> OracleResult<'_, (Option<ControllerRef>, bool)> {
+    let (rest, nontoken) = opt(tag("nontoken ")).parse(input)?;
+    let (rest, controller) = alt((
         value(
             Some(ControllerRef::You),
             tag("creatures that died under your control this turn"),
@@ -3507,21 +3511,22 @@ fn parse_creatures_died_this_turn_tail(input: &str) -> OracleResult<'_, Option<C
             tag("creature put into a graveyard from the battlefield"),
         ),
     ))
-    .parse(input)
+    .parse(rest)?;
+    Ok((rest, (controller, nontoken.is_some())))
 }
 
 /// CR 700.4: Parse "creature(s) that died" → filtered zone-change count for
 /// "for each creature that died this turn" iteration sources.
 fn parse_for_each_creature_died_this_turn(input: &str) -> OracleResult<'_, QuantityRef> {
-    let (rest, controller) = parse_creatures_died_this_turn_tail(input)?;
-    Ok((rest, creatures_died_this_turn_ref(controller)))
+    let (rest, (controller, nontoken)) = parse_creatures_died_this_turn_tail(input)?;
+    Ok((rest, creatures_died_this_turn_ref(controller, nontoken)))
 }
 
 /// CR 700.4: Parse "the number of creature(s) that died this turn" → the same
 /// `ZoneChangeCountThisTurn` quantity ref used by for-each iteration.
 fn parse_number_of_creatures_died_this_turn(input: &str) -> OracleResult<'_, QuantityRef> {
-    let (rest, controller) = parse_creatures_died_this_turn_tail(input)?;
-    Ok((rest, creatures_died_this_turn_ref(controller)))
+    let (rest, (controller, nontoken)) = parse_creatures_died_this_turn_tail(input)?;
+    Ok((rest, creatures_died_this_turn_ref(controller, nontoken)))
 }
 
 /// CR 701.21a: Parse "[type] you['ve] sacrificed this turn" -> `TargetFilter`.
@@ -3640,10 +3645,13 @@ fn parse_for_each_subtype_died_this_turn(input: &str) -> OracleResult<'_, Quanti
 /// graveyard", `controller` is `Some(ControllerRef::You)` and the count is
 /// scoped to creatures controlled by the source's controller when they died;
 /// otherwise it is `None` and every player's deaths are counted.
-fn creatures_died_this_turn_ref(controller: Option<ControllerRef>) -> QuantityRef {
+fn creatures_died_this_turn_ref(controller: Option<ControllerRef>, nontoken: bool) -> QuantityRef {
     let mut tf = TypedFilter::creature();
     if let Some(c) = controller {
         tf = tf.controller(c);
+    }
+    if nontoken {
+        tf = tf.properties(vec![FilterProp::NonToken]);
     }
     QuantityRef::ZoneChangeCountThisTurn {
         from: Some(Zone::Battlefield),
@@ -7851,5 +7859,19 @@ mod tests {
                 damage_kind: DamageKindFilter::NoncombatOnly,
             }
         );
+    }
+
+    #[test]
+    fn parse_nontoken_creature_died_this_turn_for_each() {
+        let (_, q) =
+            parse_for_each_creature_died_this_turn("nontoken creature that died this turn")
+                .unwrap();
+        let QuantityRef::ZoneChangeCountThisTurn { filter, .. } = q else {
+            panic!("expected ZoneChangeCountThisTurn, got {q:?}");
+        };
+        let TargetFilter::Typed(tf) = filter else {
+            panic!("expected typed filter");
+        };
+        assert!(tf.properties.contains(&FilterProp::NonToken));
     }
 }

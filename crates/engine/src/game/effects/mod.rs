@@ -1661,9 +1661,14 @@ pub(super) fn resolve_optional_effect_decision(
                         // declined, so it must NOT fire even though it is a
                         // separate sentence (issue #3179: Swashbuckler
                         // Extraordinaire's declined Treasure sacrifice must not
-                        // resolve the double-strike reflexive).
+                        // resolve the double-strike reflexive). CastFromZone's
+                        // graveyard-exile rider is not a printed follow-up to
+                        // execute on decline; it is permission metadata consumed
+                        // only if the graveyard spell is actually cast.
                         || (sub.sub_link == SubAbilityLink::SequentialSibling
-                            && !sub_ability_is_reflexive(sub))
+                            && !sub_ability_is_reflexive(sub)
+                            && !(matches!(&ability.effect, Effect::CastFromZone { .. })
+                                && cast_from_zone::is_graveyard_exile_rider_subability(sub)))
                 })
             });
             if let Some(branch) = decline_branch {
