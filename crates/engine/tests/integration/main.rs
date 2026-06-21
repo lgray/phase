@@ -463,6 +463,7 @@ mod terra_herald_optional_prompt;
 mod terra_magical_adept_milled_enchantment;
 mod terror_of_the_peaks_issue_2911;
 mod the_chain_veil_loyalty_grants;
+mod the_kingpin_of_crime_combat_damage;
 mod the_ur_dragon_eminence;
 mod thoughtweft_trample_regression;
 mod timely_ward_regression;

@@ -22080,6 +22080,55 @@ mod tests {
     use super::*;
     use crate::parser::parse_oracle_text;
 
+    /// CR 510.1a + CR 613.11: The Kingpin of Crime's attack ability — "Whenever you
+    /// attack, you may pay 2 life. If you do, until end of turn, creatures you
+    /// control with toughness greater than their power assign combat damage equal
+    /// to their toughness rather than their power." The plural surface form of the
+    /// damage-by-toughness predicate (and the plural "toughness greater than their
+    /// power" filter) must lower with NO residual `Effect::Unimplemented`.
+    #[test]
+    fn the_kingpin_of_crime_full_card_has_no_unimplemented() {
+        let parsed = parse_oracle_text(
+            "Extort (Whenever you cast a spell, you may pay {W/B}. If you do, each opponent loses 1 life and you gain that much life.)\n\
+             Whenever you attack, you may pay 2 life. If you do, until end of turn, creatures you control with toughness greater than their power assign combat damage equal to their toughness rather than their power.",
+            "The Kingpin of Crime",
+            &["Extort".to_string()],
+            &["Legendary".to_string(), "Creature".to_string()],
+            &["Spider".to_string()],
+        );
+
+        fn effect_has_unimplemented(effect: &Effect) -> bool {
+            matches!(effect, Effect::Unimplemented { .. })
+        }
+        fn ability_has_unimplemented(ability: &AbilityDefinition) -> bool {
+            effect_has_unimplemented(&ability.effect)
+                || ability
+                    .sub_ability
+                    .as_deref()
+                    .is_some_and(ability_has_unimplemented)
+                || ability
+                    .else_ability
+                    .as_deref()
+                    .is_some_and(ability_has_unimplemented)
+        }
+
+        for trigger in &parsed.triggers {
+            if let Some(execute) = trigger.execute.as_deref() {
+                assert!(
+                    !ability_has_unimplemented(execute),
+                    "trigger lowered to an Unimplemented node: {execute:#?}"
+                );
+            }
+        }
+        for ability in &parsed.abilities {
+            assert!(
+                !ability_has_unimplemented(ability),
+                "ability lowered to an Unimplemented node: {:#?}",
+                ability
+            );
+        }
+    }
+
     /// CR 601.2c + CR 115.1: HONEST DEFERRAL — Graceful Takedown's heterogeneous
     /// compound source set ("any number of target enchanted creatures you control
     /// AND up to one other target creature you control each deal damage equal to
