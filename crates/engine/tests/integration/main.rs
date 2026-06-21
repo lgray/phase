@@ -30,6 +30,7 @@ mod bounce_destination_redirect;
 mod braids_arisen_nightmare_decline;
 mod brigid_mana_ability;
 mod bring_to_light_free_cast_2880;
+mod call_damage_control_modal_return;
 mod cascade_intervening_if_pipeline;
 mod case_solve_condition;
 mod cast_during_resolution_pipeline;
