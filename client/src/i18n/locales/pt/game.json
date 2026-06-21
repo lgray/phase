@@ -1298,6 +1298,17 @@
     "red": "Vermelho",
     "green": "Verde"
   },
+  "roomDoor": {
+    "title": "Escolha uma porta",
+    "subtitle": "Escolha em qual porta da Sala agir",
+    "confirm": "Confirmar",
+    "option": "{{op}} {{door}}",
+    "unlock": "Destrancar",
+    "lock": "Trancar",
+    "lockOrUnlock": "Trancar ou destrancar",
+    "left": "porta esquerda",
+    "right": "porta direita"
+  },
   "dialogShell": {
     "eyebrow": "Escolha do Jogo",
     "restoreDialog": "Restaurar diálogo",

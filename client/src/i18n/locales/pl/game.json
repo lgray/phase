@@ -1298,6 +1298,17 @@
     "red": "Czerwony",
     "green": "Zielony"
   },
+  "roomDoor": {
+    "title": "Wybierz drzwi",
+    "subtitle": "Wybierz, na które drzwi Pokoju zadziałać",
+    "confirm": "Potwierdź",
+    "option": "{{op}} {{door}}",
+    "unlock": "Odblokuj",
+    "lock": "Zablokuj",
+    "lockOrUnlock": "Zablokuj lub odblokuj",
+    "left": "lewe drzwi",
+    "right": "prawe drzwi"
+  },
   "dialogShell": {
     "eyebrow": "Wybór w grze",
     "restoreDialog": "Przywróć okno dialogowe",

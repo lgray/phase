@@ -1298,6 +1298,17 @@
     "red": "Rojo",
     "green": "Verde"
   },
+  "roomDoor": {
+    "title": "Elige una puerta",
+    "subtitle": "Elige sobre qué puerta de la Sala actuar",
+    "confirm": "Confirmar",
+    "option": "{{op}} {{door}}",
+    "unlock": "Abrir",
+    "lock": "Cerrar",
+    "lockOrUnlock": "Abrir o cerrar",
+    "left": "puerta izquierda",
+    "right": "puerta derecha"
+  },
   "dialogShell": {
     "eyebrow": "Elección de la partida",
     "restoreDialog": "Restaurar diálogo",

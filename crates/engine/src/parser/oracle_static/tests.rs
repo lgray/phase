@@ -1288,6 +1288,61 @@ fn full_dispatch_alt_cost_routing_and_deferrals() {
     }
 }
 
+/// CR 202.3 + CR 208.2a + CR 604.3: Dragon Man, Reformed Robot's CDA —
+/// "~'s power is equal to the greatest mana value among noncreature permanents
+/// you control and noncreature cards in your graveyard" — must produce a
+/// `SetDynamicPower` CDA whose value is a `Max` over two single-zone
+/// `Aggregate`s (battlefield arm + graveyard arm). Revert-failing: without the
+/// "A and B" conjunction arm in `parse_cda_quantity`, the clause falls to the
+/// `static_structure` strict marker and no CDA static is produced.
+#[test]
+fn dragon_man_cda_power_is_greatest_mana_value_across_zones() {
+    use crate::parser::oracle::parse_oracle_text;
+
+    let parsed = parse_oracle_text(
+        "Flying\nDragon Man, Reformed Robot's power is equal to the greatest mana value among noncreature permanents you control and noncreature cards in your graveyard.",
+        "Dragon Man, Reformed Robot",
+        &[],
+        &["Artifact".to_string(), "Creature".to_string()],
+        &[],
+    );
+
+    let cda = parsed
+        .statics
+        .iter()
+        .find_map(|d| {
+            d.modifications.iter().find_map(|m| match m {
+                ContinuousModification::SetDynamicPower {
+                    value: QuantityExpr::Max { exprs },
+                } => Some(exprs.clone()),
+                _ => None,
+            })
+        })
+        .unwrap_or_else(|| {
+            panic!(
+                "expected SetDynamicPower(Max[..]) CDA static, got {:?}",
+                parsed.statics
+            )
+        });
+
+    assert_eq!(cda.len(), 2, "expected two zone arms, got {cda:?}");
+    for arm in &cda {
+        assert!(
+            matches!(
+                arm,
+                QuantityExpr::Ref {
+                    qty: QuantityRef::Aggregate {
+                        function: AggregateFunction::Max,
+                        property: ObjectProperty::ManaValue,
+                        ..
+                    }
+                }
+            ),
+            "each arm must be a Max/ManaValue Aggregate, got {arm:?}"
+        );
+    }
+}
+
 /// CR 205.1a + CR 205.2 + CR 205.3 + CR 613.1c: "becomes a [subtype]*
 /// [core-type]+ in addition to its other types" must decompose into
 /// typed `AddType`/`AddSubtype` modifications. Jump Scare regression.
@@ -5153,7 +5208,10 @@ fn parse_continuous_modifications_are_goaded_emits_goaded_static_mode() {
 
 /// CR 613.1f + CR 113.3: "all activated abilities of all cards exiled with it" /
 /// "the exiled card" → `GrantAllActivatedAbilitiesOf { ExiledBySource }` (Myr
-/// Welder, Territory Forge). Issue #3101.
+/// Welder, Territory Forge). Issue #3101. Both the bare-predicate building-block
+/// form and the verb-prefixed production form (`"has all activated abilities of
+/// …"`, the shape the static dispatch actually feeds via `parse_continuous_gets_has`)
+/// must resolve identically — the verb prefix is the leading axis of the grant.
 #[test]
 fn parse_continuous_modifications_grants_all_activated_abilities_of_exiled() {
     use crate::types::ability::TargetFilter;
@@ -5161,6 +5219,9 @@ fn parse_continuous_modifications_grants_all_activated_abilities_of_exiled() {
         "all activated abilities of all cards exiled with it",
         "all activated abilities of all cards exiled with ~",
         "all activated abilities of the exiled card",
+        // Production-path forms: the static dispatch prepends the verb.
+        "has all activated abilities of the exiled card",
+        "have all activated abilities of all cards exiled with it",
     ] {
         let mods = parse_continuous_modifications(predicate);
         assert_eq!(
@@ -5171,14 +5232,61 @@ fn parse_continuous_modifications_grants_all_activated_abilities_of_exiled() {
             "predicate: {predicate}"
         );
     }
-    // Typed/counter/battlefield forms stay a gap (no modification) for now.
-    assert!(
-        parse_continuous_modifications(
-            "all activated abilities of all creature cards exiled with it"
-        )
-        .is_empty(),
-        "typed 'creature cards exiled with it' must stay a gap (follow-up)"
-    );
+}
+
+/// CR 613.1f + CR 607.2a + CR 205.3: "all creature cards exiled with it/~" narrows
+/// the granted set to creature cards only (Agatha's Soul Cauldron) — the source
+/// filter intersects `ExiledBySource` with the Creature type filter.
+#[test]
+fn parse_continuous_modifications_grants_creature_cards_exiled() {
+    use crate::types::ability::{TargetFilter, TypedFilter};
+    let expected = ContinuousModification::GrantAllActivatedAbilitiesOf {
+        source: TargetFilter::And {
+            filters: vec![
+                TargetFilter::Typed(TypedFilter::creature()),
+                TargetFilter::ExiledBySource,
+            ],
+        },
+    };
+    for predicate in [
+        "all activated abilities of all creature cards exiled with it",
+        "all activated abilities of all creature cards exiled with ~",
+        "has all activated abilities of all creature cards exiled with ~",
+    ] {
+        assert_eq!(
+            parse_continuous_modifications(predicate),
+            vec![expected.clone()],
+            "predicate: {predicate}"
+        );
+    }
+}
+
+/// CR 613.1f + CR 201.2: "all activated abilities of creatures you control that
+/// don't have the same name as it/~" (Marvin, Murderous Mimic) — battlefield
+/// creatures you control, excluding ones sharing the recipient's name.
+#[test]
+fn parse_continuous_modifications_grants_creatures_you_control_not_same_name() {
+    use crate::types::ability::{ControllerRef, FilterProp, TargetFilter, TypedFilter};
+    let expected = ContinuousModification::GrantAllActivatedAbilitiesOf {
+        source: TargetFilter::Typed(
+            TypedFilter::creature()
+                .controller(ControllerRef::You)
+                .properties(vec![FilterProp::Not {
+                    prop: Box::new(FilterProp::SameName),
+                }]),
+        ),
+    };
+    for predicate in [
+        "all activated abilities of creatures you control that don't have the same name as it",
+        "all activated abilities of creatures you control that don't have the same name as ~",
+        "has all activated abilities of creatures you control that don't have the same name as ~",
+    ] {
+        assert_eq!(
+            parse_continuous_modifications(predicate),
+            vec![expected.clone()],
+            "predicate: {predicate}"
+        );
+    }
 }
 
 /// CR 305.6 + CR 305.7 + CR 205.3i: "gain all basic land types" (and the

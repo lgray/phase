@@ -1032,6 +1032,7 @@ fn walk_effect(effect: &Effect, out: &mut Vec<String>) {
         | Effect::Goad { .. }
         | Effect::GoadAll { .. }
         | Effect::Detain { .. }
+        | Effect::SetRoomDoorLock { .. }
         | Effect::ExchangeControl { .. }
         | Effect::ChangeTargets { .. }
         | Effect::Manifest { .. }
@@ -2850,6 +2851,7 @@ mod tests {
             source_rider: Some(CounterSourceRider::LosesAbilities {
                 static_def: Box::new(counter_static),
             }),
+            countered_spell_zone: None,
         };
         walk_effect(&counter, &mut names);
 

@@ -977,6 +977,28 @@ pub enum CounterSourceRider {
     Destroy,
 }
 
+/// CR 701.6a + CR 614.1a: "put it <zone> instead of into that player's
+/// graveyard" — a replacement redirect on the destination of a countered
+/// *spell* (Memory Lapse, Remand, Spell Crumple). Distinct from
+/// [`CounterSourceRider`], which acts on a countered *ability*'s source
+/// permanent.
+///
+/// CR 701.6a says a countered spell is put into its owner's graveyard; CR
+/// 614.1a makes the "instead" clause a replacement that redirects that move to
+/// the named zone. Exile is deliberately excluded — that case is already
+/// handled by the existing graveyard-exile sub-ability rider in
+/// `game::effects::counter` (Force of Negation, No More Lies).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type")]
+pub enum CounteredSpellDestination {
+    /// "put it on top/bottom of its owner's library" (Memory Lapse,
+    /// Spell Crumple).
+    Library { position: LibraryPosition },
+    /// "return it to its owner's hand" / "put it into its owner's hand"
+    /// (Remand).
+    Hand,
+}
+
 /// Power/toughness value -- either a fixed integer or a variable reference (e.g. "*", "X").
 ///
 /// Custom Deserialize: accepts both the tagged format `{"type":"Fixed","value":2}` (new)
@@ -2566,6 +2588,14 @@ pub enum FilterProp {
     Renowned,
     /// CR 510.1c: Matches creatures whose toughness is greater than their power.
     ToughnessGTPower,
+    /// CR 208.1 + CR 613.4a + CR 613.4b: Matches a creature whose current
+    /// (post-layer) power exceeds its base power. Base power is established by
+    /// layer 7a CDAs (CR 613.4a) and layer 7b set effects (CR 613.4b), before
+    /// the counters and pumps applied in layers 7c–7e. True for a creature
+    /// pumped above its base by +1/+1 counters, auras, or anthems; false when
+    /// power == base or power < base. Consolidation target if a 3rd same-object
+    /// P/T self-comparison appears: `PtSelfComparison { lhs, comparator, rhs }`.
+    PowerExceedsBase,
     /// Disjunctive composite: the object matches if ANY inner prop matches.
     /// Used for natural-language OR within a property suffix — e.g.
     /// "creature with power or toughness N or less" decomposes to
@@ -3398,6 +3428,26 @@ pub enum TapStateChange {
     Untap,
 }
 
+/// CR 709.5f-g: Operation an [`Effect::SetRoomDoorLock`] performs on a door
+/// (half) of a Room permanent. Typed (not a bool) so serialized engine state
+/// and the door-choice prompt say which direction is being applied, and so the
+/// "lock or unlock" disjunction is a first-class third operation rather than an
+/// inexpressible boolean combination. Parameterizes the lock/unlock axis — both
+/// live within CR rule section 709.5 — into one effect variant instead of two
+/// sibling effects.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type")]
+pub enum DoorLockOp {
+    /// CR 709.5f: choose a locked half and give it the unlocked designation.
+    Unlock,
+    /// CR 709.5g: choose an unlocked half and remove its unlocked designation.
+    Lock,
+    /// CR 709.5f + CR 709.5g: "Lock or unlock a door" — the player chooses both
+    /// the operation and the eligible half at resolution (Keys to the House,
+    /// Marina Vendrell).
+    LockOrUnlock,
+}
+
 /// CR 102 + CR 119 + CR 402: Player axis for player-scoped quantity references.
 ///
 /// Parameterizes the player whose hand size, life total, or other per-player
@@ -3761,7 +3811,12 @@ pub enum QuantityRef {
     /// 0 outside cost/trigger resolution, whereas this one is correct any time
     /// the resolver has a `source_id` (cost payment, ability resolution, etc.).
     SelfManaValue,
-    /// CR 107.3e: Aggregate query (max/min/sum) over a property of battlefield objects.
+    /// CR 202.3: Aggregate query (max/min/sum) over a property of objects in the
+    /// zones the `filter` declares (battlefield by default; e.g. an `InZone`
+    /// graveyard filter aggregates over the graveyard). The resolver scans
+    /// `filter.extract_zones()`, so the query is zone-general.
+    // TODO: no dedicated CR governs the extremum/aggregation itself; CR 202.3 is
+    // cited for the mana-value property — the most common aggregated property.
     Aggregate {
         function: AggregateFunction,
         property: ObjectProperty,
@@ -7362,6 +7417,15 @@ pub enum Effect {
         /// countered spell is not a permanent (CR 701.8a / CR 110.1).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         source_rider: Option<CounterSourceRider>,
+        /// CR 701.6a + CR 614.1a: Redirect for a countered *spell*'s
+        /// destination — "if that spell is countered this way, put it <zone>
+        /// instead of into that player's graveyard" (Memory Lapse, Remand,
+        /// Spell Crumple). When `None`, the countered spell follows the default
+        /// CR 701.6a graveyard rule. Resolved at counter-resolution time on the
+        /// countered spell (not its source); has no effect when an ability is
+        /// countered (an ability is not a card and has no zone — CR 110.1).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        countered_spell_zone: Option<CounteredSpellDestination>,
     },
     /// CR 701.6 + CR 405.1: Mass counter — counter every spell or ability on
     /// the stack matching `target`. Mirrors `Effect::DestroyAll` /
@@ -9344,6 +9408,19 @@ pub enum Effect {
         #[serde(default = "default_target_filter_any")]
         target: TargetFilter,
     },
+    /// CR 709.5f-g + CR 709.5j: Lock or unlock a door (half) of the targeted
+    /// Room permanent. `op` fixes the direction (or `LockOrUnlock` lets the
+    /// player choose); `target` selects the Room. The eligible half is chosen at
+    /// resolution from the Room's runtime unlock state — locked halves for
+    /// `Unlock`, unlocked halves for `Lock` — so the choice cannot be baked into
+    /// static branches at parse time. Covers Ghostly Keybearer ("unlock a locked
+    /// door of up to one target Room you control"), Keys to the House, and Marina
+    /// Vendrell ("lock or unlock a door of target Room you control").
+    SetRoomDoorLock {
+        op: DoorLockOp,
+        #[serde(default = "default_target_filter_any")]
+        target: TargetFilter,
+    },
     /// CR 701.12a: Exchange control of two target permanents. Each slot carries its
     /// own filter so patterns like "target X you control and target Y an opponent
     /// controls" (Oko, Political Trickery, Shrewd Negotiation) declare distinct
@@ -10487,6 +10564,10 @@ impl Effect {
             | Effect::PutOnTopOrBottom { target, .. }
             | Effect::Goad { target, .. }
             | Effect::Detain { target, .. }
+            // CR 709.5f-g: the Room is a real declared target ("target Room you
+            // control"); surface it so the cast/trigger-time target slot is
+            // built and CR 608.2b re-validates it at resolution.
+            | Effect::SetRoomDoorLock { target, .. }
             | Effect::ExtraTurn { target, .. }
             | Effect::GrantExtraLoyaltyActivations { target, .. }
             | Effect::SkipNextTurn { target, .. }
@@ -10920,6 +11001,7 @@ impl Effect {
             | Effect::GoadAll { .. }
             | Effect::Goad { .. }
             | Effect::Detain { .. }
+            | Effect::SetRoomDoorLock { .. }
             | Effect::ExtraTurn { .. }
             | Effect::Transform { .. }
             | Effect::RevealTop { .. }
@@ -11131,6 +11213,7 @@ impl Effect {
             | Effect::GoadAll { .. }
             | Effect::Goad { .. }
             | Effect::Detain { .. }
+            | Effect::SetRoomDoorLock { .. }
             | Effect::ExtraTurn { .. }
             | Effect::Transform { .. }
             | Effect::RevealTop { .. }
@@ -11383,6 +11466,7 @@ pub fn effect_variant_name(effect: &Effect) -> &str {
         Effect::Goad { .. } => "Goad",
         Effect::GoadAll { .. } => "GoadAll",
         Effect::Detain { .. } => "Detain",
+        Effect::SetRoomDoorLock { .. } => "SetRoomDoorLock",
         Effect::ExchangeControl { .. } => "ExchangeControl",
         Effect::ChangeTargets { .. } => "ChangeTargets",
         Effect::Incubate { .. } => "Incubate",
@@ -11593,6 +11677,7 @@ pub enum EffectKind {
     Goad,
     GoadAll,
     Detain,
+    SetRoomDoorLock,
     ExchangeControl,
     ChangeTargets,
     Incubate,
@@ -11815,6 +11900,7 @@ impl From<&Effect> for EffectKind {
             Effect::Goad { .. } => EffectKind::Goad,
             Effect::GoadAll { .. } => EffectKind::GoadAll,
             Effect::Detain { .. } => EffectKind::Detain,
+            Effect::SetRoomDoorLock { .. } => EffectKind::SetRoomDoorLock,
             Effect::ExchangeControl { .. } => EffectKind::ExchangeControl,
             Effect::ChangeTargets { .. } => EffectKind::ChangeTargets,
             Effect::Incubate { .. } => EffectKind::Incubate,

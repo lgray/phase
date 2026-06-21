@@ -502,6 +502,7 @@ fn redundancy_delta(
         | Effect::Goad { .. }
         | Effect::GoadAll { .. }
         | Effect::Detain { .. }
+        | Effect::SetRoomDoorLock { .. }
         | Effect::ExchangeControl { .. }
         | Effect::ChangeTargets { .. }
         | Effect::Manifest { .. }

@@ -831,6 +831,9 @@ fn keys_from_effect_kind(kind: EffectKind, push: &mut impl FnMut(TriggerEventKey
         | EffectKind::Goad
         | EffectKind::GoadAll
         | EffectKind::Detain
+        // CR 709.5h-i unlock/fully-unlock triggers fire on the
+        // `RoomDoorUnlocked` event, not on this `EffectResolved` kind.
+        | EffectKind::SetRoomDoorLock
         | EffectKind::ExchangeControl
         | EffectKind::ChangeTargets
         | EffectKind::Incubate

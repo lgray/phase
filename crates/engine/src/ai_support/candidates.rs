@@ -2036,6 +2036,27 @@ pub fn candidate_actions_broad(state: &GameState) -> Vec<CandidateAction> {
                 )
             })
             .collect(),
+        // CR 709.5f-g: Choose which door (half) of the targeted Room to
+        // lock/unlock — one candidate per offered (operation, door) pair so AI
+        // games never soft-lock on the door-choice prompt.
+        WaitingFor::ChooseRoomDoor {
+            player,
+            object_id,
+            options,
+        } => options
+            .iter()
+            .map(|&(op, door)| {
+                candidate(
+                    GameAction::ChooseRoomDoor {
+                        object_id: *object_id,
+                        op,
+                        door,
+                    },
+                    TacticalClass::Selection,
+                    Some(*player),
+                )
+            })
+            .collect(),
         // CR 701.49a: Choose which dungeon to venture into.
         WaitingFor::ChooseDungeon { player, options } => options
             .iter()

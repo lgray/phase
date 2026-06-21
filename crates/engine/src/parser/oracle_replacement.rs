@@ -4232,6 +4232,9 @@ fn parse_oneshot_next_n_damage_to_self_redirect(norm_lower: &str) -> Option<Effe
 
     // CR 115.1: redirect recipient — "target creature you control" (every en-Kor
     // card) or the looser "target creature"; both become a chosen object target.
+    // (An "any target" redirect is intentionally NOT accepted here: it can be a
+    // player, but the CreateDamageReplacement resolver stores only object redirect
+    // targets, so a player choice would silently drop the redirect — fail closed.)
     let (rest, redirect_object_filter) = alt((
         value(
             inject_controller(
@@ -4266,16 +4269,18 @@ fn parse_oneshot_next_n_damage_to_self_redirect(norm_lower: &str) -> Option<Effe
     })
 }
 
-/// CR 614.9: one-shot redirection whose ORIGINAL recipient is a CHOSEN TARGET and
-/// whose redirect destination is the source itself (`~` → `SourceObject`) or its
-/// controller (`you` → `Controller`): "the next N damage that would be dealt to
-/// <target> this turn is dealt to <~|you> instead" (Daughter of Autumn, Vassal's
-/// Duty). This is the mirror of `parse_oneshot_next_n_damage_to_self_redirect`
-/// with the recipient/redirect roles swapped — there the recipient is `~` and the
-/// redirect a chosen target; here the recipient is the chosen target and the
-/// redirect is `~`/`you`. `Controller`/`SourceObject` need no chosen redirect slot
-/// (see `chosen_redirect_object`), so `redirect_object_filter` is `None` and the
-/// targeting layer (CR 115.1) surfaces only the recipient slot.
+/// CR 614.9: one-shot redirection whose ORIGINAL recipient is a CHOSEN TARGET.
+/// "the next N damage that would be dealt to <target> this turn is dealt to
+/// <destination> instead", where the destination is the source itself
+/// (`~` → `SourceObject`), its controller (`you` → `Controller`), or a SECOND
+/// chosen *object* target (`another target creature` → `ChosenObjectTarget` with
+/// its own redirect slot). Covers Daughter of Autumn / Vassal's Duty (→ ~ / you)
+/// and Razia, Boros Archangel (→ another target creature). The mirror of
+/// `parse_oneshot_next_n_damage_to_self_redirect` (recipient `~`); `Controller`/
+/// `SourceObject` need no chosen redirect slot, the chosen-object destination
+/// surfaces one (CR 115.1) alongside the recipient slot. An `any target` redirect
+/// is rejected (it can be a player, which the object-only redirect resolver can't
+/// store) — fail closed.
 fn parse_oneshot_next_n_damage_to_target_redirect(norm_lower: &str) -> Option<Effect> {
     let (rest, (_, amount, _)) = (
         tag::<_, _, OracleError<'_>>("the next "),
@@ -4310,22 +4315,40 @@ fn parse_oneshot_next_n_damage_to_target_redirect(norm_lower: &str) -> Option<Ef
         .parse(rest)
         .ok()?;
 
-    // CR 614.9: redirect destination — `~` (the source object) or `you` (its
-    // controller). Both need no chosen redirect slot.
-    let (rest, redirect_to) = alt((
-        value(
-            DamageRedirectTarget::SourceObject,
-            tag::<_, _, OracleError<'_>>("~"),
-        ),
-        value(
-            DamageRedirectTarget::Controller,
-            tag::<_, _, OracleError<'_>>("you"),
-        ),
-    ))
-    .parse(rest)
-    .ok()?;
+    // CR 614.9: redirect destination. `~` (the source object) and `you` (its
+    // controller) need no chosen redirect slot; a second chosen target ("another
+    // target creature", "any target", "target creature ...") is a
+    // `ChosenObjectTarget` that surfaces its own redirect slot (Razia, Boros
+    // Archangel). Capture the recipient phrase up to the trailing " instead".
+    let (after_redirect, redirect_text) = take_until::<_, _, OracleError<'_>>(" instead")
+        .parse(rest)
+        .ok()?;
+    let (redirect_to, redirect_object_filter) = if all_consuming(tag::<_, _, OracleError<'_>>("~"))
+        .parse(redirect_text)
+        .is_ok()
+    {
+        (DamageRedirectTarget::SourceObject, None)
+    } else if all_consuming(tag::<_, _, OracleError<'_>>("you"))
+        .parse(redirect_text)
+        .is_ok()
+    {
+        (DamageRedirectTarget::Controller, None)
+    } else {
+        let (filter, leftover) = crate::parser::oracle_target::parse_target(redirect_text);
+        // CR 115.1: require a fully-consumed chosen *object* target. `TargetFilter::Any`
+        // is intentionally rejected: it can resolve to a player, but the
+        // CreateDamageReplacement resolver stores only object redirect targets
+        // (`chosen_redirect_object`), so a player choice would silently drop the
+        // redirect. Fail closed on `Any`, scopes, and unparsed remainders.
+        if !leftover.trim().is_empty() || !matches!(filter, TargetFilter::Typed(_)) {
+            return None;
+        }
+        (DamageRedirectTarget::ChosenObjectTarget, Some(filter))
+    };
 
-    let (rest, _) = tag::<_, _, OracleError<'_>>(" instead").parse(rest).ok()?;
+    let (rest, _) = tag::<_, _, OracleError<'_>>(" instead")
+        .parse(after_redirect)
+        .ok()?;
     let (rest, _) = opt(char::<_, OracleError<'_>>('.')).parse(rest).ok()?;
     if !rest.trim().is_empty() {
         return None;
@@ -4338,7 +4361,7 @@ fn parse_oneshot_next_n_damage_to_target_redirect(norm_lower: &str) -> Option<Ef
         modification: None,
         redirect_to: Some(redirect_to),
         redirect_amount: Some(PreventionAmount::Next(amount)),
-        redirect_object_filter: None,
+        redirect_object_filter,
         recipient_object_filter: Some(recipient_filter),
     })
 }
@@ -13945,6 +13968,56 @@ mod snapshot_tests {
                 }
             ),
             "en-Kor self-recipient form regressed: {effect:?}"
+        );
+    }
+
+    #[test]
+    fn oneshot_next_n_damage_to_target_redirected_to_chosen_target() {
+        // Razia, Boros Archangel — "{T}: The next 3 damage that would be dealt to
+        // target creature you control this turn is dealt to another target
+        // creature instead." Both the original recipient AND the redirect
+        // destination are chosen object targets (two slots).
+        let effect = parse_oneshot_damage_replacement(
+            "the next 3 damage that would be dealt to target creature you control this turn is dealt to another target creature instead",
+        )
+        .expect("must parse redirect-target-to-chosen-target one-shot");
+        match effect {
+            Effect::CreateDamageReplacement {
+                modification: None,
+                redirect_to: Some(DamageRedirectTarget::ChosenObjectTarget),
+                redirect_amount: Some(PreventionAmount::Next(3)),
+                recipient_object_filter: Some(TargetFilter::Typed(_)),
+                // CR 115.1: the "another target creature" redirect surfaces its
+                // own chosen-object slot.
+                redirect_object_filter: Some(TargetFilter::Typed(_)),
+                source_filter: None,
+                combat_scope: None,
+                target_filter: None,
+            } => {}
+            other => panic!("expected recipient+redirect both chosen targets, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn oneshot_redirect_to_any_target_fails_closed() {
+        // CR 115.1: an "any target" redirect can resolve to a player, but the
+        // CreateDamageReplacement resolver stores only OBJECT redirect targets, so
+        // a player choice would silently drop the redirect. Both the `~`-recipient
+        // (Zhalfirin Crusader) and chosen-target-recipient forms must therefore
+        // fail closed on "any target" rather than mis-model it.
+        assert!(
+            parse_oneshot_damage_replacement(
+                "the next 1 damage that would be dealt to ~ this turn is dealt to any target instead",
+            )
+            .is_none(),
+            "en-Kor 'any target' redirect must fail closed (object-only resolver)"
+        );
+        assert!(
+            parse_oneshot_damage_replacement(
+                "the next 1 damage that would be dealt to target creature you control this turn is dealt to any target instead",
+            )
+            .is_none(),
+            "chosen-recipient 'any target' redirect must fail closed (object-only resolver)"
         );
     }
 

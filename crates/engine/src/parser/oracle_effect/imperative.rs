@@ -28,7 +28,7 @@ use crate::parser::oracle_static::{
 use crate::types::ability::{
     AbilityCost, AbilityDefinition, AbilityKind, BounceSelection, CardSelectionMode,
     CategoryChooserScope, ChoiceType, Chooser, ContinuousModification, ControllerRef,
-    CopyRetargetPermission, Duration, Effect, EffectScope, FaceDownProfile, FilterProp,
+    CopyRetargetPermission, DoorLockOp, Duration, Effect, EffectScope, FaceDownProfile, FilterProp,
     LibraryPosition, MultiTargetSpec, OutsideGameSourcePool, PlayerScope, PreventionAmount,
     PreventionScope, PtStat, PtValue, QuantityExpr, QuantityRef, SearchSelectionConstraint,
     StaticDefinition, TapStateChange, TargetFilter, TargetSelectionMode, TypeFilter, TypedFilter,
@@ -1223,6 +1223,35 @@ pub(super) fn parse_targeted_action_ast(
         assert_no_compound_remainder(_rem, text);
         return Some(TargetedImperativeAst::Goad { target });
     }
+    // CR 709.5f-g + CR 709.5j: "lock"/"unlock"/"lock or unlock [a] [locked] door
+    // of [up to one] target Room you control". Compose the operation, the
+    // optional "a " article, the optional "locked " narrowing (CR 709.5f: unlock
+    // chooses a locked half — present on Ghostly Keybearer, absent on the
+    // lock-or-unlock cards), the "door of " connective, and the "up to one "
+    // optional-target flag with nom combinators, then hand the Room phrase to
+    // the shared target parser. The op alternatives are ordered longest-first so
+    // "lock or unlock " wins over the bare "lock " prefix. The eligible half is
+    // chosen at resolution, so only the operation and the Room `TargetFilter`
+    // are captured here.
+    if let Some((op, rest)) = nom_on_lower(text, lower, |input| {
+        let (input, op) = alt((
+            value(DoorLockOp::LockOrUnlock, tag("lock or unlock ")),
+            value(DoorLockOp::Unlock, tag("unlock ")),
+            value(DoorLockOp::Lock, tag("lock ")),
+        ))
+        .parse(input)?;
+        let (input, _) = opt(tag("a ")).parse(input)?;
+        let (input, _) = opt(tag("locked ")).parse(input)?;
+        let (input, _) = tag("door of ").parse(input)?;
+        let (input, _) = opt(tag("up to one ")).parse(input)?;
+        Ok((input, op))
+    }) {
+        let (target_text, _) = super::strip_optional_target_prefix(rest);
+        let (target, _rem) = parse_target_with_ctx(target_text, ctx);
+        #[cfg(debug_assertions)]
+        assert_no_compound_remainder(_rem, text);
+        return Some(TargetedImperativeAst::SetRoomDoorLock { op, target });
+    }
     if let Some((_, after_discard_orig)) =
         nom_on_lower(text, lower, |input| value((), tag("discard ")).parse(input))
     {
@@ -1665,6 +1694,10 @@ pub(super) fn lower_targeted_action_ast(ast: TargetedImperativeAst) -> Effect {
         },
         TargetedImperativeAst::Goad { target } => Effect::Goad { target },
         TargetedImperativeAst::GoadAll { target } => Effect::GoadAll { target },
+        // CR 709.5f-g: lock/unlock a door of the targeted Room.
+        TargetedImperativeAst::SetRoomDoorLock { op, target } => {
+            Effect::SetRoomDoorLock { op, target }
+        }
         TargetedImperativeAst::Sacrifice {
             target,
             count,
@@ -6584,6 +6617,13 @@ pub(super) fn parse_imperative_family_ast(
             parse_targeted_action_ast(text, lower, ctx)
                 .map(|ast| ImperativeFamilyAst::Structured(ImperativeAst::Targeted(ast)))
         }
+        // CR 709.5f-g + CR 709.5j: "lock"/"unlock"/"lock or unlock a door of
+        // target Room" — the room-door instruction (Ghostly Keybearer, Keys to
+        // the House, Marina Vendrell). Routed to `parse_targeted_action_ast`,
+        // whose combinator arm also rejects unrelated "lock"/"unlock" lines by
+        // returning `None` (it requires the "door of " connective).
+        "lock" | "unlock" => parse_targeted_action_ast(text, lower, ctx)
+            .map(|ast| ImperativeFamilyAst::Structured(ImperativeAst::Targeted(ast))),
         "earthbend" | "airbend" => parse_targeted_action_ast(text, lower, ctx)
             .map(|ast| ImperativeFamilyAst::Structured(ImperativeAst::Targeted(ast))),
 
@@ -7905,6 +7945,10 @@ pub(super) fn lower_imperative_family_ast(ast: ImperativeFamilyAst) -> ParsedEff
                 Effect::Counter {
                     target,
                     source_rider,
+                    // CR 701.6a + CR 614.1a: the countered-spell redirect is a
+                    // continuation absorbed post-hoc (sequence.rs); the base
+                    // effect parses with the default graveyard destination.
+                    countered_spell_zone: None,
                 }
             };
             let mut clause = parsed_clause(effect);
@@ -8692,6 +8736,10 @@ pub(super) fn lower_zone_counter_ast(ast: ZoneCounterImperativeAst) -> Effect {
                 Effect::Counter {
                     target,
                     source_rider,
+                    // CR 701.6a + CR 614.1a: the countered-spell redirect is a
+                    // continuation absorbed post-hoc (sequence.rs); the base
+                    // effect parses with the default graveyard destination.
+                    countered_spell_zone: None,
                 }
             }
         }
@@ -10144,6 +10192,80 @@ mod tests {
                 assert!(keywords.contains(&crate::types::keywords::Keyword::Haste));
             }
             other => panic!("Expected Effect::Animate, got {other:?}"),
+        }
+    }
+
+    // CR 709.5f + CR 709.5j: "unlock a locked door of up to one target Room you
+    // control" (Ghostly Keybearer's combat-damage trigger) must lower to
+    // `Effect::SetRoomDoorLock { op: Unlock }` targeting a Room you control. The
+    // "a locked " narrowing and "up to one " optional-target flag are both
+    // consumed by the combinator and don't bleed into the Room target filter.
+    #[test]
+    fn parse_unlock_locked_door_of_up_to_one_target_room() {
+        let text = "unlock a locked door of up to one target Room you control";
+        let lower = text.to_lowercase();
+        let result = parse_targeted_action_ast(text, &lower, &mut ParseContext::default());
+        assert!(result.is_some(), "Should parse the unlock-door instruction");
+        let effect = lower_targeted_action_ast(result.unwrap());
+        match effect {
+            Effect::SetRoomDoorLock { op, target } => {
+                assert_eq!(op, DoorLockOp::Unlock);
+                assert_eq!(
+                    target,
+                    TargetFilter::Typed(
+                        TypedFilter::default()
+                            .subtype("Room".to_string())
+                            .controller(ControllerRef::You)
+                    )
+                );
+            }
+            other => panic!("Expected Effect::SetRoomDoorLock, got {other:?}"),
+        }
+    }
+
+    // CR 709.5f + CR 709.5g: "lock or unlock a door of target Room you control"
+    // (Keys to the House, Marina Vendrell) must lower to
+    // `Effect::SetRoomDoorLock { op: LockOrUnlock }` — the longest-first op
+    // ordering ensures "lock or unlock " wins over the bare "lock " prefix.
+    #[test]
+    fn parse_lock_or_unlock_door_of_target_room() {
+        let text = "lock or unlock a door of target Room you control";
+        let lower = text.to_lowercase();
+        let result = parse_targeted_action_ast(text, &lower, &mut ParseContext::default());
+        assert!(
+            result.is_some(),
+            "Should parse the lock-or-unlock instruction"
+        );
+        let effect = lower_targeted_action_ast(result.unwrap());
+        match effect {
+            Effect::SetRoomDoorLock { op, target } => {
+                assert_eq!(op, DoorLockOp::LockOrUnlock);
+                assert_eq!(
+                    target,
+                    TargetFilter::Typed(
+                        TypedFilter::default()
+                            .subtype("Room".to_string())
+                            .controller(ControllerRef::You)
+                    )
+                );
+            }
+            other => panic!("Expected Effect::SetRoomDoorLock, got {other:?}"),
+        }
+    }
+
+    // CR 709.5g: the bare "lock a door of ..." instruction lowers to
+    // `op: Lock`. No standard card uses this phrasing yet, but the building
+    // block must cover the full lock/unlock axis, not just the shipped cards.
+    #[test]
+    fn parse_lock_door_of_target_room() {
+        let text = "lock a door of target Room you control";
+        let lower = text.to_lowercase();
+        let result = parse_targeted_action_ast(text, &lower, &mut ParseContext::default());
+        assert!(result.is_some(), "Should parse the lock instruction");
+        let effect = lower_targeted_action_ast(result.unwrap());
+        match effect {
+            Effect::SetRoomDoorLock { op, .. } => assert_eq!(op, DoorLockOp::Lock),
+            other => panic!("Expected Effect::SetRoomDoorLock, got {other:?}"),
         }
     }
 

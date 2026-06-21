@@ -173,6 +173,7 @@ pub mod search_outside_game;
 pub mod seek;
 pub mod separate_piles;
 pub mod set_class_level;
+pub mod set_room_door_lock;
 pub mod shuffle;
 pub mod skip_next_step;
 pub mod skip_next_turn;
@@ -1661,9 +1662,14 @@ pub(super) fn resolve_optional_effect_decision(
                         // declined, so it must NOT fire even though it is a
                         // separate sentence (issue #3179: Swashbuckler
                         // Extraordinaire's declined Treasure sacrifice must not
-                        // resolve the double-strike reflexive).
+                        // resolve the double-strike reflexive). CastFromZone's
+                        // graveyard-exile rider is not a printed follow-up to
+                        // execute on decline; it is permission metadata consumed
+                        // only if the graveyard spell is actually cast.
                         || (sub.sub_link == SubAbilityLink::SequentialSibling
-                            && !sub_ability_is_reflexive(sub))
+                            && !sub_ability_is_reflexive(sub)
+                            && !(matches!(&ability.effect, Effect::CastFromZone { .. })
+                                && cast_from_zone::is_graveyard_exile_rider_subability(sub)))
                 })
             });
             if let Some(branch) = decline_branch {
@@ -2580,6 +2586,7 @@ pub fn resolve_effect(
         Effect::GainControlAll { .. } => gain_control::resolve_all(state, ability, events),
         Effect::Goad { .. } | Effect::GoadAll { .. } => goad::resolve(state, ability, events),
         Effect::Detain { .. } => detain::resolve(state, ability, events),
+        Effect::SetRoomDoorLock { .. } => set_room_door_lock::resolve(state, ability, events),
         Effect::ExchangeControl { .. } => exchange_control::resolve(state, ability, events),
         Effect::Attach { .. } => attach::resolve(state, ability, events),
         Effect::UnattachAll { .. } => attach::resolve_unattach_all(state, ability, events),
@@ -9274,6 +9281,7 @@ mod tests {
             Effect::Counter {
                 target: TargetFilter::StackSpell,
                 source_rider: None,
+                countered_spell_zone: None,
             },
             vec![TargetRef::Object(spell)],
             ObjectId(100),
@@ -15511,6 +15519,7 @@ mod tests {
             Effect::Counter {
                 target: TargetFilter::Any,
                 source_rider: None,
+                countered_spell_zone: None,
             },
             vec![TargetRef::Object(ObjectId(7))],
             ObjectId(99),
@@ -15525,6 +15534,7 @@ mod tests {
             Effect::Counter {
                 target: TargetFilter::Any,
                 source_rider: None,
+                countered_spell_zone: None,
             },
             vec![TargetRef::Object(ObjectId(8))],
             ObjectId(99),

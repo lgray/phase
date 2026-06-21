@@ -571,6 +571,17 @@ fn fallback_action(state: &GameState) -> Option<GameAction> {
             .first()
             .map(|&source| GameAction::ChooseDamageSource { source }),
 
+        // CR 709.5f-g: room-door choice — pick the first offered (op, door).
+        WaitingFor::ChooseRoomDoor {
+            object_id, options, ..
+        } => options
+            .first()
+            .map(|&(op, door)| GameAction::ChooseRoomDoor {
+                object_id: *object_id,
+                op,
+                door,
+            }),
+
         // Mode choice: select first mode.
         WaitingFor::ModeChoice { .. } | WaitingFor::AbilityModeChoice { .. } => {
             Some(GameAction::SelectModes { indices: vec![0] })
