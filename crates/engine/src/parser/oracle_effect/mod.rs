@@ -15417,12 +15417,35 @@ fn attach_repeat_process_keywords(defs: &mut Vec<AbilityDefinition>, keywords: &
 }
 
 /// Swap the gating keyword inside an `AbilityCondition` to `new_keyword`. Used
-/// by `attach_repeat_process_keywords` to rewrite the "if a creature card in
-/// your graveyard has <keyword>" gate of each replicated counter clause.
+/// by `attach_repeat_process_keywords` to rewrite each replicated counter
+/// clause's keyword gate. Covers every keyword-gate shape the antecedent
+/// conditional keyword-counter clause can take:
+///   - `QuantityCheck` over an `ObjectCount` filter — "if a creature card in
+///     your graveyard has <keyword>" (Kathril, Aspect Warper).
+///   - `TargetHasKeywordInstead` / `SourceLacksKeyword` — "if that creature has
+///     <keyword> and ~ doesn't" (Super-Adaptoid).
+///   - `And`/`Or`/`Not` — recurse into each compound conjunct so the
+///     Super-Adaptoid conjunction has BOTH the target-has and the source-lacks
+///     keyword swapped together.
 fn rewrite_ability_condition_keyword(condition: &mut AbilityCondition, new_keyword: &Keyword) {
-    if let AbilityCondition::QuantityCheck { lhs, rhs, .. } = condition {
-        rewrite_quantity_expr_keyword(lhs, new_keyword);
-        rewrite_quantity_expr_keyword(rhs, new_keyword);
+    match condition {
+        AbilityCondition::QuantityCheck { lhs, rhs, .. } => {
+            rewrite_quantity_expr_keyword(lhs, new_keyword);
+            rewrite_quantity_expr_keyword(rhs, new_keyword);
+        }
+        AbilityCondition::TargetHasKeywordInstead { keyword }
+        | AbilityCondition::SourceLacksKeyword { keyword } => {
+            *keyword = new_keyword.clone();
+        }
+        AbilityCondition::And { conditions } | AbilityCondition::Or { conditions } => {
+            for inner in conditions {
+                rewrite_ability_condition_keyword(inner, new_keyword);
+            }
+        }
+        AbilityCondition::Not { condition } => {
+            rewrite_ability_condition_keyword(condition, new_keyword);
+        }
+        _ => {}
     }
 }
 
