@@ -5981,11 +5981,11 @@ fn try_parse_still_a_type(tp: TextPair) -> Option<ParsedEffectClause> {
     // a creature retains its prior types/subtypes (CR 613.1d ordering), so the
     // "still a …" clause is confirmatory and emits the same `AddType`/
     // `AddSubtype` Layer-4 modifications the animation already implies.
-    let (_, descriptor_orig) = nom_on_lower(tp.original, tp.lower, |input| {
+    let (is_plural, descriptor_orig) = nom_on_lower(tp.original, tp.lower, |input| {
         alt((
-            value((), tag("it's still ")),
-            value((), tag("that's still ")),
-            value((), tag("they're still ")),
+            value(false, tag("it's still ")),
+            value(false, tag("that's still ")),
+            value(true, tag("they're still ")),
         ))
         .parse(input)
     })?;
@@ -5996,6 +5996,12 @@ fn try_parse_still_a_type(tp: TextPair) -> Option<ParsedEffectClause> {
     // + AddSubtype{Cave}, Cavernous Maw), not just a bare core type. Strip a
     // trailing period so the descriptor parses cleanly.
     let descriptor = descriptor_orig.trim().trim_end_matches('.');
+    let descriptor = if is_plural {
+        // allow-noncombinator: structural singularization after nom parsed the plural prefix.
+        descriptor.strip_suffix('s').unwrap_or(descriptor)
+    } else {
+        descriptor
+    };
     let spec = animation::parse_animation_spec(descriptor, &mut ParseContext::default())?;
     let modifications = animation::animation_modifications(&spec);
     if modifications.is_empty() {
@@ -54421,6 +54427,28 @@ mod snapshot_tests {
             "anaphoric return + animation with no parent referent must honest-defer \
              to Effect::Unimplemented (not a wrong SelfRef animation), got {def:#?}"
         );
+    }
+
+    #[test]
+    fn plural_still_lands_retains_land_core_type_not_lands_subtype() {
+        let def = parse_effect_chain("They're still lands.", AbilityKind::Activated);
+        let Effect::GenericEffect {
+            static_abilities, ..
+        } = &*def.effect
+        else {
+            panic!("expected GenericEffect, got {:?}", def.effect);
+        };
+        let mods = &static_abilities[0].modifications;
+        assert!(mods.iter().any(|m| matches!(
+            m,
+            ContinuousModification::AddType {
+                core_type: CoreType::Land
+            }
+        )));
+        assert!(!mods.iter().any(|m| matches!(
+            m,
+            ContinuousModification::AddSubtype { subtype } if subtype == "Lands"
+        )));
     }
 
     #[test]
