@@ -2196,26 +2196,29 @@ pub(crate) fn parse_static_line_inner(
         }
     }
 
-    // --- "Power-up abilities of [subject] cost {N} less to activate" ---
-    // CR 601.2f: Class-scoped power-up activation cost reduction (Hulk / Gamma
-    // Goliath: "Power-up abilities of other creatures you control cost {3} less
-    // to activate"). The keyword is the ability tag ("power-up"); the static
-    // runtime gate matches the activating ability's tag. The `<subject>` filter
-    // ("other creatures you control") is routed through `parse_type_phrase`,
-    // which handles the "other" self-exclusion.
-    if let Some(((subject, amount), _)) = nom_on_lower(tp.original, tp.lower, |i| {
-        let (i, _) = tag("power-up abilities of ").parse(i)?;
+    // --- "<Keyword> abilities of [subject] cost {N} less to activate" ---
+    // CR 601.2f: Class-scoped keyword-ability activation cost reduction keyed on
+    // a tagged activated keyword (CR 602.1). The keyword is the ability tag
+    // ("power-up", "exhaust", "boast", "outlast"); the static runtime gate
+    // (`apply_static_activated_ability_cost_reduction`) matches the activating
+    // ability's `AbilityTag::keyword_str()`. The `<subject>` filter is routed
+    // through `parse_type_phrase`, which handles the "other" self-exclusion.
+    //   - Hulk / Gamma Goliath: "Power-up abilities of other creatures you control…"
+    //   - Boom Scholar: "Exhaust abilities of other permanents you control…"
+    if let Some(((keyword, subject, amount), _)) = nom_on_lower(tp.original, tp.lower, |i| {
+        let (i, keyword) = parse_taggable_ability_keyword(i)?;
+        let (i, _) = tag(" abilities of ").parse(i)?;
         let (i, subject) = take_until(" cost ").parse(i)?;
         let (i, _) = tag(" cost ").parse(i)?;
         let (i, amount) =
             nom::sequence::delimited(tag("{"), nom_primitives::parse_number, tag("}")).parse(i)?;
         let (i, _) = tag(" less to activate").parse(i)?;
-        Ok((i, (subject.to_string(), amount)))
+        Ok((i, (keyword, subject.to_string(), amount)))
     }) {
         let (affected, _rest) = parse_type_phrase(&subject);
         return Some(
             StaticDefinition::new(StaticMode::ReduceAbilityCost {
-                keyword: "power-up".to_string(),
+                keyword: keyword.to_string(),
                 amount,
                 minimum_mana: parse_activated_cost_reduction_minimum_mana(tp.lower),
                 dynamic_count: None,

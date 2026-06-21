@@ -14166,6 +14166,56 @@ fn static_reduce_activated_ability_cost_equipped_artifact_with_minimum() {
     ));
 }
 
+#[test]
+fn static_reduce_exhaust_ability_cost_other_permanents() {
+    // Boom Scholar: "Exhaust abilities of other permanents you control cost {2}
+    // less to activate." The generalized "<keyword> abilities of [subject]" arm
+    // keys the reduction on the "exhaust" ability tag (CR 602.1 / CR 601.2f) and
+    // routes the "other permanents you control" self-exclusion through
+    // parse_type_phrase.
+    let def = parse_static_line(
+        "Exhaust abilities of other permanents you control cost {2} less to activate.",
+    )
+    .unwrap();
+    assert_eq!(
+        def.mode,
+        StaticMode::ReduceAbilityCost {
+            keyword: "exhaust".to_string(),
+            amount: 2,
+            minimum_mana: None,
+            dynamic_count: None,
+        }
+    );
+    // "other ... you control" must exclude the source permanent (CR 109.5).
+    match &def.affected {
+        Some(TargetFilter::Typed(tf)) => {
+            assert_eq!(tf.controller, Some(ControllerRef::You));
+            assert!(
+                tf.properties.contains(&FilterProp::Another),
+                "\"other permanents you control\" must carry FilterProp::Another"
+            );
+        }
+        other => panic!("Expected Some(Typed filter), got {other:?}"),
+    }
+
+    // Full card: the static line + the exhaust activated ability both parse with
+    // no Unimplemented node remaining.
+    let parsed = crate::parser::oracle::parse_oracle_text(
+        "Exhaust abilities of other permanents you control cost {2} less to activate.\nExhaust — {4}{R}{G}: Creatures and Vehicles you control gain trample until end of turn. Put two +1/+1 counters on this creature.",
+        "Boom Scholar",
+        &[],
+        &["Creature".to_string()],
+        &[],
+    );
+    let json = serde_json::to_string(&parsed).unwrap();
+    assert!(
+        !json.contains("Unimplemented"), // allow-noncombinator: coverage assertion over serialized AST, not parser dispatch
+        "Boom Scholar must parse with no Unimplemented node: {json}"
+    );
+    assert_eq!(parsed.statics.len(), 1);
+    assert_eq!(parsed.abilities.len(), 1);
+}
+
 // --- Group C: Spells you cast have keyword ---
 
 #[test]
