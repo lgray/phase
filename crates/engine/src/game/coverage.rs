@@ -185,6 +185,17 @@ fn is_data_carrying_static(mode: &StaticMode) -> bool {
             // removing effects). Parameterized — no registry entry; coverage
             // support here.
             | StaticMode::CantHaveKeyword { .. }
+            // CR 708.5: MayLookAtFaceDown is a nullary permission whose affected
+            // filter selects the face-down permanents the controller may look at
+            // (Found Footage, Lumbering Laundry). Runtime enforcement is in
+            // visibility.rs face-down identity redaction. Not registry-keyed.
+            | StaticMode::MayLookAtFaceDown
+            // CR 116.2b + CR 708.7: CantBeTurnedFaceUp is a nullary prohibition
+            // whose affected filter selects the permanents that can't be turned
+            // face up; the optional timing rides on `condition` (Karlov
+            // Watchdog). Runtime enforcement is in morph::turn_face_up. Not
+            // registry-keyed.
+            | StaticMode::CantBeTurnedFaceUp
     )
 }
 

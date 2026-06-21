@@ -270,8 +270,17 @@ pub fn filter_state_for_viewer(state: &GameState, viewer: PlayerId) -> GameState
         .collect();
     for obj_id in facedown_object_ids {
         if let Some(source) = state.objects.get(&obj_id) {
+            let controller = source.controller;
+            // CR 708.5: the controller always sees their own face-down
+            // permanents. A non-controller viewer may additionally see this
+            // face-down permanent if they control an active "you may look at
+            // face-down [filter] any time" static (CR 708.5 exception) whose
+            // affected filter matches this permanent.
+            let viewer_may_look = can_view_private_for_player(controller)
+                || (can_view_private_for_player(viewer)
+                    && viewer_may_look_at_face_down(state, viewer, obj_id));
             if let Some(obj) = filtered.objects.get_mut(&obj_id) {
-                if can_view_private_for_player(source.controller) {
+                if viewer_may_look {
                     reveal_face_down_identity_to_controller(obj);
                 } else {
                     redact_face_down_identity_from_observer(obj);
@@ -693,6 +702,31 @@ pub fn filter_state_for_viewer(state: &GameState, viewer: PlayerId) -> GameState
     }
 
     filtered
+}
+
+/// CR 708.5: `viewer` may look at face-down permanent `obj_id` they do not
+/// control if they control an active `MayLookAtFaceDown` static (Found Footage,
+/// Lumbering Laundry) whose affected filter matches the permanent. The affected
+/// filter is resolved from the static's source controller (the viewer), so
+/// `controller: Opponent` correctly scopes to the viewer's opponents.
+fn viewer_may_look_at_face_down(state: &GameState, viewer: PlayerId, obj_id: ObjectId) -> bool {
+    use crate::types::statics::StaticMode;
+    for (source, def) in super::functioning_abilities::battlefield_active_statics(state) {
+        if !matches!(def.mode, StaticMode::MayLookAtFaceDown) {
+            continue;
+        }
+        if source.controller != viewer {
+            continue;
+        }
+        let Some(filter) = def.affected.as_ref() else {
+            continue;
+        };
+        let ctx = super::filter::FilterContext::from_source(state, source.id);
+        if super::filter::matches_target_filter(state, obj_id, filter, &ctx) {
+            return true;
+        }
+    }
+    false
 }
 
 fn is_visible_revealed_card(state: &GameState, obj_id: ObjectId) -> bool {
@@ -2054,6 +2088,95 @@ mod tests {
         );
         assert_eq!(opponent_obj.power, Some(2));
         assert_eq!(opponent_obj.toughness, Some(2));
+    }
+
+    /// CR 708.5 (Found Footage class): "You may look at face-down creatures your
+    /// opponents control any time." A `MayLookAtFaceDown` static controlled by
+    /// the viewer reveals the matched opponent's face-down identity to the
+    /// viewer, while a viewer WITHOUT the static keeps the default redaction.
+    /// Discriminating: the `found_back.name` assertion (the static is present)
+    /// fails — back_face redacts to None — if the `viewer_may_look_at_face_down`
+    /// branch in `filter_state_for_viewer` is removed.
+    #[test]
+    fn found_footage_reveals_opponent_face_down_to_static_controller_only() {
+        use crate::types::ability::{
+            ControllerRef, FilterProp, StaticDefinition, TargetFilter, TypedFilter,
+        };
+        use crate::types::statics::StaticMode;
+
+        let mut state = GameState::new(FormatConfig::standard(), 2, 42);
+        let looker = PlayerId(0);
+        let opponent = PlayerId(1);
+
+        // The opponent manifests a creature face down on the battlefield.
+        let secret = create_object(
+            &mut state,
+            CardId(7),
+            opponent,
+            "Opposing Spy".to_string(),
+            Zone::Library,
+        );
+        {
+            let obj = state.objects.get_mut(&secret).unwrap();
+            obj.power = Some(5);
+            obj.toughness = Some(4);
+            obj.card_types = CardType {
+                supertypes: vec![],
+                core_types: vec![CoreType::Creature],
+                subtypes: vec![],
+            };
+        }
+        let mut events = Vec::new();
+        manifest(&mut state, opponent, &mut events).unwrap();
+        assert!(state.objects[&secret].face_down);
+
+        // Without the static, the looker (an opponent of the controller) cannot
+        // see the hidden identity — the CR 708.5 default redaction.
+        let baseline = filter_state_for_viewer(&state, looker);
+        assert!(
+            baseline.objects[&secret].back_face.is_none(),
+            "without Found Footage, the looker must not see the opponent's face-down identity"
+        );
+
+        // The looker now controls Found Footage: "you may look at face-down
+        // creatures your opponents control any time."
+        let found_footage = create_object(
+            &mut state,
+            CardId(0xF00),
+            looker,
+            "Found Footage".to_string(),
+            Zone::Battlefield,
+        );
+        {
+            let obj = state.objects.get_mut(&found_footage).unwrap();
+            obj.card_types.core_types.push(CoreType::Artifact);
+            obj.entered_battlefield_turn = Some(0);
+            obj.static_definitions.push(
+                StaticDefinition::new(StaticMode::MayLookAtFaceDown).affected(TargetFilter::Typed(
+                    TypedFilter::creature()
+                        .controller(ControllerRef::Opponent)
+                        .properties(vec![FilterProp::FaceDown]),
+                )),
+            );
+        }
+
+        // With the static, the looker now sees the opponent's hidden identity.
+        let found_view = filter_state_for_viewer(&state, looker);
+        let found_obj = found_view.objects.get(&secret).unwrap();
+        assert!(
+            found_obj.face_down,
+            "the permanent is still face down (CR 708.2)"
+        );
+        let found_back = found_obj
+            .back_face
+            .as_ref()
+            .expect("with Found Footage, the looker must see the opponent's face-down identity");
+        assert_eq!(found_back.name, "Opposing Spy");
+        assert_eq!(found_back.power, Some(5));
+
+        // The opponent (controller) still sees their own permanent regardless.
+        let owner_view = filter_state_for_viewer(&state, opponent);
+        assert!(owner_view.objects[&secret].back_face.is_some());
     }
 
     /// CR 400.2 — Invoke Calamity's `FreeCastWindow` lists the controller's

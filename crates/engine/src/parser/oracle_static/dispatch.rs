@@ -223,6 +223,85 @@ fn parse_reveal_hand_static(tp: &TextPair<'_>, text: &str) -> Option<StaticDefin
     )
 }
 
+/// CR 708.5: "You may look at face-down creatures [you don't control | your
+/// opponents control] any time." (Found Footage). Builds a
+/// `StaticMode::MayLookAtFaceDown` whose `affected` filter is the subject phrase
+/// (carrying `FilterProp::FaceDown` plus the controller scope), parsed via the
+/// shared `parse_target` so both scope wordings route through one handler.
+fn parse_may_look_at_face_down_static(tp: &TextPair<'_>) -> Option<StaticDefinition> {
+    let rest = nom_tag_tp(tp, "you may look at ")?;
+    // `parse_target` consumes the original-cased subject phrase that the
+    // lowercase tag matched past.
+    let (filter, remainder) = parse_target(rest.original);
+    // The subject must be a face-down creature filter; "any time" is the only
+    // permitted trailing clause for this permission.
+    let has_face_down = matches!(
+        &filter,
+        TargetFilter::Typed(t) if t.properties.iter().any(|p| matches!(p, FilterProp::FaceDown))
+    );
+    if !has_face_down {
+        return None;
+    }
+    let tail = remainder.trim().trim_end_matches('.').trim();
+    if !tail.eq_ignore_ascii_case("any time") {
+        return None;
+    }
+    Some(
+        StaticDefinition::new(StaticMode::MayLookAtFaceDown)
+            .affected(filter)
+            .description(tp.original.to_string()),
+    )
+}
+
+/// CR 116.2b + CR 708.7: "[subject] can't be turned face up [during your turn]."
+/// (Karlov Watchdog). Builds a `StaticMode::CantBeTurnedFaceUp` whose `affected`
+/// filter is the subject phrase and whose optional timing rides on `condition`.
+/// The subject is parsed with `parse_target` so any permanent-scope wording
+/// ("permanents your opponents control", "creatures you control", `~`) is
+/// covered, not just one card.
+fn parse_cant_be_turned_face_up_static(tp: &TextPair<'_>) -> Option<StaticDefinition> {
+    // Split the line on the prohibition predicate via a nom combinator. The
+    // combinator consumes "<subject> can't be turned face up" and yields the
+    // subject's byte length; the remainder (original case) is the timing window.
+    let (subject_len, tail_original) = nom_on_lower(tp.original, tp.lower, |i| {
+        let (i, subject) =
+            take_until::<_, _, OracleError<'_>>("can't be turned face up").parse(i)?;
+        let subject_len = subject.len();
+        let (i, _) = tag("can't be turned face up").parse(i)?;
+        Ok((i, subject_len))
+    })?;
+    let subject = tp.original.get(..subject_len)?.trim();
+    let affected = if subject.is_empty() {
+        TargetFilter::SelfRef
+    } else {
+        let (filter, remainder) = parse_target(subject);
+        if matches!(filter, TargetFilter::None) || !remainder.trim().is_empty() {
+            return None;
+        }
+        filter
+    };
+
+    // Trailing timing window after the predicate. Only "during your turn" is
+    // modeled today; a bare prohibition (no timing) leaves `condition` None.
+    let tail = tail_original
+        .trim()
+        .trim_end_matches('.')
+        .trim()
+        .to_ascii_lowercase();
+    let mut def = StaticDefinition::new(StaticMode::CantBeTurnedFaceUp)
+        .affected(affected)
+        .description(tp.original.to_string());
+    if tail.is_empty() {
+        // Unconditional prohibition (no timing window).
+    } else if tail == "during your turn" {
+        def = def.condition(StaticCondition::DuringYourTurn);
+    } else {
+        // An unmodeled timing window — fail rather than silently drop it.
+        return None;
+    }
+    Some(def)
+}
+
 /// CR 514.2: "Damage isn't removed from [subject] during cleanup steps."
 /// Builds a `StaticMode::DamageNotRemovedDuringCleanup` static whose `affected`
 /// filter is the subject — `~`/`this creature`/`this permanent` map to SelfRef
@@ -2112,6 +2191,22 @@ pub(crate) fn parse_static_line_inner(
                 ))
                 .description(text.to_string()),
         );
+    }
+
+    // CR 708.5: "You may look at face-down creatures [you don't control | your
+    // opponents control] any time." (Found Footage). The default rule lets you
+    // look only at face-down permanents you control; this static lifts that for
+    // the permanents named by the subject phrase. The affected filter (carrying
+    // FilterProp::FaceDown plus the controller scope) is parsed via
+    // `parse_target` so the same handler covers both scope wordings.
+    if let Some(def) = parse_may_look_at_face_down_static(&tp) {
+        return Some(def);
+    }
+
+    // CR 116.2b + CR 708.7: "Permanents your opponents control can't be turned
+    // face up during your turn." (Karlov Watchdog) — turn-face-up prohibition.
+    if let Some(def) = parse_cant_be_turned_face_up_static(&tp) {
+        return Some(def);
     }
 
     // NOTE: "enters with N counters" patterns are now handled by oracle_replacement.rs

@@ -6773,6 +6773,43 @@ pub(super) fn parse_imperative_family_ast(
             // a trailing follow-up sentence is left for the chain splitter.
             let text_trim = text.trim();
             let lower_trim = lower.trim();
+            // CR 116.2b + CR 708.7: Inside the body of an explicit granted
+            // activated ability ("{cost}: Turn this creature face up. ..."),
+            // the self-referential turn-up IS the printed resolving effect of
+            // that ability — it turns the granted ability's source (the
+            // face-down permanent) face up. Etrata, Deadly Fugitive grants
+            // face-down creatures a custom-cost version of this. Distinct from
+            // the top-level rejection below, which keeps the rule-based
+            // morph/disguise special action ("turn this permanent face up")
+            // from becoming a spurious resolving effect.
+            if ctx.in_granted_activated_ability
+                && all_consuming(terminated(
+                    preceded(
+                        // Self-reference subject — either the `~` normalized
+                        // form ("turn ~ face up", dropping the noun) or the
+                        // explicit "turn this [creature|permanent] face up".
+                        alt((
+                            tag::<_, _, OracleError<'_>>("turn ~"),
+                            tag("turns ~"),
+                            preceded(
+                                alt((
+                                    tag::<_, _, OracleError<'_>>("turn this "),
+                                    tag("turns this "),
+                                )),
+                                alt((tag("creature"), tag("permanent"))),
+                            ),
+                        )),
+                        tag(" face up"),
+                    ),
+                    opt(tag(".")),
+                ))
+                .parse(lower_trim)
+                .is_ok()
+            {
+                return Some(ImperativeFamilyAst::TurnFaceUp {
+                    target: TargetFilter::SelfRef,
+                });
+            }
             // The all-consuming clause extracts the target phrase between the
             // verb prefix and " face up"; any trailing sentence (Hauntwoods's
             // full reveal text) fails it and falls through to the chain splitter.

@@ -19,7 +19,9 @@ mod prelude {
     pub(super) use super::super::oracle_effect::subject::{
         parse_restriction_modes, static_mode_needs_grant_propagation,
     };
-    pub(super) use super::super::oracle_effect::{parse_effect_chain, strip_trailing_duration};
+    pub(super) use super::super::oracle_effect::{
+        parse_effect_chain, parse_effect_chain_with_context, strip_trailing_duration,
+    };
     pub(super) use super::super::oracle_ir::context::ParseContext;
     pub(super) use super::super::oracle_ir::static_ir::StaticIr;
     pub(super) use super::super::oracle_nom::bridge::nom_on_lower;

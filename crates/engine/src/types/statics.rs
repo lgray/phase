@@ -1319,6 +1319,28 @@ pub enum StaticMode {
         actions: Vec<CrewAction>,
     },
     MayLookAtTopOfLibrary,
+    /// CR 708.5: Static permission to look at face-down permanents the
+    /// controller would otherwise not be allowed to see. The default rule lets
+    /// you look only at face-down permanents you control; this static lifts that
+    /// for the permanents matched by `StaticDefinition::affected` (resolved from
+    /// the static's source controller). Parameterized by scope on the affected
+    /// filter — "your opponents control" (Found Footage → `controller: Opponent`)
+    /// and "you don't control" (Lumbering Laundry → `Not { controller: You }`)
+    /// are the same permission, differing only in the filter. The look-permission
+    /// is enforced in `visibility.rs` (face-down identity redaction) and surfaced
+    /// to the controller, not via layer 7.
+    MayLookAtFaceDown,
+    /// CR 116.2b + CR 708.7: Prohibition preventing the permanents matched by
+    /// `StaticDefinition::affected` from being turned face up. Turning a
+    /// face-down permanent face up is a special action (CR 116.2b) that the
+    /// rules allowing it normally permit (CR 708.7); this static blocks it for
+    /// the affected permanents. The optional timing window rides on
+    /// `StaticDefinition::condition` (Karlov Watchdog: `DuringYourTurn` —
+    /// "Permanents your opponents control can't be turned face up during your
+    /// turn"). The affected filter is resolved from the static's source
+    /// controller, so `controller: Opponent` means the source controller's
+    /// opponents' permanents. Enforced in `morph::turn_face_up`.
+    CantBeTurnedFaceUp,
 
     // -- Tier 3: Parser-produced statics --
     /// CR 502.3: You may choose not to untap this permanent during your untap step.
@@ -1752,6 +1774,8 @@ impl StaticMode {
             | StaticMode::CantCrew
             | StaticMode::CrewContribution { .. }
             | StaticMode::MayLookAtTopOfLibrary
+            | StaticMode::MayLookAtFaceDown
+            | StaticMode::CantBeTurnedFaceUp
             | StaticMode::MayChooseNotToUntap
             | StaticMode::AdditionalLandDrop { .. }
             | StaticMode::EmblemStatic
@@ -2048,6 +2072,8 @@ impl fmt::Display for StaticMode {
                 write!(f, "CrewContribution({kind:?},{actions:?})")
             }
             StaticMode::MayLookAtTopOfLibrary => write!(f, "MayLookAtTopOfLibrary"),
+            StaticMode::MayLookAtFaceDown => write!(f, "MayLookAtFaceDown"),
+            StaticMode::CantBeTurnedFaceUp => write!(f, "CantBeTurnedFaceUp"),
             // Tier 3
             StaticMode::MayChooseNotToUntap => write!(f, "MayChooseNotToUntap"),
             StaticMode::AdditionalLandDrop { count } => {
@@ -2442,6 +2468,8 @@ impl FromStr for StaticMode {
             },
             "CantCrew" => StaticMode::CantCrew,
             "MayLookAtTopOfLibrary" => StaticMode::MayLookAtTopOfLibrary,
+            "MayLookAtFaceDown" => StaticMode::MayLookAtFaceDown,
+            "CantBeTurnedFaceUp" => StaticMode::CantBeTurnedFaceUp,
             // Tier 3
             "MayChooseNotToUntap" => StaticMode::MayChooseNotToUntap,
             // AdditionalLandDrop is parameterized — parsed in the `other` branch below
@@ -2987,6 +3015,8 @@ mod tests {
             },
             StaticMode::CantCrew,
             StaticMode::MayLookAtTopOfLibrary,
+            StaticMode::MayLookAtFaceDown,
+            StaticMode::CantBeTurnedFaceUp,
             // Tier 3: parser-produced statics
             StaticMode::MayChooseNotToUntap,
             StaticMode::AdditionalLandDrop { count: 1 },

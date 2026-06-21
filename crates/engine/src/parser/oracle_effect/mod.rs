@@ -234,6 +234,58 @@ fn if_you_do_object_anchor(
         })
 }
 
+/// CR 608.2c + CR 708.7: Reinterpret a generic "if you can't" rider for a
+/// preceding effect that performs no zone change.
+///
+/// `try_nom_condition_as_ability_condition` lowers "if you can't" to
+/// `Not { ZoneChangedThisWay { Any } }` — the right proxy for the common
+/// zone-changing parent ("search …. If you can't, draw"), where an absence of
+/// `last_zone_changed_ids` means the instruction did nothing. But that proxy is
+/// WRONG for an effect whose success produces no `ZoneChanged` event: a
+/// successful `Effect::TurnFaceUp` (Etrata, Deadly Fugitive's granted
+/// "{2}{U}{B}: Turn this creature face up. If you can't, exile it …") only
+/// clears `face_down`/restores `back_face` and emits `TurnedFaceUp`, so the
+/// zone-change ledger stays empty and `Not { ZoneChangedThisWay }` would be
+/// true even after the turn-up SUCCEEDED — firing the exile rider every time.
+///
+/// The correct general signal for "the preceding instruction couldn't be
+/// performed" is `Not { OptionalEffectPerformed }`: a mandatory parent whose
+/// action occurred seeds `optional_effect_performed` via
+/// `effects::mod::mandatory_parent_effect_performed`, which has a `TurnFaceUp`
+/// arm keyed on `GameEvent::TurnedFaceUp`. Rewrite the condition to that signal
+/// only when the immediately-preceding clause is exactly a `TurnFaceUp` — the
+/// one effect class in this position whose success is invisible to the
+/// zone-change ledger. Other effects keep the zone-change proxy unchanged.
+fn rewrite_cant_rider_for_non_zone_change_parent(
+    condition: Option<AbilityCondition>,
+    clauses: &[ClauseIr],
+) -> Option<AbilityCondition> {
+    let is_generic_cant = matches!(
+        &condition,
+        Some(AbilityCondition::Not { condition })
+            if matches!(
+                condition.as_ref(),
+                AbilityCondition::ZoneChangedThisWay {
+                    filter: TargetFilter::Any
+                }
+            )
+    );
+    if !is_generic_cant {
+        return condition;
+    }
+    let prev_is_turn_face_up = clauses
+        .iter()
+        .rev()
+        .find(|clause| !clause.absorbed_by_followup)
+        .is_some_and(|clause| matches!(clause.parsed.effect, Effect::TurnFaceUp { .. }));
+    if prev_is_turn_face_up {
+        return Some(AbilityCondition::Not {
+            condition: Box::new(AbilityCondition::effect_performed()),
+        });
+    }
+    condition
+}
+
 fn merge_clause_conditions(
     outer: AbilityCondition,
     inner: Option<AbilityCondition>,
@@ -18877,6 +18929,11 @@ pub(crate) fn parse_effect_chain_ir(
             (None, text)
         };
         let condition = condition.or(leading_cond);
+        // CR 608.2c + CR 708.7: a generic "if you can't" rider attached to a
+        // preceding `TurnFaceUp` must read the performed-signal, not the
+        // zone-change ledger (a successful turn-up changes no zone). See the
+        // helper for the full rationale (Etrata, Deadly Fugitive).
+        let condition = rewrite_cant_rider_for_non_zone_change_parent(condition, &clauses);
         // CR 608.2c: "[effect] a number of times equal to the difference" — when
         // a leading comparison condition was just stripped, a trailing
         // difference-repeat suffix repeats the effect by the unsigned magnitude
@@ -19458,6 +19515,11 @@ pub(crate) fn parse_effect_chain_ir(
             // cards onto the battlefield" anaphor binds its `TrackedSet` move to
             // that origin instead of the impulse-default exile.
             pending_tracked_set_origin: chain_pending_tracked_set_origin,
+            // CR 116.2b + CR 708.7: a granted activated-ability body context is a
+            // property of the whole ability, not of an individual chunk, so all
+            // chunks inside it share the flag — the head "turn this creature face
+            // up" clause (Etrata) needs it to lower to TurnFaceUp { SelfRef }.
+            in_granted_activated_ability: ctx.in_granted_activated_ability,
             ..Default::default()
         };
         let ctx = &mut chunk_ctx;

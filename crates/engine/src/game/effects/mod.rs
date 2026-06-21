@@ -3477,6 +3477,20 @@ fn mandatory_parent_effect_performed(effect: &Effect, events: &[GameEvent]) -> b
                 } | GameEvent::ControllerChanged { .. }
             )
         }),
+        // CR 708.7 + CR 608.2c: A resolving "turn this creature face up" (Etrata,
+        // Deadly Fugitive's granted ability) "did anything" iff a permanent
+        // actually became face up. `turn_face_up::resolve` emits `TurnedFaceUp`
+        // only on success — it is skipped when the object was already face up or
+        // when a `CantBeTurnedFaceUp` static (CR 116.2b + CR 708.7) blocks it.
+        // The event's presence is therefore the authoritative "the turn-up
+        // happened" signal, which drives Etrata's "If you can't, exile it …"
+        // rider: that rider gates on `Not { OptionalEffectPerformed }`, so it
+        // fires ONLY when no `TurnedFaceUp` occurred. Without this arm the effect
+        // would fall into the `_ => true` default and always claim success,
+        // suppressing the exile branch even when the turn-up was blocked.
+        Effect::TurnFaceUp { .. } => events
+            .iter()
+            .any(|event| matches!(event, GameEvent::TurnedFaceUp { .. })),
         _ => true,
     }
 }
