@@ -3788,6 +3788,27 @@ fn parse_life_history_condition(input: &str) -> OracleResult<'_, StaticCondition
                 tag("that player lost life this turn"),
             )),
         ),
+        // CR 119.3 + CR 603.4: "that player lost less than N life this turn"
+        // (Lolth, Spider Queen emblem intervening-if).
+        |i| {
+            let (rest, _) = tag("that player lost less than ").parse(i)?;
+            let (rest, n) = parse_number(rest)?;
+            let (rest, _) = tag(" life this turn").parse(rest)?;
+            Ok((
+                rest,
+                StaticCondition::QuantityComparison {
+                    lhs: QuantityExpr::Ref {
+                        qty: QuantityRef::LifeLostThisTurn {
+                            player: PlayerScope::ScopedPlayer,
+                        },
+                    },
+                    comparator: Comparator::LT,
+                    rhs: QuantityExpr::Fixed {
+                        value: i32::try_from(n).unwrap_or(i32::MAX),
+                    },
+                },
+            ))
+        },
         parse_opponent_lost_life_this_turn,
         // CR 119.4 + CR 603.4: "an opponent gained life this turn" — sum across
         // opponents, mirroring the lost-life sibling. Unlocks Needlebite Trap

@@ -1024,6 +1024,24 @@ pub enum StaticMode {
         /// cast spells from among cards exiled with ~.").
         #[serde(default)]
         timing: ExileCastTiming,
+        /// CR 609.4b: Optional payment concession riding alongside the cast
+        /// permission — "Mana of any type can be spent to cast those spells."
+        /// (Azula, Cunning Usurper). `None` (default) preserves the existing
+        /// shapes (Maralen, The Matrix of Time). `Some(AnyTypeOrColor)` scopes
+        /// the any-type-mana spend to spells cast via this permission, mirroring
+        /// the per-card `CastingPermission::PlayFromExile.mana_spend_permission`
+        /// for the persistent-static seam. Consulted in
+        /// `casting::player_can_spend_as_any_color_for_spell`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        mana_spend_permission: Option<crate::types::ability::ManaSpendPermission>,
+        /// CR 601.3b + CR 702.8a: When `true`, spells cast via this permission
+        /// may be cast "as though they had flash" — i.e. at instant speed
+        /// regardless of their normal timing (Azula, Cunning Usurper: "you may
+        /// cast them as though they had flash"). `false` (default) leaves the
+        /// normal sorcery-speed timing rules in force. Consulted by the
+        /// cast-timing check in `casting::prepare_spell_cast`.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        grants_flash: bool,
     },
     /// CR 113.6 + CR 601.2a: Marker static identifying a source whose linked
     /// "play a card from exile with a collection counter on it" permission is
@@ -1595,12 +1613,19 @@ impl Hash for StaticMode {
                 cost,
                 pool,
                 timing,
+                mana_spend_permission,
+                grants_flash,
             } => {
                 frequency.hash(state);
                 play_mode.hash(state);
                 pool.hash(state);
                 timing.hash(state);
                 cost.hash(state);
+                // `ManaSpendPermission` does not derive `Hash` (mirrors the
+                // `TopOfLibraryCastPermission.alt_cost` treatment above) — hash
+                // its presence so the two payment-concession shapes don't collide.
+                mana_spend_permission.is_some().hash(state);
+                grants_flash.hash(state);
             }
             // CR 122.2: Zone derives Hash; hash the excluded-zone list so
             // [Hand, Library] does not collide with other zone sets.
@@ -1896,10 +1921,13 @@ impl fmt::Display for StaticMode {
                 cost,
                 pool,
                 timing,
+                mana_spend_permission,
+                grants_flash,
             } => {
                 // Positional, lossless round-trip. Segments 1-2 (play_mode,
                 // frequency) are always present; the optional "free" cost
-                // marker, the pool scope, and the timing scope are appended as
+                // marker, the pool scope, the timing scope, the any-type-mana
+                // spend marker, and the flash-grant marker are appended as
                 // tagged segments only when non-default so the historical
                 // 2-/3-segment Maralen forms keep parsing unchanged.
                 write!(f, "ExileCastPermission({play_mode},{frequency}")?;
@@ -1911,6 +1939,12 @@ impl fmt::Display for StaticMode {
                 }
                 if matches!(timing, ExileCastTiming::YourTurnOnly) {
                     write!(f, ",timing={timing}")?;
+                }
+                if mana_spend_permission.is_some() {
+                    write!(f, ",anymana")?;
+                }
+                if *grants_flash {
+                    write!(f, ",flash")?;
                 }
                 write!(f, ")")
             }
@@ -2311,6 +2345,8 @@ impl FromStr for StaticMode {
                 cost: ExileCastCost::PayNormalCost,
                 pool: ExileCardPool::ThisTurn,
                 timing: ExileCastTiming::AnyTime,
+                mana_spend_permission: None,
+                grants_flash: false,
             },
             s if s.starts_with("ExileCastPermission(") => {
                 // Display form: "ExileCastPermission(<play_mode>,<frequency>[,free]
@@ -2334,9 +2370,18 @@ impl FromStr for StaticMode {
                 let mut cost = ExileCastCost::PayNormalCost;
                 let mut pool = ExileCardPool::ThisTurn;
                 let mut timing = ExileCastTiming::AnyTime;
+                let mut mana_spend_permission = None;
+                let mut grants_flash = false;
                 for seg in parts {
                     if seg == "free" {
                         cost = ExileCastCost::WithoutPayingManaCost;
+                    } else if seg == "anymana" {
+                        // CR 609.4b: any-type-mana spend concession.
+                        mana_spend_permission =
+                            Some(crate::types::ability::ManaSpendPermission::AnyTypeOrColor);
+                    } else if seg == "flash" {
+                        // CR 601.3b: cast-as-though-flash concession.
+                        grants_flash = true;
                     } else if let Some(scope) = seg.strip_prefix("pool=") {
                         if let Ok(p) = scope.parse() {
                             pool = p;
@@ -2353,6 +2398,8 @@ impl FromStr for StaticMode {
                     cost,
                     pool,
                     timing,
+                    mana_spend_permission,
+                    grants_flash,
                 }
             }
             "CantBeCountered" => StaticMode::CantBeCountered,
@@ -2981,6 +3028,8 @@ mod tests {
                 cost: ExileCastCost::WithoutPayingManaCost,
                 pool: ExileCardPool::ThisTurn,
                 timing: ExileCastTiming::AnyTime,
+                mana_spend_permission: None,
+                grants_flash: false,
             },
             StaticMode::ExileCastPermission {
                 frequency: CastFrequency::Unlimited,
@@ -2988,6 +3037,8 @@ mod tests {
                 cost: ExileCastCost::PayNormalCost,
                 pool: ExileCardPool::ThisTurn,
                 timing: ExileCastTiming::AnyTime,
+                mana_spend_permission: None,
+                grants_flash: false,
             },
             // Persistent, your-turn-only exile-play permission
             // (The Matrix of Time; Prosper/Tibalt impulse-commander class).
@@ -2997,6 +3048,21 @@ mod tests {
                 cost: ExileCastCost::PayNormalCost,
                 pool: ExileCardPool::Persistent,
                 timing: ExileCastTiming::YourTurnOnly,
+                mana_spend_permission: None,
+                grants_flash: false,
+            },
+            // CR 609.4b + CR 702.8a: Azula, Cunning Usurper — Cast mode from a
+            // persistent pool, your-turn-only, granting any-type mana and flash.
+            StaticMode::ExileCastPermission {
+                frequency: CastFrequency::Unlimited,
+                play_mode: CardPlayMode::Cast,
+                cost: ExileCastCost::PayNormalCost,
+                pool: ExileCardPool::Persistent,
+                timing: ExileCastTiming::YourTurnOnly,
+                mana_spend_permission: Some(
+                    crate::types::ability::ManaSpendPermission::AnyTypeOrColor,
+                ),
+                grants_flash: true,
             },
             // Casting prohibitions
             StaticMode::CantBeCast {

@@ -19199,8 +19199,34 @@ pub(crate) fn parse_effect_chain_ir(
                 None
             }
         });
+        // CR 119.3 + CR 609.3: "they lose life equal to the difference" — when a
+        // leading QuantityCheck condition bounds life lost (Lolth emblem: "if that
+        // player lost less than 8 life this turn"), the loss amount is the unsigned
+        // gap between the threshold and life lost this turn.
+        let difference_lose = condition.as_ref().and_then(|cond| {
+            let lower = text_no_qty.to_lowercase();
+            let clean = lower.trim().trim_end_matches('.');
+            if all_consuming(alt((
+                tag::<_, _, OracleError<'_>>("lose life equal to the difference"),
+                tag("they lose life equal to the difference"),
+            )))
+            .parse(clean)
+            .is_ok()
+            {
+                conditions::difference_expr(cond).map(|diff| {
+                    parsed_clause(Effect::LoseLife {
+                        amount: diff,
+                        target: Some(TargetFilter::ParentTarget),
+                    })
+                })
+            } else {
+                None
+            }
+        });
         let (clause, repeat_for) = if let Some(draw) = difference_draw {
             (draw, repeat_for)
+        } else if let Some(lose) = difference_lose {
+            (lose, repeat_for)
         } else {
             let (suffix_repeat_for, stripped_text_no_qty) =
                 strip_for_each_repeat_suffix(&text_no_qty);
@@ -34211,14 +34237,57 @@ mod tests {
 
     #[test]
     fn effect_emblem_trigger_with_subject_predicate_text_stays_emblem() {
+        use crate::types::ability::TriggerCondition;
+        use crate::types::triggers::TriggerMode;
+
         let def = parse_effect_chain(
             "You get an emblem with \"Whenever an opponent is dealt combat damage by one or more creatures you control, if that player lost less than 8 life this turn, they lose life equal to the difference.\"",
             AbilityKind::Activated,
         );
 
+        let Effect::CreateEmblem { triggers, .. } = &*def.effect else {
+            panic!("expected CreateEmblem, got {:?}", def.effect);
+        };
+        assert_eq!(triggers.len(), 1);
+        let trigger = &triggers[0];
+        assert_eq!(trigger.mode, TriggerMode::DamageReceived);
+        assert!(
+            matches!(
+                trigger.condition,
+                Some(TriggerCondition::QuantityComparison { .. })
+            ),
+            "emblem trigger must gate on life lost < 8, got {:?}",
+            trigger.condition
+        );
+        let execute = trigger.execute.as_ref().expect("emblem trigger execute");
+        match execute.effect.as_ref() {
+            Effect::LoseLife { amount, target } => {
+                assert_eq!(
+                    *target,
+                    Some(TargetFilter::ParentTarget),
+                    "life loss must hit the damaged player"
+                );
+                assert!(
+                    matches!(amount, QuantityExpr::Difference { .. }),
+                    "loss amount must be Difference, got {amount:?}"
+                );
+            }
+            other => panic!("expected LoseLife difference, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn lose_life_equal_to_the_difference_from_life_lost_threshold() {
+        let def = parse_effect_chain(
+            "If that player lost less than 8 life this turn, they lose life equal to the difference.",
+            AbilityKind::Spell,
+        );
         match &*def.effect {
-            Effect::CreateEmblem { .. } => {}
-            other => panic!("expected CreateEmblem, got {other:?}"),
+            Effect::LoseLife { amount, target } => {
+                assert_eq!(*target, Some(TargetFilter::ParentTarget));
+                assert!(matches!(amount, QuantityExpr::Difference { .. }));
+            }
+            other => panic!("expected LoseLife, got {other:?}"),
         }
     }
 
