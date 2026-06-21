@@ -5806,6 +5806,88 @@ mod tests {
         );
     }
 
+    /// CR 601.2a + CR 609.4b + CR 601.3b: Azula, Cunning Usurper — the
+    /// cast-from-exile static line must lower to a supported
+    /// `StaticMode::ExileCastPermission` carrying the persistent Cast permission,
+    /// the any-type-mana spend concession, and the flash grant.
+    ///
+    /// Azula is intentionally NOT full-card-0: the "Firebending 2" line is a
+    /// separate, out-of-scope keyword whose triggered mana ability remains an
+    /// honest `Effect::unknown` gap (handled by a different batch). This test
+    /// therefore pins the cast-from-exile line as the supported variant AND
+    /// asserts the only remaining gap is that Firebending ability — so it fails
+    /// both if the static line regresses to a gap and if a new unrelated gap
+    /// appears. (Runtime discrimination — any-type mana payable from a red-only
+    /// pool and instant-speed castability — lives in `game::casting::tests::
+    /// azula_exile_static_grants_any_type_mana_spend` and
+    /// `azula_exile_static_grants_flash_timing`.)
+    #[test]
+    fn azula_cunning_usurper_full_card_supported_with_exile_cast_permission() {
+        let face = oracle_face_for(
+            "Azula, Cunning Usurper",
+            "Firebending 2 (Whenever this creature attacks, add {R}{R}. This mana lasts until end of combat.)\nWhen Azula enters, target opponent exiles a nontoken creature they control, then they exile a nonland card from their graveyard.\nDuring your turn, you may cast cards exiled with Azula and you may cast them as though they had flash. Mana of any type can be spent to cast those spells.",
+            &["Legendary", "Creature"],
+            &["Human"],
+        );
+        // The cast-from-exile static line must be fully supported. Locate it by
+        // its typed parse category + handler label (not by matching Oracle text)
+        // so the assertion stays robust to wording tweaks.
+        let details = crate::game::coverage::build_parse_details_for_face(&face);
+        let cast_static = details
+            .iter()
+            .find(|d| {
+                matches!(d.category, crate::game::coverage::ParseCategory::Static)
+                    // allow-noncombinator: matching the engine's own parse-detail handler label (not Oracle text), in a test.
+                    && d.label.starts_with("ExileCastPermission")
+            })
+            .expect("Azula's cast-from-exile line must appear as an ExileCastPermission static");
+        assert!(
+            cast_static.supported,
+            "the cast-from-exile static line must be supported, got {cast_static:?}"
+        );
+        // The only remaining coverage gap is the out-of-scope Firebending
+        // ability — proving the cast-from-exile line no longer contributes a gap.
+        let gaps = crate::game::coverage::card_face_gaps(&face);
+        assert_eq!(
+            gaps,
+            vec!["Effect:unknown".to_string()],
+            "the only remaining gap must be the out-of-scope Firebending ability"
+        );
+        let firebending = details
+            .iter()
+            .find(|d| !d.supported)
+            .expect("Azula must have exactly the Firebending unsupported ability");
+        assert_eq!(
+            firebending.source_text.as_deref(),
+            Some("Firebending 2"),
+            "the single unsupported item must be the Firebending keyword line"
+        );
+
+        // Pin the structural variant the fix produces — guards against a silent
+        // regression where the line stops parsing entirely.
+        let static_def = face
+            .static_abilities
+            .iter()
+            .find(|s| {
+                matches!(
+                    s.mode,
+                    crate::types::statics::StaticMode::ExileCastPermission {
+                        play_mode: crate::types::ability::CardPlayMode::Cast,
+                        grants_flash: true,
+                        mana_spend_permission: Some(
+                            crate::types::ability::ManaSpendPermission::AnyTypeOrColor
+                        ),
+                        ..
+                    }
+                )
+            })
+            .expect("Azula must emit a Cast permission with flash + any-mana");
+        assert_eq!(
+            static_def.affected,
+            Some(crate::types::ability::TargetFilter::Any)
+        );
+    }
+
     /// CR 106.6 + CR 702.6a: Hydraulic Helper — the full card must parse with
     /// zero `Effect::Unimplemented` parts. "Defender" extracts as a keyword and
     /// the `{T}: Add {U}` mana ability carries the negative spend restriction
