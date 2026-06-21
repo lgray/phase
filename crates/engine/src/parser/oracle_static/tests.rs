@@ -5206,6 +5206,29 @@ fn parse_continuous_modifications_are_goaded_emits_goaded_static_mode() {
     )));
 }
 
+/// CR 701.60a + CR 701.60d: Airtight Alibi's compound static "Enchanted creature
+/// gets +2/+2 and can't become suspected" emits the P/T buff AND a
+/// `CantBecomeSuspected` rider (mirrors the goaded designation rider) so the
+/// prohibition is not silently dropped.
+#[test]
+fn parse_continuous_modifications_cant_become_suspected_emits_static_mode() {
+    let mods = parse_continuous_modifications("gets +2/+2 and can't become suspected");
+    assert!(
+        mods.iter()
+            .any(|m| matches!(m, ContinuousModification::AddPower { value: 2 })),
+        "P/T buff preserved alongside the prohibition rider"
+    );
+    assert!(
+        mods.iter().any(|m| matches!(
+            m,
+            ContinuousModification::AddStaticMode {
+                mode: StaticMode::CantBecomeSuspected
+            }
+        )),
+        "can't-become-suspected rider must not be dropped, got {mods:?}"
+    );
+}
+
 /// CR 613.1f + CR 113.3: "all activated abilities of all cards exiled with it" /
 /// "the exiled card" → `GrantAllActivatedAbilitiesOf { ExiledBySource }` (Myr
 /// Welder, Territory Forge). Issue #3101. Both the bare-predicate building-block

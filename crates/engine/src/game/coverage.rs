@@ -49,6 +49,12 @@ fn is_data_carrying_static(mode: &StaticMode) -> bool {
         // marked damage from permanents matching an active such static's
         // `affected` filter. Not registry-keyed (mirrors the marker cluster).
         StaticMode::DamageNotRemovedDuringCleanup
+            // CR 701.60a + CR 701.60d: nullary marker static — runtime
+            // enforcement is the suspect resolver's `can_become_suspected` gate
+            // (effects/suspect.rs), which refuses to designate a permanent
+            // carrying this static. The `affected` filter scopes the protected
+            // permanents. Not registry-keyed (mirrors the marker cluster).
+            | StaticMode::CantBecomeSuspected
             | StaticMode::ReduceAbilityCost { .. }
             | StaticMode::ModifyActivationLimit { .. }
             | StaticMode::AdditionalLandDrop { .. }
@@ -1981,7 +1987,8 @@ fn effect_details(effect: &Effect) -> Vec<(String, String)> {
         | Effect::CopySpell { target, .. }
         | Effect::CastCopyOfCard { target, .. }
         | Effect::BecomeCopy { target, .. }
-        | Effect::Suspect { target }
+        | Effect::Suspect { target, .. }
+        | Effect::Unsuspect { target, .. }
         | Effect::Connive { target, .. }
         | Effect::PhaseOut { target }
         | Effect::PhaseIn { target }
@@ -7257,6 +7264,8 @@ fn audit_card_lines(oracle_text: &str, face: &CardFace) -> Vec<SemanticFinding> 
             StaticMode::CantAttack => effective_lower.contains("can't attack"),
             StaticMode::CantBlock => effective_lower.contains("can't block"),
             StaticMode::CantAttackOrBlock => effective_lower.contains("can't attack or block"),
+            // CR 701.60a + CR 701.60d: Airtight Alibi's "can't become suspected".
+            StaticMode::CantBecomeSuspected => effective_lower.contains("can't become suspected"),
             StaticMode::CantCrew => {
                 effective_lower.contains("can't crew") || effective_lower.contains("cannot crew")
             }

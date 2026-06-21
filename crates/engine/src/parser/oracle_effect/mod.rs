@@ -13320,7 +13320,8 @@ fn inject_subject_target(effect: &mut Effect, subject: &SubjectPhraseAst) {
         | Effect::PhaseIn { target }
         | Effect::ForceBlock { target }
         | Effect::ForceAttack { target, .. }
-        | Effect::Suspect { target }
+        | Effect::Suspect { target, .. }
+        | Effect::Unsuspect { target, .. }
         | Effect::Goad { target }
         | Effect::Mill { target, .. }
         | Effect::Discard { target, .. }
@@ -16130,7 +16131,11 @@ pub(crate) fn each_target_filter_mut(effect: &mut Effect, f: &mut impl FnMut(&mu
         | Effect::Manifest { target, .. }
         // CR 701.60a: Suspect acts on a target permanent; expose its filter so
         // anaphor rewrites (e.g. self-targeting "Otherwise, suspect it") reach it.
-        | Effect::Suspect { target }
+        | Effect::Suspect { target, .. }
+        // CR 701.60a: Unsuspect (no-longer-suspected) acts on a target permanent;
+        // expose its filter so anaphor rewrites ("it's no longer suspected",
+        // "~ is no longer suspected") reach it.
+        | Effect::Unsuspect { target, .. }
         | Effect::TargetOnly { target, .. } => f(target),
         Effect::PutCounter { target, .. } | Effect::RemoveCounter { target, .. } => f(target),
         Effect::GoadAll { target } => f(target),

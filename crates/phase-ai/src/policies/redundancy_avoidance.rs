@@ -458,6 +458,7 @@ fn redundancy_delta(
         | Effect::Choose { .. }
         | Effect::ChooseDamageSource { .. }
         | Effect::Suspect { .. }
+        | Effect::Unsuspect { .. }
         | Effect::Connive { .. }
         | Effect::PhaseOut { .. }
         | Effect::PhaseIn { .. }

@@ -634,6 +634,15 @@ pub enum StaticMode {
     CantAttack,
     CantBlock,
     CantAttackOrBlock,
+    /// CR 701.60a + CR 701.60d: The affected permanent can't become suspected
+    /// (Airtight Alibi: "Enchanted creature ... can't become suspected"). A
+    /// nullary marker static — the `affected` filter scopes which permanents are
+    /// protected, and runtime enforcement is the suspect resolver's gate
+    /// (`suspect::resolve`), which refuses to designate a permanent carrying this
+    /// static. Distinct from CR 701.60d's intrinsic "a suspected permanent can't
+    /// become suspected again": this prohibits the designation even while the
+    /// permanent is NOT suspected.
+    CantBecomeSuspected,
     /// CR 508.1c: No more than `max` creatures can be declared as attackers
     /// each combat. `defender` scopes *which declarations* the cap restricts:
     /// `None` is a global per-combat cap (no more than `max` creatures can
@@ -1653,6 +1662,7 @@ impl StaticMode {
             | StaticMode::CantAttack
             | StaticMode::CantBlock
             | StaticMode::CantAttackOrBlock
+            | StaticMode::CantBecomeSuspected
             | StaticMode::MaxAttackersEachCombat { .. }
             | StaticMode::MaxBlockersEachCombat { .. }
             | StaticMode::CantBeTargeted
@@ -1759,6 +1769,7 @@ impl fmt::Display for StaticMode {
             StaticMode::CantAttack => write!(f, "CantAttack"),
             StaticMode::CantBlock => write!(f, "CantBlock"),
             StaticMode::CantAttackOrBlock => write!(f, "CantAttackOrBlock"),
+            StaticMode::CantBecomeSuspected => write!(f, "CantBecomeSuspected"),
             StaticMode::MaxAttackersEachCombat { max, defender } => match defender {
                 None => write!(f, "MaxAttackersEachCombat({max})"),
                 Some(AttackDefenderScope::Controller) => {
@@ -2086,6 +2097,7 @@ impl FromStr for StaticMode {
             "CantAttack" => StaticMode::CantAttack,
             "CantBlock" => StaticMode::CantBlock,
             "CantAttackOrBlock" => StaticMode::CantAttackOrBlock,
+            "CantBecomeSuspected" => StaticMode::CantBecomeSuspected,
             "LinkedCollectionCounterPlayPermission" => {
                 StaticMode::LinkedCollectionCounterPlayPermission
             }
