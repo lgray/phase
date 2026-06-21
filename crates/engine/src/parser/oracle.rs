@@ -5910,6 +5910,131 @@ mod tests {
         );
     }
 
+    /// CR 613.4b + CR 208.1 + CR 604.3: std BATCH 10 — Porcelain Gallery's static
+    /// "Creatures you control have base power and toughness each equal to the
+    /// number of creatures you control" must parse with zero coverage gaps. The
+    /// dynamic base-P/T set routes to layer-7b `SetPowerDynamic`/
+    /// `SetToughnessDynamic` with an `ObjectCount` value. (Runtime discrimination —
+    /// base P/T becomes and tracks the count — lives in
+    /// `tests/base_pt_dynamic_set_std_base_pt.rs`.)
+    #[test]
+    fn porcelain_gallery_full_card_supported_dynamic_base_pt() {
+        let face = oracle_face_for(
+            "Porcelain Gallery",
+            "Creatures you control have base power and toughness each equal to the number of creatures you control.",
+            &["Artifact"],
+            &[],
+        );
+        let gaps = crate::game::coverage::card_face_gaps(&face);
+        assert!(
+            gaps.is_empty(),
+            "Porcelain Gallery must be fully supported, gaps: {gaps:?}"
+        );
+    }
+
+    /// CR 613.4b + CR 208.1: std BATCH 10 — Pupu UFO's activated "{3}: Until end
+    /// of turn, this creature's base power becomes equal to the number of Towns
+    /// you control" must parse with zero coverage gaps. The power-only dynamic
+    /// base-set routes to a layer-7b `SetPowerDynamic(ObjectCount Towns)`; the
+    /// Flying keyword and the land-drop ability are already supported. (Runtime
+    /// discrimination lives in `tests/base_pt_dynamic_set_std_base_pt.rs`.)
+    #[test]
+    fn pupu_ufo_full_card_supported_dynamic_base_power() {
+        // Build the face the way the card-data pipeline does, with MTGJSON's
+        // printed `keywords: ["Flying"]` present so the standalone "Flying" line
+        // is recognized as a keyword (not a stray ability) — exactly the input
+        // production sees.
+        use crate::database::mtgjson::{AtomicCard, AtomicIdentifiers};
+        let card = AtomicCard {
+            name: "Pupu UFO".to_string(),
+            mana_cost: Some("{3}{G}".to_string()),
+            colors: vec!["G".to_string()],
+            color_identity: vec!["G".to_string()],
+            power: Some("2".to_string()),
+            toughness: Some("2".to_string()),
+            loyalty: None,
+            defense: None,
+            text: Some(
+                "Flying\n{T}: You may put a land card from your hand onto the battlefield.\n{3}: Until end of turn, this creature's base power becomes equal to the number of Towns you control.".to_string(),
+            ),
+            layout: "normal".to_string(),
+            type_line: Some("Creature — Alien".to_string()),
+            types: vec!["Creature".to_string()],
+            subtypes: vec!["Alien".to_string()],
+            supertypes: Vec::new(),
+            keywords: Some(vec!["Flying".to_string()]),
+            side: None,
+            face_name: None,
+            mana_value: 4.0,
+            legalities: Default::default(),
+            leadership_skills: None,
+            printings: Vec::new(),
+            rulings: Vec::new(),
+            is_game_changer: false,
+            identifiers: AtomicIdentifiers {
+                scryfall_oracle_id: Some("pupu-ufo-oracle".to_string()),
+                scryfall_id: Some("pupu-ufo-face".to_string()),
+            },
+            foreign_data: Vec::new(),
+        };
+        let face = crate::database::synthesis::build_oracle_face(&card, None);
+        let gaps = crate::game::coverage::card_face_gaps(&face);
+        assert!(
+            gaps.is_empty(),
+            "Pupu UFO must be fully supported, gaps: {gaps:?}"
+        );
+    }
+
+    /// CR 613.4b + CR 208.1 + CR 702.177: std BATCH 10 — Sita Varma's Exhaust
+    /// ability "Put X +1/+1 counters … Then you may have the base power and
+    /// toughness of each other creature you control become equal to Sita Varma's
+    /// power until end of turn" must parse with zero coverage gaps. The "Then you
+    /// may have …" half is the inverted-genitive base-P/T set on the other
+    /// creatures you control, set to the source's power (`~`-normalized →
+    /// `Power{Source}`) via layer-7b `SetPowerDynamic`/`SetToughnessDynamic`.
+    #[test]
+    fn sita_varma_full_card_supported_inverted_genitive_base_pt() {
+        use crate::database::mtgjson::{AtomicCard, AtomicIdentifiers};
+        let card = AtomicCard {
+            name: "Sita Varma, Masked Racer".to_string(),
+            mana_cost: Some("{1}{G}{U}".to_string()),
+            colors: vec!["G".to_string(), "U".to_string()],
+            color_identity: vec!["G".to_string(), "U".to_string()],
+            power: Some("3".to_string()),
+            toughness: Some("3".to_string()),
+            loyalty: None,
+            defense: None,
+            text: Some(
+                "Exhaust \u{2014} {X}{G}{G}{U}: Put X +1/+1 counters on Sita Varma. Then you may have the base power and toughness of each other creature you control become equal to Sita Varma's power until end of turn. (Activate each exhaust ability only once.)".to_string(),
+            ),
+            layout: "normal".to_string(),
+            type_line: Some("Legendary Creature — Human".to_string()),
+            types: vec!["Creature".to_string()],
+            subtypes: vec!["Human".to_string()],
+            supertypes: vec!["Legendary".to_string()],
+            keywords: Some(vec!["Exhaust".to_string()]),
+            side: None,
+            face_name: None,
+            mana_value: 3.0,
+            legalities: Default::default(),
+            leadership_skills: None,
+            printings: Vec::new(),
+            rulings: Vec::new(),
+            is_game_changer: false,
+            identifiers: AtomicIdentifiers {
+                scryfall_oracle_id: Some("sita-varma-oracle".to_string()),
+                scryfall_id: Some("sita-varma-face".to_string()),
+            },
+            foreign_data: Vec::new(),
+        };
+        let face = crate::database::synthesis::build_oracle_face(&card, None);
+        let gaps = crate::game::coverage::card_face_gaps(&face);
+        assert!(
+            gaps.is_empty(),
+            "Sita Varma must be fully supported, gaps: {gaps:?}"
+        );
+    }
+
     /// CR 601.2a + CR 609.4b + CR 601.3b: Azula, Cunning Usurper — the
     /// cast-from-exile static line must lower to a supported
     /// `StaticMode::ExileCastPermission` carrying the persistent Cast permission,

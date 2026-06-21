@@ -31777,6 +31777,102 @@ mod tests {
         assert_eq!(execute.duration, Some(Duration::UntilEndOfTurn));
     }
 
+    /// CR 613.4b + CR 208.1: Pupu UFO's "this creature's base power becomes equal
+    /// to the number of Towns you control" sets the *power* axis only to a
+    /// dynamic count (layer 7b). Proves the power-only axis and the dynamic
+    /// "equal to <count>" value compose in one parser — not a fixed-N/M special
+    /// case.
+    #[test]
+    fn effect_subject_base_power_becomes_equal_to_count_power_only() {
+        use crate::types::ability::{ContinuousModification, QuantityExpr, QuantityRef};
+        let def = parse_effect_chain(
+            "this creature's base power becomes equal to the number of Towns you control",
+            AbilityKind::Activated,
+        );
+        let Effect::GenericEffect {
+            static_abilities, ..
+        } = def.effect.as_ref()
+        else {
+            panic!("expected GenericEffect, got {:?}", def.effect);
+        };
+        let mods = &static_abilities[0].modifications;
+        // Power is set dynamically to the Town count.
+        assert!(
+            mods.iter().any(|m| matches!(
+                m,
+                ContinuousModification::SetPowerDynamic {
+                    value: QuantityExpr::Ref {
+                        qty: QuantityRef::ObjectCount { .. }
+                    }
+                }
+            )),
+            "expected SetPowerDynamic(ObjectCount Towns), got {mods:?}"
+        );
+        // Toughness is NOT touched (power-only axis).
+        assert!(
+            !mods.iter().any(|m| matches!(
+                m,
+                ContinuousModification::SetToughnessDynamic { .. }
+                    | ContinuousModification::SetToughness { .. }
+            )),
+            "toughness must be untouched for the power-only axis, got {mods:?}"
+        );
+    }
+
+    /// CR 613.4b + CR 208.1: Sita Varma's inverted-genitive "the base power and
+    /// toughness of each other creature you control become equal to ~'s power"
+    /// sets BOTH axes of a non-self group subject to the source's power. Proves
+    /// the inverted-genitive surface form, the non-self group subject, and the
+    /// self-power (`~`-normalized) dynamic value all compose in one parser.
+    #[test]
+    fn effect_inverted_genitive_base_pt_of_group_equal_to_source_power() {
+        use crate::types::ability::{
+            ContinuousModification, ObjectScope, QuantityExpr, QuantityRef,
+        };
+        let def = parse_effect_chain(
+            "have the base power and toughness of each other creature you control become equal to ~'s power",
+            AbilityKind::Activated,
+        );
+        let Effect::GenericEffect {
+            static_abilities, ..
+        } = def.effect.as_ref()
+        else {
+            panic!("expected GenericEffect, got {:?}", def.effect);
+        };
+        let sa = &static_abilities[0];
+        // Affected: other creatures you control.
+        match &sa.affected {
+            Some(TargetFilter::Typed(tf)) => {
+                assert!(tf.type_filters.contains(&TypeFilter::Creature));
+                assert_eq!(
+                    tf.controller,
+                    Some(crate::types::ability::ControllerRef::You)
+                );
+                assert!(tf.properties.contains(&FilterProp::Another));
+            }
+            other => panic!("expected other-creatures-you-control scope, got {other:?}"),
+        }
+        let expected = QuantityExpr::Ref {
+            qty: QuantityRef::Power {
+                scope: ObjectScope::Source,
+            },
+        };
+        assert!(
+            sa.modifications
+                .contains(&ContinuousModification::SetPowerDynamic {
+                    value: expected.clone(),
+                }),
+            "expected SetPowerDynamic(~ power), got {:?}",
+            sa.modifications
+        );
+        assert!(
+            sa.modifications
+                .contains(&ContinuousModification::SetToughnessDynamic { value: expected }),
+            "expected SetToughnessDynamic(~ power), got {:?}",
+            sa.modifications
+        );
+    }
+
     #[test]
     fn effect_becomes_color_and_attacks_if_able_chains_requirement() {
         let def = parse_effect_chain(
