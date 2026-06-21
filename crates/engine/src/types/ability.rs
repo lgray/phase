@@ -1528,6 +1528,14 @@ pub enum ManaSpendRestriction {
     /// accepts the legacy bare-`Zone` serialized form for backward compatibility,
     /// mapping it to the inclusion reading.
     SpellFromZone(ZoneSpend),
+    /// CR 106.6 + CR 116.2m + CR 709.5e: "Spend this mana only to unlock
+    /// [a ]door[s]" — the special-action half of a spend restriction. A leaf of
+    /// the [`ManaSpendRestriction::Any`] disjunction (Smoky Lounge: "cast Room
+    /// spells and unlock doors"). Lowered to
+    /// [`ManaRestriction::OnlyForSpecialAction(SpecialAction::UnlockDoor)`](super::mana::ManaRestriction::OnlyForSpecialAction),
+    /// enforced when a Room's CR 709.5e unlock cost is paid through
+    /// [`PaymentContext::SpecialAction`](super::mana::PaymentContext::SpecialAction).
+    UnlockDoor,
     /// CR 106.6: Disjunction of spend restrictions ("cast X or Y or activate Z").
     /// Lowered to `ManaRestriction::OnlyForAny`.
     Any(Vec<ManaSpendRestriction>),
