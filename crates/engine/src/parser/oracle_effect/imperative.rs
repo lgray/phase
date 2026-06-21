@@ -7649,16 +7649,11 @@ fn try_parse_exchange_control_targets(span: &str) -> Option<(TargetFilter, Targe
     // creatures controlled by different players") is a target-SET constraint
     // (`TargetSelectionConstraint::DifferentObjectControllers`), extracted
     // separately in the chain lowerer — it is not part of either per-slot filter.
-    // Locate and strip it with a nom combinator (take_until + tag) so the per-slot
-    // `parse_target` sees a clean "two other target creatures" span. Mirrors the
-    // detector `parse_controlled_by_different_players_target_constraint` in the
-    // chain lowerer.
-    let span = match take_until::<_, _, OracleError<'_>>(" controlled by different players")
-        .parse(span)
-    {
-        Ok((_, before)) => before.trim_end(),
-        Err(_) => span,
-    };
+    // Strip it via the shared `strip_controlled_by_different_players` combinator
+    // (single source of truth with the detector
+    // `parse_controlled_by_different_players_target_constraint`) so the per-slot
+    // `parse_target` sees a clean "two other target creatures" span.
+    let span = super::lower::strip_controlled_by_different_players(span).unwrap_or(span);
     // Quantified shape: "two target Xs" dispatched via nom. We peek for the
     // `"two target "` prefix with `alt((tag(...), tag(...)))` (plural handled by
     // `parse_target`'s QUANTIFIED_PREFIXES), then re-enter `parse_target` on the

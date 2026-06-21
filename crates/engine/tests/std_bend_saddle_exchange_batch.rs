@@ -247,6 +247,42 @@ fn avatar_aang_batched_bend_trigger_fires_on_any_bend() {
     );
 }
 
+/// Maintainer guard (CR 603.2): a PARTIAL bend disjunction must NOT collapse to
+/// `TriggerMode::ElementalBend`. The only any-bend runtime matcher fires on ALL
+/// four bend events; collapsing "whenever you waterbend or earthbend" to
+/// `ElementalBend` would over-fire on the unlisted firebend/airbend events.
+/// `try_parse_bend_trigger` returns `None` for any strict subset, so the trigger
+/// fails closed (`Unknown`) instead — and crucially produces NO `ElementalBend`
+/// trigger that the runtime matcher could fire on. This proves the parser never
+/// ships a building block broader than the runtime semantics it preserves.
+#[test]
+fn partial_bend_disjunction_does_not_collapse_to_elemental_bend() {
+    let parsed = parse_oracle_text(
+        "Whenever you waterbend or earthbend, draw a card.",
+        "Partial Bender",
+        &types_of(&[]),
+        &types_of(&["Creature"]),
+        &types_of(&[]),
+    );
+    assert!(
+        !parsed
+            .triggers
+            .iter()
+            .any(|t| t.mode == TriggerMode::ElementalBend),
+        "a partial two-bend disjunction must not lower to the any-bend ElementalBend \
+         matcher (it would over-fire on the unlisted bend events)"
+    );
+    // Belt-and-suspenders: it must also not silently map to one of the listed
+    // single-bend modes (that would drop the other listed event).
+    assert!(
+        !parsed
+            .triggers
+            .iter()
+            .any(|t| matches!(t.mode, TriggerMode::Waterbend | TriggerMode::Earthbend)),
+        "a partial bend disjunction must not collapse to a single-bend mode either"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // §20 — Alacrian Armory: "becomes saddled if it's a Mount and becomes an
 // artifact creature if it's a Vehicle"

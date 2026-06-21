@@ -10003,9 +10003,10 @@ fn try_parse_phase_trigger(lower: &str) -> Option<(TriggerMode, TriggerDefinitio
 }
 
 /// Avatar crossover: recognize a single bending verb and map it to its
-/// specific `TriggerMode`. A disjunction of these verbs is collapsed by
+/// specific `TriggerMode`. The full four-verb disjunction is collapsed by
 /// `try_parse_bend_trigger` to `TriggerMode::ElementalBend` (which matches any of
-/// the four bending `GameEvent`s for the source's controller). Single source of
+/// the four bending `GameEvent`s for the source's controller); a partial
+/// disjunction fails closed (see `try_parse_bend_trigger`). Single source of
 /// truth for both the trigger-mode dispatch and the `continues_player_action_list`
 /// condition/effect boundary check.
 fn parse_bend_verb(input: &str) -> OracleResult<'_, TriggerMode> {
@@ -10020,12 +10021,21 @@ fn parse_bend_verb(input: &str) -> OracleResult<'_, TriggerMode> {
 
 /// Avatar crossover (CR 603.2): "whenever you {waterbend|earthbend|firebend|
 /// airbend}[, {verb}]*[, or {verb}]" — a single bending verb fires its specific
-/// bend trigger; a disjunction of two or more fires on ANY of the listed bend
-/// events (`TriggerMode::ElementalBend`, which the runtime matcher
-/// `match_elemental_bend` already scopes to the source's controller). Avatar Aang
-/// uses the full four-verb batch. `valid_target = Controller` is redundant with
-/// the matcher's controller scoping but kept for consistency with the other
-/// player-action bend-adjacent triggers.
+/// bend trigger; the full four-verb batch (Avatar Aang) fires on ANY of the four
+/// bend events via `TriggerMode::ElementalBend`, whose matcher
+/// `match_elemental_bend` already scopes to the source's controller.
+///
+/// A PARTIAL disjunction (a strict subset of two or three distinct verbs, e.g.
+/// "whenever you waterbend or earthbend") has no faithful runtime representation:
+/// the only any-bend matcher is `match_elemental_bend`, which fires on all four,
+/// and there is no parameterized bend-set matcher yet. Collapsing a partial set to
+/// `ElementalBend` would over-fire on the unlisted bend events. So this parser
+/// returns `None` for any partial set, leaving such cards to fail closed
+/// (strict-failure `Unknown`) rather than ship a trigger broader than its
+/// semantics. When a partial-bend card actually appears, add a parameterized
+/// bend-set matcher and route the parsed set through to it. `valid_target =
+/// Controller` is redundant with the matcher's controller scoping but kept for
+/// consistency with the other player-action bend-adjacent triggers.
 fn try_parse_bend_trigger(lower: &str) -> Option<(TriggerMode, TriggerDefinition)> {
     let rest = alt((
         value((), tag::<_, _, OracleError<'_>>("whenever you ")),
@@ -10059,12 +10069,15 @@ fn try_parse_bend_trigger(lower: &str) -> Option<(TriggerMode, TriggerDefinition
         }
     }
 
+    let distinct: std::collections::HashSet<&TriggerMode> = modes.iter().collect();
     let mode = match modes.as_slice() {
         [] => return None,
         [single] => single.clone(),
-        // CR 603.2: two or more distinct bend events in one trigger collapse to
-        // the any-bend matcher.
-        _ => TriggerMode::ElementalBend,
+        // CR 603.2: only the complete four-verb batch maps to the any-bend matcher.
+        // Anything narrower (partial subset, or repeated verbs) lacks a faithful
+        // runtime matcher and must fail closed rather than over-fire.
+        _ if distinct.len() == 4 => TriggerMode::ElementalBend,
+        _ => return None,
     };
 
     let mut def = make_base();
