@@ -1689,6 +1689,15 @@ fn parse_graveyard_branch_filter(branch: &str) -> Option<TargetFilter> {
         Cow::Borrowed(branch)
     };
 
+    // CR 700.6: "historic spells" lowers to the Historic property on spell
+    // cards; suffix stripping leaves the bare adjective, so expand to the card
+    // phrase the type parser expects.
+    let cleaned: Cow<str> = if cleaned == "historic" {
+        Cow::Borrowed("historic card")
+    } else {
+        cleaned
+    };
+
     let (filter, _self_ref) = parse_graveyard_permission_filter(&cleaned);
     // Reject the unparseable fallbacks so a branch we cannot model declines the
     // whole disjunctive parse rather than silently admitting everything.
@@ -2128,6 +2137,15 @@ pub(crate) fn try_parse_top_of_library_cast_permission(
         return Some(def);
     }
 
+    // CR 305.1 + CR 601.2a + CR 700.6: Disjunctive filtered permission —
+    // "You may play <land-filter> and cast <spell-filter> from the top of your
+    // library." (Crystal Skull, Isu Spyglass). `Play` mode covers both branches;
+    // distinct branch filters merge to `TargetFilter::Or`. Parsed after the
+    // unfiltered Bolas compound so "play lands and cast spells" stays `Any`.
+    if let Some(def) = try_parse_disjunctive_top_of_library_cast_permission(text, lower) {
+        return Some(def);
+    }
+
     // CR 601.2a: Optional once-per-turn frequency prefix. "Once each turn, …"
     // (Assemble the Players) and the longer "Once during each of your turns, …"
     // synonym both lower to OncePerTurn; absence keeps the Unlimited shape
@@ -2182,6 +2200,65 @@ pub(crate) fn try_parse_top_of_library_cast_permission(
         alt_cost,
     })
     .affected(filter)
+    .description(text.to_string());
+    if let Some(condition) = parse_top_of_library_permission_condition(trailing) {
+        def = def.condition(condition);
+    }
+    Some(def)
+}
+
+/// CR 305.1 + CR 601.2a + CR 700.6: Parse the disjunctive filtered top-of-
+/// library play/cast permission — "You may play <land-filter> and cast
+/// <spell-filter> from the top of your library." — into a single
+/// `TopOfLibraryCastPermission { play_mode: Play, frequency: Unlimited }`
+/// whose `affected` filter is the union of the two branch filters.
+///
+/// Accepts both "and cast" (Crystal Skull) and "or cast" (mirroring the
+/// graveyard disjunctive connector) before the shared library-top anchor.
+fn try_parse_disjunctive_top_of_library_cast_permission(
+    text: &str,
+    lower: &str,
+) -> Option<StaticDefinition> {
+    let rest = nom_tag_lower(lower, lower, "you may play ")?;
+
+    // CR 305.1 + CR 601.2a: Split the land-play branch from the spell-cast
+    // branch. Prefer " and cast " (Crystal Skull) but accept " or cast "
+    // for the same structural class.
+    let (land_branch, spell_branch) = nom_primitives::split_once_on(rest, " and cast ")
+        .ok()
+        .map(|(_, pair)| pair)
+        .or_else(|| {
+            nom_primitives::split_once_on(rest, " or cast ")
+                .ok()
+                .map(|(_, pair)| pair)
+        })?;
+
+    let (spell_filter_text, trailing) =
+        nom_primitives::split_once_on(spell_branch, " from the top of your library")
+            .ok()
+            .map(|(_, pair)| pair)?;
+
+    let land_filter = parse_graveyard_branch_filter(land_branch.trim())?;
+    let spell_filter = parse_graveyard_branch_filter(spell_filter_text.trim())?;
+
+    // CR 700.6: when both branches resolve to the same filter, collapse the
+    // union rather than emitting a redundant `Or`.
+    let affected = if land_filter == spell_filter {
+        land_filter
+    } else {
+        TargetFilter::Or {
+            filters: vec![land_filter, spell_filter],
+        }
+    };
+
+    let alt_cost = parse_top_of_library_alt_cost_rider(trailing, text);
+
+    let mut def = StaticDefinition::new(StaticMode::TopOfLibraryCastPermission {
+        play_mode: CardPlayMode::Play,
+        frequency: CastFrequency::Unlimited,
+        alt_cost,
+    })
+    .affected(affected)
     .description(text.to_string());
     if let Some(condition) = parse_top_of_library_permission_condition(trailing) {
         def = def.condition(condition);

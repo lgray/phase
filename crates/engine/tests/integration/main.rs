@@ -306,6 +306,7 @@ mod issue_3648_ninjutsu_combat_flow;
 mod issue_3649_tetsuko;
 mod issue_3650_grievous_wound;
 mod issue_3652_together_as_one;
+mod issue_3653_crystal_skull;
 mod issue_3654_nyxbloom_mana_reflection;
 mod issue_3660_paradigm_multiple_offers;
 mod issue_3665_smugglers_share;
