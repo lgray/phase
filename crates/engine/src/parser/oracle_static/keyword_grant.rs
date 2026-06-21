@@ -1207,6 +1207,21 @@ pub(crate) fn classify_quoted_inner(ability_text: &str) -> Vec<ContinuousModific
     if ability_text.is_empty() {
         return Vec::new();
     }
+
+    // CR 207.2c: A granted ability's text may carry an italicized ability-word
+    // prefix ("Landfall — Whenever a land you control enters, ..."). Ability
+    // words have no rules meaning, so the body parses through ordinary
+    // trigger/keyword/static machinery. Strip a recognized ability-word prefix
+    // and re-classify the remainder so the inner trigger/static is detected
+    // (otherwise the ability-word prefix masks the trigger keyword and the line
+    // falls through to the GrantAbility catch-all as an unimplemented effect).
+    // Gated on a known ability word so a legitimate em-dash body is untouched.
+    if let Some((aw_name, body)) = super::oracle_modal::strip_ability_word_with_name(ability_text) {
+        if super::oracle_modal::is_known_ability_word(&aw_name) {
+            return classify_quoted_inner(&body);
+        }
+    }
+
     let lower = ability_text.to_lowercase();
 
     // CR 603.1: Detect trigger prefixes to route to GrantTrigger.

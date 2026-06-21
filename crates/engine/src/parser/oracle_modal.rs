@@ -1412,6 +1412,15 @@ pub(super) const ABILITY_WORD_NAMES: &[&str] = &[
     "repartee",
 ];
 
+/// CR 207.2c: Is `name` (already lowercased) a recognized ability word? Used by
+/// callers that have already split an em-dash label and need to confirm it is a
+/// flavor ability word (no rules meaning) before re-dispatching the body through
+/// the ordinary trigger/static machinery — e.g. token-granted abilities whose
+/// quoted text begins "Landfall — Whenever a land you control enters, ...".
+pub(super) fn is_known_ability_word(name: &str) -> bool {
+    ABILITY_WORD_NAMES.contains(&name)
+}
+
 /// Match a known ability-word name at the start of a lowercased input, enforcing
 /// a trailing word boundary. Returns the remainder after the name.
 ///
