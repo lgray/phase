@@ -4234,6 +4234,89 @@ fn try_parse_distinct_card_types_from_revealed(tp: TextPair<'_>) -> Option<Parse
     })
 }
 
+/// CR 608.2c + CR 105.1 / CR 205.2a: Parse the for-each-category exile clause —
+/// "for each color, you may exile a card of that color from among the revealed
+/// cards" (Sanar), "for each card type, you may exile a card of that type from
+/// among them" (Portent of Calamity). Composes the category axis (color vs card
+/// type) and the pool reference ("them" / "the revealed cards") rather than
+/// enumerating each full sentence. Emits [`Effect::ForEachCategoryExile`], the
+/// per-member pool-exile iteration building block.
+///
+/// Distinct from `try_parse_distinct_card_types_from_revealed` (a single
+/// distinct-types multi-select put-to-hand): this iterates each member, exiling
+/// one card of that member per iteration.
+fn try_parse_for_each_category_exile(tp: TextPair<'_>) -> Option<ParsedEffectClause> {
+    type E<'a> = OracleError<'a>;
+    use crate::types::ability::IterationCategory;
+
+    let (rest, _) = tag::<_, _, E>("for each ").parse(tp.lower).ok()?;
+    // CR 105.1 / CR 205.2a: the category axis. "of those colors" is the anaphoric
+    // form (Sanar's "For each of those colors"); the colors it refers to were
+    // bound by the preceding reveal clause, but for the per-member exile the
+    // engine iterates all five colors and skips members with no candidate.
+    let (rest, category) = alt((
+        // "of those colors" (anaphoric plural) before "color"/"card type".
+        value(
+            IterationCategory::Color,
+            (
+                opt(tag::<_, _, E>("of those ")),
+                tag("color"),
+                opt(tag::<_, _, E>("s")),
+            ),
+        ),
+        value(
+            IterationCategory::CardType,
+            (
+                opt(tag::<_, _, E>("of those ")),
+                tag("card type"),
+                opt(tag::<_, _, E>("s")),
+            ),
+        ),
+    ))
+    .parse(rest)
+    .ok()?;
+    let (rest, _) = tag::<_, _, E>(", you may exile ").parse(rest).ok()?;
+    let (rest, _) = nom_primitives::parse_article.parse(rest).ok()?;
+    let (rest, _) = tag::<_, _, E>("card of that ").parse(rest).ok()?;
+    // The "that <member-noun>" must agree with the iterated category.
+    let (rest, _) = match category {
+        IterationCategory::Color => tag::<_, _, E>("color").parse(rest).ok()?,
+        IterationCategory::CardType => tag::<_, _, E>("type").parse(rest).ok()?,
+    };
+    let (rest, _) = tag::<_, _, E>(" from among ").parse(rest).ok()?;
+    // CR 608.2c: the pool reference — "them" (anaphor for the revealed cards) or
+    // an explicit "the/those revealed cards".
+    let (rest, _) = alt((
+        tag::<_, _, E>("them"),
+        tag("the revealed cards"),
+        tag("those revealed cards"),
+    ))
+    .parse(rest)
+    .ok()?;
+    if !rest.trim().is_empty() {
+        return None;
+    }
+
+    Some(ParsedEffectClause {
+        effect: Effect::ForEachCategoryExile {
+            category,
+            // The pool cards were revealed from the top of the library.
+            zone: Zone::Library,
+            chooser: crate::types::ability::Chooser::Controller,
+            up_to: true,
+        },
+        duration: None,
+        sub_ability: None,
+        distribute: None,
+        multi_target: None,
+        condition: None,
+        // CR 608.2: "you may exile" — the iteration itself is optional per
+        // member; `up_to` carries the per-member optionality.
+        optional: false,
+        unless_pay: None,
+    })
+}
+
 #[tracing::instrument(level = "debug")]
 fn parse_effect_clause(text: &str, ctx: &mut ParseContext) -> ParsedEffectClause {
     // Phase 2: peel structural slots off the head of the clause before
@@ -5183,6 +5266,10 @@ fn parse_effect_clause_inner(text: &str, ctx: &mut ParseContext) -> ParsedEffect
     // for-each path; the `DistinctCounterKindsAmong` iteration source has already
     // been lifted onto the parent's `repeat_for` by `strip_for_each_prefix`.
     if let Some(clause) = try_parse_for_each_counter_kind_choice(tp) {
+        return clause;
+    }
+
+    if let Some(clause) = try_parse_for_each_category_exile(tp) {
         return clause;
     }
 
@@ -22294,6 +22381,70 @@ mod tests {
             matches!(*parsed.abilities[0].effect, Effect::Unimplemented { .. }),
             "compound source group must defer to Unimplemented, got {:?}",
             parsed.abilities[0].effect
+        );
+    }
+
+    /// CR 205.2a + CR 608.2c: the card-type form of the for-each-category exile
+    /// building block — "for each card type, you may exile a card of that type
+    /// from among them" (Portent of Calamity) parses to
+    /// `ForEachCategoryExile { category: CardType }`.
+    #[test]
+    fn for_each_card_type_exile_from_among_them() {
+        use crate::types::ability::IterationCategory;
+        let effect =
+            parse_effect("for each card type, you may exile a card of that type from among them");
+        assert!(
+            matches!(
+                effect,
+                Effect::ForEachCategoryExile {
+                    category: IterationCategory::CardType,
+                    up_to: true,
+                    ..
+                }
+            ),
+            "expected ForEachCategoryExile(CardType), got {effect:?}"
+        );
+    }
+
+    /// CR 105.1 + CR 608.2c: the color form — "for each color, you may exile a
+    /// card of that color from among the revealed cards" — and its anaphoric
+    /// plural variant "for each of those colors …" (Sanar) both parse to
+    /// `ForEachCategoryExile { category: Color }`.
+    #[test]
+    fn for_each_color_exile_from_revealed_cards() {
+        use crate::types::ability::IterationCategory;
+        for text in [
+            "for each color, you may exile a card of that color from among the revealed cards",
+            "for each of those colors, you may exile a card of that color from among the revealed cards",
+        ] {
+            let effect = parse_effect(text);
+            assert!(
+                matches!(
+                    effect,
+                    Effect::ForEachCategoryExile {
+                        category: IterationCategory::Color,
+                        up_to: true,
+                        ..
+                    }
+                ),
+                "expected ForEachCategoryExile(Color) for {text:?}, got {effect:?}"
+            );
+        }
+    }
+
+    /// CR 608.2c: the for-each-category EXILE parser must NOT swallow the
+    /// distinct-types PUT-to-hand form — "for each card type, you may put a card
+    /// of that type from among the revealed cards into your hand" is a different
+    /// instruction (put, not exile) and must still route to the distinct-types
+    /// `ChooseFromZone`, not the exile iterator.
+    #[test]
+    fn for_each_category_exile_does_not_shadow_put_to_hand() {
+        let effect = parse_effect(
+            "for each card type, you may put a card of that type from among the revealed cards into your hand",
+        );
+        assert!(
+            matches!(effect, Effect::ChooseFromZone { .. }),
+            "put-to-hand distinct-types form must stay ChooseFromZone, got {effect:?}"
         );
     }
 

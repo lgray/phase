@@ -2608,6 +2608,16 @@ fn effect_details(effect: &Effect) -> Vec<(String, String)> {
             d.push(("count".into(), count.to_string()));
             d.push(("zone".into(), fmt_zone(zone)));
         }
+        Effect::ForEachCategoryExile { category, zone, .. } => {
+            d.push((
+                "category".into(),
+                match category {
+                    crate::types::ability::IterationCategory::Color => "color".to_string(),
+                    crate::types::ability::IterationCategory::CardType => "card type".to_string(),
+                },
+            ));
+            d.push(("zone".into(), fmt_zone(zone)));
+        }
         Effect::ChooseObjectsIntoTrackedSet {
             chooser,
             filter,

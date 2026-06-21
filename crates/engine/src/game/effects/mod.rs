@@ -2746,6 +2746,9 @@ pub fn resolve_effect(
         Effect::RingTemptsYou => ring::resolve(state, ability, events),
         Effect::GrantCastingPermission { .. } => grant_permission::resolve(state, ability, events),
         Effect::ChooseFromZone { .. } => choose_from_zone::resolve(state, ability, events),
+        Effect::ForEachCategoryExile { .. } => {
+            choose_from_zone::resolve_for_each_category(state, ability, events)
+        }
         Effect::ChooseObjectsIntoTrackedSet { .. } => {
             choose_objects_into_tracked_set::resolve(state, ability, events)
         }
