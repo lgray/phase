@@ -5377,6 +5377,13 @@ fn continues_player_action_list(after_comma: &str) -> bool {
     if parse_player_action_phrase(candidate).is_some() {
         return true;
     }
+    // Avatar crossover: a comma-separated bending-verb disjunction
+    // ("whenever you waterbend, earthbend, firebend, or airbend") is a single
+    // batched trigger event, so the comma after each verb is a list separator,
+    // not the condition/effect boundary.
+    if all_consuming(parse_bend_verb).parse(candidate).is_ok() {
+        return true;
+    }
 
     if type_phrase_continues_to_combat_damage_player_event(trimmed) {
         return true;
@@ -9995,8 +10002,86 @@ fn try_parse_phase_trigger(lower: &str) -> Option<(TriggerMode, TriggerDefinitio
     Some((TriggerMode::Phase, def))
 }
 
+/// Avatar crossover: recognize a single bending verb and map it to its
+/// specific `TriggerMode`. A disjunction of these verbs is collapsed by
+/// `try_parse_bend_trigger` to `TriggerMode::ElementalBend` (which matches any of
+/// the four bending `GameEvent`s for the source's controller). Single source of
+/// truth for both the trigger-mode dispatch and the `continues_player_action_list`
+/// condition/effect boundary check.
+fn parse_bend_verb(input: &str) -> OracleResult<'_, TriggerMode> {
+    alt((
+        value(TriggerMode::Waterbend, tag("waterbend")),
+        value(TriggerMode::Earthbend, tag("earthbend")),
+        value(TriggerMode::Firebend, tag("firebend")),
+        value(TriggerMode::Airbend, tag("airbend")),
+    ))
+    .parse(input)
+}
+
+/// Avatar crossover (CR 603.2): "whenever you {waterbend|earthbend|firebend|
+/// airbend}[, {verb}]*[, or {verb}]" — a single bending verb fires its specific
+/// bend trigger; a disjunction of two or more fires on ANY of the listed bend
+/// events (`TriggerMode::ElementalBend`, which the runtime matcher
+/// `match_elemental_bend` already scopes to the source's controller). Avatar Aang
+/// uses the full four-verb batch. `valid_target = Controller` is redundant with
+/// the matcher's controller scoping but kept for consistency with the other
+/// player-action bend-adjacent triggers.
+fn try_parse_bend_trigger(lower: &str) -> Option<(TriggerMode, TriggerDefinition)> {
+    let rest = alt((
+        value((), tag::<_, _, OracleError<'_>>("whenever you ")),
+        value((), tag("when you ")),
+    ))
+    .parse(lower)
+    .map(|(rest, ())| rest)
+    .ok()?;
+
+    let mut modes: Vec<TriggerMode> = Vec::new();
+    let mut remaining = rest.trim();
+    loop {
+        let (after_verb, mode) = parse_bend_verb(remaining).ok()?;
+        modes.push(mode);
+        // Consume an optional list separator: ", or ", ", ", " or " — or stop at
+        // the end of the condition clause.
+        let next = alt((
+            value((), tag::<_, _, OracleError<'_>>(", or ")),
+            value((), tag(", ")),
+            value((), tag(" or ")),
+        ))
+        .parse(after_verb);
+        match next {
+            Ok((tail, ())) => remaining = tail.trim_start(),
+            Err(_) => {
+                if !after_verb.trim().is_empty() {
+                    return None;
+                }
+                break;
+            }
+        }
+    }
+
+    let mode = match modes.as_slice() {
+        [] => return None,
+        [single] => single.clone(),
+        // CR 603.2: two or more distinct bend events in one trigger collapse to
+        // the any-bend matcher.
+        _ => TriggerMode::ElementalBend,
+    };
+
+    let mut def = make_base();
+    def.mode = mode.clone();
+    def.valid_target = Some(TargetFilter::Controller);
+    Some((mode, def))
+}
+
 /// Parse player-centric triggers: "you gain life", "you cast a/an ...", "you draw a card"
 fn try_parse_player_trigger(lower: &str) -> Option<(TriggerMode, TriggerDefinition)> {
+    // Avatar crossover: bending-verb triggers ("whenever you waterbend, …") must
+    // run before the generic player-action dispatch, which does not recognize the
+    // bend verbs and would fall through to `TriggerMode::Unknown`.
+    if let Some(result) = try_parse_bend_trigger(lower) {
+        return Some(result);
+    }
+
     if let Some(result) = try_parse_player_action_trigger(lower) {
         return Some(result);
     }

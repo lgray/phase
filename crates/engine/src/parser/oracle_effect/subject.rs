@@ -417,7 +417,19 @@ fn try_parse_subject_become_clause(
     tag::<_, _, OracleError<'_>>("become ")
         .parse(predicate_lower.as_str())
         .ok()?;
-    let application = parse_subject_application(subject, ctx)?;
+    // CR 608.2c: a bare "becomes <descriptor>" conjunct (no leading subject) is
+    // the second half of a compound-become instruction whose subject carried over
+    // from the prior conjunct — Alacrian Armory's "that permanent becomes saddled
+    // if it's a Mount and becomes an artifact creature if it's a Vehicle", where
+    // the sequence splitter peels "becomes an artifact creature …" off as its own
+    // chunk. Resolve the empty subject through the same context-dependent "it"
+    // anaphor the explicit "it becomes …" form uses (parent target / triggering
+    // source), so the second animation binds to the same object as the first.
+    let application = if subject.is_empty() {
+        parse_subject_application("it", ctx)?
+    } else {
+        parse_subject_application(subject, ctx)?
+    };
     build_become_clause(application, &predicate, ctx)
 }
 

@@ -1639,9 +1639,12 @@ pub(super) fn parse_targeted_action_ast(
         assert_no_compound_remainder(_rem, text);
         return Some(TargetedImperativeAst::GainControl { target, all });
     }
-    // Earthbend: "earthbend [N] [target <type>]"
+    // Earthbend: "[you ]earthbend [N] [target <type>]". The optional "you "
+    // subject (Fatal Fissure's delayed trigger "you earthbend 4") names the
+    // controller performing the keyword action; earthbend is a player action, so
+    // the subject carries no extra targeting and is simply consumed.
     if let Some((_, rest)) = nom_on_lower(text, lower, |input| {
-        value((), tag("earthbend ")).parse(input)
+        value((), preceded(opt(tag("you ")), tag("earthbend "))).parse(input)
     }) {
         let rest_lower = &lower[lower.len() - rest.len()..];
         let (target, power, toughness) = parse_earthbend_params(text, rest_lower);
@@ -7641,6 +7644,21 @@ fn try_parse_exchange_life_totals(lower: &str) -> Option<(TargetFilter, TargetFi
 /// so we don't accept malformed inputs like "target creature and dance" as a
 /// valid two-target phrase.
 fn try_parse_exchange_control_targets(span: &str) -> Option<(TargetFilter, TargetFilter)> {
+    // CR 601.2c + CR 115.1: a trailing "controlled by different players"
+    // (Kitsune, Dragon's Daughter: "exchange control of two other target
+    // creatures controlled by different players") is a target-SET constraint
+    // (`TargetSelectionConstraint::DifferentObjectControllers`), extracted
+    // separately in the chain lowerer — it is not part of either per-slot filter.
+    // Locate and strip it with a nom combinator (take_until + tag) so the per-slot
+    // `parse_target` sees a clean "two other target creatures" span. Mirrors the
+    // detector `parse_controlled_by_different_players_target_constraint` in the
+    // chain lowerer.
+    let span = match take_until::<_, _, OracleError<'_>>(" controlled by different players")
+        .parse(span)
+    {
+        Ok((_, before)) => before.trim_end(),
+        Err(_) => span,
+    };
     // Quantified shape: "two target Xs" dispatched via nom. We peek for the
     // `"two target "` prefix with `alt((tag(...), tag(...)))` (plural handled by
     // `parse_target`'s QUANTIFIED_PREFIXES), then re-enter `parse_target` on the

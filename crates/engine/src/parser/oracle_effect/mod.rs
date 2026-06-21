@@ -2552,8 +2552,12 @@ fn try_parse_airbend_clause(tp: TextPair<'_>) -> Option<ParsedEffectClause> {
 }
 
 fn try_parse_earthbend_clause(tp: TextPair<'_>) -> Option<ParsedEffectClause> {
+    // CR 608.2c: the optional leading "you " subject ("you earthbend 4" — Fatal
+    // Fissure's delayed trigger) names the controller performing the keyword
+    // action. Earthbend is a player action with no extra targeting, so the
+    // subject is simply consumed before the count/target parse.
     let (_, rest) = nom_on_lower(tp.original, tp.lower, |i| {
-        value((), tag("earthbend ")).parse(i)
+        value((), preceded(opt(tag("you ")), tag("earthbend "))).parse(i)
     })?;
     // `rest` is the original-case remainder; lowercase it for the nom-based
     // dispatcher inside `parse_earthbend_count_expr`, which expects already-lowered
