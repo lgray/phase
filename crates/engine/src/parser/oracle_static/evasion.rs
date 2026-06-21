@@ -1976,6 +1976,10 @@ fn parse_crew_contribution_predicate_nom(
             tag("crews vehicles and stations permanents"),
         ),
         value(vec![CrewAction::Crew], tag("crews vehicles")),
+        // CR 702.184a: bare "stations permanents" — station-only contribution
+        // modifier (Tapestry Warden: "… stations permanents using its toughness
+        // rather than its power").
+        value(vec![CrewAction::Station], tag("stations permanents")),
     ))
     .parse(input)?;
     let (input, _) = space1.parse(input)?;

@@ -2087,6 +2087,56 @@ pub(super) fn parse_search_and_creation_ast(
             player,
         });
     }
+    // CR 701.20a + CR 701.20e: "look at/reveal <count> cards from the top of
+    // <owner>'s library" — the count-leading word order as opposed to the
+    // "look at the top N cards" form handled above. `reveal` distinguishes the
+    // public reveal (CR 701.20a) from the private look (CR 701.20e).
+    //
+    // Coverage-honesty guard: only a `Fixed` count is supported on this arm.
+    // A non-`Fixed` count cannot be carried losslessly to runtime in either
+    // direction, so a variable/multiplicative count-leading dig would falsely
+    // claim support:
+    //   * reveal (CR 701.20a) is demoted in `lower.rs` to
+    //     `Effect::RevealTop { count: u32 }`, collapsing every non-`Fixed` count
+    //     to 1 card revealed;
+    //   * the variable-count look forms in practice pair with a "put X cards
+    //     from among them" keep-count (Stargaze), and `Effect::Dig.keep_count`
+    //     is `Option<u32>` — it silently drops the dynamic keep to 1.
+    // Both are coverage-honesty bugs (the form would parse to 0-Unimplemented
+    // while behaving wrong at runtime). Non-fixed count-leading digs fall
+    // through and stay honestly Unimplemented until `Dig.count`/`keep_count`
+    // become `QuantityExpr` end-to-end (the documented Stargaze deferral).
+    if let Some((reveal, remainder)) = nom_on_lower(text, lower, |input| {
+        alt((
+            value(false, tag("look at ")),
+            value(false, tag("looks at ")),
+            value(true, tag("reveal ")),
+            value(true, tag("reveals ")),
+        ))
+        .parse(input)
+    }) {
+        // `parse_count_expr` lowercases internally, but its returned remainder
+        // mirrors the case of its input. The trailing "cards from the top of "
+        // tags below match lowercase, so feed the lowercase slice (not the
+        // original-case `remainder`) to keep the remainder lowercase too.
+        let rest_lower = &lower[lower.len() - remainder.len()..];
+        if let Some((QuantityExpr::Fixed { value }, after_count)) = parse_count_expr(rest_lower) {
+            let after_count = after_count.trim_start();
+            if let Ok((owner_lower, _)) = alt((
+                tag::<_, _, OracleError<'_>>("cards from the top of "),
+                tag::<_, _, OracleError<'_>>("card from the top of "),
+            ))
+            .parse(after_count)
+            {
+                let player = parse_dig_library_owner(owner_lower);
+                return Some(SearchCreationImperativeAst::Dig {
+                    count: QuantityExpr::Fixed { value },
+                    reveal,
+                    player,
+                });
+            }
+        }
+    }
     // CR 701.16a: "look at that many cards from the top of your library" — variable-count dig
     // where "that many" references the result of a previous effect (e.g., damage dealt).
     if let Some((reveal, _)) = nom_on_lower(text, lower, |input| {

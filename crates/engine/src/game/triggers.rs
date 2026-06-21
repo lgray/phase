@@ -2049,6 +2049,7 @@ fn collect_pending_triggers(
                     .condition(TriggerCondition::WasCast {
                         zone: None,
                         controller: None,
+                        owner: None,
                     });
                 let cascade_ability =
                     ResolvedAbility::new(Effect::Cascade, Vec::new(), *cast_obj_id, controller);
@@ -2093,6 +2094,7 @@ fn collect_pending_triggers(
                     .condition(TriggerCondition::WasCast {
                         zone: None,
                         controller: None,
+                        owner: None,
                     });
                 let ripple_ability = ResolvedAbility::new(
                     Effect::Ripple { count: n },
@@ -4980,13 +4982,22 @@ pub(crate) fn check_trigger_condition(
         // anyway per CR 603.4 if the source has left the relevant zone).
         // CR 601.2 + CR 603.4: cast-origin check. zone=None → cast from anywhere
         // (Discover/Wedding Ring/Satoru back-compat). zone=Some(z) → cast specifically
-        // from zone z (Twilight Diviner: graveyard). controller=Some(c) additionally
-        // gates the caster relative to the trigger controller (Prized Amalgam:
-        // "you cast it from your graveyard"). Reads the ENTERING object's cast
-        // provenance, never the trigger source.
+        // from zone z (Twilight Diviner: graveyard). Two independent scope axes:
+        //   - caster_scope=Some(c) gates the CASTER relative to the trigger
+        //     controller against `cast_controller` (Prized Amalgam: "you cast it
+        //     from your graveyard").
+        //   - owner_scope=Some(c) gates the ORIGIN-ZONE OWNER. CR 400.3 + CR 404.1:
+        //     graveyard/hand/library are owner-specific zones, so "your graveyard"
+        //     means the card's owner is you — checked against `obj.owner`,
+        //     independent of who cast it (Rocket-Powered Goblin Glider: "if it was
+        //     cast from your graveyard"). An opponent casting your card from your
+        //     graveyard satisfies owner=You; you casting from an opponent's
+        //     graveyard does not.
+        // Reads the ENTERING object's cast provenance, never the trigger source.
         TriggerCondition::WasCast {
             zone,
             controller: caster_scope,
+            owner: owner_scope,
         } => {
             let checked_id = trigger_event
                 .and_then(|e| match e {
@@ -5003,6 +5014,9 @@ pub(crate) fn check_trigger_condition(
                             obj.cast_controller.is_some_and(|caster| {
                                 controller_ref_matches_player(caster, controller, scope)
                             })
+                        })
+                        && owner_scope.as_ref().is_none_or(|scope| {
+                            controller_ref_matches_player(obj.owner, controller, scope)
                         })
                 })
         }
@@ -15623,6 +15637,7 @@ pub mod tests {
             &TriggerCondition::WasCast {
                 zone: None,
                 controller: None,
+                owner: None,
             },
             PlayerId(0),
             Some(light_paws),
@@ -15664,6 +15679,7 @@ pub mod tests {
             &TriggerCondition::WasCast {
                 zone: None,
                 controller: None,
+                owner: None,
             },
             PlayerId(0),
             Some(light_paws),
@@ -15696,6 +15712,7 @@ pub mod tests {
         let condition = TriggerCondition::WasCast {
             zone: Some(Zone::Graveyard),
             controller: Some(ControllerRef::You),
+            owner: None,
         };
         let event = zone_changed_event(
             entering,
@@ -15727,6 +15744,105 @@ pub mod tests {
             ),
             "controller-scoped WasCast should pass when the trigger controller cast it"
         );
+    }
+
+    /// CR 400.3 + CR 404.1 + CR 603.4: "if it was cast from your graveyard"
+    /// (Rocket-Powered Goblin Glider) scopes the ORIGIN-ZONE OWNER, not the
+    /// caster. A graveyard is owner-specific, so the only thing "your" constrains
+    /// is the card's owner — who cast it is irrelevant. Drives the parsed trigger
+    /// condition through `check_trigger_condition` (the runtime trigger-collection
+    /// seam) across all four owner × caster combinations relative to the trigger
+    /// controller (P0). Before the owner-axis fix the `owner = You` scope was
+    /// modeled as `controller = You` (caster), which inverted two of the four
+    /// rows: it WRONGLY rejected an opponent casting your card from your graveyard
+    /// and WRONGLY accepted you casting a card from an opponent's graveyard.
+    #[test]
+    fn rocket_glider_was_cast_from_your_graveyard_is_owner_scoped_not_caster() {
+        let trigger = crate::parser::oracle_trigger::parse_trigger_line(
+            "When this Equipment enters, if it was cast from your graveyard, attach it to target creature you control.",
+            "Rocket-Powered Goblin Glider",
+        );
+        let condition = trigger
+            .condition
+            .expect("the gravecast ETB trigger must carry an intervening-if condition");
+        // The parser must emit the owner axis, not the caster axis, for the bare
+        // "cast from your graveyard" wording (no "you cast it" clause).
+        assert_eq!(
+            condition,
+            TriggerCondition::WasCast {
+                zone: Some(Zone::Graveyard),
+                controller: None,
+                owner: Some(ControllerRef::You),
+            },
+            "bare 'cast from your graveyard' must scope the origin-zone OWNER, not the caster"
+        );
+
+        // trigger controller = P0 (controls the Equipment). Each case sets the
+        // ENTERING object's owner (graveyard owner, CR 404.1) and caster, casts
+        // it from the graveyard, then evaluates the parsed condition.
+        // (owner, caster, expected) — the assertion that flips on revert is the
+        // two opp/your-yard and you/opp-yard rows.
+        let cases = [
+            (
+                PlayerId(0),
+                PlayerId(0),
+                true,
+                "you cast your own card from your graveyard",
+            ),
+            (
+                PlayerId(0),
+                PlayerId(1),
+                true,
+                "an opponent casts your card from your graveyard",
+            ),
+            (
+                PlayerId(1),
+                PlayerId(0),
+                false,
+                "you cast a card from an opponent's graveyard",
+            ),
+            (
+                PlayerId(1),
+                PlayerId(1),
+                false,
+                "an opponent casts their card from their graveyard",
+            ),
+        ];
+        for (owner, caster, expected, label) in cases {
+            let mut state = setup();
+            // The Equipment is self-referential: "it" is the entering Equipment,
+            // owned by `owner`, cast by `caster` from its owner's graveyard.
+            let equipment = create_object(
+                &mut state,
+                CardId(1),
+                owner,
+                "Rocket-Powered Goblin Glider".to_string(),
+                Zone::Battlefield,
+            );
+            {
+                let obj = state.objects.get_mut(&equipment).unwrap();
+                obj.cast_from_zone = Some(Zone::Graveyard);
+                obj.cast_controller = Some(caster);
+            }
+            let event = zone_changed_event(
+                equipment,
+                Zone::Stack,
+                Zone::Battlefield,
+                vec![CoreType::Artifact],
+                vec!["Equipment"],
+            );
+            assert_eq!(
+                check_trigger_condition(
+                    &state,
+                    &condition,
+                    PlayerId(0),
+                    Some(equipment),
+                    Some(&event),
+                ),
+                expected,
+                "owner-scoped gravecast mismatch: {label}"
+            );
+        }
     }
 
     /// CR 603.4 + CR 601.2h: Satoru's intervening-if must fail at resolution
@@ -15798,6 +15914,7 @@ pub mod tests {
             &TriggerCondition::WasCast {
                 zone: None,
                 controller: None,
+                owner: None,
             },
             PlayerId(0),
             Some(cast_spell),
@@ -15811,6 +15928,7 @@ pub mod tests {
             &TriggerCondition::WasCast {
                 zone: None,
                 controller: None,
+                owner: None,
             },
             PlayerId(0),
             Some(cast_spell),
