@@ -1266,6 +1266,42 @@ fn rebuild_static_index_at_top() -> bool {
     true
 }
 
+/// CR 701.60c: A suspected permanent has menace and "This creature can't block"
+/// for as long as it's suspected. The suspected designation (`is_suspected`,
+/// CR 701.60b) is the source of truth; the menace + "can't block" abilities are
+/// a continuous effect *derived* from it, not stored on the permanent's copiable
+/// values. Re-deriving them here — directly onto the just-reset live `keywords`
+/// / `static_definitions` (NOT `base_*`) every layers pass — keeps them present
+/// exactly while the designation holds and leaves the permanent's printed
+/// abilities untouched: clearing the designation (Effect::Unsuspect) simply
+/// stops re-deriving them, and a naturally-menace creature keeps its printed
+/// menace when it stops being suspected.
+///
+/// Called from the Step-1 reset of both the full (`evaluate_layers`) and
+/// incremental (`apply_layers_incremental`) passes, immediately after the live
+/// fields are reset to base, so the derived grant rides along with every reset.
+fn derive_suspected_abilities(obj: &mut crate::game::game_object::GameObject) {
+    if !obj.is_suspected {
+        return;
+    }
+    // CR 701.60c: menace. Skip if the permanent already has it (printed or
+    // otherwise granted) so the derivation is idempotent and a later removal of
+    // the printed copy still leaves exactly the derived one.
+    if !obj.keywords.iter().any(|k| matches!(k, Keyword::Menace)) {
+        obj.keywords.push(Keyword::Menace);
+    }
+    // CR 701.60c: "This creature can't block." Skip if a `CantBlock` static is
+    // already present (printed or otherwise granted).
+    if !obj
+        .static_definitions
+        .iter_all()
+        .any(|s| s.mode == StaticMode::CantBlock)
+    {
+        obj.static_definitions
+            .push(StaticDefinition::new(StaticMode::CantBlock));
+    }
+}
+
 /// Unconditional full layer evaluation (CR 613.1).
 ///
 /// Production code must NOT call this directly — go through [`flush_layers`],
@@ -1361,6 +1397,10 @@ pub fn evaluate_layers(state: &mut GameState) {
             obj.assigns_damage_from_toughness = false;
             obj.assigns_damage_as_though_unblocked = false;
             obj.assigns_no_combat_damage = false;
+            // CR 701.60c: re-derive the suspected designation's menace +
+            // "can't block" onto the just-reset live fields (not base), so the
+            // grant lasts exactly as long as the designation.
+            derive_suspected_abilities(obj);
         }
     }
     // CR 702.94a + CR 400.3: Hand-zone continuous effects (Lorehold-style
@@ -2038,6 +2078,10 @@ fn apply_layers_incremental(state: &mut GameState, entered_ids: &HashSet<ObjectI
             obj.assigns_damage_from_toughness = false;
             obj.assigns_damage_as_though_unblocked = false;
             obj.assigns_no_combat_damage = false;
+            // CR 701.60c: re-derive the suspected designation's menace +
+            // "can't block" onto the just-reset live fields (mirrors the full
+            // pass) so the incremental path agrees with `evaluate_layers`.
+            derive_suspected_abilities(obj);
         }
     }
 

@@ -1867,7 +1867,7 @@ pub enum CastingPermission {
 }
 
 /// CR 609.4b: Permission modifying how mana may be spent to pay a cost.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ManaSpendPermission {
     /// Mana may be spent as though it were mana of any type or color for this
     /// payment. This preserves the Oracle distinction without changing the
@@ -8603,10 +8603,40 @@ pub enum Effect {
         #[serde(default = "default_target_filter_any")]
         source_filter: TargetFilter,
     },
-    /// CR 701.60a: Suspect target creature — it gains menace and "can't block."
+    /// CR 701.60a: Suspect creature(s) — each gains menace and "can't block."
+    ///
+    /// `scope` parameterizes the "single vs mass" axis (mirrors
+    /// `Effect::SetTapState`): `EffectScope::Single` is the targeted/anaphoric
+    /// "suspect target creature" / "suspect it"; `EffectScope::All` is a
+    /// non-targeting population filter ("suspect each creature ...") enumerated
+    /// over the battlefield at resolution. No printed card uses the mass scope
+    /// for Suspect yet, but the field keeps the designation/un-designation pair
+    /// symmetric so the shared resolver dispatches identically.
     Suspect {
         #[serde(default = "default_target_filter_any")]
         target: TargetFilter,
+        #[serde(default = "default_effect_scope_single")]
+        scope: EffectScope,
+    },
+    /// CR 701.60a: Cause creature(s) to no longer be suspected — the
+    /// un-designation transition ("all suspected creatures are no longer
+    /// suspected", "it's no longer suspected", "become no longer suspected").
+    /// The designation is the source of truth, so this clears `is_suspected` and
+    /// the derived menace + "can't block" written by `Suspect`. Sibling of
+    /// `Suspect`, mirroring the `BecomePrepared` / `BecomeUnprepared` pair.
+    ///
+    /// `scope` is load-bearing (CR 701.60a applies the un-designation to *each*
+    /// matching permanent): `EffectScope::Single` is the targeted/anaphoric
+    /// "it's no longer suspected" / "~ is no longer suspected" path that reads
+    /// `ability.targets`; `EffectScope::All` is the mass "all suspected
+    /// creatures are no longer suspected" (Absolving Lammasu) population filter
+    /// that enumerates every matching battlefield permanent with no announced
+    /// target.
+    Unsuspect {
+        #[serde(default = "default_target_filter_any")]
+        target: TargetFilter,
+        #[serde(default = "default_effect_scope_single")]
+        scope: EffectScope,
     },
     /// CR 701.50a: Target creature connives (draw a card, then discard a card;
     /// if a nonland card is discarded, put a +1/+1 counter on it).
@@ -10546,7 +10576,6 @@ impl Effect {
             | Effect::RevealHand { target, .. }
             | Effect::Reveal { target, .. }
             | Effect::TargetOnly { target, .. }
-            | Effect::Suspect { target, .. }
             | Effect::Connive { target, .. }
             | Effect::PhaseOut { target, .. }
             | Effect::PhaseIn { target, .. }
@@ -10698,6 +10727,29 @@ impl Effect {
                 ..
             } => Some(target),
             Effect::SetTapState {
+                scope: EffectScope::All,
+                ..
+            } => None,
+
+            // CR 701.60a: `Suspect`/`Unsuspect` expose a target slot only for the
+            // single-permanent scope (targeted/anaphoric "suspect target
+            // creature" / "it's no longer suspected"). The `All` scope ("all
+            // suspected creatures are no longer suspected") is a non-targeting
+            // population filter enumerated at resolution — like `DestroyAll`,
+            // its `target_filter()` is None.
+            Effect::Suspect {
+                scope: EffectScope::Single,
+                target,
+            }
+            | Effect::Unsuspect {
+                scope: EffectScope::Single,
+                target,
+            } => Some(target),
+            Effect::Suspect {
+                scope: EffectScope::All,
+                ..
+            }
+            | Effect::Unsuspect {
                 scope: EffectScope::All,
                 ..
             } => None,
@@ -11008,6 +11060,7 @@ impl Effect {
             | Effect::Reveal { .. }
             | Effect::TargetOnly { .. }
             | Effect::Suspect { .. }
+            | Effect::Unsuspect { .. }
             | Effect::Connive { .. }
             | Effect::PhaseOut { .. }
             | Effect::PhaseIn { .. }
@@ -11220,6 +11273,7 @@ impl Effect {
             | Effect::Reveal { .. }
             | Effect::TargetOnly { .. }
             | Effect::Suspect { .. }
+            | Effect::Unsuspect { .. }
             | Effect::Connive { .. }
             | Effect::PhaseOut { .. }
             | Effect::PhaseIn { .. }
@@ -11405,6 +11459,7 @@ pub fn effect_variant_name(effect: &Effect) -> &str {
         Effect::Choose { .. } => "Choose",
         Effect::ChooseDamageSource { .. } => "ChooseDamageSource",
         Effect::Suspect { .. } => "Suspect",
+        Effect::Unsuspect { .. } => "Unsuspect",
         Effect::Connive { .. } => "Connive",
         Effect::PhaseOut { .. } => "PhaseOut",
         Effect::PhaseIn { .. } => "PhaseIn",
@@ -11611,6 +11666,7 @@ pub enum EffectKind {
     Choose,
     ChooseDamageSource,
     Suspect,
+    Unsuspect,
     Connive,
     PhaseOut,
     PhaseIn,
@@ -11835,6 +11891,7 @@ impl From<&Effect> for EffectKind {
             Effect::Choose { .. } => EffectKind::Choose,
             Effect::ChooseDamageSource { .. } => EffectKind::ChooseDamageSource,
             Effect::Suspect { .. } => EffectKind::Suspect,
+            Effect::Unsuspect { .. } => EffectKind::Unsuspect,
             Effect::Connive { .. } => EffectKind::Connive,
             Effect::PhaseOut { .. } => EffectKind::PhaseOut,
             Effect::PhaseIn { .. } => EffectKind::PhaseIn,

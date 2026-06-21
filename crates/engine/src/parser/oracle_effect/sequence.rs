@@ -18,9 +18,9 @@ use crate::parser::oracle_quantity::{parse_cda_quantity, parse_quantity_ref};
 use crate::types::ability::{
     AbilityDefinition, AbilityKind, CastingPermission, Chooser, ContinuousModification,
     ControllerRef, CopyRetargetPermission, CounterSourceRider, CounteredSpellDestination, Duration,
-    Effect, FaceDownBody, FaceDownProfile, LibraryPosition, MultiTargetSpec, PermissionGrantee,
-    PtValue, QuantityExpr, QuantityRef, RevealUntilDisposition, StaticDefinition,
-    TargetChoiceTiming, TargetFilter, TypeFilter, TypedFilter,
+    Effect, EffectScope, FaceDownBody, FaceDownProfile, LibraryPosition, MultiTargetSpec,
+    PermissionGrantee, PtValue, QuantityExpr, QuantityRef, RevealUntilDisposition,
+    StaticDefinition, TargetChoiceTiming, TargetFilter, TypeFilter, TypedFilter,
 };
 use crate::types::card_type::CoreType;
 use crate::types::counter::CounterType;
@@ -2538,6 +2538,7 @@ pub(super) fn apply_clause_continuation(
                 kind,
                 Effect::Suspect {
                     target: TargetFilter::LastCreated,
+                    scope: EffectScope::Single,
                 },
             ));
         }
@@ -4259,6 +4260,7 @@ pub(super) fn clause_is_dig_lookback_transparent(effect: &Effect) -> bool {
         | Effect::Choose { .. }
         | Effect::ChooseDamageSource { .. }
         | Effect::Suspect { .. }
+        | Effect::Unsuspect { .. }
         | Effect::Connive { .. }
         | Effect::PhaseOut { .. }
         | Effect::PhaseIn { .. }
