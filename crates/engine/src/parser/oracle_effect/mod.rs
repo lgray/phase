@@ -31189,6 +31189,60 @@ mod tests {
         );
     }
 
+    /// CR 702.34a / CR 702.128a / CR 702.180a: the self-cost graveyard keyword
+    /// grant is one parameterized parser primitive — assert all three members
+    /// (flashback "that card's", embalm "its", harmonize "Its ... its") lower to
+    /// `AddKeyword(<keyword>(SelfManaCost))` with the redundant cost-clarification
+    /// sentence absorbed (no trailing `Unimplemented` sub-ability). Builds for the
+    /// class, not the card.
+    #[test]
+    fn self_cost_graveyard_keyword_grants_absorb_cost_clarification() {
+        use crate::types::keywords::{EmbalmCost, FlashbackCost, Keyword};
+
+        let cases: [(&str, Keyword); 3] = [
+            (
+                "target instant or sorcery card in your graveyard gains flashback until end of turn. The flashback cost is equal to that card's mana cost.",
+                Keyword::Flashback(FlashbackCost::Mana(ManaCost::SelfManaCost)),
+            ),
+            (
+                "target creature card in your graveyard gains embalm until end of turn. The embalm cost is equal to its mana cost.",
+                Keyword::Embalm(EmbalmCost::Mana(ManaCost::SelfManaCost)),
+            ),
+            (
+                "target instant or sorcery card in your graveyard gains harmonize until end of turn. Its harmonize cost is equal to its mana cost.",
+                Keyword::Harmonize(ManaCost::SelfManaCost),
+            ),
+        ];
+
+        for (text, expected_keyword) in cases {
+            let def = parse_effect_chain(text, AbilityKind::Spell);
+            let Effect::GenericEffect {
+                static_abilities,
+                duration,
+                target: Some(_),
+            } = &*def.effect
+            else {
+                panic!("Expected GenericEffect for {text:?}, got {:?}", def.effect);
+            };
+            assert_eq!(*duration, Some(Duration::UntilEndOfTurn));
+            assert!(
+                static_abilities
+                    .iter()
+                    .any(|static_def| static_def.modifications.contains(
+                        &ContinuousModification::AddKeyword {
+                            keyword: expected_keyword.clone()
+                        }
+                    )),
+                "missing {expected_keyword:?} grant for {text:?}: {static_abilities:?}"
+            );
+            assert!(
+                def.sub_ability.is_none(),
+                "cost clarification must be absorbed for {text:?}, got {:?}",
+                def.sub_ability
+            );
+        }
+    }
+
     #[test]
     fn effect_target_creature_becomes_blue_uses_continuous_effect() {
         let e = parse_effect("Target creature becomes blue until end of turn");
