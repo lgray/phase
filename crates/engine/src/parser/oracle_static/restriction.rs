@@ -1874,6 +1874,10 @@ pub(crate) fn try_parse_exile_cast_permission(text: &str, lower: &str) -> Option
             // restriction beyond its once-each-turn frequency.
             pool,
             timing: ExileCastTiming::AnyTime,
+            // CR 609.4b / CR 702.8a: Maralen grants no mana-spend or flash
+            // concession.
+            mana_spend_permission: None,
+            grants_flash: false,
         })
         .affected(filter)
         .description(text.to_string()),
@@ -1925,31 +1929,50 @@ pub(crate) fn try_parse_persistent_exile_play_permission(
     let uses_anaphor = after_look.is_some();
     let rest = after_look.unwrap_or(rest);
 
-    // Core permission phrase. CR 305.1: both "play lands and cast spells" and
-    // "play cards" lower to Play mode.
-    let after_clause = if let Some(rest) =
+    // Core permission phrase. CR 305.1: "play lands and cast spells" / "play
+    // cards" lower to Play mode (lands are played, non-land cards are cast).
+    // CR 601.2a: the bare "cast cards exiled with ~" wording (Azula, Cunning
+    // Usurper) is spell-cast only and lowers to `Cast` — lands cannot be
+    // "cast", so the Cast branch never admits exiled lands.
+    let (after_clause, play_mode) = if let Some(rest) =
         nom_tag_lower(rest, rest, "you may play lands and cast spells from among ")
     {
         // The play clause either names the source ("cards exiled with <self>") or
         // refers back to the look-at preamble's set ("those cards").
-        if uses_anaphor {
+        let rest = if uses_anaphor {
             nom_tag_lower(rest, rest, "those cards")?
         } else {
             strip_exile_play_source_reference(rest)?
-        }
+        };
+        (rest, CardPlayMode::Play)
+    } else if let Some(rest) = nom_tag_lower(rest, rest, "you may cast ") {
+        // CR 601.2a: "you may cast cards exiled with ~" — spell-cast only.
+        let rest = if uses_anaphor {
+            nom_tag_lower(rest, rest, "those cards")?
+        } else {
+            strip_exile_play_source_reference(rest)?
+        };
+        (rest, CardPlayMode::Cast)
     } else {
         let rest = nom_tag_lower(rest, rest, "you may play ")?;
-        if uses_anaphor {
+        let rest = if uses_anaphor {
             nom_tag_lower(rest, rest, "those cards")?
         } else {
             strip_exile_play_source_reference(rest)?
-        }
+        };
+        (rest, CardPlayMode::Play)
     };
+
+    // CR 601.3b + CR 609.4b: Optional payment/timing-concession riders that ride
+    // alongside the cast permission (Azula, Cunning Usurper). Parse them in
+    // order off the tail so any leftover proves an unmodeled shape.
+    let (after_riders, grants_flash, mana_spend_permission) =
+        strip_exile_cast_concession_riders(after_clause);
 
     // CR 113.6b: A trailing period is the only permitted remainder; any other
     // tail is an unmodeled shape — decline so it surfaces as a coverage gap
     // rather than a silent misparse.
-    let tail = after_clause.trim_start();
+    let tail = after_riders.trim_start();
     // allow-noncombinator: punctuation cleanup (drop the sentence terminator) on a pre-tokenized chunk, not parsing dispatch.
     let tail = tail.strip_prefix('.').unwrap_or(tail); // allow-noncombinator: punctuation cleanup on a pre-tokenized chunk, not parsing dispatch.
     if !tail.trim().is_empty() {
@@ -1959,13 +1982,16 @@ pub(crate) fn try_parse_persistent_exile_play_permission(
     let mut definition = StaticDefinition::new(StaticMode::ExileCastPermission {
         // CR 601.2a: No once-per-turn cap on this class.
         frequency: CastFrequency::Unlimited,
-        // CR 305.1: Play covers lands (played) and non-land cards (cast).
-        play_mode: CardPlayMode::Play,
+        // CR 305.1 / CR 601.2a: `Play` covers lands + non-land cards; `Cast`
+        // covers spells only, set by the "you may cast" wording.
+        play_mode,
         // CR 305.1 / CR 601.3: Cards are played/cast at their normal cost.
         cost: ExileCastCost::PayNormalCost,
         // CR 406.6: Lifetime per-source exile-link pool.
         pool: ExileCardPool::Persistent,
         timing,
+        mana_spend_permission,
+        grants_flash,
     })
     // CR 305.1: The permission applies to every card in the source's exile
     // pool; the pool itself is the scope, so no type/MV constraint.
@@ -1976,6 +2002,49 @@ pub(crate) fn try_parse_persistent_exile_play_permission(
     }
 
     Some(definition)
+}
+
+/// CR 601.3b + CR 609.4b: Strip the optional flash-grant and any-type-mana
+/// concession riders that follow the core exile-cast clause (Azula, Cunning
+/// Usurper: "… and you may cast them as though they had flash. Mana of any type
+/// can be spent to cast those spells."). Returns the remainder plus the parsed
+/// `(grants_flash, mana_spend_permission)` pair. Each rider is optional and
+/// recognized independently so future cards mixing only one of the two still
+/// parse. Riders not present leave the defaults `(false, None)`.
+fn strip_exile_cast_concession_riders(
+    input: &str,
+) -> (
+    &str,
+    bool,
+    Option<crate::types::ability::ManaSpendPermission>,
+) {
+    let mut rest = input.trim_start();
+    let mut grants_flash = false;
+    let mut mana_spend_permission = None;
+
+    // CR 601.3b: "[and] you may cast them as though they had flash[.]"
+    // Optional leading "and "/". " connective consumed via the file-wide
+    // nom-tag idiom so the rider may follow either the period or the conjunction.
+    if let Some(after) = nom_tag_lower(rest, rest, "and you may cast them as though they had flash")
+        .or_else(|| nom_tag_lower(rest, rest, "you may cast them as though they had flash"))
+    {
+        grants_flash = true;
+        let trimmed = after.trim_start();
+        // allow-noncombinator: punctuation cleanup (drop the sentence terminator) between riders on a pre-tokenized chunk, not parsing dispatch.
+        rest = trimmed.strip_prefix('.').unwrap_or(trimmed).trim_start(); // allow-noncombinator: punctuation cleanup between riders, not parsing dispatch.
+    }
+
+    // CR 609.4b: "Mana of any type can be spent to cast those spells[.]"
+    if let Some(after) = nom_tag_lower(
+        rest,
+        rest,
+        "mana of any type can be spent to cast those spells",
+    ) {
+        mana_spend_permission = Some(crate::types::ability::ManaSpendPermission::AnyTypeOrColor);
+        rest = after;
+    }
+
+    (rest, grants_flash, mana_spend_permission)
 }
 
 fn strip_leading_permission_condition(input: &str) -> Option<(&str, StaticCondition)> {

@@ -5206,6 +5206,29 @@ fn parse_continuous_modifications_are_goaded_emits_goaded_static_mode() {
     )));
 }
 
+/// CR 701.60a + CR 701.60d: Airtight Alibi's compound static "Enchanted creature
+/// gets +2/+2 and can't become suspected" emits the P/T buff AND a
+/// `CantBecomeSuspected` rider (mirrors the goaded designation rider) so the
+/// prohibition is not silently dropped.
+#[test]
+fn parse_continuous_modifications_cant_become_suspected_emits_static_mode() {
+    let mods = parse_continuous_modifications("gets +2/+2 and can't become suspected");
+    assert!(
+        mods.iter()
+            .any(|m| matches!(m, ContinuousModification::AddPower { value: 2 })),
+        "P/T buff preserved alongside the prohibition rider"
+    );
+    assert!(
+        mods.iter().any(|m| matches!(
+            m,
+            ContinuousModification::AddStaticMode {
+                mode: StaticMode::CantBecomeSuspected
+            }
+        )),
+        "can't-become-suspected rider must not be dropped, got {mods:?}"
+    );
+}
+
 /// CR 613.1f + CR 113.3: "all activated abilities of all cards exiled with it" /
 /// "the exiled card" → `GrantAllActivatedAbilitiesOf { ExiledBySource }` (Myr
 /// Welder, Territory Forge). Issue #3101. Both the bare-predicate building-block
@@ -8232,6 +8255,8 @@ fn exile_cast_permission_maralen_fae_ascendant() {
             cost: ExileCastCost::WithoutPayingManaCost,
             pool: ExileCardPool::ThisTurn,
             timing: ExileCastTiming::AnyTime,
+            mana_spend_permission: None,
+            grants_flash: false,
         },
         "expected ExileCastPermission, got {:?}",
         def.mode
@@ -8277,6 +8302,7 @@ fn exile_cast_permission_during_each_of_your_turns_synonym() {
                 cost: ExileCastCost::WithoutPayingManaCost,
                 pool: ExileCardPool::ThisTurn,
                 timing: ExileCastTiming::AnyTime,
+                ..
             }
         ),
         "expected ExileCastPermission(OncePerTurn, Cast, free), got {:?}",
@@ -8331,6 +8357,8 @@ fn persistent_exile_play_permission_matrix_form() {
             cost: ExileCastCost::PayNormalCost,
             pool: ExileCardPool::Persistent,
             timing: ExileCastTiming::YourTurnOnly,
+            mana_spend_permission: None,
+            grants_flash: false,
         },
         "expected persistent your-turn Play permission, got {:?}",
         def.mode
@@ -8359,6 +8387,8 @@ fn persistent_exile_play_permission_evendo_sacrificed_permanent_gate() {
             cost: ExileCastCost::PayNormalCost,
             pool: ExileCardPool::Persistent,
             timing: ExileCastTiming::YourTurnOnly,
+            mana_spend_permission: None,
+            grants_flash: false,
         },
         "expected persistent your-turn Play permission, got {:?}",
         def.mode
@@ -8433,9 +8463,62 @@ fn persistent_exile_play_permission_look_at_variant() {
             cost: ExileCastCost::PayNormalCost,
             pool: ExileCardPool::Persistent,
             timing: ExileCastTiming::AnyTime,
+            mana_spend_permission: None,
+            grants_flash: false,
         },
         "expected persistent any-time Play permission, got {:?}",
         def.mode
+    );
+}
+
+/// CR 601.2a + CR 609.4b + CR 702.8a: Azula, Cunning Usurper — "During your
+/// turn, you may cast cards exiled with ~ and you may cast them as though they
+/// had flash. Mana of any type can be spent to cast those spells." lowers to a
+/// persistent, your-turn-only, Cast-mode permission carrying both the any-type
+/// mana spend concession and the flash grant.
+#[test]
+fn persistent_exile_cast_permission_azula_flash_and_any_mana() {
+    let text = "During your turn, you may cast cards exiled with ~ and you may cast them as though they had flash. Mana of any type can be spent to cast those spells.";
+    let def = parse_static_line(text).expect("Azula static must parse");
+    assert_eq!(
+        def.mode,
+        StaticMode::ExileCastPermission {
+            frequency: CastFrequency::Unlimited,
+            // CR 601.2a: "you may cast cards exiled with ~" is spell-cast only.
+            play_mode: CardPlayMode::Cast,
+            cost: ExileCastCost::PayNormalCost,
+            pool: ExileCardPool::Persistent,
+            timing: ExileCastTiming::YourTurnOnly,
+            mana_spend_permission: Some(crate::types::ability::ManaSpendPermission::AnyTypeOrColor),
+            grants_flash: true,
+        },
+        "expected persistent Cast permission with flash + any-mana, got {:?}",
+        def.mode
+    );
+    assert_eq!(
+        def.affected,
+        Some(TargetFilter::Any),
+        "the persistent pool is the scope; affected must be Any"
+    );
+
+    // Full Oracle dispatch (with the real "~" normalization of "Azula, Cunning
+    // Usurper" → "Azula" → "~") must route the line to the same static, leaving
+    // no Unimplemented node behind.
+    let card_text = "During your turn, you may cast cards exiled with Azula and you may cast them as though they had flash. Mana of any type can be spent to cast those spells.";
+    let parsed = crate::parser::oracle::parse_oracle_text(
+        card_text,
+        "Azula, Cunning Usurper",
+        &[],
+        &["Creature".to_string()],
+        &["Human".to_string()],
+    );
+    assert!(
+        parsed
+            .statics
+            .iter()
+            .any(|parsed_def| parsed_def.mode == def.mode),
+        "full Oracle dispatch must route Azula's line to the flash+any-mana static, got {:?}",
+        parsed.statics
     );
 }
 
@@ -8465,6 +8548,8 @@ fn exile_cast_permission_soul_jar_persistent_creature_pool() {
             cost: ExileCastCost::PayNormalCost,
             pool: ExileCardPool::Persistent,
             timing: ExileCastTiming::AnyTime,
+            mana_spend_permission: None,
+            grants_flash: false,
         },
         "expected persistent ExileCastPermission, got {:?}",
         def.mode
