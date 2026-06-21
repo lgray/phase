@@ -2675,6 +2675,7 @@ pub fn resolve_effect(
         Effect::Choose { .. } => choose::resolve(state, ability, events),
         Effect::ChooseDamageSource { .. } => choose_damage_source::resolve(state, ability, events),
         Effect::Suspect { .. } => suspect::resolve(state, ability, events),
+        Effect::Unsuspect { .. } => suspect::resolve_unsuspect(state, ability, events),
         Effect::Connive { .. } => connive::resolve(state, ability, events),
         Effect::PhaseOut { .. } => phase_out::resolve(state, ability, events),
         Effect::PhaseIn { .. } => phase_out::resolve_phase_in(state, ability, events),

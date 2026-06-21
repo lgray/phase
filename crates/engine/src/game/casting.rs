@@ -1819,6 +1819,13 @@ pub(super) fn player_can_spend_as_any_color_for_optional_spell(
                     )
                 })
             })
+        // CR 609.4b: A battlefield `StaticMode::ExileCastPermission` static may
+        // grant "mana of any type can be spent to cast those spells" (Azula,
+        // Cunning Usurper) for the cards in its exile pool. Unlike the per-card
+        // `PlayFromExile` grant above, the concession lives on the static, so it
+        // is re-derived from the source's pool + filter at spend time.
+        || source_id
+            .is_some_and(|id| exile_static_permission_grants_any_color(state, player, id))
 }
 
 pub(super) fn player_can_spend_as_any_color_for_payment(
@@ -1935,6 +1942,13 @@ struct ExilePermissionSource<'a> {
     pool: ExileCardPool,
     /// CR 117.1c: When the permission functions — `AnyTime` or `YourTurnOnly`.
     timing: ExileCastTiming,
+    /// CR 609.4b: Optional any-type-mana spend concession riding alongside the
+    /// permission (Azula, Cunning Usurper). `Some(AnyTypeOrColor)` lets the
+    /// controller spend mana of any type to cast a spell offered by this source.
+    mana_spend_permission: Option<crate::types::ability::ManaSpendPermission>,
+    /// CR 601.3b + CR 702.8a: When `true`, spells cast via this permission may
+    /// be cast as though they had flash (Azula, Cunning Usurper).
+    grants_flash: bool,
 }
 
 /// CR 113.6b + CR 406.6: The set of exiled object ids this source's permission
@@ -2001,6 +2015,8 @@ fn exile_permission_sources(state: &GameState, player: PlayerId) -> Vec<ExilePer
                     cost,
                     pool,
                     timing,
+                    mana_spend_permission,
+                    grants_flash,
                 } => definition
                     .affected
                     .as_ref()
@@ -2012,6 +2028,8 @@ fn exile_permission_sources(state: &GameState, player: PlayerId) -> Vec<ExilePer
                         play_mode,
                         pool,
                         timing,
+                        mana_spend_permission,
+                        grants_flash,
                     }),
                 _ => None,
             })
@@ -2138,6 +2156,75 @@ pub(crate) fn exile_cast_permission_source(
         }
         Some((source.source_id, source.frequency, source.cost))
     })
+}
+
+/// CR 601.2a + CR 113.6b: Find the full `ExileCastPermission` source authorizing
+/// `player` to cast `exiled_id`, including its payment/timing concessions
+/// (`mana_spend_permission`, `grants_flash`). Shares the gating logic with
+/// `exile_cast_permission_source` (frequency slot, your-turn timing, pool
+/// membership, affected filter) but surfaces the concession fields so the
+/// any-type-mana and flash wiring can consult them. Returns `None` when no
+/// functioning static authorizes the cast.
+fn exile_cast_permission_source_full(
+    state: &GameState,
+    player: PlayerId,
+    exiled_id: ObjectId,
+) -> Option<ExilePermissionSource<'_>> {
+    let obj = state.objects.get(&exiled_id)?;
+    if !exile_object_can_enter_cast_path(obj) {
+        return None;
+    }
+    if state.cards_exiled_with_source_this_turn.is_empty() && state.exile_links.is_empty() {
+        return None;
+    }
+    let sources = exile_permission_sources(state, player);
+    sources.into_iter().find(|source| {
+        if !exile_cast_frequency_available(state, source.source_id, source.frequency) {
+            return false;
+        }
+        if !exile_permission_timing_active(state, source, player) {
+            return false;
+        }
+        let pool = exile_permission_pool(state, source);
+        if !pool.contains(&exiled_id) {
+            return false;
+        }
+        let ctx =
+            super::filter::FilterContext::from_source_with_controller(source.source_id, player);
+        super::filter::matches_target_filter(state, exiled_id, source.filter, &ctx)
+    })
+}
+
+/// CR 609.4b: True when an `ExileCastPermission` static granting "mana of any
+/// type can be spent to cast those spells" (Azula, Cunning Usurper) authorizes
+/// `player` to cast `exiled_id`. Consulted by
+/// `player_can_spend_as_any_color_for_spell` so the any-type-mana concession is
+/// scoped to spells offered by that static, mirroring the per-card
+/// `CastingPermission::PlayFromExile.mana_spend_permission` path.
+pub(crate) fn exile_static_permission_grants_any_color(
+    state: &GameState,
+    player: PlayerId,
+    exiled_id: ObjectId,
+) -> bool {
+    exile_cast_permission_source_full(state, player, exiled_id).is_some_and(|source| {
+        matches!(
+            source.mana_spend_permission,
+            Some(crate::types::ability::ManaSpendPermission::AnyTypeOrColor)
+        )
+    })
+}
+
+/// CR 601.3b + CR 702.8a: True when an `ExileCastPermission` static granting
+/// "you may cast them as though they had flash" (Azula, Cunning Usurper)
+/// authorizes `player` to cast `exiled_id`. Consulted by the cast-timing check
+/// in `prepare_spell_cast` so the spell may be cast at instant speed.
+pub(crate) fn exile_static_permission_grants_flash(
+    state: &GameState,
+    player: PlayerId,
+    exiled_id: ObjectId,
+) -> bool {
+    exile_cast_permission_source_full(state, player, exiled_id)
+        .is_some_and(|source| source.grants_flash)
 }
 
 fn graveyard_permission_sources(
@@ -4129,8 +4216,13 @@ fn prepare_spell_cast_with_variant_override_inner(
             .or(surge_cost)
             .unwrap_or_else(|| obj.mana_cost.clone())
     };
-    let has_granted_flash =
-        effective_spell_keyword_kinds(state, player, object_id).contains(&KeywordKind::Flash);
+    // CR 601.3b + CR 702.8a: A spell has effective flash from its own keywords
+    // OR from a battlefield `StaticMode::ExileCastPermission` static granting
+    // "you may cast them as though they had flash" (Azula, Cunning Usurper) for
+    // the cards in its exile pool.
+    let has_granted_flash = effective_spell_keyword_kinds(state, player, object_id)
+        .contains(&KeywordKind::Flash)
+        || exile_static_permission_grants_flash(state, player, object_id);
     let cast_outside_sorcery_timing = !restrictions::is_sorcery_speed_window(state, player);
     // CR 304.1: Instants can be cast any time a player has priority.
     // CR 301.1 / CR 306.1: Artifacts and planeswalkers are cast at sorcery speed.
@@ -43345,6 +43437,8 @@ mod tests {
             cost,
             pool,
             timing,
+            mana_spend_permission: None,
+            grants_flash: false,
         })
         .affected(affected);
         let obj = state.objects.get_mut(&source).unwrap();
@@ -43899,6 +43993,152 @@ mod tests {
         let obj = state.objects.get(&land).unwrap();
         assert_eq!(obj.zone, Zone::Battlefield);
         assert_eq!(obj.played_from_zone, Some(Zone::Exile));
+    }
+
+    /// Build a persistent, your-turn-only, Cast-mode `ExileCastPermission`
+    /// source carrying the Azula, Cunning Usurper concessions: any-type-mana
+    /// spend (CR 609.4b) and flash-grant (CR 702.8a).
+    fn add_azula_exile_cast_source(state: &mut GameState, player: PlayerId) -> ObjectId {
+        use crate::types::ability::StaticDefinition;
+        let card_id = crate::types::identifiers::CardId(state.next_object_id);
+        let source = create_object(
+            state,
+            card_id,
+            player,
+            "Azula, Cunning Usurper".to_string(),
+            Zone::Battlefield,
+        );
+        let def = StaticDefinition::new(StaticMode::ExileCastPermission {
+            frequency: CastFrequency::Unlimited,
+            play_mode: CardPlayMode::Cast,
+            cost: ExileCastCost::PayNormalCost,
+            pool: ExileCardPool::Persistent,
+            timing: ExileCastTiming::YourTurnOnly,
+            mana_spend_permission: Some(ManaSpendPermission::AnyTypeOrColor),
+            grants_flash: true,
+        })
+        .affected(TargetFilter::Any);
+        state
+            .objects
+            .get_mut(&source)
+            .unwrap()
+            .static_definitions
+            .push(def);
+        source
+    }
+
+    /// Add a single-blue sorcery linked to `source_id` in the persistent
+    /// `exile_links` pool. Returns the exiled spell's object id.
+    fn add_linked_blue_sorcery(
+        state: &mut GameState,
+        player: PlayerId,
+        source_id: ObjectId,
+        name: &str,
+    ) -> ObjectId {
+        let card_id = crate::types::identifiers::CardId(state.next_object_id);
+        let object_id = create_object(state, card_id, player, name.to_string(), Zone::Exile);
+        {
+            let obj = state.objects.get_mut(&object_id).unwrap();
+            obj.card_types.core_types = vec![CoreType::Sorcery];
+            // Single blue pip — provably uncastable from a red-only pool unless
+            // the any-type-mana concession is in force.
+            obj.mana_cost = ManaCost::Cost {
+                shards: vec![ManaCostShard::Blue],
+                generic: 0,
+            };
+            Arc::make_mut(&mut obj.abilities).push(AbilityDefinition::new(
+                AbilityKind::Spell,
+                Effect::Draw {
+                    count: QuantityExpr::Fixed { value: 1 },
+                    target: TargetFilter::Controller,
+                },
+            ));
+        }
+        link_exiled_to_source(state, object_id, source_id);
+        object_id
+    }
+
+    /// CR 609.4b: Azula's "Mana of any type can be spent to cast those spells"
+    /// concession lets the controller pay a blue sorcery's {U} from a red-only
+    /// pool. DISCRIMINATING: if `mana_spend_permission` is reverted to `None`,
+    /// `player_can_spend_as_any_color_for_spell` flips to false and
+    /// `can_pay_cost_after_auto_tap` fails — the spell becomes unpayable.
+    #[test]
+    fn azula_exile_static_grants_any_type_mana_spend() {
+        let mut state = setup_game_at_main_phase();
+        let player = PlayerId(0);
+        let source = add_azula_exile_cast_source(&mut state, player);
+        let spell = add_linked_blue_sorcery(&mut state, player, source, "Exiled Blue Bolt");
+        // Only RED mana available — a {U} cost is unpayable without the
+        // any-type-mana concession.
+        add_mana(&mut state, player, ManaType::Red, 1);
+
+        assert!(
+            spell_objects_available_to_cast(&state, player).contains(&spell),
+            "Azula's persistent Cast permission must surface the linked spell"
+        );
+        assert!(
+            player_can_spend_as_any_color_for_spell(&state, player, spell),
+            "the static must grant any-type-mana spend for spells in its pool"
+        );
+        assert!(
+            can_pay_cost_after_auto_tap(&state, player, spell, &state.objects[&spell].mana_cost),
+            "a {{U}} cost must be payable from a red-only pool under the concession"
+        );
+    }
+
+    /// CR 601.3b + CR 702.8a: Azula's "you may cast them as though they had
+    /// flash" concession lets a sorcery be cast at instant speed (here: P0's
+    /// main phase with a non-empty stack, so the window is NOT sorcery-speed).
+    /// DISCRIMINATING: if `grants_flash` is reverted to `false`,
+    /// `exile_static_permission_grants_flash` returns false, `has_granted_flash`
+    /// is false, and `handle_cast_spell` rejects the sorcery for sorcery-speed
+    /// timing.
+    #[test]
+    fn azula_exile_static_grants_flash_timing() {
+        let mut state = setup_game_at_main_phase();
+        let player = PlayerId(0);
+        let source = add_azula_exile_cast_source(&mut state, player);
+        let spell = add_linked_blue_sorcery(&mut state, player, source, "Exiled Blue Bolt");
+        // Mana that pays the {U} cost via the any-type concession, so the cast
+        // clears payment and the timing gate (the behavior under test) is what
+        // decides the outcome.
+        add_mana(&mut state, player, ManaType::Red, 1);
+
+        // Force a non-sorcery-speed window: P0 is active in PreCombatMain, so the
+        // only missing precondition is the empty stack.
+        state.stack.push_back(crate::types::game_state::StackEntry {
+            id: ObjectId(9000),
+            source_id: ObjectId(9000),
+            controller: player,
+            kind: crate::types::game_state::StackEntryKind::Spell {
+                card_id: CardId(9000),
+                ability: None,
+                casting_variant: CastingVariant::Normal,
+                actual_mana_spent: 0,
+            },
+        });
+        assert!(
+            !restrictions::is_sorcery_speed_window(&state, player),
+            "test setup must be outside the sorcery-speed window"
+        );
+        assert!(
+            exile_static_permission_grants_flash(&state, player, spell),
+            "the static must report a flash grant for spells in its pool"
+        );
+
+        let card_id = state.objects.get(&spell).unwrap().card_id;
+        let mut events = Vec::new();
+        let result = handle_cast_spell(&mut state, player, spell, card_id, &mut events);
+        assert!(
+            result.is_ok(),
+            "flash-granted exiled sorcery must be castable outside the sorcery window: {result:?}"
+        );
+        assert_eq!(
+            state.objects.get(&spell).unwrap().zone,
+            Zone::Stack,
+            "the cast spell must move to the stack"
+        );
     }
 
     /// PR #1441: Teferi, Time Raveler's +1 ("you may cast sorcery spells as
@@ -44755,6 +44995,134 @@ mod tests {
             generic_of(&def_opp),
             6,
             "an opponent's Spacecraft attacker must not satisfy 'you attacked with a Spacecraft'"
+        );
+    }
+
+    /// CR 601.2f + CR 602.1 + CR 109.5: Boom Scholar — "Exhaust abilities of
+    /// other permanents you control cost {2} less to activate." The generalized
+    /// "<keyword> abilities of [subject]" static parser keys the reduction on the
+    /// "exhaust" `AbilityTag` (`ReduceAbilityCost { keyword: "exhaust" }`), and
+    /// the runtime gate `apply_static_activated_ability_cost_reduction` matches it
+    /// against the activating ability's `AbilityTag::keyword_str()`.
+    ///
+    /// Drives the production seam `apply_cost_reduction` (reached by
+    /// `can_activate_ability`). Discriminating assertions:
+    ///   - Another permanent's exhaust ability ({6} generic) reduces to {4}.
+    ///   - A non-exhaust activated ability on that permanent is NOT reduced
+    ///     (keyword mismatch — `active_keyword != "exhaust"`).
+    ///   - Boom Scholar's OWN exhaust ability is NOT reduced (FilterProp::Another
+    ///     self-exclusion).
+    ///
+    /// Reverting the generalized parser arm yields no static (the line stays
+    /// Unimplemented), so the first assertion would read {6} and fail. Reverting
+    /// the "exhaust"-keyword match would leave every assertion at full cost.
+    #[test]
+    fn boom_scholar_reduces_other_permanents_exhaust_ability_cost() {
+        use crate::types::ability::{
+            AbilityTag, Effect, FilterProp, StaticDefinition, TypedFilter,
+        };
+        use crate::types::identifiers::CardId;
+        use crate::types::mana::ManaCost;
+        use crate::types::statics::StaticMode;
+
+        let mut state = GameState::new_two_player(7);
+
+        // Boom Scholar carries the parsed reduction static.
+        let scholar = create_object(
+            &mut state,
+            CardId(1),
+            PlayerId(0),
+            "Boom Scholar".to_string(),
+            Zone::Battlefield,
+        );
+        {
+            let obj = state.objects.get_mut(&scholar).unwrap();
+            obj.card_types
+                .core_types
+                .push(crate::types::card_type::CoreType::Creature);
+            obj.static_definitions = vec![StaticDefinition::new(StaticMode::ReduceAbilityCost {
+                keyword: "exhaust".to_string(),
+                amount: 2,
+                minimum_mana: None,
+                dynamic_count: None,
+            })
+            .affected(TargetFilter::Typed(
+                TypedFilter::permanent()
+                    .controller(ControllerRef::You)
+                    .properties(vec![FilterProp::Another]),
+            ))]
+            .into();
+        }
+
+        // A second permanent the same player controls, holding an exhaust ability.
+        let other = create_object(
+            &mut state,
+            CardId(2),
+            PlayerId(0),
+            "Other Exhaust Permanent".to_string(),
+            Zone::Battlefield,
+        );
+        {
+            let obj = state.objects.get_mut(&other).unwrap();
+            obj.card_types
+                .core_types
+                .push(crate::types::card_type::CoreType::Creature);
+        }
+
+        let make_exhaust_def = || {
+            let mut def = AbilityDefinition::new(
+                AbilityKind::Activated,
+                Effect::Unimplemented {
+                    name: "exhaust-effect".to_string(),
+                    description: None,
+                },
+            );
+            def.cost = Some(AbilityCost::Mana {
+                cost: ManaCost::Cost {
+                    shards: vec![],
+                    generic: 6,
+                },
+            });
+            def.ability_tag = Some(AbilityTag::Exhaust);
+            def
+        };
+        let make_plain_def = || {
+            let mut def = make_exhaust_def();
+            def.ability_tag = None; // untagged activated ability
+            def
+        };
+        let generic_of = |def: &AbilityDefinition| match def.cost.as_ref().unwrap() {
+            AbilityCost::Mana {
+                cost: ManaCost::Cost { generic, .. },
+            } => *generic,
+            other => panic!("expected Mana cost, got {other:?}"),
+        };
+
+        // Other permanent's exhaust ability: {6} → {4}.
+        let mut def_other = make_exhaust_def();
+        apply_cost_reduction(&state, &mut def_other, PlayerId(0), other);
+        assert_eq!(
+            generic_of(&def_other),
+            4,
+            "another permanent's exhaust ability must be reduced by {{2}}"
+        );
+
+        // Same permanent, but a non-exhaust (untagged) activated ability: unchanged.
+        let mut def_plain = make_plain_def();
+        apply_cost_reduction(&state, &mut def_plain, PlayerId(0), other);
+        assert_eq!(
+            generic_of(&def_plain),
+            6,
+            "a non-exhaust activated ability must not be reduced by the exhaust-keyed static"
+        );
+
+        // Boom Scholar's OWN exhaust ability: self-excluded by FilterProp::Another.
+        let mut def_self = make_exhaust_def();
+        apply_cost_reduction(&state, &mut def_self, PlayerId(0), scholar);
+        assert_eq!(
+            generic_of(&def_self),
+            6,
+            "\"other permanents\" must exclude the static's own source"
         );
     }
 

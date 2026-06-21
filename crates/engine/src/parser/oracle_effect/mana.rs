@@ -1468,6 +1468,23 @@ pub(crate) fn parse_mana_spend_restriction(
         return Some((ManaSpendRestriction::XCostOnly, vec![]));
     }
 
+    // CR 106.6: Activation-first disjunction — "to activate X or cast Y" (Automated
+    // Artificer). The "to cast " prefix check below would reject this ordering, so
+    // detect the activation-first pattern and route through the disjunction parser
+    // with the full base text (stripped of the leading "to ").
+    if nom_on_lower(base, &base_lower, |i| {
+        value((), (tag("to activate "), take_until(" or cast "))).parse(i)
+    })
+    .is_some()
+    {
+        // Strip leading "to " so each clause starts bare for parse_disjunctive_clause.
+        let without_to = nom_on_lower(base, &base_lower, |i| value((), tag("to ")).parse(i))
+            .map_or(base, |(_, rest)| rest);
+        if let Some(restriction) = parse_disjunctive_cast_clauses(without_to.trim()) {
+            return Some((restriction, vec![]));
+        }
+    }
+
     let (_, rest) = nom_on_lower(base, &base_lower, |i| value((), tag("to cast ")).parse(i))?;
     let rest = rest.trim();
 

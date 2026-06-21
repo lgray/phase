@@ -2982,9 +2982,25 @@ fn try_parse_put_counter_choice(
     tp: TextPair<'_>,
     ctx: &mut ParseContext,
 ) -> Option<ParsedEffectClause> {
-    let ((), after_choice_original) = nom_on_lower(tp.original, tp.lower, |i| {
+    // CR 122.1b + CR 608.2d: two surface forms select a counter kind. The
+    // explicit "put your choice of <list> on TARGET" form (Inspirit, Invoke the
+    // Ancients) and the bare "put a <X>, <Y>, or <Z> counter on TARGET" form
+    // (Reluctant Role Model: "put a flying, lifelink, or +1/+1 counter on it").
+    // Both resolve to the same `ChooseOneOf` of `PutCounter` branches — the
+    // controller still picks one kind at resolution. The bare form is allowed
+    // ONLY for the strictly-validated SharedNoun/FromAmong shapes (every item
+    // must name a real counter type), so noun-phrase disjunctions like "put a
+    // creature or a land into play" never misclassify as a counter choice.
+    let explicit_choice;
+    let after_choice_original = if let Some(((), rest)) = nom_on_lower(tp.original, tp.lower, |i| {
         value((), tag("put your choice of ")).parse(i)
-    })?;
+    }) {
+        explicit_choice = true;
+        rest
+    } else {
+        explicit_choice = false;
+        nom_on_lower(tp.original, tp.lower, |i| value((), tag("put ")).parse(i))?.1
+    };
 
     let consumed = tp.original.len() - after_choice_original.len();
     let after_choice = TextPair::new(after_choice_original, &tp.lower[consumed..]);
@@ -3021,6 +3037,12 @@ fn try_parse_put_counter_choice(
                 {
                     (ChoiceListShape::SharedNoun, items)
                 }
+                // The bare "put <list> on ..." form has no "your choice of"
+                // disambiguator, so it must NOT fall through to the permissive
+                // Distributed shape — that would let arbitrary "A or B" noun
+                // phrases reach the counter-branch builder. Require the strict
+                // SharedNoun/FromAmong shapes for the bare form.
+                _ if !explicit_choice => return None,
                 _ => (
                     ChoiceListShape::Distributed,
                     split_choice_list_items(choices_text)?,
@@ -13360,7 +13382,8 @@ fn inject_subject_target(effect: &mut Effect, subject: &SubjectPhraseAst) {
         | Effect::PhaseIn { target }
         | Effect::ForceBlock { target }
         | Effect::ForceAttack { target, .. }
-        | Effect::Suspect { target }
+        | Effect::Suspect { target, .. }
+        | Effect::Unsuspect { target, .. }
         | Effect::Goad { target }
         | Effect::Mill { target, .. }
         | Effect::Discard { target, .. }
@@ -16170,7 +16193,11 @@ pub(crate) fn each_target_filter_mut(effect: &mut Effect, f: &mut impl FnMut(&mu
         | Effect::Manifest { target, .. }
         // CR 701.60a: Suspect acts on a target permanent; expose its filter so
         // anaphor rewrites (e.g. self-targeting "Otherwise, suspect it") reach it.
-        | Effect::Suspect { target }
+        | Effect::Suspect { target, .. }
+        // CR 701.60a: Unsuspect (no-longer-suspected) acts on a target permanent;
+        // expose its filter so anaphor rewrites ("it's no longer suspected",
+        // "~ is no longer suspected") reach it.
+        | Effect::Unsuspect { target, .. }
         | Effect::TargetOnly { target, .. } => f(target),
         Effect::PutCounter { target, .. } | Effect::RemoveCounter { target, .. } => f(target),
         Effect::GoadAll { target } => f(target),
@@ -19226,8 +19253,34 @@ pub(crate) fn parse_effect_chain_ir(
                 None
             }
         });
+        // CR 119.3 + CR 609.3: "they lose life equal to the difference" — when a
+        // leading QuantityCheck condition bounds life lost (Lolth emblem: "if that
+        // player lost less than 8 life this turn"), the loss amount is the unsigned
+        // gap between the threshold and life lost this turn.
+        let difference_lose = condition.as_ref().and_then(|cond| {
+            let lower = text_no_qty.to_lowercase();
+            let clean = lower.trim().trim_end_matches('.');
+            if all_consuming(alt((
+                tag::<_, _, OracleError<'_>>("lose life equal to the difference"),
+                tag("they lose life equal to the difference"),
+            )))
+            .parse(clean)
+            .is_ok()
+            {
+                conditions::difference_expr(cond).map(|diff| {
+                    parsed_clause(Effect::LoseLife {
+                        amount: diff,
+                        target: Some(TargetFilter::ParentTarget),
+                    })
+                })
+            } else {
+                None
+            }
+        });
         let (clause, repeat_for) = if let Some(draw) = difference_draw {
             (draw, repeat_for)
+        } else if let Some(lose) = difference_lose {
+            (lose, repeat_for)
         } else {
             let (suffix_repeat_for, stripped_text_no_qty) =
                 strip_for_each_repeat_suffix(&text_no_qty);
@@ -34231,14 +34284,57 @@ mod tests {
 
     #[test]
     fn effect_emblem_trigger_with_subject_predicate_text_stays_emblem() {
+        use crate::types::ability::TriggerCondition;
+        use crate::types::triggers::TriggerMode;
+
         let def = parse_effect_chain(
             "You get an emblem with \"Whenever an opponent is dealt combat damage by one or more creatures you control, if that player lost less than 8 life this turn, they lose life equal to the difference.\"",
             AbilityKind::Activated,
         );
 
+        let Effect::CreateEmblem { triggers, .. } = &*def.effect else {
+            panic!("expected CreateEmblem, got {:?}", def.effect);
+        };
+        assert_eq!(triggers.len(), 1);
+        let trigger = &triggers[0];
+        assert_eq!(trigger.mode, TriggerMode::DamageReceived);
+        assert!(
+            matches!(
+                trigger.condition,
+                Some(TriggerCondition::QuantityComparison { .. })
+            ),
+            "emblem trigger must gate on life lost < 8, got {:?}",
+            trigger.condition
+        );
+        let execute = trigger.execute.as_ref().expect("emblem trigger execute");
+        match execute.effect.as_ref() {
+            Effect::LoseLife { amount, target } => {
+                assert_eq!(
+                    *target,
+                    Some(TargetFilter::ParentTarget),
+                    "life loss must hit the damaged player"
+                );
+                assert!(
+                    matches!(amount, QuantityExpr::Difference { .. }),
+                    "loss amount must be Difference, got {amount:?}"
+                );
+            }
+            other => panic!("expected LoseLife difference, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn lose_life_equal_to_the_difference_from_life_lost_threshold() {
+        let def = parse_effect_chain(
+            "If that player lost less than 8 life this turn, they lose life equal to the difference.",
+            AbilityKind::Spell,
+        );
         match &*def.effect {
-            Effect::CreateEmblem { .. } => {}
-            other => panic!("expected CreateEmblem, got {other:?}"),
+            Effect::LoseLife { amount, target } => {
+                assert_eq!(*target, Some(TargetFilter::ParentTarget));
+                assert!(matches!(amount, QuantityExpr::Difference { .. }));
+            }
+            other => panic!("expected LoseLife, got {other:?}"),
         }
     }
 

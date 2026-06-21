@@ -372,6 +372,7 @@ pub fn mark_public_state_from_events(state: &mut GameState, events: &[GameEvent]
             | GameEvent::PlayerPerformedAction { .. }
             | GameEvent::Regenerated { .. }
             | GameEvent::CreatureSuspected { .. }
+            | GameEvent::CreatureNoLongerSuspected { .. }
             | GameEvent::BecamePrepared { .. }
             | GameEvent::BecameUnprepared { .. }
             | GameEvent::CaseSolved { .. }

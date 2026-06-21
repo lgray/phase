@@ -596,6 +596,7 @@ pub(crate) fn keys_from_event(event: &GameEvent, state: &GameState) -> Keys {
         GameEvent::PlayerPerformedAction { .. } => push(TriggerEventKey::PlayerActionPerformed),
         GameEvent::Regenerated { .. }
         | GameEvent::CreatureSuspected { .. }
+        | GameEvent::CreatureNoLongerSuspected { .. }
         | GameEvent::Detained { .. }
         | GameEvent::BecamePrepared { .. }
         | GameEvent::BecameUnprepared { .. } => {}
@@ -773,6 +774,7 @@ fn keys_from_effect_kind(kind: EffectKind, push: &mut impl FnMut(TriggerEventKey
         | EffectKind::Choose
         | EffectKind::ChooseDamageSource
         | EffectKind::Suspect
+        | EffectKind::Unsuspect
         | EffectKind::PhaseOut
         | EffectKind::PhaseIn
         | EffectKind::ForceBlock

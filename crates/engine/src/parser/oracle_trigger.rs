@@ -1149,8 +1149,26 @@ pub(crate) fn lower_trigger_ir(ir: &TriggerIr) -> TriggerDefinition {
             );
             if is_difference_draw {
                 *execute.effect = Effect::Draw {
-                    count,
+                    count: count.clone(),
                     target: TargetFilter::Controller,
+                };
+            }
+            let is_difference_lose = matches!(
+                execute.effect.as_ref(),
+                Effect::Unimplemented { name, description: Some(desc) }
+                    if name == "lose"
+                        && {
+                            let clean = desc.trim().trim_end_matches('.');
+                            clean.eq_ignore_ascii_case("lose life equal to the difference")
+                                || clean.eq_ignore_ascii_case(
+                                    "they lose life equal to the difference",
+                                )
+                        }
+            );
+            if is_difference_lose {
+                *execute.effect = Effect::LoseLife {
+                    amount: count,
+                    target: Some(TargetFilter::ParentTarget),
                 };
             }
         }
