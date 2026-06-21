@@ -14685,6 +14685,32 @@ pub enum ReplacementCondition {
     /// instead" — Freyalise's Winds, Edge of Malacol) so it does NOT apply to
     /// effect-untaps ("untap target creature") at other times.
     DuringUntapStep,
+    /// CR 611.2b: "for as long as you control [source]" continuous-effect
+    /// duration, encoded as a replacement applicability gate. The replacement
+    /// applies only while `source` is on the battlefield AND still controlled by
+    /// `controller`. When the captured source object leaves the battlefield or
+    /// its controller changes, the gate goes false and the replacement stops
+    /// applying — exactly the CR 611.2b lifetime (the Master Thief example: the
+    /// effect ends when you lose control of the source).
+    ///
+    /// Both `source` and `controller` are captured at install time by the
+    /// `AddTargetReplacement` resolver (parse time uses the `ObjectId(0)` /
+    /// `PlayerId(0)` sentinels). This is required because the gate is evaluated
+    /// against the *host* the replacement rides on (the chosen creature, an
+    /// opponent's permanent): the threaded `controller`/`source_id` in
+    /// `evaluate_replacement_condition` describe that host, NOT the originating
+    /// source (Spider-Woman) or its controller. Carrying both explicitly is the
+    /// only way to re-check "you still control [the originating source]".
+    ///
+    /// Distinct from the `Unless*Controls*` / `IfControlsMatching` family
+    /// (CR 614.1c/d), which gate on a *count of permanents matching a filter*;
+    /// this gates on continued control of one specific captured object — a
+    /// different axis (CR 611.2b duration vs CR 614.1 quantity), so not a
+    /// sibling-cluster smell.
+    ControllerControlsSource {
+        source: ObjectId,
+        controller: PlayerId,
+    },
     /// "unless you revealed a [type] card" / "unless you paid {mana}"
     /// CR 614.1d — Generic condition text that the engine does not yet decompose further.
     /// Using this variant lets the replacement be recognized for coverage while deferring

@@ -940,4 +940,224 @@ mod tests {
             "a non-enchanted creature must untap normally"
         );
     }
+
+    /// CR 701.26b + CR 614.6 + CR 611.2b: Spider-Woman, Secret Agent end-to-end.
+    /// Parses the real Oracle text, drives the ETB trigger through
+    /// `resolve_ability_chain`, and asserts the full duration-bound can't-untap
+    /// class:
+    ///
+    /// 1. The ETB taps the chosen opponent's creature.
+    /// 2. While you control Spider-Woman, an *effect* untap ("untap target
+    ///    creature") of that creature is prevented (broad prohibition — drives
+    ///    `resolve_set_tap_state` Single/Untap, which the untap-step loop never
+    ///    runs).
+    /// 3. It also stays tapped through its controller's untap step
+    ///    (`execute_untap`).
+    /// 4. Once you no longer control Spider-Woman (it leaves play, CR 611.2b),
+    ///    the prohibition lapses and the creature untaps.
+    ///
+    /// Revert-probe: reverting `stamp_for_as_long_as_controlled_gate` makes the
+    /// installed replacement permanent (no `ControllerControlsSource` gate), so
+    /// step 4's final `!tapped` assertion FAILS (the creature stays locked even
+    /// after Spider-Woman is gone). Reverting the rider parser
+    /// (`try_parse_cant_become_untapped_target_rider`) leaves the sub-ability an
+    /// `Effect::Unimplemented`, so no replacement installs and step 2's "stays
+    /// tapped" assertion FAILS (the effect untap succeeds). A shape-only assert on
+    /// the parsed `AddTargetReplacement` would NOT discriminate either: it never
+    /// drives the untap pipeline.
+    #[test]
+    fn spider_woman_secret_agent_cant_untap_for_as_long_as_controlled() {
+        use crate::game::ability_utils::build_resolved_from_def_with_targets;
+        use crate::game::effects::resolve_ability_chain;
+        use crate::game::turns::execute_untap;
+        use crate::types::events::GameEvent;
+
+        let mut state = GameState::new_two_player(42);
+
+        // Spider-Woman under our control (PlayerId 0).
+        let spider_woman = create_object(
+            &mut state,
+            CardId(1),
+            PlayerId(0),
+            "Spider-Woman, Secret Agent".to_string(),
+            Zone::Battlefield,
+        );
+        state
+            .objects
+            .get_mut(&spider_woman)
+            .unwrap()
+            .card_types
+            .core_types
+            .push(CoreType::Creature);
+
+        // The opponent's creature (PlayerId 1), untapped to start.
+        let foe_creature = create_object(
+            &mut state,
+            CardId(2),
+            PlayerId(1),
+            "Opposing Bear".to_string(),
+            Zone::Battlefield,
+        );
+        state
+            .objects
+            .get_mut(&foe_creature)
+            .unwrap()
+            .card_types
+            .core_types
+            .push(CoreType::Creature);
+
+        // Parse the real card and pull the ETB trigger's effect chain.
+        let parsed = crate::parser::parse_oracle_text(
+            "Flash\nWhen Spider-Woman enters, tap target creature an opponent controls. \
+             That creature can't become untapped for as long as you control Spider-Woman.",
+            "Spider-Woman, Secret Agent",
+            &[],
+            &["Creature".to_string()],
+            &["Spider".to_string()],
+        );
+        let trigger = parsed
+            .triggers
+            .first()
+            .expect("Spider-Woman must parse an ETB trigger");
+        let execute = trigger
+            .execute
+            .as_deref()
+            .expect("the ETB trigger must carry an effect chain");
+        // The sub-ability rider must be the broad untap prohibition, not an
+        // Unimplemented residue (parse-shape sanity — the discrimination is the
+        // runtime assertions below).
+        let sub = execute
+            .sub_ability
+            .as_deref()
+            .expect("the tap clause must carry a can't-untap rider");
+        assert!(
+            matches!(*sub.effect, Effect::AddTargetReplacement { .. }),
+            "rider must install a replacement, got {:?}",
+            sub.effect
+        );
+
+        // Drive the ETB with the opponent's creature as the chosen target.
+        let resolved = build_resolved_from_def_with_targets(
+            execute,
+            spider_woman,
+            PlayerId(0),
+            vec![TargetRef::Object(foe_creature)],
+        );
+        let mut events = Vec::new();
+        resolve_ability_chain(&mut state, &resolved, &mut events, 0).unwrap();
+
+        // 1. ETB tapped the opponent's creature.
+        assert!(
+            state.objects[&foe_creature].tapped,
+            "the ETB must tap the chosen opponent's creature"
+        );
+
+        // 2. An effect untap is prevented while we control Spider-Woman.
+        let mut events = Vec::new();
+        resolve_set_tap_state(&mut state, &make_untap_ability(foe_creature), &mut events).unwrap();
+        assert!(
+            state.objects[&foe_creature].tapped,
+            "an effect-driven untap must be prevented while we control Spider-Woman"
+        );
+        assert!(
+            !events
+                .iter()
+                .any(|e| matches!(e, GameEvent::PermanentUntapped { object_id } if *object_id == foe_creature)),
+            "no PermanentUntapped event should fire for the locked creature"
+        );
+
+        // 3. It also stays tapped through its controller's untap step.
+        state.active_player = PlayerId(1);
+        let mut events = Vec::new();
+        execute_untap(&mut state, &mut events);
+        assert!(
+            state.objects[&foe_creature].tapped,
+            "the creature must stay tapped through its controller's untap step \
+             while we control Spider-Woman"
+        );
+
+        // 4. CR 611.2b: once we no longer control Spider-Woman (it leaves play),
+        // the prohibition lapses and an effect untap succeeds.
+        crate::game::zones::move_to_zone(
+            &mut state,
+            spider_woman,
+            Zone::Graveyard,
+            &mut Vec::new(),
+        );
+        let mut events = Vec::new();
+        resolve_set_tap_state(&mut state, &make_untap_ability(foe_creature), &mut events).unwrap();
+        assert!(
+            !state.objects[&foe_creature].tapped,
+            "the prohibition must lapse once we no longer control Spider-Woman (CR 611.2b)"
+        );
+    }
+
+    /// CR 611.2b control-swap sibling: the duration ends on a control CHANGE of
+    /// Spider-Woman, not only when it leaves play (the Master Thief reading).
+    /// Reverting the `ControllerControlsSource` controller comparison to read the
+    /// host's controller would keep the lock after the swap and fail the final
+    /// assertion.
+    #[test]
+    fn spider_woman_cant_untap_lapses_on_control_swap() {
+        use crate::game::ability_utils::build_resolved_from_def_with_targets;
+        use crate::game::effects::resolve_ability_chain;
+
+        let mut state = GameState::new_two_player(42);
+        let spider_woman = create_object(
+            &mut state,
+            CardId(1),
+            PlayerId(0),
+            "Spider-Woman, Secret Agent".to_string(),
+            Zone::Battlefield,
+        );
+        state
+            .objects
+            .get_mut(&spider_woman)
+            .unwrap()
+            .card_types
+            .core_types
+            .push(CoreType::Creature);
+        let foe_creature = create_object(
+            &mut state,
+            CardId(2),
+            PlayerId(1),
+            "Opposing Bear".to_string(),
+            Zone::Battlefield,
+        );
+        state
+            .objects
+            .get_mut(&foe_creature)
+            .unwrap()
+            .card_types
+            .core_types
+            .push(CoreType::Creature);
+
+        let parsed = crate::parser::parse_oracle_text(
+            "Flash\nWhen Spider-Woman enters, tap target creature an opponent controls. \
+             That creature can't become untapped for as long as you control Spider-Woman.",
+            "Spider-Woman, Secret Agent",
+            &[],
+            &["Creature".to_string()],
+            &["Spider".to_string()],
+        );
+        let execute = parsed.triggers[0].execute.as_deref().unwrap();
+        let resolved = build_resolved_from_def_with_targets(
+            execute,
+            spider_woman,
+            PlayerId(0),
+            vec![TargetRef::Object(foe_creature)],
+        );
+        resolve_ability_chain(&mut state, &resolved, &mut Vec::new(), 0).unwrap();
+        assert!(state.objects[&foe_creature].tapped);
+
+        // An opponent gains control of Spider-Woman: we no longer control it.
+        state.objects.get_mut(&spider_woman).unwrap().controller = PlayerId(1);
+
+        let mut events = Vec::new();
+        resolve_set_tap_state(&mut state, &make_untap_ability(foe_creature), &mut events).unwrap();
+        assert!(
+            !state.objects[&foe_creature].tapped,
+            "the prohibition must lapse once we lose control of Spider-Woman (CR 611.2b)"
+        );
+    }
 }

@@ -1,10 +1,12 @@
 use crate::game::targeting::resolve_event_context_target;
 use crate::types::ability::{
     DamageTargetFilter, DamageTargetPlayerScope, Duration, Effect, EffectError, EffectKind,
-    ReplacementDefinition, ResolvedAbility, RestrictionExpiry, TargetFilter, TargetRef,
+    ReplacementCondition, ReplacementDefinition, ResolvedAbility, RestrictionExpiry, TargetFilter,
+    TargetRef,
 };
 use crate::types::events::GameEvent;
 use crate::types::game_state::GameState;
+use crate::types::replacements::ReplacementEvent;
 
 pub(crate) fn expiry_from_duration(
     duration: Option<&Duration>,
@@ -39,8 +41,42 @@ fn replacement_with_ability_expiry(
     if replacement.source_controller.is_none() {
         replacement.source_controller = Some(ability.controller);
     }
+    stamp_for_as_long_as_controlled_gate(&mut replacement, ability);
     freeze_damage_modification_x(&mut replacement, ability);
     replacement
+}
+
+/// CR 611.2b: Translate a "for as long as you control ~" duration on the
+/// installing ability into a `ControllerControlsSource` applicability gate for a
+/// broad untap-prevention rider (Spider-Woman, Secret Agent: "That creature
+/// can't become untapped for as long as you control ~.").
+///
+/// The clause shell peels "for as long as you control ~" onto the ability frame
+/// as `Duration::UntilHostLeavesPlay` (the parser's canonical mapping for
+/// host-control lifetimes). For a replacement installed on a DIFFERENT object
+/// (the chosen creature) that mapping is insufficient on its own — nothing
+/// prunes an `UntilHostLeavesPlay` object-installed replacement, and it must end
+/// on a control SWAP of the originating source, not just when it leaves play.
+/// Stamping the gate with the originating source (`ability.source_id`, e.g.
+/// Spider-Woman) and its controller (`ability.controller`) re-checks "you still
+/// control [the source]" on every untap, matching the Master Thief example.
+///
+/// Tightly scoped: only a bare untap-prevention rider (event `Untap`, no
+/// `execute`, no pre-existing condition) carrying this exact duration is
+/// translated, so unrelated `AddTargetReplacement` installs are untouched.
+fn stamp_for_as_long_as_controlled_gate(
+    replacement: &mut ReplacementDefinition,
+    ability: &ResolvedAbility,
+) {
+    let is_bare_untap_prevention = replacement.event == ReplacementEvent::Untap
+        && replacement.execute.is_none()
+        && replacement.condition.is_none();
+    if is_bare_untap_prevention && matches!(ability.duration, Some(Duration::UntilHostLeavesPlay)) {
+        replacement.condition = Some(ReplacementCondition::ControllerControlsSource {
+            source: ability.source_id,
+            controller: ability.controller,
+        });
+    }
 }
 
 /// CR 107.3a + CR 601.2b: Freeze the announced value of X into a "deals that

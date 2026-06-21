@@ -1224,6 +1224,64 @@ fn parse_optional_period_and_end(input: &str) -> Option<()> {
     rest.trim().is_empty().then_some(())
 }
 
+/// CR 701.26b + CR 614.6 + CR 611.2b: Detect a "that creature/permanent can't
+/// become untapped" rider that follows a tap-target clause (Spider-Woman, Secret
+/// Agent: "tap target creature an opponent controls. That creature can't become
+/// untapped for as long as you control ~."). Returns an `AddTargetReplacement`
+/// that installs the BROAD untap prohibition (CR 701.26b — blocks every untap
+/// path, not just the untap step) onto the previously-chosen target.
+///
+/// The carried replacement uses `valid_card: SelfRef` because once it's pushed
+/// onto the target object's `replacement_definitions` by the
+/// `AddTargetReplacement` resolver, `SelfRef` binds to that host — which IS the
+/// tapped creature. `target: TargetFilter::Any` inherits the parent tap clause's
+/// chosen target (the sub-ability target-propagation in `resolve_ability_chain`).
+///
+/// The CR 611.2b "for as long as you control ~" duration is NOT encoded here:
+/// the clause shell peels that trailing duration onto the sub-ability frame
+/// (`Duration::UntilHostLeavesPlay`), and the `AddTargetReplacement` install
+/// chokepoint translates it into a `ControllerControlsSource` gate stamped with
+/// the real originating source/controller. A bare "can't become untapped" with
+/// no duration installs the permanent prohibition (no gate).
+fn try_parse_cant_become_untapped_target_rider(lower: &str) -> Option<Effect> {
+    let (rest, _) = alt((
+        tag::<_, _, OracleError<'_>>("that creature"),
+        tag("that permanent"),
+        tag("it"),
+    ))
+    .parse(lower)
+    .ok()?;
+    // CR 701.26b: "can't become untapped" / "can't be untapped" — the broad
+    // prohibition. The same prefix is shared with the static Blossombind line
+    // (`oracle_replacement::parse_cant_become_untapped_replacement`); the
+    // distinguishing subject ("that creature"/"it") routes the demonstrative
+    // anaphoric form here.
+    let (rest, _) = (
+        tag::<_, _, OracleError<'_>>(" can"),
+        alt((tag("'t"), tag("\u{2019}t"))),
+        tag(" "),
+        alt((tag("become "), tag("be "))),
+        tag("untapped"),
+    )
+        .parse(rest)
+        .ok()?;
+    parse_optional_period_and_end(rest)?;
+
+    // CR 614.6: bare prevention (no `execute`). The `untap_applier` returns
+    // `Prevented` when the replacement carries no alternative effect. No
+    // `condition` is set here: the install chokepoint translates the peeled
+    // "for as long as you control ~" duration into a `ControllerControlsSource`
+    // gate. A bare "can't become untapped" (no duration) installs permanently.
+    let replacement = ReplacementDefinition::new(ReplacementEvent::Untap)
+        .valid_card(TargetFilter::SelfRef)
+        .description("can't become untapped".to_string());
+
+    Some(Effect::AddTargetReplacement {
+        replacement: Box::new(replacement),
+        target: TargetFilter::Any,
+    })
+}
+
 fn parse_damage_source_subject(input: &str) -> Option<&str> {
     alt((
         tag::<_, _, OracleError<'_>>("a source"),
@@ -5193,6 +5251,12 @@ fn parse_effect_clause_inner(text: &str, ctx: &mut ParseContext) -> ParsedEffect
     // with …" is recognized as a `CastFromZone` permission rider rather than
     // falling through to `Effect::Unimplemented`.
     if let Some(effect) = try_parse_cast_this_way_enters_with_counter(&lower) {
+        return parsed_clause(effect);
+    }
+    // CR 701.26b + CR 614.6 + CR 611.2b: "That creature can't become untapped
+    // [for as long as you control ~]" rider following a tap-target clause
+    // (Spider-Woman). Installs the broad untap prohibition on the chosen target.
+    if let Some(effect) = try_parse_cant_become_untapped_target_rider(&lower) {
         return parsed_clause(effect);
     }
     // CR 614.1a + CR 608.2n + CR 607.2b: "exile it instead of putting it into a

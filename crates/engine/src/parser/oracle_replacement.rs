@@ -7614,6 +7614,69 @@ mod tests {
     use crate::types::card_type::{CoreType, Supertype};
     use crate::types::keywords::Keyword;
 
+    /// CR 701.26b + CR 614.6 + CR 611.2b: Spider-Woman, Secret Agent parses with
+    /// ZERO residual `Effect::Unimplemented`. Flash arrives as an MTGJSON keyword
+    /// (as in production), the ETB taps a target creature, and the "That creature
+    /// can't become untapped for as long as you control ~." rider lowers to an
+    /// `AddTargetReplacement` (the broad untap prohibition) rather than the
+    /// previous `Unimplemented[can't]` residue. Walks the whole trigger chain so a
+    /// regression in either the rider parser or the sentence-split would resurface
+    /// an `Unimplemented` and fail.
+    #[test]
+    fn spider_woman_secret_agent_parses_with_no_unimplemented() {
+        use crate::types::ability::{AbilityDefinition, Effect};
+
+        fn chain_has_unimplemented(def: &AbilityDefinition) -> bool {
+            matches!(*def.effect, Effect::Unimplemented { .. })
+                || def
+                    .sub_ability
+                    .as_deref()
+                    .is_some_and(chain_has_unimplemented)
+                || def
+                    .else_ability
+                    .as_deref()
+                    .is_some_and(chain_has_unimplemented)
+        }
+
+        let parsed = parse_oracle_text(
+            "Flash\nWhen Spider-Woman enters, tap target creature an opponent controls. \
+             That creature can't become untapped for as long as you control Spider-Woman.",
+            "Spider-Woman, Secret Agent",
+            &["Flash".to_string()],
+            &["Creature".to_string()],
+            &["Spider".to_string()],
+        );
+
+        // Flash is recognized as a keyword (production parity), not a stray ability.
+        assert!(
+            parsed.extracted_keywords.contains(&Keyword::Flash),
+            "Flash must be extracted as a keyword, got {:?}",
+            parsed.extracted_keywords
+        );
+        assert!(
+            parsed.abilities.iter().all(|a| !chain_has_unimplemented(a)),
+            "no standalone ability may be Unimplemented, got {:?}",
+            parsed.abilities
+        );
+
+        let trigger = parsed.triggers.first().expect("ETB trigger must parse");
+        let execute = trigger.execute.as_deref().expect("trigger effect chain");
+        assert!(
+            !chain_has_unimplemented(execute),
+            "the ETB chain must have zero Unimplemented effects, got {execute:?}"
+        );
+        // The rider must be the broad untap prohibition.
+        let rider = execute
+            .sub_ability
+            .as_deref()
+            .expect("can't-untap rider sub-ability");
+        assert!(
+            matches!(*rider.effect, Effect::AddTargetReplacement { .. }),
+            "rider must lower to AddTargetReplacement, got {:?}",
+            rider.effect
+        );
+    }
+
     /// CR 615.1a + CR 615.5 + CR 122.1 + CR 608.2h: Protean Hydra class —
     /// "If damage would be dealt to ~, prevent that damage and remove that
     /// many +1/+1 counters from it." Building-block assertions:

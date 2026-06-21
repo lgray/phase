@@ -3801,6 +3801,22 @@ fn evaluate_replacement_condition(
             .objects
             .get(&source_id)
             .is_some_and(|obj| obj.zone == Zone::Battlefield && obj.class_level >= Some(*level)),
+        // CR 611.2b: "for as long as you control [source]" — the replacement
+        // applies only while the captured source object is on the battlefield AND
+        // still controlled by the captured installing player. Either departure
+        // (leaving play, or a control swap) ends the continuous effect, matching
+        // the Master Thief example. Both `source` and `controller` are captured at
+        // install time and refer to the ORIGINATING source (e.g. Spider-Woman) and
+        // its controller — NOT the host the replacement rides on, so the threaded
+        // `controller`/`source_id` (which describe that host) are deliberately
+        // ignored here.
+        ReplacementCondition::ControllerControlsSource {
+            source,
+            controller: installer,
+        } => state
+            .objects
+            .get(source)
+            .is_some_and(|obj| obj.zone == Zone::Battlefield && obj.controller == *installer),
         // Unrecognized condition — always applies (enters tapped) as a safe default.
         // The engine recognizes the replacement but cannot evaluate the condition,
         // so it conservatively taps the land.
