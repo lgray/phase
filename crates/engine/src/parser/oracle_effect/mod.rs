@@ -55,8 +55,6 @@ use lower::{
 pub(crate) use self::token::parse_token_description;
 pub(crate) use self::token::try_parse_token;
 
-use std::str::FromStr;
-
 use crate::parser::oracle_nom::error::{oracle_err, OracleError};
 #[cfg(test)]
 use crate::parser::oracle_trigger::parse_trigger_line;
@@ -3921,6 +3919,8 @@ fn parse_effect_clause(text: &str, ctx: &mut ParseContext) -> ParsedEffectClause
     let original_lower = text.to_lowercase();
     if scan_contains_phrase(&original_lower, "this turn")
         || scan_contains_phrase(&original_lower, "until ")
+        || scan_contains_phrase(&original_lower, "remain exiled")
+        || scan_contains_phrase(&original_lower, "remains exiled")
     {
         if let Some(mut clause) =
             try_parse_play_from_exile(TextPair::new(text, &original_lower), ctx)
@@ -5251,33 +5251,31 @@ fn parse_effect_clause_inner(text: &str, ctx: &mut ParseContext) -> ParsedEffect
         });
     }
 
-    // CR 701.57a: "discover N" / "discover X" — effect variant.
+    // CR 701.57a: "[player] discover[s] N" / "[player] discover[s] X" — effect
+    // variant. An optional leading player subject ("you", "that player", "target
+    // opponent", …) redirects who performs the discover (Zoyowa's Justice: "Then
+    // that player discovers X"). Bare "discover N" defaults to the controller.
     let (discover_tp, discover_where_x) = strip_trailing_where_x(tp);
-    if let Some((limit, rest_orig)) =
-        super::oracle_nom::bridge::nom_on_lower(discover_tp.original, discover_tp.lower, |i| {
-            let (rest, _) = tag("discover ").parse(i)?;
-            let (rest, limit) = alt((
-                map(nom_primitives::parse_number, |value| QuantityExpr::Fixed {
-                    value: value as i32,
-                }),
-                value(
-                    QuantityExpr::Ref {
-                        qty: QuantityRef::Variable {
-                            name: "X".to_string(),
-                        },
-                    },
-                    tag("x"),
-                ),
-            ))
-            .parse(rest)?;
-            let (rest, _) = opt(tag(".")).parse(rest)?;
-            Ok((rest, limit))
-        })
-    {
+    if let Some((discover_player, limit, rest_orig)) = parse_discover_with_player(discover_tp) {
         if rest_orig.trim().is_empty() {
             let limit = apply_where_x_quantity_expression(limit, discover_where_x.as_deref());
             return parsed_clause(Effect::Discover {
                 mana_value_limit: limit,
+                player: discover_player,
+            });
+        }
+    }
+
+    // CR 701.68a: "[player] blight[s] N" — blight with a redirected player.
+    // "Target opponent blights 2" (Champion of the Weird) makes the targeted
+    // player put the -1/-1 counters on a creature *they* control. Bare
+    // "blight N" (controller blights) is handled by the imperative parser's
+    // first-word dispatch; this arm covers the leading-player-subject form.
+    if let Some((blight_player, count, rest_orig)) = parse_blight_with_player(tp) {
+        if rest_orig.trim().is_empty() {
+            return parsed_clause(Effect::BlightEffect {
+                count,
+                player: blight_player,
             });
         }
     }
@@ -5978,36 +5976,43 @@ fn try_parse_mass_forced_block(tp: TextPair, ctx: &mut ParseContext) -> Option<P
 
 fn try_parse_still_a_type(tp: TextPair) -> Option<ParsedEffectClause> {
     // Match singular "it's still a/an [type]" / "that's still a/an [type]"
-    // or plural "they're still [type]s" — CR 205.1a type retention after animation.
-    let (is_plural, rest_orig) = nom_on_lower(tp.original, tp.lower, |input| {
+    // or plural "they're still [type]s" — CR 205.1a type retention after
+    // animation. The descriptor is purely additive: a permanent animated into
+    // a creature retains its prior types/subtypes (CR 613.1d ordering), so the
+    // "still a …" clause is confirmatory and emits the same `AddType`/
+    // `AddSubtype` Layer-4 modifications the animation already implies.
+    let (is_plural, descriptor_orig) = nom_on_lower(tp.original, tp.lower, |input| {
         alt((
-            value(false, alt((tag("it's still "), tag("that's still ")))),
+            value(false, tag("it's still ")),
+            value(false, tag("that's still ")),
             value(true, tag("they're still ")),
         ))
         .parse(input)
     })?;
-    let rest_lower = &tp.lower[tp.lower.len() - rest_orig.len()..];
 
-    let type_name_lower = if is_plural {
-        // Plural: "they're still lands" — no article, strip trailing 's'
-        rest_lower
+    // CR 205.1b + CR 305.7: parse the type descriptor ("a Cave land", "lands",
+    // "a planeswalker") through the shared animation building block so a subtype
+    // *and* core type are both retained ("It's still a Cave land" → AddType{Land}
+    // + AddSubtype{Cave}, Cavernous Maw), not just a bare core type. Strip a
+    // trailing period so the descriptor parses cleanly.
+    let descriptor = descriptor_orig.trim().trim_end_matches('.');
+    let descriptor = if is_plural {
+        // allow-noncombinator: structural singularization after nom parsed the plural prefix.
+        descriptor.strip_suffix('s').unwrap_or(descriptor)
     } else {
-        // Singular: strip article "a " / "an "
-        let ((), after_article) = nom_on_lower(rest_orig, rest_lower, |input| {
-            nom_primitives::parse_article(input)
-        })?;
-        &rest_lower[rest_lower.len() - after_article.len()..]
+        descriptor
     };
-
-    // Strip plural 's' if present (e.g., "lands" → "land", "creatures" → "creature")
-    let singular = type_name_lower.strip_suffix('s').unwrap_or(type_name_lower);
-    let core_type = CoreType::from_str(&capitalize(singular)).ok()?;
+    let spec = animation::parse_animation_spec(descriptor, &mut ParseContext::default())?;
+    let modifications = animation::animation_modifications(&spec);
+    if modifications.is_empty() {
+        return None;
+    }
 
     Some(ParsedEffectClause {
         effect: Effect::GenericEffect {
             static_abilities: vec![StaticDefinition::continuous()
                 .affected(TargetFilter::SelfRef)
-                .modifications(vec![ContinuousModification::AddType { core_type }])
+                .modifications(modifications)
                 .description(tp.original.to_string())],
             duration: Some(Duration::Permanent),
             target: None,
@@ -6373,6 +6378,117 @@ fn try_parse_put_on_top_or_bottom(
     }
 
     None
+}
+
+/// CR 701.57a: Parse "[player] discover[s] N/X" and return the discovering
+/// player, the mana-value limit, and the unconsumed remainder.
+///
+/// The optional leading player subject redirects who performs the discover:
+/// - no subject / "you " → `TargetFilter::Controller` (the common case).
+/// - "that player " → `TargetFilter::ParentTargetOwner`. In the only printed
+///   pattern (Zoyowa's Justice: "The owner of target … shuffles it into their
+///   library. Then that player discovers X"), "that player" is the owner of the
+///   parent target established by the preceding clause, so it binds to the
+///   parent target's owner at resolution via `resolve_player_for_context_ref`.
+/// - any other leading "target …"/"each …" player phrase → the parsed
+///   `TargetFilter` (e.g. "target opponent" surfaces as a real target).
+///
+/// The verb is matched as "discover" or "discovers" so both the imperative
+/// ("discover N") and third-person ("that player discovers N") forms parse.
+fn parse_discover_with_player(tp: TextPair) -> Option<(TargetFilter, QuantityExpr, String)> {
+    // A `fn` item (rather than a closure) so it is generic over the input
+    // lifetime and can be invoked inside the `nom_on_lower` closures below.
+    fn limit_parser(i: &str) -> super::oracle_nom::error::OracleResult<'_, QuantityExpr> {
+        let (rest, _) = alt((tag("discovers "), tag("discover "))).parse(i)?;
+        let (rest, limit) = alt((
+            map(nom_primitives::parse_number, |value| QuantityExpr::Fixed {
+                value: value as i32,
+            }),
+            value(
+                QuantityExpr::Ref {
+                    qty: QuantityRef::Variable {
+                        name: "X".to_string(),
+                    },
+                },
+                tag("x"),
+            ),
+        ))
+        .parse(rest)?;
+        let (rest, _) = opt(tag(".")).parse(rest)?;
+        Ok((rest, limit))
+    }
+
+    // No leading player subject (or "you …") → the controller discovers.
+    if let Some((limit, rest_orig)) = nom_on_lower(tp.original, tp.lower, |i| {
+        let (rest, _) = opt(tag("you ")).parse(i)?;
+        limit_parser(rest)
+    }) {
+        return Some((TargetFilter::Controller, limit, rest_orig.to_string()));
+    }
+
+    // "that player discovers …" — binds to the owner of the parent target
+    // established by the preceding clause (Zoyowa's Justice).
+    if let Some((limit, rest_orig)) = nom_on_lower(tp.original, tp.lower, |i| {
+        let (rest, _) = tag("that player ").parse(i)?;
+        limit_parser(rest)
+    }) {
+        return Some((
+            TargetFilter::ParentTargetOwner,
+            limit,
+            rest_orig.to_string(),
+        ));
+    }
+
+    // "target opponent discovers …" and similar explicit player targets.
+    let (filter, remainder) = parse_target(tp.original);
+    let remainder = remainder.trim_start();
+    if remainder.eq_ignore_ascii_case(tp.original.trim_start()) {
+        return None;
+    }
+    let remainder_lower = remainder.to_ascii_lowercase();
+    nom_on_lower(remainder, &remainder_lower, limit_parser)
+        .map(|(limit, rest_orig)| (filter, limit, rest_orig.to_string()))
+}
+
+/// CR 701.68a: Parse "[player] blight[s] N" where a leading player subject
+/// redirects who blights, and return that player, the count, and the remainder.
+///
+/// Only the leading-player-subject form is handled here ("target opponent
+/// blights 2", "that player blights N"). Bare "blight N" (the controller
+/// blights) is dispatched by the imperative first-word parser, so this helper
+/// returns `None` when there is no player subject — leaving the bare form to its
+/// owner.
+fn parse_blight_with_player(tp: TextPair) -> Option<(TargetFilter, u32, String)> {
+    // A `fn` item (rather than a closure) so it is generic over the input
+    // lifetime and can be invoked inside the `nom_on_lower` closures below.
+    fn count_parser(i: &str) -> super::oracle_nom::error::OracleResult<'_, u32> {
+        let (rest, _) = alt((tag("blights "), tag("blight "))).parse(i)?;
+        let (rest, count) = nom_primitives::parse_number.parse(rest)?;
+        let (rest, _) = opt(tag(".")).parse(rest)?;
+        Ok((rest, count))
+    }
+
+    // "that player blights …" — binds to the owner of the parent target.
+    if let Some((count, rest_orig)) = nom_on_lower(tp.original, tp.lower, |i| {
+        let (rest, _) = tag("that player ").parse(i)?;
+        count_parser(rest)
+    }) {
+        return Some((
+            TargetFilter::ParentTargetOwner,
+            count,
+            rest_orig.to_string(),
+        ));
+    }
+
+    // "target opponent blights …" and similar explicit player targets.
+    let (filter, remainder) = parse_target(tp.original);
+    let remainder = remainder.trim_start();
+    if remainder.eq_ignore_ascii_case(tp.original.trim_start()) {
+        return None;
+    }
+    let remainder_lower = remainder.to_ascii_lowercase();
+    nom_on_lower(remainder, &remainder_lower, count_parser)
+        .map(|(count, rest_orig)| (filter, count, rest_orig.to_string()))
 }
 
 /// CR 701.24a + CR 400.3: Parse "the owner of target [filter] shuffles it into their library".
@@ -7340,8 +7456,25 @@ fn try_parse_play_from_exile(tp: TextPair, ctx: &ParseContext) -> Option<ParsedE
 
     // Try full forms first: "you may play/cast that card/it/those cards ..."
     // Then bare forms (after "you may" has been stripped): "play that card ..."
+    // CR 406.6 + CR 400.7i: "you may look at and play those cards for as long as
+    // they remain exiled" (Expensive Taste) grants the same impulse-style
+    // PlayFromExile permission; the "look at" conjunct is a private-information
+    // grant that the permission already implies (the controller can always see
+    // a card they may play). Folded in as a verb-prefix variant so the no-mana-
+    // conjunct form reaches the same grant as the bare "you may play those
+    // cards" path (the with-mana form is handled earlier by
+    // `try_parse_exile_play_grant_with_any_mana`).
     let full_rest = nom_on_lower(tp.original, tp.lower, |input| {
-        value((), alt((tag("you may play "), tag("you may cast ")))).parse(input)
+        value(
+            (),
+            alt((
+                tag("you may look at and play "),
+                tag("you may look at and cast "),
+                tag("you may play "),
+                tag("you may cast "),
+            )),
+        )
+        .parse(input)
     })
     .map(|((), rest_orig)| {
         let rest_lower = &tp.lower[tp.lower.len() - rest_orig.len()..];
@@ -7380,33 +7513,60 @@ fn try_parse_play_from_exile(tp: TextPair, ctx: &ParseContext) -> Option<ParsedE
             return None;
         }
     } else {
-        // Bare form (after "you may" was stripped by parse_effect_chain):
-        // Only match when temporal context exists ("this turn", "until"),
-        // otherwise it's a CastFromZone, not impulse draw permission.
-        let has_temporal =
-            scan_contains_phrase(tp.lower, "this turn") || scan_contains_phrase(tp.lower, "until ");
-        if !has_temporal {
-            return None;
-        }
+        // Bare form (after "you may" was stripped by parse_effect_chain).
         if scan_contains_phrase(tp.lower, "without paying") {
             return None;
         }
-        // CR 400.7i + CR 603.7: "(the) cards exiled this way" bare anaphor
-        // (Escape to the Wilds, after `you may ` is peeled by the chunk loop).
-        if alt((
-            tag::<_, _, OracleError<'_>>("play that card"),
-            tag("cast that card"),
-            tag("play it"),
-            tag("cast it"),
-            tag("play the cards exiled this way"),
-            tag("play cards exiled this way"),
-            tag("cast the cards exiled this way"),
-            tag("cast cards exiled this way"),
+        // CR 406.6 + CR 400.7i + CR 603.7: these exile anaphors are
+        // unambiguous impulse-set referents when paired with the "look at and
+        // play/cast" surface. Accept them without requiring an in-body temporal
+        // marker: the clause shell may have peeled the "for as long as ...
+        // remain[s] exiled" duration into the wrapper, so `tp.lower` no longer
+        // carries the duration text even though `with_clause_duration` will patch
+        // it onto the grant.
+        let look_at_play_anaphor_form = alt((
+            tag::<_, _, OracleError<'_>>("look at and play those cards"),
+            tag("look at and cast those cards"),
+            tag("look at and play that card"),
+            tag("look at and cast that card"),
+            tag("look at and play it"),
+            tag("look at and cast it"),
         ))
         .parse(tp.lower)
-        .is_err()
-        {
-            return None;
+        .is_ok();
+        let mass_anaphor_form = alt((
+            tag::<_, _, OracleError<'_>>("play those cards"),
+            tag("cast those cards"),
+        ))
+        .parse(tp.lower)
+        .is_ok();
+        if look_at_play_anaphor_form || mass_anaphor_form {
+            // fall through to the grant builder.
+        } else {
+            // Only match when temporal context exists ("this turn", "until"),
+            // otherwise it's a CastFromZone, not impulse draw permission.
+            let has_temporal = scan_contains_phrase(tp.lower, "this turn")
+                || scan_contains_phrase(tp.lower, "until ");
+            if !has_temporal {
+                return None;
+            }
+            // CR 400.7i + CR 603.7: "(the) cards exiled this way" bare anaphor
+            // (Escape to the Wilds, after `you may ` is peeled by the chunk loop).
+            if alt((
+                tag::<_, _, OracleError<'_>>("play that card"),
+                tag("cast that card"),
+                tag("play it"),
+                tag("cast it"),
+                tag("play the cards exiled this way"),
+                tag("play cards exiled this way"),
+                tag("cast the cards exiled this way"),
+                tag("cast cards exiled this way"),
+            ))
+            .parse(tp.lower)
+            .is_err()
+            {
+                return None;
+            }
         }
     }
 
@@ -7429,9 +7589,18 @@ fn try_parse_play_from_exile(tp: TextPair, ctx: &ParseContext) -> Option<ParsedE
         return None;
     }
 
-    // Duration: extract from trailing text, defaulting to UntilEndOfTurn for impulse draw
+    // Duration: extract from trailing text, defaulting to UntilEndOfTurn for impulse draw.
+    // CR 400.7i + CR 611.2a: "for as long as ... remain[s] exiled" persists until
+    // zone-exit cleanup clears the exile-scoped permission, matching the existing
+    // any-mana remains-exiled grant path.
     let (_, dur) = strip_trailing_duration(tp.original);
-    let duration = dur.unwrap_or(Duration::UntilEndOfTurn);
+    let duration = if scan_contains_phrase(tp.lower, "remain exiled")
+        || scan_contains_phrase(tp.lower, "remains exiled")
+    {
+        Duration::Permanent
+    } else {
+        dur.unwrap_or(Duration::UntilEndOfTurn)
+    };
 
     Some(parsed_clause(Effect::GrantCastingPermission {
         permission: CastingPermission::PlayFromExile {
@@ -20164,6 +20333,13 @@ fn try_parse_put_zone_change_parts(
         (" into their hand", Zone::Hand),
         (" into its owner's hand", Zone::Hand),
         (" into their owner's hand", Zone::Hand),
+        // CR 400.3 + CR 110.1: plural possessive — a mass move where each card
+        // goes to its OWN owner's hand/graveyard ("Put all cards exiled with ~
+        // into their owners' hands" — Connecting the Dots). `execute_zone_move`
+        // already keys the destination by each object's owner for non-
+        // battlefield zones, so the plural form needs no separate routing.
+        (" into their owners' hands", Zone::Hand),
+        (" into their owners' graveyards", Zone::Graveyard),
         (" into your graveyard", Zone::Graveyard),
         (" into its owner's graveyard", Zone::Graveyard),
         (" into their owner's graveyard", Zone::Graveyard),
@@ -37224,6 +37400,56 @@ mod tests {
     }
 
     #[test]
+    fn parse_play_from_exile_while_exiled_with_spend_mana_as_any_color_permission() {
+        let def = parse_effect_chain(
+            "You may look at and play that card for as long as it remains exiled, and you may spend mana as though it were mana of any color to cast that spell.",
+            AbilityKind::Spell,
+        );
+        assert!(
+            matches!(
+                &*def.effect,
+                Effect::GrantCastingPermission {
+                    permission: CastingPermission::PlayFromExile {
+                        duration: Duration::Permanent,
+                        mana_spend_permission: Some(ManaSpendPermission::AnyTypeOrColor),
+                        ..
+                    },
+                    ..
+                }
+            ),
+            "expected PlayFromExile grant with any-color mana permission, got {def:#?}"
+        );
+    }
+
+    #[test]
+    fn parse_brainstealer_dragon_play_grant_folds_mana_rider() {
+        let def = parse_effect_chain(
+            "Exile the top card of each opponent's library. You may play those cards for as long as they remain exiled. If you cast a spell this way, you may spend mana as though it were mana of any color to cast it.",
+            AbilityKind::Spell,
+        );
+        let grant = def
+            .sub_ability
+            .as_deref()
+            .expect("exile instruction must chain to play grant");
+        assert!(matches!(
+            &*grant.effect,
+            Effect::GrantCastingPermission {
+                permission: CastingPermission::PlayFromExile {
+                    duration: Duration::Permanent,
+                    mana_spend_permission: Some(ManaSpendPermission::AnyTypeOrColor),
+                    ..
+                },
+                target: TargetFilter::TrackedSet { .. },
+                ..
+            }
+        ));
+        assert!(
+            grant.sub_ability.is_none(),
+            "mana rider must fold into the play grant instead of emitting a standalone sub-ability: {grant:#?}"
+        );
+    }
+
+    #[test]
     fn parse_play_from_exile_next_turn() {
         let def = parse_effect_chain(
             "You may play that card until the end of your next turn.",
@@ -50981,12 +51207,73 @@ mod tests {
                         qty: QuantityRef::ObjectManaValue {
                             scope: ObjectScope::EventSource
                         }
-                    }
+                    },
+                    ..
                 }
             ),
             "expected dynamic Discover limit, got {:?}",
             def.effect
         );
+    }
+
+    /// CR 701.68a: "Target opponent blights N" (Champion of the Weird) parses to
+    /// a `BlightEffect` whose `player` carries the Opponent target, so the
+    /// resolver redirects the blight away from the controller.
+    #[test]
+    fn blight_target_opponent_carries_opponent_player() {
+        let def = parse_effect_chain("Target opponent blights 2.", AbilityKind::Spell);
+        match def.effect.as_ref() {
+            Effect::BlightEffect { count, player } => {
+                assert_eq!(*count, 2);
+                assert!(
+                    matches!(player, TargetFilter::Typed(f) if f.controller == Some(ControllerRef::Opponent)),
+                    "expected Opponent player filter, got {player:?}"
+                );
+            }
+            other => panic!("expected BlightEffect, got {other:?}"),
+        }
+    }
+
+    /// CR 701.57a: "that player discovers X" (Zoyowa's Justice) parses to a
+    /// `Discover` whose `player` binds to the parent target's owner and whose
+    /// limit is the parent target's mana value.
+    #[test]
+    fn discover_that_player_binds_parent_target_owner() {
+        let def = parse_effect_chain(
+            "The owner of target creature with mana value 1 or greater shuffles it into their library. Then that player discovers X, where X is its mana value.",
+            AbilityKind::Spell,
+        );
+        // Walk to the Discover sub-clause.
+        let mut cur = def.sub_ability.as_deref();
+        let mut discover: Option<&Effect> = None;
+        while let Some(ab) = cur {
+            if matches!(ab.effect.as_ref(), Effect::Discover { .. }) {
+                discover = Some(ab.effect.as_ref());
+                break;
+            }
+            cur = ab.sub_ability.as_deref();
+        }
+        match discover.expect("expected a Discover sub-clause") {
+            Effect::Discover {
+                player,
+                mana_value_limit,
+            } => {
+                assert!(
+                    matches!(player, TargetFilter::ParentTargetOwner),
+                    "expected ParentTargetOwner, got {player:?}"
+                );
+                assert!(
+                    matches!(
+                        mana_value_limit,
+                        QuantityExpr::Ref {
+                            qty: QuantityRef::ObjectManaValue { .. }
+                        }
+                    ),
+                    "expected dynamic MV limit, got {mana_value_limit:?}"
+                );
+            }
+            other => panic!("expected Discover, got {other:?}"),
+        }
     }
 
     #[test]
@@ -54463,6 +54750,115 @@ mod snapshot_tests {
                 )
             })
         }));
+    }
+
+    /// std BATCH 12 (Brilliance Unleashed class): a returned permanent followed by
+    /// a non-additive copula animation — "Return target X ... It's a 3/3 Robot
+    /// artifact creature with flying" — must lower the animation to a `GenericEffect`
+    /// bound to `ParentTarget` (the returned object), NOT `Effect::Unimplemented`
+    /// and NOT `SelfRef`. CR 205.1a + CR 613.1d (Layer 4 type set + Layer 7b base
+    /// P/T). Revert-discriminating on the `try_parse_contracted_subject_additive_type_clause`
+    /// animation fallback: without it the followup is `Effect::Unimplemented`.
+    #[test]
+    fn returned_target_receives_non_additive_animation_bound_to_parent() {
+        let def = parse_effect_chain(
+            "Return target artifact card from your graveyard to the battlefield. It's a 3/3 Robot artifact creature with flying.",
+            AbilityKind::Activated,
+        );
+        assert!(
+            matches!(&*def.effect, Effect::ChangeZone { .. }),
+            "expected ChangeZone head, got {:?}",
+            def.effect
+        );
+        let followup = def
+            .sub_ability
+            .as_ref()
+            .expect("expected animation followup");
+        let Effect::GenericEffect {
+            static_abilities,
+            target,
+            ..
+        } = &*followup.effect
+        else {
+            panic!("expected GenericEffect followup, got {:?}", followup.effect);
+        };
+        assert_eq!(*target, Some(TargetFilter::ParentTarget));
+        assert!(static_abilities
+            .iter()
+            .all(|sd| matches!(sd.affected, Some(TargetFilter::ParentTarget))));
+        let mods = &static_abilities[0].modifications;
+        assert!(mods
+            .iter()
+            .any(|m| matches!(m, ContinuousModification::SetPower { value: 3 })));
+        assert!(mods.iter().any(|m| matches!(
+            m,
+            ContinuousModification::AddKeyword {
+                keyword: crate::types::keywords::Keyword::Flying
+            }
+        )));
+        assert!(mods.iter().any(|m| matches!(
+            m,
+            ContinuousModification::AddSubtype { subtype } if subtype == "Robot"
+        )));
+    }
+
+    /// std BATCH 12 honest-defer gate: the same non-additive copula animation
+    /// joined by a bare "and" to an *anaphoric* "Return it" (no fresh typed
+    /// referent in scope — Brilliance Unleashed's modal-else branch) must NOT
+    /// silently animate the source permanent. The animation fallback's
+    /// ParentTarget-bind gate declines, so the conjunct honest-defers to
+    /// `Effect::unimplemented` rather than producing a wrong `SelfRef` binding.
+    #[test]
+    fn anaphoric_return_then_animation_honest_defers_when_no_parent_referent() {
+        let def = parse_effect_chain(
+            "Otherwise, return it to the battlefield and it's a 3/3 Robot artifact creature with flying.",
+            AbilityKind::Activated,
+        );
+        let mut found_unimplemented = false;
+        let mut cursor: Option<&AbilityDefinition> = Some(&def);
+        while let Some(node) = cursor {
+            if matches!(&*node.effect, Effect::Unimplemented { .. }) {
+                found_unimplemented = true;
+            }
+            // Walk both the sequential sub_ability chain and any else_ability.
+            if let Some(else_ab) = &node.else_ability {
+                let mut else_cursor: Option<&AbilityDefinition> = Some(else_ab);
+                while let Some(en) = else_cursor {
+                    if matches!(&*en.effect, Effect::Unimplemented { .. }) {
+                        found_unimplemented = true;
+                    }
+                    else_cursor = en.sub_ability.as_deref();
+                }
+            }
+            cursor = node.sub_ability.as_deref();
+        }
+        assert!(
+            found_unimplemented,
+            "anaphoric return + animation with no parent referent must honest-defer \
+             to Effect::Unimplemented (not a wrong SelfRef animation), got {def:#?}"
+        );
+    }
+
+    #[test]
+    fn plural_still_lands_retains_land_core_type_not_lands_subtype() {
+        let def = parse_effect_chain("They're still lands.", AbilityKind::Activated);
+        let Effect::GenericEffect {
+            static_abilities, ..
+        } = &*def.effect
+        else {
+            panic!("expected GenericEffect, got {:?}", def.effect);
+        };
+        let mods = &static_abilities[0].modifications;
+        assert!(mods.iter().any(|m| matches!(
+            m,
+            ContinuousModification::AddType {
+                core_type: CoreType::Land
+            }
+        )));
+        assert!(!mods.iter().any(|m| matches!(
+            m,
+            ContinuousModification::AddSubtype { subtype } if subtype == "Lands"
+        )));
     }
 
     #[test]

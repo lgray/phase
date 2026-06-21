@@ -14860,7 +14860,9 @@ mod tests {
             .as_ref()
             .expect("trigger should have execute step");
         match execute.effect.as_ref() {
-            Effect::Discover { mana_value_limit } => {
+            Effect::Discover {
+                mana_value_limit, ..
+            } => {
                 assert!(
                     matches!(
                         mana_value_limit,

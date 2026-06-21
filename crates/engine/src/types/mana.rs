@@ -285,6 +285,33 @@ pub enum PaymentContext<'a> {
     /// restriction variants name spell-casting or ability-activation use, so
     /// restricted mana is not eligible here.
     Effect,
+    /// CR 116.2: Payment for a special action's mana cost (e.g. a Room's
+    /// unlock cost, CR 116.2m / CR 709.5e). Special actions don't use the stack
+    /// and are neither spell casts nor ability activations, so they need a
+    /// distinct context: spell/activation-restricted mana must reject them, but
+    /// special-action-restricted mana (`OnlyForSpecialAction`) must accept the
+    /// matching action class. Parameterized over [`SpecialAction`] so one
+    /// context variant covers every restrictable special-action class rather
+    /// than a sibling per action.
+    SpecialAction(SpecialAction),
+}
+
+/// CR 116.2: A class of special action whose mana cost can be the subject of a
+/// CR 106.6 mana-spend restriction ("Spend this mana only to unlock doors").
+///
+/// Only special actions that pay a mana cost *through the mana pool* with a
+/// restriction-aware payment context belong here. CR 116.2m / CR 709.5e door
+/// unlock is the first such action (its unlock cost routes through
+/// `pay_special_action_mana_cost`). CR 116.2b turn-face-up does not yet pay its
+/// morph/disguise cost through a restriction-aware pool payment, so it is
+/// intentionally absent — its spend restriction is honest-deferred rather than
+/// silently over-permitted. New variants are added only once the corresponding
+/// special action's payment is routed through `PaymentContext::SpecialAction`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SpecialAction {
+    /// CR 116.2m + CR 709.5e: Paying a locked Room half's unlock cost to give
+    /// the permanent the appropriate unlocked designation.
+    UnlockDoor,
 }
 
 /// CR 106.6: The ability-activation half of a "spend only to cast [X] spell or
@@ -477,6 +504,13 @@ pub enum ManaRestriction {
     /// "… to cast an Assassin spell, a spell that has freerunning, or to activate
     /// an ability of an Assassin source."
     OnlyForAny(Vec<ManaRestriction>),
+    /// CR 106.6 + CR 116.2: "Spend this mana only to [unlock doors]" — the
+    /// special-action half of a spend restriction. Payable only for a
+    /// [`PaymentContext::SpecialAction`] whose [`SpecialAction`] matches.
+    /// Rejects spell casts, ability activations, and generic effect payments.
+    /// Parameterized over the action class so one variant covers every
+    /// restrictable special action (door unlock today; extensible).
+    OnlyForSpecialAction(SpecialAction),
     /// CR 702.51a: Internal marker for a convoke tap that substitutes for
     /// paying mana. The payment algorithm may consume it for the current spell,
     /// but cast-spent metrics and mana-added triggers must ignore it.
@@ -611,6 +645,8 @@ impl ManaRestriction {
             },
             // CR 106.6: Disjunction — the spell is payable if it satisfies any branch.
             ManaRestriction::OnlyForAny(subs) => subs.iter().any(|r| r.allows_spell(meta)),
+            // CR 116.2: Special-action-only mana never pays for a spell cast.
+            ManaRestriction::OnlyForSpecialAction(_) => false,
             ManaRestriction::ConvokePayment => true,
         }
     }
@@ -636,7 +672,9 @@ impl ManaRestriction {
             | ManaRestriction::OnlyForSpellWithManaValue { .. }
             | ManaRestriction::OnlyForSpellMatchingCostCriteria { .. }
             | ManaRestriction::OnlyForSpellWithColorCount { .. }
-            | ManaRestriction::OnlyForSpellFromZone(_) => false,
+            | ManaRestriction::OnlyForSpellFromZone(_)
+            // CR 116.2: Special-action-only mana never pays for ability activation.
+            | ManaRestriction::OnlyForSpecialAction(_) => false,
             // CR 106.6: The ability-activation half of the OR. `OfSpellType`
             // restricts to abilities of permanents whose type matches the
             // restriction ("Elemental sources" includes creature type Elemental —
@@ -681,6 +719,26 @@ impl ManaRestriction {
                 ability_tag,
             } => self.allows_activation(source_types, source_subtypes, *ability_tag),
             PaymentContext::Effect => false,
+            // CR 116.2: A special-action payment is permitted only by mana that
+            // is restricted to that exact special-action class, or by a
+            // disjunction that contains such a branch. Spell/activation/generic
+            // effect restrictions all reject it.
+            PaymentContext::SpecialAction(action) => self.allows_special_action(*action),
+        }
+    }
+
+    /// CR 106.6 + CR 116.2: Returns `true` if this restriction permits spending
+    /// mana on the given special action (e.g. a Room door unlock). Only
+    /// [`ManaRestriction::OnlyForSpecialAction`] with a matching action — or a
+    /// disjunction containing one — qualifies; every spell/activation/effect
+    /// restriction rejects special actions.
+    pub fn allows_special_action(&self, action: SpecialAction) -> bool {
+        match self {
+            ManaRestriction::OnlyForSpecialAction(allowed) => *allowed == action,
+            ManaRestriction::OnlyForAny(subs) => {
+                subs.iter().any(|r| r.allows_special_action(action))
+            }
+            _ => false,
         }
     }
 }

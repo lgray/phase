@@ -2268,6 +2268,7 @@ fn collect_effect_quantity_exprs<'a>(effect: &'a Effect, out: &mut Vec<&'a Quant
         | Effect::GainEnergy { amount, .. }
         | Effect::Discover {
             mana_value_limit: amount,
+            ..
         }
         | Effect::PutAtLibraryPosition { count: amount, .. }
         | Effect::GrantExtraLoyaltyActivations { amount, .. }
@@ -2861,6 +2862,17 @@ pub(crate) fn next_sub_needs_tracked_set(ability: &ResolvedAbility) -> bool {
         .sub_ability
         .as_deref()
         .is_some_and(ability_or_branch_references_tracked_set)
+}
+
+/// CR 608.2c: Does `ability` (or any of its continuation branches) consume the
+/// chain's tracked set — e.g. a `GrantCastingPermission { target: TrackedSet }`
+/// ("you may play that card") chained after an interactive `ChooseFromZone`?
+/// The interactive `ChooseFromZoneChoice` answer handler uses this to decide
+/// whether the chosen cards must be published as the fresh tracked set the
+/// continuation reads (End-Blaze Epiphany: "choose a card exiled this way …
+/// you may play that card").
+pub(crate) fn chain_references_tracked_set(ability: &ResolvedAbility) -> bool {
+    ability_or_branch_references_tracked_set(ability)
 }
 
 fn ability_or_branch_references_tracked_set(ability: &ResolvedAbility) -> bool {

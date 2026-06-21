@@ -10740,9 +10740,53 @@ pub(super) fn pay_effect_mana_cost(
     cost: &crate::types::mana::ManaCost,
     events: &mut Vec<GameEvent>,
 ) -> Result<(), EngineError> {
+    pay_non_cast_mana_cost(
+        state,
+        player,
+        source_id,
+        cost,
+        PaymentContext::Effect,
+        events,
+    )
+}
+
+/// CR 116.2m + CR 709.5e: Pay a special action's mana cost (e.g. a Room's unlock
+/// cost) through a `PaymentContext::SpecialAction`, so CR 106.6 special-action
+/// spend restrictions (Smoky Lounge's "spend this mana only to … unlock doors")
+/// gate which restricted mana is eligible. Routes through the same single
+/// authority as effect-time payments, differing only in the payment context.
+pub(super) fn pay_special_action_mana_cost(
+    state: &mut GameState,
+    player: PlayerId,
+    source_id: ObjectId,
+    cost: &crate::types::mana::ManaCost,
+    action: crate::types::mana::SpecialAction,
+    events: &mut Vec<GameEvent>,
+) -> Result<(), EngineError> {
+    pay_non_cast_mana_cost(
+        state,
+        player,
+        source_id,
+        cost,
+        PaymentContext::SpecialAction(action),
+        events,
+    )
+}
+
+/// CR 106.6: Single-authority core for non-cast, non-activation mana payments
+/// (effect-resolution costs and special-action costs). Auto-taps sources,
+/// validates affordability, and executes the spend with the given payment
+/// context so restriction gating routes through the correct rules category.
+fn pay_non_cast_mana_cost(
+    state: &mut GameState,
+    player: PlayerId,
+    source_id: ObjectId,
+    cost: &crate::types::mana::ManaCost,
+    ctx: PaymentContext<'_>,
+    events: &mut Vec<GameEvent>,
+) -> Result<(), EngineError> {
     super::layers::flush_layers(state);
 
-    let effect_ctx = PaymentContext::Effect;
     let events_before = events.len();
     super::casting_costs::auto_tap_mana_sources_with_context(
         state,
@@ -10750,7 +10794,7 @@ pub(super) fn pay_effect_mana_cost(
         cost,
         events,
         Some(source_id),
-        Some(&effect_ctx),
+        Some(&ctx),
     );
     // CR 605.4a: Resolve coupled `TapsForMana` triggered mana abilities inline
     // so their bonus mana is in the pool before the affordability check.
@@ -10766,12 +10810,7 @@ pub(super) fn pay_effect_mana_cost(
             .iter()
             .find(|p| p.id == player)
             .expect("player exists");
-        if !mana_payment::can_pay_for_spell(
-            &player_data.mana_pool,
-            cost,
-            Some(&effect_ctx),
-            permissions,
-        ) {
+        if !mana_payment::can_pay_for_spell(&player_data.mana_pool, cost, Some(&ctx), permissions) {
             return Err(EngineError::ActionNotAllowed(
                 "Cannot pay mana cost".to_string(),
             ));
@@ -10787,7 +10826,7 @@ pub(super) fn pay_effect_mana_cost(
         &mut player_data.mana_pool,
         cost,
         None,
-        Some(&effect_ctx),
+        Some(&ctx),
         permissions.any_color,
         None,
         permissions.life_colors,

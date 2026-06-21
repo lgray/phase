@@ -1616,9 +1616,37 @@ fn parse_single_cast_clause(rest: &str) -> Option<ManaSpendRestriction> {
 ///
 /// Returns `None` for any clause that does not independently parse — the caller
 /// then drops the whole disjunction rather than guessing.
+/// CR 106.6 + CR 116.2m + CR 709.5e: Recognize the non-cast "unlock [a ]door[s]"
+/// special-action clause of a disjunctive spend restriction (Smoky Lounge: "cast
+/// Room spells and unlock doors"). Tolerates an optional leading "to " (the
+/// split may leave "to unlock ..." on a trailing clause) and the
+/// singular/plural article forms. Returns the `UnlockDoor` leaf, which lowers to
+/// the door-unlock special-action runtime gate. Pure combinator — no string
+/// dispatch.
+fn parse_unlock_door_clause(clause: &str, clause_lower: &str) -> Option<ManaSpendRestriction> {
+    nom_on_lower(clause, clause_lower, |i| {
+        let (i, _) = opt(tag("to ")).parse(i)?;
+        let (i, _) = tag("unlock ").parse(i)?;
+        let (i, _) = opt(alt((tag("a "), tag("an ")))).parse(i)?;
+        value(
+            ManaSpendRestriction::UnlockDoor,
+            all_consuming(alt((tag("doors"), tag("door")))),
+        )
+        .parse(i)
+    })
+    .map(|(restriction, _)| restriction)
+}
+
 fn parse_disjunctive_clause(clause: &str) -> Option<ManaSpendRestriction> {
     let clause = clause.trim();
     let clause_lower = clause.to_lowercase();
+
+    // CR 116.2m + CR 709.5e: Non-cast door-unlock special-action clause — tried
+    // before the cast/activate arms so "unlock doors" isn't mistaken for a cast
+    // clause (it has no " spell" terminator and would otherwise fail to parse).
+    if let Some(restriction) = parse_unlock_door_clause(clause, &clause_lower) {
+        return Some(restriction);
+    }
 
     // ACTIVATE clause: "to activate an ability of an X source" / "activate an
     // equip ability" / "to activate an ability". Reuse the existing activation
@@ -1675,7 +1703,19 @@ fn parse_disjunctive_clause(clause: &str) -> Option<ManaSpendRestriction> {
 /// parser-combinator mandate, rather than `str::split`.
 fn parse_one_disjunction_clause(input: &str) -> OracleResult<'_, &str> {
     recognize(many1(preceded(
-        not(alt((tag(", or "), tag(", "), tag(" or ")))),
+        // CR 106.6: " or ", " and ", and the Oxford-comma forms each separate
+        // distinct acceptable actions in a spend restriction. " and " joins
+        // heterogeneous spend clauses too (Smoky Lounge: "cast Room spells and
+        // unlock doors") — a same-clause type union ("instant and sorcery
+        // spells") never reaches this splitter because the caller tries the
+        // whole remainder as a single clause first.
+        not(alt((
+            tag(", or "),
+            tag(", and "),
+            tag(", "),
+            tag(" or "),
+            tag(" and "),
+        ))),
         anychar,
     )))
     .parse(input)
@@ -1683,13 +1723,20 @@ fn parse_one_disjunction_clause(input: &str) -> OracleResult<'_, &str> {
 
 fn parse_disjunctive_cast_clauses(rest: &str) -> Option<ManaSpendRestriction> {
     // CR 106.6: Split the remainder into top-level disjunction clauses with a nom
-    // separated list — delimiters are " or " and the Oxford-comma forms (", " /
-    // ", or "). Longest delimiter first so ", or " wins over its ", " prefix.
-    // Each clause is the run of input up to the next delimiter; a type union
-    // inside one clause ("instant or sorcery spells") never reaches here because
-    // the caller tries the whole remainder as a single clause first.
+    // separated list — delimiters are " or ", " and ", and the Oxford-comma forms
+    // (", " / ", or " / ", and "). Longest delimiter first so ", or "/", and "
+    // win over their ", " prefix. Each clause is the run of input up to the next
+    // delimiter; a type union inside one clause ("instant or sorcery spells",
+    // "instant and sorcery spells") never reaches here because the caller tries
+    // the whole remainder as a single clause first.
     let (_, fragments) = all_consuming(separated_list1(
-        alt((tag(", or "), tag(", "), tag(" or "))),
+        alt((
+            tag(", or "),
+            tag(", and "),
+            tag(", "),
+            tag(" or "),
+            tag(" and "),
+        )),
         parse_one_disjunction_clause,
     ))
     .parse(rest)
@@ -3450,6 +3497,96 @@ mod tests {
                 zone: Zone::Graveyard,
                 polarity: ZoneSpendPolarity::From,
             }))
+        );
+    }
+
+    // CR 106.6 + CR 116.2m + CR 709.5e: Smoky Lounge — "cast Room spells and
+    // unlock doors" is a heterogeneous disjunction joined by " and ". It lowers
+    // to `Any([SpellType("Room"), UnlockDoor])`: the door-unlock leaf is a
+    // non-cast special-action restriction sitting alongside a cast clause.
+    #[test]
+    fn mana_spend_restriction_smoky_lounge_room_or_unlock_doors() {
+        let result = parse_mana_spend_restriction(
+            "spend this mana only to cast room spells and unlock doors",
+        );
+        assert_eq!(
+            result.map(|(r, _)| r),
+            Some(ManaSpendRestriction::Any(vec![
+                ManaSpendRestriction::SpellType("Room".to_string()),
+                ManaSpendRestriction::UnlockDoor,
+            ]))
+        );
+    }
+
+    // The door-unlock clause parses with the singular article form too, and on
+    // either side of the connective, so the leaf is order-independent.
+    #[test]
+    fn mana_spend_restriction_unlock_a_door_singular_clause() {
+        let result = parse_mana_spend_restriction(
+            "spend this mana only to cast room spells or unlock a door",
+        );
+        assert_eq!(
+            result.map(|(r, _)| r),
+            Some(ManaSpendRestriction::Any(vec![
+                ManaSpendRestriction::SpellType("Room".to_string()),
+                ManaSpendRestriction::UnlockDoor,
+            ]))
+        );
+    }
+
+    // GUARD: a same-clause type union ("instant and sorcery spells") must still
+    // read as a single `SpellType`, never split by the new " and " delimiter.
+    // The whole-remainder single-clause path consumes it before the splitter.
+    #[test]
+    fn mana_spend_restriction_instant_and_sorcery_stays_single_type() {
+        let result =
+            parse_mana_spend_restriction("spend this mana only to cast instant and sorcery spells");
+        assert_eq!(
+            result.map(|(r, _)| r),
+            Some(ManaSpendRestriction::SpellType(
+                "Instant and Sorcery".to_string()
+            ))
+        );
+    }
+
+    // HONEST-DEFER GUARD: the four batch-7 members whose disjunction contains a
+    // non-cast leaf with no restriction-aware payment seam (turn-face-up,
+    // activate-equip) must NOT produce a partial `Any` that silently drops the
+    // unenforceable leaf — a partial disjunction would over-restrict the mana
+    // (it could no longer pay the legal non-cast action). They stay an honest
+    // gap (None) until the underlying special-action payment seams exist.
+    #[test]
+    fn mana_spend_restriction_unenforceable_noncast_leaves_stay_gap() {
+        // Creeping Peeper: enchantment-spell, unlock-door, turn-face-up. The
+        // turn-face-up leaf is unenforceable, so the whole thing is deferred.
+        assert_eq!(
+            parse_mana_spend_restriction(
+                "spend this mana only to cast an enchantment spell, unlock a door, or turn a permanent face up",
+            )
+            .map(|(r, _)| r),
+            None,
+        );
+        // Freya Crescent: Equipment-spell or activate-an-equip-ability.
+        assert_eq!(
+            parse_mana_spend_restriction(
+                "spend this mana only to cast an equipment spell or activate an equip ability",
+            )
+            .map(|(r, _)| r),
+            None,
+        );
+        // Tin Street Gossip: face-down spells or turn creatures face up.
+        assert_eq!(
+            parse_mana_spend_restriction(
+                "spend this mana only to cast face-down spells or to turn creatures face up",
+            )
+            .map(|(r, _)| r),
+            None,
+        );
+        // Overgrown Zealot: pure turn-permanents-face-up (no cast clause at all).
+        assert_eq!(
+            parse_mana_spend_restriction("spend this mana only to turn permanents face up")
+                .map(|(r, _)| r),
+            None,
         );
     }
 }

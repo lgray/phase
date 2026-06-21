@@ -5728,6 +5728,71 @@ mod tests {
         parse_oracle_text(text, name, &keyword_names, &types, &subtypes)
     }
 
+    /// Cavernous Maw (std BATCH 12): the `{2}` activated ability animates the
+    /// land into a 3/3 Elemental creature, and the confirmatory "It's still a
+    /// Cave land" sentence (CR 205.1b, CR 305.7) must NOT remain
+    /// `Effect::Unimplemented`. The retention clause lowers to a `GenericEffect`
+    /// continuous modification that re-asserts the Land card type and Cave
+    /// subtype (additive, CR 613.1d). Revert-discriminating: if the
+    /// `try_parse_still_a_type` subtype-aware fix is reverted, the sub_ability is
+    /// `Effect::Unimplemented` and the zero-Unimplemented walk below fails.
+    #[test]
+    fn cavernous_maw_still_a_cave_land_clause_has_no_unimplemented() {
+        use crate::types::card_type::CoreType;
+        let r = parse(
+            "{T}: Add {C}.\n{2}: This land becomes a 3/3 Elemental creature until end of turn. It's still a Cave land. Activate only if the number of other Caves you control plus the number of Cave cards in your graveyard is three or greater.",
+            "Cavernous Maw",
+            &[],
+            &["Land"],
+            &["Cave"],
+        );
+
+        fn walk<'a>(ability: &'a AbilityDefinition, out: &mut Vec<&'a Effect>) {
+            out.push(&ability.effect);
+            if let Some(sub) = &ability.sub_ability {
+                walk(sub, out);
+            }
+        }
+        let mut effects = Vec::new();
+        for ability in &r.abilities {
+            walk(ability, &mut effects);
+        }
+        assert!(
+            !effects
+                .iter()
+                .any(|e| matches!(e, Effect::Unimplemented { .. })),
+            "Cavernous Maw must not emit Effect::Unimplemented, got {effects:#?}"
+        );
+
+        // The retention clause must produce a continuous GenericEffect that
+        // re-asserts BOTH the Land core type AND the Cave subtype.
+        let retention = effects.iter().find_map(|e| match e {
+            Effect::GenericEffect {
+                static_abilities, ..
+            } if static_abilities.iter().any(|sd| {
+                sd.modifications
+                    .iter()
+                    .any(|m| matches!(m, ContinuousModification::AddSubtype { subtype } if subtype == "Cave"))
+            }) =>
+            {
+                Some(static_abilities)
+            }
+            _ => None,
+        });
+        let retention = retention.expect("expected a Cave-retention GenericEffect");
+        assert!(
+            retention
+                .iter()
+                .any(|sd| sd.modifications.iter().any(|m| matches!(
+                    m,
+                    ContinuousModification::AddType {
+                        core_type: CoreType::Land
+                    }
+                ))),
+            "retention clause must re-assert the Land core type, got {retention:#?}"
+        );
+    }
+
     /// Build a single-face `CardFace` from an oracle `text` through the real
     /// synthesis path (`build_oracle_face`), so coverage checks recurse into
     /// granted abilities and effect payloads exactly as production does.
@@ -10299,6 +10364,48 @@ mod tests {
                     SpellCostCriterion::HasXInCost,
                 ],
             }]
+        );
+    }
+
+    /// CR 106.6 + CR 116.2m + CR 709.5e: Smoky Lounge — the triggered "add
+    /// {R}{R}. Spend this mana only to cast Room spells and unlock doors" line
+    /// lowers the heterogeneous " and " disjunction to
+    /// `Any([SpellType("Room"), UnlockDoor])`, attached to the produced mana.
+    /// The whole card parses with no `Effect::Unimplemented` anywhere.
+    #[test]
+    fn smoky_lounge_full_mana_line_no_unimplemented() {
+        let r = parse(
+            "At the beginning of your first main phase, add {R}{R}. Spend this mana only to cast Room spells and unlock doors.\n(You may cast either half. That door unlocks on the battlefield. As a sorcery, you may pay the mana cost of a locked door to unlock it.)",
+            "Smoky Lounge",
+            &[],
+            &["Enchantment"],
+            &["Room"],
+        );
+        assert_eq!(r.triggers.len(), 1, "triggers: {:?}", r.triggers);
+        let exec = r.triggers[0]
+            .execute
+            .as_ref()
+            .expect("trigger has an execute ability");
+        let Effect::Mana { restrictions, .. } = &*exec.effect else {
+            panic!("expected Effect::Mana, got {:?}", exec.effect);
+        };
+        assert_eq!(
+            restrictions,
+            &vec![ManaSpendRestriction::Any(vec![
+                ManaSpendRestriction::SpellType("Room".to_string()),
+                ManaSpendRestriction::UnlockDoor,
+            ])]
+        );
+        // The mana effect itself parsed (not a swallowed Unimplemented), and the
+        // restriction sentence was consumed rather than left as a stray gap.
+        assert!(
+            !matches!(*exec.effect, Effect::Unimplemented { .. }),
+            "Smoky Lounge mana effect must not be Unimplemented"
+        );
+        assert!(
+            exec.sub_ability.is_none(),
+            "the restriction sentence must be folded into the mana effect, not a stray chained effect: {:?}",
+            exec.sub_ability
         );
     }
 
