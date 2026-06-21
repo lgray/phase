@@ -337,4 +337,79 @@ mod tests {
             other => panic!("expected CastOffer addressed to the opponent, got {other:?}"),
         }
     }
+
+    /// CR 701.57a + CR 608.2c: Zoyowa's Justice-style "that player discovers X"
+    /// binds the discovering player through the parent object target's owner. A
+    /// direct `target opponent` filter takes the declared player-target branch;
+    /// this regression exercises the context-ref branch used by the actual
+    /// "that player" parser output.
+    #[test]
+    fn discover_parent_target_owner_uses_parent_object_owner_library() {
+        use crate::types::ability::TargetRef;
+
+        let mut state = GameState::new_two_player(42);
+        let controller = PlayerId(0);
+        let opponent = PlayerId(1);
+
+        let parent_target = create_object(
+            &mut state,
+            CardId(8),
+            opponent,
+            "Opponent-Owned Creature".to_string(),
+            Zone::Battlefield,
+        );
+        state
+            .objects
+            .get_mut(&parent_target)
+            .unwrap()
+            .card_types
+            .core_types
+            .push(CoreType::Creature);
+
+        let hit = create_object(
+            &mut state,
+            CardId(9),
+            opponent,
+            "Opponent Two Drop".to_string(),
+            Zone::Library,
+        );
+        {
+            let obj = state.objects.get_mut(&hit).unwrap();
+            obj.card_types.core_types.push(CoreType::Creature);
+            obj.mana_cost = ManaCost::generic(2);
+        }
+
+        let ability = ResolvedAbility::new(
+            Effect::Discover {
+                mana_value_limit: QuantityExpr::Fixed { value: 3 },
+                player: TargetFilter::ParentTargetOwner,
+            },
+            vec![TargetRef::Object(parent_target)],
+            ObjectId(100),
+            controller,
+        );
+
+        let mut events = Vec::new();
+        resolve(&mut state, &ability, &mut events).unwrap();
+
+        match &state.waiting_for {
+            WaitingFor::CastOffer {
+                player,
+                kind: CastOfferKind::Discover { hit_card, .. },
+                ..
+            } => {
+                assert_eq!(
+                    *player, opponent,
+                    "the parent target's owner, not the controller, is offered the discover"
+                );
+                assert_eq!(
+                    *hit_card, hit,
+                    "ParentTargetOwner discover scans the parent target owner's library"
+                );
+            }
+            other => {
+                panic!("expected CastOffer addressed to the parent target owner, got {other:?}")
+            }
+        }
+    }
 }
