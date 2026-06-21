@@ -6645,6 +6645,66 @@ mod tests {
         );
     }
 
+    /// CR 118.9: Valgavoth, Terror Eater — the cast-from-exile static line
+    /// ("During your turn, you may play cards exiled with ~. If you cast a spell
+    /// this way, pay life equal to its mana value rather than pay its mana
+    /// cost.") must be a fully-supported `ExileCastPermission` carrying an
+    /// ALTERNATIVE pay-life extra-cost (not a leftover Unimplemented gap).
+    #[test]
+    fn valgavoth_terror_eater_cast_from_exile_alt_cost_supported() {
+        use crate::types::statics::{CastCostMode, StaticMode};
+        let face = oracle_face_for(
+            "Valgavoth, Terror Eater",
+            "Flying, lifelink\nWard\u{2014}Sacrifice three nonland permanents.\nIf a card you didn't control would be put into an opponent's graveyard from anywhere, exile it instead.\nDuring your turn, you may play cards exiled with Valgavoth. If you cast a spell this way, pay life equal to its mana value rather than pay its mana cost.",
+            &["Legendary", "Creature"],
+            &["Demon"],
+        );
+        let details = crate::game::coverage::build_parse_details_for_face(&face);
+        let cast_static = details
+            .iter()
+            .find(|d| {
+                matches!(d.category, crate::game::coverage::ParseCategory::Static)
+                    // allow-noncombinator: matching the engine's own parse-detail handler label (not Oracle text), in a test.
+                    && d.label.starts_with("ExileCastPermission")
+            })
+            .expect(
+                "Valgavoth's cast-from-exile line must appear as an ExileCastPermission static",
+            );
+        assert!(
+            cast_static.supported,
+            "the cast-from-exile static line must be supported, got {cast_static:?}"
+        );
+
+        // Pin the structural variant: a persistent Play permission carrying an
+        // ALTERNATIVE pay-life extra-cost.
+        let static_def = face
+            .static_abilities
+            .iter()
+            .find(|s| matches!(s.mode, StaticMode::ExileCastPermission { .. }))
+            .expect("Valgavoth must emit an ExileCastPermission static");
+        let StaticMode::ExileCastPermission {
+            play_mode,
+            ref extra_cost,
+            ..
+        } = static_def.mode
+        else {
+            unreachable!("matched ExileCastPermission above");
+        };
+        assert_eq!(play_mode, crate::types::ability::CardPlayMode::Play);
+        let extra = extra_cost
+            .as_ref()
+            .expect("Valgavoth must carry an alternative extra-cost");
+        assert_eq!(extra.mode, CastCostMode::Alternative);
+        assert!(
+            matches!(
+                extra.cost,
+                crate::types::ability::AbilityCost::PayLife { .. }
+            ),
+            "Valgavoth's alternative cost must be PayLife, got {:?}",
+            extra.cost
+        );
+    }
+
     /// CR 106.6 + CR 702.6a: Hydraulic Helper — the full card must parse with
     /// zero `Effect::Unimplemented` parts. "Defender" extracts as a keyword and
     /// the `{T}: Add {U}` mana ability carries the negative spend restriction

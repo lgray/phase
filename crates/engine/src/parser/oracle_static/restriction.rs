@@ -1479,6 +1479,7 @@ pub(crate) fn try_parse_graveyard_cast_permission(
                 frequency: CastFrequency::OncePerTurnPerPermanentType,
                 play_mode: CardPlayMode::Play,
                 graveyard_destination_replacement: None,
+                extra_cost: None,
             })
             .affected(affected)
             .description(text.to_string()),
@@ -1504,6 +1505,16 @@ pub(crate) fn try_parse_graveyard_cast_permission(
     if let Some(def) = try_parse_disjunctive_graveyard_cast_permission(text, lower) {
         return Some(def);
     }
+
+    // CR 117.1c: Optional "during your turn, " timing qualifier (Festival of
+    // Embers). When present, the permission is gated to the source controller's
+    // turn via a `ParsedCondition::IsYourTurn` static condition
+    // (`evaluate_condition` → `state.active_player == controller`), the
+    // rules-correct enforcement at CR 102.1 — not silently dropped.
+    let (lower, your_turn_only) = match nom_tag_lower(lower, lower, "during your turn, ") {
+        Some(r) => (r, true),
+        None => (lower, false),
+    };
 
     // Determine pattern and extract the rest after the prefix
     let (rest, frequency, play_mode) = if let Some(r) = nom_tag_lower(
@@ -1549,6 +1560,14 @@ pub(crate) fn try_parse_graveyard_cast_permission(
     let graveyard_destination_replacement = parse_exile_spell_cast_this_way_rider(trailing)
         .is_ok()
         .then_some(Zone::Exile);
+    // CR 601.2f: Optional "by paying ... in addition to their other costs"
+    // ADDITIONAL non-mana cost rider (Festival of Embers). Recognized before the
+    // permission-condition fallback so it isn't misread as a condition tail.
+    let extra_cost =
+        parse_cast_permission_additional_cost_rider(trailing).map(|cost| CastExtraCost {
+            cost,
+            mode: CastCostMode::Additional,
+        });
     let condition = parse_graveyard_permission_condition(trailing)
         .ok()
         .and_then(|(rest, condition)| rest.is_empty().then_some(condition));
@@ -1563,16 +1582,60 @@ pub(crate) fn try_parse_graveyard_cast_permission(
         frequency,
         play_mode,
         graveyard_destination_replacement,
+        extra_cost,
     })
     .affected(affected)
     .description(text.to_string());
     if let Some(condition) = condition {
         def = def.condition(condition);
+    } else if your_turn_only {
+        // CR 102.1 + CR 117.1c: gate the permission to the source controller's
+        // turn (Festival of Embers' "During your turn, ...").
+        def = def.condition(StaticCondition::DuringYourTurn);
     }
     if self_ref_permission {
         def = def.active_zones(vec![Zone::Graveyard]);
     }
     Some(def)
+}
+
+/// CR 601.2f: Parse a trailing ADDITIONAL-cost rider on a cast-from-zone
+/// permission — "by paying <N> life in addition to their other costs" (Festival
+/// of Embers). The cost is paid on TOP of the spell's normal mana cost (CR
+/// 601.2f), distinct from the CR 118.9 alternative rider parsed by
+/// `oracle_effect::try_parse_alt_cost_rider`. Composed from nom combinators so
+/// the prefix × quantity × suffix axes stay independent and future shapes
+/// (other costs, "its"/"their" pronoun) extend without permutation blowup.
+/// Returns `None` when the rider shape is absent.
+fn parse_cast_permission_additional_cost_rider(
+    trailing: &str,
+) -> Option<crate::types::ability::AbilityCost> {
+    let lower = trailing.trim_start();
+    // CR 601.2f: "by paying " opens the rider; "in addition to" distinguishes
+    // the additional shape from a CR 118.9 "rather than" alternative.
+    if !nom_primitives::scan_contains(lower, "in addition to") {
+        return None;
+    }
+    let rest = nom_tag_lower(lower, lower, "by paying ")?;
+    // CR 119.4: "<N> life" — the only additional-cost shape used by the current
+    // class that this permission carries (Festival of Embers).
+    let (after_num, n) = nom_primitives::parse_number(rest).ok()?;
+    let after_life = nom_tag_lower(after_num, after_num, " life")?;
+    // CR 601.2f: the tail must be the "in addition to (their|its) other costs"
+    // closer — anything else is an unmodeled shape.
+    let after_life = after_life.trim_start();
+    let after_in_addition = nom_tag_lower(after_life, after_life, "in addition to ")?;
+    let after_pronoun = nom_tag_lower(after_in_addition, after_in_addition, "their other costs")
+        .or_else(|| nom_tag_lower(after_in_addition, after_in_addition, "its other costs"))?;
+    // allow-noncombinator: punctuation cleanup (drop the sentence terminator) on a pre-tokenized chunk, not parsing dispatch.
+    let trimmed_pronoun = after_pronoun.trim_start();
+    let after_pronoun = trimmed_pronoun.strip_prefix('.').unwrap_or(trimmed_pronoun); // allow-noncombinator: punctuation cleanup on a pre-tokenized chunk, not parsing dispatch.
+    if !after_pronoun.trim().is_empty() {
+        return None;
+    }
+    Some(crate::types::ability::AbilityCost::PayLife {
+        amount: QuantityExpr::Fixed { value: n as i32 },
+    })
 }
 
 /// CR 305.1 + CR 601.2a + CR 700.6: Parse the disjunctive once-per-turn
@@ -1652,6 +1715,7 @@ fn try_parse_disjunctive_graveyard_cast_permission(
             // Stack-exit redirect is wrong for the granted leave-battlefield
             // rider (see doc comment); leave it unset.
             graveyard_destination_replacement: None,
+            extra_cost: None,
         })
         .affected(affected)
         .description(text.to_string()),
@@ -1887,6 +1951,9 @@ pub(crate) fn try_parse_exile_cast_permission(text: &str, lower: &str) -> Option
             // concession.
             mana_spend_permission: None,
             grants_flash: false,
+            // CR 118.9 / CR 601.2f: Maralen casts at its alt-cost shape via
+            // `cost`, not an extra non-mana rider.
+            extra_cost: None,
         })
         .affected(filter)
         .description(text.to_string()),
@@ -1978,15 +2045,29 @@ pub(crate) fn try_parse_persistent_exile_play_permission(
     let (after_riders, grants_flash, mana_spend_permission) =
         strip_exile_cast_concession_riders(after_clause);
 
-    // CR 113.6b: A trailing period is the only permitted remainder; any other
-    // tail is an unmodeled shape — decline so it surfaces as a coverage gap
-    // rather than a silent misparse.
+    // CR 118.9: Optional trailing ALTERNATIVE-cost rider sentence — "If you cast
+    // a spell this way, pay life equal to its mana value rather than pay its mana
+    // cost." (Valgavoth, Terror Eater). Reuses the shared
+    // `try_parse_alt_cost_rider` authority (the same helper that stamps
+    // `TopOfLibraryCastPermission.alt_cost`), so the recognized cost shapes stay
+    // in lockstep with the top-of-library Bolas's Citadel class. When present the
+    // rider IS the only permitted remainder.
     let tail = after_riders.trim_start();
     // allow-noncombinator: punctuation cleanup (drop the sentence terminator) on a pre-tokenized chunk, not parsing dispatch.
-    let tail = tail.strip_prefix('.').unwrap_or(tail); // allow-noncombinator: punctuation cleanup on a pre-tokenized chunk, not parsing dispatch.
-    if !tail.trim().is_empty() {
-        return None;
-    }
+    let tail = tail.strip_prefix('.').unwrap_or(tail).trim_start(); // allow-noncombinator: punctuation cleanup on a pre-tokenized chunk, not parsing dispatch.
+
+    let extra_cost = if tail.is_empty() {
+        None
+    } else {
+        // CR 113.6b: A non-empty tail must be the recognized alt-cost rider; an
+        // unmodeled remainder declines so it surfaces as a coverage gap rather
+        // than a silent misparse.
+        let cost = super::oracle_effect::try_parse_alt_cost_rider(tail)?;
+        Some(CastExtraCost {
+            cost,
+            mode: CastCostMode::Alternative,
+        })
+    };
 
     let mut definition = StaticDefinition::new(StaticMode::ExileCastPermission {
         // CR 601.2a: No once-per-turn cap on this class.
@@ -2001,6 +2082,8 @@ pub(crate) fn try_parse_persistent_exile_play_permission(
         timing,
         mana_spend_permission,
         grants_flash,
+        // CR 118.9: Valgavoth's alternative pay-life cost (or None).
+        extra_cost,
     })
     // CR 305.1: The permission applies to every card in the source's exile
     // pool; the pool itself is the scope, so no type/MV constraint.

@@ -2031,6 +2031,10 @@ struct GraveyardPermissionSource<'a> {
     filter: &'a TargetFilter,
     frequency: CastFrequency,
     graveyard_destination_replacement: Option<Zone>,
+    /// CR 118.9 + CR 601.2f: Optional non-mana cost rider on the graveyard-cast
+    /// static (Festival of Embers: additional pay-life). Borrowed from the static
+    /// definition (kept `Copy` so the source struct stays `Copy`).
+    extra_cost: &'a Option<crate::types::statics::CastExtraCost>,
 }
 
 /// CR 601.2a + CR 113.6b + CR 118.9: An active battlefield permanent carrying
@@ -2066,6 +2070,11 @@ struct ExilePermissionSource<'a> {
     /// CR 601.3b + CR 702.8a: When `true`, spells cast via this permission may
     /// be cast as though they had flash (Azula, Cunning Usurper).
     grants_flash: bool,
+    /// CR 118.9 + CR 601.2f: Optional non-mana cost rider on the exile-cast
+    /// static (Valgavoth alternative pay-life; Dawnhand additional
+    /// remove-counters). Borrowed from the static definition so the source struct
+    /// stays `Copy`.
+    extra_cost: &'a Option<crate::types::statics::CastExtraCost>,
 }
 
 /// CR 113.6b + CR 406.6: The set of exiled object ids this source's permission
@@ -2134,6 +2143,7 @@ fn exile_permission_sources(state: &GameState, player: PlayerId) -> Vec<ExilePer
                     timing,
                     mana_spend_permission,
                     grants_flash,
+                    ref extra_cost,
                 } => definition
                     .affected
                     .as_ref()
@@ -2147,6 +2157,7 @@ fn exile_permission_sources(state: &GameState, player: PlayerId) -> Vec<ExilePer
                         timing,
                         mana_spend_permission,
                         grants_flash,
+                        extra_cost,
                     }),
                 _ => None,
             })
@@ -2282,10 +2293,22 @@ pub(crate) fn exile_cast_permission_source(
 /// membership, affected filter) but surfaces the concession fields so the
 /// any-type-mana and flash wiring can consult them. Returns `None` when no
 /// functioning static authorizes the cast.
+///
+/// CR 601.2a: When `elected_source` is `Some`, only the static carried by that
+/// `ObjectId` is eligible — the per-source pool keyed by `source_id` in
+/// `exile_permission_sources` makes the elected `CastingVariant::ExilePermission`
+/// source uniquely addressable. This is mandatory for cost lookups (extra-cost
+/// rider): with two active permissions for the same exiled spell (one
+/// normal-cost, one Valgavoth pay-life alternative), the first-match scan would
+/// otherwise apply the wrong source's cost treatment regardless of which
+/// permission the player elected. A `None` elected source restores the
+/// any-authorizing-source scan used by the concession queries (any-type-mana,
+/// flash) where no single permission is committed to.
 fn exile_cast_permission_source_full(
     state: &GameState,
     player: PlayerId,
     exiled_id: ObjectId,
+    elected_source: Option<ObjectId>,
 ) -> Option<ExilePermissionSource<'_>> {
     let obj = state.objects.get(&exiled_id)?;
     if !exile_object_can_enter_cast_path(obj) {
@@ -2296,6 +2319,11 @@ fn exile_cast_permission_source_full(
     }
     let sources = exile_permission_sources(state, player);
     sources.into_iter().find(|source| {
+        // CR 601.2a: Bind to the elected permission when one was committed. A
+        // mismatched (or no-longer-functioning) elected source fails closed.
+        if elected_source.is_some_and(|elected| elected != source.source_id) {
+            return false;
+        }
         if !exile_cast_frequency_available(state, source.source_id, source.frequency) {
             return false;
         }
@@ -2323,7 +2351,7 @@ pub(crate) fn exile_static_permission_grants_any_color(
     player: PlayerId,
     exiled_id: ObjectId,
 ) -> bool {
-    exile_cast_permission_source_full(state, player, exiled_id).is_some_and(|source| {
+    exile_cast_permission_source_full(state, player, exiled_id, None).is_some_and(|source| {
         matches!(
             source.mana_spend_permission,
             Some(crate::types::ability::ManaSpendPermission::AnyTypeOrColor)
@@ -2340,8 +2368,54 @@ pub(crate) fn exile_static_permission_grants_flash(
     player: PlayerId,
     exiled_id: ObjectId,
 ) -> bool {
-    exile_cast_permission_source_full(state, player, exiled_id)
+    exile_cast_permission_source_full(state, player, exiled_id, None)
         .is_some_and(|source| source.grants_flash)
+}
+
+/// CR 118.9 + CR 601.2f: When `exiled_id` is castable via the
+/// `ExileCastPermission` static carried by `elected_source`, return that
+/// permission's `extra_cost` rider (Valgavoth alternative pay-life; Dawnhand
+/// additional remove-counters). Consulted by the cast pipeline to (a) zero the
+/// mana cost for `Alternative` shapes and (b) route the `AbilityCost` through
+/// `pay_additional_cost`.
+///
+/// CR 601.2a: `elected_source` MUST be the `CastingVariant::ExilePermission`
+/// source committed to for this cast. Two active permissions for the same exiled
+/// spell (e.g. a normal-cost source plus Valgavoth's pay-life alternative) carry
+/// different cost treatments; binding to the elected source guarantees the spell
+/// is charged according to the permission the player actually cast through, not
+/// whichever functioning source the battlefield scan reaches first.
+pub(crate) fn exile_static_permission_extra_cost(
+    state: &GameState,
+    player: PlayerId,
+    exiled_id: ObjectId,
+    elected_source: ObjectId,
+) -> Option<crate::types::statics::CastExtraCost> {
+    exile_cast_permission_source_full(state, player, exiled_id, Some(elected_source))
+        .and_then(|source| source.extra_cost.clone())
+}
+
+/// CR 601.2a: The `ExileCastPermission` source `exiled_id`'s cast commits to.
+/// Prefers the source already recorded on a `CastingVariant::ExilePermission`
+/// (`variant`); otherwise re-derives it from the same first-match scan that
+/// stamps the offered candidate (`build_cast_offers` / candidate generation), so
+/// legality checks running before variant election (`can_cast_prepared_now`,
+/// `effective_spell_cost`) bind to the permission the cast will commit to.
+///
+/// Returns `None` when no `ExileCastPermission` static authorizes the cast — an
+/// impulse `PlayFromExile` or other on-object exile permission carries no static
+/// extra-cost rider, so the per-source binding is skipped and no rider applies.
+pub(crate) fn elected_exile_permission_source(
+    state: &GameState,
+    player: PlayerId,
+    exiled_id: ObjectId,
+    variant: Option<CastingVariant>,
+) -> Option<ObjectId> {
+    variant
+        .and_then(CastingVariant::exile_permission_source)
+        .or_else(|| {
+            exile_cast_permission_source(state, player, exiled_id).map(|(source, _, _)| source)
+        })
 }
 
 fn graveyard_permission_sources(
@@ -2372,6 +2446,7 @@ fn graveyard_permission_sources(
                         frequency,
                         play_mode,
                         graveyard_destination_replacement,
+                        ref extra_cost,
                     } if graveyard_permission_play_mode_matches(play_mode, play_mode_filter) => {
                         definition
                             .affected
@@ -2381,6 +2456,7 @@ fn graveyard_permission_sources(
                                 filter,
                                 frequency,
                                 graveyard_destination_replacement,
+                                extra_cost,
                             })
                     }
                     _ => None,
@@ -2514,6 +2590,19 @@ fn graveyard_permission_source(
                 ),
             )
         })
+}
+
+/// CR 601.2f: When `object_id` is castable from the graveyard via a
+/// `GraveyardCastPermission` static that carries an `extra_cost` rider (Festival
+/// of Embers' additional pay-life), return the rider. Consulted by the cast
+/// pipeline to route the additional `AbilityCost` through `pay_additional_cost`.
+pub(crate) fn graveyard_static_permission_extra_cost(
+    state: &GameState,
+    player: PlayerId,
+    object_id: ObjectId,
+) -> Option<crate::types::statics::CastExtraCost> {
+    graveyard_permission_source(state, player, object_id)
+        .and_then(|source| source.extra_cost.clone())
 }
 
 fn filter_has_keyword_kind_constraint(filter: &TargetFilter, kind: KeywordKind) -> bool {
@@ -3647,20 +3736,45 @@ fn prepare_spell_cast_with_variant_override_inner(
         // exiled card (theoretical — gated by `has_exile_cast_permission`
         // first) cannot accidentally inherit Jeleva's "without paying its mana
         // cost" cost-zero on cards exiled with Jeleva.
-        obj.casting_permissions.iter().find_map(|p| match p {
-            crate::types::ability::CastingPermission::ExileWithAltCost { cost, .. }
-                if exile_alt_cost_permission_supports_cast(state, obj, player, p, None) =>
-            {
-                Some(cost.clone())
-            }
-            crate::types::ability::CastingPermission::Foretold { cost, .. } => Some(cost.clone()),
-            crate::types::ability::CastingPermission::ExileWithAltAbilityCost { .. }
-                if exile_alt_cost_permission_supports_cast(state, obj, player, p, None) =>
-            {
-                Some(crate::types::mana::ManaCost::zero())
-            }
-            _ => None,
-        })
+        obj.casting_permissions
+            .iter()
+            .find_map(|p| match p {
+                crate::types::ability::CastingPermission::ExileWithAltCost { cost, .. }
+                    if exile_alt_cost_permission_supports_cast(state, obj, player, p, None) =>
+                {
+                    Some(cost.clone())
+                }
+                crate::types::ability::CastingPermission::Foretold { cost, .. } => {
+                    Some(cost.clone())
+                }
+                crate::types::ability::CastingPermission::ExileWithAltAbilityCost { .. }
+                    if exile_alt_cost_permission_supports_cast(state, obj, player, p, None) =>
+                {
+                    Some(crate::types::mana::ManaCost::zero())
+                }
+                _ => None,
+            })
+            .or_else(|| {
+                // CR 118.9: Valgavoth, Terror Eater — an `ExileCastPermission`
+                // static carrying an ALTERNATIVE extra-cost (pay life equal to
+                // mana value) zeroes the spell's mana cost; the `AbilityCost`
+                // body is paid by `check_additional_cost_or_pay`'s exile branch.
+                // ADDITIONAL extra-costs (Dawnhand) leave the mana cost intact.
+                //
+                // CR 601.2a: Bind to the source the cast will commit to as its
+                // `CastingVariant::ExilePermission` — the explicit override when
+                // present, else the same first-match scan that stamps the offered
+                // variant. This keeps the zeroing decision keyed to the elected
+                // permission so a second active permission for the same exiled
+                // spell can never substitute its cost treatment.
+                let elected_source =
+                    elected_exile_permission_source(state, player, object_id, variant_override)?;
+                exile_static_permission_extra_cost(state, player, object_id, elected_source)
+                    .and_then(|extra| {
+                        matches!(extra.mode, crate::types::statics::CastCostMode::Alternative)
+                            .then(crate::types::mana::ManaCost::zero)
+                    })
+            })
     } else if obj.zone == Zone::Library
         && top_of_library_permission_src
             .as_ref()
@@ -10070,6 +10184,43 @@ fn can_cast_prepared_now(
         if let Some(amount) = find_pay_life_cost(&alt_cost, state, player, prepared.object_id) {
             if !super::life_costs::can_pay_life_cast_or_activation_cost(state, player, amount) {
                 return false;
+            }
+        }
+    }
+
+    // CR 118.9 + CR 601.2f + CR 119.8: Graveyard/exile cast-permission statics
+    // that carry a pay-life extra-cost rider (Valgavoth alternative; Festival of
+    // Embers additional) must afford the life payment for the cast to be legal.
+    // The remove-counters extra-cost (Dawnhand) carries no life payment, so
+    // `find_pay_life_cost` returns `None` and this gate is a no-op for it.
+    {
+        // CR 601.2a: Bind the exile extra-cost rider to the source this cast
+        // commits to — the recorded `ExilePermission` source if elected, else the
+        // first-match scan that stamps the offered candidate (this legality check
+        // runs on a `prepare_spell_cast` whose exile variant resolves to `Normal`
+        // until the player elects it). An impulse `PlayFromExile` or other
+        // on-object exile permission yields no static source and so no rider.
+        let static_extra = match state.objects.get(&prepared.object_id).map(|o| o.zone) {
+            Some(Zone::Exile) => elected_exile_permission_source(
+                state,
+                player,
+                prepared.object_id,
+                Some(prepared.casting_variant),
+            )
+            .and_then(|source| {
+                exile_static_permission_extra_cost(state, player, prepared.object_id, source)
+            }),
+            Some(Zone::Graveyard) => {
+                graveyard_static_permission_extra_cost(state, player, prepared.object_id)
+            }
+            _ => None,
+        };
+        if let Some(extra) = static_extra {
+            if let Some(amount) = find_pay_life_cost(&extra.cost, state, player, prepared.object_id)
+            {
+                if !super::life_costs::can_pay_life_cast_or_activation_cost(state, player, amount) {
+                    return false;
+                }
             }
         }
     }
@@ -44744,6 +44895,7 @@ mod tests {
             timing,
             mana_spend_permission: None,
             grants_flash: false,
+            extra_cost: None,
         })
         .affected(affected);
         let obj = state.objects.get_mut(&source).unwrap();
@@ -44848,6 +45000,112 @@ mod tests {
         assert!(
             !available.contains(&stale_exile),
             "previous-turn exile card must not be surfaced by the static"
+        );
+    }
+
+    /// Build a battlefield `ExileCastPermission` source carrying a specific
+    /// `extra_cost` rider (Valgavoth alternative pay-life; `None` for a
+    /// plain Maralen-style permission). `Unlimited` frequency keeps the source
+    /// always-functioning so the elected-source binding — not slot consumption —
+    /// is the only axis under test.
+    fn add_exile_cast_permission_source_with_extra_cost(
+        state: &mut GameState,
+        player: PlayerId,
+        name: &str,
+        extra_cost: Option<crate::types::statics::CastExtraCost>,
+    ) -> ObjectId {
+        use crate::types::ability::StaticDefinition;
+        let card_id = crate::types::identifiers::CardId(state.next_object_id);
+        let source = create_object(state, card_id, player, name.to_string(), Zone::Battlefield);
+        let def = StaticDefinition::new(StaticMode::ExileCastPermission {
+            frequency: CastFrequency::Unlimited,
+            play_mode: CardPlayMode::Cast,
+            cost: ExileCastCost::WithoutPayingManaCost,
+            pool: ExileCardPool::ThisTurn,
+            timing: ExileCastTiming::AnyTime,
+            mana_spend_permission: None,
+            grants_flash: false,
+            extra_cost,
+        })
+        .affected(TargetFilter::Any);
+        state
+            .objects
+            .get_mut(&source)
+            .unwrap()
+            .static_definitions
+            .push(def);
+        source
+    }
+
+    /// CR 601.2a + CR 118.9 + CR 601.2f: When two functioning
+    /// `ExileCastPermission` sources both offer the same exiled spell — one with
+    /// no extra cost, one carrying Valgavoth's ALTERNATIVE pay-life rider — the
+    /// extra-cost lookup must return the rider of the ELECTED source only, never
+    /// whichever source the battlefield scan reaches first.
+    ///
+    /// Discriminating: the source IDs are monotonic, so the no-cost source is
+    /// scanned first. Pre-fix, `exile_static_permission_extra_cost` re-scanned
+    /// and returned the first matching source's rider (`None`) regardless of the
+    /// elected source — so the `Some(Alternative)` assertion for the Valgavoth
+    /// election would fail. Asserting BOTH directions (no-cost election => None;
+    /// Valgavoth election => Some) pins the binding from either scan order.
+    #[test]
+    fn exile_extra_cost_binds_to_elected_source_not_first_match() {
+        use crate::types::statics::{CastCostMode, CastExtraCost};
+        let mut state = setup_game_at_main_phase();
+        let player = PlayerId(0);
+
+        // No-cost source created first => lower (earlier-scanned) ObjectId.
+        let plain_source =
+            add_exile_cast_permission_source_with_extra_cost(&mut state, player, "Maralen", None);
+        let valgavoth_extra = CastExtraCost {
+            cost: AbilityCost::PayLife {
+                amount: QuantityExpr::Ref {
+                    qty: QuantityRef::SelfManaValue,
+                },
+            },
+            mode: CastCostMode::Alternative,
+        };
+        let valgavoth_source = add_exile_cast_permission_source_with_extra_cost(
+            &mut state,
+            player,
+            "Valgavoth, Terror Eater",
+            Some(valgavoth_extra.clone()),
+        );
+        assert!(
+            plain_source.0 < valgavoth_source.0,
+            "test premise: the no-cost source must be scanned before Valgavoth"
+        );
+
+        let exiled = add_exiled_card(&mut state, player, "Exiled Bear");
+        // Both permissions offer this exiled spell from their per-turn pool.
+        state
+            .cards_exiled_with_source_this_turn
+            .insert(plain_source, vec![exiled]);
+        state
+            .cards_exiled_with_source_this_turn
+            .insert(valgavoth_source, vec![exiled]);
+
+        // Electing the no-cost source must yield no extra cost even though the
+        // Valgavoth source is also active and offering the same spell.
+        assert_eq!(
+            exile_static_permission_extra_cost(&state, player, exiled, plain_source),
+            None,
+            "electing the no-cost permission must not pick up Valgavoth's rider"
+        );
+        // Electing Valgavoth must yield its ALTERNATIVE rider even though the
+        // no-cost source is scanned first.
+        assert_eq!(
+            exile_static_permission_extra_cost(&state, player, exiled, valgavoth_source),
+            Some(valgavoth_extra),
+            "electing the Valgavoth permission must apply its alternative rider"
+        );
+        // A source that is not the spell's authorizing permission (here, an
+        // unrelated ObjectId) yields nothing — fail-closed.
+        assert_eq!(
+            exile_static_permission_extra_cost(&state, player, exiled, exiled),
+            None,
+            "a non-permission elected source must not authorize any extra cost"
         );
     }
 
@@ -45377,6 +45635,47 @@ mod tests {
             timing: ExileCastTiming::YourTurnOnly,
             mana_spend_permission: Some(ManaSpendPermission::AnyTypeOrColor),
             grants_flash: true,
+            extra_cost: None,
+        })
+        .affected(TargetFilter::Any);
+        state
+            .objects
+            .get_mut(&source)
+            .unwrap()
+            .static_definitions
+            .push(def);
+        source
+    }
+
+    /// CR 118.9: Build a persistent, your-turn-only, Play-mode
+    /// `ExileCastPermission` source carrying the Valgavoth, Terror Eater
+    /// ALTERNATIVE extra-cost (pay life equal to the spell's mana value).
+    fn add_valgavoth_exile_cast_source(state: &mut GameState, player: PlayerId) -> ObjectId {
+        use crate::types::ability::StaticDefinition;
+        let card_id = crate::types::identifiers::CardId(state.next_object_id);
+        let source = create_object(
+            state,
+            card_id,
+            player,
+            "Valgavoth, Terror Eater".to_string(),
+            Zone::Battlefield,
+        );
+        let def = StaticDefinition::new(StaticMode::ExileCastPermission {
+            frequency: CastFrequency::Unlimited,
+            play_mode: CardPlayMode::Play,
+            cost: ExileCastCost::PayNormalCost,
+            pool: ExileCardPool::Persistent,
+            timing: ExileCastTiming::YourTurnOnly,
+            mana_spend_permission: None,
+            grants_flash: false,
+            extra_cost: Some(crate::types::statics::CastExtraCost {
+                cost: AbilityCost::PayLife {
+                    amount: QuantityExpr::Ref {
+                        qty: QuantityRef::SelfManaValue,
+                    },
+                },
+                mode: crate::types::statics::CastCostMode::Alternative,
+            }),
         })
         .affected(TargetFilter::Any);
         state
@@ -45624,6 +45923,98 @@ mod tests {
             state.objects.get(&spell).unwrap().zone,
             Zone::Stack,
             "the cast spell must move to the stack"
+        );
+    }
+
+    /// Add a {2}-generic (mana value 2) sorcery linked to `source_id` in the
+    /// persistent `exile_links` pool. Returns the exiled spell's object id.
+    fn add_linked_two_generic_sorcery(
+        state: &mut GameState,
+        player: PlayerId,
+        source_id: ObjectId,
+        name: &str,
+    ) -> ObjectId {
+        let card_id = crate::types::identifiers::CardId(state.next_object_id);
+        let object_id = create_object(state, card_id, player, name.to_string(), Zone::Exile);
+        {
+            let obj = state.objects.get_mut(&object_id).unwrap();
+            obj.card_types.core_types = vec![CoreType::Sorcery];
+            // Mana value 2 — provably unpayable from an empty pool unless the
+            // Valgavoth alternative cost zeroes the mana cost.
+            obj.mana_cost = ManaCost::Cost {
+                shards: vec![],
+                generic: 2,
+            };
+            Arc::make_mut(&mut obj.abilities).push(AbilityDefinition::new(
+                AbilityKind::Spell,
+                Effect::Draw {
+                    count: QuantityExpr::Fixed { value: 1 },
+                    target: TargetFilter::Controller,
+                },
+            ));
+        }
+        link_exiled_to_source(state, object_id, source_id);
+        object_id
+    }
+
+    /// CR 118.9: Valgavoth, Terror Eater's ALTERNATIVE extra-cost ("pay life
+    /// equal to its mana value rather than pay its mana cost") zeroes the
+    /// exiled spell's mana cost and substitutes a pay-life cost. With an EMPTY
+    /// mana pool and life in hand, a {2} sorcery is castable only because the
+    /// mana cost is zeroed.
+    ///
+    /// DISCRIMINATING: reverting the static's `extra_cost` to `None` leaves the
+    /// {2} mana cost intact; `effective_spell_cost` stops being
+    /// without-paying-mana and `can_pay_cost_after_auto_tap` fails against the
+    /// empty pool — the spell becomes uncastable.
+    #[test]
+    fn valgavoth_exile_static_alternative_cost_zeroes_mana_cost() {
+        let mut state = setup_game_at_main_phase();
+        let player = PlayerId(0);
+        state.players[0].life = 20;
+        let source = add_valgavoth_exile_cast_source(&mut state, player);
+        let spell = add_linked_two_generic_sorcery(&mut state, player, source, "Exiled Big Spell");
+        // No mana at all — a {2} cost is unpayable unless it is zeroed.
+
+        assert!(
+            spell_objects_available_to_cast(&state, player).contains(&spell),
+            "Valgavoth's persistent Play permission must surface the linked spell"
+        );
+        let effective = effective_spell_cost(&state, player, spell)
+            .expect("effective cost must resolve for the linked spell");
+        assert!(
+            effective.is_without_paying_mana(),
+            "the alternative pay-life cost must zero the spell's mana cost, got {effective:?}"
+        );
+        assert!(
+            can_pay_cost_after_auto_tap(&state, player, spell, &effective),
+            "the zeroed mana cost must be payable from an empty pool"
+        );
+    }
+
+    /// CR 118.9 + CR 119.4: Valgavoth's alternative pay-life cost must gate cast
+    /// legality on life affordability — a {2} spell needs 2 life. Here the pool
+    /// HAS {2} (which would pay the printed cost outright), so the only thing
+    /// blocking the cast is the alternative cost's 0-life pay-life gate.
+    ///
+    /// DISCRIMINATING: at 0 life with {2} in the pool, reverting `extra_cost` to
+    /// `None` makes the spell castable (the {2} mana pays the printed cost); the
+    /// `Alternative` cost both zeroes the mana cost AND requires 2 life, so the
+    /// cast must be rejected.
+    #[test]
+    fn valgavoth_exile_static_alternative_cost_gated_on_life() {
+        let mut state = setup_game_at_main_phase();
+        let player = PlayerId(0);
+        state.players[0].life = 0;
+        let source = add_valgavoth_exile_cast_source(&mut state, player);
+        let spell = add_linked_two_generic_sorcery(&mut state, player, source, "Exiled Big Spell");
+        // Enough mana to pay the printed {2} — so WITHOUT the alt cost the spell
+        // would be castable; the 0-life pay-life gate is the only blocker.
+        add_mana(&mut state, player, ManaType::Colorless, 2);
+
+        assert!(
+            !can_cast_object_now(&state, player, spell),
+            "a pay-life alternative cast must be illegal at 0 life even with {{2}} in pool"
         );
     }
 

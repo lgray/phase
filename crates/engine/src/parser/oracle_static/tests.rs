@@ -7662,6 +7662,7 @@ fn graveyard_cast_permission_exile_rider() {
             frequency: CastFrequency::OncePerTurn,
             play_mode: CardPlayMode::Cast,
             graveyard_destination_replacement: Some(Zone::Exile),
+            ..
         }
     ));
 }
@@ -8163,6 +8164,7 @@ fn graveyard_cast_permission_disjunctive_tail_zone_without_rider() {
                 frequency: CastFrequency::OncePerTurn,
                 play_mode: CardPlayMode::Play,
                 graveyard_destination_replacement: None,
+                ..
             }
         ),
         "expected OncePerTurn + Play + no stack-exit redirect, got {:?}",
@@ -8219,6 +8221,7 @@ fn graveyard_cast_permission_disjunctive_serra_paragon_per_branch_zone() {
                 frequency: CastFrequency::OncePerTurn,
                 play_mode: CardPlayMode::Play,
                 graveyard_destination_replacement: None,
+                ..
             }
         ),
         "expected OncePerTurn + Play, got {:?}",
@@ -8378,6 +8381,7 @@ fn exile_cast_permission_maralen_fae_ascendant() {
             timing: ExileCastTiming::AnyTime,
             mana_spend_permission: None,
             grants_flash: false,
+            extra_cost: None,
         },
         "expected ExileCastPermission, got {:?}",
         def.mode
@@ -8480,6 +8484,7 @@ fn persistent_exile_play_permission_matrix_form() {
             timing: ExileCastTiming::YourTurnOnly,
             mana_spend_permission: None,
             grants_flash: false,
+            extra_cost: None,
         },
         "expected persistent your-turn Play permission, got {:?}",
         def.mode
@@ -8510,6 +8515,7 @@ fn persistent_exile_play_permission_evendo_sacrificed_permanent_gate() {
             timing: ExileCastTiming::YourTurnOnly,
             mana_spend_permission: None,
             grants_flash: false,
+            extra_cost: None,
         },
         "expected persistent your-turn Play permission, got {:?}",
         def.mode
@@ -8586,6 +8592,7 @@ fn persistent_exile_play_permission_look_at_variant() {
             timing: ExileCastTiming::AnyTime,
             mana_spend_permission: None,
             grants_flash: false,
+            extra_cost: None,
         },
         "expected persistent any-time Play permission, got {:?}",
         def.mode
@@ -8612,6 +8619,7 @@ fn persistent_exile_cast_permission_azula_flash_and_any_mana() {
             timing: ExileCastTiming::YourTurnOnly,
             mana_spend_permission: Some(crate::types::ability::ManaSpendPermission::AnyTypeOrColor),
             grants_flash: true,
+            extra_cost: None,
         },
         "expected persistent Cast permission with flash + any-mana, got {:?}",
         def.mode
@@ -8655,6 +8663,95 @@ fn persistent_exile_play_permission_rejects_maralen_this_turn() {
     );
 }
 
+/// CR 118.9: Valgavoth, Terror Eater — "During your turn, you may play cards
+/// exiled with ~. If you cast a spell this way, pay life equal to its mana value
+/// rather than pay its mana cost." lowers to a persistent, your-turn-only,
+/// Play-mode permission carrying an ALTERNATIVE pay-life extra-cost.
+#[test]
+fn persistent_exile_play_permission_valgavoth_alternative_pay_life() {
+    use crate::types::ability::{AbilityCost, QuantityExpr, QuantityRef};
+    use crate::types::statics::{CastCostMode, CastExtraCost};
+    let text = "During your turn, you may play cards exiled with ~. If you cast a spell this way, pay life equal to its mana value rather than pay its mana cost.";
+    let def = parse_static_line(text).expect("Valgavoth static must parse");
+    assert_eq!(
+        def.mode,
+        StaticMode::ExileCastPermission {
+            frequency: CastFrequency::Unlimited,
+            play_mode: CardPlayMode::Play,
+            cost: ExileCastCost::PayNormalCost,
+            pool: ExileCardPool::Persistent,
+            timing: ExileCastTiming::YourTurnOnly,
+            mana_spend_permission: None,
+            grants_flash: false,
+            extra_cost: Some(CastExtraCost {
+                cost: AbilityCost::PayLife {
+                    amount: QuantityExpr::Ref {
+                        qty: QuantityRef::SelfManaValue,
+                    },
+                },
+                mode: CastCostMode::Alternative,
+            }),
+        },
+        "expected persistent Play permission with an alternative pay-life cost, got {:?}",
+        def.mode
+    );
+
+    // Full Oracle dispatch (with the real "~" normalization) must route the line
+    // to the same static, leaving no Unimplemented node behind.
+    let card_text = "During your turn, you may play cards exiled with Valgavoth. If you cast a spell this way, pay life equal to its mana value rather than pay its mana cost.";
+    let parsed = crate::parser::oracle::parse_oracle_text(
+        card_text,
+        "Valgavoth, Terror Eater",
+        &[],
+        &["Creature".to_string()],
+        &["Demon".to_string()],
+    );
+    assert!(
+        parsed
+            .statics
+            .iter()
+            .any(|parsed_def| parsed_def.mode == def.mode),
+        "full Oracle dispatch must route Valgavoth's line to the alt-cost static, got {:?}",
+        parsed.statics
+    );
+}
+
+/// CR 601.2f: Festival of Embers — "During your turn, you may cast instant and
+/// sorcery spells from your graveyard by paying 1 life in addition to their
+/// other costs." lowers to a graveyard-cast permission carrying an ADDITIONAL
+/// pay-life extra-cost, gated to the controller's turn.
+#[test]
+fn graveyard_cast_permission_festival_additional_pay_life() {
+    use crate::types::ability::{AbilityCost, QuantityExpr};
+    use crate::types::statics::{CastCostMode, CastExtraCost};
+    let text = "During your turn, you may cast instant and sorcery spells from your graveyard by paying 1 life in addition to their other costs.";
+    let def = parse_static_line(text).expect("Festival static must parse");
+    let StaticMode::GraveyardCastPermission {
+        play_mode,
+        ref extra_cost,
+        ..
+    } = def.mode
+    else {
+        panic!("expected GraveyardCastPermission, got {:?}", def.mode);
+    };
+    assert_eq!(play_mode, CardPlayMode::Cast);
+    assert_eq!(
+        extra_cost,
+        &Some(CastExtraCost {
+            cost: AbilityCost::PayLife {
+                amount: QuantityExpr::Fixed { value: 1 },
+            },
+            mode: CastCostMode::Additional,
+        }),
+        "expected an additional pay-1-life extra cost, got {extra_cost:?}"
+    );
+    assert_eq!(
+        def.condition,
+        Some(crate::types::ability::StaticCondition::DuringYourTurn),
+        "the \"During your turn\" qualifier must gate the permission to the controller's turn"
+    );
+}
+
 /// Issue #1524 — Serpent's Soul-Jar: persistent exile pool without "this turn".
 #[test]
 fn exile_cast_permission_soul_jar_persistent_creature_pool() {
@@ -8671,6 +8768,7 @@ fn exile_cast_permission_soul_jar_persistent_creature_pool() {
             timing: ExileCastTiming::AnyTime,
             mana_spend_permission: None,
             grants_flash: false,
+            extra_cost: None,
         },
         "expected persistent ExileCastPermission, got {:?}",
         def.mode

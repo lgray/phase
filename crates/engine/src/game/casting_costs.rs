@@ -2791,9 +2791,22 @@ fn combined_imposed_additional_cast_cost(
     player: PlayerId,
     object_id: ObjectId,
     ability: &ResolvedAbility,
+    casting_variant: CastingVariant,
 ) -> Option<AbilityCost> {
-    let imposed_costs =
+    let mut imposed_costs =
         super::casting::collect_imposed_additional_cast_costs(state, player, object_id, ability);
+    // CR 601.2f: A graveyard/exile cast-permission static may carry an
+    // ADDITIONAL non-mana cost paid on top of the spell's mana cost (Festival of
+    // Embers' "by paying 1 life in addition to their other costs"; Dawnhand
+    // Dissident's additional remove-counters). The `Alternative` shape
+    // (Valgavoth) is handled separately in the alt-cost block — it zeroes the
+    // mana cost — and must NOT be folded in here.
+    imposed_costs.extend(cast_permission_additional_extra_cost(
+        state,
+        player,
+        object_id,
+        casting_variant,
+    ));
     match imposed_costs.len() {
         0 => None,
         1 => imposed_costs.into_iter().next(),
@@ -2801,6 +2814,39 @@ fn combined_imposed_additional_cast_cost(
             costs: imposed_costs,
         }),
     }
+}
+
+/// CR 601.2f: Return the ADDITIONAL non-mana cost imposed by a graveyard/exile
+/// cast-permission static when `object_id` is castable from that zone via the
+/// permission (Festival of Embers graveyard pay-life; Dawnhand Dissident exile
+/// remove-counters). Returns `None` for the `Alternative` cost shape (Valgavoth)
+/// — that replaces the mana cost and is paid through the alt-cost block instead.
+fn cast_permission_additional_extra_cost(
+    state: &GameState,
+    player: PlayerId,
+    object_id: ObjectId,
+    casting_variant: CastingVariant,
+) -> Option<AbilityCost> {
+    let extra = match state.objects.get(&object_id).map(|obj| obj.zone) {
+        Some(Zone::Graveyard) => {
+            super::casting::graveyard_static_permission_extra_cost(state, player, object_id)
+        }
+        // CR 601.2a: Bind to the source this cast commits to so the additional
+        // rider is read from the elected permission, never a second active
+        // permission for the same exiled spell. A non-`ExilePermission` exile
+        // cast (impulse `PlayFromExile`) yields no static source and so no rider.
+        Some(Zone::Exile) => super::casting::elected_exile_permission_source(
+            state,
+            player,
+            object_id,
+            Some(casting_variant),
+        )
+        .and_then(|source| {
+            super::casting::exile_static_permission_extra_cost(state, player, object_id, source)
+        }),
+        _ => None,
+    }?;
+    matches!(extra.mode, crate::types::statics::CastCostMode::Additional).then_some(extra.cost)
 }
 
 fn merge_required_additional_cost(
@@ -2925,7 +2971,7 @@ pub(super) fn check_additional_cost_or_pay_with_distribute(
         .and_then(|obj| obj.additional_cost.clone())
         .or(flash_additional);
     let imposed_required_cost =
-        combined_imposed_additional_cast_cost(state, player, object_id, &ability);
+        combined_imposed_additional_cast_cost(state, player, object_id, &ability, casting_variant);
 
     // CR 601.2b/f + CR 113.2c: non-kicker keyword additional costs with
     // independently functioning instances are announced through a queue. This
@@ -3261,14 +3307,40 @@ pub(super) fn check_additional_cost_or_pay_with_distribute(
             // CR 611.2a: Match the grantee filter used by
             // `prepare_spell_cast_with_variant_override` so the alt-ability
             // cost is only consumed by the granted player.
-            obj.casting_permissions.iter().find_map(|p| match p {
-                crate::types::ability::CastingPermission::ExileWithAltAbilityCost {
-                    cost,
-                    granted_to,
-                    ..
-                } if granted_to.is_none() || *granted_to == Some(player) => Some(cost.clone()),
-                _ => None,
-            })
+            obj.casting_permissions
+                .iter()
+                .find_map(|p| match p {
+                    crate::types::ability::CastingPermission::ExileWithAltAbilityCost {
+                        cost,
+                        granted_to,
+                        ..
+                    } if granted_to.is_none() || *granted_to == Some(player) => Some(cost.clone()),
+                    _ => None,
+                })
+                .or_else(|| {
+                    // CR 118.9: Valgavoth — an `ExileCastPermission` static's
+                    // ALTERNATIVE extra-cost. The mana cost was zeroed in
+                    // `cast_spell`; pay the alt cost here.
+                    //
+                    // CR 601.2a: Read the rider from the source this cast commits
+                    // to so the alt cost paid matches the elected permission, not a
+                    // second active permission for the same exiled spell.
+                    super::casting::elected_exile_permission_source(
+                        state,
+                        player,
+                        object_id,
+                        Some(casting_variant),
+                    )
+                    .and_then(|source| {
+                        super::casting::exile_static_permission_extra_cost(
+                            state, player, object_id, source,
+                        )
+                        .filter(|extra| {
+                            matches!(extra.mode, crate::types::statics::CastCostMode::Alternative)
+                        })
+                        .map(|extra| extra.cost)
+                    })
+                })
         } else if obj.zone == Zone::Library && obj.owner == player {
             // CR 401.5 + CR 118.9 + CR 601.2a: Top-of-library cast with an
             // alt-cost rider (Bolas's Citadel: "pay life equal to its mana

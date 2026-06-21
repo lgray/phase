@@ -59,10 +59,10 @@ mod prelude {
     pub(super) use crate::types::phase::Phase;
     pub(super) use crate::types::statics::{
         ActivationExemption, AdditionalCostTaxAction, AttackDefenderScope, BlockExceptionKind,
-        CastFreeOrigin, CastFrequency, CastingProhibitionCondition, CombatAloneAction,
-        CombatAloneRequirement, CostModifyMode, CostPaymentProhibition, CrewAction,
-        CrewContributionKind, ExileCardPool, ExileCastCost, ExileCastTiming, HandSizeModification,
-        ProhibitionScope, StaticMode, TriggerCause,
+        CastCostMode, CastExtraCost, CastFreeOrigin, CastFrequency, CastingProhibitionCondition,
+        CombatAloneAction, CombatAloneRequirement, CostModifyMode, CostPaymentProhibition,
+        CrewAction, CrewContributionKind, ExileCardPool, ExileCastCost, ExileCastTiming,
+        HandSizeModification, ProhibitionScope, StaticMode, TriggerCause,
     };
     pub(super) use crate::types::zones::Zone;
 }

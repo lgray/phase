@@ -5090,6 +5090,19 @@ impl CastingVariant {
         *self == CastingVariant::Normal
     }
 
+    /// CR 601.2a: The `ObjectId` of the `StaticMode::ExileCastPermission` source
+    /// elected for this cast, when the variant is `ExilePermission`. The cast
+    /// pipeline carries the elected source so per-source cost treatment
+    /// (extra-cost riders) binds to the permission the player actually cast
+    /// through — not whichever functioning source a battlefield scan reaches
+    /// first when several permissions offer the same exiled spell.
+    pub fn exile_permission_source(self) -> Option<ObjectId> {
+        match self {
+            CastingVariant::ExilePermission { source, .. } => Some(source),
+            _ => None,
+        }
+    }
+
     /// CR 118.9a: Only one alternative cost can be applied to a spell.
     pub fn uses_alternative_cost(self) -> bool {
         match self {

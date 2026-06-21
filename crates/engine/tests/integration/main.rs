@@ -85,6 +85,7 @@ mod exhibition_tidecaller_target_player_mill;
 mod export_runtime_canaries;
 mod exquisite_blood_routing;
 mod fateful_handoff_target_mana_value_draw;
+mod festival_of_embers_graveyard_additional_cost;
 mod field_marshal_soldier_anthem_first_strike;
 mod flickerwisp_delayed_return;
 mod floodpits_drowner;

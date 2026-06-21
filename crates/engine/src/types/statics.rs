@@ -475,6 +475,70 @@ impl FromStr for ExileCastTiming {
     }
 }
 
+/// CR 118.9 + CR 601.2f: Whether a non-mana cost rider on a graveyard/exile
+/// cast-permission static is an *alternative* cost (paid in lieu of the spell's
+/// mana cost, which is zeroed — CR 118.9) or an *additional* cost (paid on top
+/// of the normal mana cost, which is still due — CR 601.2f).
+///
+/// A typed enum rather than a `bool` so the design space stays open and each
+/// shape is self-documenting at its match sites:
+/// - `Alternative` — Valgavoth, Terror Eater: "If you cast a spell this way, pay
+///   life equal to its mana value rather than pay its mana cost." The static's
+///   `extra_cost.cost` replaces the mana cost (CR 118.9a — exactly one
+///   alternative cost applies).
+/// - `Additional` — Festival of Embers ("by paying 1 life in addition to their
+///   other costs"), Dawnhand Dissident ("by removing three counters … in
+///   addition to paying their other costs"). The mana cost is still paid; the
+///   static's `extra_cost.cost` is added on top (CR 601.2f).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum CastCostMode {
+    /// CR 118.9: Replaces the spell's mana cost (the mana cost is zeroed).
+    Alternative,
+    /// CR 601.2f: Paid on top of the spell's normal mana cost.
+    Additional,
+}
+
+impl fmt::Display for CastCostMode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            CastCostMode::Alternative => write!(f, "alternative"),
+            CastCostMode::Additional => write!(f, "additional"),
+        }
+    }
+}
+
+impl FromStr for CastCostMode {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "alternative" => Ok(CastCostMode::Alternative),
+            "additional" => Ok(CastCostMode::Additional),
+            other => Err(format!("unknown CastCostMode: {other}")),
+        }
+    }
+}
+
+/// CR 118.9 + CR 601.2f: A non-mana cost rider carried by a graveyard/exile
+/// cast-permission static. Pairs the `AbilityCost` to pay with the `mode`
+/// (`Alternative` vs `Additional`) that decides whether the spell's mana cost is
+/// replaced or still due. The single building block covering the whole
+/// "cast-from-zone for a non-mana cost" class (Valgavoth alternative pay-life;
+/// Festival of Embers additional pay-life; Dawnhand Dissident additional
+/// remove-counters). Mirrors `TopOfLibraryCastPermission.alt_cost`, which is
+/// always `Alternative` and so needs no `mode` axis.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CastExtraCost {
+    /// CR 118.9 / CR 601.2f: The cost to pay. Routed through
+    /// `pay_additional_cost` (the single non-mana cost-payment authority) so
+    /// dynamic refs (`QuantityRef::SelfManaValue`) resolve against the spell at
+    /// cast time, exactly as the per-card `ExileWithAltAbilityCost` flow does.
+    pub cost: AbilityCost,
+    /// CR 118.9 vs CR 601.2f: Alternative (replaces mana cost) vs Additional
+    /// (paid on top of the mana cost).
+    pub mode: CastCostMode,
+}
+
 /// CR 603.2d: The cause-predicate axis for trigger-doubling static abilities.
 ///
 /// "An effect that states a triggered ability of an object triggers additional
@@ -941,6 +1005,14 @@ pub enum StaticMode {
         /// permission.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         graveyard_destination_replacement: Option<Zone>,
+        /// CR 118.9 + CR 601.2f: Optional non-mana cost rider paid when casting
+        /// a spell via this permission. `Additional` is paid on top of the
+        /// normal mana cost (Festival of Embers: "by paying 1 life in addition
+        /// to their other costs"); `Alternative` would replace the mana cost.
+        /// `None` (default) preserves the existing graveyard-cast shapes
+        /// (Lurrus, Karador, Conduit). Routed through `pay_additional_cost`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        extra_cost: Option<CastExtraCost>,
     },
     /// CR 401.5 + CR 118.9 + CR 601.2a: Static ability granting permission to
     /// play/cast the top card of the controller's library when it matches
@@ -1065,6 +1137,17 @@ pub enum StaticMode {
         /// cast-timing check in `casting::prepare_spell_cast`.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         grants_flash: bool,
+        /// CR 118.9 + CR 601.2f: Optional non-mana cost rider paid when casting
+        /// a spell via this permission. `Alternative` replaces the spell's mana
+        /// cost (Valgavoth, Terror Eater: "pay life equal to its mana value
+        /// rather than pay its mana cost"); `Additional` is paid on top of the
+        /// normal mana cost (Dawnhand Dissident: "by removing three counters …
+        /// in addition to paying their other costs"). `None` (default)
+        /// preserves the existing shapes (Maralen, The Matrix of Time, Azula).
+        /// Routed through `pay_additional_cost` at cast time (mirrors
+        /// `TopOfLibraryCastPermission.alt_cost`).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        extra_cost: Option<CastExtraCost>,
     },
     /// CR 113.6 + CR 601.2a: Marker static identifying a source whose linked
     /// "play a card from exile with a collection counter on it" permission is
@@ -1650,10 +1733,15 @@ impl Hash for StaticMode {
                 frequency,
                 play_mode,
                 graveyard_destination_replacement,
+                extra_cost,
             } => {
                 frequency.hash(state);
                 play_mode.hash(state);
                 graveyard_destination_replacement.hash(state);
+                // `AbilityCost` (inside `CastExtraCost`) lacks `Hash` — hash the
+                // mode marker only (mirrors the `alt_cost` treatment) so the
+                // alternative/additional shapes don't collide.
+                extra_cost.as_ref().map(|e| e.mode).hash(state);
             }
             StaticMode::TopOfLibraryCastPermission {
                 play_mode,
@@ -1677,6 +1765,7 @@ impl Hash for StaticMode {
                 timing,
                 mana_spend_permission,
                 grants_flash,
+                extra_cost,
             } => {
                 frequency.hash(state);
                 play_mode.hash(state);
@@ -1688,6 +1777,9 @@ impl Hash for StaticMode {
                 // its presence so the two payment-concession shapes don't collide.
                 mana_spend_permission.is_some().hash(state);
                 grants_flash.hash(state);
+                // `AbilityCost` (inside `CastExtraCost`) lacks `Hash` — hash the
+                // mode marker only so the alternative/additional shapes differ.
+                extra_cost.as_ref().map(|e| e.mode).hash(state);
             }
             // CR 122.2: Zone derives Hash; hash the excluded-zone list so
             // [Hand, Library] does not collide with other zone sets.
@@ -1951,15 +2043,19 @@ impl fmt::Display for StaticMode {
                 frequency,
                 play_mode,
                 graveyard_destination_replacement,
+                extra_cost,
             } => {
+                write!(f, "GraveyardCastPermission({play_mode},{frequency}")?;
                 if matches!(graveyard_destination_replacement, Some(Zone::Exile)) {
-                    write!(
-                        f,
-                        "GraveyardCastPermission({play_mode},{frequency},exile_on_graveyard)"
-                    )
-                } else {
-                    write!(f, "GraveyardCastPermission({play_mode},{frequency})")
+                    write!(f, ",exile_on_graveyard")?;
                 }
+                // CR 601.2f: the extra_cost payload is preserved through serde,
+                // not the Display round-trip; emit only a tagged marker so the
+                // historical 2-/3-segment forms keep parsing unchanged.
+                if let Some(extra) = extra_cost {
+                    write!(f, ",extra_cost={}", extra.mode)?;
+                }
+                write!(f, ")")
             }
             StaticMode::TopOfLibraryCastPermission {
                 play_mode,
@@ -1998,13 +2094,15 @@ impl fmt::Display for StaticMode {
                 timing,
                 mana_spend_permission,
                 grants_flash,
+                extra_cost,
             } => {
                 // Positional, lossless round-trip. Segments 1-2 (play_mode,
                 // frequency) are always present; the optional "free" cost
                 // marker, the pool scope, the timing scope, the any-type-mana
-                // spend marker, and the flash-grant marker are appended as
-                // tagged segments only when non-default so the historical
-                // 2-/3-segment Maralen forms keep parsing unchanged.
+                // spend marker, the flash-grant marker, and the extra-cost
+                // marker are appended as tagged segments only when non-default
+                // so the historical 2-/3-segment Maralen forms keep parsing
+                // unchanged.
                 write!(f, "ExileCastPermission({play_mode},{frequency}")?;
                 if matches!(cost, ExileCastCost::WithoutPayingManaCost) {
                     write!(f, ",free")?;
@@ -2020,6 +2118,11 @@ impl fmt::Display for StaticMode {
                 }
                 if *grants_flash {
                     write!(f, ",flash")?;
+                }
+                // CR 118.9 + CR 601.2f: extra_cost payload preserved through
+                // serde; emit only the mode marker here.
+                if let Some(extra) = extra_cost {
+                    write!(f, ",extra_cost={}", extra.mode)?;
                 }
                 write!(f, ")")
             }
@@ -2347,6 +2450,7 @@ impl FromStr for StaticMode {
                 frequency: CastFrequency::OncePerTurn,
                 play_mode: CardPlayMode::Cast,
                 graveyard_destination_replacement: None,
+                extra_cost: None,
             },
             s if s.starts_with("GraveyardCastPermission(") => {
                 let inner = s
@@ -2361,12 +2465,17 @@ impl FromStr for StaticMode {
                         graveyard_destination_replacement: rest
                             .contains(&"exile_on_graveyard")
                             .then_some(Zone::Exile),
+                        // CR 601.2f: the extra_cost payload is preserved through
+                        // serde, not the FromStr round-trip, so FromStr defaults
+                        // to None.
+                        extra_cost: None,
                     }
                 } else {
                     StaticMode::GraveyardCastPermission {
                         frequency: CastFrequency::OncePerTurn,
                         play_mode: CardPlayMode::Cast,
                         graveyard_destination_replacement: None,
+                        extra_cost: None,
                     }
                 }
             }
@@ -2434,6 +2543,7 @@ impl FromStr for StaticMode {
                 timing: ExileCastTiming::AnyTime,
                 mana_spend_permission: None,
                 grants_flash: false,
+                extra_cost: None,
             },
             s if s.starts_with("ExileCastPermission(") => {
                 // Display form: "ExileCastPermission(<play_mode>,<frequency>[,free]
@@ -2478,6 +2588,9 @@ impl FromStr for StaticMode {
                             timing = t;
                         }
                     }
+                    // CR 118.9 + CR 601.2f: the extra_cost payload rides on serde,
+                    // not the Display round-trip — the "extra_cost=<mode>" marker
+                    // is diagnostic-only, so FromStr defaults the field to None.
                 }
                 StaticMode::ExileCastPermission {
                     frequency,
@@ -2487,6 +2600,7 @@ impl FromStr for StaticMode {
                     timing,
                     mana_spend_permission,
                     grants_flash,
+                    extra_cost: None,
                 }
             }
             "CantBeCountered" => StaticMode::CantBeCountered,
@@ -3096,12 +3210,20 @@ mod tests {
                 frequency: CastFrequency::OncePerTurn,
                 play_mode: CardPlayMode::Cast,
                 graveyard_destination_replacement: None,
+                extra_cost: None,
             },
             StaticMode::GraveyardCastPermission {
                 frequency: CastFrequency::Unlimited,
                 play_mode: CardPlayMode::Play,
                 graveyard_destination_replacement: None,
+                extra_cost: None,
             },
+            // CR 601.2f: Festival of Embers — graveyard cast with an additional
+            // pay-life cost. NOTE: `extra_cost`-bearing variants are NOT in this
+            // Display round-trip list — the `AbilityCost` payload rides on serde,
+            // not Display (FromStr defaults `extra_cost` to None, mirroring
+            // `TopOfLibraryCastPermission.alt_cost`). The payload round-trip is
+            // covered by `serde_roundtrip` instead.
             // Cast-from-hand-free permissions (Omniscience; Zaffai).
             StaticMode::CastFromHandFree {
                 frequency: CastFrequency::Unlimited,
@@ -3124,6 +3246,7 @@ mod tests {
                 timing: ExileCastTiming::AnyTime,
                 mana_spend_permission: None,
                 grants_flash: false,
+                extra_cost: None,
             },
             StaticMode::ExileCastPermission {
                 frequency: CastFrequency::Unlimited,
@@ -3133,6 +3256,7 @@ mod tests {
                 timing: ExileCastTiming::AnyTime,
                 mana_spend_permission: None,
                 grants_flash: false,
+                extra_cost: None,
             },
             // Persistent, your-turn-only exile-play permission
             // (The Matrix of Time; Prosper/Tibalt impulse-commander class).
@@ -3144,6 +3268,7 @@ mod tests {
                 timing: ExileCastTiming::YourTurnOnly,
                 mana_spend_permission: None,
                 grants_flash: false,
+                extra_cost: None,
             },
             // CR 609.4b + CR 702.8a: Azula, Cunning Usurper — Cast mode from a
             // persistent pool, your-turn-only, granting any-type mana and flash.
@@ -3157,7 +3282,12 @@ mod tests {
                     crate::types::ability::ManaSpendPermission::AnyTypeOrColor,
                 ),
                 grants_flash: true,
+                extra_cost: None,
             },
+            // NOTE: Valgavoth (alternative pay-life) and Dawnhand (additional
+            // remove-counters) `extra_cost`-bearing exile permissions are
+            // covered by `serde_roundtrip`, not this Display list — see the
+            // note on `GraveyardCastPermission` above.
             // Casting prohibitions
             StaticMode::CantBeCast {
                 who: ProhibitionScope::Controller,
@@ -3233,6 +3363,56 @@ mod tests {
                     },
                 },
                 timing_permission: None,
+            },
+            // CR 118.9 + CR 601.2f: `CastExtraCost` riders ride on serde (not the
+            // Display round-trip). Cover all three shapes of the building block:
+            // Valgavoth alternative pay-life, Festival additional pay-life,
+            // Dawnhand additional remove-counters.
+            StaticMode::ExileCastPermission {
+                frequency: CastFrequency::Unlimited,
+                play_mode: CardPlayMode::Play,
+                cost: ExileCastCost::PayNormalCost,
+                pool: ExileCardPool::Persistent,
+                timing: ExileCastTiming::YourTurnOnly,
+                mana_spend_permission: None,
+                grants_flash: false,
+                extra_cost: Some(CastExtraCost {
+                    cost: AbilityCost::PayLife {
+                        amount: QuantityExpr::Ref {
+                            qty: QuantityRef::SelfManaValue,
+                        },
+                    },
+                    mode: CastCostMode::Alternative,
+                }),
+            },
+            StaticMode::GraveyardCastPermission {
+                frequency: CastFrequency::Unlimited,
+                play_mode: CardPlayMode::Cast,
+                graveyard_destination_replacement: None,
+                extra_cost: Some(CastExtraCost {
+                    cost: AbilityCost::PayLife {
+                        amount: QuantityExpr::Fixed { value: 1 },
+                    },
+                    mode: CastCostMode::Additional,
+                }),
+            },
+            StaticMode::ExileCastPermission {
+                frequency: CastFrequency::Unlimited,
+                play_mode: CardPlayMode::Cast,
+                cost: ExileCastCost::PayNormalCost,
+                pool: ExileCardPool::Persistent,
+                timing: ExileCastTiming::YourTurnOnly,
+                mana_spend_permission: None,
+                grants_flash: false,
+                extra_cost: Some(CastExtraCost {
+                    cost: AbilityCost::RemoveCounter {
+                        count: 3,
+                        counter_type: crate::types::counter::CounterMatch::Any,
+                        target: Some(TargetFilter::Any),
+                        selection: crate::types::ability::CounterCostSelection::AmongObjects,
+                    },
+                    mode: CastCostMode::Additional,
+                }),
             },
             StaticMode::Other("Custom".to_string()),
         ];
