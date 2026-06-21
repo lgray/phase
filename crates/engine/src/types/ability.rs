@@ -1769,6 +1769,17 @@ pub enum CastingPermission {
         /// graveyard, exile it instead." Applied when the granted cast finalizes.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         exile_instead_of_graveyard_on_resolve: bool,
+        /// CR 614.1c + CR 122.1: Osteomancer Adept / The Tomb of Aclazotz class —
+        /// a `CastFromZone` grant whose sub-ability is "the creature cast this way
+        /// enters with a [counter] counter on it." When `Some(ct)`, the granted
+        /// cast finalization registers a pending ETB counter of type `ct` on the
+        /// cast object so it enters the battlefield carrying that counter
+        /// (CR 122.1h: a finality counter is the keyword counter that exiles the
+        /// permanent instead of letting it die). `None` for every other
+        /// `CastFromZone` grant. Typed `Option<CounterType>` rather than a bool so
+        /// the rider covers any counter the cast-this-way creature enters with.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        enters_with_counter: Option<CounterType>,
     },
     /// CR 400.7i: Play from exile until duration expires (impulse draw).
     /// Building block for "exile top N, choose one, you may play it this turn" patterns.

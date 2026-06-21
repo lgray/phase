@@ -1900,6 +1900,7 @@ pub(super) fn lower_targeted_action_ast(ast: TargetedImperativeAst) -> Effect {
                 resolution_cleanup: None,
                 duration: None,
                 exile_instead_of_graveyard_on_resolve: false,
+                enters_with_counter: None,
             },
             target,
             grantee: crate::types::ability::PermissionGrantee::ObjectOwner,

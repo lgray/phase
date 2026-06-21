@@ -1758,6 +1758,74 @@ fn try_parse_enters_with_additional_counters(lower: &str) -> Option<AbilityDefin
     ))
 }
 
+/// CR 614.1c + CR 122.1: Parse the "the creature cast this way enters with a
+/// [counter] counter on it" rider that follows a graveyard cast-permission grant
+/// (Osteomancer Adept "that creature enters with a finality counter on it"; The
+/// Tomb of Aclazotz "it enters with a finality counter on it"). Produces an
+/// `Effect::AddPendingETBCounters`; the runtime `CastFromZone` resolver consumes
+/// it as permission metadata (see `cast_from_zone::is_enters_with_counter_rider_subability`)
+/// rather than against the current trigger event, so the counter rides the
+/// *future* graveyard cast.
+///
+/// The subject is anaphoric ("that creature" or "it" — the spell just authorized
+/// to be cast), and the count is always one ("a [counter] counter"). Any trailing
+/// "and is a [subtype] in addition to its other types" clause (Tomb) is *not*
+/// consumed here — the type-addition rider on a cast-this-way creature is a
+/// separate continuous effect that is honestly deferred (the counter still
+/// applies; the missing type grant leaves coverage red rather than band-aided).
+fn try_parse_cast_this_way_enters_with_counter(lower: &str) -> Option<Effect> {
+    // CR 608.2c: optional "if you cast a spell this way," / "if you do," gate.
+    // The rider only fires for a spell cast via the granted permission; the
+    // runtime gates on the actual cast, so the condition prefix carries no
+    // additional parse-time meaning here and is peeled if present (Osteomancer
+    // Adept uses "if you cast a spell this way," where Tomb uses "if you do,").
+    let lower = lower.trim_start();
+    let lower = alt((
+        tag::<_, _, OracleError<'_>>("if you cast a spell this way, "),
+        tag("if you cast it this way, "),
+        tag("if you do, "),
+    ))
+    .parse(lower)
+    .map(|(rest, _)| rest)
+    .unwrap_or(lower);
+    // Anaphoric subject for the spell just granted casting permission.
+    let (rest, _) = alt((
+        tag::<_, _, OracleError<'_>>("that creature enters with "),
+        tag("that permanent enters with "),
+        tag("it enters with "),
+    ))
+    .parse(lower)
+    .ok()?;
+    // CR 122.1: the printed rider is always a single counter ("a [counter]").
+    let (rest, _) = alt((tag::<_, _, OracleError<'_>>("a "), tag("an ")))
+        .parse(rest)
+        .ok()?;
+    let (rest, counter_type) = nom_primitives::parse_counter_type_typed(rest).ok()?;
+    let (rest, _) = tag::<_, _, OracleError<'_>>(" counter on it")
+        .parse(rest)
+        .ok()?;
+    // CR 205.1b: a trailing "and is a [subtype] in addition to its other types"
+    // (Tomb of Aclazotz Vampire grant) is an unmodeled continuous effect on the
+    // cast-this-way creature — accept the counter rider whether or not that
+    // clause follows, but do not claim the type grant. A bare end-of-clause or a
+    // recognized type-addition tail both qualify; anything else is a different
+    // sentence the counter rider must not silently swallow.
+    let tail_ok = rest.is_empty()
+        || alt((
+            tag::<_, _, OracleError<'_>>(" and is a "),
+            tag(" and it's a "),
+        ))
+        .parse(rest)
+        .is_ok();
+    if tail_ok {
+        return Some(Effect::AddPendingETBCounters {
+            counter_type,
+            count: QuantityExpr::Fixed { value: 1 },
+        });
+    }
+    None
+}
+
 /// CR 603.7c: Parse inline delayed triggers like "when that creature dies, draw a card".
 /// Returns a `CreateDelayedTrigger` wrapping the parsed inner effect.
 fn try_parse_inline_delayed_trigger(
@@ -2697,6 +2765,7 @@ fn try_parse_airbend_clause(tp: TextPair<'_>) -> Option<ParsedEffectClause> {
                         resolution_cleanup: None,
                         duration: None,
                         exile_instead_of_graveyard_on_resolve: false,
+                        enters_with_counter: None,
                     },
                     target: TargetFilter::TrackedSet {
                         id: TrackedSetId(0),
@@ -5031,6 +5100,15 @@ fn parse_effect_clause_inner(text: &str, ctx: &mut ParseContext) -> ParsedEffect
         return parsed_clause(effect);
     }
     if let Some(effect) = try_parse_leave_battlefield_exile_replacement(&lower) {
+        return parsed_clause(effect);
+    }
+    // CR 614.1c + CR 122.1: "the creature cast this way enters with a [counter]
+    // counter on it" — the enters-with-counter rider on a graveyard cast-
+    // permission grant (Osteomancer Adept, The Tomb of Aclazotz). Routed before
+    // the generic effect dispatch so the anaphoric "that creature/it enters
+    // with …" is recognized as a `CastFromZone` permission rider rather than
+    // falling through to `Effect::Unimplemented`.
+    if let Some(effect) = try_parse_cast_this_way_enters_with_counter(&lower) {
         return parsed_clause(effect);
     }
     // CR 614.1a + CR 608.2n + CR 607.2b: "exile it instead of putting it into a
@@ -52640,6 +52718,88 @@ mod tests {
             }
             other => panic!("expected ChangeZone, got {other:?}"),
         }
+    }
+
+    /// CR 614.1c + CR 122.1 — Osteomancer Adept / The Tomb of Aclazotz: the
+    /// "the creature cast this way enters with a finality counter on it" rider
+    /// must parse to `AddPendingETBCounters` (consumed by `CastFromZone` as
+    /// permission metadata), across both anaphoric subjects ("that creature",
+    /// "it"), both optional gate prefixes ("if you cast a spell this way,",
+    /// "if you do,"), and whether or not a trailing type-addition clause follows.
+    #[test]
+    fn cast_this_way_enters_with_finality_counter_rider_parses() {
+        let finality = || Effect::AddPendingETBCounters {
+            counter_type: CounterType::Generic("finality".to_string()),
+            count: QuantityExpr::Fixed { value: 1 },
+        };
+        for text in [
+            "that creature enters with a finality counter on it",
+            "it enters with a finality counter on it",
+            "if you cast a spell this way, that creature enters with a finality counter on it",
+            "if you do, it enters with a finality counter on it",
+            // Tomb of Aclazotz: trailing Vampire type-addition clause is deferred
+            // but the counter rider must still be recognized.
+            "it enters with a finality counter on it and is a Vampire in addition to its other types",
+        ] {
+            assert_eq!(
+                try_parse_cast_this_way_enters_with_counter(text),
+                Some(finality()),
+                "rider should parse for {text:?}"
+            );
+        }
+    }
+
+    /// The rider generalizes beyond finality (typed `Option<CounterType>`): a
+    /// "+1/+1 counter" cast-this-way rider parses to the same effect with the
+    /// P/T counter — proving the building block is not a finality special case.
+    #[test]
+    fn cast_this_way_enters_with_counter_rider_is_counter_generic() {
+        assert_eq!(
+            try_parse_cast_this_way_enters_with_counter(
+                "that creature enters with a +1/+1 counter on it"
+            ),
+            Some(Effect::AddPendingETBCounters {
+                counter_type: CounterType::Plus1Plus1,
+                count: QuantityExpr::Fixed { value: 1 },
+            }),
+        );
+    }
+
+    /// Whole-card production-path parse: Osteomancer Adept's residual rider
+    /// sentence must surface as an `AddPendingETBCounters { finality }`
+    /// sub-ability on the activated `CastFromZone`, not `Unimplemented`.
+    #[test]
+    fn osteomancer_adept_finality_rider_parses_through_card() {
+        let parsed = parse_oracle_text(
+            "{T}: Until end of turn, you may cast creature spells from your graveyard by foraging in addition to paying their other costs. If you cast a spell this way, that creature enters with a finality counter on it.",
+            "Osteomancer Adept",
+            &[],
+            &["Creature".to_string()],
+            &["Skeleton".to_string(), "Wizard".to_string()],
+        );
+        let cast_abilities: Vec<_> = parsed
+            .abilities
+            .iter()
+            .filter(|a| matches!(&*a.effect, Effect::CastFromZone { .. }))
+            .collect();
+        let cast = cast_abilities
+            .last()
+            .expect("Osteomancer Adept should parse a CastFromZone ability");
+        let rider = cast
+            .sub_ability
+            .as_ref()
+            .expect("the finality rider must be linked as a sub-ability");
+        assert!(
+            matches!(
+                &*rider.effect,
+                Effect::AddPendingETBCounters {
+                    counter_type: CounterType::Generic(s),
+                    ..
+                } if s == "finality"
+            ),
+            "rider should be AddPendingETBCounters(finality), got {:?}",
+            rider.effect
+        );
     }
 
     /// CR 122.1 — Bare put-onto-battlefield without the counters suffix must

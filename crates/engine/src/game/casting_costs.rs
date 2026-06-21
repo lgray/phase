@@ -5538,6 +5538,27 @@ pub(super) fn finalize_cast_with_phyrexian_choices(
         apply_exile_instead_of_graveyard_rider(state, object_id);
     }
 
+    // CR 614.1c + CR 122.1: A `CastFromZone` grant whose rider was "the creature
+    // cast this way enters with a [counter] counter on it" records the counter on
+    // the granted `ExileWithAltCost`. When that cast finalizes, register a pending
+    // ETB counter so the object enters the battlefield carrying it (CR 122.1h: a
+    // finality counter exiles the permanent instead of letting it die).
+    // Osteomancer Adept, The Tomb of Aclazotz.
+    let cast_this_way_etb_counter = state.objects.get(&object_id).and_then(|obj| {
+        obj.casting_permissions.iter().find_map(|p| match p {
+            crate::types::ability::CastingPermission::ExileWithAltCost {
+                enters_with_counter: Some(ct),
+                ..
+            } => Some(ct.clone()),
+            _ => None,
+        })
+    });
+    if let Some(counter_type) = cast_this_way_etb_counter {
+        state
+            .pending_etb_counters
+            .push((object_id, counter_type, 1));
+    }
+
     if casting_variant == CastingVariant::Foretell {
         if let Some(obj) = state.objects.get_mut(&object_id) {
             obj.cast_variant_paid = Some((
@@ -11646,6 +11667,7 @@ mod tests {
                     duration: None,
 
                     exile_instead_of_graveyard_on_resolve: false,
+                    enters_with_counter: None,
                 });
 
             (state, hit, vec![miss_a, miss_b])
@@ -11747,6 +11769,7 @@ mod tests {
                     duration: None,
 
                     exile_instead_of_graveyard_on_resolve: false,
+                    enters_with_counter: None,
                 });
 
             let outcome = evaluate_cascade_constraint_with_resulting_mv(
@@ -11812,6 +11835,7 @@ mod tests {
                     duration: None,
 
                     exile_instead_of_graveyard_on_resolve: false,
+                    enters_with_counter: None,
                 });
 
             let outcome = evaluate_cascade_constraint_with_resulting_mv(
@@ -11855,6 +11879,7 @@ mod tests {
                     duration: None,
 
                     exile_instead_of_graveyard_on_resolve: false,
+                    enters_with_counter: None,
                 });
             push_announcement_stack_entry(&mut state, hit);
 
@@ -11909,6 +11934,7 @@ mod tests {
                     duration: None,
 
                     exile_instead_of_graveyard_on_resolve: false,
+                    enters_with_counter: None,
                 });
             hit_obj
                 .casting_permissions
@@ -11921,6 +11947,7 @@ mod tests {
                     duration: None,
 
                     exile_instead_of_graveyard_on_resolve: false,
+                    enters_with_counter: None,
                 });
             push_announcement_stack_entry(&mut state, hit);
 
@@ -11967,6 +11994,7 @@ mod tests {
                     duration: None,
 
                     exile_instead_of_graveyard_on_resolve: false,
+                    enters_with_counter: None,
                 });
             state.players[0].mana_pool.add(ManaUnit {
                 color: ManaType::Colorless,
@@ -12032,6 +12060,7 @@ mod tests {
                     duration: None,
 
                     exile_instead_of_graveyard_on_resolve: false,
+                    enters_with_counter: None,
                 });
             hit_obj
                 .casting_permissions
@@ -12051,6 +12080,7 @@ mod tests {
                     duration: None,
 
                     exile_instead_of_graveyard_on_resolve: false,
+                    enters_with_counter: None,
                 });
             push_announcement_stack_entry(&mut state, hit);
 
@@ -12105,6 +12135,7 @@ mod tests {
                     duration: None,
 
                     exile_instead_of_graveyard_on_resolve: false,
+                    enters_with_counter: None,
                 });
             hit_obj
                 .casting_permissions
@@ -12117,6 +12148,7 @@ mod tests {
                     duration: None,
 
                     exile_instead_of_graveyard_on_resolve: false,
+                    enters_with_counter: None,
                 });
             push_announcement_stack_entry(&mut state, hit);
 

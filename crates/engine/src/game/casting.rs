@@ -7687,6 +7687,7 @@ pub(super) fn initiate_cast_during_resolution(
                 resolution_cleanup: Some(cleanup),
                 duration: None,
                 exile_instead_of_graveyard_on_resolve: false,
+                enters_with_counter: None,
             });
     }
     let mut prepared = prepare_spell_cast_with_variant_override(state, player, hit_card, None)?;
@@ -14243,6 +14244,7 @@ mod tests {
                 duration: None,
 
                 exile_instead_of_graveyard_on_resolve: false,
+                enters_with_counter: None,
             });
         let prepared = prepare_spell_cast(&state, PlayerId(0), exiled).unwrap();
         assert!(matches!(prepared.mana_cost, ManaCost::NoCost));
@@ -26311,6 +26313,7 @@ mod tests {
                     resolution_cleanup: None,
                     duration: None,
                     exile_instead_of_graveyard_on_resolve: false,
+                    enters_with_counter: None,
                 });
         }
 
@@ -26365,6 +26368,191 @@ mod tests {
         );
     }
 
+    /// CR 614.1c + CR 122.1: Osteomancer Adept / The Tomb of Aclazotz —
+    /// "you may cast a creature spell from your graveyard this turn. The creature
+    /// cast this way enters with a finality counter on it." Drives the FULL cast
+    /// pipeline: the `CastFromZone` grant carrying the enters-with-counter rider
+    /// stamps `enters_with_counter` on the granted permission; casting the
+    /// creature and resolving it onto the battlefield must apply the finality
+    /// counter. Reverting the rider plumbing (the permission field, the cast-
+    /// finalization stamp, or the parser rider) makes the entered creature carry
+    /// no finality counter and flips the assertion below.
+    #[test]
+    fn graveyard_cast_this_way_enters_with_finality_counter() {
+        use crate::game::effects::cast_from_zone;
+
+        let mut state = setup_game_at_main_phase();
+        let creature = create_object(
+            &mut state,
+            CardId(8200),
+            PlayerId(0),
+            "Graveyard Creature".to_string(),
+            Zone::Graveyard,
+        );
+        {
+            let obj = state.objects.get_mut(&creature).unwrap();
+            obj.card_types.core_types.push(CoreType::Creature);
+            obj.base_power = Some(2);
+            obj.base_toughness = Some(2);
+            obj.power = Some(2);
+            obj.toughness = Some(2);
+            // Free to cast so the test isolates the rider, not cost payment.
+            obj.mana_cost = ManaCost::zero();
+        }
+
+        // The enters-with-counter rider sub-ability, as the parser produces it
+        // for "the creature cast this way enters with a finality counter on it".
+        let rider = AbilityDefinition::new(
+            AbilityKind::Spell,
+            Effect::AddPendingETBCounters {
+                counter_type: CounterType::Generic("finality".to_string()),
+                count: QuantityExpr::Fixed { value: 1 },
+            },
+        );
+        let mut grant = ResolvedAbility::new(
+            Effect::CastFromZone {
+                target: TargetFilter::ParentTarget,
+                without_paying_mana_cost: true,
+                mode: CardPlayMode::Cast,
+                cast_transformed: false,
+                alt_ability_cost: None,
+                constraint: None,
+                duration: Some(Duration::UntilEndOfTurn),
+                driver: crate::types::ability::CastFromZoneDriver::LingeringPermission,
+            },
+            vec![TargetRef::Object(creature)],
+            ObjectId(9100),
+            PlayerId(0),
+        );
+        grant.sub_ability = Some(Box::new(ResolvedAbility::new(
+            *rider.effect.clone(),
+            vec![],
+            ObjectId(9100),
+            PlayerId(0),
+        )));
+
+        cast_from_zone::resolve(&mut state, &grant, &mut Vec::new()).unwrap();
+
+        // The rider must have been recorded on the granted permission, not lost.
+        assert!(
+            state.objects[&creature]
+                .casting_permissions
+                .iter()
+                .any(|p| matches!(
+                    p,
+                    CastingPermission::ExileWithAltCost {
+                        enters_with_counter: Some(CounterType::Generic(ref s)),
+                        ..
+                    } if s == "finality"
+                )),
+            "the enters-with-finality-counter rider must ride the granted permission"
+        );
+
+        // Cast the creature for free via the granted permission and resolve it
+        // onto the battlefield.
+        apply_as_current(
+            &mut state,
+            GameAction::CastSpell {
+                object_id: creature,
+                card_id: CardId(8200),
+                targets: vec![],
+                payment_mode: CastPaymentMode::Auto,
+            },
+        )
+        .expect("free graveyard cast should be accepted");
+        for _ in 0..6 {
+            if state.objects[&creature].zone == Zone::Battlefield {
+                break;
+            }
+            apply_as_current(&mut state, GameAction::PassPriority).unwrap();
+        }
+
+        assert_eq!(
+            state.objects[&creature].zone,
+            Zone::Battlefield,
+            "the creature cast this way should resolve onto the battlefield"
+        );
+        // The discriminating assertion: the creature entered with a finality
+        // counter (CR 122.1h keyword counter). Reverting the rider drops it.
+        assert_eq!(
+            state.objects[&creature]
+                .counters
+                .get(&CounterType::Generic("finality".to_string())),
+            Some(&1),
+            "the creature cast this way must enter with a finality counter"
+        );
+    }
+
+    /// Negative control: an identical creature cast from the graveyard via a
+    /// `CastFromZone` grant WITHOUT the enters-with-counter rider enters with NO
+    /// finality counter — proving the counter comes from the rider, not from the
+    /// graveyard-cast path itself.
+    #[test]
+    fn graveyard_cast_without_rider_has_no_finality_counter() {
+        use crate::game::effects::cast_from_zone;
+
+        let mut state = setup_game_at_main_phase();
+        let creature = create_object(
+            &mut state,
+            CardId(8201),
+            PlayerId(0),
+            "Plain Graveyard Creature".to_string(),
+            Zone::Graveyard,
+        );
+        {
+            let obj = state.objects.get_mut(&creature).unwrap();
+            obj.card_types.core_types.push(CoreType::Creature);
+            obj.base_power = Some(2);
+            obj.base_toughness = Some(2);
+            obj.power = Some(2);
+            obj.toughness = Some(2);
+            obj.mana_cost = ManaCost::zero();
+        }
+
+        let grant = ResolvedAbility::new(
+            Effect::CastFromZone {
+                target: TargetFilter::ParentTarget,
+                without_paying_mana_cost: true,
+                mode: CardPlayMode::Cast,
+                cast_transformed: false,
+                alt_ability_cost: None,
+                constraint: None,
+                duration: Some(Duration::UntilEndOfTurn),
+                driver: crate::types::ability::CastFromZoneDriver::LingeringPermission,
+            },
+            vec![TargetRef::Object(creature)],
+            ObjectId(9101),
+            PlayerId(0),
+        );
+        cast_from_zone::resolve(&mut state, &grant, &mut Vec::new()).unwrap();
+
+        apply_as_current(
+            &mut state,
+            GameAction::CastSpell {
+                object_id: creature,
+                card_id: CardId(8201),
+                targets: vec![],
+                payment_mode: CastPaymentMode::Auto,
+            },
+        )
+        .expect("free graveyard cast should be accepted");
+        for _ in 0..6 {
+            if state.objects[&creature].zone == Zone::Battlefield {
+                break;
+            }
+            apply_as_current(&mut state, GameAction::PassPriority).unwrap();
+        }
+
+        assert_eq!(state.objects[&creature].zone, Zone::Battlefield);
+        assert_eq!(
+            state.objects[&creature]
+                .counters
+                .get(&CounterType::Generic("finality".to_string())),
+            None,
+            "a graveyard cast without the rider must not gain a finality counter"
+        );
+    }
+
     #[test]
     fn hand_alt_cost_permission_overrides_printed_mana_cost() {
         let mut state = setup_game_at_main_phase();
@@ -26396,6 +26584,7 @@ mod tests {
                     duration: None,
 
                     exile_instead_of_graveyard_on_resolve: false,
+                    enters_with_counter: None,
                 });
         }
 
@@ -26443,6 +26632,7 @@ mod tests {
             duration: None,
 
             exile_instead_of_graveyard_on_resolve: false,
+            enters_with_counter: None,
         }
     }
 
@@ -26482,6 +26672,7 @@ mod tests {
                     duration: None,
 
                     exile_instead_of_graveyard_on_resolve: false,
+                    enters_with_counter: None,
                 });
         }
 
@@ -32922,6 +33113,7 @@ mod tests {
                 duration: None,
 
                 exile_instead_of_graveyard_on_resolve: false,
+                enters_with_counter: None,
             });
 
         assert!(is_blocked_by_cast_only_from_zones(
@@ -35583,6 +35775,7 @@ mod tests {
                     duration: None,
 
                     exile_instead_of_graveyard_on_resolve: false,
+                    enters_with_counter: None,
                 },
             );
         }
