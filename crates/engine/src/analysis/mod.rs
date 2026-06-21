@@ -16,9 +16,16 @@
 //! states (correct for a mandatory loop → draw). The detector needs the inverse:
 //! "same board, resources may differ" → a beneficial loop that should be
 //! shortcut (CR 732.2a) rather than drawn (CR 104.4b / CR 732.4).
+//!
+//! - [`sim`] — the offline simulation harness ([`LoopProbe`] / [`accumulate_events`])
+//!   that drives `GameRunner::act` and *feeds* the event-fed `ResourceVector`
+//!   axes (damage, tokens, draws, casts, triggers) from the runner's event
+//!   stream, which a single `GameState` snapshot cannot supply.
 
 pub mod resource;
+pub mod sim;
 
 pub use resource::{
     loop_states_equal_modulo_resources, CounterClass, ObjectClass, ResourceVector, TriggerKind,
 };
+pub use sim::{accumulate_events, LoopProbe};
