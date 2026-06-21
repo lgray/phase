@@ -11182,6 +11182,99 @@ mod tests {
         );
     }
 
+    /// CR 106.6 + CR 708.4 + CR 116.2b + CR 709.5e: Creeping Peeper — the {U}
+    /// mana ability's three-way spend disjunction ("cast an enchantment spell,
+    /// unlock a door, or turn a permanent face up") lowers to
+    /// `Any([SpellType("Enchantment"), UnlockDoor, TurnPermanentFaceUp])`. The
+    /// whole card parses with no `Effect::Unimplemented`.
+    #[test]
+    fn creeping_peeper_full_mana_line_no_unimplemented() {
+        let r = parse(
+            "{T}: Add {U}. Spend this mana only to cast an enchantment spell, unlock a door, or turn a permanent face up.",
+            "Creeping Peeper",
+            &[],
+            &["Creature"],
+            &["Bird"],
+        );
+        assert_eq!(r.abilities.len(), 1, "abilities: {:?}", r.abilities);
+        let Effect::Mana { restrictions, .. } = &*r.abilities[0].effect else {
+            panic!("expected Effect::Mana, got {:?}", r.abilities[0].effect);
+        };
+        assert_eq!(
+            restrictions,
+            &vec![ManaSpendRestriction::Any(vec![
+                ManaSpendRestriction::SpellType("Enchantment".to_string()),
+                ManaSpendRestriction::UnlockDoor,
+                ManaSpendRestriction::TurnPermanentFaceUp,
+            ])]
+        );
+        assert!(
+            !matches!(*r.abilities[0].effect, Effect::Unimplemented { .. }),
+            "Creeping Peeper mana effect must not be Unimplemented"
+        );
+        assert!(
+            r.abilities[0].sub_ability.is_none(),
+            "the restriction sentence must be folded into the mana effect"
+        );
+    }
+
+    /// CR 106.6 + CR 116.2b + CR 702.37e: Overgrown Zealot's second ability —
+    /// "Add two mana of any one color. Spend this mana only to turn permanents
+    /// face up" — is a special-action-only spend restriction with no "to cast"
+    /// head; it lowers to the standalone `TurnPermanentFaceUp` leaf.
+    #[test]
+    fn overgrown_zealot_turn_face_up_only_no_unimplemented() {
+        let r = parse(
+            "{T}: Add two mana of any one color. Spend this mana only to turn permanents face up.",
+            "Overgrown Zealot",
+            &[],
+            &["Creature"],
+            &["Elf", "Druid"],
+        );
+        assert_eq!(r.abilities.len(), 1, "abilities: {:?}", r.abilities);
+        let Effect::Mana { restrictions, .. } = &*r.abilities[0].effect else {
+            panic!("expected Effect::Mana, got {:?}", r.abilities[0].effect);
+        };
+        assert_eq!(
+            restrictions,
+            &vec![ManaSpendRestriction::TurnPermanentFaceUp]
+        );
+        assert!(
+            !matches!(*r.abilities[0].effect, Effect::Unimplemented { .. }),
+            "Overgrown Zealot mana effect must not be Unimplemented"
+        );
+    }
+
+    /// CR 106.6 + CR 708.4 + CR 116.2b: Tin Street Gossip's mana ability —
+    /// "Add {R}{G}. Spend this mana only to cast face-down spells or to turn
+    /// creatures face up" — lowers the heterogeneous cast-or-special-action
+    /// disjunction to `Any([FaceDownSpell, TurnPermanentFaceUp])`.
+    #[test]
+    fn tin_street_gossip_face_down_or_turn_face_up_no_unimplemented() {
+        let r = parse(
+            "Vigilance\n{T}: Add {R}{G}. Spend this mana only to cast face-down spells or to turn creatures face up.",
+            "Tin Street Gossip",
+            &[crate::types::keywords::Keyword::Vigilance],
+            &["Creature"],
+            &["Goblin", "Artificer"],
+        );
+        assert_eq!(r.abilities.len(), 1, "abilities: {:?}", r.abilities);
+        let Effect::Mana { restrictions, .. } = &*r.abilities[0].effect else {
+            panic!("expected Effect::Mana, got {:?}", r.abilities[0].effect);
+        };
+        assert_eq!(
+            restrictions,
+            &vec![ManaSpendRestriction::Any(vec![
+                ManaSpendRestriction::FaceDownSpell,
+                ManaSpendRestriction::TurnPermanentFaceUp,
+            ])]
+        );
+        assert!(
+            !matches!(*r.abilities[0].effect, Effect::Unimplemented { .. }),
+            "Tin Street Gossip mana effect must not be Unimplemented"
+        );
+    }
+
     /// CR 106.6 + CR 205.3m + CR 903.3: Path of Ancestry — the passive-voice
     /// "When that mana is spent to cast a creature spell that shares a creature
     /// type with your commander, scry 1" clause folds into the

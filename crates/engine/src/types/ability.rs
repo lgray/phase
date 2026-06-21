@@ -1623,6 +1623,22 @@ pub enum ManaSpendRestriction {
     /// enforced when a Room's CR 709.5e unlock cost is paid through
     /// [`PaymentContext::SpecialAction`](super::mana::PaymentContext::SpecialAction).
     UnlockDoor,
+    /// CR 106.6 + CR 708.4: "Spend this mana only to cast face-down spells"
+    /// (Tin Street Gossip). Lowered to
+    /// [`ManaRestriction::OnlyForFaceDownSpell`](super::mana::ManaRestriction::OnlyForFaceDownSpell),
+    /// gated on `SpellMeta.is_face_down` at the spell-payment site.
+    FaceDownSpell,
+    /// CR 106.6 + CR 116.2b + CR 702.37e: "Spend this mana only to turn
+    /// permanents face up" / "turn creatures face up" — the morph/disguise
+    /// turn-face-up special-action half of a spend restriction (Overgrown
+    /// Zealot; Tin Street Gossip). A leaf of the [`ManaSpendRestriction::Any`]
+    /// disjunction. Lowered to
+    /// [`ManaRestriction::OnlyForSpecialAction(SpecialAction::TurnFaceUp)`](super::mana::ManaRestriction::OnlyForSpecialAction).
+    /// The runtime gate is honest-deferred: no payment site emits
+    /// `PaymentContext::SpecialAction(TurnFaceUp)` yet (turn-face-up charges no
+    /// mana in this engine), so such mana is conservatively unspendable rather
+    /// than over-permitted — see [`SpecialAction::TurnFaceUp`](super::mana::SpecialAction::TurnFaceUp).
+    TurnPermanentFaceUp,
     /// CR 106.6: Disjunction of spend restrictions ("cast X or Y or activate Z").
     /// Lowered to `ManaRestriction::OnlyForAny`.
     Any(Vec<ManaSpendRestriction>),

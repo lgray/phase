@@ -1422,6 +1422,9 @@ pub(super) fn build_spell_meta(
         // detected from shards (mana value alone can't reveal it — X contributes 0
         // off the stack).
         has_x_in_cost: obj.mana_cost.has_x(),
+        // CR 708.4: whether this spell is being cast face down (morph/disguise/
+        // cloak), consulted by the "cast face-down spells" spend restriction.
+        is_face_down: obj.face_down,
     })
 }
 

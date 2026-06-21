@@ -3525,6 +3525,7 @@ mod tests {
             mana_value: None,
             color_count: None,
             has_x_in_cost: false,
+            is_face_down: false,
         };
         let goblin_ctx = PaymentContext::Spell(&goblin_spell);
         let mut pool_clone = pool.clone();
@@ -3543,6 +3544,7 @@ mod tests {
             mana_value: None,
             color_count: None,
             has_x_in_cost: false,
+            is_face_down: false,
         };
         let elemental_ctx = PaymentContext::Spell(&elemental_spell);
         assert!(
