@@ -8,7 +8,9 @@ use crate::types::ability::{AbilityCost, CastVariantPaid, NinjutsuVariant};
 use crate::types::events::GameEvent;
 use crate::types::game_state::{GameState, WaitingFor};
 use crate::types::identifiers::{CardId, ObjectId};
-use crate::types::keywords::{FlashbackCost, Keyword, KeywordKind, ProtectionTarget};
+use crate::types::keywords::{
+    EmbalmCost, EternalizeCost, FlashbackCost, Keyword, KeywordKind, ProtectionTarget,
+};
 use crate::types::mana::ManaCost;
 use crate::types::phase::Phase;
 use crate::types::player::PlayerId;
@@ -243,7 +245,6 @@ pub fn resolve_self_cost_graveyard_activated_keyword(
     object_id: ObjectId,
     keyword: &Keyword,
 ) -> Keyword {
-    use crate::types::keywords::{EmbalmCost, EternalizeCost};
     match keyword {
         Keyword::Embalm(EmbalmCost::Mana(cost)) => Keyword::Embalm(EmbalmCost::Mana(
             resolve_keyword_mana_cost(state, object_id, cost),
