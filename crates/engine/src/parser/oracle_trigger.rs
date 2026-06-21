@@ -5257,6 +5257,29 @@ fn continues_spell_quality_disjunction(after_comma: &str) -> bool {
     .unwrap_or(false)
 }
 
+/// CR 105.2 + CR 601.2a: Commas inside a spell-color disjunction
+/// ("a spell that's white, blue, black, or red") are color-list separators, not
+/// the condition/effect boundary. Questing Druid is the motivating card. The
+/// text after such a comma is the next color leg — `[or ]<color>` immediately
+/// followed by a list separator (`,`) or end of clause — never a sentence/effect
+/// start. Restricting the trailing boundary to `,`/end (not a space) keeps a
+/// genuine effect that merely begins with a color word ("..., Red ... draws")
+/// from being mistaken for a list continuation.
+fn continues_spell_color_disjunction(after_comma: &str) -> bool {
+    let trimmed = after_comma.trim_start();
+    let after_or = value((), tag::<_, _, OracleError<'_>>("or "))
+        .parse(trimmed)
+        .map(|(rest, _)| rest)
+        .unwrap_or(trimmed);
+    let Ok((rest, _)) = nom_primitives::parse_color(after_or) else {
+        return false;
+    };
+    // The color leg must terminate at the clause end or a list separator comma,
+    // not run into a wider word — `tag(",")` is the combinator counterpart of the
+    // `tag(", ")` boundary check in `continues_spell_quality_disjunction`.
+    rest.is_empty() || tag::<_, _, OracleError<'_>>(",").parse(rest).is_ok()
+}
+
 fn find_effect_boundary(lower: &str) -> Option<usize> {
     use super::oracle_nom::primitives::split_once_on;
     let mut search_start = 0;
@@ -5266,6 +5289,7 @@ fn find_effect_boundary(lower: &str) -> Option<usize> {
             && !continues_disjunctive_zone_change_condition(after)
             && !continues_serial_event_condition(after)
             && !continues_spell_quality_disjunction(after)
+            && !continues_spell_color_disjunction(after)
         {
             return Some(comma_pos);
         }
@@ -10363,6 +10387,21 @@ fn try_parse_player_trigger(lower: &str) -> Option<(TriggerMode, TriggerDefiniti
         // "you" = trigger's controller
         def.valid_target = Some(TargetFilter::Controller);
 
+        // CR 105.2 + CR 601.2a: "spell that's <colors>" disjunctions span commas
+        // (Questing Druid: "a spell that's white, blue, black, or red"). The
+        // condition/effect splitter keeps the full list in `after`; recognize it
+        // on the untruncated remainder before the comma-truncation below, which
+        // would otherwise cut the color list to its first leg.
+        if let Some(filter) = parse_spell_that_clause_filter(after.trim()) {
+            let filter = if is_another {
+                add_another_prop(filter)
+            } else {
+                filter
+            };
+            def.valid_card = Some(filter);
+            return Some((TriggerMode::SpellCast, def));
+        }
+
         // Truncate at ", " so any effect clause doesn't leak into the type parser.
         let payload = nom_primitives::split_once_on(after, ", ")
             .map(|(_, (before, _))| before)
@@ -11072,6 +11111,35 @@ fn extract_spell_type_filter(after_ordinal: &str) -> Option<TargetFilter> {
     // position is the qualifier. Returns `None` if no timing tail is present.
     let qualifier = split_off_timing_tail(trimmed)?;
     parse_spell_qualifier_payload(qualifier.trim())
+}
+
+/// CR 105.2 + CR 601.2a: Parse a SpellCast `valid_card` filter from a
+/// `"spell that's <relative clause>"` payload, e.g. Questing Druid's
+/// "spell that's white, blue, black, or red" → an `Or` of `HasColor` legs.
+///
+/// Delegates the relative clause to the shared `parse_that_clause_suffix`
+/// building block (the same combinator that powers target/search "that's …"
+/// clauses), so every relative-clause property it understands — color
+/// disjunctions, color-count, supertypes — is supported here for free. The
+/// payload is consumed on the FULL pre-truncation `"you cast a …"` remainder
+/// because a color disjunction spans commas the effect-boundary splitter would
+/// otherwise cut.
+///
+/// Returns `None` unless the payload is exactly `"spell that's …"` with the
+/// relative clause consuming the entire remainder, so type-only qualifiers and
+/// post-spell modifiers continue to flow through `parse_spell_qualifier_payload`.
+fn parse_spell_that_clause_filter(payload: &str) -> Option<TargetFilter> {
+    // Strip the "spell" head noun with a nom tag; the remainder keeps its
+    // leading space, which is exactly what `parse_that_clause_suffix` expects
+    // before "that's".
+    let (rest, _) = tag::<_, _, OracleError<'_>>("spell").parse(payload).ok()?;
+    let (props, consumed) = super::oracle_target::parse_that_clause_suffix(rest, None)?;
+    if consumed != rest.len() || props.is_empty() {
+        return None;
+    }
+    Some(TargetFilter::Typed(
+        TypedFilter::default().properties(props),
+    ))
 }
 
 /// Word-boundary scan: return the text preceding the trailing timing clause,

@@ -2638,14 +2638,14 @@ fn expand_granted_static_effects(
 
 /// CR 613.1f + CR 113.3: Expand a `GrantAllActivatedAbilitiesOf { source }` host
 /// modification into one `GrantAbility` effect per activated ability of each
-/// object matching `source`. `source` is resolved relative to each recipient
-/// matching the host static's `affected_filter` (so `ExiledBySource` reads the
-/// recipient's own linked exiles). Provider objects are scanned across all zones
-/// — the granted-from cards are typically in exile, not on the battlefield — in
-/// deterministic `ObjectId` order. Both mana and non-mana activated abilities are
-/// granted. Synthesized effects target the recipient via `SelfRef`, reusing the
-/// layer-6 `GrantAbility` apply and its structural dedup, and are recomputed each
-/// pass so the granted set tracks the current `source` membership.
+/// object matching `source`. Object-self references in `source` are resolved
+/// relative to the host static, while controller-relative references use each
+/// recipient's controller. Provider objects are scanned across all zones — the
+/// granted-from cards are typically in exile, not on the battlefield — in
+/// deterministic `ObjectId` order. Both mana and non-mana activated abilities
+/// are granted. Synthesized effects target the recipient via `SelfRef`, reusing
+/// the layer-6 `GrantAbility` apply and its structural dedup, and are recomputed
+/// each pass so the granted set tracks the current `source` membership.
 fn expand_granted_activated_abilities(
     state: &GameState,
     host_source_id: ObjectId,
@@ -2670,9 +2670,23 @@ fn expand_granted_activated_abilities(
             Some(obj) => obj.controller,
             None => continue,
         };
-        // CR 109.5: `source` references like `ExiledBySource` resolve against the
-        // recipient that gained the ability.
-        let provider_ctx = crate::game::filter::FilterContext::from_source(state, recipient_id);
+        // CR 109.5 + CR 113.7a: Split the `source` filter's resolution context.
+        // Object-self references in the named card's text — `ExiledBySource`
+        // ("cards exiled with [this card]") and `SameName` ("the same name as
+        // this creature") — name the object that HAS the static ability, i.e.
+        // the host. Possessive/controller references — `ControllerRef::You`
+        // ("creatures *you* control") — refer to the controller of the object
+        // that *gained* the ability, i.e. the recipient. So resolve against the
+        // host id with the recipient's controller. For self-granting hosts
+        // (Myr Welder, Territory Forge, Marvin) host == recipient and this
+        // coincides with the recipient context; for cross-object grants
+        // (Agatha's Soul Cauldron grants creatures-you-control the abilities of
+        // *its own* exiled creature cards) only the host id finds the exile
+        // links while "you" still tracks the recipient's controller.
+        let provider_ctx = crate::game::filter::FilterContext::from_source_with_controller(
+            host_source_id,
+            recipient_controller,
+        );
         let mut next_mod_index = 0usize;
         for &provider_id in &provider_ids {
             if provider_id == recipient_id {
@@ -8697,6 +8711,282 @@ mod tests {
             host_obj.abilities.iter().any(|a| a == &granted),
             "Myr Welder must gain the exiled card's activated ability; got {:?}",
             host_obj.abilities
+        );
+    }
+
+    /// CR 613.1f + CR 201.2: Marvin, Murderous Mimic — "Marvin has all activated
+    /// abilities of creatures you control that don't have the same name as this
+    /// creature." Built end-to-end through the real parser
+    /// (`parse_oracle_text` → `GrantAllActivatedAbilitiesOf { Typed(creature,
+    /// You, [Not{SameName}]) }`) and the real `evaluate_layers` expansion.
+    ///
+    /// Discriminating: a DIFFERENT-named creature you control donates its
+    /// activated ability to Marvin, while a SAME-named creature's ability is
+    /// excluded by `Not{SameName}` and an OPPONENT's creature is excluded by the
+    /// `controller=You` axis. Reverting the parser's source-set arm (so the grant
+    /// no longer routes to the `Not{SameName}` typed filter) flips the positive
+    /// assertion; dropping the `Not{SameName}` predicate flips the
+    /// same-name-exclusion assertion.
+    #[test]
+    fn marvin_gains_differently_named_creature_abilities_only() {
+        use crate::parser::oracle::parse_oracle_text;
+        use crate::types::ability::{
+            AbilityCost, AbilityDefinition, AbilityKind, Effect, QuantityExpr,
+        };
+
+        let mut state = setup();
+
+        // Marvin carries the parser-produced static.
+        let marvin = make_creature(&mut state, "Marvin, Murderous Mimic", 0, 3, PlayerId(0));
+        let parsed = parse_oracle_text(
+            "Marvin has all activated abilities of creatures you control that \
+             don't have the same name as this creature.",
+            "Marvin, Murderous Mimic",
+            &[],
+            &["Artifact".into(), "Creature".into()],
+            &[],
+        );
+        assert_eq!(
+            parsed.statics.len(),
+            1,
+            "Marvin parses to exactly one static; got {:?}",
+            parsed.statics
+        );
+        {
+            let obj = state.objects.get_mut(&marvin).unwrap();
+            obj.card_types.core_types.insert(0, CoreType::Artifact);
+            obj.base_card_types = obj.card_types.clone();
+            obj.static_definitions = parsed.statics.clone().into();
+        }
+
+        // A differently-named creature you control with a {T}: gain 2 life
+        // ability — its ability SHOULD be granted to Marvin.
+        let donor = make_creature(&mut state, "Helpful Donor", 2, 2, PlayerId(0));
+        let donor_ability = AbilityDefinition::new(
+            AbilityKind::Activated,
+            Effect::GainLife {
+                amount: QuantityExpr::Fixed { value: 2 },
+                player: TargetFilter::Controller,
+            },
+        )
+        .cost(AbilityCost::Tap);
+        Arc::make_mut(&mut state.objects.get_mut(&donor).unwrap().abilities)
+            .push(donor_ability.clone());
+
+        // A SAME-named creature you control with a {T}: gain 5 life ability —
+        // excluded by `Not{SameName}`.
+        let twin = make_creature(&mut state, "Marvin, Murderous Mimic", 0, 3, PlayerId(0));
+        let twin_ability = AbilityDefinition::new(
+            AbilityKind::Activated,
+            Effect::GainLife {
+                amount: QuantityExpr::Fixed { value: 5 },
+                player: TargetFilter::Controller,
+            },
+        )
+        .cost(AbilityCost::Tap);
+        Arc::make_mut(&mut state.objects.get_mut(&twin).unwrap().abilities)
+            .push(twin_ability.clone());
+
+        // An OPPONENT's creature with a {T}: gain 9 life ability — excluded by
+        // the `controller=You` axis.
+        let foe = make_creature(&mut state, "Opposing Donor", 2, 2, PlayerId(1));
+        let foe_ability = AbilityDefinition::new(
+            AbilityKind::Activated,
+            Effect::GainLife {
+                amount: QuantityExpr::Fixed { value: 9 },
+                player: TargetFilter::Controller,
+            },
+        )
+        .cost(AbilityCost::Tap);
+        Arc::make_mut(&mut state.objects.get_mut(&foe).unwrap().abilities)
+            .push(foe_ability.clone());
+
+        state.layers_dirty.mark_full();
+        evaluate_layers(&mut state);
+
+        let marvin_obj = state.objects.get(&marvin).unwrap();
+        assert!(
+            marvin_obj.abilities.iter().any(|a| a == &donor_ability),
+            "Marvin must gain the differently-named creature's activated \
+             ability; got {:?}",
+            marvin_obj.abilities
+        );
+        assert!(
+            !marvin_obj.abilities.iter().any(|a| a == &twin_ability),
+            "Marvin must NOT gain a same-named creature's ability \
+             (Not{{SameName}}); got {:?}",
+            marvin_obj.abilities
+        );
+        assert!(
+            !marvin_obj.abilities.iter().any(|a| a == &foe_ability),
+            "Marvin must NOT gain an opponent's creature's ability \
+             (controller=You); got {:?}",
+            marvin_obj.abilities
+        );
+    }
+
+    /// CR 613.1f + CR 205.3: Agatha's Soul Cauldron — "Creatures you control with
+    /// +1/+1 counters on them have all activated abilities of all creature cards
+    /// exiled with Agatha's Soul Cauldron." Built end-to-end through the real
+    /// parser (`GrantAllActivatedAbilitiesOf { And[Typed(creature),
+    /// ExiledBySource] }` on a counter-gated affected filter) and the real
+    /// `evaluate_layers` expansion.
+    ///
+    /// Discriminating along two axes the new source-set arm introduces:
+    ///   - source typing: an exiled CREATURE card donates its ability, while a
+    ///     non-creature exiled card (the `And` excludes it) does not;
+    ///   - affected gating: a counter-bearing creature receives the grant, while
+    ///     a counterless creature does not.
+    ///
+    /// Reverting the typed intersection (back to bare `ExiledBySource`) flips the
+    /// non-creature-exclusion assertion. Reverting the host-relative source
+    /// resolution in `expand_granted_activated_abilities` (so `ExiledBySource`
+    /// reads the recipient creature's exile links instead of the cauldron's)
+    /// flips the positive donation assertion — the grant becomes a runtime no-op.
+    #[test]
+    fn agatha_grants_only_creature_card_abilities_to_countered_creatures() {
+        use crate::parser::oracle::parse_oracle_text;
+        use crate::types::ability::{
+            AbilityCost, AbilityDefinition, AbilityKind, Effect, QuantityExpr,
+        };
+        use crate::types::counter::CounterType;
+        use crate::types::game_state::{ExileLink, ExileLinkKind};
+
+        let mut state = setup();
+
+        // Host cauldron carries the parser-produced static.
+        let cauldron = create_object(
+            &mut state,
+            CardId(800),
+            PlayerId(0),
+            "Agatha's Soul Cauldron".to_string(),
+            Zone::Battlefield,
+        );
+        let parsed = parse_oracle_text(
+            "Creatures you control with +1/+1 counters on them have all \
+             activated abilities of all creature cards exiled with Agatha's \
+             Soul Cauldron.",
+            "Agatha's Soul Cauldron",
+            &[],
+            &["Artifact".into()],
+            &[],
+        );
+        assert_eq!(
+            parsed.statics.len(),
+            1,
+            "Agatha's grant clause parses to one static; got {:?}",
+            parsed.statics
+        );
+        {
+            let obj = state.objects.get_mut(&cauldron).unwrap();
+            obj.card_types.core_types.push(CoreType::Artifact);
+            obj.base_card_types = obj.card_types.clone();
+            obj.static_definitions = parsed.statics.clone().into();
+        }
+
+        // Exiled CREATURE card with {T}: gain 2 life — SHOULD be donated.
+        let exiled_creature = create_object(
+            &mut state,
+            CardId(801),
+            PlayerId(0),
+            "Exiled Beast".to_string(),
+            Zone::Exile,
+        );
+        {
+            let obj = state.objects.get_mut(&exiled_creature).unwrap();
+            obj.card_types.core_types.push(CoreType::Creature);
+            obj.base_card_types = obj.card_types.clone();
+        }
+        let creature_ability = AbilityDefinition::new(
+            AbilityKind::Activated,
+            Effect::GainLife {
+                amount: QuantityExpr::Fixed { value: 2 },
+                player: TargetFilter::Controller,
+            },
+        )
+        .cost(AbilityCost::Tap);
+        Arc::make_mut(&mut state.objects.get_mut(&exiled_creature).unwrap().abilities)
+            .push(creature_ability.clone());
+        state.exile_links.push(ExileLink {
+            exiled_id: exiled_creature,
+            source_id: cauldron,
+            kind: ExileLinkKind::TrackedBySource,
+        });
+
+        // Exiled NON-creature (artifact) card with {T}: gain 7 life — excluded by
+        // the `And[Typed(creature), ExiledBySource]` source filter.
+        let exiled_artifact = create_object(
+            &mut state,
+            CardId(802),
+            PlayerId(0),
+            "Exiled Relic".to_string(),
+            Zone::Exile,
+        );
+        {
+            let obj = state.objects.get_mut(&exiled_artifact).unwrap();
+            obj.card_types.core_types.push(CoreType::Artifact);
+            obj.base_card_types = obj.card_types.clone();
+        }
+        let artifact_ability = AbilityDefinition::new(
+            AbilityKind::Activated,
+            Effect::GainLife {
+                amount: QuantityExpr::Fixed { value: 7 },
+                player: TargetFilter::Controller,
+            },
+        )
+        .cost(AbilityCost::Tap);
+        Arc::make_mut(&mut state.objects.get_mut(&exiled_artifact).unwrap().abilities)
+            .push(artifact_ability.clone());
+        state.exile_links.push(ExileLink {
+            exiled_id: exiled_artifact,
+            source_id: cauldron,
+            kind: ExileLinkKind::TrackedBySource,
+        });
+
+        // A creature you control WITH a +1/+1 counter — SHOULD receive the grant.
+        let countered = make_creature(&mut state, "Countered Creature", 1, 1, PlayerId(0));
+        state
+            .objects
+            .get_mut(&countered)
+            .unwrap()
+            .counters
+            .insert(CounterType::Plus1Plus1, 1);
+
+        // A creature you control WITHOUT counters — excluded by the affected
+        // counter gate.
+        let counterless = make_creature(&mut state, "Plain Creature", 1, 1, PlayerId(0));
+
+        state.layers_dirty.mark_full();
+        evaluate_layers(&mut state);
+
+        let countered_obj = state.objects.get(&countered).unwrap();
+        assert!(
+            countered_obj
+                .abilities
+                .iter()
+                .any(|a| a == &creature_ability),
+            "A countered creature must gain the exiled creature card's ability; \
+             got {:?}",
+            countered_obj.abilities
+        );
+        assert!(
+            !countered_obj
+                .abilities
+                .iter()
+                .any(|a| a == &artifact_ability),
+            "A countered creature must NOT gain the non-creature exiled card's \
+             ability (And[creature, ExiledBySource]); got {:?}",
+            countered_obj.abilities
+        );
+
+        let counterless_obj = state.objects.get(&counterless).unwrap();
+        assert!(
+            !counterless_obj
+                .abilities
+                .iter()
+                .any(|a| a == &creature_ability),
+            "A counterless creature must NOT receive the grant; got {:?}",
+            counterless_obj.abilities
         );
     }
 

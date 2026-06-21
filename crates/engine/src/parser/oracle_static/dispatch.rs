@@ -1312,6 +1312,22 @@ pub(crate) fn parse_static_line_inner(
         return Some(def);
     }
 
+    // CR 613.1e + CR 105.2 / CR 105.3: "[subject] is/are [color expression]" for
+    // an ARBITRARY filter subject — Leyline of the Guildpact ("Each nonland
+    // permanent you control is all colors"), Shimmerwilds Growth ("Enchanted land
+    // is the chosen color"). Generalizes `parse_all_subject_are_color` (the "All
+    // ..." quantifier) and adds the "the chosen color" reading. Dispatched AFTER
+    // the specialized color branches so they keep ownership of their cases: the
+    // "All ..." fast path (`parse_all_subject_are_color`, which routes
+    // artifact/land subtypes through `typed_filter_for_subtype`) and the
+    // self-referential color CDA (`parse_self_subject_is_color_cda`, which
+    // marks `~ is colorless` characteristic-defining and declines raw card
+    // names). This branch only claims the residual general-filter subjects those
+    // two leave unparsed.
+    if let Some(def) = parse_subject_is_color(&tp, &text) {
+        return Some(def);
+    }
+
     // --- CDA: "~'s power is equal to the number of card types among cards in all graveyards
     //     and its toughness is equal to that number plus 1" (Tarmogoyf) ---
     if let Some(def) = parse_cda_pt_equality(tp.lower, tp.original) {
