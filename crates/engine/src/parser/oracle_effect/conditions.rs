@@ -1912,7 +1912,10 @@ pub(crate) fn condition_text_is_rehomeable(condition_text: &str) -> bool {
     // "it has ") carry their own boundary, so they exclude on a plain prefix
     // match and must NOT impose an extra boundary on the alphanumeric residual.
     !NON_REHOMEABLE_CONDITION_PREFIXES.iter().any(|prefix| {
-        let prefix_ends_alnum = prefix.chars().next_back().is_some_and(|c| c.is_alphanumeric());
+        let prefix_ends_alnum = prefix
+            .chars()
+            .next_back()
+            .is_some_and(|c| c.is_alphanumeric());
         // allow-noncombinator: word-boundary membership test against a fixed exclusion list, not parsing dispatch (parsing happens downstream in parse_inner_condition)
         condition_text.strip_prefix(prefix).is_some_and(|rest| {
             !prefix_ends_alnum || !rest.chars().next().is_some_and(|c| c.is_alphanumeric())

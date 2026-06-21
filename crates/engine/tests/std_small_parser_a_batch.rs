@@ -265,9 +265,11 @@ fn royal_treatment_creates_role_token_attached_to_target() {
         "a new permanent (the Role token) must exist after resolution"
     );
     let role = new_objects[0];
-    assert!(
-        role.attached_to.is_some(),
-        "the Royal Role token must enter attached to the target creature (CR 303.7)"
+    assert_eq!(
+        role.attached_to
+            .and_then(|attached_to| attached_to.as_object()),
+        Some(target),
+        "the Royal Role token must enter attached to the targeted creature (CR 303.7)"
     );
 }
 
