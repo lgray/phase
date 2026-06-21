@@ -630,6 +630,20 @@ fn parse_replacement_line_inner(text: &str, card_name: &str) -> Option<Replaceme
         return Some(def);
     }
 
+    // --- Continuous untap prohibition: "~ can't become untapped." /
+    // "Enchanted creature can't be untapped." (Blossombind class). CR 701.26b +
+    // CR 614.6 + CR 614.1a: a blanket "can't become untapped" forbids untapping
+    // in ANY way — not just the untap step (CR 502.3, the "doesn't untap during
+    // its untap step" class, which is a SEPARATE `DuringUntapStep`-gated
+    // replacement parsed by `parse_untap_step_replacement`). Modeled as an
+    // unconditional `ProposedEvent::Untap` prevention (no `execute`, no
+    // `DuringUntapStep` condition), exactly like CR 122.1d's stun-counter
+    // untap-prevention model, so every untap path (`process_one_untap`) consults
+    // it — including spell/ability untaps, which the untap-step loop never sees.
+    if let Some(def) = parse_cant_become_untapped_replacement(&norm_lower, &text) {
+        return Some(def);
+    }
+
     // --- Damage redirection: "all damage that would be dealt to [target] is dealt to ~ instead" ---
     // CR 614.1a: Replacement effects that redirect damage to a different recipient.
     if let Some(def) = parse_damage_redirection_replacement(&norm_lower, &text) {
@@ -6320,19 +6334,99 @@ fn parse_no_counters_replacement(
     // `parse_replacement_line_inner`, not here. `terminated(.., opt(tag(".")))`
     // absorbs the optional trailing period inside the combinator, keeping
     // the entire dispatch in idiomatic nom.
-    let mut combinator = all_consuming(terminated(
+    // CR 303.4b + CR 614.6: the prohibition may name the Aura's attached host
+    // ("Enchanted creature can't have counters put on it" — Blossombind) instead
+    // of the source itself (CR 303.4b — the enchanted permanent). Both lower to
+    // the same AddCounter prevention; only the scoped object set differs (SelfRef
+    // vs the EnchantedBy host).
+    let mut subject_combinator = all_consuming(terminated(
         (
-            tag::<_, _, OracleError<'_>>("~ can't have counters put on "),
+            terminated(
+                parse_counter_prohibition_subject_filter,
+                tag(" can't have counters put on "),
+            ),
             alt((tag("it"), tag("them"))),
         ),
         opt(tag(".")),
     ));
-    combinator.parse(norm_lower.trim()).ok()?;
+    let (_, (valid_card, _)) = subject_combinator.parse(norm_lower.trim()).ok()?;
 
     Some(
         ReplacementDefinition::new(ReplacementEvent::AddCounter)
-            .valid_card(TargetFilter::SelfRef)
+            .valid_card(valid_card)
             .quantity_modification(QuantityModification::Prevent)
+            .description(original_text.to_string()),
+    )
+}
+
+/// CR 303.4b + CR 614.6: Subject of a counter-placement prohibition, as a
+/// `valid_card` filter. CR 303.4b: the object an Aura is attached to is the
+/// "enchanted" permanent. Covers the source itself (`~` → `SelfRef`) and the
+/// Aura's attached host across the type hierarchy ("enchanted creature" /
+/// "enchanted permanent"). Composed as one `alt` over typed subjects so a future
+/// "enchanted land" / "enchanted artifact" form is one new arm, not a new
+/// parser. Longest-host-phrase-first is unnecessary here — the host nouns are
+/// disjoint tokens — but ordering keeps SelfRef (the most common form) first.
+fn parse_counter_prohibition_subject_filter(input: &str) -> OracleResult<'_, TargetFilter> {
+    use crate::types::ability::{FilterProp, TypedFilter};
+    alt((
+        value(TargetFilter::SelfRef, tag("~")),
+        value(
+            TargetFilter::Typed(TypedFilter::creature().properties(vec![FilterProp::EnchantedBy])),
+            tag("enchanted creature"),
+        ),
+        value(
+            TargetFilter::Typed(TypedFilter::permanent().properties(vec![FilterProp::EnchantedBy])),
+            tag("enchanted permanent"),
+        ),
+    ))
+    .parse(input)
+}
+
+/// CR 701.26b + CR 614.6 + CR 614.1a: Parse a blanket continuous untap
+/// prohibition — "<subject> can't become untapped" / "can't be untapped" — into
+/// an unconditional `ProposedEvent::Untap` prevention scoped to the subject.
+///
+/// This is the BROAD untap prohibition (CR 701.26b): it forbids untapping in any
+/// way. It is deliberately NOT a `StaticMode::CantUntap` static, because that
+/// class is used for the untap-step-only "doesn't untap during its untap step"
+/// wording (CR 502.3) and is only enforced by the untap-step turn-based action
+/// loop in `turns.rs` — a spell/ability that untaps the permanent would bypass
+/// it. Modeling it as an untap-event replacement (no `execute`, no
+/// `DuringUntapStep` condition) mirrors CR 122.1d's stun-counter prevention and
+/// routes every untap path (`process_one_untap` → `replace_event`) through the
+/// prohibition. The `parse_untap_step_replacement` path keeps the narrow
+/// untap-step class separate (`ReplacementCondition::DuringUntapStep`).
+///
+/// The subject is reused from the counter-prohibition subject combinator
+/// (`~`, "enchanted creature", "enchanted permanent") so the same host class is
+/// covered for both halves of a Blossombind-style compound.
+fn parse_cant_become_untapped_replacement(
+    norm_lower: &str,
+    original_text: &str,
+) -> Option<ReplacementDefinition> {
+    let mut combinator = all_consuming(terminated(
+        terminated(
+            parse_counter_prohibition_subject_filter,
+            (
+                tag(" can"),
+                alt((tag("'t"), tag("\u{2019}t"))),
+                tag(" "),
+                alt((tag("become "), tag("be "))),
+                tag("untapped"),
+            ),
+        ),
+        opt(tag(".")),
+    ));
+    let (_, valid_card) = combinator.parse(norm_lower.trim()).ok()?;
+
+    // CR 614.6: a bare prevention (no alternative effect). The `untap_applier`
+    // returns `Prevented` when the replacement carries no `execute`, so the
+    // permanent never untaps. No `DuringUntapStep` condition — this applies to
+    // every untap, not just the untap step.
+    Some(
+        ReplacementDefinition::new(ReplacementEvent::Untap)
+            .valid_card(valid_card)
             .description(original_text.to_string()),
     )
 }
@@ -7629,6 +7723,52 @@ mod tests {
         assert_eq!(def.event, ReplacementEvent::Untap);
         assert_eq!(def.condition, Some(ReplacementCondition::DuringUntapStep));
         assert!(def.execute.is_some());
+    }
+
+    /// CR 701.26b + CR 614.6: BROAD "can't become untapped" / "can't be untapped"
+    /// prohibition (Blossombind class). Distinct from the untap-step class above:
+    /// an UNCONDITIONAL `Untap` prevention (no `DuringUntapStep` condition, no
+    /// alternative `execute`) so it applies to every untap path — not just the
+    /// untap step. Covers the source (`~`) and the enchanted host
+    /// (creature/permanent). Reverting `parse_cant_become_untapped_replacement`
+    /// makes these return None (the prohibition would silently vanish).
+    #[test]
+    fn cant_become_untapped_is_unconditional_untap_prevention() {
+        use crate::types::ability::{FilterProp, TypedFilter};
+        for (text, name, expected) in [
+            (
+                "This creature can't become untapped.",
+                "Imprisoned Bear",
+                TargetFilter::SelfRef,
+            ),
+            (
+                "Enchanted creature can't be untapped.",
+                "Some Aura",
+                TargetFilter::Typed(
+                    TypedFilter::creature().properties(vec![FilterProp::EnchantedBy]),
+                ),
+            ),
+            (
+                "Enchanted permanent can't become untapped.",
+                "Some Aura",
+                TargetFilter::Typed(
+                    TypedFilter::permanent().properties(vec![FilterProp::EnchantedBy]),
+                ),
+            ),
+        ] {
+            let def = parse_replacement_line(text, name)
+                .unwrap_or_else(|| panic!("must parse: {text:?}"));
+            assert_eq!(def.event, ReplacementEvent::Untap);
+            assert_eq!(def.valid_card, Some(expected), "subject for {text:?}");
+            assert_eq!(
+                def.condition, None,
+                "broad untap prohibition must be unconditional for {text:?}"
+            );
+            assert!(
+                def.execute.is_none(),
+                "bare prohibition has no alternative effect for {text:?}"
+            );
+        }
     }
 
     #[test]
@@ -12287,6 +12427,44 @@ mod tests {
             def.quantity_modification,
             Some(QuantityModification::Prevent)
         );
+    }
+
+    /// CR 303.4b + CR 614.6: The counter-placement prohibition may name the Aura's
+    /// enchanted host across the type hierarchy. Both "enchanted creature" and
+    /// "enchanted permanent" lower to the AddCounter+Prevent replacement scoped to
+    /// the `EnchantedBy` host (creature- vs permanent-typed). Reverting the
+    /// "enchanted permanent" arm in `parse_counter_prohibition_subject_filter`
+    /// makes the permanent form return None (a parser gap for future Auras).
+    #[test]
+    fn no_counters_replacement_enchanted_host_variants() {
+        use crate::types::ability::{FilterProp, QuantityModification, TypedFilter};
+        for (text, expected) in [
+            (
+                "Enchanted creature can't have counters put on it.",
+                TargetFilter::Typed(
+                    TypedFilter::creature().properties(vec![FilterProp::EnchantedBy]),
+                ),
+            ),
+            (
+                "Enchanted permanent can't have counters put on it.",
+                TargetFilter::Typed(
+                    TypedFilter::permanent().properties(vec![FilterProp::EnchantedBy]),
+                ),
+            ),
+        ] {
+            let def = parse_replacement_line(text, "Some Aura")
+                .unwrap_or_else(|| panic!("must parse: {text:?}"));
+            assert_eq!(def.event, ReplacementEvent::AddCounter);
+            assert_eq!(
+                def.valid_card,
+                Some(expected),
+                "subject filter for {text:?}"
+            );
+            assert_eq!(
+                def.quantity_modification,
+                Some(QuantityModification::Prevent)
+            );
+        }
     }
 
     #[test]

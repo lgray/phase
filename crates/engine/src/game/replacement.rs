@@ -12378,6 +12378,111 @@ mod tests {
         }
     }
 
+    /// CR 614.6 + CR 303.4b: Blossombind — "Enchanted creature can't have
+    /// counters put on it" lowers to an AddCounter-prevention replacement scoped
+    /// to the Aura's enchanted host (CR 303.4b). Parsed from the real Oracle text, installed
+    /// on an attached Aura, and driven through `replace_event`: a counter on the
+    /// enchanted creature is Prevented, while a counter on an unrelated creature
+    /// is not. Reverting the "enchanted creature" subject arm in
+    /// `parse_no_counters_replacement` (or the Priority-6e split that routes
+    /// Blossombind's compound line) leaves no replacement and the prevention
+    /// assertion fails.
+    #[test]
+    fn blossombind_prevents_counters_on_enchanted_creature_only() {
+        let mut state = GameState::new_two_player(42);
+
+        let host = crate::game::zones::create_object(
+            &mut state,
+            CardId(1),
+            PlayerId(0),
+            "Bound Bear".to_string(),
+            Zone::Battlefield,
+        );
+        state
+            .objects
+            .get_mut(&host)
+            .unwrap()
+            .card_types
+            .core_types
+            .push(CoreType::Creature);
+
+        let other = crate::game::zones::create_object(
+            &mut state,
+            CardId(2),
+            PlayerId(0),
+            "Free Bear".to_string(),
+            Zone::Battlefield,
+        );
+        state
+            .objects
+            .get_mut(&other)
+            .unwrap()
+            .card_types
+            .core_types
+            .push(CoreType::Creature);
+
+        // Parse the real Blossombind static line and pull the counter-prohibition
+        // replacement out of the cross-layer split.
+        let parsed = crate::parser::parse_oracle_text(
+            "Enchant creature\nWhen this Aura enters, tap enchanted creature.\nEnchanted creature can't become untapped and can't have counters put on it.",
+            "Blossombind",
+            &[],
+            &["Enchantment".to_string()],
+            &["Aura".to_string()],
+        );
+        assert!(
+            !parsed.replacements.is_empty(),
+            "Blossombind must yield a counter-prohibition replacement"
+        );
+
+        let aura = crate::game::zones::create_object(
+            &mut state,
+            CardId(3),
+            PlayerId(0),
+            "Blossombind".to_string(),
+            Zone::Battlefield,
+        );
+        {
+            let obj = state.objects.get_mut(&aura).unwrap();
+            obj.card_types.core_types.push(CoreType::Enchantment);
+            obj.card_types.subtypes.push("Aura".to_string());
+            obj.replacement_definitions = parsed.replacements.clone().into();
+            obj.attached_to = Some(host.into());
+        }
+        state.objects.get_mut(&host).unwrap().attachments.push(aura);
+
+        let on_host = ProposedEvent::AddCounter {
+            placement: CounterPlacement::Object {
+                actor: PlayerId(0),
+                object_id: host,
+                counter_type: CounterType::Plus1Plus1,
+            },
+            count: 1,
+            applied: HashSet::new(),
+        };
+        let mut events = Vec::new();
+        assert_eq!(
+            replace_event(&mut state, on_host, &mut events),
+            ReplacementResult::Prevented,
+            "counters on the enchanted creature must be prevented"
+        );
+
+        let on_other = ProposedEvent::AddCounter {
+            placement: CounterPlacement::Object {
+                actor: PlayerId(0),
+                object_id: other,
+                counter_type: CounterType::Plus1Plus1,
+            },
+            count: 1,
+            applied: HashSet::new(),
+        };
+        let registry = build_replacement_registry();
+        assert!(
+            find_applicable_replacements(&state, &on_other, &registry).is_empty(),
+            "counters on a non-enchanted creature must not be prevented"
+        );
+    }
+
     #[test]
     fn global_object_counter_prohibition_prevents_listed_types_only() {
         let source = ObjectId(90);

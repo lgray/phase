@@ -9215,6 +9215,35 @@ pub(super) fn try_parse_attack_if_able(lower: &str) -> Option<ImperativeFamilyAs
     None
 }
 
+/// CR 701.15a + CR 701.15b: Recognize the verbatim goad *definition* —
+/// "attack[s] each combat if able and attack[s] a player other than you if able".
+/// This compound is precisely what goad does (CR 701.15a: must attack each combat
+/// if able; CR 701.15b: must attack a player other than the goading player),
+/// printed in full on cards that grant the effect without the "goad" keyword
+/// (Maximum Carnage chapter I). Mapping it to the goad mechanic is the correct
+/// class reuse: the goading player is the resolving controller ("you"), so the
+/// subject's own creatures are forced onto opponents, and `goaded_by` cleanup at
+/// the goading player's next turn matches the card's "Until your next turn"
+/// duration (CR 701.15a). Returns the bare marker; `subject.rs` binds the affected
+/// set to `Effect::GoadAll`.
+pub(super) fn try_parse_goad_equivalent(lower: &str) -> bool {
+    let trimmed = lower.trim_end_matches('.').trim();
+    let parsed: Result<(&str, ()), nom::Err<OracleError<'_>>> = (
+        alt((tag("attacks"), tag("attack"))),
+        value(
+            (),
+            (
+                tag(" each combat if able and "),
+                alt((tag("attacks"), tag("attack"))),
+                tag(" a player other than you if able"),
+            ),
+        ),
+    )
+        .map(|(_, marker)| marker)
+        .parse(trimmed);
+    matches!(parsed, Ok((rest, ())) if rest.is_empty())
+}
+
 /// CR 508.1d + CR 509.1c: Parse the combined "attacks or blocks ... if able"
 /// requirement (Hustle: "Target creature attacks or blocks this turn if able.").
 ///

@@ -836,6 +836,33 @@ fn try_parse_subject_restriction_clause(
                 unless_pay: None,
             });
         }
+        // CR 701.15a + CR 701.15b: "[subject] attacks each combat if able and
+        // attacks a player other than you if able" is the printed goad definition
+        // (Maximum Carnage chapter I). Map it to `Effect::GoadAll` over the subject
+        // population so the goad mechanic (goaded_by mark, "attack a player other
+        // than the goading player", goading-player next-turn cleanup) handles it.
+        // Tried before the plain attack recognizer since the goad compound is the
+        // strict superset and must win. The subject is a population ("each
+        // creature"), so the GoadAll target is `application.affected`.
+        if imperative::try_parse_goad_equivalent(&predicate) {
+            let application = parse_subject_application(subject, ctx)?;
+            let goad_target = application
+                .target
+                .clone()
+                .unwrap_or_else(|| application.affected.clone());
+            return Some(ParsedEffectClause {
+                effect: Effect::GoadAll {
+                    target: goad_target,
+                },
+                distribute: None,
+                multi_target: application.multi_target,
+                duration: None,
+                sub_ability: None,
+                condition: None,
+                optional: application.is_optional,
+                unless_pay: None,
+            });
+        }
         // Classify via the existing recognizer. Only the bare GenericEffect form
         // (MustAttack) is re-bound here; the player-bound `ForceAttack` form
         // ("attacks you/that player …") has its own targeted handling and must
