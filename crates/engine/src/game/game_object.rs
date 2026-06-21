@@ -831,6 +831,14 @@ pub struct GameObject {
     #[serde(default)]
     pub monstrous: bool,
 
+    /// CR 701.64b: Harnessed designation. Once a permanent becomes harnessed it
+    /// stays harnessed until it leaves the battlefield. Like `monstrous`, this is
+    /// a pure marker — neither an ability nor part of copiable values. Only
+    /// permanents can be harnessed. Read by the ∞ (Infinity) static-ability gate
+    /// (CR 702.186b: "∞ — [Ability]" grants [Ability] as long as harnessed).
+    #[serde(default)]
+    pub harnessed: bool,
+
     /// CR 702.xxx: Prepared (Strixhaven) designation. Present only on a
     /// permanent whose printed-card layout is `CardLayout::Prepare(a, b)`.
     /// While prepared, the controller may activate a synthesized priority-time
@@ -1236,6 +1244,7 @@ impl GameObject {
             detained_by: std::collections::HashSet::new(),
             is_suspected: false,
             monstrous: false,
+            harnessed: false,
             prepared: None,
             is_saddled: false,
             saddled_by: Vec::new(),
@@ -1333,6 +1342,8 @@ impl GameObject {
         self.is_suspected = false;
         self.is_renowned = false;
         self.monstrous = false;
+        // CR 701.64b: Harnessed clears when a permanent leaves the battlefield.
+        self.harnessed = false;
         self.foretold = false;
         // CR 702.xxx: Prepared (Strixhaven) is a new-object-on-entry reset, per
         // CR 400.7. A re-entering permanent has no memory of a prior prepared
@@ -1416,6 +1427,8 @@ impl GameObject {
         self.base_controller = Some(self.owner);
         // CR 701.37b: Monstrous designation clears when a permanent leaves the battlefield.
         self.monstrous = false;
+        // CR 701.64b: Harnessed designation clears when a permanent leaves the battlefield.
+        self.harnessed = false;
         // CR 701.15a / CR 701.35a: Goad and detain are battlefield-only designations.
         self.goaded_by.clear();
         self.detained_by.clear();

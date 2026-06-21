@@ -7281,6 +7281,15 @@ pub(super) fn parse_imperative_family_ast(
         }
         // Forage keyword action (CR 701.61a)
         "forage" => Some(ImperativeFamilyAst::GainKeyword(Effect::Forage)),
+        // CR 701.64a: "Harness [this permanent]" — always targets the source
+        // permanent (normalized to "~"). Guard on the self-reference so the verb
+        // does not match unrelated text; harnessing another permanent is not a
+        // printed pattern (CR 701.64a only ever harnesses "this permanent").
+        "harness" | "harnesses" => {
+            let rest = lower[first_word.len()..].trim().trim_end_matches('.').trim();
+            (rest.is_empty() || rest == "~")
+                .then_some(ImperativeFamilyAst::GainKeyword(Effect::Harness))
+        }
         // Collect evidence N keyword action (CR 702.163a)
         "collect" => {
             if let Ok((rest, _)) = tag::<_, _, OracleError<'_>>("collect evidence ").parse(lower)

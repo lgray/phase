@@ -670,6 +670,7 @@ fn static_condition_uses_object_population(condition: &StaticCondition) -> bool 
         | StaticCondition::SourceIsEquipped
         | StaticCondition::SourceIsEnchanted
         | StaticCondition::SourceIsMonstrous
+        | StaticCondition::SourceIsHarnessed
         | StaticCondition::SourceAttachedToCreature
         | StaticCondition::SourceMatchesFilter { .. }
         | StaticCondition::RecipientMatchesFilter { .. }
@@ -795,6 +796,7 @@ fn entered_object_perturbs_static_condition(
         | StaticCondition::SourceIsEquipped
         | StaticCondition::SourceIsEnchanted
         | StaticCondition::SourceIsMonstrous
+        | StaticCondition::SourceIsHarnessed
         | StaticCondition::SourceAttachedToCreature
         | StaticCondition::SourceMatchesFilter { .. }
         | StaticCondition::RecipientMatchesFilter { .. }
@@ -1072,6 +1074,12 @@ fn evaluate_condition_with_context(
             .objects
             .get(&source_id)
             .is_some_and(|obj| obj.monstrous),
+        // CR 701.64b + CR 702.186b: True when the source permanent is harnessed.
+        // The ∞ (Infinity) ability gate reads `GameObject::harnessed`.
+        StaticCondition::SourceIsHarnessed => state
+            .objects
+            .get(&source_id)
+            .is_some_and(|obj| obj.harnessed),
         // CR 301.5 + CR 303.4: True when source Aura/Equipment is attached to a
         // creature. A Player host (CR 303.4 + CR 702.5d) is never a creature, so
         // we filter to Object hosts via `as_object`.

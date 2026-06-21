@@ -1541,6 +1541,12 @@ fn ability_word_to_condition(word: &str) -> Option<crate::types::ability::Static
     };
 
     match word {
+        // CR 702.186a/b: "∞ — [Ability]" is the Infinity static ability; the
+        // ∞ keyword maps to the harnessed gate ("as long as this permanent is
+        // harnessed, it has [Ability]"). `strip_ability_word_with_name` already
+        // splits the `∞ — ` prefix generically, so this only needs the mapping.
+        // allow-noncombinator: semantic mapping after ability-word parser has classified the word
+        "∞" => Some(StaticCondition::SourceIsHarnessed),
         "threshold" => Some(StaticCondition::QuantityComparison {
             lhs: QuantityExpr::Ref {
                 qty: QuantityRef::GraveyardSize {
@@ -1734,6 +1740,9 @@ fn ability_word_to_trigger_condition(
             rhs,
         }),
         StaticCondition::HasMaxSpeed => Some(TriggerCondition::HasMaxSpeed),
+        // CR 702.186b: the ∞ ability word gates its triggered ability on the
+        // harnessed designation.
+        StaticCondition::SourceIsHarnessed => Some(TriggerCondition::SourceIsHarnessed),
         _ => None,
     }
 }
