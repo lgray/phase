@@ -330,8 +330,12 @@ pub enum PaymentContext<'a> {
 /// ([`ManaRestriction::OnlyForSpecialAction(SpecialAction::TurnFaceUp)`]) can
 /// never be satisfied yet — it is honest-deferred (conservatively
 /// under-permitting) rather than silently over-permitting the mana. The variant
-/// exists so the restriction is representable (the cluster's cards parse to no
-/// `Effect::Unimplemented`); once the turn-face-up morph cost is routed through
+/// exists so the restriction stays representable as a typed value even though
+/// the `TurnFaceUp` leaf is dead today: a card whose only spend restriction is
+/// turn-face-up (Overgrown Zealot) is left unabsorbed at the `Effect::Mana`
+/// seam and intentionally surfaces an `Effect::Unimplemented` gap (honest
+/// coverage red) via `ManaSpendRestriction::has_payable_branch`. Once the
+/// turn-face-up morph cost is routed through
 /// `PaymentContext::SpecialAction(TurnFaceUp)` the gate becomes live with no
 /// type change.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -548,8 +552,11 @@ pub enum ManaRestriction {
     /// mana (the `{3}` face-down cast cost, CR 702.37c, is not yet implemented).
     /// So `SpellMeta.is_face_down` is never `true` at any `PaymentContext::Spell`
     /// payment site, and this gate never over-permits — see
-    /// [`ManaRestriction::allows_spell`]. The restriction stays representable (the
-    /// cluster's cards parse to no `Effect::Unimplemented`); once a real face-down
+    /// [`ManaRestriction::allows_spell`]. The restriction stays representable as a
+    /// typed value even though it is dead today: a card whose only spend
+    /// restriction is this is left unabsorbed at the `Effect::Mana` seam and
+    /// intentionally surfaces an `Effect::Unimplemented` gap (honest coverage red)
+    /// via `ManaSpendRestriction::has_payable_branch`. Once a real face-down
     /// CAST routes its cost through `PaymentContext::Spell` with `is_face_down =
     /// true` the gate becomes live with no type change.
     OnlyForFaceDownSpell,
