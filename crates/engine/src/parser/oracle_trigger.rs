@@ -3746,7 +3746,81 @@ fn parse_zone_change_object_token_contraction_intervening_if(
     Ok((rest, zone_change_object_token_condition(true)))
 }
 
+/// CR 603.4 + CR 603.6a + CR 208.1: Entering-object intervening-if comparing the
+/// newcomer's power and/or toughness to the source permanent's same stat —
+/// "if it has greater power [or toughness] than ~". Subject "it" is the
+/// zone-change event object (the entering creature, CR 603.6a), evaluated live
+/// in its destination (battlefield); "~" is the ability source (CR 113.7),
+/// resolved via `ObjectScope::Source`. An enters-the-battlefield trigger is NOT
+/// a CR 603.10a look-back trigger (that list is leaves-the-battlefield,
+/// sacrifice, leaves-graveyard, and seen-by-all hand/library moves), so
+/// `PtValueScope::Current` reads the post-layer P/T of both objects.
+///
+/// Each stat needs its OWN source-relative threshold (power→source power,
+/// toughness→source toughness), so this cannot reuse
+/// `nom_filter::parse_pt_comparison` (shared threshold, stat-before-comparator
+/// word order). Disjunction composes via the existing `FilterProp::AnyOf`;
+/// the single-stat form emits one `PtComparison`. Mirrors the per-stat
+/// slice-map in `nom_filter::parse_pt_comparison` and `parse_combat_alone_props`.
+fn parse_entering_pt_vs_source_condition(input: &str) -> OracleResult<'_, TriggerCondition> {
+    let (rest, _) = tag("if it has greater ").parse(input)?;
+    let (rest, stats): (_, &[PtStat]) = alt((
+        value(
+            &[PtStat::Power, PtStat::Toughness][..],
+            tag("power or toughness"),
+        ),
+        value(&[PtStat::Power][..], tag("power")),
+        value(&[PtStat::Toughness][..], tag("toughness")),
+    ))
+    .parse(rest)?;
+    let (rest, _) = tag(" than ~").parse(rest)?;
+
+    let props: Vec<FilterProp> = stats
+        .iter()
+        .map(|&stat| {
+            // The selector above only ever emits Power/Toughness, so the
+            // `TotalPowerToughness` arm is dead-by-construction. Mapping it to
+            // `Power { Source }` (rather than `unreachable!()`) keeps the match
+            // exhaustive without a panic-bearing arm.
+            let qty = match stat {
+                PtStat::Power => QuantityRef::Power {
+                    scope: ObjectScope::Source,
+                },
+                PtStat::Toughness => QuantityRef::Toughness {
+                    scope: ObjectScope::Source,
+                },
+                PtStat::TotalPowerToughness => QuantityRef::Power {
+                    scope: ObjectScope::Source,
+                },
+            };
+            FilterProp::PtComparison {
+                stat,
+                scope: PtValueScope::Current,
+                comparator: Comparator::GT,
+                value: QuantityExpr::Ref { qty },
+            }
+        })
+        .collect();
+    let prop = if props.len() == 1 {
+        props.into_iter().next().unwrap()
+    } else {
+        FilterProp::AnyOf { props }
+    };
+
+    Ok((
+        rest,
+        TriggerCondition::ZoneChangeObjectMatchesFilter {
+            origin: None,
+            destination: Zone::Battlefield,
+            filter: TargetFilter::Typed(TypedFilter::creature().properties(vec![prop])),
+        },
+    ))
+}
+
 fn parse_zone_change_object_filter_condition(input: &str) -> OracleResult<'_, TriggerCondition> {
+    if let Ok((rest, condition)) = parse_entering_pt_vs_source_condition(input) {
+        return Ok((rest, condition));
+    }
     if let Ok((rest, condition)) = parse_zone_change_object_token_contraction_intervening_if(input)
     {
         return Ok((rest, condition));
@@ -13969,6 +14043,155 @@ mod tests {
                 other => panic!("expected NonToken intervening-if for {text:?}, got {other:?}"),
             }
         }
+    }
+
+    /// CR 603.4 + CR 603.6a + CR 208.1: Hulkling, Burgeoning Bruiser —
+    /// "Whenever another creature you control enters, if it has greater power or
+    /// toughness than ~, put a +1/+1 counter on ~." The OR intervening-if must
+    /// hoist to a `ZoneChangeObjectMatchesFilter` with destination Battlefield
+    /// (NOT the Graveyard look-back path) carrying an `AnyOf` of the two
+    /// source-relative `PtComparison` props. The effect (PutCounter +1/+1 on
+    /// SelfRef) must survive condition stripping. Fail-before: `def.condition`
+    /// is `None` (the intervening-if is dropped).
+    #[test]
+    fn trigger_hulkling_etb_greater_power_or_toughness_than_source() {
+        let def = parse_trigger_line(
+            "Whenever another creature you control enters, if it has greater power or toughness than Hulkling, put a +1/+1 counter on Hulkling.",
+            "Hulkling, Burgeoning Bruiser",
+        );
+        assert_eq!(def.mode, TriggerMode::ChangesZone);
+
+        let power_prop = FilterProp::PtComparison {
+            stat: PtStat::Power,
+            scope: PtValueScope::Current,
+            comparator: Comparator::GT,
+            value: QuantityExpr::Ref {
+                qty: QuantityRef::Power {
+                    scope: ObjectScope::Source,
+                },
+            },
+        };
+        let toughness_prop = FilterProp::PtComparison {
+            stat: PtStat::Toughness,
+            scope: PtValueScope::Current,
+            comparator: Comparator::GT,
+            value: QuantityExpr::Ref {
+                qty: QuantityRef::Toughness {
+                    scope: ObjectScope::Source,
+                },
+            },
+        };
+
+        match def.condition {
+            Some(TriggerCondition::ZoneChangeObjectMatchesFilter {
+                origin,
+                destination,
+                filter: TargetFilter::Typed(ref typed),
+            }) => {
+                assert_eq!(origin, None);
+                assert_eq!(destination, Zone::Battlefield);
+                assert!(
+                    typed.type_filters.contains(&TypeFilter::Creature),
+                    "expected creature type filter, got {typed:?}"
+                );
+                assert_eq!(
+                    typed.properties,
+                    vec![FilterProp::AnyOf {
+                        props: vec![power_prop, toughness_prop],
+                    }],
+                    "expected AnyOf of source-relative power+toughness, got {typed:?}"
+                );
+            }
+            ref other => panic!("expected ZoneChangeObjectMatchesFilter, got {other:?}"),
+        }
+
+        // Effect must remain PutCounter +1/+1 on the source (SelfRef) — the
+        // condition strip must not corrupt the effect clause.
+        let execute = def.execute.as_ref().expect("execute ability");
+        match execute.effect.as_ref() {
+            Effect::PutCounter {
+                counter_type,
+                count,
+                target,
+            } => {
+                assert_eq!(*counter_type, CounterType::Plus1Plus1);
+                assert_eq!(*count, QuantityExpr::Fixed { value: 1 });
+                assert_eq!(*target, TargetFilter::SelfRef);
+            }
+            other => panic!("expected PutCounter +1/+1 on SelfRef, got {other:?}"),
+        }
+    }
+
+    /// CR 603.4 + CR 208.1: single-stat "if it has greater power than ~" emits
+    /// exactly ONE `PtComparison(Power)` — NOT wrapped in `AnyOf`. Mirror for
+    /// toughness. Proves the disjunction is only produced for the "or" form.
+    #[test]
+    fn parse_entering_single_stat_greater_than_source_emits_one_prop() {
+        for (text, stat, qty) in [
+            (
+                "if it has greater power than ~",
+                PtStat::Power,
+                QuantityRef::Power {
+                    scope: ObjectScope::Source,
+                },
+            ),
+            (
+                "if it has greater toughness than ~",
+                PtStat::Toughness,
+                QuantityRef::Toughness {
+                    scope: ObjectScope::Source,
+                },
+            ),
+        ] {
+            let (rest, condition) =
+                parse_entering_pt_vs_source_condition(text).expect("single-stat parses");
+            assert_eq!(rest, "", "fully consumed for {text:?}");
+            match condition {
+                TriggerCondition::ZoneChangeObjectMatchesFilter {
+                    destination,
+                    filter: TargetFilter::Typed(typed),
+                    ..
+                } => {
+                    assert_eq!(destination, Zone::Battlefield);
+                    assert_eq!(
+                        typed.properties,
+                        vec![FilterProp::PtComparison {
+                            stat,
+                            scope: PtValueScope::Current,
+                            comparator: Comparator::GT,
+                            value: QuantityExpr::Ref { qty },
+                        }],
+                        "single-stat {text:?} must be one PtComparison, not AnyOf"
+                    );
+                    assert!(
+                        !matches!(typed.properties.first(), Some(FilterProp::AnyOf { .. })),
+                        "single-stat {text:?} must not wrap in AnyOf"
+                    );
+                }
+                other => panic!("expected ZoneChange condition for {text:?}, got {other:?}"),
+            }
+        }
+    }
+
+    /// Regression: a fixed-threshold P/T constraint must stay a literal
+    /// `PtComparison` with a `Fixed` value — the new source-relative arm must NOT
+    /// hijack it. Drives the shared `nom_filter::parse_pt_comparison` building
+    /// block to confirm "power 4 or greater" remains fixed (no `Source` ref).
+    #[test]
+    fn fixed_threshold_pt_comparison_stays_fixed() {
+        use crate::parser::oracle_nom::filter::parse_pt_comparison;
+        let (rest, prop) = parse_pt_comparison("power 4 or greater").expect("fixed P/T parses");
+        assert_eq!(rest, "");
+        assert_eq!(
+            prop,
+            FilterProp::PtComparison {
+                stat: PtStat::Power,
+                scope: PtValueScope::Current,
+                comparator: Comparator::GE,
+                value: QuantityExpr::Fixed { value: 4 },
+            },
+            "fixed-threshold P/T must remain a Fixed PtComparison, not source-relative"
+        );
     }
 
     /// CR 603.4 + CR 701.15b: Life of the Party — token-copy ETB sub-clause

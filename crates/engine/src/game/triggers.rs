@@ -9071,6 +9071,118 @@ pub mod tests {
         ));
     }
 
+    /// CR 603.4 + CR 603.6a + CR 208.1: Hulkling, Burgeoning Bruiser runtime gate.
+    /// The `ZoneChangeObjectMatchesFilter` evaluates the ENTERING creature's P/T
+    /// against the SOURCE (Hulkling) via `QuantityRef::Power/Toughness {Source}`.
+    /// Discriminating cases prove: strict GT (not GE), the OR over both stats,
+    /// the threshold is the SOURCE (Hulkling 2/2) not the entering creature, and
+    /// the toughness half fires independently of power.
+    #[test]
+    fn zone_change_object_condition_entering_greater_pt_than_source() {
+        // Source = Hulkling 2/2.
+        let mut state = setup();
+        let source = create_object(
+            &mut state,
+            CardId(70),
+            PlayerId(0),
+            "Hulkling, Burgeoning Bruiser".to_string(),
+            Zone::Battlefield,
+        );
+        {
+            let obj = state.objects.get_mut(&source).unwrap();
+            obj.card_types.core_types.push(CoreType::Creature);
+            obj.power = Some(2);
+            obj.toughness = Some(2);
+        }
+
+        // The condition the parser produces for Hulkling: AnyOf(power>source.power,
+        // toughness>source.toughness) on a creature entering the battlefield.
+        let condition = TriggerCondition::ZoneChangeObjectMatchesFilter {
+            origin: None,
+            destination: Zone::Battlefield,
+            filter: TargetFilter::Typed(TypedFilter::creature().properties(vec![
+                FilterProp::AnyOf {
+                    props: vec![
+                        FilterProp::PtComparison {
+                            stat: PtStat::Power,
+                            scope: PtValueScope::Current,
+                            comparator: Comparator::GT,
+                            value: QuantityExpr::Ref {
+                                qty: QuantityRef::Power {
+                                    scope: crate::types::ability::ObjectScope::Source,
+                                },
+                            },
+                        },
+                        FilterProp::PtComparison {
+                            stat: PtStat::Toughness,
+                            scope: PtValueScope::Current,
+                            comparator: Comparator::GT,
+                            value: QuantityExpr::Ref {
+                                qty: QuantityRef::Toughness {
+                                    scope: crate::types::ability::ObjectScope::Source,
+                                },
+                            },
+                        },
+                    ],
+                },
+            ])),
+        };
+
+        // Helper: create an entering creature with (power, toughness), then check
+        // the Hulkling intervening-if with `source` (Hulkling) as the trigger source.
+        let check_entering = |state: &mut GameState, card: u64, power: i32, toughness: i32| {
+            let entering = create_object(
+                state,
+                CardId(card),
+                PlayerId(0),
+                "Newcomer".to_string(),
+                Zone::Battlefield,
+            );
+            {
+                let obj = state.objects.get_mut(&entering).unwrap();
+                obj.card_types.core_types.push(CoreType::Creature);
+                obj.power = Some(power);
+                obj.toughness = Some(toughness);
+            }
+            let event = zone_changed_event(
+                entering,
+                Zone::Hand,
+                Zone::Battlefield,
+                vec![CoreType::Creature],
+                Vec::new(),
+            );
+            check_trigger_condition(state, &condition, PlayerId(0), Some(source), Some(&event))
+        };
+
+        // 3/3 vs Hulkling 2/2 → greater power (and toughness) → true.
+        assert!(
+            check_entering(&mut state, 71, 3, 3),
+            "3/3 newcomer has greater power+toughness than Hulkling 2/2"
+        );
+        // 2/2 → equal, not greater → false (strict GT, not GE).
+        assert!(
+            !check_entering(&mut state, 72, 2, 2),
+            "2/2 newcomer is equal, not greater (GT not GE)"
+        );
+        // 1/1 → smaller both ways → false.
+        assert!(
+            !check_entering(&mut state, 73, 1, 1),
+            "1/1 newcomer is strictly smaller"
+        );
+        // 1/3 vs 2/2 → power 1<=2 but toughness 3>2 → true (toughness half of OR;
+        // proves threshold is Hulkling, and the toughness disjunct fires alone).
+        assert!(
+            check_entering(&mut state, 74, 1, 3),
+            "1/3 newcomer has greater toughness only → OR fires on toughness"
+        );
+        // 1/2 vs 2/2 → power 1<=2, toughness 2<=2 → false (proves threshold is
+        // the SOURCE Hulkling 2, not the entering creature's own stat).
+        assert!(
+            !check_entering(&mut state, 75, 1, 2),
+            "1/2 newcomer is not greater in either stat vs Hulkling 2/2"
+        );
+    }
+
     #[test]
     fn zone_change_object_condition_checks_dead_object_snapshot() {
         let mut state = setup();
