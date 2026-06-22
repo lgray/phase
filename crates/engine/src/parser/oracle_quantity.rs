@@ -504,6 +504,17 @@ pub(crate) fn parse_quantity_ref_with_context(
         {
             return Some(qty);
         }
+        // CR 301.5a + CR 303.4: "the number of <type> attached to <source>" counts
+        // objects whose `attached_to` is the source ("him"/"her"/"them"/"~" all
+        // denote the source — Whiplash's "where X is the number of Equipment
+        // attached to him"). Delegate to the shared for-each referent combinator so
+        // the source- and recipient-pronoun authorities stay in one building block;
+        // require a full consume so the generic type-phrase fall-through is unshadowed.
+        if let Ok((rest_after, qty)) = nom_quantity::parse_for_each_clause_ref.parse(rest) {
+            if rest_after.is_empty() {
+                return Some(canonicalize_quantity_ref(qty));
+            }
+        }
         let (filter, remainder) = parse_type_phrase_with_ctx(rest, ctx);
         // CR 109.1: `parse_type_phrase_with_ctx` always returns `TargetFilter::Typed`,
         // including the empty-shaped form (no `type_filters`, no `controller`, no
@@ -3556,6 +3567,73 @@ mod tests {
             matches!(qty, QuantityRef::ObjectCount { .. }),
             "Expected ObjectCount, got {qty:?}"
         );
+    }
+
+    /// A2: CR 301.5a + CR 303.4. "the number of <type> attached to <source>" routes
+    /// through the shared for-each referent combinator to a typed ObjectCount with
+    /// `AttachedToSource` (Whiplash's "where X is the number of Equipment attached
+    /// to him"). Fail-before: `QuantityRef::Variable("the number of equipment
+    /// attached to him")` (string fallback), which is explicitly asserted-against.
+    #[test]
+    fn parse_quantity_ref_number_of_equipment_attached_to_source_pronoun() {
+        let qty = parse_quantity_ref("the number of equipment attached to him")
+            .expect("expected Some(ObjectCount)");
+        assert!(
+            !matches!(qty, QuantityRef::Variable { .. }),
+            "must not fall back to Variable, got {qty:?}"
+        );
+        match qty {
+            QuantityRef::ObjectCount {
+                filter:
+                    TargetFilter::Typed(TypedFilter {
+                        type_filters,
+                        controller,
+                        properties,
+                    }),
+            } => {
+                assert_eq!(controller, None);
+                assert_eq!(properties, vec![FilterProp::AttachedToSource]);
+                assert_eq!(type_filters, vec![TypeFilter::Subtype("Equipment".into())]);
+            }
+            other => panic!("expected ObjectCount{{AttachedToSource}}, got {other:?}"),
+        }
+    }
+
+    /// A2 NEG (multi-authority): the recipient pronoun "it" must stay
+    /// `AttachedToRecipient`, NOT collapse to the source authority.
+    #[test]
+    fn parse_quantity_ref_number_of_auras_attached_to_recipient_preserved() {
+        let qty = parse_quantity_ref("the number of auras attached to it")
+            .expect("expected Some(ObjectCount)");
+        match qty {
+            QuantityRef::ObjectCount {
+                filter: TargetFilter::Typed(TypedFilter { properties, .. }),
+            } => {
+                assert_eq!(properties, vec![FilterProp::AttachedToRecipient]);
+            }
+            other => panic!("expected recipient ObjectCount, got {other:?}"),
+        }
+    }
+
+    /// A2 REGRESSION: the new for-each arm requires a full consume, so a generic
+    /// "the number of creatures you control" still falls through to the existing
+    /// type-phrase ObjectCount path (no shadowing).
+    #[test]
+    fn parse_quantity_ref_number_of_creatures_you_control_not_shadowed() {
+        let qty = parse_quantity_ref("the number of creatures you control")
+            .expect("expected Some(ObjectCount)");
+        match qty {
+            QuantityRef::ObjectCount {
+                filter: TargetFilter::Typed(TypedFilter { properties, .. }),
+            } => {
+                assert!(
+                    !properties.contains(&FilterProp::AttachedToSource)
+                        && !properties.contains(&FilterProp::AttachedToRecipient),
+                    "generic ObjectCount must not gain an attachment prop, got {properties:?}"
+                );
+            }
+            other => panic!("expected generic ObjectCount, got {other:?}"),
+        }
     }
 
     // A1: "the number of opponents who control <filter>" → PlayerCount over the

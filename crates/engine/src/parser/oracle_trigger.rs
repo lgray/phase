@@ -2874,6 +2874,32 @@ fn static_condition_to_trigger_condition(sc: &StaticCondition) -> Option<Trigger
             })
         }
 
+        // CR 603.4 + CR 301.5a: "if [it/he/she/this creature] is equipped"
+        // intervening-if bridges to the generic source-filter matcher rather than
+        // a bespoke TriggerCondition sibling (see game/triggers.rs:5462). Runtime
+        // rechecks the source's attachment set at trigger-fire and on resolution
+        // (CR 603.4 dual-check). SourceExclusion::Include: a creature is never its
+        // own attachment.
+        StaticCondition::SourceIsEquipped => Some(TriggerCondition::SourceMatchesFilter {
+            filter: TargetFilter::Typed(TypedFilter::creature().properties(vec![
+                FilterProp::HasAttachment {
+                    kind: AttachmentKind::Equipment,
+                    controller: None,
+                    exclude_source: crate::types::ability::SourceExclusion::Include,
+                },
+            ])),
+        }),
+        // CR 603.4 + CR 303.4: Aura-twin of the equipped bridge.
+        StaticCondition::SourceIsEnchanted => Some(TriggerCondition::SourceMatchesFilter {
+            filter: TargetFilter::Typed(TypedFilter::creature().properties(vec![
+                FilterProp::HasAttachment {
+                    kind: AttachmentKind::Aura,
+                    controller: None,
+                    exclude_source: crate::types::ability::SourceExclusion::Include,
+                },
+            ])),
+        }),
+
         // Not combinator — handle common negation patterns.
         StaticCondition::Not { condition } => match condition.as_ref() {
             StaticCondition::DuringYourTurn => Some(TriggerCondition::Not {
@@ -3028,8 +3054,6 @@ fn static_condition_to_trigger_condition(sc: &StaticCondition) -> Option<Trigger
         | StaticCondition::SourceIsAttacking
         | StaticCondition::SourceIsBlocking
         | StaticCondition::SourceIsBlocked
-        | StaticCondition::SourceIsEquipped
-        | StaticCondition::SourceIsEnchanted
         | StaticCondition::SourceIsPaired
         | StaticCondition::SourceIsMonstrous
         // CR 110.5b + CR 611.2b: `IsTapped { scope }` is a duration-only
@@ -27421,6 +27445,72 @@ mod tests {
                 filter: filter.clone(),
             }),
             Some(TriggerCondition::SourceMatchesFilter { filter }),
+        );
+    }
+
+    /// CR 603.4 + CR 301.5a: the equipped intervening-if must bridge to a
+    /// SourceMatchesFilter carrying a creature HasAttachment(Equipment) predicate.
+    /// Fail-before: `SourceIsEquipped` was in the `=> None` arm, so `.expect`
+    /// would panic on `None`.
+    #[test]
+    fn bridge_source_is_equipped_to_has_attachment() {
+        let tc = static_condition_to_trigger_condition(&StaticCondition::SourceIsEquipped)
+            .expect("SourceIsEquipped should bridge to a TriggerCondition");
+        let TriggerCondition::SourceMatchesFilter { filter } = tc else {
+            panic!("expected SourceMatchesFilter, got {tc:?}");
+        };
+        let TargetFilter::Typed(typed) = filter else {
+            panic!("expected Typed filter, got {filter:?}");
+        };
+        assert!(
+            typed.properties.iter().any(|p| matches!(
+                p,
+                FilterProp::HasAttachment {
+                    kind: AttachmentKind::Equipment,
+                    controller: None,
+                    exclude_source: crate::types::ability::SourceExclusion::Include,
+                }
+            )),
+            "expected HasAttachment(Equipment, None, Include); got {:?}",
+            typed.properties
+        );
+    }
+
+    /// CR 603.4 + CR 303.4: the enchanted intervening-if bridges to an Aura
+    /// HasAttachment predicate, and crucially must NOT carry the Equipment
+    /// variant (discriminates attachment kind).
+    #[test]
+    fn bridge_source_is_enchanted_to_has_attachment() {
+        let tc = static_condition_to_trigger_condition(&StaticCondition::SourceIsEnchanted)
+            .expect("SourceIsEnchanted should bridge to a TriggerCondition");
+        let TriggerCondition::SourceMatchesFilter { filter } = tc else {
+            panic!("expected SourceMatchesFilter, got {tc:?}");
+        };
+        let TargetFilter::Typed(typed) = filter else {
+            panic!("expected Typed filter, got {filter:?}");
+        };
+        assert!(
+            typed.properties.iter().any(|p| matches!(
+                p,
+                FilterProp::HasAttachment {
+                    kind: AttachmentKind::Aura,
+                    controller: None,
+                    exclude_source: crate::types::ability::SourceExclusion::Include,
+                }
+            )),
+            "expected HasAttachment(Aura, None, Include); got {:?}",
+            typed.properties
+        );
+        assert!(
+            !typed.properties.iter().any(|p| matches!(
+                p,
+                FilterProp::HasAttachment {
+                    kind: AttachmentKind::Equipment,
+                    ..
+                }
+            )),
+            "enchanted bridge must not carry the Equipment HasAttachment; got {:?}",
+            typed.properties
         );
     }
 
