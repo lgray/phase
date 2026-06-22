@@ -893,6 +893,7 @@ fn fmt_type_filter(tf: &TypeFilter) -> String {
         TypeFilter::Sorcery => "sorcery",
         TypeFilter::Planeswalker => "planeswalker",
         TypeFilter::Battle => "battle",
+        TypeFilter::Kindred => "kindred",
         TypeFilter::Permanent => "permanent",
         TypeFilter::Card => "card",
         TypeFilter::Any => "any",

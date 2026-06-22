@@ -74,9 +74,8 @@ pub enum ZoneOwner {
 /// This is the *category* axis of for-each iteration — distinct from per-object
 /// iteration ("for each creature you control", which counts battlefield
 /// objects). The members come from a printed rules enumeration, not from game
-/// state: the five colors (CR 105.1) or the seven main card types (CR 205.2a;
-/// the supplemental types — kindred/dungeon/battle/etc. — are never offered for
-/// "for each card type" effects, matching `protection_quality_str`'s pool).
+/// state: the five colors (CR 105.1) or the card types that can appear on cards
+/// in a library (CR 205.2a).
 ///
 /// During resolution the iterating effect binds each member in turn and the
 /// per-member payload references it ("a card of *that* color/type") by
@@ -86,8 +85,9 @@ pub enum ZoneOwner {
 pub enum IterationCategory {
     /// CR 105.1: The five colors, iterated in WUBRG order.
     Color,
-    /// CR 205.2a: The seven main card types (artifact, creature, enchantment,
-    /// instant, land, planeswalker, sorcery), iterated in that order.
+    /// CR 205.2a: The card types that can appear on a card in a library —
+    /// artifact, battle, creature, enchantment, instant, kindred, land,
+    /// planeswalker, and sorcery — iterated in CR 205.2a order.
     CardType,
 }
 
@@ -110,12 +110,25 @@ impl IterationCategory {
                     })
                 })
                 .collect(),
-            // CR 205.2a: The seven main card types in printed order.
+            // The members are the CR 205.2a card types that can appear in a
+            // library, offered in CR 205.2a order: artifact, battle, creature,
+            // enchantment, instant, kindred, land, planeswalker, and sorcery.
+            // (Author's gloss, not quoted CR text:) the nontraditional
+            // command-zone types — dungeon/plane/phenomenon/scheme/conspiracy/
+            // vanguard — can never be in a library, so they are never offered.
+            //
+            // Per CR 308.1 ("each kindred card has another card type"), a kindred
+            // card is exilable at BOTH the Kindred member and its other-type
+            // member (e.g. a Kindred Sorcery matches both the kindred member and
+            // the sorcery member). Kindred is offered explicitly via the
+            // dedicated `TypeFilter::Kindred` member below.
             IterationCategory::CardType => [
                 TypeFilter::Artifact,
+                TypeFilter::Battle,
                 TypeFilter::Creature,
                 TypeFilter::Enchantment,
                 TypeFilter::Instant,
+                TypeFilter::Kindred,
                 TypeFilter::Land,
                 TypeFilter::Planeswalker,
                 TypeFilter::Sorcery,
@@ -2240,6 +2253,8 @@ pub enum TypeFilter {
     Planeswalker,
     /// CR 310: Battle — a permanent type introduced in March of the Machine.
     Battle,
+    /// CR 308.1: Kindred — each kindred card has another card type; matched via CoreType::Kindred.
+    Kindred,
     Permanent,
     Card,
     Any,
@@ -9291,7 +9306,9 @@ pub enum Effect {
         constraint: Option<ChooseFromZoneConstraint>,
     },
     /// CR 608.2c + CR 105.1 / CR 205.2a: For each member of a fixed category
-    /// (the five colors, or the seven main card types), optionally choose one
+    /// (the five colors, or the CR 205.2a card types that can appear in a
+    /// library — nine: artifact, battle, creature, enchantment, instant,
+    /// kindred, land, planeswalker, sorcery), optionally choose one
     /// card of *that* member from a card pool and exile it — "for each color,
     /// you may exile a card of that color from among the revealed cards"
     /// (Sanar), "for each card type, you may exile a card of that type from
@@ -9316,8 +9333,10 @@ pub enum Effect {
         /// CR 700.2: Who makes each per-member choice. Controller by default.
         #[serde(default)]
         chooser: Chooser,
-        /// CR 609.3: When true (the "you may exile" idiom), each member's pick
-        /// is optional — the chooser selects 0 or 1 card of that member.
+        /// CR 608.2d: When true (the "you may exile" idiom), each member's pick
+        /// is a resolution-time optional choice — the player announces the choice
+        /// while applying the effect, selecting 0 or 1 card of that member (a
+        /// 0..=1 optional pick per member).
         #[serde(default = "default_true")]
         up_to: bool,
     },

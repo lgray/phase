@@ -1121,12 +1121,6 @@ pub struct PendingPerCategoryZoneChoice {
     /// Per-member candidate filters not yet prompted, in category member order
     /// (WUBRG for colors, CR 205.2a order for card types).
     pub remaining_member_filters: Vec<crate::types::ability::TargetFilter>,
-    /// CR 603.7 + CR 608.2c: Whether a pick from this iteration has already
-    /// started its fresh chosen-card tracked set. The first non-empty pick
-    /// STARTS a fresh set so the chosen cards do not merge with the producing
-    /// reveal/exile set; every later pick EXTENDS that fresh set.
-    #[serde(default)]
-    pub accumulated: bool,
 }
 
 /// CR 701.38d + CR 608.2c: Stores the remaining voters whose per-ballot
