@@ -1613,7 +1613,11 @@ pub(super) fn handle_resolution_choice(
             // (shared with the search-split partition) has a single Zone.
             // When a continuation owns the unkept pile (Expressive Iteration
             // bottom/exile tail), do not pre-route here.
-            if state.pending_continuation.is_none() {
+            let defer_rest_routing = state
+                .pending_continuation
+                .as_ref()
+                .is_some_and(|cont| dig_continuation_needs_full_looked_at_tracked_set(&cont.chain));
+            if !defer_rest_routing {
                 route_rest_partition(
                     state,
                     &unkept,

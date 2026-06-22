@@ -3712,18 +3712,34 @@ pub(super) fn parse_utility_imperative_ast(
                     let rem = &rest[rest.len() - rem_lower.len()..];
                     (target, rem)
                 } else {
-                    // CR 707.10 + CR 608.2k: thread ctx so "copy it" routes the
-                    // "it" pronoun through resolve_it_pronoun → TriggeringSource
-                    // (the triggering spell), matching "copy that spell".
-                    // Precondition (resolve_it_pronoun, oracle_effect/mod.rs:165):
-                    // this yields TriggeringSource ONLY for trigger subjects that
-                    // are non-SelfRef / non-Any (Taigam's subject is Controller —
-                    // the "you" arm — so it qualifies). For SelfRef/Any subjects
-                    // "it" stays SelfRef/ParentTarget and the CopySpell runtime
-                    // fallback (triggering_spell_stack_entry, copy_spell.rs)
-                    // keeps them working — behavior-neutral-or-better, never a
-                    // regression for non-Taigam "copy it" cards.
-                    parse_target_with_ctx(rest, ctx)
+                    // CR 707.10 + CR 701.6a: multi-way stack-object disjunctions
+                    // ("instant spell, sorcery spell, activated ability, or
+                    // triggered ability") must use `parse_stack_object_target`,
+                    // same as the Counter path — bare `parse_target` only keeps
+                    // the first spell type (Return the Favor, issue #3996).
+                    let stack_phrase = opt(tag::<_, _, OracleError<'_>>("target "))
+                        .parse(rest_lower)
+                        .map(|(after, _)| after)
+                        .unwrap_or(rest_lower);
+                    if let Ok((rem_lower, stack_target)) =
+                        crate::parser::oracle_nom::target::parse_stack_object_target(stack_phrase)
+                    {
+                        let rem = &rest[rest.len() - rem_lower.len()..];
+                        (stack_target, rem)
+                    } else {
+                        // CR 707.10 + CR 608.2k: thread ctx so "copy it" routes the
+                        // "it" pronoun through resolve_it_pronoun → TriggeringSource
+                        // (the triggering spell), matching "copy that spell".
+                        // Precondition (resolve_it_pronoun, oracle_effect/mod.rs:165):
+                        // this yields TriggeringSource ONLY for trigger subjects that
+                        // are non-SelfRef / non-Any (Taigam's subject is Controller —
+                        // the "you" arm — so it qualifies). For SelfRef/Any subjects
+                        // "it" stays SelfRef/ParentTarget and the CopySpell runtime
+                        // fallback (triggering_spell_stack_entry, copy_spell.rs)
+                        // keeps them working — behavior-neutral-or-better, never a
+                        // regression for non-Taigam "copy it" cards.
+                        parse_target_with_ctx(rest, ctx)
+                    }
                 };
                 let retarget = if super::sequence::recognize_copy_retarget_clause(_rem.trim()) {
                     // CR 707.10c: "copy that spell and may choose new targets for the
@@ -7317,6 +7333,15 @@ pub(super) fn parse_imperative_family_ast(
         }
         // Forage keyword action (CR 701.61a)
         "forage" => Some(ImperativeFamilyAst::GainKeyword(Effect::Forage)),
+        // CR 701.64a: "Harness [this permanent]" — always targets the source
+        // permanent (normalized to "~"). Guard on the self-reference so the verb
+        // does not match unrelated text; harnessing another permanent is not a
+        // printed pattern (CR 701.64a only ever harnesses "this permanent").
+        "harness" | "harnesses" => {
+            let rest = lower[first_word.len()..].trim().trim_end_matches('.').trim();
+            (rest.is_empty() || rest == "~")
+                .then_some(ImperativeFamilyAst::GainKeyword(Effect::Harness))
+        }
         // Collect evidence N keyword action (CR 702.163a)
         "collect" => {
             if let Ok((rest, _)) = tag::<_, _, OracleError<'_>>("collect evidence ").parse(lower)
@@ -13998,6 +14023,60 @@ mod tests {
             )
             .is_none(),
             "unknown qualifier must not widen to an unscoped StackAbility target"
+        );
+    }
+
+    /// Issue #3996 — Return the Favor copy mode must accept instants, sorceries,
+    /// and stack abilities, not only the first spell type.
+    #[test]
+    fn copy_four_way_stack_object_disjunction_parses_or_filter() {
+        use crate::types::ability::TypeFilter;
+        use crate::types::ability::{CopyRetargetPermission, Effect, TargetFilter};
+
+        let def = super::super::parse_effect_chain(
+            "Copy target instant spell, sorcery spell, activated ability, or triggered ability. \
+             You may choose new targets for the copy.",
+            AbilityKind::Spell,
+        );
+        let Effect::CopySpell {
+            target, retarget, ..
+        } = &*def.effect
+        else {
+            panic!("expected CopySpell, got {:?}", def.effect);
+        };
+        let TargetFilter::Or { filters } = target else {
+            panic!("expected Or stack-object filter, got {target:?}");
+        };
+        assert!(
+            filters.iter().any(|f| {
+                matches!(
+                    f,
+                    TargetFilter::Typed(tf)
+                        if tf.type_filters == [TypeFilter::Instant]
+                )
+            }),
+            "missing instant spell leg: {filters:?}"
+        );
+        assert!(
+            filters.iter().any(|f| {
+                matches!(
+                    f,
+                    TargetFilter::Typed(tf)
+                        if tf.type_filters == [TypeFilter::Sorcery]
+                )
+            }),
+            "missing sorcery spell leg: {filters:?}"
+        );
+        assert!(
+            filters
+                .iter()
+                .any(|f| matches!(f, TargetFilter::StackAbility { .. })),
+            "missing stack ability leg: {filters:?}"
+        );
+        assert_eq!(
+            *retarget,
+            CopyRetargetPermission::MayChooseNewTargets,
+            "retarget clause must parse"
         );
     }
 

@@ -2789,6 +2789,13 @@ fn static_condition_to_trigger_condition(sc: &StaticCondition) -> Option<Trigger
         // CR 702.178a: Speed condition.
         StaticCondition::HasMaxSpeed => Some(TriggerCondition::HasMaxSpeed),
 
+        // CR 701.64b + CR 702.186b: The harnessed designation has an
+        // intervening-if equivalent — an ∞ (Infinity) triggered ability only
+        // fires while the source is harnessed. Unlike `SourceIsMonstrous`
+        // (static-only), this bridges so the ∞ ability-word gate reaches the
+        // trigger's `condition`.
+        StaticCondition::SourceIsHarnessed => Some(TriggerCondition::SourceIsHarnessed),
+
         // CR 103.1: Starting-player status — 1:1 bridge. Radiant Smite's
         // Cycling trigger reads "if you weren't the starting player".
         StaticCondition::WasStartingPlayer { controller } => {

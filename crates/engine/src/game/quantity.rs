@@ -548,6 +548,7 @@ pub(crate) fn static_condition_uses_unspent_mana(condition: &StaticCondition) ->
         | StaticCondition::SourceIsEquipped
         | StaticCondition::SourceIsEnchanted
         | StaticCondition::SourceIsMonstrous
+        | StaticCondition::SourceIsHarnessed
         | StaticCondition::SourceAttachedToCreature
         | StaticCondition::SourceMatchesFilter { .. }
         | StaticCondition::RecipientMatchesFilter { .. }

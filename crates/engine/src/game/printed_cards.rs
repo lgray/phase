@@ -1056,6 +1056,7 @@ fn walk_effect(effect: &Effect, out: &mut Vec<String>) {
         | Effect::Adapt { .. }
         | Effect::Learn
         | Effect::Forage
+        | Effect::Harness
         | Effect::CollectEvidence { .. }
         | Effect::Endure { .. }
         | Effect::BlightEffect { .. }

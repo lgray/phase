@@ -5204,6 +5204,12 @@ pub(crate) fn check_trigger_condition(
         TriggerCondition::ClassLevelGE { level } => {
             source_id.is_some_and(|id| eval_class_level_ge(state, id, *level))
         }
+        // CR 701.64b + CR 702.186b: True when the source permanent is harnessed.
+        // Gates an ∞ (Infinity) triggered ability so it only fires while
+        // harnessed (the ∞ ability word maps to this condition).
+        TriggerCondition::SourceIsHarnessed => source_id
+            .and_then(|id| state.objects.get(&id))
+            .is_some_and(|obj| obj.harnessed),
         TriggerCondition::AttractionVisitRoll { min, max } => trigger_event
             .and_then(|e| match e {
                 GameEvent::AttractionVisited { roll, .. } => Some(*roll),
