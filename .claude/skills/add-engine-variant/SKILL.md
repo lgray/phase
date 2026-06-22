@@ -22,6 +22,8 @@ If you find yourself about to type `pub enum Foo { ... NewVariant ... }` in `cra
 
 The variant might already exist under a different engine-native name. The mtgish AST and the engine vocabulary are not 1:1; the engine often has the concept under a different name.
 
+> The canonical engine surface is `data/engine-inventory.json` (gitignored). Run `cargo engine-inventory` to (re)generate it locally before grepping for existing variants.
+
 Run **all five searches** before considering extension:
 
 ```bash
