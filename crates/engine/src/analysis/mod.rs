@@ -21,11 +21,21 @@
 //!   that drives `GameRunner::act` and *feeds* the event-fed `ResourceVector`
 //!   axes (damage, tokens, draws, casts, triggers) from the runner's event
 //!   stream, which a single `GameState` snapshot cannot supply.
+//! - [`loop_check`] — Engine A: [`detect_loop`] turns a same-board-plus-net-progress
+//!   measurement into a [`LoopCertificate`] (the unbounded axes + a [`WinKind`]),
+//!   the offline classification the corpus harness asserts against. Still
+//!   **zero gameplay change** — never called from the reducer.
 
+pub mod loop_check;
 pub mod resource;
 pub mod sim;
 
+#[cfg(test)]
+mod corpus_tests;
+
+pub use loop_check::{detect_loop, LoopCertificate, WinKind};
 pub use resource::{
-    loop_states_equal_modulo_resources, CounterClass, ObjectClass, ResourceVector, TriggerKind,
+    loop_states_equal_modulo_resources, CounterClass, ObjectClass, ResourceAxis, ResourceVector,
+    TriggerKind,
 };
 pub use sim::{accumulate_events, LoopProbe};

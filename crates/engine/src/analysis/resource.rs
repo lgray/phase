@@ -21,11 +21,13 @@
 //! [`ResourceVector`] is the typed catalogue of those monotone axes;
 //! [`loop_states_equal_modulo_resources`] is the projected comparison.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 
+use crate::types::ability::ActivationRestriction;
 use crate::types::card_type::CoreType;
 use crate::types::counter::CounterType;
 use crate::types::game_state::{loop_states_equal, GameState};
+use crate::types::identifiers::ObjectId;
 use crate::types::mana::ManaType;
 use crate::types::phase::Phase;
 use crate::types::player::PlayerId;
@@ -558,7 +560,26 @@ fn map_delta<K: Ord + Copy>(
 pub fn loop_states_equal_modulo_resources(a: &GameState, b: &GameState) -> bool {
     let pa = project_out_resources(a);
     let pb = project_out_resources(b);
-    loop_states_equal(&pa, &pb)
+    // CR 606.3: the per-object loyalty-activation count is the authoritative
+    // once-per-turn-per-permanent gate, but `objects_content_eq` does NOT compare it
+    // (and `normalize_for_loop` does not zero it), so a loyalty loop is invisible to
+    // `loop_states_equal`. Compare it analysis-locally (do NOT widen the strict
+    // comparator, do NOT zero the field) so a loop that re-activates a loyalty
+    // ability (count k -> k+1) compares UNEQUAL and is not falsely certified.
+    loop_states_equal(&pa, &pb) && loyalty_activation_counts_match(&pa, &pb)
+}
+
+/// CR 606.3: per-object `loyalty_activations_this_turn` equality across two
+/// projected states. Transparent for non-loyalty loops (all-zero counts compare
+/// equal); discriminating for loyalty loops (the count grows each activation).
+/// `loop_states_equal` already requires identical object sets before this runs, so
+/// iterating one side's objects and comparing shared ids is symmetric.
+fn loyalty_activation_counts_match(a: &GameState, b: &GameState) -> bool {
+    a.objects.iter().all(|(id, oa)| {
+        b.objects
+            .get(id)
+            .is_none_or(|ob| oa.loyalty_activations_this_turn == ob.loyalty_activations_this_turn)
+    })
 }
 
 /// Clone a state through `normalize_for_loop` and additionally zero every
@@ -610,14 +631,136 @@ fn project_out_resources(state: &GameState) -> GameState {
         object.defense = None;
     }
 
+    // Per-turn / per-game *bookkeeping* accumulators the dynamic Engine-A path
+    // perturbs each cycle. This block runs ONLY in the offline `loop_states_equal_
+    // modulo_resources` comparison and never touches a live game state, so it cannot
+    // affect the strict CR 104.4b mandatory-draw path (which compares
+    // `normalize_for_loop()` directly, not this projection). The accumulators
+    // partition into two classes that are handled OPPOSITELY:
+    //   * repetition-BLOCKING legality gates (per-turn/per-game activation tallies,
+    //     once-per-turn/N-times trigger limits, per-object loyalty activation count)
+    //     — PRESERVED (or compared analysis-locally) so a GATED loop compares UNEQUAL
+    //     and is not falsely certified as infinite;
+    //   * pure pumped HISTORY (journals, counts, branch/quantity sources) — CLEARED
+    //     so a genuine unrestricted loop compares equal.
+    //
+    // Pure pumped HISTORY: journals, counts, and branch/quantity sources a genuine
+    // loop pumps every cycle. None of these BLOCK loop repetition (they are read by
+    // branch conditions or quantity refs, not by a once-per-turn/N-times legality
+    // gate), so their downstream effect is caught by the board-equality or net-progress
+    // gates — clearing them is required so a real loop compares equal. Only the
+    // repetition-blocking activation/trigger/loyalty gates above are preserved.
+    s.spells_cast_this_turn = 0;
+    s.spells_cast_last_turn = None;
+    s.priority_pass_count = 0;
+    // CR 602.5b: per-turn / per-game activation gates. These tallies are bumped for
+    // EVERY activation (restrictions.rs record_ability_activation, unconditional), so
+    // they grow for unrestricted loops too — blanket-clearing them would erase the
+    // gate that makes a once-per-turn ("Activate only once each turn") or once-per-game
+    // ability NON-repeatable, falsely certifying it as infinite. Retain only the keys
+    // whose ability actually carries the matching restriction so two cycles of a GATED
+    // activation compare DIFFERENT (the gate progressed) while pure pumped history is
+    // still projected out (unrestricted loops compare equal).
+    let keep_turn: HashSet<(ObjectId, usize)> = s
+        .activated_abilities_this_turn
+        .keys()
+        .filter(|key| ability_has_per_turn_activation_gate(&s, key))
+        .copied()
+        .collect();
+    s.activated_abilities_this_turn
+        .retain(|key, _| keep_turn.contains(key));
+    let keep_game: HashSet<(ObjectId, usize)> = s
+        .activated_abilities_this_game
+        .keys()
+        .filter(|key| ability_has_per_game_activation_gate(&s, key))
+        .copied()
+        .collect();
+    s.activated_abilities_this_game
+        .retain(|key, _| keep_game.contains(key));
+    // CR 603.4: NthResolutionThisTurn{n} is a one-shot branch SELECTOR (an effect
+    // branch fires when the per-ability resolution count == n), NOT a repetition-
+    // blocking legality gate. Clearing it is sound: a board-divergent Nth branch is
+    // caught by objects_content_eq, and a resource-only Nth branch is a one-time bonus
+    // the warmup-skipping steady-cycle measurement never re-counts. Projected out as
+    // pure pumped history.
+    s.ability_resolutions_this_turn.clear();
+    s.loyalty_abilities_activated_this_turn.clear();
+    s.extra_loyalty_activations_this_turn.clear();
+    // CR 603.2h: trigger once-per-turn / N-times-per-turn limits. These maps have
+    // EXACTLY ONE writer each — the constraint-keyed `record_trigger_fired`
+    // (triggers.rs), which returns early for an unconstrained trigger:
+    // `triggers_fired_this_turn` is written ONLY for `TriggerConstraint::OncePerTurn`,
+    // `trigger_fire_counts_this_turn` ONLY for `MaxTimesPerTurn`. An UNRESTRICTED
+    // (repeatable) trigger inserts into NEITHER, so a legitimate unrestricted-trigger
+    // loop never touches them and PRESERVING them cannot break legit-loop equality.
+    // For a GATED trigger the key/count is present/grows, so two cycles compare
+    // DIFFERENT — exactly the soundness the gate enforces (a once-per-turn trigger
+    // cannot drive an infinite loop). `triggers_fired_this_turn_per_opponent`
+    // (OncePerOpponentPerTurn) and `triggers_fired_this_game` (OncePerGame) are
+    // likewise NOT cleared here — consistent with the preserved `crew_activated_this_turn`.
+    // CR 120: who has dealt damage + the per-turn damage event log.
+    s.objects_that_dealt_damage.clear();
+    s.damage_dealt_this_turn.clear();
+    // CR 601: per-turn / per-game cast journals.
+    s.spells_cast_this_turn_by_player.clear();
+    s.spells_cast_this_game.clear();
+    s.spells_cast_this_game_by_player.clear();
+    // CR 400 (zones) / CR 603.6a (ETB) / CR 701.21 (sacrifice) / CR 111 (tokens):
+    // append-only event journals a loop pumps.
+    s.zone_changes_this_turn.clear();
+    s.battlefield_entries_this_turn.clear();
+    s.created_tokens_this_turn.clear();
+    s.players_who_created_token_this_turn.clear();
+    s.sacrificed_permanents_this_turn.clear();
+    s.players_who_sacrificed_artifact_this_turn.clear();
+    s.counter_added_this_turn.clear();
+    s.player_actions_this_turn.clear();
+    // CR 506 / CR 500.8: combat/phase tallies an extra-combat loop pumps.
+    s.combat_phases_started_this_turn = 0;
+    s.end_steps_started_this_turn = 0;
+
     s
+}
+
+/// CR 602.5b: does the ability at `key=(source,index)` carry a PER-TURN activation
+/// gate? Single authority for "is this activated-tally key a per-turn gate?".
+/// Exhaustive-by-listing `matches!` (no wildcard) so a future per-turn restriction
+/// variant forces an explicit keep/drop decision. A key whose source object is
+/// absent (un-activatable, gate moot) is treated as not-gated and projected out.
+fn ability_has_per_turn_activation_gate(state: &GameState, key: &(ObjectId, usize)) -> bool {
+    state
+        .objects
+        .get(&key.0)
+        .and_then(|o| o.abilities.get(key.1))
+        .is_some_and(|def| {
+            def.activation_restrictions.iter().any(|r| {
+                matches!(
+                    r,
+                    ActivationRestriction::OnlyOnceEachTurn
+                        | ActivationRestriction::MaxTimesEachTurn { .. }
+                )
+            })
+        })
+}
+
+/// CR 602.5b: per-GAME activation gate. Single authority.
+fn ability_has_per_game_activation_gate(state: &GameState, key: &(ObjectId, usize)) -> bool {
+    state
+        .objects
+        .get(&key.0)
+        .and_then(|o| o.abilities.get(key.1))
+        .is_some_and(|def| {
+            def.activation_restrictions
+                .iter()
+                .any(|r| matches!(r, ActivationRestriction::OnlyOnce))
+        })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::game::game_object::GameObject;
-    use crate::types::identifiers::{CardId, ObjectId};
+    use crate::types::identifiers::CardId;
     use crate::types::zones::Zone;
 
     fn pid(n: u8) -> PlayerId {
@@ -636,6 +779,28 @@ mod tests {
         object.card_types.core_types = vec![CoreType::Artifact, CoreType::Creature];
         state.objects.insert(oid, object);
         state.battlefield.push_back(oid);
+        oid
+    }
+
+    /// Battlefield creature carrying exactly one activated ability whose
+    /// `activation_restrictions` is `restrictions` — production shape the gate
+    /// predicates run against (`o.abilities.get(idx).activation_restrictions`).
+    fn battlefield_creature_with_restrictions(
+        state: &mut GameState,
+        id: u64,
+        controller: u8,
+        restrictions: Vec<ActivationRestriction>,
+    ) -> ObjectId {
+        use crate::types::ability::{AbilityDefinition, AbilityKind, Effect};
+        use std::sync::Arc;
+
+        let oid = battlefield_creature(state, id, controller);
+        let mut def = AbilityDefinition::new(
+            AbilityKind::Activated,
+            Effect::unimplemented("gate-test", "activated"),
+        );
+        def.activation_restrictions = restrictions;
+        state.objects.get_mut(&oid).unwrap().abilities = Arc::new(vec![def]);
         oid
     }
 
@@ -957,5 +1122,230 @@ mod tests {
             vec![(ResourceAxis::LibraryDelta(pid(1)), -4)],
             "a mill loop is unbounded downward on library size"
         );
+    }
+
+    /// EDIT A1 (CR 602.5b): a per-turn ("Activate only once each turn") activation
+    /// gate must be PRESERVED across `project_out_resources`, so a loop that
+    /// re-activates the gated ability (tally 1 -> 2) plus a projected resource
+    /// (life) compares modulo-UNEQUAL — the gate is what makes it non-repeatable.
+    /// PAIRED POSITIVE: an UNRESTRICTED ability's tally is projected out, so the
+    /// same shape stays modulo-EQUAL. The contrast is the discrimination: reverting
+    /// to a blanket `.clear()` flips the negative to equal.
+    #[test]
+    fn activated_once_per_turn_gate_breaks_modulo_equality() {
+        // --- Negative: gated ability, tally differs => UNEQUAL ---
+        let mut a = GameState::new_two_player(7);
+        let oid = battlefield_creature_with_restrictions(
+            &mut a,
+            700,
+            0,
+            vec![ActivationRestriction::OnlyOnceEachTurn],
+        );
+        let mut b = a.clone();
+        b.activated_abilities_this_turn.insert((oid, 0), 1); // gate progressed
+        b.players[1].life -= 1; // projected-out resource gain
+        assert!(
+            !loop_states_equal_modulo_resources(&a, &b),
+            "a preserved once-per-turn activation gate (CR 602.5b) must keep two cycles UNEQUAL"
+        );
+
+        // --- Positive control: unrestricted ability, tally projected out => EQUAL ---
+        let mut c = GameState::new_two_player(7);
+        let oid2 = battlefield_creature_with_restrictions(&mut c, 701, 0, Vec::new());
+        let mut d = c.clone();
+        d.activated_abilities_this_turn.insert((oid2, 0), 1);
+        d.players[1].life -= 1;
+        assert!(
+            loop_states_equal_modulo_resources(&c, &d),
+            "an unrestricted ability's tally is pure history and must be projected out (EQUAL)"
+        );
+    }
+
+    /// EDIT A1 (CR 602.5b): per-GAME ("Activate only once") gate preserved; sibling
+    /// unrestricted ability projected out.
+    #[test]
+    fn activated_once_per_game_gate_breaks_modulo_equality() {
+        let mut a = GameState::new_two_player(7);
+        let oid = battlefield_creature_with_restrictions(
+            &mut a,
+            710,
+            0,
+            vec![ActivationRestriction::OnlyOnce],
+        );
+        let mut b = a.clone();
+        b.activated_abilities_this_game.insert((oid, 0), 1);
+        b.players[1].life -= 1;
+        assert!(
+            !loop_states_equal_modulo_resources(&a, &b),
+            "a preserved once-per-game activation gate (CR 602.5b) must keep two cycles UNEQUAL"
+        );
+
+        let mut c = GameState::new_two_player(7);
+        let oid2 = battlefield_creature_with_restrictions(&mut c, 711, 0, Vec::new());
+        let mut d = c.clone();
+        d.activated_abilities_this_game.insert((oid2, 0), 1);
+        d.players[1].life -= 1;
+        assert!(
+            loop_states_equal_modulo_resources(&c, &d),
+            "an unrestricted ability's per-game tally is pure history and must be projected out (EQUAL)"
+        );
+    }
+
+    /// EDIT A3 (CR 603.2h): a once-per-turn TRIGGER limit (`triggers_fired_this_turn`)
+    /// is no longer cleared, so a loop that re-fires the gated trigger plus a
+    /// resource delta compares UNEQUAL. CONTROL: an unrestricted trigger writes
+    /// NEITHER map, so a loop modeled with empty trigger maps both sides is EQUAL.
+    #[test]
+    fn trigger_once_per_turn_gate_breaks_modulo_equality() {
+        let mut a = GameState::new_two_player(7);
+        let oid = battlefield_creature(&mut a, 720, 0);
+        let mut b = a.clone();
+        b.triggers_fired_this_turn.insert((oid, 0)); // OncePerTurn gate fired
+        b.players[1].life -= 1;
+        assert!(
+            !loop_states_equal_modulo_resources(&a, &b),
+            "a preserved once-per-turn trigger limit (CR 603.2h) must keep two cycles UNEQUAL"
+        );
+
+        // CONTROL: unrestricted trigger touches neither map => both empty => EQUAL.
+        let mut c = GameState::new_two_player(7);
+        battlefield_creature(&mut c, 721, 0);
+        let mut d = c.clone();
+        d.players[1].life -= 1; // only a projected resource differs
+        assert!(
+            loop_states_equal_modulo_resources(&c, &d),
+            "an unrestricted trigger writes neither limit map, so the cycle stays EQUAL"
+        );
+    }
+
+    /// EDIT A3 (CR 603.2h): an N-times-per-turn TRIGGER limit
+    /// (`trigger_fire_counts_this_turn`) 1 vs 2 plus a resource delta compares
+    /// UNEQUAL. CONTROL: empty count maps both sides => EQUAL.
+    #[test]
+    fn trigger_max_times_per_turn_gate_breaks_modulo_equality() {
+        let mut a = GameState::new_two_player(7);
+        let oid = battlefield_creature(&mut a, 730, 0);
+        a.trigger_fire_counts_this_turn.insert((oid, 0), 1);
+        let mut b = a.clone();
+        b.trigger_fire_counts_this_turn.insert((oid, 0), 2); // limit progressed
+        b.players[1].life -= 1;
+        assert!(
+            !loop_states_equal_modulo_resources(&a, &b),
+            "a preserved N-times-per-turn trigger limit (CR 603.2h) must keep two cycles UNEQUAL"
+        );
+
+        let mut c = GameState::new_two_player(7);
+        battlefield_creature(&mut c, 731, 0);
+        let mut d = c.clone();
+        d.players[1].life -= 1;
+        assert!(
+            loop_states_equal_modulo_resources(&c, &d),
+            "with empty count maps both sides, only a projected resource differs => EQUAL"
+        );
+    }
+
+    /// EDIT B (CR 606.3): the per-object loyalty-activation count is compared
+    /// analysis-locally, so a loop re-activating a loyalty ability (0 -> 1) plus a
+    /// projected resource (loyalty counters, which `project_out_resources` zeroes)
+    /// compares UNEQUAL. `objects_content_eq` ignores this field, so this helper is
+    /// the ONLY thing catching the loyalty loop. CONTROL: equal counts (a damage
+    /// loop on the same board) stay EQUAL.
+    #[test]
+    fn loyalty_activation_breaks_modulo_equality() {
+        let mut a = GameState::new_two_player(7);
+        let oid = battlefield_creature(&mut a, 740, 0);
+        a.objects.get_mut(&oid).unwrap().card_types.core_types = vec![CoreType::Planeswalker];
+        let mut b = a.clone();
+        // The loyalty ability was activated again, and loyalty grew (projected out).
+        if let Some(o) = b.objects.get_mut(&oid) {
+            o.loyalty_activations_this_turn = 1;
+            o.counters.insert(CounterType::Loyalty, 5);
+        }
+        assert!(
+            !loop_states_equal_modulo_resources(&a, &b),
+            "CR 606.3: a re-activated loyalty ability (count 0 -> 1) must compare UNEQUAL even \
+             though loyalty counters are projected out and objects_content_eq ignores the count"
+        );
+
+        // CONTROL: equal loyalty-activation counts (a non-loyalty damage loop) => EQUAL.
+        let mut c = GameState::new_two_player(7);
+        battlefield_creature(&mut c, 741, 0);
+        let mut d = c.clone();
+        d.players[1].life -= 1; // a drain loop, no loyalty re-activation
+        assert!(
+            loop_states_equal_modulo_resources(&c, &d),
+            "equal loyalty-activation counts must stay modulo-EQUAL (transparent for non-loyalty loops)"
+        );
+    }
+
+    /// EDIT A5 (CR 602.5b): the gate-predicate partition. `AsSorcery` is a real
+    /// non-gate restriction variant (it constrains timing, not repetition), so it
+    /// must read as NOT a per-turn gate — proving the predicates classify by the
+    /// repetition axis, not by "has any restriction".
+    #[test]
+    fn activation_gate_predicates_partition_restrictions() {
+        let mut state = GameState::new_two_player(7);
+
+        let per_turn = battlefield_creature_with_restrictions(
+            &mut state,
+            750,
+            0,
+            vec![ActivationRestriction::OnlyOnceEachTurn],
+        );
+        let max_turn = battlefield_creature_with_restrictions(
+            &mut state,
+            751,
+            0,
+            vec![ActivationRestriction::MaxTimesEachTurn { count: 2 }],
+        );
+        let per_game = battlefield_creature_with_restrictions(
+            &mut state,
+            752,
+            0,
+            vec![ActivationRestriction::OnlyOnce],
+        );
+        let non_gate = battlefield_creature_with_restrictions(
+            &mut state,
+            753,
+            0,
+            vec![ActivationRestriction::AsSorcery],
+        );
+
+        // Per-turn predicate: true for the two per-turn limits, false otherwise.
+        assert!(ability_has_per_turn_activation_gate(&state, &(per_turn, 0)));
+        assert!(ability_has_per_turn_activation_gate(&state, &(max_turn, 0)));
+        assert!(!ability_has_per_turn_activation_gate(
+            &state,
+            &(per_game, 0)
+        ));
+        assert!(!ability_has_per_turn_activation_gate(
+            &state,
+            &(non_gate, 0)
+        ));
+
+        // Per-game predicate: true ONLY for OnlyOnce.
+        assert!(ability_has_per_game_activation_gate(&state, &(per_game, 0)));
+        assert!(!ability_has_per_game_activation_gate(
+            &state,
+            &(per_turn, 0)
+        ));
+        assert!(!ability_has_per_game_activation_gate(
+            &state,
+            &(max_turn, 0)
+        ));
+        assert!(!ability_has_per_game_activation_gate(
+            &state,
+            &(non_gate, 0)
+        ));
+
+        // A missing source object is not-gated (gate moot).
+        assert!(!ability_has_per_turn_activation_gate(
+            &state,
+            &(ObjectId(9999), 0)
+        ));
+        assert!(!ability_has_per_game_activation_gate(
+            &state,
+            &(ObjectId(9999), 0)
+        ));
     }
 }
