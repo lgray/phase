@@ -1638,8 +1638,12 @@ pub enum ManaSpendRestriction {
     /// battlefield via the zone pipeline and charges no mana (the `{3}` face-down
     /// cast cost, CR 702.37c, is not yet implemented), so `SpellMeta.is_face_down`
     /// is never `true` at a payment site and the gate never over-permits. The
-    /// variant exists so the restriction is representable (the cluster's cards
-    /// parse to no `Effect::Unimplemented`); once a real face-down CAST routes its
+    /// variant exists so the restriction stays representable as a typed value even
+    /// though this leaf is dead today: the parser still recognizes the shape, but a
+    /// card whose ONLY spend restriction is this leaf is left unabsorbed at the
+    /// `Effect::Mana` seam and intentionally surfaces an `Effect::Unimplemented`
+    /// gap (honest coverage red) via `ManaSpendRestriction::has_payable_branch`.
+    /// Once a real face-down CAST routes its
     /// `{3}` cost through `PaymentContext::Spell` the gate becomes live with no
     /// type change. See
     /// [`ManaRestriction::OnlyForFaceDownSpell`](super::mana::ManaRestriction::OnlyForFaceDownSpell).
