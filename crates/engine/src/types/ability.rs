@@ -5453,6 +5453,12 @@ pub enum StaticCondition {
     /// Read from `GameObject::monstrous` (existing bool field).
     /// Used for "as long as this creature is monstrous" statics (Fleecemane Lion, etc.).
     SourceIsMonstrous,
+    /// CR 701.64b + CR 702.186b: True when the source permanent is harnessed.
+    /// Read from `GameObject::harnessed`. This is the ∞ (Infinity) ability gate:
+    /// "∞ — [Ability]" grants [Ability] only while the permanent is harnessed.
+    /// Sibling of `SourceIsMonstrous` — a distinct CR designation marker, not a
+    /// parameterization of it (each marker is its own CR 701.x designation).
+    SourceIsHarnessed,
     /// CR 301.5 + CR 303.4: True when the source Aura/Equipment is attached to a creature.
     /// All observed Oracle text uses "attached to a creature"; no filter parameter needed.
     /// Used for "as long as this Equipment is attached to a creature" statics (Pact Weapon, etc.).
@@ -9854,6 +9860,12 @@ pub enum Effect {
     Learn,
     /// CR 701.61a: Forage — exile three cards from your graveyard or sacrifice a Food.
     Forage,
+    /// CR 701.64a: Harness [this permanent] — if the source permanent isn't
+    /// harnessed, it becomes harnessed. A unit keyword action (no parameters):
+    /// it always designates the source permanent, mirroring `Forage`'s
+    /// argument-free shape. The harnessed designation (CR 701.64b) is read by
+    /// the ∞ (Infinity) ability gate via `SourceIsHarnessed`.
+    Harness,
     /// CR 702.163a: Collect evidence N — exile cards with total mana value N or more from graveyard.
     CollectEvidence {
         #[serde(default = "default_one")]
@@ -11109,6 +11121,7 @@ impl Effect {
             | Effect::Adapt { .. }
             | Effect::Learn
             | Effect::Forage
+            | Effect::Harness
             | Effect::CollectEvidence { .. }
             | Effect::Endure { .. }
             | Effect::ExploreAll { .. }
@@ -11348,6 +11361,7 @@ impl Effect {
             | Effect::FlipCoin { .. }
             | Effect::FlipCoinUntilLose { .. }
             | Effect::Forage
+            | Effect::Harness
             | Effect::FreeCastFromZones { .. }
             | Effect::GiftDelivery { .. }
             | Effect::GrantCastingPermission { .. }
@@ -11563,6 +11577,7 @@ impl Effect {
             | Effect::FlipCoin { .. }
             | Effect::FlipCoinUntilLose { .. }
             | Effect::Forage
+            | Effect::Harness
             | Effect::FreeCastFromZones { .. }
             | Effect::GiftDelivery { .. }
             | Effect::GrantCastingPermission { .. }
@@ -11790,6 +11805,7 @@ pub fn effect_variant_name(effect: &Effect) -> &str {
         },
         Effect::Learn => "Learn",
         Effect::Forage => "Forage",
+        Effect::Harness => "Harness",
         Effect::CollectEvidence { .. } => "CollectEvidence",
         Effect::Endure { .. } => "Endure",
         Effect::BlightEffect { .. } => "BlightEffect",
@@ -12001,6 +12017,7 @@ pub enum EffectKind {
     RuntimeHandled,
     Learn,
     Forage,
+    Harness,
     CollectEvidence,
     Endure,
     BlightEffect,
@@ -12229,6 +12246,7 @@ impl From<&Effect> for EffectKind {
             Effect::RuntimeHandled { .. } => EffectKind::RuntimeHandled,
             Effect::Learn => EffectKind::Learn,
             Effect::Forage => EffectKind::Forage,
+            Effect::Harness => EffectKind::Harness,
             Effect::CollectEvidence { .. } => EffectKind::CollectEvidence,
             Effect::Endure { .. } => EffectKind::Endure,
             Effect::BlightEffect { .. } => EffectKind::BlightEffect,
@@ -12496,6 +12514,11 @@ pub enum ActivationRestriction {
     },
     /// CR 719.3c: This ability can only be activated while the source Case is solved.
     IsSolved,
+    /// CR 701.64b + CR 702.186b: This ability is present only while the source
+    /// permanent is harnessed, so it can only be activated while harnessed.
+    /// Read from `GameObject::harnessed`. Sibling of `IsSolved` (CR 719.3c) — a
+    /// per-object designation activation gate, not a parameterization of it.
+    SourceIsHarnessed,
     /// CR 716.4: Level N+1 ability can only activate when the source Class is at exactly this level.
     ClassLevelIs {
         level: u8,
@@ -14122,6 +14145,12 @@ pub enum TriggerCondition {
     /// CR 716.2a: True when the source Class enchantment is at or above the given level.
     /// Used to gate continuous triggers that only become active at higher class levels.
     ClassLevelGE { level: u8 },
+    /// CR 701.64b + CR 702.186b: True when the source permanent is harnessed.
+    /// The intervening-if counterpart of `StaticCondition::SourceIsHarnessed` —
+    /// gates an ∞ (Infinity) triggered ability so it only fires while the
+    /// permanent is harnessed. Mirrors `ClassLevelGE`'s "active only past a
+    /// per-object designation" gating.
+    SourceIsHarnessed,
     /// CR 701.52a + CR 702.159a: Visit ability on a numbered attraction line —
     /// the roll from `AttractionVisited` must fall within the printed range.
     AttractionVisitRoll { min: u8, max: u8 },

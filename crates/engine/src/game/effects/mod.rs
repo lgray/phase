@@ -114,6 +114,7 @@ pub mod gift_delivery;
 pub mod goad;
 pub mod grant_extra_loyalty_activations;
 pub mod grant_permission;
+pub mod harness;
 pub mod heist;
 pub mod hideaway;
 pub mod incubate;
@@ -2836,6 +2837,7 @@ pub fn resolve_effect(
         Effect::BlightEffect { .. } => blight::resolve(state, ability, events),
         Effect::Endure { .. } => endure::resolve(state, ability, events),
         Effect::Forage => forage::resolve(state, ability, events),
+        Effect::Harness => harness::resolve(state, ability, events),
         Effect::CollectEvidence { .. } => collect_evidence::resolve(state, ability, events),
         Effect::SetLifeTotal { .. } => life::resolve_set_life_total(state, ability, events),
         Effect::ExchangeLifeWithStat { .. } => exchange_life::resolve(state, ability, events),

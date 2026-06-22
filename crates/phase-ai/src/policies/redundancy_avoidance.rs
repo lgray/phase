@@ -527,6 +527,7 @@ fn redundancy_delta(
         | Effect::Adapt { .. }
         | Effect::Learn
         | Effect::Forage
+        | Effect::Harness
         | Effect::CollectEvidence { .. }
         | Effect::Endure { .. }
         | Effect::BlightEffect { .. }

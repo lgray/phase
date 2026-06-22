@@ -1541,6 +1541,12 @@ fn ability_word_to_condition(word: &str) -> Option<crate::types::ability::Static
     };
 
     match word {
+        // CR 702.186a/b: "∞ — [Ability]" is the Infinity static ability; the
+        // ∞ keyword maps to the harnessed gate ("as long as this permanent is
+        // harnessed, it has [Ability]"). `strip_ability_word_with_name` already
+        // splits the `∞ — ` prefix generically, so this only needs the mapping.
+        // allow-noncombinator: semantic mapping after ability-word parser has classified the word
+        "∞" => Some(StaticCondition::SourceIsHarnessed),
         "threshold" => Some(StaticCondition::QuantityComparison {
             lhs: QuantityExpr::Ref {
                 qty: QuantityRef::GraveyardSize {
@@ -1734,6 +1740,9 @@ fn ability_word_to_trigger_condition(
             rhs,
         }),
         StaticCondition::HasMaxSpeed => Some(TriggerCondition::HasMaxSpeed),
+        // CR 702.186b: the ∞ ability word gates its triggered ability on the
+        // harnessed designation.
+        StaticCondition::SourceIsHarnessed => Some(TriggerCondition::SourceIsHarnessed),
         _ => None,
     }
 }
@@ -2658,6 +2667,16 @@ pub(crate) fn parse_oracle_ir(
         if let Some(colon_pos) = find_activated_colon(&line) {
             let cost_text = line[..colon_pos].trim();
             let effect_text = line[colon_pos + 1..].trim();
+            // CR 207.2c (shared label-prefix mechanism, used by ability words
+            // like Threshold) + CR 702.186a: the ∞ keyword (NOT an ability word —
+            // it is absent from the CR 207.2c list) is likewise followed by
+            // ability text after an em-dash and can prefix an activation cost
+            // ("∞ — {T}: ..."). `find_activated_colon` strips the label only to
+            // locate the colon; the prefix is still in `cost_text` here, so
+            // recover the typed gate condition (shared `strip_ability_word_with_name`
+            // path serves both forms) to gate this ability.
+            let aw_condition = strip_ability_word_with_name(cost_text)
+                .and_then(|(aw_name, _)| ability_word_to_condition(&aw_name));
             let (mut def, effect_text) = parse_activated_ability_definition(
                 cost_text,
                 effect_text,
@@ -2666,6 +2685,18 @@ pub(crate) fn parse_oracle_ir(
                 Some(result.abilities.len()),
                 &mut ctx,
             );
+            // CR 702.186b: ∞ ("As long as harnessed, it has [ability]") gates an
+            // activated ability's legality (the ability is absent while
+            // unharnessed) — an activation restriction, NOT an intervening-if
+            // `condition` (a resolution-time gate, CR 608.2c + Shelldock Isle
+            // ruling, which the engine deliberately does not use for activation
+            // legality). Applied AFTER the call because
+            // `parse_activated_ability_definition` overwrites
+            // `activation_restrictions` from the cost-text constraints.
+            if matches!(aw_condition, Some(StaticCondition::SourceIsHarnessed)) {
+                def.activation_restrictions
+                    .push(ActivationRestriction::SourceIsHarnessed);
+            }
             if ability_cant_be_copied {
                 def.cant_be_copied = true;
             }

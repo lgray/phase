@@ -330,6 +330,8 @@ mod issue_3876_gadrak_treasure_count;
 mod issue_3878_go_shintai_combat_damage;
 mod issue_3881_feed_swarm_darksteel_mutation;
 mod issue_3883_kari_zev_ragavan;
+mod issue_3994_malevolent_rumble;
+mod issue_3996_return_the_favor;
 mod issue_3999_latchkey_faerie_prowl_etb;
 mod issue_4000_dominating_licid;
 mod issue_4050_adamaro_extremum_hand_size;

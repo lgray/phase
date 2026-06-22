@@ -2938,6 +2938,7 @@ fn effect_details(effect: &Effect) -> Vec<(String, String)> {
         | Effect::ChangeTargets { .. }
         | Effect::ExchangeControl { .. }
         | Effect::Forage
+        | Effect::Harness
         | Effect::Learn
         | Effect::SwitchPT { .. }
         | Effect::Myriad
@@ -6075,6 +6076,8 @@ fn static_condition_feature(cond: &StaticCondition) -> (&'static str, FeatureSup
         StaticCondition::SourceIsEnchanted => ("SourceIsEnchanted", Handled),
         // SourceIsMonstrous resolved by layers::evaluate_condition (layers.rs:1071)
         StaticCondition::SourceIsMonstrous => ("SourceIsMonstrous", Handled),
+        // SourceIsHarnessed resolved by layers::evaluate_condition (the ∞ gate).
+        StaticCondition::SourceIsHarnessed => ("SourceIsHarnessed", Handled),
         // SourceAttachedToCreature resolved by layers::evaluate_condition (layers.rs:1078)
         StaticCondition::SourceAttachedToCreature => ("SourceAttachedToCreature", Handled),
         // SourceMatchesFilter resolved by layers::evaluate_condition (layers.rs:1104)
@@ -10969,10 +10972,11 @@ mod tests {
     /// intentionally NOT asserted here so a future stub does not silently pass.
     #[test]
     fn source_state_static_conditions_are_marked_handled() {
-        let conditions: [(StaticCondition, &str); 5] = [
+        let conditions: [(StaticCondition, &str); 6] = [
             (StaticCondition::SourceIsEquipped, "SourceIsEquipped"),
             (StaticCondition::SourceIsEnchanted, "SourceIsEnchanted"),
             (StaticCondition::SourceIsMonstrous, "SourceIsMonstrous"),
+            (StaticCondition::SourceIsHarnessed, "SourceIsHarnessed"),
             (
                 StaticCondition::SourceAttachedToCreature,
                 "SourceAttachedToCreature",

@@ -36591,6 +36591,73 @@ mod tests {
         );
     }
 
+    #[test]
+    fn cant_regenerate_destroyed_this_way_with_intervening_effect() {
+        // Kirtar's Wrath threshold form: DestroyAll, then tokens, then
+        // "Creatures destroyed this way can't be regenerated."
+        // The continuation must back-search past the intervening token
+        // creation to find the DestroyAll.
+        let def = parse_effect_chain(
+            "Destroy all creatures. They can't be regenerated. If the threshold condition is met, instead destroy all creatures, then create two 1/1 white Spirit creature tokens with flying. Creatures destroyed this way can't be regenerated.",
+            AbilityKind::Spell,
+        );
+        assert!(
+            matches!(
+                *def.effect,
+                Effect::DestroyAll {
+                    cant_regenerate: true,
+                    ..
+                }
+            ),
+            "Expected DestroyAll {{ cant_regenerate: true }}, got {:?}",
+            def.effect
+        );
+    }
+
+    #[test]
+    fn cant_regenerate_token_intervening_discriminating() {
+        // Regression: CantRegenerate catch-all must fire even when the
+        // immediately preceding effect is Token. Before the fix the Token arm
+        // in parse_followup_continuation_ast shadowed the `_ if scan_contains`
+        // guard, leaving cant_regenerate: false on the DestroyAll.
+        let def = parse_effect_chain(
+            "Destroy all creatures. Create two 1/1 white Spirit creature tokens with flying. Creatures destroyed this way can't be regenerated.",
+            AbilityKind::Spell,
+        );
+        assert!(
+            matches!(
+                *def.effect,
+                Effect::DestroyAll {
+                    cant_regenerate: true,
+                    ..
+                }
+            ),
+            "Expected DestroyAll {{ cant_regenerate: true }} (token-intervening path), got {:?}",
+            def.effect
+        );
+    }
+
+    #[test]
+    fn cant_regenerate_destroyed_this_way_simple() {
+        // "A creature destroyed this way can't be regenerated" with full
+        // noun-phrase subject (not just "it" / "they").
+        let def = parse_effect_chain(
+            "Destroy target creature. A creature destroyed this way can't be regenerated.",
+            AbilityKind::Spell,
+        );
+        assert!(
+            matches!(
+                *def.effect,
+                Effect::Destroy {
+                    cant_regenerate: true,
+                    ..
+                }
+            ),
+            "Expected Destroy {{ cant_regenerate: true }}, got {:?}",
+            def.effect
+        );
+    }
+
     // -----------------------------------------------------------------------
     // Item 2: Restriction predicates
     // -----------------------------------------------------------------------

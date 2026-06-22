@@ -1748,6 +1748,17 @@
           ]
         },
         {
+          "name": "SourceIsHarnessed",
+          "line": 12521,
+          "kind": "unit",
+          "field_names": [],
+          "doc": "CR 701.64b + CR 702.186b: This ability is present only while the source permanent is harnessed, so it can only be activated while harnessed. Read from `GameObject::harnessed`. Sibling of `IsSolved` (CR 719.3c) — a per-object designation activation gate, not a parameterization of it.",
+          "cr_refs": [
+            "CR 701.64b",
+            "CR 702.186b"
+          ]
+        },
+        {
           "name": "ClassLevelIs",
           "line": 12450,
           "kind": "struct",
@@ -10989,6 +11000,17 @@
           "doc": "CR 701.61a: Forage — exile three cards from your graveyard or sacrifice a Food.",
           "cr_refs": [
             "CR 701.61a"
+          ]
+        },
+        {
+          "name": "Harness",
+          "line": 9868,
+          "kind": "unit",
+          "field_names": [],
+          "doc": "CR 701.64a: Harness [this permanent] — if the source permanent isn't harnessed, it becomes harnessed. A unit keyword action (no parameters): it always designates the source permanent, mirroring `Forage`'s argument-free shape. The harnessed designation (CR 701.64b) is read by the ∞ (Infinity) ability gate via `SourceIsHarnessed`.",
+          "cr_refs": [
+            "CR 701.64a",
+            "CR 701.64b"
           ]
         },
         {
@@ -30071,6 +30093,18 @@
           ]
         },
         {
+          "name": "SourceIsHarnessed",
+          "line": 5461,
+          "kind": "unit",
+          "field_names": [],
+          "doc": "CR 701.64b + CR 702.186b: True when the source permanent is harnessed. Read from `GameObject::harnessed`. This is the ∞ (Infinity) ability gate: \"∞ — [Ability]\" grants [Ability] only while the permanent is harnessed. Sibling of `SourceIsMonstrous` — a distinct CR designation marker, not a parameterization of it (each marker is its own CR 701.x designation).",
+          "cr_refs": [
+            "CR 701",
+            "CR 701.64b",
+            "CR 702.186b"
+          ]
+        },
+        {
           "name": "SourceAttachedToCreature",
           "line": 5448,
           "kind": "unit",
@@ -32739,6 +32773,17 @@
           "doc": "CR 716.2a: True when the source Class enchantment is at or above the given level. Used to gate continuous triggers that only become active at higher class levels.",
           "cr_refs": [
             "CR 716.2a"
+          ]
+        },
+        {
+          "name": "SourceIsHarnessed",
+          "line": 14153,
+          "kind": "unit",
+          "field_names": [],
+          "doc": "CR 701.64b + CR 702.186b: True when the source permanent is harnessed. The intervening-if counterpart of `StaticCondition::SourceIsHarnessed` — gates an ∞ (Infinity) triggered ability so it only fires while the permanent is harnessed. Mirrors `ClassLevelGE`'s \"active only past a per-object designation\" gating.",
+          "cr_refs": [
+            "CR 701.64b",
+            "CR 702.186b"
           ]
         },
         {

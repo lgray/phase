@@ -3130,6 +3130,10 @@ pub(crate) fn static_condition_to_ability_condition(
         | StaticCondition::SourceIsEnchanted
         | StaticCondition::SourceIsPaired
         | StaticCondition::SourceIsMonstrous
+        // CR 701.64b: the harnessed designation gates triggered/static abilities
+        // (via `TriggerCondition::SourceIsHarnessed` / Layer 6), never an
+        // effect-resolution-time `AbilityCondition` — mirror `SourceIsMonstrous`.
+        | StaticCondition::SourceIsHarnessed
         | StaticCondition::OpponentPoisonAtLeast { .. }
         | StaticCondition::UnlessPay { .. }
         | StaticCondition::Unrecognized { .. }
