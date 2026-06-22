@@ -346,6 +346,10 @@ impl ResourceVector {
     /// *consumed* axes constrain sustainability. A mill loop still satisfies (1)
     /// via some other axis (or via a negative library being the unbounded
     /// resource — callers read [`Self::unbounded_components`] for that).
+    ///
+    /// CR 121.4 + CR 704.5b: a *pure*-mill loop whose only changing axis is a
+    /// negative `library_delta` also counts as net-progress here — emptying a
+    /// library is the win even though no axis strictly increased.
     pub fn is_net_progress(&self) -> bool {
         let mut any_increase = false;
         for (component, value) in self.components() {
@@ -357,7 +361,15 @@ impl ResourceVector {
                 any_increase = true;
             }
         }
-        any_increase
+        // CR 121.4 + CR 704.5b: a pure-mill loop is net-progress even though its
+        // only changing axis (`library_delta`) is *negative* — driving a library
+        // toward empty is the win (the opponent loses on the next attempted draw,
+        // a state-based action). Recognized consistently with `unbounded_components`,
+        // which surfaces `library_delta` on either sign; positive library growth is
+        // already counted by the generic `value > 0` clause above, so this clause is
+        // strictly additive for the negative (mill) case.
+        let mills = self.library_delta.values().any(|&n| n < 0);
+        any_increase || mills
     }
 
     /// The component axes that strictly increased over this delta — the
@@ -542,10 +554,23 @@ fn project_out_resources(state: &GameState) -> GameState {
     for (_, object) in s.objects.iter_mut() {
         // CR 120: marked damage is a monotone resource (lifelink/ping loops).
         object.damage_marked = 0;
-        // CR 122.1: counters (and their derived P/T/loyalty/defense) are the
-        // pumped resource of a +1/+1 or loyalty loop; project them all out so
-        // two cycles of such a loop compare as the same board.
-        object.counters.clear();
+        // CR 122.1: project out only *monotone* counters (CR 122.1a/613.4c
+        // +1/+1, -1/-1, P/T; CR 306.5b loyalty; CR 310.4c defense) — these are
+        // the pumped resource of a +1/+1 or loyalty loop, so two cycles compare
+        // as the same board. PRESERVE consumable/duration/state-gating counters
+        // (CR 122.1b/c/d stun/shield/keyword; CR 702.62a/63a time; CR 702.32a
+        // fade; CR 702.24a age; CR 714.3 lore; generic): consuming one of these
+        // is a real board change, not a monotone pump, so it must remain visible
+        // to `objects_content_eq` (game_state.rs counter comparison).
+        object
+            .counters
+            .retain(|ct, _| !ct.is_monotone_loop_resource());
+        // CR 613.4c: the counter-derived fields are zeroed because they derive
+        // ONLY from the monotone counters just projected out — power/toughness
+        // fold only `power_toughness_delta()==Some` counters, loyalty derives
+        // only from CounterType::Loyalty and defense only from CounterType::Defense.
+        // The preserved counters never reach these four fields, so zeroing cannot
+        // mask a consumed non-monotone counter.
         object.power = None;
         object.toughness = None;
         object.loyalty = None;
@@ -633,6 +658,78 @@ mod tests {
         assert!(
             loop_states_equal_modulo_resources(&a, &b),
             "same board with only monotone resources differing must be modulo-resources equal (CR 732.2a net-progress loop point)"
+        );
+    }
+
+    /// BLOCKER 1 (CR 122.1c): a CONSUMED non-monotone counter (shield, 2 -> 1)
+    /// plus a projected-out resource gain must keep two boards modulo-UNEQUAL —
+    /// the finite counter makes the cycle non-repeatable. PAIRED positive control:
+    /// a board differing only by a MONOTONE +1/+1 (CR 122.1a) plus the same
+    /// resource gain stays modulo-EQUAL, proving the partition projects monotone
+    /// counters out without erasing consumable ones.
+    #[test]
+    fn consumed_shield_counter_breaks_modulo_equality_but_monotone_does_not() {
+        // --- Negative: consumed shield counter keeps boards unequal ---
+        let mut a = GameState::new_two_player(7);
+        let oid = battlefield_creature(&mut a, 500, 0);
+        a.objects
+            .get_mut(&oid)
+            .unwrap()
+            .counters
+            .insert(CounterType::Shield, 2);
+        let mut b = a.clone();
+        b.objects
+            .get_mut(&oid)
+            .unwrap()
+            .counters
+            .insert(CounterType::Shield, 1); // consumed one shield
+        b.players[1].life -= 1; // projected-out resource gain
+        assert!(
+            !loop_states_equal_modulo_resources(&a, &b),
+            "a consumed shield counter (CR 122.1c) makes the cycle non-repeatable; \
+             boards must NOT be modulo-equal even though only a resource also changed"
+        );
+
+        // --- Positive control: only a monotone +1/+1 differs => still equal ---
+        let mut c = GameState::new_two_player(7);
+        let oid2 = battlefield_creature(&mut c, 600, 0);
+        let mut d = c.clone();
+        d.objects
+            .get_mut(&oid2)
+            .unwrap()
+            .counters
+            .insert(CounterType::Plus1Plus1, 3);
+        d.players[1].life -= 1;
+        assert!(
+            loop_states_equal_modulo_resources(&c, &d),
+            "only a monotone +1/+1 pump (CR 122.1a) plus a resource delta must stay modulo-equal"
+        );
+    }
+
+    /// BLOCKER 2 (CR 121.4 / CR 704.5b): a pure mill delta (only a negative
+    /// library_delta) is net progress. Controls: an empty delta is not progress,
+    /// and the consumed-axis guard still rejects a loop that net-loses life.
+    #[test]
+    fn pure_mill_delta_is_net_progress() {
+        let mut mill = ResourceVector::default();
+        mill.library_delta.insert(pid(1), -4);
+        assert!(
+            mill.is_net_progress(),
+            "a pure mill loop (only negative library_delta) is net progress (CR 121.4)"
+        );
+
+        assert!(
+            !ResourceVector::default().is_net_progress(),
+            "an empty delta is not net progress"
+        );
+
+        // Consumed-axis guard intact: a mill that net-loses life is rejected.
+        let mut mill_bleed = ResourceVector::default();
+        mill_bleed.library_delta.insert(pid(1), -4);
+        mill_bleed.life.insert(pid(0), -1);
+        assert!(
+            !mill_bleed.is_net_progress(),
+            "a loop that net-spends a consumed axis (life) is not sustainable"
         );
     }
 
