@@ -237,8 +237,15 @@ fn unbounded_axes_for(delta: &ResourceVector, controller: PlayerId) -> Vec<Resou
 /// opponent loss condition; the corpus rows are two-player, so any non-controller
 /// player is the opponent.
 fn classify_win_kind(controller: PlayerId, delta: &ResourceVector) -> WinKind {
-    // CR 704.5a: unbounded damage dealt to any player is lethal damage.
-    if delta.damage_dealt.values().any(|&n| n > 0) {
+    // CR 704.5a: a player at 0 life loses — so unbounded damage is a WIN only when
+    // the damaged player is an OPPONENT (a non-controller). Damage to the loop's
+    // own controller (self-ping offset by lifegain) is an advantage engine, not a
+    // win; mirror the life/decking branches' opponent-victim discrimination.
+    if delta
+        .damage_dealt
+        .iter()
+        .any(|(pid, &n)| n > 0 && *pid != controller)
+    {
         return WinKind::LethalDamage;
     }
     // CR 704.5a: unbounded life *loss* from an opponent (drain loops report a
@@ -628,6 +635,62 @@ mod tests {
             classify_win_kind(pid(1), &delta),
             WinKind::Advantage,
             "self-mill (controller == victim) is advantage, not a deck-out win"
+        );
+    }
+
+    /// FINDING (CR 704.5a): damage dealt to the loop's OWN controller is NOT a
+    /// win — a player loses only when *they* reach 0 life, so lethal damage is a
+    /// win only against an OPPONENT. A self-ping loop whose controller's life is
+    /// offset (lifegain) pumps `damage_dealt[controller]` unbounded but kills no
+    /// opponent; it is an advantage engine, mirroring self-mill (`Advantage`, not
+    /// `Decking`) and self-life-loss (`Advantage`, not `LethalDamage`).
+    ///
+    /// DISCRIMINATING: the pre-fix damage branch was
+    /// `delta.damage_dealt.values().any(|&n| n > 0)` — controller-blind — so it
+    /// classified controller-only damage as `LethalDamage`. The first assertion
+    /// (`controller == victim => Advantage`) therefore FAILS against pre-fix code
+    /// and PASSES against the fixed `*pid != controller` predicate. The second
+    /// assertion (`opponent victim => LethalDamage`) is unchanged by the fix,
+    /// proving the change is surgical: it flips only the controller-victim case.
+    ///
+    /// WELL-FORMEDNESS: `unbounded_components` still surfaces
+    /// `DamageDealt(controller)`, so `detect_loop` returns a `Some` certificate
+    /// naming >=1 axis with `win_kind == Advantage` (a beneficial CR 732.2a loop),
+    /// not `None` and not a panic.
+    #[test]
+    fn classify_win_kind_controller_only_damage_is_not_lethal() {
+        // Controller-only damage (P0 pings ITSELF) => Advantage, NOT LethalDamage.
+        let mut self_dmg = ResourceVector::default();
+        self_dmg.damage_dealt.insert(pid(0), 1);
+        assert_eq!(
+            classify_win_kind(pid(0), &self_dmg),
+            WinKind::Advantage,
+            "damage to the loop's own controller is not a win (CR 704.5a): \
+             a player loses only when THEY reach 0 life"
+        );
+
+        // Parallel opponent case (P0 controls, P1 is damaged) => still LethalDamage.
+        let mut opp_dmg = ResourceVector::default();
+        opp_dmg.damage_dealt.insert(pid(1), 1);
+        assert_eq!(
+            classify_win_kind(pid(0), &opp_dmg),
+            WinKind::LethalDamage,
+            "unbounded damage to an OPPONENT is still lethal (CR 704.5a)"
+        );
+
+        // WELL-FORMEDNESS: the controller-only-damage loop still produces a
+        // well-formed certificate (DamageDealt(controller) axis named) classified
+        // as the advantage engine it is — not None, not a false direct win.
+        let mut start = GameState::new_two_player(7);
+        battlefield_creature(&mut start, 500, 0);
+        let end = start.clone();
+        let cert = detect_loop(&start, &end, &self_dmg, pid(0), false)
+            .expect("controller-only damage is still a confirmed (advantage) loop");
+        assert_eq!(cert.win_kind, WinKind::Advantage);
+        assert!(
+            cert.covers(&[ResourceAxis::DamageDealt(pid(0))]),
+            "certificate names the controller's damage axis (the unbounded resource), \
+             but classifies it as Advantage, not a win"
         );
     }
 }
