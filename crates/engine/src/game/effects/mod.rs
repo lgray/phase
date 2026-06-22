@@ -1697,7 +1697,14 @@ pub(super) fn resolve_optional_effect_decision(
                         || (sub.sub_link == SubAbilityLink::SequentialSibling
                             && !sub_ability_is_reflexive(sub)
                             && !(matches!(&ability.effect, Effect::CastFromZone { .. })
-                                && cast_from_zone::is_graveyard_exile_rider_subability(sub)))
+                                && (cast_from_zone::is_graveyard_exile_rider_subability(sub)
+                                    // CR 614.1c + CR 122.1: the enters-with-counter
+                                    // rider is permission metadata (Osteomancer
+                                    // Adept, The Tomb of Aclazotz), not a printed
+                                    // follow-up to execute on decline.
+                                    || cast_from_zone::is_enters_with_counter_rider_subability(
+                                        sub,
+                                    ))))
                 })
             });
             if let Some(branch) = decline_branch {
@@ -5949,6 +5956,18 @@ fn resolve_chain_body(
             &ability.effect,
             Effect::CastFromZone { .. } | Effect::Counter { .. }
         ) && cast_from_zone::is_graveyard_exile_rider_subability(sub)
+        {
+            return Ok(());
+        }
+
+        // CR 614.1c + CR 122.1: CastFromZone consumes the "creature cast this way
+        // enters with a [counter] counter on it" rider as permission metadata
+        // (recorded on the granted `ExileWithAltCost`). Resolving the structural
+        // `AddPendingETBCounters` rider here would read the (absent) SpellCast
+        // trigger event of the granting ability, not the future graveyard cast —
+        // so skip it (Osteomancer Adept, The Tomb of Aclazotz).
+        if matches!(&ability.effect, Effect::CastFromZone { .. })
+            && cast_from_zone::is_enters_with_counter_rider_subability(sub)
         {
             return Ok(());
         }
@@ -11507,6 +11526,7 @@ mod tests {
                         duration: None,
 
                         exile_instead_of_graveyard_on_resolve: false,
+                        enters_with_counter: None,
                     },
                     target: TargetFilter::TrackedSet {
                         id: TrackedSetId(0),
@@ -11603,6 +11623,7 @@ mod tests {
                         duration: None,
 
                         exile_instead_of_graveyard_on_resolve: false,
+                        enters_with_counter: None,
                     },
                     target: TargetFilter::TrackedSet {
                         id: TrackedSetId(0),
@@ -11673,6 +11694,7 @@ mod tests {
                     duration: None,
 
                     exile_instead_of_graveyard_on_resolve: false,
+                    enters_with_counter: None,
                 },
                 target: TargetFilter::TrackedSet {
                     id: TrackedSetId(0),
