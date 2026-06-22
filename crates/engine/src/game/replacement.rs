@@ -3377,21 +3377,33 @@ fn matches_damage_target_filter(
 
 // --- Pipeline functions ---
 
-/// CR 611.2b + CR 613.1b: "for as long as you control [source]" applicability
-/// gate — true only while the captured originating source is on the battlefield
-/// AND still controlled by the captured installer. Single authority shared by
-/// the `ControllerControlsSource` condition arm (live re-evaluation) and the
-/// layer-pass lapse prunes (`layers::prune_lapsed_controller_controls_source`),
-/// so both agree on exactly when the CR 611.2b duration has ended.
+/// CR 702.26f + CR 611.2b: "for as long as you control [source]" applicability
+/// gate — true only while the captured originating source is on the battlefield,
+/// still controlled by the captured installer, AND phased in. A "for as long as"
+/// duration that tracks a permanent ends when that permanent phases out because
+/// the effect can no longer see it (CR 702.26f); per CR 702.26b/d a phased-out
+/// permanent is treated as not on the battlefield and not under its controller's
+/// control even though phasing never changes its zone or controller, so it lapses
+/// this duration (CR 611.2b: the duration ends and does not begin again).
+/// CR 613.1b: the captured control reference is a Layer-2 control concept.
+/// Single authority shared by the `ControllerControlsSource` condition arm (live
+/// re-evaluation) and the layer-pass lapse prune
+/// (`layers::prune_lapsed_controller_controls_source`), so both agree on exactly
+/// when the CR 611.2b duration has ended.
 pub(crate) fn controller_controls_source_gate(
     state: &GameState,
     source: ObjectId,
     installer: PlayerId,
 ) -> bool {
-    state
-        .objects
-        .get(&source)
-        .is_some_and(|o| o.zone == Zone::Battlefield && o.controller == installer)
+    state.objects.get(&source).is_some_and(|o| {
+        // CR 702.26f: a "for as long as you control ~" continuous effect that
+        // tracks a permanent ends when that permanent phases out, because the
+        // effect can no longer see it (CR 611.2b: the duration ends and does not
+        // begin again). CR 702.26b/d: phasing never changes zone or controller,
+        // so the zone/controller checks alone would wrongly keep this gate true;
+        // the phased-in requirement is load-bearing.
+        o.zone == Zone::Battlefield && o.controller == installer && o.is_phased_in()
+    })
 }
 
 /// Evaluate a replacement condition against the current game state.

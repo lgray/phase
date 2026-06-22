@@ -1394,6 +1394,95 @@ mod tests {
         );
     }
 
+    /// CR 702.26f + CR 611.2b: a "for as long as you control ~" duration that
+    /// tracks the source ends when that source phases out (the effect can no
+    /// longer see it), permanently — phasing the source back in must NOT revive
+    /// the lock. CR 702.26b/d: phasing never changes the source's zone or
+    /// controller, so only the phased-in requirement in the gate makes this lapse.
+    ///
+    /// Discriminating: reverting the gate's `&& o.is_phased_in()` conjunct leaves
+    /// the gate true while the source is phased out (zone/controller unchanged by
+    /// phasing, CR 702.26d), so the layer-pass prune never drops the gated def
+    /// from base+live. The lock then survives phase-out and revives on phase-in,
+    /// and the final `!tapped` assertion fails.
+    #[test]
+    fn spider_woman_cant_untap_dead_on_phase_out_no_revive() {
+        use crate::game::game_object::PhaseOutCause;
+        use crate::game::phasing::{phase_in_object, phase_out_object};
+
+        let mut state = GameState::new_two_player(42);
+        let (spider_woman, foe_creature) = install_spider_woman_lock(&mut state);
+
+        // Negative baseline: with the source phased in, the lock HOLDS — proves the
+        // phase-out (not a pre-broken lock) is what lapses the duration.
+        crate::game::layers::evaluate_layers(&mut state);
+        let mut events = Vec::new();
+        resolve_set_tap_state(&mut state, &make_untap_ability(foe_creature), &mut events).unwrap();
+        assert!(
+            state.objects[&foe_creature].tapped,
+            "lock holds while the source is phased in"
+        );
+
+        // Phase the SOURCE out via the production path (marks layers full). The
+        // HOST (foe) stays phased in and its controller is unchanged — this isolates
+        // the source-phase axis from the control-swap and zone-exit axes.
+        let mut events = Vec::new();
+        let phased = phase_out_object(
+            &mut state,
+            spider_woman,
+            PhaseOutCause::Directly,
+            &mut events,
+        );
+        assert_eq!(phased, vec![spider_woman], "source phased out");
+        assert!(
+            state.objects[&spider_woman].is_phased_out(),
+            "source is phased out"
+        );
+        assert_eq!(
+            state.objects[&spider_woman].zone,
+            Zone::Battlefield,
+            "CR 702.26d: phasing must not change zone"
+        );
+        assert_eq!(
+            state.objects[&spider_woman].controller,
+            PlayerId(0),
+            "CR 702.26d: phasing must not change controller"
+        );
+
+        // Flush layers: the now-false gate makes prune_lapsed_controller_controls_source
+        // drop the gated def from base+live (CR 611.2b permanent lapse).
+        crate::game::layers::evaluate_layers(&mut state);
+
+        // The lock lapsed: the foe untaps while the source is phased out.
+        state.objects.get_mut(&foe_creature).unwrap().tapped = true;
+        let mut events = Vec::new();
+        resolve_set_tap_state(&mut state, &make_untap_ability(foe_creature), &mut events).unwrap();
+        assert!(
+            !state.objects[&foe_creature].tapped,
+            "phasing out the source must lapse the lock (CR 702.26f + CR 611.2b)"
+        );
+
+        // Phase the source back in via the production path, then flush layers.
+        let mut events = Vec::new();
+        let back = phase_in_object(&mut state, spider_woman, &mut events);
+        assert_eq!(back, vec![spider_woman], "source phased back in");
+        assert!(
+            state.objects[&spider_woman].is_phased_in(),
+            "source is phased in again"
+        );
+        crate::game::layers::evaluate_layers(&mut state);
+
+        // Re-tap the foe and attempt an effect untap: the lock is DEAD (pruned on
+        // phase-out), so it must NOT revive on phase-in — the foe untaps.
+        state.objects.get_mut(&foe_creature).unwrap().tapped = true;
+        let mut events = Vec::new();
+        resolve_set_tap_state(&mut state, &make_untap_ability(foe_creature), &mut events).unwrap();
+        assert!(
+            !state.objects[&foe_creature].tapped,
+            "the lock must NOT revive when the source phases back in (CR 611.2b ends permanently)"
+        );
+    }
+
     /// TEST b — CR 611.2b + CR 400.7 source re-entry: the captured source leaving
     /// and re-entering as a new object (same storage ObjectId) ends the lock
     /// permanently; it must not revive on a same-ObjectId re-entry.
