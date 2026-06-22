@@ -5525,6 +5525,15 @@ pub struct GameState {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub post_replacement_event_target: Option<crate::types::ability::TargetRef>,
 
+    /// CR 701.50a + CR 614.5 + CR 616.1f: deferred connive link of a connive
+    /// replacement whose leading draw parked a replacement-ordering choice. See
+    /// `PendingConniveReentry`. Drained only by
+    /// `engine_replacement::handle_replacement_choice` (accept and decline) —
+    /// never by the shared zone-delivery tail. Transient; serde-skipped when None;
+    /// `.take()`-cleared at drain.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending_connive_reentry: Option<PendingConniveReentry>,
+
     /// Transient: post-resolution context for a permanent spell whose ETB replacement
     /// needs a player choice (NeedsChoice). Consumed by `handle_replacement_choice`
     /// after the zone change completes.
@@ -6804,6 +6813,28 @@ pub struct TransientContinuousEffect {
     pub source_name: String,
 }
 
+/// CR 701.50a + CR 614.5 + CR 616.1f: deferred "then that creature connives"
+/// link of a connive replacement whose LEADING `Draw` link parked an interactive
+/// `ReplacementChoice` (the controller's own draw is itself replaced). CR 701.50a's
+/// replacement reads "instead you draw a card, THEN that creature connives" — the
+/// "then" fixes the printed order, so the connive must run only AFTER the parked
+/// draw choice resolves. Held in a DEDICATED slot (NOT
+/// `post_replacement_continuation`) so the shared zone-delivery tail
+/// (`apply_zone_delivery_tail`, `DeliveryTail` owner) cannot drain it mid-draw —
+/// it is drained ONLY by the post-replacement-choice epilogue
+/// (`engine_replacement::handle_replacement_choice`), after the leading draw fully
+/// delivers, on both the accept and decline resume paths. On drain it re-enters
+/// the pipeline via `propose_connive` with the already-applied rids excluded
+/// (CR 614.5) so the CR 616.1f repeat covers the remaining connive replacements
+/// without self-invoking. (CR 614.11a — completing a replacement's actions before
+/// resuming a draw — is the analogous supporting principle.)
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PendingConniveReentry {
+    pub conniver: ObjectId,
+    pub count: u32,
+    pub applied: HashSet<ReplacementId>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PendingReplacement {
     pub proposed: ProposedEvent,
@@ -7133,6 +7164,7 @@ impl GameState {
             post_replacement_source: None,
             post_replacement_event_source: None,
             post_replacement_event_target: None,
+            pending_connive_reentry: None,
             pending_spell_resolution: None,
             pending_mutate_merge: None,
             deferred_entry_events: Vec::new(),
@@ -7591,6 +7623,7 @@ impl PartialEq for GameState {
             && self.max_lands_per_turn == other.max_lands_per_turn
             && self.priority_pass_count == other.priority_pass_count
             && self.pending_replacement == other.pending_replacement
+            && self.pending_connive_reentry == other.pending_connive_reentry
             && self.pending_spell_resolution == other.pending_spell_resolution
             && self.deferred_entry_events == other.deferred_entry_events
             && self.layers_dirty == other.layers_dirty

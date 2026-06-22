@@ -64,6 +64,34 @@ pub(crate) fn object_has_devour_replacement(state: &GameState, id: ObjectId) -> 
     })
 }
 
+/// CR 701.50a + CR 614.5 + CR 616.1f: drain a deferred connive whose leading
+/// Draw link parked a replacement-ordering choice. Runs only when the dedicated
+/// `pending_connive_reentry` slot is set (the connive applier's parked-draw
+/// path). `propose_connive` re-enters with the already-applied rids excluded
+/// (CR 614.5) so the CR 616.1f repeat covers the remaining connive replacements.
+/// Called from BOTH the Execute arm (the leading draw delivered) and the
+/// Prevented arm (the inner draw was prevented, but CR 701.50a's "draw a card,
+/// THEN that creature connives" still runs the connive step — the prevention
+/// replaced only the draw). Returns the parked `WaitingFor` (ConniveDiscard /
+/// fresh ReplacementChoice) if `propose_connive` parked one, else `None`.
+fn drain_pending_connive_reentry(
+    state: &mut GameState,
+    events: &mut Vec<GameEvent>,
+) -> Option<WaitingFor> {
+    let reentry = state.pending_connive_reentry.take()?;
+    let _ = crate::game::effects::connive::propose_connive(
+        state,
+        reentry.conniver,
+        reentry.count,
+        reentry.applied,
+        events,
+    );
+    match &state.waiting_for {
+        WaitingFor::Priority { .. } => None,
+        wf => Some(wf.clone()),
+    }
+}
+
 pub(super) fn handle_replacement_choice(
     state: &mut GameState,
     index: usize,
@@ -526,6 +554,21 @@ pub(super) fn handle_replacement_choice(
                 }
             }
 
+            // CR 701.50a + CR 614.5 + CR 616.1f: resume a deferred connive whose
+            // leading Draw link parked this just-resolved ReplacementChoice. The
+            // draw fully delivered above (Draw arm), so "draw a card, THEN that
+            // creature connives" (CR 701.50a) order is honored. `propose_connive`
+            // re-enters with the already-applied rids excluded (CR 614.5) so the
+            // CR 616.1f repeat covers the remaining connive replacements; it sets a
+            // parked ConniveDiscard / fresh ReplacementChoice on state.waiting_for,
+            // which we surface instead of the Priority reset. Drained from the
+            // DEDICATED slot so the leading draw's DeliveryTail could not consume it.
+            if matches!(waiting_for, WaitingFor::Priority { .. }) {
+                if let Some(wf) = drain_pending_connive_reentry(state, events) {
+                    waiting_for = wf;
+                }
+            }
+
             if matches!(waiting_for, WaitingFor::Priority { .. })
                 && state.pending_counter_moves.is_some()
             {
@@ -672,6 +715,29 @@ pub(super) fn handle_replacement_choice(
                     WaitingFor::Priority { .. } | WaitingFor::ReplacementChoice { .. }
                 )
             {
+                return Ok(state.waiting_for.clone());
+            }
+            // CR 701.50a + CR 614.5 + CR 616.1f: the leading Draw of a connive
+            // replacement was PREVENTED (a draw-Prevent replacement ordered
+            // first). The prevention replaced only the draw — CR 701.50a's
+            // "instead you draw a card, THEN that creature connives" still runs
+            // the connive step. Drain the deferred connive from the dedicated
+            // slot (the Execute arm above did not run because the draw was
+            // prevented). Reset the stale leading-draw `ReplacementChoice`
+            // waiting_for to Priority first (mirrors the Execute arm and every
+            // other Prevented-arm drain below) so the connive's own draw
+            // re-enters from a clean state instead of seeing the parked prompt.
+            // `propose_connive` may park a ConniveDiscard / fresh
+            // ReplacementChoice — surface it. If the slot is None (every
+            // non-connive Prevented resolution) skip entirely so control falls
+            // through to the existing pending-* blocks unchanged.
+            if state.pending_connive_reentry.is_some() {
+                state.waiting_for = WaitingFor::Priority {
+                    player: state.active_player,
+                };
+                if let Some(wf) = drain_pending_connive_reentry(state, events) {
+                    return Ok(wf);
+                }
                 return Ok(state.waiting_for.clone());
             }
             if state.pending_counter_additions.is_some() {

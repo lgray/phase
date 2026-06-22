@@ -1378,4 +1378,349 @@ mod tests {
             "opponent's plain connive should add a +1/+1 counter"
         );
     }
+
+    /// CR 701.50a + CR 614.5 + CR 616.1f (Leader, Super-Genius): when the
+    /// connive replacement's LEADING draw is ITSELF replaced and parks an
+    /// interactive `ReplacementChoice` (the controller's own draw is replaced),
+    /// the "then that creature connives" link must NOT run early. CR 701.50a's
+    /// replacement reads "you draw a card, THEN that creature connives" — the
+    /// "then" fixes the printed order, so the connive runs only AFTER the parked
+    /// draw choice resolves. The applier defers the connive into the DEDICATED
+    /// `state.pending_connive_reentry` slot and returns `Prevented`; the
+    /// post-replacement-choice epilogue
+    /// (`engine_replacement::handle_replacement_choice`) drains that slot once the
+    /// leading draw fully delivers (AFTER the Priority reset), so the resulting
+    /// `ConniveDiscard` survives. The dedicated slot is invisible to the shared
+    /// zone-delivery tail (`apply_zone_delivery_tail`, `DeliveryTail` owner) that
+    /// drains `post_replacement_continuation` mid-draw — that mid-draw drain is
+    /// exactly what clobbered the round-1 continuation-slot mechanism.
+    ///
+    /// Fixture (SINGLE intent for the leading draw): two ONE-SHOT,
+    /// NON-COMMUTING count-modifier draw replacements on P0 battlefield objects
+    /// (`Times { factor: 2 }` Multiplicative + `Plus { value: 1 }` Additive).
+    /// Two co-applicable, order-material candidates on the connive replacement's
+    /// `Draw 1` event force a CR 616.1 (`is_optional: false`) ordering
+    /// `ReplacementChoice` — the leading draw parks. Count modifiers carry NO
+    /// `execute`, so they never touch any continuation slot (a count-modifier
+    /// produces no `mandatory_post_effect`). `consume_on_apply` retires both after
+    /// the leading draw so they do not re-park the connive's OWN later draw.
+    ///
+    /// REVERT PROBE — three independent reverts each break a distinct assertion:
+    /// (1) Revert STEP C+E2 together (back to the `post_replacement_continuation`
+    /// stash + variant drain): the post-resume CRUX FAILS — the DeliveryTail drains
+    /// the continuation mid-draw, the connive's `ConniveDiscard` is then clobbered
+    /// to `Priority` by the epilogue reset, so `waiting_for` is NOT
+    /// `ConniveDiscard`. (2) Revert ONLY E2 (defer still writes the field, no
+    /// epilogue drain): post-resume `state.pending_connive_reentry` is stranded
+    /// `Some(..)` instead of `None`, and the connive never resumes
+    /// (`waiting_for == Priority`). (3) Revert ONLY C (no field stashed, applier
+    /// runs `Effect::Connive` synchronously): the pre-resume "0 counters" / "0
+    /// Connive events" assertions FAIL because the connive ran early. All three are
+    /// discriminating and non-vacuous.
+    #[test]
+    fn leader_connive_parked_draw_defers_then_resumes() {
+        use crate::game::engine::apply_as_current;
+        use crate::types::ability::QuantityModification;
+        use crate::types::ability::ReplacementDefinition;
+        use crate::types::actions::GameAction;
+        use crate::types::game_state::PendingConniveReentry;
+        use crate::types::replacements::ReplacementEvent;
+
+        let mut state = GameState::new_two_player(42);
+        let _leader = install_leader_replacement(&mut state, PlayerId(0));
+        let conniver = make_battlefield_creature(&mut state, PlayerId(0));
+
+        // Two one-shot, non-commuting count-modifier Draw replacements on P0
+        // battlefield objects. Two material candidates on the leading `Draw 1`
+        // force a CR 616.1 ordering ReplacementChoice (is_optional: false) so the
+        // leading draw PARKS. No execute => no continuation-slot competition.
+        let install_count_modifier = |state: &mut GameState, modification: QuantityModification| {
+            let host = make_battlefield_creature(state, PlayerId(0));
+            let mut repl = ReplacementDefinition::new(ReplacementEvent::Draw);
+            repl.quantity_modification = Some(modification);
+            // Retire after the leading draw so the connive's own later draw is
+            // not re-parked by these helpers.
+            repl.consume_on_apply = true;
+            state
+                .objects
+                .get_mut(&host)
+                .unwrap()
+                .replacement_definitions
+                .push(repl);
+        };
+        install_count_modifier(&mut state, QuantityModification::Times { factor: 2 });
+        install_count_modifier(&mut state, QuantityModification::Plus { value: 1 });
+
+        // Plenty of nonland library cards: the modified leading draw pulls several
+        // (1 -> 2 or 3 depending on chosen order), and the connive's own draw
+        // pulls one more.
+        for i in 0..6 {
+            add_card_to_library(&mut state, PlayerId(0), &format!("Card{i}"), false);
+        }
+
+        // Drive the real connive entry point (as the combat trigger would).
+        let ability = make_connive_ability(conniver, conniver);
+        let mut events = Vec::new();
+        resolve(&mut state, &ability, &mut events).unwrap();
+
+        // POST-FIX: the leading DRAW parked its replacement-ordering choice; the
+        // connive was DEFERRED into the dedicated slot, not run. (Pre-fix without
+        // STEP C: the connive ran early and clobbered this with ConniveDiscard, and
+        // the field was never stashed.)
+        assert!(
+            matches!(state.waiting_for, WaitingFor::ReplacementChoice { .. }),
+            "leading draw must park a ReplacementChoice (the draw's choice), got {:?}",
+            state.waiting_for
+        );
+        assert!(
+            matches!(
+                state.pending_connive_reentry,
+                Some(PendingConniveReentry { .. })
+            ),
+            "the deferred connive must be stashed in pending_connive_reentry, got {:?}",
+            state.pending_connive_reentry
+        );
+        // The connive has NOT run yet: no +1/+1 counter, no Connive completion.
+        assert_eq!(
+            state.objects[&conniver]
+                .counters
+                .get(&CounterType::Plus1Plus1)
+                .copied()
+                .unwrap_or(0),
+            0,
+            "the connive must not have added a counter before the draw choice resolves"
+        );
+        assert_eq!(
+            events
+                .iter()
+                .filter(|e| matches!(
+                    e,
+                    GameEvent::EffectResolved {
+                        kind: EffectKind::Connive,
+                        ..
+                    }
+                ))
+                .count(),
+            0,
+            "the connive must not complete before the draw choice resolves"
+        );
+
+        // Resolve the draw's ordering choice through the REAL action pipeline.
+        // The whole resume (apply both count-modifiers, complete the modified
+        // leading draw, then drain the deferred pending_connive_reentry) runs
+        // within this one resume; fold its returned events in.
+        let resume = apply_as_current(&mut state, GameAction::ChooseReplacement { index: 0 })
+            .expect("draw replacement ordering choice");
+        events.extend(resume.events.iter().cloned());
+
+        // POST-FIX CRUX: the deferred connive resumed in printed order. The
+        // dedicated slot is drained to None, and the surviving plain connive now
+        // pauses on its own ConniveDiscard (the modified leading draw plus the
+        // connive's own draw leave 2+ cards in hand). This ConniveDiscard surviving
+        // the epilogue's Priority reset is exactly what the dedicated-slot drain
+        // (run AFTER the reset) buys over the round-1 mid-draw DeliveryTail drain.
+        assert!(
+            state.pending_connive_reentry.is_none(),
+            "pending_connive_reentry must be drained to None after the draw choice resolves, got {:?}",
+            state.pending_connive_reentry
+        );
+        match state.waiting_for.clone() {
+            WaitingFor::ConniveDiscard {
+                player,
+                conniver_id,
+                count,
+                ..
+            } => {
+                assert_eq!(player, PlayerId(0));
+                assert_eq!(conniver_id, conniver);
+                assert_eq!(count, 1, "the resumed plain connive discards exactly 1");
+            }
+            other => {
+                panic!("expected ConniveDiscard after the resumed connive draws, got {other:?}")
+            }
+        }
+
+        // Drive the discard through the REAL resolution-action pipeline: discard a
+        // nonland card so the conniver gets its +1/+1.
+        let waiting = state.waiting_for.clone();
+        let WaitingFor::ConniveDiscard { cards, .. } = &waiting else {
+            unreachable!("matched ConniveDiscard above");
+        };
+        let to_discard = *cards.first().expect("hand has a card to discard");
+        crate::game::engine_resolution_choices::handle_resolution_choice(
+            &mut state,
+            waiting,
+            GameAction::SelectCards {
+                cards: vec![to_discard],
+            },
+            &mut events,
+        )
+        .unwrap();
+
+        // CR 701.50a: a nonland was discarded -> EXACTLY ONE +1/+1 counter.
+        assert_eq!(
+            state.objects[&conniver]
+                .counters
+                .get(&CounterType::Plus1Plus1)
+                .copied()
+                .unwrap_or(0),
+            1,
+            "the resumed connive must add exactly one +1/+1 counter"
+        );
+        // CR 614.5: the connive completes EXACTLY once.
+        assert_eq!(
+            events
+                .iter()
+                .filter(|e| matches!(
+                    e,
+                    GameEvent::EffectResolved {
+                        kind: EffectKind::Connive,
+                        ..
+                    }
+                ))
+                .count(),
+            1,
+            "the connive must complete exactly once after the deferred resume"
+        );
+    }
+
+    /// CR 701.50a + CR 614.5 + CR 616.1f: the Leader connive replacement's
+    /// leading draw is itself replaced by a draw-PREVENT replacement (Living
+    /// Conundrum "skip that draw" shape). CR 701.50a's "instead you draw a card,
+    /// THEN that creature connives" makes the connive step INDEPENDENT of whether
+    /// the inner draw happened — the prevention replaced only the DRAW, not the
+    /// connive — so the deferred connive must STILL run when the leading draw
+    /// resolves to `ReplacementResult::Prevented`.
+    ///
+    /// Fixture intent: install the Leader replacement plus TWO co-applicable
+    /// Draw-PREVENT replacements on P0 (Living Conundrum "skip that draw" shape).
+    /// Two applicable mandatory replacements on the leading `Draw 1` force a
+    /// CR 616.1 ordering `ReplacementChoice` so the leading draw PARKS (a lone
+    /// Prevent would auto-apply without a choice) and the connive DEFERS into
+    /// `pending_connive_reentry`. Choosing one Prevent fully prevents the leading
+    /// draw -> `continue_replacement` returns `ReplacementResult::Prevented` ->
+    /// the Prevented arm of `handle_replacement_choice`. The chosen Prevent is
+    /// consumed (`consume_on_apply`); the OTHER Prevent survives. The drain added
+    /// there (Step 3) runs the deferred connive: its OWN draw (a fresh Draw 1
+    /// event) is the lone surviving Prevent's only candidate, so it auto-applies
+    /// and the connive's draw is prevented too. Per `resolve_connive_effect`'s
+    /// Prevented arm (CR 701.50b/c) the connive still emits its `EffectResolved`
+    /// and completes. A second Prevent (rather than a count-modifier survivor)
+    /// keeps the connive's own draw deterministic — no leftover count-modifier
+    /// can non-deterministically scale the connive's draw or re-park it.
+    ///
+    /// Discriminating observables (the flip): post-fix, the deferred slot is
+    /// drained to None, exactly one `EffectResolved { Connive }` is emitted (the
+    /// connive ran), and control returns to Priority. Pre-fix (Step 3 reverted),
+    /// the Prevented arm never drains the slot: it stays STRANDED `Some(..)`, NO
+    /// `EffectResolved { Connive }` is emitted, and waiting_for falls through to
+    /// Priority. So the `pending_connive_reentry.is_none()` AND the
+    /// `EffectResolved { Connive }` count == 1 assertions BOTH flip on revert.
+    /// (Verified non-vacuous by neutering Step 3 and watching this test fail.)
+    #[test]
+    fn leader_connive_prevented_draw_still_connives() {
+        use crate::game::engine::apply_as_current;
+        use crate::types::ability::QuantityModification;
+        use crate::types::ability::ReplacementDefinition;
+        use crate::types::actions::GameAction;
+        use crate::types::game_state::PendingConniveReentry;
+        use crate::types::replacements::ReplacementEvent;
+
+        let mut state = GameState::new_two_player(42);
+        let _leader = install_leader_replacement(&mut state, PlayerId(0));
+        let conniver = make_battlefield_creature(&mut state, PlayerId(0));
+
+        // Two co-applicable Draw-PREVENT replacements on P0 battlefield objects.
+        // Both are mandatory and applicable to the leading `Draw 1`, forcing a
+        // CR 616.1 ordering `ReplacementChoice` so the leading draw PARKS (a lone
+        // Prevent would auto-apply without a choice). Each carries
+        // `consume_on_apply`: the chosen one is retired after preventing the
+        // leading draw, leaving the other as the sole applicable replacement for
+        // the connive's own later draw (so that draw auto-applies — no second
+        // ordering choice — and is cleanly prevented, keeping the test
+        // deterministic).
+        let install_draw_prevent = |state: &mut GameState| -> ObjectId {
+            let host = make_battlefield_creature(state, PlayerId(0));
+            let mut repl = ReplacementDefinition::new(ReplacementEvent::Draw);
+            repl.quantity_modification = Some(QuantityModification::Prevent);
+            repl.consume_on_apply = true;
+            state
+                .objects
+                .get_mut(&host)
+                .unwrap()
+                .replacement_definitions
+                .push(repl);
+            host
+        };
+        install_draw_prevent(&mut state);
+        install_draw_prevent(&mut state);
+
+        // Library cards present so a draw COULD happen — proving the prevention,
+        // not an empty library, is what stops the draws.
+        for i in 0..6 {
+            add_card_to_library(&mut state, PlayerId(0), &format!("Card{i}"), false);
+        }
+
+        // Drive the real connive entry point (as the combat trigger would).
+        let ability = make_connive_ability(conniver, conniver);
+        let mut events = Vec::new();
+        resolve(&mut state, &ability, &mut events).unwrap();
+
+        // PRECONDITION: the leading draw parked its ordering choice and the connive
+        // deferred into the dedicated slot (same park as the Execute-path test).
+        assert!(
+            matches!(state.waiting_for, WaitingFor::ReplacementChoice { .. }),
+            "leading draw must park a ReplacementChoice, got {:?}",
+            state.waiting_for
+        );
+        assert!(
+            matches!(
+                state.pending_connive_reentry,
+                Some(PendingConniveReentry { .. })
+            ),
+            "the deferred connive must be stashed before the draw choice resolves, got {:?}",
+            state.pending_connive_reentry
+        );
+
+        // Resolve the leading draw's ordering choice (either index is a Prevent).
+        // Choosing it fully prevents the leading draw -> ReplacementResult::Prevented
+        // -> the Prevented arm of handle_replacement_choice.
+        let resume = apply_as_current(&mut state, GameAction::ChooseReplacement { index: 0 })
+            .expect("draw replacement ordering choice (Prevent)");
+        events.extend(resume.events.iter().cloned());
+
+        // CRUX (the flip): the leading draw was PREVENTED, but the deferred connive
+        // STILL RAN. The dedicated slot is drained to None (NOT stranded) and the
+        // connive completed (its own draw was prevented by the surviving Prevent,
+        // so per CR 701.50b/c it emits EffectResolved and finishes). Both
+        // assertions are FALSE pre-fix (Step 3 reverted: the slot stays Some and no
+        // EffectResolved { Connive } is emitted).
+        assert!(
+            state.pending_connive_reentry.is_none(),
+            "pending_connive_reentry must be drained to None after the prevented draw, got {:?}",
+            state.pending_connive_reentry
+        );
+        assert!(
+            matches!(state.waiting_for, WaitingFor::Priority { .. }),
+            "the connive completed (its own draw prevented), returning to Priority, got {:?}",
+            state.waiting_for
+        );
+        // CR 614.5 + CR 701.50b/c: the connive completes EXACTLY once even though
+        // both its leading (Leader-replacement) draw and its own draw were
+        // prevented — the connive step itself is independent of the draws.
+        assert_eq!(
+            events
+                .iter()
+                .filter(|e| matches!(
+                    e,
+                    GameEvent::EffectResolved {
+                        kind: EffectKind::Connive,
+                        ..
+                    }
+                ))
+                .count(),
+            1,
+            "the connive must complete exactly once even though the leading draw was prevented"
+        );
+    }
 }
