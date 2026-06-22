@@ -1847,6 +1847,17 @@ pub enum CastingPermission {
         /// graveyard, exile it instead." Applied when the granted cast finalizes.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         exile_instead_of_graveyard_on_resolve: bool,
+        /// CR 614.1c + CR 122.1: Osteomancer Adept / The Tomb of Aclazotz class —
+        /// a `CastFromZone` grant whose sub-ability is "the creature cast this way
+        /// enters with a [counter] counter on it." When `Some(ct)`, the granted
+        /// cast finalization registers a pending ETB counter of type `ct` on the
+        /// cast object so it enters the battlefield carrying that counter
+        /// (CR 122.1h: a finality counter is the keyword counter that exiles the
+        /// permanent instead of letting it die). `None` for every other
+        /// `CastFromZone` grant. Typed `Option<CounterType>` rather than a bool so
+        /// the rider covers any counter the cast-this-way creature enters with.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        enters_with_counter: Option<CounterType>,
     },
     /// CR 400.7i: Play from exile until duration expires (impulse draw).
     /// Building block for "exile top N, choose one, you may play it this turn" patterns.
@@ -7407,6 +7418,22 @@ impl FaceDownProfile {
 // carry a `QuantityExpr`; the right remedy is to box `PtValue::Quantity` (used
 // in 70+ sites), not to box individual `Effect` variants. Allow the spread here
 // until that boxing lands.
+/// Digital-only Alchemy: a modification applied by `Effect::ApplyPerpetual` that
+/// permanently edits a card and follows it across all zones (CR has no entry —
+/// matches the engine's existing `Intensify`/`Conjure` digital-only treatment).
+///
+/// Increment 1 covers base power/toughness setting; the enum is extensible to the
+/// other perpetual forms (`ModifyPowerToughness` for "perpetually gets +N/+N",
+/// `GrantAbility` for "perpetually gains ...", `Become` for type changes).
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize, Debug)]
+#[serde(tag = "kind")]
+pub enum PerpetualModification {
+    /// "[object] perpetually become(s)/has base power and toughness P/T" — sets
+    /// the card's persistent base power and toughness (High Fae Prankster,
+    /// Three Tree Battalion, Blood Age Muster).
+    SetBasePowerToughness { power: i32, toughness: i32 },
+}
+
 #[allow(clippy::large_enum_variant)]
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize, strum::IntoStaticStr)]
 #[serde(tag = "type")]
@@ -9936,6 +9963,19 @@ pub enum Effect {
         #[serde(default)]
         tapped: bool,
     },
+    /// Digital-only Alchemy keyword action (no CR entry): "perpetually" applies a
+    /// modification to the matched cards that persists for the rest of the game
+    /// and follows each card across all zones — a permanent edit to the card,
+    /// unlike until-end-of-turn or while-on-battlefield continuous effects. Like
+    /// `Intensify`, the change is recorded on the object (`perpetual_mods`) so it
+    /// survives zone changes and serialization. `target` selects the affected
+    /// cards (self, a referenced object such as a conjured duplicate, or a
+    /// filter such as "creatures you control").
+    ApplyPerpetual {
+        #[serde(default = "default_target_filter_any")]
+        target: TargetFilter,
+        modification: PerpetualModification,
+    },
     /// Digital-only Alchemy keyword action (no CR entry): increase the intensity
     /// of one or more cards by `amount`. `scope` selects which cards — the source
     /// itself, every card the controller owns with the source's name, or every
@@ -11078,6 +11118,7 @@ impl Effect {
             | Effect::RuntimeHandled { .. }
             | Effect::Conjure { .. }
             | Effect::Intensify { .. }
+            | Effect::ApplyPerpetual { .. }
             | Effect::DraftFromSpellbook { .. }
             | Effect::ChooseOneOf { .. }
             | Effect::Unimplemented { .. }
@@ -11189,7 +11230,8 @@ impl Effect {
             | Effect::RevealHand { count, .. } => count.as_ref(),
 
             // --- Effects with no QuantityExpr count/amount ---
-            Effect::StartYourEngines { .. }
+            Effect::ApplyPerpetual { .. }
+            | Effect::StartYourEngines { .. }
             | Effect::ApplyPostReplacementDamage { .. }
             | Effect::Pump { .. }
             | Effect::PairWith { .. }
@@ -11403,7 +11445,8 @@ impl Effect {
             | Effect::RevealHand { count, .. } => count.as_mut(),
 
             // --- Effects with no QuantityExpr count/amount ---
-            Effect::StartYourEngines { .. }
+            Effect::ApplyPerpetual { .. }
+            | Effect::StartYourEngines { .. }
             | Effect::ApplyPostReplacementDamage { .. }
             | Effect::Pump { .. }
             | Effect::PairWith { .. }
@@ -11759,6 +11802,7 @@ pub fn effect_variant_name(effect: &Effect) -> &str {
         Effect::RemoveFromCombat { .. } => "RemoveFromCombat",
         Effect::Conjure { .. } => "Conjure",
         Effect::Intensify { .. } => "Intensify",
+        Effect::ApplyPerpetual { .. } => "ApplyPerpetual",
         Effect::DraftFromSpellbook { .. } => "DraftFromSpellbook",
         Effect::ChooseOneOf { .. } => "ChooseOneOf",
         Effect::Unimplemented { name, .. } => name,
@@ -11969,6 +12013,7 @@ pub enum EffectKind {
     RemoveFromCombat,
     Conjure,
     Intensify,
+    ApplyPerpetual,
     DraftFromSpellbook,
     ChooseOneOf,
     Unimplemented,
@@ -12196,6 +12241,7 @@ impl From<&Effect> for EffectKind {
             Effect::RemoveFromCombat { .. } => EffectKind::RemoveFromCombat,
             Effect::Conjure { .. } => EffectKind::Conjure,
             Effect::Intensify { .. } => EffectKind::Intensify,
+            Effect::ApplyPerpetual { .. } => EffectKind::ApplyPerpetual,
             Effect::DraftFromSpellbook { .. } => EffectKind::DraftFromSpellbook,
             Effect::ChooseOneOf { .. } => EffectKind::ChooseOneOf,
             Effect::Unimplemented { .. } => EffectKind::Unimplemented,

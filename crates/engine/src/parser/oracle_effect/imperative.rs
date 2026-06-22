@@ -23,7 +23,8 @@ use crate::parser::oracle_nom::bridge::{nom_on_lower, nom_parse_lower, split_onc
 use crate::parser::oracle_nom::primitives as nom_primitives;
 use crate::parser::oracle_nom::quantity as nom_quantity;
 use crate::parser::oracle_static::{
-    parse_continuous_modifications, parse_quoted_ability_modifications,
+    parse_continuous_modifications, parse_may_look_at_face_down_filter,
+    parse_quoted_ability_modifications,
 };
 use crate::types::ability::{
     AbilityCost, AbilityDefinition, AbilityKind, BounceSelection, CardSelectionMode,
@@ -1900,6 +1901,7 @@ pub(super) fn lower_targeted_action_ast(ast: TargetedImperativeAst) -> Effect {
                 resolution_cleanup: None,
                 duration: None,
                 exile_instead_of_graveyard_on_resolve: false,
+                enters_with_counter: None,
             },
             target,
             grantee: crate::types::ability::PermissionGrantee::ObjectOwner,
@@ -6842,6 +6844,32 @@ pub(super) fn parse_imperative_family_ast(
     if let Some(effect) = crate::parser::oracle_replacement::parse_oneshot_damage_replacement(lower)
     {
         return Some(ImperativeFamilyAst::GainKeyword(effect));
+    }
+
+    // CR 708.5: "[Until end of turn,] you may look at face-down [permanents] you
+    // don't control any time" (Lumbering Laundry's `{2}:` activated ability).
+    // This is the duration-bound form of Found Footage's continuous look
+    // permission: the same `StaticMode::MayLookAtFaceDown` carried by a resolving
+    // ability as a transient continuous effect. The "you may" here is part of the
+    // permission grammar ("you ARE allowed to look"), not an optional one-shot, so
+    // intercept the whole phrase BEFORE the `you`/`may` first-word arms strip
+    // "you may " and re-dispatch it as a generic optional clause (which would
+    // otherwise fail to a `look` Unimplemented). The face-down filter is parsed by
+    // the shared `parse_may_look_at_face_down_filter` (the single authority for
+    // the phrase grammar, also used by the static-line builder), and the duration
+    // rides on the resolving ability via the stripped "Until end of turn," prefix;
+    // the `GenericEffect` resolution path defaults to `UntilEndOfTurn` when no
+    // duration is supplied.
+    if let Some(filter) = parse_may_look_at_face_down_filter(text, lower) {
+        return Some(ImperativeFamilyAst::GainKeyword(Effect::GenericEffect {
+            static_abilities: vec![StaticDefinition::new(StaticMode::MayLookAtFaceDown)
+                .affected(filter)
+                .modifications(vec![ContinuousModification::AddStaticMode {
+                    mode: StaticMode::MayLookAtFaceDown,
+                }])],
+            duration: None,
+            target: None,
+        }));
     }
 
     // NOTE: when adding verbs here, also add them to IMPERATIVE_EXTRA_VERBS

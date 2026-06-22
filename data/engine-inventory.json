@@ -31293,10 +31293,12 @@
         },
         {
           "name": "SpendManaAsAnyColor",
-          "line": 1430,
-          "kind": "unit",
-          "field_names": [],
-          "doc": "CR 609.4b: \"You may spend mana as though it were mana of any color.\" Allows the controller to pay colored mana costs with mana of any color.",
+          "line": 1442,
+          "kind": "struct",
+          "field_names": [
+            "spell_filter"
+          ],
+          "doc": "CR 609.4b: \"You may spend mana as though it were mana of any color\" / \"You may spend mana of any type to cast [filtered] spells.\" Allows the controller to pay colored mana costs with mana of any type or color.  `spell_filter` is the leaf parameterization of the spell-class axis (same CR 609.4b section, so a field, not a sibling variant): - `None` — board-wide (Chromatic Orrery / Joiner Adept): the concession   applies to every cost the controller pays (spell casts, effect   payments, activations). - `Some(filter)` — scoped to spells the controller casts that match the   filter (Vizier of the Menagerie: \"creature spells\"). The concession is   re-derived against the spell object at spend time and never applies to   non-spell payments. Consulted by   `casting::player_can_spend_as_any_color_for_optional_spell`.",
           "cr_refs": [
             "CR 609.4b"
           ]

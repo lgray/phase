@@ -4481,6 +4481,7 @@ pub(super) fn clause_is_dig_lookback_transparent(effect: &Effect) -> bool {
         | Effect::RemoveFromCombat { .. }
         | Effect::Conjure { .. }
         | Effect::Intensify { .. }
+        | Effect::ApplyPerpetual { .. }
         | Effect::DraftFromSpellbook { .. }
         | Effect::ChooseOneOf { .. }
         // CR 614.12 + CR 303.4: Return-as-Aura is its own emitted sub-effect
