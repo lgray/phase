@@ -5544,15 +5544,15 @@ pub(super) fn finalize_cast_with_phyrexian_choices(
     // ETB counter so the object enters the battlefield carrying it (CR 122.1h: a
     // finality counter exiles the permanent instead of letting it die).
     // Osteomancer Adept, The Tomb of Aclazotz.
-    let cast_this_way_etb_counter = state.objects.get(&object_id).and_then(|obj| {
-        obj.casting_permissions.iter().find_map(|p| match p {
-            crate::types::ability::CastingPermission::ExileWithAltCost {
-                enters_with_counter: Some(ct),
-                ..
-            } => Some(ct.clone()),
-            _ => None,
-        })
-    });
+    //
+    // CR 608.2c: the binding uses the selected-permission authority — the rider is
+    // read from the permission that actually supports THIS cast, not any permission
+    // that happens to carry a counter, so a non-consumed sibling permission's rider
+    // cannot leak onto this cast.
+    let cast_this_way_etb_counter =
+        super::casting::selected_exile_alt_cost_permission_enters_with_counter(
+            state, object_id, player,
+        );
     if let Some(counter_type) = cast_this_way_etb_counter {
         state
             .pending_etb_counters

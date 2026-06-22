@@ -1768,11 +1768,17 @@ fn try_parse_enters_with_additional_counters(lower: &str) -> Option<AbilityDefin
 /// *future* graveyard cast.
 ///
 /// The subject is anaphoric ("that creature" or "it" — the spell just authorized
-/// to be cast), and the count is always one ("a [counter] counter"). Any trailing
-/// "and is a [subtype] in addition to its other types" clause (Tomb) is *not*
-/// consumed here — the type-addition rider on a cast-this-way creature is a
-/// separate continuous effect that is honestly deferred (the counter still
-/// applies; the missing type grant leaves coverage red rather than band-aided).
+/// to be cast), and the count is always one ("a [counter] counter").
+///
+/// CR 205.1b deferral: a trailing "and is a [subtype] in addition to its other
+/// types" clause (The Tomb of Aclazotz's "is a Vampire in addition to its other
+/// types") is an unmodeled continuous type grant. This function does NOT model
+/// it, so the *combined* sentence is rejected here (returns `None`) and falls
+/// through to `Effect::Unimplemented` — Tomb is left honestly unsupported rather
+/// than partially accepted as a bare counter that silently drops the type grant.
+/// Only the bare counter rider (no trailing clause) is accepted. Osteomancer
+/// Adept ("that creature enters with a finality counter on it", no tail) still
+/// parses to the counter effect.
 fn try_parse_cast_this_way_enters_with_counter(lower: &str) -> Option<Effect> {
     // CR 608.2c: optional "if you cast a spell this way," / "if you do," gate.
     // The rider only fires for a spell cast via the granted permission; the
@@ -1804,26 +1810,21 @@ fn try_parse_cast_this_way_enters_with_counter(lower: &str) -> Option<Effect> {
     let (rest, _) = tag::<_, _, OracleError<'_>>(" counter on it")
         .parse(rest)
         .ok()?;
-    // CR 205.1b: a trailing "and is a [subtype] in addition to its other types"
-    // (Tomb of Aclazotz Vampire grant) is an unmodeled continuous effect on the
-    // cast-this-way creature — accept the counter rider whether or not that
-    // clause follows, but do not claim the type grant. A bare end-of-clause or a
-    // recognized type-addition tail both qualify; anything else is a different
-    // sentence the counter rider must not silently swallow.
-    let tail_ok = rest.is_empty()
-        || alt((
-            tag::<_, _, OracleError<'_>>(" and is a "),
-            tag(" and it's a "),
-        ))
-        .parse(rest)
-        .is_ok();
-    if tail_ok {
-        return Some(Effect::AddPendingETBCounters {
-            counter_type,
-            count: QuantityExpr::Fixed { value: 1 },
-        });
+    // CR 205.1b deferral: accept the counter rider ONLY when nothing meaningful
+    // follows. A trailing "and is a [subtype] in addition to its other types"
+    // (The Tomb of Aclazotz's Vampire grant) is an unmodeled continuous type
+    // grant; accepting the sentence here would silently drop it. So a non-empty
+    // remainder (after trimming a trailing '.' and whitespace) makes this a
+    // different, not-yet-modeled sentence — return `None` and let it fall
+    // through to `Effect::Unimplemented` instead of partially accepting a bare
+    // counter.
+    if !rest.trim_end_matches('.').trim().is_empty() {
+        return None;
     }
-    None
+    Some(Effect::AddPendingETBCounters {
+        counter_type,
+        count: QuantityExpr::Fixed { value: 1 },
+    })
 }
 
 /// CR 603.7c: Parse inline delayed triggers like "when that creature dies, draw a card".
@@ -52720,12 +52721,18 @@ mod tests {
         }
     }
 
-    /// CR 614.1c + CR 122.1 — Osteomancer Adept / The Tomb of Aclazotz: the
+    /// CR 614.1c + CR 122.1 — Osteomancer Adept / The Tomb of Aclazotz: the bare
     /// "the creature cast this way enters with a finality counter on it" rider
     /// must parse to `AddPendingETBCounters` (consumed by `CastFromZone` as
     /// permission metadata), across both anaphoric subjects ("that creature",
-    /// "it"), both optional gate prefixes ("if you cast a spell this way,",
-    /// "if you do,"), and whether or not a trailing type-addition clause follows.
+    /// "it") and both optional gate prefixes ("if you cast a spell this way,",
+    /// "if you do,").
+    ///
+    /// CR 205.1b deferral: when a trailing "and is a [subtype] in addition to its
+    /// other types" clause follows (The Tomb of Aclazotz's Vampire grant), the
+    /// *combined* sentence must NOT parse to a bare counter — the unmodeled type
+    /// grant would be silently dropped. It returns `None` so the whole sentence
+    /// falls through to `Effect::Unimplemented` (Tomb stays honestly unsupported).
     #[test]
     fn cast_this_way_enters_with_finality_counter_rider_parses() {
         let finality = || Effect::AddPendingETBCounters {
@@ -52737,16 +52744,22 @@ mod tests {
             "it enters with a finality counter on it",
             "if you cast a spell this way, that creature enters with a finality counter on it",
             "if you do, it enters with a finality counter on it",
-            // Tomb of Aclazotz: trailing Vampire type-addition clause is deferred
-            // but the counter rider must still be recognized.
-            "it enters with a finality counter on it and is a Vampire in addition to its other types",
         ] {
             assert_eq!(
                 try_parse_cast_this_way_enters_with_counter(text),
                 Some(finality()),
-                "rider should parse for {text:?}"
+                "bare rider should parse for {text:?}"
             );
         }
+        // CR 205.1b deferral: the combined Tomb sentence (counter + type grant)
+        // must NOT be partially accepted as a bare counter — it returns `None`.
+        assert_eq!(
+            try_parse_cast_this_way_enters_with_counter(
+                "it enters with a finality counter on it and is a Vampire in addition to its other types"
+            ),
+            None,
+            "combined counter+type-grant sentence must not parse to a bare counter"
+        );
     }
 
     /// The rider generalizes beyond finality (typed `Option<CounterType>`): a
@@ -52799,6 +52812,84 @@ mod tests {
             ),
             "rider should be AddPendingETBCounters(finality), got {:?}",
             rider.effect
+        );
+    }
+
+    /// CR 205.1b deferral — The Tomb of Aclazotz: the combined residual sentence
+    /// "...it enters with a finality counter on it and is a Vampire in addition to
+    /// its other types" carries an unmodeled continuous type grant. The parser
+    /// must NOT partially accept it as a bare `AddPendingETBCounters`; the whole
+    /// sentence must surface as `Effect::Unimplemented` so the cast-this-way
+    /// permission carries NO `enters_with_counter` rider (Tomb honestly
+    /// unsupported). A negative twin proves the bare-counter clause (no type tail)
+    /// still parses to the rider — discriminating the type-tail rejection from a
+    /// blanket "never parse a counter rider" regression.
+    #[test]
+    fn tomb_aclazotz_counter_plus_type_tail_is_unimplemented() {
+        // Collect every effect reachable from a parsed ability (top-level + the
+        // sub_ability chain) so the assertion does not depend on whether the
+        // residual sentence attaches as a sub-ability or a sibling ability.
+        fn collect_effects<'a>(ability: &'a AbilityDefinition, out: &mut Vec<&'a Effect>) {
+            // `effect` is `Box<Effect>`; `as_ref()` yields `&Effect`.
+            out.push(ability.effect.as_ref());
+            let mut cursor = ability.sub_ability.as_deref();
+            while let Some(sub) = cursor {
+                out.push(sub.effect.as_ref());
+                cursor = sub.sub_ability.as_deref();
+            }
+        }
+
+        // The Tomb residual clause carried on a graveyard cast-this-way grant of
+        // the exact shape Osteomancer uses, but with the deferred Vampire type tail.
+        let tomb = parse_oracle_text(
+            "{T}: Until end of turn, you may cast creature spells from your graveyard by foraging in addition to paying their other costs. If you cast a spell this way, it enters with a finality counter on it and is a Vampire in addition to its other types.",
+            "The Tomb of Aclazotz",
+            &[],
+            &["Land".to_string()],
+            &[],
+        );
+        let mut tomb_effects = Vec::new();
+        for ability in &tomb.abilities {
+            collect_effects(ability, &mut tomb_effects);
+        }
+        assert!(
+            !tomb_effects
+                .iter()
+                .any(|e| matches!(e, Effect::AddPendingETBCounters { .. })),
+            "the combined counter+type-grant sentence must NOT yield a bare \
+             AddPendingETBCounters rider; got {tomb_effects:?}"
+        );
+        assert!(
+            tomb_effects
+                .iter()
+                .any(|e| matches!(e, Effect::Unimplemented { .. })),
+            "the unmodeled Tomb sentence must surface as Effect::Unimplemented; \
+             got {tomb_effects:?}"
+        );
+
+        // Negative twin: the SAME card without the type tail still parses the bare
+        // counter rider — proving the rejection is specific to the type-grant tail.
+        let no_tail = parse_oracle_text(
+            "{T}: Until end of turn, you may cast creature spells from your graveyard by foraging in addition to paying their other costs. If you cast a spell this way, it enters with a finality counter on it.",
+            "The Tomb of Aclazotz",
+            &[],
+            &["Land".to_string()],
+            &[],
+        );
+        let mut no_tail_effects = Vec::new();
+        for ability in &no_tail.abilities {
+            collect_effects(ability, &mut no_tail_effects);
+        }
+        assert!(
+            no_tail_effects.iter().any(|e| matches!(
+                e,
+                Effect::AddPendingETBCounters {
+                    counter_type: CounterType::Generic(s),
+                    ..
+                } if s == "finality"
+            )),
+            "the bare-counter clause (no type tail) must still parse to the \
+             AddPendingETBCounters(finality) rider; got {no_tail_effects:?}"
         );
     }
 

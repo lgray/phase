@@ -1644,6 +1644,30 @@ pub(super) fn selected_exile_alt_cost_permission_casts_transformed(
         })
 }
 
+// CR 614.1c + CR 122.1: read the enters-with rider from the *consumed* cast-this-way
+// permission only (the one supporting THIS cast), not any permission carrying a counter,
+// so a non-consumed sibling permission's rider cannot leak onto this cast (CR 608.2c:
+// apply the instructions belonging to this cast).
+pub(super) fn selected_exile_alt_cost_permission_enters_with_counter(
+    state: &GameState,
+    object_id: ObjectId,
+    player: PlayerId,
+) -> Option<crate::types::counter::CounterType> {
+    let obj = state.objects.get(&object_id)?;
+    obj.casting_permissions
+        .iter()
+        .find(|permission| {
+            exile_alt_cost_permission_supports_cast(state, obj, player, permission, None)
+        })
+        .and_then(|permission| match permission {
+            crate::types::ability::CastingPermission::ExileWithAltCost {
+                enters_with_counter,
+                ..
+            } => enters_with_counter.clone(),
+            _ => None,
+        })
+}
+
 pub(super) fn exile_alt_cost_permissions_accept_resulting_mv(
     state: &GameState,
     object_id: ObjectId,
@@ -26550,6 +26574,112 @@ mod tests {
                 .get(&CounterType::Generic("finality".to_string())),
             None,
             "a graveyard cast without the rider must not gain a finality counter"
+        );
+    }
+
+    /// CR 608.2c — the enters-with-counter rider must bind to the *consumed*
+    /// cast-this-way permission, not "any permission carrying a counter". A
+    /// graveyard creature with TWO `ExileWithAltCost` permissions:
+    ///   - P1 (consumed): `granted_to: Some(caster)`, `enters_with_counter: None`
+    ///   - P2 (NOT consumed): `granted_to: Some(other player)` so
+    ///     `exile_alt_cost_permission_grants_to_player` is false and it never
+    ///     supports the caster's cast, with `enters_with_counter: Some(finality)`.
+    ///
+    /// The cast goes through P1 (P2 is foreign), so the entered creature must NOT
+    /// gain P2's finality counter. The old `any()`-scan over all permissions would
+    /// leak P2's rider; `selected_exile_alt_cost_permission_enters_with_counter`
+    /// reads only the consumed permission. The positive twin swaps the rider onto
+    /// the consumed P1 and asserts exactly one finality counter — proving the
+    /// helper selects the consumed permission rather than always returning `None`.
+    #[test]
+    fn enters_with_counter_does_not_leak_from_non_consumed_permission() {
+        // Run the two-permission cast and return the finality-counter count the
+        // entered creature ends with. `rider_on_consumed` is the rider attached to
+        // the consumed P1 (None in the leak case, Some(finality) in the positive twin).
+        fn run_two_permission_cast(rider_on_consumed: Option<CounterType>) -> Option<u32> {
+            let mut state = setup_game_at_main_phase();
+            let creature = create_object(
+                &mut state,
+                CardId(8202),
+                PlayerId(0),
+                "Two Permission Creature".to_string(),
+                Zone::Graveyard,
+            );
+            {
+                let obj = state.objects.get_mut(&creature).unwrap();
+                obj.card_types.core_types.push(CoreType::Creature);
+                obj.base_power = Some(2);
+                obj.base_toughness = Some(2);
+                obj.power = Some(2);
+                obj.toughness = Some(2);
+                obj.mana_cost = ManaCost::zero();
+                // P1: the permission the caster (PlayerId(0)) actually consumes.
+                obj.casting_permissions
+                    .push(CastingPermission::ExileWithAltCost {
+                        cost: ManaCost::zero(),
+                        cast_transformed: false,
+                        constraint: None,
+                        granted_to: Some(PlayerId(0)),
+                        resolution_cleanup: None,
+                        duration: Some(Duration::UntilEndOfTurn),
+                        exile_instead_of_graveyard_on_resolve: false,
+                        enters_with_counter: rider_on_consumed.clone(),
+                    });
+                // P2: foreign-granted (to the opponent) so it never supports
+                // PlayerId(0)'s cast — it is the non-consumed sibling carrying the
+                // finality rider that must NOT leak onto this cast.
+                obj.casting_permissions
+                    .push(CastingPermission::ExileWithAltCost {
+                        cost: ManaCost::zero(),
+                        cast_transformed: false,
+                        constraint: None,
+                        granted_to: Some(PlayerId(1)),
+                        resolution_cleanup: None,
+                        duration: Some(Duration::UntilEndOfTurn),
+                        exile_instead_of_graveyard_on_resolve: false,
+                        enters_with_counter: Some(CounterType::Generic("finality".to_string())),
+                    });
+            }
+
+            apply_as_current(
+                &mut state,
+                GameAction::CastSpell {
+                    object_id: creature,
+                    card_id: CardId(8202),
+                    targets: vec![],
+                    payment_mode: CastPaymentMode::Auto,
+                },
+            )
+            .expect("free graveyard cast via the consumed permission should be accepted");
+            for _ in 0..6 {
+                if state.objects[&creature].zone == Zone::Battlefield {
+                    break;
+                }
+                apply_as_current(&mut state, GameAction::PassPriority).unwrap();
+            }
+            assert_eq!(
+                state.objects[&creature].zone,
+                Zone::Battlefield,
+                "the creature cast via the consumed permission should resolve onto the battlefield"
+            );
+            state.objects[&creature]
+                .counters
+                .get(&CounterType::Generic("finality".to_string()))
+                .copied()
+        }
+
+        // Leak case: rider lives only on the NON-consumed P2 → must NOT apply.
+        assert_eq!(
+            run_two_permission_cast(None),
+            None,
+            "a non-consumed permission's enters-with-counter rider must not leak onto this cast"
+        );
+
+        // Positive twin: move the rider onto the CONSUMED P1 → must apply exactly once.
+        assert_eq!(
+            run_two_permission_cast(Some(CounterType::Generic("finality".to_string()))),
+            Some(1),
+            "the rider on the consumed permission must apply exactly one finality counter"
         );
     }
 
