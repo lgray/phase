@@ -437,8 +437,20 @@ fn prompt_next_each_player(
         return Ok(());
     }
 
-    // CR 608.2c: No player had an eligible card — emit the resolution event so the
-    // parked continuation ("put those cards onto the battlefield") still runs.
+    // CR 101.4 + CR 608.2c: No iterated player had an eligible card. When
+    // `accumulated == false` this is the FIRST resolution of the iteration (no
+    // player was ever prompted), so it MUST rebind a FRESH (empty) chain tracked
+    // set before the parked continuation runs — mirroring the first-resolution
+    // rebind in `drain_pending_per_player_zone_choice`. Otherwise an EARLIER
+    // same-chain producer's tracked set (e.g. Breach the Multiverse's preceding
+    // mill) stays bound and a downstream `ChangeZoneAll { TrackedSet }` over-acts
+    // on that stale set instead of this iteration's (empty) picks: "those chosen
+    // cards" must mean exactly the cards chosen by THIS iteration. When
+    // `accumulated == true` an earlier player already rebound a fresh set for this
+    // iteration — leave it bound, do not clobber it.
+    if !accumulated {
+        super::publish_fresh_tracked_set(state, Vec::new());
+    }
     events.push(GameEvent::EffectResolved {
         kind: EffectKind::ChooseFromZone,
         source_id: ability.source_id,
@@ -2245,6 +2257,89 @@ mod tests {
         );
         // The prior producer's set is untouched (still holds its two objects), so
         // a downstream ChangeZoneAll { TrackedSet } reads the empty fresh set.
+        assert_eq!(
+            state.tracked_object_sets.get(&prior),
+            Some(&vec![ObjectId(7), ObjectId(8)]),
+            "the prior producer's set must be untouched, never inherited by the iteration"
+        );
+    }
+
+    /// CR 101.4 + CR 608.2c (MED #4093): the FIRST resolution of a per-player
+    /// `ChooseFromZone` iteration must rebind a fresh (possibly empty) chain
+    /// tracked set EVEN when NO iterated player has an eligible candidate (the
+    /// loop exhausts in `prompt_next_each_player` with zero prompts ever parked).
+    /// This is the no-prompt sibling of
+    /// `per_player_first_decline_rebinds_fresh_empty_tracked_set` (which reaches
+    /// the rebind via the drain path). Here the entry is `resolve`, which
+    /// dispatches `EachOpponent` straight into `prompt_next_each_player` with
+    /// `accumulated == false`; every opponent zone is empty so the loop exhausts.
+    ///
+    /// REVERT PROBE: remove the new `if !accumulated { publish_fresh_tracked_set }`
+    /// call on the exhaustion branch and `chain_tracked_set_id` stays pointed at
+    /// `prior` (the non-empty producer set) — both `assert_ne!(bound, prior)` and
+    /// the empty-set assertion below fail (the bound set would hold `prior`'s two
+    /// objects).
+    #[test]
+    fn per_player_no_eligible_player_rebinds_fresh_empty_tracked_set() {
+        let mut state = GameState::new_two_player(42);
+
+        // An earlier SAME-CHAIN producer published a NON-EMPTY tracked set and
+        // bound the chain to it (e.g. Breach the Multiverse's preceding mill).
+        let prior = TrackedSetId(state.next_tracked_set_id);
+        state.next_tracked_set_id += 1;
+        state
+            .tracked_object_sets
+            .insert(prior, vec![ObjectId(7), ObjectId(8)]);
+        state.chain_tracked_set_id = Some(prior);
+
+        // A per-OPPONENT ChooseFromZone scanning the battlefield. The only
+        // opponent of PlayerId(0) is PlayerId(1), whose battlefield is empty in a
+        // fresh two-player state, so `collect_player_zone_cards` yields nothing for
+        // every iterated player and `prompt_next_each_player` exhausts WITHOUT
+        // parking a single prompt (the no-eligible-anyone path).
+        let ability = ResolvedAbility::new(
+            Effect::ChooseFromZone {
+                count: 1,
+                zone: Zone::Battlefield,
+                additional_zones: Vec::new(),
+                zone_owner: ZoneOwner::EachOpponent,
+                filter: None,
+                chooser: Chooser::Controller,
+                up_to: true,
+                constraint: None,
+                selection: crate::types::ability::CardSelectionMode::Chosen,
+            },
+            vec![],
+            ObjectId(100),
+            PlayerId(0),
+        );
+
+        let mut events = Vec::new();
+        // `resolve` routes EachOpponent directly into `prompt_next_each_player`
+        // with accumulated=false; no opponent is eligible → exhaustion branch.
+        resolve(&mut state, &ability, &mut events).unwrap();
+
+        // No interactive prompt was raised (the loop never parked one).
+        assert!(
+            !matches!(state.waiting_for, WaitingFor::ChooseFromZoneChoice { .. }),
+            "no prompt must be parked when no iterated player is eligible, got {:?}",
+            state.waiting_for
+        );
+
+        let bound = state
+            .chain_tracked_set_id
+            .expect("a fresh chain tracked set must be bound after the no-eligible exhaustion");
+        assert_ne!(
+            bound, prior,
+            "the no-eligible exhaustion must rebind to a FRESH set, not stay on the prior producer's set"
+        );
+        assert_eq!(
+            state.tracked_object_sets.get(&bound),
+            Some(&vec![]),
+            "the fresh per-player set must be empty (no player was eligible)"
+        );
+        // The prior producer's set is untouched, so a downstream
+        // ChangeZoneAll { TrackedSet } reads the empty fresh set, not these objects.
         assert_eq!(
             state.tracked_object_sets.get(&prior),
             Some(&vec![ObjectId(7), ObjectId(8)]),
