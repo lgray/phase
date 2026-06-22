@@ -201,7 +201,11 @@ pub fn resolve_mana_ability(
     color_override: Option<ProductionOverride>,
 ) -> Result<(), EngineError> {
     // Pay the full ability cost (tap, sacrifice, etc.)
+    let waiting_before_cost = state.waiting_for.clone();
     pay_mana_ability_cost(state, source_id, player, &ability_def.cost, events)?;
+    if state.waiting_for != waiting_before_cost {
+        return Ok(());
+    }
 
     // CR 117.1 + CR 202.3: This non-interactive entry point is reachable only
     // when no cost-paid-object snapshot is needed (no battlefield exile
@@ -1350,6 +1354,7 @@ pub(super) fn advance_mana_ability_activation(
             Some(&resolved_for_prompt),
         ) {
             let events_before = events.len();
+            let waiting_before_cost = state.waiting_for.clone();
             pay_mana_ability_cost_with_choices(
                 state,
                 pending.source_id,
@@ -1364,6 +1369,9 @@ pub(super) fn advance_mana_ability_activation(
                 pending.chosen_counter_count,
                 pending.chosen_x,
             )?;
+            if state.waiting_for != waiting_before_cost {
+                return Ok(state.waiting_for.clone());
+            }
             // CR 603.2a + CR 603.2g + CR 605.3b: Cost-payment events (Tap,
             // Sacrifice, etc.) generated during a mana ability's cost step
             // trigger external abilities normally — CR 603.2a allows triggers
@@ -1401,6 +1409,7 @@ pub(super) fn advance_mana_ability_activation(
         }
     }
 
+    let waiting_before_cost = state.waiting_for.clone();
     resolve_mana_ability_with_selected_choices(
         state,
         pending.source_id,
@@ -1417,6 +1426,9 @@ pub(super) fn advance_mana_ability_activation(
         pending.chosen_x,
         pending.cost_paid_object,
     )?;
+    if state.waiting_for != waiting_before_cost {
+        return Ok(state.waiting_for.clone());
+    }
     complete_mana_ability_activation(
         state,
         pending.source_id,
@@ -2170,9 +2182,11 @@ fn mill_for_mana_cost(
             // bail like `mill::resolve` does so the surfaced prompt is not
             // clobbered. The parked activation resumes the remaining cost
             // components and mana production.
-            super::effects::mill::apply_mill_after_replacement(state, event, events).map_err(
+            if !super::effects::mill::apply_mill_after_replacement(state, event, events).map_err(
                 |e| EngineError::InvalidAction(format!("Mill cost could not be paid: {e:?}")),
-            )?;
+            )? {
+                return Ok(());
+            }
         }
         // CR 701.17b: "mill as many as you can" — a fully replaced-away or empty
         // library still pays the cost (milling zero cards is legal).
@@ -2204,17 +2218,26 @@ fn mill_for_mana_cost(
 /// `advance_mana_ability_activation` surfaces before mana production (CR 701.59),
 /// so it is a no-op in the cost-payment match rather than a delegated payment.
 fn is_self_contained_mana_subcost(cost: &AbilityCost) -> bool {
-    matches!(
-        cost,
+    match cost {
         AbilityCost::Untap
-            | AbilityCost::Exert
-            | AbilityCost::PayEnergy { .. }
-            | AbilityCost::EffectCost { .. }
-            | AbilityCost::ReturnToHand {
-                filter: Some(TargetFilter::SelfRef),
-                ..
-            }
-    )
+        | AbilityCost::Exert
+        | AbilityCost::PayEnergy { .. }
+        | AbilityCost::EffectCost { .. }
+        | AbilityCost::ReturnToHand {
+            filter: Some(TargetFilter::SelfRef),
+            ..
+        } => true,
+        // CR 122.1 + CR 601.2b: Pentad Prism / Everflowing Chalice — bare
+        // self-RemoveCounter mana-ability costs (no tap) delegate to the
+        // activated-ability cost payer. "Remove any number" stays on the
+        // interactive mana-ability path in `advance_mana_ability_activation`.
+        AbilityCost::RemoveCounter {
+            target: None,
+            count,
+            ..
+        } => !crate::types::ability::is_chosen_remove_counter_cost_count(*count),
+        _ => false,
+    }
 }
 
 fn pay_life_cost(
