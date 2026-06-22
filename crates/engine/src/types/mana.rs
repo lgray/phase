@@ -257,11 +257,26 @@ pub struct SpellMeta {
     /// MV/X spend restrictions (`OnlyForSpellMatchingCostCriteria`). `false` at
     /// payment sites with no associated spell, or when the spell has no `{X}`.
     pub has_x_in_cost: bool,
-    /// CR 708.4: Whether the spell is being cast face down (morph/disguise/cloak
+    /// CR 708.4: Whether the spell is being CAST FACE DOWN (morph/disguise/cloak
     /// cast as a 2/2 face-down creature). Consulted by the "cast face-down
     /// spells" spend restriction ([`ManaRestriction::OnlyForFaceDownSpell`],
     /// Tin Street Gossip). `false` at payment sites with no associated spell or
     /// for a normal face-up cast.
+    ///
+    /// This is "being cast face down", NOT "the object is currently face down" —
+    /// the two differ for exile/library concealment. Foretell (CR 702.143a),
+    /// hideaway, and similar effects set `obj.face_down = true` while the card
+    /// waits in exile, yet that card is CAST FACE UP (CR 702.143c: a foretold card
+    /// is cast face up "even if it was cast for a cost other than a foretell
+    /// cost"). `game::casting::build_spell_meta` therefore sources this field from
+    /// the cast's face-down intent, hardcoded `false` today — never from raw
+    /// `obj.face_down` — so a foretold/hideaway cast is correctly reported as
+    /// face-up. No engine path casts a spell face down (CR 708.4 face-down play,
+    /// `PlayFaceDown` → `game::morph::play_face_down`, enters the battlefield via
+    /// the zone pipeline and charges no mana, building no spell-payment context),
+    /// so the field is fail-closed: never `true` at a real `PaymentContext::Spell`
+    /// site. It is wired for forward compatibility — see
+    /// [`ManaRestriction::OnlyForFaceDownSpell`] for the contract.
     pub is_face_down: bool,
 }
 
@@ -516,9 +531,27 @@ pub enum ManaRestriction {
     /// for backward compatibility, mapping it to the inclusion reading.
     OnlyForSpellFromZone(ZoneSpend),
     /// CR 106.6 + CR 708.4: "Spend this mana only to cast face-down spells"
-    /// (Tin Street Gossip). Gates spending on whether the spell is being cast
+    /// (Tin Street Gossip). Gates spending on whether the spell is being CAST
     /// face down (morph/disguise/cloak), consulting `SpellMeta.is_face_down`.
     /// Rejects normal face-up casts, ability activations, and special actions.
+    ///
+    /// The gate reads `meta.is_face_down`, which `build_spell_meta` sources from
+    /// the cast's face-down intent — NOT from `obj.face_down`. That distinction
+    /// matters: exile/library concealment (foretell, hideaway) sets
+    /// `obj.face_down = true` for a card that is nonetheless CAST FACE UP
+    /// (CR 702.143c), so the gate correctly REJECTS those concealment casts.
+    ///
+    /// The gate is also fail-closed today: no production path casts a face-down
+    /// spell *through spell payment* in this engine. CR 708.4 face-down play is
+    /// modeled by [`GameAction::PlayFaceDown`] → `game::morph::play_face_down`,
+    /// which moves the card hand→battlefield via the zone pipeline and charges no
+    /// mana (the `{3}` face-down cast cost, CR 702.37c, is not yet implemented).
+    /// So `SpellMeta.is_face_down` is never `true` at any `PaymentContext::Spell`
+    /// payment site, and this gate never over-permits — see
+    /// [`ManaRestriction::allows_spell`]. The restriction stays representable (the
+    /// cluster's cards parse to no `Effect::Unimplemented`); once a real face-down
+    /// CAST routes its cost through `PaymentContext::Spell` with `is_face_down =
+    /// true` the gate becomes live with no type change.
     OnlyForFaceDownSpell,
     /// CR 106.6: Disjunctive spend restriction — the mana may be spent on any
     /// payment that satisfies at least one inner restriction. Composition
@@ -666,9 +699,21 @@ impl ManaRestriction {
                     .cast_from_zone
                     .is_some_and(|cast_from| cast_from != zs.zone),
             },
-            // CR 708.4: Face-down-spell-gated spend. A spell qualifies only when
-            // it is being cast face down (morph/disguise/cloak). Normal face-up
-            // casts are ineligible.
+            // CR 708.4: Face-down-spell-gated spend. The eligibility predicate is
+            // `meta.is_face_down` — a spell qualifies only when it is being CAST
+            // face down (morph/disguise/cloak); normal face-up casts are
+            // ineligible. `is_face_down` is sourced from the cast's face-down
+            // intent (`build_spell_meta`), not from `obj.face_down`, so this arm
+            // correctly REJECTS both normal face-up casts AND exile-concealment
+            // casts (foretell/hideaway, CR 702.143c) whose `obj.face_down = true`
+            // but which are cast face up. It is also fail-closed: no production
+            // payment site casts a spell face down (`GameAction::PlayFaceDown` →
+            // `game::morph::play_face_down` enters the battlefield via the zone
+            // pipeline and charges no mana), so `is_face_down` is never `true` at a
+            // real `PaymentContext::Spell` site and the gate never over-permits. It
+            // already reads `meta.is_face_down`, so the day a real face-down CAST
+            // routes its `{3}` cost through `PaymentContext::Spell` with that flag
+            // set, the gate becomes live with no change here. See the variant doc.
             ManaRestriction::OnlyForFaceDownSpell => meta.is_face_down,
             // CR 106.6: Disjunction — the spell is payable if it satisfies any branch.
             ManaRestriction::OnlyForAny(subs) => subs.iter().any(|r| r.allows_spell(meta)),

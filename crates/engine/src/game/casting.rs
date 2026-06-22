@@ -1422,9 +1422,24 @@ pub(super) fn build_spell_meta(
         // detected from shards (mana value alone can't reveal it — X contributes 0
         // off the stack).
         has_x_in_cost: obj.mana_cost.has_x(),
-        // CR 708.4: whether this spell is being cast face down (morph/disguise/
-        // cloak), consulted by the "cast face-down spells" spend restriction.
-        is_face_down: obj.face_down,
+        // CR 708.4 + CR 702.37c / CR 702.168b: `is_face_down` means "this spell is
+        // being CAST FACE DOWN" (morph/disguise/cloak — paying {3} to cast as a 2/2
+        // face-down creature spell), NOT "the object is currently face down". Those
+        // differ: foretell (CR 702.143a), hideaway, and other exile/library
+        // concealment set `obj.face_down = true` while the card waits in exile, yet
+        // such a card is CAST FACE UP (CR 702.143c: cast "even if it was cast for a
+        // cost other than a foretell cost"). Mana payment runs against the origin
+        // (exile) zone BEFORE the deferred origin->stack move clears `face_down`, so
+        // sourcing this from raw `obj.face_down` would let a face-up foretold/hideaway
+        // cast wrongly satisfy the `OnlyForFaceDownSpell` spend restriction (Tin
+        // Street Gossip). No engine path casts a spell face down today:
+        // `GameAction::PlayFaceDown` -> `game::morph::play_face_down` moves
+        // hand->battlefield via the zone pipeline and charges no mana, never building
+        // a `PaymentContext::Spell`. So the correct value at every current production
+        // payment site is `false`. When a real CR 702.37c / 708.4 face-down CAST path
+        // is built, set this from that cast's announced face-down intent; the gate
+        // (`ManaRestriction::allows_spell`) already reads this field.
+        is_face_down: false,
     })
 }
 
@@ -14145,6 +14160,39 @@ mod tests {
             [CastingPermission::Foretold { cost, turn_foretold }]
                 if *cost == foretell_test_cost() && *turn_foretold == state.turn_number
         ));
+    }
+
+    // CR 708.4 + CR 702.143a / CR 702.143c: a FORETOLD card is cast FACE UP from
+    // exile, never as a face-down spell. Mana payment runs `build_spell_meta` while
+    // the object still sits in exile with `obj.face_down == true`; the resulting
+    // `SpellMeta.is_face_down` MUST be false so `OnlyForFaceDownSpell` mana (Tin
+    // Street Gossip) is NOT treated as eligible for the foretold cast. Discriminating
+    // revert: if `build_spell_meta`'s `is_face_down` reverts to `obj.face_down`, this
+    // flips to true (obj.face_down is true after foretell).
+    #[test]
+    fn build_spell_meta_for_foretold_card_is_not_face_down() {
+        let mut state = setup_game_at_main_phase();
+        let object_id = add_foretell_sorcery(&mut state);
+        add_mana(&mut state, PlayerId(0), ManaType::Colorless, 2);
+        handle_foretell(
+            &mut state,
+            PlayerId(0),
+            object_id,
+            CardId(143),
+            &mut Vec::new(),
+        )
+        .unwrap();
+
+        assert!(
+            state.objects.get(&object_id).unwrap().face_down,
+            "foretell must set obj.face_down (precondition for the discriminating assert)"
+        );
+        let meta = build_spell_meta(&state, PlayerId(0), object_id)
+            .expect("foretold object in exile must build a spell meta");
+        assert!(
+            !meta.is_face_down,
+            "a foretold (face-up) cast must NOT be reported as a face-down CR 708.4 cast"
+        );
     }
 
     #[test]

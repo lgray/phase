@@ -1627,6 +1627,22 @@ pub enum ManaSpendRestriction {
     /// (Tin Street Gossip). Lowered to
     /// [`ManaRestriction::OnlyForFaceDownSpell`](super::mana::ManaRestriction::OnlyForFaceDownSpell),
     /// gated on `SpellMeta.is_face_down` at the spell-payment site.
+    ///
+    /// The runtime gate reads `SpellMeta.is_face_down`, sourced from the cast's
+    /// face-down intent (`build_spell_meta`) rather than `obj.face_down`, so it
+    /// correctly REJECTS exile-concealment casts (foretell/hideaway) whose
+    /// `obj.face_down = true` but which are cast face up (CR 702.143c). It is also
+    /// fail-closed: no production path casts a face-down spell *through spell
+    /// payment* in this engine — CR 708.4 face-down play
+    /// (`GameAction::PlayFaceDown` → `game::morph::play_face_down`) enters the
+    /// battlefield via the zone pipeline and charges no mana (the `{3}` face-down
+    /// cast cost, CR 702.37c, is not yet implemented), so `SpellMeta.is_face_down`
+    /// is never `true` at a payment site and the gate never over-permits. The
+    /// variant exists so the restriction is representable (the cluster's cards
+    /// parse to no `Effect::Unimplemented`); once a real face-down CAST routes its
+    /// `{3}` cost through `PaymentContext::Spell` the gate becomes live with no
+    /// type change. See
+    /// [`ManaRestriction::OnlyForFaceDownSpell`](super::mana::ManaRestriction::OnlyForFaceDownSpell).
     FaceDownSpell,
     /// CR 106.6 + CR 116.2b + CR 702.37e: "Spend this mana only to turn
     /// permanents face up" / "turn creatures face up" — the morph/disguise

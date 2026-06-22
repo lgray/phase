@@ -324,7 +324,12 @@ pub(crate) fn resolve_restrictions(
                 crate::types::mana::SpecialAction::UnlockDoor,
             )),
             // CR 106.6 + CR 708.4: Lower the face-down-cast leaf into the runtime
-            // gate checked against `SpellMeta.is_face_down` by `allows_spell`.
+            // gate checked against `SpellMeta.is_face_down` by `allows_spell`. The
+            // gate reads cast face-down intent (not `obj.face_down`), so it
+            // correctly rejects exile-concealment casts (foretell/hideaway, whose
+            // `obj.face_down = true` but which are cast face up, CR 702.143c). It is
+            // fail-closed: no production path casts a spell face down, so the gate
+            // never over-permits.
             ManaSpendRestriction::FaceDownSpell => Some(ManaRestriction::OnlyForFaceDownSpell),
             // CR 106.6 + CR 116.2b + CR 702.37e: Lower the turn-face-up
             // special-action leaf into the runtime gate. No payment site emits
