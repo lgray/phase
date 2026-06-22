@@ -1,3 +1,4 @@
+import type { CSSProperties } from "react";
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
@@ -88,6 +89,20 @@ export interface MenuSelectProps {
   wrapperClassName?: string;
   /** Class on the trigger button. */
   className?: string;
+  /** Inline style on the trigger button (e.g. seat-color tint). */
+  triggerStyle?: CSSProperties;
+  /** Class on the chevron icon wrapper. */
+  chevronClassName?: string;
+  /** Class on the portaled menu panel. */
+  menuClassName?: string;
+  /** z-index class for the portaled menu (default `z-[120]`). Raise inside high-z overlays like the debug panel. */
+  menuZClassName?: string;
+  /** z-index class for the mobile bottom-sheet backdrop. */
+  backdropZClassName?: string;
+  /** Per-option inline style (e.g. seat-color labels). */
+  getOptionStyle?: (item: MenuSelectItem) => CSSProperties | undefined;
+  /** Fired when the pointer or focus moves over an option, or leaves the menu. */
+  onOptionHover?: (value: string | null) => void;
 }
 
 function ChevronDownIcon({ className }: { className: string }) {
@@ -181,6 +196,13 @@ export function MenuSelect({
   fitContainer = false,
   wrapperClassName = "",
   className = "",
+  triggerStyle,
+  chevronClassName = "text-white/70",
+  menuClassName = "",
+  menuZClassName = "z-[120]",
+  backdropZClassName = "z-[119]",
+  getOptionStyle,
+  onOptionHover,
 }: MenuSelectProps) {
   const listboxId = useId();
   const mobileSheet = useMobileSheetLayout();
@@ -226,10 +248,18 @@ export function MenuSelect({
     setMenuStyle(computeAnchoredMenuStyle(trigger));
   }, [useBottomSheet]);
 
+  const onOptionHoverRef = useRef(onOptionHover);
+  onOptionHoverRef.current = onOptionHover;
+
+  const closeMenu = useCallback(() => {
+    setOpen(false);
+    onOptionHoverRef.current?.(null);
+  }, []);
+
   const toggleOpen = useCallback(() => {
     if (disabled) return;
     if (open) {
-      setOpen(false);
+      closeMenu();
       return;
     }
     const trigger = triggerRef.current;
@@ -237,7 +267,7 @@ export function MenuSelect({
       setMenuStyle(computeAnchoredMenuStyle(trigger));
     }
     setOpen(true);
-  }, [disabled, open, useBottomSheet]);
+  }, [closeMenu, disabled, open, useBottomSheet]);
 
   useLayoutEffect(() => {
     if (!open) return;
@@ -259,11 +289,11 @@ export function MenuSelect({
     const handlePointerDown = (event: PointerEvent) => {
       const target = event.target as Node;
       if (triggerRef.current?.contains(target) || menuRef.current?.contains(target)) return;
-      setOpen(false);
+      closeMenu();
     };
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
-        setOpen(false);
+        closeMenu();
         triggerRef.current?.focus();
         return;
       }
@@ -307,7 +337,7 @@ export function MenuSelect({
         parent.removeEventListener("scroll", handleScroll);
       });
     };
-  }, [open, updatePosition, useBottomSheet]);
+  }, [closeMenu, open, updatePosition, useBottomSheet]);
 
   const renderOption = (item: MenuSelectItem) => (
     <button
@@ -316,9 +346,14 @@ export function MenuSelect({
       role="option"
       onClick={() => {
         onSelect(item.value);
-        setOpen(false);
+        closeMenu();
       }}
+      onMouseEnter={() => onOptionHoverRef.current?.(item.value)}
+      onMouseLeave={() => onOptionHoverRef.current?.(null)}
+      onFocus={() => onOptionHoverRef.current?.(item.value)}
+      onBlur={() => onOptionHoverRef.current?.(null)}
       aria-selected={selectedValue === item.value}
+      style={getOptionStyle?.(item)}
       className={[
         "flex w-full min-w-0 items-center px-3 py-2 text-left text-sm transition-colors hover:bg-white/10 focus-visible:bg-white/10 focus-visible:outline-none",
         selectedValue === item.value ? "bg-white/10 text-white" : "text-slate-200",
@@ -358,11 +393,12 @@ export function MenuSelect({
         aria-label={ariaLabel ?? label}
         onClick={toggleOpen}
         className={triggerClassName}
+        style={triggerStyle}
       >
         <span className="min-w-0 truncate" title={label}>
           {label}
         </span>
-        <ChevronDownIcon className="h-4 w-4 shrink-0 text-white/70" />
+        <ChevronDownIcon className={`h-4 w-4 shrink-0 ${chevronClassName}`} />
       </button>
 
       {open &&
@@ -372,8 +408,8 @@ export function MenuSelect({
               <button
                 type="button"
                 aria-label={ariaLabel ?? label}
-                className="fixed inset-0 z-[119] bg-black/60"
-                onClick={() => setOpen(false)}
+                className={`fixed inset-0 ${backdropZClassName} bg-black/60`}
+                onClick={closeMenu}
               />
             )}
             <div
@@ -382,10 +418,11 @@ export function MenuSelect({
               role="listbox"
               aria-label={ariaLabel ?? label}
               className={[
-                "fixed z-[120] flex flex-col overflow-x-hidden overflow-y-auto overscroll-contain border border-white/10 bg-[#0a0f1b]/98 py-1 shadow-xl backdrop-blur-md thin-scrollbar",
+                `fixed ${menuZClassName} flex flex-col overflow-x-hidden overflow-y-auto overscroll-contain border border-white/10 bg-[#0a0f1b]/98 py-1 shadow-xl backdrop-blur-md thin-scrollbar`,
                 useBottomSheet
                   ? "inset-x-0 bottom-[calc(76px+env(safe-area-inset-bottom))] max-h-[min(70dvh,calc(100dvh-76px-env(safe-area-inset-bottom)-1rem))] rounded-t-2xl rounded-b-none border-b-0"
                   : "rounded-xl",
+                menuClassName,
               ].join(" ")}
               onWheel={(event) => event.stopPropagation()}
               style={
