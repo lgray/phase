@@ -1546,7 +1546,9 @@ pub fn compute_combat_tax(
                         source_obj.controller,
                         source_id,
                     );
-                    base_cost.scaled(n.max(0) as u32)
+                    let mut cost = base_cost.clone();
+                    cost.concretize_x(n.max(0) as u32);
+                    cost
                 }
                 UnlessPayScaling::PerAffectedWithRef { quantity } => {
                     // CR 118.12a + CR 202.3e: Nils, Discipline Enforcer — "pays {X},
@@ -7472,6 +7474,52 @@ mod tests {
         });
         obj.static_definitions.push(def);
         id
+    }
+
+    fn add_sphere_of_safety(state: &mut GameState, controller: PlayerId) -> ObjectId {
+        use crate::parser::oracle_static::parse_static_line;
+
+        let def = parse_static_line(
+            "Creatures can't attack you or planeswalkers you control unless their controller pays {X} for each of those creatures, where X is the number of enchantments you control.",
+        )
+        .expect("Sphere of Safety should parse");
+        let id = create_object(
+            state,
+            CardId(state.next_object_id),
+            controller,
+            "Sphere of Safety".to_string(),
+            crate::types::zones::Zone::Battlefield,
+        );
+        let obj = state.objects.get_mut(&id).unwrap();
+        obj.card_types.core_types.push(CoreType::Enchantment);
+        obj.static_definitions.push(def);
+        id
+    }
+
+    fn create_enchantment(state: &mut GameState, controller: PlayerId, name: &str) -> ObjectId {
+        let id = create_object(
+            state,
+            CardId(state.next_object_id),
+            controller,
+            name.to_string(),
+            crate::types::zones::Zone::Battlefield,
+        );
+        let obj = state.objects.get_mut(&id).unwrap();
+        obj.card_types.core_types.push(CoreType::Enchantment);
+        id
+    }
+
+    #[test]
+    fn compute_attack_tax_sphere_of_safety_concretizes_x_per_attacker() {
+        let mut state = setup();
+        let _sphere = add_sphere_of_safety(&mut state, PlayerId(1));
+        let _other_ench = create_enchantment(&mut state, PlayerId(1), "Other Aura");
+        let attacker = create_creature(&mut state, PlayerId(0), "Bear", 2, 2);
+        let attacks = vec![(attacker, AttackTarget::Player(PlayerId(1)))];
+        let (total, per_creature) = compute_attack_tax(&state, &attacks).expect("tax applies");
+        assert_eq!(total.mana_value(), 2);
+        assert_eq!(per_creature.len(), 1);
+        assert_eq!(per_creature[0].1.mana_value(), 2);
     }
 
     #[test]

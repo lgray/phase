@@ -12527,8 +12527,13 @@ fn replace_target_with_parent(effect: &mut Effect) {
         } => {
             *target = Some(TargetFilter::ParentTarget);
             for static_def in static_abilities {
-                if matches!(static_def.affected, Some(TargetFilter::SelfRef)) {
-                    static_def.affected = Some(TargetFilter::ParentTarget);
+                if let Some(affected) = static_def.affected.as_mut() {
+                    if matches!(
+                        affected,
+                        TargetFilter::SelfRef | TargetFilter::TriggeringSource
+                    ) {
+                        *affected = TargetFilter::ParentTarget;
+                    }
                 }
             }
         }
@@ -34169,6 +34174,50 @@ mod tests {
             )),
             "modifications must contain AddStaticMode(CantBeBlockedBy), got {:?}",
             static_def.modifications
+        );
+    }
+
+    /// Issue #3990: Ms. Bumbleflower — "Put a +1/+1 counter on target creature.
+    /// It gains flying until end of turn." must grant flying to the counter
+    /// target, not the trigger source.
+    #[test]
+    fn bumbleflower_it_gains_flying_binds_to_counter_target() {
+        let def = parse_effect_chain(
+            "Target opponent draws a card. Put a +1/+1 counter on target creature. It gains flying until end of turn.",
+            AbilityKind::Spell,
+        );
+        let draw = &*def.effect;
+        let put_counter = def
+            .sub_ability
+            .as_ref()
+            .expect("draw -> put counter chain")
+            .sub_ability
+            .as_ref()
+            .expect("put counter -> flying chain");
+        assert!(matches!(draw, Effect::Draw { .. }));
+        let Effect::PutCounter { target, .. } = &*def.sub_ability.as_ref().unwrap().effect else {
+            panic!(
+                "expected PutCounter, got {:?}",
+                def.sub_ability.as_ref().unwrap().effect
+            );
+        };
+        assert!(!matches!(target, TargetFilter::ParentTarget));
+        let Effect::GenericEffect {
+            static_abilities,
+            target,
+            ..
+        } = &*put_counter.effect
+        else {
+            panic!(
+                "expected GenericEffect flying grant, got {:?}",
+                put_counter.effect
+            );
+        };
+        assert_eq!(target, &Some(TargetFilter::ParentTarget));
+        assert_eq!(
+            static_abilities[0].affected,
+            Some(TargetFilter::ParentTarget),
+            "flying grant must affect the counter target, not TriggeringSource"
         );
     }
 
