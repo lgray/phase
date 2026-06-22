@@ -261,7 +261,7 @@ fn merged_copiable_values(
     Some((values, display_source, printed_ref, token_image_ref))
 }
 
-fn remove_merge_layer_effect(state: &mut GameState, target_id: ObjectId) {
+pub(crate) fn remove_merge_layer_effect(state: &mut GameState, target_id: ObjectId) {
     let effect_id = state
         .objects
         .get(&target_id)

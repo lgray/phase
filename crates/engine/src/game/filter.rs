@@ -1974,6 +1974,10 @@ fn subtype_matches_with_changeling(
     false
 }
 
+fn subtype_matches_host_supertype(subtype: &str, supertypes: &[Supertype]) -> bool {
+    subtype.eq_ignore_ascii_case("host") && supertypes.contains(&Supertype::Host)
+}
+
 /// Check if an object matches a TypeFilter variant.
 /// Check if an object's card types match a `TypeFilter`.
 /// CR 205.2a: Each card type has its own rules for how it behaves.
@@ -2013,12 +2017,14 @@ pub fn type_filter_matches(
         // expands Changeling into `obj.card_types.subtypes`, but for cards in
         // library/hand/graveyard/exile the helper below handles the expansion
         // by inspecting `obj.keywords` and the runtime creature-type catalog.
-        TypeFilter::Subtype(ref sub) => subtype_matches_with_changeling(
-            sub,
-            &obj.card_types.subtypes,
-            &obj.keywords,
-            all_creature_types,
-        ),
+        TypeFilter::Subtype(ref sub) => {
+            subtype_matches_with_changeling(
+                sub,
+                &obj.card_types.subtypes,
+                &obj.keywords,
+                all_creature_types,
+            ) || subtype_matches_host_supertype(sub, &obj.card_types.supertypes)
+        }
         // CR 608.2b: Disjunction — matches if any inner filter matches.
         TypeFilter::AnyOf(ref filters) => filters
             .iter()
@@ -2057,12 +2063,14 @@ fn zone_change_record_matches_type_filter(
         // CR 205.3 + CR 702.73a: Subtype match through the Changeling helper —
         // zone-change records snapshot the object's keywords, so Changeling
         // travels with the snapshot.
-        TypeFilter::Subtype(subtype) => subtype_matches_with_changeling(
-            subtype,
-            &record.subtypes,
-            &record.keywords,
-            all_creature_types,
-        ),
+        TypeFilter::Subtype(subtype) => {
+            subtype_matches_with_changeling(
+                subtype,
+                &record.subtypes,
+                &record.keywords,
+                all_creature_types,
+            ) || subtype_matches_host_supertype(subtype, &record.supertypes)
+        }
         TypeFilter::AnyOf(filters) => filters
             .iter()
             .any(|inner| zone_change_record_matches_type_filter(record, inner, all_creature_types)),
@@ -2578,12 +2586,14 @@ fn spell_record_matches_type_filter(
         // CR 205.3 + CR 702.73a: Spell-cast records snapshot keywords, so
         // Ur-Dragon's "Dragon spells you cast" matches Mistform Ultimus on the
         // stack via Changeling.
-        TypeFilter::Subtype(subtype) => subtype_matches_with_changeling(
-            subtype,
-            &record.subtypes,
-            &record.keywords,
-            all_creature_types,
-        ),
+        TypeFilter::Subtype(subtype) => {
+            subtype_matches_with_changeling(
+                subtype,
+                &record.subtypes,
+                &record.keywords,
+                all_creature_types,
+            ) || subtype_matches_host_supertype(subtype, &record.supertypes)
+        }
         TypeFilter::AnyOf(filters) => filters
             .iter()
             .any(|inner| spell_record_matches_type_filter(record, inner, all_creature_types)),

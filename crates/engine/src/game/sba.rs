@@ -151,6 +151,14 @@ pub fn check_state_based_actions(state: &mut GameState, events: &mut Vec<GameEve
         // CR 704.5d: Tokens in zones other than the battlefield cease to exist.
         check_token_cease_to_exist(state, &mut any_performed);
 
+        // Unstable Host/Augment: a standalone augment permanent on the
+        // battlefield is put into its owner's graveyard.
+        crate::game::augment::check_standalone_augment_permanents(
+            state,
+            events,
+            &mut any_performed,
+        );
+
         // CR 704.5z: A player controlling Start your engines! gets speed 1 if they had none.
         check_start_your_engines(state, events, &mut any_performed);
 

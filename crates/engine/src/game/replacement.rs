@@ -1753,6 +1753,204 @@ fn explore_applier(
     ApplyResult::Prevented
 }
 
+// --- 4b2. Connive (Leader, Super-Genius) ---
+
+fn connive_matcher(event: &ProposedEvent, _source: ObjectId, _state: &GameState) -> bool {
+    matches!(event, ProposedEvent::Connive { .. })
+}
+
+/// CR 701.50a + CR 614.5 + CR 616.1f: Apply a connive replacement (Leader,
+/// Super-Genius — "If a creature you control would connive, instead you draw a
+/// card, then that creature connives"). CR 701.50a's replacement reads "you draw
+/// a card, THEN that creature connives" — the "then" fixes the printed order, so
+/// the connive link runs only after the leading draw completes. Runs the
+/// replacement's `execute` chain (the sole production chain is exactly `Draw 1`
+/// then `Connive`) and fully replaces the original connive event (`Prevented`).
+/// The `Connive` link in the chain RE-ENTERS the replacement pipeline via
+/// `propose_connive`, carrying the `applied` set (which already contains this rid
+/// — the loop/resume marked it before the applier ran), so the process repeats
+/// over the OTHER still-applicable connive replacements (CR 616.1f) while
+/// `find_applicable_replacements` excludes this one (CR 614.5) — this replacement
+/// cannot self-invoke.
+///
+/// When the leading draw link itself parks an interactive `ReplacementChoice`
+/// (the controller's own draw is replaced), the applier must NOT run the
+/// `Connive` link early — that would violate CR 701.50a's printed order and
+/// clobber the live draw choice. Instead it defers the remaining `Connive` link
+/// (always a single link for this chain) into the DEDICATED
+/// `state.pending_connive_reentry` slot (NOT `post_replacement_continuation`, so
+/// the shared zone-delivery tail cannot drain it mid-draw) and returns
+/// `Prevented`; the post-replacement-choice epilogue
+/// (`engine_replacement::handle_replacement_choice`) resumes the connive in order
+/// once the parked draw choice resolves. (CR 614.11a — completing a replacement's
+/// actions before resuming a draw sequence — is the analogous supporting
+/// principle.) This parking path is specific to this one caller; it is not a
+/// general mechanism.
+fn connive_applier(
+    event: ProposedEvent,
+    rid: ReplacementId,
+    state: &mut GameState,
+    events: &mut Vec<GameEvent>,
+) -> ApplyResult {
+    let ProposedEvent::Connive {
+        object_id,
+        count,
+        applied,
+    } = event
+    else {
+        return ApplyResult::Modified(event);
+    };
+
+    let Some(source) = state.objects.get(&rid.source) else {
+        // CR 614.5: carry the captured `applied` set (already marks this rid) so
+        // the fallback survivor event cannot re-apply the same replacement.
+        return ApplyResult::Modified(ProposedEvent::Connive {
+            object_id,
+            count,
+            applied,
+        });
+    };
+    let Some(execute) = source
+        .replacement_definitions
+        .get(rid.index)
+        .and_then(|def| def.execute.clone())
+    else {
+        // CR 614.5: carry the captured `applied` set (already marks this rid) so
+        // the fallback survivor event cannot re-apply the same replacement.
+        return ApplyResult::Modified(ProposedEvent::Connive {
+            object_id,
+            count,
+            applied,
+        });
+    };
+
+    use crate::game::ability_utils::build_resolved_from_def;
+    use crate::types::ability::TargetRef;
+
+    let controller = source.controller;
+    let mut current = Some(execute.as_ref());
+    while let Some(def) = current {
+        match &*def.effect {
+            // CR 701.50a + CR 701.50e: "then that creature connives" runs the
+            // chain's OWN connive at its parsed count (plain connive = Fixed(1);
+            // connive N = Fixed(N) / dynamic), NOT the replaced event's count.
+            // Resolve the def's QuantityExpr against the conniving permanent as
+            // the target, mirroring the normal connive resolver
+            // (effects/connive.rs).
+            //
+            // Build the ResolvedAbility from `def` directly (NOT a
+            // sub_ability-stripped clone like the `_ =>` arm): resolve_quantity_
+            // with_targets reads only ability.effect/targets/controller/source_id
+            // and never walks `sub_ability`, so the extra clone is unnecessary
+            // here.
+            Effect::Connive {
+                count: connive_count_expr,
+                ..
+            } => {
+                let mut ability = build_resolved_from_def(def, rid.source, controller);
+                ability.targets = vec![TargetRef::Object(object_id)];
+                let connive_count = crate::game::quantity::resolve_quantity_with_targets(
+                    state,
+                    connive_count_expr,
+                    &ability,
+                )
+                .max(0) as u32;
+                // CR 616.1f + CR 614.5: re-propose the nested connive through the
+                // pipeline so OTHER still-applicable connive replacements get
+                // their CR 616.1f repeat. `applied` already contains this rid (the
+                // loop/resume marked it before the applier ran), so
+                // `find_applicable_replacements` excludes it (CR 614.5) — this
+                // replacement cannot self-invoke. The link's OWN parsed count
+                // (Fixed(1)/N) still seeds the re-proposed event, preserving the
+                // count fix. The chain loop may drive multiple links, so clone the
+                // (small) `applied` set per re-entry.
+                let _ = crate::game::effects::connive::propose_connive(
+                    state,
+                    object_id,
+                    connive_count,
+                    applied.clone(),
+                    events,
+                );
+            }
+            // CR 701.50a: "you draw a card" and any other modeled effect in the
+            // chain resolve against the replacement source / conniving permanent.
+            // Resolve THIS link only — `connive_applier`'s loop drives the chain,
+            // so the def's `sub_ability` is stripped before dispatch. Otherwise
+            // `resolve_ability_chain` would also walk the `then ... connives`
+            // sub-link through the propose path and re-trigger this replacement
+            // (infinite recursion; CR 614.5 bars self-invocation).
+            _ => {
+                let mut single = def.clone();
+                single.sub_ability = None;
+                let mut ability = build_resolved_from_def(&single, rid.source, controller);
+                ability.targets = vec![TargetRef::Object(object_id)];
+                let _ = crate::game::effects::resolve_ability_chain(state, &ability, events, 1);
+
+                // CR 701.50a + CR 614.5 + CR 616.1f: if this draw link parked an
+                // interactive ReplacementChoice (the controller's own draw is
+                // itself replaced) and its successor is the `then ... connives`
+                // link, the connive must NOT run now — CR 701.50a's "then" fixes
+                // the printed order. Defer the connive into the dedicated
+                // `state.pending_connive_reentry` slot (resumed by the
+                // post-replacement-choice epilogue once the parked draw choice
+                // resolves) and return `Prevented`.
+                //
+                // The park signal is precise: `draw_through_replacement` parks via
+                // `replace_event`'s `NeedsChoice`, which BOTH sets `waiting_for` to
+                // a `ReplacementChoice` AND leaves a live `pending_replacement`
+                // record. A normally-completed draw (the multi-Leader connive
+                // re-entry path) consumes its pending record and leaves
+                // `pending_replacement == None`, so this guard does not misfire on
+                // a stale non-Priority `waiting_for` left by the surrounding
+                // connive-ordering resume. Reached ONLY on the parked-draw +
+                // Connive-successor path; every other case advances the loop
+                // unchanged.
+                if matches!(state.waiting_for, WaitingFor::ReplacementChoice { .. })
+                    && state.pending_replacement.is_some()
+                {
+                    if let Some(next) = def.sub_ability.as_deref() {
+                        if let Effect::Connive {
+                            count: connive_count_expr,
+                            ..
+                        } = &*next.effect
+                        {
+                            let mut next_ability =
+                                build_resolved_from_def(next, rid.source, controller);
+                            next_ability.targets = vec![TargetRef::Object(object_id)];
+                            let connive_count =
+                                crate::game::quantity::resolve_quantity_with_targets(
+                                    state,
+                                    connive_count_expr,
+                                    &next_ability,
+                                )
+                                .max(0) as u32;
+                            // CR 614.5: `applied` already excludes this rid, so the
+                            // resumed `propose_connive` cannot self-invoke and the
+                            // CR 616.1f repeat covers the remaining connives.
+                            // Dedicated slot (NOT post_replacement_continuation) so
+                            // the leading draw's DeliveryTail drain cannot consume it
+                            // mid-draw; the post-replacement-choice epilogue drains
+                            // it after the draw fully delivers (CR 701.50a order).
+                            if state.pending_connive_reentry.is_none() {
+                                state.pending_connive_reentry =
+                                    Some(crate::types::game_state::PendingConniveReentry {
+                                        conniver: object_id,
+                                        count: connive_count,
+                                        applied: applied.clone(),
+                                    });
+                            }
+                            return ApplyResult::Prevented;
+                        }
+                    }
+                }
+            }
+        }
+        current = def.sub_ability.as_deref();
+    }
+
+    ApplyResult::Prevented
+}
+
 // --- 4c. CoinFlip (Krark's Thumb) ---
 
 // CR 705.1 + CR 614.1a: A coin flip is about to happen. Krark's Thumb replaces
@@ -3056,6 +3254,15 @@ pub fn build_replacement_registry() -> IndexMap<ReplacementEvent, ReplacementHan
         ReplacementHandlerEntry {
             matcher: explore_matcher,
             applier: explore_applier,
+        },
+    );
+    // CR 701.50a + CR 614.1a: Connive replacements (Leader, Super-Genius)
+    // intercept "a creature would connive" and substitute a modified action.
+    registry.insert(
+        ReplacementEvent::Connive,
+        ReplacementHandlerEntry {
+            matcher: connive_matcher,
+            applier: connive_applier,
         },
     );
     registry.insert(
@@ -5140,6 +5347,19 @@ fn apply_single_replacement(
                         | (ProposedEvent::LifeGain { .. }, Effect::GainLife { .. })
                 )
             });
+            // CR 701.50a + CR 614.5: The connive applier runs the entire
+            // replacement `execute` chain ("instead you draw a card, then that
+            // creature connives") itself and returns `Prevented`. Stashing the
+            // same chain as a post-replacement continuation would re-run it when
+            // the continuation drains (e.g. after the connive's `ConniveDiscard`
+            // choice resolves), executing the modified action twice. The applier
+            // is the single authority for this event, so suppress the generic
+            // stash. On its parking path the applier stashes its deferred connive
+            // into the DEDICATED `state.pending_connive_reentry` slot (only the
+            // deferred connive link, not the whole chain), so suppressing this
+            // generic Template stash here does not drop the deferred connive.
+            let post_effect =
+                post_effect.filter(|_| !matches!(proposed, ProposedEvent::Connive { .. }));
             let mut modifiers = event_modifiers_for_ability(ability, state, rid.source, &proposed);
             // CR 110.2a: A self-ETB controller override is carried directly on the
             // replacement definition (not derived from `execute`), parallel to the

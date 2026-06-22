@@ -87,6 +87,7 @@ pub struct MutateFormState;
 pub enum MergeKind {
     Mutate,
     Meld,
+    Augment,
 }
 
 /// CR 702.160a: Prototype form marker — `Some(_)` means this object was cast

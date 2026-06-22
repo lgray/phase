@@ -143,6 +143,19 @@ pub enum GameEvent {
         merging_id: ObjectId,
         controller: PlayerId,
     },
+    /// Unstable Host/Augment: a card with augment combined with a Host
+    /// creature, forming a merged permanent. Emitted by `augment.rs`.
+    /// `merged_id` is the surviving permanent's `ObjectId` (the Host
+    /// creature's continuity id); `augmenting_id` is the augment component that
+    /// merged onto it; `controller` is the player who performed the combine.
+    ///
+    /// Distinct from `Mutated`: Augment reuses merge-like bookkeeping but is a
+    /// separate mechanic and must not satisfy `TriggerMode::Mutates`.
+    Augmented {
+        merged_id: ObjectId,
+        augmenting_id: ObjectId,
+        controller: PlayerId,
+    },
     /// CR 707.10: A spell was copied onto the stack. A copy of a spell isn't
     /// cast, so this is a distinct event from `SpellCast` — copy-sensitive
     /// triggers (Magecraft, "whenever you copy a spell") fire on this, while

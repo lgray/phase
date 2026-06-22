@@ -637,6 +637,9 @@ pub(crate) fn keys_from_event(event: &GameEvent, state: &GameState) -> Keys {
         // unclassified bucket (see `keys_from_trigger_def`), so the `Mutated`
         // event needs no dedicated index key — `match_mutates` is always consulted.
         GameEvent::Mutated { .. } => {}
+        // Unstable Host/Augment combine is a distinct mechanic and has no
+        // dedicated trigger mode today.
+        GameEvent::Augmented { .. } => {}
         GameEvent::Firebend { .. }
         | GameEvent::Airbend { .. }
         | GameEvent::Earthbend { .. }
@@ -892,7 +895,9 @@ fn keys_from_effect_kind(kind: EffectKind, push: &mut impl FnMut(TriggerEventKey
         | EffectKind::ExchangeLifeTotals
         // Heist/HeistExile have no production EffectResolved-dispatching matcher.
         | EffectKind::Heist
-        | EffectKind::HeistExile => {}
+        | EffectKind::HeistExile
+        | EffectKind::CombineHost
+        | EffectKind::ChooseAugmentAndCombineWithHost => {}
     }
 }
 

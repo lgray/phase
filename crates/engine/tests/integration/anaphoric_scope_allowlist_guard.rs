@@ -170,7 +170,6 @@ const ANAPHORIC_SCOPE_CARDS: &[&str] = &[
     "beastie beatdown",
     "benalish faithbonder",
     "benalish knight-counselor",
-    "bionic blow",
     "bite down on crime",
     "blood poet",
     "bottle golems",
@@ -178,7 +177,6 @@ const ANAPHORIC_SCOPE_CARDS: &[&str] = &[
     "brainstealer dragon",
     "brokers charm",
     "burrog barrage",
-    "captain marvel, shooting star",
     "champion of the path",
     "champion of wits",
     "chastise",
@@ -186,7 +184,6 @@ const ANAPHORIC_SCOPE_CARDS: &[&str] = &[
     "clear shot",
     "coalition skyknight",
     "coalition warbrute",
-    "colossal collision",
     "common black removal",
     "conclave mentor",
     "consume",
@@ -209,7 +206,6 @@ const ANAPHORIC_SCOPE_CARDS: &[&str] = &[
     "electryte",
     "exile",
     "felling blow",
-    "feral encounter",
     "foot chopper",
     "gargantuan gorilla",
     "garruk relentless",
@@ -258,9 +254,7 @@ const ANAPHORIC_SCOPE_CARDS: &[&str] = &[
     "nibelheim aflame",
     "nissa's judgment",
     "nissa's revelation",
-    "nova flame",
     "noxious gearhulk",
-    "origin of thor",
     "orzhov charm",
     "packsong pup",
     "pain for all",
@@ -287,6 +281,7 @@ const ANAPHORIC_SCOPE_CARDS: &[&str] = &[
     "shriveling rot",
     "signature slam",
     "sister hospitaller",
+    "sly spy",
     "sorin the mirthless",
     "sorin, grim nemesis",
     "south wind avatar",
@@ -352,7 +347,6 @@ const DEMONSTRATIVE_SCOPE_CARDS: &[&str] = &[
     "consuming vapors",
     "cragganwick cremator",
     "creature bond",
-    "daredevil, fearless fighter",
     "daxos of meletis",
     "dead reckoning",
     "devour flesh",
@@ -431,10 +425,8 @@ const DEMONSTRATIVE_SCOPE_CARDS: &[&str] = &[
     "singe-mind ogre",
     "summon: kujata",
     "terror of the peaks",
-    "the frightful four",
     "the lord of pain",
     "the provider",
-    "thor, god of thunder",
     "tribute to hunger",
     "trostani, selesnya's voice",
     "twisted justice",
@@ -552,17 +544,23 @@ fn anaphoric_scope_set_is_frozen() {
     // spell), dropping it back out (-1) for a net count of 172. Vivien's
     // Invocation remains Anaphoric: the reflexive-trigger anaphor handling in
     // this batch keeps its "its mana value" pointing at the entering creature.
+    // The current export once again retains Sly Spy's reveal-referent pronoun
+    // ("its mana value") as ObjectScope::Anaphoric, taking the count to 173.
+    // The current export no longer retains the prior one-sided-fight /
+    // target-event anaphor set (Bionic Blow, Captain Marvel, Colossal
+    // Collision, Feral Encounter, Nova Flame, Origin of Thor), dropping the
+    // count to 167.
     assert_eq!(
         observed.len(),
-        172,
-        "Expected exactly 172 cards retaining ObjectScope::Anaphoric (pronoun \
+        167,
+        "Expected exactly 167 cards retaining ObjectScope::Anaphoric (pronoun \
          'its' antecedents). Count moved to {}.",
         observed.len()
     );
     assert_eq!(
         ANAPHORIC_SCOPE_CARDS.len(),
-        172,
-        "ANAPHORIC_SCOPE_CARDS must list exactly 172 cards."
+        167,
+        "ANAPHORIC_SCOPE_CARDS must list exactly 167 cards."
     );
 }
 
@@ -614,18 +612,20 @@ fn demonstrative_scope_set_is_frozen() {
     // nom quantity call-site migration briefly resolved Nightmares and Daydreams
     // out of the demonstrative set, but the delayed-trigger split combined with
     // this batch's grammar keeps it parsing as a bare demonstrative, so it is
-    // retained.)
+    // retained.) The current export no longer retains the prior three Marvel
+    // demonstrative keys ("daredevil, fearless fighter", "the frightful four",
+    // and "thor, god of thunder"), dropping the count to 113.
     assert_eq!(
         observed.len(),
-        116,
-        "Expected exactly 116 cards retaining ObjectScope::Demonstrative. Count \
+        113,
+        "Expected exactly 113 cards retaining ObjectScope::Demonstrative. Count \
          moved to {}.",
         observed.len()
     );
     assert_eq!(
         DEMONSTRATIVE_SCOPE_CARDS.len(),
-        116,
-        "DEMONSTRATIVE_SCOPE_CARDS must list exactly 116 cards."
+        113,
+        "DEMONSTRATIVE_SCOPE_CARDS must list exactly 113 cards."
     );
 }
 

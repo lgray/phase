@@ -64,6 +64,34 @@ pub(crate) fn object_has_devour_replacement(state: &GameState, id: ObjectId) -> 
     })
 }
 
+/// CR 701.50a + CR 614.5 + CR 616.1f: drain a deferred connive whose leading
+/// Draw link parked a replacement-ordering choice. Runs only when the dedicated
+/// `pending_connive_reentry` slot is set (the connive applier's parked-draw
+/// path). `propose_connive` re-enters with the already-applied rids excluded
+/// (CR 614.5) so the CR 616.1f repeat covers the remaining connive replacements.
+/// Called from BOTH the Execute arm (the leading draw delivered) and the
+/// Prevented arm (the inner draw was prevented, but CR 701.50a's "draw a card,
+/// THEN that creature connives" still runs the connive step — the prevention
+/// replaced only the draw). Returns the parked `WaitingFor` (ConniveDiscard /
+/// fresh ReplacementChoice) if `propose_connive` parked one, else `None`.
+fn drain_pending_connive_reentry(
+    state: &mut GameState,
+    events: &mut Vec<GameEvent>,
+) -> Option<WaitingFor> {
+    let reentry = state.pending_connive_reentry.take()?;
+    let _ = crate::game::effects::connive::propose_connive(
+        state,
+        reentry.conniver,
+        reentry.count,
+        reentry.applied,
+        events,
+    );
+    match &state.waiting_for {
+        WaitingFor::Priority { .. } => None,
+        wf => Some(wf.clone()),
+    }
+}
+
 pub(super) fn handle_replacement_choice(
     state: &mut GameState,
     index: usize,
@@ -292,6 +320,23 @@ pub(super) fn handle_replacement_choice(
                 // CR 701.37a: Explore accepted after replacement choice — the
                 // explore resolver handles the actual explore logic; this is a no-op here.
                 ProposedEvent::Explore { .. } => {}
+                // CR 701.50a + CR 616.1: Connive surviving as an `Execute`
+                // payload after a replacement-ordering choice (the count-modifier
+                // case — a full-substitution connive replacement returns
+                // `Prevented` and never reaches here). The connive keyword action
+                // still has to run with the surviving count; resolve its internals
+                // directly so it does not re-enter the propose pipeline (CR 614.5).
+                // CR 616.1f: this is the TERMINAL survivor — `pipeline_loop`
+                // already repeated over and exhausted every applicable connive
+                // replacement, so no connive replacement remains to apply here and
+                // a direct `resolve_connive_effect` is correct.
+                ProposedEvent::Connive {
+                    object_id, count, ..
+                } => {
+                    let _ = crate::game::effects::connive::resolve_connive_effect(
+                        state, object_id, count, events,
+                    );
+                }
                 // CR 701.34a: Proliferate accepted after replacement choice.
                 proliferate @ ProposedEvent::Proliferate { .. } => {
                     crate::game::effects::proliferate::apply_proliferate_after_replacement(
@@ -509,6 +554,21 @@ pub(super) fn handle_replacement_choice(
                 }
             }
 
+            // CR 701.50a + CR 614.5 + CR 616.1f: resume a deferred connive whose
+            // leading Draw link parked this just-resolved ReplacementChoice. The
+            // draw fully delivered above (Draw arm), so "draw a card, THEN that
+            // creature connives" (CR 701.50a) order is honored. `propose_connive`
+            // re-enters with the already-applied rids excluded (CR 614.5) so the
+            // CR 616.1f repeat covers the remaining connive replacements; it sets a
+            // parked ConniveDiscard / fresh ReplacementChoice on state.waiting_for,
+            // which we surface instead of the Priority reset. Drained from the
+            // DEDICATED slot so the leading draw's DeliveryTail could not consume it.
+            if matches!(waiting_for, WaitingFor::Priority { .. }) {
+                if let Some(wf) = drain_pending_connive_reentry(state, events) {
+                    waiting_for = wf;
+                }
+            }
+
             if matches!(waiting_for, WaitingFor::Priority { .. })
                 && state.pending_counter_moves.is_some()
             {
@@ -627,6 +687,59 @@ pub(super) fn handle_replacement_choice(
             ))
         }
         super::replacement::ReplacementResult::Prevented => {
+            // CR 616.1f + CR 701.50a: a full-substitution applier (the Leader,
+            // Super-Genius connive replacement) can park its OWN interactive
+            // choice while running the replacing action. Two shapes occur:
+            //  - a `ConniveDiscard` prompt — the surviving plain connive pauses
+            //    when the controller must choose which card to discard, or
+            //  - a FRESH `ReplacementChoice` — the nested "then that creature
+            //    connives" re-entry found two or more OTHER still-applicable
+            //    connive replacements, so CR 616.1f repeats over them and the
+            //    controller must order the next one (the 3+ co-applicable case).
+            // `continue_replacement` returned `Prevented` (the original event was
+            // fully replaced), but the applier already set `state.waiting_for` to
+            // that live prompt. Surface it instead of clobbering it with
+            // `Priority`; the prompt's own resolution finishes the parked work.
+            //
+            // A bare `ReplacementChoice` whitelist is insufficient: it cannot
+            // tell the JUST-RESOLVED ordering prompt (already consumed) from a
+            // freshly-parked nested one. `continue_replacement` `.take()`-consumed
+            // the prior pending record at its start, so a `pending_replacement`
+            // that is still `Some` here is necessarily the applier's freshly-
+            // parked nested ordering choice — surface it so the next
+            // `ChooseReplacement` resumes the CR 616.1f repeat instead of orphaning
+            // the record and dropping replacements C onward.
+            if state.pending_replacement.is_some()
+                || !matches!(
+                    state.waiting_for,
+                    WaitingFor::Priority { .. } | WaitingFor::ReplacementChoice { .. }
+                )
+            {
+                return Ok(state.waiting_for.clone());
+            }
+            // CR 701.50a + CR 614.5 + CR 616.1f: the leading Draw of a connive
+            // replacement was PREVENTED (a draw-Prevent replacement ordered
+            // first). The prevention replaced only the draw — CR 701.50a's
+            // "instead you draw a card, THEN that creature connives" still runs
+            // the connive step. Drain the deferred connive from the dedicated
+            // slot (the Execute arm above did not run because the draw was
+            // prevented). Reset the stale leading-draw `ReplacementChoice`
+            // waiting_for to Priority first (mirrors the Execute arm and every
+            // other Prevented-arm drain below) so the connive's own draw
+            // re-enters from a clean state instead of seeing the parked prompt.
+            // `propose_connive` may park a ConniveDiscard / fresh
+            // ReplacementChoice — surface it. If the slot is None (every
+            // non-connive Prevented resolution) skip entirely so control falls
+            // through to the existing pending-* blocks unchanged.
+            if state.pending_connive_reentry.is_some() {
+                state.waiting_for = WaitingFor::Priority {
+                    player: state.active_player,
+                };
+                if let Some(wf) = drain_pending_connive_reentry(state, events) {
+                    return Ok(wf);
+                }
+                return Ok(state.waiting_for.clone());
+            }
             if state.pending_counter_additions.is_some() {
                 state.waiting_for = WaitingFor::Priority {
                     player: state.active_player,

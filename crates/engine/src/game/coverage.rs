@@ -2404,6 +2404,19 @@ fn effect_details(effect: &Effect) -> Vec<(String, String)> {
                 d.push(("on_decline".into(), "present".into()));
             }
         }
+        Effect::CombineHost { source, host } => {
+            d.push(("source".into(), format!("{source:?}")));
+            d.push(("host".into(), fmt_target(host)));
+        }
+        Effect::ChooseAugmentAndCombineWithHost {
+            zones,
+            filter,
+            host,
+        } => {
+            d.push(("zones".into(), zones.iter().map(fmt_zone).collect::<Vec<_>>().join("/")));
+            d.push(("filter".into(), fmt_target(filter)));
+            d.push(("host".into(), fmt_target(host)));
+        }
         Effect::RevealTop { player, count } => {
             d.push(("player".into(), fmt_target(player)));
             d.push(("count".into(), count.to_string()));
