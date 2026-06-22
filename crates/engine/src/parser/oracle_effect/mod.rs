@@ -5398,11 +5398,15 @@ fn parse_effect_clause_inner(text: &str, ctx: &mut ParseContext) -> ParsedEffect
     }
 
     // CR 101.4 + CR 102.2 + CR 608.2c: "For each [other] player, exile [up to
-    // one] [target] <type> that player controls" — Kaya, Spirits' Justice's −2.
-    // The combined per-iterated-player choose + mass-exile-those form. Checked
-    // before the choose-from-zone dispatcher because its verb is "exile", and it
-    // returns a `ChooseFromZone { EachPlayer/EachOpponent }` clause whose
-    // `sub_ability` is the `ChangeZoneAll { TrackedSet }` exile.
+    // one] <type> that player controls" — Kaya, Spirits' Justice's −2. The
+    // combined per-iterated-player choose + mass-exile-those form. Checked before
+    // the choose-from-zone dispatcher because its verb is "exile", and it returns
+    // a `ChooseFromZone { EachPlayer/EachOpponent }` clause whose `sub_ability` is
+    // the `ChangeZoneAll { TrackedSet }` exile. The printed-`target` variant
+    // (CR 115.1c + CR 601.2c, "exile up to one TARGET <type>…") is intentionally
+    // NOT handled — its targets must be announced at activation, which the engine
+    // cannot model as a per-iterated-player set — so it falls through to
+    // `Effect::unimplemented`.
     if let Some(clause) = imperative::parse_for_each_player_exile_controlled(tp.lower, ctx) {
         return clause;
     }

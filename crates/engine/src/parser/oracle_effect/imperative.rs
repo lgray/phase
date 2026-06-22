@@ -3168,23 +3168,32 @@ pub(super) fn parse_for_each_player_choose_from_zone(
     // duration-bound continuous effect on the chosen set). Emitting the choose
     // here would yield a silently-wrong chain (the payload over-acts), which is
     // strictly worse than an honest residual gap — so these stay Unimplemented
-    // until their payloads land. The combined choose+exile form (Kaya, below) is
-    // verified end-to-end and IS handled.
+    // until their payloads land. The combined choose+exile NON-target form (Kaya,
+    // below) is verified end-to-end and IS handled; its printed-`target` variant
+    // (CR 115.1c + CR 601.2c) needs announced per-iterated-player target slots the
+    // engine cannot yet model, so it is intentionally Unimplemented.
     None
 }
 
-/// CR 601.2c + CR 608.2k: Parse the body shared by the per-player
-/// battlefield-control choose ("choose [up to one] [other] [target] `<type>`
-/// that player controls") and exile ("exile [up to one] [target] `<type>` that
-/// player controls", Kaya) forms — everything AFTER the verb head. Returns
-/// `(up_to, filter)`.
+/// CR 608.2c + CR 608.2k: Parse the body shared by the per-player
+/// battlefield-control choose ("choose [up to one] [other] `<type>` that player
+/// controls") and exile ("exile [up to one] `<type>` that player controls",
+/// Kaya) forms — everything AFTER the verb head. Returns `(up_to, filter)`.
 ///
 /// "up to one" → `up_to = true` (zero-or-one); a bare article ("a"/"an"/"one")
-/// is the mandatory single pick. The printed "other "/"target " modifiers are
-/// non-semantic for a resolution-scoped per-player choice: "other " folds into
-/// the filter (`FilterProp::Another`, excluding the source); "target " is the
-/// printed word, resolved as the interactive choice rather than an
-/// announced-at-cast target. The trailing "that player controls" relative-control
+/// is the mandatory single pick. "other " folds into the filter
+/// (`FilterProp::Another`, excluding the source).
+///
+/// The NON-target form is a resolution-scoped per-player choice (CR 608.2c +
+/// CR 115.10a: the affected permanent is chosen on resolution and is NOT a
+/// target). The printed-`target` form is different in kind — CR 115.1c +
+/// CR 601.2c require its targets to be announced as the ability is activated,
+/// chosen through the targeting machinery (legality / hexproof / shroud /
+/// protection enforced). The engine has no machinery for a variable,
+/// per-iterated-player set of announced target slots, so the printed-`target`
+/// variant is NOT representable as a resolution choice: this body rejects a
+/// leading `target ` (returns `None`) and the dispatcher falls through to
+/// `Effect::unimplemented`. The trailing "that player controls" relative-control
 /// clause is required (it is what distinguishes the battlefield-control form from
 /// the zone-noun form).
 fn parse_controlled_battlefield_body(
@@ -3205,12 +3214,15 @@ fn parse_controlled_battlefield_body(
     let (after_other, exclude_source) = opt(value((), tag::<_, _, E>("other ")))
         .parse(after_qty)
         .ok()?;
-    let after_target = opt(tag::<_, _, E>("target "))
-        .parse(after_other)
-        .ok()
-        .map(|(rest, _)| rest)?;
+    // CR 115.1c + CR 601.2c: a printed `target` requires targets announced as the
+    // ability is activated, not a resolution choice. There is no machinery for a
+    // variable per-iterated-player set of announced target slots, so reject the
+    // printed-`target` variant here → dispatcher emits `Effect::unimplemented`.
+    if tag::<_, _, E>("target ").parse(after_other).is_ok() {
+        return None;
+    }
 
-    let (control_clause_start, _) = nom_primitives::scan_split_at_phrase(after_target, |i| {
+    let (control_clause_start, _) = nom_primitives::scan_split_at_phrase(after_other, |i| {
         value((), tag::<_, _, E>("that player controls")).parse(i)
     })?;
     let type_phrase = control_clause_start.trim_end();

@@ -1,22 +1,32 @@
-//! Per-opponent iterated exile — Kaya, Spirits' Justice's −2 ability.
+//! Per-other-player iterated exile — Kaya, Spirits' Justice's −2 ability.
 //!
 //! Printed −2: "Exile target creature you control. For each other player, exile
 //! up to one target creature that player controls."
 //!
-//! This exercises the per-player iterated target/choice primitive
-//! (`ChooseFromZone { zone_owner: EachOpponent }`): for EACH OTHER player in
-//! APNAP order the controller chooses up to one creature THAT player controls
-//! and exiles every chosen permanent (`ChangeZoneAll { TrackedSet }`). The
-//! controller is never offered as an iterated chooser (that is the `EachOpponent`
-//! vs `EachPlayer` discriminator).
+//! The printed second sentence uses the word "target" for a VARIABLE,
+//! per-iterated-player set of permanents. CR 115.1c + CR 601.2c require those
+//! targets to be announced as the ability is activated and chosen through the
+//! targeting machinery (legality / hexproof / shroud / protection enforced). The
+//! engine has no machinery for a per-iterated-player set of announced target
+//! slots (`collect_target_slots` is fixed-count; `repeat_for` resolves at
+//! resolution time, not announcement), so the printed-`target` clause is
+//! honestly `Effect::unimplemented` rather than silently routed through a
+//! resolution-time choose (which would bypass targeting). This is asserted by
+//! `printed_target_form_is_unimplemented`.
+//!
+//! The NON-target form ("…exile up to one creature that player controls") IS a
+//! resolution-time choice (CR 115.10a + CR 608.2c: the affected permanent is
+//! chosen on resolution and is NOT a target). It parses to the per-player
+//! iterated `ChooseFromZone { zone_owner: EachOpponent }` primitive: for EACH
+//! OTHER player in APNAP order the controller chooses up to one creature THAT
+//! player controls and every chosen permanent is exiled
+//! (`ChangeZoneAll { TrackedSet }`). The controller is never offered as an
+//! iterated chooser (the `EachOpponent` vs `EachPlayer` discriminator).
 //!
 //! The runtime tests drive the REAL `apply` pipeline in a 3-player game: a
 //! sorcery carrying the per-other-player clause is cast, the choose loop parks
 //! interactive `ChooseFromZoneChoice` prompts, each pick is answered via a real
-//! `GameAction::SelectCards`, and every observable zone is engine-produced. The
-//! first sentence ("Exile target creature you control") is a pre-existing
-//! single-target `ChangeZone` and is asserted at the parser level on the real
-//! printed card (the runtime tests isolate the NEW per-other-player seam).
+//! `GameAction::SelectCards`, and every observable zone is engine-produced.
 //!
 //! CR 101.4: per-player choices are made in APNAP order.
 //! CR 102.2: "each other player" excludes the controller.
@@ -33,9 +43,10 @@ use engine::types::phase::Phase;
 use engine::types::player::PlayerId;
 use engine::types::zones::Zone;
 
-/// The per-other-player sentence of Kaya's −2 (the clause this change adds).
-const PER_OTHER_PLAYER: &str =
-    "For each other player, exile up to one target creature that player controls.";
+/// The NON-target per-other-player sentence — the resolution-time choice form
+/// this change supports.
+const PER_OTHER_PLAYER_NON_TARGET: &str =
+    "For each other player, exile up to one creature that player controls.";
 
 const P0: PlayerId = PlayerId(0);
 const P1: PlayerId = PlayerId(1);
@@ -97,13 +108,156 @@ fn answer_pick(runner: &mut GameRunner, expected_chooser: PlayerId, pick: Object
         .expect("selecting one legal creature must succeed");
 }
 
+/// Walk the `sub_ability` chain rooted at the −2's self-exile `ChangeZone` and
+/// report `(reaches_each_opponent_choose, reaches_unimplemented)`.
+fn scan_minus_two_chain(parsed: &engine::parser::oracle::ParsedAbilities) -> (bool, bool) {
+    let minus_two = parsed
+        .abilities
+        .iter()
+        .find(|a| {
+            matches!(
+                &*a.effect,
+                Effect::ChangeZone {
+                    destination: Zone::Exile,
+                    ..
+                }
+            )
+        })
+        .expect("−2 self-exile ChangeZone present");
+
+    let mut node = minus_two.sub_ability.as_deref();
+    let mut found_each_opponent = false;
+    let mut found_unimplemented = false;
+    while let Some(def) = node {
+        match &*def.effect {
+            Effect::ChooseFromZone {
+                zone_owner: ZoneOwner::EachOpponent,
+                ..
+            } => found_each_opponent = true,
+            Effect::Unimplemented { .. } => found_unimplemented = true,
+            _ => {}
+        }
+        node = def.sub_ability.as_deref();
+    }
+    (found_each_opponent, found_unimplemented)
+}
+
+/// HIGH discriminator. The REAL printed −2 (WITH "target") must NOT route the
+/// per-other-player clause through a resolution-time `ChooseFromZone` — that
+/// would bypass CR 115.1c / CR 601.2c target announcement and the
+/// hexproof/shroud/protection gate. Instead the printed-`target` clause is
+/// honestly `Effect::unimplemented`: NO `ChooseFromZone { EachOpponent }` is
+/// reachable through the sub_ability chain, and an `Unimplemented` node IS.
+///
+/// REVERT PROBE: undo the `tag("target ")` rejection guard in
+/// `parse_controlled_battlefield_body` (re-swallowing the printed `target`) and
+/// the clause again lowers to `ChooseFromZone { EachOpponent }` — then
+/// `reaches_each_opponent` becomes `true` and the first assertion fails (and
+/// `reaches_unimplemented` becomes `false`, failing the second).
+#[test]
+fn printed_target_form_is_unimplemented() {
+    let oracle = "\u{2212}2: Exile target creature you control. For each other player, \
+         exile up to one target creature that player controls.";
+    let parsed = parse_oracle_text(
+        oracle,
+        "Kaya, Spirits' Justice",
+        &[],
+        &["Planeswalker".to_string()],
+        &["Kaya".to_string()],
+    );
+    let dbg = format!("{parsed:#?}");
+    let (reaches_each_opponent, reaches_unimplemented) = scan_minus_two_chain(&parsed);
+    assert!(
+        !reaches_each_opponent,
+        "the printed-`target` clause must NOT lower to a resolution-time \
+         ChooseFromZone {{ EachOpponent }} (it would bypass targeting);\n{dbg}"
+    );
+    assert!(
+        reaches_unimplemented,
+        "the printed-`target` per-other-player clause must be honestly \
+         Effect::unimplemented;\n{dbg}"
+    );
+}
+
+/// Proves the guard rejects ONLY the printed `target` token, not the whole class:
+/// the NON-target form still parses to the supported per-player iterated
+/// choose+exile chain (zero `Unimplemented`, a reachable
+/// `ChooseFromZone {{ EachOpponent, up_to }}` → `ChangeZoneAll {{ TrackedSet }}`).
+#[test]
+fn non_target_form_still_parses_to_each_opponent_exile_chain() {
+    let oracle = "\u{2212}2: Exile target creature you control. For each other player, \
+         exile up to one creature that player controls.";
+    let parsed = parse_oracle_text(
+        oracle,
+        "Kaya, Spirits' Justice",
+        &[],
+        &["Planeswalker".to_string()],
+        &["Kaya".to_string()],
+    );
+    let dbg = format!("{parsed:#?}");
+    assert!(
+        !dbg.contains("Unimplemented"),
+        "the non-target −2 must parse with zero Unimplemented nodes; got:\n{dbg}"
+    );
+
+    let minus_two = parsed
+        .abilities
+        .iter()
+        .find(|a| {
+            matches!(
+                &*a.effect,
+                Effect::ChangeZone {
+                    destination: Zone::Exile,
+                    ..
+                }
+            )
+        })
+        .expect("−2 self-exile ChangeZone present");
+
+    // Walk the sub_ability chain: the choose must be EachOpponent + up_to, and
+    // its sub_ability must be the mass-exile over the chain tracked set.
+    let mut node = minus_two.sub_ability.as_deref();
+    let mut found_chain = false;
+    while let Some(def) = node {
+        if let Effect::ChooseFromZone {
+            zone_owner: ZoneOwner::EachOpponent,
+            up_to: true,
+            ..
+        } = &*def.effect
+        {
+            let exile_all = def
+                .sub_ability
+                .as_deref()
+                .expect("the per-player choose must chain the mass exile");
+            assert!(
+                matches!(
+                    &*exile_all.effect,
+                    Effect::ChangeZoneAll {
+                        destination: Zone::Exile,
+                        target: engine::types::ability::TargetFilter::TrackedSet { .. },
+                        ..
+                    }
+                ),
+                "the choose must chain ChangeZoneAll {{ TrackedSet }} → Exile;\n{dbg}"
+            );
+            found_chain = true;
+        }
+        node = def.sub_ability.as_deref();
+    }
+    assert!(
+        found_chain,
+        "the non-target −2 chain must include ChooseFromZone {{ EachOpponent, up_to }} \
+         → ChangeZoneAll {{ TrackedSet }};\n{dbg}"
+    );
+}
+
 /// CR 101.4 + CR 102.2 + CR 400.7: For each OTHER player exactly the chosen
 /// creature is exiled, while the controller's creatures and each other player's
 /// unchosen creatures stay on the battlefield. The controller is NEVER a chooser
 /// prompt (the `EachOpponent` discriminator: revert it to `EachPlayer` and the
 /// loop would prompt a third time for P0's creatures).
 #[test]
-fn kaya_minus_two_exiles_one_creature_per_other_player() {
+fn non_target_form_exiles_one_creature_per_other_player() {
     let mut scenario = GameScenario::new_n_player(3, 4242);
     scenario.at_phase(Phase::PreCombatMain);
 
@@ -117,7 +271,12 @@ fn kaya_minus_two_exiles_one_creature_per_other_player() {
     let p2_chosen = scenario.add_creature(P2, "P2 Chosen", 4, 4).id();
 
     let spell = scenario
-        .add_spell_to_hand_from_oracle(P0, "Kaya Per-Other-Player Probe", false, PER_OTHER_PLAYER)
+        .add_spell_to_hand_from_oracle(
+            P0,
+            "Kaya Per-Other-Player Probe",
+            false,
+            PER_OTHER_PLAYER_NON_TARGET,
+        )
         .id();
     let mut runner = scenario.build();
     let card_id = runner.state().objects[&spell].card_id;
@@ -179,7 +338,7 @@ fn kaya_minus_two_exiles_one_creature_per_other_player() {
 /// `EachOpponent` → `EachPlayer` and this fails: P0 would be prompted to exile
 /// its own creature.
 #[test]
-fn kaya_minus_two_skips_controller_in_per_other_player_loop() {
+fn non_target_form_skips_controller() {
     let mut scenario = GameScenario::new_n_player(3, 4243);
     scenario.at_phase(Phase::PreCombatMain);
 
@@ -188,7 +347,12 @@ fn kaya_minus_two_skips_controller_in_per_other_player_loop() {
     // P1/P2 have NO creatures.
 
     let spell = scenario
-        .add_spell_to_hand_from_oracle(P0, "Kaya Per-Other-Player Probe B", false, PER_OTHER_PLAYER)
+        .add_spell_to_hand_from_oracle(
+            P0,
+            "Kaya Per-Other-Player Probe B",
+            false,
+            PER_OTHER_PLAYER_NON_TARGET,
+        )
         .id();
     let mut runner = scenario.build();
     let card_id = runner.state().objects[&spell].card_id;
@@ -212,60 +376,5 @@ fn kaya_minus_two_skips_controller_in_per_other_player_loop() {
             WaitingFor::ChooseFromZoneChoice { .. }
         ),
         "the controller must never be prompted in the each-OTHER-player loop"
-    );
-}
-
-/// Parser structural guard for the full printed −2: the first sentence is a
-/// single-target self-exile `ChangeZone`, and the second sentence is the
-/// `ChooseFromZone { EachOpponent }` → `ChangeZoneAll { TrackedSet }` chain this
-/// change adds. Asserts the −2 carries zero `Unimplemented` nodes.
-#[test]
-fn kaya_minus_two_parses_to_each_opponent_exile_chain() {
-    let oracle = "\u{2212}2: Exile target creature you control. For each other player, \
-         exile up to one target creature that player controls.";
-    let parsed = parse_oracle_text(
-        oracle,
-        "Kaya, Spirits' Justice",
-        &[],
-        &["Planeswalker".to_string()],
-        &["Kaya".to_string()],
-    );
-    let dbg = format!("{parsed:#?}");
-    assert!(
-        !dbg.contains("Unimplemented"),
-        "the −2 must parse with zero Unimplemented nodes; got:\n{dbg}"
-    );
-    // The −2 activated ability's first effect is the self-exile; its sub_ability
-    // chain reaches a `ChooseFromZone { EachOpponent }`.
-    let minus_two = parsed
-        .abilities
-        .iter()
-        .find(|a| {
-            matches!(
-                &*a.effect,
-                Effect::ChangeZone {
-                    destination: Zone::Exile,
-                    ..
-                }
-            )
-        })
-        .expect("−2 self-exile ChangeZone present");
-    // Walk the sub_ability chain to find the per-other-player choose.
-    let mut node = minus_two.sub_ability.as_deref();
-    let mut found_each_opponent = false;
-    while let Some(def) = node {
-        if let Effect::ChooseFromZone {
-            zone_owner: ZoneOwner::EachOpponent,
-            up_to: true,
-            ..
-        } = &*def.effect
-        {
-            found_each_opponent = true;
-        }
-        node = def.sub_ability.as_deref();
-    }
-    assert!(
-        found_each_opponent,
-        "the −2 chain must include a ChooseFromZone {{ EachOpponent, up_to }};\n{dbg}"
     );
 }
