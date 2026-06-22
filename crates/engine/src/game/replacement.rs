@@ -3377,6 +3377,23 @@ fn matches_damage_target_filter(
 
 // --- Pipeline functions ---
 
+/// CR 611.2b + CR 613.1b: "for as long as you control [source]" applicability
+/// gate — true only while the captured originating source is on the battlefield
+/// AND still controlled by the captured installer. Single authority shared by
+/// the `ControllerControlsSource` condition arm (live re-evaluation) and the
+/// layer-pass lapse prunes (`layers::prune_lapsed_controller_controls_source`),
+/// so both agree on exactly when the CR 611.2b duration has ended.
+pub(crate) fn controller_controls_source_gate(
+    state: &GameState,
+    source: ObjectId,
+    installer: PlayerId,
+) -> bool {
+    state
+        .objects
+        .get(&source)
+        .is_some_and(|o| o.zone == Zone::Battlefield && o.controller == installer)
+}
+
 /// Evaluate a replacement condition against the current game state.
 /// Returns `true` if the replacement should apply, `false` if it should be skipped.
 fn evaluate_replacement_condition(
@@ -3813,10 +3830,7 @@ fn evaluate_replacement_condition(
         ReplacementCondition::ControllerControlsSource {
             source,
             controller: installer,
-        } => state
-            .objects
-            .get(source)
-            .is_some_and(|obj| obj.zone == Zone::Battlefield && obj.controller == *installer),
+        } => controller_controls_source_gate(state, *source, *installer),
         // Unrecognized condition — always applies (enters tapped) as a safe default.
         // The engine recognizes the replacement but cannot evaluate the condition,
         // so it conservatively taps the land.

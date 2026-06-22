@@ -27939,6 +27939,19 @@
           ]
         },
         {
+          "name": "ControllerControlsSource",
+          "line": 14536,
+          "kind": "struct",
+          "field_names": [
+            "source",
+            "controller"
+          ],
+          "doc": "CR 611.2b \"for as long as you control [source]\" duration on a replacement installed on a foreign host; applies only while the captured source is on the battlefield AND controlled by the captured installer; either departure (leave-play or control swap) ends it permanently; distinct from the count-based Unless*Controls*/IfControlsMatching family CR 614.1.",
+          "cr_refs": [
+            "CR 611.2b"
+          ]
+        },
+        {
           "name": "Unrecognized",
           "line": 14642,
           "kind": "struct",

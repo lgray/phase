@@ -507,6 +507,119 @@ pub fn prune_affected_object_left_effects(state: &mut GameState, departed_id: Ob
     }
 }
 
+/// CR 611.2b + CR 613.1b: a control swap of the captured source ends the
+/// can't-untap continuous effect permanently; remove the gated def from
+/// base+live so a later swap-back cannot revive it. Runs inside
+/// `evaluate_layers` after the Layer-2 control board is finalized.
+///
+/// Read/mutate split: the read pass borrows `&state` to consult the shared gate
+/// (`controller_controls_source_gate`) for every `ControllerControlsSource` def
+/// it finds (live OR base); the mutate pass uses only the owned host-id list and
+/// lapsed `(source, controller)` set, so no `&state` borrow is alive while
+/// mutating `state.objects`.
+pub(crate) fn prune_lapsed_controller_controls_source(state: &mut GameState) {
+    use crate::types::ability::ReplacementCondition;
+
+    let mut lapsed: HashSet<(ObjectId, PlayerId)> = HashSet::new();
+    let mut hosts: Vec<ObjectId> = Vec::new();
+
+    // READ pass.
+    for (host_id, obj) in state.objects.iter() {
+        let mut host_has_lapsed = false;
+        let mut scan = |def: &crate::types::ability::ReplacementDefinition| {
+            if let Some(ReplacementCondition::ControllerControlsSource { source, controller }) =
+                def.condition
+            {
+                if !crate::game::replacement::controller_controls_source_gate(
+                    state, source, controller,
+                ) {
+                    lapsed.insert((source, controller));
+                    host_has_lapsed = true;
+                }
+            }
+        };
+        obj.replacement_definitions.iter_all().for_each(&mut scan);
+        obj.base_replacement_definitions.iter().for_each(&mut scan);
+        if host_has_lapsed {
+            hosts.push(*host_id);
+        }
+    }
+
+    if hosts.is_empty() {
+        return;
+    }
+
+    // MUTATE pass — owned data only.
+    let is_lapsed = |def: &crate::types::ability::ReplacementDefinition| {
+        matches!(
+            def.condition,
+            Some(ReplacementCondition::ControllerControlsSource { source, controller })
+                if lapsed.contains(&(source, controller))
+        )
+    };
+    for host_id in hosts {
+        if let Some(obj) = state.objects.get_mut(&host_id) {
+            obj.replacement_definitions.retain(|d| !is_lapsed(d));
+            std::sync::Arc::make_mut(&mut obj.base_replacement_definitions)
+                .retain(|d| !is_lapsed(d));
+        }
+    }
+}
+
+/// CR 611.2b + CR 400.7: the captured source leaving play, OR the host leaving
+/// and re-entering as a new object (same storage ObjectId), ends the can't-untap
+/// continuous effect permanently — drop the gated def from base+live so it
+/// cannot revive on a same-ObjectId re-entry. Called from `zones.rs` on a
+/// battlefield exit, OUTSIDE `evaluate_layers`, so it marks layers full on change
+/// (mirroring `prune_host_left_effects`).
+///
+/// The predicate is purely id-based (`departed_id`), so no `&state` gate read is
+/// needed — each object is mutated in a single pass: case (b) the captured
+/// `source == departed_id`, OR case (c) the holding object's own id ==
+/// `departed_id` (host left and may re-enter as a new CR 400.7 object reusing the
+/// same storage key).
+pub(crate) fn prune_controller_controls_source_on_leave(
+    state: &mut GameState,
+    departed_id: ObjectId,
+) {
+    use crate::types::ability::ReplacementCondition;
+
+    let mut changed = false;
+    for (host_id, obj) in state.objects.iter_mut() {
+        let host_left = *host_id == departed_id;
+        let is_lapsed = |def: &crate::types::ability::ReplacementDefinition| {
+            host_left
+                || matches!(
+                    def.condition,
+                    Some(ReplacementCondition::ControllerControlsSource { source, .. })
+                        if source == departed_id
+                )
+        };
+        // Only `ControllerControlsSource` defs are eligible to be dropped — the
+        // `host_left` arm must not wipe unrelated riders, so gate on the variant.
+        let drop = |def: &crate::types::ability::ReplacementDefinition| {
+            matches!(
+                def.condition,
+                Some(ReplacementCondition::ControllerControlsSource { .. })
+            ) && is_lapsed(def)
+        };
+        let before_live = obj.replacement_definitions.len();
+        obj.replacement_definitions.retain(|d| !drop(d));
+        let before_base = obj.base_replacement_definitions.len();
+        if obj.base_replacement_definitions.iter().any(drop) {
+            std::sync::Arc::make_mut(&mut obj.base_replacement_definitions).retain(|d| !drop(d));
+        }
+        if obj.replacement_definitions.len() != before_live
+            || obj.base_replacement_definitions.len() != before_base
+        {
+            changed = true;
+        }
+    }
+    if changed {
+        state.layers_dirty.mark_full();
+    }
+}
+
 /// Evaluate a `StaticCondition` for the given controller.
 /// Returns `true` if the condition is met (effect should apply), `false` otherwise.
 ///
@@ -1654,6 +1767,15 @@ pub fn evaluate_layers(state: &mut GameState) {
         evaluate_layers(state);
         return;
     }
+
+    // CR 611.2b + CR 613.1b: a control swap of the captured source ends the
+    // can't-untap continuous effect permanently; remove the gated def from
+    // base+live so a later swap-back cannot revive it. Runs AFTER the
+    // ring-normalization recursion guard (not at the prev_controllers diff loop)
+    // so it observes the fully-derived Layer-2 board. No `mark_full` here:
+    // `layers_dirty = Clean` is set unconditionally below, so a mark would be
+    // dead code — consistency relies on the in-pass live+base mutation.
+    prune_lapsed_controller_controls_source(state);
 
     // CR 611.3a + CR 611.3b: refresh the source-level enabling-condition truth
     // cache from this fully-derived board. Placed AFTER the ring-normalization

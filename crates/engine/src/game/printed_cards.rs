@@ -2,8 +2,8 @@ use crate::database::synthesis::KeywordTriggerInstaller;
 use crate::database::CardDatabase;
 use crate::types::ability::{
     AbilityCost, AbilityDefinition, ConjureSource, ContinuousModification, CopiableValues,
-    CounterSourceRider, Effect, PtValue, QuantityExpr, ReplacementDefinition, ReplacementMode,
-    StaticDefinition, TargetFilter, TriggerDefinition,
+    CounterSourceRider, Effect, PtValue, QuantityExpr, ReplacementCondition, ReplacementDefinition,
+    ReplacementMode, StaticDefinition, TargetFilter, TriggerDefinition,
 };
 use crate::types::card::{CardFace, CardLayout, LayoutKind, PrintedCardRef};
 use crate::types::card_type::{CardType, CoreType};
@@ -456,9 +456,50 @@ pub fn intrinsic_copiable_values(obj: &GameObject) -> CopiableValues {
         // is both correct and zero-allocation.
         abilities: Arc::clone(&obj.base_abilities),
         trigger_definitions: Arc::clone(&obj.base_trigger_definitions),
-        replacement_definitions: Arc::clone(&obj.base_replacement_definitions),
+        replacement_definitions: copiable_replacement_definitions(obj),
         static_definitions: Arc::clone(&obj.base_static_definitions),
     }
+}
+
+/// CR 707.2 / CR 707.2b: copiable values are the object's printed/defining
+/// characteristics, NOT resolved continuous effects installed by other
+/// permanents (CR 611.2b "for as long as you control ~" locks). A
+/// `ControllerControlsSource`-gated replacement is a runtime continuous effect
+/// durably stored in `base_replacement_definitions` purely so it survives a
+/// layer reset (evaluate_layers rebuilds live defs from base — layers.rs); it is
+/// NOT a printed characteristic. Exclude it from copiable values so that a copy
+/// of the locked host (becomes-a-copy or a copy-token) does not inherit the lock.
+///
+/// Zero-alloc fast path: every printed card has no gated def, so the common case
+/// keeps sharing the source `Arc<Vec<_>>`. A filtered allocation is paid only
+/// when a runtime lock is actually present on the object.
+fn copiable_replacement_definitions(obj: &GameObject) -> Arc<Vec<ReplacementDefinition>> {
+    if !obj
+        .base_replacement_definitions
+        .iter()
+        .any(is_runtime_control_gated_replacement)
+    {
+        return Arc::clone(&obj.base_replacement_definitions);
+    }
+    Arc::new(
+        obj.base_replacement_definitions
+            .iter()
+            .filter(|def| !is_runtime_control_gated_replacement(def))
+            .cloned()
+            .collect(),
+    )
+}
+
+/// CR 707.2 / CR 611.2b: True for a replacement that is a runtime continuous
+/// effect installed by another permanent ("for as long as you control ~"),
+/// durably stored in base only for layer-reset survival. Such defs are NOT
+/// copiable values and must be excluded from any copiable-values surface
+/// (`intrinsic_copiable_values`, the merge/mutate `merged_copiable_values`).
+pub(crate) fn is_runtime_control_gated_replacement(def: &ReplacementDefinition) -> bool {
+    matches!(
+        def.condition,
+        Some(ReplacementCondition::ControllerControlsSource { .. })
+    )
 }
 
 /// CR 707.2 + CR 712.4b: Build the copiable values for a melded permanent

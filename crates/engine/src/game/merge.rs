@@ -233,7 +233,19 @@ fn merged_copiable_values(
         abilities.extend(abil.iter().cloned());
         triggers.extend(trig.iter().cloned());
         statics.extend(stat.iter().cloned());
-        replacements.extend(repl.iter().cloned());
+        // CR 707.2 / CR 611.2b: merged copiable values are printed/defining
+        // characteristics, not the runtime "for as long as you control ~" locks
+        // another permanent installed on a component. Those gated defs live in
+        // base only for layer-reset survival; exclude them from this
+        // copiable-values surface (mirrors `intrinsic_copiable_values`) so a
+        // merged permanent does not inherit a component host's runtime lock.
+        replacements.extend(
+            repl.iter()
+                .filter(|def| {
+                    !crate::game::printed_cards::is_runtime_control_gated_replacement(def)
+                })
+                .cloned(),
+        );
         for kw in kws {
             if !keywords.contains(&kw) {
                 keywords.push(kw);
