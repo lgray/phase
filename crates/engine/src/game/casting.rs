@@ -1885,7 +1885,18 @@ pub(super) fn player_can_spend_as_any_color_for_optional_spell(
     player: PlayerId,
     source_id: Option<ObjectId>,
 ) -> bool {
-    super::static_abilities::player_can_spend_as_any_color(state, player)
+    // CR 609.4b: When a spell object is in context, consult both the board-wide
+    // (`spell_filter: None`) and spell-class-filtered (`Some`) statics; the
+    // filtered form (Vizier of the Menagerie: "creature spells") is matched
+    // against the spell object. With no spell in context (effect/activation
+    // payments), only the unfiltered board-wide static applies.
+    let static_grant = match source_id {
+        Some(spell_id) => super::static_abilities::player_can_spend_as_any_color_for_spell_object(
+            state, player, spell_id,
+        ),
+        None => super::static_abilities::player_can_spend_as_any_color(state, player),
+    };
+    static_grant
         || source_id
             .and_then(|id| state.objects.get(&id))
             .is_some_and(|obj| {
@@ -45095,6 +45106,131 @@ mod tests {
         assert!(
             can_pay_cost_after_auto_tap(&state, player, spell, &state.objects[&spell].mana_cost),
             "a {{U}} cost must be payable from a red-only pool under the concession"
+        );
+    }
+
+    /// Build a Vizier-of-the-Menagerie-class permanent carrying the
+    /// spell-class-filtered `SpendManaAsAnyColor { spell_filter: Some(creature) }`
+    /// static (CR 609.4b). Returns the source object id.
+    fn add_vizier_filtered_any_type_source(state: &mut GameState, player: PlayerId) -> ObjectId {
+        let card_id = crate::types::identifiers::CardId(state.next_object_id);
+        let source = create_object(
+            state,
+            card_id,
+            player,
+            "Vizier of the Menagerie".to_string(),
+            Zone::Battlefield,
+        );
+        let def = StaticDefinition::new(StaticMode::SpendManaAsAnyColor {
+            spell_filter: Some(TargetFilter::Typed(TypedFilter::creature())),
+        })
+        .affected(TargetFilter::Controller);
+        state
+            .objects
+            .get_mut(&source)
+            .unwrap()
+            .static_definitions
+            .push(def);
+        source
+    }
+
+    /// Add a single-pip-blue spell of the given core type controlled by `player`,
+    /// placed on the stack (it is being cast). Returns the spell object id.
+    fn add_single_blue_spell(
+        state: &mut GameState,
+        player: PlayerId,
+        core_type: CoreType,
+        name: &str,
+    ) -> ObjectId {
+        let card_id = crate::types::identifiers::CardId(state.next_object_id);
+        let object_id = create_object(state, card_id, player, name.to_string(), Zone::Stack);
+        let obj = state.objects.get_mut(&object_id).unwrap();
+        obj.card_types.core_types = vec![core_type];
+        // Single blue pip — provably unpayable from a red-only pool unless the
+        // any-type-mana concession is in force for this spell's class.
+        obj.mana_cost = ManaCost::Cost {
+            shards: vec![ManaCostShard::Blue],
+            generic: 0,
+        };
+        object_id
+    }
+
+    /// CR 609.4b: Vizier of the Menagerie — "you may spend mana of any type to
+    /// cast creature spells." The spell-class-FILTERED static lets the controller
+    /// pay a blue CREATURE spell's {U} from a red-only pool, but does NOT help a
+    /// blue NONcreature spell (the filter excludes it), and does nothing without
+    /// the static.
+    ///
+    /// DISCRIMINATING: if `spell_filter` were reverted to the unfiltered `None`
+    /// form, the noncreature assertion below flips (a sorcery would also become
+    /// payable). If the static is removed entirely, the creature assertion flips
+    /// (the {U} cost becomes unpayable from a red-only pool). The seam under test
+    /// is `player_can_spend_as_any_color_for_spell_object` →
+    /// `player_can_spend_as_any_color_for_optional_spell` →
+    /// `can_pay_cost_after_auto_tap`.
+    #[test]
+    fn vizier_filtered_static_grants_any_type_mana_for_creature_spells() {
+        let mut state = setup_game_at_main_phase();
+        let player = PlayerId(0);
+
+        // Revert guard: with NO static, a blue creature spell is unpayable from a
+        // red-only pool.
+        {
+            let mut bare = state.clone();
+            let creature =
+                add_single_blue_spell(&mut bare, player, CoreType::Creature, "Pre Beast");
+            add_mana(&mut bare, player, ManaType::Red, 1);
+            assert!(
+                !can_pay_cost_after_auto_tap(
+                    &bare,
+                    player,
+                    creature,
+                    &bare.objects[&creature].mana_cost
+                ),
+                "without the static, a {{U}} creature spell must be unpayable from a red-only pool"
+            );
+        }
+
+        add_vizier_filtered_any_type_source(&mut state, player);
+        let creature = add_single_blue_spell(&mut state, player, CoreType::Creature, "Blue Beast");
+        let sorcery = add_single_blue_spell(&mut state, player, CoreType::Sorcery, "Blue Bolt");
+        // Only RED mana — a {U} cost is unpayable without the concession.
+        add_mana(&mut state, player, ManaType::Red, 2);
+
+        // POSITIVE: a creature spell matches the filter, so off-color mana pays.
+        assert!(
+            crate::game::static_abilities::player_can_spend_as_any_color_for_spell_object(
+                &state, player, creature
+            ),
+            "the filtered static must grant any-type-mana spend for a creature spell"
+        );
+        assert!(
+            can_pay_cost_after_auto_tap(
+                &state,
+                player,
+                creature,
+                &state.objects[&creature].mana_cost
+            ),
+            "a {{U}} creature-spell cost must be payable from a red-only pool under the concession"
+        );
+
+        // NEGATIVE: a noncreature spell does NOT match the filter — off-color mana
+        // must NOT help. This is what distinguishes the filtered static from the
+        // unfiltered board-wide form.
+        assert!(
+            !crate::game::static_abilities::player_can_spend_as_any_color_for_spell_object(
+                &state, player, sorcery
+            ),
+            "the filtered static must NOT grant any-type-mana spend for a noncreature spell"
+        );
+        assert!(
+            !can_pay_cost_after_auto_tap(
+                &state,
+                player,
+                sorcery,
+                &state.objects[&sorcery].mana_cost
+            ),
+            "a {{U}} sorcery cost must stay unpayable from a red-only pool — the filter excludes it"
         );
     }
 

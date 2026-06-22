@@ -9769,8 +9769,10 @@ fn lower_imperative_clause(text: &str, ctx: &mut ParseContext) -> ParsedEffectCl
             || nom_primitives::scan_contains(&lower, "mana of any type can be spent to cast")
         {
             return parsed_clause(Effect::GenericEffect {
-                static_abilities: vec![StaticDefinition::new(StaticMode::SpendManaAsAnyColor)
-                    .description(text.to_string())],
+                static_abilities: vec![StaticDefinition::new(StaticMode::SpendManaAsAnyColor {
+                    spell_filter: None,
+                })
+                .description(text.to_string())],
                 duration: None,
                 target: Some(TargetFilter::Controller),
             });

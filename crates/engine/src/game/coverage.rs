@@ -139,6 +139,13 @@ fn is_data_carrying_static(mode: &StaticMode) -> bool {
             // CR 107.4f: PayLifeAsColoredMana carries the `ManaColor` axis
             // (K'rrik = Black; future printings any other color).
             | StaticMode::PayLifeAsColoredMana { .. }
+            // CR 609.4b: SpendManaAsAnyColor carries an optional spell-class
+            // `TargetFilter`. The board-wide `None` shape is registry-keyed;
+            // the spell-filtered `Some` shape (Vizier of the Menagerie) carries
+            // an unbounded filter value space, so coverage support lives here.
+            // Runtime enforcement is in
+            // casting.rs::player_can_spend_as_any_color_for_optional_spell.
+            | StaticMode::SpendManaAsAnyColor { .. }
             // CR 121.6: CantDraw carries `who` (controller vs all_players) —
             // runtime enforcement is in game/effects/draw.rs::allowed_draw_count.
             | StaticMode::CantDraw { .. }

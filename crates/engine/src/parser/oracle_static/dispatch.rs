@@ -644,10 +644,19 @@ pub(crate) fn parse_static_line_inner(
     // CR 609.4b: "You may spend mana as though it were mana of any color."
     if tp.lower.trim_end_matches('.') == "you may spend mana as though it were mana of any color" {
         return Some(
-            StaticDefinition::new(StaticMode::SpendManaAsAnyColor)
+            StaticDefinition::new(StaticMode::SpendManaAsAnyColor { spell_filter: None })
                 .affected(TargetFilter::Player)
                 .description(text.to_string()),
         );
+    }
+
+    // CR 609.4b: Spell-class-filtered any-type-mana spend —
+    // "You may/can spend mana of any type to cast <spell-filter> spells."
+    // (Vizier of the Menagerie: "creature spells"). Scoped to the matching
+    // spell class via `spell_filter`, so off-color mana never helps a spell
+    // outside the class.
+    if let Some(def) = try_parse_filtered_spend_any_type_to_cast(&text, tp.lower) {
+        return Some(def);
     }
 
     // CR 107.4f: K'rrik-class life-for-color payment substitution —

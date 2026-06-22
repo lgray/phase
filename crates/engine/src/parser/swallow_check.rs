@@ -638,9 +638,10 @@ fn static_mode_is_optional_permission(mode: &StaticMode) -> bool {
             // CR 601.2f: Defiler-style cost reductions encode the optional
             // life payment inside the static cost-modification primitive.
             | StaticMode::DefilerCostReduction { .. }
-            // CR 609.4b: "You may spend mana as though it were mana of any color" —
-            // opt-in mana-color substitution, inherently optional by the "you may" surface.
-            | StaticMode::SpendManaAsAnyColor
+            // CR 609.4b: "You may spend mana as though it were mana of any color" /
+            // "you may spend mana of any type to cast [filtered] spells" — opt-in
+            // mana substitution, inherently optional by the "you may" surface.
+            | StaticMode::SpendManaAsAnyColor { .. }
             // CR 602.5a + CR 702.10c: "You may activate abilities of X as though those
             // creatures had haste" — lifts the summoning-sickness gate on {T}/{Q}
             // activated abilities; the permission is opt-in by the "you may" surface.
@@ -3041,10 +3042,10 @@ mod tests {
             &["Artifact"],
         );
         assert!(
-            parsed
-                .statics
-                .iter()
-                .any(|s| matches!(s.mode, StaticMode::SpendManaAsAnyColor)),
+            parsed.statics.iter().any(|s| matches!(
+                s.mode,
+                StaticMode::SpendManaAsAnyColor { spell_filter: None }
+            )),
             "expected SpendManaAsAnyColor static to parse, got statics: {:#?}",
             parsed.statics
         );
