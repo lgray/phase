@@ -26,7 +26,7 @@
     "crates/engine/src/types/card_type.rs"
   ],
   "enum_count": 308,
-  "variant_count": 3253,
+  "variant_count": 3254,
   "smell_summary": [
     {
       "enum_name": "AbilityCondition",
@@ -1745,6 +1745,17 @@
           "doc": "CR 719.3c: This ability can only be activated while the source Case is solved.",
           "cr_refs": [
             "CR 719.3c"
+          ]
+        },
+        {
+          "name": "SourceIsHarnessed",
+          "line": 12329,
+          "kind": "unit",
+          "field_names": [],
+          "doc": "CR 701.64b + CR 702.186b: This ability is present only while the source permanent is harnessed, so it can only be activated while harnessed. Read from `GameObject::harnessed`. Sibling of `IsSolved` (CR 719.3c) — a per-object designation activation gate, not a parameterization of it.",
+          "cr_refs": [
+            "CR 701.64b",
+            "CR 702.186b"
           ]
         },
         {

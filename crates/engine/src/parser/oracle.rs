@@ -2667,6 +2667,16 @@ pub(crate) fn parse_oracle_ir(
         if let Some(colon_pos) = find_activated_colon(&line) {
             let cost_text = line[..colon_pos].trim();
             let effect_text = line[colon_pos + 1..].trim();
+            // CR 207.2c (shared label-prefix mechanism, used by ability words
+            // like Threshold) + CR 702.186a: the ∞ keyword (NOT an ability word —
+            // it is absent from the CR 207.2c list) is likewise followed by
+            // ability text after an em-dash and can prefix an activation cost
+            // ("∞ — {T}: ..."). `find_activated_colon` strips the label only to
+            // locate the colon; the prefix is still in `cost_text` here, so
+            // recover the typed gate condition (shared `strip_ability_word_with_name`
+            // path serves both forms) to gate this ability.
+            let aw_condition = strip_ability_word_with_name(cost_text)
+                .and_then(|(aw_name, _)| ability_word_to_condition(&aw_name));
             let (mut def, effect_text) = parse_activated_ability_definition(
                 cost_text,
                 effect_text,
@@ -2675,6 +2685,18 @@ pub(crate) fn parse_oracle_ir(
                 Some(result.abilities.len()),
                 &mut ctx,
             );
+            // CR 702.186b: ∞ ("As long as harnessed, it has [ability]") gates an
+            // activated ability's legality (the ability is absent while
+            // unharnessed) — an activation restriction, NOT an intervening-if
+            // `condition` (a resolution-time gate, CR 608.2c + Shelldock Isle
+            // ruling, which the engine deliberately does not use for activation
+            // legality). Applied AFTER the call because
+            // `parse_activated_ability_definition` overwrites
+            // `activation_restrictions` from the cost-text constraints.
+            if matches!(aw_condition, Some(StaticCondition::SourceIsHarnessed)) {
+                def.activation_restrictions
+                    .push(ActivationRestriction::SourceIsHarnessed);
+            }
             if ability_cant_be_copied {
                 def.cant_be_copied = true;
             }

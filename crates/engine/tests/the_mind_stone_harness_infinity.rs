@@ -24,6 +24,7 @@
 //!    that the negative arm above discriminates against.
 
 use engine::game::scenario::GameScenario;
+use engine::types::actions::GameAction;
 use engine::types::game_state::{GameState, StackEntryKind, WaitingFor};
 use engine::types::identifiers::ObjectId;
 use engine::types::mana::{ManaType, ManaUnit};
@@ -61,6 +62,84 @@ fn infinity_trigger_on_stack(state: &GameState, stone: ObjectId) -> bool {
     state.stack.iter().any(|entry| {
         entry.source_id == stone && matches!(entry.kind, StackEntryKind::TriggeredAbility { .. })
     })
+}
+
+/// CR 701.64b + CR 702.186b: an ∞ ("∞ — [Ability]") ACTIVATED ability is
+/// present (and therefore activatable) only while the source is harnessed. This
+/// drives the real parser → `can_activate_ability_now` and the production
+/// activation pipeline.
+///
+/// Revert probe: removing the parser `push` of
+/// `ActivationRestriction::SourceIsHarnessed` (Priority 4 in `oracle.rs`) OR the
+/// runtime arm in `restrictions.rs` makes assertion (b) fail — the unharnessed ∞
+/// ability becomes activatable.
+#[test]
+fn infinity_activated_ability_gated_by_harness() {
+    use engine::game::casting::can_activate_ability_now;
+    use engine::types::ability::ActivationRestriction;
+
+    // Two activated abilities, in source order:
+    //   index 0: `{2}, {T}: Harness this artifact.`
+    //   index 1: `∞ — {T}: Add {C}.`  (the gated ability)
+    const ORACLE: &str = "{2}, {T}: Harness this artifact.\n\u{221e} \u{2014} {T}: Add {C}.";
+
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(Phase::PreCombatMain);
+    let stone = scenario
+        .add_creature_from_oracle(P0, "Harness Mana Rock", 0, 1, ORACLE)
+        .as_artifact()
+        .id();
+    let mut runner = scenario.build();
+
+    // Empirically confirmed indices (see the matching debug dump in the
+    // implementation report): exactly 2 abilities; index 1 is the ∞ ability
+    // carrying SourceIsHarnessed, index 0 is the Harness activator.
+    const HARNESS_IDX: usize = 0;
+    const INFINITY_IDX: usize = 1;
+
+    // (a) Structural non-vacuity guard: the ∞ ability must carry the restriction.
+    assert!(
+        runner.state().objects[&stone].abilities[INFINITY_IDX]
+            .activation_restrictions
+            .contains(&ActivationRestriction::SourceIsHarnessed),
+        "the ∞ activated ability must carry ActivationRestriction::SourceIsHarnessed; got {:?}",
+        runner.state().objects[&stone].abilities[INFINITY_IDX].activation_restrictions
+    );
+
+    // (b) Before harness: the ∞ ability is not activatable.
+    assert!(
+        !runner.state().objects[&stone].harnessed,
+        "precondition: the source starts unharnessed"
+    );
+    assert!(
+        !can_activate_ability_now(runner.state(), P0, stone, INFINITY_IDX),
+        "CR 702.186b: the ∞ activated ability must NOT be activatable while unharnessed"
+    );
+
+    // (c) Harness via the production activation pipeline. Fund the {2} generic.
+    for _ in 0..2 {
+        runner.state_mut().players[0].mana_pool.add(ManaUnit::new(
+            ManaType::Colorless,
+            ObjectId(0),
+            false,
+            vec![],
+        ));
+    }
+    runner.activate(stone, HARNESS_IDX).resolve();
+    assert!(
+        runner.state().objects[&stone].harnessed,
+        "activating the Harness ability must set the harnessed designation"
+    );
+
+    // (d) Isolate the harnessed gate from the {T} tap cost of the ∞ ability
+    // (the Harness cost tapped the source).
+    runner.state_mut().objects.get_mut(&stone).unwrap().tapped = false;
+
+    // (e) After harness: the ∞ ability becomes activatable.
+    assert!(
+        can_activate_ability_now(runner.state(), P0, stone, INFINITY_IDX),
+        "CR 702.186b: once harnessed, the ∞ activated ability must be activatable"
+    );
 }
 
 #[test]
@@ -105,8 +184,6 @@ fn run_to_end_step_observing_trigger(
     runner: &mut engine::game::scenario::GameRunner,
     stone: ObjectId,
 ) -> bool {
-    use engine::types::actions::GameAction;
-
     let mut reached_end_step = false;
     for _ in 0..400 {
         if infinity_trigger_on_stack(runner.state(), stone) {
