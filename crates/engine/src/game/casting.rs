@@ -4237,16 +4237,24 @@ fn prepare_spell_cast_with_variant_override_inner(
     // no mana cost — the granting static replaces the mana cost with nothing.
     let is_hand_permission_variant =
         matches!(casting_variant, CastingVariant::HandPermission { .. });
-    // CR 601.2a + CR 118.9a: ExilePermission variant (Maralen, Fae Ascendant).
-    // Pays no mana cost when the granting static carries
-    // `cost: ExileCastCost::WithoutPayingManaCost`. Re-derived from
-    // `exile_cast_permission_source` — the variant itself does not carry the
-    // cost shape because that would let the override side bypass the static's
-    // authoritative shape.
+    // CR 113.6d + CR 118.9a + CR 601.2b: Whether the cast pays no mana cost is
+    // decided by the ELECTED `ExileCastPermission`'s own cost shape — a cost-
+    // modifying ability functions on the stack (CR 113.6d), only one alternative
+    // cost applies (CR 118.9a), and the previously made choice of which
+    // permission to cast through restricts the cost (CR 601.2b). The variant
+    // carries the elected `source` (not the cost shape), so the static stays the
+    // authority: read THAT source's `ExileCastCost` via the elected-source-aware
+    // lookup, never a first-match battlefield scan that a second active
+    // permission could substitute its shape into. With two functioning
+    // permissions for the same exiled spell (one `WithoutPayingManaCost`, one
+    // pay-normal), a first-match scan could free-cast the wrong source. Fail
+    // closed (not-free) when the elected source no longer functions:
+    // `exile_cast_permission_source_full(..., Some(source))` returns `None` (its
+    // `find()` guard rejects a mismatched/dead elected source).
     let is_exile_permission_free_cast =
-        if let CastingVariant::ExilePermission { .. } = casting_variant {
-            exile_cast_permission_source(state, player, object_id)
-                .is_some_and(|(_, _, cost)| matches!(cost, ExileCastCost::WithoutPayingManaCost))
+        if let CastingVariant::ExilePermission { source, .. } = &casting_variant {
+            exile_cast_permission_source_full(state, player, object_id, Some(*source))
+                .is_some_and(|src| matches!(src.cost, ExileCastCost::WithoutPayingManaCost))
         } else {
             false
         };
@@ -45106,6 +45114,99 @@ mod tests {
             exile_static_permission_extra_cost(&state, player, exiled, exiled),
             None,
             "a non-permission elected source must not authorize any extra cost"
+        );
+    }
+
+    /// CR 113.6d + CR 118.9a + CR 601.2b: With two functioning
+    /// `ExileCastPermission` statics offering the SAME exiled spell — one
+    /// `WithoutPayingManaCost` (free), one `PayNormalCost` — the free-cast
+    /// decision in `prepare_spell_cast_with_variant_override` must follow the
+    /// ELECTED source, never the first-match battlefield scan.
+    ///
+    /// DISCRIMINATING: the free source is created FIRST (lowest, earliest-scanned
+    /// `ObjectId`). Pre-fix, `is_exile_permission_free_cast` re-scanned via
+    /// `exile_cast_permission_source` and saw the first `WithoutPayingManaCost`
+    /// source regardless of election — so electing the `PayNormalCost` source
+    /// would WRONGLY zero the mana cost. Asserting the pay-normal election keeps a
+    /// non-zero mana cost is the revert-failing assertion; asserting the free
+    /// election zeroes it pins the other direction.
+    #[test]
+    fn exile_permission_free_cast_binds_to_elected_source_not_first_match() {
+        let mut state = setup_game_at_main_phase();
+        let player = PlayerId(0);
+
+        // Free source created FIRST => lower (earlier-scanned) ObjectId. A
+        // first-match scan would always reach this one.
+        let free_source = add_exile_cast_permission_source_with(
+            &mut state,
+            player,
+            "Maralen",
+            TargetFilter::Any,
+            CastFrequency::Unlimited,
+            CardPlayMode::Cast,
+            ExileCastCost::WithoutPayingManaCost,
+            ExileCardPool::ThisTurn,
+            ExileCastTiming::AnyTime,
+        );
+        let paynormal_source = add_exile_cast_permission_source_with(
+            &mut state,
+            player,
+            "Pay-Normal Permission",
+            TargetFilter::Any,
+            CastFrequency::Unlimited,
+            CardPlayMode::Cast,
+            ExileCastCost::PayNormalCost,
+            ExileCardPool::ThisTurn,
+            ExileCastTiming::AnyTime,
+        );
+        assert!(
+            free_source.0 < paynormal_source.0,
+            "test premise: the free source must be scanned before the pay-normal source"
+        );
+
+        let exiled = add_exiled_card(&mut state, player, "Exiled Bear");
+        // Both permissions offer this exiled spell from their per-turn pool.
+        state
+            .cards_exiled_with_source_this_turn
+            .insert(free_source, vec![exiled]);
+        state
+            .cards_exiled_with_source_this_turn
+            .insert(paynormal_source, vec![exiled]);
+
+        // Electing the PAY-NORMAL source must keep the spell's normal mana cost
+        // even though the free source is active, offering the same spell, and
+        // scanned first. REVERT-FAILING: pre-fix the first-scanned free source
+        // wins and `is_without_paying_mana()` is wrongly true here.
+        let prepared_paynormal = prepare_spell_cast_with_variant_override(
+            &state,
+            player,
+            exiled,
+            Some(CastingVariant::ExilePermission {
+                source: paynormal_source,
+                frequency: CastFrequency::Unlimited,
+            }),
+        )
+        .expect("preparing the pay-normal exile cast must succeed");
+        assert!(
+            !prepared_paynormal.mana_cost.is_without_paying_mana(),
+            "electing the pay-normal permission must NOT free-cast the spell"
+        );
+
+        // Electing the FREE source zeroes the mana cost (positive control; holds
+        // in both worlds — isolates the bug to the binding axis).
+        let prepared_free = prepare_spell_cast_with_variant_override(
+            &state,
+            player,
+            exiled,
+            Some(CastingVariant::ExilePermission {
+                source: free_source,
+                frequency: CastFrequency::Unlimited,
+            }),
+        )
+        .expect("preparing the free exile cast must succeed");
+        assert!(
+            prepared_free.mana_cost.is_without_paying_mana(),
+            "electing the WithoutPayingManaCost permission must free-cast the spell"
         );
     }
 
