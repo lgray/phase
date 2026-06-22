@@ -119,6 +119,7 @@ pub mod heist;
 pub mod hideaway;
 pub mod incubate;
 pub mod intensify;
+pub mod perpetual;
 // Tests for `heist` live in a sibling file (declared here, not in `heist.rs`,
 // so `heist.rs` stays implementation-only — no inline `#[cfg(test)]` token).
 #[cfg(test)]
@@ -1698,7 +1699,14 @@ pub(super) fn resolve_optional_effect_decision(
                         || (sub.sub_link == SubAbilityLink::SequentialSibling
                             && !sub_ability_is_reflexive(sub)
                             && !(matches!(&ability.effect, Effect::CastFromZone { .. })
-                                && cast_from_zone::is_graveyard_exile_rider_subability(sub)))
+                                && (cast_from_zone::is_graveyard_exile_rider_subability(sub)
+                                    // CR 614.1c + CR 122.1: the enters-with-counter
+                                    // rider is permission metadata (Osteomancer
+                                    // Adept, The Tomb of Aclazotz), not a printed
+                                    // follow-up to execute on decline.
+                                    || cast_from_zone::is_enters_with_counter_rider_subability(
+                                        sub,
+                                    ))))
                 })
             });
             if let Some(branch) = decline_branch {
@@ -2747,6 +2755,9 @@ pub fn resolve_effect(
         Effect::RingTemptsYou => ring::resolve(state, ability, events),
         Effect::GrantCastingPermission { .. } => grant_permission::resolve(state, ability, events),
         Effect::ChooseFromZone { .. } => choose_from_zone::resolve(state, ability, events),
+        Effect::ForEachCategoryExile { .. } => {
+            choose_from_zone::resolve_for_each_category(state, ability, events)
+        }
         Effect::ChooseObjectsIntoTrackedSet { .. } => {
             choose_objects_into_tracked_set::resolve(state, ability, events)
         }
@@ -2849,6 +2860,7 @@ pub fn resolve_effect(
         Effect::ProcessRadCounters => rad_counters::resolve(state, ability, events),
         Effect::Conjure { .. } => conjure::resolve(state, ability, events),
         Effect::Intensify { .. } => intensify::resolve(state, ability, events),
+        Effect::ApplyPerpetual { .. } => perpetual::resolve(state, ability, events),
         Effect::DraftFromSpellbook { .. } => spellbook::resolve(state, ability, events),
         Effect::ChooseOneOf { .. } => choose_one_of::resolve(state, ability, events),
         Effect::Unimplemented { name, .. } => {
@@ -5951,6 +5963,18 @@ fn resolve_chain_body(
             &ability.effect,
             Effect::CastFromZone { .. } | Effect::Counter { .. }
         ) && cast_from_zone::is_graveyard_exile_rider_subability(sub)
+        {
+            return Ok(());
+        }
+
+        // CR 614.1c + CR 122.1: CastFromZone consumes the "creature cast this way
+        // enters with a [counter] counter on it" rider as permission metadata
+        // (recorded on the granted `ExileWithAltCost`). Resolving the structural
+        // `AddPendingETBCounters` rider here would read the (absent) SpellCast
+        // trigger event of the granting ability, not the future graveyard cast —
+        // so skip it (Osteomancer Adept, The Tomb of Aclazotz).
+        if matches!(&ability.effect, Effect::CastFromZone { .. })
+            && cast_from_zone::is_enters_with_counter_rider_subability(sub)
         {
             return Ok(());
         }
@@ -11509,6 +11533,7 @@ mod tests {
                         duration: None,
 
                         exile_instead_of_graveyard_on_resolve: false,
+                        enters_with_counter: None,
                     },
                     target: TargetFilter::TrackedSet {
                         id: TrackedSetId(0),
@@ -11605,6 +11630,7 @@ mod tests {
                         duration: None,
 
                         exile_instead_of_graveyard_on_resolve: false,
+                        enters_with_counter: None,
                     },
                     target: TargetFilter::TrackedSet {
                         id: TrackedSetId(0),
@@ -11675,6 +11701,7 @@ mod tests {
                     duration: None,
 
                     exile_instead_of_graveyard_on_resolve: false,
+                    enters_with_counter: None,
                 },
                 target: TargetFilter::TrackedSet {
                     id: TrackedSetId(0),

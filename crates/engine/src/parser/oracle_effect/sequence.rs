@@ -2686,19 +2686,28 @@ pub(super) fn apply_clause_continuation(
         }
         ContinuationAst::SelfCostKeywordCostClarification => {}
         ContinuationAst::CantRegenerate => {
-            let Some(previous) = defs.last_mut() else {
-                return;
-            };
-            match &mut *previous.effect {
-                Effect::Destroy {
-                    cant_regenerate, ..
+            // CR 608.2c: walk backward through the definition chain to find
+            // the nearest Destroy/DestroyAll. The regen clause may not be
+            // adjacent — e.g. Kirtar's Wrath threshold has a Token creation
+            // between the DestroyAll and "Creatures destroyed this way can't
+            // be regenerated."
+            if let Some(def) = defs.iter_mut().rev().find(|d| {
+                matches!(
+                    &*d.effect,
+                    Effect::Destroy { .. } | Effect::DestroyAll { .. }
+                )
+            }) {
+                match &mut *def.effect {
+                    Effect::Destroy {
+                        cant_regenerate, ..
+                    }
+                    | Effect::DestroyAll {
+                        cant_regenerate, ..
+                    } => {
+                        *cant_regenerate = true;
+                    }
+                    _ => unreachable!(),
                 }
-                | Effect::DestroyAll {
-                    cant_regenerate, ..
-                } => {
-                    *cant_regenerate = true;
-                }
-                _ => {}
             }
         }
         ContinuationAst::PutRest {
@@ -4425,6 +4434,7 @@ pub(super) fn clause_is_dig_lookback_transparent(effect: &Effect) -> bool {
         | Effect::ProcessRadCounters
         | Effect::GrantCastingPermission { .. }
         | Effect::ChooseFromZone { .. }
+        | Effect::ForEachCategoryExile { .. }
         | Effect::ChooseObjectsIntoTrackedSet { .. }
         | Effect::ChooseAndSacrificeRest { .. }
         | Effect::Exploit { .. }
@@ -4481,6 +4491,7 @@ pub(super) fn clause_is_dig_lookback_transparent(effect: &Effect) -> bool {
         | Effect::RemoveFromCombat { .. }
         | Effect::Conjure { .. }
         | Effect::Intensify { .. }
+        | Effect::ApplyPerpetual { .. }
         | Effect::DraftFromSpellbook { .. }
         | Effect::ChooseOneOf { .. }
         // CR 614.12 + CR 303.4: Return-as-Aura is its own emitted sub-effect
@@ -4850,11 +4861,19 @@ pub(super) fn parse_followup_continuation_ast(
         // imperative verb). Both bare imperative ("put that card", second-person
         // reveal-until) and third-person ("the player puts that card",
         // Polymorph / Proteus Staff / Transmogrify) forms are accepted.
+        //
+        // Plural filtered kept clauses ("put those land cards onto the battlefield tapped",
+        // The Ring Goes South) use the same RevealUntilKept patch — checked before the
+        // RevealUntilAllToZone arm because "those land cards" is not a "those cards"
+        // substring and must not fall through with the default Hand kept destination.
         Effect::RevealUntil { .. }
             if nom_primitives::scan_contains(&lower, "put that card")
                 || nom_primitives::scan_contains(&lower, "puts that card")
                 || nom_primitives::scan_contains(&lower, "put it")
-                || nom_primitives::scan_contains(&lower, "puts it") =>
+                || nom_primitives::scan_contains(&lower, "puts it")
+                || ((nom_primitives::scan_contains(&lower, "put those")
+                    || nom_primitives::scan_contains(&lower, "puts those"))
+                    && nom_primitives::scan_contains(&lower, "onto the battlefield")) =>
         {
             let (destination, enter_tapped, enters_attacking) =
                 if nom_primitives::scan_contains(&lower, "onto the battlefield") {
@@ -5191,6 +5210,20 @@ pub(super) fn parse_followup_continuation_ast(
                 && nom_primitives::scan_contains(&lower, "takes an extra turn") =>
         {
             Some(ContinuationAst::GrantExtraTurnAfterControlledTurn)
+        }
+        // CR 701.19c + CR 608.2c: "Creatures/A creature destroyed this way
+        // can't be regenerated" after any effect — including Token creation
+        // (e.g. Kirtar's Wrath threshold: DestroyAll → Token → this clause).
+        // Must be checked before the Effect::Token arm so a Token preceding
+        // this phrase doesn't shadow the catch-all guard. The Destroy/DestroyAll
+        // target is found by `apply_clause_continuation` walking backward.
+        _ if nom_primitives::scan_contains(&lower, "destroyed this way can't be regenerated")
+            || nom_primitives::scan_contains(
+                &lower,
+                "destroyed this way cannot be regenerated",
+            ) =>
+        {
+            Some(ContinuationAst::CantRegenerate)
         }
         // CR 122.6a + CR 614.1c: Token enters-with-counters continuation. Two forms:
         //   * Declarative: "The token enters with X +1/+1 counters on it[, where X is ...]"
@@ -6635,6 +6668,44 @@ mod tests {
             reveal: false,
             enter_tapped: false,
         }
+    }
+
+    #[test]
+    fn reveal_until_ring_goes_south_followup_continuation() {
+        use crate::types::ability::{
+            RevealUntilDisposition, TargetFilter, TypeFilter, TypedFilter,
+        };
+        let reveal = Effect::RevealUntil {
+            player: TargetFilter::Controller,
+            filter: TargetFilter::Typed(TypedFilter {
+                type_filters: vec![TypeFilter::Land],
+                ..Default::default()
+            }),
+            count: QuantityExpr::Fixed { value: 1 },
+            matched_disposition: RevealUntilDisposition::KeepEach,
+            kept_destination: Zone::Hand,
+            rest_destination: Zone::Library,
+            enter_tapped: crate::types::zones::EtbTapState::Unspecified,
+            enters_attacking: false,
+            kept_optional_to: None,
+            enters_under: None,
+        };
+        let result = parse_followup_continuation_ast(
+            "Put those land cards onto the battlefield tapped and the rest on the bottom of your library in a random order.",
+            &reveal,
+            &mut ParseContext::default(),
+        );
+        assert!(
+            matches!(
+                result,
+                Some(ContinuationAst::RevealUntilKept {
+                    destination: Zone::Battlefield,
+                    enter_tapped: true,
+                    ..
+                })
+            ),
+            "expected RevealUntilKept to battlefield tapped, got {result:?}"
+        );
     }
 
     #[test]

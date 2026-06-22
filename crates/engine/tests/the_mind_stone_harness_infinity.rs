@@ -23,7 +23,9 @@
 //!    placed on the stack at the controller's end step. This is the positive arm
 //!    that the negative arm above discriminates against.
 
+use engine::game::casting::can_activate_ability_now;
 use engine::game::scenario::GameScenario;
+use engine::types::ability::ActivationRestriction;
 use engine::types::actions::GameAction;
 use engine::types::game_state::{GameState, StackEntryKind, WaitingFor};
 use engine::types::identifiers::ObjectId;
@@ -75,9 +77,6 @@ fn infinity_trigger_on_stack(state: &GameState, stone: ObjectId) -> bool {
 /// ability becomes activatable.
 #[test]
 fn infinity_activated_ability_gated_by_harness() {
-    use engine::game::casting::can_activate_ability_now;
-    use engine::types::ability::ActivationRestriction;
-
     // Two activated abilities, in source order:
     //   index 0: `{2}, {T}: Harness this artifact.`
     //   index 1: `∞ — {T}: Add {C}.`  (the gated ability)
