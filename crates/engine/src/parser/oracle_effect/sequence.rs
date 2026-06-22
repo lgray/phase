@@ -4586,11 +4586,25 @@ pub(super) fn parse_followup_continuation_ast(
             })
         }
         Effect::Mana { .. } => {
+            // CR 106.6: Only absorb a parsed spend restriction when at least one of
+            // its branches is payable at a reachable production payment site (see
+            // `ManaSpendRestriction::has_payable_branch`). An all-dead restriction
+            // (every branch's runtime gate is hardcoded-false or never reached — X
+            // costs, face-down casts, turn-face-up) is deliberately left unabsorbed
+            // here so this `Effect::Mana` line lowers to `Effect::Unimplemented`
+            // (honest coverage red) instead of masquerading as supported. Liveness
+            // is decided once on the fully assembled restriction, so a mixed
+            // disjunction keeps its live branches (the `Any` short-circuit) rather
+            // than being dropped wholesale. A dropped all-dead restriction also
+            // drops any paired `grants`; that is intentional (no real card pairs a
+            // grant with an all-dead restriction).
             if let Some((restriction, grants)) = super::mana::parse_mana_spend_restriction(&lower) {
-                return Some(ContinuationAst::ManaRestriction {
-                    restriction,
-                    grants,
-                });
+                if restriction.has_payable_branch() {
+                    return Some(ContinuationAst::ManaRestriction {
+                        restriction,
+                        grants,
+                    });
+                }
             }
             // CR 106.6: "that spell can't be countered" as a standalone clause
             // after comma-splitting from the restriction text.

@@ -1660,6 +1660,70 @@ pub enum ManaSpendRestriction {
     Any(Vec<ManaSpendRestriction>),
 }
 
+impl ManaSpendRestriction {
+    /// Returns `true` iff at least one branch of this restriction is **payable**:
+    /// its lowered [`ManaRestriction`](super::mana::ManaRestriction) runtime gate
+    /// can return `true` at some reachable production payment site — i.e. there
+    /// exists a real spend the engine would accept for it today (data-value
+    /// reachability). `Any(subs)` is payable iff any sub-branch is payable.
+    ///
+    /// A `ManaSpendRestriction` with no payable branch is left *unabsorbed* at the
+    /// parser seam (see `parser::oracle_effect::sequence`), so the surrounding
+    /// `Effect::Mana` line lowers to `Effect::Unimplemented` — honest coverage
+    /// **red** — rather than masquerading as supported while every action it names
+    /// is non-functional at runtime. (False-green example: Overgrown Zealot's
+    /// "turn permanents face up" and Tin Street Gossip's "cast face-down spells or
+    /// turn creatures face up" — every branch dead today.)
+    ///
+    /// Any `grants` paired with an all-dead restriction drop with it. This is
+    /// intentional: no real card pairs a mana-spell grant with a restriction whose
+    /// every branch is dead, so nothing functional is lost.
+    ///
+    /// The match is exhaustive with **no wildcard arm** on purpose: a future
+    /// `ManaSpendRestriction` variant must fail to compile here, forcing an
+    /// explicit liveness classification rather than silently defaulting to
+    /// payable (false green) or unpayable (false red).
+    pub fn has_payable_branch(&self) -> bool {
+        match self {
+            // DEAD — no reachable production payment site makes the lowered gate
+            // return true today:
+            // CR 106.6: `OnlyForXCosts` is hardcoded `false` in both `allows_spell`
+            // and `allows_activation` (no {X}-in-cost data check at any call site).
+            ManaSpendRestriction::XCostOnly => false,
+            // CR 708.4: gate is `meta.is_face_down`, which `build_spell_meta` never
+            // sets `true` at a payment site (no production path casts a spell face
+            // down *through spell payment*), so the gate is never satisfied.
+            ManaSpendRestriction::FaceDownSpell => false,
+            // CR 116.2b + CR 702.37e: lowered to
+            // `OnlyForSpecialAction(SpecialAction::TurnFaceUp)`, which only fires on
+            // a `PaymentContext::SpecialAction(TurnFaceUp)` that no production site
+            // emits (turn-face-up charges no mana here; the sole special-action
+            // emit is `UnlockDoor`).
+            ManaSpendRestriction::TurnPermanentFaceUp => false,
+            // LIVE — at least one reachable production payment site accepts a spend.
+            ManaSpendRestriction::SpellOnly
+            | ManaSpendRestriction::SpellType(_)
+            | ManaSpendRestriction::ChosenCreatureType
+            | ManaSpendRestriction::SpellTypeOrAbilityActivation { .. }
+            | ManaSpendRestriction::ActivateOnly
+            | ManaSpendRestriction::ActivateTagged(_)
+            | ManaSpendRestriction::SpellWithKeywordKind(_)
+            | ManaSpendRestriction::SpellWithKeywordKindFromZone { .. }
+            | ManaSpendRestriction::SpellWithManaValue { .. }
+            | ManaSpendRestriction::SpellMatchingCostCriteria { .. }
+            | ManaSpendRestriction::SpellWithColorCount { .. }
+            | ManaSpendRestriction::SpellFromZone(_)
+            | ManaSpendRestriction::UnlockDoor => true,
+            // CR 106.6: a disjunction is payable iff any branch is payable, so a
+            // mixed `Any` with at least one live branch stays supported while an
+            // all-dead `Any` (e.g. `[FaceDownSpell, TurnPermanentFaceUp]`) is dead.
+            ManaSpendRestriction::Any(subs) => {
+                subs.iter().any(ManaSpendRestriction::has_payable_branch)
+            }
+        }
+    }
+}
+
 /// Duration for temporary effects.
 ///
 /// Player-axis variants are parameterized by `PlayerScope` per the workspace
@@ -16919,6 +16983,49 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// CR 106.6: `ManaSpendRestriction::has_payable_branch` must classify each
+    /// leaf by whether its lowered runtime gate can return `true` at a reachable
+    /// production payment site today, and short-circuit `Any` in both directions.
+    ///
+    /// Revert direction (each assertion pins one classification):
+    /// - Flipping a LIVE arm to `false` fails its `assert!(... .has_payable_branch())`.
+    /// - Flipping a DEAD arm (`XCostOnly`, `FaceDownSpell`, `TurnPermanentFaceUp`)
+    ///   to `true` fails its `assert!(!...)`.
+    /// - The all-dead `Any([FaceDownSpell, TurnPermanentFaceUp])` pins the `Any`
+    ///   short-circuit in the `false` direction (returning `true` on an all-dead
+    ///   set fails it); the mixed `Any([SpellType, UnlockDoor, TurnPermanentFaceUp])`
+    ///   pins it in the `true` direction (treating any dead leaf as poisoning the
+    ///   whole disjunction fails it).
+    #[test]
+    fn has_payable_branch_distinguishes_live_and_dead_leaves() {
+        // LIVE: at least one reachable production payment site accepts a spend.
+        assert!(ManaSpendRestriction::SpellOnly.has_payable_branch());
+        assert!(ManaSpendRestriction::UnlockDoor.has_payable_branch());
+        assert!(ManaSpendRestriction::SpellType("Enchantment".into()).has_payable_branch());
+        assert!(ManaSpendRestriction::ActivateOnly.has_payable_branch());
+
+        // DEAD: every lowered gate is hardcoded-false or never reached today.
+        assert!(!ManaSpendRestriction::XCostOnly.has_payable_branch());
+        assert!(!ManaSpendRestriction::FaceDownSpell.has_payable_branch());
+        assert!(!ManaSpendRestriction::TurnPermanentFaceUp.has_payable_branch());
+
+        // All-dead disjunction is dead (Tin Street Gossip).
+        assert!(!ManaSpendRestriction::Any(vec![
+            ManaSpendRestriction::FaceDownSpell,
+            ManaSpendRestriction::TurnPermanentFaceUp,
+        ])
+        .has_payable_branch());
+
+        // Mixed disjunction with a live branch stays payable (Creeping Peeper /
+        // Smoky Lounge class): a dead leaf must not poison the whole `Any`.
+        assert!(ManaSpendRestriction::Any(vec![
+            ManaSpendRestriction::SpellType("Enchantment".into()),
+            ManaSpendRestriction::UnlockDoor,
+            ManaSpendRestriction::TurnPermanentFaceUp,
+        ])
+        .has_payable_branch());
+    }
 
     /// CR 111.1 + CR 400.1: the shared `OriginConstraint::matches_from` predicate
     /// (used by both the zone-change trigger matcher and the `EnteredFromZone`
