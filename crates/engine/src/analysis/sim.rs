@@ -23,12 +23,11 @@
 use crate::analysis::resource::{ResourceVector, TriggerKind};
 use crate::game::engine::EngineError;
 use crate::game::scenario::GameRunner;
-use crate::types::ability::TargetRef;
+use crate::types::ability::{EffectKind, TargetRef};
 use crate::types::actions::GameAction;
 use crate::types::card_type::CoreType;
 use crate::types::events::{GameEvent, PlayerActionKind};
 use crate::types::game_state::ActionResult;
-use crate::types::phase::Phase;
 use crate::types::zones::Zone;
 
 /// Fold one action's worth of game events into the **event-fed** axes of `acc`.
@@ -87,16 +86,14 @@ pub fn accumulate_events(acc: &mut ResourceVector, events: &[GameEvent]) {
             // counted here.
             GameEvent::SpellCast { .. } => acc.casts_this_step += 1,
 
-            // CR 500.8 + CR 506: each combat phase is entered via its beginning-of-
-            // combat step, so one `BeginCombat` phase change == one combat phase.
-            GameEvent::PhaseChanged {
-                phase: Phase::BeginCombat,
-            } => acc.combat_phases += 1,
-
-            // CR 500.7: every turn starts with a `TurnStarted` event; a loop that
-            // manufactures turns pumps this axis. (The first natural turn of an
-            // analysis window is netted out by the boundary `delta`.)
-            GameEvent::TurnStarted { .. } => acc.extra_turns += 1,
+            // CR 500.7: an EXTRA turn is created when `Effect::ExtraTurn` resolves
+            // and pushes onto `state.extra_turns` (one resolve == one turn). The
+            // creation event — not `TurnStarted`, which also fires on every natural
+            // turn — is what keeps ordinary turn progression off this axis.
+            GameEvent::EffectResolved {
+                kind: EffectKind::ExtraTurn,
+                ..
+            } => acc.extra_turns += 1,
 
             // CR 603.6a / CR 603.6c: battlefield zone changes drive the ETB / LTB /
             // dies / landfall trigger axes. The `ZoneChangeRecord` carries the
@@ -249,7 +246,6 @@ fn splice_event_fed(target: &mut ResourceVector, events: &ResourceVector) {
     target.cards_drawn = events.cards_drawn;
     target.casts_this_step = events.casts_this_step;
     target.landfall_triggers = events.landfall_triggers;
-    target.combat_phases = events.combat_phases;
     target.extra_turns = events.extra_turns;
     target.death_triggers = events.death_triggers;
     target.etb_triggers = events.etb_triggers;
@@ -264,6 +260,7 @@ mod tests {
     use crate::game::scenario::{GameScenario, P0, P1};
     use crate::types::game_state::{CastPaymentMode, WaitingFor, ZoneChangeRecord};
     use crate::types::identifiers::{CardId, ObjectId};
+    use crate::types::phase::Phase;
     use crate::types::player::PlayerId;
 
     fn zone_change(from: Option<Zone>, to: Zone, core_types: Vec<CoreType>) -> GameEvent {
@@ -320,9 +317,9 @@ mod tests {
             GameEvent::PhaseChanged {
                 phase: Phase::BeginCombat,
             },
-            GameEvent::TurnStarted {
-                player_id: PlayerId(0),
-                turn_number: 2,
+            GameEvent::EffectResolved {
+                kind: EffectKind::ExtraTurn,
+                source_id: ObjectId(9),
             },
             // ETB of a land == landfall + etb.
             zone_change(Some(Zone::Hand), Zone::Battlefield, vec![CoreType::Land]),
@@ -351,7 +348,10 @@ mod tests {
         // 1 (CardDrawn) + 2 (CardsDrawn batch) — disjoint emission paths.
         assert_eq!(acc.cards_drawn, 3);
         assert_eq!(acc.casts_this_step, 1);
-        assert_eq!(acc.combat_phases, 1);
+        assert_eq!(
+            acc.combat_phases, 0,
+            "PhaseChanged no longer feeds combat_phases — it is state-readable now"
+        );
         assert_eq!(acc.extra_turns, 1);
         assert_eq!(acc.landfall_triggers, 1);
         // the land ETB and the creature death each contribute one etb / ltb.
@@ -577,5 +577,250 @@ mod tests {
         // And no event-fed axis spuriously moved.
         assert!(delta.generic_triggers.is_empty());
         assert!(delta.damage_dealt.is_empty());
+    }
+
+    /// N1 — REVERT PROBE for the deleted `PhaseChanged{BeginCombat}` arm.
+    /// Drive a probe through natural phase progression into the beginning-of-
+    /// combat step via `PassPriority`. The raw runner event stream MUST contain a
+    /// natural `PhaseChanged{BeginCombat}` (asserted below) — that is what the OLD
+    /// arm counted, so this fixture is non-vacuous: against the deleted code
+    /// `delta.combat_phases` would be 1. With the fix it is 0, because a natural
+    /// combat is not an *extra* combat (the state-readable snapshot only counts
+    /// `combat_phases_started_this_turn - 1`, i.e. zero extra combats here).
+    #[test]
+    fn natural_begin_combat_is_not_extra_combat() {
+        let mut scenario = GameScenario::new();
+        scenario.at_phase(Phase::PreCombatMain);
+        let mut runner = scenario.build();
+        {
+            let state = runner.state_mut();
+            state.active_player = P0;
+            state.priority_player = P0;
+        }
+        let mut probe = LoopProbe::new(&mut runner);
+
+        // CR 500.5 / CR 506.1: pass priority until natural progression enters the
+        // beginning-of-combat step. Stop the instant the event is captured — the
+        // step may be auto-passed in the same action (phase already advanced past
+        // BeginCombat), so latch on the event, not on the current phase, to avoid
+        // driving into a later empty-library draw (a state-based loss).
+        let mut saw_natural_begin_combat = false;
+        for _ in 0..32 {
+            let result = probe.act(GameAction::PassPriority).expect("pass priority");
+            if result.events.iter().any(|e| {
+                matches!(
+                    e,
+                    GameEvent::PhaseChanged {
+                        phase: Phase::BeginCombat
+                    }
+                )
+            }) {
+                saw_natural_begin_combat = true;
+                break;
+            }
+        }
+        assert!(
+            saw_natural_begin_combat,
+            "non-vacuity: the runner must have emitted a natural PhaseChanged{{BeginCombat}} \
+             (the OLD deleted arm would have counted it)"
+        );
+
+        let delta = probe.iteration_delta();
+        assert_eq!(
+            delta.combat_phases, 0,
+            "a NATURAL begin-combat is not an extra combat"
+        );
+    }
+
+    /// N2 — REVERT PROBE for the deleted `TurnStarted` arm.
+    /// Drive a probe through a natural turn rollover via `PassPriority`. The raw
+    /// runner event stream MUST contain a natural `TurnStarted` (asserted below) —
+    /// the OLD arm counted that, so against the deleted code `delta.extra_turns`
+    /// would be >= 1. With the fix it is 0, because no `EffectResolved{ExtraTurn}`
+    /// (a creation signal) ever fired — only a natural turn began.
+    #[test]
+    fn natural_next_turn_is_not_extra_turn() {
+        let mut scenario = GameScenario::new();
+        scenario.at_phase(Phase::PreCombatMain);
+        let mut runner = scenario.build();
+        {
+            let state = runner.state_mut();
+            state.active_player = P0;
+            state.priority_player = P0;
+        }
+        let mut probe = LoopProbe::new(&mut runner);
+
+        // CR 500.1 / CR 500.7: pass priority through the rest of the turn until a
+        // natural next turn begins.
+        let mut saw_natural_turn_started = false;
+        for _ in 0..64 {
+            let result = probe.act(GameAction::PassPriority).expect("pass priority");
+            if result
+                .events
+                .iter()
+                .any(|e| matches!(e, GameEvent::TurnStarted { .. }))
+            {
+                saw_natural_turn_started = true;
+                break;
+            }
+        }
+        assert!(
+            saw_natural_turn_started,
+            "non-vacuity: the runner must have emitted a natural TurnStarted \
+             (the OLD deleted arm would have counted it)"
+        );
+
+        let delta = probe.iteration_delta();
+        assert_eq!(
+            delta.extra_turns, 0,
+            "a NATURAL next turn is not an extra turn"
+        );
+    }
+
+    /// P1 — the extra-turn axis is fed by the `EffectResolved{ExtraTurn}`
+    /// CREATION event, and ONLY that kind. Discriminates the `kind` match: a
+    /// different `EffectKind` (here `DealDamage`) must not touch `extra_turns`.
+    #[test]
+    fn extra_turn_creation_feeds_axis() {
+        let mut acc = ResourceVector::default();
+        accumulate_events(
+            &mut acc,
+            &[GameEvent::EffectResolved {
+                kind: EffectKind::ExtraTurn,
+                source_id: ObjectId(7),
+            }],
+        );
+        assert_eq!(
+            acc.extra_turns, 1,
+            "an ExtraTurn creation event feeds the extra-turns axis"
+        );
+
+        // A different EffectKind must NOT increment the axis (kind discrimination).
+        let mut other = ResourceVector::default();
+        accumulate_events(
+            &mut other,
+            &[GameEvent::EffectResolved {
+                kind: EffectKind::DealDamage,
+                source_id: ObjectId(7),
+            }],
+        );
+        assert_eq!(
+            other.extra_turns, 0,
+            "a non-ExtraTurn EffectResolved must not feed the extra-turns axis"
+        );
+    }
+
+    /// P2 — the combat-phase axis is fed by `snapshot` from `state.extra_phases`:
+    /// one queued `ExtraPhase{phase: BeginCombat}` (anchor irrelevant) is counted
+    /// as one extra combat, with the natural combat tally at its baseline (1, the
+    /// single natural combat already entered).
+    #[test]
+    fn extra_combat_creation_feeds_axis() {
+        use crate::types::game_state::{ExtraPhase, GameState};
+
+        let mut state = GameState::new_two_player(7);
+        // CR 506.1: the one natural combat already entered this turn.
+        state.combat_phases_started_this_turn = 1;
+        // CR 500.8: one queued extra combat (Aurelia-style "after this phase").
+        state.extra_phases.push(ExtraPhase {
+            anchor: Phase::EndCombat,
+            phase: Phase::BeginCombat,
+        });
+
+        let v = ResourceVector::snapshot(&state);
+        assert_eq!(
+            v.combat_phases, 1,
+            "one queued BeginCombat extra phase is one extra combat (entered=0 + queued=1)"
+        );
+    }
+
+    /// P3 (Obeka class / pitfall-1 rebuttal) — a multi-push of N extra combats
+    /// must count ALL N from the queued term, proving the snapshot is NOT a
+    /// 1-per-event undercount (a per-event fold would have collapsed a single
+    /// AdditionalPhase resolution that pushes 3 phases to 1).
+    #[test]
+    fn multi_push_extra_combats_counted() {
+        use crate::types::game_state::{ExtraPhase, GameState};
+
+        let mut state = GameState::new_two_player(7);
+        state.combat_phases_started_this_turn = 1; // one natural combat
+        for _ in 0..3 {
+            state.extra_phases.push(ExtraPhase {
+                anchor: Phase::EndCombat,
+                phase: Phase::BeginCombat,
+            });
+        }
+
+        let v = ResourceVector::snapshot(&state);
+        assert_eq!(
+            v.combat_phases, 3,
+            "all 3 queued extra combats are counted (entered=0 + queued=3), not undercounted to 1"
+        );
+    }
+
+    /// H1 (pitfall-2 / CR 500.10a rebuttal) — with NO queued extra combats and
+    /// the natural combat tally at the baseline 1, `combat_phases` is 0. In the
+    /// real engine a *no-op* AdditionalPhase (CR 500.10a: "you get" an extra phase
+    /// on a non-controller's turn adds nothing) still EMITS
+    /// `EffectResolved{AdditionalPhase}`; the snapshot path is immune because that
+    /// no-op pushed nothing onto `state.extra_phases` and entered no extra combat.
+    /// combat_phases is fed by STATE, not by the AdditionalPhase event, so the
+    /// no-op event cannot inflate it.
+    #[test]
+    fn no_op_additional_phase_not_counted() {
+        use crate::types::game_state::GameState;
+
+        let mut state = GameState::new_two_player(7);
+        state.combat_phases_started_this_turn = 1; // only the natural combat
+        debug_assert!(state.extra_phases.is_empty());
+
+        let v = ResourceVector::snapshot(&state);
+        assert_eq!(
+            v.combat_phases, 0,
+            "a no-op AdditionalPhase pushes nothing onto state, so the state-readable axis stays 0"
+        );
+    }
+
+    /// H2 (pitfall-3 rebuttal) — a NON-combat queued extra phase (an Obeka-style
+    /// extra Upkeep) must be filtered out: only `Phase::BeginCombat` entries feed
+    /// the combat axis.
+    #[test]
+    fn non_combat_extra_phase_not_counted() {
+        use crate::types::game_state::{ExtraPhase, GameState};
+
+        let mut state = GameState::new_two_player(7);
+        state.combat_phases_started_this_turn = 1;
+        state.extra_phases.push(ExtraPhase {
+            anchor: Phase::Upkeep,
+            phase: Phase::Upkeep,
+        });
+
+        let v = ResourceVector::snapshot(&state);
+        assert_eq!(
+            v.combat_phases, 0,
+            "a queued non-combat (Upkeep) extra phase must not feed the combat axis"
+        );
+    }
+
+    /// H3 (Route-B consume-to-zero rebuttal) — create-then-consume: one extra
+    /// combat was ENTERED (tally = 2: one natural + one extra) and then consumed
+    /// (`state.extra_phases` empty). The entered term (started - 1 = 1) retains
+    /// that consumed extra combat, so `combat_phases` is 1 — a naive backlog-only
+    /// measure would report 0.
+    #[test]
+    fn extra_combat_survives_consumption() {
+        use crate::types::game_state::GameState;
+
+        let mut state = GameState::new_two_player(7);
+        // One natural + one extra combat ENTERED; the extra phase was removed from
+        // the queue when `advance_phase` consumed it (turns.rs:58 before enter).
+        state.combat_phases_started_this_turn = 2;
+        debug_assert!(state.extra_phases.is_empty());
+
+        let v = ResourceVector::snapshot(&state);
+        assert_eq!(
+            v.combat_phases, 1,
+            "a consumed extra combat is retained by the entered term (started - 1)"
+        );
     }
 }

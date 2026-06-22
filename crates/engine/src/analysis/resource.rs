@@ -27,6 +27,7 @@ use crate::types::card_type::CoreType;
 use crate::types::counter::CounterType;
 use crate::types::game_state::{loop_states_equal, GameState};
 use crate::types::mana::ManaType;
+use crate::types::phase::Phase;
 use crate::types::player::PlayerId;
 
 /// WUBRG + colorless, the canonical index order used by [`ResourceVector::mana`].
@@ -181,11 +182,19 @@ pub struct ResourceVector {
     /// word for a land-enters triggered ability). **Event-fed.**
     pub landfall_triggers: i64,
 
-    /// CR 500.8 + CR 506: extra combat phases created this window (CR 500.8
-    /// governs adding phases; CR 506 is the combat phase). **Event-fed.**
+    /// CR 500.8 + CR 506.1: extra combat phases CREATED this turn (begin-combat
+    /// phases entered as extras plus those still queued in `state.extra_phases`).
+    /// **State-readable** — computed by `snapshot` from the per-turn combat tally
+    /// and queued extra phases.
     pub combat_phases: i64,
 
-    /// CR 500.7: extra turns created this window. **Event-fed.**
+    /// CR 500.7: extra turns created this window, fed from the
+    /// `EffectResolved{ExtraTurn}` creation event (not natural `TurnStarted`).
+    /// **Event-fed.** NOTE: the scheduled "take an extra turn after this one"
+    /// turn-control path (`turns.rs` `grant_extra_turn_after`) pushes onto
+    /// `state.extra_turns` WITHOUT emitting `EffectResolved{ExtraTurn}`, so that
+    /// less-common class is not counted on this axis — an honest coverage gap, not
+    /// a regression.
     pub extra_turns: i64,
 
     /// CR 700.4 + CR 603.6c: "dies" (leaves-the-battlefield-to-graveyard)
@@ -257,6 +266,30 @@ impl ResourceVector {
                 *v.counters.entry(key).or_insert(0) += *count as i64;
             }
         }
+
+        // CR 500.8 + CR 506.1 + CR 500.1: extra COMBAT phases created this turn.
+        // CR 506.1 / CR 500.1: a turn has exactly one natural combat phase, so
+        // `combat_phases_started_this_turn` (every begin-combat ENTERED this turn,
+        // natural + extra) minus that one natural combat yields extra combats
+        // already entered; the `Phase::BeginCombat` entries still queued in
+        // `state.extra_phases` (CR 500.8) add extra combats created but not yet
+        // entered. The two terms are disjoint — `advance_phase` removes an extra
+        // phase from `state.extra_phases` before entering it — so a consumed extra
+        // combat is counted by the first term, a pending one by the second, never
+        // both. This is "extra combats created", monotone within the turn and
+        // independent of consumption timing, so a self-sustaining extra-combat loop
+        // does not net to zero. NOTE: `combat_phases_started_this_turn` is engine
+        // bookkeeping that resets each turn (in `start_next_turn`), so across a turn
+        // boundary this axis can read negative under `delta`; that is a benign
+        // false-NEGATIVE for a `Gained` axis (CR 732.2a `is_net_progress` only vetoes
+        // on negative `Consumed` axes), never a false-positive.
+        let entered_extra_combats = state.combat_phases_started_this_turn.saturating_sub(1) as i64;
+        let queued_extra_combats = state
+            .extra_phases
+            .iter()
+            .filter(|extra_phase| extra_phase.phase == Phase::BeginCombat)
+            .count() as i64;
+        v.combat_phases = entered_extra_combats + queued_extra_combats;
 
         v
     }
@@ -863,6 +896,47 @@ mod tests {
         assert!(
             !loop_states_equal(&a.normalize_for_loop(), &b.normalize_for_loop()),
             "without the resource projection the comparison would (wrongly) reject this beneficial-loop point"
+        );
+    }
+
+    /// R1 — REVERT PROBE for the state-readable combat-phase axis (EDIT 3):
+    /// `snapshot` reads extra combat phases from `combat_phases_started_this_turn`
+    /// (entered, minus the one natural combat) plus the `BeginCombat` entries
+    /// queued in `state.extra_phases`. A queued `Upkeep` extra phase must not
+    /// change it. Reverting EDIT 3 leaves `combat_phases` at its `Default` 0 and
+    /// flips the positive assertions.
+    #[test]
+    fn snapshot_reads_extra_combat_phases() {
+        use crate::types::game_state::ExtraPhase;
+
+        let mut state = GameState::new_two_player(7);
+        // CR 506.1: one natural combat + two extra combats already ENTERED.
+        state.combat_phases_started_this_turn = 3;
+        // CR 500.8: one extra combat still QUEUED, plus a non-combat extra phase
+        // that must be filtered out.
+        state.extra_phases.push(ExtraPhase {
+            anchor: Phase::EndCombat,
+            phase: Phase::BeginCombat,
+        });
+        state.extra_phases.push(ExtraPhase {
+            anchor: Phase::Upkeep,
+            phase: Phase::Upkeep,
+        });
+
+        let v = ResourceVector::snapshot(&state);
+        // entered extra = (3 - 1) = 2; queued BeginCombat = 1; Upkeep ignored.
+        assert_eq!(
+            v.combat_phases, 3,
+            "snapshot = entered-extra (started-1=2) + queued BeginCombat (1); Upkeep filtered"
+        );
+
+        // Removing the queued BeginCombat drops the axis to the entered term only.
+        let mut consumed = GameState::new_two_player(7);
+        consumed.combat_phases_started_this_turn = 3;
+        let v2 = ResourceVector::snapshot(&consumed);
+        assert_eq!(
+            v2.combat_phases, 2,
+            "with no queued extras, only the entered term (started - 1) remains"
         );
     }
 
