@@ -12596,6 +12596,14 @@ pub struct ModalChoice {
     /// `Chosen` preserves controller-choice; omitted from card-data when default.
     #[serde(default, skip_serializing_if = "TargetSelectionMode::is_chosen")]
     pub selection: TargetSelectionMode,
+    /// CR 700.2 + CR 107.3m: Dynamic maximum number of modes ("choose up to X
+    /// —"), where {X} is the value chosen for the spell's cost and carried to the
+    /// ETB/triggered modal per CR 107.3m. When `Some`, the cap is resolved live
+    /// from the source's cost {X} and clamped to `mode_count` (CR 700.2d — a
+    /// player can't choose more distinct modes than exist); `max_choices` holds
+    /// the static `mode_count` placeholder used before resolution.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dynamic_max_choices: Option<QuantityExpr>,
 }
 
 /// Selection constraints attached to a modal choice header.

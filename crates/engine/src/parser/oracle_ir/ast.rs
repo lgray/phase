@@ -1530,6 +1530,9 @@ pub(crate) struct ModalHeaderAst {
     /// random" headers (Cult of Skaro) — the game selects the mode(s), not the
     /// chooser. `Chosen` for all standard modal headers.
     pub(crate) selection: crate::types::ability::TargetSelectionMode,
+    /// CR 700.2 + CR 107.3m: Dynamic max ("choose up to X —") — `Some` carries
+    /// the cost {X} reference resolved live at runtime; `None` for fixed caps.
+    pub(crate) dynamic_max_choices: Option<crate::types::ability::QuantityExpr>,
 }
 
 // --- ActivatedConstraintAst (moved from oracle.rs) ---
