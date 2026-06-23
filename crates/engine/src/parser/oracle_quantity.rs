@@ -505,13 +505,17 @@ pub(crate) fn parse_quantity_ref_with_context(
             return Some(qty);
         }
         // CR 301.5a + CR 303.4: "the number of <type> attached to <source>" counts
-        // objects whose `attached_to` is the source ("him"/"her"/"them"/"~" all
-        // denote the source — Whiplash's "where X is the number of Equipment
-        // attached to him"). Delegate to the shared for-each referent combinator so
-        // the source- and recipient-pronoun authorities stay in one building block;
-        // require a full consume so the generic type-phrase fall-through is unshadowed.
+        // objects whose `attached_to` is the source ("him"/"her"/"~" all denote the
+        // source — Whiplash's "where X is the number of Equipment attached to him";
+        // "them" denotes the recipient (player-enchanting Auras — see
+        // oracle_nom/quantity.rs parse_for_each_attached_to_source)). Delegate to the
+        // shared for-each referent combinator so the source- and recipient-pronoun
+        // authorities stay in one building block; require a full consume so the
+        // generic type-phrase fall-through is unshadowed.
         if let Ok((rest_after, qty)) = nom_quantity::parse_for_each_clause_ref.parse(rest) {
-            if rest_after.is_empty() {
+            // trim() matches the sibling completeness checks (470/482/489/527) and
+            // tolerates trailing whitespace.
+            if rest_after.trim().is_empty() {
                 return Some(canonicalize_quantity_ref(qty));
             }
         }
