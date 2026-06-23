@@ -1,0 +1,289 @@
+================================================================
+ coverage breakdown: modern+commander
+ inputs: 2026-06-22T19:53:15Z (coverage-data + card-data)
+================================================================
+members (in group)        : 22669
+supported                 : 21118  (93.16%)
+unsupported               : 1551
+  parser gap (gap_count>0): 1376   -> handler buckets below
+  resolver-flagged (==0)  : 175   -> parses fully, runtime-incomplete
+
+--- gap-handler histogram (parser-gap cards; per handler occurrence) ---
+ 304 Swallow:Condition_If
+ 119 Swallow:DynamicQty
+  77 Effect:static_structure
+  68 Effect:unknown
+  46 Effect:choose
+  41 Swallow:Duration_ThisTurn
+  35 Swallow:Optional_YouMay
+  33 Effect:deal
+  30 Effect:for
+  27 Effect:the
+  26 Effect:effect_structure
+  22 Effect:when
+  21 Effect:Unsupported unless clause
+  20 Effect:replacement_structure
+  17 Effect:spend
+  17 Effect:otherwise
+  16 Effect:put
+  16 Effect:flip
+  15 Effect:repeat
+  15 Effect:create
+  14 Effect:add
+  13 Swallow:Condition_AsLongAs
+  13 Effect:all
+  12 Swallow:Condition_Unless
+  12 Effect:can't
+
+--- resolver-flagged cards (parse OK, need runtime work) ---
+Apostle of Invasion
+Arcane Investigator
+Armament of Nyx
+Aven Heartstabber
+Beastbreaker of Bala Ged
+Blinkmoth Nexus
+Bloodfire Enforcers
+Bonds of Faith
+Bonepicker Skirge
+Bounty of Might
+Braids's Frightful Return
+Brass Knuckles
+Bride's Gown
+Brimstone Mage
+Burnout Bashtronaut
+Cairn Wanderer
+Call to Serve
+Caravan Escort
+Cecil, Dark Knight
+Cloister Gargoyle
+Conspicuous Snoop
+Contact Other Plane
+Controlled Instincts
+Coralhelm Commander
+Cosmos Elixir
+Crew Captain
+Crown of Convergence
+Deepway Navigator
+Descendant of Kiyomaro
+Dissection Practice
+Distorted Curiosity
+Djinni Windseer
+Dog Umbra
+Domineer
+Dream Prowler
+Drownyard Behemoth
+Duplicant
+Earth-Cult Elemental
+Echo Mage
+Elenda, Saint of Dusk
+Entangling Vines
+Even the Odds
+Evolved Spinoderm
+Face of Divinity
+Farideh's Fireball
+Fire Magic
+Flash Foliage
+Founding the Third Path
+Frodo Baggins
+Gastal Raider
+Gastal Thrillseeker
+Gathan Raiders
+Giant's Amulet
+Glimmerdust Nap
+Gloom Stalker
+Goblin Glory Chaser
+Goblin Morningstar
+Graveyard Shift
+Grim Wanderer
+Groom's Finery
+Gutter Shortcut
+Gutter Skulker
+Guul Draz Assassin
+Hada Spy Patrol
+Halimar Wavewatch
+Havi, the All-Father
+Hedron-Field Purists
+Herald of Hadar
+Hewed Stone Retainers
+Hexdrinker
+Hoarding Ogre
+Honored Hierarch
+Howling Galefang
+Hundred-Battle Veteran
+Hunt for Specimens
+Ikiral Outrider
+Illusory Angel
+Infuse with Vitality
+Inkmoth Nexus
+Isleback Spawn
+Kabira Vindicator
+Kargan Dragonlord
+Karsus Depthguard
+Kazandu Tuskcaller
+Knight of Cliffhaven
+Knight of Grace
+Knight of Malice
+Kumena's Speaker
+Lightfoot Rogue
+Lightwheel Enhancements
+Lion Umbra
+Living Conundrum
+Loathsome Troll
+Love Song of Night and Day
+Manor Gargoyle
+Merry, Esquire of Rohan
+Minimus Containment
+Mishra's Domination
+Mul Daya Channelers
+Nadaar, Selfless Paladin
+Nesting Bot
+Neurok Spy
+Nirkana Cutthroat
+Novice Knight
+Null Champion
+Oculus Whelp
+Okina Nightwatch
+Orgg
+Ozai, the Phoenix King
+Path of Bravery
+Power of Persuasion
+Precipitous Drop
+Predator's Gambit
+Racers' Scoreboard
+Rampaging Cyclops
+Rampaging Soulrager
+Reiterating Bolt
+Restless Prairie
+Scion of Stygia
+Scrapdiver Serpent
+Season of Loss
+Secretkeeper
+Security Bypass
+Seeds of Strength
+Shadow of Mortality
+Skill Borrower
+Skrelv's Hive
+Skyrider Trainee
+Skywatcher Adept
+Snooping Newsie
+So Tiny
+Sokka's Haiku
+Spiked Pit Trap
+Sting, the Glinting Dagger
+Streaking Oilgorger
+Student of Warfare
+Swarming Goblins
+Swiftwing Assailant
+Swimmer in Nightmares
+Sylvan Shepherd
+Syndicate Infiltrator
+Talara's Battalion
+Tanglewalker
+Tenacious Hunter
+Tenacious Underdog
+The Cruelty of Gix
+The Deck of Many Things
+The Elder Dragon War
+The Lunar Whale
+The Weatherseed Treaty
+The World Spell
+Thrasta, Tempest's Roar
+Threads of Disloyalty
+Throne of the Grim Captain
+Thunder Magic
+Tifa's Limit Break
+Timeline Culler
+Tranquil Frillback
+Transcendent Master
+Urborg Scavengers
+Vampire Nocturnus
+Vengeful Firebrand
+Verdant Rebirth
+Viral Spawning
+Viridian Betrayers
+Walking Sarcophagus
+War Historian
+Warden of the Beyond
+Windwright Mage
+Wurmweaver Coil
+Yotia Declares War
+Yuan-Ti Malison
+Zealot's Conviction
+Zulaport Enforcer
+Zurgo and Ojutai
+
+--- parser-gap cards grouped by handler-set (name | snippet) ---
+Cost:choose a creature you con | Close Encounter              | choose a creature you control or a warped creature card you own in exile
+Cost:creature;Cost:land;Cost:o | Soul Diviner                 | creature
+Cost:Embermage                 | Skoa, Embermage              | Embermage
+Cost:Fist of Krosa             | Baru, Fist of Krosa          | Fist of Krosa
+Cost:Heir to Blackblade        | Korlash, Heir to Blackblade  | Heir to Blackblade
+Cost:I've Come Up with a New R | Ignis Scientia               | I've Come Up with a New Recipe! — {1}{G}{U}
+Cost:Loose Leaf                | Page, Loose Leaf             | Loose Leaf
+Cost:Remove a +1/+1 counter or | Ion Storm                    | Remove a +1/+1 counter or a charge counter from a permanent you control
+Cost:rounded up                | Murderous Betrayal           | rounded up
+Cost:Samite Guardian           | Oriss, Samite Guardian       | Samite Guardian
+Cost:Zephyr Mage               | Linessa, Zephyr Mage         | Zephyr Mage
+Effect:•                     | Life of Toshiro Umezawa      | • You gain 2 ~
+Effect:"                       | Can't Stay Away              | "
+Effect:"                       | Tamiyo, Compleated Sage      | "
+Effect:{0};Effect:{1};Effect:{ | Vincent's Limit Break        | • Galian Beast — {0} — 3/2.
+Effect:~                       | Ballroom Brawlers            | ~ and up to one other target creature you control both gain your choice of first str
+Effect:~                       | Regenerate                   | ~ target creature.
+Effect:~                       | Tatsunari, Toad Rider        | {1}{G/U}: ~ and target Frog you control can't be blocked this turn except by creatur
+Effect:~'s                     | Amplifire                    | ~'s base power becomes twice that card's power and its base toughness becomes twice 
+Effect:1/1;Effect:1/2;Effect:2 | Genku, Future Shaper         | 2/2 white Fox with vigilance
+Effect:1/3;Effect:1/5;Effect:3 | Wild Shape                   | 1/3 Turtle with hexproof
+Effect:2/1;Effect:3/1          | Outlaws' Merriment           | 3/1 Human Warrior with trample and haste
+Effect:5,                      | Kozilek's Unsealing          | 5, or 6
+Effect:5,                      | Sarkhan's Unsealing          | 5, or 6
+Effect:a                       | Ballista Wielder             | A creature dealt damage this way can't block
+Effect:a                       | Elite Spellbinder            | A spell cast this way costs {2} more to cast
+Effect:a                       | Invasion of Gobakhan         | A spell cast this way costs {2} more to cast
+Effect:a                       | Perilous Predicament         | a nonartifact creature of their choice
+Effect:a                       | Structural Collapse          | a land of their choice
+Effect:a                       | To the Slaughter             | a planeswalker of their choice
+Effect:a;Effect:unknown        | Altar of the Pantheon        | Your devotion to each color and each combination of colors is increased by one.
+Effect:activate                | Kaito, Dancing Shadow        | activate loyalty abilities of ~ twice this turn rather than only once
+Effect:activate                | Urza Assembles the Titans    | activate the loyalty abilities of planeswalkers you control twice this turn rather t
+Effect:activated               | Trickbind                    | activated abilities of that permanent can't be activated
+Effect:add                     | Conduit of Emrakul           | add {C}{C} at the beginning of your next main phase
+Effect:add                     | Conduit of Storms            | add {R} at the beginning of your next main phase
+Effect:add                     | Elemental Resonance          | add mana equal to enchanted permanent's mana cost
+Effect:add                     | Fangorn, Tree Shepherd       | add twice that much {G}
+Effect:add                     | Katilda, Dawnhart Prime      | {T}: Add one mana of any of ~'s colors.
+Effect:add                     | Mana Seism                   | add that much {C}
+Effect:add                     | Neheb, the Eternal           | add {R} for each 1 life your opponents have lost
+Effect:add                     | Omnath, Locus of All         | add three mana in any combination of its colors
+Effect:add                     | Plaza of Harmony             | {T}: Add one mana of any type that a Gate you control could produce.
+Effect:add                     | River of Tears               | add {B} instead
+Effect:add                     | Su-Chi Cave Guard            | add eight {C}
+Effect:add                     | Tundra Fumarole              | Add {C} for each {S} spent to cast this spell
+Effect:add;Effect:put          | Esper Terra                  | put up to three lore counters on it
+Effect:add;Effect:spend        | Tazri, Stalwart Survivor     | {t}: add one mana of any of ~'s colors. spend this mana only to activate an ability 
+Effect:all                     | Ascent of the Worthy         | all damage that would be dealt to creatures you control is dealt to that creature in
+Effect:all                     | Gideon's Sacrifice           | All damage that would be dealt this turn to you and permanents you control is dealt 
+Effect:all                     | Glen Elendra's Answer        | all abilities your opponents control
+Effect:all                     | Kjeldoran Royal Guard        | {T}: All combat damage that would be dealt to you by unblocked creatures this turn i
+Effect:all                     | Kor Dirge                    | All damage that would be dealt this turn to target creature you control by a source 
+Effect:all                     | Legions to Ashes             | all tokens that player controls with the same name as that permanent
+Effect:all                     | Moratorium Stone             | all other cards from graveyards with the same name as that card
+Effect:all                     | Oracle's Attendants          | {T}: All damage that would be dealt to target creature this turn by a source of your
+Effect:all                     | Saving Grace                 | all damage that would be dealt this turn to you and permanents you control is dealt 
+Effect:all                     | Shadows' Verdict             | all creature and planeswalker cards with mana value 3 or less from all graveyards
+Effect:all                     | Soulquake                    | all creature cards in graveyards
+Effect:all                     | Sphere of Annihilation       | all creatures and planeswalkers with mana value less than or equal to the number of 
+Effect:all;Effect:shuffle      | Sway of the Stars            | Each player shuffles their hand, graveyard, and all permanents they own into their l
+Effect:an                      | Boneyard Parley              | An opponent separates those cards into two piles
+Effect:an                      | Fact or Fiction              | An opponent separates those cards into two piles
+Effect:an                      | Jace, Architect of Thought   | An opponent separates those cards into two piles
+Effect:an                      | Sphinx of Clear Skies        | An opponent separates those cards into two piles
+Effect:an                      | Sphinx of Uthuun             | An opponent separates those cards into two piles
+Effect:an                      | Unesh, Criosphinx Sovereign  | An opponent separates those cards into two piles
+Effect:an;Effect:otherwise     | Gollum, Scheming Guide       | An opponent guesses whether the top card of your library is the chosen kind
+Effect:an;Effect:play          | Brilliant Ultimatum          | An opponent separates those cards into two piles
+Effect:and;Effect:it           | Mishra, Claimed by Gix       | and you both own and control them, exile them, then meld them into ~, Lost to Phyrex
+Effect:another                 | Feral Contest                | Another target creature blocks it this turn if able
+Effect:another                 | Tovolar's Packleader         | {2}{G}{G}: Another target Wolf or Werewolf you control fights target creature you do
+Effect:another;Effect:can't    | The Phasing of Zhalfir       | Another target nonland permanent phases out
+Effect:any           

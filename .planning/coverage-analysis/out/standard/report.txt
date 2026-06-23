@@ -1,0 +1,14 @@
+================================================================
+ coverage breakdown: standard
+ inputs: 2026-06-22T19:56:56Z (coverage-data + card-data)
+================================================================
+members (in group)        : 4647
+supported                 : 4379  (94.23%)
+unsupported               : 268
+  parser gap (gap_count>0): 239   -> handler buckets below
+  resolver-flagged (==0)  : 29   -> parses fully, runtime-incomplete
+
+--- gap-handler histogram (parser-gap cards; per handler occurrence) ---
+  75 Swallow:Condition_If
+  36 Swallow:DynamicQty
+  15 Swallow:Duration_ThisTurn

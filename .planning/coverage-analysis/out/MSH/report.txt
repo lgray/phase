@@ -1,0 +1,30 @@
+================================================================
+ coverage breakdown: MSH
+ inputs: 2026-06-22T19:57:17Z (coverage-data + card-data)
+================================================================
+members (in group)        : 286
+supported                 : 273  (95.45%)
+unsupported               : 13
+  parser gap (gap_count>0): 10   -> handler buckets below
+  resolver-flagged (==0)  : 3   -> parses fully, runtime-incomplete
+
+--- gap-handler histogram (parser-gap cards; per handler occurrence) ---
+   4 Swallow:DynamicQty
+   3 Swallow:Condition_If
+
+--- resolver-flagged cards (parse OK, need runtime work) ---
+Doctor Doom
+Hawkeye, Master Marksman
+The Ruinous Wrecking Crew
+
+--- parser-gap cards grouped by handler-set (name | snippet) ---
+ParseWarning:target-fallback   | Baron Helmut Zemo            | [warning:target-fallback] parse_target could not classify 'those exiled cards'
+Swallow:Condition_If           | Hulkling, Burgeoning Bruiser | Condition_If — Vigilance Whenever another creature you control enters, if it has g
+Swallow:Condition_If           | The Incredible Hulk          | Condition_If — Reach, trample Enrage — Whenever The Incredible Hulk is dealt dam
+Swallow:Condition_If           | Whiplash, Vengeful Engineer  | Condition_If — Whiplash enters tapped. Whenever Whiplash attacks, if he's equipped
+Swallow:Duration_UntilEndOfTur | Black Widow, Super Spy       | Duration_UntilEndOfTurn — Menace Whenever Black Widow deals combat damage to a pla
+Swallow:DynamicQty             | Cosmic Cube                  | DynamicQty — Ward {2} Whenever you attack, look at the top six cards of your libra
+Swallow:DynamicQty             | Hawkeye, Young Avenger       | DynamicQty — Reach If a source you control would deal noncombat damage to an oppon
+Swallow:DynamicQty             | Klaw, Sonic Subjugator       | DynamicQty — Sonic Attack — When Klaw enters, target player reveals a number of 
+Swallow:DynamicQty             | Winter Soldier, Icy Assassin | DynamicQty — Vigilance, menace Winter Soldier gets +2/+0 for each Equipment attach
+Trigger:Whenever a player or p | Loki, God of Mischief        | Whenever a player or permanent becomes the target of an ability you control, draw a 

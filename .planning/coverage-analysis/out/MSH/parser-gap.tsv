@@ -1,0 +1,10 @@
+Baron Helmut Zemo	1	MSH	ParseWarning:target-fallback	[warning:target-fallback] parse_target could not classify 'those exiled cards'
+Black Widow, Super Spy	1	MSH	Swallow:Duration_UntilEndOfTurn	Duration_UntilEndOfTurn — Menace Whenever Black Widow deals combat damage to a player, that player exiles cards from the top of their library until they exile a
+Cosmic Cube	1	MSH	Swallow:DynamicQty	DynamicQty — Ward {2} Whenever you attack, look at the top six cards of your library. You may cast a spell from among them with mana value less than or e
+Hawkeye, Young Avenger	1	MSH	Swallow:DynamicQty	DynamicQty — Reach If a source you control would deal noncombat damage to an opponent or a permanent an opponent controls, instead it deals that much dam
+Hulkling, Burgeoning Bruiser	1	MSH	Swallow:Condition_If	Condition_If — Vigilance Whenever another creature you control enters, if it has greater power or toughness than Hulkling, put a +1/+1 counter on Hulkling.
+Klaw, Sonic Subjugator	1	MSH	Swallow:DynamicQty	DynamicQty — Sonic Attack — When Klaw enters, target player reveals a number of cards from their hand equal to one plus the number of creature cards in
+Loki, God of Mischief	1	MSH;PMEI	Trigger:Whenever a player or permanent becomes the target of an ability you control	Whenever a player or permanent becomes the target of an ability you control, draw a card. This ability triggers only once each turn.
+The Incredible Hulk	1	MSH	Swallow:Condition_If	Condition_If — Reach, trample Enrage — Whenever The Incredible Hulk is dealt damage, put a +1/+1 counter on him. If he's attacking, untap him and there i
+Whiplash, Vengeful Engineer	1	MSH	Swallow:Condition_If	Condition_If — Whiplash enters tapped. Whenever Whiplash attacks, if he's equipped, each opponent loses X life and you gain X life, where X is the number o
+Winter Soldier, Icy Assassin	1	MSH	Swallow:DynamicQty	DynamicQty — Vigilance, menace Winter Soldier gets +2/+0 for each Equipment attached to him. {3}{W}{B}: Return this card from your graveyard to the battl

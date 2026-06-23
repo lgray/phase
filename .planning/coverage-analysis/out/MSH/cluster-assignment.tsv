@@ -1,0 +1,13 @@
+Doctor Doom	0		R2-aslongas-conditional-static
+Whiplash, Vengeful Engineer	1	Swallow:Condition_If	S03-intervening-if-trigger
+Winter Soldier, Icy Assassin	1	Swallow:DynamicQty	S08-foreach-count-qty
+Klaw, Sonic Subjugator	1	Swallow:DynamicQty	S10-dynamic-qty-bespoke
+The Incredible Hulk	1	Swallow:Condition_If	S01-reflexive-if-rider
+Cosmic Cube	1	Swallow:DynamicQty	S10-dynamic-qty-bespoke
+Black Widow, Super Spy	1	Swallow:Duration_UntilEndOfTurn	S11-duration-grant
+Hulkling, Burgeoning Bruiser	1	Swallow:Condition_If	S03-intervening-if-trigger
+Hawkeye, Master Marksman	0		R4-cant-restriction-static
+Hawkeye, Young Avenger	1	Swallow:DynamicQty	S10-dynamic-qty-bespoke
+Loki, God of Mischief	1	Trigger:Whenever a player or permanent becomes the target of an ability you control	S19-new-trigger-matcher
+The Ruinous Wrecking Crew	0		R5-runtime-bespoke
+Baron Helmut Zemo	1	ParseWarning:target-fallback	S17-anaphoric-target

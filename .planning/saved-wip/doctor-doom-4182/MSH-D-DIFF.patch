@@ -1,0 +1,664 @@
+diff --git a/crates/draft-core/src/cube.rs b/crates/draft-core/src/cube.rs
+index f999a5da8..fff5c7050 100644
+--- a/crates/draft-core/src/cube.rs
++++ b/crates/draft-core/src/cube.rs
+@@ -207,6 +207,7 @@ fn core_type_name(core_type: &CoreType) -> &'static str {
+         CoreType::Planeswalker => "Planeswalker",
+         CoreType::Sorcery => "Sorcery",
+         CoreType::Tribal => "Tribal",
++        CoreType::Plan => "Plan",
+     }
+ }
+ 
+diff --git a/crates/engine/src/game/coverage.rs b/crates/engine/src/game/coverage.rs
+index ea0ebda16..0f67e3853 100644
+--- a/crates/engine/src/game/coverage.rs
++++ b/crates/engine/src/game/coverage.rs
+@@ -900,6 +900,7 @@ fn fmt_type_filter(tf: &TypeFilter) -> String {
+         TypeFilter::Sorcery => "sorcery",
+         TypeFilter::Planeswalker => "planeswalker",
+         TypeFilter::Battle => "battle",
++        TypeFilter::Plan => "plan",
+         TypeFilter::Kindred => "kindred",
+         TypeFilter::Permanent => "permanent",
+         TypeFilter::Card => "card",
+@@ -1878,6 +1879,7 @@ fn fmt_core_type(ct: &CoreType) -> &'static str {
+         CoreType::Phenomenon => "phenomenon",
+         CoreType::Scheme => "scheme",
+         CoreType::Conspiracy => "conspiracy",
++        CoreType::Plan => "plan",
+     }
+ }
+ 
+diff --git a/crates/engine/src/game/effects/token.rs b/crates/engine/src/game/effects/token.rs
+index 83e527468..345036fee 100644
+--- a/crates/engine/src/game/effects/token.rs
++++ b/crates/engine/src/game/effects/token.rs
+@@ -1049,6 +1049,7 @@ fn type_filter_core_types(filter: &TypeFilter) -> Option<Vec<CoreType>> {
+         TypeFilter::Sorcery => Some(vec![CoreType::Sorcery]),
+         TypeFilter::Planeswalker => Some(vec![CoreType::Planeswalker]),
+         TypeFilter::Battle => Some(vec![CoreType::Battle]),
++        TypeFilter::Plan => Some(vec![CoreType::Plan]),
+         TypeFilter::Kindred => Some(vec![CoreType::Kindred]),
+         TypeFilter::AnyOf(inner) => {
+             let mut out = Vec::new();
+diff --git a/crates/engine/src/game/filter.rs b/crates/engine/src/game/filter.rs
+index e15eafd27..e4b0652f6 100644
+--- a/crates/engine/src/game/filter.rs
++++ b/crates/engine/src/game/filter.rs
+@@ -964,6 +964,7 @@ pub(crate) fn matches_type_filter_against_face(face: &CardFace, filter: &TypeFil
+         TypeFilter::Sorcery => face.card_type.core_types.contains(&CoreType::Sorcery),
+         TypeFilter::Planeswalker => face.card_type.core_types.contains(&CoreType::Planeswalker),
+         TypeFilter::Battle => face.card_type.core_types.contains(&CoreType::Battle),
++        TypeFilter::Plan => face.card_type.core_types.contains(&CoreType::Plan),
+         // CR 308.1: Kindred card-type check.
+         TypeFilter::Kindred => face.card_type.core_types.contains(&CoreType::Kindred),
+         TypeFilter::Permanent => face
+@@ -2000,6 +2001,7 @@ pub fn type_filter_matches(
+         TypeFilter::Planeswalker => obj.card_types.core_types.contains(&CoreType::Planeswalker),
+         // CR 310: Battle type check.
+         TypeFilter::Battle => obj.card_types.core_types.contains(&CoreType::Battle),
++        TypeFilter::Plan => obj.card_types.core_types.contains(&CoreType::Plan),
+         // CR 308.1: Kindred type check.
+         TypeFilter::Kindred => obj.card_types.core_types.contains(&CoreType::Kindred),
+         // CR 403.3: Permanents exist only on the battlefield — creatures, artifacts, enchantments, lands, planeswalkers, battles.
+@@ -2046,6 +2048,7 @@ fn zone_change_record_matches_type_filter(
+         TypeFilter::Sorcery => record.core_types.contains(&CoreType::Sorcery),
+         TypeFilter::Planeswalker => record.core_types.contains(&CoreType::Planeswalker),
+         TypeFilter::Battle => record.core_types.contains(&CoreType::Battle),
++        TypeFilter::Plan => record.core_types.contains(&CoreType::Plan),
+         // CR 308.1: Kindred type check.
+         TypeFilter::Kindred => record.core_types.contains(&CoreType::Kindred),
+         TypeFilter::Permanent => {
+@@ -2569,6 +2572,7 @@ fn spell_record_matches_type_filter(
+         TypeFilter::Sorcery => record.core_types.contains(&CoreType::Sorcery),
+         TypeFilter::Planeswalker => record.core_types.contains(&CoreType::Planeswalker),
+         TypeFilter::Battle => record.core_types.contains(&CoreType::Battle),
++        TypeFilter::Plan => record.core_types.contains(&CoreType::Plan),
+         // CR 308.1: Kindred type check.
+         TypeFilter::Kindred => record.core_types.contains(&CoreType::Kindred),
+         TypeFilter::Permanent => {
+@@ -4804,6 +4808,34 @@ mod tests {
+         id
+     }
+ 
++    /// CR: needs-manual-verification — Plan card-type runtime filter
++    /// (Marvel's Spider-Man), modeled on `TypeFilter::Battle`. Exercises the
++    /// object-path runtime branch in `type_filter_matches`.
++    #[test]
++    fn type_filter_plan_matches_only_plan_core_type() {
++        let mut state = setup();
++        let plan = add_creature(&mut state, PlayerId(0), "A Plan");
++        // Replace the default Creature core type with Plan.
++        {
++            let obj = state.objects.get_mut(&plan).unwrap();
++            obj.card_types.core_types = vec![CoreType::Plan];
++        }
++        let creature = add_creature(&mut state, PlayerId(0), "A Creature");
++
++        let all_creature_types: Vec<String> = Vec::new();
++        let plan_obj = state.objects.get(&plan).unwrap();
++        let creature_obj = state.objects.get(&creature).unwrap();
++
++        assert!(
++            type_filter_matches(&TypeFilter::Plan, plan_obj, &all_creature_types),
++            "a CoreType::Plan object must match TypeFilter::Plan"
++        );
++        assert!(
++            !type_filter_matches(&TypeFilter::Plan, creature_obj, &all_creature_types),
++            "a creature must NOT match TypeFilter::Plan"
++        );
++    }
++
+     #[test]
+     fn cmc_filter_treats_retained_x_as_zero_off_stack() {
+         let mut state = setup();
+diff --git a/crates/engine/src/game/layers.rs b/crates/engine/src/game/layers.rs
+index 0df3a2f7f..e9a0eb463 100644
+--- a/crates/engine/src/game/layers.rs
++++ b/crates/engine/src/game/layers.rs
+@@ -11470,6 +11470,132 @@ mod tests {
+         );
+     }
+ 
++    /// Builds a Doctor Doom permanent on player 0's battlefield whose static
++    /// grants itself Indestructible while its controller controls an artifact
++    /// creature or a Plan — the exact typed condition the parser now lowers
++    /// ("you control an artifact creature or a Plan").
++    ///
++    /// CR 604.1 + CR 611.3a + CR 702.12b. The condition is the typed
++    /// `IsPresent { Or[ Typed{[Artifact,Creature],You,Battlefield},
++    /// Typed{[Plan],You,Battlefield} ] }` (see
++    /// `parser::oracle_nom::condition::tests::doctor_doom_disjunctive_control_condition_is_typed_not_unrecognized`).
++    fn doctor_doom_static() -> StaticDefinition {
++        use crate::types::keywords::Keyword;
++        StaticDefinition::continuous()
++            .affected(TargetFilter::SelfRef)
++            .modifications(vec![ContinuousModification::AddKeyword {
++                keyword: Keyword::Indestructible,
++            }])
++            .condition(StaticCondition::IsPresent {
++                filter: Some(TargetFilter::Or {
++                    filters: vec![
++                        TargetFilter::Typed(TypedFilter {
++                            type_filters: vec![TypeFilter::Artifact, TypeFilter::Creature],
++                            controller: Some(ControllerRef::You),
++                            properties: vec![FilterProp::InZone {
++                                zone: Zone::Battlefield,
++                            }],
++                        }),
++                        TargetFilter::Typed(TypedFilter {
++                            type_filters: vec![TypeFilter::Plan],
++                            controller: Some(ControllerRef::You),
++                            properties: vec![FilterProp::InZone {
++                                zone: Zone::Battlefield,
++                            }],
++                        }),
++                    ],
++                }),
++            })
++    }
++
++    fn make_doctor_doom(state: &mut GameState, player: PlayerId) -> ObjectId {
++        let doom = make_creature(state, "Doctor Doom", 4, 4, player);
++        let s = doctor_doom_static();
++        let obj = state.objects.get_mut(&doom).unwrap();
++        Arc::make_mut(&mut obj.base_static_definitions).push(s.clone());
++        obj.static_definitions.push(s);
++        doom
++    }
++
++    fn make_artifact_creature(state: &mut GameState, name: &str, player: PlayerId) -> ObjectId {
++        let id = make_creature(state, name, 1, 1, player);
++        let obj = state.objects.get_mut(&id).unwrap();
++        obj.card_types.core_types.push(CoreType::Artifact);
++        obj.base_card_types = obj.card_types.clone();
++        id
++    }
++
++    /// Arm A (positive): player 0 controls an artifact creature, so the typed
++    /// `IsPresent { Or[..] }` condition is true and Doctor Doom has
++    /// Indestructible. CR 611.3a (continuous re-evaluation) + CR 702.12b.
++    #[test]
++    fn doctor_doom_has_indestructible_with_artifact_creature() {
++        use crate::types::keywords::Keyword;
++        let mut state = setup();
++        let doom = make_doctor_doom(&mut state, PlayerId(0));
++        make_artifact_creature(&mut state, "Doombot", PlayerId(0));
++
++        evaluate_layers(&mut state);
++
++        assert!(
++            state
++                .objects
++                .get(&doom)
++                .unwrap()
++                .has_keyword(&Keyword::Indestructible),
++            "Doctor Doom must have Indestructible while you control an artifact creature"
++        );
++    }
++
++    /// Arm B (revert-probe / discriminating): player 0 controls NO artifact
++    /// creature and NO Plan, so the condition is false and Doctor Doom does NOT
++    /// have Indestructible. PRE-FIX the parser lowered this condition to
++    /// `Unrecognized`, which `evaluate_condition` treats as `true` — making the
++    /// grant always-on so this assertion would FAIL on revert.
++    #[test]
++    fn doctor_doom_no_indestructible_without_artifact_creature_or_plan() {
++        use crate::types::keywords::Keyword;
++        let mut state = setup();
++        let doom = make_doctor_doom(&mut state, PlayerId(0));
++        // A plain (non-artifact) creature must not satisfy the AND-of-types leg.
++        make_creature(&mut state, "Vanilla Bear", 2, 2, PlayerId(0));
++
++        evaluate_layers(&mut state);
++
++        assert!(
++            !state
++                .objects
++                .get(&doom)
++                .unwrap()
++                .has_keyword(&Keyword::Indestructible),
++            "Doctor Doom must NOT have Indestructible with no artifact creature/Plan you control"
++        );
++    }
++
++    /// Arm C (multi-authority / proves `ControllerRef::You`): the only artifact
++    /// creature is controlled by the OPPONENT (player 1), so the `You`-scoped
++    /// condition is false and Doctor Doom does NOT have Indestructible. A naive
++    /// global "is any artifact creature present" rescan would wrongly grant it.
++    /// CR 109.5 ("you" = the static's controller).
++    #[test]
++    fn doctor_doom_no_indestructible_when_opponent_controls_artifact_creature() {
++        use crate::types::keywords::Keyword;
++        let mut state = setup();
++        let doom = make_doctor_doom(&mut state, PlayerId(0));
++        make_artifact_creature(&mut state, "Enemy Doombot", PlayerId(1));
++
++        evaluate_layers(&mut state);
++
++        assert!(
++            !state
++                .objects
++                .get(&doom)
++                .unwrap()
++                .has_keyword(&Keyword::Indestructible),
++            "an opponent-controlled artifact creature must NOT satisfy the You-scoped condition"
++        );
++    }
++
+     /// CR 113.6 + CR 113.6b: Sanity check for the zone-of-function gate.
+     /// When Anger is on the battlefield (not in the graveyard), the compound
+     /// `SourceInZone(Graveyard)` arm evaluates false, so the anthem must not
+diff --git a/crates/engine/src/game/trigger_index.rs b/crates/engine/src/game/trigger_index.rs
+index 58e251ee6..d0b01b505 100644
+--- a/crates/engine/src/game/trigger_index.rs
++++ b/crates/engine/src/game/trigger_index.rs
+@@ -74,10 +74,13 @@ fn narrow_core_type(filter: &Option<TargetFilter>) -> Option<CoreType> {
+         TypeFilter::Battle => Some(CoreType::Battle),
+         // Non-narrow filter shapes — broad emission carries the trigger.
+         // CR 308.1: Kindred is a non-permanent supplemental type, never a
+-        // narrowing battlefield-trigger card type.
++        // narrowing battlefield-trigger card type. Plan (Marvel's Spider-Man)
++        // is likewise nontraditional/non-permanent, so it never narrows a
++        // battlefield trigger.
+         TypeFilter::Instant
+         | TypeFilter::Sorcery
+         | TypeFilter::Kindred
++        | TypeFilter::Plan
+         | TypeFilter::Permanent
+         | TypeFilter::Card
+         | TypeFilter::Any
+diff --git a/crates/engine/src/parser/oracle_effect/conditions.rs b/crates/engine/src/parser/oracle_effect/conditions.rs
+index 3a65705e0..06307ee99 100644
+--- a/crates/engine/src/parser/oracle_effect/conditions.rs
++++ b/crates/engine/src/parser/oracle_effect/conditions.rs
+@@ -795,6 +795,8 @@ fn type_filter_to_core_type(tf: &TypeFilter) -> Option<CoreType> {
+         TypeFilter::Battle => Some(CoreType::Battle),
+         // CR 308.1: Kindred maps to its core type.
+         TypeFilter::Kindred => Some(CoreType::Kindred),
++        // CR: needs-manual-verification — Plan card type (Marvel's Spider-Man).
++        TypeFilter::Plan => Some(CoreType::Plan),
+         _ => None,
+     }
+ }
+@@ -814,6 +816,11 @@ fn core_type_to_type_filter(core: CoreType) -> TypeFilter {
+         CoreType::Battle => TypeFilter::Battle,
+         // CR 308.1: Kindred maps to its dedicated type filter.
+         CoreType::Kindred => TypeFilter::Kindred,
++        // CR: needs-manual-verification — Plan card type (Marvel's Spider-Man)
++        // has a dedicated TypeFilter::Plan; it must NOT fall through to the
++        // `Subtype("Plan")` catch-all below (that would gate on a nonexistent
++        // subtype instead of the core type).
++        CoreType::Plan => TypeFilter::Plan,
+         // CR 110.1: any remaining card type maps to a Subtype-free typed filter
+         // by its name; `Tribal`/`Plane`/etc. fall here and are gated by name.
+         other => TypeFilter::Subtype(format!("{other:?}")),
+@@ -6463,4 +6470,24 @@ mod tests {
+             }
+         );
+     }
++
++    /// CR: needs-manual-verification — Plan card type (Marvel's Spider-Man).
++    /// `core_type_to_type_filter` must route `CoreType::Plan` to the dedicated
++    /// `TypeFilter::Plan`, NOT silently to the `Subtype("Plan")` catch-all
++    /// (which would gate on a nonexistent subtype). `type_filter_to_core_type`
++    /// must round-trip it back. DISCRIMINATING: pre-fix Plan fell to the
++    /// `Subtype(format!("{other:?}"))` / `_ => None` arms.
++    #[test]
++    fn plan_core_type_filter_round_trips_not_subtype() {
++        assert_eq!(core_type_to_type_filter(CoreType::Plan), TypeFilter::Plan);
++        assert_ne!(
++            core_type_to_type_filter(CoreType::Plan),
++            TypeFilter::Subtype("Plan".to_string()),
++            "Plan must NOT lower to the Subtype catch-all"
++        );
++        assert_eq!(
++            type_filter_to_core_type(&TypeFilter::Plan),
++            Some(CoreType::Plan)
++        );
++    }
+ }
+diff --git a/crates/engine/src/parser/oracle_keyword.rs b/crates/engine/src/parser/oracle_keyword.rs
+index 95bf5e3dc..f4cd28ed7 100644
+--- a/crates/engine/src/parser/oracle_keyword.rs
++++ b/crates/engine/src/parser/oracle_keyword.rs
+@@ -1930,6 +1930,7 @@ fn type_filter_subject_name(tf: &TypeFilter) -> String {
+         TypeFilter::Sorcery => "sorcery".to_string(),
+         TypeFilter::Planeswalker => "planeswalker".to_string(),
+         TypeFilter::Battle => "battle".to_string(),
++        TypeFilter::Plan => "plan".to_string(),
+         TypeFilter::Kindred => "kindred".to_string(),
+         TypeFilter::Permanent => "permanent".to_string(),
+         TypeFilter::Card => "card".to_string(),
+diff --git a/crates/engine/src/parser/oracle_nom/condition.rs b/crates/engine/src/parser/oracle_nom/condition.rs
+index 2b939087a..eb66dfcb9 100644
+--- a/crates/engine/src/parser/oracle_nom/condition.rs
++++ b/crates/engine/src/parser/oracle_nom/condition.rs
+@@ -2681,19 +2681,56 @@ fn parse_you_control_a(input: &str) -> OracleResult<'_, StaticCondition> {
+     // "another " to `FilterProp::Another`).
+     let (rest, _article) =
+         nom::combinator::peek(alt((tag("a "), tag("an "), tag("another ")))).parse(rest)?;
+-    let (filter, remainder) = parse_type_phrase(rest);
++    let (filter, mut remainder) = parse_type_phrase(rest);
+     if matches!(filter, TargetFilter::Any) {
+         return Err(nom::Err::Error(nom::error::Error::new(
+             input,
+             nom::error::ErrorKind::Fail,
+         )));
+     }
+-    let filter = inject_controller(filter, ctrl);
++
++    // CR 608.2c + CR 109.5: Elided-verb disjunctive control —
++    // "you control <type A> or <article> <type B>" (Doctor Doom: "you control
++    // an artifact creature or a Plan"). The repeated "you control"/article RHS
++    // ("or a Plan") is NOT a standalone control condition, so the top-level
++    // `parse_condition_disjunction` cannot split it; instead a single shared
++    // verb governs both type filters. Each additional " or <article> <type>"
++    // segment is folded into a disjunction of presence filters. `parse_type_phrase`
++    // (unchanged) parses each article-led segment; this loop only adds the
++    // elided-verb continuation specific to the control-condition grammar, so the
++    // recipient/attached `it's X or Y` paths (which DO repeat a parseable RHS)
++    // are unaffected. Dispatch uses nom `tag(" or ")` + `peek(article)`.
++    let mut filters = vec![filter];
++    loop {
++        let Ok((after_or, _)) = tag::<_, _, OracleError<'_>>(" or ").parse(remainder) else {
++            break;
++        };
++        // Require an article-led RHS — a bare-type RHS ("... or creatures") or a
++        // standalone-condition RHS is left for the existing dispatchers.
++        let Ok((_, _)): Result<(&str, &str), nom::Err<OracleError<'_>>> =
++            nom::combinator::peek(alt((tag("a "), tag("an "), tag("another ")))).parse(after_or)
++        else {
++            break;
++        };
++        let (next_filter, next_remainder) = parse_type_phrase(after_or);
++        if matches!(next_filter, TargetFilter::Any) {
++            break;
++        }
++        filters.push(next_filter);
++        remainder = next_remainder;
++    }
++
++    let combined = if filters.len() == 1 {
++        filters.pop().expect("one filter")
++    } else {
++        TargetFilter::Or { filters }
++    };
++    let combined = inject_controller(combined, ctrl);
+     let consumed = input.len() - remainder.len();
+     Ok((
+         &input[consumed..],
+         StaticCondition::IsPresent {
+-            filter: Some(filter),
++            filter: Some(combined),
+         },
+     ))
+ }
+@@ -7290,6 +7327,79 @@ mod tests {
+         }
+     }
+ 
++    /// CR 604.1 + CR 611.3a: Doctor Doom's conditional-static gate
++    /// "as long as you control an artifact creature or a Plan, ~ has
++    /// indestructible" must lower its CONDITION to a typed
++    /// `IsPresent { Or[ Typed{[Artifact,Creature],You,Battlefield},
++    /// Typed{[Plan],You,Battlefield} ] }`, NOT `StaticCondition::Unrecognized`.
++    /// DISCRIMINATING: pre-fix `parse_type_phrase` left " or a Plan" unconsumed
++    /// (Plan unknown + non-comma connector rejected an article-led RHS), so the
++    /// condition fell to `Unrecognized` — which `evaluate_condition` treats as
++    /// `true`, making the keyword grant always-on (coverage-unsupported).
++    #[test]
++    fn doctor_doom_disjunctive_control_condition_is_typed_not_unrecognized() {
++        let (rest, c) =
++            parse_inner_condition("you control an artifact creature or a plan").unwrap();
++        assert_eq!(rest, "");
++        assert!(
++            !matches!(c, StaticCondition::Unrecognized { .. }),
++            "condition must NOT be Unrecognized, got {c:?}"
++        );
++        let StaticCondition::IsPresent {
++            filter: Some(TargetFilter::Or { filters }),
++        } = &c
++        else {
++            panic!("expected IsPresent {{ Or[..] }}, got {c:#?}");
++        };
++        assert_eq!(filters.len(), 2, "two disjuncts");
++        let TargetFilter::Typed(left) = &filters[0] else {
++            panic!("left disjunct must be Typed");
++        };
++        assert!(left.type_filters.contains(&TypeFilter::Artifact));
++        assert!(left.type_filters.contains(&TypeFilter::Creature));
++        assert_eq!(left.controller, Some(ControllerRef::You));
++        assert!(left.properties.iter().any(|p| matches!(
++            p,
++            FilterProp::InZone {
++                zone: Zone::Battlefield
++            }
++        )));
++        let TargetFilter::Typed(right) = &filters[1] else {
++            panic!("right disjunct must be Typed");
++        };
++        assert_eq!(
++            right.type_filters,
++            vec![TypeFilter::Plan],
++            "right disjunct must be a Plan, got {right:?}"
++        );
++        assert_eq!(right.controller, Some(ControllerRef::You));
++        assert!(right.properties.iter().any(|p| matches!(
++            p,
++            FilterProp::InZone {
++                zone: Zone::Battlefield
++            }
++        )));
++    }
++
++    /// Regression: a single "you control an artifact creature" (no connector)
++    /// still lowers to a single `IsPresent { Typed{[Artifact,Creature],You,
++    /// Battlefield} }`.
++    #[test]
++    fn you_control_single_artifact_creature_still_typed() {
++        let (rest, c) = parse_inner_condition("you control an artifact creature").unwrap();
++        assert_eq!(rest, "");
++        let tf = typed_presence(&c);
++        assert!(tf.type_filters.contains(&TypeFilter::Artifact));
++        assert!(tf.type_filters.contains(&TypeFilter::Creature));
++        assert_eq!(tf.controller, Some(ControllerRef::You));
++        assert!(tf.properties.iter().any(|p| matches!(
++            p,
++            FilterProp::InZone {
++                zone: Zone::Battlefield
++            }
++        )));
++    }
++
+     #[test]
+     fn test_you_control_named_pair() {
+         // CR 201.2 + CR 603.4: Scepter of Empires class — "you control [type]
+diff --git a/crates/engine/src/parser/oracle_nom/target.rs b/crates/engine/src/parser/oracle_nom/target.rs
+index 01c05da97..70dccc0e1 100644
+--- a/crates/engine/src/parser/oracle_nom/target.rs
++++ b/crates/engine/src/parser/oracle_nom/target.rs
+@@ -205,6 +205,12 @@ pub fn parse_type_filter_word(input: &str) -> OracleResult<'_, TypeFilter> {
+         ("sorcery", TypeFilter::Sorcery),
+         ("planeswalkers", TypeFilter::Planeswalker),
+         ("planeswalker", TypeFilter::Planeswalker),
++        // CR: needs-manual-verification — "Plan" card type (Marvel's Spider-Man).
++        // Ordering is load-bearing: the scan uses strip_prefix with NO word-boundary
++        // guard, so "plan"/"plans" MUST follow the "planeswalker"/"planeswalkers"
++        // entries above, else "planeswalker" would match "plan" first.
++        ("plans", TypeFilter::Plan),
++        ("plan", TypeFilter::Plan),
+         ("lands", TypeFilter::Land),
+         ("land", TypeFilter::Land),
+         ("battle", TypeFilter::Battle),
+diff --git a/crates/engine/src/parser/oracle_target.rs b/crates/engine/src/parser/oracle_target.rs
+index 6221d1be2..9cdd4683c 100644
+--- a/crates/engine/src/parser/oracle_target.rs
++++ b/crates/engine/src/parser/oracle_target.rs
+@@ -13352,4 +13352,60 @@ mod tests {
+         assert_eq!(tf.controller, Some(ControllerRef::You));
+         assert!(tf.properties.contains(&FilterProp::Another));
+     }
++
++    /// CR 205.2a: `parse_type_phrase` parses "a Plan" — the new Plan card type
++    /// (Marvel's Spider-Man) — to `Typed{[Plan]}`, fully consumed. The
++    /// elided-verb "or" disjunction ("you control an artifact creature or a
++    /// Plan") is assembled one level up in `parse_you_control_a`, so
++    /// `parse_type_phrase` itself stops at the first segment and leaves the
++    /// connector as remainder (asserted below).
++    #[test]
++    fn parse_type_phrase_recognizes_plan() {
++        let (f, rest) = parse_type_phrase("a Plan");
++        assert!(rest.trim().is_empty(), "remainder must be empty: {rest:?}");
++        let TargetFilter::Typed(tf) = f else {
++            panic!("expected single Typed filter, got {f:?}");
++        };
++        assert_eq!(tf.type_filters, vec![TypeFilter::Plan]);
++    }
++
++    /// `parse_type_phrase` does NOT swallow an article-led "or" RHS — it stops at
++    /// the first segment and leaves " or a Plan" as remainder. This is the
++    /// load-bearing precondition for the `parse_you_control_a` elided-verb loop:
++    /// the connector must survive so the condition layer can fold the disjuncts.
++    #[test]
++    fn parse_type_phrase_leaves_article_led_or_rhs_as_remainder() {
++        let (f, rest) = parse_type_phrase("an artifact creature or a Plan");
++        assert_eq!(rest, " or a Plan", "article-led or RHS must remain");
++        let TargetFilter::Typed(tf) = f else {
++            panic!("expected single Typed filter, got {f:?}");
++        };
++        assert!(tf.type_filters.contains(&TypeFilter::Artifact));
++        assert!(tf.type_filters.contains(&TypeFilter::Creature));
++    }
++
++    /// Regression: a single article-led conjunction with no connector still
++    /// parses to a single Typed filter (not an Or).
++    #[test]
++    fn single_artifact_creature_still_typed_not_or() {
++        let (f, rest) = parse_type_phrase("an artifact creature");
++        assert!(rest.trim().is_empty(), "remainder must be empty: {rest:?}");
++        let TargetFilter::Typed(tf) = f else {
++            panic!("expected single Typed filter, got {f:?}");
++        };
++        assert!(tf.type_filters.contains(&TypeFilter::Artifact));
++        assert!(tf.type_filters.contains(&TypeFilter::Creature));
++    }
++
++    /// Regression: a bare (no-article) connector RHS still parses to an Or via
++    /// the existing non-comma separator branch (unchanged by this work).
++    #[test]
++    fn bare_connector_rhs_still_or() {
++        let (f, rest) = parse_type_phrase("artifact creature or enchantment");
++        assert!(rest.trim().is_empty(), "remainder must be empty: {rest:?}");
++        assert!(
++            matches!(f, TargetFilter::Or { .. }),
++            "expected Or filter, got {f:?}"
++        );
++    }
+ }
+diff --git a/crates/engine/src/types/ability.rs b/crates/engine/src/types/ability.rs
+index e97485916..79162e248 100644
+--- a/crates/engine/src/types/ability.rs
++++ b/crates/engine/src/types/ability.rs
+@@ -2375,6 +2375,9 @@ pub enum TypeFilter {
+     Battle,
+     /// CR 308.1: Kindred — each kindred card has another card type; matched via CoreType::Kindred.
+     Kindred,
++    // CR: needs-manual-verification — Plan card-type filter (Marvel's Spider-Man),
++    // modeled on TypeFilter::Battle; matches objects whose core types contain CoreType::Plan.
++    Plan,
+     Permanent,
+     Card,
+     Any,
+diff --git a/crates/engine/src/types/card_type.rs b/crates/engine/src/types/card_type.rs
+index 8faf15c53..18ef743af 100644
+--- a/crates/engine/src/types/card_type.rs
++++ b/crates/engine/src/types/card_type.rs
+@@ -80,6 +80,10 @@ pub enum CoreType {
+     /// conspiracy applies its abilities and a hidden-agenda conspiracy
+     /// (CR 905.4a + CR 702.106) starts face down.
+     Conspiracy,
++    // CR: needs-manual-verification — "Plan" card type is from Marvel's Spider-Man
++    // (post-2026-04-17 CR snapshot); CR 205.2a lists artifact..vanguard with no Plan.
++    // Modeled structurally on CoreType::Plane: a nontraditional, non-permanent card type.
++    Plan,
+ }
+ 
+ impl FromStr for CoreType {
+@@ -102,6 +106,7 @@ impl FromStr for CoreType {
+             "Phenomenon" => Ok(CoreType::Phenomenon),
+             "Scheme" => Ok(CoreType::Scheme),
+             "Conspiracy" => Ok(CoreType::Conspiracy),
++            "Plan" => Ok(CoreType::Plan),
+             _ => Err(()),
+         }
+     }
+@@ -125,6 +130,7 @@ impl fmt::Display for CoreType {
+             CoreType::Phenomenon => write!(f, "Phenomenon"),
+             CoreType::Scheme => write!(f, "Scheme"),
+             CoreType::Conspiracy => write!(f, "Conspiracy"),
++            CoreType::Plan => write!(f, "Plan"),
+         }
+     }
+ }
+@@ -182,7 +188,8 @@ impl CoreType {
+             | CoreType::Plane
+             | CoreType::Phenomenon
+             | CoreType::Scheme
+-            | CoreType::Conspiracy => None,
++            | CoreType::Conspiracy
++            | CoreType::Plan => None,
+         }
+     }
+ }
+@@ -425,7 +432,7 @@ mod tests {
+             Some("planeswalker")
+         );
+         assert_eq!(CoreType::Land.protection_quality_str(), Some("land"));
+-        // 7 None — supplemental types never offered as a chosen card type.
++        // 8 None — supplemental types never offered as a chosen card type.
+         assert_eq!(CoreType::Tribal.protection_quality_str(), None);
+         assert_eq!(CoreType::Battle.protection_quality_str(), None);
+         assert_eq!(CoreType::Kindred.protection_quality_str(), None);
+@@ -434,5 +441,40 @@ mod tests {
+         assert_eq!(CoreType::Phenomenon.protection_quality_str(), None);
+         assert_eq!(CoreType::Scheme.protection_quality_str(), None);
+         assert_eq!(CoreType::Conspiracy.protection_quality_str(), None);
++        assert_eq!(CoreType::Plan.protection_quality_str(), None);
++    }
++
++    /// CR: needs-manual-verification — "Plan" card type (Marvel's Spider-Man).
++    /// Modeled on `CoreType::Plane`: nontraditional, non-permanent.
++    #[test]
++    fn plan_core_type_round_trips_and_is_non_permanent() {
++        assert_eq!(CoreType::from_str("Plan"), Ok(CoreType::Plan));
++        assert_eq!(CoreType::Plan.to_string(), "Plan");
++        // Display <-> FromStr round-trip.
++        assert_eq!(
++            CoreType::from_str(&CoreType::Plan.to_string()),
++            Ok(CoreType::Plan)
++        );
++        // Unknown / near-miss strings still error.
++        assert_eq!(CoreType::from_str("Planx"), Err(()));
++        // Non-permanent, exactly like Plane (both nontraditional).
++        assert!(!CoreType::Plan.is_permanent_type());
++        assert_eq!(
++            CoreType::Plan.is_permanent_type(),
++            CoreType::Plane.is_permanent_type()
++        );
++    }
++
++    #[test]
++    fn card_type_with_plan_serde_round_trips() {
++        let ct = CardType {
++            supertypes: vec![],
++            core_types: vec![CoreType::Creature, CoreType::Plan],
++            subtypes: vec![],
++        };
++        let json = serde_json::to_string(&ct).expect("serialize");
++        let back: CardType = serde_json::from_str(&json).expect("deserialize");
++        assert_eq!(ct, back);
++        assert!(back.core_types.contains(&CoreType::Plan));
+     }
+ }
