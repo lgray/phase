@@ -11470,6 +11470,132 @@ mod tests {
         );
     }
 
+    /// Builds a Doctor Doom permanent on player 0's battlefield whose static
+    /// grants itself Indestructible while its controller controls an artifact
+    /// creature or a Plan — the exact typed condition the parser now lowers
+    /// ("you control an artifact creature or a Plan").
+    ///
+    /// CR 604.1 + CR 611.3a + CR 702.12b. The condition is the typed
+    /// `IsPresent { Or[ Typed{[Artifact,Creature],You,Battlefield},
+    /// Typed{[Plan],You,Battlefield} ] }` (see
+    /// `parser::oracle_nom::condition::tests::doctor_doom_disjunctive_control_condition_is_typed_not_unrecognized`).
+    fn doctor_doom_static() -> StaticDefinition {
+        use crate::types::keywords::Keyword;
+        StaticDefinition::continuous()
+            .affected(TargetFilter::SelfRef)
+            .modifications(vec![ContinuousModification::AddKeyword {
+                keyword: Keyword::Indestructible,
+            }])
+            .condition(StaticCondition::IsPresent {
+                filter: Some(TargetFilter::Or {
+                    filters: vec![
+                        TargetFilter::Typed(TypedFilter {
+                            type_filters: vec![TypeFilter::Artifact, TypeFilter::Creature],
+                            controller: Some(ControllerRef::You),
+                            properties: vec![FilterProp::InZone {
+                                zone: Zone::Battlefield,
+                            }],
+                        }),
+                        TargetFilter::Typed(TypedFilter {
+                            type_filters: vec![TypeFilter::Plan],
+                            controller: Some(ControllerRef::You),
+                            properties: vec![FilterProp::InZone {
+                                zone: Zone::Battlefield,
+                            }],
+                        }),
+                    ],
+                }),
+            })
+    }
+
+    fn make_doctor_doom(state: &mut GameState, player: PlayerId) -> ObjectId {
+        let doom = make_creature(state, "Doctor Doom", 4, 4, player);
+        let s = doctor_doom_static();
+        let obj = state.objects.get_mut(&doom).unwrap();
+        Arc::make_mut(&mut obj.base_static_definitions).push(s.clone());
+        obj.static_definitions.push(s);
+        doom
+    }
+
+    fn make_artifact_creature(state: &mut GameState, name: &str, player: PlayerId) -> ObjectId {
+        let id = make_creature(state, name, 1, 1, player);
+        let obj = state.objects.get_mut(&id).unwrap();
+        obj.card_types.core_types.push(CoreType::Artifact);
+        obj.base_card_types = obj.card_types.clone();
+        id
+    }
+
+    /// Arm A (positive): player 0 controls an artifact creature, so the typed
+    /// `IsPresent { Or[..] }` condition is true and Doctor Doom has
+    /// Indestructible. CR 611.3a (continuous re-evaluation) + CR 702.12b.
+    #[test]
+    fn doctor_doom_has_indestructible_with_artifact_creature() {
+        use crate::types::keywords::Keyword;
+        let mut state = setup();
+        let doom = make_doctor_doom(&mut state, PlayerId(0));
+        make_artifact_creature(&mut state, "Doombot", PlayerId(0));
+
+        evaluate_layers(&mut state);
+
+        assert!(
+            state
+                .objects
+                .get(&doom)
+                .unwrap()
+                .has_keyword(&Keyword::Indestructible),
+            "Doctor Doom must have Indestructible while you control an artifact creature"
+        );
+    }
+
+    /// Arm B (revert-probe / discriminating): player 0 controls NO artifact
+    /// creature and NO Plan, so the condition is false and Doctor Doom does NOT
+    /// have Indestructible. PRE-FIX the parser lowered this condition to
+    /// `Unrecognized`, which `evaluate_condition` treats as `true` — making the
+    /// grant always-on so this assertion would FAIL on revert.
+    #[test]
+    fn doctor_doom_no_indestructible_without_artifact_creature_or_plan() {
+        use crate::types::keywords::Keyword;
+        let mut state = setup();
+        let doom = make_doctor_doom(&mut state, PlayerId(0));
+        // A plain (non-artifact) creature must not satisfy the AND-of-types leg.
+        make_creature(&mut state, "Vanilla Bear", 2, 2, PlayerId(0));
+
+        evaluate_layers(&mut state);
+
+        assert!(
+            !state
+                .objects
+                .get(&doom)
+                .unwrap()
+                .has_keyword(&Keyword::Indestructible),
+            "Doctor Doom must NOT have Indestructible with no artifact creature/Plan you control"
+        );
+    }
+
+    /// Arm C (multi-authority / proves `ControllerRef::You`): the only artifact
+    /// creature is controlled by the OPPONENT (player 1), so the `You`-scoped
+    /// condition is false and Doctor Doom does NOT have Indestructible. A naive
+    /// global "is any artifact creature present" rescan would wrongly grant it.
+    /// CR 109.5 ("you" = the static's controller).
+    #[test]
+    fn doctor_doom_no_indestructible_when_opponent_controls_artifact_creature() {
+        use crate::types::keywords::Keyword;
+        let mut state = setup();
+        let doom = make_doctor_doom(&mut state, PlayerId(0));
+        make_artifact_creature(&mut state, "Enemy Doombot", PlayerId(1));
+
+        evaluate_layers(&mut state);
+
+        assert!(
+            !state
+                .objects
+                .get(&doom)
+                .unwrap()
+                .has_keyword(&Keyword::Indestructible),
+            "an opponent-controlled artifact creature must NOT satisfy the You-scoped condition"
+        );
+    }
+
     /// CR 113.6 + CR 113.6b: Sanity check for the zone-of-function gate.
     /// When Anger is on the battlefield (not in the graveyard), the compound
     /// `SourceInZone(Graveyard)` arm evaluates false, so the anthem must not

@@ -205,6 +205,12 @@ pub fn parse_type_filter_word(input: &str) -> OracleResult<'_, TypeFilter> {
         ("sorcery", TypeFilter::Sorcery),
         ("planeswalkers", TypeFilter::Planeswalker),
         ("planeswalker", TypeFilter::Planeswalker),
+        // CR: needs-manual-verification — "Plan" card type (Marvel's Spider-Man).
+        // Ordering is load-bearing: the scan uses strip_prefix with NO word-boundary
+        // guard, so "plan"/"plans" MUST follow the "planeswalker"/"planeswalkers"
+        // entries above, else "planeswalker" would match "plan" first.
+        ("plans", TypeFilter::Plan),
+        ("plan", TypeFilter::Plan),
         ("lands", TypeFilter::Land),
         ("land", TypeFilter::Land),
         ("battle", TypeFilter::Battle),

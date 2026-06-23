@@ -900,6 +900,7 @@ fn fmt_type_filter(tf: &TypeFilter) -> String {
         TypeFilter::Sorcery => "sorcery",
         TypeFilter::Planeswalker => "planeswalker",
         TypeFilter::Battle => "battle",
+        TypeFilter::Plan => "plan",
         TypeFilter::Kindred => "kindred",
         TypeFilter::Permanent => "permanent",
         TypeFilter::Card => "card",
@@ -1878,6 +1879,7 @@ fn fmt_core_type(ct: &CoreType) -> &'static str {
         CoreType::Phenomenon => "phenomenon",
         CoreType::Scheme => "scheme",
         CoreType::Conspiracy => "conspiracy",
+        CoreType::Plan => "plan",
     }
 }
 

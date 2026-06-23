@@ -74,10 +74,13 @@ fn narrow_core_type(filter: &Option<TargetFilter>) -> Option<CoreType> {
         TypeFilter::Battle => Some(CoreType::Battle),
         // Non-narrow filter shapes — broad emission carries the trigger.
         // CR 308.1: Kindred is a non-permanent supplemental type, never a
-        // narrowing battlefield-trigger card type.
+        // narrowing battlefield-trigger card type. Plan (Marvel's Spider-Man)
+        // is likewise nontraditional/non-permanent, so it never narrows a
+        // battlefield trigger.
         TypeFilter::Instant
         | TypeFilter::Sorcery
         | TypeFilter::Kindred
+        | TypeFilter::Plan
         | TypeFilter::Permanent
         | TypeFilter::Card
         | TypeFilter::Any

@@ -964,6 +964,7 @@ pub(crate) fn matches_type_filter_against_face(face: &CardFace, filter: &TypeFil
         TypeFilter::Sorcery => face.card_type.core_types.contains(&CoreType::Sorcery),
         TypeFilter::Planeswalker => face.card_type.core_types.contains(&CoreType::Planeswalker),
         TypeFilter::Battle => face.card_type.core_types.contains(&CoreType::Battle),
+        TypeFilter::Plan => face.card_type.core_types.contains(&CoreType::Plan),
         // CR 308.1: Kindred card-type check.
         TypeFilter::Kindred => face.card_type.core_types.contains(&CoreType::Kindred),
         TypeFilter::Permanent => face
@@ -2000,6 +2001,7 @@ pub fn type_filter_matches(
         TypeFilter::Planeswalker => obj.card_types.core_types.contains(&CoreType::Planeswalker),
         // CR 310: Battle type check.
         TypeFilter::Battle => obj.card_types.core_types.contains(&CoreType::Battle),
+        TypeFilter::Plan => obj.card_types.core_types.contains(&CoreType::Plan),
         // CR 308.1: Kindred type check.
         TypeFilter::Kindred => obj.card_types.core_types.contains(&CoreType::Kindred),
         // CR 403.3: Permanents exist only on the battlefield — creatures, artifacts, enchantments, lands, planeswalkers, battles.
@@ -2046,6 +2048,7 @@ fn zone_change_record_matches_type_filter(
         TypeFilter::Sorcery => record.core_types.contains(&CoreType::Sorcery),
         TypeFilter::Planeswalker => record.core_types.contains(&CoreType::Planeswalker),
         TypeFilter::Battle => record.core_types.contains(&CoreType::Battle),
+        TypeFilter::Plan => record.core_types.contains(&CoreType::Plan),
         // CR 308.1: Kindred type check.
         TypeFilter::Kindred => record.core_types.contains(&CoreType::Kindred),
         TypeFilter::Permanent => {
@@ -2569,6 +2572,7 @@ fn spell_record_matches_type_filter(
         TypeFilter::Sorcery => record.core_types.contains(&CoreType::Sorcery),
         TypeFilter::Planeswalker => record.core_types.contains(&CoreType::Planeswalker),
         TypeFilter::Battle => record.core_types.contains(&CoreType::Battle),
+        TypeFilter::Plan => record.core_types.contains(&CoreType::Plan),
         // CR 308.1: Kindred type check.
         TypeFilter::Kindred => record.core_types.contains(&CoreType::Kindred),
         TypeFilter::Permanent => {
@@ -4802,6 +4806,34 @@ mod tests {
             .core_types
             .push(CoreType::Creature);
         id
+    }
+
+    /// CR: needs-manual-verification — Plan card-type runtime filter
+    /// (Marvel's Spider-Man), modeled on `TypeFilter::Battle`. Exercises the
+    /// object-path runtime branch in `type_filter_matches`.
+    #[test]
+    fn type_filter_plan_matches_only_plan_core_type() {
+        let mut state = setup();
+        let plan = add_creature(&mut state, PlayerId(0), "A Plan");
+        // Replace the default Creature core type with Plan.
+        {
+            let obj = state.objects.get_mut(&plan).unwrap();
+            obj.card_types.core_types = vec![CoreType::Plan];
+        }
+        let creature = add_creature(&mut state, PlayerId(0), "A Creature");
+
+        let all_creature_types: Vec<String> = Vec::new();
+        let plan_obj = state.objects.get(&plan).unwrap();
+        let creature_obj = state.objects.get(&creature).unwrap();
+
+        assert!(
+            type_filter_matches(&TypeFilter::Plan, plan_obj, &all_creature_types),
+            "a CoreType::Plan object must match TypeFilter::Plan"
+        );
+        assert!(
+            !type_filter_matches(&TypeFilter::Plan, creature_obj, &all_creature_types),
+            "a creature must NOT match TypeFilter::Plan"
+        );
     }
 
     #[test]

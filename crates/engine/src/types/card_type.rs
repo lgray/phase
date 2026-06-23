@@ -80,6 +80,10 @@ pub enum CoreType {
     /// conspiracy applies its abilities and a hidden-agenda conspiracy
     /// (CR 905.4a + CR 702.106) starts face down.
     Conspiracy,
+    // CR: needs-manual-verification — "Plan" card type is from Marvel's Spider-Man
+    // (post-2026-04-17 CR snapshot); CR 205.2a lists artifact..vanguard with no Plan.
+    // Modeled structurally on CoreType::Plane: a nontraditional, non-permanent card type.
+    Plan,
 }
 
 impl FromStr for CoreType {
@@ -102,6 +106,7 @@ impl FromStr for CoreType {
             "Phenomenon" => Ok(CoreType::Phenomenon),
             "Scheme" => Ok(CoreType::Scheme),
             "Conspiracy" => Ok(CoreType::Conspiracy),
+            "Plan" => Ok(CoreType::Plan),
             _ => Err(()),
         }
     }
@@ -125,6 +130,7 @@ impl fmt::Display for CoreType {
             CoreType::Phenomenon => write!(f, "Phenomenon"),
             CoreType::Scheme => write!(f, "Scheme"),
             CoreType::Conspiracy => write!(f, "Conspiracy"),
+            CoreType::Plan => write!(f, "Plan"),
         }
     }
 }
@@ -182,7 +188,8 @@ impl CoreType {
             | CoreType::Plane
             | CoreType::Phenomenon
             | CoreType::Scheme
-            | CoreType::Conspiracy => None,
+            | CoreType::Conspiracy
+            | CoreType::Plan => None,
         }
     }
 }
@@ -425,7 +432,7 @@ mod tests {
             Some("planeswalker")
         );
         assert_eq!(CoreType::Land.protection_quality_str(), Some("land"));
-        // 7 None — supplemental types never offered as a chosen card type.
+        // 8 None — supplemental types never offered as a chosen card type.
         assert_eq!(CoreType::Tribal.protection_quality_str(), None);
         assert_eq!(CoreType::Battle.protection_quality_str(), None);
         assert_eq!(CoreType::Kindred.protection_quality_str(), None);
@@ -434,5 +441,40 @@ mod tests {
         assert_eq!(CoreType::Phenomenon.protection_quality_str(), None);
         assert_eq!(CoreType::Scheme.protection_quality_str(), None);
         assert_eq!(CoreType::Conspiracy.protection_quality_str(), None);
+        assert_eq!(CoreType::Plan.protection_quality_str(), None);
+    }
+
+    /// CR: needs-manual-verification — "Plan" card type (Marvel's Spider-Man).
+    /// Modeled on `CoreType::Plane`: nontraditional, non-permanent.
+    #[test]
+    fn plan_core_type_round_trips_and_is_non_permanent() {
+        assert_eq!(CoreType::from_str("Plan"), Ok(CoreType::Plan));
+        assert_eq!(CoreType::Plan.to_string(), "Plan");
+        // Display <-> FromStr round-trip.
+        assert_eq!(
+            CoreType::from_str(&CoreType::Plan.to_string()),
+            Ok(CoreType::Plan)
+        );
+        // Unknown / near-miss strings still error.
+        assert_eq!(CoreType::from_str("Planx"), Err(()));
+        // Non-permanent, exactly like Plane (both nontraditional).
+        assert!(!CoreType::Plan.is_permanent_type());
+        assert_eq!(
+            CoreType::Plan.is_permanent_type(),
+            CoreType::Plane.is_permanent_type()
+        );
+    }
+
+    #[test]
+    fn card_type_with_plan_serde_round_trips() {
+        let ct = CardType {
+            supertypes: vec![],
+            core_types: vec![CoreType::Creature, CoreType::Plan],
+            subtypes: vec![],
+        };
+        let json = serde_json::to_string(&ct).expect("serialize");
+        let back: CardType = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(ct, back);
+        assert!(back.core_types.contains(&CoreType::Plan));
     }
 }

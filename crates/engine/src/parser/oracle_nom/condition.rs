@@ -2681,19 +2681,56 @@ fn parse_you_control_a(input: &str) -> OracleResult<'_, StaticCondition> {
     // "another " to `FilterProp::Another`).
     let (rest, _article) =
         nom::combinator::peek(alt((tag("a "), tag("an "), tag("another ")))).parse(rest)?;
-    let (filter, remainder) = parse_type_phrase(rest);
+    let (filter, mut remainder) = parse_type_phrase(rest);
     if matches!(filter, TargetFilter::Any) {
         return Err(nom::Err::Error(nom::error::Error::new(
             input,
             nom::error::ErrorKind::Fail,
         )));
     }
-    let filter = inject_controller(filter, ctrl);
+
+    // CR 608.2c + CR 109.5: Elided-verb disjunctive control —
+    // "you control <type A> or <article> <type B>" (Doctor Doom: "you control
+    // an artifact creature or a Plan"). The repeated "you control"/article RHS
+    // ("or a Plan") is NOT a standalone control condition, so the top-level
+    // `parse_condition_disjunction` cannot split it; instead a single shared
+    // verb governs both type filters. Each additional " or <article> <type>"
+    // segment is folded into a disjunction of presence filters. `parse_type_phrase`
+    // (unchanged) parses each article-led segment; this loop only adds the
+    // elided-verb continuation specific to the control-condition grammar, so the
+    // recipient/attached `it's X or Y` paths (which DO repeat a parseable RHS)
+    // are unaffected. Dispatch uses nom `tag(" or ")` + `peek(article)`.
+    let mut filters = vec![filter];
+    loop {
+        let Ok((after_or, _)) = tag::<_, _, OracleError<'_>>(" or ").parse(remainder) else {
+            break;
+        };
+        // Require an article-led RHS — a bare-type RHS ("... or creatures") or a
+        // standalone-condition RHS is left for the existing dispatchers.
+        let Ok((_, _)): Result<(&str, &str), nom::Err<OracleError<'_>>> =
+            nom::combinator::peek(alt((tag("a "), tag("an "), tag("another ")))).parse(after_or)
+        else {
+            break;
+        };
+        let (next_filter, next_remainder) = parse_type_phrase(after_or);
+        if matches!(next_filter, TargetFilter::Any) {
+            break;
+        }
+        filters.push(next_filter);
+        remainder = next_remainder;
+    }
+
+    let combined = if filters.len() == 1 {
+        filters.pop().expect("one filter")
+    } else {
+        TargetFilter::Or { filters }
+    };
+    let combined = inject_controller(combined, ctrl);
     let consumed = input.len() - remainder.len();
     Ok((
         &input[consumed..],
         StaticCondition::IsPresent {
-            filter: Some(filter),
+            filter: Some(combined),
         },
     ))
 }
@@ -7288,6 +7325,79 @@ mod tests {
             }
             other => panic!("expected And(IsPresent, IsPresent), got {other:?}"),
         }
+    }
+
+    /// CR 604.1 + CR 611.3a: Doctor Doom's conditional-static gate
+    /// "as long as you control an artifact creature or a Plan, ~ has
+    /// indestructible" must lower its CONDITION to a typed
+    /// `IsPresent { Or[ Typed{[Artifact,Creature],You,Battlefield},
+    /// Typed{[Plan],You,Battlefield} ] }`, NOT `StaticCondition::Unrecognized`.
+    /// DISCRIMINATING: pre-fix `parse_type_phrase` left " or a Plan" unconsumed
+    /// (Plan unknown + non-comma connector rejected an article-led RHS), so the
+    /// condition fell to `Unrecognized` — which `evaluate_condition` treats as
+    /// `true`, making the keyword grant always-on (coverage-unsupported).
+    #[test]
+    fn doctor_doom_disjunctive_control_condition_is_typed_not_unrecognized() {
+        let (rest, c) =
+            parse_inner_condition("you control an artifact creature or a plan").unwrap();
+        assert_eq!(rest, "");
+        assert!(
+            !matches!(c, StaticCondition::Unrecognized { .. }),
+            "condition must NOT be Unrecognized, got {c:?}"
+        );
+        let StaticCondition::IsPresent {
+            filter: Some(TargetFilter::Or { filters }),
+        } = &c
+        else {
+            panic!("expected IsPresent {{ Or[..] }}, got {c:#?}");
+        };
+        assert_eq!(filters.len(), 2, "two disjuncts");
+        let TargetFilter::Typed(left) = &filters[0] else {
+            panic!("left disjunct must be Typed");
+        };
+        assert!(left.type_filters.contains(&TypeFilter::Artifact));
+        assert!(left.type_filters.contains(&TypeFilter::Creature));
+        assert_eq!(left.controller, Some(ControllerRef::You));
+        assert!(left.properties.iter().any(|p| matches!(
+            p,
+            FilterProp::InZone {
+                zone: Zone::Battlefield
+            }
+        )));
+        let TargetFilter::Typed(right) = &filters[1] else {
+            panic!("right disjunct must be Typed");
+        };
+        assert_eq!(
+            right.type_filters,
+            vec![TypeFilter::Plan],
+            "right disjunct must be a Plan, got {right:?}"
+        );
+        assert_eq!(right.controller, Some(ControllerRef::You));
+        assert!(right.properties.iter().any(|p| matches!(
+            p,
+            FilterProp::InZone {
+                zone: Zone::Battlefield
+            }
+        )));
+    }
+
+    /// Regression: a single "you control an artifact creature" (no connector)
+    /// still lowers to a single `IsPresent { Typed{[Artifact,Creature],You,
+    /// Battlefield} }`.
+    #[test]
+    fn you_control_single_artifact_creature_still_typed() {
+        let (rest, c) = parse_inner_condition("you control an artifact creature").unwrap();
+        assert_eq!(rest, "");
+        let tf = typed_presence(&c);
+        assert!(tf.type_filters.contains(&TypeFilter::Artifact));
+        assert!(tf.type_filters.contains(&TypeFilter::Creature));
+        assert_eq!(tf.controller, Some(ControllerRef::You));
+        assert!(tf.properties.iter().any(|p| matches!(
+            p,
+            FilterProp::InZone {
+                zone: Zone::Battlefield
+            }
+        )));
     }
 
     #[test]
