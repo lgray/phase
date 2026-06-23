@@ -1,21 +1,44 @@
 # MSH (Marvel) rollout plan
 
 > **Hard rule (user, 2026-06-22): every card MUST be implemented. No "defer", no "out-of-scope."**
-> All 13 unsupported MSH cards are assigned to an implementation cluster below; the two
+> All unsupported MSH cards are assigned to an implementation cluster below; the two
 > heaviest (Cosmic Cube, Hawkeye Young Avenger) are in scope as a heavy cluster gated by
 > `/review-engine-plan`, not dropped. Backing: `.planning/coverage-analysis/out/MSH/cluster-assignment.tsv`.
+> _Re-measured 2026-06-23 @ `ae663ee8c`: 9 unsupported remain (was 13). See "Where MSH stands"._
 
 **Set:** `MSH` — a Marvel product with **no format legalities** (standard/modern/commander all null). These are **engine-completeness** targets: a standalone pool that std/modern coverage will *not* clear (0 of the 13 are in the standard pool). The building-block *classes* overlap with the std/modern clusters, so most fixes reuse those primitives.
-**Snapshot:** 2026-06-22 · main @ `c55670fd0` · fresh card-data.
+**Snapshot:** 2026-06-23 · main @ `ae663ee8c` (re-measured; was 2026-06-22 @ `c55670fd0`) · fresh card-data regenerated against `ae663ee8c`.
 **Method:** `coverage-breakdown.sh --set MSH && cluster-assign.sh MSH`.
 
 ## Where MSH stands
 
-| metric | value |
-|---|---|
-| members | 286 |
-| supported | 273 (**95.45 %**) |
-| unsupported (all clustered) | **13** = 10 parser-gap + 3 resolver-flagged |
+| metric | value (2026-06-23 @ `ae663ee8c`) | prior (2026-06-22 @ `c55670fd0`) |
+|---|---|---|
+| members | 286 | 286 |
+| supported | 277 (**96.85 %**) | 273 (95.45 %) |
+| unsupported | **9** = 6 parser-gap + 3 resolver-flagged | 13 = 10 parser-gap + 3 resolver-flagged |
+
+### Re-measured 2026-06-23 — the current 9 unsupported (4 cleared since the snapshot)
+
+Pool size unchanged (286); 4 of the original 13 now parse/resolve. Exact remaining
+set from `out/MSH/unsupported.tsv` (name · gap-handler · status):
+
+| card | handler | status |
+|---|---|---|
+| The Ruinous Wrecking Crew | resolver-flagged (gap=0) | **OPEN PR #4186** (card/msh-modal-choose) |
+| Doctor Doom | resolver-flagged (gap=0) | **OPEN PR #4182** (card/msh-doctor-doom) |
+| Hulkling, Burgeoning Bruiser | Swallow:Condition_If | **OPEN PR #4169** (card/msh-intervening-if) |
+| Cosmic Cube | Swallow:DynamicQty | heavy cluster |
+| Hawkeye, Young Avenger | Swallow:DynamicQty | heavy cluster |
+| Hawkeye, Master Marksman | resolver-flagged (gap=0) | not yet assigned a PR |
+| Baron Helmut Zemo | ParseWarning:target-fallback | not yet assigned a PR |
+| Loki, God of Mischief | Trigger:became-target-of-ability | not yet assigned a PR |
+| The Incredible Hulk | Swallow:Condition_If | not yet assigned a PR |
+
+The three OPEN PRs (CI-green, review CHANGES_REQUESTED) cover 3 of the 9; landing
+them drops MSH unsupported to **6**. Cluster prose below predates this re-measure
+(it enumerated the original 13) — re-run `cluster-assign.sh MSH` to refresh
+per-card cluster files before dispatching new work.
 
 ## Clusters (all 13 — every card has a home)
 

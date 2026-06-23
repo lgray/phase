@@ -40,7 +40,9 @@ function classify(g, h, o,   lo) {
   }
   # ---- parser-gap ----
   if (h ~ /(^|;)Cost:/)             return "S23-alt-cost-parse"
+  if (h ~ /AlternativeKeywordCost/) return "S26-alt-keyword-cost"
   if (h ~ /target-fallback/)        return "S17-anaphoric-target"
+  if (h ~ /trigger-subject/)        return "S27-trigger-subject-anaphora"
   if (h ~ /Condition_If/) {
     if (lo ~ /activate only if/)                                                          return "S04-activate-only-if"
     if (lo ~ /rather than pay|you may pay [{][^}]*[}] rather|costs [{][^}]*[}] less to cast if|cast this (spell|card) (for|as though|from)|cast .* from your graveyard (for|if|by|in)|as though it had flash if|you may cast this card from your graveyard/) return "S05-alt-cost-if"
