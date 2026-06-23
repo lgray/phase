@@ -9183,6 +9183,171 @@ pub mod tests {
         );
     }
 
+    /// CR 608.2h + CR 603.4 + CR 603.10a: An ETB intervening-if that compares the
+    /// entrant's P/T against the source is rechecked when the ability resolves
+    /// (CR 603.4). An ETB trigger is NOT a look-back trigger (CR 603.10a), so by
+    /// CR 608.2h the recheck uses the entrant's current info while it is still in
+    /// the public zone it was expected in (the battlefield), and its LAST KNOWN
+    /// INFORMATION once it has left. The exit-time LKI holds the on-battlefield
+    /// layered P/T (3/3), while the live object has been reverted to its printed
+    /// base (1/1) by `move_to_zone` (CR 400.7). Pre-fix, the Battlefield branch
+    /// read the reverted live object (1/1), so a creature that was 3/3 on the
+    /// battlefield but printed 1/1 failed the > Hulkling-2/2 comparison after
+    /// leaving — wrong. This test moves the entrant off the battlefield via the
+    /// production `move_to_zone` path and asserts the recheck sees the exit LKI.
+    #[test]
+    fn zone_change_object_condition_entering_uses_exit_lki_after_leaving_battlefield() {
+        // Source = Hulkling 2/2.
+        let mut state = setup();
+        let source = create_object(
+            &mut state,
+            CardId(70),
+            PlayerId(0),
+            "Hulkling, Burgeoning Bruiser".to_string(),
+            Zone::Battlefield,
+        );
+        {
+            let obj = state.objects.get_mut(&source).unwrap();
+            obj.card_types.core_types.push(CoreType::Creature);
+            obj.power = Some(2);
+            obj.toughness = Some(2);
+        }
+
+        // The condition the parser produces for Hulkling: AnyOf(power>source.power,
+        // toughness>source.toughness) on a creature entering the battlefield. Same
+        // literal as `zone_change_object_condition_entering_greater_pt_than_source`.
+        let condition = TriggerCondition::ZoneChangeObjectMatchesFilter {
+            origin: None,
+            destination: Zone::Battlefield,
+            filter: TargetFilter::Typed(TypedFilter::creature().properties(vec![
+                FilterProp::AnyOf {
+                    props: vec![
+                        FilterProp::PtComparison {
+                            stat: PtStat::Power,
+                            scope: PtValueScope::Current,
+                            comparator: Comparator::GT,
+                            value: QuantityExpr::Ref {
+                                qty: QuantityRef::Power {
+                                    scope: crate::types::ability::ObjectScope::Source,
+                                },
+                            },
+                        },
+                        FilterProp::PtComparison {
+                            stat: PtStat::Toughness,
+                            scope: PtValueScope::Current,
+                            comparator: Comparator::GT,
+                            value: QuantityExpr::Ref {
+                                qty: QuantityRef::Toughness {
+                                    scope: crate::types::ability::ObjectScope::Source,
+                                },
+                            },
+                        },
+                    ],
+                },
+            ])),
+        };
+
+        // POSITIVE entrant: printed base 1/1 (NOT greater than source 2/2), but
+        // 3/3 while on the battlefield (the layered value greater than 2/2).
+        let entrant = create_object(
+            &mut state,
+            CardId(71),
+            PlayerId(0),
+            "Newcomer".to_string(),
+            Zone::Battlefield,
+        );
+        {
+            let obj = state.objects.get_mut(&entrant).unwrap();
+            obj.card_types.core_types.push(CoreType::Creature);
+            obj.base_power = Some(1);
+            obj.base_toughness = Some(1);
+            obj.power = Some(3);
+            obj.toughness = Some(3);
+        }
+        // The original ETB event used for the intervening-if recheck.
+        let etb_event = zone_changed_event(
+            entrant,
+            Zone::Hand,
+            Zone::Battlefield,
+            vec![CoreType::Creature],
+            Vec::new(),
+        );
+
+        // Move the entrant off the battlefield via the PRODUCTION exit path. This
+        // snapshots exit LKI (live 3/3) AND reverts the live object to base (1/1).
+        let mut evs = Vec::new();
+        crate::game::zones::move_to_zone(&mut state, entrant, Zone::Graveyard, &mut evs);
+
+        // Non-vacuity: live obj and LKI now hold DISTINCT values. If these ever
+        // coincide the positive/pre-fix discrimination below is meaningless.
+        assert_eq!(
+            state.objects.get(&entrant).unwrap().power,
+            Some(1),
+            "live obj reverted to printed base (1/1) after leaving the battlefield"
+        );
+        assert_eq!(
+            state.lki_cache.get(&entrant).unwrap().power,
+            Some(3),
+            "exit LKI holds the last on-battlefield power (3/3)"
+        );
+
+        // POSITIVE: exit LKI 3/3 > source 2/2 (CR 608.2h). Pre-fix this read the
+        // reverted live object 1/1 → false; post-fix it reads the exit LKI → true.
+        assert!(
+            check_trigger_condition(
+                &state,
+                &condition,
+                PlayerId(0),
+                Some(source),
+                Some(&etb_event)
+            ),
+            "exit LKI 3/3 > source 2/2 (CR 608.2h); pre-fix reads reverted 1/1 -> false"
+        );
+
+        // NEGATIVE sibling: entrant whose exit LKI is 1/1 (base 1/1, live 1/1 on
+        // battlefield), NOT greater than source 2/2. Discriminates an over-broad
+        // fix that would pass any off-battlefield entrant.
+        let weak = create_object(
+            &mut state,
+            CardId(72),
+            PlayerId(0),
+            "Weakling".to_string(),
+            Zone::Battlefield,
+        );
+        {
+            let obj = state.objects.get_mut(&weak).unwrap();
+            obj.card_types.core_types.push(CoreType::Creature);
+            obj.base_power = Some(1);
+            obj.base_toughness = Some(1);
+            obj.power = Some(1);
+            obj.toughness = Some(1);
+        }
+        let weak_etb_event = zone_changed_event(
+            weak,
+            Zone::Hand,
+            Zone::Battlefield,
+            vec![CoreType::Creature],
+            Vec::new(),
+        );
+        let mut weak_evs = Vec::new();
+        crate::game::zones::move_to_zone(&mut state, weak, Zone::Graveyard, &mut weak_evs);
+        assert_eq!(
+            state.lki_cache.get(&weak).unwrap().power,
+            Some(1),
+            "exit LKI for the weak entrant is 1/1"
+        );
+        assert!(
+            !check_trigger_condition(
+                &state,
+                &condition,
+                PlayerId(0),
+                Some(source),
+                Some(&weak_etb_event)
+            ),
+            "exit LKI 1/1 is not greater than source 2/2 -> false"
+        );
+    }
+
     #[test]
     fn zone_change_object_condition_checks_dead_object_snapshot() {
         let mut state = setup();
