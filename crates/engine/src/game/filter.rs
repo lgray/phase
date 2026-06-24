@@ -1265,6 +1265,7 @@ pub fn matches_target_filter_on_lki_snapshot(
         is_token: false,
         combat_status: Default::default(),
         co_departed: Vec::new(),
+        entered_incarnation: None,
         turn_zone_change_index: 0,
     };
     matches_target_filter_on_zone_change_record(state, &record, filter, ctx)
@@ -1299,7 +1300,45 @@ pub fn matches_zone_change_event_object_filter(
     }
 
     if destination == Zone::Battlefield {
-        matches_target_filter(state, *object_id, filter, ctx)
+        // CR 603.4: the intervening-if is rechecked when the ability resolves.
+        // CR 608.2h: a filter that reads the entrant's characteristics uses its
+        // CURRENT info only while the entrant is still in the public zone it was
+        // expected in (the battlefield); once it has left, it uses the entrant's
+        // LAST KNOWN INFORMATION. CR 603.10a: an ETB trigger is not a look-back
+        // trigger, so the normal CR 608.2h rule applies. CR 400.7: the live
+        // object is reverted to its base characteristics on its zone exit
+        // (zones.rs revert_layered_characteristics_to_base), so reading the live
+        // object after it leaves would compare against baseline P/T rather than
+        // its last on-battlefield values — hence the LKI dispatch below. A
+        // fully-absent entrant (objects.get == None) likewise routes to LKI
+        // rather than a spurious false from matches_target_filter.
+        // CR 400.7: a leave + re-entry reuses the SAME ObjectId but bumps the
+        // object's incarnation (move_to_zone -> reset_for_battlefield_entry). The
+        // original ETB trigger must use the ORIGINAL entrant's info, so the live
+        // object only counts as "still the original entrant" when its incarnation
+        // matches the one captured in the ETB record. A re-entered incarnation is
+        // a different object for this trigger and routes to the original exit LKI
+        // below. `entered_incarnation == None` (legacy/defensive records) falls
+        // back to the zone-only check.
+        let still_on_battlefield = state.objects.get(object_id).is_some_and(|obj| {
+            obj.zone == Zone::Battlefield
+                && record
+                    .entered_incarnation
+                    .is_none_or(|inc| obj.incarnation == inc)
+        });
+        if still_on_battlefield {
+            matches_target_filter(state, *object_id, filter, ctx)
+        } else if let Some(lki) = state.lki_cache.get(object_id) {
+            // CR 608.2h: the entrant has left the battlefield — evaluate against
+            // its exit-time LKI (the most-recently-existed battlefield
+            // characteristics, snapshotted before the base revert).
+            matches_target_filter_on_lki_snapshot(state, *object_id, lki, filter, ctx)
+        } else {
+            // No exit LKI cached (defensive — a battlefield exit always caches
+            // one). Use the zone-change record rather than the reverted live
+            // object so the comparison never regresses to baseline P/T.
+            matches_target_filter_on_zone_change_record(state, record, filter, ctx)
+        }
     } else {
         matches_target_filter_on_zone_change_record(state, record, filter, ctx)
     }
@@ -9285,6 +9324,7 @@ mod tests {
             is_token: false,
             combat_status: Default::default(),
             co_departed: Vec::new(),
+            entered_incarnation: None,
             turn_zone_change_index: 0,
         };
         let goblin_filter = make_subtype_filter("Goblin");

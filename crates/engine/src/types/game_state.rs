@@ -446,6 +446,13 @@ pub struct ZoneChangeRecord {
     /// accumulated event vector.
     #[serde(default)]
     pub co_departed: Vec<ObjectId>,
+    /// CR 400.7: the entrant's incarnation captured AFTER its battlefield-entry
+    /// bump, so a later leave + re-entry (same ObjectId, higher incarnation) is
+    /// distinguishable from the original entrant at intervening-if recheck.
+    /// `None` for non-battlefield destinations and for records built before the
+    /// post-entry bump (filled in by `move_to_zone`).
+    #[serde(default)]
+    pub entered_incarnation: Option<u64>,
     /// Per-turn monotonic index assigned when the zone change is recorded (CR
     /// 400.7). Distinguishes repeated identical `(object, from, to)` transitions
     /// within the same turn for batched trigger replay guards (issue #3866).
@@ -550,6 +557,7 @@ impl ZoneChangeRecord {
             is_token: false,
             combat_status: ZoneChangeCombatStatus::default(),
             co_departed: Vec::new(),
+            entered_incarnation: None,
             turn_zone_change_index: 0,
         }
     }
