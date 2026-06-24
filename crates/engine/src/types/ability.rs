@@ -289,7 +289,13 @@ pub enum ChoiceType {
     },
     OddOrEven,
     BasicLandType,
-    CardType,
+    /// CR 205.2a: A choice among card types. `excluded` narrows the offered
+    /// set below the full seven-type list (e.g. Archon of Valor's Reach
+    /// excludes Creature and Land, leaving "artifact, enchantment, instant,
+    /// sorcery, or planeswalker") — mirrors the `Color { excluded }` axis.
+    CardType {
+        excluded: Vec<CoreType>,
+    },
     CardName,
     /// "Choose a number between X and Y" — generates string options "0", "1", ..., "Y".
     NumberRange {
@@ -346,6 +352,16 @@ impl ChoiceType {
         Self::Color { excluded }
     }
 
+    pub fn card_type() -> Self {
+        Self::CardType {
+            excluded: Vec::new(),
+        }
+    }
+
+    pub fn card_type_excluding(excluded: Vec<CoreType>) -> Self {
+        Self::CardType { excluded }
+    }
+
     /// Whether the player supplies the chosen value at runtime rather than the
     /// engine enumerating a fixed option set.
     ///
@@ -392,7 +408,19 @@ impl Serialize for ChoiceType {
             Self::BasicLandType => {
                 serializer.serialize_unit_variant("ChoiceType", 3, "BasicLandType")
             }
-            Self::CardType => serializer.serialize_unit_variant("ChoiceType", 4, "CardType"),
+            // Serialize the unrestricted form as the legacy unit variant
+            // "CardType" so existing card-data JSON stays byte-stable; only
+            // emit the struct form when a restriction is present.
+            Self::CardType { excluded } => {
+                if excluded.is_empty() {
+                    serializer.serialize_unit_variant("ChoiceType", 4, "CardType")
+                } else {
+                    let mut variant =
+                        serializer.serialize_struct_variant("ChoiceType", 4, "CardType", 1)?;
+                    variant.serialize_field("excluded", excluded)?;
+                    variant.end()
+                }
+            }
             Self::CardName => serializer.serialize_unit_variant("ChoiceType", 5, "CardName"),
             Self::NumberRange { min, max } => {
                 let mut variant =
@@ -452,6 +480,10 @@ impl<'de> Deserialize<'de> for ChoiceType {
                 #[serde(default)]
                 excluded: Vec<ManaColor>,
             },
+            CardType {
+                #[serde(default)]
+                excluded: Vec<CoreType>,
+            },
             NumberRange {
                 min: u8,
                 max: u8,
@@ -474,7 +506,7 @@ impl<'de> Deserialize<'de> for ChoiceType {
                 "Color" => Ok(Self::color()),
                 "OddOrEven" => Ok(Self::OddOrEven),
                 "BasicLandType" => Ok(Self::BasicLandType),
-                "CardType" => Ok(Self::CardType),
+                "CardType" => Ok(Self::card_type()),
                 "CardName" => Ok(Self::CardName),
                 "LandType" => Ok(Self::LandType),
                 "Opponent" => Ok(Self::Opponent { restriction: None }),
@@ -502,6 +534,7 @@ impl<'de> Deserialize<'de> for ChoiceType {
             },
             ChoiceTypeRepr::Data(data) => match data {
                 ChoiceTypeData::Color { excluded } => Ok(Self::Color { excluded }),
+                ChoiceTypeData::CardType { excluded } => Ok(Self::CardType { excluded }),
                 ChoiceTypeData::NumberRange { min, max } => Ok(Self::NumberRange { min, max }),
                 ChoiceTypeData::Labeled { options } => Ok(Self::Labeled { options }),
                 ChoiceTypeData::Opponent { restriction } => Ok(Self::Opponent { restriction }),
@@ -822,7 +855,7 @@ impl ChosenAttribute {
             Self::Color(_) => ChoiceType::color(),
             Self::CreatureType(_) => ChoiceType::CreatureType,
             Self::BasicLandType(_) => ChoiceType::BasicLandType,
-            Self::CardType(_) => ChoiceType::CardType,
+            Self::CardType(_) => ChoiceType::card_type(),
             Self::OddOrEven(_) => ChoiceType::OddOrEven,
             Self::CardName(_) => ChoiceType::CardName,
             Self::Number(_) => ChoiceType::NumberRange { min: 0, max: 20 },
@@ -909,7 +942,10 @@ impl ChoiceValue {
             ChoiceType::BasicLandType => {
                 value.parse::<BasicLandType>().ok().map(Self::BasicLandType)
             }
-            ChoiceType::CardType => value.parse::<CoreType>().ok().map(Self::CardType),
+            ChoiceType::CardType { excluded } => {
+                let core_type = value.parse::<CoreType>().ok()?;
+                (!excluded.contains(&core_type)).then_some(Self::CardType(core_type))
+            }
             ChoiceType::OddOrEven => value.parse::<Parity>().ok().map(Self::OddOrEven),
             ChoiceType::CardName => Some(Self::CardName(value.to_string())),
             ChoiceType::NumberRange { .. } => value.parse::<u8>().ok().map(Self::Number),
@@ -3523,6 +3559,17 @@ pub enum TargetFilter {
     TriggeringPlayer,
     /// CR 603.7c: Resolves to the source object of the triggering event.
     TriggeringSource,
+    /// CR 603.2 + CR 120.1: Resolves to the object that *received* the damage
+    /// referenced by the current trigger event — the recipient counterpart to
+    /// [`TargetFilter::TriggeringSource`] and the `TargetFilter`-side analogue of
+    /// [`ObjectScope::EventTarget`]. This binds "that creature" / "that
+    /// permanent" in an intervening-`if` (CR 603.4) to the *specific* damaged
+    /// object carried by the `DamageDealt` event, not a generic type filter, so
+    /// "if that creature was dealt excess damage this turn" (Maarika, Brutal
+    /// Gladiator) checks only the creature this trigger's damage went to.
+    /// Resolved via `extract_target_object_from_event` against
+    /// `state.current_trigger_event`; matches no object outside a trigger.
+    EventTarget,
     /// CR 603.7c + CR 109.4 + CR 110.2: Resolves to the *controller* of the
     /// triggering event's source object — the player-level counterpart of
     /// `TriggeringSource`, mirroring how `TriggeringSpellController` is the
@@ -3655,6 +3702,13 @@ pub enum EffectScope {
     /// Every permanent matching the filter — `target` is a non-targeting
     /// population filter (legacy `Effect::TapAll` / `Effect::UntapAll`).
     All,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ReassembleControlMode {
+    #[default]
+    KeepController,
+    GainControl,
 }
 
 /// CR 701.26a (tap) / CR 701.26b (untap): Direction of an `Effect::SetTapState`.
@@ -4331,6 +4385,11 @@ pub enum QuantityRef {
             skip_serializing_if = "is_default_damage_kind"
         )]
         damage_kind: DamageKindFilter,
+        /// CR 120.10: When true, only count records where `excess > 0` —
+        /// i.e. damage that was lethal-overkill. Used by the
+        /// "was dealt excess damage this turn" intervening-if class.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        excess_only: bool,
     },
     /// A number chosen as the source entered the battlefield (e.g., Talion, the Kindly Lord).
     /// Resolved from the source object's `ChosenAttribute::Number`.
@@ -8487,6 +8546,37 @@ pub enum Effect {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         additional_modifications: Vec<ContinuousModification>,
     },
+    /// CR 113.1a + CR 113.10 + CR 611.2 + CR 611.2c + CR 613.1f: Grant the
+    /// recipient(s) all activated abilities of a chosen target object, for a
+    /// duration. Unlike the static-side `ContinuousModification::GrantAllActivatedAbilitiesOf`
+    /// (re-scanned every layer pass against a structural source filter, correct
+    /// for CR 604/611.3 always-on statics), this is a CR 611.2c resolution-time
+    /// grant: the donor's activated abilities are snapshotted ONCE, when this
+    /// effect resolves, into concrete `ContinuousModification::GrantAbility`
+    /// instances — never the `GrantAllActivatedAbilitiesOf` meta-modification.
+    ///
+    /// **Invariant**: the resolver must never construct
+    /// `ContinuousModification::GrantAllActivatedAbilitiesOf` — doing so would
+    /// silently reintroduce live-rescan semantics into the transient path, since
+    /// `gather_transient_continuous_effects` has no special-case handling for
+    /// that meta-modification (only the static-side gather does) and the CR
+    /// 611.2c "won't change" guarantee would silently break.
+    ///
+    /// CR 201.5b: a granted ability that references the donor's name (`~` /
+    /// `SelfRef` in its cost/effect) is reinterpreted to use the recipient's
+    /// own identity — handled by the granted `GrantAbility` definition binding
+    /// the recipient as its source at activation time.
+    GainActivatedAbilitiesOfTarget {
+        /// The donor, chosen via targeting (BecomeCopy-style).
+        #[serde(default = "default_target_filter_any")]
+        target: TargetFilter,
+        /// Who receives the abilities: `SelfRef` (Quicksilver Elemental) or a
+        /// typed group filter (Grell Philosopher: each Horror you control).
+        #[serde(default = "default_target_filter_self_ref")]
+        recipient: TargetFilter,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        duration: Option<Duration>,
+    },
     ChooseCard {
         #[serde(default)]
         choices: Vec<String>,
@@ -9410,6 +9500,42 @@ pub enum Effect {
     },
     /// CR 701.52: Roll to visit your Attractions.
     RollToVisitAttractions,
+    /// Unstable Contraptions: assemble one or more Contraptions from the top
+    /// of the controller's Contraption deck.
+    AssembleContraptions {
+        count: QuantityExpr,
+    },
+    /// Unstable Contraptions: assemble Contraptions equal to the unsigned
+    /// difference between the two most recent die-roll results of the current
+    /// resolution.
+    AssembleContraptionsFromRollDifference,
+    /// Unstable Contraptions: crank the targeted Contraptions.
+    CrankContraptions {
+        target: TargetFilter,
+    },
+    /// Unstable Contraptions: move a Contraption onto a different sprocket,
+    /// optionally gaining control of it first.
+    ReassembleContraption {
+        target: TargetFilter,
+        #[serde(default)]
+        control_mode: ReassembleControlMode,
+    },
+    /// Internal Contraption helper: resolve one assemble onto the chosen
+    /// sprocket, then continue with any remaining assembles.
+    AssembleContraptionOnSprocket {
+        target: TargetFilter,
+        sprocket: u8,
+        #[serde(default)]
+        remaining: u32,
+    },
+    /// Internal Contraption helper: move the target Contraption onto the
+    /// chosen sprocket, optionally gaining control of it first.
+    ReassembleContraptionOnSprocket {
+        target: TargetFilter,
+        sprocket: u8,
+        #[serde(default)]
+        control_mode: ReassembleControlMode,
+    },
     /// CR 123.3: Put one or more stickers you have access to on a target object.
     PutSticker {
         #[serde(default = "default_target_filter_any")]
@@ -11002,6 +11128,7 @@ impl Effect {
             | Effect::CopySpell { target, .. }
             | Effect::CastCopyOfCard { target, .. }
             | Effect::BecomeCopy { target, .. }
+            | Effect::GainActivatedAbilitiesOfTarget { target, .. }
             | Effect::ChooseCard { target, .. }
             | Effect::PutCounter { target, .. }
             | Effect::MultiplyCounter { target, .. }
@@ -11062,6 +11189,9 @@ impl Effect {
 
             Effect::CombineHost { host, .. }
             | Effect::ChooseAugmentAndCombineWithHost { host, .. } => Some(host.as_ref()),
+            Effect::CrankContraptions { target }
+            | Effect::ReassembleContraption { target, .. }
+            | Effect::ReassembleContraptionOnSprocket { target, .. } => Some(target),
 
             // CR 702.75a: Hideaway conceal acts on the just-exiled card inherited
             // from the parent `Dig` continuation (`ParentTarget`); it is never
@@ -11308,6 +11438,9 @@ impl Effect {
             | Effect::Planeswalk
             | Effect::OpenAttractions { .. }
             | Effect::RollToVisitAttractions
+            | Effect::AssembleContraptions { .. }
+            | Effect::AssembleContraptionsFromRollDifference
+            | Effect::AssembleContraptionOnSprocket { .. }
             | Effect::ProcessRadCounters
             | Effect::Incubate { .. }
             | Effect::Amass { .. }
@@ -11417,6 +11550,7 @@ impl Effect {
             | Effect::Renown { count, .. }
             | Effect::Bolster { count, .. }
             | Effect::Adapt { count, .. }
+            | Effect::AssembleContraptions { count }
             // CR 701.20a: how many matching cards to reveal before the
             // until-loop terminates ("reveal until you reveal X [filter] cards").
             | Effect::RevealUntil { count, .. }
@@ -11490,6 +11624,7 @@ impl Effect {
             | Effect::HideawayConceal { .. }
             | Effect::CopyTokenBlockingAttacker { .. }
             | Effect::BecomeCopy { .. }
+            | Effect::GainActivatedAbilitiesOfTarget { .. }
             | Effect::ChooseCard { .. }
             | Effect::MultiplyCounter { .. }
             | Effect::DoublePT { .. }
@@ -11571,10 +11706,15 @@ impl Effect {
             | Effect::TurnFaceUp { .. }
             | Effect::MiracleCast { .. }
             | Effect::OpenAttractions { .. }
+            | Effect::AssembleContraptionsFromRollDifference
+            | Effect::AssembleContraptionOnSprocket { .. }
+            | Effect::CrankContraptions { .. }
             | Effect::PayCost { .. }
             | Effect::PutSticker { .. }
             | Effect::ApplySticker { .. }
             | Effect::ProcessRadCounters
+            | Effect::ReassembleContraption { .. }
+            | Effect::ReassembleContraptionOnSprocket { .. }
             | Effect::ReduceNextSpellCost { .. }
             | Effect::RevealFromHand { .. }
             | Effect::RingTemptsYou
@@ -11637,6 +11777,7 @@ impl Effect {
             | Effect::Renown { count, .. }
             | Effect::Bolster { count, .. }
             | Effect::Adapt { count, .. }
+            | Effect::AssembleContraptions { count }
             // CR 701.20a: how many matching cards to reveal before the
             // until-loop terminates ("reveal until you reveal X [filter] cards").
             | Effect::RevealUntil { count, .. }
@@ -11710,6 +11851,7 @@ impl Effect {
             | Effect::HideawayConceal { .. }
             | Effect::CopyTokenBlockingAttacker { .. }
             | Effect::BecomeCopy { .. }
+            | Effect::GainActivatedAbilitiesOfTarget { .. }
             | Effect::ChooseCard { .. }
             | Effect::MultiplyCounter { .. }
             | Effect::DoublePT { .. }
@@ -11791,10 +11933,15 @@ impl Effect {
             | Effect::TurnFaceUp { .. }
             | Effect::MiracleCast { .. }
             | Effect::OpenAttractions { .. }
+            | Effect::AssembleContraptionsFromRollDifference
+            | Effect::AssembleContraptionOnSprocket { .. }
+            | Effect::CrankContraptions { .. }
             | Effect::PayCost { .. }
             | Effect::PutSticker { .. }
             | Effect::ApplySticker { .. }
             | Effect::ProcessRadCounters
+            | Effect::ReassembleContraption { .. }
+            | Effect::ReassembleContraptionOnSprocket { .. }
             | Effect::ReduceNextSpellCost { .. }
             | Effect::RevealFromHand { .. }
             | Effect::RingTemptsYou
@@ -11897,6 +12044,7 @@ pub fn effect_variant_name(effect: &Effect) -> &str {
         Effect::HideawayConceal { .. } => "HideawayConceal",
         Effect::CopyTokenBlockingAttacker { .. } => "CopyTokenBlockingAttacker",
         Effect::BecomeCopy { .. } => "BecomeCopy",
+        Effect::GainActivatedAbilitiesOfTarget { .. } => "GainActivatedAbilitiesOfTarget",
         Effect::ChooseCard { .. } => "ChooseCard",
         Effect::PutCounter { .. } => "PutCounter",
         Effect::PutCounterAll { .. } => "PutCounterAll",
@@ -11961,6 +12109,12 @@ pub fn effect_variant_name(effect: &Effect) -> &str {
         Effect::Planeswalk => "Planeswalk",
         Effect::OpenAttractions { .. } => "OpenAttractions",
         Effect::RollToVisitAttractions => "RollToVisitAttractions",
+        Effect::AssembleContraptions { .. } => "AssembleContraptions",
+        Effect::AssembleContraptionsFromRollDifference => "AssembleContraptionsFromRollDifference",
+        Effect::CrankContraptions { .. } => "CrankContraptions",
+        Effect::ReassembleContraption { .. } => "ReassembleContraption",
+        Effect::AssembleContraptionOnSprocket { .. } => "AssembleContraptionOnSprocket",
+        Effect::ReassembleContraptionOnSprocket { .. } => "ReassembleContraptionOnSprocket",
         Effect::PutSticker { .. } => "PutSticker",
         Effect::ApplySticker { .. } => "ApplySticker",
         Effect::ProcessRadCounters => "ProcessRadCounters",
@@ -12116,6 +12270,7 @@ pub enum EffectKind {
     ExileHaunting,
     HideawayConceal,
     BecomeCopy,
+    GainActivatedAbilitiesOfTarget,
     ChooseCard,
     PutCounter,
     PutCounterAll,
@@ -12180,6 +12335,12 @@ pub enum EffectKind {
     Planeswalk,
     OpenAttractions,
     RollToVisitAttractions,
+    AssembleContraptions,
+    AssembleContraptionsFromRollDifference,
+    CrankContraptions,
+    ReassembleContraption,
+    AssembleContraptionOnSprocket,
+    ReassembleContraptionOnSprocket,
     PutSticker,
     ApplySticker,
     ProcessRadCounters,
@@ -12344,6 +12505,9 @@ impl From<&Effect> for EffectKind {
             // is bookkeeping layered on top of the same token-copy creation.
             Effect::CopyTokenBlockingAttacker { .. } => EffectKind::CopyTokenOf,
             Effect::BecomeCopy { .. } => EffectKind::BecomeCopy,
+            Effect::GainActivatedAbilitiesOfTarget { .. } => {
+                EffectKind::GainActivatedAbilitiesOfTarget
+            }
             Effect::ChooseCard { .. } => EffectKind::ChooseCard,
             Effect::PutCounter { .. } => EffectKind::PutCounter,
             Effect::PutCounterAll { .. } => EffectKind::PutCounterAll,
@@ -12410,6 +12574,18 @@ impl From<&Effect> for EffectKind {
             Effect::Planeswalk => EffectKind::Planeswalk,
             Effect::OpenAttractions { .. } => EffectKind::OpenAttractions,
             Effect::RollToVisitAttractions => EffectKind::RollToVisitAttractions,
+            Effect::AssembleContraptions { .. } => EffectKind::AssembleContraptions,
+            Effect::AssembleContraptionsFromRollDifference => {
+                EffectKind::AssembleContraptionsFromRollDifference
+            }
+            Effect::CrankContraptions { .. } => EffectKind::CrankContraptions,
+            Effect::ReassembleContraption { .. } => EffectKind::ReassembleContraption,
+            Effect::AssembleContraptionOnSprocket { .. } => {
+                EffectKind::AssembleContraptionOnSprocket
+            }
+            Effect::ReassembleContraptionOnSprocket { .. } => {
+                EffectKind::ReassembleContraptionOnSprocket
+            }
             Effect::PutSticker { .. } => EffectKind::PutSticker,
             Effect::ApplySticker { .. } => EffectKind::ApplySticker,
             Effect::ProcessRadCounters => EffectKind::ProcessRadCounters,
@@ -12557,6 +12733,14 @@ pub struct ModalChoice {
     /// `Chosen` preserves controller-choice; omitted from card-data when default.
     #[serde(default, skip_serializing_if = "TargetSelectionMode::is_chosen")]
     pub selection: TargetSelectionMode,
+    /// CR 700.2 + CR 107.3m: Dynamic maximum number of modes ("choose up to X
+    /// —"), where {X} is the value chosen for the spell's cost and carried to the
+    /// ETB/triggered modal per CR 107.3m. When `Some`, the cap is resolved live
+    /// from the source's cost {X} and clamped to `mode_count` (CR 700.2d — a
+    /// player can't choose more distinct modes than exist); `max_choices` holds
+    /// the static `mode_count` placeholder used before resolution.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dynamic_max_choices: Option<QuantityExpr>,
 }
 
 /// Selection constraints attached to a modal choice header.

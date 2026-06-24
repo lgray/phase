@@ -109,6 +109,7 @@ pub mod forage;
 pub mod force_attack;
 pub mod force_block;
 pub mod free_cast_from_zones;
+pub mod gain_activated_abilities;
 pub mod gain_control;
 pub mod gift_delivery;
 pub mod goad;
@@ -464,8 +465,6 @@ pub(crate) fn candidate_player_scalar(p: &Player, attr: &QuantityRef) -> Option<
     match attr {
         // CR 402.1: cards in the candidate's hand.
         QuantityRef::HandSize { .. } => Some(usize_to_i32_saturating(p.hand.len())),
-        // CR 119.1: the candidate's current life total.
-        QuantityRef::LifeTotal { .. } => Some(p.life),
         // CR 119.3: life lost this turn is tracked per candidate player.
         QuantityRef::LifeLostThisTurn { .. } => Some(u32_to_i32_saturating(p.life_lost_this_turn)),
         // CR 404.1: cards in the candidate's graveyard.
@@ -495,6 +494,13 @@ pub(crate) fn candidate_player_scalar_with_state(
         return Some(value);
     }
     match attr {
+        // CR 119.1 + CR 810.9a: the candidate's life total reads the team's
+        // shared total in a team format (off-team it is the candidate's own
+        // life). Stateful because `team_life_total` folds over teammates'
+        // `Player::life` via the live game state.
+        QuantityRef::LifeTotal { .. } => {
+            Some(crate::game::players::team_life_total(state, candidate.id))
+        }
         QuantityRef::BattlefieldEntriesThisTurn { filter, .. } => {
             Some(crate::game::arithmetic::usize_to_i32_saturating(
                 state
@@ -2688,6 +2694,9 @@ pub fn resolve_effect(
             copy_token_blocking::resolve(state, ability, events)
         }
         Effect::BecomeCopy { .. } => become_copy::resolve(state, ability, events),
+        Effect::GainActivatedAbilitiesOfTarget { .. } => {
+            gain_activated_abilities::resolve(state, ability, events)
+        }
         Effect::ChooseCard { .. } => choose_card::resolve(state, ability, events),
         Effect::PutCounter { .. } => counters::resolve_add(state, ability, events),
         Effect::PutCounterAll { .. } => counters::resolve_add_all(state, ability, events),
@@ -2864,6 +2873,14 @@ pub fn resolve_effect(
         Effect::Planeswalk => planeswalk::resolve(state, ability, events),
         Effect::OpenAttractions { .. } | Effect::RollToVisitAttractions => {
             attractions::resolve(state, ability, events)
+        }
+        Effect::AssembleContraptions { .. }
+        | Effect::AssembleContraptionsFromRollDifference
+        | Effect::AssembleContraptionOnSprocket { .. }
+        | Effect::CrankContraptions { .. }
+        | Effect::ReassembleContraption { .. }
+        | Effect::ReassembleContraptionOnSprocket { .. } => {
+            crate::game::contraptions::resolve(state, ability, events)
         }
         Effect::PutSticker { .. } | Effect::ApplySticker { .. } => {
             stickers::resolve(state, ability, events)
@@ -3924,7 +3941,17 @@ fn filter_uses_relative_controller_you(filter: &TargetFilter) -> bool {
 /// ability's controller.
 fn filter_uses_relative_controller_scoped(filter: &TargetFilter) -> bool {
     match filter {
-        TargetFilter::Typed(tf) => tf.controller == Some(ControllerRef::ScopedPlayer),
+        TargetFilter::Typed(tf) => {
+            tf.controller == Some(ControllerRef::ScopedPlayer)
+                || tf.properties.iter().any(|prop| {
+                    matches!(
+                        prop,
+                        FilterProp::Owned {
+                            controller: ControllerRef::ScopedPlayer
+                        }
+                    )
+                })
+        }
         TargetFilter::Or { filters } | TargetFilter::And { filters } => {
             filters.iter().any(filter_uses_relative_controller_scoped)
         }
@@ -18175,10 +18202,24 @@ mod tests {
             ),
             Some(3)
         );
-        // CR 119.1: life total reads p.life.
+        // CR 810.9a: life total now needs game state (team fold), so the
+        // STATELESS reader returns None and falls the predicate closed.
         assert_eq!(
             candidate_player_scalar(
                 p,
+                &QuantityRef::LifeTotal {
+                    player: PlayerScope::ScopedPlayer
+                }
+            ),
+            None
+        );
+        // CR 119.1 + CR 810.9a: the STATEFUL reader returns the team total —
+        // off-team (Commander) this is the candidate's own life (17).
+        assert_eq!(
+            candidate_player_scalar_with_state(
+                &state,
+                p,
+                PlayerId(0),
                 &QuantityRef::LifeTotal {
                     player: PlayerScope::ScopedPlayer
                 }

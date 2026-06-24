@@ -999,6 +999,7 @@ fn walk_effect(effect: &Effect, out: &mut Vec<String>) {
         | Effect::HideawayConceal { .. }
         | Effect::CopyTokenBlockingAttacker { .. }
         | Effect::BecomeCopy { .. }
+        | Effect::GainActivatedAbilitiesOfTarget { .. }
         | Effect::ChooseCard { .. }
         | Effect::PutCounter { .. }
         | Effect::PutCounterAll { .. }
@@ -1052,6 +1053,12 @@ fn walk_effect(effect: &Effect, out: &mut Vec<String>) {
         | Effect::Planeswalk
         | Effect::OpenAttractions { .. }
         | Effect::RollToVisitAttractions
+        | Effect::AssembleContraptions { .. }
+        | Effect::AssembleContraptionsFromRollDifference
+        | Effect::CrankContraptions { .. }
+        | Effect::ReassembleContraption { .. }
+        | Effect::AssembleContraptionOnSprocket { .. }
+        | Effect::ReassembleContraptionOnSprocket { .. }
         | Effect::PutSticker { .. }
         | Effect::ApplySticker { .. }
         | Effect::ProcessRadCounters

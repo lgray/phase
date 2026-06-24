@@ -417,6 +417,85 @@ fn partition_lki_trigger_definitions(
     (printed, granted_keywords)
 }
 
+fn batched_zone_change_batch(events: &[GameEvent]) -> bool {
+    !events.is_empty()
+        && events
+            .iter()
+            .all(|event| matches!(event, GameEvent::ZoneChanged { .. }))
+}
+
+// CR 603.2c: An ability triggers only once each time its trigger event occurs.
+// This helper checks if the replay guard applies to a batched zone-change trigger.
+fn batched_zone_change_replay_guard_applies(
+    trig_def: &TriggerDefinition,
+    trigger_events: &[GameEvent],
+) -> bool {
+    trig_def.batched
+        && matches!(
+            trig_def.mode,
+            TriggerMode::ChangesZone | TriggerMode::ChangesZoneAll | TriggerMode::Evolve
+        )
+        && batched_zone_change_batch(trigger_events)
+}
+
+fn batched_zone_change_already_collected(
+    state: &GameState,
+    source_id: ObjectId,
+    trig_idx: usize,
+    trigger_events: &[GameEvent],
+) -> bool {
+    let mut zone_changes = trigger_events
+        .iter()
+        .filter_map(|event| {
+            if let GameEvent::ZoneChanged { record, .. } = event {
+                Some(record.turn_zone_change_index)
+            } else {
+                None
+            }
+        })
+        .peekable();
+    zone_changes.peek().is_some()
+        && zone_changes.all(|turn_zone_change_index| {
+            state.batched_zone_change_trigger_fired.contains(&(
+                source_id,
+                trig_idx,
+                turn_zone_change_index,
+            ))
+        })
+}
+
+fn record_batched_zone_change_collected(
+    state: &mut GameState,
+    source_id: ObjectId,
+    trig_idx: usize,
+    trigger_events: &[GameEvent],
+) {
+    for event in trigger_events {
+        if let GameEvent::ZoneChanged { record, .. } = event {
+            state.batched_zone_change_trigger_fired.insert((
+                source_id,
+                trig_idx,
+                record.turn_zone_change_index,
+            ));
+        }
+    }
+}
+
+fn record_matched_batched_zone_change_replay(
+    state: &mut GameState,
+    source_id: ObjectId,
+    matched: &MatchedTrigger,
+) {
+    if matched.batched && batched_zone_change_batch(&matched.trigger_events) {
+        record_batched_zone_change_collected(
+            state,
+            source_id,
+            matched.trig_idx,
+            &matched.trigger_events,
+        );
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn collect_matching_triggers(
     state: &GameState,
@@ -690,6 +769,16 @@ fn collect_matching_triggers_inner(
                 vec![vec![event.clone()]]
             };
             for trigger_events in trigger_event_batches {
+                if batched_zone_change_replay_guard_applies(trig_def, &trigger_events)
+                    && batched_zone_change_already_collected(
+                        state,
+                        obj_id,
+                        trig_idx,
+                        &trigger_events,
+                    )
+                {
+                    continue;
+                }
                 let trigger_event = trigger_events
                     .first()
                     .cloned()
@@ -1301,6 +1390,7 @@ fn collect_pending_triggers(
                     matched.trig_idx,
                     event,
                 );
+                record_matched_batched_zone_change_replay(state, obj_id, &matched);
                 if matched.batched {
                     batched_this_pass.insert((obj_id, matched.trig_idx));
                 }
@@ -1701,6 +1791,7 @@ fn collect_pending_triggers(
                         matched.trig_idx,
                         event,
                     );
+                    record_matched_batched_zone_change_replay(state, *moved_id, &matched);
                     if matched.batched {
                         batched_this_pass.insert((*moved_id, matched.trig_idx));
                     }
@@ -1750,6 +1841,7 @@ fn collect_pending_triggers(
                         matched.trig_idx,
                         event,
                     );
+                    record_matched_batched_zone_change_replay(state, *exploiter, &matched);
                     if matched.batched {
                         batched_this_pass.insert((*exploiter, matched.trig_idx));
                     }
@@ -1819,6 +1911,7 @@ fn collect_pending_triggers(
                         matched.trig_idx,
                         event,
                     );
+                    record_matched_batched_zone_change_replay(state, observer_id, &matched);
                     if matched.batched {
                         batched_this_pass.insert((observer_id, matched.trig_idx));
                     }
@@ -1935,6 +2028,7 @@ fn collect_pending_triggers(
                         matched.trig_idx,
                         event,
                     );
+                    record_matched_batched_zone_change_replay(state, obj_id, &matched);
                     if matched.batched {
                         batched_this_pass.insert((obj_id, matched.trig_idx));
                     }
@@ -5576,9 +5670,12 @@ pub(crate) fn check_trigger_condition(
         TriggerCondition::TwoOrMoreSpellsCastLastTurn => {
             state.spells_cast_last_turn.unwrap_or(0) >= 2
         }
-        // CR 603.4: "if you have N or more life" — compare controller's life total.
+        // CR 603.4 + CR 810.9a: "if you have N or more life" reads the
+        // controller's TEAM total in a team format (own life off-team). Note:
+        // `minimum == 0` would flip a missing-player false→true vs. the prior
+        // `player_field` wrapper, but no real card has a 0 minimum.
         TriggerCondition::LifeTotalGE { minimum } => {
-            player_field(state, controller, |p| p.life >= *minimum)
+            super::players::team_life_total(state, controller) >= *minimum
         }
         // CR 603.4 + CR 102.1: "if it's <player>'s turn" — true when the named
         // player is currently the active player. Negation ("if it isn't <player>'s
@@ -11926,6 +12023,155 @@ pub mod tests {
         ));
     }
 
+    /// Builds the `EventTarget`-bound excess-damage intervening-`if` condition
+    /// (Maarika, Brutal Gladiator class) and checks it against `DamageDealt`
+    /// trigger events. Verifies the building block, not one card: the condition
+    /// must consult only the *specific* damaged object carried by the trigger
+    /// event, not any creature dealt excess damage this turn.
+    fn maarika_excess_condition() -> TriggerCondition {
+        // CR 120.10 + CR 603.4 + CR 603.2 + CR 120.1: "if that creature was dealt
+        // excess damage this turn" — DamageDealtThisTurn{excess_only,target=EventTarget} >= 1.
+        TriggerCondition::QuantityComparison {
+            lhs: QuantityExpr::Ref {
+                qty: QuantityRef::DamageDealtThisTurn {
+                    source: Box::new(TargetFilter::Any),
+                    target: Box::new(TargetFilter::EventTarget),
+                    aggregate: AggregateFunction::Sum,
+                    group_by: None,
+                    damage_kind: DamageKindFilter::Any,
+                    excess_only: true,
+                },
+            },
+            comparator: Comparator::GE,
+            rhs: QuantityExpr::Fixed { value: 1 },
+        }
+    }
+
+    /// CR 603.2 + CR 120.1 + CR 120.10: regression for the Maarika false-positive.
+    /// "if that creature was dealt excess damage this turn" must bind "that
+    /// creature" to the trigger event's damaged object — NOT scan every excess
+    /// record this turn. When an UNRELATED creature took excess damage earlier
+    /// and this trigger's damage to its own creature was non-excess, the
+    /// condition must be FALSE.
+    #[test]
+    fn excess_damage_intervening_if_binds_to_event_target_not_unrelated_creature() {
+        let mut state = setup();
+        let maarika = ObjectId(10); // the trigger source (the damager)
+                                    // Real battlefield objects: `matches_target_filter` looks each candidate
+                                    // up in `state.objects`, so the damaged creatures must actually exist.
+        let creature_a = create_object(
+            &mut state,
+            CardId(1),
+            PlayerId(1),
+            "Creature A".to_string(),
+            Zone::Battlefield,
+        );
+        let creature_b = create_object(
+            &mut state,
+            CardId(2),
+            PlayerId(1),
+            "Creature B".to_string(),
+            Zone::Battlefield,
+        );
+        for id in [creature_a, creature_b] {
+            let obj = state.objects.get_mut(&id).unwrap();
+            obj.card_types.core_types.push(CoreType::Creature);
+            obj.toughness = Some(4);
+            obj.base_toughness = Some(4);
+        }
+
+        // Earlier this turn: creature B was dealt EXCESS damage by someone.
+        state.damage_dealt_this_turn.push_back(DamageRecord {
+            source_id: ObjectId(99),
+            source_controller: PlayerId(1),
+            target: TargetRef::Object(creature_b),
+            target_controller: PlayerId(1),
+            amount: 5,
+            is_combat: true,
+            excess: 3,
+            ..Default::default()
+        });
+        // This trigger: Maarika dealt NON-excess damage to creature A.
+        state.damage_dealt_this_turn.push_back(DamageRecord {
+            source_id: maarika,
+            source_controller: PlayerId(0),
+            target: TargetRef::Object(creature_a),
+            target_controller: PlayerId(1),
+            amount: 2,
+            is_combat: true,
+            excess: 0,
+            ..Default::default()
+        });
+
+        let condition = maarika_excess_condition();
+
+        // Trigger event: Maarika dealt damage to creature A (the event target).
+        let event_a = GameEvent::DamageDealt {
+            source_id: maarika,
+            target: TargetRef::Object(creature_a),
+            amount: 2,
+            is_combat: true,
+            excess: 0,
+        };
+
+        // BUG REGRESSION: must be FALSE — creature A took no excess damage even
+        // though the unrelated creature B did. A generic creature filter would
+        // wrongly return true here.
+        assert!(
+            !check_trigger_condition(
+                &state,
+                &condition,
+                PlayerId(0),
+                Some(maarika),
+                Some(&event_a)
+            ),
+            "excess intervening-if must not fire off an unrelated creature's earlier excess damage"
+        );
+
+        // POSITIVE: when this trigger's own creature (A) DID take excess damage,
+        // the condition must be TRUE.
+        state.damage_dealt_this_turn.push_back(DamageRecord {
+            source_id: maarika,
+            source_controller: PlayerId(0),
+            target: TargetRef::Object(creature_a),
+            target_controller: PlayerId(1),
+            amount: 7,
+            is_combat: true,
+            excess: 4,
+            ..Default::default()
+        });
+        assert!(
+            check_trigger_condition(
+                &state,
+                &condition,
+                PlayerId(0),
+                Some(maarika),
+                Some(&event_a)
+            ),
+            "excess intervening-if must be true when the event-target creature took excess damage"
+        );
+
+        // And the event-target binding is per-event: with the trigger event
+        // pointing at creature B (which took excess), the same condition is TRUE.
+        let event_b = GameEvent::DamageDealt {
+            source_id: maarika,
+            target: TargetRef::Object(creature_b),
+            amount: 5,
+            is_combat: true,
+            excess: 3,
+        };
+        assert!(
+            check_trigger_condition(
+                &state,
+                &condition,
+                PlayerId(0),
+                Some(maarika),
+                Some(&event_b)
+            ),
+            "event-target binding must follow the trigger event's damaged object"
+        );
+    }
+
     #[test]
     fn shelob_spider_damage_death_trigger_end_to_end() {
         use crate::game::sba;
@@ -12036,6 +12282,56 @@ pub mod tests {
             &condition,
             PlayerId(0),
             Some(source),
+            None,
+        ));
+    }
+
+    /// CR 603.4 + CR 810.9a: "if you have N or more life" reads the
+    /// controller's TEAM total in a 2HG game. Team A = 30 + 25 = 55 satisfies a
+    /// minimum of 50, even though neither individual reaches 50. Reverting Site
+    /// 2 to the individual `p.life` read (30) flips the assertion to false.
+    #[test]
+    fn life_total_ge_reads_team_total_in_2hg() {
+        let mut state =
+            GameState::new(crate::types::format::FormatConfig::two_headed_giant(), 4, 0);
+        state.players[0].life = 30;
+        state.players[1].life = 25;
+        let condition = TriggerCondition::LifeTotalGE { minimum: 50 };
+        assert!(
+            check_trigger_condition(&state, &condition, PlayerId(0), Some(ObjectId(10)), None),
+            "team total (55) >= 50 even though no individual reaches 50"
+        );
+        // Sibling: a minimum above the team total fails.
+        let high = TriggerCondition::LifeTotalGE { minimum: 56 };
+        assert!(!check_trigger_condition(
+            &state,
+            &high,
+            PlayerId(0),
+            Some(ObjectId(10)),
+            None,
+        ));
+    }
+
+    /// Off-team degeneracy sibling for Site 2: in a 1v1 the controller's own
+    /// life governs the threshold (no team fold).
+    #[test]
+    fn life_total_ge_off_team_is_individual_life() {
+        let mut state = setup();
+        state.players[0].life = 12;
+        let condition = TriggerCondition::LifeTotalGE { minimum: 12 };
+        assert!(check_trigger_condition(
+            &state,
+            &condition,
+            PlayerId(0),
+            Some(ObjectId(10)),
+            None,
+        ));
+        let condition = TriggerCondition::LifeTotalGE { minimum: 13 };
+        assert!(!check_trigger_condition(
+            &state,
+            &condition,
+            PlayerId(0),
+            Some(ObjectId(10)),
             None,
         ));
     }
@@ -16274,6 +16570,94 @@ pub mod tests {
                 ),
                 expected,
                 "owner-scoped gravecast mismatch: {label}"
+            );
+        }
+    }
+
+    /// CR 601.2 + CR 404.1 + CR 603.4: "if you cast it from your graveyard"
+    /// ("you cast it" + owner-specific zone) scopes BOTH axes — caster=you AND
+    /// origin-zone owner=you. Drives the parser-emitted condition through
+    /// `check_trigger_condition` across all four owner × caster rows relative to
+    /// the trigger controller (P0): only the row where you cast your own card
+    /// from your graveyard satisfies it. Before the scope fix the parser emitted
+    /// `controller: None, owner: None`, which wrongly passed every row.
+    #[test]
+    fn you_cast_from_your_graveyard_scopes_both_caster_and_owner() {
+        let trigger = crate::parser::oracle_trigger::parse_trigger_line(
+            "When this creature enters, if you cast it from your graveyard, put a +1/+1 counter on it.",
+            "Gravecaster",
+        );
+        let condition = trigger
+            .condition
+            .expect("scoped gravecast intervening-if must parse");
+        assert_eq!(
+            condition,
+            TriggerCondition::WasCast {
+                zone: Some(Zone::Graveyard),
+                controller: Some(ControllerRef::You),
+                owner: Some(ControllerRef::You),
+            },
+            "'you cast it from your graveyard' must scope both caster and owner to you"
+        );
+
+        // (owner, caster, expected) relative to trigger controller P0.
+        let cases = [
+            (
+                PlayerId(0),
+                PlayerId(0),
+                true,
+                "you cast your card from your graveyard",
+            ),
+            (
+                PlayerId(0),
+                PlayerId(1),
+                false,
+                "opponent cast your card from your graveyard",
+            ),
+            (
+                PlayerId(1),
+                PlayerId(0),
+                false,
+                "you cast a card from an opponent's graveyard",
+            ),
+            (
+                PlayerId(1),
+                PlayerId(1),
+                false,
+                "opponent cast their card from their graveyard",
+            ),
+        ];
+        for (owner, caster, expected, label) in cases {
+            let mut state = setup();
+            let entering = create_object(
+                &mut state,
+                CardId(1),
+                owner,
+                "Gravecaster".to_string(),
+                Zone::Battlefield,
+            );
+            {
+                let obj = state.objects.get_mut(&entering).unwrap();
+                obj.cast_from_zone = Some(Zone::Graveyard);
+                obj.cast_controller = Some(caster);
+            }
+            let event = zone_changed_event(
+                entering,
+                Zone::Stack,
+                Zone::Battlefield,
+                vec![CoreType::Creature],
+                Vec::new(),
+            );
+            assert_eq!(
+                check_trigger_condition(
+                    &state,
+                    &condition,
+                    PlayerId(0),
+                    Some(entering),
+                    Some(&event),
+                ),
+                expected,
+                "both-axes-scoped gravecast mismatch: {label}"
             );
         }
     }
@@ -25149,6 +25533,7 @@ mod push_first_contract_tests {
             entwine_cost: None,
             chooser: PlayerFilter::Controller,
             selection: crate::types::ability::TargetSelectionMode::Chosen,
+            dynamic_max_choices: None,
         };
         let modal_ability = AbilityDefinition::new(
             AbilityKind::Database,
@@ -25263,6 +25648,7 @@ mod push_first_contract_tests {
             chooser: PlayerFilter::Controller,
             // The axis under test: the game selects the mode at random.
             selection: TargetSelectionMode::Random,
+            dynamic_max_choices: None,
         };
         let modal_ability = AbilityDefinition::new(
             AbilityKind::Database,

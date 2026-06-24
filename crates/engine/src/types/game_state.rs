@@ -446,6 +446,11 @@ pub struct ZoneChangeRecord {
     /// accumulated event vector.
     #[serde(default)]
     pub co_departed: Vec<ObjectId>,
+    /// Per-turn monotonic index assigned when the zone change is recorded (CR
+    /// 400.7). Distinguishes repeated identical `(object, from, to)` transitions
+    /// within the same turn for batched trigger replay guards (issue #3866).
+    #[serde(default)]
+    pub turn_zone_change_index: usize,
 }
 
 /// CR 506.4 / CR 508.1k / CR 509.1g / CR 509.1h: Combat role snapshot for an
@@ -545,6 +550,7 @@ impl ZoneChangeRecord {
             is_token: false,
             combat_status: ZoneChangeCombatStatus::default(),
             co_departed: Vec::new(),
+            turn_zone_change_index: 0,
         }
     }
 }
@@ -662,6 +668,11 @@ pub struct DamageRecord {
     /// (the common combat-damage case) for legacy records and test fixtures.
     #[serde(default = "default_source_zone")]
     pub source_zone: Zone,
+    /// CR 120.10: Excess damage beyond lethal for creatures/planeswalkers/battles.
+    /// Zero for players and for damage that does not overkill. Used by the
+    /// "was dealt excess damage this turn" intervening-if condition class.
+    #[serde(default)]
+    pub excess: u32,
 }
 
 /// CR 608.2i: Default damage-source zone. Combat damage — the overwhelmingly
@@ -697,6 +708,7 @@ impl Default for DamageRecord {
             source_controller_snapshot: PlayerId(0),
             source_owner: PlayerId(0),
             source_zone: Zone::Battlefield,
+            excess: 0,
         }
     }
 }
@@ -1320,6 +1332,17 @@ pub enum BatchCompletion {
         player: PlayerId,
         object_id: ObjectId,
         remaining: u32,
+    },
+    /// Unstable Contraptions: a Contraption being assembled paused on a
+    /// battlefield-entry replacement-ordering choice. Defer the assembled
+    /// object's bookkeeping and any remaining assembles of the same effect
+    /// until the paused entry resolves.
+    ContraptionAssembleRemainder {
+        player: PlayerId,
+        source_id: ObjectId,
+        object_id: ObjectId,
+        sprocket: u8,
+        remaining_after: u32,
     },
 }
 
@@ -6205,6 +6228,13 @@ pub struct GameState {
     /// CR 400.7: Zone-change snapshots this turn, enabling data-driven condition queries.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub zone_changes_this_turn: Vec<ZoneChangeRecord>,
+    /// CR 603.2c: Batched zone-change triggers already collected for
+    /// `(source_id, trig_idx, turn_zone_change_index)`. Prevents a second
+    /// `process_triggers` pass over the same `ZoneChanged` events from
+    /// stacking duplicate batched triggers (issue #3866) without suppressing a
+    /// later distinct leave by the same object in the same turn.
+    #[serde(default, skip_serializing_if = "HashSet::is_empty")]
+    pub batched_zone_change_trigger_fired: HashSet<(ObjectId, usize, usize)>,
     /// CR 403.3: Battlefield entry snapshots this turn, enabling data-driven ETB queries.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub battlefield_entries_this_turn: Vec<BattlefieldEntryRecord>,
@@ -6673,6 +6703,20 @@ pub struct GameState {
     /// triggers (CR 513.1 + CR 603.3b) still fire.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub deferred_step_trigger_resume: Option<Phase>,
+
+    /// CR 805.4b: queue of players who still owe their turn-based draw-step
+    /// draw THIS step. Seeded by `turns::enter_phase`'s `Phase::Draw` arm on
+    /// first entry (`[active_player]` normally, or `[active_player,
+    /// teammate]` under the shared team turns option) and drained front-to-
+    /// back by `turns::drain_pending_team_draw_step`. A draw that pauses on
+    /// a CR 616.1 competing-replacement choice leaves its player at the
+    /// front of the queue (not popped) so resumption — via
+    /// `handle_replacement_choice`'s epilogue, which also calls the same
+    /// drain function — retries exactly that player's draw and then
+    /// continues to any still-queued teammate, instead of either redrawing
+    /// a completed player or silently dropping a queued one.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pending_team_draw_step: Vec<PlayerId>,
 
     /// CR 502.3: Transient untap-step carry. When a `MaxUntapPerType` cap
     /// (Smoke / Stoic Angel / Damping Field) raises `WaitingFor::ChooseUntapSubset`,
@@ -7149,10 +7193,25 @@ impl GameState {
 
     /// Create a new game with the given format configuration and player count.
     pub fn new(config: FormatConfig, player_count: u8, seed: u64) -> Self {
+        // CR 810.4 + CR 810.11: `FormatConfig::starting_life` is the TEAM's
+        // shared total in a team-based format (Two-Headed Giant: 30, not 30
+        // per player / 60 per team). `game::players::team_life_total` derives
+        // the shared total by summing each living teammate's own `life`
+        // field, so the individual starting values must already split the
+        // shared total rather than each duplicating it. The engine currently
+        // only models 2-player teams (seats paired {0,1}, {2,3}, ... — see
+        // `game::players::teammates`/`team_index`), so the split is an even
+        // halving; CR 810.11 (3+-player teams) would need this to divide by
+        // the actual team size instead.
+        let per_player_life = if config.team_based {
+            config.starting_life / 2
+        } else {
+            config.starting_life
+        };
         let players: Vec<Player> = (0..player_count)
             .map(|i| Player {
                 id: PlayerId(i),
-                life: config.starting_life,
+                life: per_player_life,
                 ..Player::default()
             })
             .collect();
@@ -7295,6 +7354,7 @@ impl GameState {
             players_who_sacrificed_artifact_this_turn: HashSet::new(),
             sacrificed_permanents_this_turn: Vec::new(),
             zone_changes_this_turn: Vec::new(),
+            batched_zone_change_trigger_fired: HashSet::new(),
             battlefield_entries_this_turn: Vec::new(),
             damage_dealt_this_turn: im::Vector::new(),
             assassin_or_commander_dealt_combat_damage_this_turn: HashSet::new(),
@@ -7358,6 +7418,7 @@ impl GameState {
             pending_step_end_mana_handlers: Vec::new(),
             pending_phase_transition_progress: None,
             deferred_step_trigger_resume: None,
+            pending_team_draw_step: Vec::new(),
             pending_untap_declines: Vec::new(),
             current_trigger_event: None,
             current_trigger_match_count: None,
@@ -7756,6 +7817,7 @@ impl PartialEq for GameState {
                 == other.players_who_sacrificed_artifact_this_turn
             && self.sacrificed_permanents_this_turn == other.sacrificed_permanents_this_turn
             && self.zone_changes_this_turn == other.zone_changes_this_turn
+            && self.batched_zone_change_trigger_fired == other.batched_zone_change_trigger_fired
             && self.battlefield_entries_this_turn == other.battlefield_entries_this_turn
             && self.damage_dealt_this_turn == other.damage_dealt_this_turn
             && self.assassin_or_commander_dealt_combat_damage_this_turn

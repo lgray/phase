@@ -1,4 +1,4 @@
-use crate::types::ability::{ControllerRef, PlayerRelation, SeatDirection};
+use crate::types::ability::{AggregateFunction, ControllerRef, PlayerRelation, SeatDirection};
 use crate::types::events::{GameEvent, PlayerActionKind};
 use crate::types::game_state::GameState;
 use crate::types::game_state::LinkedExileSnapshot;
@@ -303,8 +303,91 @@ pub fn teammates(state: &GameState, player: PlayerId) -> Vec<PlayerId> {
     }
 }
 
-fn team_index(player: PlayerId) -> u8 {
+pub(crate) fn team_index(player: PlayerId) -> u8 {
     player.0 / 2
+}
+
+/// CR 810.9a + CR 810.9d: Fold a player population into one i32 by aggregating
+/// each DISTINCT team's shared `team_life_total` exactly once (dedup by team).
+/// Min/Max = extremum over team totals; Sum = Σ team totals (no double-count).
+/// Empty population → 0. Off-team every player is its own singleton team, so
+/// this matches a per-individual fold: the dedup key falls back to `pid.0`,
+/// which is distinct per player even when two players share a `team_index`
+/// (e.g. a 1v1 where players 0 and 1 are both `team_index == 0`).
+/// CR 810.9d is the confirming example: a per-team extremum (Repay in Kind)
+/// reads each team's total once, not each member.
+pub(crate) fn aggregate_over_teams<I>(
+    state: &GameState,
+    players: I,
+    aggregate: AggregateFunction,
+) -> i32
+where
+    I: IntoIterator<Item = PlayerId>,
+{
+    let mut seen: std::collections::HashSet<u32> = std::collections::HashSet::new();
+    let team_totals = players.into_iter().filter_map(|pid| {
+        let key = if state.format_config.team_based {
+            team_index(pid) as u32
+        } else {
+            pid.0 as u32
+        };
+        seen.insert(key).then(|| team_life_total(state, pid))
+    });
+    match aggregate {
+        AggregateFunction::Max => team_totals.max().unwrap_or(0),
+        AggregateFunction::Min => team_totals.min().unwrap_or(0),
+        AggregateFunction::Sum => team_totals.sum(),
+    }
+}
+
+/// CR 810.4 + CR 810.9a: A player's team's shared life total. In non-team
+/// formats this is just the player's own life total — `teammates` returns
+/// empty, so the sum degenerates to the single value. CR 810.9a: "If a cost
+/// or effect needs to know the value of an individual player's life total,
+/// that cost or effect uses the team's life total instead" — callers that
+/// read an individual life total for a comparison, cost, or SBA check in a
+/// team-based format must go through this accessor rather than `Player::life`
+/// directly. The underlying per-player `life` fields remain the single
+/// source of truth (CR 810.9: life loss/gain still happens to "each player
+/// individually") — this is a pure derived sum, not a separate stored pool.
+pub fn team_life_total(state: &GameState, player: PlayerId) -> i32 {
+    let mut total = state
+        .players
+        .iter()
+        .find(|p| p.id == player)
+        .map(|p| p.life)
+        .unwrap_or(0);
+    for teammate in teammates(state, player) {
+        total += state
+            .players
+            .iter()
+            .find(|p| p.id == teammate)
+            .map(|p| p.life)
+            .unwrap_or(0);
+    }
+    total
+}
+
+/// CR 810.10 + CR 810.10a: A player's team's shared poison-counter total.
+/// Mirrors `team_life_total` — a pure derived sum over `Player::poison_counters`
+/// for the player and their (living) teammates. Non-team formats degenerate
+/// to the player's own count.
+pub fn team_poison_total(state: &GameState, player: PlayerId) -> u32 {
+    let mut total = state
+        .players
+        .iter()
+        .find(|p| p.id == player)
+        .map(|p| p.poison_counters)
+        .unwrap_or(0);
+    for teammate in teammates(state, player) {
+        total += state
+            .players
+            .iter()
+            .find(|p| p.id == teammate)
+            .map(|p| p.poison_counters)
+            .unwrap_or(0);
+    }
+    total
 }
 
 #[cfg(test)]
@@ -630,5 +713,104 @@ mod tests {
         let mut state = make_state(4, FormatConfig::two_headed_giant());
         eliminate(&mut state, PlayerId(1));
         assert!(teammates(&state, PlayerId(0)).is_empty());
+    }
+
+    // --- team_life_total / team_poison_total ---
+
+    /// CR 810.4: "Each team has a shared life total, which starts at 30
+    /// life" — the TEAM's combined total at game start must be 30, not 30
+    /// per player (60 per team). Regression for a bug where `GameState::new`
+    /// gave every player the full `starting_life` regardless of team size.
+    #[test]
+    fn team_life_total_at_game_start_is_30_not_60() {
+        let state = GameState::new(FormatConfig::two_headed_giant(), 4, 0);
+        assert_eq!(team_life_total(&state, PlayerId(0)), 30);
+        assert_eq!(team_life_total(&state, PlayerId(1)), 30);
+        assert_eq!(team_life_total(&state, PlayerId(2)), 30);
+        assert_eq!(team_life_total(&state, PlayerId(3)), 30);
+    }
+
+    /// Outside team-based formats, `team_life_total` degenerates to the
+    /// player's own (full, unsplit) starting life — no regression from the
+    /// 2HG even-split fix.
+    #[test]
+    fn team_life_total_non_team_format_is_full_starting_life() {
+        let state = GameState::new(FormatConfig::commander(), 4, 0);
+        assert_eq!(team_life_total(&state, PlayerId(0)), 40);
+    }
+
+    #[test]
+    fn team_poison_total_sums_living_teammates() {
+        let mut state = GameState::new(FormatConfig::two_headed_giant(), 4, 0);
+        state.players[0].poison_counters = 6;
+        state.players[1].poison_counters = 9;
+        assert_eq!(team_poison_total(&state, PlayerId(0)), 15);
+        assert_eq!(team_poison_total(&state, PlayerId(1)), 15);
+        // Opposing team is unaffected.
+        assert_eq!(team_poison_total(&state, PlayerId(2)), 0);
+    }
+
+    // --- aggregate_over_teams ---
+
+    /// CR 810.9a + CR 810.9d: aggregating life over a population folds each
+    /// DISTINCT team's shared total exactly once. Over the two opponents of
+    /// team A (players 2 and 3 with 9 and 5 = team total 14), Sum/Max/Min all
+    /// read 14 ONCE — not 28 (double-counted) and not 9 (individual). This is
+    /// the byte-distinguishing regression for Malignus-style off-team reads.
+    #[test]
+    fn aggregate_over_teams_dedups_a_shared_team() {
+        let mut state = GameState::new(FormatConfig::two_headed_giant(), 4, 0);
+        state.players[2].life = 9;
+        state.players[3].life = 5;
+        let opp_team = vec![PlayerId(2), PlayerId(3)];
+        assert_eq!(
+            aggregate_over_teams(&state, opp_team.clone(), AggregateFunction::Sum),
+            14,
+            "Sum must count the shared team total once, not 28"
+        );
+        assert_eq!(
+            aggregate_over_teams(&state, opp_team.clone(), AggregateFunction::Max),
+            14
+        );
+        assert_eq!(
+            aggregate_over_teams(&state, opp_team, AggregateFunction::Min),
+            14
+        );
+    }
+
+    /// The dedup key falls back to `pid.0` off-team so two players that share a
+    /// `team_index` in a NON-team format are NOT collapsed. In Commander,
+    /// players 0 and 1 both have `team_index == 0` (0/2 and 1/2); a bare
+    /// `team_index` key would drop one and break Sum. With the `pid.0` guard,
+    /// Sum over [11, 7] is 18 (both counted as singleton teams).
+    #[test]
+    fn aggregate_over_teams_non_team_format_keeps_players_distinct() {
+        let mut state = GameState::new(FormatConfig::commander(), 4, 0);
+        state.players[0].life = 11;
+        state.players[1].life = 7;
+        assert_eq!(
+            aggregate_over_teams(
+                &state,
+                vec![PlayerId(0), PlayerId(1)],
+                AggregateFunction::Sum
+            ),
+            18,
+            "non-team players sharing a team_index must stay distinct via the pid.0 guard"
+        );
+    }
+
+    /// Empty population → 0 for every aggregate.
+    #[test]
+    fn aggregate_over_teams_empty_population_is_zero() {
+        let state = GameState::new(FormatConfig::two_headed_giant(), 4, 0);
+        let empty: Vec<PlayerId> = Vec::new();
+        assert_eq!(
+            aggregate_over_teams(&state, empty.clone(), AggregateFunction::Max),
+            0
+        );
+        assert_eq!(
+            aggregate_over_teams(&state, empty, AggregateFunction::Sum),
+            0
+        );
     }
 }
