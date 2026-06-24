@@ -1,7 +1,8 @@
 use crate::parser::oracle_nom::error::{OracleError, OracleResult};
 use nom::branch::alt;
 use nom::bytes::complete::{tag, take_until};
-use nom::combinator::{map, opt, success, value};
+use nom::character::complete::multispace0;
+use nom::combinator::{map, not, opt, success, value};
 use nom::multi::fold_many1;
 use nom::sequence::{delimited, preceded, terminated};
 use nom::Parser;
@@ -1698,9 +1699,23 @@ fn scan_modal_count_override(text: &str) -> Option<ModalCountSpec> {
             // CR 700.2 + CR 107.3m: "choose up to X —" — the maximum is the cast
             // {X}, resolved live at runtime; `parse_number` fails on bare "x" so
             // this arm cannot shadow the numeric "choose up to N" arm below.
+            //
+            // A trailing ", where X is <expr>" clause REDEFINES X to a different
+            // quantity (e.g. Bumi "where X is the number of Lesson cards in your
+            // graveyard"; Riku "where X is the number of times you chose a
+            // mode") and the card carries no cast {X}. Such headers must NOT be
+            // read as the cast {X} — the negative lookahead guards them out so
+            // they fall through to the fixed default rather than resolving
+            // `CostXPaid` (which is 0 for a card with no {X}, silently making
+            // the modal choose nothing). Parsing the redefining quantity into
+            // `dynamic_max_choices` is a follow-up; this PR's scope is the
+            // cast-{X} subclass (The Ruinous Wrecking Crew).
             value(
                 ModalCountSpec::DynamicCostX,
-                tag::<_, _, OracleError<'_>>("choose up to x"),
+                terminated(
+                    tag::<_, _, OracleError<'_>>("choose up to x"),
+                    not(preceded((opt(tag(",")), multispace0), tag("where"))),
+                ),
             ),
             // CR 700.2a / CR 700.2d: "choose up to N —" is a modal header where
             // min_choices = 0 (decline all modes) and max_choices = N.
@@ -1932,6 +1947,32 @@ mod tests {
         assert_eq!(
             parse_modal_choose_count("choose up to x —"),
             ModalCountSpec::DynamicCostX
+        );
+    }
+
+    // CR 700.2 + CR 107.3m: a trailing ", where X is <expr>" clause REDEFINES X
+    // to a quantity other than the cast {X} (Bumi → Lesson cards in graveyard;
+    // Riku → number of times you chose a mode), and such cards carry no {X} in
+    // their cost. These headers must NOT classify as `DynamicCostX` (which
+    // resolves `CostXPaid` == 0 for them, silently choosing nothing); they fall
+    // through to the fixed `(1, 1)` default. This negative discriminates the
+    // word-boundary `not(... "where")` guard — reverting it makes both match
+    // `DynamicCostX`.
+    #[test]
+    fn parse_modal_choose_count_up_to_x_redefined_is_not_dynamic() {
+        // Bumi, King of Three Trials.
+        assert_eq!(
+            parse_modal_choose_count(
+                "choose up to x, where x is the number of lesson cards in your graveyard —"
+            ),
+            fixed(1, 1)
+        );
+        // Riku of Many Paths.
+        assert_eq!(
+            parse_modal_choose_count(
+                "choose up to x, where x is the number of times you chose a mode for that spell —"
+            ),
+            fixed(1, 1)
         );
     }
 
