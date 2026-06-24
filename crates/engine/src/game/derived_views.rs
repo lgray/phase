@@ -1086,6 +1086,7 @@ mod tests {
                 is_token: false,
                 combat_status: Default::default(),
                 co_departed: Vec::new(),
+                entered_incarnation: None,
             }),
         };
         let ability = ResolvedAbility::new(

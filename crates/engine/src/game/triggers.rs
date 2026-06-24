@@ -9348,6 +9348,171 @@ pub mod tests {
         );
     }
 
+    /// CR 400.7 + CR 608.2h + CR 603.4: A leave + re-entry reuses the SAME
+    /// ObjectId but bumps the object's incarnation (`move_to_zone` ->
+    /// `reset_for_battlefield_entry`). An ETB intervening-if triggered by the
+    /// ORIGINAL entry must, when rechecked at resolution (CR 603.4), still use
+    /// the ORIGINAL entrant's information — its last-known information now that it
+    /// has left (CR 608.2h) — NOT the characteristics of the NEW incarnation that
+    /// happens to occupy the same storage id. The incarnation gate in
+    /// `matches_zone_change_event_object_filter` distinguishes the two: the live
+    /// object only counts as "still the original entrant" when its incarnation
+    /// matches the one captured in the ETB record.
+    #[test]
+    fn zone_change_object_condition_uses_original_exit_lki_after_leave_and_reentry() {
+        // Source = Hulkling 2/2.
+        let mut state = setup();
+        let source = create_object(
+            &mut state,
+            CardId(70),
+            PlayerId(0),
+            "Hulkling, Burgeoning Bruiser".to_string(),
+            Zone::Battlefield,
+        );
+        {
+            let obj = state.objects.get_mut(&source).unwrap();
+            obj.card_types.core_types.push(CoreType::Creature);
+            obj.power = Some(2);
+            obj.toughness = Some(2);
+        }
+
+        // Hulkling's intervening-if: AnyOf(power>source.power, toughness>source.toughness)
+        // on a creature entering the battlefield (same literal as the sibling tests).
+        let condition = TriggerCondition::ZoneChangeObjectMatchesFilter {
+            origin: None,
+            destination: Zone::Battlefield,
+            filter: TargetFilter::Typed(TypedFilter::creature().properties(vec![
+                FilterProp::AnyOf {
+                    props: vec![
+                        FilterProp::PtComparison {
+                            stat: PtStat::Power,
+                            scope: PtValueScope::Current,
+                            comparator: Comparator::GT,
+                            value: QuantityExpr::Ref {
+                                qty: QuantityRef::Power {
+                                    scope: crate::types::ability::ObjectScope::Source,
+                                },
+                            },
+                        },
+                        FilterProp::PtComparison {
+                            stat: PtStat::Toughness,
+                            scope: PtValueScope::Current,
+                            comparator: Comparator::GT,
+                            value: QuantityExpr::Ref {
+                                qty: QuantityRef::Toughness {
+                                    scope: crate::types::ability::ObjectScope::Source,
+                                },
+                            },
+                        },
+                    ],
+                },
+            ])),
+        };
+
+        // Entrant created in hand with printed base 1/1.
+        let entrant = create_object(
+            &mut state,
+            CardId(71),
+            PlayerId(0),
+            "Newcomer".to_string(),
+            Zone::Hand,
+        );
+        {
+            let obj = state.objects.get_mut(&entrant).unwrap();
+            obj.card_types.core_types.push(CoreType::Creature);
+            obj.base_power = Some(1);
+            obj.base_toughness = Some(1);
+            obj.power = Some(1);
+            obj.toughness = Some(1);
+        }
+
+        // FIRST battlefield entry via the PRODUCTION path. This is the event the
+        // intervening-if is rechecked against; its record carries
+        // `entered_incarnation` = the entrant's incarnation at this entry (CR 400.7).
+        let mut first_evs = Vec::new();
+        crate::game::zones::move_to_zone(&mut state, entrant, Zone::Battlefield, &mut first_evs);
+        let etb_event = first_evs
+            .into_iter()
+            .find(|e| {
+                matches!(
+                    e,
+                    GameEvent::ZoneChanged {
+                        to: Zone::Battlefield,
+                        ..
+                    }
+                )
+            })
+            .expect("first battlefield entry produced a ZoneChanged event");
+        let GameEvent::ZoneChanged { record, .. } = &etb_event else {
+            unreachable!("etb_event is ZoneChanged");
+        };
+        let first_incarnation = record
+            .entered_incarnation
+            .expect("production battlefield entry records entered_incarnation");
+
+        // While on the battlefield the entrant is buffed to 3/3 (layered above its
+        // printed base), which IS greater than the source's 2/2 threshold.
+        {
+            let obj = state.objects.get_mut(&entrant).unwrap();
+            obj.power = Some(3);
+            obj.toughness = Some(3);
+        }
+
+        // Leave to the graveyard via the production exit path: caches exit LKI
+        // (3/3) and reverts the live object to its printed base (1/1).
+        let mut leave_evs = Vec::new();
+        crate::game::zones::move_to_zone(&mut state, entrant, Zone::Graveyard, &mut leave_evs);
+        assert_eq!(
+            state.lki_cache.get(&entrant).unwrap().power,
+            Some(3),
+            "exit LKI holds the last on-battlefield power (3/3)"
+        );
+
+        // RE-ENTER the battlefield with the SAME ObjectId. `reset_for_battlefield_entry`
+        // bumps the incarnation; the live object is base 1/1 again.
+        let mut reentry_evs = Vec::new();
+        crate::game::zones::move_to_zone(&mut state, entrant, Zone::Battlefield, &mut reentry_evs);
+        let live = state.objects.get(&entrant).unwrap();
+        assert_eq!(
+            live.zone,
+            Zone::Battlefield,
+            "entrant occupies the battlefield again under the same ObjectId"
+        );
+        assert_eq!(
+            live.power,
+            Some(1),
+            "re-entered incarnation is printed base 1/1"
+        );
+        assert!(
+            live.incarnation > first_incarnation,
+            "re-entry bumped the incarnation past the original entry (live {} > original {})",
+            live.incarnation,
+            first_incarnation
+        );
+
+        // The intervening-if recheck against the ORIGINAL ETB event must use the
+        // ORIGINAL entrant's exit LKI (3/3 > 2/2 -> true). The incarnation gate
+        // makes `still_on_battlefield` FALSE (live incarnation != recorded entry
+        // incarnation), routing the recheck to the exit LKI.
+        //
+        // DISCRIMINATION: reverting the incarnation gate in
+        // `matches_zone_change_event_object_filter` (back to a zone-only
+        // `still_on_battlefield` check) FLIPS this assertion — the re-entered
+        // object is on the battlefield under the same id, so the recheck reads the
+        // live reverted base 1/1, and 1/1 > 2/2 is false.
+        assert!(
+            check_trigger_condition(
+                &state,
+                &condition,
+                PlayerId(0),
+                Some(source),
+                Some(&etb_event)
+            ),
+            "original exit LKI 3/3 > source 2/2 (CR 608.2h); reverting the \
+             incarnation gate reads the re-entered base 1/1 -> false"
+        );
+    }
+
     #[test]
     fn zone_change_object_condition_checks_dead_object_snapshot() {
         let mut state = setup();

@@ -1263,6 +1263,7 @@ pub fn matches_target_filter_on_lki_snapshot(
         is_token: false,
         combat_status: Default::default(),
         co_departed: Vec::new(),
+        entered_incarnation: None,
     };
     matches_target_filter_on_zone_change_record(state, &record, filter, ctx)
 }
@@ -1308,10 +1309,20 @@ pub fn matches_zone_change_event_object_filter(
         // its last on-battlefield values — hence the LKI dispatch below. A
         // fully-absent entrant (objects.get == None) likewise routes to LKI
         // rather than a spurious false from matches_target_filter.
-        let still_on_battlefield = state
-            .objects
-            .get(object_id)
-            .is_some_and(|obj| obj.zone == Zone::Battlefield);
+        // CR 400.7: a leave + re-entry reuses the SAME ObjectId but bumps the
+        // object's incarnation (move_to_zone -> reset_for_battlefield_entry). The
+        // original ETB trigger must use the ORIGINAL entrant's info, so the live
+        // object only counts as "still the original entrant" when its incarnation
+        // matches the one captured in the ETB record. A re-entered incarnation is
+        // a different object for this trigger and routes to the original exit LKI
+        // below. `entered_incarnation == None` (legacy/defensive records) falls
+        // back to the zone-only check.
+        let still_on_battlefield = state.objects.get(object_id).is_some_and(|obj| {
+            obj.zone == Zone::Battlefield
+                && record
+                    .entered_incarnation
+                    .is_none_or(|inc| obj.incarnation == inc)
+        });
         if still_on_battlefield {
             matches_target_filter(state, *object_id, filter, ctx)
         } else if let Some(lki) = state.lki_cache.get(object_id) {
@@ -9298,6 +9309,7 @@ mod tests {
             is_token: false,
             combat_status: Default::default(),
             co_departed: Vec::new(),
+            entered_incarnation: None,
         };
         let goblin_filter = make_subtype_filter("Goblin");
         let plains_filter = make_subtype_filter("Plains");
