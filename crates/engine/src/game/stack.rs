@@ -2064,6 +2064,7 @@ fn zone_change_record_from_spec(
         combat_status: Default::default(),
         co_departed: Vec::new(),
         entered_incarnation: None,
+        turn_zone_change_index: 0,
     }
 }
 

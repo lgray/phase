@@ -82,6 +82,7 @@ pub(crate) fn affected_filter_uses_object_population(filter: &TargetFilter) -> b
         | TargetFilter::TriggeringSourceController
         | TargetFilter::TriggeringPlayer
         | TargetFilter::TriggeringSource
+        | TargetFilter::EventTarget
         | TargetFilter::ParentTarget
         | TargetFilter::ParentTargetSlot { .. }
         | TargetFilter::ParentTargetController
@@ -279,6 +280,7 @@ pub(crate) fn entered_object_perturbs_affected_filter(
         | TargetFilter::TriggeringSourceController
         | TargetFilter::TriggeringPlayer
         | TargetFilter::TriggeringSource
+        | TargetFilter::EventTarget
         | TargetFilter::ParentTarget
         | TargetFilter::ParentTargetSlot { .. }
         | TargetFilter::ParentTargetController
@@ -1264,6 +1266,7 @@ pub fn matches_target_filter_on_lki_snapshot(
         combat_status: Default::default(),
         co_departed: Vec::new(),
         entered_incarnation: None,
+        turn_zone_change_index: 0,
     };
     matches_target_filter_on_zone_change_record(state, &record, filter, ctx)
 }
@@ -1719,6 +1722,15 @@ fn filter_inner_for_object(
         | TargetFilter::TriggeringPlayer
         | TargetFilter::TriggeringSource
         | TargetFilter::DefendingPlayer => false,
+        // CR 603.2 + CR 120.1 + CR 603.4: "that creature"/"that permanent" bound
+        // to the damaged object of the current trigger event. Matches only the
+        // specific object that received this trigger's damage, so an
+        // intervening-`if` like "if that creature was dealt excess damage this
+        // turn" (Maarika) never fires off an unrelated creature's earlier excess
+        // hit. Resolves through the same event-extraction authority as
+        // `ObjectScope::EventTarget`; inert (matches nothing) outside a trigger.
+        TargetFilter::EventTarget => crate::game::quantity::triggering_event_target_object(state)
+            .is_some_and(|damaged| damaged == object_id),
         // ParentTarget/ParentTargetController/ParentTargetOwner/PostReplacementSourceController
         // resolve at resolution time, not via object matching. ParentTargetOwner
         // mirrors ParentTargetController for the player-axis side of CR 108.3 vs CR 109.4.
@@ -1961,6 +1973,7 @@ fn zone_change_filter_inner(
         | TargetFilter::TriggeringSourceController
         | TargetFilter::TriggeringPlayer
         | TargetFilter::TriggeringSource
+        | TargetFilter::EventTarget
         | TargetFilter::ParentTarget
         | TargetFilter::ParentTargetSlot { .. }
         | TargetFilter::ParentTargetController
@@ -2206,6 +2219,7 @@ pub fn spell_record_matches_filter(
         | TargetFilter::TriggeringSourceController
         | TargetFilter::TriggeringPlayer
         | TargetFilter::TriggeringSource
+        | TargetFilter::EventTarget
         | TargetFilter::ParentTarget
         | TargetFilter::ParentTargetSlot { .. }
         | TargetFilter::ParentTargetController
@@ -2448,6 +2462,7 @@ fn spell_object_matches_filter_inner(
         | TargetFilter::TriggeringSourceController
         | TargetFilter::TriggeringPlayer
         | TargetFilter::TriggeringSource
+        | TargetFilter::EventTarget
         | TargetFilter::ParentTarget
         | TargetFilter::ParentTargetSlot { .. }
         | TargetFilter::ParentTargetController
@@ -9310,6 +9325,7 @@ mod tests {
             combat_status: Default::default(),
             co_departed: Vec::new(),
             entered_incarnation: None,
+            turn_zone_change_index: 0,
         };
         let goblin_filter = make_subtype_filter("Goblin");
         let plains_filter = make_subtype_filter("Plains");

@@ -453,6 +453,11 @@ pub struct ZoneChangeRecord {
     /// post-entry bump (filled in by `move_to_zone`).
     #[serde(default)]
     pub entered_incarnation: Option<u64>,
+    /// Per-turn monotonic index assigned when the zone change is recorded (CR
+    /// 400.7). Distinguishes repeated identical `(object, from, to)` transitions
+    /// within the same turn for batched trigger replay guards (issue #3866).
+    #[serde(default)]
+    pub turn_zone_change_index: usize,
 }
 
 /// CR 506.4 / CR 508.1k / CR 509.1g / CR 509.1h: Combat role snapshot for an
@@ -553,6 +558,7 @@ impl ZoneChangeRecord {
             combat_status: ZoneChangeCombatStatus::default(),
             co_departed: Vec::new(),
             entered_incarnation: None,
+            turn_zone_change_index: 0,
         }
     }
 }
@@ -670,6 +676,11 @@ pub struct DamageRecord {
     /// (the common combat-damage case) for legacy records and test fixtures.
     #[serde(default = "default_source_zone")]
     pub source_zone: Zone,
+    /// CR 120.10: Excess damage beyond lethal for creatures/planeswalkers/battles.
+    /// Zero for players and for damage that does not overkill. Used by the
+    /// "was dealt excess damage this turn" intervening-if condition class.
+    #[serde(default)]
+    pub excess: u32,
 }
 
 /// CR 608.2i: Default damage-source zone. Combat damage — the overwhelmingly
@@ -705,6 +716,7 @@ impl Default for DamageRecord {
             source_controller_snapshot: PlayerId(0),
             source_owner: PlayerId(0),
             source_zone: Zone::Battlefield,
+            excess: 0,
         }
     }
 }
@@ -1328,6 +1340,17 @@ pub enum BatchCompletion {
         player: PlayerId,
         object_id: ObjectId,
         remaining: u32,
+    },
+    /// Unstable Contraptions: a Contraption being assembled paused on a
+    /// battlefield-entry replacement-ordering choice. Defer the assembled
+    /// object's bookkeeping and any remaining assembles of the same effect
+    /// until the paused entry resolves.
+    ContraptionAssembleRemainder {
+        player: PlayerId,
+        source_id: ObjectId,
+        object_id: ObjectId,
+        sprocket: u8,
+        remaining_after: u32,
     },
 }
 
@@ -6213,6 +6236,13 @@ pub struct GameState {
     /// CR 400.7: Zone-change snapshots this turn, enabling data-driven condition queries.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub zone_changes_this_turn: Vec<ZoneChangeRecord>,
+    /// CR 603.2c: Batched zone-change triggers already collected for
+    /// `(source_id, trig_idx, turn_zone_change_index)`. Prevents a second
+    /// `process_triggers` pass over the same `ZoneChanged` events from
+    /// stacking duplicate batched triggers (issue #3866) without suppressing a
+    /// later distinct leave by the same object in the same turn.
+    #[serde(default, skip_serializing_if = "HashSet::is_empty")]
+    pub batched_zone_change_trigger_fired: HashSet<(ObjectId, usize, usize)>,
     /// CR 403.3: Battlefield entry snapshots this turn, enabling data-driven ETB queries.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub battlefield_entries_this_turn: Vec<BattlefieldEntryRecord>,
@@ -7332,6 +7362,7 @@ impl GameState {
             players_who_sacrificed_artifact_this_turn: HashSet::new(),
             sacrificed_permanents_this_turn: Vec::new(),
             zone_changes_this_turn: Vec::new(),
+            batched_zone_change_trigger_fired: HashSet::new(),
             battlefield_entries_this_turn: Vec::new(),
             damage_dealt_this_turn: im::Vector::new(),
             assassin_or_commander_dealt_combat_damage_this_turn: HashSet::new(),
@@ -7794,6 +7825,7 @@ impl PartialEq for GameState {
                 == other.players_who_sacrificed_artifact_this_turn
             && self.sacrificed_permanents_this_turn == other.sacrificed_permanents_this_turn
             && self.zone_changes_this_turn == other.zone_changes_this_turn
+            && self.batched_zone_change_trigger_fired == other.batched_zone_change_trigger_fired
             && self.battlefield_entries_this_turn == other.battlefield_entries_this_turn
             && self.damage_dealt_this_turn == other.damage_dealt_this_turn
             && self.assassin_or_commander_dealt_combat_damage_this_turn

@@ -1087,6 +1087,7 @@ mod tests {
                 combat_status: Default::default(),
                 co_departed: Vec::new(),
                 entered_incarnation: None,
+                turn_zone_change_index: 0,
             }),
         };
         let ability = ResolvedAbility::new(
