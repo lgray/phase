@@ -565,6 +565,13 @@ pub fn modal_choice_for_player(
             effective.max_choices = cap;
         }
     }
+    // CR 107.3m + CR 700.2d: dynamic modal max ("choose up to X") resolves the
+    // cast {X} live and clamps to mode_count (a player can't choose more modes
+    // than exist).
+    if let Some(expr) = &modal.dynamic_max_choices {
+        let resolved = super::quantity::resolve_quantity(state, expr, player, source_id);
+        effective.max_choices = (resolved.max(0) as usize).min(modal.mode_count);
+    }
     effective
 }
 
@@ -5601,6 +5608,114 @@ mod tests {
             ..Default::default()
         };
         assert!(pawprint_budget_satisfied(&plain, &[0, 1, 2, 2, 2]));
+    }
+
+    /// A 4-mode "choose up to X —" modal carrying a `dynamic_max_choices` of
+    /// `CostXPaid`, mirroring The Ruinous Wrecking Crew's ETB.
+    fn dynamic_cost_x_modal() -> ModalChoice {
+        ModalChoice {
+            min_choices: 0,
+            // CR 700.2 + CR 107.3m: the static placeholder is mode_count; the
+            // live cap is resolved from `dynamic_max_choices`.
+            max_choices: 4,
+            mode_count: 4,
+            dynamic_max_choices: Some(QuantityExpr::Ref {
+                qty: QuantityRef::CostXPaid,
+            }),
+            ..Default::default()
+        }
+    }
+
+    /// Spawn a battlefield source object whose stashed cast {X} (CR 107.3m) is
+    /// `x`, returning its id for use as the modal source.
+    fn spawn_source_with_cost_x(state: &mut GameState, x: u32) -> ObjectId {
+        let id = create_object(
+            state,
+            CardId(999),
+            PlayerId(0),
+            "Dynamic Modal Source".to_string(),
+            Zone::Battlefield,
+        );
+        state.objects.get_mut(&id).unwrap().cost_x_paid = Some(x);
+        id
+    }
+
+    /// T2 — CR 107.3m + CR 700.2d: `modal_choice_for_player` resolves the
+    /// dynamic "choose up to X —" cap from the source's cast {X} and clamps it
+    /// to `mode_count`. Reverting the injection in `modal_choice_for_player`
+    /// leaves `max_choices` at the static 4 for every X, so the X=3 and X=0
+    /// assertions below both fail — this discriminates the resolution value,
+    /// not just the clamp.
+    #[test]
+    fn modal_choice_for_player_resolves_dynamic_cost_x_cap() {
+        let modal = dynamic_cost_x_modal();
+
+        // X = 3 → cap 3 (below mode_count, no clamp).
+        let mut state = GameState::new_two_player(42);
+        let source = spawn_source_with_cost_x(&mut state, 3);
+        let effective = modal_choice_for_player(
+            &state,
+            PlayerId(0),
+            source,
+            &modal,
+            &SpellContext::default(),
+        );
+        assert_eq!(effective.max_choices, 3, "X=3 resolves to cap 3");
+
+        // X = 0 → cap 0 (player chose X=0; declines all modes).
+        let mut state = GameState::new_two_player(42);
+        let source = spawn_source_with_cost_x(&mut state, 0);
+        let effective = modal_choice_for_player(
+            &state,
+            PlayerId(0),
+            source,
+            &modal,
+            &SpellContext::default(),
+        );
+        assert_eq!(effective.max_choices, 0, "X=0 resolves to cap 0");
+
+        // X = 10 → clamped to mode_count 4 (CR 700.2d — can't pick >4 modes).
+        let mut state = GameState::new_two_player(42);
+        let source = spawn_source_with_cost_x(&mut state, 10);
+        let effective = modal_choice_for_player(
+            &state,
+            PlayerId(0),
+            source,
+            &modal,
+            &SpellContext::default(),
+        );
+        assert_eq!(
+            effective.max_choices, 4,
+            "X=10 clamps to mode_count 4, not 10"
+        );
+    }
+
+    /// T3 regression — a fixed "choose up to two —" modal (no
+    /// `dynamic_max_choices`) is untouched by the injection: the resolved cap
+    /// equals the static `max_choices`, independent of any source cost {X}.
+    #[test]
+    fn modal_choice_for_player_skips_injection_for_fixed_cap() {
+        let modal = ModalChoice {
+            min_choices: 0,
+            max_choices: 2,
+            mode_count: 4,
+            dynamic_max_choices: None,
+            ..Default::default()
+        };
+        let mut state = GameState::new_two_player(42);
+        // Even with a large stashed X, the fixed cap must not move.
+        let source = spawn_source_with_cost_x(&mut state, 10);
+        let effective = modal_choice_for_player(
+            &state,
+            PlayerId(0),
+            source,
+            &modal,
+            &SpellContext::default(),
+        );
+        assert_eq!(
+            effective.max_choices, 2,
+            "fixed cap is unaffected by source cost X"
+        );
     }
 
     #[test]

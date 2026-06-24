@@ -1087,6 +1087,12 @@ export interface ModalChoice {
    */
   mode_pawprints?: number[];
   constraints?: Array<{ type: string }>;
+  /**
+   * CR 700.2 + CR 107.3m: Engine-internal dynamic "choose up to X —" cap
+   * descriptor (a serialized QuantityExpr). Resolved live by the engine into
+   * `max_choices` before the choice is offered; the UI never reads this field.
+   */
+  dynamic_max_choices?: unknown;
 }
 
 // CR 603.3b: Display payload for one collected-but-not-yet-stacked trigger
