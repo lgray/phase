@@ -13353,11 +13353,11 @@ mod tests {
         assert!(tf.properties.contains(&FilterProp::Another));
     }
 
-    /// CR 205.2a: `parse_type_phrase` parses "a Plan" — the new Plan card type
-    /// (Marvel's Spider-Man) — to `Typed{[Plan]}`, fully consumed. The
-    /// elided-verb "or" disjunction ("you control an artifact creature or a
-    /// Plan") is assembled one level up in `parse_you_control_a`, so
-    /// `parse_type_phrase` itself stops at the first segment and leaves the
+    /// CR 205.3h: `parse_type_phrase` parses "a Plan" — "Plan" is an enchantment
+    /// subtype (Marvel's Spider-Man) — to `Typed{[Subtype("Plan")]}`, fully
+    /// consumed. The elided-verb "or" disjunction ("you control an artifact
+    /// creature or a Plan") is assembled one level up in `parse_you_control_a`,
+    /// so `parse_type_phrase` itself stops at the first segment and leaves the
     /// connector as remainder (asserted below).
     #[test]
     fn parse_type_phrase_recognizes_plan() {
@@ -13366,7 +13366,10 @@ mod tests {
         let TargetFilter::Typed(tf) = f else {
             panic!("expected single Typed filter, got {f:?}");
         };
-        assert_eq!(tf.type_filters, vec![TypeFilter::Plan]);
+        assert_eq!(
+            tf.type_filters,
+            vec![TypeFilter::Subtype("Plan".to_string())]
+        );
     }
 
     /// `parse_type_phrase` does NOT swallow an article-led "or" RHS — it stops at

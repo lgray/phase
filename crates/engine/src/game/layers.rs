@@ -11497,7 +11497,7 @@ mod tests {
                             }],
                         }),
                         TargetFilter::Typed(TypedFilter {
-                            type_filters: vec![TypeFilter::Plan],
+                            type_filters: vec![TypeFilter::Subtype("Plan".to_string())],
                             controller: Some(ControllerRef::You),
                             properties: vec![FilterProp::InZone {
                                 zone: Zone::Battlefield,
@@ -11521,6 +11521,24 @@ mod tests {
         let id = make_creature(state, name, 1, 1, player);
         let obj = state.objects.get_mut(&id).unwrap();
         obj.card_types.core_types.push(CoreType::Artifact);
+        obj.base_card_types = obj.card_types.clone();
+        id
+    }
+
+    /// CR 205.3h: a permanent that is `Enchantment — Plan` (e.g. Doom Reigns
+    /// Supreme). "Plan" is an enchantment subtype, so the second disjunct
+    /// `Typed{[Subtype("Plan")], You, Battlefield}` matches it.
+    fn make_plan_enchantment(state: &mut GameState, name: &str, player: PlayerId) -> ObjectId {
+        let id = create_object(
+            state,
+            CardId(0),
+            player,
+            name.to_string(),
+            Zone::Battlefield,
+        );
+        let obj = state.objects.get_mut(&id).unwrap();
+        obj.card_types.core_types.push(CoreType::Enchantment);
+        obj.card_types.subtypes.push("Plan".to_string());
         obj.base_card_types = obj.card_types.clone();
         id
     }
@@ -11593,6 +11611,32 @@ mod tests {
                 .unwrap()
                 .has_keyword(&Keyword::Indestructible),
             "an opponent-controlled artifact creature must NOT satisfy the You-scoped condition"
+        );
+    }
+
+    /// Arm D (positive, Subtype("Plan") leg / discriminating): player 0 controls
+    /// an `Enchantment — Plan` permanent and NO artifact creature, so the second
+    /// disjunct `Typed{[Subtype("Plan")], You, Battlefield}` is satisfied and
+    /// Doctor Doom has Indestructible. This is the leg exercising "Plan" as an
+    /// enchantment subtype (CR 205.3h) rather than a core card type. PRE-REWORK
+    /// the parser produced `TypeFilter::Plan` and this enchantment (no
+    /// CoreType::Plan) would NOT match, so the assertion would FAIL on revert.
+    #[test]
+    fn doctor_doom_has_indestructible_with_plan_enchantment() {
+        use crate::types::keywords::Keyword;
+        let mut state = setup();
+        let doom = make_doctor_doom(&mut state, PlayerId(0));
+        make_plan_enchantment(&mut state, "Doom Reigns Supreme", PlayerId(0));
+
+        evaluate_layers(&mut state);
+
+        assert!(
+            state
+                .objects
+                .get(&doom)
+                .unwrap()
+                .has_keyword(&Keyword::Indestructible),
+            "Doctor Doom must have Indestructible while you control a Plan (enchantment subtype)"
         );
     }
 

@@ -795,8 +795,6 @@ fn type_filter_to_core_type(tf: &TypeFilter) -> Option<CoreType> {
         TypeFilter::Battle => Some(CoreType::Battle),
         // CR 308.1: Kindred maps to its core type.
         TypeFilter::Kindred => Some(CoreType::Kindred),
-        // CR: needs-manual-verification — Plan card type (Marvel's Spider-Man).
-        TypeFilter::Plan => Some(CoreType::Plan),
         _ => None,
     }
 }
@@ -816,11 +814,6 @@ fn core_type_to_type_filter(core: CoreType) -> TypeFilter {
         CoreType::Battle => TypeFilter::Battle,
         // CR 308.1: Kindred maps to its dedicated type filter.
         CoreType::Kindred => TypeFilter::Kindred,
-        // CR: needs-manual-verification — Plan card type (Marvel's Spider-Man)
-        // has a dedicated TypeFilter::Plan; it must NOT fall through to the
-        // `Subtype("Plan")` catch-all below (that would gate on a nonexistent
-        // subtype instead of the core type).
-        CoreType::Plan => TypeFilter::Plan,
         // CR 110.1: any remaining card type maps to a Subtype-free typed filter
         // by its name; `Tribal`/`Plane`/etc. fall here and are gated by name.
         other => TypeFilter::Subtype(format!("{other:?}")),
@@ -6468,26 +6461,6 @@ mod tests {
                     ..Default::default()
                 }),
             }
-        );
-    }
-
-    /// CR: needs-manual-verification — Plan card type (Marvel's Spider-Man).
-    /// `core_type_to_type_filter` must route `CoreType::Plan` to the dedicated
-    /// `TypeFilter::Plan`, NOT silently to the `Subtype("Plan")` catch-all
-    /// (which would gate on a nonexistent subtype). `type_filter_to_core_type`
-    /// must round-trip it back. DISCRIMINATING: pre-fix Plan fell to the
-    /// `Subtype(format!("{other:?}"))` / `_ => None` arms.
-    #[test]
-    fn plan_core_type_filter_round_trips_not_subtype() {
-        assert_eq!(core_type_to_type_filter(CoreType::Plan), TypeFilter::Plan);
-        assert_ne!(
-            core_type_to_type_filter(CoreType::Plan),
-            TypeFilter::Subtype("Plan".to_string()),
-            "Plan must NOT lower to the Subtype catch-all"
-        );
-        assert_eq!(
-            type_filter_to_core_type(&TypeFilter::Plan),
-            Some(CoreType::Plan)
         );
     }
 }

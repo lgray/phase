@@ -2375,9 +2375,6 @@ pub enum TypeFilter {
     Battle,
     /// CR 308.1: Kindred — each kindred card has another card type; matched via CoreType::Kindred.
     Kindred,
-    // CR: needs-manual-verification — Plan card-type filter (Marvel's Spider-Man),
-    // modeled on TypeFilter::Battle; matches objects whose core types contain CoreType::Plan.
-    Plan,
     Permanent,
     Card,
     Any,

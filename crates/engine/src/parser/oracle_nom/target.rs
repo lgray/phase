@@ -205,14 +205,6 @@ pub fn parse_type_filter_word(input: &str) -> OracleResult<'_, TypeFilter> {
         ("sorcery", TypeFilter::Sorcery),
         ("planeswalkers", TypeFilter::Planeswalker),
         ("planeswalker", TypeFilter::Planeswalker),
-        // CR: needs-manual-verification — "Plan" card type (Marvel's Spider-Man).
-        // The scan now applies a word-boundary guard (see the loop below), so a
-        // prefix like "plan" no longer shadows a longer subtype such as "plant"
-        // or "planet". Ordering remains load-bearing for type words that share a
-        // prefix and are BOTH valid (e.g. "planeswalker"/"planeswalkers" must
-        // precede "plan"/"plans" so the longer head noun wins the match).
-        ("plans", TypeFilter::Plan),
-        ("plan", TypeFilter::Plan),
         ("lands", TypeFilter::Land),
         ("land", TypeFilter::Land),
         // Plural before singular (longest-match-first): the word-boundary guard
@@ -244,8 +236,8 @@ pub fn parse_type_filter_word(input: &str) -> OracleResult<'_, TypeFilter> {
             // parse_subtype_entry in oracle_util.rs): a head-noun type word must
             // be followed by end-of-input or a non-alphanumeric char. Without
             // this, a TYPE_WORD that prefixes a longer subtype shadows it — e.g.
-            // "plan" eating "plant"/"planet" and returning TypeFilter::Plan
-            // instead of falling through to the boundary-guarded subtype table.
+            // "land" eating "lander" or "spell" eating "spellshaper" instead of
+            // falling through to the boundary-guarded subtype table.
             if rest.is_empty() || rest.starts_with(|c: char| !c.is_alphanumeric()) {
                 return Ok((rest, tf.clone()));
             }
@@ -1027,18 +1019,18 @@ mod tests {
         }
     }
 
-    // --- TYPE_WORDS word-boundary guard (the "plan" / "plant" class) ---
+    // --- TYPE_WORDS word-boundary guard (the head-noun-prefix class) ---
     //
-    // Without the boundary guard on the TYPE_WORDS scan, the "plan" entry
-    // strip_prefix-matches "plant"/"plants"/"planet" and returns TypeFilter::Plan
-    // instead of falling through to the boundary-guarded subtype table. These
-    // negatives fail pre-fix (returning Plan) and pass post-fix.
+    // Without the boundary guard on the TYPE_WORDS scan, a head-noun entry like
+    // "land" or "spell" strip_prefix-matches longer subtypes ("lander",
+    // "spellshaper") and returns the wrong card-type filter instead of falling
+    // through to the boundary-guarded subtype table. "Plan" itself is an
+    // enchantment subtype (CR 205.3h), so it resolves via that subtype table.
 
     #[test]
     fn test_type_word_plant_is_subtype_not_plan() {
-        // Pre-fix: "plan" prefix eats "plant" and returns TypeFilter::Plan.
-        // Post-fix: boundary guard rejects the "plan" prefix (followed by 't'),
-        // so the subtype table resolves "Plant".
+        // The "plant" head noun resolves to the Plant subtype; no head-noun
+        // TYPE_WORD prefix shadows it.
         let (rest, tf) = parse_type_filter_word("plant").unwrap();
         assert_eq!(tf, TypeFilter::Subtype("Plant".to_string()));
         assert_eq!(rest, "");
@@ -1063,9 +1055,8 @@ mod tests {
     #[test]
     fn test_type_word_power_plant_never_plan() {
         // "power-plant" is a land subtype (Power-Plant). The hyphenated form must
-        // resolve as a subtype, never as the Plan card type.
+        // resolve as a subtype.
         let (_, tf) = parse_type_filter_word("power-plant").unwrap();
-        assert_ne!(tf, TypeFilter::Plan, "power-plant must never be Plan");
         assert!(
             matches!(tf, TypeFilter::Subtype(_)),
             "power-plant must be a Subtype, got {tf:?}"
@@ -1074,27 +1065,33 @@ mod tests {
 
     #[test]
     fn test_type_word_power_space_plant_never_plan() {
-        // The space-separated "power plant" head noun must never classify as Plan.
-        // Either it fails to parse (no leading type word) or it resolves to a
-        // non-Plan filter — both are acceptable; "Plan" is the prohibited result.
+        // The space-separated "power plant" head noun must never classify as the
+        // "Plan" subtype. Either it fails to parse or it resolves to a non-Plan
+        // filter — both are acceptable; "Plan" is the prohibited result.
         if let Ok((_, tf)) = parse_type_filter_word("power plant") {
-            assert_ne!(tf, TypeFilter::Plan, "power plant must never be Plan");
+            assert_ne!(
+                tf,
+                TypeFilter::Subtype("Plan".to_string()),
+                "power plant must never be the Plan subtype"
+            );
         }
     }
 
     #[test]
     fn test_type_word_plan_still_plan() {
-        // Positive feature guard: bare "plan" still classifies as the Plan type.
+        // "Plan" is an enchantment subtype (CR 205.3h): bare "plan" resolves to
+        // Subtype("Plan") via the subtype table.
         let (rest, tf) = parse_type_filter_word("plan").unwrap();
-        assert_eq!(tf, TypeFilter::Plan);
+        assert_eq!(tf, TypeFilter::Subtype("Plan".to_string()));
         assert_eq!(rest, "");
     }
 
     #[test]
     fn test_type_word_plan_trailing_space_still_plan() {
-        // Positive feature guard: "plan" followed by a space boundary is Plan.
+        // "plan" followed by a space boundary resolves to the Plan subtype and
+        // leaves the trailing context unconsumed.
         let (rest, tf) = parse_type_filter_word("plan you control").unwrap();
-        assert_eq!(tf, TypeFilter::Plan);
+        assert_eq!(tf, TypeFilter::Subtype("Plan".to_string()));
         assert_eq!(rest, " you control");
     }
 

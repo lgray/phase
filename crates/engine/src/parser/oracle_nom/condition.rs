@@ -7401,8 +7401,8 @@ mod tests {
         };
         assert_eq!(
             right.type_filters,
-            vec![TypeFilter::Plan],
-            "right disjunct must be a Plan, got {right:?}"
+            vec![TypeFilter::Subtype("Plan".to_string())],
+            "right disjunct must be the Plan subtype, got {right:?}"
         );
         assert_eq!(right.controller, Some(ControllerRef::You));
         assert!(right.properties.iter().any(|p| matches!(
