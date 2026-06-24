@@ -11614,13 +11614,17 @@ mod tests {
         );
     }
 
-    /// Arm D (positive, Subtype("Plan") leg / discriminating): player 0 controls
-    /// an `Enchantment — Plan` permanent and NO artifact creature, so the second
+    /// Arm D (positive, Subtype("Plan") leg): player 0 controls an
+    /// `Enchantment — Plan` permanent and NO artifact creature, so the second
     /// disjunct `Typed{[Subtype("Plan")], You, Battlefield}` is satisfied and
-    /// Doctor Doom has Indestructible. This is the leg exercising "Plan" as an
-    /// enchantment subtype (CR 205.3h) rather than a core card type. PRE-REWORK
-    /// the parser produced `TypeFilter::Plan` and this enchantment (no
-    /// CoreType::Plan) would NOT match, so the assertion would FAIL on revert.
+    /// Doctor Doom has Indestructible. This exercises the RUNTIME half — the
+    /// layer-eval + filter-match against a hand-built `Subtype("Plan")`
+    /// condition and a hand-set `Enchantment — Plan` permanent. It does NOT
+    /// exercise the parser or `ENCHANTMENT_SUBTYPES`; the parser-side
+    /// discrimination ("a Plan" → `Subtype("Plan")`, not a CoreType axis) lives
+    /// in the parser tests (`parse_type_filter_word`,
+    /// `doctor_doom_disjunctive_control_condition_is_typed_not_unrecognized`)
+    /// and in the end-to-end test below. CR 205.3h.
     #[test]
     fn doctor_doom_has_indestructible_with_plan_enchantment() {
         use crate::types::keywords::Keyword;
@@ -11637,6 +11641,65 @@ mod tests {
                 .unwrap()
                 .has_keyword(&Keyword::Indestructible),
             "Doctor Doom must have Indestructible while you control a Plan (enchantment subtype)"
+        );
+    }
+
+    /// End-to-end (parser → layers), the true Plan-as-subtype revert probe:
+    /// Doctor Doom's printed indestructible line is PARSED (not hand-built), so
+    /// the second disjunct is produced by `parse_type_filter_word` consulting
+    /// `ENCHANTMENT_SUBTYPES`. With a real `Enchantment — Plan` permanent and no
+    /// artifact creature in play, `evaluate_layers` grants Indestructible only
+    /// if the parsed condition's "a Plan" disjunct lowered to
+    /// `Subtype("Plan")`. CR 205.3h + CR 604.1 + CR 702.12b.
+    ///
+    /// DISCRIMINATION: reverting the Plan-as-subtype rework makes the parser
+    /// produce the old `CoreType::Plan` axis (or drop "Plan" from
+    /// `ENCHANTMENT_SUBTYPES`), so the parsed disjunct no longer matches a
+    /// subtype-Plan enchantment, the condition is unsatisfied, and Doctor Doom
+    /// does NOT gain Indestructible — flipping this assertion.
+    #[test]
+    fn doctor_doom_indestructible_parsed_end_to_end_with_plan_enchantment() {
+        use crate::parser::oracle::parse_oracle_text;
+        use crate::types::keywords::Keyword;
+        let mut state = setup();
+
+        // Doctor Doom carries the PARSER-PRODUCED indestructible static.
+        let doom = make_creature(&mut state, "Doctor Doom", 4, 4, PlayerId(0));
+        let parsed = parse_oracle_text(
+            "As long as you control an artifact creature or a Plan, \
+             Doctor Doom has indestructible.",
+            "Doctor Doom",
+            &[],
+            &["Creature".into()],
+            &[],
+        );
+        assert_eq!(
+            parsed.statics.len(),
+            1,
+            "the indestructible line parses to exactly one static; got {:?}",
+            parsed.statics
+        );
+        {
+            let obj = state.objects.get_mut(&doom).unwrap();
+            for s in parsed.statics.iter() {
+                Arc::make_mut(&mut obj.base_static_definitions).push(s.clone());
+                obj.static_definitions.push(s.clone());
+            }
+        }
+
+        // A real `Enchantment — Plan` permanent (no artifact creature), so only
+        // the Subtype("Plan") disjunct can satisfy the condition.
+        make_plan_enchantment(&mut state, "Doom Reigns Supreme", PlayerId(0));
+
+        evaluate_layers(&mut state);
+
+        assert!(
+            state
+                .objects
+                .get(&doom)
+                .unwrap()
+                .has_keyword(&Keyword::Indestructible),
+            "parsed condition's Subtype(\"Plan\") disjunct must match the Plan enchantment"
         );
     }
 
