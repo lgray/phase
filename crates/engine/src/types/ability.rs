@@ -7619,6 +7619,25 @@ pub enum PerpetualModification {
     SetBasePowerToughness { power: i32, toughness: i32 },
 }
 
+/// CR 701.20e + CR 608.2c: Discriminates where `Effect::Dig` reads its
+/// card set from. `Library` (the default) reads from the top of the library;
+/// `PriorLook` reads from `GameState::private_look_ids`, which was populated
+/// by a preceding look-only Dig (e.g. the Birthing Ritual pattern: look →
+/// sacrifice → choose from among those cards).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DigSource {
+    #[default]
+    Library,
+    PriorLook,
+}
+
+impl DigSource {
+    pub fn is_library(&self) -> bool {
+        matches!(self, DigSource::Library)
+    }
+}
+
 #[allow(clippy::large_enum_variant)]
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize, strum::IntoStaticStr)]
 #[serde(tag = "type")]
@@ -8091,6 +8110,9 @@ pub enum Effect {
         /// tapped when true (Planar Genesis — "onto the battlefield tapped").
         #[serde(default)]
         enter_tapped: bool,
+        /// Determines where the resolver reads the card set from. See [`DigSource`].
+        #[serde(default, skip_serializing_if = "DigSource::is_library")]
+        source: DigSource,
     },
     GainControl {
         #[serde(default = "default_target_filter_any")]
