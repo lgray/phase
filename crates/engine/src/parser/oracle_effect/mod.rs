@@ -13427,6 +13427,13 @@ fn lower_subject_predicate_ast(
                     let mut sub_ability =
                         AbilityDefinition::new(AbilityKind::Spell, clause.effect.clone());
                     sub_ability.sub_ability = clause.sub_ability;
+                    // CR 115.1d: an "up to N target" count on the moved-object
+                    // clause (Memory's Journey — "shuffles up to three target
+                    // cards from their graveyard …") belongs to the inner
+                    // ChangeZone slot, not the singular player `TargetOnly`
+                    // wrapper. Carry it onto the sub-ability so the cast
+                    // surfaces N card slots.
+                    sub_ability.multi_target = clause.multi_target;
                     return ParsedEffectClause {
                         effect: Effect::TargetOnly {
                             target: player_target.clone(),

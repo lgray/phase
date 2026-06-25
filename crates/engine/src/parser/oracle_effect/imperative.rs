@@ -5644,6 +5644,12 @@ pub(super) fn parse_shuffle_ast(text: &str, lower: &str) -> Option<ShuffleImpera
                 value((), alt((tag("all "), tag("each ")))).parse(input)
             })
             .is_some();
+            // CR 115.1d: "shuffle up to N target cards from <zone> into <library>"
+            // (Memory's Journey) carries an "up to N" count on the target slot.
+            // Recover it as a `MultiTargetSpec` so the lowering surfaces N slots;
+            // `parse_target` itself strips the quantifier and only returns the
+            // filter. The mass-move (`all`) form ignores it.
+            let (_, multi_target) = super::strip_optional_target_prefix(after_shuffle);
             let (target, _) = parse_target(after_shuffle);
             let origin = if nom_primitives::scan_contains(lower, "graveyard") {
                 Some(Zone::Graveyard)
@@ -5658,6 +5664,7 @@ pub(super) fn parse_shuffle_ast(text: &str, lower: &str) -> Option<ShuffleImpera
                 target,
                 origin,
                 all,
+                multi_target: if all { None } else { multi_target },
             });
         }
     }
@@ -5740,6 +5747,7 @@ pub(super) fn lower_shuffle_ast(ast: ShuffleImperativeAst) -> ParsedEffectClause
             target,
             origin,
             all,
+            multi_target,
         } => {
             // CR 400.6: "shuffle all <filter> from <zone> into your library"
             // (Elixir) is a mandatory mass move of every eligible object — no
@@ -5774,7 +5782,11 @@ pub(super) fn lower_shuffle_ast(ast: ShuffleImperativeAst) -> ParsedEffectClause
                     enter_with_counters: vec![],
                     face_down_profile: None,
                 };
-                with_shuffle_sub_ability(effect)
+                // CR 115.1d: propagate the "up to N target" count so the cast
+                // surfaces N target slots (Memory's Journey: up to three).
+                let mut clause = with_shuffle_sub_ability(effect);
+                clause.multi_target = multi_target;
+                clause
             }
         }
         ShuffleImperativeAst::Unimplemented { text } => parsed_clause(Effect::Unimplemented {
@@ -14523,6 +14535,47 @@ mod tests {
                 panic!("Expected ChangeZoneToLibrary with EnchantedBy target, got {other:?}")
             }
         }
+    }
+
+    /// Issue #4255 — Memory's Journey: "Target player shuffles up to three
+    /// target cards from their graveyard into their library." The "up to three
+    /// target cards" count must survive onto the `ChangeZone` ability as a
+    /// `MultiTargetSpec` so the cast surfaces three target slots rather than
+    /// one. CR 115.1d. Drives the full `parse_effect_chain` pipeline (subject
+    /// shift → shuffle imperative → lowering) and fails if the count is dropped.
+    #[test]
+    fn memorys_journey_up_to_three_targets_survives_to_change_zone() {
+        let def = super::super::parse_effect_chain(
+            "Target player shuffles up to three target cards from their graveyard into their library.",
+            AbilityKind::Spell,
+        );
+
+        // Walk the sub_ability chain to the ChangeZone(Library) link.
+        fn find_change_zone_multi_target(
+            def: &AbilityDefinition,
+        ) -> Option<Option<MultiTargetSpec>> {
+            if matches!(
+                &*def.effect,
+                Effect::ChangeZone {
+                    destination: Zone::Library,
+                    ..
+                }
+            ) {
+                return Some(def.multi_target.clone());
+            }
+            def.sub_ability
+                .as_deref()
+                .and_then(find_change_zone_multi_target)
+        }
+
+        let multi_target = find_change_zone_multi_target(&def).unwrap_or_else(|| {
+            panic!("expected a ChangeZone(Library) link in the chain, got {def:?}")
+        });
+        assert_eq!(
+            multi_target,
+            Some(MultiTargetSpec::up_to(QuantityExpr::Fixed { value: 3 })),
+            "the 'up to three target cards' count must surface as a MultiTargetSpec"
+        );
     }
 
     /// CR 400.7 + CR 701.23: Multi-zone same-name exile combinator covers

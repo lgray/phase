@@ -1252,10 +1252,16 @@ pub(crate) enum ShuffleImperativeAst {
     /// eligible object moves with no interactive choice (CR 400.6) and the move
     /// stamps `last_effect_count`; when `false` it emits a single
     /// `Effect::ChangeZone`.
+    ///
+    /// CR 115.1d: `multi_target` carries an "up to N target" count ("shuffle up
+    /// to three target cards from your graveyard into your library" — Memory's
+    /// Journey) so the lowering surfaces N target slots instead of one. `None`
+    /// for the single-target form; only meaningful when `all` is `false`.
     TargetedChangeZoneToLibrary {
         target: TargetFilter,
         origin: Option<Zone>,
         all: bool,
+        multi_target: Option<MultiTargetSpec>,
     },
     Unimplemented {
         text: String,
