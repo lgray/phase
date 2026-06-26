@@ -20500,3 +20500,58 @@ fn static_creatures_enchanted_player_controls_attack_each_combat_if_able() {
         ))
     );
 }
+
+#[test]
+fn static_nonlegendary_creatures_enchanted_player_controls_base_pt_and_lose_types() {
+    // Curse of Conformity: "Nonlegendary creatures enchanted player controls
+    // have base power and toughness 3/3 and lose all creature types."
+    // CR 613.4b (layer 7b base P/T), CR 205.1a (creature type removal),
+    // CR 303.4b (enchanted player scope).
+    let def = parse_static_line(
+        "Nonlegendary creatures enchanted player controls have base power and toughness 3/3 \
+         and lose all creature types.",
+    )
+    .expect("Curse of Conformity oracle must parse");
+    assert_eq!(def.mode, StaticMode::Continuous);
+    // Filter: nonlegendary creatures enchanted player controls.
+    let tf = match &def.affected {
+        Some(TargetFilter::Typed(tf)) => tf,
+        other => panic!("expected Typed filter, got {other:?}"),
+    };
+    assert!(
+        tf.type_filters.contains(&TypeFilter::Creature),
+        "must filter on Creature"
+    );
+    assert_eq!(
+        tf.controller,
+        Some(ControllerRef::EnchantedPlayer),
+        "must scope to enchanted player"
+    );
+    assert!(
+        tf.properties.contains(&FilterProp::NotSupertype {
+            value: Supertype::Legendary,
+        }),
+        "must exclude legendary creatures"
+    );
+    // Modifications: SetPower{3}, SetToughness{3}, RemoveAllSubtypes{Creature}.
+    assert!(
+        def.modifications
+            .contains(&ContinuousModification::SetPower { value: 3 }),
+        "must set power to 3, got {:?}",
+        def.modifications
+    );
+    assert!(
+        def.modifications
+            .contains(&ContinuousModification::SetToughness { value: 3 }),
+        "must set toughness to 3, got {:?}",
+        def.modifications
+    );
+    assert!(
+        def.modifications
+            .contains(&ContinuousModification::RemoveAllSubtypes {
+                set: crate::types::card_type::SubtypeSet::Creature,
+            }),
+        "must remove all creature types, got {:?}",
+        def.modifications
+    );
+}
