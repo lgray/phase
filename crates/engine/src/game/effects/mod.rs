@@ -4039,6 +4039,10 @@ fn drive_repeated_optional_payment(
     payment_unit.repeat_for = None;
     payment_unit.sub_ability = None;
     payment_unit.optional = false;
+    // Strip any resolution-time condition from the per-iteration payment unit:
+    // the top-level ability's condition (if any) is evaluated once in the
+    // depth==0 prelude and must not re-gate each individual {1} payment.
+    payment_unit.condition = None;
 
     state.pending_repeated_optional_payment = Some(Box::new(PendingRepeatedOptionalPayment {
         payment_unit: Box::new(payment_unit),
@@ -4087,25 +4091,31 @@ pub(super) fn resolve_repeated_optional_payment_choice(
             state.optional_cost_payments_this_resolution = state
                 .optional_cost_payments_this_resolution
                 .saturating_add(1);
-        }
-        if remaining > 0 {
-            // CR 700.2d: offer the next "up to N" payment.
-            let player = payment_unit.controller;
-            let source_id = payment_unit.source_id;
-            let description = payment_unit.description.clone();
-            state.pending_repeated_optional_payment =
-                Some(Box::new(PendingRepeatedOptionalPayment {
-                    payment_unit,
-                    reflexive,
-                    remaining: remaining - 1,
-                }));
-            state.waiting_for = WaitingFor::OptionalEffectChoice {
-                player,
-                source_id,
-                description,
-                may_trigger_key: None,
-            };
-            return Ok(());
+            // CR 118.3 + CR 603.12a: only a payment that actually succeeded can
+            // lead to another "you may pay {1} [again]" offer. A failed payment
+            // — the player accepted but lacked the resources (CR 118.3) — does
+            // not satisfy the "if you do" rider, so the sequence ends here and
+            // the reflexive resolves once with the payments already made (it is
+            // not offered another payment opportunity).
+            if remaining > 0 {
+                // CR 700.2d: offer the next "up to N" payment.
+                let player = payment_unit.controller;
+                let source_id = payment_unit.source_id;
+                let description = payment_unit.description.clone();
+                state.pending_repeated_optional_payment =
+                    Some(Box::new(PendingRepeatedOptionalPayment {
+                        payment_unit,
+                        reflexive,
+                        remaining: remaining - 1,
+                    }));
+                state.waiting_for = WaitingFor::OptionalEffectChoice {
+                    player,
+                    source_id,
+                    description,
+                    may_trigger_key: None,
+                };
+                return Ok(());
+            }
         }
     }
     // CR 603.12a: a decline ends the repeated payment early; either way the

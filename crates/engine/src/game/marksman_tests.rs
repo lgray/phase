@@ -226,23 +226,42 @@ fn decline_immediately_skips_reflexive_at_k_zero() {
     );
 }
 
-/// K counts only SUCCESSFUL payments: with funding for a single {1}, the first
-/// accept pays (K=1) and the second accept fails (insufficient mana, K stays 1).
-/// Revert discriminator: dropping the `if !cost_payment_failed_flag` guard counts
-/// the failed payment, yielding K=2 and a modal cap of 2 instead of 1.
+/// K counts only SUCCESSFUL payments, AND a failed payment ENDS the repeated
+/// sequence. CR 118.3: a player can't pay a cost without the resources to pay it
+/// fully. CR 603.12a: the "you may pay {1} [again]" rider is satisfied only by a
+/// payment that actually happened. With funding for a single {1}, the first
+/// accept pays (K=1); the second accept fails for lack of mana, so the loop
+/// terminates immediately and the reflexive modal is offered exactly once, capped
+/// at K=1 — NO third payment prompt is offered.
+///
+/// Discriminators: (a) dropping the `if !cost_payment_failed_flag` K-guard counts
+/// the failed payment, yielding K=2 and a cap of 2; (b) the pre-fix behavior of
+/// offering another prompt after a failed payment (the `if remaining > 0` branch
+/// running regardless of `cost_payment_failed_flag`) leaves
+/// `pending_repeated_optional_payment` Some with no modal offered, failing the
+/// termination + cap assertions below.
 #[test]
-fn k_counts_only_successful_payments() {
+fn failed_payment_ends_sequence_and_offers_reflexive_once() {
     let mut runner = hawkeye_runtime(1, &[]);
     decide(&mut runner, true); // pays {1} — K = 1
-    decide(&mut runner, true); // no mana left — payment fails, K stays 1
-    decide(&mut runner, false); // stop
+    decide(&mut runner, true); // accept, but no mana left — payment FAILS → loop ends
 
     assert_eq!(
         k_count(runner.state()),
         1,
         "only the funded payment counts toward K"
     );
-    assert_eq!(modal_cap(runner.state()), Some((0, 1)));
+    assert!(
+        runner.state().pending_repeated_optional_payment.is_none(),
+        "a failed payment terminates the repeated-payment sequence — no further \
+         payment prompt is offered: {:?}",
+        runner.state().waiting_for
+    );
+    assert_eq!(
+        modal_cap(runner.state()),
+        Some((0, 1)),
+        "the reflexive modal is offered exactly once, capped at K=1"
+    );
 }
 
 // ── B-iv: a chosen mode resolves; reflexive resolves exactly once ───────
