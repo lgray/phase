@@ -15896,8 +15896,12 @@ pub enum DamageModification {
     Double,
     /// amount * 3 (e.g. Fiery Emancipation)
     Triple,
-    /// amount + value (e.g. Torbran, +2)
-    Plus { value: u32 },
+    /// CR 614.1a + CR 120: amount + value, where the added magnitude is a
+    /// `QuantityExpr` resolved against the replacement source at application
+    /// time. `Fixed { value }` covers static offsets (Torbran +2, Artist's
+    /// Talent +2); a `Ref` carries a live game quantity ("...plus X, where X is
+    /// ~'s power" — Hawkeye, Young Avenger).
+    Plus { value: QuantityExpr },
     /// amount.saturating_sub(value) (e.g. Benevolent Unicorn, -1).
     /// CR 615.1 + CR 614.1a: Continuous prevention statics ("prevent that damage")
     /// emit `Minus { value: u32::MAX }` — saturating-subtraction yields 0 for any

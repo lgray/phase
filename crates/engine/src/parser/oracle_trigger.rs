@@ -33087,7 +33087,9 @@ mod tests {
         };
         assert_eq!(
             replacement.damage_modification,
-            Some(DamageModification::Plus { value: 0 }),
+            Some(DamageModification::Plus {
+                value: crate::types::ability::QuantityExpr::Fixed { value: 0 }
+            }),
             "the 'plus X' placeholder is frozen at activation, not parse time"
         );
         assert_eq!(
