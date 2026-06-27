@@ -5761,6 +5761,28 @@ pub struct GameState {
     /// must not break AI-search dedup on semantically-identical positions.
     #[serde(skip)]
     pub static_source_index: StaticSourceIndex,
+    /// CR 732.2a loop-shortcut detection ring (PR-3). A bounded FIFO of recent
+    /// post-resolution NORMALIZED board snapshots, captured at the post-pipeline frame
+    /// of `game::engine::pass_priority_once_with_pipeline` (after
+    /// `run_post_action_pipeline` places refilling triggers, CR 603.3) and scanned at
+    /// the SBA-reconciliation seam (`game::engine::reconcile_terminal_result`). A
+    /// self-refilling MANDATORY cascade drives the engine one resolution per `apply()`
+    /// with no call-local window (the per-beat single-apply drive), so the window that
+    /// detects the loop MUST persist across `apply()` calls — hence on `GameState`.
+    ///
+    /// TRANSIENT DERIVED STATE — `#[serde(skip, default)]`. It is never serialized: it
+    /// is rebuilt deterministically from play and is a pure optimization over the
+    /// existing CR 704.5a SBA (which already ends every realistic-life drain), so
+    /// losing it across a save/load/MP-snapshot boundary only defers the shortcut by a
+    /// few resolutions — never changes a winner. Snapshots are `Arc`-shared so the
+    /// frequent `GameState::clone` (AI search, §9 probes) pays O(ring.len()) refcount
+    /// bumps, not deep copies. INTENTIONALLY omitted from `impl PartialEq for GameState`
+    /// (derived state, like `static_source_index`/`static_gate_truth` — both
+    /// `#[serde(skip)]` AND eq-excluded; NOT `public_state_dirty`/`state_revision`/
+    /// `layers_dirty`, which are `serde(skip)` but ARE compared in `eq`) so AI-search
+    /// dedup on semantically-identical positions is unaffected.
+    #[serde(skip, default)]
+    pub loop_detect_ring: std::collections::VecDeque<std::sync::Arc<GameState>>,
     pub next_timestamp: u64,
     #[serde(skip, default = "PublicStateDirty::all_dirty")]
     pub public_state_dirty: PublicStateDirty,
@@ -7471,6 +7493,7 @@ impl GameState {
             static_gate_truth: im::HashMap::new(),
             trigger_index: TriggerIndex::default(),
             static_source_index: StaticSourceIndex::default(),
+            loop_detect_ring: std::collections::VecDeque::new(),
             next_timestamp: 1,
             public_state_dirty: PublicStateDirty::all_dirty(),
             state_revision: 0,
@@ -7854,9 +7877,35 @@ impl GameState {
         clone.next_pip_id = 0;
         clone.layers_dirty = LayersDirty::full();
         clone.public_state_dirty = PublicStateDirty::all_dirty();
+        // PR-3 (Option C): snapshots stored in `loop_detect_ring` are produced BY this
+        // method, so without clearing here each stored snapshot would carry a clone of
+        // the live ring → recursive/quadratic growth. Cleared ⇒ every stored snapshot
+        // has clone depth 1. Does not affect any comparison (the ring is eq-excluded).
+        clone.loop_detect_ring.clear();
         clone
     }
+
+    /// PR-3 (Option C): push one NORMALIZED post-resolution snapshot onto the
+    /// CR 732.2a loop-detection ring, evicting the oldest at `LOOP_DETECT_RING_CAP`.
+    /// The snapshot is `normalize_for_loop`d (its own ring cleared, see above) and
+    /// `Arc`-shared so storage is O(1) per element. Called only from the post-pipeline
+    /// frame behind the refill gate (`game::engine::pass_priority_once_with_pipeline`,
+    /// after `run_post_action_pipeline` places refilling triggers).
+    pub(crate) fn record_loop_detect_sample(&mut self) {
+        if self.loop_detect_ring.len() == LOOP_DETECT_RING_CAP {
+            self.loop_detect_ring.pop_front();
+        }
+        let snapshot = std::sync::Arc::new(self.normalize_for_loop());
+        self.loop_detect_ring.push_back(snapshot);
+    }
 }
+
+/// PR-3 (Option C): max retained CR 732.2a loop-detection snapshots. A determinate
+/// drain has period ≤ 2; 16 covers ≥ 8 cycles and any loop whose repeating phase
+/// begins within a 16-resolution preamble. A longer-period/longer-preamble loop
+/// simply falls back to the natural CR 704.5a SBA death (fail-safe — never a wrong
+/// win). Kept small because the live `GameState` carries it through every clone.
+const LOOP_DETECT_RING_CAP: usize = 16;
 
 /// CR 104.4b confirmation between two states that have BOTH already been
 /// `normalize_for_loop`d. Reuses `PartialEq` for the ~95 non-object fields and

@@ -216,6 +216,42 @@ pub(super) fn apply_action_boundary_with_stack_limit(
     Ok(result)
 }
 
+thread_local! {
+    /// PR-3 (Option C): set while inside a legality/search simulation probe
+    /// (`ai_support::SimulationFilter`'s clone-and-apply). Loop-shortcut detection
+    /// (`reconcile_terminal_result` §3) and ring accumulation
+    /// (`pass_priority_once_with_pipeline` §2) are TOP-LEVEL-ONLY — a hypothetical
+    /// single-action probe is NOT a real CR 732.2a play sequence, so it must neither
+    /// shortcut nor accumulate. Engine game logic is single-threaded (no rayon /
+    /// par_iter / std::thread::spawn in the apply or legal_actions path), `apply()` is
+    /// fully synchronous (no `.await` between set and restore), and the tokio server
+    /// runs each apply synchronously within one task on one thread, so the RAII
+    /// set/restore is balanced on a single thread within one call. Mirrors the in-engine
+    /// thread-local idiom (`perf_counters.rs`, `layers.rs`, `quantity.rs`).
+    static IN_SIMULATION_PROBE: std::cell::Cell<bool> =
+        const { std::cell::Cell::new(false) };
+}
+
+/// True while inside a `SimulationFilter` legality probe. Read by §2 and §3.
+pub(crate) fn in_simulation_probe() -> bool {
+    IN_SIMULATION_PROBE.with(|f| f.get())
+}
+
+/// RAII guard: sets the probe flag, restores the PREVIOUS value on drop (panic-safe,
+/// nesting-correct — a probe that itself enumerates legal actions keeps the flag set).
+#[must_use]
+pub(crate) struct SimulationProbeGuard(bool);
+impl SimulationProbeGuard {
+    pub(crate) fn enter() -> Self {
+        SimulationProbeGuard(IN_SIMULATION_PROBE.with(|f| f.replace(true)))
+    }
+}
+impl Drop for SimulationProbeGuard {
+    fn drop(&mut self) {
+        IN_SIMULATION_PROBE.with(|f| f.set(self.0));
+    }
+}
+
 fn reconcile_terminal_result(state: &mut GameState, result: &mut ActionResult) {
     // Safety net (fixes #962): If a player-loss SBA would eliminate a player,
     // run SBAs now. CR 704.3 normally checks SBAs when a player would receive
@@ -236,6 +272,56 @@ fn reconcile_terminal_result(state: &mut GameState, result: &mut ActionResult) {
     if matches!(state.waiting_for, WaitingFor::GameOver { .. }) {
         match_flow::handle_game_over_transition(state);
         result.waiting_for = state.waiting_for.clone();
+    }
+
+    // CR 732.2a + CR 704.5a: shortcut a NET-PROGRESS mandatory cascade to its
+    // determinate single-opponent loss. Runs AFTER the CR 704 state-based actions
+    // above (CR 704.3 ordering), so a player ALREADY at 0 life loses via the real
+    // 704.5a SBA first and this never preempts or double-fires a legitimate win — it
+    // only fires when the game would otherwise grind on (high victim life, or mid-drain
+    // before 0). The `!GameOver` guard makes it idempotent across the :196/:200 calls.
+    if !matches!(state.waiting_for, WaitingFor::GameOver { .. })
+        && matches!(state.waiting_for, WaitingFor::Priority { .. }) // a player would get priority (CR 704.3)
+        && !state.stack.is_empty()
+        && !state.loop_detect_ring.is_empty()
+        // PR-3 Defect-2: loop-shortcut detection is TOP-LEVEL-ONLY. Inside a
+        // `SimulationFilter` legality probe the flag is set, so §3 is skipped. This
+        // enforces the invariant that a hypothetical single-action probe never runs
+        // game-ending shortcut logic, and guards the
+        // reconcile→§3→§9→legal_actions→SimulationFilter→reconcile path against
+        // unbounded re-entry. (In the current architecture the §9 gate's pass-state
+        // reset already makes those nested probes handoffs that do not re-resolve, so
+        // the path is bounded even without this conjunct — see the impl report's
+        // Defect-2 measurement — but the guard keeps the top-level-only invariant
+        // explicit and robust to future §9/§2 changes.)
+        && !in_simulation_probe()
+    {
+        // Clone the Arc handles (cheap refcount bumps) to release the borrow on the
+        // ring before the GameOver mutation below.
+        let priors: Vec<std::sync::Arc<GameState>> =
+            state.loop_detect_ring.iter().cloned().collect();
+        let cur = crate::analysis::resource::ResourceVector::snapshot(state);
+        if let Some(winner) = priors.iter().find_map(|prior| {
+            let delta = crate::analysis::resource::ResourceVector::delta(
+                &crate::analysis::resource::ResourceVector::snapshot(prior),
+                &cur,
+            );
+            crate::analysis::loop_check::live_mandatory_loop_winner(prior, state, &delta)
+        }) {
+            // CR 732.5: shortcut ONLY a loop NO living player can break. The gate runs
+            // ONCE after find_map (not per prior). At the per-beat drive this is the
+            // entire soundness firewall.
+            if no_living_player_has_meaningful_priority_action(state) {
+                result.events.push(GameEvent::GameOver {
+                    winner: Some(winner),
+                });
+                state.waiting_for = WaitingFor::GameOver {
+                    winner: Some(winner),
+                };
+                result.waiting_for = state.waiting_for.clone();
+                match_flow::handle_game_over_transition(state);
+            }
+        }
     }
 }
 
@@ -432,6 +518,13 @@ fn pass_priority_once_with_pipeline(
     state.pending_activations.clear();
 
     let stack_was_empty = state.stack.is_empty();
+    // PR-3 (Option C) Defect-1: capture the pre-pipeline stack frame for the §2
+    // loop-shortcut window maintenance below. `stack_top_before` is the resolving
+    // entry's id; a real resolution this beat replaces the top with a different id
+    // (every refilled trigger gets a fresh monotonic ObjectId), whereas a bare
+    // priority handoff leaves it unchanged.
+    let stack_len_before = state.stack.len();
+    let stack_top_before = state.stack.last().map(|e| e.id);
     // CR 117.4 + CR 723.5/723.8: pass the *seat* that holds priority, not
     // `priority_player` — under turn-control the latter is the authorized
     // submitter (the controller), which would mis-count consecutive passes and
@@ -465,6 +558,45 @@ fn pass_priority_once_with_pipeline(
         skip_triggers,
     )?;
     sync_waiting_for(state, &wf);
+
+    // PR-3 (Option C) CR 732.2a loop-shortcut window accumulation — relocated here
+    // (PR3 Defect-1 fix). The refilling trigger is placed by
+    // `run_post_action_pipeline` (CR 603.3 / CR 704.3: triggered abilities waiting to
+    // go on the stack are put there the next time a player would receive priority),
+    // which runs above — AFTER the resolution seam in `handle_priority_pass_with_limit`.
+    // Sampling here is the only frame where a self-refilling cascade is already
+    // non-shrinking (the refilled trigger is on the stack).
+    //
+    // RESOLUTION-OCCURRED GATE. `resolved_this_beat` is true iff there WAS a top entry
+    // at function entry and it is no longer the top — i.e. a stack entry was actually
+    // resolved/consumed this beat. A bare priority handoff (the active player passes,
+    // priority moves on, stack untouched) leaves the top unchanged ⇒
+    // `resolved_this_beat == false` ⇒ the ring is LEFT INTACT so accumulation survives
+    // across the handoff beats that separate resolutions under the per-beat drive. A
+    // naive `len >= before` gate would false-positive on those handoffs; a strict
+    // clear-on-handoff would destroy the accumulation — both are wrong. This gate
+    // samples only on a real resolution and touches the ring only then.
+    let resolved_this_beat =
+        stack_top_before.is_some() && state.stack.last().map(|e| e.id) != stack_top_before;
+    if resolved_this_beat && !in_simulation_probe() {
+        // REFILL gate: a self-refilling MANDATORY cascade holds the stack non-empty and
+        // non-shrinking across the resolution, settling at a non-interactive priority
+        // window reset to the active player (the canonical modulo-comparison point —
+        // `project_out_resources` compares phase/priority exactly). A normal multi-spell
+        // stack SHRINKS; an interactive effect opens a non-Priority window; a finite
+        // chain drains to empty — all three fall to the clear arm.
+        if !state.stack.is_empty()
+            && state.stack.len() >= stack_len_before
+            && matches!(wf, WaitingFor::Priority { player } if player == state.active_player)
+        {
+            state.record_loop_detect_sample();
+        } else {
+            state.loop_detect_ring.clear();
+        }
+    }
+    // No else-branch: a bare handoff or an empty-stack pass-to-advance-phase does NOT
+    // touch the ring (leave-intact), so accumulation survives the inter-resolution beats.
+
     Ok(wf)
 }
 
@@ -482,6 +614,28 @@ fn priority_player_has_meaningful_action(state: &GameState) -> bool {
     // — it drops only the unused spell-cost object-walk and grouped-map build.
     let actions = crate::ai_support::flat_priority_actions(&probe);
     crate::ai_support::has_meaningful_priority_action(&probe, &actions)
+}
+
+/// CR 732.5: no player can be forced to keep looping if ANY of them could take an
+/// action that ends the loop. The cap-path [`priority_player_has_meaningful_action`]
+/// checks only the CURRENT priority holder; the loop-shortcut WIN designates a
+/// LOSER, so its gate must be stronger — the would-be loop-breaker (a victim whose
+/// priority is auto-passed by a stale `UntilStackEmpty`/`UntilEndOfTurn` session,
+/// which `priority_auto_pass_decision` Passes WITHOUT a meaningful check) need NOT
+/// hold priority at the modulo-match iteration. Probe EVERY living player as the
+/// priority holder (`legal_actions`/`has_meaningful_priority_action` key off
+/// `waiting_for`). Conservative: if anyone has a meaningful action this returns
+/// `false` and the cascade falls through to the existing halt (priority preserved) —
+/// fail-safe toward the status quo, never a wrong win.
+fn no_living_player_has_meaningful_priority_action(state: &GameState) -> bool {
+    state.players.iter().filter(|p| !p.is_eliminated).all(|p| {
+        let mut probe = state.clone();
+        probe.auto_pass.clear();
+        probe.priority_player = p.id;
+        probe.waiting_for = WaitingFor::Priority { player: p.id };
+        let actions = crate::ai_support::legal_actions(&probe);
+        !crate::ai_support::has_meaningful_priority_action(&probe, &actions)
+    })
 }
 
 fn finish_completed_or_interrupted_until_stack_empty_sessions(state: &mut GameState) -> bool {
@@ -1152,6 +1306,34 @@ mod auto_pass_decision_tests {
             }
         ));
     }
+
+    /// U-gate (CR 732.5): the loop-shortcut gate must probe EVERY living player,
+    /// not just the current priority holder. Here the NON-priority player P1 holds a
+    /// meaningful (non-mana activated) ability while the current holder P0 has none.
+    ///
+    /// - `no_living_player_has_meaningful_priority_action` returns `false` (P1's
+    ///   action blocks the shortcut) — correct.
+    /// - `priority_player_has_meaningful_action` (current holder P0 only) returns
+    ///   `false`, so a gate built on its negation (`!current_only`) would wrongly be
+    ///   `true` and clear the loop. That contrast proves the all-players
+    ///   generalization is load-bearing (the session-masked victim need not hold
+    ///   priority at the modulo-match iteration).
+    #[test]
+    fn loop_gate_probes_all_living_players_not_just_current_holder() {
+        let mut state = priority_state();
+        // P1 (NOT the current priority holder) has a meaningful action.
+        add_non_mana_activated_artifact(&mut state, PlayerId(1));
+
+        assert!(
+            !no_living_player_has_meaningful_priority_action(&state),
+            "P1 has a loop-ending action, so the all-players gate must refuse to clear"
+        );
+        assert!(
+            !priority_player_has_meaningful_action(&state),
+            "the current-holder-only check sees nothing for P0 — its negation would \
+             wrongly clear, proving the all-players probe is load-bearing"
+        );
+    }
 }
 
 /// Auto-pass loop: when a player has an auto-pass flag and receives priority,
@@ -1271,6 +1453,22 @@ fn run_auto_pass_loop(state: &mut GameState, result: &mut ActionResult) {
                                 match_flow::handle_game_over_transition(state);
                                 return;
                             }
+
+                            // PR-3 (Option C): the NET-PROGRESS mandatory-loop WIN
+                            // shortcut is NOT duplicated here. `run_auto_pass_loop`
+                            // resolves via `pass_priority_once_with_pipeline` (:1339),
+                            // whose §2 maintenance accumulates the persisted
+                            // `loop_detect_ring` across these internal iterations, but
+                            // `reconcile_terminal_result` (the §3 win site) is NOT called
+                            // inside this loop — only at :200 AFTER it returns. So the §3
+                            // shortcut does NOT accelerate this auto-pass grind: this loop
+                            // runs its own net-progress drive to the natural CR 704.5a
+                            // death (or the strict CR 104.4b DRAW block above) on its own.
+                            // The accelerated path is the per-beat repeated
+                            // `apply(PassPriority)` drive (the production frontend
+                            // default), where §3 runs after every beat. Keeping a second
+                            // win site here would create two divergent detectors.
+
                             // CR 104.4b: a sliding window of the most recent
                             // MAX_LOOP_WINDOW distinct states. A fill-once-and-stop
                             // buffer never records the cycle of a loop whose
@@ -1645,6 +1843,19 @@ fn apply_action(
             waiting_for: state.waiting_for.clone(),
             log_entries: vec![],
         });
+    }
+
+    // PR-3 (Option C): CR 732.2a loop-detection ring invalidation. Any deliberate
+    // non-pass action (cast / activate / play-land) breaks a self-refilling mandatory
+    // cascade, so the accumulated detection window is stale and must be dropped.
+    // Placed AFTER every preference early-return (CancelAutoPass / SetPhaseStops /
+    // ReorderHand / Debug / Grant- & RevokeDebugPermission) so a no-op preference
+    // toggle never reaches here; PassPriority is the only action that CONTINUES a
+    // cascade and so must NOT clear. `run_auto_pass_loop` and `resolve_all_fast_forward`
+    // call the resolution seam directly (not via `apply_action`), so this clear does
+    // not fire during their internal iterations — the ring accumulates correctly there.
+    if !matches!(action, GameAction::PassPriority) {
+        state.loop_detect_ring.clear();
     }
 
     // Any deliberate player action (not auto-pass-related or a simple pass) cancels their auto-pass.

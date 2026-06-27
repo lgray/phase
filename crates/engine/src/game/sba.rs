@@ -305,7 +305,11 @@ fn ascend_status(state: &GameState, player: PlayerId) -> AscendStatus {
 /// for entries pinned to this player via `SpecificPlayer { id }` whose
 /// modifications grant `StaticMode::CantLoseTheGame`. The battlefield scan
 /// handles the permanent-source path (Platinum Angel and friends).
-fn player_has_cant_lose(state: &GameState, player_id: PlayerId) -> bool {
+///
+/// `pub(crate)` so the live loop-shortcut firewall
+/// (`analysis::loop_check::live_mandatory_loop_winner`, CR 101.2) can reuse the same
+/// SBA-layer predicate rather than re-deriving the can't-lose check.
+pub(crate) fn player_has_cant_lose(state: &GameState, player_id: PlayerId) -> bool {
     let from_permanent = state.battlefield.iter().any(|&id| {
         let obj = match state.objects.get(&id) {
             Some(o) => o,
