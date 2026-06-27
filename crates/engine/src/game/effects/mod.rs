@@ -21,8 +21,8 @@ use crate::types::ability::{AttackScope, AttackSubject};
 use crate::types::events::{GameEvent, PlayerActionKind};
 use crate::types::game_state::{
     AutoMayChoice, CastOfferKind, ClauseMinimumSnapshot, DayNight, GameState, LKISnapshot,
-    MayTriggerAutoChoiceKey, PendingContinuation, PendingCopyTokenBatch, WaitingFor,
-    ZoneChangeRecord,
+    MayTriggerAutoChoiceKey, PendingContinuation, PendingCopyTokenBatch,
+    PendingRepeatedOptionalPayment, WaitingFor, ZoneChangeRecord,
 };
 use crate::types::identifiers::{ObjectId, TrackedSetId};
 use crate::types::mana::ManaCost;
@@ -3955,6 +3955,184 @@ fn has_member_driven_repeat_after_hydration(state: &GameState, ability: &Resolve
     has_member_driven_repeat(&ability_with_event_context_targets(state, ability))
 }
 
+/// CR 603.12a + CR 608.2c: True when this ability is a "you may pay {cost} up to
+/// N times. When you do, [reflexive]" process (Hawkeye, Master Marksman — "Trick
+/// Arrows"). Unlike a generic `repeat_for` loop (one up-front "you may" then N
+/// mandatory iterations), each payment is offered SEPARATELY and the reflexive
+/// triggers exactly once for one-or-more payments, sized by the payment count
+/// (CR 700.2d). Such an ability is driven by `drive_repeated_optional_payment`
+/// instead of the up-front optional gate + `repeated_full_chain` loop. Mirrors
+/// `has_kind_driven_repeat` / `has_member_driven_repeat`.
+///
+/// The cost is restricted to the SYNCHRONOUS mana class (see
+/// `is_synchronous_mana_pay_cost`): the driver pays each iteration in line and
+/// reads the failure flag immediately, so a cost that PAUSES (sets
+/// `WaitingFor::PayAmountChoice` for unannounced-X / pay-any-amount, or returns
+/// `PaymentOutcome::Paused` for interactive `Discard`/`Sacrifice`/replacement
+/// payments) cannot be driven here — it would mis-count K and clobber its own
+/// continuation. Any repeated-optional ability whose cost pauses falls through to
+/// the generic `repeat_for` path and stays honestly unimplemented (no false
+/// green) until the driver gains pause-resume plumbing.
+fn is_repeated_optional_payment(ability: &ResolvedAbility) -> bool {
+    ability.optional
+        && is_synchronous_mana_pay_cost(&ability.effect)
+        && matches!(ability.repeat_for, Some(QuantityExpr::Fixed { .. }))
+        && ability
+            .sub_ability
+            .as_ref()
+            .is_some_and(|sub| sub.condition == Some(AbilityCondition::WhenYouDo))
+}
+
+/// CR 118.1: A `PayCost` whose cost is a pure, fully-static mana cost — the only
+/// resolution-time payment class guaranteed synchronous (auto-tap + pool
+/// deduction returns Paid/Failed, never a `PayAmountChoice`/`Paused` pause).
+/// Excludes:
+/// - mana costs carrying an unannounced `{X}` (which prompt `PayAmountChoice`,
+///   pay.rs `cost_has_x` arm),
+/// - a per-object `scale` (resolution-only multiplier, not the repeated-optional
+///   shape),
+/// - every non-mana `AbilityCost` (Discard/Sacrifice/PayLife/PayEnergy/Composite/
+///   …) — these either branch interactively or pause.
+///
+/// A mana payment intercepted by a payment-replacement effect is the one residual
+/// pause vector; it is outside the current corpus and the predicate cannot see it
+/// at AST time. A future pause-resume driver would lift this.
+fn is_synchronous_mana_pay_cost(effect: &Effect) -> bool {
+    matches!(
+        effect,
+        Effect::PayCost {
+            cost: AbilityCost::Mana { cost },
+            scale: None,
+            ..
+        } if !crate::game::casting_costs::cost_has_x(cost)
+    )
+}
+
+/// CR 603.12a: Fire the first per-iteration payment prompt for a
+/// repeated-optional-payment process and stash the continuation. Each
+/// subsequent prompt + the once-after-loop reflexive are driven by
+/// `resolve_repeated_optional_payment_choice` as the player answers each
+/// `DecideOptionalEffect`. Returns having set `WaitingFor::OptionalEffectChoice`
+/// (or, for an "up to 0 times" bound, a no-op resolution with K = 0).
+fn drive_repeated_optional_payment(
+    state: &mut GameState,
+    ability: &ResolvedAbility,
+) -> Result<(), EffectError> {
+    // CR 700.2d: the "up to N" payment budget.
+    let n = match &ability.repeat_for {
+        Some(QuantityExpr::Fixed { value }) => (*value).max(0),
+        _ => 0,
+    };
+    let Some(reflexive) = ability.sub_ability.as_ref() else {
+        return Ok(());
+    };
+    if n == 0 {
+        // CR 603.12a: with no payment opportunity, K stays 0 — the reflexive
+        // never triggers and the modal is never offered.
+        return Ok(());
+    }
+    // The PayCost-only unit prompted/paid each iteration: clear `repeat_for` and
+    // `sub_ability` so resolving it neither re-enters this driver nor
+    // re-resolves the reflexive, and clear `optional` (the prompt itself is the
+    // optionality — on accept the payment is performed unconditionally).
+    let mut payment_unit = ability.clone();
+    payment_unit.repeat_for = None;
+    payment_unit.sub_ability = None;
+    payment_unit.optional = false;
+
+    state.pending_repeated_optional_payment = Some(Box::new(PendingRepeatedOptionalPayment {
+        payment_unit: Box::new(payment_unit),
+        reflexive: Box::new((**reflexive).clone()),
+        remaining: (n - 1) as u32,
+    }));
+    state.waiting_for = WaitingFor::OptionalEffectChoice {
+        player: ability.controller,
+        source_id: ability.source_id,
+        description: ability.description.clone(),
+        may_trigger_key: None,
+    };
+    Ok(())
+}
+
+/// CR 603.12a + CR 608.2c: Resume a repeated-optional-payment process for one
+/// `DecideOptionalEffect`. On accept, pay the per-iteration cost (resolution-
+/// time mana payment is synchronous — auto-tap, never pauses) and count it
+/// toward K iff it succeeded; then offer the next payment if budget remains.
+/// On decline (or after the last payment), resolve the reflexive modal exactly
+/// once iff K >= 1. Called by `handle_optional_effect_choice`.
+pub(super) fn resolve_repeated_optional_payment_choice(
+    state: &mut GameState,
+    accept: bool,
+    events: &mut Vec<GameEvent>,
+) -> Result<(), EffectError> {
+    let Some(pending) = state.pending_repeated_optional_payment.take() else {
+        return Ok(());
+    };
+    let PendingRepeatedOptionalPayment {
+        payment_unit,
+        reflexive,
+        remaining,
+    } = *pending;
+
+    if accept {
+        // CR 608.2c: clear the resolution failure flag before THIS payment so a
+        // prior iteration's failure can't be misread as this payment's outcome
+        // (which would under-count K on a fail-then-succeed sweep).
+        state.cost_payment_failed_flag = false;
+        // CR 118.1: pay the cost. Depth >= 1 keeps the resolution-
+        // local K counter (cleared only by the depth==0 prelude) alive.
+        resolve_ability_chain(state, &payment_unit, events, 1)?;
+        // CR 603.12a: count only successful payments toward K.
+        if !state.cost_payment_failed_flag {
+            state.optional_cost_payments_this_resolution = state
+                .optional_cost_payments_this_resolution
+                .saturating_add(1);
+        }
+        if remaining > 0 {
+            // CR 700.2d: offer the next "up to N" payment.
+            let player = payment_unit.controller;
+            let source_id = payment_unit.source_id;
+            let description = payment_unit.description.clone();
+            state.pending_repeated_optional_payment =
+                Some(Box::new(PendingRepeatedOptionalPayment {
+                    payment_unit,
+                    reflexive,
+                    remaining: remaining - 1,
+                }));
+            state.waiting_for = WaitingFor::OptionalEffectChoice {
+                player,
+                source_id,
+                description,
+                may_trigger_key: None,
+            };
+            return Ok(());
+        }
+    }
+    // CR 603.12a: a decline ends the repeated payment early; either way the
+    // reflexive resolves exactly once iff at least one payment succeeded.
+    finish_repeated_optional_payment(state, &reflexive, events)
+}
+
+/// CR 603.12a: resolve the reflexive modal exactly once iff K >= 1. K == 0 ⇒ no
+/// "do" occurred ⇒ the modal is never offered. Resolved at depth >= 1 so the
+/// `depth == 0` prelude does not zero the K counter before
+/// `modal_choice_for_player` reads it as the dynamic modal cap (CR 700.2d).
+fn finish_repeated_optional_payment(
+    state: &mut GameState,
+    reflexive: &ResolvedAbility,
+    events: &mut Vec<GameEvent>,
+) -> Result<(), EffectError> {
+    if state.optional_cost_payments_this_resolution >= 1 {
+        // CR 608.2c: clear the per-iteration failure flag before the reflexive so
+        // a loop-terminating decline can't suppress it. (The WhenYouDo gate is
+        // flag-independent for the reflexive's `GenericEffect`, but clear
+        // defensively for the general class.)
+        state.cost_payment_failed_flag = false;
+        resolve_ability_chain(state, reflexive, events, 1)?;
+    }
+    Ok(())
+}
+
 /// CR 608.2c + CR 609.3: True when a counted repeat loop must wrap scoped
 /// and/or unless-pay instructions (Torment of Hailfire — "Repeat X times.
 /// Each opponent loses 3 life unless …"). The repeat count is the outermost
@@ -4641,6 +4819,13 @@ pub fn resolve_ability_chain(
         // the `engine.rs` apply() clear. (CR 706.2 + CR 706.4 + CR 603.12)
         state.last_effect_counts_by_player.clear();
         state.exiled_from_hand_this_resolution = 0;
+        // CR 603.12a: the repeated-optional-payment count is resolution-local.
+        // Reset it per top-level resolution so a prior Hawkeye/Frillback tap
+        // can't leak K into the next one. MUST be depth-0 only: the
+        // repeated-optional-payment driver resolves its reflexive modal at
+        // depth >= 1 so `modal_choice_for_player` reads the live K before this
+        // prelude can wipe it (CR 700.2d clamp).
+        state.optional_cost_payments_this_resolution = 0;
         // CR 608.2e: The clause-local equalization snapshot is resolution-
         // scoped. It is overwritten per `player_scope` link within a chain
         // (and survives the interactive `EffectZoneChoice` drain, which
@@ -5400,9 +5585,14 @@ fn resolve_chain_body(
     // accept another. Suppress the single up-front gate here; the `repeat_for`
     // loop below fires its own per-iteration `OptionalEffectChoice` for each
     // counter kind (see the `kind_driven` optional path in the loop).
+    // CR 603.12a: a repeated-optional-payment process (Hawkeye) offers its "you
+    // may" PER iteration via `drive_repeated_optional_payment`, not once up
+    // front — suppress the single gate here exactly as the kind/member-driven
+    // loops do.
     if ability.optional
         && !has_kind_driven_repeat(ability)
         && !has_member_driven_repeat_after_hydration(state, ability)
+        && !is_repeated_optional_payment(ability)
     {
         let description = ability.description.clone();
         let prompt_player = optional_prompt_player(state, ability);
@@ -5445,6 +5635,16 @@ fn resolve_chain_body(
             may_trigger_key,
         };
         return Ok(());
+    }
+
+    // CR 603.12a: a "you may pay {cost} up to N times. When you do, [reflexive]"
+    // process drives its own per-iteration payment loop + once-after-loop
+    // reflexive (Hawkeye, Master Marksman). The up-front gate is suppressed for
+    // this class above; resolve it through the dedicated driver here, before the
+    // generic `repeat_for` loop (which would re-resolve the reflexive per
+    // payment).
+    if is_repeated_optional_payment(ability) {
+        return drive_repeated_optional_payment(state, ability);
     }
 
     // CR 118.12 + CR 118.12a: "Effect unless [player] pays {cost}" —
@@ -8218,6 +8418,111 @@ mod tests {
         assert!(
             ability_or_branch_references_tracked_set(&ability),
             "repeat_for: TrackedSetSize must mark the ability as referencing the tracked set"
+        );
+    }
+
+    /// CR 118.1 + CR 603.12a: the repeated-optional-payment driver pays each
+    /// iteration in line and reads the failure flag immediately, so it must admit
+    /// ONLY a pure, static mana `PayCost` (Hawkeye's `{1}`). A PayCost whose cost
+    /// PAUSES — unannounced-`{X}` mana (`WaitingFor::PayAmountChoice`) or an
+    /// interactive `Discard` (`PaymentOutcome::Paused`) — or a per-object `scale`
+    /// must fall through to the generic `repeat_for` path and stay honestly
+    /// unimplemented; driving it would mis-count K and clobber the payment's own
+    /// continuation.
+    ///
+    /// Revert discriminator: widening `is_synchronous_mana_pay_cost` back to a
+    /// bare `matches!(effect, Effect::PayCost { .. })` makes the X-mana, Discard,
+    /// and scaled-mana fixtures satisfy the predicate ⇒ the `!...` assertions fail.
+    #[test]
+    fn repeated_optional_payment_admits_only_synchronous_mana_cost() {
+        use crate::types::ability::{CardSelectionMode, DiscardSelfScope};
+        use crate::types::mana::ManaCostShard;
+
+        fn repeated_optional_with_cost(
+            cost: AbilityCost,
+            scale: Option<QuantityExpr>,
+        ) -> ResolvedAbility {
+            let mut ability = ResolvedAbility::new(
+                Effect::PayCost {
+                    cost,
+                    scale,
+                    payer: TargetFilter::Controller,
+                },
+                vec![],
+                ObjectId(1),
+                PlayerId(0),
+            );
+            ability.optional = true;
+            ability.repeat_for = Some(QuantityExpr::Fixed { value: 3 });
+            let mut reflexive = ResolvedAbility::new(
+                Effect::GenericEffect {
+                    static_abilities: vec![],
+                    duration: None,
+                    target: None,
+                },
+                vec![],
+                ObjectId(1),
+                PlayerId(0),
+            );
+            reflexive.condition = Some(AbilityCondition::WhenYouDo);
+            ability.sub_ability = Some(Box::new(reflexive));
+            ability
+        }
+
+        // Positive control: Hawkeye's `{1}` — pure static mana, synchronous.
+        let mana = repeated_optional_with_cost(
+            AbilityCost::Mana {
+                cost: ManaCost::generic(1),
+            },
+            None,
+        );
+        assert!(
+            is_repeated_optional_payment(&mana),
+            "pure {{1}} mana is the synchronous repeated-optional class"
+        );
+
+        // Negative: unannounced `{X}` mana pauses via `WaitingFor::PayAmountChoice`.
+        let x_mana = repeated_optional_with_cost(
+            AbilityCost::Mana {
+                cost: ManaCost::Cost {
+                    shards: vec![ManaCostShard::X],
+                    generic: 0,
+                },
+            },
+            None,
+        );
+        assert!(
+            !is_repeated_optional_payment(&x_mana),
+            "{{X}} mana prompts PayAmountChoice — must NOT be driven"
+        );
+
+        // Negative: interactive Discard pauses via `PaymentOutcome::Paused` — the
+        // exact "you may discard a card up to N times" class the driver cannot run.
+        let discard = repeated_optional_with_cost(
+            AbilityCost::Discard {
+                count: QuantityExpr::Fixed { value: 1 },
+                filter: None,
+                selection: CardSelectionMode::default(),
+                self_scope: DiscardSelfScope::default(),
+            },
+            None,
+        );
+        assert!(
+            !is_repeated_optional_payment(&discard),
+            "interactive Discard pauses — must NOT be driven"
+        );
+
+        // Negative: a per-object `scale` is the resolution-only multiplier shape,
+        // not the repeated-optional shape.
+        let scaled = repeated_optional_with_cost(
+            AbilityCost::Mana {
+                cost: ManaCost::generic(1),
+            },
+            Some(QuantityExpr::Fixed { value: 2 }),
+        );
+        assert!(
+            !is_repeated_optional_payment(&scaled),
+            "scaled mana is not the synchronous repeated-optional class"
         );
     }
 

@@ -407,6 +407,7 @@ fn quantity_ref_uses_unspent_mana(qty: &QuantityRef) -> bool {
         | QuantityRef::AdditionalCostPaymentCount
         | QuantityRef::AdditionalCostPaymentCountFor { .. }
         | QuantityRef::ConvokedCreatureCount
+        | QuantityRef::TimesCostPaidThisResolution
         | QuantityRef::ManaSpentToCast { .. }
         | QuantityRef::ColorsInCommandersColorIdentity
         | QuantityRef::VoteCount { .. }
@@ -655,6 +656,7 @@ fn quantity_ref_uses_object_count(qty: &QuantityRef) -> bool {
         | QuantityRef::AdditionalCostPaymentCount
         | QuantityRef::AdditionalCostPaymentCountFor { .. }
         | QuantityRef::ConvokedCreatureCount
+        | QuantityRef::TimesCostPaidThisResolution
         | QuantityRef::ManaSpentToCast { .. }
         | QuantityRef::ColorsInCommandersColorIdentity
         | QuantityRef::VoteCount { .. }
@@ -838,6 +840,7 @@ fn entered_object_perturbs_quantity_ref(
         | QuantityRef::AdditionalCostPaymentCount
         | QuantityRef::AdditionalCostPaymentCountFor { .. }
         | QuantityRef::ConvokedCreatureCount
+        | QuantityRef::TimesCostPaidThisResolution
         | QuantityRef::ManaSpentToCast { .. }
         | QuantityRef::ColorsInCommandersColorIdentity
         | QuantityRef::VoteCount { .. }
@@ -2887,6 +2890,15 @@ fn resolve_ref(
             .get(&ctx.self_object())
             .map(|obj| usize_to_i32_saturating(obj.convoked_creatures.len()))
             .unwrap_or(0),
+        // CR 603.12a: Number of times the controller paid the repeated optional
+        // cost during THIS resolution. Resolution-local transient on the
+        // GameState (cleared at the depth==0 prelude of resolve_ability_chain,
+        // incremented once per successful payment); never read from an object,
+        // never snapshotted. Sizes the reflexive "choose up to that many" modal
+        // cap (CR 700.2d clamps it to mode_count).
+        QuantityRef::TimesCostPaidThisResolution => {
+            u32_to_i32_saturating(state.optional_cost_payments_this_resolution)
+        }
         // CR 603.10a + CR 603.6e: Count attachments present on the leaving object
         // at zone-change time (look-back). Reads the `attachments` snapshot on
         // the `ZoneChanged` event in `current_trigger_event`, filtered by kind

@@ -4517,6 +4517,16 @@ pub enum QuantityRef {
     /// spell that became the source permanent. Reads `GameObject::convoked_creatures`;
     /// ETB replacement contexts resolve against the entering object.
     ConvokedCreatureCount,
+    /// CR 603.12a: Number of times the controller paid the repeated optional
+    /// cost during THIS ability's resolution ("you may pay {C} up to N times").
+    /// Resolution-local and transient: read from
+    /// `GameState::optional_cost_payments_this_resolution`, which is cleared at
+    /// the `depth == 0` prelude of `resolve_ability_chain` and incremented once
+    /// per successful payment. Distinct from the cast-time `CostXPaid` /
+    /// `KickerCount` / `AdditionalCostPaymentCount` tallies, which are read from
+    /// the source spell/object at announcement (CR 601.2 / 702.33 / 702.51).
+    /// Used to size a reflexive "choose up to that many" modal (CR 700.2d).
+    TimesCostPaidThisResolution,
     /// CR 106.3 + CR 601.2h: Mana spent to cast a spell, parameterized by
     /// which cast object is being measured and which spent-mana metric is
     /// needed. Covers total amount, distinct colors, and source-qualified

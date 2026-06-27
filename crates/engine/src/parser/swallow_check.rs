@@ -115,6 +115,7 @@ pub fn check_swallowed_clauses(
     detect_duration_next_turn(&cleaned, oracle_text, &ast_json, diagnostics);
     detect_optional_may_have(&cleaned, oracle_text, &ast_json, diagnostics);
     detect_apnap(&cleaned, oracle_text, &ast_json, diagnostics);
+    detect_modal_dynamic_max_dropped(&cleaned, oracle_text, &ast_json, diagnostics);
 }
 
 // ── Detector A: Replacement_Instead ─────────────────────────────────────
@@ -1544,6 +1545,71 @@ fn detect_dynamic_qty(
     });
 }
 
+// ── Detector M: Modal_DynamicMaxDropped ─────────────────────────────────
+
+/// CR 700.2 + CR 700.2d: a "choose up to X / up to that many" MODAL header
+/// whose dynamic cap was not captured (a `"modal":{` node exists but its
+/// `dynamic_max_choices` is None) silently mis-sizes the modal — the player
+/// would be locked to the fixed `mode_count` cap instead of the dynamic
+/// "up to X" / "up to that many" cap. Surface it so coverage stays honest.
+///
+/// The `"modal":{` gate excludes non-modal "choose up to X <nouns>" selection
+/// clauses (Heroic Feast: "choose up to that many target creatures you
+/// control"; Temporal Firestorm: "choose up to X creatures ... where X is ..."):
+/// those parse to a quantified target/selection, not a modal node, so no
+/// `"modal":{` appears and this detector stays silent on them.
+///
+/// Keys on serialized-field presence:
+/// - `modal` (`AbilityDefinitionRepr`, ability.rs:13381) is omitted when None
+///   via `skip_serializing_if`, so `"modal":{` is an exact proxy for "a modal
+///   node was parsed" (there is no `"modal":null` form to confuse it).
+/// - `dynamic_max_choices` (ability.rs:12925) carries
+///   `#[serde(default, skip_serializing_if = "Option::is_none")]`, so it is
+///   omitted when None; ABSENCE of `"dynamic_max_choices":{` means the dynamic
+///   cap was dropped (there is no `:null` form to test).
+///
+/// CONSERVATIVE-RED LIMITATION (deliberate, never false-green): the three gates
+/// are independent whole-text / whole-AST scans, not a per-node association. A
+/// single card carrying BOTH (a) an UNRELATED fixed modal node (gate 2) AND (b)
+/// a SEPARATE non-modal "choose up to X <nouns>" selection clause elsewhere in
+/// its text (gate 1) would fire even though its fixed modal's cap was never
+/// meant to be dynamic. This errs toward RED — it understates coverage, never
+/// over-states it — so a card so flagged stays honestly unsupported rather than
+/// being marked green without a working dynamic cap. No such card exists in the
+/// current corpus (the modal-bearing dynamic-header cards — Hawkeye, Tranquil
+/// Frillback, Bumi, Riku — each have the header ON the modal itself). Tightening
+/// to a per-node "the header terminates the modal node, not a noun phrase"
+/// association would duplicate the parser's `oracle_modal` negative-lookahead in
+/// audit code and risk regressing the measured Frillback/Hawkeye discrimination;
+/// it is intentionally NOT done while the false-RED set is empty.
+fn detect_modal_dynamic_max_dropped(
+    cleaned: &str,
+    original: &str,
+    ast_json: &str,
+    diagnostics: &mut Vec<OracleDiagnostic>,
+) {
+    // (1) Oracle carries a dynamic modal header (the "choose " lead is intrinsic
+    //     to both markers).
+    let has_dynamic_header = cleaned.contains("choose up to that many") // allow-noncombinator: swallow detector marker scan on classified text
+        || cleaned.contains("choose up to x"); // allow-noncombinator: swallow detector marker scan on classified text
+    if !has_dynamic_header {
+        return;
+    }
+    // (2) A modal node was parsed (excludes non-modal selection clauses).
+    if !json_has_any(ast_json, &["\"modal\":{"]) {
+        return;
+    }
+    // (3) ...but it carries no dynamic cap — the "up to X / that many" was lost.
+    if json_has_any(ast_json, &["\"dynamic_max_choices\":{"]) {
+        return;
+    }
+    diagnostics.push(OracleDiagnostic::SwallowedClause {
+        detector: "Modal_DynamicMaxDropped".into(),
+        description: truncate(original, 140).into(),
+        line_index: 0,
+    });
+}
+
 /// CR 701.38: True when every dynamic-quantity marker in `cleaned` belongs to a
 /// Council's-dilemma vote tally — "[equal to [twice|N times] ]the number of
 /// <choice> votes". Such tallies are realized by the Vote resolver's per-vote
@@ -2940,6 +3006,150 @@ mod tests {
         def.sub_ability
             .as_deref()
             .and_then(find_search_outside_game)
+    }
+
+    // ── Modal_DynamicMaxDropped (Sub-plan A) ────────────────────────────
+
+    /// Core gate (positive): a `"modal":{` node with no `"dynamic_max_choices":{`
+    /// and a dynamic header marker fires the detector. Revert discriminator:
+    /// removing the `diagnostics.push` in `detect_modal_dynamic_max_dropped`
+    /// (or gate (1)/(2)/(3)) drops the diagnostic and fails this assertion.
+    #[test]
+    fn modal_dynamic_max_dropped_fires_on_modal_without_dynamic_cap() {
+        let ast_json =
+            r#"{"abilities":[{"modal":{"min_choices":1,"max_choices":1,"mode_count":3}}]}"#;
+        let mut diags = Vec::new();
+        super::detect_modal_dynamic_max_dropped(
+            "when you do, choose up to that many",
+            "When you do, choose up to that many.",
+            ast_json,
+            &mut diags,
+        );
+        assert!(
+            diags.iter().any(|d| matches!(
+                d,
+                OracleDiagnostic::SwallowedClause { detector, .. }
+                    if detector == "Modal_DynamicMaxDropped"
+            )),
+            "detector must fire when a modal node lacks a dynamic cap: {diags:?}"
+        );
+    }
+
+    /// Negative (a) — Ruinous shape: a modal node that DOES carry
+    /// `"dynamic_max_choices":{` is silent (the cap was captured). Proves the
+    /// detector keys on the AST cap, not the phrase. Revert gate (3) → fires.
+    #[test]
+    fn modal_dynamic_max_dropped_silent_when_dynamic_cap_present() {
+        let ast_json = r#"{"abilities":[{"modal":{"min_choices":0,"max_choices":3,"mode_count":3,"dynamic_max_choices":{"type":"Ref","qty":"CostXPaid"}}}]}"#;
+        let mut diags = Vec::new();
+        super::detect_modal_dynamic_max_dropped(
+            "choose up to x",
+            "Choose up to X —",
+            ast_json,
+            &mut diags,
+        );
+        assert!(
+            diags.is_empty(),
+            "must stay silent when dynamic_max_choices is present: {diags:?}"
+        );
+    }
+
+    /// Negative (b) — A1 fix: a NON-modal "choose up to X <nouns>" selection
+    /// clause has no `"modal":{` node, so the detector is silent even though
+    /// the dynamic header marker is present. Revert gate (2) → false-fires on
+    /// Heroic Feast / Temporal Firestorm.
+    #[test]
+    fn modal_dynamic_max_dropped_silent_without_modal_node() {
+        let ast_json = r#"{"abilities":[{"effect":{"type":"PutCounter","count":{"type":"Ref","qty":"CostXPaid"}}}]}"#;
+        let mut diags = Vec::new();
+        super::detect_modal_dynamic_max_dropped(
+            "choose up to that many target creatures you control",
+            "Choose up to that many target creatures you control.",
+            ast_json,
+            &mut diags,
+        );
+        assert!(
+            diags.is_empty(),
+            "must stay silent without a modal node (A1 gate): {diags:?}"
+        );
+    }
+
+    /// Registration + real-pipeline positive: a "choose up to X, where X is ..."
+    /// modal keeps the fixed-default cap (the existing "where" guard blocks the
+    /// cast-{X} arm), so the real parser yields a modal node WITHOUT
+    /// `dynamic_max_choices`. Driven end-to-end through `parse_oracle_text` →
+    /// `check_swallowed_clauses`, so it discriminates the detector registration.
+    /// This "where X is" shape is unaffected by Sub-plan B's "that many" arm,
+    /// keeping the test stable across both commits. Revert the registration line
+    /// in `check_swallowed_clauses` → no diagnostic → fails.
+    #[test]
+    fn modal_dynamic_max_dropped_registered_via_real_parse() {
+        let parsed = parse_named(
+            "Choose up to X, where X is the number of cards in your hand \u{2014}\n\
+             \u{2022} You gain 2 life.\n\
+             \u{2022} Draw a card.",
+            "Synthetic Dropped Cap Modal",
+            &["Sorcery"],
+        );
+        assert!(
+            has_swallowed_detector(&parsed, "Modal_DynamicMaxDropped"),
+            "real parse of a dropped-cap modal must surface the detector: {:?}",
+            parsed.parse_warnings
+        );
+    }
+
+    /// Real-pipeline negative — The Ruinous Wrecking Crew: its modal carries
+    /// `dynamic_max_choices: Some(CostXPaid)` on the base, so the detector is
+    /// silent and the line-counter fold (A-1) greens it. Stable across B.
+    #[test]
+    fn modal_dynamic_max_dropped_silent_on_ruinous() {
+        let parsed = parse_named(
+            "The Ruinous Wrecking Crew enters with X +1/+1 counters on it.\n\
+             When The Ruinous Wrecking Crew enters, choose up to X \u{2014}\n\
+             \u{2022} Discard a card, then draw a card.\n\
+             \u{2022} Target opponent loses 2 life.\n\
+             \u{2022} Destroy target token.\n\
+             \u{2022} Each player sacrifices a creature of their choice.",
+            "The Ruinous Wrecking Crew",
+            &["Creature"],
+        );
+        assert!(
+            !has_swallowed_detector(&parsed, "Modal_DynamicMaxDropped"),
+            "Ruinous carries a dynamic cap and must stay silent: {:?}",
+            parsed.parse_warnings
+        );
+    }
+
+    /// Real-pipeline negative — Heroic Feast / Temporal Firestorm: a non-modal
+    /// "choose up to X/that many <nouns>" selection clause has no modal node, so
+    /// the detector stays silent (A1 gate on real parses). Guards no-regression.
+    #[test]
+    fn modal_dynamic_max_dropped_silent_on_non_modal_selection_clauses() {
+        let heroic = parse_named(
+            "When this enchantment enters, create a Food token.\n\
+             Whenever you gain life, choose up to that many target creatures you control. \
+             Put a +1/+1 counter on each of them.",
+            "Heroic Feast",
+            &["Enchantment"],
+        );
+        assert!(
+            !has_swallowed_detector(&heroic, "Modal_DynamicMaxDropped"),
+            "Heroic Feast is a non-modal selection clause and must stay silent: {:?}",
+            heroic.parse_warnings
+        );
+
+        let firestorm = parse_named(
+            "Choose up to X creatures and/or planeswalkers you control, where X is the number \
+             of times this spell was kicked. Those permanents phase out.\n\
+             Temporal Firestorm deals 5 damage to each creature and each planeswalker.",
+            "Temporal Firestorm",
+            &["Sorcery"],
+        );
+        assert!(
+            !has_swallowed_detector(&firestorm, "Modal_DynamicMaxDropped"),
+            "Temporal Firestorm is a non-modal selection clause and must stay silent: {:?}",
+            firestorm.parse_warnings
+        );
     }
 
     #[test]

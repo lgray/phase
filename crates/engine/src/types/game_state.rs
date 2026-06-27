@@ -980,6 +980,30 @@ pub struct PendingRepeatIteration {
     pub total_iterations: usize,
 }
 
+/// CR 603.12a + CR 608.2c: A "you may pay {cost} up to N times. When you do,
+/// [reflexive]" process paused for one of its per-iteration optional-payment
+/// decisions (Hawkeye, Master Marksman — "Trick Arrows"). Unlike a generic
+/// `repeat_for` loop, each iteration's "you may" is offered SEPARATELY, the
+/// number of successful payments (K, accumulated in
+/// `GameState::optional_cost_payments_this_resolution`) sizes the reflexive
+/// modal (CR 700.2d), and the reflexive triggers EXACTLY ONCE for K >= 1
+/// (CR 603.12a) — never per payment. The resolution-time mana payment is
+/// synchronous (auto-tap, never pauses), so the only async boundaries are the
+/// per-iteration `OptionalEffectChoice` and the final `AbilityModeChoice`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PendingRepeatedOptionalPayment {
+    /// The PayCost-only unit prompted (and, on accept, paid) this iteration —
+    /// `repeat_for`/`sub_ability` cleared so resolving it neither re-enters the
+    /// driver nor re-resolves the reflexive.
+    pub payment_unit: Box<crate::types::ability::ResolvedAbility>,
+    /// The reflexive sub-ability (the modal) resolved exactly once after the
+    /// loop, iff at least one payment succeeded (CR 603.12a).
+    pub reflexive: Box<crate::types::ability::ResolvedAbility>,
+    /// Number of further per-iteration payment prompts after the one currently
+    /// outstanding (the "up to N" budget minus the iterations already offered).
+    pub remaining: u32,
+}
+
 /// CR 705.1 + CR 614.1a: Discriminates which multi-flip resolver paused for a
 /// Krark's Thumb keep-1 choice, carrying the loop position needed to re-enter.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -6473,6 +6497,15 @@ pub struct GameState {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pending_repeat_iteration: Option<PendingRepeatIteration>,
 
+    /// CR 603.12a + CR 608.2c: A repeated-optional-payment process (Hawkeye,
+    /// Master Marksman — "you may pay {1} up to three times. When you do, choose
+    /// up to that many.") paused for one of its per-iteration payment decisions.
+    /// Carries the PayCost-only unit, the reflexive modal to resolve once after
+    /// the loop, and the remaining payment budget. Driven by
+    /// `resolve_repeated_optional_payment_choice` on each `DecideOptionalEffect`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending_repeated_optional_payment: Option<Box<PendingRepeatedOptionalPayment>>,
+
     /// CR 614.12b + CR 614.1c + CR 614.13: Pending multi-target `ChangeZone`
     /// iteration loop paused mid-flight because one of the moving objects
     /// triggered a per-permanent replacement choice. Drained by
@@ -6796,6 +6829,35 @@ pub struct GameState {
     /// resolution starts at 0.
     #[serde(default, skip_serializing_if = "is_zero_u32")]
     pub exiled_from_hand_this_resolution: u32,
+
+    /// CR 603.12a: Number of times the controller has paid a repeated optional
+    /// cost ("you may pay {C} up to N times") during the CURRENT ability
+    /// resolution. Read by `QuantityRef::TimesCostPaidThisResolution` to size a
+    /// reflexive "choose up to that many" modal (Hawkeye, Master Marksman /
+    /// Tranquil Frillback class). Incremented once per successful payment by the
+    /// repeated-optional-payment driver in `resolve_chain_body`, and cleared at
+    /// the `depth == 0` prelude of `resolve_ability_chain` so each top-level
+    /// resolution starts at 0.
+    ///
+    /// This counter is nonzero AT the per-iteration `WaitingFor::OptionalEffectChoice`
+    /// pause: `resolve_repeated_optional_payment_choice` increments K and THEN
+    /// sets `waiting_for` and returns, so each `DecideOptionalEffect` is a
+    /// SEPARATE `apply()` call with K already nonzero. That pause is a serde
+    /// boundary — the persistence layer (`to_persisted`/`from_persisted`,
+    /// single-player save/load, multiplayer host-resume) can serialize the state
+    /// between two payment prompts. Because the paired continuation
+    /// `pending_repeated_optional_payment` is serialized-when-`Some` and
+    /// eq-included precisely to survive that pause, K must survive it too — a
+    /// roundtrip restoring K=0 would collapse the reflexive modal cap (CR 700.2d)
+    /// below the payments actually made, denying the player modes they paid for.
+    ///
+    /// Therefore K mirrors `exiled_from_hand_this_resolution` EXACTLY (the
+    /// resolution-local u32 counter observable at a pause), NOT `static_gate_truth`
+    /// (which is genuinely derived and recomputable via `refresh_static_gate_truth`):
+    /// `#[serde(default, skip_serializing_if = "is_zero_u32")]` (serialized
+    /// only when nonzero, so a roundtrip is faithful) and INCLUDED in `PartialEq`.
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub optional_cost_payments_this_resolution: u32,
 
     /// CR 725: The current monarch, if any. At the beginning of the monarch's end step,
     /// the monarch draws a card. When a creature deals combat damage to the monarch,
@@ -7610,6 +7672,7 @@ impl GameState {
             public_revealed_cards: HashSet::new(),
             pending_continuation: None,
             pending_repeat_iteration: None,
+            pending_repeated_optional_payment: None,
             pending_change_zone_iteration: None,
             devour_eligible_snapshot: None,
             merged_card_component_route: None,
@@ -7651,6 +7714,7 @@ impl GameState {
             last_effect_counts_by_player: HashMap::new(),
             clause_minimum_snapshot: None,
             exiled_from_hand_this_resolution: 0,
+            optional_cost_payments_this_resolution: 0,
             monarch: None,
             city_blessing: HashSet::new(),
             epic_effects: Vec::new(),
@@ -8108,6 +8172,7 @@ impl PartialEq for GameState {
             && self.public_revealed_cards == other.public_revealed_cards
             && self.pending_continuation == other.pending_continuation
             && self.pending_repeat_iteration == other.pending_repeat_iteration
+            && self.pending_repeated_optional_payment == other.pending_repeated_optional_payment
             && self.pending_change_zone_iteration == other.pending_change_zone_iteration
             // `devour_eligible_snapshot` is INTENTIONALLY excluded from PartialEq.
             // It is a TRANSIENT mid-resolution carrier (CR 614.12a/13a): `Some`
@@ -8151,6 +8216,13 @@ impl PartialEq for GameState {
             && self.pending_optional_trigger_match_count
                 == other.pending_optional_trigger_match_count
             && self.exiled_from_hand_this_resolution == other.exiled_from_hand_this_resolution
+            // CR 603.12a: K is nonzero AT the per-iteration `OptionalEffectChoice`
+            // pause (a serde boundary across separate `apply()` calls). It is
+            // serialized-when-nonzero and eq-included — mirroring
+            // `exiled_from_hand_this_resolution` — so a save/restore mid-payment-loop
+            // preserves the reflexive modal cap (CR 700.2d).
+            && self.optional_cost_payments_this_resolution
+                == other.optional_cost_payments_this_resolution
             && self.lki_cache == other.lki_cache
             && self.city_blessing == other.city_blessing
             && self.planar_deck == other.planar_deck
