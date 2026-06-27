@@ -15543,6 +15543,18 @@ pub struct TriggerDefinition {
     pub secondary: bool,
     #[serde(default)]
     pub valid_target: Option<TargetFilter>,
+    /// CR 115.1: The player leaf of a becomes-target trigger's SUBJECT (e.g. the
+    /// "a player" / "you" half of Loki, God of Mischief's "a player or permanent").
+    /// Kept DISTINCT from `valid_target` because `valid_target` is overloaded as the
+    /// EFFECT-target slot: the effect-target parser sets `valid_target =
+    /// TargetFilter::Player` whenever the effect text says "target opponent/player"
+    /// (e.g. Venerated Rotpriest's "target opponent gets a poison counter"). The
+    /// `match_becomes_target` Player arm reads THIS field for the subject's player
+    /// match so a player-targeting EFFECT can never be mistaken for a player SUBJECT.
+    /// Set only by `set_trigger_subject`'s mixed-subject (`Or`) split; ignored by
+    /// every non-becomes-target trigger mode.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub valid_subject_player: Option<TargetFilter>,
     #[serde(default)]
     pub valid_source: Option<TargetFilter>,
     /// CR 601.2a + CR 603.2: Cast-origin constraint for `TriggerMode::SpellCast`
@@ -15634,6 +15646,7 @@ impl TriggerDefinition {
             damage_kind: DamageKindFilter::Any,
             secondary: false,
             valid_target: None,
+            valid_subject_player: None,
             valid_source: None,
             spell_cast_origin: OriginConstraint::Any,
             description: None,
@@ -18306,6 +18319,7 @@ mod tests {
             damage_kind: DamageKindFilter::Any,
             secondary: false,
             valid_target: None,
+            valid_subject_player: None,
             valid_source: None,
             spell_cast_origin: OriginConstraint::Any,
             description: Some("When ~ dies, draw a card.".to_string()),
