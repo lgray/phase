@@ -1122,6 +1122,34 @@ pub enum StaticMode {
         /// `pay_additional_cost` (mirrors the `ExileWithAltAbilityCost` flow).
         alt_cost: Option<AbilityCost>,
     },
+    /// CR 702.170f: Static ability allowing the plot keyword ability to function
+    /// in a zone other than a player's hand — specifically, the top card of the
+    /// controller's library. "In that case, the card is exiled from the zone it
+    /// is in as the action is taken rather than from its owner's hand." Class
+    /// specimen: Fblthp, Lost on the Range ("The top card of your library has
+    /// plot. The plot cost is equal to its mana cost." + "You may plot nonland
+    /// cards from the top of your library.").
+    ///
+    /// Categorically distinct from `TopOfLibraryCastPermission`, and that
+    /// distinction is why this is a dedicated variant rather than a parameter on
+    /// the cast-permission axis:
+    /// - `TopOfLibraryCastPermission` is CR 601.2a: casting moves the card
+    ///   `Library → Stack` directly, with NO exile step — a single zone change,
+    ///   a normal spell cast.
+    /// - This is CR 702.170: plotting is a *special action* (CR 702.170b) that
+    ///   moves the card `Library → Exile` face up now, and only on a *later*
+    ///   turn `Exile → Stack` for free — two zone changes, a different runtime
+    ///   action in a different CR section.
+    ///
+    /// Unifying the two under one parameterized variant would conflate CR 601.2a
+    /// and CR 702.170 at the leaf reference layer, against the categorical
+    /// boundary rule. The eligibility scope (Fblthp's "nonland") rides the
+    /// existing `StaticDefinition.affected: Option<TargetFilter>` slot exactly as
+    /// the cast-permission sibling carries its eligibility — no new field. The
+    /// plot cost ("equal to its mana cost") needs no stored parameter: it is the
+    /// live top card's `mana_cost`, computed at activation synthesis time (the
+    /// defining invariant of the mechanic), not data carried on the static.
+    TopOfLibraryHasPlot,
     /// CR 601.2b + CR 118.9a: Static ability granting permission to cast matching
     /// spells without paying their mana costs. `Unlimited` = Omniscience,
     /// Tamiyo emblem, Dracogenesis. `OncePerTurn` = Zaffai and the Tempests.
@@ -1950,6 +1978,7 @@ impl StaticMode {
             | StaticMode::RevealHand { .. }
             | StaticMode::GraveyardCastPermission { .. }
             | StaticMode::TopOfLibraryCastPermission { .. }
+            | StaticMode::TopOfLibraryHasPlot
             | StaticMode::CastFromHandFree { .. }
             | StaticMode::ExileCastPermission { .. }
             | StaticMode::CountersPersistAcrossZones { .. }
@@ -2171,6 +2200,9 @@ impl fmt::Display for StaticMode {
                     write!(f, "TopOfLibraryCastPermission({play_mode}{freq_seg})")
                 }
             }
+            // CR 702.170f: nullary marker; nonland scope rides
+            // `StaticDefinition.affected`, not the Display payload.
+            StaticMode::TopOfLibraryHasPlot => write!(f, "TopOfLibraryHasPlot"),
             StaticMode::CastFromHandFree { frequency, origin } => {
                 if matches!(origin, CastFreeOrigin::Hand) {
                     write!(f, "CastFromHandFree({frequency})")
@@ -2632,6 +2664,9 @@ impl FromStr for StaticMode {
                     alt_cost: None,
                 }
             }
+            // CR 702.170f: nullary marker; the nonland scope is carried on
+            // `StaticDefinition.affected`, so there is no Display payload to parse.
+            "TopOfLibraryHasPlot" => StaticMode::TopOfLibraryHasPlot,
             "CastFromHandFree" => StaticMode::CastFromHandFree {
                 frequency: CastFrequency::Unlimited,
                 origin: CastFreeOrigin::Hand,
@@ -3318,6 +3353,10 @@ mod tests {
             },
             StaticMode::CantCrew,
             StaticMode::MayLookAtTopOfLibrary,
+            // CR 702.170f: nullary plot-from-library marker (Fblthp). The
+            // nonland scope rides `StaticDefinition.affected`, not the Display
+            // payload, so the bare marker round-trips cleanly here.
+            StaticMode::TopOfLibraryHasPlot,
             StaticMode::MayLookAtFaceDown,
             StaticMode::CantBeTurnedFaceUp,
             // Tier 3: parser-produced statics

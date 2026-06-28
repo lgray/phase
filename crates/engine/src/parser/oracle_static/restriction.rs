@@ -2409,6 +2409,93 @@ pub(crate) fn try_parse_top_of_library_cast_permission(
     Some(def)
 }
 
+/// CR 702.170f: Parse "You may plot [filter] cards from the top of your library"
+/// — the plot-from-library *permission* line (Fblthp, Lost on the Range L4).
+/// Structurally a clone of [`try_parse_top_of_library_cast_permission`], but
+/// anchored on the plot verb ("you may plot ") and emitting the categorically
+/// distinct [`StaticMode::TopOfLibraryHasPlot`] rather than the cast-permission
+/// variant: plot is a CR 702.170 special action (Library → Exile, then a later
+/// Exile → Stack free cast), not a CR 601.2a Library → Stack cast.
+///
+/// The eligibility filter ("nonland") rides `StaticDefinition.affected`, exactly
+/// as the cast-permission sibling carries its eligibility. Built for the class:
+/// any type/subtype phrase the cast arm accepts is accepted here, so future
+/// "you may plot <type> cards from the top of your library" printings slot in
+/// without parser changes.
+pub(crate) fn try_parse_top_of_library_plot_permission(
+    text: &str,
+    lower: &str,
+) -> Option<StaticDefinition> {
+    // "you may plot <filter> from the top of your library"
+    let rest = nom_tag_lower(lower, lower, "you may plot ")?;
+
+    // Anchor on " from the top of your library"; the filter text precedes it.
+    let (filter_text, _trailing) =
+        nom_primitives::split_once_on(rest, " from the top of your library")
+            .ok()
+            .map(|(_, pair)| pair)?;
+
+    // Strip a leading article so `parse_type_phrase` sees the bare noun.
+    let filter_text = nom_tag_lower(filter_text, filter_text, "a ")
+        .or_else(|| nom_tag_lower(filter_text, filter_text, "an "))
+        .unwrap_or(filter_text);
+
+    // Drop trailing " cards"/" card" so `parse_type_phrase` sees the bare
+    // type/subtype phrase ("nonland cards" → "nonland"). Mirrors the
+    // " spells"/" spell" replacen idiom of the cast-permission arm; plot
+    // operates on cards (it exiles a card), so the noun is "card(s)".
+    let cleaned: Cow<str> = if nom_primitives::scan_contains(filter_text, "cards") {
+        Cow::Owned(filter_text.replacen(" cards", "", 1))
+    } else if nom_primitives::scan_contains(filter_text, "card") {
+        Cow::Owned(filter_text.replacen(" card", "", 1))
+    } else {
+        Cow::Borrowed(filter_text)
+    };
+
+    let (filter, _) = parse_type_phrase(&cleaned);
+
+    Some(
+        StaticDefinition::new(StaticMode::TopOfLibraryHasPlot)
+            .affected(filter)
+            .description(text.to_string()),
+    )
+}
+
+/// CR 702.170f + CR 702.170a: Parse "The top card of your library has plot[. The
+/// plot cost is equal to its mana cost]" — the mechanic-establishing line that
+/// grants plot to the top library card (Fblthp, Lost on the Range L3).
+///
+/// The optional second sentence is consumed (no capture) so the full line
+/// classifies: the plot cost is the card's own mana cost (CR 702.170a),
+/// computed at activation synthesis from the live top card, not data carried on
+/// the static. `affected` is `TargetFilter::Any` — the nonland narrowing comes
+/// from the companion L4 permission; the two AND-compose at runtime. The
+/// remainder must be empty after consuming the known sentences so an unexpected
+/// longer line is not silently swallowed.
+pub(crate) fn try_parse_top_of_library_has_plot(
+    text: &str,
+    lower: &str,
+) -> Option<StaticDefinition> {
+    let rest = nom_tag_lower(lower, lower, "the top card of your library has plot")?;
+
+    // CR 702.170a: optional intrinsic cost sentence — consumed, never captured.
+    let rest =
+        nom_tag_lower(rest, rest, ". the plot cost is equal to its mana cost").unwrap_or(rest);
+
+    // Allow a trailing sentence period after either sentence.
+    let rest = nom_tag_lower(rest, rest, ".").unwrap_or(rest);
+
+    if !rest.trim().is_empty() {
+        return None;
+    }
+
+    Some(
+        StaticDefinition::new(StaticMode::TopOfLibraryHasPlot)
+            .affected(TargetFilter::Any)
+            .description(text.to_string()),
+    )
+}
+
 /// CR 305.1 + CR 601.2a + CR 700.6: Parse the disjunctive filtered top-of-
 /// library play/cast permission — "You may play <land-filter> and cast
 /// <spell-filter> from the top of your library." — into a single

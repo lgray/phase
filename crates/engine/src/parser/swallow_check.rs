@@ -601,6 +601,11 @@ fn static_mode_is_optional_permission(mode: &StaticMode) -> bool {
             | StaticMode::MayPlayAdditionalLand
             | StaticMode::AdditionalLandDrop { .. }
             | StaticMode::TopOfLibraryCastPermission { .. }
+            // CR 702.170f: "You may plot [filter] cards from the top of your
+            // library" / "The top card of your library has plot" — opt-in
+            // plot-from-library permission (Fblthp). The plot special action
+            // (CR 702.170b) is taken at the player's discretion.
+            | StaticMode::TopOfLibraryHasPlot
             // CR 702.8: "You may cast this spell as though it had flash" —
             // opt-in cast-timing permission.
             | StaticMode::CastWithFlash
