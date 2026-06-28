@@ -343,6 +343,13 @@ pub enum SpecialAction {
     /// CR 116.2m + CR 709.5e: Paying a locked Room half's unlock cost to give
     /// the permanent the appropriate unlocked designation.
     UnlockDoor,
+    /// CR 116.2k + CR 702.170a: Exiling a card from hand and paying its plot
+    /// cost to make it a plotted card. The plot ability is synthesized as a
+    /// hand-zone activated ability (`synthesize_plot`); this variant lets a
+    /// `StaticMode::ReduceActionCost { action: Plot, .. }` (Doc Aurlock) reduce
+    /// that plot cost without conflating plot with generic activated-ability
+    /// cost reducers.
+    Plot,
     /// CR 116.2b + CR 702.37e: Paying a face-down permanent's morph/disguise
     /// cost to turn it face up. No payment site emits
     /// `PaymentContext::SpecialAction(TurnFaceUp)` yet (turn-face-up is free in
