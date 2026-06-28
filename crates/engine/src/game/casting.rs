@@ -49116,6 +49116,297 @@ mod tests {
         }
     }
 
+    /// CR 601.2f + CR 208.1 + CR 113.7: End-to-end activation of an
+    /// Agatha-reduced creature ability through the PRODUCTION activation entry
+    /// (`GameAction::ActivateAbility` → `handle_activate_ability` →
+    /// `apply_cost_reduction`). Unlike
+    /// `agatha_dynamic_power_reduces_controlled_creature_ability_cost` (which
+    /// calls `apply_cost_reduction` directly), this proves the RUNTIME path —
+    /// the production seam the maintainer flagged — actually charges the reduced
+    /// cost when paying mana.
+    ///
+    /// Agatha of the Vile Cauldron (power 3) carries the dynamic
+    /// `ReduceAbilityCost { keyword: "activated", amount: 1, dynamic_count:
+    /// Power(Source) }` static; a creature P0 controls has a {4}-generic
+    /// activated ability. The reduction is 1 × 3 = 3, so the production path must
+    /// charge {1}.
+    ///
+    /// Discriminating (insufficient full-cost / sufficient reduced-cost mana):
+    ///   - WITH Agatha + exactly {1} in pool → activation SUCCEEDS, the {1}
+    ///     reduced cost drains the pool, and the ability reaches the stack.
+    ///   - WITHOUT Agatha + the SAME {1} → the full {4} is unaffordable, so the
+    ///     production path returns `Err` and spends no mana. Agatha's presence is
+    ///     the only delta, so a regression that dropped `apply_cost_reduction`
+    ///     from the activation seam would make the positive case fail identically
+    ///     (`auto_tap_and_pay_cost_excluding` rejects the unreduced {4}).
+    #[test]
+    fn agatha_reduced_creature_ability_activates_via_production_path() {
+        use crate::types::ability::{
+            Effect, ObjectScope, QuantityExpr, QuantityRef, StaticDefinition, TargetFilter,
+            TypedFilter,
+        };
+        use crate::types::identifiers::CardId;
+        use crate::types::mana::ManaCost;
+        use crate::types::statics::{CostModifyMode, StaticMode};
+
+        // Builds a game with a P0 creature whose {4}-generic activated ability
+        // (no tap → no CR 302.6 summoning-sickness gate) is index 0, optionally
+        // with Agatha of the Vile Cauldron + her dynamic reduction static on the
+        // battlefield. Returns (state, creature id).
+        let build = |with_agatha: bool| -> (GameState, ObjectId) {
+            let mut state = setup_game_at_main_phase();
+
+            if with_agatha {
+                let agatha = create_object(
+                    &mut state,
+                    CardId(1),
+                    PlayerId(0),
+                    "Agatha of the Vile Cauldron".to_string(),
+                    Zone::Battlefield,
+                );
+                let statics = vec![StaticDefinition::new(StaticMode::ReduceAbilityCost {
+                    mode: CostModifyMode::Reduce,
+                    keyword: "activated".to_string(),
+                    amount: 1,
+                    minimum_mana: Some(1),
+                    dynamic_count: Some(QuantityRef::Power {
+                        scope: ObjectScope::Source,
+                    }),
+                })
+                .affected(TargetFilter::Typed(
+                    TypedFilter::creature().controller(ControllerRef::You),
+                ))];
+                let obj = state.objects.get_mut(&agatha).unwrap();
+                obj.card_types
+                    .core_types
+                    .push(crate::types::card_type::CoreType::Creature);
+                // Set BASE power/statics too: the layer flush during cost payment
+                // resets `power = base_power` and `static_definitions =
+                // base_static_definitions`. Without bases set, the flush would
+                // zero Agatha's power (collapsing the dynamic multiplier to 0)
+                // and erase her static.
+                obj.power = Some(3);
+                obj.base_power = Some(3);
+                obj.toughness = Some(1);
+                obj.base_toughness = Some(1);
+                obj.base_static_definitions = Arc::new(statics.clone());
+                obj.static_definitions = statics.into();
+            }
+
+            let creature = create_object(
+                &mut state,
+                CardId(2),
+                PlayerId(0),
+                "Some Creature".to_string(),
+                Zone::Battlefield,
+            );
+            let mut def = AbilityDefinition::new(
+                AbilityKind::Activated,
+                Effect::Draw {
+                    count: QuantityExpr::Fixed { value: 1 },
+                    target: TargetFilter::Controller,
+                },
+            );
+            def.cost = Some(AbilityCost::Mana {
+                cost: ManaCost::Cost {
+                    shards: vec![],
+                    generic: 4,
+                },
+            });
+            let obj = state.objects.get_mut(&creature).unwrap();
+            obj.card_types
+                .core_types
+                .push(crate::types::card_type::CoreType::Creature);
+            // Set live + base abilities — the flush rebuilds `abilities` from
+            // `base_abilities` for battlefield permanents.
+            *Arc::make_mut(&mut obj.abilities) = vec![def.clone()];
+            *Arc::make_mut(&mut obj.base_abilities) = vec![def];
+
+            (state, creature)
+        };
+
+        // WITH Agatha: {4} → {1}; exactly {1} mana funds the reduced cost.
+        let (mut state, creature) = build(true);
+        add_mana(&mut state, PlayerId(0), ManaType::Colorless, 1);
+        apply_as_current(
+            &mut state,
+            GameAction::ActivateAbility {
+                source_id: creature,
+                ability_index: 0,
+            },
+        )
+        .expect("Agatha-reduced {4}->{1} ability must activate with exactly {1} mana");
+        assert_eq!(
+            state.players[0].mana_pool.total(),
+            0,
+            "the production path charged the reduced {{1}}, draining the pool"
+        );
+        assert_eq!(
+            state.stack.len(),
+            1,
+            "the reduced activation reached the stack"
+        );
+
+        // WITHOUT Agatha: the SAME {1} mana, but the full {4} is unaffordable.
+        let (mut state, creature) = build(false);
+        add_mana(&mut state, PlayerId(0), ManaType::Colorless, 1);
+        let result = apply_as_current(
+            &mut state,
+            GameAction::ActivateAbility {
+                source_id: creature,
+                ability_index: 0,
+            },
+        );
+        assert!(
+            result.is_err(),
+            "without Agatha the full {{4}} cost is unaffordable with only {{1}} mana"
+        );
+        assert_eq!(
+            state.players[0].mana_pool.total(),
+            1,
+            "a failed activation spends no mana"
+        );
+        assert_eq!(
+            state.stack.len(),
+            0,
+            "a failed activation puts nothing on the stack"
+        );
+    }
+
+    /// CR 116.2k + CR 702.170 + CR 118.7a: End-to-end activation of a Doc
+    /// Aurlock-reduced SYNTHESIZED plot special action through the PRODUCTION
+    /// activation entry (`GameAction::ActivateAbility` → `handle_activate_ability`
+    /// → `apply_cost_reduction` → `reduce_special_action_in_ability_cost`).
+    /// Unlike `doc_aurlock_reduces_plot_special_action_cost` (which calls
+    /// `apply_cost_reduction` on a hand-built ability), the plot ability here is
+    /// produced by the production synthesizer `synthesize_plot`, so the exact
+    /// synthesized `Composite { Mana, Exile(self from hand) }` shape is paid by
+    /// the runtime seam.
+    ///
+    /// Doc Aurlock carries `ReduceActionCost { action: Plot, amount: 2 }`. A hand
+    /// card with `Plot {3}` synthesizes a {3}-generic plot cost; the reduction
+    /// must charge {1}.
+    ///
+    /// Discriminating (insufficient full-cost / sufficient reduced-cost mana):
+    ///   - WITH Doc Aurlock + exactly {1} in pool → the plot activation SUCCEEDS:
+    ///     the card moves Hand → Exile (the self-exile cost is paid) and the {1}
+    ///     reduced cost drains the pool.
+    ///   - WITHOUT Doc Aurlock + the SAME {1} → the full {3} plot cost is
+    ///     unaffordable, so the production path returns `Err`, the card stays in
+    ///     hand, and no mana is spent. Doc Aurlock's presence is the only delta.
+    #[test]
+    fn doc_aurlock_reduced_plot_activates_via_production_path() {
+        use crate::database::synthesis::synthesize_plot;
+        use crate::types::ability::StaticDefinition;
+        use crate::types::card::CardFace;
+        use crate::types::identifiers::CardId;
+        use crate::types::mana::ManaCost;
+        use crate::types::statics::{CostModifyMode, StaticMode};
+
+        // Builds a game with a P0 hand card carrying a synthesized `Plot {3}`
+        // activation (index 0), optionally with Doc Aurlock + his plot
+        // cost-reduction static on the battlefield. Returns (state, plot card id).
+        let build = |with_doc: bool| -> (GameState, ObjectId) {
+            let mut state = setup_game_at_main_phase();
+
+            if with_doc {
+                let doc = create_object(
+                    &mut state,
+                    CardId(1),
+                    PlayerId(0),
+                    "Doc Aurlock, Grizzled Genius".to_string(),
+                    Zone::Battlefield,
+                );
+                let statics = vec![StaticDefinition::new(StaticMode::ReduceActionCost {
+                    action: SpecialAction::Plot,
+                    mode: CostModifyMode::Reduce,
+                    amount: 2,
+                })];
+                let obj = state.objects.get_mut(&doc).unwrap();
+                obj.card_types
+                    .core_types
+                    .push(crate::types::card_type::CoreType::Creature);
+                obj.base_static_definitions = Arc::new(statics.clone());
+                obj.static_definitions = statics.into();
+            }
+
+            // Produce the plot activation from a fresh CardFace via the
+            // production synthesizer so the exact synthesized cost shape is used.
+            let mut face = CardFace::default();
+            face.keywords.push(Keyword::Plot(ManaCost::Cost {
+                shards: vec![],
+                generic: 3,
+            }));
+            synthesize_plot(&mut face);
+
+            let plot_card = create_object(
+                &mut state,
+                CardId(2),
+                PlayerId(0),
+                "Plotted Card".to_string(),
+                Zone::Hand,
+            );
+            let obj = state.objects.get_mut(&plot_card).unwrap();
+            obj.card_types
+                .core_types
+                .push(crate::types::card_type::CoreType::Creature);
+            obj.base_card_types = obj.card_types.clone();
+            obj.keywords = face.keywords.clone();
+            obj.base_keywords = face.keywords.clone();
+            *Arc::make_mut(&mut obj.abilities) = face.abilities.clone();
+            *Arc::make_mut(&mut obj.base_abilities) = face.abilities.clone();
+
+            (state, plot_card)
+        };
+
+        // WITH Doc Aurlock: {3} → {1}; exactly {1} mana funds the reduced cost.
+        let (mut state, plot_card) = build(true);
+        add_mana(&mut state, PlayerId(0), ManaType::Colorless, 1);
+        apply_as_current(
+            &mut state,
+            GameAction::ActivateAbility {
+                source_id: plot_card,
+                ability_index: 0,
+            },
+        )
+        .expect("Doc-Aurlock-reduced {3}->{1} plot must activate with exactly {1} mana");
+        assert_eq!(
+            state.objects[&plot_card].zone,
+            Zone::Exile,
+            "the synthesized plot self-exile cost moved the card Hand -> Exile"
+        );
+        assert_eq!(
+            state.players[0].mana_pool.total(),
+            0,
+            "the production path charged the reduced {{1}} plot cost"
+        );
+
+        // WITHOUT Doc Aurlock: the SAME {1} mana, but the full {3} is unaffordable.
+        let (mut state, plot_card) = build(false);
+        add_mana(&mut state, PlayerId(0), ManaType::Colorless, 1);
+        let result = apply_as_current(
+            &mut state,
+            GameAction::ActivateAbility {
+                source_id: plot_card,
+                ability_index: 0,
+            },
+        );
+        assert!(
+            result.is_err(),
+            "without Doc Aurlock the full {{3}} plot cost is unaffordable with only {{1}} mana"
+        );
+        assert_eq!(
+            state.objects[&plot_card].zone,
+            Zone::Hand,
+            "a failed plot activation leaves the card in hand"
+        );
+        assert_eq!(
+            state.players[0].mana_pool.total(),
+            1,
+            "a failed plot activation spends no mana"
+        );
+    }
+
     /// CR 118.7 + CR 702.6a: Firion, Wild Rose Warrior's granted equip-cost
     /// reduction — "This Equipment's equip abilities cost {2} less to activate."
     /// (`mode: Reduce`, keyword `"equip"`, `SelfRef`).
