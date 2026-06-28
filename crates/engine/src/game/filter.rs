@@ -4241,10 +4241,18 @@ fn zone_change_record_matches_property(
             .lki_cache
             .get(&record.object_id)
             .is_some_and(|lki| lki.tapped),
+        // CR 110.5 + CR 110.5d: symmetric sibling of `Tapped`. A look-back
+        // "was untapped" rider reads the exit-time tap state from the LKI
+        // snapshot and asserts it was NOT tapped. Fail-closed (no snapshot ⇒
+        // false) mirrors the `Tapped` arm: a card not on the battlefield is
+        // neither tapped nor untapped, so absence of a snapshot answers neither.
+        FilterProp::Untapped => state
+            .lki_cache
+            .get(&record.object_id)
+            .is_some_and(|lki| !lki.tapped),
         FilterProp::IsSaddled
         | FilterProp::SaddledSource
         | FilterProp::ProtectorMatches { .. }
-        | FilterProp::Untapped
         | FilterProp::HasHasteOrControlledSinceTurnBegan
         | FilterProp::AttackedThisTurn
         | FilterProp::BlockedThisTurn
@@ -8810,6 +8818,110 @@ mod tests {
             &FilterProp::Historic,
             &state,
             &vanilla_record,
+            &source_ctx,
+        ));
+    }
+
+    /// CR 110.5 + CR 110.5d + CR 400.7: the tap-status LKI-lookback arms of
+    /// `zone_change_record_matches_property` read exit-time tap state from the
+    /// snapshot. `Tapped` matches iff the snapshot recorded a tapped exit;
+    /// `Untapped` is the symmetric sibling, matching iff it recorded an untapped
+    /// exit. Both fail closed when no snapshot exists (a card off the battlefield
+    /// is neither tapped nor untapped, so absence answers neither — CR 110.5d).
+    ///
+    /// Revert-probe: returning `FilterProp::Untapped` to the fail-closed bucket
+    /// (its state on PR #4559 head 428481a) makes the `Untapped`/`untapped_record`
+    /// assertion fail — it returns false despite the snapshot recording an
+    /// untapped exit. This is the exact sibling gap the maintainer flagged.
+    #[test]
+    fn zone_change_record_tap_status_reads_lki_snapshot() {
+        use crate::types::game_state::{LKISnapshot, ZoneChangeRecord};
+
+        let mut state = GameState::default();
+        let source_ctx = SourceContext {
+            id: ObjectId(1),
+            controller: Some(PlayerId(0)),
+            attached_to: None,
+            source_is_aura: false,
+            source_is_equipment: false,
+            chosen_creature_type: None,
+            chosen_attributes: &[],
+            ability: None,
+            recipient_id: None,
+        };
+
+        let lki = |tapped: bool| LKISnapshot {
+            name: "Tap Probe".to_string(),
+            power: None,
+            toughness: None,
+            base_power: None,
+            base_toughness: None,
+            mana_value: 0,
+            controller: PlayerId(0),
+            owner: PlayerId(0),
+            card_types: vec![CoreType::Creature],
+            subtypes: vec![],
+            supertypes: vec![],
+            keywords: vec![],
+            colors: vec![],
+            chosen_attributes: vec![],
+            counters: Default::default(),
+            tapped,
+        };
+
+        // Left the battlefield TAPPED.
+        let tapped_id = ObjectId(60);
+        let tapped_record =
+            ZoneChangeRecord::test_minimal(tapped_id, Some(Zone::Battlefield), Zone::Hand);
+        state.lki_cache.insert(tapped_id, lki(true));
+
+        // Left the battlefield UNTAPPED.
+        let untapped_id = ObjectId(61);
+        let untapped_record =
+            ZoneChangeRecord::test_minimal(untapped_id, Some(Zone::Battlefield), Zone::Hand);
+        state.lki_cache.insert(untapped_id, lki(false));
+
+        // `Tapped`: matches the tapped exit, not the untapped exit.
+        assert!(zone_change_record_matches_property(
+            &FilterProp::Tapped,
+            &state,
+            &tapped_record,
+            &source_ctx,
+        ));
+        assert!(!zone_change_record_matches_property(
+            &FilterProp::Tapped,
+            &state,
+            &untapped_record,
+            &source_ctx,
+        ));
+
+        // `Untapped` (new sibling): matches the untapped exit, not the tapped exit.
+        assert!(zone_change_record_matches_property(
+            &FilterProp::Untapped,
+            &state,
+            &untapped_record,
+            &source_ctx,
+        ));
+        assert!(!zone_change_record_matches_property(
+            &FilterProp::Untapped,
+            &state,
+            &tapped_record,
+            &source_ctx,
+        ));
+
+        // Fail-closed symmetry: no snapshot ⇒ neither predicate matches.
+        let no_lki_record =
+            ZoneChangeRecord::test_minimal(ObjectId(62), Some(Zone::Battlefield), Zone::Hand);
+        assert!(!zone_change_record_matches_property(
+            &FilterProp::Tapped,
+            &state,
+            &no_lki_record,
+            &source_ctx,
+        ));
+        assert!(!zone_change_record_matches_property(
+            &FilterProp::Untapped,
+            &state,
+            &no_lki_record,
             &source_ctx,
         ));
     }

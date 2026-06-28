@@ -1456,6 +1456,13 @@ fn parse_reflexive_object_property(input: &str) -> OracleResult<'_, FilterProp> 
         // tapped") form reads live state. Must precede `attacking`/`blocking`:
         // distinct word, no shared prefix, but kept adjacent to the status leaves.
         value(FilterProp::Tapped, tag("tapped")),
+        // CR 110.5: untapped is the symmetric tap-status sibling ("if it was
+        // untapped"). "untapped" is a distinct lexeme, not "not tapped" — it
+        // shares no prefix with "tapped" (begins with "un"), so leaf order vs
+        // `tapped` is immaterial. Tense/polarity compose for free: past-tense
+        // "was untapped" sets use_lki (reads the snapshot), present-tense "is
+        // untapped" reads live state, and "isn't untapped" wraps in `Not`.
+        value(FilterProp::Untapped, tag("untapped")),
         // CR 508.1b: combat status (Wisecrack "is attacking").
         value(FilterProp::Attacking { defender: None }, tag("attacking")),
         // CR 509.1a: combat status (blocking sibling).
@@ -6535,6 +6542,41 @@ mod tests {
         let (prop, use_lki) = single_prop(condition);
         assert_eq!(*prop, FilterProp::Tapped);
         assert!(!use_lki, "present-tense 'isn't tapped' reads live state");
+    }
+
+    /// CR 110.5 + CR 400.7: untapped sibling of `reflexive_was_tapped_uses_lki`.
+    /// "it was untapped" → Untapped, LKI — the past-tense rider reads the LKI
+    /// snapshot's exit-time tap state after the antecedent leaves the battlefield.
+    ///
+    /// Revert-probe: deleting the `value(FilterProp::Untapped, tag("untapped"))`
+    /// leaf in `parse_reflexive_object_property` makes this return `None` — the
+    /// leaf is load-bearing for the whole "untapped" predicate class (the gap
+    /// the maintainer flagged on PR #4559).
+    #[test]
+    fn reflexive_was_untapped_uses_lki() {
+        let cond = parse_target_reflexive_property_condition_text("it was untapped").unwrap();
+        let (prop, use_lki) = single_prop(&cond);
+        assert_eq!(*prop, FilterProp::Untapped);
+        assert!(
+            use_lki,
+            "past-tense 'was untapped' must use LKI per CR 400.7"
+        );
+    }
+
+    /// CR 110.5: present-tense "that permanent isn't untapped" → Not{Untapped,
+    /// LIVE}. Proves the composed axes (tense ⇒ live, polarity ⇒ Not) carry over
+    /// the new `untapped` leaf for free — the same axes the `tapped` siblings
+    /// exercise, confirming the sibling is a true parameterization, not a one-off.
+    #[test]
+    fn reflexive_isnt_untapped_negated_live() {
+        let cond = parse_target_reflexive_property_condition_text("that permanent isn't untapped")
+            .unwrap();
+        let AbilityCondition::Not { condition } = &cond else {
+            panic!("expected Not, got {cond:?}");
+        };
+        let (prop, use_lki) = single_prop(condition);
+        assert_eq!(*prop, FilterProp::Untapped);
+        assert!(!use_lki, "present-tense 'isn't untapped' reads live state");
     }
 
     /// Sibling: negated present "that creature isn't attacking" → Not +
