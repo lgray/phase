@@ -916,6 +916,42 @@ fn collect_effects_in_effect<'a>(effect: &'a Effect, out: &mut Vec<&'a Effect>) 
 // Node model
 // ---------------------------------------------------------------------------
 
+/// Whether every collected `Effect`/cost of a node (or every member node of a
+/// candidate) projected to a modeled `ResourceVector`, or at least one folded to
+/// [`Projection::Unmodeled`]. A typed candidate-confidence axis replacing a raw
+/// `bool` (CLAUDE.md "no raw bool" / R2) — self-documenting and extensible to
+/// finer-grained confidence levels without touching call sites.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ModelCompleteness {
+    /// Every effect/cost projected to a modeled vector.
+    #[default]
+    FullyModeled,
+    /// ≥1 effect/cost folded to [`Projection::Unmodeled`].
+    ContainsUnmodeled,
+}
+
+impl ModelCompleteness {
+    /// Lattice join over completeness: the result is [`Self::ContainsUnmodeled`]
+    /// if either operand is (it is the absorbing element). Used to aggregate a
+    /// node's effects and to roll member nodes up into a candidate.
+    fn merge(self, other: ModelCompleteness) -> ModelCompleteness {
+        // Exhaustive over the completeness lattice (no wildcard, mirroring the
+        // crate's drift-gate discipline): a future finer-grained variant forces a
+        // compile error here so its join is decided explicitly, not silently
+        // absorbed into `ContainsUnmodeled`.
+        match (self, other) {
+            (ModelCompleteness::FullyModeled, ModelCompleteness::FullyModeled) => {
+                ModelCompleteness::FullyModeled
+            }
+            (ModelCompleteness::FullyModeled, ModelCompleteness::ContainsUnmodeled)
+            | (ModelCompleteness::ContainsUnmodeled, ModelCompleteness::FullyModeled)
+            | (ModelCompleteness::ContainsUnmodeled, ModelCompleteness::ContainsUnmodeled) => {
+                ModelCompleteness::ContainsUnmodeled
+            }
+        }
+    }
+}
+
 /// One graph node per *ability* across the input faces.
 #[derive(Debug, Clone)]
 pub struct AbilityNode {
@@ -931,8 +967,9 @@ pub struct AbilityNode {
     pub produces: BTreeSet<AxisKey>,
     /// Axes this node costs/needs + the trigger-event axis that fires it.
     pub requires: BTreeSet<AxisKey>,
-    /// ≥1 collected effect was `Unmodeled` (candidate confidence flag).
-    pub any_unmodeled: bool,
+    /// Whether every collected effect/cost projected, or ≥1 was `Unmodeled`
+    /// (candidate-confidence flag).
+    pub completeness: ModelCompleteness,
 }
 
 /// Mutable accumulator while folding one node's effects and cost.
@@ -944,7 +981,7 @@ struct NodeAcc {
     produces: BTreeSet<AxisKey>,
     /// Field-less required axes (`Tap`, `AnyCounter`) injected directly.
     requires: BTreeSet<AxisKey>,
-    any_unmodeled: bool,
+    completeness: ModelCompleteness,
 }
 
 /// Fold one effect's [`Projection`] into the node accumulator.
@@ -965,7 +1002,7 @@ fn fold_projection(acc: &mut NodeAcc, proj: Projection) {
             acc.produces.extend(produces);
             acc.requires.extend(requires);
         }
-        Projection::Unmodeled => acc.any_unmodeled = true,
+        Projection::Unmodeled => acc.completeness = ModelCompleteness::ContainsUnmodeled,
     }
 }
 
@@ -1055,11 +1092,18 @@ fn fold_cost(acc: &mut NodeAcc, cost: &AbilityCost) {
         },
         // CR 118.3: an effect performed as a cost is projected the same way.
         AbilityCost::EffectCost { effect } => fold_projection(acc, effect_projection(effect)),
-        AbilityCost::Composite { costs } | AbilityCost::OneOf { costs } => {
+        // CR 601.2h: a Composite cost is conjunctive — every sub-cost is part of
+        // the total cost and all are paid (partial payments are not allowed), so
+        // the branches AND-fold (sum) into the node.
+        AbilityCost::Composite { costs } => {
             for c in costs {
                 fold_cost(acc, c);
             }
         }
+        // CR 118.12a: a OneOf cost is disjunctive — the paying player chooses ONE
+        // branch ("[do something] unless [a player does something else]"). It must
+        // NOT AND-fold; see [`fold_one_of`].
+        AbilityCost::OneOf { costs } => fold_one_of(acc, costs),
         // PayLife is deferred to PR-4b with GainLife/LoseLife (R3-LIFE-SYMMETRY).
         // PerCounter is a no-op per plan (its `base` is recursable but not folded).
         // The remaining structural costs carry no modeled axis in PR-4a.
@@ -1078,6 +1122,166 @@ fn fold_cost(acc: &mut NodeAcc, cost: &AbilityCost) {
         | AbilityCost::PerCounter { .. }
         | AbilityCost::Unimplemented { .. } => {}
     }
+}
+
+/// Per-key MAX envelope of one [`ResourceVector`] map field across `OneOf`
+/// branches, treating a missing key as `0`: union the keys, take the max value,
+/// and insert into `out` iff that max is nonzero. The union-of-keys construction
+/// (not a pairwise fold) is what makes "branch A has the key, branch B lacks it"
+/// resolve to `max(value, 0)` rather than dropping the comparison.
+fn max_map_envelope<K, F>(out: &mut BTreeMap<K, i64>, branches: &[NodeAcc], get: F)
+where
+    K: Copy + Ord,
+    F: Fn(&NodeAcc) -> &BTreeMap<K, i64>,
+{
+    let keys: BTreeSet<K> = branches
+        .iter()
+        .flat_map(|b| get(b).keys().copied())
+        .collect();
+    for k in keys {
+        let m = branches
+            .iter()
+            .map(|b| get(b).get(&k).copied().unwrap_or(0))
+            .max()
+            .unwrap_or(0);
+        if m != 0 {
+            out.insert(k, m);
+        }
+    }
+}
+
+/// Fold a disjunctive [`AbilityCost::OneOf`] into the accumulator as an
+/// **optimistic envelope** over its branches.
+///
+/// CR 118.12a: a `OneOf` cost is disjunctive — the paying player chooses ONE
+/// branch ("[do something] unless [a player does something else]"). The runtime
+/// confirms this: casting routes it through `WaitingFor::ActivationCostOneOfChoice`
+/// and `cost_payability.rs` deems it payable when ANY branch `is_payable`. A
+/// static candidate proposer must therefore NOT AND-fold the branches — summing
+/// every alternative invents requirements / net-negative axes that no single
+/// branch pays, turning a real loop into a false negative (the candidate that a
+/// payable branch closes would be suppressed).
+///
+/// The envelope maximizes recall (Engine A is the sound confirmer that filters
+/// any false positive that survives here):
+/// - `produces` / `unbounded_production` = UNION (any branch's production is choosable)
+/// - `requires` = INTERSECTION (only the requirements unavoidable in EVERY branch)
+/// - `net` = per-axis MAX with missing-component = 0 (the most loop-favorable branch per axis)
+/// - `completeness` = merge (`ContainsUnmodeled` if any branch is)
+///
+/// Self-consistency: `build_node` derives `requires` from a negative `net` sign;
+/// `net_env` is negative on an axis ONLY when EVERY branch is negative there
+/// (= unavoidable), which matches the explicit `requires` intersection. A
+/// single-branch `OneOf` is identical to folding that branch; a nested
+/// `OneOf`/`Composite` inside a branch is handled by the recursive temp
+/// `fold_cost`.
+fn fold_one_of(acc: &mut NodeAcc, costs: &[AbilityCost]) {
+    if costs.is_empty() {
+        return;
+    }
+    let branches: Vec<NodeAcc> = costs
+        .iter()
+        .map(|c| {
+            let mut b = NodeAcc::default();
+            fold_cost(&mut b, c);
+            b
+        })
+        .collect();
+
+    // produces / unbounded = UNION; completeness = merge across all branches.
+    let mut produces_env = BTreeSet::new();
+    let mut unbounded_env = BTreeSet::new();
+    let mut completeness_env = ModelCompleteness::FullyModeled;
+    for b in &branches {
+        produces_env.extend(b.produces.iter().copied());
+        unbounded_env.extend(b.unbounded_production.iter().copied());
+        completeness_env = completeness_env.merge(b.completeness);
+    }
+
+    // requires = INTERSECTION (kept only if present in EVERY branch — a cost any
+    // single branch dodges is not an unavoidable requirement).
+    let mut requires_env = branches[0].requires.clone();
+    for b in &branches[1..] {
+        requires_env = &requires_env & &b.requires;
+    }
+
+    // net = per-axis MAX across ALL branches, missing-component = 0.
+    // KEEP IN SYNC with `net_axis_components` / `add_into`: every `ResourceVector`
+    // field must be enveloped here, or that axis of a `OneOf` cost is silently
+    // mis-modeled. A new field is a compile error there, not here — re-check this
+    // walk whenever those two are extended.
+    let mut net_env = ResourceVector::default();
+    for i in 0..6 {
+        net_env.mana[i] = branches.iter().map(|b| b.net.mana[i]).max().unwrap_or(0);
+    }
+    max_map_envelope(&mut net_env.life, &branches, |b| &b.net.life);
+    max_map_envelope(&mut net_env.damage_dealt, &branches, |b| {
+        &b.net.damage_dealt
+    });
+    max_map_envelope(&mut net_env.library_delta, &branches, |b| {
+        &b.net.library_delta
+    });
+    max_map_envelope(&mut net_env.counters, &branches, |b| &b.net.counters);
+    max_map_envelope(&mut net_env.generic_triggers, &branches, |b| {
+        &b.net.generic_triggers
+    });
+    net_env.tokens_created = branches
+        .iter()
+        .map(|b| b.net.tokens_created)
+        .max()
+        .unwrap_or(0);
+    net_env.cards_drawn = branches
+        .iter()
+        .map(|b| b.net.cards_drawn)
+        .max()
+        .unwrap_or(0);
+    net_env.casts_this_step = branches
+        .iter()
+        .map(|b| b.net.casts_this_step)
+        .max()
+        .unwrap_or(0);
+    net_env.landfall_triggers = branches
+        .iter()
+        .map(|b| b.net.landfall_triggers)
+        .max()
+        .unwrap_or(0);
+    net_env.combat_phases = branches
+        .iter()
+        .map(|b| b.net.combat_phases)
+        .max()
+        .unwrap_or(0);
+    net_env.extra_turns = branches
+        .iter()
+        .map(|b| b.net.extra_turns)
+        .max()
+        .unwrap_or(0);
+    net_env.death_triggers = branches
+        .iter()
+        .map(|b| b.net.death_triggers)
+        .max()
+        .unwrap_or(0);
+    net_env.etb_triggers = branches
+        .iter()
+        .map(|b| b.net.etb_triggers)
+        .max()
+        .unwrap_or(0);
+    net_env.ltb_triggers = branches
+        .iter()
+        .map(|b| b.net.ltb_triggers)
+        .max()
+        .unwrap_or(0);
+    net_env.sac_triggers = branches
+        .iter()
+        .map(|b| b.net.sac_triggers)
+        .max()
+        .unwrap_or(0);
+
+    // Merge the envelope into the live accumulator.
+    acc.produces.extend(produces_env);
+    acc.unbounded_production.extend(unbounded_env);
+    acc.completeness = acc.completeness.merge(completeness_env);
+    acc.requires.extend(requires_env);
+    add_into(&mut acc.net, &net_env);
 }
 
 /// CR 106.1+: enumerate every nonzero [`ResourceVector`] component of `net` as a
@@ -1208,7 +1412,7 @@ fn build_node(
         unbounded_production: acc.unbounded_production,
         produces,
         requires,
-        any_unmodeled: acc.any_unmodeled,
+        completeness: acc.completeness,
     }
 }
 
@@ -1317,8 +1521,8 @@ pub struct CandidateCycle {
     pub unbounded: Vec<ResourceAxis>,
     /// Tentative win classification.
     pub win_kind: WinKind,
-    /// ≥1 member node had unmodeled effects (lower confidence).
-    pub any_unmodeled: bool,
+    /// Whether ≥1 member node had unmodeled effects (lower confidence).
+    pub completeness: ModelCompleteness,
 }
 
 impl CandidateCycle {
@@ -1366,9 +1570,31 @@ fn axis_key_to_resource(key: &AxisKey, net: &ResourceVector) -> Option<ResourceA
                 .unwrap_or(ManaType::Colorless);
             Some(ResourceAxis::Mana(color))
         }
-        AxisKey::Damage => Some(ResourceAxis::DamageDealt(OPPONENT)),
-        AxisKey::Life => Some(ResourceAxis::Life(OPPONENT)),
-        AxisKey::Library => Some(ResourceAxis::LibraryDelta(OPPONENT)),
+        // CR 120.1 / CR 119.1 / CR 401: a player-keyed axis is attributed by net
+        // sign rather than hardcoded — a controller-directed engine (self-damage,
+        // lifegain, self-mill/draw) keeps the CONTROLLER; otherwise the axis is
+        // opponent-directed (burn, drain, mill) and keys to OPPONENT.
+        AxisKey::Damage => {
+            if net.damage_dealt.get(&CONTROLLER).copied().unwrap_or(0) > 0 {
+                Some(ResourceAxis::DamageDealt(CONTROLLER))
+            } else {
+                Some(ResourceAxis::DamageDealt(OPPONENT))
+            }
+        }
+        AxisKey::Life => {
+            if net.life.get(&CONTROLLER).copied().unwrap_or(0) > 0 {
+                Some(ResourceAxis::Life(CONTROLLER))
+            } else {
+                Some(ResourceAxis::Life(OPPONENT))
+            }
+        }
+        AxisKey::Library => {
+            if net.library_delta.get(&CONTROLLER).copied().unwrap_or(0) != 0 {
+                Some(ResourceAxis::LibraryDelta(CONTROLLER))
+            } else {
+                Some(ResourceAxis::LibraryDelta(OPPONENT))
+            }
+        }
         AxisKey::Counter(class, obj) => Some(ResourceAxis::Counter(*class, *obj)),
         AxisKey::Trigger(kind) => Some(ResourceAxis::Trigger(*kind)),
         AxisKey::Tokens => Some(ResourceAxis::TokensCreated),
@@ -1408,13 +1634,13 @@ pub(crate) fn candidate_cycles_from_nodes(nodes: Vec<AbilityNode>) -> Vec<Candid
 
         let mut net = ResourceVector::default();
         let mut unbounded_production = BTreeSet::new();
-        let mut any_unmodeled = false;
+        let mut completeness = ModelCompleteness::FullyModeled;
         let mut faces_in: Vec<String> = Vec::new();
         for &idx in &scc {
             let node = &graph[idx];
             add_into(&mut net, &node.net);
             unbounded_production.extend(node.unbounded_production.iter().copied());
-            any_unmodeled |= node.any_unmodeled;
+            completeness = completeness.merge(node.completeness);
             if !faces_in.contains(&node.face_name) {
                 faces_in.push(node.face_name.clone());
             }
@@ -1440,7 +1666,7 @@ pub(crate) fn candidate_cycles_from_nodes(nodes: Vec<AbilityNode>) -> Vec<Candid
             win_kind: classify_win_kind(CONTROLLER, &net),
             net,
             unbounded,
-            any_unmodeled,
+            completeness,
         });
     }
     out
@@ -1510,7 +1736,7 @@ mod tests {
             unbounded_production: BTreeSet::new(),
             produces: BTreeSet::new(),
             requires: BTreeSet::new(),
-            any_unmodeled: false,
+            completeness: ModelCompleteness::FullyModeled,
         }
     }
     const P1P1: (CounterClass, ObjectClass) = (CounterClass::Plus1Plus1, ObjectClass::Creature);
@@ -2007,6 +2233,246 @@ mod tests {
                         .any(|a| matches!(a, ResourceAxis::Mana(_)))
             }),
             "Priest of Titania + Umbral Mantle yields a mana-family candidate cycle; got {cands:?}"
+        );
+    }
+
+    // === E. PR-4a review resolution (PR #4493) ==============================
+
+    #[test]
+    fn one_of_cost_disjunctive_envelope_emits_candidate() {
+        // MAINTAINER REGRESSION (PR #4493): `AbilityCost::OneOf` is disjunctive —
+        // the payer chooses ONE branch (CR 118.12a). The payoff node B's cost is
+        // `OneOf { {1}  |  {100} }`: the cheap {1} branch closes the loop, the
+        // {100} branch is unsustainable mana the real loop never pays. The
+        // candidate MUST still be emitted (the proposer envelopes optimistically).
+        //
+        // DISCRIMINATION: revert `fold_one_of` to the AND-fold (`for c in costs {
+        // fold_cost(acc, c) }`) and B costs {101}; the cycle's fixed +1 mana then
+        // nets to -100 with no UNBOUNDED mana production, so `candidate_coverable`
+        // vetoes and this candidate DISAPPEARS (0 emitted). The envelope keeps
+        // mana at max(-1,-100) = -1, balanced to 0, so it survives.
+
+        // Engine node A: tap for {1} (FIXED, so mana stays a veto axis) plus an
+        // UNBOUNDED +1/+1 counter — the payoff and the non-mana progress axis that
+        // makes the cycle coverable without making mana unbounded. Requires Tap.
+        let mut def_a = activated(mana_effect(colorless(fixed(1))));
+        def_a.sub_ability = Some(Box::new(activated(put_counter(
+            CounterType::Plus1Plus1,
+            dynamic(),
+        ))));
+        def_a.cost = Some(AbilityCost::Tap);
+        let node_a = build_node("Engine", &def_a, None);
+        assert_eq!(
+            node_a.net.mana[COLORLESS_INDEX], 1,
+            "fixed +1 mana producer"
+        );
+        assert!(
+            node_a
+                .unbounded_production
+                .contains(&AxisKey::Counter(P1P1.0, P1P1.1)),
+            "the dynamic counter is the unbounded progress axis"
+        );
+        assert!(
+            !node_a.unbounded_production.contains(&AxisKey::Mana),
+            "mana production is FIXED, so mana stays a coverability veto axis"
+        );
+
+        // Payoff node B: untaps the engine (produces Tap), cost = the disjunction.
+        let mut def_b = activated(set_tap(TapStateChange::Untap));
+        def_b.cost = Some(AbilityCost::OneOf {
+            costs: vec![
+                AbilityCost::Mana {
+                    cost: ManaCost::generic(1),
+                },
+                AbilityCost::Mana {
+                    cost: ManaCost::generic(100),
+                },
+            ],
+        });
+        let node_b = build_node("Payoff", &def_b, None);
+        assert_eq!(
+            node_b.net.mana[COLORLESS_INDEX], -1,
+            "envelope keeps the cheap branch's mana (max(-1,-100)), not the AND-fold's -101"
+        );
+        assert!(node_b.requires.contains(&AxisKey::Mana));
+        assert!(node_b.produces.contains(&AxisKey::Tap));
+
+        let cands = candidate_cycles_from_nodes(vec![node_a, node_b]);
+        assert_eq!(
+            cands.len(),
+            1,
+            "the disjunctive OneOf branch closes the loop; got {cands:?}"
+        );
+        assert!(cands[0]
+            .unbounded
+            .iter()
+            .any(|a| matches!(a, ResourceAxis::Counter(..))));
+    }
+
+    #[test]
+    fn one_of_envelope_per_axis_max_and_requires_intersection() {
+        // fold_one_of envelope mechanics (PR #4493): net = per-axis MAX (missing
+        // component = 0), produces = UNION, requires = INTERSECTION over branches.
+        // Cost = `OneOf { {2}  |  ({5} + Tap + Sacrifice) }`; the payer picks ONE.
+        let mut def = activated(Effect::unimplemented("t", "disjoint cost"));
+        def.cost = Some(AbilityCost::OneOf {
+            costs: vec![
+                AbilityCost::Mana {
+                    cost: ManaCost::generic(2),
+                },
+                AbilityCost::Composite {
+                    costs: vec![
+                        AbilityCost::Mana {
+                            cost: ManaCost::generic(5),
+                        },
+                        AbilityCost::Tap,
+                        AbilityCost::Sacrifice(SacrificeCost::count(
+                            default_target_filter_any(),
+                            1,
+                        )),
+                    ],
+                },
+            ],
+        });
+        let node = build_node("Disjoint", &def, None);
+
+        // per-axis MAX net: the cheaper mana survives (-2, not the AND-fold's -7),
+        // while the sac branch's event production is unioned in (absent in branch
+        // A ⇒ treated as 0 ⇒ max(0,1) = 1).
+        assert_eq!(
+            node.net.mana[COLORLESS_INDEX], -2,
+            "envelope keeps the cheaper branch's mana"
+        );
+        assert_eq!(
+            node.net.sac_triggers, 1,
+            "the sac branch's production is unioned into the envelope"
+        );
+        assert!(node.produces.contains(&AxisKey::Sac));
+        assert!(node.produces.contains(&AxisKey::Ltb));
+        assert!(node.produces.contains(&AxisKey::Death));
+
+        // INTERSECTION requires: Mana (derived from the surviving -2 net) is
+        // unavoidable in BOTH branches; Tap is only in branch B ⇒ dropped.
+        assert!(node.requires.contains(&AxisKey::Mana));
+        assert!(
+            !node.requires.contains(&AxisKey::Tap),
+            "a requirement present in only one branch is not unavoidable ⇒ dropped by ∩"
+        );
+    }
+
+    #[test]
+    fn axis_key_to_resource_resolves_player_by_net_sign() {
+        // gemini CORRECTNESS (PR #4493): player-keyed axes attribute CONTROLLER vs
+        // OPPONENT by inspecting `net`, not a hardcoded OPPONENT. Each pair flips
+        // the player by moving the nonzero entry — the OLD hardcoded code returned
+        // OPPONENT for every controller-directed case, so each CONTROLLER assertion
+        // discriminates against it.
+
+        // Life: controller lifegain ⇒ CONTROLLER; opponent drain ⇒ OPPONENT.
+        let mut gain = ResourceVector::default();
+        gain.life.insert(CONTROLLER, 5);
+        assert_eq!(
+            axis_key_to_resource(&AxisKey::Life, &gain),
+            Some(ResourceAxis::Life(CONTROLLER))
+        );
+        let mut drain = ResourceVector::default();
+        drain.life.insert(OPPONENT, -5);
+        assert_eq!(
+            axis_key_to_resource(&AxisKey::Life, &drain),
+            Some(ResourceAxis::Life(OPPONENT))
+        );
+
+        // Damage: self-damage engine ⇒ CONTROLLER; opponent burn ⇒ OPPONENT.
+        let mut self_dmg = ResourceVector::default();
+        self_dmg.damage_dealt.insert(CONTROLLER, 3);
+        assert_eq!(
+            axis_key_to_resource(&AxisKey::Damage, &self_dmg),
+            Some(ResourceAxis::DamageDealt(CONTROLLER))
+        );
+        let mut opp_dmg = ResourceVector::default();
+        opp_dmg.damage_dealt.insert(OPPONENT, 3);
+        assert_eq!(
+            axis_key_to_resource(&AxisKey::Damage, &opp_dmg),
+            Some(ResourceAxis::DamageDealt(OPPONENT))
+        );
+
+        // Library: self-mill/draw (any nonzero controller delta) ⇒ CONTROLLER;
+        // opponent mill ⇒ OPPONENT.
+        let mut self_lib = ResourceVector::default();
+        self_lib.library_delta.insert(CONTROLLER, -7);
+        assert_eq!(
+            axis_key_to_resource(&AxisKey::Library, &self_lib),
+            Some(ResourceAxis::LibraryDelta(CONTROLLER))
+        );
+        let mut opp_lib = ResourceVector::default();
+        opp_lib.library_delta.insert(OPPONENT, -7);
+        assert_eq!(
+            axis_key_to_resource(&AxisKey::Library, &opp_lib),
+            Some(ResourceAxis::LibraryDelta(OPPONENT))
+        );
+    }
+
+    #[test]
+    fn model_completeness_tracks_and_rolls_up_unmodeled() {
+        // gemini R2 (PR #4493): the typed completeness flag replaces a raw bool.
+        // A modeled effect ⇒ FullyModeled; an unmodeled one ⇒ ContainsUnmodeled.
+        let modeled = build_node(
+            "Modeled",
+            &activated(mana_effect(colorless(fixed(1)))),
+            None,
+        );
+        assert_eq!(modeled.completeness, ModelCompleteness::FullyModeled);
+
+        let unmodeled = build_node(
+            "Unmodeled",
+            &activated(Effect::unimplemented("x", "y")),
+            None,
+        );
+        assert_eq!(unmodeled.completeness, ModelCompleteness::ContainsUnmodeled);
+        assert_ne!(unmodeled.completeness, ModelCompleteness::FullyModeled);
+
+        // merge is the absorbing lattice join.
+        assert_eq!(
+            ModelCompleteness::FullyModeled.merge(ModelCompleteness::FullyModeled),
+            ModelCompleteness::FullyModeled
+        );
+        assert_eq!(
+            ModelCompleteness::FullyModeled.merge(ModelCompleteness::ContainsUnmodeled),
+            ModelCompleteness::ContainsUnmodeled
+        );
+        assert_eq!(
+            ModelCompleteness::ContainsUnmodeled.merge(ModelCompleteness::FullyModeled),
+            ModelCompleteness::ContainsUnmodeled
+        );
+
+        // Candidate-level rollup over a 2-node mana/counter cycle: all-modeled
+        // members ⇒ FullyModeled; one unmodeled member ⇒ ContainsUnmodeled.
+        let mut a = raw_node("A");
+        a.net.mana[COLORLESS_INDEX] = -1;
+        a.net.counters.insert(P1P1, 1);
+        a.produces.insert(AxisKey::Counter(P1P1.0, P1P1.1));
+        a.requires.insert(AxisKey::Mana);
+        let mut b = raw_node("B");
+        b.net.mana[COLORLESS_INDEX] = 2;
+        b.net.counters.insert(P1P1, -1);
+        b.produces.insert(AxisKey::Mana);
+        b.requires.insert(AxisKey::Counter(P1P1.0, P1P1.1));
+
+        let modeled_cands = candidate_cycles_from_nodes(vec![a.clone(), b.clone()]);
+        assert_eq!(modeled_cands.len(), 1);
+        assert_eq!(
+            modeled_cands[0].completeness,
+            ModelCompleteness::FullyModeled,
+            "an all-modeled cycle must NOT report ContainsUnmodeled"
+        );
+
+        a.completeness = ModelCompleteness::ContainsUnmodeled;
+        let mixed_cands = candidate_cycles_from_nodes(vec![a, b]);
+        assert_eq!(mixed_cands.len(), 1);
+        assert_eq!(
+            mixed_cands[0].completeness,
+            ModelCompleteness::ContainsUnmodeled,
+            "one unmodeled member rolls the candidate up to ContainsUnmodeled"
         );
     }
 }
