@@ -1408,8 +1408,8 @@ fn parse_target_attacked_this_turn_condition_text(text: &str) -> Option<AbilityC
     parsed
 }
 
-/// Parse a trailing "N or less" / "N or greater" comparison threshold shared by
-/// the mana-value (CR 202.3) and power/toughness (CR 208.1) reflexive
+/// CR 202.3 + CR 208.1: Parse a trailing "N or less" / "N or greater"
+/// comparison threshold shared by the mana-value and power/toughness reflexive
 /// predicates. Returns the typed `Comparator` and the fixed threshold. Composed
 /// from `nom_primitives::parse_number` and a comparator `alt` — one combinator,
 /// not a flat product of full-string tags.
