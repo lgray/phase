@@ -278,6 +278,10 @@ fn payment_cost(
         },
         PayCostKind::RemoveCounter { .. } => permanent_value(state, obj_id) * 0.5,
         PayCostKind::TapCreatures { .. } => permanent_value(state, obj_id) * 0.35,
+        // CR 117.1 + CR 601.2b: "exile any number" aggregate-threshold cost
+        // (Baron Helmut Zemo's Boast) — always exiles from the graveyard, so it
+        // values like the graveyard `ExileFromZone` / `ExileMaterials` cases.
+        PayCostKind::ExileAggregate { .. } => 0.1 + card_value(state, obj_id) * 0.2,
         PayCostKind::Behold { .. } => card_value(state, obj_id) * 0.1,
         PayCostKind::Sacrifice => sacrifice_cost(state, obj_id, penalties),
     }
