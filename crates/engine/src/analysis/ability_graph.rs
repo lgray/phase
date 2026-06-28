@@ -389,15 +389,66 @@ fn sac_produces_death(filter: &TargetFilter) -> bool {
 }
 
 /// CR 205.2b: an object can have more than one card type (an artifact creature
-/// satisfies both), so a typed conjunction provably excludes creatures ONLY when
-/// it carries an explicit `Non(Creature)` constraint. Positive non-creature card
-/// types (Land/Artifact/Enchantment/Planeswalker) are deliberately NOT treated as
-/// exclusions: creatures can also be lands (Dryad Arbor), artifacts, or
-/// enchantments, so excluding on a positive type would drop real dies edges.
+/// satisfies both), so a typed conjunction provably excludes creatures only when
+/// at least one of its filters provably matches NO creature. Positive non-creature
+/// card types (Land/Artifact/Enchantment/Planeswalker/…) are deliberately NOT
+/// treated as exclusions: creatures can also be lands (Dryad Arbor), artifacts, or
+/// enchantments, so excluding on a positive type would drop real dies edges. The
+/// reasoning recurses through `Non`/`AnyOf` composition, so a composed exclusion
+/// like `Non(AnyOf([Creature, …]))` ("neither a creature nor …") is also caught.
 fn type_filters_exclude_creature(filters: &[TypeFilter]) -> bool {
-    filters
-        .iter()
-        .any(|tf| matches!(tf, TypeFilter::Non(inner) if matches!(**inner, TypeFilter::Creature)))
+    filters.iter().any(type_filter_excludes_creature)
+}
+
+/// CR 205.2b: `true` iff `tf` provably matches NO creature. Recurses through `Non`
+/// (matches no creature iff its inner matches EVERY creature — see
+/// [`type_filter_matches_all_creatures`]) and `AnyOf` (matches no creature iff
+/// every branch does). Conservative for positive card types and subtypes: a
+/// creature can also carry those (CR 205.2b), so they are NOT exclusions.
+fn type_filter_excludes_creature(tf: &TypeFilter) -> bool {
+    match tf {
+        TypeFilter::Non(inner) => type_filter_matches_all_creatures(inner),
+        TypeFilter::AnyOf(types) => types.iter().all(type_filter_excludes_creature),
+        TypeFilter::Creature
+        | TypeFilter::Land
+        | TypeFilter::Artifact
+        | TypeFilter::Enchantment
+        | TypeFilter::Instant
+        | TypeFilter::Sorcery
+        | TypeFilter::Planeswalker
+        | TypeFilter::Battle
+        | TypeFilter::Kindred
+        | TypeFilter::Permanent
+        | TypeFilter::Card
+        | TypeFilter::Any
+        | TypeFilter::Subtype(_) => false,
+    }
+}
+
+/// CR 205.2b: `true` iff EVERY creature provably matches `tf` — the dual of
+/// [`type_filter_excludes_creature`], used to decide whether `Non(tf)` excludes
+/// creatures. Only `Creature` and `Any` match every creature outright; `Non`
+/// matches every creature iff its inner matches none, and `AnyOf` iff some branch
+/// matches every creature. Positive types stay conservative `false` (not every
+/// creature is a Land, and a creature token is neither a Permanent in every zone
+/// nor a Card), so `Non(<positive type>)` is never treated as a creature exclusion.
+fn type_filter_matches_all_creatures(tf: &TypeFilter) -> bool {
+    match tf {
+        TypeFilter::Creature | TypeFilter::Any => true,
+        TypeFilter::Non(inner) => type_filter_excludes_creature(inner),
+        TypeFilter::AnyOf(types) => types.iter().any(type_filter_matches_all_creatures),
+        TypeFilter::Land
+        | TypeFilter::Artifact
+        | TypeFilter::Enchantment
+        | TypeFilter::Instant
+        | TypeFilter::Sorcery
+        | TypeFilter::Planeswalker
+        | TypeFilter::Battle
+        | TypeFilter::Kindred
+        | TypeFilter::Permanent
+        | TypeFilter::Card
+        | TypeFilter::Subtype(_) => false,
+    }
 }
 
 /// CR 603.6a / 603.6c / 700.4: project a zone change onto its event axes. Returns
@@ -767,10 +818,19 @@ fn effect_projection(effect: &Effect) -> Projection {
             }
         }
         // Conjure creates real cards; only a battlefield entry is a modeled axis
-        // (CR 603.6a ETB). Any other destination has no repeatable axis ⇒ Unmodeled.
-        Effect::Conjure { destination, .. } => {
+        // (CR 603.6a ETB). Each `ConjureCard` carries its own `count`, so seed the
+        // ETB axis per conjured card (mirrors the token-creation `count_seed` path)
+        // — a multi-card or counted conjure produces that many ETBs, and a
+        // variable/X count is marked Unbounded. Any other destination has no
+        // repeatable axis ⇒ Unmodeled.
+        Effect::Conjure {
+            cards, destination, ..
+        } => {
             if *destination == Zone::Battlefield {
-                b.add_etb(1, AxisMagnitude::Fixed(1));
+                for card in cards {
+                    let (a, mag) = count_seed(&card.count);
+                    b.add_etb(a, mag);
+                }
             } else {
                 return Projection::Unmodeled;
             }
@@ -3266,5 +3326,50 @@ mod tests {
             ModelCompleteness::ContainsUnmodeled,
             "one unmodeled member rolls the candidate up to ContainsUnmodeled"
         );
+    }
+
+    // CR 205.2b: `type_filter_excludes_creature` must reason recursively over
+    // `Non`/`AnyOf` composition, not just a direct `Non(Creature)`.
+    // Discrimination: the pre-fix `matches!(Non(inner) if inner == Creature)`
+    // returns `false` for `Non(AnyOf([Creature, Land]))`, so the first
+    // `assert!(... )` below flips red under a revert.
+    #[test]
+    fn type_filter_excludes_creature_handles_composed_negation() {
+        use TypeFilter::*;
+        // Composed exclusions that PROVABLY match no creature:
+        assert!(type_filter_excludes_creature(&Non(Box::new(Creature))));
+        assert!(type_filter_excludes_creature(&Non(Box::new(AnyOf(vec![
+            Creature, Land
+        ])))));
+        // `AnyOf` excludes a creature only if EVERY branch does.
+        assert!(type_filter_excludes_creature(&AnyOf(vec![
+            Non(Box::new(Creature)),
+            Non(Box::new(AnyOf(vec![Creature, Artifact]))),
+        ])));
+
+        // Filters that a creature CAN still satisfy → NOT exclusions (conservative,
+        // keep the dies edge):
+        assert!(!type_filter_excludes_creature(&Creature));
+        assert!(!type_filter_excludes_creature(&Land)); // creature-lands (Dryad Arbor)
+        assert!(!type_filter_excludes_creature(&Non(Box::new(Land)))); // "noncreature" not implied
+        assert!(!type_filter_excludes_creature(&Non(Box::new(AnyOf(vec![
+            Land, Artifact
+        ]))))); // "neither land nor artifact" can still be a creature
+                // Double negation collapses: Non(Non(Creature)) ≡ Creature → matches creatures.
+        assert!(!type_filter_excludes_creature(&Non(Box::new(Non(
+            Box::new(Creature)
+        )))));
+        // An `AnyOf` with one non-excluding branch is not an exclusion.
+        assert!(!type_filter_excludes_creature(&AnyOf(vec![
+            Non(Box::new(Creature)),
+            Land,
+        ])));
+
+        // List form (conjunction): any provably-excluding filter excludes.
+        assert!(type_filters_exclude_creature(&[
+            Land,
+            Non(Box::new(Creature))
+        ]));
+        assert!(!type_filters_exclude_creature(&[Land, Artifact]));
     }
 }
