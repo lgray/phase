@@ -337,7 +337,8 @@ fn project_mana_production(p: &ManaProduction) -> (Vec<(usize, i64)>, AxisMagnit
         | ManaProduction::OpponentLandColors { count, .. }
         | ManaProduction::AnyTypeProduceableBy { count, .. }
         | ManaProduction::AnyInCommandersColorIdentity { count, .. }
-        | ManaProduction::AnyOneColorAmongPermanents { count, .. } => {
+        | ManaProduction::AnyOneColorAmongPermanents { count, .. }
+        | ManaProduction::AnyCombinationOfObjectColors { count, .. } => {
             let (a, mag) = count_seed(count);
             (vec![(COLORLESS_INDEX, a)], mag)
         }
@@ -832,6 +833,7 @@ fn trigger_axis(mode: &TriggerMode) -> Option<AxisKey> {
         | TriggerMode::Firebend
         | TriggerMode::Waterbend
         | TriggerMode::ElementalBend
+        | TriggerMode::EntersOrHauntedCreatureDies
         | TriggerMode::HauntedCreatureDies
         | TriggerMode::Unknown(..) => None,
     }
