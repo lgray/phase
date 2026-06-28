@@ -4200,6 +4200,17 @@ fn zone_change_record_matches_property(
             let actual = counter_count_from_map(&lki.counters, selector);
             comparator.evaluate(actual, resolve_filter_threshold(state, count, source))
         }),
+        // CR 120.6 + CR 120.9 + CR 608.2h: "was dealt damage this turn" is a
+        // turn-scoped historical fact, not a query against current marked damage.
+        // The `damage_dealt_this_turn` ledger is keyed by the battlefield ObjectId
+        // and survives the object's zone change, so a look-back rider ("Exile
+        // target creature. If it was dealt damage this turn, ..." — Sold Out)
+        // evaluating against the LKI snapshot reads the same ledger the live
+        // evaluator uses, by the snapshot's `object_id`. Mirrors the live arm.
+        FilterProp::WasDealtDamageThisTurn => state
+            .damage_dealt_this_turn
+            .iter()
+            .any(|r| matches!(r.target, TargetRef::Object(id) if id == record.object_id)),
         FilterProp::Tapped
         | FilterProp::IsSaddled
         | FilterProp::SaddledSource
@@ -4244,7 +4255,6 @@ fn zone_change_record_matches_property(
         | FilterProp::DifferentNameFrom { .. }
         | FilterProp::InAnyZone { .. }
         | FilterProp::SharesQuality { .. }
-        | FilterProp::WasDealtDamageThisTurn
         | FilterProp::EnteredThisTurn
         | FilterProp::ZoneChangedThisTurn { .. }
         // CR 122.6: counters-put-this-turn is a live-history join keyed on the
