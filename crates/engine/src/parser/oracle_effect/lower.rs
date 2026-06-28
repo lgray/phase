@@ -151,6 +151,141 @@ fn rewrite_else_parent_target_to_self_ref(def: &mut AbilityDefinition) {
     }
 }
 
+/// CR 608.2c + CR 608.2b: A chained tap/untap anaphor ("untap him"/"untap it")
+/// inherits its referent from the antecedent head's subject. When a def whose
+/// subject is the source itself (`SelfRef` — The Incredible Hulk: "put a +1/+1
+/// counter on him ... untap him") is followed by a chained single-permanent
+/// `SetTapState` whose target lowered to the `ParentTarget` anaphor, that anaphor
+/// refers to the source, so rewrite it to `SelfRef` (the runtime then binds it to
+/// `source_id`). A head with a real or *optional* target (Tyvar Kell: "...up to
+/// one target Elf. Untap it.") is NOT `SelfRef`, so its anaphor stays
+/// `ParentTarget`: it binds the chosen target, and a DECLINED optional target
+/// leaves the target list empty so the sub correctly does nothing (CR 608.2b —
+/// the anaphor has no referent). This is the `sub_ability`-chain analogue of
+/// [`rewrite_else_parent_target_to_self_ref`]; it must run at lowering time
+/// because by resolution the discriminator is erased — both Hulk and a
+/// declined-optional anaphor reach the resolver with the same empty target list,
+/// so the head's subject filter (visible only here) is the only thing that tells
+/// them apart. Scope is restricted to `Single` (the anaphoric singular) — `All`
+/// ("untap all ...") is a population filter, never an anaphor.
+fn patch_self_ref_head_tap_anaphor(def: &mut AbilityDefinition) {
+    let head_is_self_ref = definition_targets_self_source(def);
+    if let Some(sub) = def.sub_ability.as_deref_mut() {
+        patch_self_ref_head_tap_anaphor(sub);
+        if head_is_self_ref {
+            if let Effect::SetTapState {
+                target: target @ TargetFilter::ParentTarget,
+                scope: EffectScope::Single,
+                ..
+            } = sub.effect.as_mut()
+            {
+                *target = TargetFilter::SelfRef;
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod self_ref_tap_anaphor_tests {
+    use super::*;
+    use crate::types::ability::TapStateChange;
+
+    /// Builds a `PutCounter{head_target}` head with a chained
+    /// `SetTapState{ParentTarget, scope}` untap sub — the shape every chained
+    /// tap/untap anaphor lowers to.
+    fn put_counter_then_untap_chain(
+        head_target: TargetFilter,
+        sub_scope: EffectScope,
+    ) -> AbilityDefinition {
+        let mut def = AbilityDefinition::new(
+            AbilityKind::Spell,
+            Effect::PutCounter {
+                counter_type: CounterType::Plus1Plus1,
+                count: QuantityExpr::Fixed { value: 1 },
+                target: head_target,
+            },
+        );
+        def.sub_ability = Some(Box::new(AbilityDefinition::new(
+            AbilityKind::Spell,
+            Effect::SetTapState {
+                target: TargetFilter::ParentTarget,
+                scope: sub_scope,
+                state: TapStateChange::Untap,
+            },
+        )));
+        def
+    }
+
+    // CR 608.2c: a chained "untap him" anaphor after a `SelfRef`-subject head (The
+    // Incredible Hulk: "put a +1/+1 counter on him ... untap him") refers to the
+    // source, so the patch rewrites its `ParentTarget` to `SelfRef`.
+    #[test]
+    fn self_ref_head_tap_anaphor_rewrites_to_self_ref() {
+        let mut def = put_counter_then_untap_chain(TargetFilter::SelfRef, EffectScope::Single);
+        patch_self_ref_head_tap_anaphor(&mut def);
+        let sub = def.sub_ability.expect("sub-ability");
+        assert!(
+            matches!(
+                &*sub.effect,
+                Effect::SetTapState {
+                    target: TargetFilter::SelfRef,
+                    ..
+                }
+            ),
+            "SelfRef-head anaphor must be rewritten to SelfRef, got {:?}",
+            sub.effect
+        );
+    }
+
+    // CR 608.2b: a head with a real/optional target (Tyvar Kell "...up to one
+    // target Elf. Untap it.") is NOT `SelfRef`, so the anaphor MUST stay
+    // `ParentTarget` — it binds the chosen target, and a declined optional target
+    // leaves the target list empty so the sub no-ops. This is exactly the
+    // discrimination the rejected bare-`is_empty()` resolver arm lacked (it would
+    // have wrongly untapped the source planeswalker on a declined target).
+    #[test]
+    fn typed_head_tap_anaphor_stays_parent_target() {
+        let mut def = put_counter_then_untap_chain(
+            TargetFilter::Typed(TypedFilter::default()),
+            EffectScope::Single,
+        );
+        patch_self_ref_head_tap_anaphor(&mut def);
+        let sub = def.sub_ability.expect("sub-ability");
+        assert!(
+            matches!(
+                &*sub.effect,
+                Effect::SetTapState {
+                    target: TargetFilter::ParentTarget,
+                    ..
+                }
+            ),
+            "Typed-head anaphor must stay ParentTarget (CR 608.2b), got {:?}",
+            sub.effect
+        );
+    }
+
+    // Scope guard: `All` ("untap all ...") is a population filter, never an
+    // anaphor — it must not be rewritten even under a `SelfRef` head.
+    #[test]
+    fn self_ref_head_tap_all_scope_not_rewritten() {
+        let mut def = put_counter_then_untap_chain(TargetFilter::SelfRef, EffectScope::All);
+        patch_self_ref_head_tap_anaphor(&mut def);
+        let sub = def.sub_ability.expect("sub-ability");
+        assert!(
+            matches!(
+                &*sub.effect,
+                Effect::SetTapState {
+                    target: TargetFilter::ParentTarget,
+                    scope: EffectScope::All,
+                    ..
+                }
+            ),
+            "All-scope SetTapState must not be rewritten, got {:?}",
+            sub.effect
+        );
+    }
+}
+
 /// CR 608.2c + CR 401.4: After an optional `CastFromZone` from a linked-exile
 /// pool (Sanwell, Chaos Wand class), a trailing "put the rest / put the exiled
 /// cards … on the bottom" clause must route uncards still linked to the source
@@ -1337,6 +1472,11 @@ pub(crate) fn lower_effect_chain_ir(ir: &EffectChainIr) -> AbilityDefinition {
     rewire_result_anchored_subchain(&mut result);
     wire_optional_cast_decline_fallback(&mut result);
     retarget_counter_additional_cost_to_target(&mut result);
+    // CR 608.2c + CR 608.2b: resolve a chained tap/untap anaphor against a
+    // SelfRef-subject head (The Incredible Hulk's "untap him") — rewrite its
+    // ParentTarget to SelfRef so it binds the source, while a real/optional
+    // target head (Tyvar Kell) keeps ParentTarget and no-ops when declined.
+    patch_self_ref_head_tap_anaphor(&mut result);
     if matches!(&*result.effect, Effect::SearchOutsideGame { .. }) {
         result.optional = false;
         result.optional_for = None;

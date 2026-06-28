@@ -21,18 +21,21 @@
 //! `=> None`) drops the condition, so the gated chain fires unconditionally and
 //! Test B's `extra_phases.is_empty()` assertion flips to red.
 //!
-//! NOTE: the chained "untap him" (`SetTapState { target: ParentTarget }`) is a
+//! The chained "untap him" (`SetTapState { target: ParentTarget }`) was a
 //! pre-existing no-op for this card — the head `PutCounter` targets `SelfRef`,
-//! which is not materialized into `ability.targets`, so the chained
-//! `ParentTarget` inherits no object to untap. The root cause is a targeting-path
-//! inconsistency independent of this condition-bridge fix: `resolved_targets`
-//! falls back to the source for `ParentTarget` + empty targets, but
-//! `resolved_object_ids_for_filter` (the path `SetTapState` resolution uses) does
-//! not. That gap is tracked SEPARATELY (it affects many SelfRef-head →
-//! ParentTarget-anaphor chains, not just Hulk). Consequently these tests
-//! deliberately assert on the additional-combat-phase observable
-//! (`state.extra_phases`), which the gate *does* control, rather than on the
-//! broken untap — keeping the discriminator non-vacuous (revert-proven).
+//! which is not materialized into `ability.targets` (issue #323), so the chained
+//! `ParentTarget` inherited no object to untap. That targeting-path gap (distinct
+//! from this condition-bridge fix) is now closed at parse time:
+//! `sequence::patch_self_ref_head_tap_anaphor` rewrites the chained
+//! single-permanent `SetTapState`'s `ParentTarget` to `SelfRef` whenever the
+//! antecedent head's subject is `SelfRef`, so the untap binds the source via
+//! `tap_untap_target_ids`' `SelfRef` arm. A head with a real or optional target
+//! (Tyvar Kell "...up to one target Elf. Untap it.") keeps `ParentTarget`, so a
+//! declined optional target correctly no-ops (CR 608.2b — the anaphor has no
+//! referent). `enrage_untaps_hulk_when_attacking` (Test C) exercises Hulk's untap
+//! directly; the condition-bridge tests (A/B) keep their independent observable on
+//! the additional-combat-phase (`state.extra_phases`), which the gate *does*
+//! control, so the gate discriminator stays revert-proven.
 
 use engine::game::combat::{AttackTarget, AttackerInfo, CombatState};
 use engine::game::effects::deal_damage;
@@ -69,6 +72,7 @@ fn damage_ability(source: ObjectId, target: ObjectId, amount: i32) -> ResolvedAb
 struct EnrageOutcome {
     plus_counters: u32,
     extra_phase_scheduled: bool,
+    hulk_tapped: bool,
 }
 
 /// Build Hulk on the battlefield, deal it direct damage to fire Enrage, resolve
@@ -87,6 +91,12 @@ fn run_enrage(attacking: bool) -> EnrageOutcome {
     // CR 500.10a: the additional-combat-phase guard only adds the phase to the
     // controller's own turn — make Hulk's controller the active player.
     runner.state_mut().active_player = P0;
+
+    // Pre-tap Hulk so the chained "untap him" rider has an observable to flip.
+    // CR 508.1f: a declared attacker is normally tapped; for the not-attacking
+    // control a tapped Hulk is simply a tapped permanent — attacking-status
+    // remains the sole variable across the two cases.
+    runner.state_mut().objects.get_mut(&hulk).unwrap().tapped = true;
 
     if attacking {
         // CR 508.1k + CR 506.4: a declared attacker remains an attacking
@@ -130,6 +140,7 @@ fn run_enrage(attacking: bool) -> EnrageOutcome {
             anchor: Phase::EndCombat,
             phase: Phase::BeginCombat,
         }),
+        hulk_tapped: state.objects[&hulk].tapped,
     }
 }
 
@@ -162,6 +173,47 @@ fn enrage_when_not_attacking_gates_extra_combat() {
     assert!(
         !out.extra_phase_scheduled,
         "no additional combat phase may be scheduled when not attacking (CR 608.2c)"
+    );
+}
+
+/// Test C — the targeting fix: the chained "untap him" must actually untap Hulk
+/// when the attacking gate passes. CR 608.2c + CR 701.26b.
+///
+/// The head `PutCounter { SelfRef }` never materializes the `SelfRef` antecedent
+/// into `ability.targets` (issue #323). `sequence::patch_self_ref_head_tap_anaphor`
+/// rewrites the chained `SetTapState`'s `ParentTarget` to `SelfRef` at parse time
+/// (the head's subject is `SelfRef`), so at resolution it binds Hulk via
+/// `tap_untap_target_ids`' `SelfRef` arm.
+///
+/// Discrimination: reverting the parse-time patch leaves the sub as
+/// `SetTapState { ParentTarget }` with an EMPTY `ability.targets` slot, which the
+/// `_` arm reads as `[]` → the untap loop iterates nothing → Hulk stays tapped →
+/// the `!hulk_tapped` assertion flips red. The not-attacking control stays green
+/// either way (its untap rider is gated off by `SourceMatchesFilter {Attacking}`,
+/// so it never reaches the resolver), proving the gate — not the resolver —
+/// controls firing.
+#[test]
+fn enrage_untaps_hulk_when_attacking() {
+    let attacking = run_enrage(true);
+    assert_eq!(
+        attacking.plus_counters, 1,
+        "ungated +1/+1 counter must always be placed (CR 122.1)"
+    );
+    assert!(
+        !attacking.hulk_tapped,
+        "attacking Hulk must be untapped by the chained 'untap him' (the targeting fix)"
+    );
+
+    // Control: not attacking → the untap rider is gated off, so Hulk stays
+    // tapped while the ungated counter still applies.
+    let not_attacking = run_enrage(false);
+    assert_eq!(
+        not_attacking.plus_counters, 1,
+        "ungated +1/+1 counter must still be placed when not attacking (CR 122.1)"
+    );
+    assert!(
+        not_attacking.hulk_tapped,
+        "non-attacking Hulk stays tapped: the untap rider is gated off (CR 608.2c)"
     );
 }
 
@@ -202,9 +254,19 @@ fn enrage_chain_gates_untap_and_extra_combat_on_attacking() {
 
     // Sub 1: the untap, gated by SourceMatchesFilter{Attacking}.
     let untap = head.sub_ability.as_deref().expect("untap sub-ability");
+    // The chained "untap him" must be rewritten from `ParentTarget` to `SelfRef`
+    // by `patch_self_ref_head_tap_anaphor` (the SelfRef-subject head is The
+    // Incredible Hulk's `PutCounter{SelfRef}`), so at resolution it binds Hulk.
+    // Discrimination: reverting the patch leaves this `ParentTarget`.
     assert!(
-        matches!(&*untap.effect, Effect::SetTapState { .. }),
-        "first sub must be the untap, got {:?}",
+        matches!(
+            &*untap.effect,
+            Effect::SetTapState {
+                target: TargetFilter::SelfRef,
+                ..
+            }
+        ),
+        "first sub must be the untap rewritten to SelfRef, got {:?}",
         untap.effect
     );
     assert_eq!(
