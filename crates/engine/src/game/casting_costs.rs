@@ -2162,7 +2162,7 @@ pub(crate) fn handle_exile_aggregate_for_cost(
     events: &mut Vec<GameEvent>,
 ) -> Result<WaitingFor, EngineError> {
     // CR 601.2b: the chosen cards must be distinct.
-    if chosen.iter().copied().collect::<HashSet<_>>().len() != chosen.len() {
+    if (0..chosen.len()).any(|i| chosen[i + 1..].contains(&chosen[i])) {
         return Err(EngineError::InvalidAction(
             "Selected cards must be unique".to_string(),
         ));
