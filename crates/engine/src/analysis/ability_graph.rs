@@ -1044,8 +1044,13 @@ fn trigger_axis(trig: &TriggerDefinition) -> Option<AxisKey> {
         // CR 701.21: a sacrifice trigger consumes the Sac event.
         TriggerMode::Sacrificed | TriggerMode::SacrificedOnce => Some(AxisKey::Sac),
         // CR 119.3: life-gain / life-loss / pay-life triggers consume the Life axis.
+        // `LifeLostAll` is the batched life-loss form — the runtime routes it through
+        // the same `match_life_lost` matcher as `LifeLost` (`trigger_matchers.rs`) and
+        // indexes it with the life-change triggers (`trigger_index.rs`), so it
+        // consumes the Life axis identically.
         TriggerMode::LifeGained
         | TriggerMode::LifeLost
+        | TriggerMode::LifeLostAll
         | TriggerMode::LifeChanged
         | TriggerMode::PayLife => Some(AxisKey::Life),
         // CR 111.1: a token-created trigger consumes the Tokens axis.
@@ -1096,7 +1101,6 @@ fn trigger_axis(trig: &TriggerDefinition) -> Option<AxisKey> {
         | TriggerMode::Exiled
         | TriggerMode::Revealed
         | TriggerMode::Shuffled
-        | TriggerMode::LifeLostAll
         | TriggerMode::PayCumulativeUpkeep
         | TriggerMode::PayEcho
         | TriggerMode::TurnFaceUp
@@ -3371,5 +3375,28 @@ mod tests {
             Non(Box::new(Creature))
         ]));
         assert!(!type_filters_exclude_creature(&[Land, Artifact]));
+    }
+
+    // CR 119.3: `LifeLostAll` is the batched life-loss trigger form. The runtime
+    // routes it through the same `match_life_lost` matcher as `LifeLost`
+    // (`trigger_matchers.rs`) and indexes it with the life-change triggers
+    // (`trigger_index.rs`), so `trigger_axis` must map it to the Life axis too —
+    // otherwise Engine B misses candidates whose consumer is the all/batched
+    // life-loss trigger fed by a life-loss producer.
+    //
+    // Discrimination: pre-fix `LifeLostAll` sat in the inert `None` bucket, so the
+    // first assertion returned `None` and flips red under a revert.
+    #[test]
+    fn life_lost_all_trigger_consumes_life_axis() {
+        assert_eq!(
+            trigger_axis(&TriggerDefinition::new(TriggerMode::LifeLostAll)),
+            Some(AxisKey::Life),
+            "batched LifeLostAll must consume the Life axis like LifeLost"
+        );
+        // Sibling sanity: the non-batched form is unchanged.
+        assert_eq!(
+            trigger_axis(&TriggerDefinition::new(TriggerMode::LifeLost)),
+            Some(AxisKey::Life)
+        );
     }
 }
