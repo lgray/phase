@@ -1122,34 +1122,49 @@ pub enum StaticMode {
         /// `pay_additional_cost` (mirrors the `ExileWithAltAbilityCost` flow).
         alt_cost: Option<AbilityCost>,
     },
-    /// CR 702.170f: Static ability allowing the plot keyword ability to function
-    /// in a zone other than a player's hand — specifically, the top card of the
-    /// controller's library. "In that case, the card is exiled from the zone it
-    /// is in as the action is taken rather than from its owner's hand." Class
-    /// specimen: Fblthp, Lost on the Range ("The top card of your library has
-    /// plot. The plot cost is equal to its mana cost." + "You may plot nonland
-    /// cards from the top of your library.").
+    /// CR 702.170a + CR 702.170f: GRANT half of plot-from-library — "The top
+    /// card of your library has plot." The top card of the controller's library
+    /// *has* the plot ability (with plot cost equal to its mana cost). This is
+    /// only the grant that the card carries plot; it does NOT by itself permit
+    /// plotting from the library — per CR 702.170a a plot ability functions in
+    /// the hand, so a separate `TopOfLibraryPlotPermission` (the CR 702.170f
+    /// "function in a zone other than hand" effect) is required to actually take
+    /// the special action from the library. `affected` scopes which top cards are
+    /// granted plot (`TargetFilter::Any` for Fblthp's L3).
     ///
-    /// Categorically distinct from `TopOfLibraryCastPermission`, and that
-    /// distinction is why this is a dedicated variant rather than a parameter on
-    /// the cast-permission axis:
-    /// - `TopOfLibraryCastPermission` is CR 601.2a: casting moves the card
-    ///   `Library → Stack` directly, with NO exile step — a single zone change,
-    ///   a normal spell cast.
-    /// - This is CR 702.170: plotting is a *special action* (CR 702.170b) that
-    ///   moves the card `Library → Exile` face up now, and only on a *later*
-    ///   turn `Exile → Stack` for free — two zone changes, a different runtime
-    ///   action in a different CR section.
+    /// The plot cost ("equal to its mana cost") needs no stored parameter: it is
+    /// the live top card's `mana_cost`, computed at activation synthesis time
+    /// (the defining invariant of the mechanic), not data carried on the static.
     ///
-    /// Unifying the two under one parameterized variant would conflate CR 601.2a
-    /// and CR 702.170 at the leaf reference layer, against the categorical
-    /// boundary rule. The eligibility scope (Fblthp's "nonland") rides the
-    /// existing `StaticDefinition.affected: Option<TargetFilter>` slot exactly as
-    /// the cast-permission sibling carries its eligibility — no new field. The
-    /// plot cost ("equal to its mana cost") needs no stored parameter: it is the
-    /// live top card's `mana_cost`, computed at activation synthesis time (the
-    /// defining invariant of the mechanic), not data carried on the static.
+    /// Categorically distinct from `TopOfLibraryCastPermission` (CR 601.2a:
+    /// `Library → Stack` cast, NO exile, one zone change). Plot is CR 702.170 — a
+    /// special action (CR 702.170b) that moves `Library → Exile` face up now,
+    /// then `Exile → Stack` free on a later turn (two zone changes, a different
+    /// CR section). Unifying them at the leaf reference layer would conflate the
+    /// two against the categorical-boundary rule.
+    ///
+    /// Class specimen: Fblthp, Lost on the Range ("The top card of your library
+    /// has plot. The plot cost is equal to its mana cost.").
     TopOfLibraryHasPlot,
+    /// CR 702.170f: PERMISSION half of plot-from-library — "You may plot [filter]
+    /// cards from the top of your library." This is the CR 702.170f effect that
+    /// allows a plot ability to function in a zone other than the hand (here, the
+    /// top of the library), and authorizes the player to take the plot special
+    /// action there for cards matching `affected` ("nonland" for Fblthp's L4).
+    ///
+    /// Split from `TopOfLibraryHasPlot` because the two encode distinct CR roles:
+    /// the grant says the card *has* plot; this permission says the player *may
+    /// plot it from the library*. The runtime requires BOTH (an active grant
+    /// matching the top card AND an active permission matching it), so the
+    /// eligible set is `(union of grant filters) ∩ (union of permission
+    /// filters)`. Modeling each line as its own static means two INDEPENDENT
+    /// plot-from-top sources UNION correctly (each independently authorizes its
+    /// own eligibility), which a single conflated static could not express.
+    ///
+    /// The nonland scope rides `StaticDefinition.affected` (Fblthp's printed L4
+    /// text — CR 702.170f itself has no land/nonland clause), exactly as
+    /// `TopOfLibraryHasPlot` carries its grant scope.
+    TopOfLibraryPlotPermission,
     /// CR 601.2b + CR 118.9a: Static ability granting permission to cast matching
     /// spells without paying their mana costs. `Unlimited` = Omniscience,
     /// Tamiyo emblem, Dracogenesis. `OncePerTurn` = Zaffai and the Tempests.
@@ -1979,6 +1994,7 @@ impl StaticMode {
             | StaticMode::GraveyardCastPermission { .. }
             | StaticMode::TopOfLibraryCastPermission { .. }
             | StaticMode::TopOfLibraryHasPlot
+            | StaticMode::TopOfLibraryPlotPermission
             | StaticMode::CastFromHandFree { .. }
             | StaticMode::ExileCastPermission { .. }
             | StaticMode::CountersPersistAcrossZones { .. }
@@ -2200,9 +2216,11 @@ impl fmt::Display for StaticMode {
                     write!(f, "TopOfLibraryCastPermission({play_mode}{freq_seg})")
                 }
             }
-            // CR 702.170f: nullary marker; nonland scope rides
-            // `StaticDefinition.affected`, not the Display payload.
+            // CR 702.170a grant + CR 702.170f permission markers; both nullary —
+            // the grant/permission scope rides `StaticDefinition.affected`, not
+            // the Display payload.
             StaticMode::TopOfLibraryHasPlot => write!(f, "TopOfLibraryHasPlot"),
+            StaticMode::TopOfLibraryPlotPermission => write!(f, "TopOfLibraryPlotPermission"),
             StaticMode::CastFromHandFree { frequency, origin } => {
                 if matches!(origin, CastFreeOrigin::Hand) {
                     write!(f, "CastFromHandFree({frequency})")
@@ -2664,9 +2682,11 @@ impl FromStr for StaticMode {
                     alt_cost: None,
                 }
             }
-            // CR 702.170f: nullary marker; the nonland scope is carried on
-            // `StaticDefinition.affected`, so there is no Display payload to parse.
+            // CR 702.170a grant + CR 702.170f permission markers; both nullary —
+            // the scope rides `StaticDefinition.affected`, so there is no Display
+            // payload to parse.
             "TopOfLibraryHasPlot" => StaticMode::TopOfLibraryHasPlot,
+            "TopOfLibraryPlotPermission" => StaticMode::TopOfLibraryPlotPermission,
             "CastFromHandFree" => StaticMode::CastFromHandFree {
                 frequency: CastFrequency::Unlimited,
                 origin: CastFreeOrigin::Hand,
@@ -3353,10 +3373,11 @@ mod tests {
             },
             StaticMode::CantCrew,
             StaticMode::MayLookAtTopOfLibrary,
-            // CR 702.170f: nullary plot-from-library marker (Fblthp). The
-            // nonland scope rides `StaticDefinition.affected`, not the Display
-            // payload, so the bare marker round-trips cleanly here.
+            // CR 702.170a grant + CR 702.170f permission — nullary plot-from-
+            // library markers (Fblthp). Scope rides `StaticDefinition.affected`,
+            // not the Display payload, so the bare markers round-trip cleanly.
             StaticMode::TopOfLibraryHasPlot,
+            StaticMode::TopOfLibraryPlotPermission,
             StaticMode::MayLookAtFaceDown,
             StaticMode::CantBeTurnedFaceUp,
             // Tier 3: parser-produced statics

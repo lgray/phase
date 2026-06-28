@@ -8707,7 +8707,7 @@ pub fn synthesize_plot(face: &mut CardFace) {
 /// (CR 702.170a: main phase + empty stack + active player). The Exile cost
 /// `zone` and `def.activation_zone` are the only parameterized seams — everything
 /// downstream of "exiled card carrying Plotted" is zone-of-origin agnostic.
-fn build_plot_activation(
+pub(crate) fn build_plot_activation(
     plot_cost: ManaCost,
     activation_zone: Zone,
     exile_zone: Zone,

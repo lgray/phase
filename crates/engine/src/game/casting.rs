@@ -117,6 +117,56 @@ fn runtime_granted_graveyard_activated_abilities(
         .collect()
 }
 
+/// CR 702.170f + CR 702.170a: synthesize the plot special action as a runtime-
+/// granted activated ability on the *authorized top card* of a player's library
+/// (Fblthp, Lost on the Range). CR 702.170f authorizes plot to function from a
+/// zone other than hand (here the library) and to exile from that zone; the
+/// nonland eligibility is Fblthp's printed L4 scope (NOT a CR 702.170f clause),
+/// enforced by the delegated `top_of_library_plot_source` predicate. Returns
+/// `vec![]` for every object that is not the current authorized top card, so no
+/// non-top library card can ever carry a plot ability. Mirrors
+/// `runtime_granted_graveyard_activated_abilities`.
+///
+/// `activation_zone = Some(Zone::Library)` (set by `build_plot_activation`) is a
+/// first-of-its-kind value. It is safe ONLY because this ability is present
+/// exclusively on the positional top card — `top_of_library_plot_source`
+/// re-derives `library.front()` each call, so the activation gate's
+/// `obj.zone == Library` check passes just that one card. A future change that
+/// grants an ability with `activation_zone = Library` by a NON-positional path
+/// would authorize every library card; do not copy this value blindly.
+fn runtime_granted_top_of_library_plot_abilities(
+    state: &GameState,
+    source_id: ObjectId,
+) -> Vec<AbilityDefinition> {
+    let Some(obj) = state.objects.get(&source_id) else {
+        return Vec::new();
+    };
+    // Cheap zone guard before the battlefield scan: plot-from-library functions
+    // only in the Library zone (CR 702.170f).
+    if obj.zone != Zone::Library {
+        return Vec::new();
+    }
+    // CR 702.170d: the plot grant belongs to the library's owner — the player
+    // who may later cast the plotted card. Delegate authorization to the
+    // single-authority predicate; it must return exactly this top card.
+    let player = obj.owner;
+    let Some((top_id, _src_id)) = top_of_library_plot_source(state, player) else {
+        return Vec::new();
+    };
+    if top_id != source_id {
+        return Vec::new();
+    }
+    // CR 702.170a: plot cost = the card's mana cost, computed live from the top
+    // card (not stored on the static). CR 702.170f: the ability functions in,
+    // and exiles from, the Library zone. `build_plot_activation` is the single
+    // authority for the cost/effect shape (shared verbatim with hand-Plot).
+    vec![crate::database::synthesis::build_plot_activation(
+        obj.mana_cost.clone(),
+        Zone::Library,
+        Zone::Library,
+    )]
+}
+
 pub fn activated_ability_definitions(
     state: &GameState,
     source_id: ObjectId,
@@ -131,6 +181,13 @@ pub fn activated_ability_definitions(
         runtime_granted_cycling_abilities(state, source_id)
             .into_iter()
             .chain(runtime_granted_graveyard_activated_abilities(
+                state, source_id,
+            ))
+            // CR 702.170f: plot-from-library (Fblthp) chained LAST — must use
+            // the identical append order in `activation_ability_definition` so
+            // the `ability_index` stays consistent between enumeration and
+            // activation. Empty for every object except the authorized top card.
+            .chain(runtime_granted_top_of_library_plot_abilities(
                 state, source_id,
             ))
             .enumerate()
@@ -151,10 +208,15 @@ fn activation_ability_definition(
         let offset = ability_index.checked_sub(obj.abilities.len())?;
         // Must match the append order in `activated_ability_definitions`: printed
         // abilities first, then runtime-granted cycling, then runtime-granted
-        // graveyard activated (Encore/Scavenge).
+        // graveyard activated (Encore/Scavenge), then runtime-granted
+        // plot-from-library (Fblthp). Identical order is REQUIRED for
+        // `ability_index` consistency.
         runtime_granted_cycling_abilities(state, source_id)
             .into_iter()
             .chain(runtime_granted_graveyard_activated_abilities(
+                state, source_id,
+            ))
+            .chain(runtime_granted_top_of_library_plot_abilities(
                 state, source_id,
             ))
             .nth(offset)?
@@ -2846,6 +2908,93 @@ pub(crate) fn top_of_library_permission_source(
         }
     }
     selected.map(|(src_id, frequency, alt_cost)| (top_id, src_id, frequency, alt_cost))
+}
+
+/// CR 702.170a + CR 702.170f: Return the `(top_library_card, grant_source)` pair
+/// when the player may take the plot special action on the top card of their
+/// library. Fblthp, Lost on the Range is the type specimen ("The top card of
+/// your library has plot." + "You may plot nonland cards from the top of your
+/// library.").
+///
+/// Plot-from-library is two distinct CR roles, modeled as two statics, and BOTH
+/// must hold for the top card:
+/// - GRANT (`StaticMode::TopOfLibraryHasPlot`, CR 702.170a) — the top card *has*
+///   the plot ability. Eligible iff the top card matches the UNION of all active
+///   grants' `affected` filters (Fblthp L3 = `Any`).
+/// - PERMISSION (`StaticMode::TopOfLibraryPlotPermission`, CR 702.170f) — an
+///   effect lets the plot ability function from a zone other than hand and
+///   permits taking the action there. Eligible iff the top card matches the
+///   UNION of all active permissions' `affected` filters (Fblthp L4 = nonland).
+///
+/// Requiring both is rules-correct: a grant alone leaves a plot ability that
+/// (CR 702.170a) only functions in hand, so a library card can't be plotted
+/// without a CR 702.170f permission; a permission alone has no plot ability to
+/// act on. UNION within each role means two INDEPENDENT plot-from-top sources
+/// each authorize their own eligibility (no cross-source veto), while AND across
+/// the two roles enforces "has plot" ∧ "may plot it here". For Fblthp the net
+/// eligible set is `Any ∩ nonland = nonland`; the nonland restriction is purely
+/// the permission's filter (Fblthp's printed L4) — CR 702.170f itself has no
+/// land/nonland clause, so there is NO separate hard-gate (a future land-
+/// permitting plot-from-top card would correctly allow lands).
+///
+/// Categorically distinct from [`top_of_library_permission_source`] (CR 601.2a —
+/// a `Library → Stack` cast with no exile). This authorizes the CR 702.170 plot
+/// special action: `Library → Exile` face up now, then a free `Exile → Stack`
+/// cast on a later turn. The positional top-only restriction (CR 702.170f — "the
+/// card is exiled from the zone it is in") lives HERE, not in the activation-zone
+/// gate; the top of library is re-derived each call because it changes between
+/// priority windows. The returned source is an authorizing grant permanent.
+pub(crate) fn top_of_library_plot_source(
+    state: &GameState,
+    player: PlayerId,
+) -> Option<(ObjectId, ObjectId)> {
+    let player_data = state.players.iter().find(|p| p.id == player)?;
+    let &top_id = player_data.library.front()?;
+
+    // Scan the player's battlefield once, classifying active plot statics into
+    // the two CR roles and UNION-matching each role's `affected` filter against
+    // the current top card.
+    let mut grant_source: Option<ObjectId> = None; // first grant whose filter matches
+    let mut has_permission = false; // any permission whose filter matches
+    for &src_id in &state.battlefield {
+        let Some(obj) = state.objects.get(&src_id) else {
+            continue;
+        };
+        if obj.controller != player {
+            continue;
+        }
+        for s in active_static_definitions(state, obj) {
+            let role_is_grant = match s.mode {
+                StaticMode::TopOfLibraryHasPlot => true,
+                StaticMode::TopOfLibraryPlotPermission => false,
+                _ => continue,
+            };
+            // A `None` filter means no restriction (matches any top card).
+            let matches = s.affected.as_ref().is_none_or(|f| {
+                super::filter::matches_target_filter(
+                    state,
+                    top_id,
+                    f,
+                    &super::filter::FilterContext::from_source_with_controller(src_id, player),
+                )
+            });
+            if !matches {
+                continue;
+            }
+            if role_is_grant {
+                grant_source.get_or_insert(src_id);
+            } else {
+                has_permission = true;
+            }
+        }
+    }
+
+    // CR 702.170a grant ∧ CR 702.170f permission: the top card must both HAVE
+    // plot and be permitted to be plotted from the library.
+    match grant_source {
+        Some(src_id) if has_permission => Some((top_id, src_id)),
+        _ => None,
+    }
 }
 
 /// CR 401.5 + CR 305.1: Return the top-of-library land + source pair when a
@@ -50528,5 +50677,650 @@ mod tests {
             cast_permission_constraint_allows_cast(&state, obj, &constraint, None),
             "offer-time check (resulting MV unknown) must be permissive"
         );
+    }
+
+    /// CR 702.170f end-to-end runtime: plot-from-library (Fblthp, Lost on the
+    /// Range). These tests drive the real legal-action / activation pipeline —
+    /// `top_of_library_plot_source` → runtime-granted plot ability →
+    /// `GameAction::ActivateAbility` → exile-from-library face up → Plotted →
+    /// (reused) later free cast — never the parser shape in isolation.
+    mod plot_from_library {
+        use super::*;
+        use crate::ai_support::legal_actions;
+        use crate::game::derived::derive_display_state;
+        use crate::game::scenario::{GameRunner, GameScenario, P0, P1};
+        use crate::game::visibility::filter_state_for_viewer;
+        use crate::types::ability::{TargetFilter, TypeFilter, TypedFilter};
+
+        // Fblthp's plot-from-library lines (Ward omitted — irrelevant here and
+        // needs a keyword hint to parse). Routed through the real PR-B parser by
+        // `from_oracle_text`, so this exercises parser → static → runtime.
+        const FBLTHP_ORACLE: &str = "You may look at the top card of your library any time.\n\
+             The top card of your library has plot. The plot cost is equal to its mana cost.\n\
+             You may plot nonland cards from the top of your library.";
+
+        fn blue_one_u() -> ManaCost {
+            ManaCost::Cost {
+                shards: vec![ManaCostShard::Blue],
+                generic: 1,
+            }
+        }
+
+        /// Turn a generic library-top object into a nonland creature with a
+        /// {1}{U} cost (a colored pip distinct from any fixed Foretell-style
+        /// cost, so the EXECUTE test can prove cost = the card's mana cost).
+        fn make_nonland_blue(state: &mut GameState, id: ObjectId) {
+            let obj = state.objects.get_mut(&id).unwrap();
+            obj.card_types.core_types = vec![CoreType::Creature];
+            obj.mana_cost = blue_one_u();
+        }
+
+        fn make_land(state: &mut GameState, id: ObjectId) {
+            let obj = state.objects.get_mut(&id).unwrap();
+            obj.card_types.core_types = vec![CoreType::Land];
+            obj.mana_cost = ManaCost::NoCost;
+        }
+
+        /// Fblthp on P0's battlefield (statics parsed from Oracle text) + a
+        /// nonland {1}{U} creature on top of P0's library. Returns the runner,
+        /// Fblthp's id, and the top card's id. Phase = P0's precombat main,
+        /// empty stack, P0 priority.
+        fn fblthp_with_nonland_top() -> (GameRunner, ObjectId, ObjectId) {
+            let mut scenario = GameScenario::new();
+            scenario.at_phase(Phase::PreCombatMain);
+            let fblthp = {
+                let mut b = scenario.add_creature(P0, "Fblthp, Lost on the Range", 1, 1);
+                b.from_oracle_text(FBLTHP_ORACLE);
+                b.id()
+            };
+            let top = scenario.add_card_to_library_top(P0, "Augury Owl");
+            let mut runner = scenario.build();
+            make_nonland_blue(runner.state_mut(), top);
+            derive_display_state(runner.state_mut());
+            (runner, fblthp, top)
+        }
+
+        fn plot_action_for(state: &GameState, top_id: ObjectId) -> Option<GameAction> {
+            legal_actions(state).into_iter().find(|a| {
+                matches!(a, GameAction::ActivateAbility { source_id, .. } if *source_id == top_id)
+            })
+        }
+
+        /// Fund P0 generously so CR 601.2b affordability is never the gating
+        /// factor in the OFFER tests (which isolate GRANT / position / nonland /
+        /// authorizer conditions, not mana). Covers the {1}{U} top-card cost.
+        fn fund_for_plot(runner: &mut GameRunner) {
+            add_mana(runner.state_mut(), P0, ManaType::Blue, 2);
+            add_mana(runner.state_mut(), P0, ManaType::Colorless, 2);
+        }
+
+        fn plot_ability_index(state: &GameState, top_id: ObjectId) -> usize {
+            activated_ability_definitions(state, top_id)
+                .into_iter()
+                .find(|(_, def)| def.activation_zone == Some(Zone::Library))
+                .map(|(i, _)| i)
+                .expect("authorized top card must carry the runtime-granted plot ability")
+        }
+
+        /// Confirm Fblthp's Oracle text produced the split roles: exactly one
+        /// `TopOfLibraryHasPlot` GRANT (L3) and one `TopOfLibraryPlotPermission`
+        /// (L4) — not two of the same conflated mode (parser → runtime sanity).
+        fn assert_fblthp_statics(state: &GameState, fblthp: ObjectId) {
+            let grants = state.objects[&fblthp]
+                .static_definitions
+                .iter_all()
+                .filter(|s| matches!(s.mode, StaticMode::TopOfLibraryHasPlot))
+                .count();
+            let permissions = state.objects[&fblthp]
+                .static_definitions
+                .iter_all()
+                .filter(|s| matches!(s.mode, StaticMode::TopOfLibraryPlotPermission))
+                .count();
+            assert_eq!(grants, 1, "Fblthp L3 must be exactly one grant static");
+            assert_eq!(
+                permissions, 1,
+                "Fblthp L4 must be exactly one permission static"
+            );
+        }
+
+        /// test_plan #1: GRANT + OFFER, plus ABSENT off-turn / non-empty stack /
+        /// non-main phase. Also test_plan #12 (helper-level) for the Some case.
+        #[test]
+        fn plot_offered_for_nonland_top_only_on_own_empty_main() {
+            let (mut runner, fblthp, top) = fblthp_with_nonland_top();
+            fund_for_plot(&mut runner);
+            assert_fblthp_statics(runner.state(), fblthp);
+            assert_eq!(
+                runner.state().players[0].library.front().copied(),
+                Some(top)
+            );
+
+            // GRANT + OFFER on P0's main phase, empty stack.
+            assert!(
+                plot_action_for(runner.state(), top).is_some(),
+                "plot must be offered for the nonland top on P0's own empty main phase"
+            );
+            // Helper-level (test_plan #12): the source predicate authorizes it.
+            assert_eq!(
+                top_of_library_plot_source(runner.state(), P0),
+                Some((top, fblthp)),
+                "top_of_library_plot_source must return (top, fblthp) for a nonland top"
+            );
+
+            // ABSENT during an opponent's turn (CR 116.2k — own turn only): P0
+            // still holds priority (instant window) but plot is sorcery-speed.
+            runner.state_mut().active_player = P1;
+            derive_display_state(runner.state_mut());
+            assert!(
+                plot_action_for(runner.state(), top).is_none(),
+                "plot must NOT be offered while it is the opponent's turn"
+            );
+            runner.state_mut().active_player = P0;
+
+            // ABSENT with a non-empty stack (CR 702.170a — empty stack only).
+            let filler = zones::create_object(
+                runner.state_mut(),
+                CardId(7777),
+                P0,
+                "Stack Filler".to_string(),
+                Zone::Stack,
+            );
+            runner.state_mut().stack.push_back(StackEntry {
+                id: filler,
+                source_id: filler,
+                controller: P0,
+                kind: StackEntryKind::Spell {
+                    card_id: CardId(7777),
+                    ability: None,
+                    casting_variant: CastingVariant::Normal,
+                    actual_mana_spent: 0,
+                },
+            });
+            derive_display_state(runner.state_mut());
+            assert!(
+                plot_action_for(runner.state(), top).is_none(),
+                "plot must NOT be offered while the stack is non-empty"
+            );
+            runner.state_mut().stack.clear();
+
+            // ABSENT outside a main phase (CR 702.170a). can_activate_ability_now
+            // enforces the AsSorcery timing independently of the candidate guard.
+            runner.state_mut().phase = Phase::BeginCombat;
+            derive_display_state(runner.state_mut());
+            assert!(
+                plot_action_for(runner.state(), top).is_none(),
+                "plot must NOT be offered outside a main phase"
+            );
+        }
+
+        /// test_plan #2: positional discriminator — only `library.front()` is
+        /// plottable, never a deeper library card.
+        #[test]
+        fn plot_offered_only_for_the_top_card_not_second_from_top() {
+            let (mut runner, _fblthp, top) = fblthp_with_nonland_top();
+            fund_for_plot(&mut runner);
+            // Insert a second nonland card just under the top.
+            let second = {
+                let id = {
+                    let s = runner.state_mut();
+                    let card_id = CardId(s.next_object_id);
+                    zones::create_object(s, card_id, P0, "Second Card".to_string(), Zone::Library)
+                };
+                // Re-seat at index 1 (just under the current top).
+                let p = runner
+                    .state_mut()
+                    .players
+                    .iter_mut()
+                    .find(|p| p.id == P0)
+                    .unwrap();
+                p.library.retain(|&o| o != id);
+                p.library.insert(1, id);
+                id
+            };
+            make_nonland_blue(runner.state_mut(), second);
+            derive_display_state(runner.state_mut());
+
+            assert_eq!(
+                runner.state().players[0].library.front().copied(),
+                Some(top)
+            );
+            assert!(
+                plot_action_for(runner.state(), top).is_some(),
+                "the actual top card must be plottable"
+            );
+            assert!(
+                plot_action_for(runner.state(), second).is_none(),
+                "the second-from-top card must NOT be plottable — top-card-only"
+            );
+            // The runtime-granted ability is present ONLY on the top card.
+            assert!(
+                runtime_granted_top_of_library_plot_abilities(runner.state(), second).is_empty(),
+                "no non-top library card may carry the plot ability"
+            );
+        }
+
+        /// test_plan #3: nonland discriminator (non-vacuous flip). A land top is
+        /// never plottable; swapping it to a nonland makes it plottable.
+        #[test]
+        fn plot_requires_nonland_top() {
+            let (mut runner, _fblthp, top) = fblthp_with_nonland_top();
+            fund_for_plot(&mut runner);
+            // Land top → no offer: rejected purely by the permission's nonland
+            // filter (the hard-gate is gone). CR 702.170f covers the zone, not
+            // the land/nonland restriction.
+            make_land(runner.state_mut(), top);
+            derive_display_state(runner.state_mut());
+            assert!(
+                plot_action_for(runner.state(), top).is_none(),
+                "a land top must NOT be plottable"
+            );
+            assert_eq!(
+                top_of_library_plot_source(runner.state(), P0),
+                None,
+                "top_of_library_plot_source must reject a land top"
+            );
+
+            // Swap the same top object to a nonland → now plottable.
+            make_nonland_blue(runner.state_mut(), top);
+            derive_display_state(runner.state_mut());
+            assert!(
+                plot_action_for(runner.state(), top).is_some(),
+                "swapping the top to a nonland must make it plottable"
+            );
+        }
+
+        /// test_plan #7: STATIC-GONE revert-probe (load-bearing). Remove Fblthp
+        /// from the battlefield and the plot offer vanishes — the authorizer is
+        /// the battlefield static, not an intrinsic property of the library card.
+        #[test]
+        fn plot_offer_vanishes_when_authorizer_leaves() {
+            let (mut runner, fblthp, top) = fblthp_with_nonland_top();
+            fund_for_plot(&mut runner);
+            assert!(plot_action_for(runner.state(), top).is_some());
+
+            // Fblthp leaves the battlefield.
+            zones::remove_from_zone(runner.state_mut(), fblthp, Zone::Battlefield, P0);
+            runner.state_mut().objects.get_mut(&fblthp).unwrap().zone = Zone::Graveyard;
+            zones::add_to_zone(runner.state_mut(), fblthp, Zone::Graveyard, P0);
+            derive_display_state(runner.state_mut());
+
+            assert_eq!(
+                top_of_library_plot_source(runner.state(), P0),
+                None,
+                "with no authorizing static, the top must not be plottable"
+            );
+            assert!(
+                plot_action_for(runner.state(), top).is_none(),
+                "plot offer must vanish when Fblthp leaves the battlefield"
+            );
+        }
+
+        /// test_plan #8: INVARIANT — the cast-permission family is byte-untouched.
+        /// A `TopOfLibraryCastPermission` source (Future Sight class) is NOT a
+        /// plot authorizer: `top_of_library_plot_source` returns None even though
+        /// the top is castable Library→Stack. The two helpers are disjoint.
+        #[test]
+        fn cast_permission_source_is_not_a_plot_authorizer() {
+            let mut scenario = GameScenario::new();
+            scenario.at_phase(Phase::PreCombatMain);
+            let _future_sight = {
+                let mut b = scenario.add_creature(P0, "Future Sight Stand-in", 1, 1);
+                b.from_oracle_text(
+                    "You may play lands and cast spells from the top of your library.",
+                );
+                b.id()
+            };
+            let top = scenario.add_card_to_library_top(P0, "Augury Owl");
+            let mut runner = scenario.build();
+            make_nonland_blue(runner.state_mut(), top);
+            derive_display_state(runner.state_mut());
+
+            // The cast family still authorizes a Library→Stack cast.
+            assert!(
+                top_of_library_permission_source(runner.state(), P0, Some(CardPlayMode::Cast))
+                    .is_some(),
+                "Future Sight class must still authorize casting the top card"
+            );
+            // But it is NOT a plot authorizer — the dedicated path is disjoint.
+            assert_eq!(
+                top_of_library_plot_source(runner.state(), P0),
+                None,
+                "TopOfLibraryCastPermission must never authorize plot-from-library"
+            );
+            // No exile-from-library plot ability is granted on the top card.
+            assert!(
+                runtime_granted_top_of_library_plot_abilities(runner.state(), top).is_empty(),
+                "cast permission must not synthesize a plot ability"
+            );
+        }
+
+        /// test_plan #4 + #6: EXECUTE the plot special action, then the SAME-TURN
+        /// revert-probe. Drives the real activation pipeline: pay {1}{U} (the top
+        /// card's mana cost, INCLUDING the colored pip), exile from library FACE
+        /// UP, grant `Plotted{turn_plotted == turn_number}`, emit BecomesPlotted.
+        #[test]
+        fn execute_plot_exiles_face_up_and_grants_plotted() {
+            let (mut runner, _fblthp, top) = fblthp_with_nonland_top();
+            let idx = plot_ability_index(runner.state(), top);
+            // Colored-pip discriminator: two colorless cannot pay {1}{U}. If the
+            // plot cost were free or all-generic this would (wrongly) be payable.
+            add_mana(runner.state_mut(), P0, ManaType::Colorless, 2);
+            assert!(
+                !can_activate_ability_now(runner.state(), P0, top, idx),
+                "without blue, {{1}}{{U}} is unpayable — the plot cost carries the colored pip"
+            );
+            // Drain, then fund EXACTLY {1}{U} so a clean pool==0 after activation
+            // proves cost == the card's printed mana cost (colored pip included).
+            runner.state_mut().players[0].mana_pool = Default::default();
+            add_mana(runner.state_mut(), P0, ManaType::Blue, 1);
+            add_mana(runner.state_mut(), P0, ManaType::Colorless, 1);
+            let turn = runner.state().turn_number;
+
+            // Announce + pay; then drive to resolution, capturing events.
+            let mut events = apply_as_current(
+                runner.state_mut(),
+                GameAction::ActivateAbility {
+                    source_id: top,
+                    ability_index: idx,
+                },
+            )
+            .expect("activating plot-from-library must be accepted")
+            .events;
+            // The Exile cost is paid during activation — the card is already gone
+            // from the library before the ability hits the stack.
+            assert_eq!(
+                runner.state().objects[&top].zone,
+                Zone::Exile,
+                "paying the plot cost must exile the top card from the library"
+            );
+            assert_ne!(
+                runner.state().players[0].library.front().copied(),
+                Some(top),
+                "the plotted card must have left the library"
+            );
+            // Resolve the on-stack grant ability (pass priority both players).
+            for _ in 0..16 {
+                if runner.state().objects[&top]
+                    .casting_permissions
+                    .iter()
+                    .any(|p| matches!(p, CastingPermission::Plotted { .. }))
+                {
+                    break;
+                }
+                match apply_as_current(runner.state_mut(), GameAction::PassPriority) {
+                    Ok(r) => events.extend(r.events),
+                    Err(_) => break,
+                }
+            }
+
+            // FACE-UP exile (revert-probe vs the refuted face-down claim — CR
+            // 702.170 has no face-down clause, unlike Foretell CR 116.2h).
+            assert!(
+                !runner.state().objects[&top].face_down,
+                "plot exiles FACE UP — CR 702.170 has no face-down clause"
+            );
+            // Plotted granted, stamped to the current turn (CR 702.170a/d).
+            let plotted_turn = runner.state().objects[&top]
+                .casting_permissions
+                .iter()
+                .find_map(|p| match p {
+                    CastingPermission::Plotted { turn_plotted } => Some(*turn_plotted),
+                    _ => None,
+                })
+                .expect("the exiled card must carry the Plotted permission");
+            assert_eq!(
+                plotted_turn, turn,
+                "turn_plotted must be stamped to the turn the card was plotted"
+            );
+            // BecomesPlotted emitted for the owner.
+            assert!(
+                events.iter().any(|e| matches!(
+                    e,
+                    GameEvent::BecomesPlotted { object_id, player_id }
+                        if *object_id == top && *player_id == P0
+                )),
+                "a BecomesPlotted event must be emitted for the plotting player"
+            );
+            // The {1}{U} pool was fully consumed — cost == the card's mana cost.
+            assert_eq!(
+                runner.state().players[0].mana_pool.total(),
+                0,
+                "exactly {{1}}{{U}} must be spent — the plot cost equals the card's mana cost"
+            );
+
+            // test_plan #6: SAME-TURN revert-probe — NOT free-castable the turn
+            // it was plotted (CR 702.170d: only a LATER turn; the gate is `>`).
+            let same_turn = runner.state().turn_number;
+            let top_obj = runner.state().objects[&top].clone();
+            assert!(
+                !has_exile_cast_permission(runner.state(), &top_obj, P0, same_turn),
+                "a card plotted this turn must NOT be free-castable until a later turn"
+            );
+            // LATER-TURN probe (CR 702.170d, gate is `>`): a turn later it IS
+            // free-castable — proving the reused Plotted lifecycle is intact.
+            assert!(
+                has_exile_cast_permission(runner.state(), &top_obj, P0, same_turn + 1),
+                "on a later turn the plotted card must be free-castable"
+            );
+        }
+
+        /// Frontend exposure (design risk #4): a player with MayLookAtTopOfLibrary
+        /// (which Fblthp grants) sees their OWN library top in the viewer-filtered
+        /// state, so `ActivateAbility{source_id: top}` has a render target. The
+        /// opponent does not. Engine-authoritative — never computed client-side.
+        #[test]
+        fn maylook_exposes_own_library_top_to_viewer_only() {
+            let (mut runner, _fblthp, top) = fblthp_with_nonland_top();
+            derive_display_state(runner.state_mut());
+            assert!(
+                runner.state().players[0].can_look_at_top_of_library,
+                "Fblthp must grant P0 the look-at-top permission"
+            );
+
+            // P0 (the looker) sees the top card's identity.
+            let p0_view = filter_state_for_viewer(runner.state(), P0);
+            assert_eq!(
+                p0_view.objects[&top].name, "Augury Owl",
+                "the looking player must see their own library top (render target for plot)"
+            );
+            // The opponent does not.
+            let p1_view = filter_state_for_viewer(runner.state(), P1);
+            assert_ne!(
+                p1_view.objects[&top].name, "Augury Owl",
+                "an opponent must NOT see the hidden library top"
+            );
+        }
+
+        /// Parse a plot line into its real `StaticDefinition` (canonical filters).
+        fn plot_static(line: &str) -> StaticDefinition {
+            crate::parser::oracle_static::parse_static_line(line)
+                .expect("plot line must parse to a static")
+        }
+
+        /// Battlefield permanent carrying exactly the given plot statics + a top
+        /// library card (land or nonland). Returns (runner, source_id, top_id).
+        fn scenario_with_plot_statics(
+            statics: &[StaticDefinition],
+            top_is_land: bool,
+        ) -> (GameRunner, ObjectId, ObjectId) {
+            let mut scenario = GameScenario::new();
+            scenario.at_phase(Phase::PreCombatMain);
+            let src = {
+                let mut b = scenario.add_creature(P0, "Plot Source", 1, 1);
+                for s in statics {
+                    b.with_static_definition(s.clone());
+                }
+                b.id()
+            };
+            let top = scenario.add_card_to_library_top(P0, "Augury Owl");
+            let mut runner = scenario.build();
+            if top_is_land {
+                make_land(runner.state_mut(), top);
+            } else {
+                make_nonland_blue(runner.state_mut(), top);
+            }
+            derive_display_state(runner.state_mut());
+            (runner, src, top)
+        }
+
+        /// matthewevans [MED] split — discriminating revert-probe: plot-from-
+        /// library requires BOTH the CR 702.170a grant AND the CR 702.170f
+        /// permission. A runtime that regresses to treating one mode as both (the
+        /// pre-split conflation) would offer plot with only one role present, so
+        /// the grant-only / permission-only cases below would wrongly return
+        /// `Some` and fail. The nonland restriction is the PERMISSION's filter
+        /// (no hard-gate), so it only applies when a permission is present.
+        #[test]
+        fn plot_requires_both_grant_and_permission_roles() {
+            let grant = plot_static(
+                "The top card of your library has plot. The plot cost is equal to its mana cost.",
+            );
+            let permission =
+                plot_static("You may plot nonland cards from the top of your library.");
+            // Sanity: the two lines lower to the two distinct roles.
+            assert_eq!(grant.mode, StaticMode::TopOfLibraryHasPlot);
+            assert_eq!(permission.mode, StaticMode::TopOfLibraryPlotPermission);
+
+            // (a) GRANT-ONLY → None. CR 702.170a: a plot ability functions in
+            // hand; without a CR 702.170f permission the library card can't be
+            // plotted, even though it "has plot".
+            let (runner, _src, _top) =
+                scenario_with_plot_statics(std::slice::from_ref(&grant), false);
+            assert_eq!(
+                top_of_library_plot_source(runner.state(), P0),
+                None,
+                "grant alone must NOT authorize plot-from-library (no permission)"
+            );
+
+            // (b) PERMISSION-ONLY → None. The permission allows plotting from the
+            // library, but the top card has no plot ability to act on.
+            let (runner, _src, _top) =
+                scenario_with_plot_statics(std::slice::from_ref(&permission), false);
+            assert_eq!(
+                top_of_library_plot_source(runner.state(), P0),
+                None,
+                "permission alone must NOT authorize plot-from-library (no grant)"
+            );
+
+            // (c) BOTH → nonland top authorized (returns the grant source); a LAND
+            // top is rejected purely by the permission's nonland filter.
+            let (runner, src, top) =
+                scenario_with_plot_statics(&[grant.clone(), permission.clone()], false);
+            assert_eq!(
+                top_of_library_plot_source(runner.state(), P0),
+                Some((top, src)),
+                "grant + permission must authorize a nonland top"
+            );
+            let (runner, _src, _top) = scenario_with_plot_statics(&[grant, permission], true);
+            assert_eq!(
+                top_of_library_plot_source(runner.state(), P0),
+                None,
+                "a land top must be rejected by the permission's nonland filter"
+            );
+        }
+
+        /// Two SEPARATE P0 battlefield permanents, each carrying its own plot
+        /// statics, plus a nonland {1}{U} top. Models two INDEPENDENT plot-from-
+        /// top sources (the UNION-within-role claim). Returns
+        /// (runner, src_a, src_b, top).
+        fn scenario_with_two_plot_sources(
+            statics_a: &[StaticDefinition],
+            statics_b: &[StaticDefinition],
+            top_is_land: bool,
+        ) -> (GameRunner, ObjectId, ObjectId, ObjectId) {
+            let mut scenario = GameScenario::new();
+            scenario.at_phase(Phase::PreCombatMain);
+            let src_a = {
+                let mut b = scenario.add_creature(P0, "Plot Source A", 1, 1);
+                for s in statics_a {
+                    b.with_static_definition(s.clone());
+                }
+                b.id()
+            };
+            let src_b = {
+                let mut b = scenario.add_creature(P0, "Plot Source B", 1, 1);
+                for s in statics_b {
+                    b.with_static_definition(s.clone());
+                }
+                b.id()
+            };
+            let top = scenario.add_card_to_library_top(P0, "Augury Owl");
+            let mut runner = scenario.build();
+            if top_is_land {
+                make_land(runner.state_mut(), top);
+            } else {
+                make_nonland_blue(runner.state_mut(), top);
+            }
+            derive_display_state(runner.state_mut());
+            (runner, src_a, src_b, top)
+        }
+
+        /// Adversarial revert-probe for the UNION-WITHIN-role claim that anchors
+        /// the grant/permission split (see `top_of_library_plot_source` doc, CR
+        /// 702.170a + CR 702.170f): "two INDEPENDENT plot-from-top sources each
+        /// authorize their own eligibility (no cross-source veto)." Every other
+        /// plot test uses exactly ONE grant + ONE permission, so a regression
+        /// from per-source UNION (`grant_source.get_or_insert` /
+        /// `has_permission = true`) to a cross-source intersection (require ALL
+        /// grants — or ALL permissions — to match the top) would pass them all.
+        ///
+        /// Here a SECOND, deliberately NON-MATCHING source of each role is
+        /// load-bearing: it carries a land-only `affected` filter that the
+        /// nonland-blue top FAILS. Under an all-match regression that non-
+        /// matching source would veto the matching one → `None` → this test
+        /// fails. (If both sources matched, the test could not distinguish UNION
+        /// from intersection — the non-matching source is the discriminator.)
+        #[test]
+        fn plot_union_within_role_no_cross_source_veto() {
+            // Land-only filter: the nonland-blue top FAILS it. A future "lands on
+            // top have plot" card would carry such a grant; it must not veto a
+            // matching source. Parser only emits `Any` grants, so build directly.
+            let land_only = TargetFilter::Typed(TypedFilter::new(TypeFilter::Land));
+
+            let grant_any = plot_static(
+                "The top card of your library has plot. The plot cost is equal to its mana cost.",
+            );
+            assert_eq!(grant_any.mode, StaticMode::TopOfLibraryHasPlot);
+            let grant_land_only =
+                StaticDefinition::new(StaticMode::TopOfLibraryHasPlot).affected(land_only.clone());
+
+            let permission_nonland =
+                plot_static("You may plot nonland cards from the top of your library.");
+            assert_eq!(
+                permission_nonland.mode,
+                StaticMode::TopOfLibraryPlotPermission
+            );
+            let permission_land_only =
+                StaticDefinition::new(StaticMode::TopOfLibraryPlotPermission).affected(land_only);
+
+            // (a) UNION within the GRANT role: source A has a matching grant
+            // (`Any`) + the matching permission; source B has a NON-matching
+            // grant (land-only). The matching grant authorizes via UNION; the
+            // non-matching grant must NOT veto.
+            let (runner, _a, _b, top) = scenario_with_two_plot_sources(
+                &[grant_any.clone(), permission_nonland.clone()],
+                std::slice::from_ref(&grant_land_only),
+                false,
+            );
+            assert!(
+                matches!(top_of_library_plot_source(runner.state(), P0), Some((t, _)) if t == top),
+                "a matching grant must authorize via UNION even when a second grant \
+                 source does not match the top (no cross-source grant veto)"
+            );
+
+            // (b) UNION within the PERMISSION role: source A has the matching
+            // grant + a matching permission (nonland); source B has a NON-matching
+            // permission (land-only). No cross-source permission veto.
+            let (runner, _a, _b, top) = scenario_with_two_plot_sources(
+                &[grant_any, permission_nonland],
+                std::slice::from_ref(&permission_land_only),
+                false,
+            );
+            assert!(
+                matches!(top_of_library_plot_source(runner.state(), P0), Some((t, _)) if t == top),
+                "a matching permission must authorize via UNION even when a second \
+                 permission source does not match the top (no cross-source permission veto)"
+            );
+        }
     }
 }
