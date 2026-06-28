@@ -1023,17 +1023,63 @@ pub fn player_has_cant_lose_life(state: &GameState, player_id: PlayerId) -> bool
                 .any(|teammate| life_lock_active_for(state, teammate, StaticMode::CantLoseLife)))
 }
 
-/// CR 702.11e: Check if `player_id` may target creatures as though they didn't
-/// have hexproof, including "hexproof from [quality]" variants.
+/// CR 702.11b + CR 702.11e: Check if `player_id` may target creatures as though
+/// they didn't have hexproof, including "hexproof from [quality]" variants
+/// (CR 702.11e: an "as though it didn't have hexproof" effect also defeats
+/// hexproof-from-quality). This is the player-scoped grant (Detection Tower
+/// class — "you may target ... as though it
+/// didn't have hexproof"), keyed on a battlefield `IgnoreHexproof` static with
+/// NO object `affected` filter, plus the per-player transient grant.
+///
+/// Object-scoped `IgnoreHexproof` statics (Nowhere to Run, `affected = Some`)
+/// are deliberately excluded here — they are not player grants and must not
+/// widen the bypass to every target `player_id` chooses. Those are evaluated
+/// per-target by [`target_ignores_hexproof`].
 pub fn player_ignores_hexproof(state: &GameState, player_id: PlayerId) -> bool {
-    check_static_ability(
-        state,
-        StaticMode::IgnoreHexproof,
-        &StaticCheckContext {
-            player_id: Some(player_id),
-            ..Default::default()
-        },
-    ) || transient_grants_static_mode_to_player(state, player_id, &StaticMode::IgnoreHexproof)
+    let player_scoped_grant = game_functioning_statics(state).any(|(obj, def)| {
+        matches!(def.mode, StaticMode::IgnoreHexproof)
+            && def.affected.is_none()
+            && static_condition_matches_context(
+                state,
+                obj.id,
+                obj.controller,
+                def,
+                &StaticCheckContext {
+                    player_id: Some(player_id),
+                    ..Default::default()
+                },
+            )
+    });
+    player_scoped_grant
+        || transient_grants_static_mode_to_player(state, player_id, &StaticMode::IgnoreHexproof)
+}
+
+/// CR 702.11b + CR 702.11e: Whether an active battlefield `IgnoreHexproof` static
+/// scoped by an object `affected` filter makes `target_id` targetable as though
+/// it had no hexproof (CR 702.11e extends the bypass to hexproof-from-quality).
+/// Nowhere to Run — "Creatures your opponents control can be the
+/// targets of spells and abilities as though they didn't have hexproof." The
+/// card carries no "you control" qualifier on the spells or abilities, so the
+/// bypass applies to ANY targeting player: it is keyed solely on the would-be
+/// target matching the static's `affected` filter (evaluated from the static's
+/// own source), independent of the targeting source's controller — hexproof
+/// (CR 702.11b) only ever blocks opponents, so removing it for the matched
+/// permanents opens them to every player. Object-scoped (`affected = Some`)
+/// only; the player-scoped
+/// Detection Tower form (`affected = None`) is handled by
+/// [`player_ignores_hexproof`].
+pub fn target_ignores_hexproof(state: &GameState, target_id: ObjectId) -> bool {
+    battlefield_active_statics(state).any(|(source_obj, def)| {
+        matches!(def.mode, StaticMode::IgnoreHexproof)
+            && def.affected.as_ref().is_some_and(|filter| {
+                matches_target_filter(
+                    state,
+                    target_id,
+                    filter,
+                    &FilterContext::from_source(state, source_obj.id),
+                )
+            })
+    })
 }
 
 /// CR 118.3 + CR 119.4b + CR 601.2h + CR 602.2b: Check whether a static
