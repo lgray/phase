@@ -8656,7 +8656,7 @@ pub fn synthesize_suspend(face: &mut CardFace) {
 /// same face). Build-for-the-class: every Plot card flows through this single
 /// synthesizer regardless of card type.
 pub fn synthesize_plot(face: &mut CardFace) {
-    use crate::types::ability::{ActivationRestriction, CastingPermission, PermissionGrantee};
+    use crate::types::ability::{ActivationRestriction, CastingPermission};
 
     // CR 702.170a: Find the first Plot keyword. Cards do not print multiple Plots.
     let Some(plot_cost) = face.keywords.iter().find_map(|k| match k {
@@ -8683,41 +8683,70 @@ pub fn synthesize_plot(face: &mut CardFace) {
             )
     });
     if !already_has_plot_activation {
-        let composite_cost = AbilityCost::Composite {
-            costs: vec![
-                AbilityCost::Mana {
-                    cost: plot_cost.clone(),
-                },
-                // CR 702.170a: "exile this card from your hand" — self-targeted
-                // exile from hand. Mirrors Suspend's self-exile cost component.
-                AbilityCost::Exile {
-                    count: 1,
-                    zone: Some(Zone::Hand),
-                    filter: Some(TargetFilter::SelfRef),
-                },
-            ],
-        };
-        let mut def = AbilityDefinition::new(
-            AbilityKind::Activated,
-            // CR 702.170a + CR 702.170d: Grant the `Plotted` casting permission
-            // to the exiled card. `turn_plotted: 0` is a placeholder stamped
-            // by `grant_permission::resolve` to `state.turn_number` at
-            // resolution. Grantee is the default `AbilityController` — the
-            // plot owner — which is the player allowed to cast it later.
-            Effect::GrantCastingPermission {
-                permission: CastingPermission::Plotted { turn_plotted: 0 },
-                target: TargetFilter::SelfRef,
-                grantee: PermissionGrantee::AbilityController,
-            },
-        )
-        .cost(composite_cost)
-        // CR 702.170a: "Any time you have priority during your main phase while
-        // the stack is empty" — i.e. sorcery-speed timing. `.sorcery_speed()`
-        // is the single-authority builder (see `AbilityDefinition::sorcery_speed`).
-        .sorcery_speed();
-        def.activation_zone = Some(Zone::Hand);
-        face.abilities.push(def);
+        // CR 702.170a: printed Plot functions from hand — activation and exile
+        // both occur in the Hand zone. `build_plot_activation` is the single
+        // authority for the cost/effect shape (shared with effect-granted plot
+        // from other zones per CR 702.170f).
+        face.abilities
+            .push(build_plot_activation(plot_cost, Zone::Hand, Zone::Hand));
     }
+}
+
+/// CR 702.170a + CR 702.170f: single-authority builder for the plot special
+/// action, modeled (like hand-Plot and Suspend) as a sorcery-speed activated
+/// ability. Parameterized over the two zone seams so it serves both the printed
+/// default (hand-Plot: `activation_zone` = `exile_zone` = `Hand`) and an
+/// effect-granted plot whose ability functions in another zone (CR 702.170f —
+/// "the card is exiled from the zone it is in"; e.g. Fblthp's plot-from-library,
+/// both = `Library`).
+///
+/// Cost = `Composite[Mana(plot_cost), Exile{ self, from exile_zone }]`; effect =
+/// grant `CastingPermission::Plotted` (the real turn is stamped at resolution by
+/// `grant_permission::resolve`) to the now-exiled SelfRef for the ability
+/// controller. `.sorcery_speed()` is the single-authority timing builder
+/// (CR 702.170a: main phase + empty stack + active player). The Exile cost
+/// `zone` and `def.activation_zone` are the only parameterized seams — everything
+/// downstream of "exiled card carrying Plotted" is zone-of-origin agnostic.
+fn build_plot_activation(
+    plot_cost: ManaCost,
+    activation_zone: Zone,
+    exile_zone: Zone,
+) -> AbilityDefinition {
+    use crate::types::ability::{CastingPermission, PermissionGrantee};
+
+    let composite_cost = AbilityCost::Composite {
+        costs: vec![
+            AbilityCost::Mana { cost: plot_cost },
+            // CR 702.170a / CR 702.170f: "exile this card from <zone>" — self-
+            // targeted exile from the zone the card is in. Mirrors Suspend's
+            // self-exile cost component.
+            AbilityCost::Exile {
+                count: 1,
+                zone: Some(exile_zone),
+                filter: Some(TargetFilter::SelfRef),
+            },
+        ],
+    };
+    let mut def = AbilityDefinition::new(
+        AbilityKind::Activated,
+        // CR 702.170a + CR 702.170d: Grant the `Plotted` casting permission to
+        // the exiled card. `turn_plotted: 0` is a placeholder stamped by
+        // `grant_permission::resolve` to `state.turn_number` at resolution.
+        // Grantee is the default `AbilityController` — the plot owner — which is
+        // the player allowed to cast it later.
+        Effect::GrantCastingPermission {
+            permission: CastingPermission::Plotted { turn_plotted: 0 },
+            target: TargetFilter::SelfRef,
+            grantee: PermissionGrantee::AbilityController,
+        },
+    )
+    .cost(composite_cost)
+    // CR 702.170a: "Any time you have priority during your main phase while the
+    // stack is empty" — sorcery-speed timing. `.sorcery_speed()` is the
+    // single-authority builder (see `AbilityDefinition::sorcery_speed`).
+    .sorcery_speed();
+    def.activation_zone = Some(activation_zone);
+    def
 }
 
 /// CR 702.155a-b + CR 714.3b: Read Ahead — a Saga with read ahead lets its
