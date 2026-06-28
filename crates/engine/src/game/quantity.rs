@@ -5017,6 +5017,7 @@ mod tests {
             colors: vec![],
             chosen_attributes: Vec::new(),
             counters: HashMap::new(),
+            tapped: false,
         };
 
         state.attacker_declarations_this_turn = vec![
@@ -10690,6 +10691,7 @@ mod tests {
                 colors: vec![],
                 chosen_attributes: Vec::new(),
                 counters: HashMap::new(),
+                tapped: false,
             },
         );
         state.current_trigger_event =
@@ -10750,6 +10752,7 @@ mod tests {
                 colors: vec![ManaColor::Green],
                 chosen_attributes: Vec::new(),
                 counters: HashMap::new(),
+                tapped: false,
             },
         });
         let power = resolve_quantity_with_targets(
@@ -10895,6 +10898,7 @@ mod tests {
                 colors: vec![],
                 chosen_attributes: Vec::new(),
                 counters: HashMap::new(),
+                tapped: false,
             },
         });
         let resolved = resolve_quantity_with_targets(
@@ -10958,6 +10962,7 @@ mod tests {
                 colors: vec![],
                 chosen_attributes: Vec::new(),
                 counters: HashMap::new(),
+                tapped: false,
             },
         });
         assert!(
@@ -11019,6 +11024,7 @@ mod tests {
                 colors: vec![],
                 chosen_attributes: Vec::new(),
                 counters: HashMap::new(),
+                tapped: false,
             },
         };
         // Both fields set, with DIFFERENT mana values so the winning path is
@@ -11077,6 +11083,7 @@ mod tests {
                 colors: vec![],
                 chosen_attributes: Vec::new(),
                 counters: HashMap::new(),
+                tapped: false,
             },
         });
         let expr = QuantityExpr::Ref {
@@ -11128,6 +11135,7 @@ mod tests {
                 colors: vec![],
                 chosen_attributes: Vec::new(),
                 counters: HashMap::new(),
+                tapped: false,
             },
         };
         ability.set_effect_context_object_recursive(snapshot("Effect Context", 7));
@@ -11190,6 +11198,7 @@ mod tests {
                 colors: vec![],
                 chosen_attributes: Vec::new(),
                 counters: HashMap::new(),
+                tapped: false,
             },
         };
         ability.set_effect_context_object_recursive(snapshot("Effect Context", 5));
@@ -11229,6 +11238,7 @@ mod tests {
                 colors: vec![],
                 chosen_attributes: Vec::new(),
                 counters: HashMap::new(),
+                tapped: false,
             },
         );
         assert!(!state.lki_cache.is_empty());
@@ -11847,6 +11857,7 @@ mod tests {
                     colors: vec![],
                     counters: Default::default(),
                     chosen_attributes: vec![],
+                    tapped: false,
                 },
             );
             state.exile_links.push(ExileLink {

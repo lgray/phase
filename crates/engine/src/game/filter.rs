@@ -4204,9 +4204,10 @@ fn zone_change_record_matches_property(
             .get(&record.object_id)
             .is_some_and(|obj| obj.paired_with.is_none()),
 
-        // These predicates query live battlefield state (tap status, attachment,
-        // current counters, face-down). The snapshot has already left its public
-        // zone, so the predicate is semantically not applicable.
+        // CR 608.2h: predicates whose state IS captured into the exit-time LKI
+        // snapshot (counters, tap status) are answered from `lki_cache`, keyed by
+        // the record's object id. Predicates that are NOT snapshotted (attachment,
+        // face-down, etc.) fall through to the fail-closed group below.
         FilterProp::Counters {
             counters,
             comparator,
@@ -4230,8 +4231,17 @@ fn zone_change_record_matches_property(
             .damage_dealt_this_turn
             .iter()
             .any(|r| matches!(r.target, TargetRef::Object(id) if id == record.object_id)),
-        FilterProp::Tapped
-        | FilterProp::IsSaddled
+        // CR 110.5 + CR 110.5d + CR 608.2h: tap status is battlefield-only — once
+        // the object has left its public zone it is neither tapped nor untapped, so
+        // the live object can't answer a look-back "was tapped" rider (Brackish
+        // Blunder, evaluated after the bounce/exile). Read the exit-time tap state
+        // captured into the LKI snapshot at zone exit (zones.rs), keyed by the
+        // record's object id — mirrors the `Counters` arm's `lki_cache` lookup.
+        FilterProp::Tapped => state
+            .lki_cache
+            .get(&record.object_id)
+            .is_some_and(|lki| lki.tapped),
+        FilterProp::IsSaddled
         | FilterProp::SaddledSource
         | FilterProp::ProtectorMatches { .. }
         | FilterProp::Untapped
@@ -5275,6 +5285,7 @@ mod tests {
                 colors: vec![],
                 chosen_attributes: vec![],
                 counters: Default::default(),
+                tapped: false,
             },
         );
 
@@ -8659,6 +8670,7 @@ mod tests {
             colors: vec![],
             chosen_attributes: Vec::new(),
             counters: Default::default(),
+            tapped: false,
         };
         let filter =
             TargetFilter::Typed(TypedFilter::creature().properties(vec![FilterProp::Cmc {
@@ -8701,6 +8713,7 @@ mod tests {
             colors: vec![],
             chosen_attributes: Vec::new(),
             counters: Default::default(),
+            tapped: false,
         };
         let filter =
             TargetFilter::Typed(
@@ -9594,6 +9607,7 @@ mod tests {
             colors: vec![],
             chosen_attributes: Vec::new(),
             counters: HashMap::new(),
+            tapped: false,
         };
         let land_lki = LKISnapshot {
             name: "Test Land".to_string(),
@@ -9611,6 +9625,7 @@ mod tests {
             colors: vec![],
             chosen_attributes: Vec::new(),
             counters: HashMap::new(),
+            tapped: false,
         };
 
         let filter =
@@ -9753,6 +9768,7 @@ mod tests {
                 colors: vec![],
                 counters: Default::default(),
                 chosen_attributes: vec![],
+                tapped: false,
             },
         );
 
@@ -9820,6 +9836,7 @@ mod tests {
                 colors: vec![],
                 counters: Default::default(),
                 chosen_attributes: vec![],
+                tapped: false,
             },
         );
 
