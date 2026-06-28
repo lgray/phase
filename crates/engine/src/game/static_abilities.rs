@@ -1054,22 +1054,29 @@ pub fn player_ignores_hexproof(state: &GameState, player_id: PlayerId) -> bool {
         || transient_grants_static_mode_to_player(state, player_id, &StaticMode::IgnoreHexproof)
 }
 
-/// CR 702.11b + CR 702.11e: Whether an active battlefield `IgnoreHexproof` static
-/// scoped by an object `affected` filter makes `target_id` targetable as though
-/// it had no hexproof (CR 702.11e extends the bypass to hexproof-from-quality).
-/// Nowhere to Run — "Creatures your opponents control can be the
-/// targets of spells and abilities as though they didn't have hexproof." The
-/// card carries no "you control" qualifier on the spells or abilities, so the
-/// bypass applies to ANY targeting player: it is keyed solely on the would-be
-/// target matching the static's `affected` filter (evaluated from the static's
-/// own source), independent of the targeting source's controller — hexproof
-/// (CR 702.11b) only ever blocks opponents, so removing it for the matched
-/// permanents opens them to every player. Object-scoped (`affected = Some`)
-/// only; the player-scoped
+/// CR 702.11b + CR 702.11e: Whether a FUNCTIONING `IgnoreHexproof` static whose
+/// `condition` currently holds and which is scoped by an object `affected` filter
+/// makes `target_id` targetable as though it had no hexproof (CR 702.11e extends
+/// the bypass to hexproof-from-quality). Nowhere to Run — "Creatures your
+/// opponents control can be the targets of spells and abilities as though they
+/// didn't have hexproof." The card carries no "you control" qualifier on the
+/// spells or abilities, so the bypass applies to ANY targeting player: it is
+/// keyed solely on the would-be target matching the static's `affected` filter
+/// (evaluated from the static's own source), independent of the targeting
+/// source's controller — hexproof (CR 702.11b) only ever blocks opponents, so
+/// removing it for the matched permanents opens them to every player.
+///
+/// CR 604.1 + CR 613.1: mirrors [`player_ignores_hexproof`] — uses
+/// `game_functioning_statics` (so a source whose abilities are suppressed, or a
+/// phased-out / non-functioning source, grants nothing) and gates each static
+/// through `static_condition_matches_context` with `target_id: Some(target_id)`
+/// so an "as long as ..." condition is honored, and a condition that references
+/// the would-be target (the recipient) is evaluated against that target rather
+/// than skipped. Object-scoped (`affected = Some`) only; the player-scoped
 /// Detection Tower form (`affected = None`) is handled by
 /// [`player_ignores_hexproof`].
 pub fn target_ignores_hexproof(state: &GameState, target_id: ObjectId) -> bool {
-    battlefield_active_statics(state).any(|(source_obj, def)| {
+    game_functioning_statics(state).any(|(source_obj, def)| {
         matches!(def.mode, StaticMode::IgnoreHexproof)
             && def.affected.as_ref().is_some_and(|filter| {
                 matches_target_filter(
@@ -1079,6 +1086,16 @@ pub fn target_ignores_hexproof(state: &GameState, target_id: ObjectId) -> bool {
                     &FilterContext::from_source(state, source_obj.id),
                 )
             })
+            && static_condition_matches_context(
+                state,
+                source_obj.id,
+                source_obj.controller,
+                def,
+                &StaticCheckContext {
+                    target_id: Some(target_id),
+                    ..Default::default()
+                },
+            )
     })
 }
 
