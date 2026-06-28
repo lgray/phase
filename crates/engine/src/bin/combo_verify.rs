@@ -137,16 +137,5 @@ fn deferral_label(b: DeferralBucket) -> &'static str {
 /// Minimal JSON string escaping — the bin emits its own DTO so the engine enums
 /// (`ResourceAxis` / `WinKind` / `ResourceFamily`) need no `Serialize` derive.
 fn json_str(s: &str) -> String {
-    let mut out = String::with_capacity(s.len() + 2);
-    out.push('"');
-    for c in s.chars() {
-        match c {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            _ => out.push(c),
-        }
-    }
-    out.push('"');
-    out
+    serde_json::to_string(s).expect("serializing a string slice to JSON cannot fail")
 }
