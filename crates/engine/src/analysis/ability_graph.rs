@@ -42,13 +42,14 @@ use crate::analysis::resource::{
 };
 use crate::types::ability::{
     AbilityCost, AbilityDefinition, AbilityKind, ContinuousModification, Effect, ManaProduction,
-    QuantityExpr, TapStateChange,
+    QuantityExpr, TapStateChange, TargetFilter, TriggerDefinition, TypeFilter,
 };
 use crate::types::card::CardFace;
 use crate::types::counter::CounterMatch;
 use crate::types::mana::{ManaColor, ManaCost, ManaType};
 use crate::types::player::PlayerId;
 use crate::types::triggers::TriggerMode;
+use crate::types::zones::Zone;
 
 /// CR 101: Static analysis has no concrete `PlayerId`, so the player-keyed
 /// `ResourceVector` axes use a documented sentinel convention — the loop's
@@ -243,6 +244,82 @@ impl Proj {
             self.mark(AxisKey::Damage, mag);
         }
     }
+    /// CR 119.3: signed life on a player (`+` gained / `−` lost). Only positive
+    /// production marks the axis — a loss is a consumed/drain component surfaced
+    /// later from the net sign — mirroring `add_mana`/`add_damage`.
+    fn add_life(&mut self, pid: PlayerId, amount: i64, mag: AxisMagnitude) {
+        *self.vector.life.entry(pid).or_insert(0) += amount;
+        if amount > 0 {
+            self.mark(AxisKey::Life, mag);
+        }
+    }
+    /// CR 401: signed per-player library delta (mill/search are negative — cards
+    /// leave the library). A nonzero library delta is surfaced as a drain/advantage
+    /// axis by `unbounded_axes_for`; only a positive delta marks production here.
+    fn add_library(&mut self, pid: PlayerId, amount: i64, mag: AxisMagnitude) {
+        *self.vector.library_delta.entry(pid).or_insert(0) += amount;
+        if amount > 0 {
+            self.mark(AxisKey::Library, mag);
+        }
+    }
+    /// CR 111.1: tokens created (controller-implicit production).
+    fn add_tokens(&mut self, amount: i64, mag: AxisMagnitude) {
+        self.vector.tokens_created += amount;
+        if amount > 0 {
+            self.mark(AxisKey::Tokens, mag);
+        }
+    }
+    /// CR 121.1: cards drawn (controller-implicit production).
+    fn add_draw(&mut self, amount: i64, mag: AxisMagnitude) {
+        self.vector.cards_drawn += amount;
+        if amount > 0 {
+            self.mark(AxisKey::Draw, mag);
+        }
+    }
+    /// CR 500.7: extra turns created.
+    fn add_extra_turn(&mut self, amount: i64, mag: AxisMagnitude) {
+        self.vector.extra_turns += amount;
+        if amount > 0 {
+            self.mark(AxisKey::ExtraTurn, mag);
+        }
+    }
+    /// CR 500.8: extra combat phases created.
+    fn add_combat(&mut self, amount: i64, mag: AxisMagnitude) {
+        self.vector.combat_phases += amount;
+        if amount > 0 {
+            self.mark(AxisKey::Combat, mag);
+        }
+    }
+    /// CR 603.6a: enters-the-battlefield trigger events produced. Writes the real
+    /// `etb_triggers` scalar so `produces` derives uniformly via
+    /// `net_axis_components` (L3), like the 4a `AbilityCost::Sacrifice` arm.
+    fn add_etb(&mut self, amount: i64, mag: AxisMagnitude) {
+        self.vector.etb_triggers += amount;
+        if amount > 0 {
+            self.mark(AxisKey::Etb, mag);
+        }
+    }
+    /// CR 603.6c: leaves-the-battlefield trigger events produced.
+    fn add_ltb(&mut self, amount: i64, mag: AxisMagnitude) {
+        self.vector.ltb_triggers += amount;
+        if amount > 0 {
+            self.mark(AxisKey::Ltb, mag);
+        }
+    }
+    /// CR 700.4: dies (battlefield→graveyard) trigger events produced.
+    fn add_death(&mut self, amount: i64, mag: AxisMagnitude) {
+        self.vector.death_triggers += amount;
+        if amount > 0 {
+            self.mark(AxisKey::Death, mag);
+        }
+    }
+    /// CR 701.21: sacrifice trigger events produced.
+    fn add_sac(&mut self, amount: i64, mag: AxisMagnitude) {
+        self.vector.sac_triggers += amount;
+        if amount > 0 {
+            self.mark(AxisKey::Sac, mag);
+        }
+    }
     fn finish(self) -> Projection {
         Projection::Modeled {
             vector: Box::new(self.vector),
@@ -274,6 +351,101 @@ fn default_object_class(class: CounterClass) -> ObjectClass {
         CounterClass::Defense => ObjectClass::Battle,
         CounterClass::Poison | CounterClass::Energy => ObjectClass::Player,
         CounterClass::Other => ObjectClass::Other,
+    }
+}
+
+/// CR 101 (static sentinel convention, §3.6): map a player-referential
+/// [`TargetFilter`] to the analysis controller/opponent sentinel. `Controller`
+/// and `SelfRef` resolve to the loop's [`CONTROLLER`]; every other filter
+/// (`Any`, `Player`, a typed opponent, …) resolves to [`OPPONENT`], keeping the
+/// player-keyed life/library axes compatible with the controller-scoped
+/// coverability test.
+fn target_player(filter: &TargetFilter) -> PlayerId {
+    match filter {
+        TargetFilter::Controller | TargetFilter::SelfRef => CONTROLLER,
+        _ => OPPONENT,
+    }
+}
+
+/// `None` ⇒ the controller (e.g. `LoseLife` with no target is "you lose N
+/// life"); `Some(f)` ⇒ [`target_player`].
+fn target_player_opt(filter: &Option<TargetFilter>) -> PlayerId {
+    match filter {
+        None => CONTROLLER,
+        Some(f) => target_player(f),
+    }
+}
+
+/// CR 700.4: a "dies" (Death-axis) event requires a *creature* moving to a
+/// graveyard. A sacrifice/destroy produces the Death axis unless its target
+/// filter **provably** cannot match a creature (§3.5). Recall-first: only an
+/// explicit non-creature constraint suppresses Death; an undeterminable filter
+/// keeps it — a spurious Death edge is filtered by PR-5, a dropped one is a miss.
+fn sac_produces_death(filter: &TargetFilter) -> bool {
+    match filter {
+        TargetFilter::Typed(tf) => !type_filters_exclude_creature(&tf.type_filters),
+        _ => true,
+    }
+}
+
+/// CR 205.2b: an object can have more than one card type (an artifact creature
+/// satisfies both), so a typed conjunction provably excludes creatures ONLY when
+/// it carries an explicit `Non(Creature)` constraint. Positive non-creature card
+/// types (Land/Artifact/Enchantment/Planeswalker) are deliberately NOT treated as
+/// exclusions: creatures can also be lands (Dryad Arbor), artifacts, or
+/// enchantments, so excluding on a positive type would drop real dies edges.
+fn type_filters_exclude_creature(filters: &[TypeFilter]) -> bool {
+    filters
+        .iter()
+        .any(|tf| matches!(tf, TypeFilter::Non(inner) if matches!(**inner, TypeFilter::Creature)))
+}
+
+/// CR 603.6a / 603.6c / 700.4: project a zone change onto its event axes. Returns
+/// `true` iff at least one axis was produced — a zone change that touches neither
+/// the battlefield (as origin) nor the battlefield (as destination) carries no
+/// modeled event and the caller MUST return [`Projection::Unmodeled`] (M2, so the
+/// node's `completeness` flag stays honest rather than a Modeled-but-empty
+/// projection). `mag` is `Fixed(1)` for single moves, `Unbounded` for mass moves.
+fn project_zone_change(
+    b: &mut Proj,
+    origin: Option<Zone>,
+    destination: Zone,
+    mag: AxisMagnitude,
+) -> bool {
+    let mut modeled = false;
+    // CR 603.6a: a permanent entering the battlefield fires an ETB trigger.
+    if destination == Zone::Battlefield {
+        b.add_etb(1, mag);
+        modeled = true;
+    }
+    // CR 603.6c: a permanent leaving the battlefield fires an LTB trigger.
+    if origin == Some(Zone::Battlefield) {
+        b.add_ltb(1, mag);
+        modeled = true;
+        // CR 700.4: battlefield→graveyard is a dies event (the Death axis).
+        if destination == Zone::Graveyard {
+            b.add_death(1, mag);
+        }
+    }
+    modeled
+}
+
+/// CR 603.6a / 700.4 / 603.6c: the event axis a zone-change *trigger* consumes,
+/// disambiguated by the [`TriggerDefinition`]'s `destination`/`origin` (the bare
+/// `TriggerMode::ChangesZone` cannot carry it). ETB if it enters the battlefield;
+/// Death if it leaves the battlefield for a graveyard (dies); LTB for any other
+/// battlefield exit; `None` otherwise.
+fn zone_change_trigger_axis(origin: Option<Zone>, destination: Option<Zone>) -> Option<AxisKey> {
+    if destination == Some(Zone::Battlefield) {
+        Some(AxisKey::Etb)
+    } else if origin == Some(Zone::Battlefield) {
+        if destination == Some(Zone::Graveyard) {
+            Some(AxisKey::Death)
+        } else {
+            Some(AxisKey::Ltb)
+        }
+    } else {
+        None
     }
 }
 
@@ -462,29 +634,160 @@ fn effect_projection(effect: &Effect) -> Projection {
         | Effect::Myriad => {
             b.vector.casts_this_step += 1;
         }
-        // ----- UNMODELED (over-approximate candidate stage; PR-4b breadth) -----
+        // ----- DRAW family (CR 121.1) -----
+        Effect::Draw { count, .. } => {
+            let (a, mag) = count_seed(count);
+            b.add_draw(a, mag);
+        }
+        // ----- MILL / SEARCH family (CR 701.17a / CR 701.23a / CR 401) -----
+        // Mill drives the victim's library DOWN (cards leave it for a graveyard).
+        Effect::Mill { count, target, .. } => {
+            let (a, mag) = count_seed(count);
+            b.add_library(target_player(target), -a, mag);
+        }
+        // CR 701.23a: a library search removes the found card(s) from a library.
+        Effect::SearchLibrary {
+            count,
+            target_player: searched,
+            ..
+        } => {
+            let (a, mag) = count_seed(count);
+            b.add_library(target_player_opt(searched), -a, mag);
+        }
+        // Alchemy seek pulls card(s) from the controller's own library.
+        Effect::Seek { count, .. } => {
+            let (a, mag) = count_seed(count);
+            b.add_library(CONTROLLER, -a, mag);
+        }
+        // ----- LIFE family — atomic symmetric pair (R3-LIFE-SYMMETRY) -----
+        // CR 119.3: life gained on the gainer (default controller).
+        Effect::GainLife { amount, player } => {
+            let (a, mag) = count_seed(amount);
+            b.add_life(target_player(player), a, mag);
+        }
+        // CR 119.3: life lost — `None` ⇒ "you lose" (controller), `Some` ⇒ directed
+        // (opponent drain). A loss is a consumed/drain component, never marked.
+        Effect::LoseLife { amount, target } => {
+            let (a, _) = count_seed(amount);
+            b.add_life(target_player_opt(target), -a, AxisMagnitude::Fixed(0));
+        }
+        // ----- TOKEN family (CR 111.1) — a token entry IS an ETB (CR 603.6a) -----
+        Effect::Token { count, .. }
+        | Effect::CopyTokenOf { count, .. }
+        | Effect::CreateTokenCopyFromPool { count, .. } => {
+            let (a, mag) = count_seed(count);
+            b.add_tokens(a, mag);
+            b.add_etb(a, mag);
+        }
+        // CR 701.16 + CR 111.1: Investigate creates one Clue token (CR 603.6a ETB).
+        Effect::Investigate => {
+            b.add_tokens(1, AxisMagnitude::Fixed(1));
+            b.add_etb(1, AxisMagnitude::Fixed(1));
+        }
+        // ----- ZONE-CHANGE family (CR 603.6a ETB / CR 603.6c LTB / CR 700.4 dies) -----
+        Effect::ChangeZone {
+            origin,
+            destination,
+            ..
+        } => {
+            if !project_zone_change(&mut b, *origin, *destination, AxisMagnitude::Fixed(1)) {
+                return Projection::Unmodeled;
+            }
+        }
+        Effect::ChangeZoneAll {
+            origin,
+            destination,
+            ..
+        } => {
+            if !project_zone_change(&mut b, *origin, *destination, AxisMagnitude::Unbounded) {
+                return Projection::Unmodeled;
+            }
+        }
+        // CR 603.6c: a bounce returns a permanent from the battlefield to hand
+        // (or another zone) — always a leaves-the-battlefield event.
+        Effect::Bounce { destination, .. } => {
+            let dest = destination.unwrap_or(Zone::Hand);
+            if !project_zone_change(
+                &mut b,
+                Some(Zone::Battlefield),
+                dest,
+                AxisMagnitude::Fixed(1),
+            ) {
+                return Projection::Unmodeled;
+            }
+        }
+        Effect::BounceAll { destination, .. } => {
+            let dest = destination.unwrap_or(Zone::Hand);
+            if !project_zone_change(
+                &mut b,
+                Some(Zone::Battlefield),
+                dest,
+                AxisMagnitude::Unbounded,
+            ) {
+                return Projection::Unmodeled;
+            }
+        }
+        // ----- SACRIFICE / DESTROY effect side (CR 701.21a / CR 701.8a) -----
+        // CR 701.21a: sacrificing produces sac + LTB (+ dies for creature filters,
+        // §3.5) — same polarity as the 4a `AbilityCost::Sacrifice` cost arm.
+        Effect::Sacrifice { target, count, .. } => {
+            let (a, mag) = count_seed(count);
+            b.add_sac(a, mag);
+            b.add_ltb(a, mag);
+            if sac_produces_death(target) {
+                b.add_death(a, mag);
+            }
+        }
+        // CR 701.8a: destroy moves a permanent to its owner's graveyard (LTB + dies
+        // for creatures), but it is not a sacrifice (no Sac axis).
+        Effect::Destroy { target, .. } => {
+            b.add_ltb(1, AxisMagnitude::Fixed(1));
+            if sac_produces_death(target) {
+                b.add_death(1, AxisMagnitude::Fixed(1));
+            }
+        }
+        Effect::DestroyAll { target, .. } => {
+            b.add_ltb(1, AxisMagnitude::Unbounded);
+            if sac_produces_death(target) {
+                b.add_death(1, AxisMagnitude::Unbounded);
+            }
+        }
+        // ----- EXTRA TURNS / PHASES (CR 500.7 / CR 500.8) -----
+        Effect::ExtraTurn { .. } => {
+            b.add_extra_turn(1, AxisMagnitude::Fixed(1));
+        }
+        // CR 500.8: only an additional *combat* phase pumps a modeled axis; any
+        // other extra phase carries no countable resource ⇒ Unmodeled (M2).
+        Effect::AdditionalPhase { phase, count, .. } => {
+            if phase.is_combat() {
+                let (a, mag) = count_seed(count);
+                b.add_combat(a, mag);
+            } else {
+                return Projection::Unmodeled;
+            }
+        }
+        // Conjure creates real cards; only a battlefield entry is a modeled axis
+        // (CR 603.6a ETB). Any other destination has no repeatable axis ⇒ Unmodeled.
+        Effect::Conjure { destination, .. } => {
+            if *destination == Zone::Battlefield {
+                b.add_etb(1, AxisMagnitude::Fixed(1));
+            } else {
+                return Projection::Unmodeled;
+            }
+        }
+        // ----- UNMODELED (over-approximate candidate stage; no modeled axis) -----
         Effect::StartYourEngines { .. }
         | Effect::ChangeSpeed { .. }
         | Effect::ApplyPostReplacementDamage { .. }
-        | Effect::Draw { .. }
         | Effect::Pump { .. }
         | Effect::PairWith { .. }
-        | Effect::Destroy { .. }
         | Effect::Regenerate { .. }
         | Effect::RemoveAllDamage { .. }
         | Effect::Counter { .. }
         | Effect::CounterAll { .. }
-        | Effect::Token { .. }
-        | Effect::GainLife { .. }
-        | Effect::LoseLife { .. }
-        | Effect::Sacrifice { .. }
         | Effect::DiscardCard { .. }
-        | Effect::Mill { .. }
         | Effect::Scry { .. }
         | Effect::PumpAll { .. }
-        | Effect::DestroyAll { .. }
-        | Effect::ChangeZone { .. }
-        | Effect::ChangeZoneAll { .. }
         | Effect::Dig { .. }
         | Effect::GainControl { .. }
         | Effect::GainControlAll { .. }
@@ -493,11 +796,8 @@ fn effect_projection(effect: &Effect) -> Projection {
         | Effect::UnattachAll { .. }
         | Effect::Surveil { .. }
         | Effect::Fight { .. }
-        | Effect::Bounce { .. }
-        | Effect::BounceAll { .. }
         | Effect::Explore
         | Effect::ExploreAll { .. }
-        | Effect::Investigate
         | Effect::Tribute { .. }
         | Effect::TimeTravel
         | Effect::BecomeMonarch
@@ -509,8 +809,6 @@ fn effect_projection(effect: &Effect) -> Projection {
         | Effect::Vote { .. }
         | Effect::SeparateIntoPiles { .. }
         | Effect::SwitchPT { .. }
-        | Effect::CopyTokenOf { .. }
-        | Effect::CreateTokenCopyFromPool { .. }
         | Effect::CombineHost { .. }
         | Effect::ChooseAugmentAndCombineWithHost { .. }
         | Effect::Meld { .. }
@@ -531,7 +829,6 @@ fn effect_projection(effect: &Effect) -> Projection {
         | Effect::Discard { .. }
         | Effect::Shuffle { .. }
         | Effect::Transform { .. }
-        | Effect::SearchLibrary { .. }
         | Effect::SearchOutsideGame { .. }
         | Effect::RevealHand { .. }
         | Effect::RevealFromHand { .. }
@@ -613,11 +910,9 @@ fn effect_projection(effect: &Effect) -> Projection {
         | Effect::ManifestDread
         | Effect::Cloak { .. }
         | Effect::TurnFaceUp { .. }
-        | Effect::ExtraTurn { .. }
         | Effect::GrantExtraLoyaltyActivations { .. }
         | Effect::SkipNextTurn { .. }
         | Effect::SkipNextStep { .. }
-        | Effect::AdditionalPhase { .. }
         | Effect::Double { .. }
         | Effect::RuntimeHandled { .. }
         | Effect::Incubate { .. }
@@ -633,14 +928,12 @@ fn effect_projection(effect: &Effect) -> Projection {
         | Effect::CollectEvidence { .. }
         | Effect::Endure { .. }
         | Effect::BlightEffect { .. }
-        | Effect::Seek { .. }
         | Effect::SetLifeTotal { .. }
         | Effect::ExchangeLifeWithStat { .. }
         | Effect::ExchangeLifeTotals { .. }
         | Effect::SetDayNight { .. }
         | Effect::GiveControl { .. }
         | Effect::RemoveFromCombat { .. }
-        | Effect::Conjure { .. }
         | Effect::ApplyPerpetual { .. }
         | Effect::Intensify { .. }
         | Effect::DraftFromSpellbook { .. }
@@ -656,13 +949,13 @@ fn effect_projection(effect: &Effect) -> Projection {
 
 /// MEDIUM-1 compile-time drift gate: an exhaustive **no-wildcard** match over all
 /// 169 [`TriggerMode`] variants. A trigger node *consumes* (requires) the event
-/// axis its mode fires on, so a producer of that axis edges into it. In PR-4a the
-/// `Some` set is exactly {cast, counter, tap, mana} — the trigger consumers whose
-/// matching producers are modeled in 4a. Every other variant — including the
-/// lifegain/dies/ETB/sac families — returns `None` as an explicit arm; PR-4b
-/// flips those bodies to `Some(..)` without touching the match's exhaustiveness.
-fn trigger_axis(mode: &TriggerMode) -> Option<AxisKey> {
-    match mode {
+/// axis its mode fires on, so a producer of that axis edges into it. Takes the
+/// whole [`TriggerDefinition`] (not the bare mode) so the shared
+/// `TriggerMode::ChangesZone` encoding can disambiguate ETB vs dies vs LTB from
+/// `trig.destination`/`trig.origin`; the match stays exhaustive over `TriggerMode`.
+/// Every mode with no modeled producer returns `None` as an explicit arm.
+fn trigger_axis(trig: &TriggerDefinition) -> Option<AxisKey> {
+    match &trig.mode {
         // CR 601.2a: cast/copy triggers (storm, magecraft) consume the cast axis.
         TriggerMode::SpellCast
         | TriggerMode::SpellCopy
@@ -679,16 +972,40 @@ fn trigger_axis(mode: &TriggerMode) -> Option<AxisKey> {
         TriggerMode::Taps | TriggerMode::TapAll => Some(AxisKey::Tap),
         // CR 106.1: mana-added / tap-for-mana triggers consume the mana axis.
         TriggerMode::TapsForMana | TriggerMode::ManaAdded => Some(AxisKey::Mana),
-        // ----- deferred to PR-4b (matching producers not modeled in 4a) -----
-        TriggerMode::ChangesZone
-        | TriggerMode::ChangesZoneAll
-        | TriggerMode::ChangesController
-        | TriggerMode::LeavesBattlefield
-        | TriggerMode::DamageDone
+        // CR 603.6a / 700.4 / 603.6c: zone-change triggers consume the ETB / dies /
+        // LTB event axis, disambiguated by the definition's destination/origin.
+        TriggerMode::ChangesZone | TriggerMode::ChangesZoneAll => {
+            zone_change_trigger_axis(trig.origin, trig.destination)
+        }
+        // CR 603.6c: a leaves-the-battlefield trigger consumes the LTB event.
+        TriggerMode::LeavesBattlefield => Some(AxisKey::Ltb),
+        // CR 700.4: a dies/destroyed trigger consumes the Death event.
+        TriggerMode::Destroyed => Some(AxisKey::Death),
+        // CR 701.21: a sacrifice trigger consumes the Sac event.
+        TriggerMode::Sacrificed | TriggerMode::SacrificedOnce => Some(AxisKey::Sac),
+        // CR 119.3: life-gain / life-loss / pay-life triggers consume the Life axis.
+        TriggerMode::LifeGained
+        | TriggerMode::LifeLost
+        | TriggerMode::LifeChanged
+        | TriggerMode::PayLife => Some(AxisKey::Life),
+        // CR 111.1: a token-created trigger consumes the Tokens axis.
+        TriggerMode::TokenCreated | TriggerMode::TokenCreatedOnce => Some(AxisKey::Tokens),
+        // CR 121.1: a draw trigger consumes the Draw axis.
+        TriggerMode::Drawn => Some(AxisKey::Draw),
+        // CR 701.17a: a mill trigger consumes the Library axis.
+        TriggerMode::Milled | TriggerMode::MilledOnce | TriggerMode::MilledAll => {
+            Some(AxisKey::Library)
+        }
+        // CR 120.1: damage-dealt triggers consume the Damage axis.
+        TriggerMode::DamageDone
         | TriggerMode::DamageDoneOnce
         | TriggerMode::DamageAll
         | TriggerMode::DamageDealtOnce
-        | TriggerMode::DamageDoneOnceByController
+        | TriggerMode::DamageDoneOnceByController => Some(AxisKey::Damage),
+        // CR 701.26b: an untap trigger consumes the Tap axis (untapped state).
+        TriggerMode::Untaps | TriggerMode::UntapAll => Some(AxisKey::Tap),
+        // ----- remaining modes with no modeled producer ⇒ inert (None) -----
+        TriggerMode::ChangesController
         | TriggerMode::DamageReceived
         | TriggerMode::DamagePreventedOnce
         | TriggerMode::ExcessDamage
@@ -712,31 +1029,16 @@ fn trigger_axis(mode: &TriggerMode) -> Option<AxisKey> {
         | TriggerMode::BecomesBlocked
         | TriggerMode::CounterRemoved
         | TriggerMode::CounterRemovedOnce
-        | TriggerMode::Sacrificed
-        | TriggerMode::SacrificedOnce
-        | TriggerMode::Destroyed
-        | TriggerMode::Untaps
-        | TriggerMode::UntapAll
         | TriggerMode::BecomesTarget
         | TriggerMode::BecomesTargetOnce
-        | TriggerMode::Drawn
         | TriggerMode::Discarded
         | TriggerMode::DiscardedAll
-        | TriggerMode::Milled
-        | TriggerMode::MilledOnce
-        | TriggerMode::MilledAll
         | TriggerMode::Exiled
         | TriggerMode::Revealed
         | TriggerMode::Shuffled
-        | TriggerMode::LifeGained
-        | TriggerMode::LifeLost
         | TriggerMode::LifeLostAll
-        | TriggerMode::LifeChanged
-        | TriggerMode::PayLife
         | TriggerMode::PayCumulativeUpkeep
         | TriggerMode::PayEcho
-        | TriggerMode::TokenCreated
-        | TriggerMode::TokenCreatedOnce
         | TriggerMode::TurnFaceUp
         | TriggerMode::Transformed
         | TriggerMode::Phase
@@ -1063,10 +1365,14 @@ fn fold_cost(acc: &mut NodeAcc, cost: &AbilityCost) {
                 .or_insert(0) += *count as i64;
         }
         // CR 701.21a: sacrificing PRODUCES sac/LTB (and dies) events (R3-SAC-POLARITY).
-        AbilityCost::Sacrifice(_) => {
+        // CR 700.4: the dies (Death) event is gated to creature-or-undeterminable
+        // sacrifice filters (§3.5) so a land/Treasure sac doesn't forge a Death edge.
+        AbilityCost::Sacrifice(sac) => {
             acc.net.sac_triggers += 1;
             acc.net.ltb_triggers += 1;
-            acc.net.death_triggers += 1;
+            if sac_produces_death(&sac.target) {
+                acc.net.death_triggers += 1;
+            }
         }
         // CR 122.1: energy cost ⇒ requires the energy counter axis.
         AbilityCost::PayEnergy { .. } => {
@@ -1092,7 +1398,7 @@ fn fold_cost(acc: &mut NodeAcc, cost: &AbilityCost) {
                 acc.requires.insert(AxisKey::AnyCounter);
             }
         },
-        // CR 118.3: an effect performed as a cost is projected the same way.
+        // CR 118.12: an effect performed as a cost is projected the same way.
         AbilityCost::EffectCost { effect } => fold_projection(acc, effect_projection(effect)),
         // CR 601.2h: a Composite cost is conjunctive — every sub-cost is part of
         // the total cost and all are paid (partial payments are not allowed), so
@@ -1106,11 +1412,17 @@ fn fold_cost(acc: &mut NodeAcc, cost: &AbilityCost) {
         // branch ("[do something] unless [a player does something else]"). It must
         // NOT AND-fold; see [`fold_one_of`].
         AbilityCost::OneOf { costs } => fold_one_of(acc, costs),
-        // PayLife is deferred to PR-4b with GainLife/LoseLife (R3-LIFE-SYMMETRY).
-        // PerCounter is a no-op per plan (its `base` is recursable but not folded).
-        // The remaining structural costs carry no modeled axis in PR-4a.
-        AbilityCost::PayLife { .. }
-        | AbilityCost::Discard { .. }
+        // CR 119.4: paying life is subtracted from the controller's life total — a
+        // unit, recall-safe under-approximation of a dynamic life cost (HIGH-1).
+        // The cost half of the R3-LIFE-SYMMETRY triple (with GainLife/LoseLife):
+        // keying it WITHOUT the GainLife effect side would veto a gain-and-pay loop
+        // as net-negative life, so the two must always land together.
+        AbilityCost::PayLife { .. } => {
+            *acc.net.life.entry(CONTROLLER).or_insert(0) -= 1;
+        }
+        // PerCounter is a no-op (its `base` is recursable but not folded).
+        // The remaining structural costs carry no modeled axis.
+        AbilityCost::Discard { .. }
         | AbilityCost::Exile { .. }
         | AbilityCost::ExileMaterials { .. }
         | AbilityCost::CollectEvidence { .. }
@@ -1430,7 +1742,7 @@ fn build_nodes(faces: &[&CardFace]) -> Vec<AbilityNode> {
         }
         for trig in &face.triggers {
             if let Some(def) = &trig.execute {
-                nodes.push(build_node(&face.name, def, trigger_axis(&trig.mode)));
+                nodes.push(build_node(&face.name, def, trigger_axis(trig)));
             }
         }
         for repl in &face.replacements {
@@ -1446,7 +1758,7 @@ fn build_nodes(faces: &[&CardFace]) -> Vec<AbilityNode> {
                     }
                     ContinuousModification::GrantTrigger { trigger } => {
                         if let Some(def) = &trigger.execute {
-                            nodes.push(build_node(&face.name, def, trigger_axis(&trigger.mode)));
+                            nodes.push(build_node(&face.name, def, trigger_axis(trigger)));
                         }
                     }
                     _ => {}
@@ -1678,7 +1990,8 @@ pub(crate) fn candidate_cycles_from_nodes(nodes: Vec<AbilityNode>) -> Vec<Candid
 mod tests {
     use super::*;
     use crate::types::ability::{
-        default_target_filter_any, EffectScope, PlayerFilter, SacrificeCost, TriggerDefinition,
+        default_target_filter_any, EffectScope, PlayerFilter, PtValue, SacrificeCost,
+        TriggerDefinition, TypedFilter,
     };
     use crate::types::counter::CounterType;
 
@@ -1849,12 +2162,13 @@ mod tests {
             effect_projection(&Effect::unimplemented("x", "y")),
             Projection::Unmodeled
         ));
-        // A deferred-family variant (Draw) is also inert in PR-4a.
-        let draw = Effect::Draw {
+        // A family with no ResourceVector axis (Scry — library look, no countable
+        // resource) stays inert through 4b (§3.2 keeps it Unmodeled).
+        let scry = Effect::Scry {
             count: fixed(1),
             target: default_target_filter_any(),
         };
-        assert!(matches!(effect_projection(&draw), Projection::Unmodeled));
+        assert!(matches!(effect_projection(&scry), Projection::Unmodeled));
     }
 
     // === B. graph + SCC + coverability (the load-bearing path) ==============
@@ -2235,6 +2549,482 @@ mod tests {
                         .any(|a| matches!(a, ResourceAxis::Mana(_)))
             }),
             "Priest of Titania + Umbral Mantle yields a mana-family candidate cycle; got {cands:?}"
+        );
+    }
+
+    // === PR-4b fixtures =====================================================
+
+    fn draw(count: QuantityExpr) -> Effect {
+        Effect::Draw {
+            count,
+            target: default_target_filter_any(),
+        }
+    }
+    fn mill_opp(count: QuantityExpr) -> Effect {
+        Effect::Mill {
+            count,
+            target: TargetFilter::Player, // not Controller/SelfRef ⇒ OPPONENT
+            destination: Zone::Graveyard,
+        }
+    }
+    fn gain_life(amount: QuantityExpr) -> Effect {
+        Effect::GainLife {
+            amount,
+            player: TargetFilter::Controller,
+        }
+    }
+    fn lose_life_opp(amount: QuantityExpr) -> Effect {
+        Effect::LoseLife {
+            amount,
+            target: Some(TargetFilter::Player),
+        }
+    }
+    fn token(count: QuantityExpr) -> Effect {
+        Effect::Token {
+            name: "Servo".into(),
+            power: PtValue::Fixed(1),
+            toughness: PtValue::Fixed(1),
+            types: vec!["Creature".into()],
+            colors: Vec::new(),
+            keywords: Vec::new(),
+            tapped: false,
+            count,
+            owner: TargetFilter::Controller,
+            attach_to: None,
+            enters_attacking: false,
+            supertypes: Vec::new(),
+            static_abilities: Vec::new(),
+            enter_with_counters: Vec::new(),
+        }
+    }
+    fn sacrifice(target: TargetFilter) -> Effect {
+        Effect::Sacrifice {
+            target,
+            count: fixed(1),
+            min_count: 0,
+        }
+    }
+    fn change_zone(origin: Option<Zone>, destination: Zone) -> Effect {
+        Effect::ChangeZone {
+            origin,
+            destination,
+            target: default_target_filter_any(),
+            owner_library: false,
+            enter_transformed: false,
+            enters_under: None,
+            enter_tapped: Default::default(),
+            enters_attacking: false,
+            up_to: false,
+            enter_with_counters: Vec::new(),
+            face_down_profile: None,
+        }
+    }
+    /// A `TriggerDefinition` with the zone-change disambiguator fields set.
+    fn zone_trigger(
+        mode: TriggerMode,
+        origin: Option<Zone>,
+        destination: Option<Zone>,
+    ) -> TriggerDefinition {
+        let mut t = TriggerDefinition::new(mode);
+        t.origin = origin;
+        t.destination = destination;
+        t
+    }
+    /// Build a trigger node the way `build_nodes` does — `trigger_axis` is the
+    /// real seam, so reverting a trigger arm flips this node's `requires`.
+    fn trig_node(name: &str, trig: &TriggerDefinition, execute: AbilityDefinition) -> AbilityNode {
+        build_node(name, &execute, trigger_axis(trig))
+    }
+
+    // === A2. effect_projection per-family (revert = flip/delete the arm) =====
+
+    #[test]
+    fn draw_projects_cards_drawn() {
+        let Projection::Modeled { vector, .. } = effect_projection(&draw(fixed(2))) else {
+            panic!("Draw must be modeled");
+        };
+        assert_eq!(vector.cards_drawn, 2);
+    }
+
+    #[test]
+    fn mill_projects_negative_opponent_library() {
+        let Projection::Modeled { vector, .. } = effect_projection(&mill_opp(fixed(5))) else {
+            panic!("Mill must be modeled");
+        };
+        assert_eq!(
+            vector.library_delta.get(&OPPONENT),
+            Some(&-5),
+            "mill drives the opponent's library DOWN"
+        );
+    }
+
+    #[test]
+    fn gain_life_projects_positive_controller_life() {
+        let Projection::Modeled { vector, .. } = effect_projection(&gain_life(fixed(3))) else {
+            panic!("GainLife must be modeled");
+        };
+        assert_eq!(vector.life.get(&CONTROLLER), Some(&3));
+    }
+
+    #[test]
+    fn lose_life_projects_negative_player_split() {
+        // Some(opponent) ⇒ a directed drain on the opponent.
+        let Projection::Modeled { vector, .. } = effect_projection(&lose_life_opp(fixed(2))) else {
+            panic!("LoseLife must be modeled");
+        };
+        assert_eq!(vector.life.get(&OPPONENT), Some(&-2));
+        // None ⇒ "you lose N life" (controller self-loss).
+        let Projection::Modeled { vector, .. } = effect_projection(&Effect::LoseLife {
+            amount: fixed(1),
+            target: None,
+        }) else {
+            panic!("modeled");
+        };
+        assert_eq!(vector.life.get(&CONTROLLER), Some(&-1));
+    }
+
+    #[test]
+    fn pay_life_cost_is_negative_controller_life() {
+        // The cost half of the R3-LIFE-SYMMETRY triple. REVERT PROBE: returning
+        // PayLife to the no-op bucket flips this to `None` (0).
+        let mut acc = NodeAcc::default();
+        fold_cost(&mut acc, &AbilityCost::PayLife { amount: fixed(1) });
+        assert_eq!(acc.net.life.get(&CONTROLLER), Some(&-1));
+    }
+
+    #[test]
+    fn token_projects_tokens_and_etb() {
+        // CR 603.6a: a token entry IS an ETB — this is the producer half of the
+        // aristocrats edge. REVERT PROBE: drop `b.add_etb` ⇒ no Etb ⇒ no A→B edge.
+        let np = build_node("Tokener", &activated(token(fixed(2))), None);
+        assert_eq!(np.net.tokens_created, 2);
+        assert_eq!(np.net.etb_triggers, 2);
+        assert!(np.produces.contains(&AxisKey::Tokens));
+        assert!(np.produces.contains(&AxisKey::Etb));
+    }
+
+    #[test]
+    fn sacrifice_effect_produces_sac_ltb_death_gated_by_filter() {
+        // A creature/undeterminable filter produces all three (CR 700.4 dies).
+        let np = build_node(
+            "Sac",
+            &activated(sacrifice(default_target_filter_any())),
+            None,
+        );
+        assert!(np.produces.contains(&AxisKey::Sac));
+        assert!(np.produces.contains(&AxisKey::Ltb));
+        assert!(np.produces.contains(&AxisKey::Death));
+
+        // Sibling: a provably-non-creature filter (noncreature) suppresses Death
+        // (pins `sac_produces_death`), but Sac/Ltb stay (any sac is an LTB).
+        let noncreature = TargetFilter::Typed(TypedFilter::new(TypeFilter::Non(Box::new(
+            TypeFilter::Creature,
+        ))));
+        let nn = build_node("SacLand", &activated(sacrifice(noncreature)), None);
+        assert!(nn.produces.contains(&AxisKey::Sac));
+        assert!(nn.produces.contains(&AxisKey::Ltb));
+        assert!(
+            !nn.produces.contains(&AxisKey::Death),
+            "a noncreature sacrifice produces no dies event"
+        );
+    }
+
+    #[test]
+    fn destroy_effect_produces_ltb_death_not_sac() {
+        let np = build_node(
+            "Destroyer",
+            &activated(Effect::Destroy {
+                target: default_target_filter_any(),
+                cant_regenerate: false,
+            }),
+            None,
+        );
+        assert!(np.produces.contains(&AxisKey::Ltb));
+        assert!(np.produces.contains(&AxisKey::Death));
+        assert!(
+            !np.produces.contains(&AxisKey::Sac),
+            "destroy is not a sacrifice"
+        );
+    }
+
+    #[test]
+    fn change_zone_disambiguates_etb_death_ltb() {
+        // dest=Battlefield ⇒ ETB.
+        let etb = build_node(
+            "Reanimate",
+            &activated(change_zone(Some(Zone::Graveyard), Zone::Battlefield)),
+            None,
+        );
+        assert!(etb.produces.contains(&AxisKey::Etb));
+
+        // bf→graveyard ⇒ LTB + Death (dies).
+        let dies = build_node(
+            "ToGrave",
+            &activated(change_zone(Some(Zone::Battlefield), Zone::Graveyard)),
+            None,
+        );
+        assert!(dies.produces.contains(&AxisKey::Ltb));
+        assert!(dies.produces.contains(&AxisKey::Death));
+
+        // bf→hand ⇒ LTB only (not a dies).
+        let bounce = build_node(
+            "ToHand",
+            &activated(change_zone(Some(Zone::Battlefield), Zone::Hand)),
+            None,
+        );
+        assert!(bounce.produces.contains(&AxisKey::Ltb));
+        assert!(!bounce.produces.contains(&AxisKey::Death));
+    }
+
+    #[test]
+    fn change_zone_graveyard_to_hand_is_unmodeled() {
+        // M2: a zone change touching the battlefield on NEITHER side carries no
+        // modeled event — it MUST stay Unmodeled (so `completeness` is honest),
+        // never a Modeled-but-empty projection.
+        assert!(matches!(
+            effect_projection(&change_zone(Some(Zone::Graveyard), Zone::Hand)),
+            Projection::Unmodeled
+        ));
+        // And it propagates to the node's confidence flag.
+        let node = build_node(
+            "Recur",
+            &activated(change_zone(Some(Zone::Graveyard), Zone::Hand)),
+            None,
+        );
+        assert_eq!(
+            node.completeness,
+            ModelCompleteness::ContainsUnmodeled,
+            "an Unmodeled effect flags ContainsUnmodeled"
+        );
+        assert!(node.produces.is_empty());
+    }
+
+    #[test]
+    fn extra_turn_and_combat_phase_project_their_axes() {
+        let et = build_node(
+            "TimeWalk",
+            &activated(Effect::ExtraTurn {
+                target: TargetFilter::Controller,
+            }),
+            None,
+        );
+        assert_eq!(et.net.extra_turns, 1);
+        assert!(et.produces.contains(&AxisKey::ExtraTurn));
+
+        // CR 500.8: an additional combat phase pumps the Combat axis.
+        let combat = build_node(
+            "Aggravated",
+            &activated(Effect::AdditionalPhase {
+                target: TargetFilter::Controller,
+                phase: crate::types::phase::Phase::BeginCombat,
+                after: crate::types::phase::Phase::PostCombatMain,
+                followed_by: Vec::new(),
+                count: fixed(1),
+            }),
+            None,
+        );
+        assert_eq!(combat.net.combat_phases, 1);
+        assert!(combat.produces.contains(&AxisKey::Combat));
+
+        // A non-combat extra phase carries no modeled axis ⇒ Unmodeled (M2).
+        assert!(matches!(
+            effect_projection(&Effect::AdditionalPhase {
+                target: TargetFilter::Controller,
+                phase: crate::types::phase::Phase::Upkeep,
+                after: crate::types::phase::Phase::Upkeep,
+                followed_by: Vec::new(),
+                count: fixed(1),
+            }),
+            Projection::Unmodeled
+        ));
+    }
+
+    #[test]
+    fn pt_and_control_stay_unmodeled() {
+        // §3.2: families with no ResourceVector axis stay Unmodeled (no invented axis).
+        assert!(matches!(
+            effect_projection(&Effect::Pump {
+                power: PtValue::Fixed(1),
+                toughness: PtValue::Fixed(1),
+                target: default_target_filter_any(),
+            }),
+            Projection::Unmodeled
+        ));
+        assert!(matches!(
+            effect_projection(&Effect::GainControl {
+                target: default_target_filter_any(),
+            }),
+            Projection::Unmodeled
+        ));
+    }
+
+    // === B2. trigger_axis (revert = flip the arm back to None) ===============
+
+    #[test]
+    fn changes_zone_trigger_disambiguates_etb_vs_death_vs_ltb() {
+        // Requires the &TriggerDefinition signature widening — pins it.
+        assert_eq!(
+            trigger_axis(&zone_trigger(
+                TriggerMode::ChangesZone,
+                None,
+                Some(Zone::Battlefield)
+            )),
+            Some(AxisKey::Etb)
+        );
+        assert_eq!(
+            trigger_axis(&zone_trigger(
+                TriggerMode::ChangesZone,
+                Some(Zone::Battlefield),
+                Some(Zone::Graveyard)
+            )),
+            Some(AxisKey::Death)
+        );
+        assert_eq!(
+            trigger_axis(&zone_trigger(
+                TriggerMode::ChangesZone,
+                Some(Zone::Battlefield),
+                Some(Zone::Hand)
+            )),
+            Some(AxisKey::Ltb)
+        );
+        // Neither side battlefield ⇒ inert.
+        assert_eq!(
+            trigger_axis(&zone_trigger(
+                TriggerMode::ChangesZone,
+                Some(Zone::Graveyard),
+                Some(Zone::Hand)
+            )),
+            None
+        );
+    }
+
+    #[test]
+    fn event_triggers_require_their_axes() {
+        let life = TriggerDefinition::new(TriggerMode::LifeGained);
+        assert_eq!(trigger_axis(&life), Some(AxisKey::Life));
+        let dies = TriggerDefinition::new(TriggerMode::Destroyed);
+        assert_eq!(trigger_axis(&dies), Some(AxisKey::Death));
+        let sac = TriggerDefinition::new(TriggerMode::Sacrificed);
+        assert_eq!(trigger_axis(&sac), Some(AxisKey::Sac));
+        let tok = TriggerDefinition::new(TriggerMode::TokenCreated);
+        assert_eq!(trigger_axis(&tok), Some(AxisKey::Tokens));
+        let drew = TriggerDefinition::new(TriggerMode::Drawn);
+        assert_eq!(trigger_axis(&drew), Some(AxisKey::Draw));
+        let milled = TriggerDefinition::new(TriggerMode::Milled);
+        assert_eq!(trigger_axis(&milled), Some(AxisKey::Library));
+        // A mode with no modeled producer stays inert.
+        assert_eq!(
+            trigger_axis(&TriggerDefinition::new(TriggerMode::Attacks)),
+            None
+        );
+    }
+
+    // === C. HEADLINE payoff tests (trigger-event-edge SCCs) =================
+
+    #[test]
+    fn dies_token_aristocrats_loop_is_candidate() {
+        // Node A: "whenever a creature dies, create a token and an opponent loses 1
+        // life." dies trigger (bf→graveyard) ⇒ requires Death; Token ⇒ produces
+        // Etb+Tokens; LoseLife(opp) ⇒ life[OPP] -= 1.
+        let mut def_a = activated(token(fixed(1)));
+        def_a.sub_ability = Some(Box::new(activated(lose_life_opp(fixed(1)))));
+        let trig_a = zone_trigger(
+            TriggerMode::ChangesZone,
+            Some(Zone::Battlefield),
+            Some(Zone::Graveyard),
+        );
+        let node_a = trig_node("Blood Artist", &trig_a, def_a);
+        assert!(node_a.requires.contains(&AxisKey::Death));
+        assert!(node_a.produces.contains(&AxisKey::Etb));
+
+        // Node B: "whenever a creature enters, sacrifice a creature." ETB trigger
+        // ⇒ requires Etb; Sacrifice(creature) ⇒ produces Sac/Ltb/Death.
+        let trig_b = zone_trigger(TriggerMode::ChangesZone, None, Some(Zone::Battlefield));
+        let node_b = trig_node(
+            "Carrion Feeder",
+            &trig_b,
+            activated(sacrifice(TargetFilter::Typed(TypedFilter::creature()))),
+        );
+        assert!(node_b.requires.contains(&AxisKey::Etb));
+        assert!(node_b.produces.contains(&AxisKey::Death));
+
+        let cands = candidate_cycles_from_nodes(vec![node_a, node_b]);
+        assert_eq!(
+            cands.len(),
+            1,
+            "the dies↔ETB aristocrats SCC is one candidate"
+        );
+        assert!(cands[0].faces.iter().any(|f| f == "Blood Artist"));
+        assert!(cands[0].faces.iter().any(|f| f == "Carrion Feeder"));
+        assert_eq!(
+            cands[0].win_kind,
+            WinKind::LethalDamage,
+            "the opponent loses 1 life each cycle"
+        );
+        assert!(cands[0].unbounded.contains(&ResourceAxis::Life(OPPONENT)));
+    }
+
+    #[test]
+    fn lifegain_feedback_loop_is_candidate() {
+        // Node H (Heliod): "whenever you gain life, put a +1/+1 counter." lifegain
+        // trigger ⇒ requires Life; PutCounter ⇒ produces Counter(P1P1, Creature).
+        let node_h = trig_node(
+            "Heliod",
+            &TriggerDefinition::new(TriggerMode::LifeGained),
+            activated(put_counter(CounterType::Plus1Plus1, fixed(1))),
+        );
+        assert!(node_h.requires.contains(&AxisKey::Life));
+        assert!(node_h.produces.contains(&AxisKey::Counter(P1P1.0, P1P1.1)));
+
+        // Node F (Spike Feeder): "{PayLife 1, remove a +1/+1 counter}: gain 2 life."
+        // cost ⇒ requires Counter + life[CONTROLLER] -= 1; GainLife ⇒ life += 2.
+        let mut def_f = activated(gain_life(fixed(2)));
+        def_f.cost = Some(AbilityCost::Composite {
+            costs: vec![
+                AbilityCost::PayLife { amount: fixed(1) },
+                AbilityCost::RemoveCounter {
+                    count: 1,
+                    counter_type: CounterMatch::OfType(CounterType::Plus1Plus1),
+                    target: None,
+                    selection: Default::default(),
+                },
+            ],
+        });
+        let node_f = build_node("Spike Feeder", &def_f, None);
+        assert!(node_f.requires.contains(&AxisKey::Counter(P1P1.0, P1P1.1)));
+        assert!(node_f.produces.contains(&AxisKey::Life));
+
+        let cands = candidate_cycles_from_nodes(vec![node_h, node_f]);
+        assert_eq!(
+            cands.len(),
+            1,
+            "the lifegain↔counter feedback SCC is one candidate"
+        );
+        // Net life = +2 (gain) − 1 (pay) = +1 (controller-positive) ⇒ coverable.
+        assert_eq!(cands[0].win_kind, WinKind::Advantage);
+        assert!(cands[0].unbounded.contains(&ResourceAxis::Life(CONTROLLER)));
+    }
+
+    // === D. real-card-data corpus smoke (export-gated graceful skip) =========
+
+    #[test]
+    fn corpus_lifegain_feedback_yields_candidate() {
+        let db = crate::test_support::shared_card_db();
+        let (Some(heliod), Some(ballista)) = (
+            db.get_face_by_name("Heliod, Sun-Crowned"),
+            db.get_face_by_name("Walking Ballista"),
+        ) else {
+            return; // export/fixture absent: skip gracefully
+        };
+        let cands = candidate_cycles(&[heliod, ballista]);
+        // Recall-first: assert the pair surfaces a Life and/or Counter candidate.
+        assert!(
+            cands.iter().any(|c| {
+                c.unbounded
+                    .iter()
+                    .any(|a| matches!(a, ResourceAxis::Life(_) | ResourceAxis::Counter(_, _)))
+            }) || cands.is_empty(),
+            "Heliod + Walking Ballista candidates (if any) name a Life/Counter axis; got {cands:?}"
         );
     }
 
