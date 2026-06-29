@@ -4931,6 +4931,40 @@ pub enum AutoPassMode {
     UntilEndOfTurn,
 }
 
+/// CR 732.2a: user-controllable gate for the live combo (infinite-loop) detector.
+///
+/// `Off` (the default) restores EXACT pre-detector behavior: the engine records
+/// no loop-detection samples (no per-resolution `normalize_for_loop` clone), never
+/// fires the mandatory-loop game-ending shortcut (CR 732.2a / CR 732.5 / CR 704.5a),
+/// and never marks `∞` unbounded resources from a detected loop. `On` enables the
+/// detector. New game-changing functionality is opt-in so it can be developed
+/// safely (issue #4603).
+///
+/// This is a game-wide setting (the gated shortcut ends the whole game, so a
+/// per-player flag would be meaningless). It is INTENTIONALLY a typed mode enum
+/// rather than a `bool`, matching the engine's `*Mode` idiom (`AutoPassMode`,
+/// `ConvokeMode`, `CastPaymentMode`) and leaving room for a future detect-only
+/// mode (display `∞` without the game-ending shortcut). The debug
+/// `DebugAction::SetInfiniteMana` toggle is a SEPARATE producer of
+/// `unbounded_resources` and is NOT gated by this flag.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(tag = "type")]
+pub enum LoopDetectionMode {
+    /// Pre-feature behavior: no loop sampling, no shortcut, no detector `∞`.
+    #[default]
+    Off,
+    /// Live combo-detector active: samples loops, fires the CR 732.2a mandatory-loop
+    /// shortcut, and marks `unbounded_resources` for a confirmed loop.
+    On,
+}
+
+impl LoopDetectionMode {
+    /// True when the live combo-detector is enabled.
+    pub fn is_on(self) -> bool {
+        matches!(self, LoopDetectionMode::On)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ActionResult {
     pub events: Vec<GameEvent>,
@@ -6153,6 +6187,21 @@ pub struct GameState {
     /// relied on this same exclusion implicitly; it is now explicit.)
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub unbounded_resources: BTreeMap<PlayerId, BTreeSet<ResourceAxis>>,
+
+    /// CR 732.2a: user-controllable opt-in gate for the live combo (infinite-loop)
+    /// detector. Default `Off` = exact pre-combo-detector behavior. Toggled at
+    /// runtime via `GameAction::SetLoopDetection` (a preference action, like
+    /// `auto_pass`/`phase_stops`). Game-wide because the gated shortcut ends the
+    /// whole game; see [`LoopDetectionMode`].
+    ///
+    /// INTENTIONALLY EXCLUDED from `impl PartialEq for GameState` and
+    /// `loop_fingerprint` (same family as `unbounded_resources`): this is
+    /// control/display state, not rules state for equality. It is invariant across
+    /// the snapshots CR 732.2a loop detection compares (a player cannot toggle it
+    /// mid-loop), and AI-search dedup ignores it (the AI never reads the detector),
+    /// so excluding it cannot cause a false loop match or a missed position dedup.
+    #[serde(default)]
+    pub loop_detection: LoopDetectionMode,
 
     #[serde(default)]
     pub match_config: MatchConfig,
@@ -7834,6 +7883,7 @@ impl GameState {
             debug_mode: false,
             debug_permitted: BTreeSet::new(),
             unbounded_resources: BTreeMap::new(),
+            loop_detection: LoopDetectionMode::Off,
         }
     }
 
@@ -8045,9 +8095,14 @@ impl GameState {
 
     /// CR 732.2a: record that an unbounded (net-progress) loop under `controller`
     /// pumps `axes`. The single write authority for `unbounded_resources` —
-    /// every producer (the infinite-mana debug toggle today, a detector
-    /// `LoopCertificate.unbounded` in PR-7) routes through here, never mutating
-    /// the map inline. Idempotent set-union: storing exactly the axes it is given
+    /// every producer routes through here, never mutating the map inline. Two
+    /// producers exist: the infinite-mana debug toggle
+    /// (`DebugAction::SetInfiniteMana`, ungated) and the live combo-detector at the
+    /// reconcile seam (`game::engine::reconcile_terminal_result`), which persists a
+    /// confirmed loop's `delta.unbounded_axes_for(winner)` — the same axes
+    /// `detect_loop` names in `LoopCertificate.unbounded` — but ONLY when the
+    /// user-controllable `GameState::loop_detection` gate is `On`. Idempotent
+    /// set-union: storing exactly the axes it is given
     /// (so a mana toggle stores its six `Mana(_)` axes, a drain certificate stores
     /// its `Life`/`DamageDealt` axes) without clobbering axes a prior producer
     /// already recorded for the same controller.

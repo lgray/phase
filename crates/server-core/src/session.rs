@@ -1081,6 +1081,31 @@ impl SessionManager {
             ));
         }
 
+        // SetLoopDetection: game-wide combo-detector opt-in toggle (CR 732.2a).
+        // Like the preference actions it must bypass the turn/legal-action prechecks
+        // (it is legal in any state and not tied to priority), but unlike SetPhaseStops
+        // it carries no per-player keying, so we delegate straight to the engine handler
+        // — the engine remains the single authority for the flag and the ring clear.
+        if matches!(action, GameAction::SetLoopDetection { .. }) {
+            session.push_takeback_snapshot(player);
+            let result = apply(&mut session.state, player, action).map_err(|e| {
+                warn!(game = %game_code, player = ?player, error = %e, reason = "engine_error", "action rejected");
+                format!("Engine error: {}", e)
+            })?;
+            let (new_legal_actions, spell_costs, by_object) =
+                engine_legal_actions_full(&session.state);
+            let auto_pass = auto_pass_recommended(&session.state, &new_legal_actions);
+            return Ok((
+                session.state.clone(),
+                result.events,
+                new_legal_actions,
+                result.log_entries,
+                auto_pass,
+                spell_costs,
+                by_object,
+            ));
+        }
+
         // ReorderHand: per-player display-preference update keyed to the
         // authenticated player, not the priority holder. Mirrors
         // CancelAutoPass / SetPhaseStops by bypassing the turn/legal-action

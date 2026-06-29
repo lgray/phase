@@ -4,6 +4,7 @@ import { useTranslation } from "react-i18next";
 
 import { ConnectionDot } from "../multiplayer/ConnectionDot.tsx";
 import { FullscreenButton } from "./FullscreenButton.tsx";
+import { LoopDetectionToggle } from "./LoopDetectionToggle.tsx";
 import { VolumeControl } from "./VolumeControl.tsx";
 import { clearGame } from "../../stores/gameStore.ts";
 import { useDraftStore } from "../../stores/draftStore.ts";
@@ -161,6 +162,9 @@ export function GameMenu({
               }}
             />
           )}
+          {/* CR 732.2a: opt-in combo (infinite-loop) detector, default OFF. Stays
+              open on toggle so the On/Off state is visible as it flips. */}
+          <LoopDetectionToggle />
           <div className="my-1 border-t border-gray-700" />
           <MenuButton
             label={t("gameMenu.concede")}

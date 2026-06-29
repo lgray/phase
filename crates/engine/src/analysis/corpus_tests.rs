@@ -34,12 +34,13 @@ use crate::analysis::corpus;
 use crate::analysis::resource::ResourceAxis;
 use crate::analysis::{detect_loop, LoopCertificate, LoopProbe, WinKind};
 use crate::database::CardDatabase;
-use crate::game::scenario::{GameScenario, P0, P1};
+use crate::game::derived_views::derive_views;
+use crate::game::scenario::{GameRunner, GameScenario, P0, P1};
 use crate::types::ability::{
     AbilityDefinition, AbilityKind, Effect, QuantityExpr, TargetFilter, TargetRef,
 };
 use crate::types::actions::GameAction;
-use crate::types::game_state::{CastPaymentMode, GameState, WaitingFor};
+use crate::types::game_state::{CastPaymentMode, GameState, LoopDetectionMode, WaitingFor};
 use crate::types::identifiers::ObjectId;
 use crate::types::mana::ManaType;
 use crate::types::phase::Phase;
@@ -915,6 +916,250 @@ fn drive_drain_idx18_victim_with_out_is_not_eliminated() {
     assert!(
         corpus::first_gameover_beat(&trace).is_none(),
         "P1 holds a loop-ending action — the §9 gate must refuse the shortcut (no GameOver)"
+    );
+}
+
+// ===========================================================================
+// Combo-detector OPT-IN gate (PR #4603): `GameState::loop_detection`.
+// The live detector (ring sampler + reconcile-seam shortcut + `∞` producer) is
+// gated behind a user-controllable toggle, default OFF. These tests pin the gate
+// end-to-end on the SAME idx18 drain loop the tests above drive: ON wins + marks
+// `∞`; OFF restores exact pre-detector behavior (no shortcut, no `∞`, no ring).
+// ===========================================================================
+
+/// PR6-GATE-1 (LIVE PRODUCER): with the detector ON, the idx18 drain loop both wins
+/// LIVE (CR 704.5a via the §3 shortcut) AND marks `GameState::unbounded_resources`
+/// for the winner, so `derive_views` projects ≥1 `∞` HUD row. This is the maintainer's
+/// requested live producer — before this fix the only writer of `unbounded_resources`
+/// was the debug `SetInfiniteMana` toggle.
+///
+/// REVERT-FAIL: delete the `mark_unbounded_loop(winner, …)` call at the §3 site ⇒
+/// `unbounded_resources` stays empty ⇒ both the map and the `∞`-row assertions flip.
+#[test]
+fn pr6_gate_on_drain_marks_unbounded_resources() {
+    let Some(mut board) = corpus::build_drain_board(card_db(), corpus::row(18).cards, 200) else {
+        return; // export absent: skip
+    };
+    // build_drain_board opts the detector ON; assert that precondition explicitly so
+    // a future change to the harness default cannot silently make this test vacuous.
+    assert!(
+        board.runner.state().loop_detection.is_on(),
+        "the live-detector harness must run with loop_detection ON"
+    );
+    corpus::seed_lifegain_cascade(&mut board);
+    let trace = corpus::drive_pass_priority(&mut board, 40);
+    let (_, winner) = corpus::first_gameover_beat(&trace)
+        .expect("idx18 must win LIVE with the detector ON (§3 shortcut)");
+    assert_eq!(winner, P0, "the non-falling player wins");
+
+    let state = board.runner.state();
+    // The live producer recorded the confirmed loop's unbounded axes for the winner.
+    let winner_axes = state
+        .unbounded_resources
+        .get(&winner)
+        .expect("the live producer must mark unbounded_resources for the winning controller");
+    assert!(
+        !winner_axes.is_empty(),
+        "the producer must name ≥1 unbounded axis for the confirmed drain loop"
+    );
+    // The `∞` HUD projection sees it: derive_views emits ≥1 row attributed to the winner.
+    let views = derive_views(state, None);
+    assert!(
+        views
+            .unbounded_resources
+            .iter()
+            .any(|row| row.player == winner),
+        "derive_views must project an ∞ row for the winner (got {:?})",
+        views.unbounded_resources
+    );
+}
+
+/// PR6-GATE-2 (OFF == PRE-FEATURE + PERF GATE): the SAME idx18 drain loop with the
+/// detector OFF must behave exactly as it did before the combo-detector existed —
+/// (a) NO early `GameOver` (the natural ~400-beat CR 704.5a death is far outside the
+/// 40-beat window), (b) NO `∞` marked, and (c) the loop-detection ring is NEVER
+/// populated (proving the per-resolution `normalize_for_loop` sampling cost is gated
+/// off in the default configuration).
+///
+/// REVERT-FAIL:
+///  - remove the `is_on()` guard at the §2 ring sampler ⇒ the ring populates ⇒ the
+///    `ring stays empty` assertion flips.
+///  - (the §3 shortcut guard is pinned separately by PR6-GATE-3 below.)
+#[test]
+fn pr6_gate_off_drain_is_pre_feature() {
+    let Some(mut board) = corpus::build_drain_board(card_db(), corpus::row(18).cards, 200) else {
+        return; // export absent: skip
+    };
+    // Opt the detector OFF (the engine default; build_drain_board flips it ON).
+    board.runner.state_mut().loop_detection = LoopDetectionMode::Off;
+    corpus::seed_lifegain_cascade(&mut board);
+    let trace = corpus::drive_pass_priority(&mut board, 40);
+    assert!(
+        corpus::first_gameover_beat(&trace).is_none(),
+        "with the detector OFF the loop must NOT be shortcut to a win (pre-feature behavior)"
+    );
+    assert!(
+        board.runner.state().unbounded_resources.is_empty(),
+        "OFF must never mark ∞ (the detector producer is gated; the debug toggle is untouched)"
+    );
+    assert!(
+        trace.iter().all(|t| t.ring_len == 0),
+        "OFF must never populate the loop-detection ring (the sampler's per-resolution clone is gated)"
+    );
+}
+
+/// PR6-GATE-3 (SHORTCUT GUARD, flag A/B from an identical pre-state): drive the idx18
+/// loop ON until the exact pre-win state (populated ring, detector ON), then re-apply
+/// the SINGLE winning beat twice from clones that differ ONLY in `loop_detection`:
+/// ON ends the game, OFF does not. Because the two probes share a byte-identical
+/// populated ring and differ only in the flag, this isolates the §3 shortcut gate from
+/// the §2 sampler gate (which PR6-GATE-2 covers).
+///
+/// REVERT-FAIL: remove the `&& state.loop_detection.is_on()` conjunct at the §3
+/// shortcut ⇒ the OFF probe also ends the game ⇒ the `OFF must not GameOver` flips.
+#[test]
+fn pr6_gate_shortcut_guard_isolated_by_flag() {
+    let Some(mut board) = corpus::build_drain_board(card_db(), corpus::row(18).cards, 200) else {
+        return; // export absent: skip
+    };
+    corpus::seed_lifegain_cascade(&mut board);
+    // Capture the state from the beat immediately BEFORE the ON drive's GameOver — the
+    // exact populated-ring state whose next `PassPriority` fires the §3 shortcut.
+    let mut pre_win: Option<GameState> = None;
+    for _ in 0..40 {
+        if matches!(
+            board.runner.state().waiting_for,
+            WaitingFor::GameOver { .. }
+        ) {
+            break;
+        }
+        let snapshot = board.runner.state().clone();
+        if board.runner.act(GameAction::PassPriority).is_err() {
+            break;
+        }
+        if matches!(
+            board.runner.state().waiting_for,
+            WaitingFor::GameOver { .. }
+        ) {
+            pre_win = Some(snapshot);
+            break;
+        }
+    }
+    let pre = pre_win.expect("idx18 ON must reach a §3-shortcut GameOver within 40 beats");
+    assert!(
+        !pre.loop_detect_ring.is_empty() && pre.loop_detection.is_on(),
+        "the captured pre-win state must carry a populated ring with the detector ON"
+    );
+
+    // ON probe: re-applying the winning beat from a clone ends the game (deterministic).
+    let on_res = GameRunner::from_state(pre.clone())
+        .act(GameAction::PassPriority)
+        .expect("re-applying the winning beat must dispatch");
+    assert!(
+        matches!(on_res.waiting_for, WaitingFor::GameOver { winner: Some(_) }),
+        "with loop_detection ON, the captured beat shortcuts the loop to a win"
+    );
+
+    // OFF probe: same pre-state and same populated ring, only the flag flipped (set
+    // directly so the ring is RETAINED, not cleared by the SetLoopDetection handler).
+    let mut off_state = pre;
+    off_state.loop_detection = LoopDetectionMode::Off;
+    assert!(
+        !off_state.loop_detect_ring.is_empty(),
+        "the OFF probe must keep the populated ring so only the flag differs"
+    );
+    let off_res = GameRunner::from_state(off_state)
+        .act(GameAction::PassPriority)
+        .expect("re-applying the winning beat must dispatch");
+    assert!(
+        !matches!(off_res.waiting_for, WaitingFor::GameOver { .. }),
+        "with loop_detection OFF, the SAME populated-ring beat must NOT shortcut the game — \
+         only the §3 flag gate differs between the two probes"
+    );
+}
+
+/// PR6-GATE-4 (RUNTIME TOGGLE): `GameAction::SetLoopDetection` flips the flag from any
+/// state, and turning it OFF clears the loop-detection ring (returning to a clean
+/// pre-feature state). Routed by `actor`, legal with no WaitingFor precondition.
+#[test]
+fn pr6_gate_set_loop_detection_runtime_toggle() {
+    let mut runner = {
+        let mut scenario = GameScenario::new();
+        scenario.at_phase(Phase::PreCombatMain);
+        scenario.build()
+    };
+    // Default is OFF.
+    assert_eq!(runner.state().loop_detection, LoopDetectionMode::Off);
+
+    // Turn ON.
+    runner
+        .act(GameAction::SetLoopDetection {
+            mode: LoopDetectionMode::On,
+        })
+        .expect("SetLoopDetection{On} must be legal from any state");
+    assert!(runner.state().loop_detection.is_on());
+
+    // Seed a ring entry, then turning OFF must clear it.
+    let ring_sample = std::sync::Arc::new(runner.state().normalize_for_loop());
+    runner.state_mut().loop_detect_ring.push_back(ring_sample);
+    assert!(!runner.state().loop_detect_ring.is_empty());
+    runner
+        .act(GameAction::SetLoopDetection {
+            mode: LoopDetectionMode::Off,
+        })
+        .expect("SetLoopDetection{Off} must be legal from any state");
+    assert_eq!(runner.state().loop_detection, LoopDetectionMode::Off);
+    assert!(
+        runner.state().loop_detect_ring.is_empty(),
+        "turning the detector OFF must clear the ring (exact pre-feature state)"
+    );
+}
+
+/// PR6-GATE-5 (LOOP-EQUALITY EXCLUSION): `loop_detection` is control state, excluded
+/// from `impl PartialEq for GameState` (and therefore from `loop_states_equal`), like
+/// `unbounded_resources`. Two states identical except for the flag must compare EQUAL,
+/// or CR 732.2a loop detection / AI-search dedup would see spurious differences.
+///
+/// REVERT-FAIL: add `&& self.loop_detection == other.loop_detection` to the manual
+/// `PartialEq` ⇒ `a == b` becomes false ⇒ both assertions flip.
+#[test]
+fn pr6_gate_loop_detection_excluded_from_equality() {
+    let base = GameScenario::new().build().state().clone();
+    let mut a = base.clone();
+    let mut b = base;
+    a.loop_detection = LoopDetectionMode::On;
+    b.loop_detection = LoopDetectionMode::Off;
+    assert_ne!(
+        a.loop_detection, b.loop_detection,
+        "fixture must actually differ in loop_detection"
+    );
+    assert_eq!(
+        a, b,
+        "manual PartialEq must EXCLUDE loop_detection (control state)"
+    );
+    assert!(
+        crate::types::game_state::loop_states_equal(&a, &b),
+        "CR 732.2a loop_states_equal must EXCLUDE loop_detection"
+    );
+}
+
+/// PR6-GATE-6 (SERDE BACK-COMPAT): a serialized `GameState` predating this field must
+/// deserialize with `loop_detection == Off` (the `#[serde(default)]`), so existing
+/// wire/saved states load as pre-feature. Non-vacuous: dropping `#[serde(default)]`
+/// makes the deserialize fail.
+#[test]
+fn pr6_gate_loop_detection_serde_defaults_off() {
+    let state = GameScenario::new().build().state().clone();
+    let mut json = serde_json::to_value(&state).expect("serialize");
+    // Simulate a pre-field wire state by removing the key.
+    json.as_object_mut()
+        .expect("state serializes as an object")
+        .remove("loop_detection");
+    let restored: GameState = serde_json::from_value(json).expect("deserialize without the field");
+    assert_eq!(
+        restored.loop_detection,
+        LoopDetectionMode::Off,
+        "a state without `loop_detection` must default to Off (pre-feature)"
     );
 }
 

@@ -1643,6 +1643,11 @@ pub(crate) fn build_drain_board(
         let state = runner.state_mut();
         state.active_player = P0;
         state.priority_player = P0;
+        // CR 732.2a: this harness exercises the live combo-detector, so it opts the
+        // (default-OFF) detector ON. Without this the reconcile-seam shortcut and the
+        // loop-detection ring sampler are both gated off and no drain cascade would be
+        // shortcut to its GameOver — see `GameState::loop_detection`.
+        state.loop_detection = crate::types::game_state::LoopDetectionMode::On;
     }
     let mut ids = Vec::new();
     {

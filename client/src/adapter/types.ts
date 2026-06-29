@@ -1648,6 +1648,7 @@ export type GameAction =
   | { type: "SetAutoPass"; data: { mode: { type: "UntilStackEmpty" } | { type: "UntilEndOfTurn" } } }
   | { type: "CancelAutoPass" }
   | { type: "SetPhaseStops"; data: { stops: Phase[] } }
+  | { type: "SetLoopDetection"; data: { mode: LoopDetectionMode } }
   | { type: "AssignCombatDamage"; data: { assignments: [ObjectId, number][]; trample_damage: number; controller_damage: number } }
   // CR 510.1d + CR 702.22k: blocker's combat-damage division among the attackers it blocks.
   | { type: "AssignBlockerDamage"; data: { assignments: [ObjectId, number][] } }
@@ -2164,11 +2165,21 @@ export interface GameState {
     grant_extra_turn_after?: boolean;
   }>;
   debug_mode?: boolean;
+  /** CR 732.2a: user-controllable opt-in gate for the live combo-detector
+   *  (default Off). Toggled via `GameAction::SetLoopDetection`. */
+  loop_detection?: LoopDetectionMode;
 }
 
 export type AutoPassMode =
   | { type: "UntilStackEmpty"; initial_stack_len: number }
   | { type: "UntilEndOfTurn" };
+
+/**
+ * CR 732.2a: user-controllable opt-in gate for the live combo (infinite-loop)
+ * detector. `Off` (default) restores pre-detector behavior; `On` enables it.
+ * Mirrors `engine::types::game_state::LoopDetectionMode`.
+ */
+export type LoopDetectionMode = { type: "Off" } | { type: "On" };
 
 // ── Source attribution (CR 613 layers) ───────────────────────────────────
 

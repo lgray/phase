@@ -4,7 +4,7 @@ use super::ability::{LibraryPosition, TargetRef};
 use super::counter::CounterType;
 use super::game_state::{
     AutoMayChoice, AutoPassRequest, CastPaymentMode, CombatDamageAssignmentMode, CounterCostChoice,
-    CounterMoveChoice, ShardChoice,
+    CounterMoveChoice, LoopDetectionMode, ShardChoice,
 };
 use super::identifiers::{CardId, ObjectId};
 use super::keywords::Keyword;
@@ -590,6 +590,15 @@ pub enum GameAction {
     /// Legal in any WaitingFor state — pure preference propagation.
     SetPhaseStops {
         stops: Vec<super::phase::Phase>,
+    },
+    /// CR 732.2a: toggle the live combo (infinite-loop) detector on/off. A
+    /// user-controllable opt-in setting (default `Off` restores pre-detector
+    /// behavior). Game-wide control state, not a per-player preference, but routed
+    /// and handled like the other preference actions (`SetPhaseStops`,
+    /// `SetAutoPass`): legal in any WaitingFor state, applied by `actor`, no game
+    /// logic and no stack/priority transition.
+    SetLoopDetection {
+        mode: LoopDetectionMode,
     },
     /// CR 510.1c/d: Assign damage from an attacker to its blockers (and optionally
     /// the defending player/PW with trample, plus PW controller with trample-over-PW).
@@ -1336,6 +1345,7 @@ impl GameAction {
             | GameAction::SetAutoPass { .. }
             | GameAction::CancelAutoPass
             | GameAction::SetPhaseStops { .. }
+            | GameAction::SetLoopDetection { .. }
             | GameAction::AssignCombatDamage { .. }
             | GameAction::AssignBlockerDamage { .. }
             | GameAction::DistributeAmong { .. }
