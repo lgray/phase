@@ -13486,6 +13486,16 @@ pub fn handle_activate_ability(
             let assigned_targets = flatten_targets_in_chain(&resolved);
             emit_targeting_events(state, &assigned_targets, source_id, player, events);
 
+            // CR 702.170b: plot's grant targets SelfRef (a context-ref), so
+            // `build_target_slots` yields no slot and plot never takes this target
+            // branch — it is intercepted in the no-target path below. Guard the
+            // invariant: a future plot variant reaching here would silently revert
+            // to the on-stack model, so relocate the intercept if this ever fires.
+            debug_assert!(
+                !is_plot_special_action(&ability_def),
+                "plot special action reached the target branch; SelfRef should suppress its target slot"
+            );
+
             let entry_id = ObjectId(state.next_object_id);
             state.next_object_id += 1;
 
@@ -13575,6 +13585,25 @@ pub fn handle_activate_ability(
             )));
             return Ok(state.waiting_for.clone());
         }
+    }
+
+    // CR 702.170b + CR 116.2k: Exiling a card using its plot ability is a
+    // SPECIAL ACTION that doesn't use the stack. The self-exile cost paid above
+    // already moved the card to exile (face up — CR 702.170 has no face-down
+    // clause). Apply the `Plotted` grant IMMEDIATELY via the same single-
+    // authority resolver the stack would otherwise have used on resolution, then
+    // keep priority. No stack entry is created, and crucially no
+    // `AbilityActivated` event is emitted: plot is a special action, not an
+    // activated ability (CR 702.170b), so "whenever you activate an ability"
+    // triggers must not fire and per-turn activation caps (`record_ability_
+    // activation`) do not apply. `resolve` cannot fail for the SelfRef grant, but
+    // the Result is mapped to `EngineError` rather than unwrapped.
+    if is_plot_special_action(&ability_def) {
+        super::effects::grant_permission::resolve(state, &resolved, events).map_err(|e| {
+            EngineError::ActionNotAllowed(format!("plot special action failed: {e}"))
+        })?;
+        priority::clear_priority_passes(state);
+        return Ok(WaitingFor::Priority { player });
     }
 
     // Push to stack
@@ -14019,18 +14048,28 @@ pub(crate) fn apply_special_action_cost_reduction(
     cost
 }
 
-/// CR 702.170a: True when `ability_def` is the synthesized plot special action —
-/// its effect grants the `Plotted` casting permission (see `synthesize_plot`).
-/// Used to apply `ReduceActionCost { action: Plot }` reductions to the plot
-/// mana cost without conflating plot with generic activated-ability reducers.
-fn is_plot_special_action(ability_def: &AbilityDefinition) -> bool {
+/// CR 702.170a: True when `effect` is the synthesized plot special action's
+/// effect — a `Plotted` casting-permission grant (see `synthesize_plot`). Shared
+/// predicate so both the `AbilityDefinition` shape (`is_plot_special_action`) and
+/// the `ResolvedAbility.effect` shape (the cost-pause resume-path invariant in
+/// `casting_costs::push_activated_ability_to_stack`) classify plot identically.
+pub(super) fn effect_is_plot_grant(effect: &Effect) -> bool {
     matches!(
-        &*ability_def.effect,
+        effect,
         Effect::GrantCastingPermission {
             permission: CastingPermission::Plotted { .. },
             ..
         }
     )
+}
+
+/// CR 702.170a: True when `ability_def` is the synthesized plot special action —
+/// its effect grants the `Plotted` casting permission (see `synthesize_plot`).
+/// Used to apply `ReduceActionCost { action: Plot }` reductions to the plot mana
+/// cost without conflating plot with generic activated-ability reducers, and to
+/// gate the CR 702.170b special-action intercept in `handle_activate_ability`.
+fn is_plot_special_action(ability_def: &AbilityDefinition) -> bool {
+    effect_is_plot_grant(&ability_def.effect)
 }
 
 /// CR 116.2 + CR 118.7a: Apply a special-action cost reduction to the mana
@@ -49623,6 +49662,19 @@ mod tests {
             0,
             "the production path charged the reduced {{1}} plot cost"
         );
+        // CR 702.170b: printed hand-Plot is also a special action — the stack
+        // stays empty and the card is plotted immediately (no on-stack grant).
+        assert!(
+            state.stack.is_empty(),
+            "printed hand-Plot is a special action (CR 702.170b) — it must not use the stack"
+        );
+        assert!(
+            state.objects[&plot_card]
+                .casting_permissions
+                .iter()
+                .any(|p| matches!(p, CastingPermission::Plotted { .. })),
+            "printed hand-Plot must grant Plotted immediately as part of the special action"
+        );
 
         // WITHOUT Doc Aurlock: the SAME {1} mana, but the full {3} is unaffordable.
         let (mut state, plot_card) = build(false);
@@ -51016,8 +51068,12 @@ mod tests {
             add_mana(runner.state_mut(), P0, ManaType::Colorless, 1);
             let turn = runner.state().turn_number;
 
-            // Announce + pay; then drive to resolution, capturing events.
-            let mut events = apply_as_current(
+            // Take the plot SPECIAL ACTION. CR 702.170b: it does NOT use the
+            // stack — the card becomes plotted IMMEDIATELY as part of the action,
+            // with NO intervening priority passing or stack resolution. No
+            // PassPriority loop: everything below must hold directly after the
+            // single `ActivateAbility` returns.
+            let events = apply_as_current(
                 runner.state_mut(),
                 GameAction::ActivateAbility {
                     source_id: top,
@@ -51026,8 +51082,8 @@ mod tests {
             )
             .expect("activating plot-from-library must be accepted")
             .events;
-            // The Exile cost is paid during activation — the card is already gone
-            // from the library before the ability hits the stack.
+            // The Exile cost is paid during the action — the card is already gone
+            // from the library.
             assert_eq!(
                 runner.state().objects[&top].zone,
                 Zone::Exile,
@@ -51038,20 +51094,34 @@ mod tests {
                 Some(top),
                 "the plotted card must have left the library"
             );
-            // Resolve the on-stack grant ability (pass priority both players).
-            for _ in 0..16 {
-                if runner.state().objects[&top]
+            // CR 702.170b discriminator (revert-probe vs the old on-stack model):
+            // the stack is EMPTY — plotting created no stack entry. Under the
+            // reverted model an `ActivatedAbility` entry would sit here awaiting
+            // resolution.
+            assert!(
+                runner.state().stack.is_empty(),
+                "plot is a special action (CR 702.170b) — it must NOT use the stack"
+            );
+            // CR 702.170b discriminator: the card is plotted IMMEDIATELY, with no
+            // priority passing. The old model required resolving an on-stack grant
+            // (passing priority) before `Plotted` appeared; this runs directly
+            // after the action and fails if plotting is deferred to the stack.
+            assert!(
+                runner.state().objects[&top]
                     .casting_permissions
                     .iter()
-                    .any(|p| matches!(p, CastingPermission::Plotted { .. }))
-                {
-                    break;
-                }
-                match apply_as_current(runner.state_mut(), GameAction::PassPriority) {
-                    Ok(r) => events.extend(r.events),
-                    Err(_) => break,
-                }
-            }
+                    .any(|p| matches!(p, CastingPermission::Plotted { .. })),
+                "the card must be plotted immediately as part of the special action"
+            );
+            // CR 702.170b: plot is a special action, NOT an activated ability — no
+            // `AbilityActivated` event (so "whenever you activate an ability"
+            // triggers must not fire). `BecomesPlotted` IS emitted (asserted below).
+            assert!(
+                !events
+                    .iter()
+                    .any(|e| matches!(e, GameEvent::AbilityActivated { .. })),
+                "a special action must not emit AbilityActivated (CR 702.170b)"
+            );
 
             // FACE-UP exile (revert-probe vs the refuted face-down claim — CR
             // 702.170 has no face-down clause, unlike Foretell CR 116.2h).
