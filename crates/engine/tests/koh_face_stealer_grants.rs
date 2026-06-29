@@ -34,8 +34,9 @@ use engine::types::ability::{
     AbilityDefinition, AbilityKind, ChosenAttribute, ContinuousModification, Effect,
     ManaContribution, ManaProduction, StaticDefinition, TargetFilter, TriggerDefinition,
 };
+use engine::types::actions::GameAction;
 use engine::types::card_type::CoreType;
-use engine::types::game_state::{GameState, WaitingFor};
+use engine::types::game_state::{ExileLink, ExileLinkKind, GameState, WaitingFor};
 use engine::types::identifiers::{CardId, ObjectId};
 use engine::types::mana::ManaColor;
 use engine::types::phase::Phase;
@@ -333,6 +334,150 @@ fn resolve_remember_card(state: &mut GameState, koh: ObjectId, card: ObjectId) {
     let ability = build_resolved_from_def(&def, koh, P0);
     let mut events = Vec::new();
     resolve_ability_chain(state, &ability, &mut events, 0).expect("RememberCard must resolve");
+}
+
+// ─── Maintainer HIGH (PR #4611): Koh can choose OPPONENT-owned exiled cards ────
+
+/// CR 400.1 + CR 607.2a (PR #4611, maintainer matthewevans): Koh exiles
+/// *opponents'* creatures, so "Choose a creature card exiled with Koh" must
+/// offer opponent-OWNED exiled cards. The activated ability lowers to
+/// `ChooseFromZone { zone_owner: AllOwners, filter: And[Creature, ExiledBySource] }`,
+/// which scans the whole shared exile zone (CR 400.1) and lets the linked-exile
+/// reference (CR 607.2a) do all scoping — ownership is irrelevant. Driven
+/// end-to-end through the REAL parse→resolve→select path: the parsed activated
+/// ability parks a `ChooseFromZoneChoice` offering the opponent's exiled
+/// creature; selecting it runs the `RememberCard` sub-ability, which records it
+/// as Koh's `ChosenAttribute::Card` (the seam `TargetFilter::ChosenCard` and the
+/// Layer-6 grant statics read).
+///
+/// DISCRIMINATOR: the ONLY exiled creature is opponent-owned. Under the old
+/// `ZoneOwner::Controller` scope the per-owner gate empties the candidate pool,
+/// so NO prompt parks and NO card is recorded — both the prompt-parks assertion
+/// and the chosen-card assertion below flip to failure (the revert-probe).
+#[test]
+fn koh_can_choose_opponent_owned_creature_exiled_with_koh() {
+    const KOH: &str = "When Koh enters, exile up to one other target creature.\nWhenever another nontoken creature dies, you may exile it.\nPay 1 life: Choose a creature card exiled with Koh.\nKoh has all activated and triggered abilities of the last chosen card.";
+    let opponent = PlayerId(1);
+
+    let mut state = GameState::new_two_player(7);
+    state.phase = Phase::PreCombatMain;
+    state.active_player = P0;
+    state.priority_player = P0;
+    state.waiting_for = WaitingFor::Priority { player: P0 };
+
+    let koh = build_koh(&mut state);
+
+    // An OPPONENT-owned creature card in the shared exile zone (CR 400.1),
+    // exiled WITH Koh — the common case, since Koh exiles opponents' creatures.
+    let opp_face = create_object(
+        &mut state,
+        CardId(7000),
+        opponent,
+        "Opponent's Exiled Face".to_string(),
+        Zone::Exile,
+    );
+    {
+        let obj = state.objects.get_mut(&opp_face).unwrap();
+        obj.card_types.core_types = vec![CoreType::Creature];
+        obj.base_card_types = obj.card_types.clone();
+        // A donatable activated ability with an observable, color-distinct
+        // effect — what Koh's Layer-6 grant should surface once this opponent's
+        // card is the last chosen card.
+        obj.abilities = Arc::new(vec![mana_ability(ManaColor::Green)]);
+    }
+    // CR 607.2a: link the opponent-owned card to Koh as "exiled with" it.
+    state.exile_links.push(ExileLink {
+        exiled_id: opp_face,
+        source_id: koh,
+        kind: ExileLinkKind::TrackedBySource,
+    });
+
+    // Negative baseline: with nothing chosen yet, Koh is granted no ability —
+    // the discriminator for the end-to-end grant assertion below.
+    evaluate_layers(&mut state);
+    assert!(
+        koh_granted_mana_colors(&state, koh).is_empty(),
+        "before any card is chosen, Koh must have no granted ability"
+    );
+
+    // Real parser path: Koh's activated ability (ChooseFromZone + RememberCard sub).
+    let parsed = parse_oracle_text(
+        KOH,
+        "Koh, the Face Stealer",
+        &[],
+        &["Legendary".to_string(), "Creature".to_string()],
+        &["Shapeshifter".to_string()],
+    );
+    let activated = parsed
+        .abilities
+        .iter()
+        .find(|a| matches!(a.kind, AbilityKind::Activated))
+        .expect("Koh's activated ability must parse")
+        .clone();
+
+    // Resolve the activated ability through the real chain → parks on the choice.
+    let ability = build_resolved_from_def(&activated, koh, P0);
+    let mut events = Vec::new();
+    resolve_ability_chain(&mut state, &ability, &mut events, 0)
+        .expect("Koh's choose-from-exile must resolve");
+
+    // The interactive prompt parked and OFFERS the opponent-owned card. Under the
+    // old Controller scope the pool is empty and `waiting_for` would not be a
+    // ChooseFromZoneChoice at all — this match arm is the revert-probe failure.
+    match &state.waiting_for {
+        WaitingFor::ChooseFromZoneChoice { player, cards, .. } => {
+            assert_eq!(*player, P0, "Koh's controller chooses");
+            assert!(
+                cards.contains(&opp_face),
+                "the opponent-owned creature exiled with Koh must be offered, got {cards:?}"
+            );
+        }
+        other => panic!(
+            "expected ChooseFromZoneChoice offering the opponent-owned exiled creature; \
+             got {other:?} (a Controller-scope owner gate would empty the pool)"
+        ),
+    }
+
+    // Select the opponent's card → the RememberCard sub-ability records it.
+    engine::game::engine::apply(
+        &mut state,
+        P0,
+        GameAction::SelectCards {
+            cards: vec![opp_face],
+        },
+    )
+    .expect("selecting the opponent-owned exiled creature must succeed");
+
+    // Production seam: Koh now remembers the OPPONENT-owned card as its last
+    // chosen card (what `TargetFilter::ChosenCard` / the grant statics read).
+    let remembered: Vec<ObjectId> = state.objects[&koh]
+        .chosen_attributes
+        .iter()
+        .filter_map(|a| match a {
+            ChosenAttribute::Card(id) => Some(*id),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        remembered,
+        vec![opp_face],
+        "Koh must record the chosen OPPONENT-owned exiled creature as its last \
+         chosen card (RememberCard wrote ChosenAttribute::Card across owners)"
+    );
+
+    // End-to-end payoff — the user-facing bug: with the opponent-owned card now
+    // recorded as Koh's last chosen card, the Layer-6 grant
+    // (`TargetFilter::ChosenCard`, owner-agnostic and zone-guarded to Exile)
+    // surfaces that card's activated ability ONTO Koh. This is the whole point
+    // of Koh choosing opponent-owned exiled creatures: stealing their abilities.
+    evaluate_layers(&mut state);
+    assert_eq!(
+        koh_granted_mana_colors(&state, koh),
+        vec![ManaColor::Green],
+        "Koh must be granted the OPPONENT-owned chosen card's activated ability \
+         (against the empty baseline above — proving cross-owner selection drives \
+         the grant end-to-end)"
+    );
 }
 
 // ─── gap=0 proxy: the whole card lowers with no Unimplemented ─────────────────

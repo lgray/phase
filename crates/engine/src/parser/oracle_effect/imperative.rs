@@ -3174,8 +3174,10 @@ fn try_parse_choose_owned_by_voter(
 ///   Epiphany).
 /// - "exiled with ~" / "exiled with it" → the source's linked-exile set,
 ///   scanned in `Zone::Exile` by [`TargetFilter::ExiledBySource`]. Lowered via
-///   [`ChooseImperativeAst::FromZone`] so the runtime applies the linked-exile
-///   filter (Omenpath Journey).
+///   [`ChooseImperativeAst::FromZone`] with [`ZoneOwner::AllOwners`] so the
+///   runtime scans the whole shared exile zone (CR 400.1) and the linked-exile
+///   filter (CR 607.2a) does all scoping — opponent-owned cards Koh exiled are
+///   in the pool, not just the controller's own (Omenpath Journey, Koh).
 ///
 /// The optional "at random" qualifier sets [`CardSelectionMode::Random`]
 /// (CR 608.2d override): the game selects, the controller does not.
@@ -3258,10 +3260,16 @@ fn try_parse_choose_exiled_anaphor(lower: &str) -> Option<ChooseImperativeAst> {
                 },
                 None => TargetFilter::ExiledBySource,
             };
+            // CR 400.1 + CR 607.2a: "exiled with [source]" is owner-agnostic —
+            // exile is a zone shared by all players (CR 400.1) and the
+            // linked-exile reference (CR 607.2a) is defined by linkage, not
+            // ownership. Koh exiles opponents' creatures, so the candidate pool
+            // must span every owner; `ZoneOwner::AllOwners` scans the whole
+            // exile zone and lets `ExiledBySource` (in `filter`) do all scoping.
             return Some(ChooseImperativeAst::FromZone {
                 count: 1,
                 zones: vec![Zone::Exile],
-                zone_owner: ZoneOwner::Controller,
+                zone_owner: ZoneOwner::AllOwners,
                 filter,
                 chooser: Chooser::Controller,
                 up_to: false,

@@ -75,6 +75,24 @@ pub enum ZoneOwner {
     /// Kaya, Spirits' Justice's −2 ("For each other player, exile up to one
     /// target creature that player controls").
     EachOpponent,
+    /// CR 400.1 + CR 607.2a: The referenced zone is scanned across ALL owners —
+    /// ownership imposes no restriction, and the effect's `TargetFilter`
+    /// performs every bit of scoping. Used when the candidate pool's membership
+    /// is defined by something other than ownership, so owner-gating would
+    /// wrongly drop valid cards. The motivating case is "a creature card exiled
+    /// with [this source]" (Koh, the Face Stealer): exile is a zone shared by
+    /// all players (CR 400.1), and "exiled with [source]" is a linked-ability
+    /// reference (CR 607.2a) whose membership is the source's linked-exile set
+    /// regardless of who owns each card — and Koh typically exiles *opponents'*
+    /// creatures, so gating to the controller's own exiled cards empties the
+    /// pool. This is the single-pool owner-agnostic leaf of the scope axis:
+    /// distinct from [`ZoneOwner::EachPlayer`]/[`ZoneOwner::EachOpponent`],
+    /// which iterate one prompt per player and accumulate into a tracked set —
+    /// this raises ONE prompt over the whole-zone union. Mirrors the
+    /// `ScopedPlayer`-on-Battlefield branch in `collect_direct_zone_cards`
+    /// (scan broadly, let the filter narrow), but with no owner restriction at
+    /// all.
+    AllOwners,
 }
 
 /// CR 105.1 + CR 205.2: A fixed, closed enumeration whose members an effect
@@ -17891,6 +17909,8 @@ mod tests {
             ZoneOwner::Opponent,
             ZoneOwner::ScopedPlayer,
             ZoneOwner::EachPlayer,
+            ZoneOwner::EachOpponent,
+            ZoneOwner::AllOwners,
         ] {
             let json = serde_json::to_string(&owner).expect("ZoneOwner serializes");
             let round_tripped: ZoneOwner =
