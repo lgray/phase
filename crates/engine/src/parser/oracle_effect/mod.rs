@@ -21482,7 +21482,45 @@ pub(crate) fn parse_effect_chain_ir(
         // *named clause*, not the trigger condition. The SelfRef prior-clause
         // test is structural over the parsed clause and its nested sub-ability
         // chain — no string heuristic.
-        if typed_trigger_subject
+        //
+        // CR 712.2 (issue #4543): the typed-subject branch covers the typed
+        // members of this class (Ajani). The transform-flip-from-exile cards
+        // (Tamiyo, Inquisitive Student: "When you draw your third card in a turn,
+        // exile Tamiyo, then return her to the battlefield transformed") have a
+        // PLAYER subject, so `typed_trigger_subject` is false and the bare "her"
+        // would default to `TriggeringSource` — but the CardDrawn event has no
+        // resolvable source, so the return fizzles and the permanent is stranded
+        // in exile. Detect that specific structural class — a prior "exile ~"
+        // (ChangeZone→Exile, SelfRef) followed by a TRANSFORMED return
+        // (ChangeZone→Battlefield, `enter_transformed`) — and bind to the source
+        // there too. The `enter_transformed` requirement keeps Cecil-style
+        // "untap ~. transform it" (ParentTarget) and plain "exile ~. return it"
+        // (Aetherling) untouched.
+        // Narrowly: only the BROKEN binding (`TriggeringSource`, which the
+        // CardDrawn/player-subject event cannot resolve — Tamiyo). Cards whose
+        // return already binds correctly (`TrackedSet`/`ParentTarget` — the
+        // saga and flip-walker classes like Azusa's Many Journeys, Jace, Vryn's
+        // Prodigy) are left untouched: they are bound by their own (working)
+        // rewrites and must not be re-pointed.
+        let exile_then_return_transformed = matches!(
+            &clause.effect,
+            Effect::ChangeZone {
+                destination: Zone::Battlefield,
+                target: TargetFilter::TriggeringSource,
+                enter_transformed: true,
+                ..
+            }
+        ) && clauses.last().is_some_and(|prev| {
+            matches!(
+                &prev.parsed.effect,
+                Effect::ChangeZone {
+                    destination: Zone::Exile,
+                    target: TargetFilter::SelfRef,
+                    ..
+                }
+            )
+        });
+        if (typed_trigger_subject || exile_then_return_transformed)
             && has_anaphoric_reference(&text_lower)
             && clauses
                 .last()

@@ -14502,6 +14502,62 @@ mod tests {
         assert!(def.execute.is_some());
     }
 
+    /// CR 608.2c + CR 712.2 (issue #4543): Tamiyo, Inquisitive Student —
+    /// "When you draw your third card in a turn, exile Tamiyo, then return her
+    /// to the battlefield transformed under her owner's control." The exile
+    /// step targets the source (`~` → SelfRef); the "return her ... transformed"
+    /// sub-clause's bare "her" must ALSO bind to the source (SelfRef), not to
+    /// `TriggeringSource`. The trigger subject is the player ("you draw …"), so
+    /// the source has no entry in the CardDrawn event — before the fix the
+    /// return resolved to an empty target set and Tamiyo was stranded in exile.
+    /// The SelfRef-anaphor rewrite was gated on a typed trigger subject; it now
+    /// fires for player/event subjects too because the antecedent is the named
+    /// prior clause.
+    #[test]
+    fn tamiyo_flip_return_transformed_binds_to_self_ref() {
+        use crate::types::ability::Effect;
+
+        let def = parse_trigger_line(
+            "When you draw your third card in a turn, exile Tamiyo, then return her to the battlefield transformed under her owner's control.",
+            "Tamiyo, Inquisitive Student",
+        );
+        let exec = def.execute.as_deref().expect("Tamiyo trigger execute body");
+        // Exile step: source named via `~`.
+        let Effect::ChangeZone {
+            destination,
+            target,
+            ..
+        } = &*exec.effect
+        else {
+            panic!("expected exile ChangeZone head, got {:?}", exec.effect);
+        };
+        assert_eq!(*destination, Zone::Exile);
+        assert_eq!(*target, TargetFilter::SelfRef);
+        // Return step: "her" must bind to the source and enter transformed.
+        let sub = exec.sub_ability.as_deref().expect("return sub_ability");
+        let Effect::ChangeZone {
+            destination,
+            target,
+            enter_transformed,
+            ..
+        } = &*sub.effect
+        else {
+            panic!("expected return ChangeZone sub, got {:?}", sub.effect);
+        };
+        assert_eq!(*destination, Zone::Battlefield);
+        assert!(
+            *enter_transformed,
+            "return must enter transformed (CR 712.2)"
+        );
+        assert_eq!(
+            *target,
+            TargetFilter::SelfRef,
+            "the 'return her transformed' anaphor must bind to the source (SelfRef), \
+             not TriggeringSource — otherwise the CardDrawn event has no source and \
+             Tamiyo is stranded in exile"
+        );
+    }
+
     /// SHAPE TEST — issue #3299: `parse_trigger_lines` must not compound-split
     /// Syr Konrad's disjunctive zone-change condition into separate triggers.
     #[test]
