@@ -848,6 +848,18 @@ pub enum ChosenAttribute {
     /// label is stored case-canonicalised to match `ChoiceType::Labeled`'s
     /// capitalised option list.
     Label(String),
+    /// CR 613.1f + CR 611.2c + CR 400.7: A remembered card object — the "last
+    /// chosen card" for cards like Koh, the Face Stealer ("Koh has all activated
+    /// and triggered abilities of the last chosen card"). Unlike every other
+    /// variant, this is NOT a player-prompted choice category: it is written by
+    /// `Effect::RememberCard` directly from the resolution chain's tracked set,
+    /// not produced through `ChoiceType`/`ChoiceValue`/`from_choice` (the same
+    /// engine-set precedent as `TributeOutcome`). It is consumed by
+    /// `TargetFilter::ChosenCard` at Layer-6 grant evaluation, and — being stored
+    /// in `chosen_attributes` — is cleared automatically when the source permanent
+    /// changes zones (CR 400.7), which is exactly the lifetime Koh's grant needs.
+    /// Replace-on-rechoose: `RememberCard` removes any prior `Card` before pushing.
+    Card(ObjectId),
 }
 
 impl ChosenAttribute {
@@ -884,6 +896,14 @@ impl ChosenAttribute {
             // idiom). The stored single label is one of those options.
             Self::Label(label) => ChoiceType::Labeled {
                 options: vec![label.clone()],
+            },
+            // Engine-set, never player-prompted (written by `Effect::RememberCard`
+            // from a tracked set, not via `from_choice`). `choice_type()` has no
+            // callers for this variant; the empty `Labeled` template mirrors the
+            // `Keyword`/`TributeOutcome` placeholder idiom rather than inventing a
+            // spurious object-choice category.
+            Self::Card(_) => ChoiceType::Labeled {
+                options: Vec::new(),
             },
         }
     }
@@ -3605,6 +3625,15 @@ pub enum TargetFilter {
     /// resolving spell or ability. Used by effects such as "the exiled card"
     /// after an exile-as-cost clause.
     CostPaidObject,
+    /// CR 613.1f + CR 611.2c + CR 400.7: Resolves to the single card most recently
+    /// recorded on the FILTER's source object via `ChosenAttribute::Card` (written
+    /// by `Effect::RememberCard`). Models "the last chosen card" — Koh, the Face
+    /// Stealer's Layer-6 grant source. Live, not snapshotted: re-evaluated each
+    /// layer pass, so re-choosing replaces the grant and the chosen card leaving
+    /// its zone (CR 400.7 — a new object) drops the grant. The object matcher
+    /// reads `chosen_attributes` from the source (not the resolving ability), so
+    /// the static grant resolves it against the permanent that HAS the static.
+    ChosenCard,
     /// Matches exactly the objects in a tracked set.
     /// CR 603.7: Delayed triggers act on specific objects from the originating effect.
     TrackedSet {
@@ -5983,6 +6012,22 @@ pub enum ParsedCondition {
     },
     YouControlNoCreatures,
     YouAttackedThisTurn,
+    /// CR 508.6 + CR 508.5 + CR 109.5: True when the affected player attacked the
+    /// SOURCE's controller — or a planeswalker/battle that controller controls —
+    /// this turn. Evaluated as `has_attacked(affected_player, source.controller)`
+    /// against `attacked_defenders_this_turn`, whose `defending_player` is already
+    /// the CR-508.5 collapse of the attack target (planeswalker/battle → its
+    /// controller), so "attacked you OR a planeswalker you control" is one check.
+    /// Sandswirl Wanderglyph: "Each opponent who attacked you or a planeswalker you
+    /// control this turn can't cast spells."
+    ///
+    /// AXIS NOTE (parameterize-vs-proliferate): this is the 2nd "you-attacked-
+    /// [defender]" leaf — `YouAttackedThisTurn` (defender = ANY player) vs this
+    /// (defender = the source's controller). Kept as a flat leaf to match the
+    /// surrounding idiom (`YouAttackedThisTurn` / `YouAttackedWithAtLeast` /
+    /// `SourceAttackedThisTurn`). A THIRD defender variant should trigger a
+    /// refactor to `YouAttacked { defender: <scope> }` (CR 508.6); do not unify now.
+    YouAttackedSourceControllerThisTurn,
     /// CR 508.1a: True when the player declared at least `count` attackers this
     /// turn. `filter: None` counts every attacker the player declared (backed by
     /// the fast `state.attacking_creatures_this_turn` counter — "you attacked
@@ -9949,6 +9994,19 @@ pub enum Effect {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         constraint: Option<ChooseFromZoneConstraint>,
     },
+    /// CR 608.2c + CR 613.1f: Record the card selected by a preceding selection
+    /// effect (typically `ChooseFromZone`) onto the resolving ability's SOURCE as
+    /// `ChosenAttribute::Card`, so a companion Layer-6 static ("[this] has all
+    /// activated and triggered abilities of the last chosen card" — Koh, the Face
+    /// Stealer) can read it via `TargetFilter::ChosenCard`. Composable building
+    /// block: the choice UI/zone search stays in `ChooseFromZone`; this effect is
+    /// the persistent writer. `target` reads the chosen object(s) — Koh passes
+    /// `TrackedSet { id: TrackedSetId(0) }` (the resolution chain's published
+    /// pick, resolved via `resolve_tracked_set_sentinel`); the single recorded
+    /// card replaces any prior `ChosenAttribute::Card` (replace-on-rechoose).
+    RememberCard {
+        target: TargetFilter,
+    },
     /// CR 608.2c + CR 105.1 / CR 205.2a: For each member of a fixed category
     /// (the five colors, or the CR 205.2a card types that can appear in a
     /// library — nine: artifact, battle, creature, enchantment, instant,
@@ -11521,6 +11579,7 @@ impl Effect {
             | Effect::Scry { target, .. }
             | Effect::Surveil { target, .. }
             | Effect::Pump { target, .. }
+            | Effect::RememberCard { target }
             | Effect::PairWith { target }
             | Effect::Destroy { target, .. }
             | Effect::Regenerate { target, .. }
@@ -12098,6 +12157,7 @@ impl Effect {
             | Effect::ChooseAndSacrificeRest { .. }
             | Effect::ChooseDamageSource { .. }
             | Effect::ChooseFromZone { .. }
+            | Effect::RememberCard { .. }
             | Effect::ForEachCategoryExile { .. }
             | Effect::ChooseObjectsIntoTrackedSet { .. }
             | Effect::ChooseOneOf { .. }
@@ -12326,6 +12386,7 @@ impl Effect {
             | Effect::ChooseAndSacrificeRest { .. }
             | Effect::ChooseDamageSource { .. }
             | Effect::ChooseFromZone { .. }
+            | Effect::RememberCard { .. }
             | Effect::ForEachCategoryExile { .. }
             | Effect::ChooseObjectsIntoTrackedSet { .. }
             | Effect::ChooseOneOf { .. }
@@ -12550,6 +12611,7 @@ pub fn effect_variant_name(effect: &Effect) -> &str {
         Effect::ProcessRadCounters => "ProcessRadCounters",
         Effect::GrantCastingPermission { .. } => "GrantCastingPermission",
         Effect::ChooseFromZone { .. } => "ChooseFromZone",
+        Effect::RememberCard { .. } => "RememberCard",
         Effect::ForEachCategoryExile { .. } => "ForEachCategoryExile",
         Effect::ChooseObjectsIntoTrackedSet { .. } => "ChooseObjectsIntoTrackedSet",
         Effect::ChooseAndSacrificeRest { .. } => "ChooseAndSacrificeRest",
@@ -12777,6 +12839,7 @@ pub enum EffectKind {
     ProcessRadCounters,
     GrantCastingPermission,
     ChooseFromZone,
+    RememberCard,
     ChooseObjectsIntoTrackedSet,
     ChooseAndSacrificeRest,
     Exploit,
@@ -13023,6 +13086,7 @@ impl From<&Effect> for EffectKind {
             Effect::ProcessRadCounters => EffectKind::ProcessRadCounters,
             Effect::GrantCastingPermission { .. } => EffectKind::GrantCastingPermission,
             Effect::ChooseFromZone { .. } => EffectKind::ChooseFromZone,
+            Effect::RememberCard { .. } => EffectKind::RememberCard,
             // The per-member iteration parks `ChooseFromZoneChoice` prompts and
             // emits `ChooseFromZone` resolution events; it shares the kind.
             Effect::ForEachCategoryExile { .. } => EffectKind::ChooseFromZone,
@@ -16862,6 +16926,25 @@ pub enum ContinuousModification {
         /// rather than a bool so the cap axis can grow to other use-restrictions.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         cap: Option<ActivationRestriction>,
+    },
+    /// CR 613.1f + CR 603.1 + CR 603.2: Grant the affected object **all triggered
+    /// abilities of** the objects matching `source` (Koh, the Face Stealer "Koh
+    /// has all activated and triggered abilities of the last chosen card"). The
+    /// triggered-ability mirror of `GrantAllActivatedAbilitiesOf`: the set is
+    /// dynamic — recomputed each layer pass — so it is expanded into one
+    /// `GrantTrigger` per matching trigger definition at continuous-effect
+    /// collection time (`expand_granted_triggered_abilities`); the layer-6 apply
+    /// of this variant itself is therefore a no-op. `source` is resolved relative
+    /// to the host static with each recipient's controller, mirroring the
+    /// activated expander. Distinct sibling rather than a parameter of
+    /// `GrantAllActivatedAbilitiesOf` because activated and triggered abilities
+    /// land in different stores (CR 602.1 `obj.abilities` via `GrantAbility` vs
+    /// CR 603.1 `obj.trigger_definitions` via `GrantTrigger`) with different
+    /// expansion, and the `cap` use-restriction (CR 602.5b) is activated-only —
+    /// the same split the singular `GrantAbility`/`GrantTrigger` pair already
+    /// draws. No cap: triggered abilities carry no activation restriction.
+    GrantAllTriggeredAbilitiesOf {
+        source: TargetFilter,
     },
     /// CR 604.1: Grant a triggered ability to the affected object.
     /// Unlike GrantAbility (which pushes to obj.abilities), this pushes to
