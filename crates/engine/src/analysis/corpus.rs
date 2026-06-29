@@ -839,7 +839,7 @@ pub(crate) struct ComboBoard {
 
 /// Build a board with the named permanents installed on P0's battlefield, a large
 /// finite mana pool floated (so mana-cost abilities can pay, while a mana-GAIN
-/// axis is still measurable — not `debug_infinite_mana`), and layers settled.
+/// axis is still measurable — not `unbounded_resources`), and layers settled.
 /// `None` if any name is missing from `db`. Auras are installed but NOT
 /// auto-attached (each driver attaches them to the correct host).
 pub(crate) fn build_board(db: &CardDatabase, cards: &[&str]) -> Option<ComboBoard> {

@@ -1858,6 +1858,77 @@ export interface ArchenemyView {
   hero_player_ids?: PlayerId[];
 }
 
+/** Mirrors `engine::analysis::resource::ObjectClass` (unit variants → strings). */
+export type ObjectClass = "Creature" | "Planeswalker" | "Battle" | "Player" | "Other";
+
+/** Mirrors `engine::analysis::resource::CounterClass` (unit variants → strings). */
+export type CounterClass =
+  | "Plus1Plus1"
+  | "Minus1Minus1"
+  | "Loyalty"
+  | "Defense"
+  | "Poison"
+  | "Energy"
+  | "Other";
+
+/** Mirrors `engine::analysis::resource::TriggerKind` (unit variants → strings). */
+export type TriggerKind = "Proliferate" | "Magecraft" | "Constellation" | "Landfall" | "Other";
+
+/**
+ * One unbounded-resource axis a CR 732.2a net-progress loop pumps. Mirrors
+ * `engine::analysis::resource::ResourceAxis` (serde externally-tagged: unit
+ * variants serialize as bare strings, data variants as a single-key object,
+ * tuple variants as an array). The frontend only formats each axis to a display
+ * family — it never derives which axes are unbounded or decides attribution.
+ */
+export type ResourceAxis =
+  | { Mana: ManaType }
+  | { Life: PlayerId }
+  | { DamageDealt: PlayerId }
+  | { LibraryDelta: PlayerId }
+  | { Counter: [CounterClass, ObjectClass] }
+  | { Trigger: TriggerKind }
+  | "TokensCreated"
+  | "CardsDrawn"
+  | "Casts"
+  | "LandfallTriggers"
+  | "CombatPhases"
+  | "ExtraTurns"
+  | "DeathTriggers"
+  | "EtbTriggers"
+  | "LtbTriggers"
+  | "SacTriggers";
+
+/** The externally-tagged discriminant of a `ResourceAxis` (its variant name).
+ *  Exhaustive over `ResourceAxis` so a new engine axis forces a TS update. */
+export type ResourceAxisTag =
+  | "Mana"
+  | "Life"
+  | "DamageDealt"
+  | "LibraryDelta"
+  | "Counter"
+  | "Trigger"
+  | "TokensCreated"
+  | "CardsDrawn"
+  | "Casts"
+  | "LandfallTriggers"
+  | "CombatPhases"
+  | "ExtraTurns"
+  | "DeathTriggers"
+  | "EtbTriggers"
+  | "LtbTriggers"
+  | "SacTriggers";
+
+/**
+ * One `∞` HUD row. Mirrors `engine::game::derived_views::UnboundedResourceView`.
+ * `player` is the engine-decided HUD attribution (NOT necessarily the loop
+ * controller); `axis` is the engine-provided identity the FE maps to a family.
+ */
+export interface UnboundedResourceView {
+  player: PlayerId;
+  axis: ResourceAxis;
+}
+
 /**
  * Engine-authored projections computed at each state snapshot. Rides
  * alongside GameState through every adapter path. Frontend components
@@ -1917,6 +1988,13 @@ export interface DerivedViews {
   planechase?: PlanechaseView | null;
   /** Engine-authored Archenemy state. */
   archenemy?: ArchenemyView | null;
+  /**
+   * CR 732.2a: `∞` HUD rows — one per (engine-attributed player, pumped axis)
+   * of every unbounded-resource loop. Empty/omitted when no loop is active. The
+   * FE maps each axis to a display family and never re-derives attribution.
+   * Mirrors `engine::game::derived_views::DerivedViews::unbounded_resources`.
+   */
+  unbounded_resources?: UnboundedResourceView[];
 }
 
 /** Mirrors `engine::types::game_state::NextSpellModifier` (serde tag="type"). */

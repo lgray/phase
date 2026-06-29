@@ -23,6 +23,8 @@
 
 use std::collections::{BTreeMap, HashSet};
 
+use serde::{Deserialize, Serialize};
+
 use crate::types::ability::ActivationRestriction;
 use crate::types::card_type::CoreType;
 use crate::types::counter::CounterType;
@@ -50,7 +52,7 @@ const MANA_INDEX: [ManaType; 6] = [
 /// creature is a different unbounded resource than loyalty on a planeswalker).
 ///
 /// Typed rather than stringly so the win-classifier can `match` exhaustively.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum ObjectClass {
     /// CR 302: a creature on the battlefield.
     Creature,
@@ -74,7 +76,7 @@ pub enum ObjectClass {
 /// map would be a far larger, non-additive change. Instead this module owns a
 /// small `Ord` classification of the counter dimensions the corpus cares about
 /// (CR 122.1: +1/+1, loyalty, poison, …) and folds the long tail into `Other`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum CounterClass {
     /// CR 122.1a: a +1/+1 counter.
     Plus1Plus1,
@@ -114,7 +116,7 @@ impl CounterClass {
 /// not stored totals — so [`ResourceVector::snapshot`] always leaves
 /// [`ResourceVector::generic_triggers`] empty and the simulation harness (PR-1)
 /// feeds them.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum TriggerKind {
     /// CR 701.34: proliferate (the keyword action a loop can pump mana-neutrally).
     Proliferate,
@@ -531,7 +533,7 @@ enum Component {
 
 /// A tagged, named resource axis — the typed identity of one unbounded resource,
 /// used by the (PR-2) `WinKind` classifier to describe a loop certificate.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum ResourceAxis {
     Mana(ManaType),
     Life(PlayerId),

@@ -31,6 +31,7 @@ use super::proposed_event::{CopyTokenSpec, ProposedEvent, ReplacementId, TokenSp
 use super::zones::EtbTapState;
 use super::zones::{ExileCostSourceZone, Zone};
 
+use crate::analysis::resource::ResourceAxis;
 use crate::game::bracket_estimate::CommanderBracketTier;
 use crate::game::combat::{AttackTarget, CombatState};
 use crate::game::deck_loading::DeckEntry;
@@ -6132,15 +6133,26 @@ pub struct GameState {
     #[serde(default)]
     pub debug_permitted: BTreeSet<PlayerId>,
 
-    /// Set of players for whom the "infinite mana" debug toggle is active. While
-    /// a player is in this set, their mana pool is topped up after every action
-    /// (`mana_payment::refill_infinite_mana`) and is NOT emptied at end of
-    /// step/phase — CR 500.5 is deliberately suppressed for this player only.
-    /// This is a debug-only departure from the rules, gated behind the same
-    /// debug-action permission as every other `DebugAction`. Toggled via
-    /// `DebugAction::SetInfiniteMana`; empty by default.
-    #[serde(default)]
-    pub debug_infinite_mana: BTreeSet<PlayerId>,
+    /// Per-controller set of resource axes a detected/forced unbounded loop pumps,
+    /// the engine-authoritative source for the `∞` HUD projection (`derive_views`)
+    /// and the byte-preserved infinite-mana refill/keep gates. The infinite-mana
+    /// debug toggle (`DebugAction::SetInfiniteMana`) is one producer: it records
+    /// the six `ResourceAxis::Mana(_)` axes (`INFINITE_MANA_AXES`) for the player,
+    /// which the `mana_payment::refill_infinite_mana` top-up and the
+    /// `turns` end-of-step keep gate read (CR 500.5 suppressed for that player
+    /// only — a debug-only departure from the rules). Written ONLY through
+    /// `mark_unbounded_loop` / `clear_unbounded_loop`.
+    ///
+    /// INTENTIONALLY EXCLUDED from `PartialEq`, `normalize_for_loop`, and
+    /// `loop_fingerprint` (same family as `static_gate_truth` /
+    /// `devour_eligible_snapshot`): this is display/annotation state, not rules
+    /// state for equality. CR 104.4b/CR 732.2a loop detection (`loop_states_equal`)
+    /// and AI-search position dedup compare two states reached at different times;
+    /// a populated live state must still compare equal to the empty-`unbounded_resources`
+    /// ring snapshots, or loop detection yields false negatives. (`debug_infinite_mana`
+    /// relied on this same exclusion implicitly; it is now explicit.)
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub unbounded_resources: BTreeMap<PlayerId, BTreeSet<ResourceAxis>>,
 
     #[serde(default)]
     pub match_config: MatchConfig,
@@ -7821,7 +7833,7 @@ impl GameState {
             objects_that_dealt_damage: HashSet::new(),
             debug_mode: false,
             debug_permitted: BTreeSet::new(),
-            debug_infinite_mana: BTreeSet::new(),
+            unbounded_resources: BTreeMap::new(),
         }
     }
 
@@ -8029,6 +8041,27 @@ impl GameState {
         }
         let snapshot = std::sync::Arc::new(self.normalize_for_loop());
         self.loop_detect_ring.push_back(snapshot);
+    }
+
+    /// CR 732.2a: record that an unbounded (net-progress) loop under `controller`
+    /// pumps `axes`. The single write authority for `unbounded_resources` —
+    /// every producer (the infinite-mana debug toggle today, a detector
+    /// `LoopCertificate.unbounded` in PR-7) routes through here, never mutating
+    /// the map inline. Idempotent set-union: storing exactly the axes it is given
+    /// (so a mana toggle stores its six `Mana(_)` axes, a drain certificate stores
+    /// its `Life`/`DamageDealt` axes) without clobbering axes a prior producer
+    /// already recorded for the same controller.
+    pub fn mark_unbounded_loop(&mut self, controller: PlayerId, axes: &[ResourceAxis]) {
+        let entry = self.unbounded_resources.entry(controller).or_default();
+        entry.extend(axes.iter().copied());
+    }
+
+    /// CR 732.2a: clear every unbounded-resource axis recorded for `controller`.
+    /// Whole-player clear: with the infinite-mana toggle as the only PR-6 producer
+    /// this matches today's all-or-nothing disable; an axis-scoped clear can be
+    /// added when multiple producers coexist on one controller.
+    pub fn clear_unbounded_loop(&mut self, controller: PlayerId) {
+        self.unbounded_resources.remove(&controller);
     }
 }
 
@@ -8352,6 +8385,47 @@ mod tests {
             before,
             state.loop_fingerprint(),
             "advancing the RNG stream must change the loop fingerprint"
+        );
+    }
+
+    /// PR-6 test 8 (B2 loop-equality guard): `unbounded_resources` is
+    /// display/annotation state, NOT rules state for equality. Two states
+    /// identical except one has a populated `unbounded_resources` (the
+    /// infinite-mana toggle's six `Mana(_)` axes via `mark_unbounded_loop`) MUST
+    /// compare EQUAL through every loop-detection comparator. Otherwise a populated
+    /// live state would stop matching the empty-`unbounded_resources` ring
+    /// snapshots and CR 104.4b / CR 732.2a loop detection would yield false
+    /// negatives (and AI-search position dedup would break).
+    ///
+    /// REVERT-PROBE: add `&& self.unbounded_resources == other.unbounded_resources`
+    /// to the manual `impl PartialEq for GameState` → `a == b`, `loop_states_equal`,
+    /// and `loop_states_equal_modulo_resources` all flip to false → every assertion
+    /// below fails.
+    #[test]
+    fn unbounded_resources_excluded_from_loop_equality() {
+        use crate::analysis::resource::loop_states_equal_modulo_resources;
+        use crate::game::mana_payment::INFINITE_MANA_AXES;
+
+        let a = GameState::new_two_player(7);
+        let mut b = a.clone();
+        b.mark_unbounded_loop(PlayerId(0), &INFINITE_MANA_AXES);
+        // Sanity: the populated field really does differ between the two states.
+        assert_ne!(
+            a.unbounded_resources, b.unbounded_resources,
+            "fixture must actually differ in unbounded_resources"
+        );
+
+        assert!(
+            a == b,
+            "manual PartialEq must exclude unbounded_resources (display state)"
+        );
+        assert!(
+            loop_states_equal(&a, &b),
+            "loop_states_equal (CR 104.4b/732.2a) must exclude unbounded_resources"
+        );
+        assert!(
+            loop_states_equal_modulo_resources(&a, &b),
+            "the PR-0/PR-2 modulo path must exclude unbounded_resources"
         );
     }
 
