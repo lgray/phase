@@ -387,6 +387,7 @@ mod issue_4384_airbend_stack_spell;
 mod issue_4420_lava_blister_unless_deal_damage;
 mod issue_4459_decoy_gambit_unless_have_you_draw;
 mod issue_4503_incremental_growth;
+mod issue_4566_jocasta;
 mod issue_536_six_grants_retrace;
 mod issue_541_endurance_graveyard_to_bottom;
 mod issue_544_krark_clan_ironworks_auto_pass;

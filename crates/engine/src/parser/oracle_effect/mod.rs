@@ -47341,6 +47341,27 @@ mod tests {
         );
     }
 
+    /// CR 508.4: "return it to the battlefield tapped and attacking" (Jocasta,
+    /// Automaton Avenger) must lower with both `enter_tapped` and
+    /// `enters_attacking` when the anaphor refers to the trigger source.
+    #[test]
+    fn effect_return_it_tapped_and_attacking() {
+        let e = parse_effect("return it to the battlefield tapped and attacking");
+        match e {
+            Effect::ChangeZone {
+                destination,
+                enter_tapped,
+                enters_attacking,
+                ..
+            } => {
+                assert_eq!(destination, Zone::Battlefield);
+                assert!(enter_tapped.is_tapped());
+                assert!(enters_attacking);
+            }
+            other => panic!("expected Effect::ChangeZone, got {other:?}"),
+        }
+    }
+
     /// CR 508.4: "return target creature card from your graveyard to the
     /// battlefield tapped and attacking" (Dauntless Avenger / Yore-Tiller
     /// Nephilim) must lower to `Effect::ChangeZone` with `enters_attacking: true`.
