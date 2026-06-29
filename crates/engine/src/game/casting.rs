@@ -12641,21 +12641,30 @@ pub fn can_activate_ability_now(
     if !obj.detained_by.is_empty() {
         return false;
     }
-    // CR 602.5 + CR 603.2a: Consult active CantBeActivated statics — a player can't
-    // begin to activate an ability that's prohibited from being activated. Note this
-    // only affects activated abilities (CR 603.2a: triggered abilities are unaffected
-    // and use SuppressTriggers instead).
-    // CR 605.1a: The ability definition is passed through so the prohibition can apply
-    // its mana-ability exemption (Pithing Needle class) via the single classifier authority.
-    if is_blocked_by_cant_be_activated(state, player, source_id, &ability_def) {
-        return false;
-    }
-    // CR 602.5 + CR 117.1b: Time-axis activation prohibition (City of Solitude class).
-    if is_blocked_by_cant_activate_during(state, player, &ability_def) {
-        return false;
-    }
-    if is_blocked_by_cant_activate_abilities(state, player, &ability_def) {
-        return false;
+    // CR 702.170b + CR 116.2k + CR 602.1c: Plot is a SPECIAL ACTION, not an activated
+    // ability, so the activated-ability prohibition gates must not block it. Mirrors
+    // the guard in `handle_activate_ability` so the legality gate and the runtime
+    // activation path agree (otherwise `candidates.rs` would never offer plot under a
+    // Pithing-Needle / City-of-Solitude / Damping-Matrix-class static while
+    // `handle_activate_ability` still permits it). Plot's timing is enforced by
+    // AsSorcery in check_activation_restrictions below, outside this guard.
+    if !is_plot_special_action(&ability_def) {
+        // CR 602.5 + CR 603.2a: Consult active CantBeActivated statics — a player can't
+        // begin to activate an ability that's prohibited from being activated. Note this
+        // only affects activated abilities (CR 603.2a: triggered abilities are unaffected
+        // and use SuppressTriggers instead).
+        // CR 605.1a: The ability definition is passed through so the prohibition can apply
+        // its mana-ability exemption (Pithing Needle class) via the single classifier authority.
+        if is_blocked_by_cant_be_activated(state, player, source_id, &ability_def) {
+            return false;
+        }
+        // CR 602.5 + CR 117.1b: Time-axis activation prohibition (City of Solitude class).
+        if is_blocked_by_cant_activate_during(state, player, &ability_def) {
+            return false;
+        }
+        if is_blocked_by_cant_activate_abilities(state, player, &ability_def) {
+            return false;
+        }
     }
     if restrictions::check_activation_restrictions(
         state,
@@ -12875,27 +12884,36 @@ pub fn handle_activate_ability(
         )));
     }
 
-    // CR 602.5 + CR 603.2a: Reject activation if any CantBeActivated static prohibits
-    // the player from activating this permanent's activated abilities.
-    // CR 605.1a: The exemption gate (Pithing Needle's "unless they're mana abilities")
-    // is applied inside `is_blocked_by_cant_be_activated` via `mana_abilities::is_mana_ability`.
-    if is_blocked_by_cant_be_activated(state, player, source_id, &ability_def) {
-        return Err(EngineError::ActionNotAllowed(
-            "Activated abilities of this permanent can't be activated (CR 602.5)".to_string(),
-        ));
-    }
-    // CR 602.5 + CR 117.1b: Reject activation if any CantActivateDuring static
-    // prohibits activation during the current turn condition (City of Solitude class).
-    if is_blocked_by_cant_activate_during(state, player, &ability_def) {
-        return Err(EngineError::ActionNotAllowed(
-            "Activated abilities can't be activated during this turn (CR 602.5 + CR 117.1b)"
-                .to_string(),
-        ));
-    }
-    if is_blocked_by_cant_activate_abilities(state, player, &ability_def) {
-        return Err(EngineError::ActionNotAllowed(
-            "A temporary effect prevents activating this ability".to_string(),
-        ));
+    // CR 702.170b + CR 116.2k + CR 602.1c: Plot is a SPECIAL ACTION, not the
+    // activation of an ability. CR 602.5/603.2a prohibitions ("can't activate
+    // abilities") are typed to activated abilities only, so none of the three gates
+    // below may block plot. Plot's own-turn / main-phase / empty-stack timing is
+    // enforced separately by ActivationRestriction::AsSorcery via
+    // check_activation_restrictions (below), which stays outside this guard — so
+    // skipping these gates loses no timing protection.
+    if !is_plot_special_action(&ability_def) {
+        // CR 602.5 + CR 603.2a: Reject activation if any CantBeActivated static
+        // prohibits the player from activating this permanent's activated abilities.
+        // CR 605.1a: The exemption gate (Pithing Needle's "unless they're mana
+        // abilities") is applied inside `is_blocked_by_cant_be_activated`.
+        if is_blocked_by_cant_be_activated(state, player, source_id, &ability_def) {
+            return Err(EngineError::ActionNotAllowed(
+                "Activated abilities of this permanent can't be activated (CR 602.5)".to_string(),
+            ));
+        }
+        // CR 602.5 + CR 117.1b: Reject activation if any CantActivateDuring static
+        // prohibits activation during the current turn condition (City of Solitude class).
+        if is_blocked_by_cant_activate_during(state, player, &ability_def) {
+            return Err(EngineError::ActionNotAllowed(
+                "Activated abilities can't be activated during this turn (CR 602.5 + CR 117.1b)"
+                    .to_string(),
+            ));
+        }
+        if is_blocked_by_cant_activate_abilities(state, player, &ability_def) {
+            return Err(EngineError::ActionNotAllowed(
+                "A temporary effect prevents activating this ability".to_string(),
+            ));
+        }
     }
 
     // CR 601.2f: Apply self-referential cost reduction before any cost payment.
@@ -13909,13 +13927,26 @@ fn apply_cost_reduction(
         }
     }
 
-    apply_static_activated_ability_cost_reduction(state, ability_def, source_id);
+    // CR 702.170b + CR 116.2k: Plot is a SPECIAL ACTION, not the activation of an
+    // ability. The activated-ability reducer's `keyword == "activated"` blanket arm
+    // matches ANY ability regardless of tag and adjusts in BOTH directions, so it
+    // would wrongly change a plot cost. Skip it for the synthesized plot shape; plot's
+    // only cost adjustment is its dedicated special-action axis below
+    // (ReduceActionCost { action: Plot }). A tag-keyed reducer can never match plot
+    // anyway — the synthesized plot ability carries no `ability_tag`
+    // (active_keyword == None) — so skipping the whole function is equivalent to
+    // skipping just the "activated" arm, and clearer.
+    if !is_plot_special_action(ability_def) {
+        apply_static_activated_ability_cost_reduction(state, ability_def, source_id);
+    }
 
     // CR 116.2k + CR 702.170: Plot is taken as a special action via a synthesized
-    // hand activation whose effect grants the `Plotted` casting permission. Its
-    // mana cost is reduced by `ReduceActionCost { action: Plot }` statics (Doc
-    // Aurlock) — the dedicated special-action axis, distinct from the generic
-    // activated-ability reducer above (plot payments carry no `AbilityTag`).
+    // hand activation whose effect grants the `Plotted` casting permission. Its mana
+    // cost is adjusted ONLY by `ReduceActionCost { action: Plot }` statics (Doc
+    // Aurlock) — the dedicated special-action axis. The generic activated-ability
+    // reducer is skipped above for plot: its `keyword == "activated"` blanket arm
+    // would otherwise match (and adjust) a plot cost even though plot is not the
+    // activation of an ability (CR 702.170b).
     if is_plot_special_action(ability_def) {
         if let Some(cost) = ability_def.cost.as_mut() {
             reduce_special_action_in_ability_cost(state, player, SpecialAction::Plot, cost);
@@ -49700,6 +49731,486 @@ mod tests {
             1,
             "a failed plot activation spends no mana"
         );
+    }
+
+    /// Build a P0 hand card carrying a synthesized `Plot {generic}` activation
+    /// (index 0) on P0's main phase with an empty stack. Mirrors the production
+    /// `build` closure in `doc_aurlock_reduced_plot_activates_via_production_path`
+    /// so the runtime activation seam (`GameAction::ActivateAbility` →
+    /// `handle_activate_ability`) and the legality gate (`can_activate_ability_now`)
+    /// both see the exact synthesized plot shape. Returns (state, plot card id);
+    /// the caller adds prohibiting statics / mana / timing changes.
+    fn build_p0_plot_card_in_hand(generic: u32) -> (GameState, ObjectId) {
+        use crate::database::synthesis::synthesize_plot;
+        use crate::types::card::CardFace;
+        use crate::types::identifiers::CardId;
+        use crate::types::mana::ManaCost;
+
+        let mut state = setup_game_at_main_phase();
+
+        let mut face = CardFace::default();
+        face.keywords.push(Keyword::Plot(ManaCost::Cost {
+            shards: vec![],
+            generic,
+        }));
+        synthesize_plot(&mut face);
+
+        let plot_card = create_object(
+            &mut state,
+            CardId(0x9701),
+            PlayerId(0),
+            "Plotted Card".to_string(),
+            Zone::Hand,
+        );
+        let obj = state.objects.get_mut(&plot_card).unwrap();
+        obj.card_types.core_types.push(CoreType::Creature);
+        obj.base_card_types = obj.card_types.clone();
+        obj.keywords = face.keywords.clone();
+        obj.base_keywords = face.keywords.clone();
+        *Arc::make_mut(&mut obj.abilities) = face.abilities.clone();
+        *Arc::make_mut(&mut obj.base_abilities) = face.abilities.clone();
+
+        (state, plot_card)
+    }
+
+    /// CR 702.170b + CR 116.2k + CR 602.1c + CR 602.5 + CR 603.2a: Plot is a SPECIAL
+    /// ACTION, not the activation of an ability, so none of the three
+    /// activated-ability prohibition gates may block it — at EITHER the runtime
+    /// activation seam (`handle_activate_ability`, Edit 1) OR the legality/offer gate
+    /// (`can_activate_ability_now`, Edit 2 — the path `candidates.rs` consults to
+    /// offer plot to the AI/UI). Covers all three gate classes: CantBeActivated
+    /// (Pithing Needle), the ActivateAbilities prohibition (Damping Matrix class),
+    /// and CantActivateDuring active during P0's own main phase.
+    ///
+    /// Discriminating / non-vacuous:
+    ///   - Each sub-case first asserts the gate is LIVE against the plot source
+    ///     (`is_blocked_by_*` returns `true` for the plot ability) — so absent the
+    ///     guard the activation WOULD be blocked. The activation succeeds anyway,
+    ///     proving the guard is doing the work.
+    ///   - Revert-probe (Edit 1): unwrapping the `handle_activate_ability` gates
+    ///     makes `apply_as_current` return `Err(ActionNotAllowed)` and leaves the
+    ///     card in hand for all three sub-cases.
+    ///   - Revert-probe (Edit 2): unwrapping the `can_activate_ability_now` mirror
+    ///     gates makes the `can_activate_ability_now(..) == true` assertion fail
+    ///     (returns `false`), diverging the offer path from the runtime path.
+    #[test]
+    fn plot_special_action_bypasses_activated_ability_prohibitions() {
+        use crate::types::ability::{
+            ChosenAttribute, GameRestriction, ProhibitedActivity, RestrictionExpiry,
+            RestrictionPlayerScope, StaticDefinition, TargetFilter,
+        };
+        use crate::types::identifiers::CardId;
+        use crate::types::statics::{
+            ActivationExemption, CastingProhibitionCondition, ProhibitionScope, StaticMode,
+        };
+
+        // Given a state where the relevant gate is already LIVE for the plot source,
+        // assert plot succeeds at BOTH the legality gate (Edit 2) and the runtime
+        // seam (Edit 1). A {1} plot cost is funded by exactly {1} colorless mana.
+        let assert_plot_bypasses = |mut state: GameState, plot_card: ObjectId, label: &str| {
+            add_mana(&mut state, PlayerId(0), ManaType::Colorless, 1);
+
+            assert!(
+                can_activate_ability_now(&state, PlayerId(0), plot_card, 0),
+                "{label}: can_activate_ability_now must offer plot (Edit 2 mirror guard); \
+                 reverting Edit 2 makes this return false"
+            );
+
+            apply_as_current(
+                &mut state,
+                GameAction::ActivateAbility {
+                    source_id: plot_card,
+                    ability_index: 0,
+                },
+            )
+            .unwrap_or_else(|e| {
+                panic!(
+                    "{label}: plot special action must activate (Edit 1 guard); \
+                     reverting Edit 1 yields Err: {e:?}"
+                )
+            });
+
+            assert_eq!(
+                state.objects[&plot_card].zone,
+                Zone::Exile,
+                "{label}: the plot self-exile cost moved the card Hand -> Exile"
+            );
+            assert!(
+                state.stack.is_empty(),
+                "{label}: plot is a special action (CR 702.170b) — it must not use the stack"
+            );
+            assert!(
+                state.objects[&plot_card]
+                    .casting_permissions
+                    .iter()
+                    .any(|p| matches!(p, CastingPermission::Plotted { .. })),
+                "{label}: plot must grant Plotted immediately"
+            );
+        };
+
+        // A1 — Pithing Needle naming the plot card (CantBeActivated, HasChosenName).
+        {
+            let (mut state, plot_card) = build_p0_plot_card_in_hand(1);
+            let needle = create_object(
+                &mut state,
+                CardId(0x9EED1E),
+                PlayerId(0),
+                "Pithing Needle".to_string(),
+                Zone::Battlefield,
+            );
+            {
+                let obj = state.objects.get_mut(&needle).unwrap();
+                obj.card_types.core_types.push(CoreType::Artifact);
+                obj.entered_battlefield_turn = Some(0);
+                obj.chosen_attributes
+                    .push(ChosenAttribute::CardName("Plotted Card".to_string()));
+                obj.static_definitions
+                    .push(StaticDefinition::new(StaticMode::CantBeActivated {
+                        who: ProhibitionScope::AllPlayers,
+                        source_filter: TargetFilter::HasChosenName,
+                        exemption: ActivationExemption::ManaAbilities,
+                    }));
+            }
+            let plot_def = state.objects[&plot_card].abilities[0].clone();
+            assert!(
+                is_blocked_by_cant_be_activated(&state, PlayerId(0), plot_card, &plot_def),
+                "A1 sanity: Pithing Needle naming the card blocks its (non-mana) activation \
+                 absent the plot guard — proves the gate is live"
+            );
+            assert_plot_bypasses(state, plot_card, "A1 Pithing Needle");
+        }
+
+        // A2 — Damping Matrix / Linvala class (ProhibitActivity::ActivateAbilities).
+        {
+            let (mut state, plot_card) = build_p0_plot_card_in_hand(1);
+            let matrix = create_object(
+                &mut state,
+                CardId(0xDA33),
+                PlayerId(0),
+                "Damping Matrix".to_string(),
+                Zone::Battlefield,
+            );
+            state
+                .objects
+                .get_mut(&matrix)
+                .unwrap()
+                .card_types
+                .core_types
+                .push(CoreType::Artifact);
+            state.restrictions.push(GameRestriction::ProhibitActivity {
+                source: matrix,
+                affected_players: RestrictionPlayerScope::SpecificPlayer(PlayerId(0)),
+                expiry: RestrictionExpiry::EndOfTurn,
+                activity: ProhibitedActivity::ActivateAbilities {
+                    exemption: ActivationExemption::None,
+                    only_tag: None,
+                },
+            });
+            let plot_def = state.objects[&plot_card].abilities[0].clone();
+            assert!(
+                is_blocked_by_cant_activate_abilities(&state, PlayerId(0), &plot_def),
+                "A2 sanity: the ActivateAbilities prohibition blocks plot absent the guard \
+                 — proves the gate is live"
+            );
+            assert_plot_bypasses(state, plot_card, "A2 Damping Matrix");
+        }
+
+        // A3 — CantActivateDuring active during P0's OWN main phase. NOTE: this uses
+        // `DuringYourTurn`, NOT City of Solitude's `NotDuringAffectedPlayersTurn`.
+        // Plot is legal ONLY during the controller's own turn / main phase / empty
+        // stack (CR 702.170a via AsSorcery), and `NotDuringAffectedPlayersTurn` fires
+        // only on OTHER players' turns — so it can never overlap plot's window and a
+        // City-of-Solitude test would be VACUOUS (the gate never fires while plot is
+        // legal, so the guard would have nothing to bypass). `DuringYourTurn`
+        // (controlled by P0, AllPlayers scope) is the only `CantActivateDuring` shape
+        // whose active window coincides with plot's, making it the discriminating
+        // choice that genuinely exercises Edits 1/2.
+        {
+            let (mut state, plot_card) = build_p0_plot_card_in_hand(1);
+            add_cant_activate_during_permanent(
+                &mut state,
+                PlayerId(0),
+                ProhibitionScope::AllPlayers,
+                CastingProhibitionCondition::DuringYourTurn,
+                ActivationExemption::None,
+            );
+            let plot_def = state.objects[&plot_card].abilities[0].clone();
+            assert!(
+                is_blocked_by_cant_activate_during(&state, PlayerId(0), &plot_def),
+                "A3 sanity: a CantActivateDuring static active on P0's own turn blocks plot \
+                 absent the guard — proves the gate is live during plot's window"
+            );
+            assert_plot_bypasses(state, plot_card, "A3 CantActivateDuring");
+        }
+    }
+
+    /// CR 702.170b + CR 116.2k + CR 118.7a: Plot is a SPECIAL ACTION, so the generic
+    /// activated-ability cost reducer (`ReduceAbilityCost { keyword: "activated" }`,
+    /// whose blanket arm matches ANY ability regardless of tag and adjusts in BOTH
+    /// directions) must NOT change a plot cost. Only the dedicated special-action
+    /// axis (`ReduceActionCost { action: Plot }`, Doc Aurlock) may adjust it.
+    ///
+    /// Drives the production seam `apply_cost_reduction`. Discriminating /
+    /// non-vacuous (revert-probe Edit 3 — unguarding
+    /// `apply_static_activated_ability_cost_reduction`):
+    ///   - B1 Raise: with Edit 3 reverted the {3} plot cost would read {4}; B1 Reduce
+    ///     would read {2}. With the guard both stay {3}.
+    ///   - B2: Doc Aurlock's special-action axis still reduces {3} -> {1} (regression
+    ///     guard that Edit 3 did not disturb `reduce_special_action_in_ability_cost`).
+    ///   - B3 combined: net {1} (Plot −2, blanket +1 skipped), NOT {2} (+1 −2).
+    #[test]
+    fn plot_special_action_ignores_generic_activated_ability_cost_modifiers() {
+        use crate::types::ability::{
+            CastingPermission, Effect, PermissionGrantee, StaticDefinition, TargetFilter,
+        };
+        use crate::types::identifiers::CardId;
+        use crate::types::mana::ManaCost;
+        use crate::types::statics::{CostModifyMode, StaticMode};
+
+        let make_plot_def = |generic: u32| {
+            let mut def = AbilityDefinition::new(
+                AbilityKind::Activated,
+                Effect::GrantCastingPermission {
+                    permission: CastingPermission::Plotted { turn_plotted: 0 },
+                    target: TargetFilter::SelfRef,
+                    grantee: PermissionGrantee::AbilityController,
+                },
+            );
+            def.cost = Some(AbilityCost::Composite {
+                costs: vec![
+                    AbilityCost::Mana {
+                        cost: ManaCost::Cost {
+                            shards: vec![],
+                            generic,
+                        },
+                    },
+                    AbilityCost::Exile {
+                        count: 1,
+                        zone: Some(Zone::Hand),
+                        filter: Some(TargetFilter::SelfRef),
+                    },
+                ],
+            });
+            def.activation_zone = Some(Zone::Hand);
+            def
+        };
+        let plot_generic_of = |def: &AbilityDefinition| match def.cost.as_ref().unwrap() {
+            AbilityCost::Composite { costs } => costs
+                .iter()
+                .find_map(|c| match c {
+                    AbilityCost::Mana {
+                        cost: ManaCost::Cost { generic, .. },
+                    } => Some(*generic),
+                    _ => None,
+                })
+                .expect("composite plot cost has a mana sub-cost"),
+            other => panic!("expected composite cost, got {other:?}"),
+        };
+
+        // A hand card supplies the plot source id (filter context for the reducer).
+        let setup = || -> (GameState, ObjectId) {
+            let mut state = setup_game_at_main_phase();
+            let plot_card = create_object(
+                &mut state,
+                CardId(2),
+                PlayerId(0),
+                "Plotted Card".to_string(),
+                Zone::Hand,
+            );
+            (state, plot_card)
+        };
+        let blanket = |mode: CostModifyMode| {
+            StaticDefinition::new(StaticMode::ReduceAbilityCost {
+                mode,
+                keyword: "activated".to_string(),
+                amount: 1,
+                minimum_mana: None,
+                dynamic_count: None,
+            })
+        };
+        let doc_axis = || {
+            StaticDefinition::new(StaticMode::ReduceActionCost {
+                action: SpecialAction::Plot,
+                mode: CostModifyMode::Reduce,
+                amount: 2,
+            })
+        };
+
+        // B1 Raise — "activated abilities cost {1} more" must NOT touch plot.
+        {
+            let (mut state, plot_card) = setup();
+            let src = create_object(
+                &mut state,
+                CardId(1),
+                PlayerId(0),
+                "Blanket Reducer".to_string(),
+                Zone::Battlefield,
+            );
+            state.objects.get_mut(&src).unwrap().static_definitions =
+                vec![blanket(CostModifyMode::Raise)].into();
+            let mut def = make_plot_def(3);
+            apply_cost_reduction(&state, &mut def, PlayerId(0), plot_card);
+            assert_eq!(
+                plot_generic_of(&def),
+                3,
+                "B1 Raise: a blanket activated-ability raise must not change plot \
+                 (reverting Edit 3 yields {{4}})"
+            );
+        }
+        // B1 Reduce — symmetric: a blanket activated reduce must not touch plot either.
+        {
+            let (mut state, plot_card) = setup();
+            let src = create_object(
+                &mut state,
+                CardId(1),
+                PlayerId(0),
+                "Blanket Reducer".to_string(),
+                Zone::Battlefield,
+            );
+            state.objects.get_mut(&src).unwrap().static_definitions =
+                vec![blanket(CostModifyMode::Reduce)].into();
+            let mut def = make_plot_def(3);
+            apply_cost_reduction(&state, &mut def, PlayerId(0), plot_card);
+            assert_eq!(
+                plot_generic_of(&def),
+                3,
+                "B1 Reduce: a blanket activated-ability reduce must not change plot \
+                 (reverting Edit 3 yields {{2}})"
+            );
+        }
+        // B2 — Doc Aurlock's special-action axis STILL reduces plot {3} -> {1}.
+        {
+            let (mut state, plot_card) = setup();
+            let doc = create_object(
+                &mut state,
+                CardId(1),
+                PlayerId(0),
+                "Doc Aurlock, Grizzled Genius".to_string(),
+                Zone::Battlefield,
+            );
+            state.objects.get_mut(&doc).unwrap().static_definitions = vec![doc_axis()].into();
+            let mut def = make_plot_def(3);
+            apply_cost_reduction(&state, &mut def, PlayerId(0), plot_card);
+            assert_eq!(
+                plot_generic_of(&def),
+                1,
+                "B2: Doc Aurlock's ReduceActionCost{{Plot}} still reduces plot {{3}} -> {{1}}"
+            );
+        }
+        // B3 — combined: blanket Raise{1} (skipped) + Doc Aurlock Reduce{2} = {1}, NOT {2}.
+        {
+            let (mut state, plot_card) = setup();
+            let doc = create_object(
+                &mut state,
+                CardId(1),
+                PlayerId(0),
+                "Doc Aurlock, Grizzled Genius".to_string(),
+                Zone::Battlefield,
+            );
+            state.objects.get_mut(&doc).unwrap().static_definitions = vec![doc_axis()].into();
+            let blanketer = create_object(
+                &mut state,
+                CardId(3),
+                PlayerId(0),
+                "Blanket Reducer".to_string(),
+                Zone::Battlefield,
+            );
+            state
+                .objects
+                .get_mut(&blanketer)
+                .unwrap()
+                .static_definitions = vec![blanket(CostModifyMode::Raise)].into();
+            let mut def = make_plot_def(3);
+            apply_cost_reduction(&state, &mut def, PlayerId(0), plot_card);
+            assert_eq!(
+                plot_generic_of(&def),
+                1,
+                "B3 combined: only the Plot axis (−2) applies, the blanket (+1) is skipped \
+                 -> {{1}} (a buggy build that applied the blanket reads {{2}})"
+            );
+        }
+    }
+
+    /// CR 702.170a + CR 116.2k: Negative control — plot's own-turn / main-phase /
+    /// empty-stack timing (CR 702.170a) is enforced by `ActivationRestriction::
+    /// AsSorcery` via `check_activation_restrictions`, which stays OUTSIDE the
+    /// prohibition guards added by Edits 1/2. So the guards must not have widened to
+    /// swallow timing: plot is still REJECTED when any timing dimension is wrong.
+    /// Proves no over-skip.
+    ///
+    /// Discriminating: a C0 positive baseline (correct timing, no prohibiting static)
+    /// SUCCEEDS, then C1/C2/C3 flip exactly one timing dimension and must each fail —
+    /// so the rejection is caused by the timing change, not unrelated setup. If a
+    /// future change folded `check_activation_restrictions` inside a guard, C1–C3
+    /// flip to `Ok` and this test catches it.
+    #[test]
+    fn plot_special_action_still_enforces_sorcery_speed_timing() {
+        let expect_rejected = |mut state: GameState, plot_card: ObjectId, label: &str| {
+            add_mana(&mut state, PlayerId(0), ManaType::Colorless, 1);
+            let result = apply_as_current(
+                &mut state,
+                GameAction::ActivateAbility {
+                    source_id: plot_card,
+                    ability_index: 0,
+                },
+            );
+            assert!(
+                result.is_err(),
+                "{label}: plot must be rejected by AsSorcery timing (outside the prohibition guards)"
+            );
+            assert_eq!(
+                state.objects[&plot_card].zone,
+                Zone::Hand,
+                "{label}: a rejected plot leaves the card in hand (no self-exile)"
+            );
+        };
+
+        // C0 — positive baseline: correct timing, no prohibiting static → SUCCEEDS.
+        // Establishes that the only delta in C1/C2/C3 is the broken timing dimension.
+        {
+            let (mut state, plot_card) = build_p0_plot_card_in_hand(1);
+            add_mana(&mut state, PlayerId(0), ManaType::Colorless, 1);
+            apply_as_current(
+                &mut state,
+                GameAction::ActivateAbility {
+                    source_id: plot_card,
+                    ability_index: 0,
+                },
+            )
+            .expect("C0 baseline: plot on own main phase with empty stack must succeed");
+            assert_eq!(state.objects[&plot_card].zone, Zone::Exile);
+        }
+
+        // C1 — opponent's turn: CR 702.170a requires the controller's own turn.
+        {
+            let (mut state, plot_card) = build_p0_plot_card_in_hand(1);
+            state.active_player = PlayerId(1);
+            expect_rejected(state, plot_card, "C1 opponent's turn");
+        }
+
+        // C2 — non-empty stack: CR 702.170a requires an empty stack.
+        {
+            let (mut state, plot_card) = build_p0_plot_card_in_hand(1);
+            state.stack.push_back(crate::types::game_state::StackEntry {
+                id: ObjectId(0xDEAD),
+                source_id: ObjectId(0xDEAD),
+                controller: PlayerId(0),
+                kind: crate::types::game_state::StackEntryKind::Spell {
+                    card_id: crate::types::identifiers::CardId(99),
+                    ability: None,
+                    casting_variant: CastingVariant::Normal,
+                    actual_mana_spent: 0,
+                },
+            });
+            expect_rejected(state, plot_card, "C2 non-empty stack");
+        }
+
+        // C3 — wrong phase: CR 702.170a requires a main phase.
+        {
+            let (mut state, plot_card) = build_p0_plot_card_in_hand(1);
+            state.phase = Phase::BeginCombat;
+            expect_rejected(state, plot_card, "C3 begin-combat step");
+        }
     }
 
     /// CR 118.7 + CR 702.6a: Firion, Wild Rose Warrior's granted equip-cost
