@@ -1931,6 +1931,32 @@ fn parse_hand_size_predicate(rest: &str, player: PlayerScope) -> Option<(&str, S
         ));
     }
 
+    // CR 402: "more cards in hand than each opponent" → HandSize(player) GT
+    // HandSize(Opponent{Max}). "each opponent" is universal (more than ALL of
+    // them), so the predicate is "your hand > the maximum opponent hand" — the
+    // Max aggregate, mirroring how "more life than an opponent" uses Min for its
+    // existential "an". Okina Nightwatch, Secretkeeper.
+    if let Ok((rest, _)) =
+        tag::<_, _, OracleError<'_>>("more cards in hand than each opponent").parse(rest)
+    {
+        return Some((
+            rest,
+            StaticCondition::QuantityComparison {
+                lhs: QuantityExpr::Ref {
+                    qty: QuantityRef::HandSize { player },
+                },
+                comparator: Comparator::GT,
+                rhs: QuantityExpr::Ref {
+                    qty: QuantityRef::HandSize {
+                        player: PlayerScope::Opponent {
+                            aggregate: AggregateFunction::Max,
+                        },
+                    },
+                },
+            },
+        ));
+    }
+
     // "N or more cards in hand" → HandSize GE N
     let (after_n, n) = parse_number(rest).ok()?;
     if let Ok((rest, _)) = alt((
@@ -7453,6 +7479,48 @@ mod tests {
             }
             other => {
                 panic!("expected HandSize(ScopedPlayer) GT HandSize(Controller), got {other:?}")
+            }
+        }
+    }
+
+    /// CR 402: "you have more cards in hand than each opponent" →
+    /// HandSize(Controller) GT HandSize(Opponent{Max}). "each opponent" is
+    /// universal (more than all of them), so the bar is the maximum opponent
+    /// hand — the mirror of "more life than an opponent"'s existential Min.
+    /// Okina Nightwatch, Secretkeeper.
+    #[test]
+    fn test_parse_condition_more_cards_in_hand_than_each_opponent() {
+        let (rest, c) =
+            parse_condition("as long as you have more cards in hand than each opponent").unwrap();
+        assert_eq!(rest, "");
+        match c {
+            StaticCondition::QuantityComparison {
+                lhs,
+                comparator,
+                rhs,
+            } => {
+                assert_eq!(
+                    lhs,
+                    QuantityExpr::Ref {
+                        qty: QuantityRef::HandSize {
+                            player: PlayerScope::Controller,
+                        },
+                    }
+                );
+                assert_eq!(comparator, Comparator::GT);
+                assert_eq!(
+                    rhs,
+                    QuantityExpr::Ref {
+                        qty: QuantityRef::HandSize {
+                            player: PlayerScope::Opponent {
+                                aggregate: AggregateFunction::Max,
+                            },
+                        },
+                    }
+                );
+            }
+            other => {
+                panic!("expected HandSize(Controller) GT HandSize(Opponent{{Max}}), got {other:?}")
             }
         }
     }
