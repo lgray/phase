@@ -243,6 +243,18 @@ impl ResourceVector {
             v.library_delta
                 .insert(player.id, player.library.len() as i64);
             // CR 122.1 + CR 704.5c: poison counters live in a dedicated field.
+            //
+            // GAP-5 (multiplayer prerequisite): the poison axis is AGGREGATE-keyed —
+            // `(CounterClass::Poison, ObjectClass::Player)` carries NO victim `PlayerId`,
+            // so a poison delta is summed across the whole table, not attributed to the
+            // afflicted player. `live_mandatory_loop_winner` reads this summed pair
+            // conservatively (loop_check.rs ~239), and `derive_views`' `attribution_player`
+            // routes any poison ∞ to the loop's controller (see the note at
+            // derived_views.rs). That is correct ONLY because no live producer emits a
+            // poison axis today; before any future live poison/infect loop producer is
+            // enabled this key MUST be re-keyed by victim `PlayerId` (CR 704.5c: the
+            // afflicted player owns the loss), or a multiplayer poison ∞ would attribute
+            // to the wrong seat. Inert documentation — no behavior change here.
             if player.poison_counters > 0 {
                 v.counters.insert(
                     (CounterClass::Poison, ObjectClass::Player),

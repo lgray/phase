@@ -202,6 +202,10 @@ export type MatchPhase = "InGame" | "BetweenGames" | "Completed";
 
 export interface MatchConfig {
   match_type: MatchType;
+  /** CR 732.2a: combo (infinite-loop) detector opt-in, chosen at match creation and
+   *  immutable during play. Optional on the wire — omitted means `Off` (the engine's
+   *  `#[serde(default)]`), so existing payloads are unchanged. */
+  loop_detection?: LoopDetectionMode;
 }
 
 export interface MatchScore {
@@ -1648,7 +1652,6 @@ export type GameAction =
   | { type: "SetAutoPass"; data: { mode: { type: "UntilStackEmpty" } | { type: "UntilEndOfTurn" } } }
   | { type: "CancelAutoPass" }
   | { type: "SetPhaseStops"; data: { stops: Phase[] } }
-  | { type: "SetLoopDetection"; data: { mode: LoopDetectionMode } }
   | { type: "AssignCombatDamage"; data: { assignments: [ObjectId, number][]; trample_damage: number; controller_damage: number } }
   // CR 510.1d + CR 702.22k: blocker's combat-damage division among the attackers it blocks.
   | { type: "AssignBlockerDamage"; data: { assignments: [ObjectId, number][] } }
@@ -2165,8 +2168,8 @@ export interface GameState {
     grant_extra_turn_after?: boolean;
   }>;
   debug_mode?: boolean;
-  /** CR 732.2a: user-controllable opt-in gate for the live combo-detector
-   *  (default Off). Toggled via `GameAction::SetLoopDetection`. */
+  /** CR 732.2a: opt-in gate for the live combo-detector (default Off). Set from the
+   *  match's immutable `MatchConfig` at game creation; not mutable mid-game. */
   loop_detection?: LoopDetectionMode;
 }
 

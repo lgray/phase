@@ -28,6 +28,12 @@
     "updateIssue": "problem z aktualizacją",
     "updated": "zaktualizowano"
   },
+  "comboDetector": {
+    "label": "Wykrywacz combosów",
+    "title": "Wykrywaj nieskończone pętle: automatycznie kończ obowiązkowe pętle i pokazuj zasoby ∞ (domyślnie wyłączone)",
+    "on": "Wł.",
+    "off": "Wył."
+  },
   "gameMenu": {
     "menu": "Menu gry",
     "sandboxTools": "Narzędzia piaskownicy",
@@ -38,10 +44,6 @@
     "showAiHand": "Pokaż rękę AI",
     "hideAiHand": "Ukryj rękę AI",
     "requestTakeback": "Poproś o wycofanie ruchu",
-    "comboDetector": "Wykrywacz combosów",
-    "comboDetectorTitle": "Wykrywaj nieskończone pętle: automatycznie kończ obowiązkowe pętle i pokazuj zasoby ∞ (domyślnie wyłączone)",
-    "comboDetectorOn": "Wł.",
-    "comboDetectorOff": "Wył.",
     "concede": "Poddaj się",
     "backToDraft": "Wróć do draftu",
     "mainMenu": "Menu główne",

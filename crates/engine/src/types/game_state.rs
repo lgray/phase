@@ -4963,6 +4963,12 @@ impl LoopDetectionMode {
     pub fn is_on(self) -> bool {
         matches!(self, LoopDetectionMode::On)
     }
+
+    /// True when the detector is off (pre-feature behavior). Takes `&self` so it can
+    /// serve as a serde `skip_serializing_if` predicate on `MatchConfig.loop_detection`.
+    pub fn is_off(&self) -> bool {
+        matches!(self, LoopDetectionMode::Off)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -6188,11 +6194,13 @@ pub struct GameState {
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub unbounded_resources: BTreeMap<PlayerId, BTreeSet<ResourceAxis>>,
 
-    /// CR 732.2a: user-controllable opt-in gate for the live combo (infinite-loop)
-    /// detector. Default `Off` = exact pre-combo-detector behavior. Toggled at
-    /// runtime via `GameAction::SetLoopDetection` (a preference action, like
-    /// `auto_pass`/`phase_stops`). Game-wide because the gated shortcut ends the
-    /// whole game; see [`LoopDetectionMode`].
+    /// CR 732.2a: per-game runtime gate for the live combo (infinite-loop) detector.
+    /// Default `Off` = exact pre-combo-detector behavior. This is the hot-path flag the
+    /// detector gates read; it is PROJECTED from the immutable [`MatchConfig::loop_detection`]
+    /// by [`GameState::set_match_config`] at game creation and is NOT mutated mid-game —
+    /// there is no `GameAction` that flips it, so no seat can opt the match in or out
+    /// during play. Game-wide because the gated shortcut ends the whole game; chosen at
+    /// match creation, whole-table by construction. See [`LoopDetectionMode`].
     ///
     /// INTENTIONALLY EXCLUDED from `impl PartialEq for GameState` and
     /// `loop_fingerprint` (same family as `unbounded_resources`): this is
@@ -7890,6 +7898,17 @@ impl GameState {
     /// Create a standard 2-player game (backward-compatible).
     pub fn new_two_player(seed: u64) -> Self {
         Self::new(FormatConfig::standard(), 2, seed)
+    }
+
+    /// CR 732.2a: adopt a match's immutable configuration, projecting the per-game
+    /// runtime gate(s) it controls. The combo-detector opt-in lives on [`MatchConfig`]
+    /// (chosen at match creation, whole-table, immutable during play); this is the
+    /// single authority that projects it onto [`GameState::loop_detection`] — the flag
+    /// the detector gates read. Called once per game at creation and at each
+    /// between-games rebuild so a multi-game match keeps a consistent detector setting.
+    pub fn set_match_config(&mut self, config: MatchConfig) {
+        self.match_config = config;
+        self.loop_detection = config.loop_detection;
     }
 
     /// Returns the current timestamp and increments for next use.

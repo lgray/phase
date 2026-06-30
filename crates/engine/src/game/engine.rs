@@ -378,10 +378,6 @@ fn remember_public_reveals(state: &mut GameState, events: &[GameEvent]) {
 ///   e.g. the human toggles a phase stop while the AI holds priority. The
 ///   downstream handlers route by `actor`, so any seat may set its own
 ///   preferences regardless of `WaitingFor`.
-/// - **SetLoopDetection** is a game-wide UI setting (the combo-detector opt-in,
-///   CR 732.2a). Like the per-player preferences it has no CR-mandated submitter,
-///   mutates only control state (`GameState::loop_detection`), and may fire from
-///   any seat at any time, so it is authorized the same way.
 fn check_actor_authorization(
     state: &GameState,
     actor: PlayerId,
@@ -397,7 +393,6 @@ fn check_actor_authorization(
     if matches!(
         action,
         GameAction::SetPhaseStops { .. }
-            | GameAction::SetLoopDetection { .. }
             | GameAction::CancelAutoPass
             | GameAction::Debug(_)
             | GameAction::GrantDebugPermission { .. }
@@ -1731,27 +1726,6 @@ fn apply_action(
             state.phase_stops.remove(&actor);
         } else {
             state.phase_stops.insert(actor, stops.clone());
-        }
-        return Ok(ActionResult {
-            events: vec![],
-            waiting_for: state.waiting_for.clone(),
-            log_entries: vec![],
-        });
-    }
-
-    // CR 732.2a: SetLoopDetection toggles the game-wide combo-detector opt-in.
-    // Pure control state — no game logic, no WaitingFor transition. Works from any
-    // state so a frontend can flip it whenever. Turning the detector OFF also clears
-    // the loop-detection ring so the engine returns to exact pre-feature state (the
-    // ring is otherwise inert while OFF, since both the sampler and the shortcut are
-    // gated, but clearing it keeps "OFF == pre-feature" literal). It does NOT touch
-    // `unbounded_resources`: the only detector writes to that map coincide with
-    // GameOver, and the debug `SetInfiniteMana` toggle is an independent producer
-    // that OFF must not disturb.
-    if let GameAction::SetLoopDetection { mode } = &action {
-        state.loop_detection = *mode;
-        if !mode.is_on() {
-            state.loop_detect_ring.clear();
         }
         return Ok(ActionResult {
             events: vec![],

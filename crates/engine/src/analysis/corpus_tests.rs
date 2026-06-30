@@ -43,6 +43,7 @@ use crate::types::actions::GameAction;
 use crate::types::game_state::{CastPaymentMode, GameState, LoopDetectionMode, WaitingFor};
 use crate::types::identifiers::ObjectId;
 use crate::types::mana::ManaType;
+use crate::types::match_config::MatchConfig;
 use crate::types::phase::Phase;
 use crate::types::player::PlayerId;
 
@@ -765,12 +766,12 @@ fn drive_drain_idx18_wins_live() {
     // SHORTCUT, not a real CR 704.5a death), while the controller P0 gained.
     let last = trace.last().expect("at least one beat");
     assert!(
-        last.p1_life > 100 && last.p1_life < 200,
+        last.min_opponent_life() > 100 && last.min_opponent_life() < 200,
         "P1 must have drained but still be at high life when shortcut-eliminated (got {})",
-        last.p1_life
+        last.min_opponent_life()
     );
     assert!(
-        last.p0_life >= 41,
+        last.lives[0] >= 41,
         "controller P0 gained life across the cascade"
     );
 }
@@ -1061,7 +1062,8 @@ fn pr6_gate_shortcut_guard_isolated_by_flag() {
     );
 
     // OFF probe: same pre-state and same populated ring, only the flag flipped (set
-    // directly so the ring is RETAINED, not cleared by the SetLoopDetection handler).
+    // directly on the clone so the ring is RETAINED — this isolates the §3 shortcut
+    // flag gate, which is all this probe exercises).
     let mut off_state = pre;
     off_state.loop_detection = LoopDetectionMode::Off;
     assert!(
@@ -1078,40 +1080,48 @@ fn pr6_gate_shortcut_guard_isolated_by_flag() {
     );
 }
 
-/// PR6-GATE-4 (RUNTIME TOGGLE): `GameAction::SetLoopDetection` flips the flag from any
-/// state, and turning it OFF clears the loop-detection ring (returning to a clean
-/// pre-feature state). Routed by `actor`, legal with no WaitingFor precondition.
+/// PR6-GATE-4 (CONFIG PROVENANCE + IMMUTABILITY): the combo-detector opt-in is a
+/// match-creation setting on `MatchConfig`, projected onto the runtime
+/// `GameState::loop_detection` flag by `set_match_config`, and IMMUTABLE during play.
+/// The mid-game `SetLoopDetection` action was REMOVED as a security fix — previously
+/// any networked seat could flip the whole table's game-ending detector mid-match
+/// (PR #4603 review). There is now no `GameAction` that mutates the flag.
+///
+/// REVERT-FAIL: delete the `self.loop_detection = config.loop_detection` line in
+/// `GameState::set_match_config` ⇒ the ON-projection assertion flips (the detector can
+/// never be enabled), proving the projection is the sole provenance.
 #[test]
-fn pr6_gate_set_loop_detection_runtime_toggle() {
-    let mut runner = {
-        let mut scenario = GameScenario::new();
-        scenario.at_phase(Phase::PreCombatMain);
-        scenario.build()
-    };
-    // Default is OFF.
-    assert_eq!(runner.state().loop_detection, LoopDetectionMode::Off);
+fn pr6_gate_config_provenance_and_immutability() {
+    let mut state = GameScenario::new().build().state().clone();
 
-    // Turn ON.
-    runner
-        .act(GameAction::SetLoopDetection {
-            mode: LoopDetectionMode::On,
-        })
-        .expect("SetLoopDetection{On} must be legal from any state");
-    assert!(runner.state().loop_detection.is_on());
+    // Default config leaves the detector OFF (pre-feature; opt-in invariant #4603).
+    state.set_match_config(MatchConfig::default());
+    assert_eq!(
+        state.loop_detection,
+        LoopDetectionMode::Off,
+        "default MatchConfig must leave the detector OFF"
+    );
 
-    // Seed a ring entry, then turning OFF must clear it.
-    let ring_sample = std::sync::Arc::new(runner.state().normalize_for_loop());
-    runner.state_mut().loop_detect_ring.push_back(ring_sample);
-    assert!(!runner.state().loop_detect_ring.is_empty());
-    runner
-        .act(GameAction::SetLoopDetection {
-            mode: LoopDetectionMode::Off,
-        })
-        .expect("SetLoopDetection{Off} must be legal from any state");
-    assert_eq!(runner.state().loop_detection, LoopDetectionMode::Off);
+    // Opting in via config projects ON onto the runtime gate.
+    state.set_match_config(MatchConfig {
+        loop_detection: LoopDetectionMode::On,
+        ..MatchConfig::default()
+    });
     assert!(
-        runner.state().loop_detect_ring.is_empty(),
-        "turning the detector OFF must clear the ring (exact pre-feature state)"
+        state.loop_detection.is_on(),
+        "set_match_config must project MatchConfig.loop_detection onto the runtime flag"
+    );
+
+    // Immutability: no `GameAction` mutates the flag, so driving a beat leaves it at
+    // the value set at creation. (PassPriority may be a no-op/illegal from this state;
+    // either way the flag must be invariant.)
+    let before = state.loop_detection;
+    let mut runner = GameRunner::from_state(state);
+    let _ = runner.act(GameAction::PassPriority);
+    assert_eq!(
+        runner.state().loop_detection,
+        before,
+        "loop_detection is immutable during play (set only at creation by set_match_config)"
     );
 }
 
@@ -1160,6 +1170,181 @@ fn pr6_gate_loop_detection_serde_defaults_off() {
         restored.loop_detection,
         LoopDetectionMode::Off,
         "a state without `loop_detection` must default to Off (pre-feature)"
+    );
+}
+
+/// MP-B (CR 104.2a last-standing): a 4-player table where P0 runs an UNTARGETED
+/// "whenever you gain life, each opponent loses life" drain (Marauding Blight-Priest +
+/// Bloodthirsty Conqueror), all three opponents at 1 life. One drain cycle takes all
+/// three to 0; the CR 704.5a state-based actions eliminate them in ONE simultaneous
+/// batch and CR 104.2a leaves P0 the sole survivor → `GameOver { winner: Some(P0) }`.
+/// This is the NATURAL win (real SBA deaths), not the 2-player §3 shortcut (gated off
+/// at >2 living) — the production path the commander audit validated as safe.
+///
+/// DISCRIMINATION (the audit's revert-probe, run inline): swapping to a TARGETED
+/// "target opponent loses life" drain (Sanguine Bond) drains only ONE chosen opponent
+/// per cycle, so it cannot eliminate all three at once — it stops for an opponent
+/// choice and never reaches a GameOver. If the untargeted assertion were vacuous, this
+/// contrast (same life totals, different drain shape) would not diverge.
+#[test]
+fn mp_each_opponent_drain_natural_win_continues_to_sole_survivor() {
+    let db = card_db();
+    let Some(mut board) = corpus::build_drain_board_n(
+        db,
+        &["Marauding Blight-Priest", "Bloodthirsty Conqueror"],
+        4,
+        &[1, 1, 1],
+        40,
+    ) else {
+        return; // export absent (CI / fresh checkout): skip, never fail spuriously
+    };
+    corpus::seed_lifegain_cascade(&mut board);
+    let trace = corpus::drive_pass_priority(&mut board, 40);
+    let (_, winner) = corpus::first_gameover_beat(&trace)
+        .expect("untargeted each-opponent drain must eliminate every opponent → a winner");
+    assert_eq!(winner, P0, "the sole surviving player P0 wins (CR 104.2a)");
+    let eliminated: Vec<bool> = board
+        .runner
+        .state()
+        .players
+        .iter()
+        .map(|p| p.is_eliminated)
+        .collect();
+    assert_eq!(
+        eliminated,
+        vec![false, true, true, true],
+        "all three opponents eliminated in one simultaneous SBA batch; P0 survives"
+    );
+
+    // DISCRIMINATION: a targeted single-opponent drain at the same life totals cannot
+    // auto-eliminate the whole table — it stops for an opponent choice, no auto-win.
+    let Some(mut targeted) =
+        corpus::build_drain_board_n(db, &["Sanguine Bond", "Exquisite Blood"], 4, &[1, 1, 1], 40)
+    else {
+        return;
+    };
+    corpus::seed_lifegain_cascade(&mut targeted);
+    let ttrace = corpus::drive_pass_priority(&mut targeted, 40);
+    assert!(
+        corpus::first_gameover_beat(&ttrace).is_none(),
+        "a targeted single-opponent drain cannot auto-eliminate all opponents — no auto-win"
+    );
+}
+
+/// MP-D (CR 601/608 targeted resolution): a 4-player table where P0 runs a TARGETED
+/// "whenever you gain life, target opponent loses that much life" drain (Sanguine Bond +
+/// Exquisite Blood) with THREE legal opponents. `auto_select_targets` refuses to choose
+/// among 2+ legal targets, so the trigger STOPS at a target-selection window — it never
+/// silently auto-resolves into a game-ending drain. This is why the targeted shape is
+/// safe in multiplayer: a human (or AI) must pick the victim each iteration.
+///
+/// DISCRIMINATION: the SAME cards with a SINGLE legal opponent (2-player) auto-resolve
+/// to the sole target with no selection window. So the stop is caused by 2+ legal
+/// opponents, not by the card — proving the assertion is not vacuous.
+#[test]
+fn mp_targeted_drain_stops_for_opponent_choice() {
+    let db = card_db();
+    let Some(mut board) = corpus::build_drain_board_n(
+        db,
+        &["Sanguine Bond", "Exquisite Blood"],
+        4,
+        &[20, 20, 20],
+        40,
+    ) else {
+        return; // export absent: skip
+    };
+    corpus::seed_lifegain_cascade(&mut board);
+    let trace = corpus::drive_pass_priority(&mut board, 30);
+    assert!(
+        corpus::first_gameover_beat(&trace).is_none(),
+        "a targeted drain with 3 legal opponents must not auto-resolve to a GameOver"
+    );
+    let last = trace.last().expect("at least one beat");
+    match &last.wf {
+        WaitingFor::TriggerTargetSelection { target_slots, .. } => {
+            assert_eq!(
+                target_slots[0].legal_targets.len(),
+                3,
+                "all three opponents are legal targets (got {:?})",
+                target_slots[0].legal_targets
+            );
+        }
+        other => panic!("expected a target-selection stop, got {other:?}"),
+    }
+
+    // DISCRIMINATION: with a SINGLE legal opponent (2-player), the trigger auto-resolves
+    // to the sole target — no selection window ever appears.
+    let Some(mut duel) =
+        corpus::build_drain_board_n(db, &["Sanguine Bond", "Exquisite Blood"], 2, &[20], 40)
+    else {
+        return;
+    };
+    corpus::seed_lifegain_cascade(&mut duel);
+    let dtrace = corpus::drive_pass_priority(&mut duel, 30);
+    assert!(
+        dtrace
+            .iter()
+            .all(|t| !matches!(t.wf, WaitingFor::TriggerTargetSelection { .. })),
+        "with a single legal opponent the targeted drain auto-resolves — no selection stop"
+    );
+}
+
+/// MP-A (CR 104.4b mandatory DRAW): the live mandatory-loop draw gate fires
+/// `GameOver { winner: None }` when a mandatory iteration repeats a prior NORMALIZED
+/// state — a cycle that made NO net progress. That decision hinges on the exact
+/// predicate `loop_states_equal(normalize_for_loop(a), normalize_for_loop(b))` (the
+/// engine `apply`-loop CR 104.4b block). At a 4-player (Commander, no range-of-influence)
+/// table a true net-ZERO unbreakable loop is a WHOLE-GAME DRAW — never a single winner:
+/// every seat is alive and no resource changed, so the repeat must compare EQUAL (→ the
+/// gate draws) AND no faller can be named (→ not a win). The complementary net-PROGRESS
+/// cycle (one opponent's life fell) must NOT compare equal (→ the gate does not fire and
+/// the game continues — no wrongful draw of a still-advancing loop).
+///
+/// Scope: this pins the 4-player correctness of the draw gate's equality predicate and
+/// the no-false-winner guarantee. A full live auto-resolve of a net-zero loop to
+/// `GameOver{winner:None}` needs a specific net-zero mandatory combo, which the
+/// committed card fixture does not contain (every corpus loop is net-progress).
+///
+/// REVERT-FAIL: the net-progress half — were `loop_states_equal` to ignore life totals,
+/// the faller state would compare EQUAL and a still-progressing loop would wrongly draw;
+/// the `assert!(!loop_states_equal(...))` flips.
+#[test]
+fn mp_unbreakable_net_zero_mandatory_loop_whole_game_draw() {
+    let base = GameState::new(crate::types::format::FormatConfig::standard(), 4, 7);
+    assert_eq!(
+        base.players.iter().filter(|p| !p.is_eliminated).count(),
+        4,
+        "fixture sanity: four living players (no range-of-influence)"
+    );
+
+    // NET-ZERO repeat ⇒ byte-identical normalized state ⇒ the CR 104.4b gate draws.
+    assert!(
+        crate::types::game_state::loop_states_equal(
+            &base.normalize_for_loop(),
+            &base.normalize_for_loop(),
+        ),
+        "a net-zero 4-player repeat must compare EQUAL — the gate then draws (winner:None)"
+    );
+    // A net-zero cycle has no life faller ⇒ no player is named a winner (it is a draw).
+    let zero = crate::analysis::resource::ResourceVector::default();
+    assert_eq!(
+        crate::analysis::loop_check::live_mandatory_loop_winner(&base, &base, &zero),
+        None,
+        "a net-zero loop is a draw, never a single winner — no faller to lose"
+    );
+
+    // NET-PROGRESS contrast (the revert-probe): one opponent's life fell, so the cycle
+    // did NOT return to the same state — the equality is FALSE and the draw gate must
+    // not fire.
+    let mut progressed = base.clone();
+    progressed.players[1].life -= 1;
+    assert!(
+        !crate::types::game_state::loop_states_equal(
+            &base.normalize_for_loop(),
+            &progressed.normalize_for_loop(),
+        ),
+        "a net-progress repeat (an opponent's life fell) must NOT compare equal — \
+         the draw gate must not fire on a still-advancing loop"
     );
 }
 

@@ -431,9 +431,6 @@ pub fn guard_game_action_payload(action: &GameAction) -> Result<(), String> {
         | GameAction::ChooseBattleProtector { .. }
         | GameAction::SetAutoPass { .. }
         | GameAction::CancelAutoPass
-        // CR 732.2a: combo-detector toggle carries a single typed mode enum —
-        // nothing client-controlled to bound.
-        | GameAction::SetLoopDetection { .. }
         | GameAction::SubmitPayAmount { .. }
         | GameAction::LearnDecision { .. }
         | GameAction::ChooseX { .. }
