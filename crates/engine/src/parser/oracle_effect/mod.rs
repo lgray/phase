@@ -3525,8 +3525,23 @@ fn parse_choice_list_separator(input: &str) -> nom::IResult<&str, ()> {
 /// without manual byte-offset slicing. Returns `None` unless the whole input is
 /// consumed — a trailing unmatched remainder means the text was not a clean
 /// list.
+///
+/// CR 608.2d + CR 113.3: A token-choice branch may carry a quoted granted ability
+/// whose text contains a `,`/`or` list separator — e.g. Reef Worm's nested
+/// `a 3/3 blue Fish creature token with "When this token dies, create a 6/6 blue
+/// Whale creature token with '…'"`. A double-quoted span is therefore consumed as
+/// one opaque unit so the splitter never severs a list item inside quoted ability
+/// text; otherwise the inner `, create …` is misread as additional choice branches
+/// (a single cascading token wrongly becomes a `ChooseOneOf` of distinct tokens).
+/// Single quotes are only ever nested inside double quotes here, so handling the
+/// double-quoted span alone also covers them and leaves bare apostrophes
+/// (possessives such as "owner's") untouched.
 fn split_choice_list_items(input: &str) -> Option<Vec<&str>> {
-    let item = recognize(many1(preceded(not(parse_choice_list_separator), anychar)));
+    let unit = alt((
+        recognize((tag("\""), take_until("\""), tag("\""))),
+        recognize(preceded(not(parse_choice_list_separator), anychar)),
+    ));
+    let item = recognize(many1(unit));
     let (_, items) = all_consuming(separated_list1(parse_choice_list_separator, item))
         .parse(input)
         .ok()?;
@@ -60129,6 +60144,55 @@ mod tests {
             "Claim Jumper repeats once, got {:?}",
             trigger.repeat_until
         );
+    }
+
+    /// CR 608.2d: The choice-list splitter must treat a double-quoted granted
+    /// ability as one opaque item, so a `,`/`or` inside quoted text never
+    /// fabricates extra branches. A genuine unquoted disjunction still splits.
+    #[test]
+    fn split_choice_list_items_is_quote_aware() {
+        // Quoted ability carrying an inner ", create …" is a single item.
+        let nested = "a 3/3 blue Fish creature token with \"When this token dies, create a 6/6 blue Whale creature token.\"";
+        assert_eq!(
+            split_choice_list_items(nested),
+            Some(vec![nested]),
+            "a quoted ability with an inner comma must stay one item"
+        );
+        // A real top-level disjunction still splits into its branches.
+        assert_eq!(
+            split_choice_list_items("a Food token or a Treasure token"),
+            Some(vec!["a Food token", "a Treasure token"]),
+        );
+        // A real split survives even when one branch carries a quoted ability
+        // whose text contains a separator.
+        assert_eq!(
+            split_choice_list_items(
+                "a Treasure token or a 1/1 Soldier with \"When this dies, draw a card.\""
+            ),
+            Some(vec![
+                "a Treasure token",
+                "a 1/1 Soldier with \"When this dies, draw a card.\""
+            ]),
+        );
+    }
+
+    /// CR 111.2 + CR 608.2d: Reef Worm creates a single cascading Fish token that
+    /// carries a quoted death-triggered ability; it is NOT a modal token choice.
+    /// Before the quote-aware splitter, the inner ", create …" severed the clause
+    /// into a bogus `ChooseOneOf` of Fish/Whale/Kraken. (issue #4230)
+    #[test]
+    fn reef_worm_nested_token_is_not_modal_choice() {
+        let def = parse_effect_chain(
+            "create a 3/3 blue Fish creature token with \"When this token dies, create a 6/6 blue Whale creature token with 'When this token dies, create a 9/9 blue Kraken creature token.'\"",
+            AbilityKind::Spell,
+        );
+        let Effect::Token { name, .. } = &*def.effect else {
+            panic!(
+                "Reef Worm must create one Token (not a choice), got {:?}",
+                def.effect
+            );
+        };
+        assert_eq!(name, "Fish", "outer token is the 3/3 Fish");
     }
 }
 
