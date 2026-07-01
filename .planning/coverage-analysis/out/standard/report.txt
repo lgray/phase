@@ -1,30 +1,29 @@
 ================================================================
  coverage breakdown: standard
- inputs: 2026-06-29T14:04:14Z (coverage-data + card-data)
+ inputs: 2026-07-01T20:15:51Z (coverage-data + card-data)
 ================================================================
 members (in group)        : 4924
-supported                 : 4674  (94.92%)
-unsupported               : 250
-  parser gap (gap_count>0): 220   -> handler buckets below
-  resolver-flagged (==0)  : 30   -> parses fully, runtime-incomplete
+supported                 : 4693  (95.31%)
+unsupported               : 231
+  parser gap (gap_count>0): 203   -> handler buckets below
+  resolver-flagged (==0)  : 28   -> parses fully, runtime-incomplete
 
 --- gap-handler histogram (parser-gap cards; per handler occurrence) ---
-     69 Swallow:Condition_If
-     34 Swallow:DynamicQty
+     57 Swallow:Condition_If
+     33 Swallow:DynamicQty
      13 Swallow:Duration_ThisTurn
      13 Effect:for
       9 Effect:unknown
-      8 Swallow:Optional_YouMay
+      5 Swallow:Optional_YouMay
       5 Effect:when
-      5 Effect:choose
       4 Swallow:Condition_AsLongAs
       4 ParseWarning:target-fallback
       4 Effect:orphaned_copy_retarget
+      4 Effect:choose
       3 Effect:Unsupported unless clause
       3 Effect:the
       3 Effect:spend
       2 Swallow:Modal_DynamicMaxDropped
-      2 Effect:static_structure
       2 Effect:search
       2 Effect:replacement_structure
       2 Effect:lose
@@ -34,6 +33,7 @@ unsupported               : 250
       1 Trigger:When the chosen player loses the game
       1 Trigger:When the chosen creature leaves the battlefield
       1 Trigger:Whenever you untap one or more permanents during your untap step
+      1 Trigger:Whenever you tap one or more untapped creatures your opponents control
 
 --- resolver-flagged cards (parse OK, need runtime work) ---
 Burnout Bashtronaut
@@ -47,8 +47,6 @@ Gastal Raider
 Gastal Thrillseeker
 Howling Galefang
 Hundred-Battle Veteran
-Knight of Grace
-Knight of Malice
 Lightwheel Enhancements
 Living Conundrum
 Nesting Bot
@@ -76,12 +74,10 @@ Effect:all                     | Glen Elendra's Answer        | all abilities yo
 Effect:at                      | Kav Landseeker               | At the beginning of the end step on your next turn, sacrifice that token
 Effect:become                  | Foraging Wickermaw           | become that color
 Effect:behold                  | Sarkhan, Dragon Ascendant    | behold a Dragon
-Effect:can't;Effect:static_str | Sandswirl Wanderglyph        | Each opponent who attacked you or a planeswalker you control this turn can't cast sp
 Effect:choose                  | Calamity, Galloping Inferno  | choose a nonlegendary creature that saddled it this turn
 Effect:choose                  | Discerning Financier         | {2}{W}: Choose another player. That player gains control of target Treasure you cont
 Effect:choose                  | The Legend of Yangchen       | choose permanent with mana value 3 or greater from among permanents your opponents c
 Effect:choose;Effect:for       | Kaya, Spirits' Justice       | For each other player, exile up to one target creature that player controls
-Effect:choose;Effect:static_st | Koh, the Face Stealer        | Pay 1 life: Choose a creature card exiled with ~.
 Effect:cloak                   | Vannifar, Evolved Enigma     | Cloak a card from your hand
 Effect:create                  | The Skullspore Nexus         | create a green Fungus Dinosaur creature token with base power and toughness each equ
 Effect:creatures               | Quick Draw                   | Creatures target opponent controls lose first strike and double strike
@@ -155,7 +151,6 @@ Swallow:Condition_AsLongAs     | Tishana's Tidebinder         | Condition_AsLong
 Swallow:Condition_AsLongAs;Swa | Cloud, Midgar Mercenary      | Condition_If — When Cloud enters, search your library for an Equipment card, reveal 
 Swallow:Condition_If           | Agency Coroner               | Condition_If — {2}{B}, Sacrifice another creature: Draw a card. If the sacrificed cr
 Swallow:Condition_If           | A Killer Among Us            | Condition_If — When this enchantment enters, create a 1/1 white Human creature token
-Swallow:Condition_If           | Amalia Benavides Aguirre     | Condition_If — Ward—Pay 3 life. Whenever you gain life, Amalia Benavides Aguirre exp
 Swallow:Condition_If           | Antiquities on the Loose     | Condition_If — Create two 2/2 red and white Spirit creature tokens. Then if this spe
 Swallow:Condition_If           | Anti-Venom, Horrifying Heale | Condition_If — When Anti-Venom enters, if he was cast, return target creature card f
 Swallow:Condition_If           | Arid Archway                 | Condition_If — This land enters tapped. When this land enters, return a land you con
@@ -167,12 +162,10 @@ Swallow:Condition_If           | Celestial Reunion            | Condition_If —
 Swallow:Condition_If           | Charging Hooligan            | Condition_If — Whenever this creature attacks, it gets +1/+0 until end of turn for e
 Swallow:Condition_If           | Cinder Strike                | Condition_If — As an additional cost to cast this spell, you may blight 1. (You may 
 Swallow:Condition_If           | Coiling Rebirth              | Condition_If — Gift a card (You may promise an opponent a gift as you cast this spel
-Swallow:Condition_If           | Dose of Dawnglow             | Condition_If — Return target creature card from your graveyard to the battlefield. T
 Swallow:Condition_If           | Eliminate the Impossible     | Condition_If — Investigate. Creatures your opponents control get -2/-0 until end of 
 Swallow:Condition_If           | Fearless Swashbuckler        | Condition_If — Haste Vehicles you control have haste. Whenever you attack, if a Pira
 Swallow:Condition_If           | Fear of Immobility           | Condition_If — When this creature enters, tap up to one target creature. If an oppon
 Swallow:Condition_If           | Freestrider Commando         | Condition_If — This creature enters with two +1/+1 counters on it if it wasn't cast 
-Swallow:Condition_If           | Full Bore                    | Condition_If — Target creature you control gets +3/+2 until end of turn. If that cre
 Swallow:Condition_If           | Grab the Prize               | Condition_If — As an additional cost to cast this spell, discard a card. Draw two ca
 Swallow:Condition_If           | Lashwhip Predator            | Condition_If — This spell costs {2} less to cast if your opponents control three or 
 Swallow:Condition_If           | Longstalk Brawl              | Condition_If — Gift a tapped Fish (You may promise an opponent a gift as you cast th
@@ -184,14 +177,11 @@ Swallow:Condition_If           | Maximum Carnage              | Condition_If —
 Swallow:Condition_If           | Molten Exhale                | Condition_If — You may cast this spell as though it had flash if you behold a Dragon
 Swallow:Condition_If           | Nashi, Searcher in the Dark  | Condition_If — Menace Whenever Nashi deals combat damage to a player, you mill that 
 Swallow:Condition_If           | Noctis, Prince of Lucis      | Condition_If — Lifelink You may cast artifact spells from your graveyard by paying 3
-Swallow:Condition_If           | Orbital Plunge               | Condition_If — Orbital Plunge deals 6 damage to target creature. If excess damage wa
 Swallow:Condition_If           | Otterball Antics             | Condition_If — Create a 1/1 blue and red Otter creature token with prowess. If this 
 Swallow:Condition_If           | Oviya, Automech Artisan      | Condition_If — Each creature that's attacking one of your opponents has trample. {G}
 Swallow:Condition_If           | Portent of Calamity          | Condition_If — Reveal the top X cards of your library. For each card type, you may e
 Swallow:Condition_If           | Puca's Eye                   | Condition_If — When this artifact enters, draw a card, then choose a color. This art
-Swallow:Condition_If           | Quistis Trepe                | Condition_If — Blue Magic — When Quistis Trepe enters, you may cast target instant o
 Swallow:Condition_If           | Ran and Shaw                 | Condition_If — Flying, firebending 2 When Ran and Shaw enter, if you cast them and t
-Swallow:Condition_If           | Reptilian Recruiter          | Condition_If — Trample When this creature enters, choose target creature. If that cr
 Swallow:Condition_If           | Rubblebelt Braggart          | Condition_If — Whenever this creature attacks, if it's not suspected, you may suspec
 Swallow:Condition_If           | Sandman's Quicksand          | Condition_If — Mayhem {3}{B} (You may cast this card from your graveyard for {3}{B} 
 Swallow:Condition_If           | Sharp-Eyed Rookie            | Condition_If — Vigilance Whenever a creature you control enters, if its power is gre
@@ -199,26 +189,20 @@ Swallow:Condition_If           | Slumbering Trudge            | Condition_If —
 Swallow:Condition_If           | Sonic Shrieker               | Condition_If — Flying When this creature enters, it deals 2 damage to any target and
 Swallow:Condition_If           | Spelunking                   | Condition_If — When this enchantment enters, draw a card, then you may put a land ca
 Swallow:Condition_If           | Steer Clear                  | Condition_If — Steer Clear deals 2 damage to target attacking or blocking creature. 
-Swallow:Condition_If           | Summoner's Grimoire          | Condition_If — Job select Equipped creature is a Shaman in addition to its other typ
-Swallow:Condition_If           | Take the Fall                | Condition_If — Target creature gets -1/-0 until end of turn. It gets -4/-0 until end
 Swallow:Condition_If           | Temple of Cyclical Time      | Condition_If — (Transforms from Ojer Pakpatiq, Deepest Epoch.) {T}: Add {U}. Remove 
 Swallow:Condition_If           | Temple of Power              | Condition_If — (Transforms from Ojer Axonil, Deepest Might.) {T}: Add {R}. {2}{R}, {
 Swallow:Condition_If           | Temple of the Dead           | Condition_If — (Transforms from Aclazotz, Deepest Betrayal.) {T}: Add {B}. {2}{B}, {
 Swallow:Condition_If           | The Rollercrusher Ride       | Condition_If — Delirium — If a source you control would deal noncombat damage to a p
 Swallow:Condition_If           | The Tale of Tamiyo           | Condition_If — (As this Saga enters and after your draw step, add a lore counter. Sa
-Swallow:Condition_If           | Torch the Witness            | Condition_If — Torch the Witness deals twice X damage to target creature. If excess 
 Swallow:Condition_If           | Town Greeter                 | Condition_If — When this creature enters, mill four cards. You may put a land card f
 Swallow:Condition_If           | Trance Kuja, Fate Defied     | Condition_If — Flare Star — If a Wizard you control would deal damage to a permanent
 Swallow:Condition_If           | Transcendent Archaic         | Condition_If — Vigilance Converge — When this creature enters, you may draw X cards,
 Swallow:Condition_If           | Undead Sprinter              | Condition_If — Trample, haste You may cast this card from your graveyard if a non-Zo
 Swallow:Condition_If           | Valgavoth, Terror Eater      | Condition_If — Flying, lifelink Ward—Sacrifice three nonland permanents. If a card y
-Swallow:Condition_If           | Yarus, Roar of the Old Gods  | Condition_If — Other creatures you control have haste. Whenever one or more face-dow
 Swallow:Condition_If           | Yenna, Redtooth Regent       | Condition_If — {2}, {T}: Choose target enchantment you control that doesn't have the
 Swallow:Condition_If;Swallow:D | Avatar Aang                  | Condition_If — Flying, firebending 2 Whenever you waterbend, earthbend, firebend, or
 Swallow:Condition_If;Swallow:D | Stalwart Successor           | Condition_If — Menace (This creature can't be blocked except by two or more creature
-Swallow:Condition_If;Swallow:D | Kylox's Voltstrider          | Duration_UntilEndOfTurn — Collect evidence 6: This Vehicle becomes an artifact creat
 Swallow:Condition_If;Swallow:D | Cavernous Maw                | DynamicQty — {T}: Add {C}. {2}: This land becomes a 3/3 Elemental creature until end
-Swallow:Condition_If;Swallow:D | Throw from the Saddle        | DynamicQty — Target creature you control gets +1/+1 until end of turn. Put a +1/+1 c
 Swallow:Condition_If;Swallow:O | Intrepid Paleontologist      | Optional_YouMay — {T}: Add one mana of any color. {2}: Exile target card from a grav
 Swallow:Condition_If;Swallow:O | Leonardo, Sewer Samurai      | Optional_YouMay — Sneak {2}{W}{W} Double strike During your turn, you may cast creat
 Swallow:Condition_Unless       | Repulsive Mutation           | Condition_Unless — Put X +1/+1 counters on target creature you control. Then counter
@@ -264,11 +248,8 @@ Swallow:DynamicQty             | Zimone, Paradox Sculptor     | DynamicQty — A
 Swallow:DynamicQty;Swallow:Mod | Bumi, King of Three Trials   | DynamicQty — When Bumi enters, choose up to X, where X is the number of Lesson cards
 Swallow:DynamicQty;Swallow:Mod | Riku of Many Paths           | DynamicQty — Whenever you cast a modal spell, choose up to X, where X is the number 
 Swallow:Optional_YouMay        | Case of the Uneaten Feast    | Optional_YouMay — Whenever a creature you control enters, you gain 1 life. To solve 
-Swallow:Optional_YouMay        | Dracogenesis                 | Optional_YouMay — You may cast Dragon spells without paying their mana costs.
 Swallow:Optional_YouMay        | Hades, Sorcerer of Eld       | Optional_YouMay — Vigilance Echo of the Lost — During your turn, you may play cards 
 Swallow:Optional_YouMay        | Mirrormind Crown             | Optional_YouMay — As long as this Equipment is attached to a creature, the first tim
-Swallow:Optional_YouMay        | Omniscience                  | Optional_YouMay — You may cast spells from your hand without paying their mana costs
-Swallow:Optional_YouMay        | Zaffai and the Tempests      | Optional_YouMay — Once during each of your turns, you may cast an instant or sorcery
 Trigger:Whenever a creature yo | Surrak, Elusive Hunter       | Whenever a creature you control, draw a card.
 Trigger:Whenever a creature yo | Firebender Ascension         | Whenever a creature you control attacking causes a triggered ability of that creatur
 Trigger:Whenever a creature yo | Nicanzil, Current Conductor  | Whenever a creature you control explores a land card, you may put a land card from y

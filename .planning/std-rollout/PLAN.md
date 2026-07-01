@@ -7,6 +7,7 @@
 > `.planning/coverage-analysis/out/standard/cluster-assignment.tsv` (verified **0 unclustered**).
 > _Re-measured 2026-06-27 @ `c1b61ded5` (55-commit jump from v0.7.0; card-data regenerated): **270 unsupported** (was 273 @ `5eca83b8c` v0.7.0, 274 @ `a2c3033f8`, 277 @ `ae663ee8c`). See "Where standard stands"._
 > _Re-measured **2026-06-29 @ `dd6c22ea7`** (33-commit ff from `7c1c1cf67`; card-data regenerated, inputs stamp `2026-06-29T13:58Z`): **250 unsupported** = **220 parser-gap + 30 resolver-flagged**; **4674 supported (94.92 %)** of 4924. Net **270 → 250 (−20)**; parser-gap 238 → 220 (−18), resolver-flagged 32 → 30 (−2). Pool flat at 4924. **0 unclustered.** See the 2026-06-29 re-measure block in "Where standard stands"._
+> _Re-measured **2026-07-01 @ `acd2f5e6b`** (89-commit ff from `dd6c22ea7`; card-data regenerated, inputs stamp `2026-07-01T20:05Z`): **231 unsupported** = **203 parser-gap + 28 resolver-flagged**; **4693 supported (95.31 %)** of 4924. Net **250 → 231 (−19)**; parser-gap 220 → 203 (−17), resolver-flagged 30 → 28 (−2). Pool flat at 4924. **0 unclustered.** **✅ S01 reflexive-if (11 → 0) and S21 static (2 → 0) are now FULLY CLEARED** — S01 via #4688 (`f70323d5a`, 11 cards / 7 mechanic groups), S21 via #4611 (`75a25277e`, Koh + Sandswirl Wanderglyph). See the 2026-07-01 re-measure block in "Where standard stands"._
 
 **Snapshot:** 2026-06-27 · local main at `c1b61ded5` (55-commit jump from v0.7.0 `5eca83b8c`)
 · card-data + coverage-data regenerated against `c1b61ded5` (inputs stamp `2026-06-27T18:02:59Z`).
@@ -15,11 +16,29 @@ Prior snapshots: 2026-06-26 @ `5eca83b8c` (**release v0.7.0**), 2026-06-24 @ `a2
 
 ## Where standard stands
 
-| metric | value (**2026-06-29 @ `dd6c22ea7`, re-measured**) | prior (2026-06-27 @ `c1b61ded5`) | prior (2026-06-26 @ `5eca83b8c` v0.7.0) | prior (2026-06-24 @ `a2c3033f8`) | prior (2026-06-23 @ `ae663ee8c`) |
+| metric | value (**2026-07-01 @ `acd2f5e6b`, re-measured**) | prior (2026-06-29 @ `dd6c22ea7`) | prior (2026-06-27 @ `c1b61ded5`) | prior (2026-06-26 @ `5eca83b8c` v0.7.0) | prior (2026-06-24 @ `a2c3033f8`) |
 |---|---|---|---|---|---|
 | std-legal cards | 4924 | 4924 | 4924 | 4924 | 4924 |
-| supported | **4674 (94.92 %)** | 4654 (94.52 %) | 4651 (94.46 %) | 4650 (94.44 %) | 4647 (94.37 %) |
-| unsupported (all clustered below) | **250** = 220 parser-gap + 30 resolver-flagged | 270 = 238 parser-gap + 32 resolver-flagged | 273 = 241 parser-gap + 32 resolver-flagged | 274 = 242 parser-gap + 32 resolver-flagged | 277 = 245 parser-gap + 32 resolver-flagged |
+| supported | **4693 (95.31 %)** | 4674 (94.92 %) | 4654 (94.52 %) | 4651 (94.46 %) | 4650 (94.44 %) |
+| unsupported (all clustered below) | **231** = 203 parser-gap + 28 resolver-flagged | 250 = 220 parser-gap + 30 resolver-flagged | 270 = 238 parser-gap + 32 resolver-flagged | 273 = 241 parser-gap + 32 resolver-flagged | 274 = 242 parser-gap + 32 resolver-flagged |
+
+> **Net read (2026-07-01 @ `acd2f5e6b`, 89-commit ff):** pool flat at 4924; supported **+19**
+> (4674 → 4693 = 95.31 %), unsupported **250 → 231 (−19)** — parser-gap 220 → 203 (−17),
+> resolver-flagged 30 → 28 (−2). **✅ S01 reflexive-if 11 → 0 and S21 static 2 → 0 — both clusters
+> FULLY CLEARED** (S01 = #4688 `f70323d5a`, 11 cards / 7 mechanic groups; S21 = #4611 `75a25277e`,
+> Koh, the Face Stealer + Sandswirl Wanderglyph). **Fresh full cluster table (231 cards, 0 unclustered):**
+> S25-effect-verb 40 · S07-condition-if 28 · S19-new-trigger 21 · S10-dynamic-qty 21 ·
+> S08-foreach-qty 11 · R5-runtime 10 · S18-foreach-simple 9 · S11-duration 9 · S05-alt-cost-if 9 ·
+> R2-aslongas 9 · R1-speed 9 · S24-unknown 8 · S04-activate-if 8 · S03-intervening-if 6 ·
+> S20-copy-retarget 4 · S17-anaphoric 4 · S16-foreach-player-HEAVY 4 · S14-unless 4 · S02-cast-context 4 ·
+> S22-choose 3 · S13-aslongas-parse 3 · S12-optional 3 · S23-alt-cost 2 · S06-saga 2.
+> **(S01-reflexive-if and S21-static are now 0 — absent from the table.)** **Cluster movers vs the
+> 2026-06-29 table:** **S01 11 → 0**, **S21 2 → 0**, **S12 optional 6 → 3 (−3)**, **R2 as-long-as
+> 11 → 9 (−2)**, **S07 condition-if 29 → 28 (−1)**; all other clusters flat. **Handler histogram:**
+> Swallow:Condition_If now **57** (down from 76 @ `c1b61ded5` — the S01 reflexive-if riders were
+> Condition_If cards); **Effect:static_structure now 0** (the S21 gap handler is fully gone from the
+> standard pool). Resolver-flagged 28 = R2 (9) + R5 (10) + R1 (9) — the three runtime subsystems,
+> untouched this window. No regressions: no card recorded cleared reappeared in `unsupported.tsv`.
 
 > **Net read (2026-06-29 @ `dd6c22ea7`, 33-commit ff):** pool flat at 4924; supported **+20**
 > (4654 → 4674), unsupported **270 → 250 (−20)** — parser-gap 238 → 220 (−18), resolver-flagged
@@ -117,7 +136,7 @@ merged. These numbers are the real re-measure at `a2c3033f8`, not a snapshot+del
 
 | cluster | n | building block / approach | representative cards |
 |---|---|---|---|
-| **S01** reflexive "if it/that <past-state>" rider | 18 | `AbilityCondition`/`ReplacementCondition` over the just-affected object/event (`if it was tapped`, `if it had MV N`, `if it was dealt damage`, `if excess`). #3898 laid groundwork. CR 603/120. | Throw from the Saddle, Dose of Dawnglow, Faller's Faithful, Brackish Blunder, Driftgloom Coyote |
+| **S01** ✅ **DONE** reflexive "if it/that <past-state>" rider | ~~18~~ **0** | `AbilityCondition`/`ReplacementCondition` over the just-affected object/event (`if it was tapped`, `if it had MV N`, `if it was dealt damage`, `if excess`). #3898 laid groundwork. CR 603/120. **Standard set fully cleared @ `acd2f5e6b` (last 11 via #4688 `f70323d5a`).** | ~~Throw from the Saddle, Dose of Dawnglow, Faller's Faithful, Brackish Blunder, Driftgloom Coyote~~ — all supported |
 | **S08** "for each <count>" → effect quantity | 12 | `parse_for_each_clause` + `QuantityExpr::ObjectCount` into existing effects. | Luxurious Locomotive, Bounding Felidar, Machinist's Arsenal, Diligent Zookeeper, Teysa Opulent Oligarch |
 | **R2** "as long as <board>" conditional static (resolver) | 11 | runtime evaluator for static-ability conditions over board state. CR 604/611. | Living Conundrum, Knight of Malice, Elenda Saint of Dusk, Howling Galefang, Hundred-Battle Veteran |
 | **S05** alt-cost / cast-permission "if" | 9 | cast-permission gated by condition (graveyard/flash/cost-reduction-if). | Sandman's Quicksand, Valgavoth Terror Eater, Otterball Antics, Antiquities on the Loose, Lashwhip Predator |
@@ -150,7 +169,7 @@ These do not share one cheap building block; each is its own small implementatio
 | **S10** dynamic-qty bespoke | 24 | DynamicQty not reducible to plain for-each. | Hama the Bloodbender, Bumi King of Three Trials, Fractalize, Judgment Bolt; **Zimone Paradox Sculptor** (prime/advanced count → review-plan) |
 | **R5** runtime bespoke (resolver) | 11 | parses, per-card runtime gap. | Fire Magic, Cecil Dark Knight, Throne of the Grim Captain, Restless Prairie, Timeline Culler |
 | **S18** for-each simple count | 9 | straightforward per-iteration effect. | Rottenmouth Viper, Heirloom Epic, Hollow Marauder, Twisted Sewer-Witch; **Doppelgang** (X-target fan-out → review-plan) |
-| **S21** static ability | 8 | continuous static the parser drops. | Fblthp Lost on the Range, Inquisitive Glimmer, Sandswirl Wanderglyph, Agatha of the Vile Cauldron, Nowhere to Run |
+| **S21** ✅ **DONE** static ability | ~~8~~ **0** | continuous static the parser drops. **Standard set fully cleared @ `acd2f5e6b` (last 2 — Koh, the Face Stealer + Sandswirl Wanderglyph — via #4611 `75a25277e`; earlier via #4551/#4557/#4561/#4573).** | ~~Fblthp Lost on the Range, Inquisitive Glimmer, Sandswirl Wanderglyph, Agatha of the Vile Cauldron, Nowhere to Run~~ — all supported |
 | **S24** unknown-effect bespoke | 8 | `Effect:unknown` — real cards, per-card lowering. | Dawnhand Dissident, Edgar King of Figaro, Sorcerous Spyglass, Warped Space, Leyline of Transformation |
 | **S22** choose-effect | 3 | choice-effect parse/resolution. | The Legend of Yangchen, Discerning Financier, Calamity Galloping Inferno |
 
@@ -168,8 +187,8 @@ Tier-3 subtotal (dedicated cluster): **4**.   **Grand total: 116 + 157 + 4 = 277
 
 ## Dispatch order (medium effort, sequential, via `/engine-implementer`)
 
-1. **S01** reflexive-if (18) — biggest shared parser cluster; also clears 76 in modern∩commander.
-2. **R1 speed** (9) + **R2 as-long-as static** (11) — the two shared resolver subsystems.
+1. ~~**S01** reflexive-if (18)~~ ✅ **DONE @ `acd2f5e6b`** (0 standard remaining; bled 11 off modern∩commander, 61 → 50). ~~**S21** static (8)~~ ✅ **DONE** (0 standard remaining; bled 2 off modern∩commander, 65 → 63).
+2. **R1 speed** (9) + **R2 as-long-as static** (9) — the two shared resolver subsystems (R2 11 → 9 this window).
 3. **S08** for-each-qty (12) → **S04** activate-if (8) → **S05** alt-cost-if (9) → **S11** duration (9) → **S12** optional (7) → **S03** intervening-if (7) → **S02** cast-context (4).
 4. Smaller shared clusters: S14, S20, S13, S17, S23, S06, S15, R4.
 5. **Tier 2 family tracks**, largest first (S25, S07, S19, S10…), each dispatch owning one family; split into sub-batches of ~8-10 cards per `/engine-implementer` run.

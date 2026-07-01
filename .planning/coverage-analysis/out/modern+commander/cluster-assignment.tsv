@@ -1,1469 +1,1428 @@
-Heirloom Epic	1	Effect:for	S18-foreach-simple-count
-Clockspinning	1	Effect:remove	S25-effect-verb-bespoke
-Gather the Townsfolk	1	Effect:create	S25-effect-verb-bespoke
-Su-Chi Cave Guard	1	Effect:add	S25-effect-verb-bespoke
-Urborg Lhurgoyf	1	Effect:unknown	S24-unknown-effect-bespoke
-Smoke Teller	1	Effect:look	S25-effect-verb-bespoke
-Drizzt Do'Urden	1	Effect:put	S25-effect-verb-bespoke
-Carth the Lion	1	Effect:unknown	S24-unknown-effect-bespoke
-Controlled Instincts	0		R5-runtime-bespoke
-Tainted Indulgence	1	Effect:Unsupported unless clause	S14-unless-clause
-Garenbrig Paladin	1	Swallow:Condition_If	S02-cast-context-if
-Unblinking Observer	1	Effect:spend	S25-effect-verb-bespoke
-Cloister Gargoyle	0		R2-aslongas-conditional-static
-Aeve, Progenitor Ooze	1	Effect:effect_structure	S25-effect-verb-bespoke
-Sigil Captain	1	Swallow:Condition_If	S03-intervening-if-trigger
-Paragon of Modernity	1	Swallow:Condition_If	S07-condition-if-bespoke
-Shadow of Doubt	1	Effect:players	S25-effect-verb-bespoke
-Aegar, the Freezing Flame	1	Effect:wizard,	S25-effect-verb-bespoke
-Massacre Girl, Known Killer	1	Swallow:Condition_If	S03-intervening-if-trigger
-Monomania	1	Effect:choose	S22-choose-effect
-The World Spell	0		R5-runtime-bespoke
-Frodo Baggins	0		R2-aslongas-conditional-static
-Codespell Cleric	1	Swallow:Condition_If	S03-intervening-if-trigger
-Stonebinder's Familiar	1	Trigger:Whenever one or more cards are put into exile during your turn	S19-new-trigger-matcher
-Confounding Conundrum	2	Swallow:Condition_If;Swallow:Duration_ThisTurn	S03-intervening-if-trigger
-Ecological Appreciation	1	Effect:shuffle	S25-effect-verb-bespoke
-Necromantic Summons	1	Swallow:Condition_If	S07-condition-if-bespoke
-Lion Umbra	0		R5-runtime-bespoke
-Djinn Illuminatus	1	Effect:static_structure	S21-static-ability
-Exhaustion	1	Effect:creatures	S25-effect-verb-bespoke
-Sorin, Ravenous Neonate	1	Swallow:Condition_If	S07-condition-if-bespoke
-Archmage Ascension	1	Effect:instead	S25-effect-verb-bespoke
-Scrounge	1	Effect:choose	S22-choose-effect
-Aven Mindcensor	1	Effect:replacement_structure	S25-effect-verb-bespoke
-Gollum, Scheming Guide	2	Effect:an;Effect:otherwise	S25-effect-verb-bespoke
-Drowner of Truth	1	Swallow:Condition_If	S07-condition-if-bespoke
-Lightning Runner	1	Swallow:Condition_If	S07-condition-if-bespoke
-Keranos, God of Storms	1	Effect:effect_structure	S25-effect-verb-bespoke
-Curator of Sun's Creation	2	Effect:discover;Trigger:Whenever you discover	S19-new-trigger-matcher
-Notion Thief	1	Effect:draw	S25-effect-verb-bespoke
-Dormant Gomazoa	1	Trigger:Whenever you become the target of a spell	S19-new-trigger-matcher
-Tajuru Preserver	1	Effect:unknown	S24-unknown-effect-bespoke
-Roiling Horror	1	Effect:static_structure	S21-static-ability
-Avacyn's Judgment	1	Swallow:Condition_If	S07-condition-if-bespoke
-Avatar Aang	2	Swallow:Condition_If;Swallow:Duration_ThisTurn	S07-condition-if-bespoke
-Rottenmouth Viper	1	Effect:for	S18-foreach-simple-count
-Diviner's Lockbox	1	Swallow:Condition_If	S01-reflexive-if-rider
-Botanical Brawler	2	Swallow:Condition_If;Swallow:Duration_ThisTurn	S01-reflexive-if-rider
-Sarkhan's Unsealing	1	Effect:5,	S25-effect-verb-bespoke
-Vorel of the Hull Clade	1	Swallow:DynamicQty	S10-dynamic-qty-bespoke
-Yuan-Ti Malison	0		R2-aslongas-conditional-static
-Savor the Moment	1	Effect:skip	S25-effect-verb-bespoke
-Disturbing Conversion	1	Effect:static_structure	S21-static-ability
-Choice of Damnations	1	ParseWarning:target-fallback	S17-anaphoric-target
-Gríma Wormtongue	1	Swallow:Condition_If	S07-condition-if-bespoke
-Auspicious Starrix	1	Swallow:DynamicQty	S10-dynamic-qty-bespoke
-Grave Scrabbler	1	Swallow:Condition_If	S03-intervening-if-trigger
-Zealot's Conviction	0		R2-aslongas-conditional-static
-Havengul Lich	1	Effect:when	S25-effect-verb-bespoke
-Alms Beast	1	Effect:static_structure	S21-static-ability
-Regenerate	1	Effect:~	S25-effect-verb-bespoke
-Tanglewalker	0		R2-aslongas-conditional-static
-Tomik, Distinguished Advokist	1	Effect:unknown	S24-unknown-effect-bespoke
-Shape Stealer	1	Effect:change	S25-effect-verb-bespoke
-Orochi Eggwatcher	1	Effect:flip	S25-effect-verb-bespoke
-Tide of War	1	Trigger:Whenever one or more creatures block	S19-new-trigger-matcher
-Trove of Temptation	1	Effect:effect_structure	S25-effect-verb-bespoke
-A Killer Among Us	1	Swallow:Condition_If	S07-condition-if-bespoke
-Cultivator Drone	1	Effect:spend	S25-effect-verb-bespoke
-Foul-Tongue Invocation	1	Swallow:Condition_If	S07-condition-if-bespoke
-Balduvian Warlord	2	Effect:block;Effect:creatures	S25-effect-verb-bespoke
-Dermotaxi	1	Effect:unknown	S24-unknown-effect-bespoke
-Storyweave	1	Effect:the	S25-effect-verb-bespoke
-Scattering Stroke	1	Swallow:Optional_YouMay	S12-optional-youmay-subeffect
-Tamiyo, Field Researcher	1	Swallow:Optional_YouMay	S12-optional-youmay-subeffect
-Plaza of Harmony	1	Effect:add	S25-effect-verb-bespoke
-Mul Daya Channelers	0		R2-aslongas-conditional-static
-Kothophed, Soul Hoarder	1	Trigger:Whenever a permanent owned by another player is put into a graveyard from the battlefield	S19-new-trigger-matcher
-Spell Queller	1	Effect:the	S25-effect-verb-bespoke
-Harsh Mentor	1	Trigger:Whenever an opponent activates an ability of an artifact, creature, or land on the battlefield	S19-new-trigger-matcher
-Zabaz, the Glimmerwasp	1	Effect:replacement_structure	S25-effect-verb-bespoke
-Stolen Uniform	1	Effect:when	S25-effect-verb-bespoke
-Suncleanser	1	Effect:can't	S25-effect-verb-bespoke
-Serra Paragon	1	Effect:static_structure	S21-static-ability
-Plagiarize	1	Effect:instead	S25-effect-verb-bespoke
-Master Warcraft	1	Effect:choose	S22-choose-effect
-Void Mirror	1	Swallow:Condition_If	S02-cast-context-if
-Takeno, Samurai General	1	Swallow:DynamicQty	S08-foreach-count-qty
-Combat Celebrant	1	Swallow:Duration_ThisTurn	S11-duration-grant
-Demonlord Belzenlok	1	Effect:repeat	S25-effect-verb-bespoke
-Orgg	0		R4-cant-restriction-static
-Maelstrom Muse	1	Effect:the	S25-effect-verb-bespoke
-Legion Angel	1	Effect:reveal	S25-effect-verb-bespoke
-Pyxis of Pandemonium	1	Effect:turn	S25-effect-verb-bespoke
-Discerning Financier	1	Effect:choose	S22-choose-effect
-Test of Talents	1	Effect:search	S25-effect-verb-bespoke
-Odric, Master Tactician	1	Effect:choose	S22-choose-effect
-Siona, Captain of the Pyleas	1	Trigger:Whenever an Aura you control becomes attached to a creature you control	S19-new-trigger-matcher
-Heretic's Punishment	1	Effect:deal	S25-effect-verb-bespoke
-Viral Spawning	0		R2-aslongas-conditional-static
-Murderous Betrayal	1	Cost:rounded up	S23-alt-cost-parse
-Inkmoth Nexus	0		R5-runtime-bespoke
-Warp World	1	Effect:reveal	S25-effect-verb-bespoke
-Arcanum Wings	1	Effect:unknown	S24-unknown-effect-bespoke
-Play with Fire	1	Swallow:Condition_If	S07-condition-if-bespoke
-Jacob Hauken, Inspector	1	Effect:look	S25-effect-verb-bespoke
-Hobgoblin Captain	1	Swallow:Condition_If	S03-intervening-if-trigger
-Havi, the All-Father	0		R2-aslongas-conditional-static
-Inspired Idea	1	Effect:your	S25-effect-verb-bespoke
-Exert Influence	2	Swallow:Condition_If;Swallow:DynamicQty	S01-reflexive-if-rider
-Guardian of New Benalia	1	Trigger:Whenever ~ enlists a creature	S19-new-trigger-matcher
-Sigarda, Host of Herons	1	Effect:unknown	S24-unknown-effect-bespoke
-Love Song of Night and Day	0		R5-runtime-bespoke
-Squirming Emergence	1	Swallow:DynamicQty	S10-dynamic-qty-bespoke
-Development	2	Effect:Unsupported unless clause;Effect:repeat	S14-unless-clause
-Clarion Ultimatum	1	Effect:for	S18-foreach-simple-count
-Sarkhan, Dragon Ascendant	1	Effect:behold	S25-effect-verb-bespoke
-Unsettled Mariner	1	Trigger:Whenever you	S19-new-trigger-matcher
-Aragorn, Company Leader	1	Effect:put	S25-effect-verb-bespoke
-Soulquake	1	Effect:all	S25-effect-verb-bespoke
-Maze's Mantle	1	Swallow:Condition_If	S03-intervening-if-trigger
-Vendilion Clique	1	Effect:reveal	S25-effect-verb-bespoke
-Adrestia	1	Swallow:Condition_If	S03-intervening-if-trigger
-Battle for Bretagard	1	Swallow:DynamicQty	S08-foreach-count-qty
-Repulsive Mutation	1	Swallow:Condition_Unless	S14-unless-clause
-Town Greeter	1	Swallow:Condition_If	S07-condition-if-bespoke
-Minimus Containment	0		R5-runtime-bespoke
-Can't Stay Away	1	Effect:"	S25-effect-verb-bespoke
-Student of Warfare	0		R3-level-up
-Isleback Spawn	0		R2-aslongas-conditional-static
-Worldpurge	3	Effect:choose;Effect:lose;Effect:shuffle	S22-choose-effect
-Berg Strider	1	Swallow:Condition_If	S07-condition-if-bespoke
-All Suns' Dawn	1	Effect:for	S18-foreach-simple-count
-Zilortha, Apex of Ikoria	1	Effect:static_structure	S21-static-ability
-Ogre Geargrabber	1	Effect:when	S25-effect-verb-bespoke
-Transcendent Archaic	1	Swallow:Condition_If	S07-condition-if-bespoke
-Grim Reminder	1	Swallow:Duration_ThisTurn	S11-duration-grant
-Polis Crusher	1	Swallow:Condition_If	S03-intervening-if-trigger
-Damping Sphere	1	Effect:effect_structure	S25-effect-verb-bespoke
-Consuming Tide	1	Swallow:DynamicQty	S08-foreach-count-qty
-Dismantle	1	Swallow:Condition_If	S07-condition-if-bespoke
-Evolving Door	2	Effect:count;ParseWarning:target-fallback	S17-anaphoric-target
-Eliminate the Impossible	1	Swallow:Condition_If	S07-condition-if-bespoke
-Vengeful Firebrand	0		R2-aslongas-conditional-static
-Perilous Predicament	1	Effect:a	S25-effect-verb-bespoke
-Tunnel Vision	1	Effect:otherwise	S25-effect-verb-bespoke
-Kitesail Larcenist	1	Effect:for	S16-foreach-player-object-HEAVY
-The Tomb of Aclazotz	1	Effect:it	S25-effect-verb-bespoke
-Crumble to Dust	1	Effect:search	S25-effect-verb-bespoke
-Karai, Future of the Foot	1	Swallow:Duration_ThisTurn	S11-duration-grant
-Neurok Spy	0		R2-aslongas-conditional-static
-Widespread Brutality	1	Swallow:DynamicQty	S10-dynamic-qty-bespoke
-Zilortha, Strength Incarnate	1	Effect:unknown	S24-unknown-effect-bespoke
-Spell Contortion	1	Swallow:DynamicQty	S08-foreach-count-qty
-The Aesir Escape Valhalla	1	Effect:the	S25-effect-verb-bespoke
-Eye of the Storm	1	Effect:for	S18-foreach-simple-count
-Pixie Guide	1	Effect:replacement_structure	S25-effect-verb-bespoke
-Deathknell Berserker	1	Swallow:Condition_If	S01-reflexive-if-rider
-Koh, the Face Stealer	2	Effect:choose;Effect:static_structure	S21-static-ability
-Ashiok, Wicked Manipulator	2	Swallow:Duration_ThisTurn;Swallow:DynamicQty	S10-dynamic-qty-bespoke
-Command the Dreadhorde	1	Effect:deal	S25-effect-verb-bespoke
-Glaring Spotlight	1	Effect:static_structure	S21-static-ability
-Cytoshape	1	Effect:choose	S22-choose-effect
-Soulblast	1	Effect:deal	S25-effect-verb-bespoke
-Arcane Investigator	0		R5-runtime-bespoke
-Goliath Hatchery	1	Effect:draw	S25-effect-verb-bespoke
-Skyclave Shade	2	Effect:if;Effect:it's	S25-effect-verb-bespoke
-Urabrask, Heretic Praetor	2	Effect:the;Effect:they	S25-effect-verb-bespoke
-Erebos's Titan	1	Trigger:Whenever a creature card leaves an opponent's graveyard	S19-new-trigger-matcher
-Galvanic Relay	1	Effect:during	S25-effect-verb-bespoke
-Rogue Class	1	Effect:look	S25-effect-verb-bespoke
-Azor, the Lawbringer	1	Effect:during	S25-effect-verb-bespoke
-Steel Exemplar	1	Swallow:Condition_Unless	S14-unless-clause
-Grinning Totem	1	Effect:until	S25-effect-verb-bespoke
-Sharp-Eyed Rookie	1	Swallow:Condition_If	S03-intervening-if-trigger
-Nullstone Gargoyle	1	Trigger:Whenever the first noncreature spell of a turn is cast	S19-new-trigger-matcher
-Gastal Raider	0		R1-speed-mechanic
-Kalitas, Bloodchief of Ghet	2	Effect:create;Effect:its	S25-effect-verb-bespoke
-Stalking Yeti	1	Swallow:Condition_If	S03-intervening-if-trigger
-Kambal, Profiteering Mayor	1	Swallow:DynamicQty	S08-foreach-count-qty
-Grab the Prize	1	Swallow:Condition_If	S07-condition-if-bespoke
-Dream Prowler	0		R2-aslongas-conditional-static
-Tamiyo's Compleation	1	Effect:unattach	S25-effect-verb-bespoke
-Vessel of the All-Consuming	2	Swallow:Condition_If;Swallow:Duration_ThisTurn	S03-intervening-if-trigger
-Evolving Adaptive	1	Effect:empty	S25-effect-verb-bespoke
-Domineer	0		R5-runtime-bespoke
-Quenchable Fire	1	Effect:Unsupported unless clause	S14-unless-clause
-Intet, the Dreamer	1	Effect:look	S25-effect-verb-bespoke
-Teferi, Master of Time	1	Effect:effect_structure	S25-effect-verb-bespoke
-Faramir, Prince of Ithilien	2	Effect:at;Effect:otherwise	S25-effect-verb-bespoke
-Corrupted Crossroads	1	Effect:spend	S25-effect-verb-bespoke
-Ao, the Dawn Sky	1	Effect:modal_mode_unsupported_qualifier	S25-effect-verb-bespoke
-Strata Scythe	1	Swallow:DynamicQty	S08-foreach-count-qty
-Knight of Grace	0		R2-aslongas-conditional-static
-Veiling Oddity	1	Trigger:When the last time counter is removed from this card while it's exiled	S19-new-trigger-matcher
-Kumena's Awakening	1	Effect:only	S25-effect-verb-bespoke
-Gaze of the Gorgon	1	Effect:at	S25-effect-verb-bespoke
-See Red	1	Swallow:Duration_ThisTurn	S11-duration-grant
-Sewer Crocodile	1	Effect:this	S25-effect-verb-bespoke
-Ultimecia, Time Sorceress	1	ParseWarning:target-fallback	S17-anaphoric-target
-+2 Mace	1	Effect:static_structure	S21-static-ability
-Realmwright	1	Effect:static_structure	S21-static-ability
-Bill the Pony	1	Effect:assign	S25-effect-verb-bespoke
-Genku, Future Shaper	3	Effect:1/1;Effect:1/2;Effect:2/2	S25-effect-verb-bespoke
-Conduit of Emrakul	1	Effect:add	S25-effect-verb-bespoke
-Apocalypse Hydra	1	Swallow:Condition_If	S07-condition-if-bespoke
-Blinkmoth Nexus	0		R5-runtime-bespoke
-Vesuvan Drifter	1	Swallow:Condition_If	S07-condition-if-bespoke
-One Ring to Rule Them All	1	Effect:mill	S25-effect-verb-bespoke
-Worldfire	1	Effect:graveyards	S25-effect-verb-bespoke
-Temple of Power	1	Swallow:Condition_If	S04-activate-only-if
-Mazemind Tome	1	Trigger:When there are four or more page counters on ~	S19-new-trigger-matcher
-Intrepid Adversary	1	Effect:when	S25-effect-verb-bespoke
-Declaration in Stone	1	Swallow:DynamicQty	S08-foreach-count-qty
-Sandswirl Wanderglyph	2	Effect:can't;Effect:static_structure	S21-static-ability
-Ravenous Trap	1	Swallow:Duration_ThisTurn	S11-duration-grant
-Triskaidekaphobia	1	Effect:with	S25-effect-verb-bespoke
-Barrowin of Clan Undurr	1	Swallow:Condition_If	S07-condition-if-bespoke
-Goblin Glory Chaser	0		R2-aslongas-conditional-static
-Sphinx of Uthuun	1	Effect:an	S25-effect-verb-bespoke
-Pit Automaton	2	Effect:orphaned_copy_retarget;Effect:when	S20-copy-retarget
-Trophy Hunter	1	Trigger:Whenever a creature with flying dealt damage by ~ this turn dies	S19-new-trigger-matcher
-Code of Constraint	1	Swallow:Condition_If	S02-cast-context-if
-Rite of the Serpent	1	Swallow:Condition_If	S01-reflexive-if-rider
-Necrogen Rotpriest	1	Effect:get	S25-effect-verb-bespoke
-From Under the Floorboards	1	Effect:instead	S25-effect-verb-bespoke
-Curse of Hospitality	1	Effect:static_structure	S21-static-ability
-Luxior, Giada's Gift	1	Effect:static_structure	S21-static-ability
-Kaza, Roil Chaser	1	Effect:the	S25-effect-verb-bespoke
-Pigment Storm	1	Effect:excess	S25-effect-verb-bespoke
-Whisperwood Elemental	1	Effect:face-up	S25-effect-verb-bespoke
-Blinding Powder	1	Effect:unattach	S25-effect-verb-bespoke
-Timesifter	1	Effect:the	S25-effect-verb-bespoke
-Bonecache Overseer	1	Swallow:Condition_If	S04-activate-only-if
-Nephalia Academy	1	Swallow:Replacement_Instead	S28-replacement-instead
-Mirrorwing Dragon	1	Swallow:DynamicQty	S08-foreach-count-qty
-Dead Man's Chest	1	Swallow:DynamicQty	S10-dynamic-qty-bespoke
-Karn Liberated	1	Effect:restart	S25-effect-verb-bespoke
-Leyline Tyrant	1	Effect:pay	S25-effect-verb-bespoke
-Niv-Mizzet Reborn	1	Effect:for	S18-foreach-simple-count
-Goblin Morningstar	0		R5-runtime-bespoke
-Tamiyo, the Moon Sage	1	Swallow:Optional_YouMay	S12-optional-youmay-subeffect
-Reap Intellect	1	Effect:search	S25-effect-verb-bespoke
-Ouphe Vandals	1	Swallow:Condition_If	S01-reflexive-if-rider
-Plumb the Forbidden	1	Swallow:DynamicQty	S08-foreach-count-qty
-Teferi's Time Twist	1	Swallow:Condition_If	S01-reflexive-if-rider
-Master Biomancer	1	Swallow:DynamicQty	S10-dynamic-qty-bespoke
-The Deck of Many Things	0		R5-runtime-bespoke
-Racers' Scoreboard	0		R1-speed-mechanic
-Ballista Wielder	1	Effect:a	S25-effect-verb-bespoke
-The Legend of Yangchen	1	Effect:choose	S22-choose-effect
-Rite of Ruin	3	Effect:choose;ParseWarning:target-fallback	S17-anaphoric-target
-Urgoros, the Empty One	1	Swallow:Condition_If	S07-condition-if-bespoke
-Treasure Chest	1	Swallow:Optional_YouMay	S12-optional-youmay-subeffect
-Elspeth Resplendent	1	Effect:put	S25-effect-verb-bespoke
-Crackle with Power	1	Effect:deal	S25-effect-verb-bespoke
-Soul Foundry	1	Effect:x	S25-effect-verb-bespoke
-Vengeful Rebirth	1	Swallow:Condition_If	S07-condition-if-bespoke
-Anointed Peacekeeper	1	Effect:unknown	S24-unknown-effect-bespoke
-Kozilek, the Broken Reality	1	Effect:manifest	S25-effect-verb-bespoke
-Mishra, Claimed by Gix	2	Effect:and;Effect:it	S25-effect-verb-bespoke
-War Report	1	Effect:gain	S25-effect-verb-bespoke
-Whirlwind Denial	1	Effect:for	S18-foreach-simple-count
-Spelltwine	1	Swallow:Condition_If	S07-condition-if-bespoke
-Hibernation's End	1	Trigger:Whenever you pay ~'s cumulative upkeep	S19-new-trigger-matcher
-Puca's Eye	1	Swallow:Condition_If	S04-activate-only-if
-Splitting the Powerstone	1	Swallow:Condition_If	S07-condition-if-bespoke
-Jace, Architect of Thought	1	Effect:an	S25-effect-verb-bespoke
-Subterranean Schooner	1	Swallow:Duration_ThisTurn	S11-duration-grant
-Scaleguard Sentinels	1	Swallow:Condition_If	S07-condition-if-bespoke
-Gilder Bairn	1	Swallow:DynamicQty	S10-dynamic-qty-bespoke
-Soul Diviner	3	Cost:creature;Cost:land;Cost:or planeswalker you control	S23-alt-cost-parse
-The End	1	Effect:search	S25-effect-verb-bespoke
-Conduit of Storms	1	Effect:add	S25-effect-verb-bespoke
-Conjured Currency	1	Effect:exchange	S25-effect-verb-bespoke
-Azor's Gateway	1	Swallow:Condition_If	S07-condition-if-bespoke
-Scrapdiver Serpent	0		R2-aslongas-conditional-static
-Green Sun's Twilight	1	Effect:choose	S22-choose-effect
-Farideh, Devil's Chosen	1	Swallow:Condition_If	S07-condition-if-bespoke
-Frost Augur	1	Swallow:Condition_If	S01-reflexive-if-rider
-Syr Carah, the Bold	1	Trigger:Whenever ~	S19-new-trigger-matcher
-Conspicuous Snoop	0		R2-aslongas-conditional-static
-Hollow Marauder	1	Effect:for	S18-foreach-simple-count
-Grievous Wound	1	Trigger:Whenever enchanted player is dealt damage	S19-new-trigger-matcher
-Blasphemous Edict	1	Swallow:Condition_If	S05-alt-cost-if
-Bludgeon Brawl	1	Effect:static_structure	S21-static-ability
-Conspiracy	1	Effect:unknown	S24-unknown-effect-bespoke
-Molten Psyche	1	Effect:deal	S25-effect-verb-bespoke
-Dragon Egg	1	Swallow:Duration_UntilEndOfTurn	S11-duration-grant
-Prototype Portal	1	Effect:x	S25-effect-verb-bespoke
-Verdant Rebirth	0		R5-runtime-bespoke
-Gather Specimens	1	Effect:it	S25-effect-verb-bespoke
-Oblivious Bookworm	1	Effect:Unsupported unless clause	S14-unless-clause
-Tainted Sigil	1	Effect:gain	S25-effect-verb-bespoke
-Boneyard Parley	1	Effect:an	S25-effect-verb-bespoke
-Snooping Newsie	0		R2-aslongas-conditional-static
-Mindblaze	1	Effect:reveal	S25-effect-verb-bespoke
-Valki, God of Lies	1	Effect:choose	S22-choose-effect
-Edgar, King of Figaro	1	Effect:unknown	S24-unknown-effect-bespoke
-Bloodthirsty Adversary	1	Effect:when	S25-effect-verb-bespoke
-Holy Frazzle-Cannon	1	Effect:each	S25-effect-verb-bespoke
-Triton Tactics	1	Effect:at	S25-effect-verb-bespoke
-Bushi Tenderfoot	1	Effect:flip	S25-effect-verb-bespoke
-Paladin of Atonement	1	Swallow:Condition_If	S03-intervening-if-trigger
-Deepwood Denizen	1	Effect:this	S25-effect-verb-bespoke
-Call of the Ring	1	Trigger:Whenever you choose a creature as your Ring-bearer	S19-new-trigger-matcher
-Guardian of the Gateless	1	Swallow:DynamicQty	S08-foreach-count-qty
-Mockingbird	1	Swallow:DynamicQty	S10-dynamic-qty-bespoke
-Case of the Uneaten Feast	1	Swallow:Optional_YouMay	S12-optional-youmay-subeffect
-Singularity Rupture	1	Swallow:DynamicQty	S10-dynamic-qty-bespoke
-Metzali, Tower of Triumph	1	Effect:choose	S22-choose-effect
-Gandalf, Friend of the Shire	1	Swallow:Condition_If	S03-intervening-if-trigger
-Firemind's Foresight	1	Effect:repeat	S25-effect-verb-bespoke
-Boreal Outrider	1	Swallow:Condition_If	S03-intervening-if-trigger
-Sphinx's Decree	1	Effect:during	S25-effect-verb-bespoke
-Ghostfire Blade	1	Effect:static_structure	S21-static-ability
-Leyline of Combustion	1	Trigger:Whenever you and/or at least one permanent you control becomes the target of a spell or ability an opponent controls	S19-new-trigger-matcher
-Wicked Akuba	1	Swallow:Duration_ThisTurn	S11-duration-grant
-Moratorium Stone	1	Effect:all	S25-effect-verb-bespoke
-Ozai, the Phoenix King	0		R2-aslongas-conditional-static
-Invoke the Ancients	1	Swallow:DynamicQty	S08-foreach-count-qty
-Ardenvale Paladin	1	Swallow:Condition_If	S02-cast-context-if
-Atemsis, All-Seeing	1	Swallow:Condition_If	S07-condition-if-bespoke
-Rowdy Crew	1	Swallow:Condition_If	S07-condition-if-bespoke
-Waking the Trolls	1	Swallow:Condition_If	S06-saga-chapter-if
-Sovereign Okinec Ahau	1	Effect:for	S18-foreach-simple-count
-Ram Through	1	Effect:excess	S25-effect-verb-bespoke
-Haphazard Bombardment	1	Effect:choose	S22-choose-effect
-Vantress Paladin	1	Swallow:Condition_If	S02-cast-context-if
-Witch's Oven	1	Swallow:Condition_If	S07-condition-if-bespoke
-Leonin Shikari	1	Effect:effect_structure	S25-effect-verb-bespoke
-Sandstalker Moloch	2	Swallow:Condition_If;Swallow:Duration_ThisTurn	S03-intervening-if-trigger
-Bride's Gown	0		R2-aslongas-conditional-static
-Dragon's Fire	1	Effect:deal	S25-effect-verb-bespoke
-Sokenzan Renegade	1	Effect:have	S25-effect-verb-bespoke
-Stalwart Successor	2	Swallow:Condition_If;Swallow:Duration_ThisTurn	S03-intervening-if-trigger
-Flood of Tears	1	Swallow:Condition_If	S07-condition-if-bespoke
-Exotic Pets	2	Effect:for;Effect:put	S18-foreach-simple-count
-Master of Predicaments	1	Effect:that	S25-effect-verb-bespoke
-Confusion in the Ranks	1	Effect:exchange	S25-effect-verb-bespoke
-Viridian Betrayers	0		R2-aslongas-conditional-static
-Bane Alley Broker	1	Effect:effect_structure	S25-effect-verb-bespoke
-Shared Fate	1	Effect:static_structure	S21-static-ability
-Sorcerer Class	1	Effect:spend	S25-effect-verb-bespoke
-Nezumi Shortfang	1	Effect:flip	S25-effect-verb-bespoke
-Quick Draw	1	Effect:creatures	S25-effect-verb-bespoke
-Ulamog's Despoiler	2	Swallow:Condition_If;Swallow:Optional_YouMay	S07-condition-if-bespoke
-Grimoire Thief	1	Effect:effect_structure	S25-effect-verb-bespoke
-Gideon, Champion of Justice	1	Effect:he's	S25-effect-verb-bespoke
-Turntimber Symbiosis	2	Swallow:Condition_If;Swallow:Optional_YouMay	S01-reflexive-if-rider
-Titania, Voice of Gaea	1	Effect:sanctum	S25-effect-verb-bespoke
-Alchemist's Gift	1	Effect:gain	S25-effect-verb-bespoke
-Kor Dirge	1	Effect:all	S25-effect-verb-bespoke
-Coalition Victory	1	Swallow:Condition_If	S07-condition-if-bespoke
-Cinder Strike	1	Swallow:Condition_If	S07-condition-if-bespoke
-Moraug, Fury of Akoum	1	Swallow:DynamicQty	S08-foreach-count-qty
-Rampaging Soulrager	0		R2-aslongas-conditional-static
-Increasing Vengeance	1	Effect:orphaned_copy_retarget	S20-copy-retarget
-Sokka's Haiku	0		R5-runtime-bespoke
-Living Conundrum	0		R2-aslongas-conditional-static
-Predator's Rapport	1	Effect:gain	S25-effect-verb-bespoke
-Kasmina, Enigma Sage	1	Effect:static_structure	S21-static-ability
-Invader Parasite	1	Trigger:Whenever a land an opponent controls with the same name as the exiled card enters	S19-new-trigger-matcher
-Spectral Shift	1	Effect:change	S25-effect-verb-bespoke
-Critical Hit	1	Trigger:When you roll a natural 20	S19-new-trigger-matcher
-The Akroan War	1	Effect:creatures	S25-effect-verb-bespoke
-Wurmweaver Coil	0		R5-runtime-bespoke
-Blade of Shared Souls	1	Effect:have	S25-effect-verb-bespoke
-Obscura Interceptor	1	Effect:when	S25-effect-verb-bespoke
-Swarming Goblins	0		R5-runtime-bespoke
-Elspeth Conquers Death	2	Effect:noncreature;Effect:put	S25-effect-verb-bespoke
-Hinder	1	Swallow:Condition_If	S01-reflexive-if-rider
-Delina, Wild Mage	1	Swallow:Optional_YouMay	S12-optional-youmay-subeffect
-Sting, the Glinting Dagger	0		R2-aslongas-conditional-static
-Lethal Exploit	1	Effect:get	S25-effect-verb-bespoke
-Risen Executioner	2	Swallow:Condition_If;Swallow:DynamicQty	S05-alt-cost-if
-Crown of Convergence	0		R2-aslongas-conditional-static
-Weight of Spires	1	Effect:deal	S25-effect-verb-bespoke
-Carry Away	1	Effect:unattach	S25-effect-verb-bespoke
-Withercrown	1	Effect:Unsupported unless clause	S14-unless-clause
-Chisei, Heart of Oceans	1	Effect:Unsupported unless clause	S14-unless-clause
-Mesmeric Sliver	1	Effect:fateseal	S25-effect-verb-bespoke
-Angel of Grace	1	Effect:damage	S25-effect-verb-bespoke
-Final Punishment	1	Effect:lose	S25-effect-verb-bespoke
-Mitotic Manipulation	1	Swallow:Condition_If	S01-reflexive-if-rider
-Welcome to the Fold	1	Effect:instead	S25-effect-verb-bespoke
-Assimilate Essence	1	Effect:you	S25-effect-verb-bespoke
-Flames of the Blood Hand	1	Effect:gain	S25-effect-verb-bespoke
-Conduit of Worlds	1	Effect:can't	S25-effect-verb-bespoke
-Galloping Lizrog	1	Effect:remove	S25-effect-verb-bespoke
-Kaya, Spirits' Justice	2	Effect:choose;Effect:for	S16-foreach-player-object-HEAVY
-Curtain of Light	1	Effect:become	S25-effect-verb-bespoke
-Kentaro, the Smiling Cat	1	Swallow:DynamicQty	S10-dynamic-qty-bespoke
-Karfell Harbinger	1	Effect:spend	S25-effect-verb-bespoke
-Parker Luck	1	Effect:lose	S25-effect-verb-bespoke
-Tuktuk Scrapper	1	Swallow:Condition_If	S07-condition-if-bespoke
-Ichormoon Gauntlet	1	Effect:put	S25-effect-verb-bespoke
-Invasion of Tarkir	1	Effect:deal	S25-effect-verb-bespoke
-Illusory Angel	0		R5-runtime-bespoke
-Outrageous Robbery	1	Effect:spend	S25-effect-verb-bespoke
-Kav Landseeker	1	Effect:at	S25-effect-verb-bespoke
-Feral Contest	1	Effect:another	S25-effect-verb-bespoke
-Doomsday Excruciator	1	ParseWarning:target-fallback	S17-anaphoric-target
-Pick the Brain	1	Effect:search	S25-effect-verb-bespoke
-Synchronized Spellcraft	1	Swallow:DynamicQty	S10-dynamic-qty-bespoke
-Phyrexian Fleshgorger	1	Swallow:DynamicQty	S10-dynamic-qty-bespoke
-Pain's Reward	5	Effect:bid;Effect:in;Effect:the;Effect:top;Effect:you	S25-effect-verb-bespoke
-Essence of the Wild	1	Effect:static_structure	S21-static-ability
-Heir of the Ancient Fang	1	Swallow:Condition_If	S07-condition-if-bespoke
-Titan's Presence	2	Swallow:Condition_If;Swallow:DynamicQty	S01-reflexive-if-rider
-Endrek Sahr, Master Breeder	1	Trigger:When you control seven or more Thrulls	S19-new-trigger-matcher
-Deicide	1	Effect:search	S25-effect-verb-bespoke
-Kaheera, the Orphanguard	1	Effect:unknown	S24-unknown-effect-bespoke
-Kjeldoran Royal Guard	1	Effect:all	S25-effect-verb-bespoke
-Mistbind Clique	1	Trigger:When a Faerie is championed with ~	S19-new-trigger-matcher
-Retether	1	Effect:only	S25-effect-verb-bespoke
-Role Reversal	1	Effect:exchange	S25-effect-verb-bespoke
-Aurelia's Fury	1	Effect:players	S25-effect-verb-bespoke
-Cunning Bandit	1	Effect:flip	S25-effect-verb-bespoke
-Quicksilver Fountain	1	Effect:have	S25-effect-verb-bespoke
-Ward of Bones	1	Effect:static_structure	S21-static-ability
-O-Kagachi Made Manifest	1	Effect:choose	S22-choose-effect
-Hostile Negotiations	1	Effect:look	S25-effect-verb-bespoke
-Bounty of Might	0		R5-runtime-bespoke
-Harness Infinity	1	Effect:exchange	S25-effect-verb-bespoke
-Blow Your House Down	1	ParseWarning:target-fallback	S17-anaphoric-target
-Infuse with Vitality	0		R5-runtime-bespoke
-Arna Kennerüd, Skycaptain	1	Effect:for	S18-foreach-simple-count
-Scout's Warning	1	Effect:the	S25-effect-verb-bespoke
-Panglacial Wurm	1	Effect:unknown	S24-unknown-effect-bespoke
-Investigator's Journal	1	Swallow:DynamicQty	S10-dynamic-qty-bespoke
-Sorcerous Spyglass	1	Effect:unknown	S24-unknown-effect-bespoke
-Kotose, the Silent Spider	1	Effect:search	S25-effect-verb-bespoke
-Oracle's Attendants	1	Effect:all	S25-effect-verb-bespoke
-Break the Spell	1	Swallow:Condition_If	S07-condition-if-bespoke
-Fear of Immobility	1	Swallow:Condition_If	S07-condition-if-bespoke
-Path of Bravery	0		R2-aslongas-conditional-static
-Path of Mettle	1	Effect:double	S25-effect-verb-bespoke
-Circle of Affliction	1	Trigger:Whenever a source of the chosen color deals damage to you	S19-new-trigger-matcher
-Oblivion's Hunger	1	Swallow:Condition_If	S01-reflexive-if-rider
-Lithomantic Barrage	1	Swallow:Condition_If	S07-condition-if-bespoke
-Kill-Suit Cultist	1	Effect:the	S25-effect-verb-bespoke
-Woodcaller Automaton	1	Swallow:DynamicQty	S10-dynamic-qty-bespoke
-Hedonist's Trove	1	Effect:static_structure	S21-static-ability
-Angel's Grace	2	Effect:can't;Effect:damage	S25-effect-verb-bespoke
-Tinybones, Bauble Burglar	1	Effect:unknown	S24-unknown-effect-bespoke
-Ajani Goldmane	1	Effect:create	S25-effect-verb-bespoke
-Icebreaker Kraken	1	Effect:artifacts	S25-effect-verb-bespoke
-Reaper of Night	1	Swallow:Condition_If	S03-intervening-if-trigger
-Transcendent Master	0		R3-level-up
-Visions of Beyond	1	Swallow:Condition_If	S07-condition-if-bespoke
-Check for Traps	1	Effect:otherwise	S25-effect-verb-bespoke
-Precipitous Drop	0		R2-aslongas-conditional-static
-Identity Crisis	1	Effect:graveyard	S25-effect-verb-bespoke
-Kytheon, Hero of Akros	1	Swallow:Condition_If	S07-condition-if-bespoke
-Hades, Sorcerer of Eld	1	Swallow:Optional_YouMay	S12-optional-youmay-subeffect
-Prishe's Wanderings	1	Effect:when	S25-effect-verb-bespoke
-Mirrormind Crown	1	Swallow:Optional_YouMay	S12-optional-youmay-subeffect
-Dracogenesis	1	Swallow:Optional_YouMay	S12-optional-youmay-subeffect
-Fearless Swashbuckler	1	Swallow:Condition_If	S03-intervening-if-trigger
-Oath of Teferi	1	Effect:effect_structure	S25-effect-verb-bespoke
-Dreadlight Monstrosity	1	Swallow:Condition_If	S04-activate-only-if
-Gideon, Battle-Forged	1	Effect:attack	S25-effect-verb-bespoke
-Hope of Ghirapur	1	Effect:can't	S25-effect-verb-bespoke
-Long Rest	1	Swallow:Condition_If	S07-condition-if-bespoke
-Manor Gargoyle	0		R2-aslongas-conditional-static
-Soulfire Grand Master	1	Effect:the	S25-effect-verb-bespoke
-Goblin Charbelcher	1	Effect:deal	S25-effect-verb-bespoke
-Exquisite Archangel	1	Swallow:DynamicQty	S10-dynamic-qty-bespoke
-Zimone, All-Questioning	1	Swallow:Duration_ThisTurn	S11-duration-grant
-Kargan Dragonlord	0		R3-level-up
-Revealing Wind	1	Swallow:Optional_YouMay	S12-optional-youmay-subeffect
-Birgi, God of Storytelling	1	Swallow:DynamicQty	S10-dynamic-qty-bespoke
-Ajani, Strength of the Pride	1	Effect:gain	S25-effect-verb-bespoke
-Psychotic Episode	1	Effect:choose	S22-choose-effect
-Corpseberry Cultivator	1	Trigger:Whenever you forage	S19-new-trigger-matcher
-Esper Terra	2	Effect:add;Effect:put	S25-effect-verb-bespoke
-Burnout Bashtronaut	0		R1-speed-mechanic
-Vizier of the Anointed	1	Trigger:Whenever you activate an eternalize or embalm ability	S19-new-trigger-matcher
-Ajani Unyielding	1	Effect:five	S25-effect-verb-bespoke
-Doom Foretold	1	Swallow:Condition_If	S07-condition-if-bespoke
-Public Enemy	1	Effect:static_structure	S21-static-ability
-Cecil, Dark Knight	0		R5-runtime-bespoke
-Embereth Paladin	1	Swallow:Condition_If	S02-cast-context-if
-Auditore Ambush	1	Swallow:Condition_If	S01-reflexive-if-rider
-Dissection Practice	0		R5-runtime-bespoke
-Symbiote Spider-Man	1	Effect:gain	S25-effect-verb-bespoke
-Deathbringer Regent	1	Effect:there	S25-effect-verb-bespoke
-Judgment Bolt	1	Swallow:DynamicQty	S10-dynamic-qty-bespoke
-Discerning Taste	1	Effect:gain	S25-effect-verb-bespoke
-Combustible Gearhulk	1	Effect:deal	S25-effect-verb-bespoke
-Karsus Depthguard	0		R2-aslongas-conditional-static
-Knight of Malice	0		R2-aslongas-conditional-static
-Prismari Apprentice	1	Swallow:Condition_If	S01-reflexive-if-rider
-Anchor to Reality	1	Swallow:Condition_If	S01-reflexive-if-rider
-Bumi, Unleashed	1	Effect:only	S25-effect-verb-bespoke
-Soul Separator	1	Effect:create	S25-effect-verb-bespoke
-Gideon's Sacrifice	1	Effect:all	S25-effect-verb-bespoke
-Search the City	1	Trigger:Whenever you play a card with the same name as one of the exiled cards	S19-new-trigger-matcher
-Unnatural Aggression	1	Swallow:Duration_ThisTurn	S11-duration-grant
-Suppression Ray	1	Effect:choose	S22-choose-effect
-Gastal Thrillseeker	0		R1-speed-mechanic
-Eiganjo Uprising	1	Effect:create	S25-effect-verb-bespoke
-Samut, Vizier of Naktamun	1	Swallow:Condition_If	S03-intervening-if-trigger
-Medomai's Prophecy	1	Effect:when	S25-effect-verb-bespoke
-Curious Obsession	1	Swallow:Duration_ThisTurn	S11-duration-grant
-Henge Walker	1	Swallow:Condition_If	S07-condition-if-bespoke
-Ride Down	1	Effect:creatures	S25-effect-verb-bespoke
-Call to Serve	0		R5-runtime-bespoke
-Lashwhip Predator	1	Swallow:Condition_If	S05-alt-cost-if
-Barrel Down Sokenzan	1	Effect:deal	S25-effect-verb-bespoke
-Breach the Multiverse	1	Swallow:DynamicQty	S08-foreach-count-qty
-Unleash the Inferno	1	Effect:when	S25-effect-verb-bespoke
-Living Lore	1	Effect:unknown	S24-unknown-effect-bespoke
-Nivix, Aerie of the Firemind	1	Swallow:Condition_If	S01-reflexive-if-rider
-Animation Module	1	Effect:give	S25-effect-verb-bespoke
-Foraging Wickermaw	1	Effect:become	S25-effect-verb-bespoke
-Noctis, Prince of Lucis	1	Swallow:Condition_If	S05-alt-cost-if
-Thaumaton Torpedo	1	Swallow:Duration_ThisTurn	S11-duration-grant
-Brilliant Ultimatum	2	Effect:an;Effect:play	S25-effect-verb-bespoke
-Mishra's Domination	0		R2-aslongas-conditional-static
-Agency Coroner	1	Swallow:Condition_If	S07-condition-if-bespoke
-Rakdos, the Showstopper	1	Swallow:DynamicQty	S08-foreach-count-qty
-Even the Odds	0		R5-runtime-bespoke
-Legion's Initiative	1	Effect:at	S25-effect-verb-bespoke
-Crowd-Control Warden	1	Effect:replacement_structure	S25-effect-verb-bespoke
-Hungering Yeti	1	Swallow:Optional_YouMay	S12-optional-youmay-subeffect
-War's Toll	1	Effect:effect_structure	S25-effect-verb-bespoke
-Maestros Ascendancy	1	Swallow:Condition_If	S05-alt-cost-if
-Hewed Stone Retainers	0		R5-runtime-bespoke
-Conjurer's Ban	1	Effect:spells	S25-effect-verb-bespoke
-Niko, Light of Hope	1	Effect:shards	S25-effect-verb-bespoke
-Trait Doctoring	1	Effect:change	S25-effect-verb-bespoke
-Kardur, Doomscourge	1	Swallow:Condition_If	S07-condition-if-bespoke
-Inga Rune-Eyes	1	Swallow:Condition_If	S07-condition-if-bespoke
-Psychic Possession	1	ParseWarning:trigger-subject	S27-trigger-subject-anaphora
-Brimstone Mage	0		R3-level-up
-Spectral Adversary	1	Effect:when	S25-effect-verb-bespoke
-Kozilek's Unsealing	1	Effect:5,	S25-effect-verb-bespoke
-Professor Onyx	1	Effect:repeat	S25-effect-verb-bespoke
-Wiretapping	1	Trigger:Whenever you draw your first card during each of your draw steps	S19-new-trigger-matcher
-Advice from the Fae	1	Effect:otherwise	S25-effect-verb-bespoke
-Phosphorescent Feast	1	Swallow:DynamicQty	S08-foreach-count-qty
-Lightfoot Rogue	0		R5-runtime-bespoke
-Gideon Jura	1	Effect:during	S25-effect-verb-bespoke
-Mirror March	1	Swallow:DynamicQty	S08-foreach-count-qty
-Unpredictable Cyclone	1	Effect:replacement_structure	S25-effect-verb-bespoke
-Long List of the Ents	2	Effect:note;Effect:when	S25-effect-verb-bespoke
-Imperiosaur	1	Effect:unknown	S24-unknown-effect-bespoke
-New Perspectives	1	Static:AlternativeKeywordCost(Cycling)	S26-alt-keyword-cost
-Sphinx's Tutelage	1	Effect:repeat	S25-effect-verb-bespoke
-Shuriken	1	Effect:Unsupported unless clause	S14-unless-clause
-Hallowed Respite	1	Effect:otherwise	S25-effect-verb-bespoke
-Unified Will	1	Swallow:Condition_If	S07-condition-if-bespoke
-Imaginary Threats	2	Effect:creatures;Effect:during	S25-effect-verb-bespoke
-Crew Captain	0		R2-aslongas-conditional-static
-Foul Emissary	1	Trigger:When you sacrifice ~ while casting a spell with emerge	S19-new-trigger-matcher
-Signal the Clans	1	Swallow:Condition_If	S07-condition-if-bespoke
-Cranial Ram	1	Effect:static_structure	S21-static-ability
-Sway of the Stars	2	Effect:all;Effect:shuffle	S25-effect-verb-bespoke
-Obscuring Aether	1	Effect:turn	S25-effect-verb-bespoke
-Thassa's Intervention	1	Swallow:Condition_Unless	S14-unless-clause
-Nasty End	1	Swallow:Condition_If	S07-condition-if-bespoke
-Ojer Axonil, Deepest Might	1	Swallow:DynamicQty	S10-dynamic-qty-bespoke
-Dispossess	1	Effect:choose	S22-choose-effect
-Spinerock Tyrant	1	Effect:orphaned_copy_retarget	S20-copy-retarget
-Pugnacious Pugilist	1	Effect:create	S25-effect-verb-bespoke
-Happily Ever After	1	Effect:there	S25-effect-verb-bespoke
-Winds of Qal Sisma	1	Swallow:Condition_If	S07-condition-if-bespoke
-Wheel of Potential	1	Swallow:Condition_If	S07-condition-if-bespoke
-Charging Hooligan	1	Swallow:Condition_If	S07-condition-if-bespoke
-Luxurious Locomotive	1	Swallow:DynamicQty	S08-foreach-count-qty
-Auratouched Mage	2	Effect:otherwise;Effect:reveal	S25-effect-verb-bespoke
-Saving Grace	1	Effect:all	S25-effect-verb-bespoke
-Booby Trap	2	Effect:unknown;Trigger:When the chosen player draws a card with the chosen name	S19-new-trigger-matcher
-Plague of Vermin	1	Effect:repeat	S25-effect-verb-bespoke
-Nahiri's Wrath	1	Effect:deal	S25-effect-verb-bespoke
-Risona, Asari Commander	1	Swallow:Condition_If	S03-intervening-if-trigger
-Kami of Transience	2	Swallow:Condition_If;Swallow:Duration_ThisTurn	S03-intervening-if-trigger
-Commence the Endgame	1	Swallow:DynamicQty	S10-dynamic-qty-bespoke
-Stabwhisker the Odious	1	Swallow:DynamicQty	S08-foreach-count-qty
-Stand Together	1	Effect:two	S25-effect-verb-bespoke
-Detection Tower	1	Effect:can	S25-effect-verb-bespoke
-Emergent Sequence	1	Swallow:DynamicQty	S08-foreach-count-qty
-Invoke Calamity	2	Swallow:Condition_If;Swallow:Optional_YouMay	S07-condition-if-bespoke
-Lethal Throwdown	1	Swallow:Condition_If	S07-condition-if-bespoke
-Haktos the Unscarred	1	Effect:unknown	S24-unknown-effect-bespoke
-Soul of Emancipation	1	Effect:for	S18-foreach-simple-count
-Voltaic Visionary	1	Trigger:When you play a card exiled with ~	S19-new-trigger-matcher
-Crater's Claws	1	Effect:deal	S25-effect-verb-bespoke
-Thunder Magic	0		R5-runtime-bespoke
-Tax Collector	1	Effect:spells	S25-effect-verb-bespoke
-Watchers of the Dead	1	Effect:choose	S22-choose-effect
-Quarry Colossus	1	Effect:put	S25-effect-verb-bespoke
-Bruna, Light of Alabaster	1	Effect:put	S25-effect-verb-bespoke
-Tar Fiend	1	Swallow:DynamicQty	S08-foreach-count-qty
-Leonardo, Sewer Samurai	2	Swallow:Condition_If;Swallow:Optional_YouMay	S02-cast-context-if
-Arid Archway	1	Swallow:Condition_If	S07-condition-if-bespoke
-Oculus Whelp	0		R2-aslongas-conditional-static
-Dennick, Pious Apparition	1	Trigger:Whenever one or more creature cards are put into graveyards from anywhere	S19-new-trigger-matcher
-Dawnhand Dissident	1	Effect:unknown	S24-unknown-effect-bespoke
-Runaway Steam-Kin	1	Swallow:Condition_If	S03-intervening-if-trigger
-Lurebound Scarecrow	1	Trigger:When you control no permanents of the chosen color	S19-new-trigger-matcher
-Streaking Oilgorger	0		R1-speed-mechanic
-Jushi Apprentice	1	Effect:flip	S25-effect-verb-bespoke
-Marauding Raptor	1	Swallow:Condition_If	S07-condition-if-bespoke
-Nahiri, the Unforgiving	1	Effect:attack	S25-effect-verb-bespoke
-Secret of Bloodbending	2	Effect:phase;Effect:you	S25-effect-verb-bespoke
-Open the Way	1	Effect:x	S25-effect-verb-bespoke
-Vengeful Pharaoh	1	Trigger:Whenever combat damage is dealt to you or a planeswalker you control	S19-new-trigger-matcher
-Escape Velocity	1	Effect:unknown	S24-unknown-effect-bespoke
-Teferi, Timeless Voyager	1	Effect:can't	S25-effect-verb-bespoke
-Stargaze	1	Effect:look	S25-effect-verb-bespoke
-Braids's Frightful Return	0		R5-runtime-bespoke
-Perplex	1	Effect:Unsupported unless clause	S14-unless-clause
-Outlaws' Merriment	2	Effect:2/1;Effect:3/1	S25-effect-verb-bespoke
-Plasm Capture	1	Effect:at	S25-effect-verb-bespoke
-Groom's Finery	0		R2-aslongas-conditional-static
-Sizzling Soloist	1	Effect:attack	S25-effect-verb-bespoke
-Boros Battleshaper	1	Swallow:Condition_If	S07-condition-if-bespoke
-Ghastly Conscription	2	Effect:manifest;Effect:shuffle	S25-effect-verb-bespoke
-Invoke Despair	1	Effect:repeat	S25-effect-verb-bespoke
-Yotia Declares War	0		R5-runtime-bespoke
-Rhys, the Evermore	1	Effect:remove	S25-effect-verb-bespoke
-Syndicate Infiltrator	0		R2-aslongas-conditional-static
-Dancing Sword	1	Effect:isn't	S25-effect-verb-bespoke
-Ritual of the Returned	2	Effect:create;Effect:its	S25-effect-verb-bespoke
-Bioplasm	1	Effect:get	S25-effect-verb-bespoke
-Fires of Invention	1	Swallow:Optional_YouMay	S12-optional-youmay-subeffect
-Caged Sun	1	Trigger:Whenever a land's ability causes you to add one or more mana of the chosen color	S19-new-trigger-matcher
-Sword-Point Diplomacy	1	Effect:Unsupported unless clause	S14-unless-clause
-Warped Space	1	Effect:unknown	S24-unknown-effect-bespoke
-Whispering Specter	1	Swallow:DynamicQty	S08-foreach-count-qty
-Verdant Mastery	1	Swallow:Condition_If	S05-alt-cost-if
-Vincent's Limit Break	3	Effect:{0};Effect:{1};Effect:{3}	S25-effect-verb-bespoke
-Pain Magnification	1	Trigger:Whenever an opponent is dealt 3 or more damage by a single source	S19-new-trigger-matcher
-Invasion of Gobakhan	1	Effect:a	S25-effect-verb-bespoke
-Friendly Fire	2	Effect:deal;Effect:that	S25-effect-verb-bespoke
-Page, Loose Leaf	1	Cost:Loose Leaf	S23-alt-cost-parse
-Bonds of Faith	0		R2-aslongas-conditional-static
-Cloud, Midgar Mercenary	2	Swallow:Condition_AsLongAs;Swallow:Condition_If	S07-condition-if-bespoke
-Curse of Surveillance	1	Effect:draw	S25-effect-verb-bespoke
-Hour of Revelation	1	Swallow:Condition_If	S05-alt-cost-if
-Andúril, Flame of the West	1	Effect:instead	S25-effect-verb-bespoke
-Pyromancer's Goggles	2	Effect:orphaned_copy_retarget;Effect:when	S20-copy-retarget
-Dauthi Voidwalker	2	Effect:choose;Effect:replacement_structure	S22-choose-effect
-Matter Reshaper	1	Effect:otherwise	S25-effect-verb-bespoke
-Mythos of Snapdax	1	Effect:choose	S22-choose-effect
-Thran Portal	1	Effect:unknown	S24-unknown-effect-bespoke
-Full Bore	1	Swallow:Condition_If	S01-reflexive-if-rider
-Thrasta, Tempest's Roar	0		R2-aslongas-conditional-static
-Null Champion	0		R3-level-up
-Tainted Adversary	1	Effect:when	S25-effect-verb-bespoke
-Fangorn, Tree Shepherd	1	Effect:add	S25-effect-verb-bespoke
-Callow Jushi	1	Effect:flip	S25-effect-verb-bespoke
-Tromokratis	1	Effect:static_structure	S21-static-ability
-Durkwood Tracker	1	Swallow:Condition_If	S07-condition-if-bespoke
-Contact Other Plane	0		R5-runtime-bespoke
-Celestial Reunion	1	Swallow:Condition_If	S07-condition-if-bespoke
-Skophos Maze-Warden	1	Trigger:Whenever another creature becomes the target of an ability of a land you control named Labyrinth of Skophos	S19-new-trigger-matcher
-Captured by the Consulate	1	Effect:change	S25-effect-verb-bespoke
-Party Dude	1	Trigger:Whenever one or more of your opponents are attacked	S19-new-trigger-matcher
-Sanctum Prelate	1	Effect:unknown	S24-unknown-effect-bespoke
-Lost Legacy	1	Effect:choose	S22-choose-effect
-Echo Mage	0		R3-level-up
-Zaffai and the Tempests	1	Swallow:Optional_YouMay	S12-optional-youmay-subeffect
-Hunt for Specimens	0		R5-runtime-bespoke
-Llanowar Greenwidow	1	Swallow:DynamicQty	S08-foreach-count-qty
-Okina Nightwatch	0		R2-aslongas-conditional-static
-Glimpse the Impossible	1	Swallow:DynamicQty	S08-foreach-count-qty
-Unbound Flourishing	1	Effect:double	S25-effect-verb-bespoke
-Deathforge Shaman	1	Effect:deal	S25-effect-verb-bespoke
-Vastwood Hydra	1	Effect:distribute	S25-effect-verb-bespoke
-Woolly Razorback	1	Swallow:Condition_AsLongAs	S13-aslongas-parse
-Meticulous Excavation	1	Effect:instead	S25-effect-verb-bespoke
-Covenant of Minds	1	Swallow:Condition_If	S01-reflexive-if-rider
-Sphinx Ambassador	1	Swallow:Condition_If	S07-condition-if-bespoke
-Nine Lives	1	Trigger:When there are nine or more incarnation counters on ~	S19-new-trigger-matcher
-Season of Loss	0		R5-runtime-bespoke
-Outmuscle	1	Effect:the	S25-effect-verb-bespoke
-Aether Revolt	2	Swallow:Condition_AsLongAs;Swallow:Condition_If	S07-condition-if-bespoke
-Tifa's Limit Break	0		R5-runtime-bespoke
-Taster of Wares	1	Swallow:DynamicQty	S10-dynamic-qty-bespoke
-Gate to the Aether	1	Effect:creature,	S25-effect-verb-bespoke
-Gandalf's Sanction	1	Effect:excess	S25-effect-verb-bespoke
-Spiked Pit Trap	0		R5-runtime-bespoke
-Unesh, Criosphinx Sovereign	1	Effect:an	S25-effect-verb-bespoke
-Marrow Chomper	1	Swallow:DynamicQty	S08-foreach-count-qty
-Weathered Bodyguards	1	Swallow:Condition_AsLongAs	S13-aslongas-parse
-The Three Seasons	2	Effect:choose;Effect:their	S22-choose-effect
-Septic Rats	1	Swallow:Condition_If	S03-intervening-if-trigger
-Jeskai Infiltrator	2	Effect:manifest;Effect:shuffle	S25-effect-verb-bespoke
-Tezzeret, Betrayer of Flesh	1	Effect:static_structure	S21-static-ability
-Spider-Verse	1	Effect:orphaned_copy_retarget	S20-copy-retarget
-Etali, Primal Sickness	1	Effect:get	S25-effect-verb-bespoke
-Silumgar Scavenger	1	Effect:gain	S25-effect-verb-bespoke
-Boseiju, Who Shelters All	1	Swallow:Condition_If	S07-condition-if-bespoke
-Fiery Bombardment	1	Effect:deal	S25-effect-verb-bespoke
-Primal Plasma	1	Effect:unknown	S24-unknown-effect-bespoke
-As Foretold	1	Effect:unknown	S24-unknown-effect-bespoke
-Flash Conscription	1	Effect:the	S25-effect-verb-bespoke
-Trickbind	1	Effect:activated	S25-effect-verb-bespoke
-Doppelgang	1	Effect:for	S18-foreach-simple-count
-Glimmerdust Nap	0		R5-runtime-bespoke
-Liege of the Tangle	1	Effect:have	S25-effect-verb-bespoke
-Tanazir Quandrix	1	Effect:have	S25-effect-verb-bespoke
-Eldrazi Mimic	1	Effect:change	S25-effect-verb-bespoke
-Sylvan Echoes	1	Trigger:Whenever you clash and win	S19-new-trigger-matcher
-Gruesome Discovery	1	Effect:choose	S22-choose-effect
-Distended Mindbender	1	Effect:choose	S22-choose-effect
-Zurgo and Ojutai	0		R2-aslongas-conditional-static
-Torch the Witness	1	Swallow:Condition_If	S01-reflexive-if-rider
-Retriever Phoenix	1	Swallow:Optional_YouMay	S12-optional-youmay-subeffect
-Worldheart Phoenix	1	Swallow:Condition_If	S05-alt-cost-if
-Silver Bolt	1	Swallow:Condition_If	S07-condition-if-bespoke
-Rimefeather Owl	1	Effect:unknown	S24-unknown-effect-bespoke
-Thieves' Auction	2	Effect:choose;Effect:repeat	S22-choose-effect
-Celestial Dawn	2	Effect:effect_structure;Effect:static_structure	S21-static-ability
-Twisted Sewer-Witch	1	Effect:for	S18-foreach-simple-count
-God-Eternal Kefnet	1	Effect:static_structure	S21-static-ability
-Unscythe, Killer of Kings	1	Trigger:Whenever a creature dealt damage by equipped creature this turn dies	S19-new-trigger-matcher
-Embodiment of Agonies	1	Swallow:DynamicQty	S08-foreach-count-qty
-Herigast, Erupting Nullkite	1	Effect:static_structure	S21-static-ability
-Wojek Investigator	1	Swallow:DynamicQty	S08-foreach-count-qty
-Emeritus of Ideation	1	ParseWarning:target-fallback	S17-anaphoric-target
-Lost Isle Calling	1	Swallow:Condition_If	S01-reflexive-if-rider
-Ballroom Brawlers	1	Effect:~	S25-effect-verb-bespoke
-Curse of Leeches	1	Effect:unknown	S24-unknown-effect-bespoke
-Living Breakthrough	1	Effect:with	S25-effect-verb-bespoke
-Repeated Reverberation	1	Trigger:When you next cast an instant spell	S19-new-trigger-matcher
-Sandman's Quicksand	1	Swallow:Condition_If	S05-alt-cost-if
-Guardian of the Ages	1	Swallow:Condition_If	S07-condition-if-bespoke
-Mutagen Connoisseur	1	Swallow:DynamicQty	S08-foreach-count-qty
-Umbra Mystic	1	Effect:static_structure	S21-static-ability
-Combine Guildmage	2	Effect:each;Effect:this	S25-effect-verb-bespoke
-Skoa, Embermage	1	Cost:Embermage	S23-alt-cost-parse
-Talon of Pain	1	Trigger:Whenever a source you control other than ~ deals damage to an opponent	S19-new-trigger-matcher
-Zada, Hedron Grinder	1	Swallow:DynamicQty	S08-foreach-count-qty
-Amalia Benavides Aguirre	1	Swallow:Condition_If	S01-reflexive-if-rider
-Rusted Relic	1	Effect:unknown	S24-unknown-effect-bespoke
-The Eternal Wanderer	2	Effect:for;Effect:unknown	S16-foreach-player-object-HEAVY
-Pathway Arrows	1	Swallow:Condition_If	S07-condition-if-bespoke
-Sentinel's Mark	1	Effect:during	S25-effect-verb-bespoke
-Fumiko the Lowblood	1	Swallow:DynamicQty	S10-dynamic-qty-bespoke
-Joust	1	Effect:target	S25-effect-verb-bespoke
-Locthwain Paladin	1	Swallow:Condition_If	S02-cast-context-if
-Bloodsoaked Insight	1	Swallow:Condition_If	S02-cast-context-if
-Sacred Ground	1	Trigger:Whenever a spell or ability an opponent controls causes a land to be put into your graveyard from the battlefield	S19-new-trigger-matcher
-Chef's Kiss	1	Effect:the	S25-effect-verb-bespoke
-Amplifire	1	Effect:~'s	S25-effect-verb-bespoke
-Mass Polymorph	1	Effect:reveal	S25-effect-verb-bespoke
-Summoner's Grimoire	1	Swallow:Condition_If	S01-reflexive-if-rider
-Creeping Renaissance	1	Effect:choose	S22-choose-effect
-Fold into Aether	1	Swallow:Condition_If	S01-reflexive-if-rider
-Elenda, Saint of Dusk	0		R2-aslongas-conditional-static
-Teferi's Moat	1	Effect:static_structure	S21-static-ability
-Whims of the Fates	2	Effect:choose;Effect:separate	S22-choose-effect
-Moonhold	1	Effect:can't	S25-effect-verb-bespoke
-Scalpelexis	1	Effect:repeat	S25-effect-verb-bespoke
-Monument to Perfection	1	Effect:lose	S25-effect-verb-bespoke
-Mystic Reflection	1	Effect:the	S25-effect-verb-bespoke
-Firebender Ascension	1	Trigger:Whenever a creature you control attacking causes a triggered ability of that creature to trigger	S19-new-trigger-matcher
-The Lunar Whale	0		R2-aslongas-conditional-static
-Sphere of Annihilation	1	Effect:all	S25-effect-verb-bespoke
-Leonin Arbiter	1	Effect:static_structure	S21-static-ability
-Vigor Mortis	1	Swallow:Condition_If	S07-condition-if-bespoke
-Heart of Kiran	1	Static:AlternativeKeywordCost(Crew)	S26-alt-keyword-cost
-Eriette, the Beguiler	1	Trigger:Whenever an Aura you control becomes attached to a nonland permanent an opponent controls with mana value less than or equal to that Aura's mana value	S19-new-trigger-matcher
-Brine Elemental	1	Effect:skip	S25-effect-verb-bespoke
-Narset's Reversal	1	Effect:orphaned_copy_retarget	S20-copy-retarget
-Scion of Stygia	0		R5-runtime-bespoke
-Precursor Golem	1	Swallow:DynamicQty	S08-foreach-count-qty
-Malamet Battle Glyph	1	Swallow:Condition_If	S07-condition-if-bespoke
-Pulse of the Forge	1	Swallow:Condition_If	S07-condition-if-bespoke
-Chancellor of the Tangle	1	Effect:effect_structure	S25-effect-verb-bespoke
-Another Round	1	Effect:repeat	S25-effect-verb-bespoke
-Frontier Mastodon	1	Swallow:Condition_If	S07-condition-if-bespoke
-Gemini Engine	2	Effect:create;Effect:its	S25-effect-verb-bespoke
-Dubious Challenge	1	Effect:choose	S22-choose-effect
-Fire Magic	0		R5-runtime-bespoke
-Oriss, Samite Guardian	1	Cost:Samite Guardian	S23-alt-cost-parse
-Reiterating Bolt	0		R5-runtime-bespoke
-Izzet Generatorium	1	Effect:replacement_structure	S25-effect-verb-bespoke
-Kazandu Tuskcaller	0		R3-level-up
-Urgent Necropsy	1	Swallow:DynamicQty	S10-dynamic-qty-bespoke
-Choreographed Sparks	1	Effect:the	S25-effect-verb-bespoke
-Trance Kuja, Fate Defied	1	Swallow:Condition_If	S07-condition-if-bespoke
-Lantern Flare	1	Effect:x	S25-effect-verb-bespoke
-Overpowering Attack	1	Swallow:Condition_If	S05-alt-cost-if
-Intrepid Paleontologist	2	Swallow:Condition_If;Swallow:Optional_YouMay	S02-cast-context-if
-Circle of the Moon Druid	1	Effect:unknown	S24-unknown-effect-bespoke
-Relic Axe	1	Swallow:Condition_If	S01-reflexive-if-rider
-Become Anonymous	2	Effect:shuffle;Effect:they	S25-effect-verb-bespoke
-Jace, Mirror Mage	1	Effect:remove	S25-effect-verb-bespoke
-Curse of Thirst	1	Effect:deal	S25-effect-verb-bespoke
-Drownyard Behemoth	0		R2-aslongas-conditional-static
-Close Encounter	1	Cost:choose a creature you control or a warped creature card you own in exile	S23-alt-cost-parse
-The Millennium Calendar	2	Trigger:When there are 1,000 or more time counters on ~;Trigger:Whenever you untap one or more permanents during your untap step	S19-new-trigger-matcher
-Molten Sentry	1	Effect:unknown	S24-unknown-effect-bespoke
-Toralf, God of Fury	1	Effect:deal	S25-effect-verb-bespoke
-Mana Seism	1	Effect:add	S25-effect-verb-bespoke
-Carnivorous Canopy	1	Swallow:Condition_If	S01-reflexive-if-rider
-Skullmulcher	1	Swallow:DynamicQty	S08-foreach-count-qty
-Struggle for Sanity	1	Effect:repeat	S25-effect-verb-bespoke
-Dream Leash	1	Effect:effect_structure	S25-effect-verb-bespoke
-Hulking Metamorph	1	Swallow:DynamicQty	S10-dynamic-qty-bespoke
-Kaya, Intangible Slayer	1	Swallow:Condition_If	S01-reflexive-if-rider
-Huatli, Warrior Poet	1	Effect:creatures	S25-effect-verb-bespoke
-Sanity Grinding	1	Effect:for	S18-foreach-simple-count
-Neheb, the Eternal	1	Effect:add	S25-effect-verb-bespoke
-Grub, Notorious Auntie	1	ParseWarning:target-fallback	S17-anaphoric-target
-Gix, Yawgmoth Praetor	1	Effect:play	S25-effect-verb-bespoke
-Winding Constrictor	1	Effect:replacement_structure	S25-effect-verb-bespoke
-Evolved Spinoderm	0		R2-aslongas-conditional-static
-Rakdos, the Muscle	1	Swallow:DynamicQty	S10-dynamic-qty-bespoke
-Take the Fall	1	Swallow:Condition_If	S07-condition-if-bespoke
-Kassandra, Eagle Bearer	1	Trigger:Whenever a creature you control with a legendary Equipment attached to it deals combat damage to a player	S19-new-trigger-matcher
-Rhino's Rampage	1	Effect:when	S25-effect-verb-bespoke
-Skywatcher Adept	0		R3-level-up
-Jhoira's Timebug	1	Swallow:Condition_If	S01-reflexive-if-rider
-Hagra Mauling	1	Swallow:Condition_If	S05-alt-cost-if
-Grifter's Blade	1	Effect:unknown	S24-unknown-effect-bespoke
-Soul Partition	1	Swallow:Condition_AsLongAs	S13-aslongas-parse
-Lumengrid Augur	1	Swallow:Condition_If	S07-condition-if-bespoke
-Linvala, Shield of Sea Gate	1	Effect:can't	S25-effect-verb-bespoke
-Fractalize	1	Swallow:DynamicQty	S10-dynamic-qty-bespoke
-Sojourner's Companion	1	Effect:unknown	S24-unknown-effect-bespoke
-Graceful Takedown	1	Effect:multi_source_compound_each_power_damage	S25-effect-verb-bespoke
-Rally the Horde	1	Effect:repeat	S25-effect-verb-bespoke
-Slayer's Cleaver	1	Effect:attached_grant_unmodeled_conjunct	S25-effect-verb-bespoke
-Oni Possession	1	Effect:static_structure	S21-static-ability
-Tenacious Underdog	0		R5-runtime-bespoke
-Battle Cry Goblin	1	Swallow:Condition_If	S03-intervening-if-trigger
-Stomping Slabs	1	Swallow:Condition_If	S07-condition-if-bespoke
-Generator Servant	1	Swallow:Condition_If	S07-condition-if-bespoke
-Throw from the Saddle	2	Swallow:Condition_If;Swallow:DynamicQty	S01-reflexive-if-rider
-Shadow of Mortality	0		R5-runtime-bespoke
-Sigarda's Splendor	2	Effect:note;Effect:unknown	S24-unknown-effect-bespoke
-Dementia Sliver	2	Swallow:ActivateOnlyDuring;Swallow:Condition_If	S01-reflexive-if-rider
-Armament of Nyx	0		R2-aslongas-conditional-static
-Nicol Bolas, Dragon-God	1	Effect:static_structure	S21-static-ability
-Render Silent	1	Effect:can't	S25-effect-verb-bespoke
-Wizard's Spellbook	1	Swallow:Optional_YouMay	S12-optional-youmay-subeffect
-Instill Furor	1	Effect:Unsupported unless clause	S14-unless-clause
-Steer Clear	1	Swallow:Condition_If	S07-condition-if-bespoke
-Grolnok, the Omnivore	1	Effect:effect_structure	S25-effect-verb-bespoke
-Guardian Project	1	Swallow:Condition_If	S03-intervening-if-trigger
-Immortal Coil	1	Trigger:When there are no cards in your graveyard	S19-new-trigger-matcher
-Cosmos Charger	1	Effect:static_structure	S21-static-ability
-Draconic Roar	1	Swallow:Condition_If	S07-condition-if-bespoke
-Intrepid Outlander	1	Swallow:Condition_If	S03-intervening-if-trigger
-Aven Heartstabber	0		R2-aslongas-conditional-static
-Knight of Cliffhaven	0		R3-level-up
-Park Heights Pegasus	1	Swallow:Condition_If	S07-condition-if-bespoke
-Shape of the Wiitigo	1	Effect:otherwise	S25-effect-verb-bespoke
-Dragon's Approach	1	Effect:four	S25-effect-verb-bespoke
-Indulgent Tormentor	1	Effect:Unsupported unless clause	S14-unless-clause
-Rumbling Ruin	2	Effect:count;Effect:creatures	S25-effect-verb-bespoke
-Suppression Field	1	Effect:static_structure	S21-static-ability
-Matzalantli, the Great Door	1	Swallow:Condition_If	S04-activate-only-if
-Graveyard Shift	0		R2-aslongas-conditional-static
-Bronze Bombshell	1	Trigger:When a player other than ~'s owner controls it	S19-new-trigger-matcher
-Moonlit Meditation	1	Effect:replacement_structure	S25-effect-verb-bespoke
-Biomancer's Familiar	1	Effect:the	S25-effect-verb-bespoke
-Dragon Hunter	1	Effect:effect_structure	S25-effect-verb-bespoke
-Waterbending Lesson	1	Effect:Unsupported unless clause	S14-unless-clause
-Metamorphic Alteration	2	Effect:static_structure;Effect:unknown	S21-static-ability
-Windwright Mage	0		R2-aslongas-conditional-static
-Friendly Rivalry	1	Effect:multi_source_compound_each_power_damage	S25-effect-verb-bespoke
-Zirda, the Dawnwaker	1	Effect:static_structure	S21-static-ability
-Gathan Raiders	0		R2-aslongas-conditional-static
-Sideswipe	1	Effect:change	S25-effect-verb-bespoke
-Write into Being	2	Effect:manifest;Effect:put	S25-effect-verb-bespoke
-Gibbering Descent	1	Effect:static_structure	S21-static-ability
-Search for Glory	1	Swallow:DynamicQty	S08-foreach-count-qty
-Grishnákh, Brash Instigator	1	Swallow:DynamicQty	S10-dynamic-qty-bespoke
-Budoka Gardener	1	Effect:flip	S25-effect-verb-bespoke
-Duneblast	1	Effect:choose	S22-choose-effect
-Fists of Flame	1	Swallow:DynamicQty	S08-foreach-count-qty
-Cairn Wanderer	0		R2-aslongas-conditional-static
-Savior of Ollenbock	1	Trigger:Whenever ~ trains	S19-new-trigger-matcher
-Bre of Clan Stoutarm	1	Effect:otherwise	S25-effect-verb-bespoke
-Calix, Guided by Fate	1	Trigger:Whenever ~	S19-new-trigger-matcher
-Ghalta and Mavren	1	Effect:create	S25-effect-verb-bespoke
-Invasive Surgery	1	Effect:search	S25-effect-verb-bespoke
-The Tale of Tamiyo	1	Swallow:Condition_If	S06-saga-chapter-if
-Vraska, the Silencer	2	Effect:it's;Effect:lose	S25-effect-verb-bespoke
-Freestrider Commando	1	Swallow:Condition_If	S02-cast-context-if
-Memory Vessel	1	Effect:players	S25-effect-verb-bespoke
-Spelunking	1	Swallow:Condition_If	S07-condition-if-bespoke
-Master Symmetrist	1	Trigger:Whenever a creature you control with power equal to its toughness attacks	S19-new-trigger-matcher
-Guul Draz Assassin	0		R3-level-up
-Master's Manufactory	1	Swallow:Condition_If	S04-activate-only-if
-Cache Grab	1	Swallow:Condition_If	S07-condition-if-bespoke
-Lullmage's Domination	1	Swallow:Condition_If	S05-alt-cost-if
-Loathsome Troll	0		R5-runtime-bespoke
-Descendant of Kiyomaro	0		R2-aslongas-conditional-static
-Immolation Shaman	2	Effect:or;Trigger:Whenever an opponent activates an ability of an artifact, creature	S19-new-trigger-matcher
-Dog Umbra	0		R2-aslongas-conditional-static
-Kaito, Dancing Shadow	1	Effect:activate	S25-effect-verb-bespoke
-Reno and Rude	1	Swallow:Duration_ThisTurn	S11-duration-grant
-Inferno Hellion	1	Swallow:Condition_If	S03-intervening-if-trigger
-Scythe of the Wretched	1	Trigger:Whenever a creature dealt damage by equipped creature this turn dies	S19-new-trigger-matcher
-Surrak, Elusive Hunter	1	Trigger:Whenever a creature you control	S19-new-trigger-matcher
-Earth Rumble Wrestlers	0		R2-aslongas-conditional-static
-Apostle of Invasion	0		R2-aslongas-conditional-static
-Arlinn, Embraced by the Moon	1	Swallow:DynamicQty	S10-dynamic-qty-bespoke
-Grim Wanderer	0		R5-runtime-bespoke
-Quakebringer	1	Effect:this	S25-effect-verb-bespoke
-Betrayal of Flesh	1	Effect:entwine—sacrifice	S25-effect-verb-bespoke
-Gaea's Will	1	Effect:play	S25-effect-verb-bespoke
-Skrelv's Hive	0		R2-aslongas-conditional-static
-Maelstrom Djinn	1	Effect:gain	S25-effect-verb-bespoke
-Ultimate Spider-Man	1	Swallow:DynamicQty	S10-dynamic-qty-bespoke
-Shrouded Lore	2	Effect:choose;Effect:repeat	S22-choose-effect
-Gargantuan Slabhorn	1	Effect:static_structure	S21-static-ability
-Nesting Bot	0		R1-speed-mechanic
-Sen Triplets	3	Effect:or;Effect:play;Effect:this	S25-effect-verb-bespoke
-Shadows' Verdict	1	Effect:all	S25-effect-verb-bespoke
-Curator's Ward	1	Swallow:Condition_If	S01-reflexive-if-rider
-Ochre Jelly	1	Effect:the	S25-effect-verb-bespoke
-Jace, the Perfected Mind	1	Effect:otherwise	S25-effect-verb-bespoke
-The Cruelty of Gix	0		R5-runtime-bespoke
-Deification	1	Effect:unknown	S24-unknown-effect-bespoke
-Conundrum Sphinx	1	Swallow:Condition_If	S01-reflexive-if-rider
-Double Major	1	Swallow:Condition_If	S07-condition-if-bespoke
-Face of Divinity	0		R2-aslongas-conditional-static
-Nissa, Steward of Elements	1	Effect:or	S25-effect-verb-bespoke
-Morgue Burst	1	Effect:deal	S25-effect-verb-bespoke
-Long Feng, Grand Secretariat	1	Trigger:Whenever another creature you control	S19-new-trigger-matcher
-Academy Loremaster	1	Effect:spells	S25-effect-verb-bespoke
-Flash Foliage	0		R5-runtime-bespoke
-Mysterious Limousine	1	Swallow:Condition_If	S07-condition-if-bespoke
-Temple of Cyclical Time	1	Swallow:Condition_If	S04-activate-only-if
-Brutal Hordechief	2	Effect:choose;Effect:creatures	S22-choose-effect
-Elesh Norn, Mother of Machines	1	Effect:unknown	S24-unknown-effect-bespoke
-Faithful Squire	1	Effect:flip	S25-effect-verb-bespoke
-Warden of the Beyond	0		R2-aslongas-conditional-static
-Springjack Shepherd	1	Swallow:DynamicQty	S08-foreach-count-qty
-Skulking Killer	2	Swallow:Condition_If;Swallow:Duration_UntilEndOfTurn	S07-condition-if-bespoke
-Mirror of Fate	1	Effect:choose	S22-choose-effect
-Strange Augmentation	1	Effect:unknown	S24-unknown-effect-bespoke
-Gloom Stalker	0		R2-aslongas-conditional-static
-Aquamorph Entity	1	Effect:replacement_structure	S25-effect-verb-bespoke
-Grist, the Hunger Tide	1	Effect:repeat	S25-effect-verb-bespoke
-Cloud, Planet's Champion	1	Swallow:Condition_AsLongAs	S13-aslongas-parse
-Howling Galefang	0		R2-aslongas-conditional-static
-Arni Brokenbrow	1	Effect:change	S25-effect-verb-bespoke
-Maximum Carnage	1	Swallow:Condition_If	S06-saga-chapter-if
-Niko Defies Destiny	1	Effect:spend	S25-effect-verb-bespoke
-So Tiny	0		R2-aslongas-conditional-static
-Wild Shape	3	Effect:1/3;Effect:1/5;Effect:3/3	S25-effect-verb-bespoke
-Zenos yae Galvus	1	Trigger:When the chosen creature leaves the battlefield	S19-new-trigger-matcher
-Sandman, Shifting Scoundrel	1	Effect:target	S25-effect-verb-bespoke
-Plargg and Nassari	1	Effect:choose	S22-choose-effect
-Anti-Venom, Horrifying Healer	1	Swallow:Condition_If	S03-intervening-if-trigger
-Psychic Pickpocket	1	Effect:when	S25-effect-verb-bespoke
-Bladecoil Serpent	1	Effect:for	S18-foreach-simple-count
-Jolly Gerbils	1	Trigger:Whenever you give a gift	S19-new-trigger-matcher
-Devouring Hellion	2	Swallow:Condition_If;Swallow:Optional_YouMay	S07-condition-if-bespoke
-Tamiyo, Compleated Sage	1	Effect:"	S25-effect-verb-bespoke
-Goblin Flectomancer	1	Effect:change	S25-effect-verb-bespoke
-Bumi, King of Three Trials	2	Swallow:DynamicQty;Swallow:Modal_DynamicMaxDropped	S10-dynamic-qty-bespoke
-Everlasting Torment	1	Effect:effect_structure	S25-effect-verb-bespoke
-The Immortal Sun	1	Effect:unknown	S24-unknown-effect-bespoke
-Over the Top	1	Effect:reveal	S25-effect-verb-bespoke
-Valakut Fireboar	1	Effect:switch	S25-effect-verb-bespoke
-Keral Keep Disciples	1	Trigger:Whenever you activate a loyalty ability of a Chandra planeswalker	S19-new-trigger-matcher
-Chrome Replicator	1	Effect:nontoken	S25-effect-verb-bespoke
-Porphyry Nodes	1	Trigger:When there are no creatures on the battlefield	S19-new-trigger-matcher
-Wumpus Aberration	1	Swallow:Condition_If	S07-condition-if-bespoke
-Eidolon of Obstruction	1	Effect:static_structure	S21-static-ability
-Jagged Poppet	1	Effect:discard	S25-effect-verb-bespoke
-Fall	1	Effect:discard	S25-effect-verb-bespoke
-Teysa, Opulent Oligarch	2	Swallow:Duration_ThisTurn;Swallow:DynamicQty	S08-foreach-count-qty
-Zidane, Tantalus Thief	1	Trigger:Whenever an opponent gains control of a permanent from you	S19-new-trigger-matcher
-Graceful Reprieve	1	Trigger:When target creature dies this turn	S19-new-trigger-matcher
-The Dominion Bracelet	1	Effect:this	S25-effect-verb-bespoke
-Neriv, Heart of the Storm	1	Swallow:DynamicQty	S10-dynamic-qty-bespoke
-Clockwork Servant	1	Swallow:Condition_If	S03-intervening-if-trigger
-Hoarding Ogre	0		R5-runtime-bespoke
-Wretched Banquet	1	Swallow:Condition_If	S01-reflexive-if-rider
-The Rollercrusher Ride	1	Swallow:Condition_If	S07-condition-if-bespoke
-Thousand-Year Storm	1	Swallow:DynamicQty	S08-foreach-count-qty
-Giant's Amulet	0		R2-aslongas-conditional-static
-Gnoll Hunter	1	Swallow:Condition_If	S03-intervening-if-trigger
-Nezumi Graverobber	1	Effect:flip	S25-effect-verb-bespoke
-Oviya, Automech Artisan	1	Swallow:Condition_If	S07-condition-if-bespoke
-Dimir Machinations	1	Effect:put	S25-effect-verb-bespoke
-Dragon-Kami's Egg	1	Trigger:Whenever ~	S19-new-trigger-matcher
-Symmetry Matrix	1	Trigger:Whenever a creature you control with power equal to its toughness enters	S19-new-trigger-matcher
-Candles of Leng	1	Effect:otherwise	S25-effect-verb-bespoke
-Rush the Room	1	Swallow:Condition_If	S01-reflexive-if-rider
-Pia's Revolution	1	Effect:Unsupported unless clause	S14-unless-clause
-Clay Champion	1	Effect:for	S18-foreach-simple-count
-Ogre Marauder	1	Effect:Unsupported unless clause	S14-unless-clause
-Grisly Sigil	1	Effect:otherwise	S25-effect-verb-bespoke
-Reckless Crew	1	Effect:for	S18-foreach-simple-count
-Threads of Disloyalty	0		R5-runtime-bespoke
-Nashi, Searcher in the Dark	1	Swallow:Condition_If	S07-condition-if-bespoke
-Restless Prairie	0		R5-runtime-bespoke
-Capricious Hellraiser	1	Effect:choose	S22-choose-effect
-Monstrous War-Leech	1	Effect:unknown	S24-unknown-effect-bespoke
-Hurkyl, Master Wizard	1	Swallow:Optional_YouMay	S12-optional-youmay-subeffect
-Liliana of the Veil	1	Effect:separate	S25-effect-verb-bespoke
-Feast of Worms	1	Swallow:Condition_If	S07-condition-if-bespoke
-Hada Spy Patrol	0		R3-level-up
-The Book of Vile Darkness	1	Swallow:Duration_ThisTurn	S11-duration-grant
-Omniscience	1	Swallow:Optional_YouMay	S12-optional-youmay-subeffect
-Ertha Jo, Frontier Mentor	1	Trigger:Whenever you activate an ability that targets a creature or player	S19-new-trigger-matcher
-Scrying Sheets	1	Swallow:Condition_If	S01-reflexive-if-rider
-Skull Raid	1	Effect:draw	S25-effect-verb-bespoke
-Desecrator Hag	1	Swallow:Condition_If	S07-condition-if-bespoke
-Zameck Guildmage	2	Effect:each;Effect:this	S25-effect-verb-bespoke
-Entangling Vines	0		R5-runtime-bespoke
-Coiling Rebirth	1	Swallow:Condition_If	S07-condition-if-bespoke
-Starving Revenant	1	Effect:for	S18-foreach-simple-count
-Brothers Yamazaki	1	Effect:static_structure	S21-static-ability
-Palantír of Orthanc	1	Effect:lose	S25-effect-verb-bespoke
-Warchanter Skald	1	Swallow:Condition_If	S03-intervening-if-trigger
-Security Bypass	0		R2-aslongas-conditional-static
-Falkenrath Gorger	1	Effect:static_structure	S21-static-ability
-Volcano Hellion	1	Effect:deal	S25-effect-verb-bespoke
-Ikiral Outrider	0		R3-level-up
-Urza, Planeswalker	1	Effect:effect_structure	S25-effect-verb-bespoke
-Revel in Silence	1	Effect:or	S25-effect-verb-bespoke
-Glimpse the Cosmos	2	Swallow:Condition_AsLongAs;Swallow:Condition_If	S05-alt-cost-if
-Multiple Choice	1	Effect:do	S25-effect-verb-bespoke
-Pride of the Clouds	1	Swallow:DynamicQty	S08-foreach-count-qty
-Primal Adversary	1	Effect:when	S25-effect-verb-bespoke
-Solstice Revelations	1	Swallow:DynamicQty	S10-dynamic-qty-bespoke
-Awaken the Sleeper	1	Swallow:Condition_If	S01-reflexive-if-rider
-Dragon's Disciple	1	Swallow:Condition_If	S07-condition-if-bespoke
-Flame Spill	1	Effect:excess	S25-effect-verb-bespoke
-Tormented Thoughts	1	Swallow:DynamicQty	S10-dynamic-qty-bespoke
-Predator's Gambit	0		R2-aslongas-conditional-static
-Rune Snag	1	Swallow:DynamicQty	S08-foreach-count-qty
-Etrata, the Silencer	1	Swallow:Condition_If	S01-reflexive-if-rider
-Vraska, Betrayal's Sting	2	Effect:become;Effect:get	S25-effect-verb-bespoke
-Tori D'Avenant, Fury Rider	1	Effect:other	S25-effect-verb-bespoke
-Arashin Sovereign	1	Effect:put	S25-effect-verb-bespoke
-Thermal Flux	1	Effect:isn't	S25-effect-verb-bespoke
-Melira, Sylvok Outcast	2	Effect:effect_structure;Effect:static_structure	S21-static-ability
-Eater of Days	1	Effect:you	S25-effect-verb-bespoke
-Glittering Frost	1	Effect:static_structure	S21-static-ability
-Chrome Courier	1	Swallow:Condition_If	S07-condition-if-bespoke
-Yidaro, Wandering Monster	1	Effect:wandering	S25-effect-verb-bespoke
-Urborg Scavengers	0		R2-aslongas-conditional-static
-Fact or Fiction	1	Effect:an	S25-effect-verb-bespoke
-Descendant of Soramaro	1	Effect:put	S25-effect-verb-bespoke
-To the Slaughter	1	Effect:a	S25-effect-verb-bespoke
-Torch the Tower	1	Swallow:Duration_ThisTurn	S11-duration-grant
-Winnowing	1	Effect:for	S16-foreach-player-object-HEAVY
-Vesuvan Shapeshifter	1	Effect:static_structure	S21-static-ability
-Kaya, Bane of the Dead	1	Effect:static_structure	S21-static-ability
-Isildur's Fateful Strike	2	Swallow:Condition_If;Swallow:DynamicQty	S01-reflexive-if-rider
-Swimmer in Nightmares	0		R2-aslongas-conditional-static
-Exuberant Wolfbear	1	Effect:change	S25-effect-verb-bespoke
-Chain Assassination	1	Swallow:Condition_If	S05-alt-cost-if
-Maskwood Nexus	1	Effect:unknown	S24-unknown-effect-bespoke
-Voracious Dragon	1	Effect:deal	S25-effect-verb-bespoke
-Corrupted Resolve	1	Swallow:Condition_If	S01-reflexive-if-rider
-Djinni Windseer	0		R5-runtime-bespoke
-Fatespinner	1	Effect:phase	S25-effect-verb-bespoke
-Talara's Battalion	0		R5-runtime-bespoke
-Kraken of the Straits	1	Swallow:DynamicQty	S10-dynamic-qty-bespoke
-Monastery Raid	1	Swallow:Condition_If	S05-alt-cost-if
-Vexing Arcanix	1	Effect:otherwise	S25-effect-verb-bespoke
-Vampire Nocturnus	0		R2-aslongas-conditional-static
-Baru, Fist of Krosa	1	Cost:Fist of Krosa	S23-alt-cost-parse
-Power of Persuasion	0		R5-runtime-bespoke
-Domri, Anarch of Bolas	1	Effect:creature	S25-effect-verb-bespoke
-Gimli, Mournful Avenger	1	Effect:when	S25-effect-verb-bespoke
-Garth One-Eye	1	Effect:create	S25-effect-verb-bespoke
-Drana, the Last Bloodchief	2	Effect:choose;Effect:the	S22-choose-effect
-Font of Agonies	1	Trigger:Whenever you pay life	S19-new-trigger-matcher
-Brain Pry	1	Swallow:Condition_If	S01-reflexive-if-rider
-Descendants' Path	1	Effect:that	S25-effect-verb-bespoke
-Thieving Sprite	1	Swallow:DynamicQty	S10-dynamic-qty-bespoke
-Chandra, Pyromaster	1	Effect:choose	S22-choose-effect
-Grizzled Angler	1	Swallow:Condition_If	S07-condition-if-bespoke
-Predatory Focus	1	Effect:have	S25-effect-verb-bespoke
-Alania, Divergent Storm	1	Effect:the	S25-effect-verb-bespoke
-Eidolon of Countless Battles	1	Swallow:DynamicQty	S08-foreach-count-qty
-Glissa Sunseeker	2	Swallow:Condition_If;Swallow:DynamicQty	S01-reflexive-if-rider
-Ashes of the Fallen	1	Effect:static_structure	S21-static-ability
-Show of Confidence	1	Swallow:DynamicQty	S08-foreach-count-qty
-Altar of the Pantheon	2	Effect:a;Effect:unknown	S24-unknown-effect-bespoke
-Walking Sarcophagus	0		R1-speed-mechanic
-Secretkeeper	0		R2-aslongas-conditional-static
-Ixidron	1	Effect:unknown	S24-unknown-effect-bespoke
-Calamity, Galloping Inferno	1	Effect:choose	S22-choose-effect
-Rune-Tail, Kitsune Ascendant	2	Effect:flip;Trigger:When you have 30 or more life	S19-new-trigger-matcher
-Founding the Third Path	0		R5-runtime-bespoke
-Sage's Reverie	1	Swallow:DynamicQty	S08-foreach-count-qty
-Hexdrinker	0		R3-level-up
-Innocent Bystander	1	Trigger:Whenever ~ is dealt 3 or more damage	S19-new-trigger-matcher
-Chorus of the Conclave	2	Swallow:Condition_If;Swallow:Optional_YouMay	S07-condition-if-bespoke
-Ringwraiths	1	Swallow:Condition_If	S01-reflexive-if-rider
-Dream Devourer	2	Effect:static_structure;Trigger:Whenever you foretell a card	S19-new-trigger-matcher
-Portent of Calamity	1	Swallow:Condition_If	S07-condition-if-bespoke
-Orator of Ojutai	1	Swallow:Condition_If	S03-intervening-if-trigger
-Raubahn, Bull of Ala Mhigo	1	Swallow:DynamicQty	S10-dynamic-qty-bespoke
-Ascent of the Worthy	1	Effect:all	S25-effect-verb-bespoke
-Shape Anew	1	Effect:the	S25-effect-verb-bespoke
-Tamiyo, Collector of Tales	1	Effect:unknown	S24-unknown-effect-bespoke
-Corpse Appraiser	1	Swallow:Condition_If	S07-condition-if-bespoke
-Burning-Eye Zubera	2	Swallow:Condition_If;Swallow:Duration_ThisTurn	S07-condition-if-bespoke
-Brass Knuckles	0		R2-aslongas-conditional-static
-Volshe Tideturner	1	Effect:spend	S25-effect-verb-bespoke
-Ria Ivor, Bane of Bladehold	1	Effect:the	S25-effect-verb-bespoke
-Gideon of the Trials	1	Swallow:Condition_AsLongAs	S13-aslongas-parse
-Hotheaded Giant	2	Swallow:Condition_Unless;Swallow:Duration_ThisTurn	S11-duration-grant
-Uba Mask	1	Effect:static_structure	S21-static-ability
-Tyvar the Bellicose	2	Effect:put;Trigger:whenever a mana ability of ~ resolves	S19-new-trigger-matcher
-Structural Assault	1	Effect:deal	S25-effect-verb-bespoke
-Structural Collapse	1	Effect:a	S25-effect-verb-bespoke
-Tin Street Gossip	1	Effect:spend	S25-effect-verb-bespoke
-Kemba's Legion	1	Effect:effect_structure	S25-effect-verb-bespoke
-Valgavoth, Terror Eater	1	Swallow:Condition_If	S05-alt-cost-if
-Predatory Advantage	1	Swallow:Duration_ThisTurn	S11-duration-grant
-Targ Nar, Demon-Fang Gnoll	1	Swallow:Condition_If	S03-intervening-if-trigger
-Jetmir's Fixer	1	Swallow:Condition_If	S07-condition-if-bespoke
-Beastbreaker of Bala Ged	0		R3-level-up
-Meletis Charlatan	1	Effect:the	S25-effect-verb-bespoke
-The Weatherseed Treaty	0		R5-runtime-bespoke
-Cerebral Vortex	1	Effect:deal	S25-effect-verb-bespoke
-Joint Assault	1	Swallow:Condition_If	S01-reflexive-if-rider
-Life of Toshiro Umezawa	1	Effect:•	S25-effect-verb-bespoke
-Sphinx of Clear Skies	1	Effect:an	S25-effect-verb-bespoke
-Recommission	1	Swallow:Condition_If	S07-condition-if-bespoke
-Guildmages' Forum	1	Effect:that	S25-effect-verb-bespoke
-Tazri, Stalwart Survivor	2	Effect:add;Effect:spend	S25-effect-verb-bespoke
-Ion Storm	1	Cost:Remove a +1/+1 counter or a charge counter from a permanent you control	S23-alt-cost-parse
-Expose the Culprit	1	Effect:shuffle	S25-effect-verb-bespoke
-Invasion of Arcavios	1	Effect:graveyard,	S25-effect-verb-bespoke
-Ral Zarek, Guest Lecturer	1	Swallow:DynamicQty	S10-dynamic-qty-bespoke
-Cosmos Elixir	0		R5-runtime-bespoke
-Sutured Ghoul	1	Effect:unknown	S24-unknown-effect-bespoke
-Arbiter of the Ideal	1	Effect:creature,	S25-effect-verb-bespoke
-Baneclaw Marauder	1	Trigger:Whenever a creature blocking ~ dies	S19-new-trigger-matcher
-Consume Spirit	1	Effect:spend	S25-effect-verb-bespoke
-Rampaging Cyclops	0		R2-aslongas-conditional-static
-Glamerdye	1	Effect:change	S25-effect-verb-bespoke
-Coralhelm Commander	0		R3-level-up
-Yarus, Roar of the Old Gods	1	Swallow:Condition_If	S01-reflexive-if-rider
-Semester's End	1	Swallow:Condition_If	S01-reflexive-if-rider
-Undead Sprinter	1	Swallow:Condition_If	S05-alt-cost-if
-Dearly Departed	1	Swallow:Condition_AsLongAs	S13-aslongas-parse
-Tom Bombadil	1	Trigger:Whenever the final chapter ability of a Saga you control resolves	S19-new-trigger-matcher
-Primal Wellspring	2	Effect:orphaned_copy_retarget;Effect:when	S20-copy-retarget
-Korlash, Heir to Blackblade	1	Cost:Heir to Blackblade	S23-alt-cost-parse
-Howltooth Hollow	1	Swallow:Condition_If	S07-condition-if-bespoke
-Leyline of Singularity	1	Effect:effect_structure	S25-effect-verb-bespoke
-Dauntless Bodyguard	1	Effect:unknown	S24-unknown-effect-bespoke
-Ebondeath, Dracolich	1	Swallow:Condition_If	S05-alt-cost-if
-Helm of Kaldra	1	Effect:sword	S25-effect-verb-bespoke
-Expel the Interlopers	1	Swallow:DynamicQty	S10-dynamic-qty-bespoke
-Deadly Cover-Up	1	Effect:search	S25-effect-verb-bespoke
-Chronomantic Escape	1	Effect:creatures	S25-effect-verb-bespoke
-Lukka, Coppercoat Outcast	1	Swallow:Condition_AsLongAs	S13-aslongas-parse
-Ink-Treader Nephilim	2	Swallow:Condition_If;Swallow:DynamicQty	S03-intervening-if-trigger
-Master of the Wild Hunt	1	Effect:deal	S25-effect-verb-bespoke
-Mount Doom	1	Effect:choose	S22-choose-effect
-Liar's Pendulum	1	Effect:target	S25-effect-verb-bespoke
-Kopala, Warden of Waves	1	Effect:static_structure	S21-static-ability
-The Elder Dragon War	0		R5-runtime-bespoke
-Infinite Reflection	1	Effect:replacement_structure	S25-effect-verb-bespoke
-Redcap Melee	1	Swallow:Condition_If	S07-condition-if-bespoke
-Balduvian Fallen	1	Trigger:Whenever ~'s cumulative upkeep is paid	S19-new-trigger-matcher
-What Must Be Done	1	Effect:it	S25-effect-verb-bespoke
-Portent Tracker	1	Effect:otherwise	S25-effect-verb-bespoke
-Beamsplitter Mage	1	Effect:the	S25-effect-verb-bespoke
-Favor of the Mighty	1	Effect:static_structure	S21-static-ability
-Shinryu, Transcendent Rival	2	Effect:unknown;Trigger:When the chosen player loses the game	S19-new-trigger-matcher
-Drown in the Loch	1	Swallow:DynamicQty	S10-dynamic-qty-bespoke
-Sharae of Numbing Depths	1	Trigger:Whenever you tap one or more untapped creatures your opponents control	S19-new-trigger-matcher
-Ellywick Tumblestrum	1	Swallow:DynamicQty	S08-foreach-count-qty
-Mana Clash	1	Effect:repeat	S25-effect-verb-bespoke
-Sheriff of Safe Passage	1	Swallow:DynamicQty	S08-foreach-count-qty
-Touch of the Eternal	2	Effect:count;Effect:your	S25-effect-verb-bespoke
-Katilda, Dawnhart Prime	1	Effect:add	S25-effect-verb-bespoke
-Combustion Man	1	Effect:Unsupported unless clause	S14-unless-clause
-Restore the Peace	1	Swallow:Duration_ThisTurn	S11-duration-grant
-Vaevictis Asmadi, the Dire	2	Effect:for;Effect:who	S16-foreach-player-object-HEAVY
-Irencrag Feat	1	Effect:can	S25-effect-verb-bespoke
-Reverse the Sands	1	Effect:redistribute	S25-effect-verb-bespoke
-Navigator's Compass	1	Effect:become	S25-effect-verb-bespoke
-Epochrasite	1	Swallow:Condition_If	S07-condition-if-bespoke
-Scheming Fence	2	Effect:static_structure;Effect:unknown	S21-static-ability
-Swiftwing Assailant	0		R1-speed-mechanic
-Enduring Angel	1	Effect:replacement_structure	S25-effect-verb-bespoke
-Venarian Glimmer	1	Effect:choose	S22-choose-effect
-Hew the Entwood	1	Effect:choose	S22-choose-effect
-Honorable Passage	1	Swallow:Condition_If	S07-condition-if-bespoke
-Nicanzil, Current Conductor	2	Trigger:Whenever a creature you control explores a land card;Trigger:Whenever a creature you control explores a nonland card	S19-new-trigger-matcher
-Ral Zarek	1	Swallow:DynamicQty	S08-foreach-count-qty
-Firesong and Sunspeaker	1	Trigger:Whenever a white instant or sorcery spell causes you to gain life	S19-new-trigger-matcher
-Overgrown Zealot	1	Effect:spend	S25-effect-verb-bespoke
-Mjölnir, Storm Hammer	1	Effect:deal	S25-effect-verb-bespoke
-Cruel Reality	1	Swallow:Condition_If	S07-condition-if-bespoke
-Atraxa, Grand Unifier	2	Swallow:DynamicQty;Swallow:Optional_YouMay	S08-foreach-count-qty
-Sage-Eye Avengers	1	Swallow:Condition_If	S01-reflexive-if-rider
-Simic Manipulator	1	Swallow:DynamicQty	S10-dynamic-qty-bespoke
-Hama, the Bloodbender	1	Swallow:DynamicQty	S10-dynamic-qty-bespoke
-Call the Spirit Dragons	1	Effect:for	S18-foreach-simple-count
-Mordenkainen	1	Effect:exchange	S25-effect-verb-bespoke
-Escape Detection	1	Effect:freerunning—return	S25-effect-verb-bespoke
-Absorb Identity	1	Effect:have	S25-effect-verb-bespoke
-Crypt Rats	1	Effect:spend	S25-effect-verb-bespoke
-Cavernous Maw	2	Swallow:Condition_If;Swallow:DynamicQty	S04-activate-only-if
-Phylactery Lich	1	Effect:replacement_structure	S25-effect-verb-bespoke
-Longstalk Brawl	1	Swallow:Condition_If	S07-condition-if-bespoke
-Minamo's Meddling	1	Effect:discard	S25-effect-verb-bespoke
-The Phasing of Zhalfir	2	Effect:another;Effect:can't	S25-effect-verb-bespoke
-Ran and Shaw	1	Swallow:Condition_If	S02-cast-context-if
-Shadow of the Second Sun	1	Effect:there	S25-effect-verb-bespoke
-Wild Slash	1	Swallow:Condition_If	S07-condition-if-bespoke
-Scion of Draco	1	Effect:static_structure	S21-static-ability
-Duplicant	0		R2-aslongas-conditional-static
-Alpine Moon	1	Effect:unknown	S24-unknown-effect-bespoke
-Aberrant Mind Sorcerer	1	Swallow:Optional_YouMay	S12-optional-youmay-subeffect
-Hired Muscle	1	Effect:flip	S25-effect-verb-bespoke
-Novice Knight	0		R2-aslongas-conditional-static
-Riftmarked Knight	1	Trigger:When the last time counter is removed from this card while it's exiled	S19-new-trigger-matcher
-Needle Drop	1	Swallow:Duration_ThisTurn	S11-duration-grant
-Gutter Shortcut	0		R2-aslongas-conditional-static
-Sharkey, Tyrant of the Shire	2	Effect:static_structure;Effect:unknown	S21-static-ability
-Become Brutes	1	Effect:for	S18-foreach-simple-count
-Enthralling Hold	1	Effect:effect_structure	S25-effect-verb-bespoke
-Wheel of Sun and Moon	1	Effect:replacement_structure	S25-effect-verb-bespoke
-Skarrgan Hellkite	1	Swallow:Condition_If	S04-activate-only-if
-Dawn Evangel	1	Swallow:Condition_If	S03-intervening-if-trigger
-Shelldock Isle	1	Swallow:Condition_If	S07-condition-if-bespoke
-Minion of the Mighty	1	Swallow:Condition_If	S03-intervening-if-trigger
-Cut Short	1	Swallow:Duration_ThisTurn	S11-duration-grant
-Budoka Pupil	1	Effect:flip	S25-effect-verb-bespoke
-Painter's Servant	1	Effect:effect_structure	S25-effect-verb-bespoke
-Altaïr Ibn-La'Ahad	1	Effect:for	S18-foreach-simple-count
-Sasaya's Essence	1	Swallow:DynamicQty	S08-foreach-count-qty
-Akiri, Fearless Voyager	1	Effect:unattach	S25-effect-verb-bespoke
-Burn at the Stake	1	Effect:deal	S25-effect-verb-bespoke
-Creepy Puppeteer	1	Swallow:Condition_If	S03-intervening-if-trigger
-Elvish Refueler	1	Effect:unknown	S24-unknown-effect-bespoke
-Academic Probation	2	Effect:can't;Effect:with	S25-effect-verb-bespoke
-Sarkhan's Whelp	1	Trigger:Whenever you activate an ability of a Sarkhan planeswalker	S19-new-trigger-matcher
-Urza Assembles the Titans	1	Effect:activate	S25-effect-verb-bespoke
-Twinferno	2	Effect:orphaned_copy_retarget;Effect:when	S20-copy-retarget
-Kethis, the Hidden Hand	1	Swallow:Optional_YouMay	S12-optional-youmay-subeffect
-Woebringer Demon	1	Swallow:Condition_If	S07-condition-if-bespoke
-The Temporal Anchor	1	Trigger:Whenever you choose to put one or more cards on the bottom of your library while scrying	S19-new-trigger-matcher
-Psychogenic Probe	1	Trigger:Whenever a spell or ability causes a player to shuffle their library	S19-new-trigger-matcher
-Case File Auditor	1	Trigger:Whenever you solve a Case	S19-new-trigger-matcher
-Provoke the Trolls	1	Swallow:Condition_If	S07-condition-if-bespoke
-Volition Reins	1	Swallow:Condition_If	S03-intervening-if-trigger
-Suspend Aggression	1	Swallow:DynamicQty	S08-foreach-count-qty
-Magus of the Scroll	1	Swallow:Condition_If	S01-reflexive-if-rider
-Verity Circle	1	Swallow:Condition_If	S03-intervening-if-trigger
-Shadrix Silverquill	1	Swallow:Optional_YouMay	S12-optional-youmay-subeffect
-Diligent Zookeeper	1	Swallow:DynamicQty	S08-foreach-count-qty
-Darksteel Garrison	2	Effect:static_structure;Trigger:Whenever fortified land becomes tapped	S19-new-trigger-matcher
-Surgical Extraction	1	Effect:search	S25-effect-verb-bespoke
-Isperia the Inscrutable	1	Swallow:Condition_If	S07-condition-if-bespoke
-Slumbering Trudge	1	Swallow:Condition_If	S07-condition-if-bespoke
-Zur's Weirding	1	Effect:any	S25-effect-verb-bespoke
-Tishana's Tidebinder	1	Swallow:Condition_AsLongAs	S13-aslongas-parse
-Corrupted Shapeshifter	1	Effect:unknown	S24-unknown-effect-bespoke
-Breathless Knight	1	Swallow:Condition_If	S03-intervening-if-trigger
-Shah of Naar Isle	1	Trigger:When ~'s echo cost is paid	S19-new-trigger-matcher
-Nyxathid	1	Swallow:DynamicQty	S08-foreach-count-qty
-Lavinia, Azorius Renegade	1	Effect:static_structure	S21-static-ability
-Phyrexian Ingester	1	Effect:static_structure	S21-static-ability
-Void	1	Swallow:DynamicQty	S10-dynamic-qty-bespoke
-Chandra, Fire Artisan	1	Trigger:Whenever one or more loyalty counters are removed from ~	S19-new-trigger-matcher
-Qarsi Deceiver	1	Effect:spend	S25-effect-verb-bespoke
-Glen Elendra's Answer	1	Effect:all	S25-effect-verb-bespoke
-Forsworn Paladin	1	Swallow:Condition_If	S07-condition-if-bespoke
-Distorted Curiosity	0		R5-runtime-bespoke
-Elite Spellbinder	1	Effect:a	S25-effect-verb-bespoke
-Reptilian Recruiter	1	Swallow:Condition_If	S01-reflexive-if-rider
-Maestros Diabolist	1	Effect:create	S25-effect-verb-bespoke
-Deliver Unto Evil	1	Effect:leave	S25-effect-verb-bespoke
-Kylox's Voltstrider	2	Swallow:Condition_If;Swallow:Duration_UntilEndOfTurn	S01-reflexive-if-rider
-Gladewalker Ritualist	1	Trigger:Whenever another creature you control named Gladewalker Ritualist enters	S19-new-trigger-matcher
-Forge Anew	1	Effect:unknown	S24-unknown-effect-bespoke
-Barbarian Class	1	Effect:unknown	S24-unknown-effect-bespoke
-Akki Lavarunner	1	Effect:flip	S25-effect-verb-bespoke
-Confront the Past	1	Effect:remove	S25-effect-verb-bespoke
-Enhanced Surveillance	1	Effect:effect_structure	S25-effect-verb-bespoke
-Lady Octopus, Inspired Inventor	1	Trigger:Whenever you draw your first or second card each turn	S19-new-trigger-matcher
-Elbrus, the Binding Blade	1	Effect:unattach	S25-effect-verb-bespoke
-Unforge	1	Swallow:Condition_If	S07-condition-if-bespoke
-Spoils of the Vault	1	Swallow:DynamicQty	S08-foreach-count-qty
-Leyline of Transformation	1	Effect:unknown	S24-unknown-effect-bespoke
-Not Forgotten	1	Effect:put	S25-effect-verb-bespoke
-Nahiri's Lithoforming	1	Effect:lands	S25-effect-verb-bespoke
-Titans' Nest	1	Effect:spend	S25-effect-verb-bespoke
-Bounty of the Luxa	1	Effect:otherwise	S25-effect-verb-bespoke
-Druidic Satchel	1	Effect:nonland	S25-effect-verb-bespoke
-Void Stalker	1	Effect:shuffle	S25-effect-verb-bespoke
-Tovolar's Packleader	1	Effect:another	S25-effect-verb-bespoke
-The Skullspore Nexus	1	Effect:create	S25-effect-verb-bespoke
-Due Respect	1	Effect:permanents	S25-effect-verb-bespoke
-Sonic Shrieker	1	Swallow:Condition_If	S07-condition-if-bespoke
-Inferno Trap	1	Swallow:Duration_ThisTurn	S11-duration-grant
-Guild Feud	1	Effect:you	S25-effect-verb-bespoke
-Kuon, Ogre Ascendant	1	Effect:flip	S25-effect-verb-bespoke
-Seeds of Strength	0		R5-runtime-bespoke
-Reflector Mage	1	Effect:can't	S25-effect-verb-bespoke
-Bounding Felidar	1	Swallow:DynamicQty	S08-foreach-count-qty
-Cragganwick Cremator	1	Swallow:Condition_If	S07-condition-if-bespoke
-Hama Pashar, Ruin Seeker	1	Effect:unknown	S24-unknown-effect-bespoke
-Concussive Bolt	1	Effect:creatures	S25-effect-verb-bespoke
-Inventive Wingsmith	1	Swallow:Duration_ThisTurn	S11-duration-grant
-Angrath, Minotaur Pirate	1	Effect:deal	S25-effect-verb-bespoke
-Blightbeetle	1	Effect:static_structure	S21-static-ability
-Blizzard Brawl	1	Effect:target	S25-effect-verb-bespoke
-Pollywog Symbiote	1	Swallow:Condition_If	S05-alt-cost-if
-Caravan Escort	0		R3-level-up
 Hellkite Hatchling	1	Swallow:Condition_If	S01-reflexive-if-rider
-Orbital Plunge	1	Swallow:Condition_If	S01-reflexive-if-rider
-Elite Arcanist	1	Effect:x	S25-effect-verb-bespoke
-Kaldring, the Rimestaff	1	Effect:it	S25-effect-verb-bespoke
-Savage Punch	1	Swallow:Duration_UntilEndOfTurn	S11-duration-grant
-Flame Discharge	1	Effect:deal	S25-effect-verb-bespoke
-Weftwalking	1	Effect:unknown	S24-unknown-effect-bespoke
-Tablet of the Guilds	2	Swallow:Condition_If;Swallow:DynamicQty	S03-intervening-if-trigger
-Olag, Ludevic's Hubris	1	Effect:unknown	S24-unknown-effect-bespoke
-Taste for Mayhem	1	Effect:static_structure	S21-static-ability
-Verdeloth the Ancient	1	Effect:static_structure	S21-static-ability
-Balthier and Fran	1	Trigger:Whenever a Vehicle crewed by ~ this turn attacks	S19-new-trigger-matcher
-Fevered Visions	1	Swallow:Condition_If	S07-condition-if-bespoke
-Council of the Absolute	1	Effect:unknown	S24-unknown-effect-bespoke
-Sylvan Shepherd	0		R5-runtime-bespoke
-Solar Tide	1	Effect:entwine—sacrifice	S25-effect-verb-bespoke
-Twinning Glass	1	Swallow:Condition_If	S01-reflexive-if-rider
-Tyrannical Pitlord	2	Effect:static_structure;Effect:unknown	S21-static-ability
-Shirei, Shizo's Caretaker	1	Swallow:Condition_If	S07-condition-if-bespoke
-Extraplanar Lens	1	Trigger:Whenever a land with the same name as the exiled card is tapped for mana	S19-new-trigger-matcher
-Grimoire of the Dead	1	Effect:they're	S25-effect-verb-bespoke
-Feast on the Fallen	1	Swallow:Condition_If	S03-intervening-if-trigger
-Primal Prayers	1	Swallow:Condition_If	S05-alt-cost-if
-Herald of Hadar	0		R5-runtime-bespoke
-Barren Glory	2	Effect:have;Effect:if	S25-effect-verb-bespoke
-Vannifar, Evolved Enigma	1	Effect:cloak	S25-effect-verb-bespoke
-Yenna, Redtooth Regent	1	Swallow:Condition_If	S07-condition-if-bespoke
-War Historian	0		R2-aslongas-conditional-static
-Rampaging Geoderm	1	Swallow:Condition_If	S01-reflexive-if-rider
-Gutter Skulker	0		R2-aslongas-conditional-static
-Getaway Car	1	Swallow:Duration_ThisTurn	S11-duration-grant
-Invasion of Pyrulea	1	Swallow:Condition_If	S01-reflexive-if-rider
-Damping Matrix	1	Effect:static_structure	S21-static-ability
-Shalai, Voice of Plenty	1	Effect:static_structure	S21-static-ability
-Tundra Fumarole	1	Effect:add	S25-effect-verb-bespoke
-Polymorphous Rush	1	Effect:choose	S22-choose-effect
-Nirkana Cutthroat	0		R3-level-up
-Rescuer Sphinx	2	Swallow:Condition_If;Swallow:Optional_YouMay	S07-condition-if-bespoke
-Timeline Culler	0		R5-runtime-bespoke
-Anax, Hardened in the Forge	1	Swallow:Condition_If	S07-condition-if-bespoke
-Rogues' Gallery	1	Effect:for	S18-foreach-simple-count
-Throne of the Grim Captain	0		R5-runtime-bespoke
-Dose of Dawnglow	1	Swallow:Condition_If	S01-reflexive-if-rider
-Zulaport Enforcer	0		R3-level-up
-Kami of Jealous Thirst	1	Effect:this	S25-effect-verb-bespoke
-Nadaar, Selfless Paladin	0		R2-aslongas-conditional-static
-Ascendant Packleader	1	Swallow:Condition_If	S07-condition-if-bespoke
-Hearth Elemental	1	Swallow:DynamicQty	S10-dynamic-qty-bespoke
-Werewolf Pack Leader	1	Swallow:Condition_If	S03-intervening-if-trigger
-Chandra, Fire of Kaladesh	1	Swallow:Duration_ThisTurn	S11-duration-grant
-Rumbling Aftershocks	1	Effect:deal	S25-effect-verb-bespoke
-Myr Superion	1	Effect:unknown	S24-unknown-effect-bespoke
-Mind Bend	1	Effect:change	S25-effect-verb-bespoke
-Death's Approach	1	Effect:static_structure	S21-static-ability
-Kaya, Geist Hunter	1	Effect:twice	S25-effect-verb-bespoke
-Asmodeus the Archfiend	1	Swallow:Condition_If	S07-condition-if-bespoke
-Etched Host Doombringer	1	Effect:otherwise	S25-effect-verb-bespoke
-Remorseless Punishment	1	Effect:Unsupported unless clause	S14-unless-clause
-Rushing-Tide Zubera	2	Swallow:Condition_If;Swallow:Duration_ThisTurn	S07-condition-if-bespoke
-Madcap Experiment	1	Effect:deal	S25-effect-verb-bespoke
-Tail Swipe	1	Effect:target	S25-effect-verb-bespoke
-Hisoka, Minamo Sensei	1	Swallow:Condition_If	S01-reflexive-if-rider
-Garruk Relentless	1	Trigger:When Garruk has two or fewer loyalty counters on him	S19-new-trigger-matcher
-Goblin Traprunner	1	Swallow:DynamicQty	S08-foreach-count-qty
-Skill Borrower	0		R2-aslongas-conditional-static
-Braided Net	1	Swallow:Condition_AsLongAs	S13-aslongas-parse
-Rubblebelt Braggart	1	Swallow:Condition_If	S03-intervening-if-trigger
-Arcane Adaptation	1	Effect:unknown	S24-unknown-effect-bespoke
-Dreams of Steel and Oil	1	Effect:choose	S22-choose-effect
-Tunnel Ignus	2	Swallow:Condition_If;Swallow:Duration_ThisTurn	S03-intervening-if-trigger
-Lifecraft Awakening	1	Swallow:Condition_If	S01-reflexive-if-rider
-No Witnesses	1	Effect:the	S25-effect-verb-bespoke
-Deceiver of Form	1	Effect:have	S25-effect-verb-bespoke
-Melira, the Living Cure	2	Effect:replacement_structure;Effect:when	S25-effect-verb-bespoke
-Goldberry, River-Daughter	1	Effect:move	S25-effect-verb-bespoke
-Swirl the Mists	1	Effect:effect_structure	S25-effect-verb-bespoke
-Ivy, Gleeful Spellthief	1	Effect:the	S25-effect-verb-bespoke
-Lightwheel Enhancements	0		R1-speed-mechanic
-Petals of Insight	1	Swallow:Optional_YouMay	S12-optional-youmay-subeffect
-Vanille, Cheerful l'Cie	1	Effect:fearless	S25-effect-verb-bespoke
-See the Truth	1	Swallow:Condition_If	S02-cast-context-if
-Halimar Wavewatch	0		R3-level-up
-Unstable Glyphbridge	1	Effect:for	S16-foreach-player-object-HEAVY
-Outlaw Stitcher	1	Swallow:DynamicQty	S08-foreach-count-qty
-Hundred-Battle Veteran	0		R2-aslongas-conditional-static
-Athreos, God of Passage	1	Effect:Unsupported unless clause	S14-unless-clause
-Consuming Blob	1	Effect:create	S25-effect-verb-bespoke
-Dust of Moments	1	Effect:each	S25-effect-verb-bespoke
-Sasaya, Orochi Ascendant	1	Effect:static_structure	S21-static-ability
-Enshrouding Mist	1	Swallow:Condition_If	S01-reflexive-if-rider
-Riku of Many Paths	2	Swallow:DynamicQty;Swallow:Modal_DynamicMaxDropped	S10-dynamic-qty-bespoke
-Descent into Madness	1	Swallow:DynamicQty	S10-dynamic-qty-bespoke
-Overwhelming Splendor	1	Effect:static_structure	S21-static-ability
-Guile	1	Effect:replacement_structure	S25-effect-verb-bespoke
-Crystalline Giant	2	Effect:choose;Effect:put	S22-choose-effect
-Molten Exhale	1	Swallow:Condition_If	S05-alt-cost-if
-Soulless Jailer	1	Effect:static_structure	S21-static-ability
-Ward of Piety	1	Effect:the	S25-effect-verb-bespoke
-Temple of the Dead	1	Swallow:Condition_If	S04-activate-only-if
-Bloodfire Enforcers	0		R2-aslongas-conditional-static
-Thirsting Axe	1	Swallow:Duration_ThisTurn	S11-duration-grant
-Linessa, Zephyr Mage	1	Cost:Zephyr Mage	S23-alt-cost-parse
-Ugin's Nexus	1	Effect:replacement_structure	S25-effect-verb-bespoke
-Zimone, Paradox Sculptor	1	Swallow:DynamicQty	S10-dynamic-qty-bespoke
-Reject Imperfection	1	Swallow:Condition_If	S01-reflexive-if-rider
-Hauken's Insight	2	Effect:look;Effect:unknown	S24-unknown-effect-bespoke
-Masako the Humorless	1	Effect:unknown	S24-unknown-effect-bespoke
-Treacherous Greed	1	Swallow:Duration_ThisTurn	S11-duration-grant
-Shanna, Purifying Blade	1	Effect:x	S25-effect-verb-bespoke
-Antiquities on the Loose	1	Swallow:Condition_If	S05-alt-cost-if
-Narset Transcendent	2	Effect:nonland;Effect:when	S25-effect-verb-bespoke
-Domri, Chaos Bringer	1	Swallow:Condition_If	S07-condition-if-bespoke
-Sidequest: Hunt the Mark	1	Swallow:Duration_ThisTurn	S11-duration-grant
-Queen Kayla bin-Kroog	1	Effect:choose	S22-choose-effect
-Alhammarret, High Arbiter	1	Effect:unknown	S24-unknown-effect-bespoke
-Chandra's Regulator	1	Trigger:Whenever you activate a loyalty ability of a Chandra planeswalker	S19-new-trigger-matcher
-Garza's Assassin	1	Swallow:DynamicQty	S10-dynamic-qty-bespoke
-Bonepicker Skirge	0		R2-aslongas-conditional-static
-Liberator, Urza's Battlethopter	1	Swallow:Condition_If	S03-intervening-if-trigger
-Thought Distortion	1	Effect:graveyard	S25-effect-verb-bespoke
-Primal Clay	1	Effect:unknown	S24-unknown-effect-bespoke
-Machinist's Arsenal	1	Swallow:DynamicQty	S08-foreach-count-qty
-Hall of the Bandit Lord	1	Swallow:Condition_If	S07-condition-if-bespoke
-Hedron-Field Purists	0		R3-level-up
-Honored Hierarch	0		R2-aslongas-conditional-static
-Karn's Sylex	1	Effect:static_structure	S21-static-ability
-Jester's Scepter	1	Effect:look	S25-effect-verb-bespoke
-Nicol Bolas, the Arisen	1	ParseWarning:target-fallback	S17-anaphoric-target
-Chaos Channeler	1	Swallow:Optional_YouMay	S12-optional-youmay-subeffect
-Student of Elements	2	Effect:flip;Trigger:When ~ has flying	S19-new-trigger-matcher
-First Response	1	Swallow:Condition_If	S03-intervening-if-trigger
-Kitsune Mystic	1	Effect:flip	S25-effect-verb-bespoke
-Kabira Vindicator	0		R3-level-up
-Earth-Cult Elemental	0		R5-runtime-bespoke
-Tranquil Frillback	1	Swallow:Modal_DynamicMaxDropped	S29-modal-dynamic-choose
-Tenacious Hunter	0		R2-aslongas-conditional-static
-Keen-Eared Sentry	1	Effect:effect_structure	S25-effect-verb-bespoke
-Invincible Hymn	2	Effect:count;Effect:your	S25-effect-verb-bespoke
-Chancellor of the Annex	1	Effect:effect_structure	S25-effect-verb-bespoke
-Deepway Navigator	0		R2-aslongas-conditional-static
-Otterball Antics	1	Swallow:Condition_If	S05-alt-cost-if
-Brilliance Unleashed	1	Effect:it's	S25-effect-verb-bespoke
-Howlpack Piper	1	Swallow:Condition_If	S01-reflexive-if-rider
-Ral, Leyline Prodigy	1	Effect:instant	S25-effect-verb-bespoke
-Elemental Resonance	1	Effect:add	S25-effect-verb-bespoke
+Brain Pry	1	Swallow:Condition_If	S01-reflexive-if-rider
 Farideh's Fireball	0		R5-runtime-bespoke
+Azor's Gateway	1	Swallow:Condition_If	S07-condition-if-bespoke
+Phosphorescent Feast	1	Swallow:DynamicQty	S08-foreach-count-qty
+Grinning Totem	1	Effect:until	S25-effect-verb-bespoke
+Signal the Clans	1	Swallow:Condition_If	S07-condition-if-bespoke
+Blasphemous Edict	1	Swallow:Condition_If	S05-alt-cost-if
+Honored Hierarch	0		R2-aslongas-conditional-static
+Void	1	Swallow:DynamicQty	S10-dynamic-qty-bespoke
+Creepy Puppeteer	1	Swallow:Condition_If	S03-intervening-if-trigger
+Dementia Sliver	2	Swallow:ActivateOnlyDuring;Swallow:Condition_If	S01-reflexive-if-rider
+Ichormoon Gauntlet	1	Effect:put	S25-effect-verb-bespoke
+The World Spell	0		R5-runtime-bespoke
+Syndicate Infiltrator	0		R2-aslongas-conditional-static
+Identity Crisis	1	Effect:graveyard	S25-effect-verb-bespoke
+Fists of Flame	1	Swallow:DynamicQty	S08-foreach-count-qty
+Scion of Draco	1	Effect:static_structure	S21-static-ability
+Rimefeather Owl	1	Effect:unknown	S24-unknown-effect-bespoke
+Aegar, the Freezing Flame	1	Effect:wizard,	S25-effect-verb-bespoke
+Shape Anew	1	Effect:the	S25-effect-verb-bespoke
+Invasion of Tarkir	1	Effect:deal	S25-effect-verb-bespoke
+Gather Specimens	1	Effect:it	S25-effect-verb-bespoke
+Urborg Scavengers	0		R2-aslongas-conditional-static
+Temple of Power	1	Swallow:Condition_If	S04-activate-only-if
+Invoke Despair	1	Effect:repeat	S25-effect-verb-bespoke
+Swirl the Mists	1	Effect:effect_structure	S25-effect-verb-bespoke
+Assimilate Essence	1	Effect:you	S25-effect-verb-bespoke
+Dispossess	1	Effect:choose	S22-choose-effect
+Long Feng, Grand Secretariat	1	Trigger:Whenever another creature you control	S19-new-trigger-matcher
+Nahiri, the Unforgiving	1	Effect:attack	S25-effect-verb-bespoke
+Sarkhan's Whelp	1	Trigger:Whenever you activate an ability of a Sarkhan planeswalker	S19-new-trigger-matcher
+Vincent's Limit Break	3	Effect:{0};Effect:{1};Effect:{3}	S25-effect-verb-bespoke
+Sheriff of Safe Passage	1	Swallow:DynamicQty	S08-foreach-count-qty
+Conjured Currency	1	Effect:exchange	S25-effect-verb-bespoke
+Spectral Shift	1	Effect:change	S25-effect-verb-bespoke
+Captured by the Consulate	1	Effect:change	S25-effect-verb-bespoke
+Rhys, the Evermore	1	Effect:remove	S25-effect-verb-bespoke
+Ajani, Strength of the Pride	1	Effect:gain	S25-effect-verb-bespoke
+Katilda, Dawnhart Prime	1	Effect:add	S25-effect-verb-bespoke
+Huatli, Warrior Poet	1	Effect:creatures	S25-effect-verb-bespoke
+Reverse the Sands	1	Effect:redistribute	S25-effect-verb-bespoke
+Sharkey, Tyrant of the Shire	2	Effect:static_structure;Effect:unknown	S21-static-ability
+Scrapdiver Serpent	0		R2-aslongas-conditional-static
+Hostile Negotiations	1	Effect:look	S25-effect-verb-bespoke
+Orator of Ojutai	1	Swallow:Condition_If	S03-intervening-if-trigger
+Bruna, Light of Alabaster	1	Effect:put	S25-effect-verb-bespoke
+Everlasting Torment	1	Effect:effect_structure	S25-effect-verb-bespoke
+Charging Hooligan	1	Swallow:Condition_If	S07-condition-if-bespoke
+Imperiosaur	1	Effect:unknown	S24-unknown-effect-bespoke
+Outmuscle	1	Effect:the	S25-effect-verb-bespoke
+Hall of the Bandit Lord	1	Swallow:Condition_If	S07-condition-if-bespoke
+Crowd-Control Warden	1	Effect:replacement_structure	S25-effect-verb-bespoke
+Deliver Unto Evil	1	Effect:leave	S25-effect-verb-bespoke
+Polis Crusher	1	Swallow:Condition_If	S03-intervening-if-trigger
+Hungering Yeti	1	Swallow:Optional_YouMay	S12-optional-youmay-subeffect
+Oviya, Automech Artisan	1	Swallow:Condition_If	S07-condition-if-bespoke
+Pyxis of Pandemonium	1	Effect:turn	S25-effect-verb-bespoke
+Primal Prayers	1	Swallow:Condition_If	S05-alt-cost-if
+Sewer Crocodile	1	Effect:this	S25-effect-verb-bespoke
+Treacherous Greed	1	Swallow:Duration_ThisTurn	S11-duration-grant
+Herigast, Erupting Nullkite	1	Effect:static_structure	S21-static-ability
+Guild Feud	1	Effect:you	S25-effect-verb-bespoke
+Plagiarize	1	Effect:instead	S25-effect-verb-bespoke
+Confusion in the Ranks	1	Effect:exchange	S25-effect-verb-bespoke
+Hinder	1	Swallow:Condition_If	S01-reflexive-if-rider
+Cloister Gargoyle	0		R2-aslongas-conditional-static
+Favor of the Mighty	1	Effect:static_structure	S21-static-ability
+Narset Transcendent	2	Effect:nonland;Effect:when	S25-effect-verb-bespoke
+Grim Wanderer	0		R5-runtime-bespoke
+Neurok Spy	0		R2-aslongas-conditional-static
+Rune-Tail, Kitsune Ascendant	2	Effect:flip;Trigger:When you have 30 or more life	S19-new-trigger-matcher
+Monument to Perfection	1	Effect:lose	S25-effect-verb-bespoke
+Duplicant	0		R2-aslongas-conditional-static
+Soulfire Grand Master	1	Effect:the	S25-effect-verb-bespoke
+Cloud, Planet's Champion	1	Swallow:Condition_AsLongAs	S13-aslongas-parse
+Verdant Mastery	1	Swallow:Condition_If	S05-alt-cost-if
+Stalking Yeti	1	Swallow:Condition_If	S03-intervening-if-trigger
+Security Bypass	0		R2-aslongas-conditional-static
+Porphyry Nodes	1	Trigger:When there are no creatures on the battlefield	S19-new-trigger-matcher
+Struggle for Sanity	1	Effect:repeat	S25-effect-verb-bespoke
+Hundred-Battle Veteran	0		R2-aslongas-conditional-static
+Wicked Akuba	1	Swallow:Duration_ThisTurn	S11-duration-grant
+Disturbing Conversion	1	Effect:static_structure	S21-static-ability
+Double Major	1	Swallow:Condition_If	S07-condition-if-bespoke
+Delina, Wild Mage	1	Swallow:Optional_YouMay	S12-optional-youmay-subeffect
+Render Silent	1	Effect:can't	S25-effect-verb-bespoke
+Sanctum Prelate	1	Swallow:DynamicQty	S10-dynamic-qty-bespoke
+Vengeful Rebirth	1	Swallow:Condition_If	S07-condition-if-bespoke
+Sen Triplets	3	Effect:or;Effect:play;Effect:this	S25-effect-verb-bespoke
+Combat Celebrant	1	Swallow:Duration_ThisTurn	S11-duration-grant
+Waking the Trolls	1	Swallow:Condition_If	S06-saga-chapter-if
+Ashiok, Wicked Manipulator	2	Swallow:Duration_ThisTurn;Swallow:DynamicQty	S10-dynamic-qty-bespoke
+Racers' Scoreboard	0		R1-speed-mechanic
+Gutter Skulker	0		R2-aslongas-conditional-static
+Zada, Hedron Grinder	1	Swallow:DynamicQty	S08-foreach-count-qty
+Bladecoil Serpent	1	Effect:for	S18-foreach-simple-count
+Masako the Humorless	1	Effect:unknown	S24-unknown-effect-bespoke
+Holy Frazzle-Cannon	1	Effect:each	S25-effect-verb-bespoke
+Necrogen Rotpriest	1	Effect:get	S25-effect-verb-bespoke
+Titans' Nest	1	Effect:spend	S25-effect-verb-bespoke
+Demonlord Belzenlok	1	Effect:repeat	S25-effect-verb-bespoke
+Eidolon of Countless Battles	1	Swallow:DynamicQty	S08-foreach-count-qty
+Gix, Yawgmoth Praetor	1	Effect:play	S25-effect-verb-bespoke
+Circle of Affliction	1	Trigger:Whenever a source of the chosen color deals damage to you	S19-new-trigger-matcher
+Stalwart Successor	2	Swallow:Condition_If;Swallow:Duration_ThisTurn	S03-intervening-if-trigger
+Jushi Apprentice	1	Effect:flip	S25-effect-verb-bespoke
+Discerning Taste	1	Effect:gain	S25-effect-verb-bespoke
+Master of Predicaments	1	Effect:that	S25-effect-verb-bespoke
+Panglacial Wurm	1	Effect:unknown	S24-unknown-effect-bespoke
+Niko Defies Destiny	1	Effect:spend	S25-effect-verb-bespoke
+Celestial Dawn	2	Effect:effect_structure;Effect:static_structure	S21-static-ability
+Nine Lives	1	Trigger:When there are nine or more incarnation counters on ~	S19-new-trigger-matcher
+Haktos the Unscarred	1	Effect:unknown	S24-unknown-effect-bespoke
+Liar's Pendulum	1	Effect:target	S25-effect-verb-bespoke
+Hired Muscle	1	Effect:flip	S25-effect-verb-bespoke
+Viral Spawning	0		R2-aslongas-conditional-static
+Graceful Reprieve	1	Trigger:When target creature dies this turn	S19-new-trigger-matcher
+Curious Obsession	1	Swallow:Duration_ThisTurn	S11-duration-grant
+Path of Bravery	0		R2-aslongas-conditional-static
+Tail Swipe	1	Effect:target	S25-effect-verb-bespoke
+Invoke Calamity	2	Swallow:Condition_If;Swallow:Optional_YouMay	S07-condition-if-bespoke
+Recommission	1	Swallow:Condition_If	S07-condition-if-bespoke
+Skyclave Shade	2	Effect:if;Effect:it's	S25-effect-verb-bespoke
+Professor Onyx	1	Effect:repeat	S25-effect-verb-bespoke
+Become Brutes	1	Effect:for	S18-foreach-simple-count
+Restless Prairie	0		R5-runtime-bespoke
+Null Champion	0		R3-level-up
+Sigil Captain	1	Swallow:Condition_If	S03-intervening-if-trigger
+Play with Fire	1	Swallow:Condition_If	S07-condition-if-bespoke
+Doppelgang	1	Effect:for	S18-foreach-simple-count
+Fall	1	Effect:discard	S25-effect-verb-bespoke
+Wretched Banquet	1	Swallow:Condition_If	S01-reflexive-if-rider
+Dubious Challenge	1	Effect:choose	S22-choose-effect
+Deicide	1	Effect:search	S25-effect-verb-bespoke
+Quicksilver Fountain	1	Effect:have	S25-effect-verb-bespoke
+Structural Collapse	1	Effect:a	S25-effect-verb-bespoke
+Guul Draz Assassin	0		R3-level-up
+Aether Revolt	2	Swallow:Condition_AsLongAs;Swallow:Condition_If	S07-condition-if-bespoke
+Icebreaker Kraken	1	Effect:artifacts	S25-effect-verb-bespoke
+Lukka, Coppercoat Outcast	1	Swallow:Condition_AsLongAs	S13-aslongas-parse
+Predator's Gambit	0		R2-aslongas-conditional-static
+The Rollercrusher Ride	1	Swallow:Condition_If	S07-condition-if-bespoke
+Grievous Wound	1	Trigger:Whenever enchanted player is dealt damage	S19-new-trigger-matcher
+Jace, Mirror Mage	1	Effect:remove	S25-effect-verb-bespoke
+Skywatcher Adept	0		R3-level-up
+Notion Thief	1	Effect:draw	S25-effect-verb-bespoke
+Mistbind Clique	1	Trigger:When a Faerie is championed with ~	S19-new-trigger-matcher
+Bloodsoaked Insight	1	Swallow:Condition_If	S02-cast-context-if
+Master of the Wild Hunt	1	Effect:deal	S25-effect-verb-bespoke
+The Cruelty of Gix	0		R5-runtime-bespoke
+Brine Elemental	1	Effect:skip	S25-effect-verb-bespoke
+Eye of the Storm	1	Effect:for	S18-foreach-simple-count
+Thran Portal	1	Effect:unknown	S24-unknown-effect-bespoke
+Call to Serve	0		R5-runtime-bespoke
+Soul of Emancipation	1	Effect:for	S18-foreach-simple-count
+Oracle's Attendants	1	Effect:all	S25-effect-verb-bespoke
+Hades, Sorcerer of Eld	1	Swallow:Optional_YouMay	S12-optional-youmay-subeffect
+Judgment Bolt	1	Swallow:DynamicQty	S10-dynamic-qty-bespoke
+Plumb the Forbidden	1	Swallow:DynamicQty	S08-foreach-count-qty
+Mjölnir, Storm Hammer	1	Effect:deal	S25-effect-verb-bespoke
+Cairn Wanderer	0		R2-aslongas-conditional-static
+Lady Octopus, Inspired Inventor	1	Trigger:Whenever you draw your first or second card each turn	S19-new-trigger-matcher
+Goliath Hatchery	1	Effect:draw	S25-effect-verb-bespoke
+Raubahn, Bull of Ala Mhigo	1	Swallow:DynamicQty	S10-dynamic-qty-bespoke
+Nasty End	1	Swallow:Condition_If	S07-condition-if-bespoke
+Lumengrid Augur	1	Swallow:Condition_If	S07-condition-if-bespoke
+Magus of the Scroll	1	Swallow:Condition_If	S01-reflexive-if-rider
+Mystic Reflection	1	Effect:the	S25-effect-verb-bespoke
+Vexing Arcanix	1	Effect:otherwise	S25-effect-verb-bespoke
+Hama Pashar, Ruin Seeker	1	Effect:unknown	S24-unknown-effect-bespoke
+Taste for Mayhem	1	Effect:static_structure	S21-static-ability
+Corpseberry Cultivator	1	Trigger:Whenever you forage	S19-new-trigger-matcher
+Mysterious Limousine	1	Swallow:Condition_If	S07-condition-if-bespoke
+Sphinx of Clear Skies	1	Effect:an	S25-effect-verb-bespoke
+The Aesir Escape Valhalla	1	Effect:the	S25-effect-verb-bespoke
+Exuberant Wolfbear	1	Effect:change	S25-effect-verb-bespoke
+Celestial Reunion	1	Swallow:Condition_If	S07-condition-if-bespoke
+Oni Possession	1	Effect:static_structure	S21-static-ability
+Budoka Pupil	1	Effect:flip	S25-effect-verb-bespoke
+Epochrasite	1	Swallow:Condition_If	S07-condition-if-bespoke
+Warden of the Beyond	0		R2-aslongas-conditional-static
+Pulse of the Forge	1	Swallow:Condition_If	S07-condition-if-bespoke
+Zimone, All-Questioning	1	Swallow:Duration_ThisTurn	S11-duration-grant
+Minion of the Mighty	1	Swallow:Condition_If	S03-intervening-if-trigger
+Teferi, Master of Time	1	Effect:effect_structure	S25-effect-verb-bespoke
+Kozilek, the Broken Reality	1	Effect:manifest	S25-effect-verb-bespoke
+The Skullspore Nexus	1	Effect:create	S25-effect-verb-bespoke
+Bronze Bombshell	1	Trigger:When a player other than ~'s owner controls it	S19-new-trigger-matcher
+Wojek Investigator	1	Swallow:DynamicQty	S08-foreach-count-qty
+Sarkhan, Dragon Ascendant	1	Effect:behold	S25-effect-verb-bespoke
+Page, Loose Leaf	1	Cost:Loose Leaf	S23-alt-cost-parse
+Woolly Razorback	1	Swallow:Condition_AsLongAs	S13-aslongas-parse
+Ogre Marauder	1	Effect:Unsupported unless clause	S14-unless-clause
+Urgent Necropsy	1	Swallow:DynamicQty	S10-dynamic-qty-bespoke
+Kaito, Dancing Shadow	1	Effect:activate	S25-effect-verb-bespoke
+Glimmerdust Nap	0		R5-runtime-bespoke
+Nicol Bolas, Dragon-God	1	Effect:static_structure	S21-static-ability
+Loathsome Troll	0		R5-runtime-bespoke
+Ajani Unyielding	1	Effect:five	S25-effect-verb-bespoke
+Dermotaxi	1	Effect:unknown	S24-unknown-effect-bespoke
+Starving Revenant	1	Effect:for	S18-foreach-simple-count
+Gastal Thrillseeker	0		R1-speed-mechanic
+Combustible Gearhulk	1	Effect:deal	S25-effect-verb-bespoke
+Earth Rumble Wrestlers	0		R2-aslongas-conditional-static
+Search for Glory	1	Swallow:DynamicQty	S08-foreach-count-qty
+Circle of the Moon Druid	1	Effect:unknown	S24-unknown-effect-bespoke
+The Elder Dragon War	0		R5-runtime-bespoke
+Grist, the Hunger Tide	1	Effect:repeat	S25-effect-verb-bespoke
+Valgavoth, Terror Eater	1	Swallow:Condition_If	S05-alt-cost-if
+Domri, Anarch of Bolas	1	Effect:creature	S25-effect-verb-bespoke
+Drizzt Do'Urden	1	Effect:put	S25-effect-verb-bespoke
+Conjurer's Ban	1	Effect:spells	S25-effect-verb-bespoke
+Gaze of the Gorgon	1	Effect:at	S25-effect-verb-bespoke
+Master's Manufactory	1	Swallow:Condition_If	S04-activate-only-if
+Nahiri's Lithoforming	1	Effect:lands	S25-effect-verb-bespoke
+Death's Approach	1	Effect:static_structure	S21-static-ability
+Brimstone Mage	0		R3-level-up
+Goblin Glory Chaser	0		R2-aslongas-conditional-static
+Unified Will	1	Swallow:Condition_If	S07-condition-if-bespoke
+Squirming Emergence	1	Swallow:DynamicQty	S10-dynamic-qty-bespoke
+Grisly Sigil	1	Effect:otherwise	S25-effect-verb-bespoke
+Skoa, Embermage	1	Cost:Embermage	S23-alt-cost-parse
+Akki Lavarunner	1	Effect:flip	S25-effect-verb-bespoke
+Due Respect	1	Effect:permanents	S25-effect-verb-bespoke
+Zulaport Enforcer	0		R3-level-up
+Duneblast	1	Effect:choose	S22-choose-effect
+Maximum Carnage	1	Swallow:Condition_If	S06-saga-chapter-if
+Sentinel's Mark	1	Effect:during	S25-effect-verb-bespoke
+Council of the Absolute	1	Effect:unknown	S24-unknown-effect-bespoke
+Immortal Coil	1	Trigger:When there are no cards in your graveyard	S19-new-trigger-matcher
+Sandman, Shifting Scoundrel	1	Effect:target	S25-effect-verb-bespoke
+Scheming Fence	2	Effect:static_structure;Effect:unknown	S21-static-ability
+Fumiko the Lowblood	1	Swallow:DynamicQty	S10-dynamic-qty-bespoke
+Diviner's Lockbox	1	Swallow:Condition_If	S01-reflexive-if-rider
+Skarrgan Hellkite	1	Swallow:Condition_If	S04-activate-only-if
+Outrageous Robbery	1	Effect:spend	S25-effect-verb-bespoke
+Escape Velocity	1	Effect:unknown	S24-unknown-effect-bespoke
+Cinder Strike	1	Swallow:Condition_If	S07-condition-if-bespoke
+Mana Clash	1	Effect:repeat	S25-effect-verb-bespoke
+Hagra Mauling	1	Swallow:Condition_If	S05-alt-cost-if
+Aquamorph Entity	1	Effect:replacement_structure	S25-effect-verb-bespoke
+Durkwood Tracker	1	Swallow:Condition_If	S07-condition-if-bespoke
+Frost Augur	1	Swallow:Condition_If	S01-reflexive-if-rider
+Nezumi Graverobber	1	Effect:flip	S25-effect-verb-bespoke
+Fold into Aether	1	Swallow:Condition_If	S01-reflexive-if-rider
+Simic Manipulator	1	Swallow:DynamicQty	S10-dynamic-qty-bespoke
+Brilliant Ultimatum	2	Effect:an;Effect:play	S25-effect-verb-bespoke
+Innocent Bystander	1	Trigger:Whenever ~ is dealt 3 or more damage	S19-new-trigger-matcher
+Graveyard Shift	0		R2-aslongas-conditional-static
+Worldfire	1	Effect:graveyards	S25-effect-verb-bespoke
+Conduit of Worlds	1	Effect:can't	S25-effect-verb-bespoke
+Urgoros, the Empty One	1	Swallow:Condition_If	S07-condition-if-bespoke
+Scattering Stroke	1	Swallow:Optional_YouMay	S12-optional-youmay-subeffect
+Pick the Brain	1	Effect:search	S25-effect-verb-bespoke
+Plasm Capture	1	Effect:at	S25-effect-verb-bespoke
+Choice of Damnations	1	ParseWarning:target-fallback	S17-anaphoric-target
+Mana Seism	1	Effect:add	S25-effect-verb-bespoke
+Meletis Charlatan	1	Effect:the	S25-effect-verb-bespoke
+Blade of Shared Souls	1	Effect:have	S25-effect-verb-bespoke
+Crackle with Power	1	Effect:deal	S25-effect-verb-bespoke
+Leonardo, Sewer Samurai	2	Swallow:Condition_If;Swallow:Optional_YouMay	S02-cast-context-if
+Niko, Light of Hope	1	Effect:shards	S25-effect-verb-bespoke
+Monomania	1	Effect:choose	S22-choose-effect
+Ozai, the Phoenix King	0		R2-aslongas-conditional-static
+Puca's Eye	1	Swallow:Condition_If	S04-activate-only-if
+Keranos, God of Storms	1	Effect:effect_structure	S25-effect-verb-bespoke
+Worldheart Phoenix	1	Swallow:Condition_If	S05-alt-cost-if
+Narset's Reversal	1	Effect:orphaned_copy_retarget	S20-copy-retarget
+Mesmeric Sliver	1	Effect:fateseal	S25-effect-verb-bespoke
+Town Greeter	1	Swallow:Condition_If	S07-condition-if-bespoke
+Clay Champion	1	Effect:for	S18-foreach-simple-count
+Subterranean Schooner	1	Swallow:Duration_ThisTurn	S11-duration-grant
+Altar of the Pantheon	2	Effect:a;Effect:unknown	S24-unknown-effect-bespoke
+Arbiter of the Ideal	1	Effect:creature,	S25-effect-verb-bespoke
+Precursor Golem	1	Swallow:DynamicQty	S08-foreach-count-qty
+Adrestia	1	Swallow:Condition_If	S03-intervening-if-trigger
+Dennick, Pious Apparition	1	Trigger:Whenever one or more creature cards are put into graveyards from anywhere	S19-new-trigger-matcher
+Shirei, Shizo's Caretaker	1	Swallow:Condition_If	S07-condition-if-bespoke
+Guile	1	Effect:replacement_structure	S25-effect-verb-bespoke
+Sphere of Annihilation	1	Effect:all	S25-effect-verb-bespoke
+Evolved Spinoderm	0		R2-aslongas-conditional-static
+Sonic Shrieker	1	Swallow:Condition_If	S07-condition-if-bespoke
+Aurelia's Fury	1	Effect:players	S25-effect-verb-bespoke
+Enduring Angel	1	Effect:replacement_structure	S25-effect-verb-bespoke
+Realmwright	1	Effect:static_structure	S21-static-ability
+Coiling Rebirth	1	Swallow:Condition_If	S07-condition-if-bespoke
+Bonepicker Skirge	0		R2-aslongas-conditional-static
+Fractalize	1	Swallow:DynamicQty	S10-dynamic-qty-bespoke
+Shadow of the Second Sun	1	Effect:there	S25-effect-verb-bespoke
+Mirrormind Crown	1	Swallow:Optional_YouMay	S12-optional-youmay-subeffect
+Frodo Baggins	0		R2-aslongas-conditional-static
+Perilous Predicament	1	Effect:a	S25-effect-verb-bespoke
+Vendilion Clique	1	Effect:reveal	S25-effect-verb-bespoke
+Neheb, the Eternal	1	Effect:add	S25-effect-verb-bespoke
+Kozilek's Unsealing	1	Effect:5,	S25-effect-verb-bespoke
+Skullmulcher	1	Swallow:DynamicQty	S08-foreach-count-qty
+Triskaidekaphobia	1	Effect:with	S25-effect-verb-bespoke
+Conspiracy	1	Effect:unknown	S24-unknown-effect-bespoke
+Surrak, Elusive Hunter	1	Trigger:Whenever a creature you control	S19-new-trigger-matcher
+Riftmarked Knight	1	Trigger:When the last time counter is removed from this card while it's exiled	S19-new-trigger-matcher
+Foul Emissary	1	Trigger:When you sacrifice ~ while casting a spell with emerge	S19-new-trigger-matcher
+Ojer Axonil, Deepest Might	1	Swallow:DynamicQty	S10-dynamic-qty-bespoke
+Gideon, Battle-Forged	1	Effect:attack	S25-effect-verb-bespoke
+Moratorium Stone	1	Effect:all	S25-effect-verb-bespoke
+Combine Guildmage	2	Effect:each;Effect:this	S25-effect-verb-bespoke
+Caravan Escort	0		R3-level-up
+Lethal Exploit	1	Effect:get	S25-effect-verb-bespoke
+Tide of War	1	Trigger:Whenever one or more creatures block	S19-new-trigger-matcher
+Unsettled Mariner	1	Trigger:Whenever you	S19-new-trigger-matcher
+Faramir, Prince of Ithilien	2	Effect:at;Effect:otherwise	S25-effect-verb-bespoke
+Kasmina, Enigma Sage	1	Effect:static_structure	S21-static-ability
+Flash Conscription	1	Effect:the	S25-effect-verb-bespoke
+Ixidron	1	Effect:unknown	S24-unknown-effect-bespoke
+Oblivious Bookworm	1	Effect:Unsupported unless clause	S14-unless-clause
+Spectral Adversary	1	Effect:when	S25-effect-verb-bespoke
+Cultivator Drone	1	Effect:spend	S25-effect-verb-bespoke
+The Immortal Sun	1	Effect:unknown	S24-unknown-effect-bespoke
+Maestros Ascendancy	1	Swallow:Condition_If	S05-alt-cost-if
+Thieves' Auction	2	Effect:choose;Effect:repeat	S22-choose-effect
+To the Slaughter	1	Effect:a	S25-effect-verb-bespoke
+Oblivion's Hunger	1	Swallow:Condition_If	S01-reflexive-if-rider
+Groom's Finery	0		R2-aslongas-conditional-static
+Birgi, God of Storytelling	1	Swallow:DynamicQty	S10-dynamic-qty-bespoke
+Even the Odds	0		R5-runtime-bespoke
+Weight of Spires	1	Effect:deal	S25-effect-verb-bespoke
+Breach the Multiverse	1	Swallow:DynamicQty	S08-foreach-count-qty
+Karfell Harbinger	1	Effect:spend	S25-effect-verb-bespoke
+Party Dude	1	Trigger:Whenever one or more of your opponents are attacked	S19-new-trigger-matcher
+Ellywick Tumblestrum	1	Swallow:DynamicQty	S08-foreach-count-qty
+Ghostfire Blade	1	Effect:static_structure	S21-static-ability
+Sorcerer Class	1	Effect:spend	S25-effect-verb-bespoke
+Kaheera, the Orphanguard	1	Effect:unknown	S24-unknown-effect-bespoke
+Shah of Naar Isle	1	Trigger:When ~'s echo cost is paid	S19-new-trigger-matcher
+Thaumaton Torpedo	1	Swallow:Duration_ThisTurn	S11-duration-grant
+Teferi's Time Twist	1	Swallow:Condition_If	S01-reflexive-if-rider
+Concussive Bolt	1	Effect:creatures	S25-effect-verb-bespoke
+Rite of Ruin	3	Effect:choose;ParseWarning:target-fallback	S17-anaphoric-target
+Deceiver of Form	1	Effect:have	S25-effect-verb-bespoke
+Blinkmoth Nexus	0		R5-runtime-bespoke
+Ogre Geargrabber	1	Effect:when	S25-effect-verb-bespoke
+Case of the Uneaten Feast	1	Swallow:Optional_YouMay	S12-optional-youmay-subeffect
+Grimoire of the Dead	1	Effect:they're	S25-effect-verb-bespoke
+Battle for Bretagard	1	Swallow:DynamicQty	S08-foreach-count-qty
+New Perspectives	1	Static:AlternativeKeywordCost(Cycling)	S26-alt-keyword-cost
+Elenda, Saint of Dusk	0		R2-aslongas-conditional-static
+Swarming Goblins	0		R5-runtime-bespoke
+Obscura Interceptor	1	Effect:when	S25-effect-verb-bespoke
+Thermal Flux	1	Effect:isn't	S25-effect-verb-bespoke
+Rampaging Geoderm	1	Swallow:Condition_If	S01-reflexive-if-rider
+Riku of Many Paths	2	Swallow:DynamicQty;Swallow:Modal_DynamicMaxDropped	S10-dynamic-qty-bespoke
+Liege of the Tangle	1	Effect:have	S25-effect-verb-bespoke
+Inventive Wingsmith	1	Swallow:Duration_ThisTurn	S11-duration-grant
+Glissa Sunseeker	2	Swallow:Condition_If;Swallow:DynamicQty	S01-reflexive-if-rider
+Rite of the Serpent	1	Swallow:Condition_If	S01-reflexive-if-rider
+Relic Axe	1	Swallow:Condition_If	S01-reflexive-if-rider
+Karai, Future of the Foot	1	Swallow:Duration_ThisTurn	S11-duration-grant
+Fevered Visions	1	Swallow:Condition_If	S07-condition-if-bespoke
+Foul-Tongue Invocation	1	Swallow:Condition_If	S07-condition-if-bespoke
+Invader Parasite	1	Trigger:Whenever a land an opponent controls with the same name as the exiled card enters	S19-new-trigger-matcher
+Crater's Claws	1	Effect:deal	S25-effect-verb-bespoke
+Shuriken	1	Effect:Unsupported unless clause	S14-unless-clause
+Splitting the Powerstone	1	Swallow:Condition_If	S07-condition-if-bespoke
+Dreadlight Monstrosity	1	Swallow:Condition_If	S04-activate-only-if
+Foraging Wickermaw	1	Effect:become	S25-effect-verb-bespoke
+Distended Mindbender	1	Effect:choose	S22-choose-effect
+Advice from the Fae	1	Effect:otherwise	S25-effect-verb-bespoke
+Aven Heartstabber	0		R2-aslongas-conditional-static
+Zabaz, the Glimmerwasp	1	Effect:replacement_structure	S25-effect-verb-bespoke
+Sigarda's Splendor	2	Effect:note;Effect:unknown	S24-unknown-effect-bespoke
+Paragon of Modernity	1	Swallow:Condition_If	S07-condition-if-bespoke
+Tifa's Limit Break	0		R5-runtime-bespoke
+Forge Anew	1	Effect:unknown	S24-unknown-effect-bespoke
+Etrata, the Silencer	1	Swallow:Condition_If	S01-reflexive-if-rider
+Consuming Blob	1	Effect:create	S25-effect-verb-bespoke
+Kraken of the Straits	1	Swallow:DynamicQty	S10-dynamic-qty-bespoke
+Bounty of Might	0		R5-runtime-bespoke
+Unblinking Observer	1	Effect:spend	S25-effect-verb-bespoke
+Temple of Cyclical Time	1	Swallow:Condition_If	S04-activate-only-if
+Kaya, Intangible Slayer	1	Swallow:Condition_If	S01-reflexive-if-rider
+Spelltwine	1	Swallow:Condition_If	S07-condition-if-bespoke
+Tormented Thoughts	1	Swallow:DynamicQty	S10-dynamic-qty-bespoke
+Unforge	1	Swallow:Condition_If	S07-condition-if-bespoke
+Elite Spellbinder	1	Effect:a	S25-effect-verb-bespoke
+Shadrix Silverquill	1	Swallow:Optional_YouMay	S12-optional-youmay-subeffect
+Ouphe Vandals	1	Swallow:Condition_If	S01-reflexive-if-rider
+Stonebinder's Familiar	1	Trigger:Whenever one or more cards are put into exile during your turn	S19-new-trigger-matcher
+Overwhelming Splendor	1	Effect:static_structure	S21-static-ability
+Oculus Whelp	0		R2-aslongas-conditional-static
+Gather the Townsfolk	1	Effect:create	S25-effect-verb-bespoke
+Spoils of the Vault	1	Swallow:DynamicQty	S08-foreach-count-qty
+Ebondeath, Dracolich	1	Swallow:Condition_If	S05-alt-cost-if
+Sanity Grinding	1	Effect:for	S18-foreach-simple-count
+Wheel of Sun and Moon	1	Effect:replacement_structure	S25-effect-verb-bespoke
+Joust	1	Effect:target	S25-effect-verb-bespoke
+Kambal, Profiteering Mayor	1	Swallow:DynamicQty	S08-foreach-count-qty
+Sutured Ghoul	1	Effect:unknown	S24-unknown-effect-bespoke
+Shape of the Wiitigo	1	Effect:otherwise	S25-effect-verb-bespoke
+Pixie Guide	1	Effect:replacement_structure	S25-effect-verb-bespoke
+Multiple Choice	1	Effect:do	S25-effect-verb-bespoke
+Bioplasm	1	Effect:get	S25-effect-verb-bespoke
+Vessel of the All-Consuming	2	Swallow:Condition_If;Swallow:Duration_ThisTurn	S03-intervening-if-trigger
+Enhanced Surveillance	1	Effect:effect_structure	S25-effect-verb-bespoke
+Tin Street Gossip	1	Effect:spend	S25-effect-verb-bespoke
+Nirkana Cutthroat	0		R3-level-up
+Kitsune Mystic	1	Effect:flip	S25-effect-verb-bespoke
+Test of Talents	1	Effect:search	S25-effect-verb-bespoke
+Drown in the Loch	1	Swallow:DynamicQty	S10-dynamic-qty-bespoke
+Drownyard Behemoth	0		R2-aslongas-conditional-static
+Consuming Tide	1	Swallow:DynamicQty	S08-foreach-count-qty
+Unbound Flourishing	1	Effect:double	S25-effect-verb-bespoke
+Chain Assassination	1	Swallow:Condition_If	S05-alt-cost-if
+Braids's Frightful Return	0		R5-runtime-bespoke
+Longstalk Brawl	1	Swallow:Condition_If	S07-condition-if-bespoke
+Knight of Cliffhaven	0		R3-level-up
+Primal Adversary	1	Effect:when	S25-effect-verb-bespoke
+Revel in Silence	1	Effect:or	S25-effect-verb-bespoke
+Ravenous Trap	1	Swallow:Duration_ThisTurn	S11-duration-grant
+Sage's Reverie	1	Swallow:DynamicQty	S08-foreach-count-qty
+Honorable Passage	1	Swallow:Condition_If	S07-condition-if-bespoke
+Entangling Vines	0		R5-runtime-bespoke
+Savage Punch	1	Swallow:Duration_UntilEndOfTurn	S11-duration-grant
+Soul Diviner	3	Cost:creature;Cost:land;Cost:or planeswalker you control	S23-alt-cost-parse
+Rally the Horde	1	Effect:repeat	S25-effect-verb-bespoke
+Sideswipe	1	Effect:change	S25-effect-verb-bespoke
+Mindblaze	1	Effect:reveal	S25-effect-verb-bespoke
+Pit Automaton	2	Effect:orphaned_copy_retarget;Effect:when	S20-copy-retarget
+Kaya, Geist Hunter	1	Effect:twice	S25-effect-verb-bespoke
+The Three Seasons	2	Effect:choose;Effect:their	S22-choose-effect
+Irencrag Feat	1	Effect:can	S25-effect-verb-bespoke
+Blizzard Brawl	1	Effect:target	S25-effect-verb-bespoke
+Rogue Class	1	Effect:look	S25-effect-verb-bespoke
+Luxurious Locomotive	1	Swallow:DynamicQty	S08-foreach-count-qty
+Park Heights Pegasus	1	Swallow:Condition_If	S07-condition-if-bespoke
+Swiftwing Assailant	0		R1-speed-mechanic
+Angrath, Minotaur Pirate	1	Effect:deal	S25-effect-verb-bespoke
+Shanna, Purifying Blade	1	Effect:x	S25-effect-verb-bespoke
+Thassa's Intervention	1	Swallow:Condition_Unless	S14-unless-clause
+Inferno Hellion	1	Swallow:Condition_If	S03-intervening-if-trigger
+Balthier and Fran	1	Trigger:Whenever a Vehicle crewed by ~ this turn attacks	S19-new-trigger-matcher
+Hotheaded Giant	2	Swallow:Condition_Unless;Swallow:Duration_ThisTurn	S11-duration-grant
+Curtain of Light	1	Effect:become	S25-effect-verb-bespoke
+Hisoka, Minamo Sensei	1	Swallow:Condition_If	S01-reflexive-if-rider
+Path of Mettle	1	Effect:double	S25-effect-verb-bespoke
+Grim Reminder	1	Swallow:Duration_ThisTurn	S11-duration-grant
+Master Warcraft	1	Effect:choose	S22-choose-effect
+Vannifar, Evolved Enigma	1	Effect:cloak	S25-effect-verb-bespoke
+Tromokratis	1	Effect:static_structure	S21-static-ability
+Sharae of Numbing Depths	1	Trigger:Whenever you tap one or more untapped creatures your opponents control	S19-new-trigger-matcher
+Ultimecia, Time Sorceress	1	ParseWarning:target-fallback	S17-anaphoric-target
+Trance Kuja, Fate Defied	1	Swallow:Condition_If	S07-condition-if-bespoke
+Animation Module	1	Effect:give	S25-effect-verb-bespoke
+Ward of Bones	1	Effect:static_structure	S21-static-ability
+Djinni Windseer	0		R5-runtime-bespoke
+Sasaya, Orochi Ascendant	1	Effect:static_structure	S21-static-ability
+Creeping Renaissance	1	Effect:choose	S22-choose-effect
+Gargantuan Slabhorn	1	Effect:static_structure	S21-static-ability
+Novice Knight	0		R2-aslongas-conditional-static
+Dragon-Kami's Egg	1	Trigger:Whenever ~	S19-new-trigger-matcher
+Sorcerous Spyglass	1	Effect:unknown	S24-unknown-effect-bespoke
+Life of Toshiro Umezawa	1	Effect:•	S25-effect-verb-bespoke
+Unnatural Aggression	1	Swallow:Duration_ThisTurn	S11-duration-grant
+Outlaw Stitcher	1	Swallow:DynamicQty	S08-foreach-count-qty
+Witch's Oven	1	Swallow:Condition_If	S07-condition-if-bespoke
+Dauntless Bodyguard	1	Effect:unknown	S24-unknown-effect-bespoke
+Gilder Bairn	1	Swallow:DynamicQty	S10-dynamic-qty-bespoke
+Jacob Hauken, Inspector	1	Effect:look	S25-effect-verb-bespoke
+Auratouched Mage	2	Effect:otherwise;Effect:reveal	S25-effect-verb-bespoke
+Prishe's Wanderings	1	Effect:when	S25-effect-verb-bespoke
+Clarion Ultimatum	1	Effect:for	S18-foreach-simple-count
+Fatespinner	1	Effect:phase	S25-effect-verb-bespoke
+Solar Tide	1	Effect:entwine—sacrifice	S25-effect-verb-bespoke
+Whispering Specter	1	Swallow:DynamicQty	S08-foreach-count-qty
+Altaïr Ibn-La'Ahad	1	Effect:for	S18-foreach-simple-count
+Grizzled Angler	1	Swallow:Condition_If	S07-condition-if-bespoke
+God-Eternal Kefnet	1	Effect:static_structure	S21-static-ability
+Void Stalker	1	Effect:shuffle	S25-effect-verb-bespoke
+Exquisite Archangel	1	Swallow:DynamicQty	S10-dynamic-qty-bespoke
+Fearless Swashbuckler	1	Swallow:Condition_If	S03-intervening-if-trigger
+Vraska, the Silencer	2	Effect:it's;Effect:lose	S25-effect-verb-bespoke
+Blightbeetle	1	Effect:static_structure	S21-static-ability
+Absorb Identity	1	Effect:have	S25-effect-verb-bespoke
+Deadly Cover-Up	1	Effect:search	S25-effect-verb-bespoke
+Fire Magic	0		R5-runtime-bespoke
+Rampaging Cyclops	0		R2-aslongas-conditional-static
+Elemental Resonance	1	Effect:add	S25-effect-verb-bespoke
+Alhammarret, High Arbiter	1	Effect:unknown	S24-unknown-effect-bespoke
+Jester's Scepter	1	Effect:look	S25-effect-verb-bespoke
+Cavernous Maw	2	Swallow:Condition_If;Swallow:DynamicQty	S04-activate-only-if
+Cragganwick Cremator	1	Swallow:Condition_If	S07-condition-if-bespoke
+Carnivorous Canopy	1	Swallow:Condition_If	S01-reflexive-if-rider
+Soulquake	1	Effect:all	S25-effect-verb-bespoke
+Bill the Pony	1	Effect:assign	S25-effect-verb-bespoke
+Pyromancer's Goggles	2	Effect:orphaned_copy_retarget;Effect:when	S20-copy-retarget
+Needle Drop	1	Swallow:Duration_ThisTurn	S11-duration-grant
+Prismari Apprentice	1	Swallow:Condition_If	S01-reflexive-if-rider
+Taster of Wares	1	Swallow:DynamicQty	S10-dynamic-qty-bespoke
+Bloodfire Enforcers	0		R2-aslongas-conditional-static
+Shinryu, Transcendent Rival	2	Effect:unknown;Trigger:When the chosen player loses the game	S19-new-trigger-matcher
+Regenerate	1	Effect:~	S25-effect-verb-bespoke
+Curator's Ward	1	Swallow:Condition_If	S01-reflexive-if-rider
+Tainted Sigil	1	Effect:gain	S25-effect-verb-bespoke
+Rusted Relic	1	Effect:unknown	S24-unknown-effect-bespoke
+Thrasta, Tempest's Roar	0		R2-aslongas-conditional-static
+Sylvan Echoes	1	Trigger:Whenever you clash and win	S19-new-trigger-matcher
+Savor the Moment	1	Effect:skip	S25-effect-verb-bespoke
+Shared Fate	1	Effect:static_structure	S21-static-ability
+Ward of Piety	1	Effect:the	S25-effect-verb-bespoke
+Ochre Jelly	1	Effect:the	S25-effect-verb-bespoke
+Druidic Satchel	1	Effect:nonland	S25-effect-verb-bespoke
+Kytheon, Hero of Akros	1	Swallow:Condition_If	S07-condition-if-bespoke
+Kjeldoran Royal Guard	1	Effect:all	S25-effect-verb-bespoke
+Open the Way	1	Effect:x	S25-effect-verb-bespoke
+Rushing-Tide Zubera	2	Swallow:Condition_If;Swallow:Duration_ThisTurn	S07-condition-if-bespoke
+Mul Daya Channelers	0		R2-aslongas-conditional-static
+Arni Brokenbrow	1	Effect:change	S25-effect-verb-bespoke
+The Eternal Wanderer	2	Effect:for;Effect:unknown	S16-foreach-player-object-HEAVY
+Linessa, Zephyr Mage	1	Cost:Zephyr Mage	S23-alt-cost-parse
+Exert Influence	2	Swallow:Condition_If;Swallow:DynamicQty	S01-reflexive-if-rider
+Invoke the Ancients	1	Swallow:DynamicQty	S08-foreach-count-qty
+Phylactery Lich	1	Effect:replacement_structure	S25-effect-verb-bespoke
+Gnoll Hunter	1	Swallow:Condition_If	S03-intervening-if-trigger
+Legion's Initiative	1	Effect:at	S25-effect-verb-bespoke
+Curator of Sun's Creation	2	Effect:discover;Trigger:Whenever you discover	S19-new-trigger-matcher
+Shadow of Doubt	1	Effect:players	S25-effect-verb-bespoke
+Kabira Vindicator	0		R3-level-up
+Painter's Servant	1	Effect:effect_structure	S25-effect-verb-bespoke
+Mazemind Tome	1	Trigger:When there are four or more page counters on ~	S19-new-trigger-matcher
+Role Reversal	1	Effect:exchange	S25-effect-verb-bespoke
+Murderous Betrayal	1	Cost:rounded up	S23-alt-cost-parse
+Spell Contortion	1	Swallow:DynamicQty	S08-foreach-count-qty
+Feast on the Fallen	1	Swallow:Condition_If	S03-intervening-if-trigger
+As Foretold	1	Effect:unknown	S24-unknown-effect-bespoke
+Master Symmetrist	1	Trigger:Whenever a creature you control with power equal to its toughness attacks	S19-new-trigger-matcher
+Hour of Revelation	1	Swallow:Condition_If	S05-alt-cost-if
+Master Biomancer	1	Swallow:DynamicQty	S10-dynamic-qty-bespoke
+All Suns' Dawn	1	Effect:for	S18-foreach-simple-count
+Kotose, the Silent Spider	1	Effect:search	S25-effect-verb-bespoke
+Embodiment of Agonies	1	Swallow:DynamicQty	S08-foreach-count-qty
+Shadow of Mortality	0		R5-runtime-bespoke
+Chaos Channeler	1	Swallow:Optional_YouMay	S12-optional-youmay-subeffect
+Intrepid Outlander	1	Swallow:Condition_If	S03-intervening-if-trigger
+Nahiri's Wrath	1	Effect:deal	S25-effect-verb-bespoke
+Wild Shape	3	Effect:1/3;Effect:1/5;Effect:3/3	S25-effect-verb-bespoke
+Tuktuk Scrapper	1	Swallow:Condition_If	S07-condition-if-bespoke
+Korlash, Heir to Blackblade	1	Cost:Heir to Blackblade	S23-alt-cost-parse
+First Response	1	Swallow:Condition_If	S03-intervening-if-trigger
+Mishra, Claimed by Gix	2	Effect:and;Effect:it	S25-effect-verb-bespoke
+Hoarding Ogre	0		R5-runtime-bespoke
+Intet, the Dreamer	1	Effect:look	S25-effect-verb-bespoke
+Cut Short	1	Swallow:Duration_ThisTurn	S11-duration-grant
+Braided Net	1	Swallow:Condition_AsLongAs	S13-aslongas-parse
+Ecological Appreciation	1	Effect:shuffle	S25-effect-verb-bespoke
+Sphinx's Tutelage	1	Effect:repeat	S25-effect-verb-bespoke
+Ultimate Spider-Man	1	Swallow:DynamicQty	S10-dynamic-qty-bespoke
+Steer Clear	1	Swallow:Condition_If	S07-condition-if-bespoke
+Lightwheel Enhancements	0		R1-speed-mechanic
+Lost Isle Calling	1	Swallow:Condition_If	S01-reflexive-if-rider
+Font of Agonies	1	Trigger:Whenever you pay life	S19-new-trigger-matcher
+Student of Warfare	0		R3-level-up
+Shrouded Lore	2	Effect:choose;Effect:repeat	S22-choose-effect
+Spiked Pit Trap	0		R5-runtime-bespoke
+Tundra Fumarole	1	Effect:add	S25-effect-verb-bespoke
+Reiterating Bolt	0		R5-runtime-bespoke
+Chancellor of the Tangle	1	Effect:effect_structure	S25-effect-verb-bespoke
+Widespread Brutality	1	Swallow:DynamicQty	S10-dynamic-qty-bespoke
+Hewed Stone Retainers	0		R5-runtime-bespoke
+Guildmages' Forum	1	Effect:that	S25-effect-verb-bespoke
+Glamerdye	1	Effect:change	S25-effect-verb-bespoke
+Karn Liberated	1	Effect:restart	S25-effect-verb-bespoke
+Guardian Project	1	Swallow:Condition_If	S03-intervening-if-trigger
+Infinite Reflection	1	Effect:replacement_structure	S25-effect-verb-bespoke
+Psychogenic Probe	1	Trigger:Whenever a spell or ability causes a player to shuffle their library	S19-new-trigger-matcher
+Sasaya's Essence	1	Swallow:DynamicQty	S08-foreach-count-qty
+Plaza of Harmony	1	Effect:add	S25-effect-verb-bespoke
+Cruel Reality	1	Swallow:Condition_If	S07-condition-if-bespoke
+Siona, Captain of the Pyleas	1	Trigger:Whenever an Aura you control becomes attached to a creature you control	S19-new-trigger-matcher
+Joint Assault	1	Swallow:Condition_If	S01-reflexive-if-rider
+Living Conundrum	0		R2-aslongas-conditional-static
+Increasing Vengeance	1	Effect:orphaned_copy_retarget	S20-copy-retarget
+Chef's Kiss	1	Effect:the	S25-effect-verb-bespoke
+Ugin's Nexus	1	Effect:replacement_structure	S25-effect-verb-bespoke
+Tranquil Frillback	1	Swallow:Modal_DynamicMaxDropped	S29-modal-dynamic-choose
+Tamiyo, Compleated Sage	1	Effect:"	S25-effect-verb-bespoke
+Woodcaller Automaton	1	Swallow:DynamicQty	S10-dynamic-qty-bespoke
+Legion Angel	1	Effect:reveal	S25-effect-verb-bespoke
+Ran and Shaw	1	Swallow:Condition_If	S02-cast-context-if
+Hada Spy Patrol	0		R3-level-up
+Locthwain Paladin	1	Swallow:Condition_If	S02-cast-context-if
+Pigment Storm	1	Effect:excess	S25-effect-verb-bespoke
+Lion Umbra	0		R5-runtime-bespoke
+Bonecache Overseer	1	Swallow:Condition_If	S04-activate-only-if
+Overgrown Zealot	1	Effect:spend	S25-effect-verb-bespoke
+Perplex	1	Effect:Unsupported unless clause	S14-unless-clause
+Crumble to Dust	1	Effect:search	S25-effect-verb-bespoke
+The Dominion Bracelet	1	Effect:this	S25-effect-verb-bespoke
+Jace, Architect of Thought	1	Effect:an	S25-effect-verb-bespoke
+Moraug, Fury of Akoum	1	Swallow:DynamicQty	S08-foreach-count-qty
+Kaza, Roil Chaser	1	Effect:the	S25-effect-verb-bespoke
+Hexdrinker	0		R3-level-up
+Titania, Voice of Gaea	1	Effect:sanctum	S25-effect-verb-bespoke
+Savior of Ollenbock	1	Trigger:Whenever ~ trains	S19-new-trigger-matcher
+Hallowed Respite	1	Effect:otherwise	S25-effect-verb-bespoke
+Myr Superion	1	Effect:unknown	S24-unknown-effect-bespoke
+Slayer's Cleaver	1	Effect:attached_grant_unmodeled_conjunct	S25-effect-verb-bespoke
+Kor Dirge	1	Effect:all	S25-effect-verb-bespoke
+Scout's Warning	1	Effect:the	S25-effect-verb-bespoke
+Kalitas, Bloodchief of Ghet	2	Effect:create;Effect:its	S25-effect-verb-bespoke
+Vanille, Cheerful l'Cie	1	Effect:fearless	S25-effect-verb-bespoke
+Angel's Grace	2	Effect:can't;Effect:damage	S25-effect-verb-bespoke
+Matter Reshaper	1	Effect:otherwise	S25-effect-verb-bespoke
+Beastbreaker of Bala Ged	0		R3-level-up
+Stabwhisker the Odious	1	Swallow:DynamicQty	S08-foreach-count-qty
+Saving Grace	1	Effect:all	S25-effect-verb-bespoke
+Battle Cry Goblin	1	Swallow:Condition_If	S03-intervening-if-trigger
+Student of Elements	2	Effect:flip;Trigger:When ~ has flying	S19-new-trigger-matcher
+Damping Matrix	1	Effect:static_structure	S21-static-ability
+See Red	1	Swallow:Duration_ThisTurn	S11-duration-grant
+Arid Archway	1	Swallow:Condition_If	S07-condition-if-bespoke
+Rhino's Rampage	1	Effect:when	S25-effect-verb-bespoke
+Public Enemy	1	Effect:static_structure	S21-static-ability
+Meticulous Excavation	1	Effect:instead	S25-effect-verb-bespoke
+Kaya, Bane of the Dead	1	Effect:static_structure	S21-static-ability
+Sandman's Quicksand	1	Swallow:Condition_If	S05-alt-cost-if
+Aragorn, Company Leader	1	Effect:put	S25-effect-verb-bespoke
+Hama, the Bloodbender	1	Swallow:DynamicQty	S10-dynamic-qty-bespoke
+Conduit of Emrakul	1	Effect:add	S25-effect-verb-bespoke
+Brothers Yamazaki	1	Effect:static_structure	S21-static-ability
+Dimir Machinations	1	Effect:put	S25-effect-verb-bespoke
+Season of Loss	0		R5-runtime-bespoke
+Brutal Hordechief	2	Effect:choose;Effect:creatures	S22-choose-effect
+Mirror of Fate	1	Effect:choose	S22-choose-effect
+Dragon's Disciple	1	Swallow:Condition_If	S07-condition-if-bespoke
+Matzalantli, the Great Door	1	Swallow:Condition_If	S04-activate-only-if
+Reno and Rude	1	Swallow:Duration_ThisTurn	S11-duration-grant
+Leonin Arbiter	1	Effect:static_structure	S21-static-ability
+Lantern Flare	1	Effect:x	S25-effect-verb-bespoke
+Inga Rune-Eyes	1	Swallow:Condition_If	S07-condition-if-bespoke
+Necromantic Summons	1	Swallow:Condition_If	S07-condition-if-bespoke
+Auditore Ambush	1	Swallow:Condition_If	S01-reflexive-if-rider
+Ertha Jo, Frontier Mentor	1	Trigger:Whenever you activate an ability that targets a creature or player	S19-new-trigger-matcher
+Teferi's Moat	1	Effect:static_structure	S21-static-ability
+Morgue Burst	1	Effect:deal	S25-effect-verb-bespoke
+Bounty of the Luxa	1	Effect:otherwise	S25-effect-verb-bespoke
+Lightning Runner	1	Swallow:Condition_If	S07-condition-if-bespoke
+Heir of the Ancient Fang	1	Swallow:Condition_If	S07-condition-if-bespoke
+Calix, Guided by Fate	1	Trigger:Whenever ~	S19-new-trigger-matcher
+Friendly Fire	2	Effect:deal;Effect:that	S25-effect-verb-bespoke
+Emeritus of Ideation	1	ParseWarning:target-fallback	S17-anaphoric-target
+Weathered Bodyguards	1	Swallow:Condition_AsLongAs	S13-aslongas-parse
+Rottenmouth Viper	1	Effect:for	S18-foreach-simple-count
+Predator's Rapport	1	Effect:gain	S25-effect-verb-bespoke
+Hearth Elemental	1	Swallow:DynamicQty	S10-dynamic-qty-bespoke
+Declaration in Stone	1	Swallow:DynamicQty	S08-foreach-count-qty
+Ashes of the Fallen	1	Effect:static_structure	S21-static-ability
+Sokenzan Renegade	1	Effect:have	S25-effect-verb-bespoke
+Sphinx of Uthuun	1	Effect:an	S25-effect-verb-bespoke
+Winds of Qal Sisma	1	Swallow:Condition_If	S07-condition-if-bespoke
+Love Song of Night and Day	0		R5-runtime-bespoke
+Tyrannical Pitlord	2	Effect:static_structure;Effect:unknown	S21-static-ability
+Code of Constraint	1	Swallow:Condition_If	S02-cast-context-if
+Zidane, Tantalus Thief	1	Trigger:Whenever an opponent gains control of a permanent from you	S19-new-trigger-matcher
+Kassandra, Eagle Bearer	1	Trigger:Whenever a creature you control with a legendary Equipment attached to it deals combat damage to a player	S19-new-trigger-matcher
+Devouring Hellion	2	Swallow:Condition_If;Swallow:Optional_YouMay	S07-condition-if-bespoke
+Zimone, Paradox Sculptor	1	Swallow:DynamicQty	S10-dynamic-qty-bespoke
+Alpine Moon	1	Effect:unknown	S24-unknown-effect-bespoke
+Runaway Steam-Kin	1	Swallow:Condition_If	S03-intervening-if-trigger
+Dragon's Fire	1	Effect:deal	S25-effect-verb-bespoke
+Hauken's Insight	2	Effect:look;Effect:unknown	S24-unknown-effect-bespoke
+Tishana's Tidebinder	1	Swallow:Condition_AsLongAs	S13-aslongas-parse
+The Akroan War	1	Effect:creatures	S25-effect-verb-bespoke
+Eater of Days	1	Effect:you	S25-effect-verb-bespoke
+Reaper of Night	1	Swallow:Condition_If	S03-intervening-if-trigger
+Cytoshape	1	Effect:choose	S22-choose-effect
+Kami of Transience	2	Swallow:Condition_If;Swallow:Duration_ThisTurn	S03-intervening-if-trigger
+Keen-Eared Sentry	1	Effect:effect_structure	S25-effect-verb-bespoke
+Wheel of Potential	1	Swallow:Condition_If	S07-condition-if-bespoke
+Zilortha, Strength Incarnate	1	Effect:unknown	S24-unknown-effect-bespoke
+See the Truth	1	Swallow:Condition_If	S02-cast-context-if
+Coalition Victory	1	Swallow:Condition_If	S07-condition-if-bespoke
+Power of Persuasion	0		R5-runtime-bespoke
 Legions to Ashes	1	Effect:all	S25-effect-verb-bespoke
-Jinnie Fay, Jetmir's Second	1	Effect:replacement_structure	S25-effect-verb-bespoke
+Pugnacious Pugilist	1	Effect:create	S25-effect-verb-bespoke
+Twinferno	2	Effect:orphaned_copy_retarget;Effect:when	S20-copy-retarget
+Winding Constrictor	1	Effect:replacement_structure	S25-effect-verb-bespoke
+Barrowin of Clan Undurr	1	Swallow:Condition_If	S07-condition-if-bespoke
+Cranial Ram	1	Effect:static_structure	S21-static-ability
+Akiri, Fearless Voyager	1	Effect:unattach	S25-effect-verb-bespoke
+Kemba's Legion	1	Effect:effect_structure	S25-effect-verb-bespoke
+Bloodthirsty Adversary	1	Effect:when	S25-effect-verb-bespoke
+Sizzling Soloist	1	Effect:attack	S25-effect-verb-bespoke
+Gibbering Descent	1	Effect:static_structure	S21-static-ability
+Dawnhand Dissident	1	Effect:unknown	S24-unknown-effect-bespoke
+Sokka's Haiku	0		R5-runtime-bespoke
+Budoka Gardener	1	Effect:flip	S25-effect-verb-bespoke
+Thunder Magic	0		R5-runtime-bespoke
+Lurebound Scarecrow	1	Trigger:When you control no permanents of the chosen color	S19-new-trigger-matcher
+Mythos of Snapdax	1	Effect:choose	S22-choose-effect
+Hurkyl, Master Wizard	1	Swallow:Optional_YouMay	S12-optional-youmay-subeffect
+Graceful Takedown	1	Effect:multi_source_compound_each_power_damage	S25-effect-verb-bespoke
+Calamity, Galloping Inferno	1	Effect:choose	S22-choose-effect
+Suppression Field	1	Effect:static_structure	S21-static-ability
+Scrounge	1	Effect:choose	S22-choose-effect
+Thirsting Axe	1	Swallow:Duration_ThisTurn	S11-duration-grant
+Kitesail Larcenist	1	Effect:for	S16-foreach-player-object-HEAVY
+Spinerock Tyrant	1	Effect:orphaned_copy_retarget	S20-copy-retarget
+Hew the Entwood	1	Effect:choose	S22-choose-effect
+Zealot's Conviction	0		R2-aslongas-conditional-static
+Angel of Grace	1	Effect:damage	S25-effect-verb-bespoke
+Kumena's Awakening	1	Effect:only	S25-effect-verb-bespoke
+Contact Other Plane	0		R5-runtime-bespoke
+Rogues' Gallery	1	Effect:for	S18-foreach-simple-count
+Reap Intellect	1	Effect:search	S25-effect-verb-bespoke
+Olag, Ludevic's Hubris	1	Effect:unknown	S24-unknown-effect-bespoke
+Gandalf's Sanction	1	Effect:excess	S25-effect-verb-bespoke
+Tablet of the Guilds	2	Swallow:Condition_If;Swallow:DynamicQty	S03-intervening-if-trigger
+Metzali, Tower of Triumph	1	Effect:choose	S22-choose-effect
+Galvanic Relay	1	Effect:during	S25-effect-verb-bespoke
+Pain Magnification	1	Trigger:Whenever an opponent is dealt 3 or more damage by a single source	S19-new-trigger-matcher
+Gideon Jura	1	Effect:during	S25-effect-verb-bespoke
+Monastery Raid	1	Swallow:Condition_If	S05-alt-cost-if
+Dust of Moments	1	Effect:each	S25-effect-verb-bespoke
+Metamorphic Alteration	2	Effect:static_structure;Effect:unknown	S21-static-ability
+Quick Draw	1	Effect:creatures	S25-effect-verb-bespoke
+Quakebringer	1	Effect:this	S25-effect-verb-bespoke
+Codespell Cleric	1	Swallow:Condition_If	S03-intervening-if-trigger
+Skulking Killer	2	Swallow:Condition_If;Swallow:Duration_UntilEndOfTurn	S07-condition-if-bespoke
+Kaya, Spirits' Justice	2	Effect:choose;Effect:for	S16-foreach-player-object-HEAVY
+Mass Polymorph	1	Effect:reveal	S25-effect-verb-bespoke
+Mutagen Connoisseur	1	Swallow:DynamicQty	S08-foreach-count-qty
+Jhoira's Timebug	1	Swallow:Condition_If	S01-reflexive-if-rider
+Case File Auditor	1	Trigger:Whenever you solve a Case	S19-new-trigger-matcher
+Goblin Flectomancer	1	Effect:change	S25-effect-verb-bespoke
+O-Kagachi Made Manifest	1	Effect:choose	S22-choose-effect
+Unpredictable Cyclone	1	Effect:replacement_structure	S25-effect-verb-bespoke
+Detection Tower	1	Effect:can	S25-effect-verb-bespoke
+Dreams of Steel and Oil	1	Effect:choose	S22-choose-effect
 Light Up the Night	1	Effect:deal	S25-effect-verb-bespoke
-Quistis Trepe	1	Swallow:Condition_If	S01-reflexive-if-rider
+Malamet Battle Glyph	1	Swallow:Condition_If	S07-condition-if-bespoke
+Inkmoth Nexus	0		R5-runtime-bespoke
+Massacre Girl, Known Killer	1	Swallow:Condition_If	S03-intervening-if-trigger
+Talara's Battalion	0		R5-runtime-bespoke
+Commence the Endgame	1	Swallow:DynamicQty	S10-dynamic-qty-bespoke
+Deification	1	Effect:unknown	S24-unknown-effect-bespoke
+Izzet Generatorium	1	Effect:replacement_structure	S25-effect-verb-bespoke
+Garth One-Eye	1	Effect:create	S25-effect-verb-bespoke
+Glimpse the Cosmos	2	Swallow:Condition_AsLongAs;Swallow:Condition_If	S05-alt-cost-if
+Guardian of New Benalia	1	Trigger:Whenever ~ enlists a creature	S19-new-trigger-matcher
+Conduit of Storms	1	Effect:add	S25-effect-verb-bespoke
+Llanowar Greenwidow	1	Swallow:DynamicQty	S08-foreach-count-qty
+Baru, Fist of Krosa	1	Cost:Fist of Krosa	S23-alt-cost-parse
+Woebringer Demon	1	Swallow:Condition_If	S07-condition-if-bespoke
+Warp World	1	Effect:reveal	S25-effect-verb-bespoke
+The Legend of Yangchen	1	Effect:choose	S22-choose-effect
+Inspired Idea	1	Effect:your	S25-effect-verb-bespoke
+Tax Collector	1	Effect:spells	S25-effect-verb-bespoke
+Sharp-Eyed Rookie	1	Swallow:Condition_If	S03-intervening-if-trigger
+Flame Discharge	1	Effect:deal	S25-effect-verb-bespoke
+Brass Knuckles	0		R2-aslongas-conditional-static
+Vastwood Hydra	1	Effect:distribute	S25-effect-verb-bespoke
+Snooping Newsie	0		R2-aslongas-conditional-static
+Suppression Ray	1	Effect:choose	S22-choose-effect
+Rowdy Crew	1	Swallow:Condition_If	S07-condition-if-bespoke
+Close Encounter	1	Cost:choose a creature you control or a warped creature card you own in exile	S23-alt-cost-parse
+Apocalypse Hydra	1	Swallow:Condition_If	S07-condition-if-bespoke
+Firemind's Foresight	1	Effect:repeat	S25-effect-verb-bespoke
+Dissection Practice	0		R5-runtime-bespoke
+Rush the Room	1	Swallow:Condition_If	S01-reflexive-if-rider
+Nivix, Aerie of the Firemind	1	Swallow:Condition_If	S01-reflexive-if-rider
+Urborg Lhurgoyf	1	Effect:unknown	S24-unknown-effect-bespoke
+Ral Zarek, Guest Lecturer	1	Swallow:DynamicQty	S10-dynamic-qty-bespoke
+Garza's Assassin	1	Swallow:DynamicQty	S10-dynamic-qty-bespoke
+Enthralling Hold	1	Effect:effect_structure	S25-effect-verb-bespoke
+Throne of the Grim Captain	0		R5-runtime-bespoke
+Nyxathid	1	Swallow:DynamicQty	S08-foreach-count-qty
+Soul Separator	1	Effect:create	S25-effect-verb-bespoke
+Stomping Slabs	1	Swallow:Condition_If	S07-condition-if-bespoke
+Valki, God of Lies	1	Effect:choose	S22-choose-effect
+War Historian	0		R2-aslongas-conditional-static
+Synchronized Spellcraft	1	Swallow:DynamicQty	S10-dynamic-qty-bespoke
+Doom Foretold	1	Swallow:Condition_If	S07-condition-if-bespoke
+Frontier Mastodon	1	Swallow:Condition_If	S07-condition-if-bespoke
+Enshrouding Mist	1	Swallow:Condition_If	S01-reflexive-if-rider
+Chandra, Fire Artisan	1	Trigger:Whenever one or more loyalty counters are removed from ~	S19-new-trigger-matcher
+Bludgeon Brawl	1	Effect:static_structure	S21-static-ability
+Illusory Angel	0		R5-runtime-bespoke
+Teysa, Opulent Oligarch	2	Swallow:Duration_ThisTurn;Swallow:DynamicQty	S08-foreach-count-qty
+Timeline Culler	0		R5-runtime-bespoke
+Prototype Portal	1	Effect:x	S25-effect-verb-bespoke
+Confront the Past	1	Effect:remove	S25-effect-verb-bespoke
+Harness Infinity	1	Effect:exchange	S25-effect-verb-bespoke
+Thought Distortion	1	Effect:graveyard	S25-effect-verb-bespoke
+The Tomb of Aclazotz	1	Effect:it	S25-effect-verb-bespoke
+Skull Raid	1	Effect:draw	S25-effect-verb-bespoke
+Gollum, Scheming Guide	2	Effect:an;Effect:otherwise	S25-effect-verb-bespoke
+Edgar, King of Figaro	1	Effect:unknown	S24-unknown-effect-bespoke
+Qarsi Deceiver	1	Effect:spend	S25-effect-verb-bespoke
+Booby Trap	2	Effect:unknown;Trigger:When the chosen player draws a card with the chosen name	S19-new-trigger-matcher
+Crew Captain	0		R2-aslongas-conditional-static
+Scrying Sheets	1	Swallow:Condition_If	S01-reflexive-if-rider
+Candles of Leng	1	Effect:otherwise	S25-effect-verb-bespoke
+Samut, Vizier of Naktamun	1	Swallow:Condition_If	S03-intervening-if-trigger
+Development	2	Effect:Unsupported unless clause;Effect:repeat	S14-unless-clause
+Umbra Mystic	1	Effect:static_structure	S21-static-ability
+Sylvan Shepherd	0		R5-runtime-bespoke
+Extraplanar Lens	1	Trigger:Whenever a land with the same name as the exiled card is tapped for mana	S19-new-trigger-matcher
+Windwright Mage	0		R2-aslongas-conditional-static
+Nesting Bot	0		R1-speed-mechanic
+Maze's Mantle	1	Swallow:Condition_If	S03-intervening-if-trigger
+Outlaws' Merriment	2	Effect:2/1;Effect:3/1	S25-effect-verb-bespoke
+Toralf, God of Fury	1	Effect:deal	S25-effect-verb-bespoke
+Immolation Shaman	2	Effect:or;Trigger:Whenever an opponent activates an ability of an artifact, creature	S19-new-trigger-matcher
+Barren Glory	2	Effect:have;Effect:if	S25-effect-verb-bespoke
+Triton Tactics	1	Effect:at	S25-effect-verb-bespoke
+Restore the Peace	1	Swallow:Duration_ThisTurn	S11-duration-grant
+Skill Borrower	0		R2-aslongas-conditional-static
+Silumgar Scavenger	1	Effect:gain	S25-effect-verb-bespoke
+Imaginary Threats	2	Effect:creatures;Effect:during	S25-effect-verb-bespoke
+Anax, Hardened in the Forge	1	Swallow:Condition_If	S07-condition-if-bespoke
+Djinn Illuminatus	1	Effect:static_structure	S21-static-ability
+Write into Being	2	Effect:manifest;Effect:put	S25-effect-verb-bespoke
+Orgg	0		R4-cant-restriction-static
+Structural Assault	1	Effect:deal	S25-effect-verb-bespoke
+Tanazir Quandrix	1	Effect:have	S25-effect-verb-bespoke
+Volshe Tideturner	1	Effect:spend	S25-effect-verb-bespoke
+Kill-Suit Cultist	1	Effect:the	S25-effect-verb-bespoke
+Green Sun's Twilight	1	Effect:choose	S22-choose-effect
+Hunt for Specimens	0		R5-runtime-bespoke
+Chancellor of the Annex	1	Effect:effect_structure	S25-effect-verb-bespoke
+Ivy, Gleeful Spellthief	1	Effect:the	S25-effect-verb-bespoke
+Invasive Surgery	1	Effect:search	S25-effect-verb-bespoke
+Zirda, the Dawnwaker	1	Effect:static_structure	S21-static-ability
+Wiretapping	1	Trigger:Whenever you draw your first card during each of your draw steps	S19-new-trigger-matcher
+Noctis, Prince of Lucis	1	Swallow:Condition_If	S05-alt-cost-if
+Genku, Future Shaper	3	Effect:1/1;Effect:1/2;Effect:2/2	S25-effect-verb-bespoke
+Springjack Shepherd	1	Swallow:DynamicQty	S08-foreach-count-qty
+Mirror March	1	Swallow:DynamicQty	S08-foreach-count-qty
+The Millennium Calendar	2	Trigger:When there are 1,000 or more time counters on ~;Trigger:Whenever you untap one or more permanents during your untap step	S19-new-trigger-matcher
+War's Toll	1	Effect:effect_structure	S25-effect-verb-bespoke
+Tamiyo, the Moon Sage	1	Swallow:Optional_YouMay	S12-optional-youmay-subeffect
+Alms Beast	1	Effect:static_structure	S21-static-ability
+Void Mirror	1	Swallow:Condition_If	S02-cast-context-if
+Kuon, Ogre Ascendant	1	Effect:flip	S25-effect-verb-bespoke
+Streaking Oilgorger	0		R1-speed-mechanic
+Evolving Door	2	Effect:count;ParseWarning:target-fallback	S17-anaphoric-target
+Skophos Maze-Warden	1	Trigger:Whenever another creature becomes the target of an ability of a land you control named Labyrinth of Skophos	S19-new-trigger-matcher
+Vraska, Betrayal's Sting	2	Effect:become;Effect:get	S25-effect-verb-bespoke
+Sojourner's Companion	1	Effect:unknown	S24-unknown-effect-bespoke
+Dead Man's Chest	1	Swallow:DynamicQty	S10-dynamic-qty-bespoke
+Sigarda, Host of Herons	1	Effect:unknown	S24-unknown-effect-bespoke
+Berg Strider	1	Swallow:Condition_If	S07-condition-if-bespoke
+Maelstrom Muse	1	Effect:the	S25-effect-verb-bespoke
+Another Round	1	Effect:repeat	S25-effect-verb-bespoke
+Conspicuous Snoop	0		R2-aslongas-conditional-static
+Aberrant Mind Sorcerer	1	Swallow:Optional_YouMay	S12-optional-youmay-subeffect
+Spelunking	1	Swallow:Condition_If	S07-condition-if-bespoke
+Leyline of Transformation	1	Effect:unknown	S24-unknown-effect-bespoke
+Atemsis, All-Seeing	1	Swallow:Condition_If	S07-condition-if-bespoke
+Desecrator Hag	1	Swallow:Condition_If	S07-condition-if-bespoke
+Machinist's Arsenal	1	Swallow:DynamicQty	S08-foreach-count-qty
+Expose the Culprit	1	Effect:shuffle	S25-effect-verb-bespoke
+The Temporal Anchor	1	Trigger:Whenever you choose to put one or more cards on the bottom of your library while scrying	S19-new-trigger-matcher
+Welcome to the Fold	1	Effect:instead	S25-effect-verb-bespoke
+Crypt Rats	1	Effect:spend	S25-effect-verb-bespoke
+Ghalta and Mavren	1	Effect:create	S25-effect-verb-bespoke
+Moonlit Meditation	1	Effect:replacement_structure	S25-effect-verb-bespoke
+Queen Kayla bin-Kroog	1	Effect:choose	S22-choose-effect
+Remorseless Punishment	1	Effect:Unsupported unless clause	S14-unless-clause
+Gathan Raiders	0		R2-aslongas-conditional-static
+Curse of Thirst	1	Effect:deal	S25-effect-verb-bespoke
+Venarian Glimmer	1	Effect:choose	S22-choose-effect
+Secret of Bloodbending	2	Effect:phase;Effect:you	S25-effect-verb-bespoke
+Leyline Tyrant	1	Effect:pay	S25-effect-verb-bespoke
+Elite Arcanist	1	Effect:x	S25-effect-verb-bespoke
+Helm of Kaldra	1	Effect:sword	S25-effect-verb-bespoke
+Galloping Lizrog	1	Effect:remove	S25-effect-verb-bespoke
+Jagged Poppet	1	Effect:discard	S25-effect-verb-bespoke
+Grifter's Blade	1	Effect:unknown	S24-unknown-effect-bespoke
+Alania, Divergent Storm	1	Effect:the	S25-effect-verb-bespoke
+Shelldock Isle	1	Swallow:Condition_If	S07-condition-if-bespoke
+Gandalf, Friend of the Shire	1	Swallow:Condition_If	S03-intervening-if-trigger
+Balduvian Warlord	2	Effect:block;Effect:creatures	S25-effect-verb-bespoke
+Chandra, Pyromaster	1	Effect:choose	S22-choose-effect
++2 Mace	1	Effect:static_structure	S21-static-ability
+Titan's Presence	2	Swallow:Condition_If;Swallow:DynamicQty	S01-reflexive-if-rider
+Molten Psyche	1	Effect:deal	S25-effect-verb-bespoke
+Elspeth Resplendent	1	Effect:put	S25-effect-verb-bespoke
+Kami of Jealous Thirst	1	Effect:this	S25-effect-verb-bespoke
+Friendly Rivalry	1	Effect:multi_source_compound_each_power_damage	S25-effect-verb-bespoke
+Deepwood Denizen	1	Effect:this	S25-effect-verb-bespoke
+Palantír of Orthanc	1	Effect:lose	S25-effect-verb-bespoke
+Burn at the Stake	1	Effect:deal	S25-effect-verb-bespoke
+Voracious Dragon	1	Effect:deal	S25-effect-verb-bespoke
+Cerebral Vortex	1	Effect:deal	S25-effect-verb-bespoke
+Elbrus, the Binding Blade	1	Effect:unattach	S25-effect-verb-bespoke
+Gutter Shortcut	0		R2-aslongas-conditional-static
+Living Lore	1	Effect:unknown	S24-unknown-effect-bespoke
+Deathforge Shaman	1	Effect:deal	S25-effect-verb-bespoke
+Cunning Bandit	1	Effect:flip	S25-effect-verb-bespoke
+Escape Detection	1	Effect:freerunning—return	S25-effect-verb-bespoke
+Veiling Oddity	1	Trigger:When the last time counter is removed from this card while it's exiled	S19-new-trigger-matcher
+The Phasing of Zhalfir	1	Effect:another	S25-effect-verb-bespoke
+Confounding Conundrum	2	Swallow:Condition_If;Swallow:Duration_ThisTurn	S03-intervening-if-trigger
+Maelstrom Djinn	1	Effect:gain	S25-effect-verb-bespoke
+Evolving Adaptive	1	Effect:empty	S25-effect-verb-bespoke
+Breathless Knight	1	Swallow:Condition_If	S03-intervening-if-trigger
+Predatory Advantage	1	Swallow:Duration_ThisTurn	S11-duration-grant
+Lashwhip Predator	1	Swallow:Condition_If	S05-alt-cost-if
+Wild Slash	1	Swallow:Condition_If	S07-condition-if-bespoke
+Pride of the Clouds	1	Swallow:DynamicQty	S08-foreach-count-qty
+Call of the Ring	1	Trigger:Whenever you choose a creature as your Ring-bearer	S19-new-trigger-matcher
+Scion of Stygia	0		R5-runtime-bespoke
+Weftwalking	1	Effect:unknown	S24-unknown-effect-bespoke
+Solstice Revelations	1	Swallow:DynamicQty	S10-dynamic-qty-bespoke
+Heart of Kiran	1	Static:AlternativeKeywordCost(Crew)	S26-alt-keyword-cost
+Molten Sentry	1	Effect:unknown	S24-unknown-effect-bespoke
+Jeskai Infiltrator	2	Effect:manifest;Effect:shuffle	S25-effect-verb-bespoke
+Dauthi Voidwalker	2	Effect:choose;Effect:replacement_structure	S22-choose-effect
+Warchanter Skald	1	Swallow:Condition_If	S03-intervening-if-trigger
+Tezzeret, Betrayer of Flesh	1	Effect:static_structure	S21-static-ability
+Psychic Pickpocket	1	Effect:when	S25-effect-verb-bespoke
+Watchers of the Dead	1	Effect:choose	S22-choose-effect
+Withercrown	1	Effect:Unsupported unless clause	S14-unless-clause
+Turntimber Symbiosis	2	Swallow:Condition_If;Swallow:Optional_YouMay	S01-reflexive-if-rider
+Sword-Point Diplomacy	1	Effect:Unsupported unless clause	S14-unless-clause
+Tinybones, Bauble Burglar	1	Effect:unknown	S24-unknown-effect-bespoke
+Henge Walker	1	Swallow:Condition_If	S07-condition-if-bespoke
+Kav Landseeker	1	Effect:at	S25-effect-verb-bespoke
+Timesifter	1	Effect:the	S25-effect-verb-bespoke
+Chorus of the Conclave	2	Swallow:Condition_If;Swallow:Optional_YouMay	S07-condition-if-bespoke
+One Ring to Rule Them All	1	Effect:mill	S25-effect-verb-bespoke
+Verdeloth the Ancient	1	Effect:static_structure	S21-static-ability
+Stolen Uniform	1	Effect:when	S25-effect-verb-bespoke
+Deathknell Berserker	1	Swallow:Condition_If	S01-reflexive-if-rider
+Lightfoot Rogue	0		R5-runtime-bespoke
+Kazandu Tuskcaller	0		R3-level-up
+Barrel Down Sokenzan	1	Effect:deal	S25-effect-verb-bespoke
+Andúril, Flame of the West	1	Effect:instead	S25-effect-verb-bespoke
+Capricious Hellraiser	1	Effect:choose	S22-choose-effect
+Minimus Containment	0		R5-runtime-bespoke
+Rumbling Ruin	2	Effect:count;Effect:creatures	S25-effect-verb-bespoke
+Yotia Declares War	0		R5-runtime-bespoke
+Otterball Antics	1	Swallow:Condition_If	S05-alt-cost-if
+Transcendent Archaic	1	Swallow:Condition_If	S07-condition-if-bespoke
+Visions of Beyond	1	Swallow:Condition_If	S07-condition-if-bespoke
+Feast of Worms	1	Swallow:Condition_If	S07-condition-if-bespoke
+Yuan-Ti Malison	0		R2-aslongas-conditional-static
+Suncleanser	1	Effect:can't	S25-effect-verb-bespoke
+Lost Legacy	1	Effect:choose	S22-choose-effect
+Soulless Jailer	1	Effect:static_structure	S21-static-ability
+Neriv, Heart of the Storm	1	Swallow:DynamicQty	S10-dynamic-qty-bespoke
+Deepway Navigator	0		R2-aslongas-conditional-static
+Chronomantic Escape	1	Effect:creatures	S25-effect-verb-bespoke
+Bonds of Faith	0		R2-aslongas-conditional-static
+Tenacious Underdog	0		R5-runtime-bespoke
+Worldpurge	3	Effect:choose;Effect:lose;Effect:shuffle	S22-choose-effect
+Wizard's Spellbook	1	Swallow:Optional_YouMay	S12-optional-youmay-subeffect
+Leonin Shikari	1	Effect:effect_structure	S25-effect-verb-bespoke
+Tom Bombadil	1	Trigger:Whenever the final chapter ability of a Saga you control resolves	S19-new-trigger-matcher
+Cloud, Midgar Mercenary	2	Swallow:Condition_AsLongAs;Swallow:Condition_If	S07-condition-if-bespoke
+Soul Partition	1	Swallow:Condition_AsLongAs	S13-aslongas-parse
+Hobgoblin Captain	1	Swallow:Condition_If	S03-intervening-if-trigger
+Diligent Zookeeper	1	Swallow:DynamicQty	S08-foreach-count-qty
+Gideon of the Trials	1	Swallow:Condition_AsLongAs	S13-aslongas-parse
+Call the Spirit Dragons	1	Effect:for	S18-foreach-simple-count
+Risen Executioner	2	Swallow:Condition_If;Swallow:DynamicQty	S05-alt-cost-if
+Rampaging Soulrager	0		R2-aslongas-conditional-static
+Break the Spell	1	Swallow:Condition_If	S07-condition-if-bespoke
+Singularity Rupture	1	Swallow:DynamicQty	S10-dynamic-qty-bespoke
+Ballista Wielder	1	Effect:a	S25-effect-verb-bespoke
+Slumbering Trudge	1	Swallow:Condition_If	S07-condition-if-bespoke
+Ritual of the Returned	2	Effect:create;Effect:its	S25-effect-verb-bespoke
+Touch of the Eternal	2	Effect:count;Effect:your	S25-effect-verb-bespoke
+Hollow Marauder	1	Effect:for	S18-foreach-simple-count
+Phyrexian Fleshgorger	1	Swallow:DynamicQty	S10-dynamic-qty-bespoke
+Whirlwind Denial	1	Effect:for	S18-foreach-simple-count
+Sacred Ground	1	Trigger:Whenever a spell or ability an opponent controls causes a land to be put into your graveyard from the battlefield	S19-new-trigger-matcher
+Dismantle	1	Swallow:Condition_If	S07-condition-if-bespoke
+Inferno Trap	1	Swallow:Duration_ThisTurn	S11-duration-grant
+Jetmir's Fixer	1	Swallow:Condition_If	S07-condition-if-bespoke
+The Lunar Whale	0		R2-aslongas-conditional-static
+Face of Divinity	0		R2-aslongas-conditional-static
+Spell Queller	1	Effect:the	S25-effect-verb-bespoke
+Hedron-Field Purists	0		R3-level-up
+Pathway Arrows	1	Swallow:Condition_If	S07-condition-if-bespoke
+Clockwork Servant	1	Swallow:Condition_If	S03-intervening-if-trigger
+Goblin Charbelcher	1	Effect:deal	S25-effect-verb-bespoke
+Botanical Brawler	2	Swallow:Condition_If;Swallow:Duration_ThisTurn	S01-reflexive-if-rider
+Polymorphous Rush	1	Effect:choose	S22-choose-effect
+Roiling Horror	1	Effect:static_structure	S21-static-ability
+Tunnel Vision	1	Effect:otherwise	S25-effect-verb-bespoke
+Distorted Curiosity	0		R5-runtime-bespoke
+Tainted Indulgence	1	Effect:Unsupported unless clause	S14-unless-clause
+Pia's Revolution	1	Effect:Unsupported unless clause	S14-unless-clause
+Freestrider Commando	1	Swallow:Condition_If	S02-cast-context-if
+Serra Paragon	1	Effect:static_structure	S21-static-ability
+Primal Wellspring	2	Effect:orphaned_copy_retarget;Effect:when	S20-copy-retarget
+Howling Galefang	0		R2-aslongas-conditional-static
+Tyvar the Bellicose	2	Effect:put;Trigger:whenever a mana ability of ~ resolves	S19-new-trigger-matcher
+Flash Foliage	0		R5-runtime-bespoke
+Betrayal of Flesh	1	Effect:entwine—sacrifice	S25-effect-verb-bespoke
+Urza, Planeswalker	1	Effect:effect_structure	S25-effect-verb-bespoke
+Crown of Convergence	0		R2-aslongas-conditional-static
+From Under the Floorboards	1	Effect:instead	S25-effect-verb-bespoke
+Dawn Evangel	1	Swallow:Condition_If	S03-intervening-if-trigger
+Tenacious Hunter	0		R2-aslongas-conditional-static
+Gastal Raider	0		R1-speed-mechanic
+Tamiyo's Compleation	1	Effect:unattach	S25-effect-verb-bespoke
+Nicol Bolas, the Arisen	1	ParseWarning:target-fallback	S17-anaphoric-target
+Seeds of Strength	0		R5-runtime-bespoke
+Agency Coroner	1	Swallow:Condition_If	S07-condition-if-bespoke
+Endrek Sahr, Master Breeder	1	Trigger:When you control seven or more Thrulls	S19-new-trigger-matcher
+Psychic Possession	1	ParseWarning:trigger-subject	S27-trigger-subject-anaphora
+Silver Bolt	1	Swallow:Condition_If	S07-condition-if-bespoke
+Embereth Paladin	1	Swallow:Condition_If	S02-cast-context-if
+Werewolf Pack Leader	1	Swallow:Condition_If	S03-intervening-if-trigger
+Phyrexian Ingester	1	Effect:static_structure	S21-static-ability
+Primal Plasma	1	Effect:unknown	S24-unknown-effect-bespoke
+Kentaro, the Smiling Cat	1	Swallow:DynamicQty	S10-dynamic-qty-bespoke
+Mount Doom	1	Effect:choose	S22-choose-effect
+Biomancer's Familiar	1	Effect:the	S25-effect-verb-bespoke
+Zameck Guildmage	2	Effect:each;Effect:this	S25-effect-verb-bespoke
+Elesh Norn, Mother of Machines	1	Effect:unknown	S24-unknown-effect-bespoke
+Elspeth Conquers Death	2	Effect:noncreature;Effect:put	S25-effect-verb-bespoke
+Blinding Powder	1	Effect:unattach	S25-effect-verb-bespoke
+Chrome Replicator	1	Effect:nontoken	S25-effect-verb-bespoke
+Syr Carah, the Bold	1	Trigger:Whenever ~	S19-new-trigger-matcher
+Yenna, Redtooth Regent	1	Swallow:Condition_If	S07-condition-if-bespoke
+Soulblast	1	Effect:deal	S25-effect-verb-bespoke
+Yidaro, Wandering Monster	1	Effect:wandering	S25-effect-verb-bespoke
+Oath of Teferi	1	Effect:effect_structure	S25-effect-verb-bespoke
+Smoke Teller	1	Effect:look	S25-effect-verb-bespoke
+Madcap Experiment	1	Effect:deal	S25-effect-verb-bespoke
+Urabrask, Heretic Praetor	2	Effect:the;Effect:they	S25-effect-verb-bespoke
+Rakdos, the Showstopper	1	Swallow:DynamicQty	S08-foreach-count-qty
+So Tiny	0		R2-aslongas-conditional-static
+Retriever Phoenix	1	Swallow:Optional_YouMay	S12-optional-youmay-subeffect
+Lethal Throwdown	1	Swallow:Condition_If	S07-condition-if-bespoke
+Long List of the Ents	2	Effect:note;Effect:when	S25-effect-verb-bespoke
+Kardur, Doomscourge	1	Swallow:Condition_If	S07-condition-if-bespoke
+Havengul Lich	1	Effect:when	S25-effect-verb-bespoke
+Karsus Depthguard	0		R2-aslongas-conditional-static
+Portent Tracker	1	Effect:otherwise	S25-effect-verb-bespoke
+Melira, the Living Cure	2	Effect:replacement_structure;Effect:when	S25-effect-verb-bespoke
+Garenbrig Paladin	1	Swallow:Condition_If	S02-cast-context-if
+Academic Probation	2	Effect:can't;Effect:with	S25-effect-verb-bespoke
+Wumpus Aberration	1	Swallow:Condition_If	S07-condition-if-bespoke
+Long Rest	1	Swallow:Condition_If	S07-condition-if-bespoke
+Bounding Felidar	1	Swallow:DynamicQty	S08-foreach-count-qty
+Final Punishment	1	Effect:lose	S25-effect-verb-bespoke
+Dragon Hunter	1	Effect:effect_structure	S25-effect-verb-bespoke
+Boneyard Parley	1	Effect:an	S25-effect-verb-bespoke
+Curse of Hospitality	1	Effect:static_structure	S21-static-ability
+Sandstalker Moloch	2	Swallow:Condition_If;Swallow:Duration_ThisTurn	S03-intervening-if-trigger
+Urza Assembles the Titans	1	Effect:activate	S25-effect-verb-bespoke
+Hope of Ghirapur	1	Effect:can't	S25-effect-verb-bespoke
+Sting, the Glinting Dagger	0		R2-aslongas-conditional-static
+Controlled Instincts	0		R5-runtime-bespoke
+Goldberry, River-Daughter	1	Effect:move	S25-effect-verb-bespoke
+Bane Alley Broker	1	Effect:effect_structure	S25-effect-verb-bespoke
+Descendants' Path	1	Effect:that	S25-effect-verb-bespoke
+Auspicious Starrix	1	Swallow:DynamicQty	S10-dynamic-qty-bespoke
+Blow Your House Down	1	ParseWarning:target-fallback	S17-anaphoric-target
+Gladewalker Ritualist	1	Trigger:Whenever another creature you control named Gladewalker Ritualist enters	S19-new-trigger-matcher
+Portent of Calamity	1	Swallow:Condition_If	S07-condition-if-bespoke
+Dream Leash	1	Effect:effect_structure	S25-effect-verb-bespoke
+Drowner of Truth	1	Swallow:Condition_If	S07-condition-if-bespoke
+Redcap Melee	1	Swallow:Condition_If	S07-condition-if-bespoke
+Manor Gargoyle	0		R2-aslongas-conditional-static
+Oriss, Samite Guardian	1	Cost:Samite Guardian	S23-alt-cost-parse
+Nissa, Steward of Elements	1	Effect:or	S25-effect-verb-bespoke
+Kopala, Warden of Waves	1	Effect:static_structure	S21-static-ability
+Vampire Nocturnus	0		R2-aslongas-conditional-static
+Stand Together	1	Effect:two	S25-effect-verb-bespoke
+Shalai, Voice of Plenty	1	Effect:static_structure	S21-static-ability
+Burning-Eye Zubera	2	Swallow:Condition_If;Swallow:Duration_ThisTurn	S07-condition-if-bespoke
+Talon of Pain	1	Trigger:Whenever a source you control other than ~ deals damage to an opponent	S19-new-trigger-matcher
+Forsworn Paladin	1	Swallow:Condition_If	S07-condition-if-bespoke
+Exotic Pets	2	Effect:for;Effect:put	S18-foreach-simple-count
+Domri, Chaos Bringer	1	Swallow:Condition_If	S07-condition-if-bespoke
+Medomai's Prophecy	1	Effect:when	S25-effect-verb-bespoke
+Grishnákh, Brash Instigator	1	Swallow:DynamicQty	S10-dynamic-qty-bespoke
+Glittering Frost	1	Effect:static_structure	S21-static-ability
+Carth the Lion	1	Effect:unknown	S24-unknown-effect-bespoke
+Ion Storm	1	Cost:Remove a +1/+1 counter or a charge counter from a permanent you control	S23-alt-cost-parse
+Falkenrath Gorger	1	Effect:static_structure	S21-static-ability
+Maskwood Nexus	1	Effect:unknown	S24-unknown-effect-bespoke
+Marrow Chomper	1	Swallow:DynamicQty	S08-foreach-count-qty
+Kargan Dragonlord	0		R3-level-up
+Corrupted Resolve	1	Swallow:Condition_If	S01-reflexive-if-rider
+Rakdos, the Muscle	1	Swallow:DynamicQty	S10-dynamic-qty-bespoke
+Gideon's Sacrifice	1	Effect:all	S25-effect-verb-bespoke
+The End	1	Effect:search	S25-effect-verb-bespoke
+Moonhold	1	Effect:can't	S25-effect-verb-bespoke
+Chandra, Fire of Kaladesh	1	Swallow:Duration_ThisTurn	S11-duration-grant
+Cosmos Elixir	0		R5-runtime-bespoke
+Pollywog Symbiote	1	Swallow:Condition_If	S05-alt-cost-if
+Flames of the Blood Hand	1	Effect:gain	S25-effect-verb-bespoke
+Luxior, Giada's Gift	1	Effect:static_structure	S21-static-ability
+Dragon Egg	1	Swallow:Duration_UntilEndOfTurn	S11-duration-grant
+Vengeful Firebrand	0		R2-aslongas-conditional-static
+Transcendent Master	0		R3-level-up
+No Witnesses	1	Effect:the	S25-effect-verb-bespoke
+Search the City	1	Trigger:Whenever you play a card with the same name as one of the exiled cards	S19-new-trigger-matcher
+Havi, the All-Father	0		R2-aslongas-conditional-static
+Nullstone Gargoyle	1	Trigger:Whenever the first noncreature spell of a turn is cast	S19-new-trigger-matcher
+Zur's Weirding	1	Effect:any	S25-effect-verb-bespoke
+Cosmos Charger	1	Effect:static_structure	S21-static-ability
+Ascendant Packleader	1	Swallow:Condition_If	S07-condition-if-bespoke
+Repeated Reverberation	1	Trigger:When you next cast an instant spell	S19-new-trigger-matcher
+Clockspinning	1	Effect:remove	S25-effect-verb-bespoke
+Become Anonymous	2	Effect:shuffle;Effect:they	S25-effect-verb-bespoke
+Cache Grab	1	Swallow:Condition_If	S07-condition-if-bespoke
+Glaring Spotlight	1	Effect:static_structure	S21-static-ability
+Reflector Mage	1	Effect:can't	S25-effect-verb-bespoke
+Suspend Aggression	1	Swallow:DynamicQty	S08-foreach-count-qty
+Winnowing	1	Effect:for	S16-foreach-player-object-HEAVY
+Vesuvan Drifter	1	Swallow:Condition_If	S07-condition-if-bespoke
+Tajuru Preserver	1	Effect:unknown	S24-unknown-effect-bespoke
+Scaleguard Sentinels	1	Swallow:Condition_If	S07-condition-if-bespoke
+Isperia the Inscrutable	1	Swallow:Condition_If	S07-condition-if-bespoke
+Lifecraft Awakening	1	Swallow:Condition_If	S01-reflexive-if-rider
+Arcane Adaptation	1	Effect:unknown	S24-unknown-effect-bespoke
+Shadows' Verdict	1	Effect:all	S25-effect-verb-bespoke
+Mirrorwing Dragon	1	Swallow:DynamicQty	S08-foreach-count-qty
+Eriette, the Beguiler	1	Trigger:Whenever an Aura you control becomes attached to a nonland permanent an opponent controls with mana value less than or equal to that Aura's mana value	S19-new-trigger-matcher
+Twinning Glass	1	Swallow:Condition_If	S01-reflexive-if-rider
+Ram Through	1	Effect:excess	S25-effect-verb-bespoke
+Zurgo and Ojutai	0		R2-aslongas-conditional-static
+Ink-Treader Nephilim	2	Swallow:Condition_If;Swallow:DynamicQty	S03-intervening-if-trigger
+Plargg and Nassari	1	Effect:choose	S22-choose-effect
+Coralhelm Commander	0		R3-level-up
+Invincible Hymn	2	Effect:count;Effect:your	S25-effect-verb-bespoke
+Curse of Surveillance	1	Effect:draw	S25-effect-verb-bespoke
+Grub, Notorious Auntie	1	ParseWarning:target-fallback	S17-anaphoric-target
+Monstrous War-Leech	1	Effect:unknown	S24-unknown-effect-bespoke
+Gimli, Mournful Avenger	1	Effect:when	S25-effect-verb-bespoke
+Unscythe, Killer of Kings	1	Trigger:Whenever a creature dealt damage by equipped creature this turn dies	S19-new-trigger-matcher
+Critical Hit	1	Trigger:When you roll a natural 20	S19-new-trigger-matcher
+Curse of Leeches	1	Effect:unknown	S24-unknown-effect-bespoke
+Brilliance Unleashed	1	Effect:it's	S25-effect-verb-bespoke
+Fact or Fiction	1	Effect:an	S25-effect-verb-bespoke
+Domineer	0		R5-runtime-bespoke
+Darksteel Garrison	2	Effect:static_structure;Trigger:Whenever fortified land becomes tapped	S19-new-trigger-matcher
+Elvish Refueler	1	Effect:unknown	S24-unknown-effect-bespoke
+Isleback Spawn	0		R2-aslongas-conditional-static
+Vengeful Pharaoh	1	Trigger:Whenever combat damage is dealt to you or a planeswalker you control	S19-new-trigger-matcher
+Reject Imperfection	1	Swallow:Condition_If	S01-reflexive-if-rider
+Whisperwood Elemental	1	Effect:face-up	S25-effect-verb-bespoke
+Liberator, Urza's Battlethopter	1	Swallow:Condition_If	S03-intervening-if-trigger
+Vigor Mortis	1	Swallow:Condition_If	S07-condition-if-bespoke
+Trait Doctoring	1	Effect:change	S25-effect-verb-bespoke
+Getaway Car	1	Swallow:Duration_ThisTurn	S11-duration-grant
+Heretic's Punishment	1	Effect:deal	S25-effect-verb-bespoke
+Melira, Sylvok Outcast	2	Effect:effect_structure;Effect:static_structure	S21-static-ability
+Lithomantic Barrage	1	Swallow:Condition_If	S07-condition-if-bespoke
+Glimpse the Impossible	1	Swallow:DynamicQty	S08-foreach-count-qty
+Arna Kennerüd, Skycaptain	1	Effect:for	S18-foreach-simple-count
+Tunnel Ignus	2	Swallow:Condition_If;Swallow:Duration_ThisTurn	S03-intervening-if-trigger
+Surgical Extraction	1	Effect:search	S25-effect-verb-bespoke
+Firebender Ascension	1	Trigger:Whenever a creature you control attacking causes a triggered ability of that creature to trigger	S19-new-trigger-matcher
+Dragon's Approach	1	Effect:four	S25-effect-verb-bespoke
+Trove of Temptation	1	Effect:effect_structure	S25-effect-verb-bespoke
+Odric, Master Tactician	1	Effect:choose	S22-choose-effect
+Isildur's Fateful Strike	2	Swallow:Condition_If;Swallow:DynamicQty	S01-reflexive-if-rider
+Firesong and Sunspeaker	1	Trigger:Whenever a white instant or sorcery spell causes you to gain life	S19-new-trigger-matcher
+Karn's Sylex	1	Effect:static_structure	S21-static-ability
+Predatory Focus	1	Effect:have	S25-effect-verb-bespoke
+Glen Elendra's Answer	1	Effect:all	S25-effect-verb-bespoke
+Grave Scrabbler	1	Swallow:Condition_If	S03-intervening-if-trigger
+Ghastly Conscription	2	Effect:manifest;Effect:shuffle	S25-effect-verb-bespoke
+Invasion of Pyrulea	1	Swallow:Condition_If	S01-reflexive-if-rider
+Storyweave	1	Effect:the	S25-effect-verb-bespoke
+Dream Devourer	2	Effect:static_structure;Trigger:Whenever you foretell a card	S19-new-trigger-matcher
+Scalpelexis	1	Effect:repeat	S25-effect-verb-bespoke
+Ride Down	1	Effect:creatures	S25-effect-verb-bespoke
+Draconic Roar	1	Swallow:Condition_If	S07-condition-if-bespoke
+Stargaze	1	Effect:look	S25-effect-verb-bespoke
+Treasure Chest	1	Swallow:Optional_YouMay	S12-optional-youmay-subeffect
+Tanglewalker	0		R2-aslongas-conditional-static
+Faithful Squire	1	Effect:flip	S25-effect-verb-bespoke
+Skrelv's Hive	0		R2-aslongas-conditional-static
+Descendant of Soramaro	1	Effect:put	S25-effect-verb-bespoke
+Threads of Disloyalty	0		R5-runtime-bespoke
+Essence of the Wild	1	Effect:static_structure	S21-static-ability
+Living Breakthrough	1	Effect:with	S25-effect-verb-bespoke
+Symbiote Spider-Man	1	Effect:gain	S25-effect-verb-bespoke
+Bride's Gown	0		R2-aslongas-conditional-static
+Vesuvan Shapeshifter	1	Effect:static_structure	S21-static-ability
+Zilortha, Apex of Ikoria	1	Effect:static_structure	S21-static-ability
+Primal Clay	1	Effect:unknown	S24-unknown-effect-bespoke
+Crystalline Giant	2	Effect:choose;Effect:put	S22-choose-effect
+Corpse Appraiser	1	Swallow:Condition_If	S07-condition-if-bespoke
+Unstable Glyphbridge	1	Effect:for	S16-foreach-player-object-HEAVY
+Su-Chi Cave Guard	1	Effect:add	S25-effect-verb-bespoke
+Ringwraiths	1	Swallow:Condition_If	S01-reflexive-if-rider
+Choreographed Sparks	1	Effect:the	S25-effect-verb-bespoke
+Thieving Sprite	1	Swallow:DynamicQty	S10-dynamic-qty-bespoke
+Valakut Fireboar	1	Effect:switch	S25-effect-verb-bespoke
+Dormant Gomazoa	1	Trigger:Whenever you become the target of a spell	S19-new-trigger-matcher
+Temple of the Dead	1	Swallow:Condition_If	S04-activate-only-if
+Hedonist's Trove	1	Effect:static_structure	S21-static-ability
+Nezumi Shortfang	1	Effect:flip	S25-effect-verb-bespoke
+Flame Spill	1	Effect:excess	S25-effect-verb-bespoke
+Anti-Venom, Horrifying Healer	1	Swallow:Condition_If	S03-intervening-if-trigger
+Halimar Wavewatch	0		R3-level-up
+Gruesome Discovery	1	Effect:choose	S22-choose-effect
+Gate to the Aether	1	Effect:creature,	S25-effect-verb-bespoke
+Navigator's Compass	1	Effect:become	S25-effect-verb-bespoke
+Hibernation's End	1	Trigger:Whenever you pay ~'s cumulative upkeep	S19-new-trigger-matcher
+Paladin of Atonement	1	Swallow:Condition_If	S03-intervening-if-trigger
+Leyline of Combustion	1	Trigger:Whenever you and/or at least one permanent you control becomes the target of a spell or ability an opponent controls	S19-new-trigger-matcher
+Tar Fiend	1	Swallow:DynamicQty	S08-foreach-count-qty
+Memory Vessel	1	Effect:players	S25-effect-verb-bespoke
+Dancing Sword	1	Effect:isn't	S25-effect-verb-bespoke
+Flood of Tears	1	Swallow:Condition_If	S07-condition-if-bespoke
+Arcanum Wings	1	Effect:unknown	S24-unknown-effect-bespoke
+Twisted Sewer-Witch	1	Effect:for	S18-foreach-simple-count
+Provoke the Trolls	1	Swallow:Condition_If	S07-condition-if-bespoke
+Lullmage's Domination	1	Swallow:Condition_If	S05-alt-cost-if
+Vizier of the Anointed	1	Trigger:Whenever you activate an eternalize or embalm ability	S19-new-trigger-matcher
+A Killer Among Us	1	Swallow:Condition_If	S07-condition-if-bespoke
+Burnout Bashtronaut	0		R1-speed-mechanic
+Arcane Investigator	0		R5-runtime-bespoke
+Combustion Man	1	Effect:Unsupported unless clause	S14-unless-clause
+The Tale of Tamiyo	1	Swallow:Condition_If	S06-saga-chapter-if
+Ajani Goldmane	1	Effect:create	S25-effect-verb-bespoke
+Takeno, Samurai General	1	Swallow:DynamicQty	S08-foreach-count-qty
+Liliana of the Veil	1	Effect:separate	S25-effect-verb-bespoke
+Sway of the Stars	2	Effect:all;Effect:shuffle	S25-effect-verb-bespoke
+Reckless Crew	1	Effect:for	S18-foreach-simple-count
+Cecil, Dark Knight	0		R5-runtime-bespoke
+Instill Furor	1	Effect:Unsupported unless clause	S14-unless-clause
+Descent into Madness	1	Swallow:DynamicQty	S10-dynamic-qty-bespoke
+Tamiyo, Collector of Tales	1	Effect:unknown	S24-unknown-effect-bespoke
+Volcano Hellion	1	Effect:deal	S25-effect-verb-bespoke
+Kaldring, the Rimestaff	1	Effect:it	S25-effect-verb-bespoke
+Dearly Departed	1	Swallow:Condition_AsLongAs	S13-aslongas-parse
+Orochi Eggwatcher	1	Effect:flip	S25-effect-verb-bespoke
+Goblin Morningstar	0		R5-runtime-bespoke
+Mind Bend	1	Effect:change	S25-effect-verb-bespoke
+Gaea's Will	1	Effect:play	S25-effect-verb-bespoke
+Emergent Sequence	1	Swallow:DynamicQty	S08-foreach-count-qty
+Eliminate the Impossible	1	Swallow:Condition_If	S07-condition-if-bespoke
+Etched Host Doombringer	1	Effect:otherwise	S25-effect-verb-bespoke
+Sorin, Ravenous Neonate	1	Swallow:Condition_If	S07-condition-if-bespoke
+Mishra's Domination	0		R2-aslongas-conditional-static
+Sphinx Ambassador	1	Swallow:Condition_If	S07-condition-if-bespoke
+Over the Top	1	Effect:reveal	S25-effect-verb-bespoke
+Infuse with Vitality	0		R5-runtime-bespoke
+Psychotic Episode	1	Effect:choose	S22-choose-effect
+Niv-Mizzet Reborn	1	Effect:for	S18-foreach-simple-count
+Dog Umbra	0		R2-aslongas-conditional-static
+Linvala, Shield of Sea Gate	1	Effect:can't	S25-effect-verb-bespoke
+Rescuer Sphinx	2	Swallow:Condition_If;Swallow:Optional_YouMay	S07-condition-if-bespoke
+Apostle of Invasion	0		R2-aslongas-conditional-static
+Eidolon of Obstruction	1	Effect:static_structure	S21-static-ability
+Tainted Adversary	1	Effect:when	S25-effect-verb-bespoke
+Rubblebelt Braggart	1	Swallow:Condition_If	S03-intervening-if-trigger
+Balduvian Fallen	1	Trigger:Whenever ~'s cumulative upkeep is paid	S19-new-trigger-matcher
+Tovolar's Packleader	1	Effect:another	S25-effect-verb-bespoke
+Pain's Reward	5	Effect:bid;Effect:in;Effect:the;Effect:top;Effect:you	S25-effect-verb-bespoke
+Sage-Eye Avengers	1	Swallow:Condition_If	S01-reflexive-if-rider
+Mordenkainen	1	Effect:exchange	S25-effect-verb-bespoke
+The Deck of Many Things	0		R5-runtime-bespoke
+Drana, the Last Bloodchief	2	Effect:choose;Effect:the	S22-choose-effect
+Invasion of Gobakhan	1	Effect:a	S25-effect-verb-bespoke
+Aeve, Progenitor Ooze	1	Effect:effect_structure	S25-effect-verb-bespoke
+Nadaar, Selfless Paladin	0		R2-aslongas-conditional-static
+Earth-Cult Elemental	0		R5-runtime-bespoke
+Consume Spirit	1	Effect:spend	S25-effect-verb-bespoke
+Minamo's Meddling	1	Effect:discard	S25-effect-verb-bespoke
+Bre of Clan Stoutarm	1	Effect:otherwise	S25-effect-verb-bespoke
+Swimmer in Nightmares	0		R2-aslongas-conditional-static
+Septic Rats	1	Swallow:Condition_If	S03-intervening-if-trigger
+Giant's Amulet	0		R2-aslongas-conditional-static
+Mitotic Manipulation	1	Swallow:Condition_If	S01-reflexive-if-rider
+Soul Foundry	1	Effect:x	S25-effect-verb-bespoke
+Walking Sarcophagus	0		R1-speed-mechanic
+Ikiral Outrider	0		R3-level-up
+Boros Battleshaper	1	Swallow:Condition_If	S07-condition-if-bespoke
+Sarkhan's Unsealing	1	Effect:5,	S25-effect-verb-bespoke
+Plague of Vermin	1	Effect:repeat	S25-effect-verb-bespoke
+Fear of Immobility	1	Swallow:Condition_If	S07-condition-if-bespoke
+Happily Ever After	1	Effect:there	S25-effect-verb-bespoke
+Ral Zarek	1	Swallow:DynamicQty	S08-foreach-count-qty
+Rumbling Aftershocks	1	Effect:deal	S25-effect-verb-bespoke
+Hulking Metamorph	1	Swallow:DynamicQty	S10-dynamic-qty-bespoke
+Bumi, Unleashed	1	Effect:only	S25-effect-verb-bespoke
+Anchor to Reality	1	Swallow:Condition_If	S01-reflexive-if-rider
+Targ Nar, Demon-Fang Gnoll	1	Swallow:Condition_If	S03-intervening-if-trigger
+Esper Terra	2	Effect:add;Effect:put	S25-effect-verb-bespoke
+Avacyn's Judgment	1	Swallow:Condition_If	S07-condition-if-bespoke
+Founding the Third Path	0		R5-runtime-bespoke
+Damping Sphere	1	Effect:effect_structure	S25-effect-verb-bespoke
+Fangorn, Tree Shepherd	1	Effect:add	S25-effect-verb-bespoke
+Garruk Relentless	1	Trigger:When Garruk has two or fewer loyalty counters on him	S19-new-trigger-matcher
+Trophy Hunter	1	Trigger:Whenever a creature with flying dealt damage by ~ this turn dies	S19-new-trigger-matcher
+Erebos's Titan	1	Trigger:Whenever a creature card leaves an opponent's graveyard	S19-new-trigger-matcher
+Bushi Tenderfoot	1	Effect:flip	S25-effect-verb-bespoke
+Antiquities on the Loose	1	Swallow:Condition_If	S05-alt-cost-if
+Tori D'Avenant, Fury Rider	1	Effect:other	S25-effect-verb-bespoke
+Etali, Primal Sickness	1	Effect:get	S25-effect-verb-bespoke
+Parker Luck	1	Effect:lose	S25-effect-verb-bespoke
+Vantress Paladin	1	Swallow:Condition_If	S02-cast-context-if
+Farideh, Devil's Chosen	1	Swallow:Condition_If	S07-condition-if-bespoke
+Strange Augmentation	1	Effect:unknown	S24-unknown-effect-bespoke
+Baneclaw Marauder	1	Trigger:Whenever a creature blocking ~ dies	S19-new-trigger-matcher
+Academy Loremaster	1	Effect:spells	S25-effect-verb-bespoke
+Goblin Traprunner	1	Swallow:DynamicQty	S08-foreach-count-qty
+Lavinia, Azorius Renegade	1	Effect:static_structure	S21-static-ability
+Barbarian Class	1	Effect:unknown	S24-unknown-effect-bespoke
+Risona, Asari Commander	1	Swallow:Condition_If	S03-intervening-if-trigger
+Nashi, Searcher in the Dark	1	Swallow:Condition_If	S07-condition-if-bespoke
+Leyline of Singularity	1	Effect:effect_structure	S25-effect-verb-bespoke
+Uba Mask	1	Effect:static_structure	S21-static-ability
+Quarry Colossus	1	Effect:put	S25-effect-verb-bespoke
+Ardenvale Paladin	1	Swallow:Condition_If	S02-cast-context-if
+Gemini Engine	2	Effect:create;Effect:its	S25-effect-verb-bespoke
+Intrepid Paleontologist	2	Swallow:Condition_If;Swallow:Optional_YouMay	S02-cast-context-if
+Grab the Prize	1	Swallow:Condition_If	S07-condition-if-bespoke
+Tazri, Stalwart Survivor	2	Effect:add;Effect:spend	S25-effect-verb-bespoke
+Harsh Mentor	1	Trigger:Whenever an opponent activates an ability of an artifact, creature, or land on the battlefield	S19-new-trigger-matcher
+Spider-Verse	1	Effect:orphaned_copy_retarget	S20-copy-retarget
+Grolnok, the Omnivore	1	Effect:effect_structure	S25-effect-verb-bespoke
+Scythe of the Wretched	1	Trigger:Whenever a creature dealt damage by equipped creature this turn dies	S19-new-trigger-matcher
+Trickbind	1	Effect:activated	S25-effect-verb-bespoke
+Conundrum Sphinx	1	Swallow:Condition_If	S01-reflexive-if-rider
+Marauding Raptor	1	Swallow:Condition_If	S07-condition-if-bespoke
+Jolly Gerbils	1	Trigger:Whenever you give a gift	S19-new-trigger-matcher
+Callow Jushi	1	Effect:flip	S25-effect-verb-bespoke
+Caged Sun	1	Trigger:Whenever a land's ability causes you to add one or more mana of the chosen color	S19-new-trigger-matcher
+Ria Ivor, Bane of Bladehold	1	Effect:the	S25-effect-verb-bespoke
+Unesh, Criosphinx Sovereign	1	Effect:an	S25-effect-verb-bespoke
+Steel Exemplar	1	Swallow:Condition_Unless	S14-unless-clause
+Discerning Financier	1	Effect:choose	S22-choose-effect
+Dream Prowler	0		R2-aslongas-conditional-static
+Chrome Courier	1	Swallow:Condition_If	S07-condition-if-bespoke
+Ao, the Dawn Sky	1	Effect:modal_mode_unsupported_qualifier	S25-effect-verb-bespoke
+Undead Sprinter	1	Swallow:Condition_If	S05-alt-cost-if
+Not Forgotten	1	Effect:put	S25-effect-verb-bespoke
+Molten Exhale	1	Swallow:Condition_If	S05-alt-cost-if
+Guardian of the Gateless	1	Swallow:DynamicQty	S08-foreach-count-qty
+Kothophed, Soul Hoarder	1	Trigger:Whenever a permanent owned by another player is put into a graveyard from the battlefield	S19-new-trigger-matcher
+Asmodeus the Archfiend	1	Swallow:Condition_If	S07-condition-if-bespoke
+Investigator's Journal	1	Swallow:DynamicQty	S10-dynamic-qty-bespoke
+Verdant Rebirth	0		R5-runtime-bespoke
+Torch the Tower	1	Swallow:Duration_ThisTurn	S11-duration-grant
+Doomsday Excruciator	1	ParseWarning:target-fallback	S17-anaphoric-target
+Voltaic Visionary	1	Trigger:When you play a card exiled with ~	S19-new-trigger-matcher
+Waterbending Lesson	1	Effect:Unsupported unless clause	S14-unless-clause
+Corrupted Shapeshifter	1	Effect:unknown	S24-unknown-effect-bespoke
+Intrepid Adversary	1	Effect:when	S25-effect-verb-bespoke
+Carry Away	1	Effect:unattach	S25-effect-verb-bespoke
+Unleash the Inferno	1	Effect:when	S25-effect-verb-bespoke
+Generator Servant	1	Swallow:Condition_If	S07-condition-if-bespoke
+Sidequest: Hunt the Mark	1	Swallow:Duration_ThisTurn	S11-duration-grant
+Semester's End	1	Swallow:Condition_If	S01-reflexive-if-rider
+Quenchable Fire	1	Effect:Unsupported unless clause	S14-unless-clause
+Exhaustion	1	Effect:creatures	S25-effect-verb-bespoke
+Armament of Nyx	0		R2-aslongas-conditional-static
+Tomik, Distinguished Advokist	1	Effect:unknown	S24-unknown-effect-bespoke
+Nephalia Academy	1	Swallow:Replacement_Instead	S28-replacement-instead
+The Weatherseed Treaty	0		R5-runtime-bespoke
+Eiganjo Uprising	1	Effect:create	S25-effect-verb-bespoke
+Corrupted Crossroads	1	Effect:spend	S25-effect-verb-bespoke
+Precipitous Drop	0		R2-aslongas-conditional-static
+Volition Reins	1	Swallow:Condition_If	S03-intervening-if-trigger
+Vorel of the Hull Clade	1	Swallow:DynamicQty	S10-dynamic-qty-bespoke
+Fiery Bombardment	1	Effect:deal	S25-effect-verb-bespoke
+Mockingbird	1	Swallow:DynamicQty	S10-dynamic-qty-bespoke
+Viridian Betrayers	0		R2-aslongas-conditional-static
+Boreal Outrider	1	Swallow:Condition_If	S03-intervening-if-trigger
+Covenant of Minds	1	Swallow:Condition_If	S01-reflexive-if-rider
+Atraxa, Grand Unifier	2	Swallow:DynamicQty;Swallow:Optional_YouMay	S08-foreach-count-qty
+Show of Confidence	1	Swallow:DynamicQty	S08-foreach-count-qty
+Sovereign Okinec Ahau	1	Effect:for	S18-foreach-simple-count
+War Report	1	Effect:gain	S25-effect-verb-bespoke
+Kethis, the Hidden Hand	1	Swallow:Optional_YouMay	S12-optional-youmay-subeffect
+Petals of Insight	1	Swallow:Optional_YouMay	S12-optional-youmay-subeffect
+Can't Stay Away	1	Effect:"	S25-effect-verb-bespoke
+Ral, Leyline Prodigy	1	Effect:instant	S25-effect-verb-bespoke
+Revealing Wind	1	Swallow:Optional_YouMay	S12-optional-youmay-subeffect
+Invasion of Arcavios	1	Effect:graveyard,	S25-effect-verb-bespoke
+Command the Dreadhorde	1	Effect:deal	S25-effect-verb-bespoke
+Herald of Hadar	0		R5-runtime-bespoke
+Maestros Diabolist	1	Effect:create	S25-effect-verb-bespoke
+Zenos yae Galvus	1	Trigger:When the chosen creature leaves the battlefield	S19-new-trigger-matcher
+Check for Traps	1	Effect:otherwise	S25-effect-verb-bespoke
+Beamsplitter Mage	1	Effect:the	S25-effect-verb-bespoke
+Awaken the Sleeper	1	Swallow:Condition_If	S01-reflexive-if-rider
+Guardian of the Ages	1	Swallow:Condition_If	S07-condition-if-bespoke
+Strata Scythe	1	Swallow:DynamicQty	S08-foreach-count-qty
+Warped Space	1	Effect:unknown	S24-unknown-effect-bespoke
+Gríma Wormtongue	1	Swallow:Condition_If	S07-condition-if-bespoke
+Ballroom Brawlers	1	Effect:~	S25-effect-verb-bespoke
+Ulamog's Despoiler	2	Swallow:Condition_If;Swallow:Optional_YouMay	S07-condition-if-bespoke
+Alchemist's Gift	1	Effect:gain	S25-effect-verb-bespoke
+Echo Mage	0		R3-level-up
+Chisei, Heart of Oceans	1	Effect:Unsupported unless clause	S14-unless-clause
+Nicanzil, Current Conductor	2	Trigger:Whenever a creature you control explores a land card;Trigger:Whenever a creature you control explores a nonland card	S19-new-trigger-matcher
+Boseiju, Who Shelters All	1	Swallow:Condition_If	S07-condition-if-bespoke
+Gloom Stalker	0		R2-aslongas-conditional-static
+Archmage Ascension	1	Effect:instead	S25-effect-verb-bespoke
+Anointed Peacekeeper	1	Effect:unknown	S24-unknown-effect-bespoke
+Grimoire Thief	1	Effect:effect_structure	S25-effect-verb-bespoke
+Howlpack Piper	1	Swallow:Condition_If	S01-reflexive-if-rider
+Feral Contest	1	Effect:another	S25-effect-verb-bespoke
+Jace, the Perfected Mind	1	Effect:otherwise	S25-effect-verb-bespoke
+Whims of the Fates	2	Effect:choose;Effect:separate	S22-choose-effect
+Deathbringer Regent	1	Effect:there	S25-effect-verb-bespoke
+Repulsive Mutation	1	Swallow:Condition_Unless	S14-unless-clause
+Retether	1	Effect:only	S25-effect-verb-bespoke
+Rune Snag	1	Swallow:DynamicQty	S08-foreach-count-qty
+Arashin Sovereign	1	Effect:put	S25-effect-verb-bespoke
+Expel the Interlopers	1	Swallow:DynamicQty	S10-dynamic-qty-bespoke
+Gideon, Champion of Justice	1	Effect:he's	S25-effect-verb-bespoke
+Bumi, King of Three Trials	2	Swallow:DynamicQty;Swallow:Modal_DynamicMaxDropped	S10-dynamic-qty-bespoke
+Wurmweaver Coil	0		R5-runtime-bespoke
+Verity Circle	1	Swallow:Condition_If	S03-intervening-if-trigger
+Howltooth Hollow	1	Swallow:Condition_If	S07-condition-if-bespoke
+Arlinn, Embraced by the Moon	1	Swallow:DynamicQty	S10-dynamic-qty-bespoke
+Symmetry Matrix	1	Trigger:Whenever a creature you control with power equal to its toughness enters	S19-new-trigger-matcher
+Vaevictis Asmadi, the Dire	2	Effect:for;Effect:who	S16-foreach-player-object-HEAVY
+Ascent of the Worthy	1	Effect:all	S25-effect-verb-bespoke
+Thousand-Year Storm	1	Swallow:DynamicQty	S08-foreach-count-qty
+Avatar Aang	2	Swallow:Condition_If;Swallow:Duration_ThisTurn	S07-condition-if-bespoke
+Heirloom Epic	1	Effect:for	S18-foreach-simple-count

@@ -8,13 +8,35 @@ All counts measured from `data/coverage-data.json` × `data/card-data.json`.
 
 ## Where the intersection stands
 
-| metric | value (**2026-06-29 @ `dd6c22ea7`**) | prior (2026-06-27 @ `c1b61ded5`) | prior (2026-06-23 @ `ae663ee8c`) | prior (2026-06-22 @ `c55670fd0`) |
+| metric | value (**2026-07-01 @ `acd2f5e6b`**) | prior (2026-06-29 @ `dd6c22ea7`) | prior (2026-06-27 @ `c1b61ded5`) | prior (2026-06-23 @ `ae663ee8c`) |
 |---|---|---|---|---|
-| members (Modern ∩ Commander) | **22,943** | 22,943 | 22,943 | 22,669 |
-| supported | **21,474 (93.60 %)** | 21,438 (93.44 %) | 21,387 (93.22 %) | 21,118 (93.16 %) |
-| unsupported | **1,469** | 1,505 | 1,556 | 1,551 |
-| └ parser-gap (`gap_count > 0`) | **1,297** | 1,330 | 1,380 | 1,376 |
-| └ resolver-flagged (`gap_count == 0`, parses fully) | **172** | 175 | 176 | 175 |
+| members (Modern ∩ Commander) | **22,943** | 22,943 | 22,943 | 22,943 |
+| supported | **21,515 (93.78 %)** | 21,474 (93.60 %) | 21,438 (93.44 %) | 21,387 (93.22 %) |
+| unsupported | **1,428** | 1,469 | 1,505 | 1,556 |
+| └ parser-gap (`gap_count > 0`) | **1,261** | 1,297 | 1,330 | 1,380 |
+| └ resolver-flagged (`gap_count == 0`, parses fully) | **167** | 172 | 175 | 176 |
+
+> **Net read (re-measured 2026-07-01 @ `acd2f5e6b`, 89-commit ff; card-data regenerated, inputs
+> stamp `2026-07-01T20:05Z`):** pool flat at **22,943**; supported **+41** (21,474 → 21,515 = 93.78 %),
+> unsupported **1,469 → 1,428 (−41)** — parser-gap 1,297 → 1,261 (−36), resolver-flagged 172 → 167 (−5).
+> **0 unclustered.** **S01 and S21 are DONE for the Standard set but NOT for this intersection:** the
+> Standard dispatches (#4688 S01, #4611 S21) cleared only the Standard-legal members and bled through
+> here — **S01-reflexive-if 61 → 50 (−11)**, **S21-static 65 → 63 (−2)**. The remaining 50 (S01) + 63
+> (S21) are the older / broader-shape intersection cards the Standard recognizers don't yet cover —
+> exactly the "widen the regression corpus" model (§ "same building blocks, scaled up"). **Fresh full
+> cluster table (1,428 cards):**
+> S25-effect-verb 501 · S07-condition-if 126 · S19-new-trigger 91 · R2-aslongas 75 · **S21-static 63** ·
+> R5-runtime 61 · S24-unknown 59 · S08-foreach-qty 53 · **S01-reflexive-if 50** · S10-dynamic-qty 48 ·
+> S03-intervening-if 48 · S22-choose 42 · S11-duration 27 · S18-foreach-simple 23 · S05-alt-cost-if 22 ·
+> R3-level-up 21 · S14-unless 18 · S12-optional 17 · S02-cast-context 13 · S23-alt-cost 10 · S04-activate-if 10 ·
+> S17-anaphoric 9 · S13-aslongas-parse 9 · R1-speed 9 · S20-copy-retarget 8 · S16-foreach-player-HEAVY 6 ·
+> S06-saga 3 · S26-alt-keyword-cost 2 · S29-modal 1 · S28-replacement-instead 1 · S27-trigger-subject 1 ·
+> R4-cant-restriction 1. **Cluster movers vs the 2026-06-29 table:** S25 511 → 501 (−10), **S01 61 → 50 (−11)**,
+> R2 80 → 75 (−5), S12 22 → 17 (−5), **S21 65 → 63 (−2)**, S14 20 → 18 (−2), S19 93 → 91 (−2),
+> S07/S24/S22/S11/S05 −1 each; S10 47 → 48 (+1, pool churn). **Handler-histogram deltas:**
+> Swallow:Condition_If 285 → 272 (−13), Swallow:DynamicQty 109 (flat), Effect:static_structure 67 → 65 (−2).
+> Resolver-flagged 167 = R2 (75) + R5 (61) + R3 level-up (21) + R1 speed (9) + R4 (1). No regressions:
+> no card recorded cleared reappeared in `unsupported.tsv`.
 
 > **Net read (re-measured 2026-06-29 @ `dd6c22ea7`, 33-commit ff; card-data regenerated, inputs
 > stamp `2026-06-29T13:58Z`):** pool flat at **22,943**; supported **+36** (21,438 → 21,474),
@@ -84,7 +106,7 @@ The top buckets are **identical to Standard's** (Condition_If, DynamicQty, for-e
 
 | cluster (building block) | Std | Modern∩Cmdr | note |
 |---|---|---|---|
-| C1 reflexive "if it/that <past-state>" rider (S01) | 18 | **76** | same fix; #3898 laid groundwork |
+| C1 reflexive "if it/that <past-state>" rider (S01) | ✅ **0** (was 18) | **50** (was 76) | Standard ✅ done (#4688); 50 broader-shape intersection cards remain |
 | Condition_If (all sub-clusters S01–S07) | 77 | 306 | C1/C2/C3/C5 + alt-cost |
 | DynamicQty (for-each count → effect qty, S08–S10) | 36 | 112 | C4 |
 | Effect:for (S16+S18) | 13 | 30 | incl. per-player defer |
@@ -128,7 +150,7 @@ The refreshed `cluster-assignment.tsv` (0 unclustered) added two named clusters 
 
 ## Recommended dispatch order (xhigh, via `/engine-implementer`)
 
-1. **Run the Standard clusters first** (C1 reflexive-if, C4 for-each, C3 intervening-if, speed) — these unlock the bulk of the shared intersection classes (C1 alone = 76 here) and Standard is the smaller, cleaner proving ground.
+1. **Run the Standard clusters first** (C1 reflexive-if, C4 for-each, C3 intervening-if, speed) — these unlock the bulk of the shared intersection classes and Standard is the smaller, cleaner proving ground. **Status @ `acd2f5e6b`: S01 reflexive-if and S21 static are ✅ DONE for Standard (#4688 / #4611); they bled 11 (S01: 61 → 50) and 2 (S21: 65 → 63) off this intersection. The residual 50 (S01) + 63 (S21) are broader-shape/older cards needing recognizer generalization beyond the Standard shapes — the next S01/S21 increment targets these directly rather than the (now-empty) Standard set.**
 2. **M3 as-long-as conditional static (resolver, 81)** — biggest intersection-only cluster, single runtime evaluator.
 3. **M1 flip cards (16)** — self-contained subsystem.
 4. **M4 level up (21)** — self-contained mechanic.
