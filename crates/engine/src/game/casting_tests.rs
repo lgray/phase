@@ -13603,6 +13603,180 @@ fn cast_from_zone_exile_rider_exiles_graveyard_cast_on_resolution() {
     );
 }
 
+/// CR 614.1a + CR 608.2n + CR 400.7 / CR 113.6e — Kylox's Voltstrider: an
+/// instant cast from EXILE (a card "exiled with it" via collect evidence) whose
+/// grant carries the "if that spell would be put into a graveyard, put it on the
+/// bottom of its owner's library instead" rider must be redirected to the library
+/// BOTTOM on resolution — NOT dropped into the graveyard.
+///
+/// This drives the REAL exile-origin cast pipeline
+/// (`GameAction::CastSpell` → `finalize_cast_with_phyrexian_choices`), the exact
+/// seam where the Exile→Stack move runs `apply_zone_exit_cleanup` (zones.rs) and
+/// clears every `ExileWithAltCost` permission on leaving exile (CR 400.7 /
+/// CR 113.6e). The rider lives on that permission. Pre-fix, `finalize` read the
+/// rider AFTER that move, so the read returned `None`, no redirect installed, and
+/// the spell wrongly landed in the graveyard. The graveyard/hand in-place casts
+/// (Quistis, Emry, Electrodominance) masked the gap because their permission
+/// never trips the `from == Zone::Exile` clear.
+///
+/// The permission is stamped through the real production grant
+/// (`grant_lingering_permissions`) from a Kylox-shaped `CastFromZone` carrying
+/// the library-bottom rider sub-ability, so this also proves the exile-origin
+/// grant carries the typed `Library { Bottom }` destination.
+///
+/// REVERT-PROBE: move the graveyard-replacement read back to AFTER the
+/// `casting_to_stack` move in `finalize_cast_with_phyrexian_choices` and
+/// `library.back() == Some(&spell)` fails — the exile-cleared permission yields
+/// `None` and the spell lands in the graveyard instead of the library bottom.
+#[test]
+fn cast_from_exile_library_bottom_rider_bottoms_resolved_spell() {
+    use crate::game::effects::cast_from_zone;
+    use crate::types::ability::{
+        CardPlayMode, CastFromZoneDriver, Effect, LibraryPosition, ResolvedAbility,
+        SpellStackToGraveyardReplacement, TargetRef,
+    };
+
+    let mut state = setup_game_at_main_phase();
+    let player = PlayerId(0);
+
+    // Kylox-shaped source on the battlefield (the grant's controller/source).
+    let kylox = create_object(
+        &mut state,
+        CardId(9500),
+        player,
+        "Kylox's Voltstrider".to_string(),
+        Zone::Battlefield,
+    );
+
+    // A pre-existing library card so "bottom" is provably the last slot.
+    let filler = create_object(
+        &mut state,
+        CardId(9501),
+        player,
+        "Filler".to_string(),
+        Zone::Library,
+    );
+
+    // The instant, "exiled with" Kylox (collect evidence). Zero mana cost so the
+    // real cast needs no payment; a Draw-0 spell ability so the filler survives
+    // resolution (a real draw would consume it before the stack→library redirect
+    // and "bottom" couldn't be distinguished).
+    let spell = create_object(
+        &mut state,
+        CardId(9502),
+        player,
+        "Bottom Bolt".to_string(),
+        Zone::Exile,
+    );
+    {
+        let obj = state.objects.get_mut(&spell).unwrap();
+        obj.card_types.core_types.push(CoreType::Instant);
+        obj.mana_cost = ManaCost::zero();
+        Arc::make_mut(&mut obj.abilities).push(AbilityDefinition::new(
+            AbilityKind::Spell,
+            Effect::Draw {
+                count: QuantityExpr::Fixed { value: 0 },
+                target: TargetFilter::Controller,
+            },
+        ));
+    }
+    link_exiled_to_source(&mut state, spell, kylox);
+
+    // Grant the lingering permission via the REAL production path: a Kylox-shaped
+    // `CastFromZone` with the library-bottom rider as its sub-ability. This stamps
+    // `ExileWithAltCost { graveyard_replacement: Some(Library { Bottom }) }` on the
+    // exiled card exactly as `grant_lingering_permissions` does at runtime.
+    let mut grant = ResolvedAbility::new(
+        Effect::CastFromZone {
+            target: TargetFilter::ParentTarget,
+            without_paying_mana_cost: true,
+            mode: CardPlayMode::Cast,
+            cast_transformed: false,
+            alt_ability_cost: None,
+            constraint: None,
+            duration: None,
+            mana_spend_permission: None,
+            driver: CastFromZoneDriver::LingeringPermission,
+        },
+        vec![TargetRef::Object(spell)],
+        kylox,
+        player,
+    );
+    grant.sub_ability = Some(Box::new(ResolvedAbility::new(
+        Effect::PutAtLibraryPosition {
+            target: TargetFilter::ParentTarget,
+            count: QuantityExpr::Fixed { value: 1 },
+            position: LibraryPosition::Bottom,
+        },
+        vec![],
+        kylox,
+        player,
+    )));
+
+    let mut events = Vec::new();
+    cast_from_zone::grant_lingering_permissions(&mut state, &grant, &[spell], &mut events).unwrap();
+
+    // Precondition: the exile-origin grant stamped the typed library-bottom rider.
+    assert!(
+        state.objects[&spell]
+            .casting_permissions
+            .iter()
+            .any(|p| matches!(
+                p,
+                CastingPermission::ExileWithAltCost {
+                    graveyard_replacement: Some(SpellStackToGraveyardReplacement::Library {
+                        position: LibraryPosition::Bottom
+                    }),
+                    ..
+                }
+            )),
+        "the exile-origin grant must stamp an ExileWithAltCost library-bottom rider"
+    );
+
+    // Cast the exiled instant through the REAL public cast action — this walks the
+    // exile-origin finalize seam (Exile→Stack move clears the permission).
+    let card_id = state.objects[&spell].card_id;
+    apply_as_current(
+        &mut state,
+        GameAction::CastSpell {
+            object_id: spell,
+            card_id,
+            targets: vec![],
+            payment_mode: CastPaymentMode::Auto,
+        },
+    )
+    .expect("exile-origin free cast via the granted permission must be accepted");
+    assert_eq!(
+        state.objects[&spell].zone,
+        Zone::Stack,
+        "the cast spell must reach the stack (the exile→stack move ran)"
+    );
+
+    stack::resolve_top(&mut state, &mut events);
+
+    // CR 614.1a: the rider's synthetic Moved redirect must bottom the resolved
+    // spell instead of letting it default to the graveyard (CR 608.2n).
+    assert_eq!(
+        state.objects[&spell].zone,
+        Zone::Library,
+        "the exile-origin library-bottom rider must send the resolved spell to the library"
+    );
+    assert_eq!(
+        state.players[0].library.back(),
+        Some(&spell),
+        "the spell must be at the library BOTTOM (last slot), beneath the pre-existing filler"
+    );
+    assert!(
+        !state.players[0].graveyard.contains(&spell),
+        "the redirected spell must NOT land in the graveyard (the pre-fix bug)"
+    );
+    assert_eq!(
+        state.players[0].library.front(),
+        Some(&filler),
+        "the filler stays above the redirected spell"
+    );
+}
+
 /// Issue #2027 — Emry, Lurker in the Loch: targeted graveyard artifact may
 /// be cast this turn via `CastFromZone` without exiling first.
 #[test]
@@ -38086,6 +38260,118 @@ fn resolve_graveyard_paid_grant(state: &mut GameState, spell: ObjectId) {
         PlayerId(0),
     );
     crate::game::effects::cast_from_zone::resolve(state, &grant, &mut Vec::new()).unwrap();
+}
+
+/// Resolve a Quistis-class paid during-resolution `CastFromZone` targeting
+/// `spell` that ALSO carries the "if that spell would be put into a graveyard,
+/// exile it instead" rider (CR 614.1a) as its sub-ability — the offer forwards
+/// the exile destination onto the grant.
+fn resolve_graveyard_paid_grant_with_exile_rider(state: &mut GameState, spell: ObjectId) {
+    let mut grant = ResolvedAbility::new(
+        Effect::CastFromZone {
+            target: TargetFilter::ParentTarget,
+            without_paying_mana_cost: false,
+            mode: CardPlayMode::Cast,
+            cast_transformed: false,
+            alt_ability_cost: None,
+            constraint: None,
+            duration: None,
+            driver: crate::types::ability::CastFromZoneDriver::DuringResolution,
+            mana_spend_permission: Some(ManaSpendPermission::AnyTypeOrColor),
+        },
+        vec![TargetRef::Object(spell)],
+        ObjectId(9200),
+        PlayerId(0),
+    );
+    grant.sub_ability = Some(Box::new(ResolvedAbility::new(
+        Effect::ChangeZone {
+            origin: None,
+            destination: Zone::Exile,
+            target: TargetFilter::ParentTarget,
+            owner_library: false,
+            enter_transformed: false,
+            enters_under: None,
+            enter_tapped: crate::types::zones::EtbTapState::Unspecified,
+            enters_attacking: false,
+            up_to: false,
+            enter_with_counters: vec![],
+            conditional_enter_with_counters: vec![],
+            face_down_profile: None,
+            enters_modified_if: None,
+        },
+        vec![],
+        ObjectId(9200),
+        PlayerId(0),
+    )));
+    crate::game::effects::cast_from_zone::resolve(state, &grant, &mut Vec::new()).unwrap();
+}
+
+/// Count the synthetic self-scoped spell→graveyard redirect replacements
+/// (`ReplacementEvent::Moved`, `destination_zone: Graveyard`) installed on
+/// `spell` — the rider `apply_spell_graveyard_replacement_rider` pushes. Two
+/// identical defs is the double-install defect.
+fn spell_graveyard_redirect_count(state: &GameState, spell: ObjectId) -> usize {
+    state.objects[&spell]
+        .replacement_definitions
+        .iter_all()
+        .filter(|d| {
+            d.event == ReplacementEvent::Moved
+                && d.destination_zone == Some(Zone::Graveyard)
+                && d.valid_card == Some(TargetFilter::SelfRef)
+        })
+        .count()
+}
+
+/// CR 614.1a + CR 608.2n (double-install guard): a paid during-resolution cast
+/// (Quistis "exile it instead") that ALSO carries the graveyard-redirect rider
+/// must install EXACTLY ONE self-scoped redirect and exile the spell once on
+/// resolution. `initiate_cast_during_resolution` pushes the `ExileWithAltCost`
+/// permission but no longer applies the rider itself;
+/// `finalize_cast_with_phyrexian_choices` is the single application point.
+///
+/// REVERT-PROBE: restore the `apply_spell_graveyard_replacement_rider` call in
+/// `initiate_cast_during_resolution` (so both it AND finalize install) and
+/// `spell_graveyard_redirect_count == 1` fails (becomes 2) — the double install.
+#[test]
+fn graveyard_paid_cast_with_exile_rider_installs_single_redirect_and_exiles_once() {
+    let mut state = setup_game_at_main_phase();
+    let spell = make_graveyard_blue_sorcery(&mut state, PlayerId(0));
+    add_mana(&mut state, PlayerId(0), ManaType::Blue, 1);
+    resolve_graveyard_paid_grant_with_exile_rider(&mut state, spell);
+
+    apply_as_current(
+        &mut state,
+        GameAction::GraveyardPaidCastChoice {
+            choice: crate::types::actions::CastChoice::Cast,
+        },
+    )
+    .expect("accepting the paid rider cast must succeed");
+
+    // Finalize the {U} payment: the spell reaches the stack and the rider installs.
+    apply_as_current(&mut state, GameAction::PassPriority)
+        .expect("finalizing the {U} payment must succeed");
+    assert!(
+        state.stack.iter().any(|e| e.source_id == spell),
+        "the paid rider spell must reach the stack after payment"
+    );
+    assert_eq!(
+        spell_graveyard_redirect_count(&state, spell),
+        1,
+        "exactly ONE graveyard→exile redirect must be installed (no double-install)"
+    );
+
+    // Resolve the spell: the single rider must exile it (not send it to graveyard).
+    let mut events = Vec::new();
+    stack::resolve_top(&mut state, &mut events);
+    assert_eq!(
+        state.objects[&spell].zone,
+        Zone::Exile,
+        "the rider must exile the resolved paid cast (CR 614.1a)"
+    );
+    assert!(
+        !state.players[0].graveyard.contains(&spell),
+        "the exiled spell must not also reach the graveyard"
+    );
 }
 
 /// TEST 4 (router): the paid gate produces a `CastOffer::GraveyardPaidCast` and

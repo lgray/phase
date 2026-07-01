@@ -5806,6 +5806,25 @@ pub(super) fn finalize_cast_with_phyrexian_choices(
         None
     };
 
+    // CR 614.1a + CR 608.2n + CR 400.7 / CR 113.6e: Capture the `CastFromZone`
+    // grant's graveyard-redirect destination BEFORE the Exile→Stack move. For an
+    // exile-origin cast (a card "exiled with it" then cast — Kylox's Voltstrider),
+    // the Exile→Stack move runs `apply_zone_exit_cleanup` (zones.rs), which drops
+    // every `ExileWithAltCost` permission on leaving exile (CR 400.7 / CR 113.6e).
+    // Reading the rider after the move would return `None` and the redirect would
+    // never install, wrongly sending the spell to the graveyard instead of the
+    // library bottom. Mirrors the sibling exile-scoped captures above
+    // (`exile_play_permission_source`, `top_of_library_permission_source`,
+    // `single_use_exile_play_group`), all read pre-move for the same reason. The
+    // destination is read from the selected-permission authority (the permission
+    // that actually supports THIS cast) so a non-consumed sibling `ExileWithAltCost`
+    // permission's redirect cannot leak onto this cast (CR 608.2c). The rider is
+    // applied AFTER the move so it attaches to the object once it lives on the stack.
+    let graveyard_replacement_dest =
+        super::casting::selected_exile_alt_cost_permission_graveyard_replacement(
+            state, object_id, player,
+        );
+
     // CR 601.2a + CR 601.2i: The spell was announced onto the stack earlier,
     // but the object's `zone` field stayed at its origin through cost payment
     // so continuous effects that granted castability ("cards in your graveyard
@@ -5824,17 +5843,17 @@ pub(super) fn finalize_cast_with_phyrexian_choices(
         crate::game::zone_pipeline::ZoneMoveRequest::casting_to_stack(object_id, object_id);
     crate::game::zone_pipeline::move_object(state, stack_req, events);
 
-    // CR 614.1a + CR 608.2n: `CastFromZone` grants with a graveyard-redirect
-    // rider ("exile it" / "put it on the bottom of its owner's library" / "return
-    // it to its owner's hand" instead) stamp the synthetic self-scoped redirect
-    // when the granted cast finalizes. The destination is read from the
-    // selected-permission authority (the permission that actually supports THIS
-    // cast), mirroring the enters-with-counter rider below — a non-consumed
-    // sibling `ExileWithAltCost` permission's redirect must not leak onto this
-    // cast (CR 608.2c).
-    if let Some(dest) = super::casting::selected_exile_alt_cost_permission_graveyard_replacement(
-        state, object_id, player,
-    ) {
+    // CR 614.1a + CR 608.2n: install the graveyard-redirect rider captured above
+    // now that the spell lives on the stack. This is the application point for
+    // normal casts from exile/graveyard/hand (Kylox's Voltstrider, Emry,
+    // Electrodominance). During-resolution casts (Quistis/Tinybones paid,
+    // Torrential/Cascade free) carry `resolution_cleanup: Some(_)`, so
+    // `evaluate_cascade_constraint_with_resulting_mv` strips their rider-bearing
+    // permission earlier in this function — `graveyard_replacement_dest` is `None`
+    // for them here, and they install the rider in `initiate_cast_during_resolution`
+    // instead. The two application points are therefore mutually exclusive per cast
+    // (no double-install).
+    if let Some(dest) = graveyard_replacement_dest {
         apply_spell_graveyard_replacement_rider(state, object_id, dest);
     }
 

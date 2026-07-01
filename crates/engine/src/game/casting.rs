@@ -8244,10 +8244,16 @@ pub(super) fn initiate_cast_during_resolution(
                 enters_with_counter: None,
                 mana_spend_permission,
             });
-        // CR 614.1a + CR 608.2n: a bool→Option mechanical rename, behavior-
-        // preserving (false→None, true→Some(Exile)). Zero NEW during-resolution
-        // behavior: the only destination a cast-during-resolution path carries
-        // today is exile.
+        // CR 614.1a + CR 608.2n: apply the graveyard-redirect rider HERE — this is
+        // the sole application point for during-resolution casts. The pushed
+        // permission carries `resolution_cleanup: Some(_)`, so
+        // `evaluate_cascade_constraint_with_resulting_mv` (casting_costs.rs) strips
+        // it during `finalize_cast_with_phyrexian_choices` BEFORE the finalize
+        // graveyard-replacement read runs, re-homing only a concession-only
+        // permission without the rider. The finalize read therefore returns `None`
+        // for these casts, so applying here does NOT double-install: the finalize
+        // read (normal exile/graveyard casts) and this read (during-resolution
+        // casts) are mutually exclusive per cast.
         if let Some(dest) = graveyard_replacement {
             crate::game::casting_costs::apply_spell_graveyard_replacement_rider(
                 state, hit_card, dest,
