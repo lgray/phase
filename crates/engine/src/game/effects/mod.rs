@@ -4948,21 +4948,27 @@ fn previous_effect_amount_from_events(
                 .sum()
         }
         Effect::Fight { .. } => {
-            let fight_target = ability.targets.iter().find_map(|target| match target {
-                TargetRef::Object(id) => Some(*id),
-                _ => None,
-            });
+            // CR 120.10 + CR 701.14a: "add that much {R}" (The Last Agni Kai)
+            // reads the excess dealt to the *fought* creature — the fight's
+            // damage recipient, which in a dual-target fight is the second
+            // chosen target, not the fighting subject. Use the shared fighter
+            // resolver so this stays in lockstep with
+            // `previous_effect_excess_amount_from_events`.
+            let fought_creature = fight::resolve_fight_fighters(state, ability)
+                .ok()
+                .flatten()
+                .map(|(_subject, fought)| fought);
             events
                 .iter()
-                .filter_map(|event| match (event, fight_target) {
+                .filter_map(|event| match (event, fought_creature) {
                     (
                         GameEvent::DamageDealt {
                             target: TargetRef::Object(id),
                             excess,
                             ..
                         },
-                        Some(fight_target),
-                    ) if *id == fight_target => {
+                        Some(fought_creature),
+                    ) if *id == fought_creature => {
                         Some(crate::game::arithmetic::u32_to_i32_saturating(*excess))
                     }
                     _ => None,
@@ -5018,6 +5024,7 @@ fn previous_effect_amount_from_events(
 /// stamped eagerly and `evaluate_condition` selects. Returns `None` when no
 /// excess was dealt.
 fn previous_effect_excess_amount_from_events(
+    state: &GameState,
     ability: &ResolvedAbility,
     events: &[GameEvent],
 ) -> Option<i32> {
@@ -5034,21 +5041,29 @@ fn previous_effect_excess_amount_from_events(
                 .sum()
         }
         Effect::Fight { .. } => {
-            let fight_target = ability.targets.iter().find_map(|target| match target {
-                TargetRef::Object(id) => Some(*id),
-                _ => None,
-            });
+            // CR 120.10 + CR 701.14a: The Fight excess condition names the
+            // *fought* creature (The Last Agni Kai: "if the creature the
+            // opponent controls is dealt excess damage this way"), which is the
+            // fight's damage recipient — never the fighting subject. Read the
+            // recipient from the shared fighter resolver so a dual-target fight
+            // ("target creature you control fights target creature an opponent
+            // controls") sums excess dealt to the correct creature instead of
+            // the first chosen target.
+            let fought_creature = fight::resolve_fight_fighters(state, ability)
+                .ok()
+                .flatten()
+                .map(|(_subject, fought)| fought);
             events
                 .iter()
-                .filter_map(|event| match (event, fight_target) {
+                .filter_map(|event| match (event, fought_creature) {
                     (
                         GameEvent::DamageDealt {
                             target: TargetRef::Object(id),
                             excess,
                             ..
                         },
-                        Some(fight_target),
-                    ) if *id == fight_target => {
+                        Some(fought_creature),
+                    ) if *id == fought_creature => {
                         Some(crate::game::arithmetic::u32_to_i32_saturating(*excess))
                     }
                     _ => None,
@@ -5671,8 +5686,9 @@ fn resolve_chain_body(
             // CR 120.10: stamp the resolution-local excess channel alongside the
             // CR 120.6 total so a follow-up "if excess damage was dealt this way"
             // condition reads overkill-beyond-lethal.
-            state.last_effect_excess_amount =
-                previous_effect_excess_amount_from_events(&scoped_template, scoped_events);
+            let excess =
+                previous_effect_excess_amount_from_events(state, &scoped_template, scoped_events);
+            state.last_effect_excess_amount = excess;
         }
         let affected_with_causes =
             if next_sub_needs_tracked_set(ability) || after_scope_needs_linked_exile {
@@ -6484,8 +6500,8 @@ fn resolve_chain_body(
         // CR 120.10: stamp the resolution-local excess channel alongside the
         // CR 120.6 total so a follow-up "if excess damage was dealt this way"
         // condition reads overkill-beyond-lethal.
-        state.last_effect_excess_amount =
-            previous_effect_excess_amount_from_events(ability, parent_events);
+        let excess = previous_effect_excess_amount_from_events(state, ability, parent_events);
+        state.last_effect_excess_amount = excess;
     }
 
     // CR 608.2c: Populate last_zone_changed_ids for ZoneChangedThisWay condition evaluation.
