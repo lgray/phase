@@ -7957,7 +7957,8 @@ pub fn finalize_mana_payment(
                 .chosen_x
                 .unwrap_or_else(|| total_paid.saturating_sub(non_x_cost));
 
-            let targets = super::ability_utils::flatten_targets_in_chain(&pending.ability);
+            // CR 601.2c + CR 601.2d: Divide only among the distributing effect's own targets.
+            let targets = super::ability_utils::distribution_targets(&pending.ability);
             // Store pending cast for post-distribution resumption. Use `ManaCost::NoCost`
             // since mana was already paid above — `finalize_cast` must not re-deduct.
             let mut pending_resumed = PendingCast::new(
@@ -8153,7 +8154,8 @@ pub fn finalize_mana_payment_with_phyrexian_choices(
                 .chosen_x
                 .unwrap_or_else(|| total_paid.saturating_sub(non_x_cost));
 
-            let targets = super::ability_utils::flatten_targets_in_chain(&pending.ability);
+            // CR 601.2c + CR 601.2d: Divide only among the distributing effect's own targets.
+            let targets = super::ability_utils::distribution_targets(&pending.ability);
             let mut pending_resumed = PendingCast::new(
                 pending.object_id,
                 pending.card_id,
