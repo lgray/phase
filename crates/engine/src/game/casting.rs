@@ -2086,14 +2086,27 @@ pub(super) fn player_can_spend_as_any_color_for_optional_spell(
             .and_then(|id| state.objects.get(&id))
             .is_some_and(|obj| {
                 obj.casting_permissions.iter().any(|permission| {
+                    use crate::types::ability::{CastingPermission, ManaSpendPermission};
                     matches!(
                         permission,
-                        crate::types::ability::CastingPermission::PlayFromExile {
+                        CastingPermission::PlayFromExile {
                             granted_to,
-                            mana_spend_permission:
-                                Some(crate::types::ability::ManaSpendPermission::AnyTypeOrColor),
+                            mana_spend_permission: Some(ManaSpendPermission::AnyTypeOrColor),
                             ..
                         } if *granted_to == player
+                    )
+                    // CR 609.4b: Mirror of the `PlayFromExile` arm for the
+                    // in-place graveyard cast-from-zone grant (Quistis Trepe,
+                    // Tinybones the Pickpocket). Same single consumption
+                    // authority — the concession lives on the grant scoped to
+                    // `granted_to`, never as a global player permission.
+                    || matches!(
+                        permission,
+                        CastingPermission::ExileWithAltCost {
+                            granted_to: Some(g),
+                            mana_spend_permission: Some(ManaSpendPermission::AnyTypeOrColor),
+                            ..
+                        } if *g == player
                     )
                 })
             })
@@ -8104,7 +8117,8 @@ pub(super) struct ResolutionCastRequest {
     pub(super) constraint: Option<crate::types::ability::CastPermissionConstraint>,
     pub(super) cast_transformed: bool,
     pub(super) cleanup: crate::types::ability::ResolutionCastCleanup,
-    pub(super) exile_instead_of_graveyard_on_resolve: bool,
+    pub(super) graveyard_replacement:
+        Option<crate::types::ability::SpellStackToGraveyardReplacement>,
 }
 
 /// CR 608.2g: Cast a Cascade/Discover hit *during resolution* of its source
@@ -8142,7 +8156,7 @@ pub(super) fn initiate_cast_during_resolution(
         constraint,
         cast_transformed,
         cleanup,
-        exile_instead_of_graveyard_on_resolve,
+        graveyard_replacement,
     } = request;
     if let Some(obj) = state.objects.get_mut(&hit_card) {
         // CR 601.2a + CR 601.2i: zero-cost permission consumed by
@@ -8161,11 +8175,18 @@ pub(super) fn initiate_cast_during_resolution(
                 granted_to: Some(player),
                 resolution_cleanup: Some(cleanup),
                 duration: None,
-                exile_instead_of_graveyard_on_resolve,
+                graveyard_replacement: graveyard_replacement.clone(),
                 enters_with_counter: None,
+                mana_spend_permission: None,
             });
-        if exile_instead_of_graveyard_on_resolve {
-            crate::game::casting_costs::apply_exile_instead_of_graveyard_rider(state, hit_card);
+        // CR 614.1a + CR 608.2n: a bool→Option mechanical rename, behavior-
+        // preserving (false→None, true→Some(Exile)). Zero NEW during-resolution
+        // behavior: the only destination a cast-during-resolution path carries
+        // today is exile.
+        if let Some(dest) = graveyard_replacement {
+            crate::game::casting_costs::apply_spell_graveyard_replacement_rider(
+                state, hit_card, dest,
+            );
         }
     }
     let mut prepared = prepare_spell_cast_with_variant_override(state, player, hit_card, None)?;
@@ -12120,6 +12141,23 @@ pub(super) fn find_exile_with_aggregate_cost(
     }
 }
 
+/// CR 701.59a: Detect a collect-evidence component in an activation cost,
+/// returning its threshold `N`. Recurses into `Composite` so the class extends
+/// to any future keyword-action-cost ability that bundles collect evidence with
+/// other sub-costs. Collect evidence is interactive (the player chooses which
+/// graveyard cards to exile), so the caller detours to
+/// `WaitingFor::CollectEvidenceChoice` and pays before the ability reaches the
+/// stack.
+pub(super) fn find_collect_evidence_activation_cost(cost: &AbilityCost) -> Option<u32> {
+    match cost {
+        AbilityCost::CollectEvidence { amount } => Some(*amount),
+        AbilityCost::Composite { costs } => {
+            costs.iter().find_map(find_collect_evidence_activation_cost)
+        }
+        _ => None,
+    }
+}
+
 /// CR 702.167a/b: Detect a craft materials cost requiring interactive object
 /// selection across the battlefield/graveyard union. Returns `(count,
 /// materials)`. Recurses into `Composite` (the synthesized craft cost is a
@@ -13191,6 +13229,30 @@ pub fn handle_activate_ability(
                     spell: Box::new(pending_discard),
                 },
             });
+        }
+
+        // CR 701.59a + CR 602.2b: Pre-check for a collect-evidence activation
+        // cost (Kylox's Voltstrider — "Collect evidence 6: This Vehicle becomes
+        // an artifact creature ..."). Collect evidence is an INTERACTIVE cost:
+        // the player chooses which graveyard cards (total mana value >= N) to
+        // exile, so it must detour to `WaitingFor::CollectEvidenceChoice` and be
+        // paid BEFORE the ability reaches the stack — exactly like the
+        // ExileAggregate / non-self exile detours. Without this detour the cost
+        // is a silent no-op in `pay_ability_cost` (it is documented there as
+        // "intercepted before reaching pay_ability_cost"), so the ability would
+        // resolve for free. CR 701.59b payability was already enforced by the
+        // `is_payable` gate above; `begin_cost_payment` re-checks it defensively.
+        // The resume (`CollectEvidenceResume::Casting`, made activation-aware)
+        // pushes the activated ability to the stack once the cards are exiled.
+        // This is the SINGLE-AUTHORITY interactive-cost dispatch: the call site
+        // never inspects cost components beyond routing to the resolver.
+        if let Some(amount) = find_collect_evidence_activation_cost(cost) {
+            let mut pending = PendingCast::new(source_id, CardId(0), resolved, ManaCost::NoCost);
+            pending.activation_cost = Some(cost.clone());
+            pending.activation_ability_index = Some(ability_index);
+            return super::effects::collect_evidence::begin_cost_payment(
+                state, player, amount, pending,
+            );
         }
 
         // CR 117.1 + CR 601.2b + CR 602.2b: Pre-check for an `ExileWithAggregate`

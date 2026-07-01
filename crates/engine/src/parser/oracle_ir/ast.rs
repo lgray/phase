@@ -3,10 +3,10 @@ use serde::Serialize;
 use crate::types::ability::MultiTargetSpec;
 use crate::types::ability::{
     AbilityCondition, AbilityCost, AbilityDefinition, ActivationRestriction, BounceSelection,
-    CastingPermission, ControllerRef, CopyRetargetPermission, CounterSourceRider,
-    CounteredSpellDestination, DoorLockOp, Duration, Effect, FaceDownProfile, LibraryPosition,
-    ManaProduction, ManaSpendRestriction, ModalSelectionConstraint, OutsideGameSourcePool,
-    PlayerFilter, PtStat, PtValue, QuantityExpr, SearchDestinationSplit, SearchSelectionConstraint,
+    CastingPermission, ControllerRef, CopyRetargetPermission, CounterSourceRider, DoorLockOp,
+    Duration, Effect, FaceDownProfile, LibraryPosition, ManaProduction, ManaSpendRestriction,
+    ModalSelectionConstraint, OutsideGameSourcePool, PlayerFilter, PtStat, PtValue, QuantityExpr,
+    SearchDestinationSplit, SearchSelectionConstraint, SpellStackToGraveyardReplacement,
     StaticCondition, StaticDefinition, TargetFilter,
 };
 use crate::types::card_type::Supertype;
@@ -237,7 +237,7 @@ pub(crate) enum ContinuationAst {
     /// `countered_spell_zone = Some(destination)` on the preceding
     /// `Effect::Counter` (Memory Lapse, Remand, Spell Crumple).
     CounterSpellZoneRedirect {
-        destination: CounteredSpellDestination,
+        destination: SpellStackToGraveyardReplacement,
     },
     /// CR 707.10c: "You may choose new targets for the copy/copies." after a
     /// CopySpell (possibly wrapped in a CreateDelayedTrigger) — patches
@@ -343,7 +343,15 @@ pub(crate) enum ContinuationAst {
     /// CR 508.4 / CR 614.1: "It/The token enters tapped and attacking [that player]"
     /// Absorbs into preceding CopyTokenOf, Token, or ChangeZone by setting
     /// enters_attacking and tapped/enter_tapped flags.
-    EntersTappedAttacking,
+    ///
+    /// CR 614.12: `moved_filter` carries an optional leading moved-object
+    /// type condition ("If that card is an enchantment card, it enters
+    /// tapped and attacking" — Summoner's Grimoire). When `Some`, the
+    /// absorbed ChangeZone gates the riders on the moved object via
+    /// `Effect::ChangeZone.enters_modified_if`. `None` = unconditional
+    /// (Stangg / Shark Shredder). Only ChangeZone honors the gate;
+    /// CopyTokenOf / Token always enter unconditionally.
+    EntersTappedAttacking { moved_filter: Option<TargetFilter> },
     /// CR 122.6a: "The token enters with X +1/+1 counters on it, where X is ..."
     /// Absorbs into the preceding Token effect by populating `enter_with_counters`.
     TokenEntersWithCounters {

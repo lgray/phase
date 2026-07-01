@@ -405,6 +405,7 @@ mod tests {
         mana.condition = Some(AbilityCondition::PreviousEffectAmount {
             comparator: Comparator::GT,
             rhs: QuantityExpr::Fixed { value: 0 },
+            channel: crate::types::ability::DamageChannel::Excess,
         });
         ability.sub_ability = Some(Box::new(mana));
 
@@ -441,6 +442,7 @@ mod tests {
         mana.condition = Some(AbilityCondition::PreviousEffectAmount {
             comparator: Comparator::GT,
             rhs: QuantityExpr::Fixed { value: 0 },
+            channel: crate::types::ability::DamageChannel::Excess,
         });
         ability.sub_ability = Some(Box::new(mana));
 

@@ -5369,6 +5369,7 @@ mod tests {
             count_param: 0,
             library_position: None,
             is_cost_payment: false,
+            enters_modified_if: None,
         };
 
         let actions = candidate_actions_broad(&state);
@@ -6451,6 +6452,7 @@ mod tests {
                 enter_with_counters: vec![],
                 conditional_enter_with_counters: vec![],
                 face_down_profile: None,
+                enters_modified_if: None,
             },
         )
         .cost(AbilityCost::Mana {

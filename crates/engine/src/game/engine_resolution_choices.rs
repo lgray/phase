@@ -321,6 +321,7 @@ fn apply_search_partition(
                 enter_with_counters: Vec::new(),
                 conditional_enter_with_counters: vec![],
                 face_down_profile: None,
+                enters_modified_if: None,
             },
             primary_targets,
             source_id,
@@ -556,7 +557,7 @@ pub(super) fn handle_resolution_choice(
                         ),
                         cast_transformed: false,
                         cleanup,
-                        exile_instead_of_graveyard_on_resolve: false,
+                        graveyard_replacement: None,
                     },
                     events,
                 )?;
@@ -791,7 +792,7 @@ pub(super) fn handle_resolution_choice(
                         ),
                         cast_transformed: false,
                         cleanup,
-                        exile_instead_of_graveyard_on_resolve: false,
+                        graveyard_replacement: None,
                     },
                     events,
                 )?;
@@ -840,7 +841,7 @@ pub(super) fn handle_resolution_choice(
                         constraint: None,
                         cast_transformed: false,
                         cleanup,
-                        exile_instead_of_graveyard_on_resolve: false,
+                        graveyard_replacement: None,
                     },
                     events,
                 )?;
@@ -933,7 +934,7 @@ pub(super) fn handle_resolution_choice(
                     constraint: None,
                     cast_transformed: false,
                     cleanup,
-                    exile_instead_of_graveyard_on_resolve: false,
+                    graveyard_replacement: None,
                 },
                 events,
             )?;
@@ -2667,6 +2668,7 @@ pub(super) fn handle_resolution_choice(
                 count_param,
                 library_position,
                 is_cost_payment,
+                enters_modified_if,
             },
             GameAction::SelectCards { cards: chosen },
         ) => {
@@ -2845,6 +2847,10 @@ pub(super) fn handle_resolution_choice(
                             // resuming face up and exposing the real object.
                             face_down_profile: face_down_profile.clone(),
                             library_placement: None,
+                            // CR 614.12: evaluate the moved-object type gate carried
+                            // across the `EffectZoneChoice` round-trip against each
+                            // chosen object (Summoner's Grimoire).
+                            enters_modified_if: enters_modified_if.clone(),
                         };
                         match effects::change_zone::process_one_zone_move(
                             state, &ctx, *card_id, events,
@@ -2881,6 +2887,9 @@ pub(super) fn handle_resolution_choice(
                                         // face-down profile across a further pause.
                                         face_down_profile: ctx.face_down_profile.clone(),
                                         library_placement: ctx.library_placement.clone(),
+                                        // CR 614.12: preserve the moved-object type
+                                        // gate across a further as-enters pause.
+                                        enters_modified_if: ctx.enters_modified_if.clone(),
                                         effect_kind,
                                     });
                                 return Ok(action_result_outcome(
@@ -2915,6 +2924,9 @@ pub(super) fn handle_resolution_choice(
                                         // face-down profile across a further pause.
                                         face_down_profile: ctx.face_down_profile.clone(),
                                         library_placement: ctx.library_placement.clone(),
+                                        // CR 614.12: preserve the moved-object type
+                                        // gate across a further as-enters pause.
+                                        enters_modified_if: ctx.enters_modified_if.clone(),
                                         effect_kind,
                                     });
                                 state.waiting_for =
@@ -3116,6 +3128,9 @@ pub(super) fn handle_resolution_choice(
                         track_exiled_by_source,
                         face_down_profile: face_down_profile.clone(),
                         library_placement: None,
+                        // CR 614.12: cost-payment exile carries no enter-modifier
+                        // gate; thread the (None) round-trip value for consistency.
+                        enters_modified_if: enters_modified_if.clone(),
                     };
                     let events_before_effect = events.len();
                     let chosen_ids: Vec<_> = chosen.to_vec();
@@ -3151,6 +3166,9 @@ pub(super) fn handle_resolution_choice(
                                         moved_count: None,
                                         face_down_profile: ctx.face_down_profile.clone(),
                                         library_placement: ctx.library_placement.clone(),
+                                        // CR 614.12: preserve the moved-object type
+                                        // gate across a further as-enters pause.
+                                        enters_modified_if: ctx.enters_modified_if.clone(),
                                         effect_kind,
                                     });
                                 state.waiting_for =
@@ -3182,6 +3200,9 @@ pub(super) fn handle_resolution_choice(
                                         moved_count: None,
                                         face_down_profile: ctx.face_down_profile.clone(),
                                         library_placement: ctx.library_placement.clone(),
+                                        // CR 614.12: preserve the moved-object type
+                                        // gate across a further as-enters pause.
+                                        enters_modified_if: ctx.enters_modified_if.clone(),
                                         effect_kind,
                                     });
                                 state.waiting_for =

@@ -558,6 +558,7 @@ mod the_chain_veil_loyalty_grants;
 mod the_kingpin_of_crime_combat_damage;
 mod the_ur_dragon_eminence;
 mod thoughtweft_trample_regression;
+mod throw_instead_tail_class;
 mod timely_ward_regression;
 mod tinybones_joins_up_multi_target;
 mod tobita_master_of_winds_flying_grant;

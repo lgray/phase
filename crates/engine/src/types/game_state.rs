@@ -1126,6 +1126,14 @@ pub struct PendingChangeZoneIteration {
     /// library" still suppresses auto-shuffle on resume.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub library_placement: Option<crate::types::ability::LibraryPosition>,
+    /// CR 614.12: gates the `enter_tapped`/`enters_attacking` riders on the
+    /// moved object's type, carried across a replacement-ordering / as-enters
+    /// pause so a paused-then-resumed gated move (Summoner's Grimoire) still
+    /// applies the riders only to a matching object on resume. `None` = apply
+    /// unconditionally. Mirrors the `enter_tapped`/`face_down_profile`
+    /// carry-through pattern on this same struct.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enters_modified_if: Option<crate::types::ability::TargetFilter>,
     pub effect_kind: crate::types::ability::EffectKind,
 }
 
@@ -3403,6 +3411,13 @@ pub enum WaitingFor {
         /// handling for exile-link tracking (push_exiled_with_source_this_turn).
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         is_cost_payment: bool,
+        /// CR 614.12: gates the `enter_tapped`/`enters_attacking` riders on the
+        /// chosen object's type, carried across the `EffectZoneChoice` round-trip
+        /// so the gate is evaluated per chosen object at resume (Summoner's
+        /// Grimoire). `None` = apply the riders unconditionally (every non-Grimoire
+        /// use). Mirrors the `enter_tapped` / `enters_attacking` carry-through above.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        enters_modified_if: Option<crate::types::ability::TargetFilter>,
     },
     /// Player chooses which drawn-this-turn hand cards to put on top of their
     /// library. Each unchosen required card is kept by paying life.
@@ -6976,6 +6991,18 @@ pub struct GameState {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_effect_amount: Option<i32>,
 
+    /// CR 120.10: Resolution-local twin of `last_effect_amount` carrying the
+    /// *excess* damage dealt by the preceding effect (damage beyond lethal), as
+    /// distinct from the total (CR 120.6). Stamped alongside `last_effect_amount`
+    /// after a damage-dealing effect resolves and read by
+    /// `AbilityCondition::PreviousEffectAmount { channel: DamageChannel::Excess }`
+    /// for the "if excess damage was dealt … this way" class. Resolution-scoped:
+    /// reset to `None` at depth-0. Follows the `last_effect_amount`
+    /// PartialEq-OMISSION pattern: NOT compared in the hand-written `PartialEq`
+    /// (safe — always cleared at comparison boundaries).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_effect_excess_amount: Option<i32>,
+
     /// CR 706.2 + CR 706.4: The actual scalar result available to the current
     /// ability resolution. During a results-table roll, `roll_die::resolve`
     /// stamps each individual die result before resolving that die's branch
@@ -7903,6 +7930,7 @@ impl GameState {
             last_vote_ballots: im::Vector::new(),
             player_actions_this_way: HashSet::new(),
             last_effect_amount: None,
+            last_effect_excess_amount: None,
             die_result_this_resolution: None,
             last_effect_count: None,
             last_effect_counts_by_player: HashMap::new(),
@@ -9274,6 +9302,7 @@ mod tests {
             count_param: 0,
             library_position: None,
             is_cost_payment: false,
+            enters_modified_if: None,
         }));
         variants.push(Box::new(WaitingFor::DefilerPayment {
             player: PlayerId(0),
@@ -9532,6 +9561,7 @@ mod tests {
             count_param: 0,
             library_position: None,
             is_cost_payment: false,
+            enters_modified_if: None,
         };
         let json = serde_json::to_string(&wf).unwrap();
         let deserialized: WaitingFor = serde_json::from_str(&json).unwrap();
@@ -9589,6 +9619,7 @@ mod tests {
             }),
             library_placement: None,
             effect_kind: crate::types::ability::EffectKind::ChangeZone,
+            enters_modified_if: None,
         };
         let json = serde_json::to_string(&original).expect("serialize");
         // Modern shape must be emitted, NOT the legacy bool field.
@@ -9638,6 +9669,7 @@ mod tests {
             count_param: 0,
             library_position: None,
             is_cost_payment: false,
+            enters_modified_if: None,
         };
         let json = serde_json::to_string(&wf).expect("serialize");
         // Modern shape must be emitted, NOT the legacy bool field.
