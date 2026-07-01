@@ -2114,8 +2114,17 @@ pub enum CastingPermission {
         /// replacement when the granted cast finalizes; `None` (the common
         /// case) leaves the resolving spell on its default graveyard path.
         /// Typed rather than a bool so the rider covers every CR 614.1a
-        /// destination, not just exile.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
+        /// destination, not just exile. The `alias` + `deserialize_with` accept
+        /// the legacy `exile_instead_of_graveyard_on_resolve: bool` this field
+        /// replaced (`true` → `Some(Exile)`, `false`/absent → `None`), so an
+        /// in-flight saved / reconnected permission serialized before the
+        /// migration still reloads with its exile-on-resolution rider.
+        #[serde(
+            default,
+            alias = "exile_instead_of_graveyard_on_resolve",
+            skip_serializing_if = "Option::is_none",
+            deserialize_with = "deserialize_graveyard_replacement_compat"
+        )]
         graveyard_replacement: Option<SpellStackToGraveyardReplacement>,
         /// CR 614.1c + CR 122.1: Osteomancer Adept / The Tomb of Aclazotz class —
         /// a `CastFromZone` grant whose sub-ability is "the creature cast this way
@@ -2635,6 +2644,52 @@ pub enum DamageChannel {
 /// mirroring the prior `skip_serializing_if = "std::ops::Not::not"` on the bool.
 fn is_total_damage_channel(channel: &DamageChannel) -> bool {
     matches!(channel, DamageChannel::Total)
+}
+
+/// CR 120.6 + CR 120.10: Compatibility deserializer for the `channel` field that
+/// replaced the former `excess_only: bool` on `QuantityRef::DamageDealtThisTurn`
+/// (and `AbilityCondition::PreviousEffectAmount`). Accepts both the current
+/// `DamageChannel` representation ("Total" / "Excess") and the legacy bool
+/// (`true` → `Excess`, `false` → `Total`), so a game state / scenario serialized
+/// before the migration reloads with the correct channel instead of silently
+/// defaulting to a total-damage check. Paired with `#[serde(alias =
+/// "excess_only")]` on the field, which routes the legacy key's value here.
+fn deserialize_damage_channel_compat<'de, D>(d: D) -> Result<DamageChannel, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::Deserialize as _;
+    let raw = serde_json::Value::deserialize(d)?;
+    if let serde_json::Value::Bool(excess_only) = raw {
+        return Ok(if excess_only {
+            DamageChannel::Excess
+        } else {
+            DamageChannel::Total
+        });
+    }
+    serde_json::from_value(raw).map_err(serde::de::Error::custom)
+}
+
+/// CR 608.2n: Compatibility deserializer for the `graveyard_replacement` field
+/// that replaced the former `exile_instead_of_graveyard_on_resolve: bool` on
+/// `CastingPermission::ExileWithAltCost`. Accepts both the current
+/// `Option<SpellStackToGraveyardReplacement>` representation and the legacy bool
+/// (`true` → `Some(Exile)`, the only destination the bool could encode; `false`
+/// → `None`), so an in-flight saved / reconnected permission serialized before
+/// the migration still reloads with its exile-on-resolution rider. Paired with
+/// `#[serde(alias = "exile_instead_of_graveyard_on_resolve")]` on the field.
+fn deserialize_graveyard_replacement_compat<'de, D>(
+    d: D,
+) -> Result<Option<SpellStackToGraveyardReplacement>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::Deserialize as _;
+    let raw = serde_json::Value::deserialize(d)?;
+    if let serde_json::Value::Bool(exile) = raw {
+        return Ok(exile.then_some(SpellStackToGraveyardReplacement::Exile));
+    }
+    serde_json::from_value(raw).map_err(serde::de::Error::custom)
 }
 
 /// Controller reference for filter matching.
@@ -4645,8 +4700,17 @@ pub enum QuantityRef {
         /// CR 120.6 / CR 120.10: `Total` counts every matching record's marked
         /// damage; `Excess` counts only records where `excess > 0` — i.e. damage
         /// that was lethal-overkill. Used by the "was dealt excess damage this
-        /// turn" intervening-if class.
-        #[serde(default, skip_serializing_if = "is_total_damage_channel")]
+        /// turn" intervening-if class. The `alias` + `deserialize_with` accept
+        /// the legacy `excess_only: bool` this field replaced (`true` →
+        /// `Excess`, `false`/absent → `Total`), so persisted pre-migration game
+        /// states / scenarios reload with the correct channel instead of
+        /// silently defaulting to a total-damage check.
+        #[serde(
+            default,
+            alias = "excess_only",
+            skip_serializing_if = "is_total_damage_channel",
+            deserialize_with = "deserialize_damage_channel_compat"
+        )]
         channel: DamageChannel,
     },
     /// A number chosen as the source entered the battlefield (e.g., Talion, the Kindly Lord).
@@ -19678,6 +19742,122 @@ mod tests {
             serde_json::from_str::<QuantityRef>(&json).unwrap(),
             some_ref
         );
+    }
+
+    /// CR 120.10: Legacy `excess_only: bool` compatibility — a
+    /// `DamageDealtThisTurn` serialized before the `channel: DamageChannel`
+    /// migration must reload with the correct channel via the `excess_only`
+    /// serde alias + compat deserializer, not silently default to `Total`.
+    #[test]
+    fn damage_channel_reads_legacy_excess_only_bool() {
+        // Build the modern value (channel Total, elided) to get a valid
+        // source/target JSON shape, then inject the legacy `excess_only` key.
+        let modern_total = QuantityRef::DamageDealtThisTurn {
+            source: Box::new(TargetFilter::Any),
+            target: Box::new(TargetFilter::Any),
+            aggregate: default_damage_aggregate(),
+            group_by: None,
+            damage_kind: default_damage_kind(),
+            channel: DamageChannel::Total,
+        };
+        let mut v: serde_json::Value =
+            serde_json::from_str(&serde_json::to_string(&modern_total).unwrap()).unwrap();
+        v.as_object_mut()
+            .unwrap()
+            .insert("excess_only".to_string(), serde_json::Value::Bool(true));
+        let back: QuantityRef = serde_json::from_value(v).unwrap();
+        assert!(
+            matches!(
+                back,
+                QuantityRef::DamageDealtThisTurn {
+                    channel: DamageChannel::Excess,
+                    ..
+                }
+            ),
+            "legacy excess_only:true must map to DamageChannel::Excess, got {back:?}"
+        );
+
+        // `excess_only:false` maps to Total (the elided default).
+        let mut v_false: serde_json::Value =
+            serde_json::from_str(&serde_json::to_string(&modern_total).unwrap()).unwrap();
+        v_false
+            .as_object_mut()
+            .unwrap()
+            .insert("excess_only".to_string(), serde_json::Value::Bool(false));
+        assert!(matches!(
+            serde_json::from_value::<QuantityRef>(v_false).unwrap(),
+            QuantityRef::DamageDealtThisTurn {
+                channel: DamageChannel::Total,
+                ..
+            }
+        ));
+
+        // Modern representation still round-trips.
+        let modern_excess = QuantityRef::DamageDealtThisTurn {
+            source: Box::new(TargetFilter::Any),
+            target: Box::new(TargetFilter::Any),
+            aggregate: default_damage_aggregate(),
+            group_by: None,
+            damage_kind: default_damage_kind(),
+            channel: DamageChannel::Excess,
+        };
+        let json = serde_json::to_string(&modern_excess).unwrap();
+        assert_eq!(
+            serde_json::from_str::<QuantityRef>(&json).unwrap(),
+            modern_excess
+        );
+    }
+
+    /// CR 608.2n: Legacy `exile_instead_of_graveyard_on_resolve: bool`
+    /// compatibility — an `ExileWithAltCost` permission serialized before the
+    /// `graveyard_replacement` migration must reload `true` as `Some(Exile)` via
+    /// the serde alias + compat deserializer, not lose its exile-on-resolution
+    /// rider.
+    #[test]
+    fn exile_with_alt_cost_reads_legacy_exile_on_resolve_bool() {
+        let modern = CastingPermission::ExileWithAltCost {
+            cost: ManaCost::zero(),
+            cast_transformed: false,
+            constraint: None,
+            granted_to: None,
+            resolution_cleanup: None,
+            duration: None,
+            graveyard_replacement: None,
+            enters_with_counter: None,
+            mana_spend_permission: None,
+        };
+        let mut v: serde_json::Value =
+            serde_json::from_str(&serde_json::to_string(&modern).unwrap()).unwrap();
+        v.as_object_mut().unwrap().insert(
+            "exile_instead_of_graveyard_on_resolve".to_string(),
+            serde_json::Value::Bool(true),
+        );
+        let back: CastingPermission = serde_json::from_value(v).unwrap();
+        assert!(
+            matches!(
+                back,
+                CastingPermission::ExileWithAltCost {
+                    graveyard_replacement: Some(SpellStackToGraveyardReplacement::Exile),
+                    ..
+                }
+            ),
+            "legacy exile_instead_of_graveyard_on_resolve:true must map to Some(Exile), got {back:?}"
+        );
+
+        // `false` reloads as `None` (no rider), matching the pre-migration bool.
+        let mut v_false: serde_json::Value =
+            serde_json::from_str(&serde_json::to_string(&modern).unwrap()).unwrap();
+        v_false.as_object_mut().unwrap().insert(
+            "exile_instead_of_graveyard_on_resolve".to_string(),
+            serde_json::Value::Bool(false),
+        );
+        assert!(matches!(
+            serde_json::from_value::<CastingPermission>(v_false).unwrap(),
+            CastingPermission::ExileWithAltCost {
+                graveyard_replacement: None,
+                ..
+            }
+        ));
     }
 
     /// CR 106.1 + CR 202.2c: the dynamic-color `AnyCombinationOfObjectColors`

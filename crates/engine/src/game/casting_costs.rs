@@ -5827,17 +5827,14 @@ pub(super) fn finalize_cast_with_phyrexian_choices(
     // CR 614.1a + CR 608.2n: `CastFromZone` grants with a graveyard-redirect
     // rider ("exile it" / "put it on the bottom of its owner's library" / "return
     // it to its owner's hand" instead) stamp the synthetic self-scoped redirect
-    // when the granted cast finalizes. The destination is read from the selected
-    // permission's typed `graveyard_replacement`.
-    if let Some(dest) = state.objects.get(&object_id).and_then(|obj| {
-        obj.casting_permissions.iter().find_map(|p| match p {
-            crate::types::ability::CastingPermission::ExileWithAltCost {
-                graveyard_replacement: Some(dest),
-                ..
-            } => Some(dest.clone()),
-            _ => None,
-        })
-    }) {
+    // when the granted cast finalizes. The destination is read from the
+    // selected-permission authority (the permission that actually supports THIS
+    // cast), mirroring the enters-with-counter rider below — a non-consumed
+    // sibling `ExileWithAltCost` permission's redirect must not leak onto this
+    // cast (CR 608.2c).
+    if let Some(dest) = super::casting::selected_exile_alt_cost_permission_graveyard_replacement(
+        state, object_id, player,
+    ) {
         apply_spell_graveyard_replacement_rider(state, object_id, dest);
     }
 

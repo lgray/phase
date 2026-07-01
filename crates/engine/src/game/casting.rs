@@ -1837,6 +1837,33 @@ pub(super) fn selected_exile_alt_cost_permission_enters_with_counter(
         })
 }
 
+// CR 614.1a + CR 608.2n: read the graveyard-redirect rider ("if that spell would
+// be put into a graveyard, exile it / put it on the bottom of its owner's library
+// / return it to its owner's hand instead") from the *consumed* cast permission
+// only (the one supporting THIS cast), not any permission that happens to carry a
+// redirect, so a non-consumed sibling permission's rider cannot leak onto this
+// cast (CR 608.2c: apply the instructions belonging to this cast). Mirrors
+// `selected_exile_alt_cost_permission_enters_with_counter`.
+pub(super) fn selected_exile_alt_cost_permission_graveyard_replacement(
+    state: &GameState,
+    object_id: ObjectId,
+    player: PlayerId,
+) -> Option<crate::types::ability::SpellStackToGraveyardReplacement> {
+    let obj = state.objects.get(&object_id)?;
+    obj.casting_permissions
+        .iter()
+        .find(|permission| {
+            exile_alt_cost_permission_supports_cast(state, obj, player, permission, None)
+        })
+        .and_then(|permission| match permission {
+            crate::types::ability::CastingPermission::ExileWithAltCost {
+                graveyard_replacement,
+                ..
+            } => graveyard_replacement.clone(),
+            _ => None,
+        })
+}
+
 pub(super) fn exile_alt_cost_permissions_accept_resulting_mv(
     state: &GameState,
     object_id: ObjectId,
