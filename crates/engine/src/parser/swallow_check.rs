@@ -6169,6 +6169,7 @@ this spell's mana cost.\nAttacking creatures get -3/-0 until end of turn.",
             target,
             without_paying_mana_cost,
             mana_spend_permission,
+            driver,
             ..
         } = &*execute.effect
         else {
@@ -6180,6 +6181,13 @@ this spell's mana cost.\nAttacking creatures get -3/-0 until end of turn.",
         assert!(
             !without_paying_mana_cost,
             "Quistis casts at full cost (CR 609.4b is payment-mode, not free)"
+        );
+        // CR 608.2g: the graveyard any-mana cast is a during-resolution paid cast,
+        // routed by the explicit driver — not a lingering permission.
+        assert_eq!(
+            *driver,
+            crate::types::ability::CastFromZoneDriver::DuringResolution,
+            "Quistis lowers to a during-resolution cast (CR 608.2g)"
         );
         assert_eq!(
             *mana_spend_permission,

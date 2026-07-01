@@ -16914,6 +16914,7 @@ fn try_parse_cast_target_from_graveyard_any_mana(text: &str) -> Option<Effect> {
     let Effect::CastFromZone {
         mana_spend_permission,
         target,
+        driver,
         ..
     } = &mut effect
     else {
@@ -16921,6 +16922,9 @@ fn try_parse_cast_target_from_graveyard_any_mana(text: &str) -> Option<Effect> {
     };
     // CR 609.4b: scope the any-type concession to this specific granted cast.
     *mana_spend_permission = Some(ManaSpendPermission::AnyTypeOrColor);
+    // CR 608.2g: "cast target ... from a graveyard" with no duration is a
+    // during-resolution paid cast, not a lingering permission.
+    *driver = crate::types::ability::CastFromZoneDriver::DuringResolution;
     // CR 611.2a + CR 108.3: "that player's graveyard" = the triggering player's
     // graveyard (`scan_zone_phrase` maps it to a bare `InZone{Graveyard}` with no
     // owner). Add the owner constraint so the candidate set is the damaged

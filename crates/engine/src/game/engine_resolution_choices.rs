@@ -83,6 +83,10 @@ pub(super) fn handles(waiting_for: &WaitingFor) -> bool {
                 kind: CastOfferKind::Discover { .. },
                 ..
             }
+            | WaitingFor::CastOffer {
+                kind: CastOfferKind::GraveyardPaidCast { .. },
+                ..
+            }
             | WaitingFor::RevealUntilKeptChoice { .. }
             | WaitingFor::RepeatDecision { .. }
             | WaitingFor::CastOffer {
@@ -558,6 +562,7 @@ pub(super) fn handle_resolution_choice(
                         cast_transformed: false,
                         cleanup,
                         graveyard_replacement: None,
+                        cost: crate::types::ability::ResolutionCastCost::Free,
                     },
                     events,
                 )?;
@@ -577,6 +582,54 @@ pub(super) fn handle_resolution_choice(
                     }
                 }
 
+                ResolutionChoiceOutcome::WaitingFor(finish_with_continuation(state, player, events))
+            }
+        }
+        // CR 608.2g + CR 609.4b: Paid during-resolution graveyard cast (Quistis
+        // Trepe, Tinybones the Pickpocket). Accept → cast the card at its real
+        // printed cost through `initiate_cast_during_resolution` with
+        // `ResolutionCastCost::FullCost`, which opens a manual mana-payment window
+        // and rides the any-type concession onto the grant. Decline → the card
+        // stays in the graveyard and resolution continues.
+        (
+            WaitingFor::CastOffer {
+                player,
+                kind:
+                    CastOfferKind::GraveyardPaidCast {
+                        hit_card,
+                        mana_spend_permission,
+                        graveyard_replacement,
+                        cast_transformed,
+                        constraint,
+                    },
+            },
+            GameAction::GraveyardPaidCastChoice { choice },
+        ) => {
+            if matches!(choice, crate::types::actions::CastChoice::Cast) {
+                let cleanup = crate::types::ability::ResolutionCastCleanup {
+                    exiled_misses: Vec::new(),
+                    reject_action: crate::types::ability::ResolutionMvRejectAction::RemainExiled,
+                    success_action:
+                        crate::types::ability::ResolutionCastSuccessAction::BottomMisses,
+                };
+                let result = casting::initiate_cast_during_resolution(
+                    state,
+                    player,
+                    hit_card,
+                    casting::ResolutionCastRequest {
+                        constraint,
+                        cast_transformed,
+                        cleanup,
+                        graveyard_replacement,
+                        cost: crate::types::ability::ResolutionCastCost::FullCost {
+                            mana_spend_permission,
+                        },
+                    },
+                    events,
+                )?;
+                ResolutionChoiceOutcome::WaitingFor(result)
+            } else {
+                // CR 608.2g decline: card stays in the graveyard; nothing is cast.
                 ResolutionChoiceOutcome::WaitingFor(finish_with_continuation(state, player, events))
             }
         }
@@ -793,6 +846,7 @@ pub(super) fn handle_resolution_choice(
                         cast_transformed: false,
                         cleanup,
                         graveyard_replacement: None,
+                        cost: crate::types::ability::ResolutionCastCost::Free,
                     },
                     events,
                 )?;
@@ -842,6 +896,7 @@ pub(super) fn handle_resolution_choice(
                         cast_transformed: false,
                         cleanup,
                         graveyard_replacement: None,
+                        cost: crate::types::ability::ResolutionCastCost::Free,
                     },
                     events,
                 )?;
@@ -935,6 +990,7 @@ pub(super) fn handle_resolution_choice(
                     cast_transformed: false,
                     cleanup,
                     graveyard_replacement: None,
+                    cost: crate::types::ability::ResolutionCastCost::Free,
                 },
                 events,
             )?;

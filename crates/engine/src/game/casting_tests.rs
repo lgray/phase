@@ -37876,15 +37876,42 @@ fn tinybones_3player_cast_restricted_to_damaged_player_graveyard() {
         &["Legendary".to_string(), "Creature".to_string()],
         &[],
     );
-    let target_filter = parsed
+    let (target_filter, driver, without_paying, msp) = parsed
         .triggers
         .iter()
         .find_map(|t| t.execute.as_deref())
         .and_then(|ad| match &*ad.effect {
-            Effect::CastFromZone { target, .. } => Some(target.clone()),
+            Effect::CastFromZone {
+                target,
+                driver,
+                without_paying_mana_cost,
+                mana_spend_permission,
+                ..
+            } => Some((
+                target.clone(),
+                *driver,
+                *without_paying_mana_cost,
+                *mana_spend_permission,
+            )),
             _ => None,
         })
         .expect("Tinybones must lower to a CastFromZone with a target filter");
+    // CR 608.2g + CR 609.4b: Tinybones lowers to a during-resolution PAID cast
+    // carrying the any-type concession — not a free lingering permission.
+    assert_eq!(
+        driver,
+        crate::types::ability::CastFromZoneDriver::DuringResolution,
+        "Tinybones is a during-resolution cast (CR 608.2g)"
+    );
+    assert!(
+        !without_paying,
+        "Tinybones pays the card's real cost (CR 609.4b is payment-mode, not free)"
+    );
+    assert_eq!(
+        msp,
+        Some(ManaSpendPermission::AnyTypeOrColor),
+        "the any-type concession must ride the grant"
+    );
 
     // 3-player game: B = PlayerId(1) (damaged), C = PlayerId(2) (untouched).
     let mut state = GameState::new(crate::types::format::FormatConfig::commander(), 3, 99);
@@ -38006,4 +38033,307 @@ fn cant_cast_next_turn_arms_on_each_opponents_own_turn() {
         state.restrictions
     );
     assert!(!is_blocked_by_cant_cast_spells(&state, PlayerId(0), None));
+}
+
+// ===========================================================================
+// CR 608.2g + CR 609.4b: Paid during-resolution graveyard cast (Quistis Trepe,
+// Tinybones the Pickpocket). Accept/decline CastOffer; on accept the caster pays
+// the card's real printed cost with any-type mana off-color.
+// ===========================================================================
+
+/// Build a `{U}` sorcery (Draw 1) in `owner`'s graveyard and return its id.
+fn make_graveyard_blue_sorcery(state: &mut GameState, owner: PlayerId) -> ObjectId {
+    let spell = create_object(
+        state,
+        CardId(8300),
+        owner,
+        "Graveyard Blue Bolt".to_string(),
+        Zone::Graveyard,
+    );
+    let obj = state.objects.get_mut(&spell).unwrap();
+    obj.card_types.core_types.push(CoreType::Sorcery);
+    obj.mana_cost = ManaCost::Cost {
+        shards: vec![ManaCostShard::Blue],
+        generic: 0,
+    };
+    Arc::make_mut(&mut obj.abilities).push(AbilityDefinition::new(
+        AbilityKind::Spell,
+        Effect::Draw {
+            count: QuantityExpr::Fixed { value: 1 },
+            target: TargetFilter::Controller,
+        },
+    ));
+    spell
+}
+
+/// Resolve a Quistis-class `CastFromZone` (during-resolution, full-cost, any-type
+/// concession) targeting `spell` and return the produced state via `state`.
+fn resolve_graveyard_paid_grant(state: &mut GameState, spell: ObjectId) {
+    let grant = ResolvedAbility::new(
+        Effect::CastFromZone {
+            target: TargetFilter::ParentTarget,
+            without_paying_mana_cost: false,
+            mode: CardPlayMode::Cast,
+            cast_transformed: false,
+            alt_ability_cost: None,
+            constraint: None,
+            duration: None,
+            driver: crate::types::ability::CastFromZoneDriver::DuringResolution,
+            mana_spend_permission: Some(ManaSpendPermission::AnyTypeOrColor),
+        },
+        vec![TargetRef::Object(spell)],
+        ObjectId(9200),
+        PlayerId(0),
+    );
+    crate::game::effects::cast_from_zone::resolve(state, &grant, &mut Vec::new()).unwrap();
+}
+
+/// TEST 4 (router): the paid gate produces a `CastOffer::GraveyardPaidCast` and
+/// stamps NO lingering permission. Reverting the paid gate falls through to
+/// `grant_lingering_permissions`, which stamps an `ExileWithAltCost` immediately
+/// and never opens the offer — flipping both assertions.
+#[test]
+fn graveyard_paid_cast_router_opens_offer_not_lingering_permission() {
+    let mut state = setup_game_at_main_phase();
+    let spell = make_graveyard_blue_sorcery(&mut state, PlayerId(0));
+    resolve_graveyard_paid_grant(&mut state, spell);
+
+    assert!(
+        matches!(
+            &state.waiting_for,
+            WaitingFor::CastOffer {
+                kind: crate::types::game_state::CastOfferKind::GraveyardPaidCast { hit_card, .. },
+                ..
+            } if *hit_card == spell
+        ),
+        "paid graveyard cast must open a GraveyardPaidCast offer, got {:?}",
+        state.waiting_for
+    );
+    assert!(
+        state.objects[&spell].casting_permissions.is_empty(),
+        "the paid gate must NOT stamp a lingering permission — the grant is stamped only on accept"
+    );
+}
+
+/// TEST 1 (paid accept, on-color): accepting opens a MANUAL mana payment (not an
+/// auto-resolve), and paying the printed `{U}` puts the spell on the stack with
+/// the mana deducted. Reverting `FullCost`→`Manual` (back to `Auto`) makes the
+/// cast auto-resolve, so no `ManaPayment` step opens — flipping the assertion.
+#[test]
+fn graveyard_paid_cast_accept_on_color_opens_manual_payment_then_stack() {
+    let mut state = setup_game_at_main_phase();
+    let spell = make_graveyard_blue_sorcery(&mut state, PlayerId(0));
+    add_mana(&mut state, PlayerId(0), ManaType::Blue, 1);
+    resolve_graveyard_paid_grant(&mut state, spell);
+
+    apply_as_current(
+        &mut state,
+        GameAction::GraveyardPaidCastChoice {
+            choice: crate::types::actions::CastChoice::Cast,
+        },
+    )
+    .expect("accepting the paid cast must succeed");
+    assert!(
+        matches!(state.waiting_for, WaitingFor::ManaPayment { .. }),
+        "FullCost accept must open a MANUAL mana payment, got {:?}",
+        state.waiting_for
+    );
+
+    // Finalize the payment from the pool: the spell reaches the stack.
+    apply_as_current(&mut state, GameAction::PassPriority)
+        .expect("finalizing the {U} payment must succeed");
+    assert!(
+        state.stack.iter().any(|e| e.source_id == spell),
+        "the paid spell must reach the stack after payment"
+    );
+    assert!(
+        state.players[0].mana_pool.mana.is_empty(),
+        "the {{U}} must have been spent from the pool"
+    );
+}
+
+/// TEST 2 (paid accept, OFF-color — CR 609.4b): the `{U}` cost is paid from a
+/// red-only pool because the any-type concession rides the granted permission.
+/// Reverting the `mana_spend_permission` forwarding in the `FullCost` arm drops
+/// the concession, so the off-color payment is rejected and the finalize errors.
+#[test]
+fn graveyard_paid_cast_accept_off_color_pays_via_any_type_concession() {
+    let mut state = setup_game_at_main_phase();
+    let spell = make_graveyard_blue_sorcery(&mut state, PlayerId(0));
+    // Red-only pool — cannot pay {U} without the concession.
+    add_mana(&mut state, PlayerId(0), ManaType::Red, 1);
+    resolve_graveyard_paid_grant(&mut state, spell);
+
+    apply_as_current(
+        &mut state,
+        GameAction::GraveyardPaidCastChoice {
+            choice: crate::types::actions::CastChoice::Cast,
+        },
+    )
+    .expect("accepting the paid cast must succeed");
+    assert!(
+        matches!(state.waiting_for, WaitingFor::ManaPayment { .. }),
+        "off-color paid accept must still open manual payment, got {:?}",
+        state.waiting_for
+    );
+    // The concession is scoped to THIS spell via the granted permission.
+    assert!(
+        player_can_spend_as_any_color_for_optional_spell(&state, PlayerId(0), Some(spell)),
+        "the any-type concession must be in force for the granted spell (CR 609.4b)"
+    );
+
+    apply_as_current(&mut state, GameAction::PassPriority)
+        .expect("finalizing {U} from a red-only pool must succeed under the concession");
+    assert!(
+        state.stack.iter().any(|e| e.source_id == spell),
+        "the off-color-paid spell must reach the stack"
+    );
+    assert!(
+        state.players[0].mana_pool.mana.is_empty(),
+        "the red mana must have been spent to pay the {{U}} pip off-color"
+    );
+}
+
+/// TEST 3 (decline): declining leaves the card in the graveyard, casts nothing,
+/// and stamps no lingering permission. Resolution continues past the offer.
+#[test]
+fn graveyard_paid_cast_decline_leaves_card_in_graveyard() {
+    let mut state = setup_game_at_main_phase();
+    let spell = make_graveyard_blue_sorcery(&mut state, PlayerId(0));
+    resolve_graveyard_paid_grant(&mut state, spell);
+
+    apply_as_current(
+        &mut state,
+        GameAction::GraveyardPaidCastChoice {
+            choice: crate::types::actions::CastChoice::Decline,
+        },
+    )
+    .expect("declining the paid cast must succeed");
+
+    assert_eq!(
+        state.objects[&spell].zone,
+        Zone::Graveyard,
+        "declining must leave the card in the graveyard"
+    );
+    assert!(
+        !state.stack.iter().any(|e| e.source_id == spell),
+        "declining must not put the card on the stack"
+    );
+    assert!(
+        state.objects[&spell].casting_permissions.is_empty(),
+        "declining must leave no lingering ExileWithAltCost permission on the card"
+    );
+    assert!(
+        !matches!(
+            state.waiting_for,
+            WaitingFor::CastOffer {
+                kind: crate::types::game_state::CastOfferKind::GraveyardPaidCast { .. },
+                ..
+            }
+        ),
+        "resolution must continue past the offer on decline, got {:?}",
+        state.waiting_for
+    );
+}
+
+/// TEST 5 (negative sibling): a FREE during-resolution cast (Cascade/Discover/
+/// Suspend caller shape) still auto-resolves with no payment step, even with an
+/// empty pool. Guards the 5 preserved `ResolutionCastCost::Free` callers.
+/// Reverting the `Free` arm to charge/`Manual` would open `ManaPayment` here.
+#[test]
+fn free_during_resolution_cast_auto_resolves_with_empty_pool() {
+    let mut state = setup_game_at_main_phase();
+    // Card in exile with a real {U} cost, but NO mana in pool.
+    let spell = create_object(
+        &mut state,
+        CardId(8302),
+        PlayerId(0),
+        "Exiled Free Bolt".to_string(),
+        Zone::Exile,
+    );
+    {
+        let obj = state.objects.get_mut(&spell).unwrap();
+        obj.card_types.core_types.push(CoreType::Sorcery);
+        obj.mana_cost = ManaCost::Cost {
+            shards: vec![ManaCostShard::Blue],
+            generic: 0,
+        };
+        Arc::make_mut(&mut obj.abilities).push(AbilityDefinition::new(
+            AbilityKind::Spell,
+            Effect::Draw {
+                count: QuantityExpr::Fixed { value: 1 },
+                target: TargetFilter::Controller,
+            },
+        ));
+    }
+    let cleanup = crate::types::ability::ResolutionCastCleanup {
+        exiled_misses: Vec::new(),
+        reject_action: crate::types::ability::ResolutionMvRejectAction::RemainExiled,
+        success_action: crate::types::ability::ResolutionCastSuccessAction::BottomMisses,
+    };
+    let wf = initiate_cast_during_resolution(
+        &mut state,
+        PlayerId(0),
+        spell,
+        ResolutionCastRequest {
+            constraint: None,
+            cast_transformed: false,
+            cleanup,
+            graveyard_replacement: None,
+            cost: crate::types::ability::ResolutionCastCost::Free,
+        },
+        &mut Vec::new(),
+    )
+    .expect("free during-resolution cast must begin");
+    assert!(
+        !matches!(wf, WaitingFor::ManaPayment { .. }),
+        "a Free during-resolution cast must NOT open a payment step, got {wf:?}"
+    );
+    assert!(
+        state.stack.iter().any(|e| e.source_id == spell),
+        "a Free cast must reach the stack with no mana paid"
+    );
+}
+
+/// TEST 6 (negative): a `without_paying` immediate graveyard free cast (Memory
+/// Plunder-class) still routes to the free `cast_single_target_during_resolution`
+/// path — it casts for free, never opening the PAID offer. Guards that adding the
+/// paid gate did not divert the `without_paying` free-cast class.
+#[test]
+fn without_paying_graveyard_free_cast_bypasses_paid_offer() {
+    let mut state = setup_game_at_main_phase();
+    let spell = make_graveyard_blue_sorcery(&mut state, PlayerId(0));
+    let grant = ResolvedAbility::new(
+        Effect::CastFromZone {
+            target: TargetFilter::ParentTarget,
+            without_paying_mana_cost: true,
+            mode: CardPlayMode::Cast,
+            cast_transformed: false,
+            alt_ability_cost: None,
+            constraint: None,
+            duration: None,
+            driver: crate::types::ability::CastFromZoneDriver::LingeringPermission,
+            mana_spend_permission: None,
+        },
+        vec![TargetRef::Object(spell)],
+        ObjectId(9201),
+        PlayerId(0),
+    );
+    crate::game::effects::cast_from_zone::resolve(&mut state, &grant, &mut Vec::new()).unwrap();
+
+    assert!(
+        !matches!(
+            state.waiting_for,
+            WaitingFor::CastOffer {
+                kind: crate::types::game_state::CastOfferKind::GraveyardPaidCast { .. },
+                ..
+            }
+        ),
+        "a without_paying free cast must NOT open the paid offer, got {:?}",
+        state.waiting_for
+    );
+    assert!(
+        state.stack.iter().any(|e| e.source_id == spell),
+        "the without_paying graveyard cast must reach the stack for free"
+    );
 }

@@ -962,6 +962,14 @@ fn fallback_action(state: &GameState) -> Option<GameAction> {
         } => Some(GameAction::DiscoverChoice {
             choice: engine::types::actions::CastChoice::Decline,
         }),
+        // CR 608.2g + CR 609.4b: paid graveyard cast — decline by default (parity
+        // with Discover/Cascade/Ripple); the candidate generator explores accept.
+        WaitingFor::CastOffer {
+            kind: CastOfferKind::GraveyardPaidCast { .. },
+            ..
+        } => Some(GameAction::GraveyardPaidCastChoice {
+            choice: engine::types::actions::CastChoice::Decline,
+        }),
         // CR 701.20a: RevealUntil kept choice — accept (put onto the battlefield)
         // as the search default; the candidate generator still explores decline.
         WaitingFor::RevealUntilKeptChoice { .. } => {

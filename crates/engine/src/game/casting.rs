@@ -8155,6 +8155,11 @@ pub(super) struct ResolutionCastRequest {
     pub(super) cleanup: crate::types::ability::ResolutionCastCleanup,
     pub(super) graveyard_replacement:
         Option<crate::types::ability::SpellStackToGraveyardReplacement>,
+    /// CR 608.2g + CR 609.4b: whether the during-resolution cast is free
+    /// (Cascade/Discover/Suspend, `Auto`) or pays the card's real printed cost
+    /// (Quistis Trepe / Tinybones the Pickpocket, `Manual` with an optional
+    /// any-type-mana concession).
+    pub(super) cost: crate::types::ability::ResolutionCastCost,
 }
 
 /// CR 608.2g: Cast a Cascade/Discover hit *during resolution* of its source
@@ -8166,7 +8171,11 @@ pub(super) struct ResolutionCastRequest {
 /// (the resulting-MV gate, evaluated at finalization once X is known),
 /// `cast_transformed` (for Siege victory casts), and `cleanup` (the misses +
 /// reject disposition, so a cast-time rejection can still bottom/hand the hit).
-/// Then prepares and continues the cast on the `Auto` payment mode. The
+/// The `request.cost` (`ResolutionCastCost`) drives the payment shape: `Free`
+/// zeroes the cost and continues on `Auto` (Cascade/Discover/Suspend);
+/// `FullCost` charges the card's live printed cost (`SelfManaCost`), forwards the
+/// any-type-mana concession onto the grant, and pauses on `Manual` payment so the
+/// caster spends mana (Quistis Trepe, Tinybones the Pickpocket — CR 609.4b). The
 /// returned `WaitingFor` falls through
 /// `run_post_action_pipeline` normally, which fires the hit's own cast-triggers
 /// (CR 702.85a, etc.) and returns priority to the active player — satisfying CR
@@ -8193,7 +8202,27 @@ pub(super) fn initiate_cast_during_resolution(
         cast_transformed,
         cleanup,
         graveyard_replacement,
+        cost,
     } = request;
+    // CR 608.2g + CR 609.4b: resolve the payment shape once. `Free` zeroes the
+    // cost and auto-pays (Cascade/Discover/Suspend). `FullCost` charges the
+    // card's live printed cost (`SelfManaCost`) and pauses for manual payment so
+    // the caster can spend mana; the any-type concession, when present, rides the
+    // grant (Quistis Trepe, Tinybones the Pickpocket).
+    let (perm_cost, mana_spend_permission, payment_mode) = match cost {
+        crate::types::ability::ResolutionCastCost::Free => {
+            (ManaCost::zero(), None, CastPaymentMode::Auto)
+        }
+        // CR 609.4b: SelfManaCost resolves to the card's live printed cost; the
+        // any-type concession rides the grant.
+        crate::types::ability::ResolutionCastCost::FullCost {
+            mana_spend_permission,
+        } => (
+            ManaCost::SelfManaCost,
+            mana_spend_permission,
+            CastPaymentMode::Manual,
+        ),
+    };
     if let Some(obj) = state.objects.get_mut(&hit_card) {
         // CR 601.2a + CR 601.2i: zero-cost permission consumed by
         // `prepare_spell_cast_with_variant_override`'s exile alt-cost scan.
@@ -8205,7 +8234,7 @@ pub(super) fn initiate_cast_during_resolution(
         // enters the cascade reject path.
         obj.casting_permissions
             .push(CastingPermission::ExileWithAltCost {
-                cost: ManaCost::zero(),
+                cost: perm_cost,
                 cast_transformed,
                 constraint,
                 granted_to: Some(player),
@@ -8213,7 +8242,7 @@ pub(super) fn initiate_cast_during_resolution(
                 duration: None,
                 graveyard_replacement: graveyard_replacement.clone(),
                 enters_with_counter: None,
-                mana_spend_permission: None,
+                mana_spend_permission,
             });
         // CR 614.1a + CR 608.2n: a bool→Option mechanical rename, behavior-
         // preserving (false→None, true→Some(Exile)). Zero NEW during-resolution
@@ -8226,7 +8255,7 @@ pub(super) fn initiate_cast_during_resolution(
         }
     }
     let mut prepared = prepare_spell_cast_with_variant_override(state, player, hit_card, None)?;
-    prepared.payment_mode = CastPaymentMode::Auto;
+    prepared.payment_mode = payment_mode;
     continue_with_prepared(state, player, prepared, events)
 }
 

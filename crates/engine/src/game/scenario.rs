@@ -1593,6 +1593,10 @@ impl GameRunner {
                 kind: CastOfferKind::Discover { .. },
                 ..
             } => "DiscoverChoice",
+            WaitingFor::CastOffer {
+                kind: CastOfferKind::GraveyardPaidCast { .. },
+                ..
+            } => "GraveyardPaidCastChoice",
             WaitingFor::RevealUntilKeptChoice { .. } => "RevealUntilKeptChoice",
             WaitingFor::RepeatDecision { .. } => "RepeatDecision",
             WaitingFor::CastOffer {

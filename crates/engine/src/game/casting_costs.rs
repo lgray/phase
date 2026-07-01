@@ -6160,15 +6160,24 @@ fn evaluate_cascade_constraint_with_resulting_mv(
         .expect("object present above")
         .casting_permissions
         .remove(index);
-    let (constraint, cast_transformed, cleanup) = match permission {
-        CastingPermission::ExileWithAltCost {
-            constraint,
-            cast_transformed,
-            resolution_cleanup: Some(cleanup),
-            ..
-        } => (constraint, cast_transformed, cleanup),
-        _ => unreachable!("position() already filtered to this variant"),
-    };
+    let (constraint, cast_transformed, cleanup, mana_spend_permission, granted_to) =
+        match permission {
+            CastingPermission::ExileWithAltCost {
+                constraint,
+                cast_transformed,
+                resolution_cleanup: Some(cleanup),
+                mana_spend_permission,
+                granted_to,
+                ..
+            } => (
+                constraint,
+                cast_transformed,
+                cleanup,
+                mana_spend_permission,
+                granted_to,
+            ),
+            _ => unreachable!("position() already filtered to this variant"),
+        };
 
     // CR 702.85a / CR 701.57a: evaluate the resulting-MV gate carried on the
     // permission (`< source_mv` for Cascade, `<= N` for Discover).
@@ -6181,6 +6190,32 @@ fn evaluate_cascade_constraint_with_resulting_mv(
     );
 
     if accepted {
+        // CR 609.4b: A during-resolution PAID cast (Quistis Trepe, Tinybones the
+        // Pickpocket) carries a "mana of any type can be spent to cast that spell"
+        // concession on the consumed resolution permission. The CR 608.2g timing
+        // marker (`resolution_cleanup`) is consumed here, but the CR 609.4b
+        // payment concession must outlive it — the real mana payment still runs
+        // below (`finalize_cast` → `pay_mana_cost_with_choices`). Re-home a
+        // concession-only `ExileWithAltCost` (no `resolution_cleanup`, so this
+        // gate never re-fires) so the payment step still reads the off-color
+        // concession. Cleared with the object's other permissions when the spell
+        // leaves the stack. Free casts (no concession) carry `None` and skip this.
+        if let Some(msp) = mana_spend_permission {
+            if let Some(obj) = state.objects.get_mut(&object_id) {
+                obj.casting_permissions
+                    .push(CastingPermission::ExileWithAltCost {
+                        cost: crate::types::mana::ManaCost::SelfManaCost,
+                        cast_transformed: false,
+                        constraint: None,
+                        granted_to,
+                        resolution_cleanup: None,
+                        duration: None,
+                        graveyard_replacement: None,
+                        enters_with_counter: None,
+                        mana_spend_permission: Some(msp),
+                    });
+            }
+        }
         let waiting_for = handle_resolution_cast_success(
             state,
             player,

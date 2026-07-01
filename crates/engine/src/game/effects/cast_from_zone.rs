@@ -96,6 +96,7 @@ pub fn resolve(
         constraint,
         duration,
         driver,
+        mana_spend_permission,
     ) = match &ability.effect {
         Effect::CastFromZone {
             target,
@@ -105,6 +106,7 @@ pub fn resolve(
             constraint,
             duration,
             driver,
+            mana_spend_permission,
             ..
         } => (
             target,
@@ -114,6 +116,7 @@ pub fn resolve(
             constraint.clone(),
             duration.clone(),
             *driver,
+            *mana_spend_permission,
         ),
         _ => return Err(EffectError::MissingParam("CastFromZone".to_string())),
     };
@@ -294,6 +297,41 @@ pub fn resolve(
             .get(&target_ids[0])
             .is_some_and(|obj| obj.zone == Zone::Graveyard);
 
+    // CR 608.2g + CR 609.4b: paid during-resolution graveyard cast (Quistis Trepe,
+    // Tinybones the Pickpocket). Not without_paying — the caster pays the real cost
+    // with any-type mana. Offered accept/decline, resolved by
+    // initiate_cast_during_resolution with ResolutionCastCost::FullCost. Replaces
+    // the wrong lingering-permission path (#2884: the offer was inert on
+    // opponent-graveyard targets, and own-graveyard targets deferred the cast to a
+    // later priority window instead of a resolution-time offer).
+    let graveyard_paid_cast = !without_paying
+        && mana_spend_permission.is_some()
+        && driver.is_during_resolution()
+        && alt_ability_cost.is_none()
+        && duration.is_none()
+        && target_ids.len() == 1
+        && state
+            .objects
+            .get(&target_ids[0])
+            .is_some_and(|o| o.zone == Zone::Graveyard);
+    if graveyard_paid_cast {
+        events.push(GameEvent::EffectResolved {
+            kind: EffectKind::CastFromZone,
+            source_id: ability.source_id,
+        });
+        state.waiting_for = WaitingFor::CastOffer {
+            player: ability.controller,
+            kind: crate::types::game_state::CastOfferKind::GraveyardPaidCast {
+                hit_card: target_ids[0],
+                mana_spend_permission,
+                graveyard_replacement: cast_from_zone_graveyard_destination(ability),
+                cast_transformed,
+                constraint: constraint.clone(),
+            },
+        };
+        return Ok(());
+    }
+
     if driver_free_cast || immediate_graveyard_free_cast {
         return cast_single_target_during_resolution(
             state,
@@ -431,6 +469,7 @@ fn cast_single_target_during_resolution(
             cast_transformed,
             cleanup,
             graveyard_replacement,
+            cost: crate::types::ability::ResolutionCastCost::Free,
         },
         events,
     )
