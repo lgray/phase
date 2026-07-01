@@ -1,0 +1,26 @@
+# MSH-F round-2 verification log (planner, against wt-msh-f @ 5eca83b8c)
+
+All line numbers below opened and confirmed THIS round.
+
+## Sub-Plan A (Cosmic Cube)
+- Constraint parser `parse_cast_permission_constraint` = oracle_effect/mod.rs:15613-15631. Anchor = `take_until("if that spell's mana value is ")`; value parsed BEFORE comparator (`parse_quantity_expr_number` @15621), comparator is POST-value suffix `tag("or less")`/`tag("or greater")` @15623-15629 → confirms MEDIUM (post vs pre position).
+- HIGH confirmed: `parse_quantity_ref_with_context` aggregate branch oracle_quantity.rs:300-310 gates on `snapshot_ok` (remainder empty OR cast-snapshot suffix). " without paying its mana cost" → snapshot_ok=false → None.
+- FIX path: nom combinator `parse_object_property_aggregate_ref` (oracle_nom/quantity.rs:959, returns `final_remainder` @1013-1031, does NOT require empty remainder) — reachable via pub `nom_quantity::parse_quantity_ref` (oracle_nom/quantity.rs:560, alt arm @564). `nom_quantity` already imported mod.rs:73, used @4181/8811. Class-general; no `take_until(" without paying")` hardcode needed.
+- `parse_quantity_expr_number` (oracle_nom/quantity.rs:544) = `x`→Variable | number→Fixed. No aggregate. Fixed fallback only.
+- from-among arm mod.rs:15490; constraint threaded @15501; `driver: LingeringPermission` @15503 → consumed by `grant_lingering_permissions` cast_from_zone.rs:491 → `ExileWithAltCost{constraint}` @556/568 (LOW provenance confirmed; :357 during-resolution path is NOT used).
+- Enforcement (MEDIUM): `cast_permission_constraint_allows_cast` casting.rs:1577-1601 — Fixed+resulting_mv.is_none() branch @1586-1590 (printed-MV fallback); dynamic branch @1592-1598 resolves `resolve_quantity(state,value,obj.controller,obj.id)`, returns permissive `true` when resulting_mv None (NO printed fallback). Finalize gates: `selected_exile_alt_cost_permission_accepts_resulting_mv` casting.rs:1695, `exile_alt_cost_permissions_accept_resulting_mv` casting.rs:1763, both called casting_costs.rs:5350-5374 with `Some(resulting_mv)` → reject ⇒ `handle_cancel_cast` + `Err(ActionNotAllowed("Spell mana value does not satisfy the cast permission"))` @5359-5362. (casting_costs.rs:5946 is the Cascade/Discover resolution-cleanup path, NOT lingering.)
+- Anchors: CastPermissionConstraint::ManaValue ability.rs:2185 (variant 2188-2191, value ALREADY QuantityExpr); FilterProp::Attacking ability.rs:2591 (plan said 2538); ObjectProperty enum 4605 / Power variant 4606 (plan said 4605); QuantityRef::Aggregate ability.rs:4132; Comparator ability.rs:5220 = GT/LT/GE/LE/EQ/NE.
+- card-data.json `cosmic cube`: TODAY = YouAttack trigger + CastFromZone + `"constraint":null`. Only the MV ceiling drops. Revert baseline = constraint None.
+
+## Sub-Plan B (Hawkeye)
+- DamageModification ability.rs:15775 (derives Eq), Plus{value:u32} @15783, SetToSourcePower @15794, SetTo{value:u32} @15800, LifeFloor @15806.
+- Sibling QuantityModification ability.rs:15810 ("Modeled after DamageModification"), Plus{value:u32} @15826 — SEPARATE enum (MEDIUM non-goal).
+- DamageModification::Plus sites = 4 files (grep -rln): replacement.rs, oracle_replacement.rs, add_target_replacement.rs, oracle_trigger.rs. Compiler-enforced.
+- QuantityModification::Plus sites oracle_replacement.rs:5737/6292/6308/12704/14144/14716/14739 — naive `Plus {` grep = 19 hits conflates both enums.
+- Resolver: damage_done_applier replacement.rs:930, Plus arm @949 (`amount.saturating_add(value)`); SetToSourcePower precedent @956-968 reads `state.objects.get(&rid.source).power`. `damage_modification_for_rid` replacement.rs:873-892 returns OWNED clone (no borrow conflict). `replacement_source_player` replacement.rs:51 (CR 109.4). `resolve_quantity(state,expr,controller,source_id)` quantity.rs:68.
+- Parser: scan_damage_modification oracle_replacement.rs:4918 (uses scan_at_word_boundaries → position-independent, leading "instead" OK); parse_that_much_damage_offset @4935; freeze arm `value(Plus{0}, tag("plus x"))` @4942 (new dynamic arm must precede). `parse_cda_quantity` oracle_quantity.rs:667 returns Option<QuantityExpr>, STRIPS trailing '.' @676 (`text.trim().trim_end_matches('.')`) → period tolerated. Test cda_quantity_self_power @4232 → `Ref(Power{Source})`. scan_at_word_boundaries primitives.rs:856 returns on first success ignoring remainder.
+- AT regression assertions: oracle_replacement.rs:11783 + 11810 (`Plus{value:2}`), 14026 (`Plus{value:0}` placeholder), 14036 (`Plus{value:2}` literal). Migrate → `Plus{value: Fixed{value:N}}`.
+- card-data.json `hawkeye, young avenger`: TODAY = DamageDone + NoncombatOnly + PlayerOrPermanentsControlledBy{Opponent} + `damage_modification:{"type":"Plus","value":0}` (frozen). Serde: bare `0` loads via QuantityExpr Deserialize (ability.rs:5013-5028) → Fixed{0}. Revert baseline = Plus{Fixed{0}} (no amplification).
+
+## CR grep (docs/MagicCompRules.txt, line)
+601.2e@2466 (cast legality) · 601.2f@2468 (total cost lock-in) · 614.1a@3056 (instead=replacement) · 508.1@2260 / 508.1b@2264 (declare attackers) · 202.3@1359 (mana value) · 208.1@1509 (power) · 120.1@1087 / 120.3@1097 (damage) · 107.1b@455 (neg→0 clamp) · 109.4@594 (off-bf controller→owner) · 107.3a@466 (X chosen at cast).

@@ -5,26 +5,113 @@
 > below. Hard cards are not dropped — they live in heavy-infra clusters gated by
 > `/review-engine-plan` before code, but they ship. Backing artifact (per-card, exhaustive):
 > `.planning/coverage-analysis/out/standard/cluster-assignment.tsv` (verified **0 unclustered**).
-> _Re-measured 2026-06-23 @ `ae663ee8c`: 277 unsupported (was 268); pool grew +277 cards. See "Where standard stands"._
+> _Re-measured 2026-06-27 @ `c1b61ded5` (55-commit jump from v0.7.0; card-data regenerated): **270 unsupported** (was 273 @ `5eca83b8c` v0.7.0, 274 @ `a2c3033f8`, 277 @ `ae663ee8c`). See "Where standard stands"._
+> _Re-measured **2026-06-29 @ `dd6c22ea7`** (33-commit ff from `7c1c1cf67`; card-data regenerated, inputs stamp `2026-06-29T13:58Z`): **250 unsupported** = **220 parser-gap + 30 resolver-flagged**; **4674 supported (94.92 %)** of 4924. Net **270 → 250 (−20)**; parser-gap 238 → 220 (−18), resolver-flagged 32 → 30 (−2). Pool flat at 4924. **0 unclustered.** See the 2026-06-29 re-measure block in "Where standard stands"._
 
-**Snapshot:** 2026-06-23 · main @ `ae663ee8c` (re-measured; was 2026-06-22 @ `c55670fd0`) · card-data regenerated against `ae663ee8c`.
+**Snapshot:** 2026-06-27 · local main at `c1b61ded5` (55-commit jump from v0.7.0 `5eca83b8c`)
+· card-data + coverage-data regenerated against `c1b61ded5` (inputs stamp `2026-06-27T18:02:59Z`).
+Prior snapshots: 2026-06-26 @ `5eca83b8c` (**release v0.7.0**), 2026-06-24 @ `a2c3033f8` (#4280), 2026-06-23 @ `ae663ee8c`, 2026-06-22 @ `c55670fd0`.
 **Method / reuse:** `coverage-breakdown.sh --format standard` then `cluster-assign.sh standard` (both in `.planning/coverage-analysis/`).
 
 ## Where standard stands
 
-| metric | value (2026-06-23 @ `ae663ee8c`) | prior (2026-06-22 @ `c55670fd0`) |
-|---|---|---|
-| std-legal cards | 4924 | 4647 |
-| supported | 4647 (**94.37 %**) | 4379 (94.23 %) |
-| unsupported (all clustered below) | **277** = 245 parser-gap + 32 resolver-flagged | 268 = 239 parser-gap + 29 resolver-flagged |
+| metric | value (**2026-06-29 @ `dd6c22ea7`, re-measured**) | prior (2026-06-27 @ `c1b61ded5`) | prior (2026-06-26 @ `5eca83b8c` v0.7.0) | prior (2026-06-24 @ `a2c3033f8`) | prior (2026-06-23 @ `ae663ee8c`) |
+|---|---|---|---|---|---|
+| std-legal cards | 4924 | 4924 | 4924 | 4924 | 4924 |
+| supported | **4674 (94.92 %)** | 4654 (94.52 %) | 4651 (94.46 %) | 4650 (94.44 %) | 4647 (94.37 %) |
+| unsupported (all clustered below) | **250** = 220 parser-gap + 30 resolver-flagged | 270 = 238 parser-gap + 32 resolver-flagged | 273 = 241 parser-gap + 32 resolver-flagged | 274 = 242 parser-gap + 32 resolver-flagged | 277 = 245 parser-gap + 32 resolver-flagged |
 
-> **Net read:** the pool grew **+277** standard-legal cards since the snapshot (new
-> set releases / card-data refresh) while supported rose **+268** — so unsupported
-> ticked **+9** net (268 → 277) even though 60 card-PRs merged. The fixes are real;
-> the standard pool is simply growing slightly faster than it's being cleared.
-> Top parser-gap handlers now: Swallow:Condition_If (77), Swallow:DynamicQty (38),
-> Swallow:Duration_ThisTurn (15), Effect:for (13). Cluster prose below predates this
-> re-measure — re-run `cluster-assign.sh standard` to refresh per-card cluster files.
+> **Net read (2026-06-29 @ `dd6c22ea7`, 33-commit ff):** pool flat at 4924; supported **+20**
+> (4654 → 4674), unsupported **270 → 250 (−20)** — parser-gap 238 → 220 (−18), resolver-flagged
+> 32 → 30 (−2). **Fresh full cluster table (250 cards, 0 unclustered):**
+> S25-effect-verb 40 · S07-condition-if 29 · S19-new-trigger 21 · S10-dynamic-qty 21 ·
+> S08-foreach-qty 11 · **S01-reflexive-if 11** · R2-aslongas 11 · R5-runtime 10 · S18-foreach-simple 9 ·
+> S11-duration 9 · S05-alt-cost-if 9 · R1-speed 9 · S24-unknown 8 · S04-activate-if 8 ·
+> S12-optional 6 · S03-intervening-if 6 · S20-copy-retarget 4 · S17-anaphoric 4 · S16-foreach-player-HEAVY 4 ·
+> S14-unless 4 · S02-cast-context 4 · S22-choose 3 · S13-aslongas-parse 3 · S23-alt-cost 2 ·
+> **S21-static 2** · S06-saga 2. (S15-activate-during and R4-cant-restriction now **0** — fully cleared.)
+> **Cluster movers vs the 2026-06-23 baseline table:** **S01 reflexive-if 17 → 11** (6 cleared via
+> #4553/#4559/#4567 — PARTIAL: #4553's recognizer handles only the FilterProp-on-affected-object shape;
+> the 11 remaining are OTHER reflexive shapes — card-type, excess-damage, replacement-instead, phase,
+> subtype, cast-context, compound — none yet delivered); **S21 static 8 → 2** (6 cleared via
+> #4551/#4557/#4561/#4573; remaining Koh + Sandswirl Wanderglyph); **S19 24 → 21**, **S10 24 → 21**,
+> **S08 12 → 11**, **S25 41 → 40**, **R5 11 → 10**, **S12/S03 7 → 6**, **S23 3 → 2**, **S15/R4 1 → 0**.
+> Resolver-flagged 30 = R2 as-long-as static (11) + R5 runtime-bespoke (10) + R1 speed (9) — the three
+> runtime subsystems, untouched this window. No regressions: no card recorded cleared reappeared in `unsupported.tsv`.
+
+> **Net read (2026-06-27 @ `c1b61ded5`, 55-commit jump from v0.7.0):** pool size held at
+> 4924; supported rose **+3** (4651 → 4654), so unsupported dropped **273 → 270 (−3)**.
+> Parser-gap fell **241 → 238 (−3)**; resolver-flagged held at **32** (full set unchanged —
+> the 3 cleared are all parser-gap cards). Top parser-gap handlers unchanged in rank:
+> Swallow:Condition_If (76), Swallow:DynamicQty (34, was 37), Swallow:Duration_ThisTurn (15),
+> Effect:for (13). **Cleared-card attribution:** the prior `out/standard/unsupported.tsv` (at
+> `5eca83b8c`) was overwritten by this re-measure, so an exact set-diff is not recoverable
+> (same limitation as the prior re-measure). Strong candidate among the 55-commit parser
+> one-offs: **Dragonfire Blade** (#4426, DFT, std-member, now supported); the other two are
+> not pinned to a named PR to avoid an unverifiable claim. **Regression check: clean** — no
+> card the plan recorded as cleared/merged/supported (Doctor Doom #4182, Bloodchief's Thirst,
+> Macabre Waltz, Insidious Roots, Show and Tell, Maarika/Rith) reappears in the new
+> unsupported set. The 2 MSH-E resolver-flagged cards (The Ruinous Wrecking Crew, Hawkeye,
+> Master Marksman) remain unsupported as expected (clear only when #4482 merges). Cluster
+> tables below still reflect the 2026-06-23 `ae663ee8c` (277) clustering — vs that recorded
+> histogram the new (270) set shrank S10 (24→21), S25 (41→40), S19 (24→23), S08 (12→11),
+> S03 (7→6); no cluster grew, no new handler bucket, **0 unclustered** re-confirmed.
+
+> **Net read (2026-06-26 @ `5eca83b8c`):** pool size held at 4924; supported rose **+1** (4650 → 4651), so
+> unsupported dropped **274 → 273**. Parser-gap fell 242 → 241 (−1); resolver-flagged
+> held at 32. Top parser-gap handlers unchanged: Swallow:Condition_If (76), Swallow:DynamicQty
+> (37), Swallow:Duration_ThisTurn (15), Effect:for (13). Cluster prose below predates
+> this re-measure — re-run `cluster-assign.sh standard` to refresh per-card cluster files.
+
+## GitHub delta — `a2c3033f8` → `5eca83b8c` (v0.7.0), re-measured 2026-06-26
+
+Local main was fast-forwarded `a2c3033f8` → `5eca83b8c` (**75 commits**; release v0.7.0),
+then card-data regenerated. Measured standard unsupported **274 → 273 (net −1)**;
+resolver-flagged held at 32 (so the −1 is a single parser-gap card clearing). Many
+parser/engine PRs landed in this window — a sample of the parser-coverage-relevant ones:
+#4391 (The Second Doctor "can't attack you" cluster — *not* a standard member),
+#4340 (game-state `unless` gates → effect conditions), #4333 (equal-to / enter-with-counters
+→ full CDA), #4286 (`ControllerRef::EnchantedPlayer` triggers), #4254 (bare "except it's
+legendary" on token copies), #4310 ("beneath the top X cards" for Unexpectedly Absent),
+#4318 (Memory's Journey up-to-three count). Most of these were runtime/bug fixes on
+already-supported cards (no coverage delta) or affected non-standard pools, which is why
+the net parse-coverage movement is only −1.
+
+> **Exact cleared card not pinpointed:** the prior `out/standard/unsupported.tsv` (at
+> `a2c3033f8`) was overwritten by this re-measure run, so an exact set-diff is not
+> recoverable. The −1 is the measured headline movement; the specific card is not
+> credited to a named PR here to avoid an unverifiable claim. Re-run with the list
+> preserved if attribution is needed.
+
+### GitHub delta — resolved by the 2026-06-24 re-measure (`ae663ee8c` → `a2c3033f8`)
+
+Local main was fast-forwarded `ae663ee8c` → `a2c3033f8` (34 commits), then card-data
+regenerated, so the previously-pending PRs are now **measured**, not predicted:
+
+**Merged & confirmed cleared from the standard unsupported set (measured):**
+- **#4182 Doctor Doom** (`2af0f855e`) — was standard resolver-flagged; now **supported**.
+  Confirmed absent from the new `out/standard/unsupported.tsv`. ✓ (matches prediction)
+  (`#4202` restricted `ChoiceType::CardType` landed as its card-type-enumeration groundwork.)
+
+**Merged but PREDICTION REFUTED — still unsupported (measured):**
+- **#4186 The Ruinous Wrecking Crew** (`23c50148a`, confirmed ancestor of HEAD) — the
+  earlier plan predicted this clears the card (277 → 276). Measured against fresh data,
+  Ruinous is **still resolver-flagged unsupported** in both the standard and MSH pools.
+  The merged "dynamic modal max (choose up to X)" work did not satisfy the coverage
+  tool's resolver audit for this card. **Action:** keep Ruinous in scope as a follow-up
+  (audit why `gap_count==0` yet `supported==false`); do not credit the closed PR.
+
+**Merged — bug fixes on already-supported cards (no delta; still verified absent from unsupported):**
+- #4112 (Maarika/Rith excess-damage intervening-if), #4193 (Bloodchief's Thirst),
+  #4190 (Adventure instant faces), #4188 (dual-target fight), #4191 (Show and Tell),
+  #4196 (Macabre Waltz), #4194 (Insidious Roots), #4276 (no-legal-target trigger drop),
+  #4167 (Contraptions assemble/crank — new subsystem, no Contraption was unsupported).
+
+**Not in standard pool:** #4169 Hulkling (MSH-only) merged (`798857711`) — cleared MSH, no standard delta.
+
+**Net standard unsupported `277 → 274` (−3):** Doctor Doom (#4182) + 2 other cards cleared
+across the 34-commit fast-forward. **Ruinous (#4186) is NOT one of them** despite being
+merged. These numbers are the real re-measure at `a2c3033f8`, not a snapshot+delta estimate.
 
 ## Tier 1 — shared-building-block clusters (fix once → unlock many; dispatch first)
 

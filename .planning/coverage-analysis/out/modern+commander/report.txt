@@ -1,39 +1,39 @@
 ================================================================
  coverage breakdown: modern+commander
- inputs: 2026-06-23T14:45:18Z (coverage-data + card-data)
+ inputs: 2026-06-29T14:04:26Z (coverage-data + card-data)
 ================================================================
 members (in group)        : 22943
-supported                 : 21387  (93.22%)
-unsupported               : 1556
-  parser gap (gap_count>0): 1380   -> handler buckets below
-  resolver-flagged (==0)  : 176   -> parses fully, runtime-incomplete
+supported                 : 21474  (93.60%)
+unsupported               : 1469
+  parser gap (gap_count>0): 1297   -> handler buckets below
+  resolver-flagged (==0)  : 172   -> parses fully, runtime-incomplete
 
 --- gap-handler histogram (parser-gap cards; per handler occurrence) ---
-    306 Swallow:Condition_If
-    121 Swallow:DynamicQty
-     77 Effect:static_structure
-     68 Effect:unknown
+    285 Swallow:Condition_If
+    109 Swallow:DynamicQty
+     67 Effect:unknown
+     67 Effect:static_structure
      46 Effect:choose
-     41 Swallow:Duration_ThisTurn
-     35 Swallow:Optional_YouMay
-     32 Effect:deal
-     30 Effect:for
+     38 Swallow:Duration_ThisTurn
+     31 Swallow:Optional_YouMay
+     31 Effect:deal
+     29 Effect:for
      27 Effect:the
      26 Effect:effect_structure
      22 Effect:when
-     21 Effect:Unsupported unless clause
-     20 Effect:replacement_structure
-     17 Effect:spend
+     18 Effect:replacement_structure
+     17 Effect:Unsupported unless clause
      17 Effect:otherwise
      16 Effect:put
      16 Effect:flip
+     15 Effect:spend
      15 Effect:repeat
-     15 Effect:create
-     14 Effect:add
-     13 Swallow:Condition_AsLongAs
+     13 Effect:create
      13 Effect:all
-     12 Swallow:Condition_Unless
+     12 Swallow:Condition_AsLongAs
      12 Effect:can't
+     12 Effect:add
+     11 Effect:creatures
 
 --- resolver-flagged cards (parse OK, need runtime work) ---
 Apostle of Invasion
@@ -68,13 +68,13 @@ Descendant of Kiyomaro
 Dissection Practice
 Distorted Curiosity
 Djinni Windseer
-Doctor Doom
 Dog Umbra
 Domineer
 Dream Prowler
 Drownyard Behemoth
 Duplicant
 Earth-Cult Elemental
+Earth Rumble Wrestlers
 Echo Mage
 Elenda, Saint of Dusk
 Entangling Vines
@@ -103,7 +103,6 @@ Guul Draz Assassin
 Hada Spy Patrol
 Halimar Wavewatch
 Havi, the All-Father
-Hawkeye, Master Marksman
 Hedron-Field Purists
 Herald of Hadar
 Hewed Stone Retainers
@@ -125,7 +124,6 @@ Kazandu Tuskcaller
 Knight of Cliffhaven
 Knight of Grace
 Knight of Malice
-Kumena's Speaker
 Lightfoot Rogue
 Lightwheel Enhancements
 Lion Umbra
@@ -185,7 +183,6 @@ The Cruelty of Gix
 The Deck of Many Things
 The Elder Dragon War
 The Lunar Whale
-The Ruinous Wrecking Crew
 The Weatherseed Treaty
 The World Spell
 Thrasta, Tempest's Roar
@@ -194,7 +191,6 @@ Throne of the Grim Captain
 Thunder Magic
 Tifa's Limit Break
 Timeline Culler
-Tranquil Frillback
 Transcendent Master
 Urborg Scavengers
 Vampire Nocturnus
@@ -219,7 +215,6 @@ Cost:creature;Cost:land;Cost:o | Soul Diviner                 | creature
 Cost:Embermage                 | Skoa, Embermage              | Embermage
 Cost:Fist of Krosa             | Baru, Fist of Krosa          | Fist of Krosa
 Cost:Heir to Blackblade        | Korlash, Heir to Blackblade  | Heir to Blackblade
-Cost:I've Come Up with a New R | Ignis Scientia               | I've Come Up with a New Recipe! — {1}{G}{U}
 Cost:Loose Leaf                | Page, Loose Leaf             | Loose Leaf
 Cost:Remove a +1/+1 counter or | Ion Storm                    | Remove a +1/+1 counter or a charge counter from a permanent you control
 Cost:rounded up                | Murderous Betrayal           | rounded up
@@ -229,7 +224,6 @@ Effect:"                       | Can't Stay Away              | "
 Effect:"                       | Tamiyo, Compleated Sage      | "
 Effect:~                       | Ballroom Brawlers            | ~ and up to one other target creature you control both gain your choice of first str
 Effect:~                       | Regenerate                   | ~ target creature.
-Effect:~                       | Tatsunari, Toad Rider        | {1}{G/U}: ~ and target Frog you control can't be blocked this turn except by creatur
 Effect:•                       | Life of Toshiro Umezawa      | • You gain 2 ~
 Effect:{0};Effect:{1};Effect:{ | Vincent's Limit Break        | • Galian Beast — {0} — 3/2.
 Effect:1/1;Effect:1/2;Effect:2 | Genku, Future Shaper         | 2/2 white Fox with vigilance
@@ -253,9 +247,7 @@ Effect:add                     | Fangorn, Tree Shepherd       | add twice that m
 Effect:add                     | Katilda, Dawnhart Prime      | {T}: Add one mana of any of ~'s colors.
 Effect:add                     | Mana Seism                   | add that much {C}
 Effect:add                     | Neheb, the Eternal           | add {R} for each 1 life your opponents have lost
-Effect:add                     | Omnath, Locus of All         | add three mana in any combination of its colors
 Effect:add                     | Plaza of Harmony             | {T}: Add one mana of any type that a Gate you control could produce.
-Effect:add                     | River of Tears               | add {B} instead
 Effect:add                     | Su-Chi Cave Guard            | add eight {C}
 Effect:add                     | Tundra Fumarole              | Add {C} for each {S} spent to cast this spell
 Effect:add;Effect:put          | Esper Terra                  | put up to three lore counters on it
@@ -388,9 +380,7 @@ Effect:create                  | Garth One-Eye                | Create a copy of
 Effect:create                  | Gather the Townsfolk         | Fateful hour — If you have 5 or less life, create five of those tokens instead.
 Effect:create                  | Ghalta and Mavren            | Create a tapped and attacking X/X green Dinosaur creature token with trample, where 
 Effect:create                  | Maestros Diabolist           | create a tapped and attacking 1/1 red Devil creature token with "When ~ dies, it dea
-Effect:create                  | Mutable Explorer             | create a tapped Mutavault token
 Effect:create                  | Pugnacious Pugilist          | create a tapped and attacking 1/1 red Devil creature token with "When ~ dies, it dea
-Effect:create                  | Ral and the Implicit Maze    | Create a Spellgorger Weird token
 Effect:create                  | Soul Separator               | Create a black Zombie creature token with power equal to that card's power and tough
 Effect:create                  | The Skullspore Nexus         | create a green Fungus Dinosaur creature token with base power and toughness each equ
 Effect:create;Effect:its       | Gemini Engine                | create a colorless Construct artifact creature token named Twin that's attacking
@@ -431,7 +421,6 @@ Effect:deal                    | Mjölnir, Storm Hammer        | deal damage to 
 Effect:deal                    | Molten Psyche                | Metalcraft — If you control three or more artifacts, ~ deals damage to each opponent
 Effect:deal                    | Morgue Burst                 | deal damage to any target equal to the power of the card returned this way
 Effect:deal                    | Nahiri's Wrath               | ~ deals damage equal to the total mana value of the discarded cards to each of up to
-Effect:deal                    | Quenchable Fire              | deal an additional 3 damage to that player or planeswalker at the beginning of your 
 Effect:deal                    | Rumbling Aftershocks         | deal damage to any target equal to the number of times that spell was kicked
 Effect:deal                    | Soulblast                    | ~ deals damage to any target equal to the total power of the sacrificed creatures.
 Effect:deal                    | Structural Assault           | deal damage to each creature equal to the number of artifacts that were put into gra
@@ -449,6 +438,7 @@ Effect:do                      | Multiple Choice              | If X is 4 or mor
 Effect:double                  | Path of Mettle               | double strike, vigilance, and/or haste
 Effect:double                  | Unbound Flourishing          | double the value of X
 Effect:draw                    | Curse of Surveillance        | draw cards equal to the number of Curses attached to that player
+Effect:draw                    | Goliath Hatchery             | draw cards equal to its total toxic value
 Effect:draw                    | Notion Thief                 | draw
 Effect:draw                    | Skull Raid                   | draw cards equal to the difference
 Effect:during                  | Azor, the Lawbringer         | during that player's next turn
@@ -473,6 +463,7 @@ Effect:effect_structure        | Everlasting Torment          | All damage is de
 Effect:effect_structure        | Grimoire Thief               | You may look at cards exiled with ~.
 Effect:effect_structure        | Grolnok, the Omnivore        | You may play lands and cast spells from among cards you own in exile with croak coun
 Effect:effect_structure        | Keen-Eared Sentry            | Each opponent can't venture into the dungeon more than once each turn.
+Effect:effect_structure        | Kemba's Legion               | ~ can block an additional creature each combat for each Equipment attached to ~.
 Effect:effect_structure        | Keranos, God of Storms       | Reveal the first card you draw on each of your turns. Whenever you reveal a land car
 Effect:effect_structure        | Leonin Shikari               | You may activate equip abilities any time you could cast an instant.
 Effect:effect_structure        | Leyline of Singularity       | All nonland permanents are legendary.
@@ -484,17 +475,10 @@ Effect:effect_structure        | Trove of Temptation          | Each opponent mu
 Effect:effect_structure        | Urza, Planeswalker           | You may activate the loyalty abilities of ~ twice each turn rather than only once.
 Effect:effect_structure        | War's Toll                   | If a creature an opponent controls attacks, all creatures that opponent controls att
 Effect:effect_structure;Effect | Celestial Dawn               | Nonland permanents you control are white. The same is true for spells you control an
-Effect:effect_structure;Effect | Fblthp, Lost on the Range    | The top card of your library has plot. The plot cost is equal to its mana cost.
 Effect:effect_structure;Effect | Melira, Sylvok Outcast       | You can't get poison counters.
 Effect:empty                   | Evolving Adaptive            | 
 Effect:entwine—sacrifice       | Betrayal of Flesh            | Entwine—Sacrifice three lands.
 Effect:entwine—sacrifice       | Solar Tide                   | Entwine—Sacrifice two lands.
-Effect:escape—{2}{r}           | Satyr's Cunning              | Escape—{2}{R}, Exile two other cards from your graveyard.
-Effect:escape—{2}{u}           | Glimpse of Freedom           | Escape—{2}{U}, Exile five other cards from your graveyard.
-Effect:escape—{2}{u}           | Sleep of the Dead            | Escape—{2}{U}, Exile three other cards from your graveyard.
-Effect:escape—{3}{b}           | Cling to Dust                | Escape—{3}{B}, Exile five other cards from your graveyard.
-Effect:escape—{3}{b}           | Fruit of Tizerus             | Escape—{3}{B}, Exile three other cards from your graveyard.
-Effect:escape—{3}{u}           | Sweet Oblivion               | Escape—{3}{U}, Exile four other cards from your graveyard.
 Effect:excess                  | Flame Spill                  | Excess damage is dealt to that creature's controller instead
 Effect:excess                  | Gandalf's Sanction           | Excess damage is dealt to that creature's controller instead
 Effect:excess                  | Pigment Storm                | Excess damage is dealt to that creature's controller instead
@@ -545,7 +529,6 @@ Effect:for                     | Sanity Grinding              | For each blue ma
 Effect:for                     | Soul of Emancipation         | For each of those permanents, its controller creates a 3/3 white Angel creature toke
 Effect:for                     | Sovereign Okinec Ahau        | for each creature you control with power greater than that creature's base power, pu
 Effect:for                     | Starving Revenant            | for each card you put on top of your library
-Effect:for                     | Sword-Point Diplomacy        | For each of those cards, put that card into your hand unless any opponent pays 3 lif
 Effect:for                     | Twisted Sewer-Witch          | for each Rat you control
 Effect:for                     | Unstable Glyphbridge         | for each player, choose a creature with power 2 or less that player controls
 Effect:for                     | Whirlwind Denial             | For each spell and ability your opponents control, counter it unless its controller 
@@ -592,7 +575,6 @@ Effect:instead                 | From Under the Floorboards   | instead create X
 Effect:instead                 | Meticulous Excavation        | instead exile it, then return that card to its owner's hand
 Effect:instead                 | Plagiarize                   | instead that player skips that draw
 Effect:instead                 | Welcome to the Fold          | instead gain control of that creature
-Effect:instead                 | Will of the All-Hunter       | instead put two +1/+1 counters on it
 Effect:isn't                   | Dancing Sword                | isn't an Equipment
 Effect:isn't                   | Thermal Flux                 | isn't snow
 Effect:it                      | Gather Specimens             | If a creature would enter the battlefield under an opponent's control this turn, it 
@@ -689,7 +671,6 @@ Effect:remove                  | Jace, Mirror Mage            | Remove a number 
 Effect:remove                  | Rhys, the Evermore           | {W}, {T}: Remove any number of counters from target creature you control. Activate o
 Effect:repeat                  | Another Round                | repeat this process X more times
 Effect:repeat                  | Demonlord Belzenlok          | repeat this process
-Effect:repeat                  | Development                  | Repeat this process two more times
 Effect:repeat                  | Firemind's Foresight         | repeat this process for instant cards with mana values 2 and 1
 Effect:repeat                  | Grist, the Hunger Tide       | repeat this process
 Effect:repeat                  | Invoke Despair               | repeat this process for an enchantment and a planeswalker
@@ -711,8 +692,6 @@ Effect:replacement_structure   | Jinnie Fay, Jetmir's Second  | If you would cre
 Effect:replacement_structure   | Moonlit Meditation           | The first time you would create one or more tokens each turn, you may instead create
 Effect:replacement_structure   | Phylactery Lich              | As ~ enters, put a phylactery counter on an artifact you control.
 Effect:replacement_structure   | Pixie Guide                  | Grant an Advantage — If you would roll one or more dice, instead roll that many dice
-Effect:replacement_structure   | Radiant Restraints           | Creatures enchanted player controls enter tapped.
-Effect:replacement_structure   | Steamflogger Boss            | If a Rigger you control would assemble a Contraption, it assembles two Contraptions 
 Effect:replacement_structure   | Ugin's Nexus                 | If ~ would be put into a graveyard from the battlefield, instead exile it and take a
 Effect:replacement_structure   | Unpredictable Cyclone        | If a cycling ability of another nonland card would cause you to draw a card, instead
 Effect:replacement_structure   | Wheel of Sun and Moon        | If a card would be put into enchanted player's graveyard from anywhere, instead that
@@ -758,15 +737,12 @@ Effect:spend                   | Niko Defies Destiny          | Spend this mana 
 Effect:spend                   | Outrageous Robbery           | spend mana as though it were mana of any type to cast it
 Effect:spend                   | Overgrown Zealot             | Spend this mana only to turn permanents face up
 Effect:spend                   | Qarsi Deceiver               | Spend this mana only to cast a face-down creature spell, pay a mana cost to turn a m
-Effect:spend                   | Rosheen Meanderer            | Spend this mana only on costs that contain {X}
-Effect:spend                   | Rosheen, Roaring Prophet     | Spend this mana only on costs that contain {X}
 Effect:spend                   | Sorcerer Class               | Spend this mana only to cast an instant or sorcery spell or to gain a Class level
 Effect:spend                   | Tin Street Gossip            | Spend this mana only to cast face-down spells or to turn creatures face up
 Effect:spend                   | Titans' Nest                 | Spend this mana only to cast a spell that's one or more colors without {X} in its ma
 Effect:spend                   | Unblinking Observer          | Spend this mana only to pay a disturb cost or cast an instant or sorcery spell
 Effect:spend                   | Volshe Tideturner            | Spend this mana only to cast an instant or sorcery spell or a kicked spell
 Effect:static_structure        | +2 Mace                      | Equipped creature gets ~/~.
-Effect:static_structure        | Agatha of the Vile Cauldron  | Activated abilities of creatures you control cost {X} less to activate, where X is ~
 Effect:static_structure        | Alms Beast                   | Creatures blocking or blocked by ~ have lifelink.
 Effect:static_structure        | Ashes of the Fallen          | Each creature card in your graveyard has the chosen creature type in addition to its
 Effect:static_structure        | Blightbeetle                 | Creatures your opponents control can't have +1/+1 counters put on them.
@@ -774,17 +750,13 @@ Effect:static_structure        | Bludgeon Brawl               | Each noncreature
 Effect:static_structure        | Brothers Yamazaki            | If there are exactly two permanents named Brothers Yamazaki on the battlefield, the 
 Effect:static_structure        | Cosmos Charger               | Foretelling cards from your hand costs {1} less and can be done on any player's turn
 Effect:static_structure        | Cranial Ram                  | Equipped creature gets +X/+1, where X is the number of artifacts you control.
-Effect:static_structure        | Curse of Death's Hold        | Creatures enchanted player controls get -1/-1.
 Effect:static_structure        | Curse of Hospitality         | Creatures attacking enchanted player have trample.
 Effect:static_structure        | Damping Matrix               | Activated abilities of artifacts and creatures can't be activated unless they're man
 Effect:static_structure        | Death's Approach             | Enchanted creature gets -X/-X, where X is the number of creature cards in its contro
 Effect:static_structure        | Disturbing Conversion        | Enchanted creature gets -X/-0, where X is the number of cards in its controller's gr
 Effect:static_structure        | Djinn Illuminatus            | Each instant and sorcery spell you cast has replicate. The replicate cost is equal t
-Effect:static_structure        | Doc Aurlock, Grizzled Genius | Plotting cards from your hand costs {2} less.
-Effect:static_structure        | Drana and Linvala            | ~ has all activated abilities of all creatures your opponents control. You may spend
 Effect:static_structure        | Eidolon of Obstruction       | Loyalty abilities of planeswalkers your opponents control cost {1} more to activate.
 Effect:static_structure        | Essence of the Wild          | Creatures you control enter as a copy of ~.
-Effect:static_structure        | Experiment Kraj              | ~ has all activated abilities of each other creature with a +1/+1 counter on it.
 Effect:static_structure        | Falkenrath Gorger            | Each Vampire creature card you own that isn't on the battlefield has madness. The ma
 Effect:static_structure        | Favor of the Mighty          | Each creature with the greatest mana value has protection from each color.
 Effect:static_structure        | Gargantuan Slabhorn          | Other transformed permanents you control have trample and ward {2}.
@@ -795,19 +767,16 @@ Effect:static_structure        | Glittering Frost             | Enchanted land i
 Effect:static_structure        | God-Eternal Kefnet           | You may reveal the first card you draw each turn as you draw it. Whenever you reveal
 Effect:static_structure        | Hedonist's Trove             | You may cast spells from among cards exiled with ~. You can't cast more than one spe
 Effect:static_structure        | Herigast, Erupting Nullkite  | Each creature spell you cast has emerge. The emerge cost is equal to its mana cost.
-Effect:static_structure        | Inquisitive Glimmer          | Unlock costs you pay cost {1} less.
 Effect:static_structure        | Karn's Sylex                 | Players can't pay life to cast spells or to activate abilities that aren't mana abil
 Effect:static_structure        | Kasmina, Enigma Sage         | Each other planeswalker you control has the loyalty abilities of ~.
 Effect:static_structure        | Kaya, Bane of the Dead       | Your opponents and permanents your opponents control with hexproof can be the target
 Effect:static_structure        | Kopala, Warden of Waves      | Abilities your opponents activate that target a Merfolk you control cost {2} more to
 Effect:static_structure        | Lavinia, Azorius Renegade    | Each opponent can't cast noncreature spells with mana value greater than the number 
 Effect:static_structure        | Leonin Arbiter               | Players can't search libraries. Any player may pay {2} for that player to ignore thi
-Effect:static_structure        | Locus of Enlightenment       | ~ has each activated ability of the exiled cards used to craft it. You may activate 
 Effect:static_structure        | Luxior, Giada's Gift         | Equipped permanent isn't a planeswalker and is a creature in addition to its other t
 Effect:static_structure        | Nicol Bolas, Dragon-God      | ~ has all loyalty abilities of all other planeswalkers on the battlefield.
-Effect:static_structure        | Nowhere to Run               | Creatures your opponents control can be the targets of spells and abilities as thoug
 Effect:static_structure        | Oni Possession               | Enchanted creature is a Demon Spirit.
-Effect:static_structure        | Overwhelming Splendor        | Creatures enchanted player controls lose all abilities and have base power and tough
+Effect:static_structure        | Overwhelming Splendor        | Enchanted player can't activate abilities that aren't mana abilities or loyalty abil
 Effect:static_structure        | Phyrexian Ingester           | ~ gets +X/+Y, where X is the exiled creature card's power and Y is its toughness.
 Effect:static_structure        | Public Enemy                 | All creatures attack enchanted creature's controller each combat if able.
 Effect:static_structure        | Realmwright                  | Lands you control are the chosen type in addition to their other types.
@@ -825,7 +794,6 @@ Effect:static_structure        | Tezzeret, Betrayer of Flesh  | The first activa
 Effect:static_structure        | Tromokratis                  | ~ has hexproof unless it's attacking or blocking.
 Effect:static_structure        | Uba Mask                     | Each player may play lands and cast spells from among cards they exiled with ~ this 
 Effect:static_structure        | Umbra Mystic                 | Auras attached to permanents you control have umbra armor.
-Effect:static_structure        | Umbra Stalker                | Chroma — ~'s power and toughness are each equal to the number of black mana symbols 
 Effect:static_structure        | Verdeloth the Ancient        | Saproling creatures and other Treefolk creatures get +1/+1.
 Effect:static_structure        | Vesuvan Shapeshifter         | As ~ enters or is turned face up, you may choose another creature on the battlefield
 Effect:static_structure        | Ward of Bones                | Each opponent who controls more creatures than you can't cast creature spells. The s
@@ -903,7 +871,6 @@ Effect:unknown                 | Conspiracy                   | The same is true
 Effect:unknown                 | Corrupted Shapeshifter       | As ~ enters, it becomes your choice of a 3/3 creature with flying, a 2/5 creature wi
 Effect:unknown                 | Council of the Absolute      | As ~ enters, choose a noncreature, nonland card name.
 Effect:unknown                 | Curse of Leeches             | As ~ transforms into ~, attach it to a player.
-Effect:unknown                 | Curse of the Nightly Hunt    | Creatures enchanted player controls attack each combat if able.
 Effect:unknown                 | Dauntless Bodyguard          | As ~ enters, choose another creature you control.
 Effect:unknown                 | Dawnhand Dissident           | During your turn, you may cast creature spells from among cards you own exiled with 
 Effect:unknown                 | Deification                  | As ~ enters, choose a planeswalker type.
@@ -950,27 +917,23 @@ Effect:unknown                 | Weftwalking                  | The first spell 
 Effect:unknown                 | Zilortha, Strength Incarnate | Lethal damage dealt to creatures you control is determined by their power rather tha
 Effect:unknown;Trigger:When th | Booby Trap                   | The chosen player reveals each card they draw.
 Effect:unknown;Trigger:When th | Shinryu, Transcendent Rival  | As ~ transforms into ~, choose an opponent.
-Effect:Unsupported unless clau | Argentum Masticore           | sacrifice ~ unless you discard a card. When you discard a card this way, destroy tar
-Effect:Unsupported unless clau | Athreos, God of Passage      | return it to your hand unless target opponent pays 3 life
-Effect:Unsupported unless clau | Avatar of Discord            | sacrifice it unless you discard two cards
-Effect:Unsupported unless clau | Chisei, Heart of Oceans      | sacrifice ~ unless you remove a counter from a permanent you control
+Effect:Unsupported unless clau | Athreos, God of Passage      | return it to your hand unless target opponent pays 3 life (unless: target opponent p
+Effect:Unsupported unless clau | Chisei, Heart of Oceans      | sacrifice ~ unless you remove a counter from a permanent you control (unless: you re
 Effect:Unsupported unless clau | Combustion Man               | destroy target permanent unless its controller has ~ deal damage to them equal to hi
-Effect:Unsupported unless clau | Elesh Norn                   | that source's controller loses 2 life unless they pay {1}
-Effect:Unsupported unless clau | Forbidding Spirit            | until your next turn, creatures can't attack you or planeswalkers you control unless
-Effect:Unsupported unless clau | Furnace Punisher             | ~ deals 2 damage to that player unless they control two or more basic lands
-Effect:Unsupported unless clau | Hope-Ender Coatl             | counter target spell an opponent controls unless they pay {1}
 Effect:Unsupported unless clau | Indulgent Tormentor          | draw a card unless target opponent sacrifices a creature of their choice or pays 3 l
-Effect:Unsupported unless clau | Instill Furor                | sacrifice ~ unless it attacked this turn
-Effect:Unsupported unless clau | Kazuul, Tyrant of the Cliffs | if you're the defending player, create a 3/3 red Ogre creature token unless that cre
-Effect:Unsupported unless clau | Magmatic Sprinter            | return ~ to its owner's hand unless you remove two oil counters from it
+Effect:Unsupported unless clau | Instill Furor                | sacrifice ~ unless it attacked this turn (unless: it attacked this turn)
+Effect:Unsupported unless clau | Oblivious Bookworm           | discard a card unless a permanent entered the battlefield face down under your contr
 Effect:Unsupported unless clau | Ogre Marauder                | it gains "~ can't be blocked" until end of turn unless defending player sacrifices a
-Effect:Unsupported unless clau | Pia's Revolution             | return that card to your hand unless target opponent has ~ deal 3 damage to them
-Effect:Unsupported unless clau | Ravenous Necrotitan          | sacrifice a creature unless an opponent has three or more poison counters
-Effect:Unsupported unless clau | Reality Smasher              | counter that spell unless its controller discards a card
-Effect:Unsupported unless clau | Sauron, the Necromancer      | exile target creature card from your graveyard. Create a tapped and attacking token 
-Effect:Unsupported unless clau | Skullcage                    | ~ deals 2 damage to that player unless they have exactly three or exactly four cards
-Effect:Unsupported unless clau | Steamcore Scholar            | draw two cards. Then discard two cards unless you discard an instant or sorcery card
-Effect:Unsupported unless clau | Withercrown                  | you lose 1 life unless you sacrifice ~
+Effect:Unsupported unless clau | Perplex                      | Counter target spell unless its controller discards their hand.
+Effect:Unsupported unless clau | Pia's Revolution             | return that card to your hand unless target opponent has ~ deal 3 damage to them (un
+Effect:Unsupported unless clau | Quenchable Fire              | It deals an additional 3 damage to that player or planeswalker at the beginning of y
+Effect:Unsupported unless clau | Remorseless Punishment       | Target opponent loses 5 life unless that player discards two cards or sacrifices a c
+Effect:Unsupported unless clau | Shuriken                     | That creature's controller gains control of ~ unless it was unattached from a Ninja 
+Effect:Unsupported unless clau | Sword-Point Diplomacy        | For each of those cards, put that card into your hand unless any opponent pays 3 lif
+Effect:Unsupported unless clau | Tainted Indulgence           | discard a card unless there are five or more mana values among cards in your graveya
+Effect:Unsupported unless clau | Waterbending Lesson          | discard a card unless you waterbend {2} (unless: you waterbend {2})
+Effect:Unsupported unless clau | Withercrown                  | you lose 1 life unless you sacrifice ~ (unless: you sacrifice ~)
+Effect:Unsupported unless clau | Development                  | Create a 3/1 red Elemental creature token unless any opponent has you draw a card. R
 Effect:until                   | Grinning Totem               | Until the beginning of your next upkeep, you may play that card
 Effect:wandering               | Yidaro, Wandering Monster    | Wandering Monster four or more times this game, put it onto the battlefield from you
 Effect:when                    | Bloodthirsty Adversary       | When you pay this cost one or more times, put that many +1/+1 counters on ~, then ex
@@ -1001,21 +964,20 @@ Effect:you                     | Assimilate Essence           | you incubate 2
 Effect:you                     | Eater of Days                | you skip your next two turns
 Effect:you                     | Guild Feud                   | You do the same with the top three cards of your library
 Effect:your                    | Inspired Idea                | Your maximum hand size is reduced by three
-ParseWarning:target-fallback   | Baron Helmut Zemo            | [warning:target-fallback] parse_target could not classify 'those exiled cards'
 ParseWarning:target-fallback   | Blow Your House Down         | [warning:target-fallback] parse_target could not classify 'any of them that are Wall
 ParseWarning:target-fallback   | Choice of Damnations         | [warning:target-fallback] parse_target could not classify 'but that many permanents 
+ParseWarning:target-fallback   | Doomsday Excruciator         | [warning:target-fallback] parse_target could not classify 'but the bottom six cards 
 ParseWarning:target-fallback   | Emeritus of Ideation         | [warning:target-fallback] parse_target could not classify 'eight cards from your gra
 ParseWarning:target-fallback   | Grub, Notorious Auntie       | [warning:target-fallback] parse_target could not classify 'the blighted creature'
+ParseWarning:target-fallback   | Nicol Bolas, the Arisen      | [warning:target-fallback] parse_target could not classify 'but the bottom card of ta
 ParseWarning:target-fallback   | Ultimecia, Time Sorceress    | [warning:target-fallback] parse_target could not classify 'eight cards from your gra
 ParseWarning:trigger-subject   | Psychic Possession           | [warning:target-fallback] trigger subject parse fell back to Any 'enchanted opponent
 Static:AlternativeKeywordCost( | Heart of Kiran               | You may remove a loyalty counter from a planeswalker you control rather than pay ~'s
 Static:AlternativeKeywordCost( | New Perspectives             | As long as you have seven or more cards in hand, you may pay {0} rather than pay cyc
-Swallow:ActivateOnlyDuring     | Katara, Water Tribe's Hope   | ActivateOnlyDuring — Vigilance When Katara enters, create a 1/1 white Ally creature 
 Swallow:ActivateOnlyDuring;Swa | Dementia Sliver              | ActivateOnlyDuring — All Slivers have "{T}: Choose a card name. Target opponent reve
 Swallow:Condition_AsLongAs     | Braided Net                  | Condition_AsLongAs — This artifact enters with three net counters on it. {T}, Remove
 Swallow:Condition_AsLongAs     | Cloud, Planet's Champion     | Condition_AsLongAs — During your turn, as long as Cloud is equipped, it has double s
 Swallow:Condition_AsLongAs     | Dearly Departed              | Condition_AsLongAs — Flying As long as this creature is in your graveyard, each Huma
-Swallow:Condition_AsLongAs     | Foriysian Totem              | Condition_AsLongAs — {T}: Add {R}. {4}{R}: This artifact becomes a 4/4 red Giant art
 Swallow:Condition_AsLongAs     | Gideon of the Trials         | Condition_AsLongAs — [+1]: Until your next turn, prevent all damage target permanent
 Swallow:Condition_AsLongAs     | Lukka, Coppercoat Outcast    | Condition_AsLongAs — [+1]: Exile the top three cards of your library. Creature cards
 Swallow:Condition_AsLongAs     | Soul Partition               | Condition_AsLongAs — Exile target nonland permanent. For as long as that card remain
@@ -1045,7 +1007,6 @@ Swallow:Condition_If           | Awaken the Sleeper           | Condition_If —
 Swallow:Condition_If           | Azor's Gateway               | Condition_If — {1}, {T}: Draw a card, then exile a card from your hand. If cards wit
 Swallow:Condition_If           | Barrowin of Clan Undurr      | Condition_If — When Barrowin enters, venture into the dungeon. (Enter the first room
 Swallow:Condition_If           | Battle Cry Goblin            | Condition_If — {1}{R}: Goblins you control get +1/+0 and gain haste until end of tur
-Swallow:Condition_If           | Battlefield Improvisation    | Condition_If — Target creature gets +2/+2 until end of turn. If that creature is att
 Swallow:Condition_If           | Berg Strider                 | Condition_If — When this creature enters, tap target artifact or creature an opponen
 Swallow:Condition_If           | Blasphemous Edict            | Condition_If — You may pay {B} rather than pay this spell's mana cost if there are t
 Swallow:Condition_If           | Bloodsoaked Insight          | Condition_If — This spell costs {1} less to cast for each 1 life your opponents have
@@ -1053,7 +1014,6 @@ Swallow:Condition_If           | Bonecache Overseer           | Condition_If —
 Swallow:Condition_If           | Boreal Outrider              | Condition_If — Whenever you cast a creature spell, if {S} of any of that spell's col
 Swallow:Condition_If           | Boros Battleshaper           | Condition_If — At the beginning of each combat, up to one target creature attacks or
 Swallow:Condition_If           | Boseiju, Who Shelters All    | Condition_If — Boseiju enters tapped. {T}, Pay 2 life: Add {C}. If that mana is spen
-Swallow:Condition_If           | Brackish Blunder             | Condition_If — Return target creature to its owner's hand. If it was tapped, create 
 Swallow:Condition_If           | Brain Pry                    | Condition_If — Choose a nonland card name. Target player reveals their hand. That pl
 Swallow:Condition_If           | Break the Spell              | Condition_If — Destroy target enchantment. If a permanent you controlled or a token 
 Swallow:Condition_If           | Breathless Knight            | Condition_If — Flying, lifelink Whenever this creature or another creature you contr
@@ -1069,8 +1029,6 @@ Swallow:Condition_If           | Coalition Victory            | Condition_If —
 Swallow:Condition_If           | Code of Constraint           | Condition_If — Target creature gets -4/-0 until end of turn. Draw a card. Addendum —
 Swallow:Condition_If           | Codespell Cleric             | Condition_If — Vigilance When this creature enters, if it was the second spell you c
 Swallow:Condition_If           | Coiling Rebirth              | Condition_If — Gift a card (You may promise an opponent a gift as you cast this spel
-Swallow:Condition_If           | Consign to Dream             | Condition_If — Return target permanent to its owner's hand. If that permanent is red
-Swallow:Condition_If           | Consuming Ashes              | Condition_If — Exile target creature. If it had mana value 3 or less, surveil 2. (Lo
 Swallow:Condition_If           | Conundrum Sphinx             | Condition_If — Flying Whenever this creature attacks, each player chooses a card nam
 Swallow:Condition_If           | Corpse Appraiser             | Condition_If — When this creature enters, exile up to one target creature card from 
 Swallow:Condition_If           | Corrupted Resolve            | Condition_If — Counter target spell if its controller is poisoned.
@@ -1091,7 +1049,6 @@ Swallow:Condition_If           | Double Major                 | Condition_If —
 Swallow:Condition_If           | Draconic Roar                | Condition_If — As an additional cost to cast this spell, you may reveal a Dragon car
 Swallow:Condition_If           | Dragon's Disciple            | Condition_If — As this creature enters, you may reveal a Dragon card from your hand.
 Swallow:Condition_If           | Dreadlight Monstrosity       | Condition_If — Ward {2} (Whenever this creature becomes the target of a spell or abi
-Swallow:Condition_If           | Driftgloom Coyote            | Condition_If — When this creature enters, exile target creature an opponent controls
 Swallow:Condition_If           | Drowner of Truth             | Condition_If — Devoid (This card has no color.) When you cast this spell, if {C} was
 Swallow:Condition_If           | Durkwood Tracker             | Condition_If — {1}{G}, {T}: If this creature is on the battlefield, it deals damage 
 Swallow:Condition_If           | Ebondeath, Dracolich         | Condition_If — Flash Flying Ebondeath enters tapped. You may cast this card from you
@@ -1106,7 +1063,6 @@ Swallow:Condition_If           | Fear of Immobility           | Condition_If —
 Swallow:Condition_If           | Feast of Worms               | Condition_If — Destroy target land. If that land was legendary, its controller sacri
 Swallow:Condition_If           | Feast on the Fallen          | Condition_If — At the beginning of each upkeep, if an opponent lost life last turn, 
 Swallow:Condition_If           | Fevered Visions              | Condition_If — At the beginning of each player's end step, that player draws a card.
-Swallow:Condition_If           | Filigree Fracture            | Condition_If — Destroy target artifact or enchantment. If that permanent was blue or
 Swallow:Condition_If           | First Response               | Condition_If — At the beginning of each upkeep, if you lost life last turn, create a
 Swallow:Condition_If           | Flood of Tears               | Condition_If — Return all nonland permanents to their owners' hands. If you return f
 Swallow:Condition_If           | Fold into Aether             | Condition_If — Counter target spell. If that spell is countered this way, its contro
@@ -1115,13 +1071,10 @@ Swallow:Condition_If           | Foul-Tongue Invocation       | Condition_If —
 Swallow:Condition_If           | Freestrider Commando         | Condition_If — This creature enters with two +1/+1 counters on it if it wasn't cast 
 Swallow:Condition_If           | Frontier Mastodon            | Condition_If — Ferocious — This creature enters with a +1/+1 counter on it if you co
 Swallow:Condition_If           | Frost Augur                  | Condition_If — {S}, {T}: Look at the top card of your library. If it's a snow card, 
-Swallow:Condition_If           | Frostpyre Arcanist           | Condition_If — This spell costs {1} less to cast if you control a Giant or a Wizard.
 Swallow:Condition_If           | Full Bore                    | Condition_If — Target creature you control gets +3/+2 until end of turn. If that cre
 Swallow:Condition_If           | Gandalf, Friend of the Shire | Condition_If — Flash You may cast sorcery spells as though they had flash. Whenever 
 Swallow:Condition_If           | Garenbrig Paladin            | Condition_If — Adamant — If at least three green mana was spent to cast this spell, 
 Swallow:Condition_If           | Generator Servant            | Condition_If — {T}, Sacrifice this creature: Add {C}{C}. If that mana is spent on a 
-Swallow:Condition_If           | Gloomlance                   | Condition_If — Destroy target creature. If that creature was green or white, its con
-Swallow:Condition_If           | Gloomwidow's Feast           | Condition_If — Destroy target creature with flying. If that creature was blue or bla
 Swallow:Condition_If           | Gnoll Hunter                 | Condition_If — Pack tactics — Whenever this creature attacks, if you attacked with c
 Swallow:Condition_If           | Grab the Prize               | Condition_If — As an additional cost to cast this spell, discard a card. Draw two ca
 Swallow:Condition_If           | Grave Scrabbler              | Condition_If — Madness {1}{B} (If you discard this card, discard it into exile. When
@@ -1141,11 +1094,8 @@ Swallow:Condition_If           | Honorable Passage            | Condition_If —
 Swallow:Condition_If           | Hour of Revelation           | Condition_If — This spell costs {3} less to cast if there are ten or more nonland pe
 Swallow:Condition_If           | Howlpack Piper               | Condition_If — This spell can't be countered. {1}{G}, {T}: You may put a creature ca
 Swallow:Condition_If           | Howltooth Hollow             | Condition_If — Hideaway 4 (When this land enters, look at the top four cards of your
-Swallow:Condition_If           | Hulkling, Burgeoning Bruiser | Condition_If — Vigilance Whenever another creature you control enters, if it has gre
-Swallow:Condition_If           | Incisor Glider               | Condition_If — Flying Corrupted — Whenever this creature attacks, if an opponent has
 Swallow:Condition_If           | Inferno Hellion              | Condition_If — Trample (This creature can deal excess combat damage to the player or
 Swallow:Condition_If           | Inga Rune-Eyes               | Condition_If — When Inga Rune-Eyes enters, scry 3. When Inga Rune-Eyes dies, draw th
-Swallow:Condition_If           | Inquisitor's Snare           | Condition_If — Prevent all damage target attacking or blocking creature would deal t
 Swallow:Condition_If           | Intrepid Outlander           | Condition_If — Reach Pack tactics — Whenever this creature attacks, if you attacked 
 Swallow:Condition_If           | Invasion of Pyrulea          | Condition_If — (As a Siege enters, choose an opponent to protect it. You and others 
 Swallow:Condition_If           | Isperia the Inscrutable      | Condition_If — Flying Whenever Isperia deals combat damage to a player, choose a car
@@ -1180,14 +1130,12 @@ Swallow:Condition_If           | Minion of the Mighty         | Condition_If —
 Swallow:Condition_If           | Mitotic Manipulation         | Condition_If — Look at the top seven cards of your library. You may put one of those
 Swallow:Condition_If           | Molten Exhale                | Condition_If — You may cast this spell as though it had flash if you behold a Dragon
 Swallow:Condition_If           | Monastery Raid               | Condition_If — Freerunning {X}{R} (You may cast this spell for its freerunning cost 
-Swallow:Condition_If           | Morsel Theft                 | Condition_If — Prowl {1}{B} (You may cast this for its prowl cost if you dealt comba
 Swallow:Condition_If           | Mysterious Limousine         | Condition_If — Whenever this Vehicle enters or attacks, exile up to one other target
 Swallow:Condition_If           | Nashi, Searcher in the Dark  | Condition_If — Menace Whenever Nashi deals combat damage to a player, you mill that 
 Swallow:Condition_If           | Nasty End                    | Condition_If — As an additional cost to cast this spell, sacrifice a creature. Draw 
 Swallow:Condition_If           | Necromantic Summons          | Condition_If — Put target creature card from a graveyard onto the battlefield under 
 Swallow:Condition_If           | Nivix, Aerie of the Firemind | Condition_If — {T}: Add {C}. {2}{U}{R}, {T}: Exile the top card of your library. Unt
 Swallow:Condition_If           | Noctis, Prince of Lucis      | Condition_If — Lifelink You may cast artifact spells from your graveyard by paying 3
-Swallow:Condition_If           | Notorious Throng             | Condition_If — Prowl {5}{U} (You may cast this for its prowl cost if you dealt comba
 Swallow:Condition_If           | Oblivion's Hunger            | Condition_If — Target creature you control gains indestructible until end of turn. D
 Swallow:Condition_If           | Orator of Ojutai             | Condition_If — As an additional cost to cast this spell, you may reveal a Dragon car
 Swallow:Condition_If           | Orbital Plunge               | Condition_If — Orbital Plunge deals 6 damage to target creature. If excess damage wa
@@ -1232,7 +1180,6 @@ Swallow:Condition_If           | Scrying Sheets               | Condition_If —
 Swallow:Condition_If           | See the Truth                | Condition_If — Look at the top three cards of your library. Put one of those cards i
 Swallow:Condition_If           | Semester's End               | Condition_If — Exile any number of target creatures and/or planeswalkers you control
 Swallow:Condition_If           | Septic Rats                  | Condition_If — Infect (This creature deals damage to creatures in the form of -1/-1 
-Swallow:Condition_If           | Serum Snare                  | Condition_If — Return target nonland permanent to its owner's hand. If that permanen
 Swallow:Condition_If           | Sharp-Eyed Rookie            | Condition_If — Vigilance Whenever a creature you control enters, if its power is gre
 Swallow:Condition_If           | Shelldock Isle               | Condition_If — Hideaway 4 (When this land enters, look at the top four cards of your
 Swallow:Condition_If           | Shirei, Shizo's Caretaker    | Condition_If — Whenever a creature with power 1 or less is put into your graveyard f
@@ -1251,14 +1198,12 @@ Swallow:Condition_If           | Stalking Yeti                | Condition_If —
 Swallow:Condition_If           | Steer Clear                  | Condition_If — Steer Clear deals 2 damage to target attacking or blocking creature. 
 Swallow:Condition_If           | Stomping Slabs               | Condition_If — Reveal the top seven cards of your library, then put those cards on t
 Swallow:Condition_If           | Summoner's Grimoire          | Condition_If — Job select Equipped creature is a Shaman in addition to its other typ
-Swallow:Condition_If           | Sweep Away                   | Condition_If — Return target creature to its owner's hand. If that creature is attac
 Swallow:Condition_If           | Take the Fall                | Condition_If — Target creature gets -1/-0 until end of turn. It gets -4/-0 until end
 Swallow:Condition_If           | Targ Nar, Demon-Fang Gnoll   | Condition_If — Pack tactics — Whenever Targ Nar attacks, if you attacked with creatu
 Swallow:Condition_If           | Teferi's Time Twist          | Condition_If — Exile target permanent you control. Return that card to the battlefie
 Swallow:Condition_If           | Temple of Cyclical Time      | Condition_If — (Transforms from Ojer Pakpatiq, Deepest Epoch.) {T}: Add {U}. Remove 
 Swallow:Condition_If           | Temple of Power              | Condition_If — (Transforms from Ojer Axonil, Deepest Might.) {T}: Add {R}. {2}{R}, {
 Swallow:Condition_If           | Temple of the Dead           | Condition_If — (Transforms from Aclazotz, Deepest Betrayal.) {T}: Add {B}. {2}{B}, {
-Swallow:Condition_If           | The Incredible Hulk          | Condition_If — Reach, trample Enrage — Whenever The Incredible Hulk is dealt damage,
 Swallow:Condition_If           | The Rollercrusher Ride       | Condition_If — Delirium — If a source you control would deal noncombat damage to a p
 Swallow:Condition_If           | The Tale of Tamiyo           | Condition_If — (As this Saga enters and after your draw step, add a lore counter. Sa
 Swallow:Condition_If           | Torch the Witness            | Condition_If — Torch the Witness deals twice X damage to target creature. If excess 
@@ -1279,7 +1224,6 @@ Swallow:Condition_If           | Verity Circle                | Condition_If —
 Swallow:Condition_If           | Vesuvan Drifter              | Condition_If — Flying You may look at the top card of your library any time. At the 
 Swallow:Condition_If           | Vigor Mortis                 | Condition_If — Return target creature card from your graveyard to the battlefield. I
 Swallow:Condition_If           | Visions of Beyond            | Condition_If — Draw a card. If a graveyard has twenty or more cards in it, draw thre
-Swallow:Condition_If           | Vivisection Evangelist       | Condition_If — Vigilance Corrupted — When this creature enters, if an opponent has t
 Swallow:Condition_If           | Void Mirror                  | Condition_If — Whenever a player casts a spell, if no colored mana was spent to cast
 Swallow:Condition_If           | Volition Reins               | Condition_If — Enchant permanent When this Aura enters, if enchanted permanent is ta
 Swallow:Condition_If           | Waking the Trolls            | Condition_If — (As this Saga enters and after your draw step, add a lore counter. Sa
@@ -1288,7 +1232,6 @@ Swallow:Condition_If           | Werewolf Pack Leader         | Condition_If —
 Swallow:Condition_If           | Wheel of Potential           | Condition_If — You get {E}{E}{E} (three energy counters), then you may pay any amoun
 Swallow:Condition_If           | Wild Slash                   | Condition_If — Ferocious — If you control a creature with power 4 or greater, damage
 Swallow:Condition_If           | Winds of Qal Sisma           | Condition_If — Prevent all combat damage that would be dealt this turn. Ferocious — 
-Swallow:Condition_If           | Wisecrack                    | Condition_If — Target creature deals damage equal to its power to itself. If that cr
 Swallow:Condition_If           | Witch's Oven                 | Condition_If — {T}, Sacrifice a creature: Create a Food token. If the sacrificed cre
 Swallow:Condition_If           | Woebringer Demon             | Condition_If — Flying At the beginning of each player's upkeep, that player sacrific
 Swallow:Condition_If           | Worldheart Phoenix           | Condition_If — Flying You may cast this card from your graveyard by paying {W}{U}{B}
@@ -1300,11 +1243,9 @@ Swallow:Condition_If;Swallow:D | Avatar Aang                  | Condition_If —
 Swallow:Condition_If;Swallow:D | Botanical Brawler            | Condition_If — Trample This creature enters with two +1/+1 counters on it. Whenever 
 Swallow:Condition_If;Swallow:D | Burning-Eye Zubera           | Condition_If — When this creature dies, if 4 or more damage was dealt to it this tur
 Swallow:Condition_If;Swallow:D | Confounding Conundrum        | Condition_If — When this enchantment enters, draw a card. Whenever a land an opponen
-Swallow:Condition_If;Swallow:D | Faller's Faithful            | Condition_If — When this creature enters, destroy up to one other target creature. I
 Swallow:Condition_If;Swallow:D | Kami of Transience           | Condition_If — Trample Whenever you cast an enchantment spell, put a +1/+1 counter o
 Swallow:Condition_If;Swallow:D | Rushing-Tide Zubera          | Condition_If — When this creature dies, if 4 or more damage was dealt to it this tur
 Swallow:Condition_If;Swallow:D | Sandstalker Moloch           | Condition_If — Flash When this creature enters, if an opponent cast a blue and/or bl
-Swallow:Condition_If;Swallow:D | Sold Out                     | Condition_If — Exile target creature. If it was dealt damage this turn, create a Clu
 Swallow:Condition_If;Swallow:D | Stalwart Successor           | Condition_If — Menace (This creature can't be blocked except by two or more creature
 Swallow:Condition_If;Swallow:D | Tunnel Ignus                 | Condition_If — Whenever a land enters under an opponent's control, if that player ha
 Swallow:Condition_If;Swallow:D | Vessel of the All-Consuming  | Condition_If — Trample Whenever this creature deals damage, put a +1/+1 counter on i
@@ -1327,17 +1268,9 @@ Swallow:Condition_If;Swallow:O | Leonardo, Sewer Samurai      | Optional_YouMay 
 Swallow:Condition_If;Swallow:O | Rescuer Sphinx               | Optional_YouMay — Flying As this creature enters, you may return a nonland permanent
 Swallow:Condition_If;Swallow:O | Turntimber Symbiosis         | Optional_YouMay — Look at the top seven cards of your library. You may put a creatur
 Swallow:Condition_If;Swallow:O | Ulamog's Despoiler           | Optional_YouMay — As this creature enters, you may put two cards your opponents own 
-Swallow:Condition_Unless       | Cut the Tethers              | Condition_Unless — For each Spirit, return it to its owner's hand unless that player
-Swallow:Condition_Unless       | Perplex                      | Condition_Unless — Counter target spell unless its controller discards their hand. T
-Swallow:Condition_Unless       | Remorseless Punishment       | Condition_Unless — Target opponent loses 5 life unless that player discards two card
 Swallow:Condition_Unless       | Repulsive Mutation           | Condition_Unless — Put X +1/+1 counters on target creature you control. Then counter
-Swallow:Condition_Unless       | Shuriken                     | Condition_Unless — Equipped creature has "{T}, Unattach Shuriken: Shuriken deals 2 d
 Swallow:Condition_Unless       | Steel Exemplar               | Condition_Unless — Trample This creature enters with two +1/+1 counters on it unless
-Swallow:Condition_Unless       | Tainted Indulgence           | Condition_Unless — Draw two cards. Then discard a card unless there are five or more
 Swallow:Condition_Unless       | Thassa's Intervention        | Condition_Unless — Choose one — • Look at the top X cards of your library. Put up to
-Swallow:Condition_Unless       | Tragic Lesson                | Condition_Unless — Draw two cards. Then discard a card unless you return a land you 
-Swallow:Condition_Unless       | Urza's Tome                  | Condition_Unless — {3}, {T}: Draw a card. Then discard a card unless you exile a his
-Swallow:Condition_Unless       | Waterbending Lesson          | Condition_Unless — Draw three cards. Then discard a card unless you waterbend {2}. (
 Swallow:Condition_Unless;Swall | Hotheaded Giant              | Condition_Unless — Haste This creature enters with two -1/-1 counters on it unless y
 Swallow:Duration_ThisTurn      | Chandra, Fire of Kaladesh    | Duration_ThisTurn — Whenever you cast a red spell, untap Chandra. {T}: Chandra deals
 Swallow:Duration_ThisTurn      | Combat Celebrant             | Duration_ThisTurn — If this creature hasn't been exerted this turn, you may exert it
@@ -1353,7 +1286,6 @@ Swallow:Duration_ThisTurn      | Predatory Advantage          | Duration_ThisTur
 Swallow:Duration_ThisTurn      | Ravenous Trap                | Duration_ThisTurn — If an opponent had three or more cards put into their graveyard 
 Swallow:Duration_ThisTurn      | Reno and Rude                | Duration_ThisTurn — Menace Whenever Reno and Rude deals combat damage to a player, e
 Swallow:Duration_ThisTurn      | Restore the Peace            | Duration_ThisTurn — Return each creature that dealt damage this turn to its owner's 
-Swallow:Duration_ThisTurn      | Rith, Liberated Primeval     | Duration_ThisTurn — Flying, ward {2} Other Dragons you control have ward {2}. At the
 Swallow:Duration_ThisTurn      | See Red                      | Duration_ThisTurn — Enchant creature Enchanted creature gets +2/+1 and has first str
 Swallow:Duration_ThisTurn      | Sidequest: Hunt the Mark     | Duration_ThisTurn — When this enchantment enters, destroy up to one target creature.
 Swallow:Duration_ThisTurn      | Subterranean Schooner        | Duration_ThisTurn — Whenever this Vehicle attacks, target creature that crewed it th
@@ -1373,18 +1305,14 @@ Swallow:DynamicQty             | Arlinn, Embraced by the Moon | DynamicQty — [
 Swallow:DynamicQty             | Auspicious Starrix           | DynamicQty — Mutate {5}{G} (If you cast this spell for its mutate cost, put it over 
 Swallow:DynamicQty             | Battle for Bretagard         | DynamicQty — (As this Saga enters and after your draw step, add a lore counter. Sacr
 Swallow:DynamicQty             | Birgi, God of Storytelling   | DynamicQty — Whenever you cast a spell, add {R}. Until end of turn, you don't lose t
-Swallow:DynamicQty             | Blademane Baku               | DynamicQty — Whenever you cast a Spirit or Arcane spell, you may put a ki counter on
 Swallow:DynamicQty             | Bounding Felidar             | DynamicQty — Whenever this creature attacks while saddled, put a +1/+1 counter on ea
 Swallow:DynamicQty             | Breach the Multiverse        | DynamicQty — Each player mills ten cards. For each player, choose a creature or plan
-Swallow:DynamicQty             | Bumi, King of Three Trials   | DynamicQty — When Bumi enters, choose up to X, where X is the number of Lesson cards
 Swallow:DynamicQty             | Commence the Endgame         | DynamicQty — This spell can't be countered. Draw two cards, then amass Zombies X, wh
 Swallow:DynamicQty             | Consuming Tide               | DynamicQty — Each player chooses a nonland permanent they control. Return all nonlan
-Swallow:DynamicQty             | Cosmic Cube                  | DynamicQty — Ward {2} Whenever you attack, look at the top six cards of your library
 Swallow:DynamicQty             | Dead Man's Chest             | DynamicQty — Enchant creature an opponent controls When enchanted creature dies, exi
 Swallow:DynamicQty             | Declaration in Stone         | DynamicQty — Exile target creature and all other creatures its controller controls w
 Swallow:DynamicQty             | Descent into Madness         | DynamicQty — At the beginning of your upkeep, put a despair counter on this enchantm
 Swallow:DynamicQty             | Diligent Zookeeper           | DynamicQty — Each non-Human creature you control gets +1/+1 for each of its creature
-Swallow:DynamicQty             | Dragonfire Blade             | DynamicQty — Equipped creature gets +2/+2 and has hexproof from monocolored. Equip {
 Swallow:DynamicQty             | Drown in the Loch            | DynamicQty — Choose one — • Counter target spell with mana value less than or equal 
 Swallow:DynamicQty             | Eidolon of Countless Battles | DynamicQty — Bestow {2}{W}{W} (If you cast this card for its bestow cost, it's an Au
 Swallow:DynamicQty             | Ellywick Tumblestrum         | DynamicQty — [+1]: Venture into the dungeon. (Enter the first room or advance to the
@@ -1399,21 +1327,16 @@ Swallow:DynamicQty             | Garza's Assassin             | DynamicQty — S
 Swallow:DynamicQty             | Gilder Bairn                 | DynamicQty — {2}{G/U}, {Q}: Double the number of each kind of counter on target perm
 Swallow:DynamicQty             | Glimpse the Impossible       | DynamicQty — Exile the top three cards of your library. You may play those cards thi
 Swallow:DynamicQty             | Goblin Traprunner            | DynamicQty — Whenever this creature attacks, flip three coins. For each flip you win
-Swallow:DynamicQty             | Goliath Hatchery             | DynamicQty — When this enchantment enters, create two 3/3 green Phyrexian Beast crea
 Swallow:DynamicQty             | Grishnákh, Brash Instigator  | DynamicQty — When Grishnákh enters, amass Orcs 2. When you do, until end of turn, ga
 Swallow:DynamicQty             | Guardian of the Gateless     | DynamicQty — Flying This creature can block any number of creatures. Whenever this c
 Swallow:DynamicQty             | Hama, the Bloodbender        | DynamicQty — When Hama enters, target opponent mills three cards. Exile up to one no
-Swallow:DynamicQty             | Hawkeye, Young Avenger       | DynamicQty — Reach If a source you control would deal noncombat damage to an opponen
 Swallow:DynamicQty             | Hearth Elemental             | DynamicQty — This spell costs {X} less to cast, where X is the number of cards in yo
 Swallow:DynamicQty             | Hulking Metamorph            | DynamicQty — Prototype {2}{U}{U} — 3/3 (You may cast this spell with different mana 
-Swallow:DynamicQty             | In Search of Greatness       | DynamicQty — At the beginning of your upkeep, you may cast a permanent spell from yo
 Swallow:DynamicQty             | Investigator's Journal       | DynamicQty — This artifact enters with a number of suspect counters on it equal to t
 Swallow:DynamicQty             | Invoke the Ancients          | DynamicQty — Create two 4/5 green Spirit creature tokens. For each of them, put your
 Swallow:DynamicQty             | Judgment Bolt                | DynamicQty — Judgment Bolt deals 5 damage to target creature and X damage to that cr
 Swallow:DynamicQty             | Kambal, Profiteering Mayor   | DynamicQty — Whenever one or more tokens your opponents control enter, for each of t
-Swallow:DynamicQty             | Kemba's Legion               | DynamicQty — Vigilance This creature can block an additional creature each combat fo
 Swallow:DynamicQty             | Kentaro, the Smiling Cat     | DynamicQty — Bushido 1 (Whenever this creature blocks or becomes blocked, it gets +1
-Swallow:DynamicQty             | Kianne, Dean of Substance    | DynamicQty — {T}: Exile the top card of your library. If it's a land card, put it in
 Swallow:DynamicQty             | Kraken of the Straits        | DynamicQty — Creatures with power less than the number of Islands you control can't 
 Swallow:DynamicQty             | Llanowar Greenwidow          | DynamicQty — Reach, trample Domain — {7}{G}: Return this card from your graveyard to
 Swallow:DynamicQty             | Luxurious Locomotive         | DynamicQty — Whenever this Vehicle attacks, create a Treasure token for each creatur
@@ -1439,7 +1362,6 @@ Swallow:DynamicQty             | Rakdos, the Showstopper      | DynamicQty — F
 Swallow:DynamicQty             | Ral Zarek                    | DynamicQty — [+1]: Tap target permanent, then untap another target permanent. [−2]: 
 Swallow:DynamicQty             | Ral Zarek, Guest Lecturer    | DynamicQty — [+1]: Surveil 2. [−1]: Any number of target players each discard a card
 Swallow:DynamicQty             | Raubahn, Bull of Ala Mhigo   | DynamicQty — Ward—Pay life equal to Raubahn's power. Whenever Raubahn attacks, attac
-Swallow:DynamicQty             | Riku of Many Paths           | DynamicQty — Whenever you cast a modal spell, choose up to X, where X is the number 
 Swallow:DynamicQty             | Rune Snag                    | DynamicQty — Counter target spell unless its controller pays {2} plus an additional 
 Swallow:DynamicQty             | Sage's Reverie               | DynamicQty — Enchant creature When this Aura enters, draw a card for each Aura you c
 Swallow:DynamicQty             | Sasaya's Essence             | DynamicQty — Whenever a land you control is tapped for mana, add an additional one m
@@ -1455,7 +1377,6 @@ Swallow:DynamicQty             | Spoils of the Vault          | DynamicQty — C
 Swallow:DynamicQty             | Springjack Shepherd          | DynamicQty — Chroma — When this creature enters, create a 0/1 white Goat creature to
 Swallow:DynamicQty             | Squirming Emergence          | DynamicQty — Fathomless descent — Return to the battlefield target nonland permanent
 Swallow:DynamicQty             | Stabwhisker the Odious       | DynamicQty — At the beginning of each opponent's upkeep, that player loses 1 life fo
-Swallow:DynamicQty             | Storm Entity                 | DynamicQty — Haste This creature enters with a +1/+1 counter on it for each other sp
 Swallow:DynamicQty             | Strata Scythe                | DynamicQty — Imprint — When this Equipment enters, search your library for a land ca
 Swallow:DynamicQty             | Suspend Aggression           | DynamicQty — Exile target nonland permanent and the top card of your library. For ea
 Swallow:DynamicQty             | Synchronized Spellcraft      | DynamicQty — Synchronized Spellcraft deals 4 damage to target creature and X damage 
@@ -1467,20 +1388,19 @@ Swallow:DynamicQty             | Thousand-Year Storm          | DynamicQty — W
 Swallow:DynamicQty             | Tormented Thoughts           | DynamicQty — As an additional cost to cast this spell, sacrifice a creature. Target 
 Swallow:DynamicQty             | Ultimate Spider-Man          | DynamicQty — First strike, haste Camouflage — {2}: Put a +1/+1 counter on Ultimate S
 Swallow:DynamicQty             | Urgent Necropsy              | DynamicQty — As an additional cost to cast this spell, collect evidence X, where X i
-Swallow:DynamicQty             | Velomachus Lorehold          | DynamicQty — Flying, vigilance, haste Whenever Velomachus Lorehold attacks, look at 
 Swallow:DynamicQty             | Void                         | DynamicQty — Choose a number. Destroy all artifacts and creatures with mana value eq
 Swallow:DynamicQty             | Vorel of the Hull Clade      | DynamicQty — {G}{U}, {T}: Double the number of each kind of counter on target artifa
-Swallow:DynamicQty             | Warden of the Grove          | DynamicQty — At the beginning of your end step, put a +1/+1 counter on this creature
 Swallow:DynamicQty             | Whispering Specter           | DynamicQty — Flying Infect (This creature deals damage to creatures in the form of -
 Swallow:DynamicQty             | Widespread Brutality         | DynamicQty — Amass Zombies 2, then the Army you amassed deals damage equal to its po
 Swallow:DynamicQty             | Wojek Investigator           | DynamicQty — Flying, vigilance At the beginning of your upkeep, investigate once for
 Swallow:DynamicQty             | Woodcaller Automaton         | DynamicQty — Prototype {2}{G}{G} — 3/3 (You may cast this spell with different mana 
 Swallow:DynamicQty             | Zada, Hedron Grinder         | DynamicQty — Whenever you cast an instant or sorcery spell that targets only Zada, c
-Swallow:DynamicQty             | Ziatora's Envoy              | DynamicQty — Trample Whenever this creature deals combat damage to a player, look at
 Swallow:DynamicQty             | Zimone, Paradox Sculptor     | DynamicQty — At the beginning of combat on your turn, put a +1/+1 counter on each of
+Swallow:DynamicQty;Swallow:Mod | Bumi, King of Three Trials   | DynamicQty — When Bumi enters, choose up to X, where X is the number of Lesson cards
+Swallow:DynamicQty;Swallow:Mod | Riku of Many Paths           | DynamicQty — Whenever you cast a modal spell, choose up to X, where X is the number 
 Swallow:DynamicQty;Swallow:Opt | Atraxa, Grand Unifier        | Optional_YouMay — Flying, vigilance, deathtouch, lifelink When Atraxa enters, reveal
+Swallow:Modal_DynamicMaxDroppe | Tranquil Frillback           | Modal_DynamicMaxDropped — When this creature enters, you may pay {G} up to three tim
 Swallow:Optional_YouMay        | Aberrant Mind Sorcerer       | Optional_YouMay — Psionic Spells — When this creature enters, choose target instant 
-Swallow:Optional_YouMay        | Battletide Alchemist         | Optional_YouMay — If a source would deal damage to a player, you may prevent X of th
 Swallow:Optional_YouMay        | Case of the Uneaten Feast    | Optional_YouMay — Whenever a creature you control enters, you gain 1 life. To solve 
 Swallow:Optional_YouMay        | Chaos Channeler              | Optional_YouMay — Wild Magic Surge — Whenever this creature attacks, roll a d20. 1—9
 Swallow:Optional_YouMay        | Delina, Wild Mage            | Optional_YouMay — Whenever Delina attacks, choose target creature you control, then 
@@ -1490,7 +1410,6 @@ Swallow:Optional_YouMay        | Hades, Sorcerer of Eld       | Optional_YouMay 
 Swallow:Optional_YouMay        | Hungering Yeti               | Optional_YouMay — As long as you control a green or blue permanent, you may cast thi
 Swallow:Optional_YouMay        | Hurkyl, Master Wizard        | Optional_YouMay — At the beginning of your end step, if you've cast a noncreature sp
 Swallow:Optional_YouMay        | Kethis, the Hidden Hand      | Optional_YouMay — Legendary spells you cast cost {1} less to cast. Exile two legenda
-Swallow:Optional_YouMay        | Magitek Scythe               | Optional_YouMay — A Test of Your Reflexes! — When this Equipment enters, you may att
 Swallow:Optional_YouMay        | Mirrormind Crown             | Optional_YouMay — As long as this Equipment is attached to a creature, the first tim
 Swallow:Optional_YouMay        | Omniscience                  | Optional_YouMay — You may cast spells from your hand without paying their mana costs
 Swallow:Optional_YouMay        | Petals of Insight            | Optional_YouMay — Look at the top three cards of your library. You may put those car
@@ -1498,24 +1417,21 @@ Swallow:Optional_YouMay        | Retriever Phoenix            | Optional_YouMay 
 Swallow:Optional_YouMay        | Revealing Wind               | Optional_YouMay — Prevent all combat damage that would be dealt this turn. You may l
 Swallow:Optional_YouMay        | Scattering Stroke            | Optional_YouMay — Counter target spell. Clash with an opponent. If you win, at the b
 Swallow:Optional_YouMay        | Shadrix Silverquill          | Optional_YouMay — Flying, double strike At the beginning of combat on your turn, you
-Swallow:Optional_YouMay        | Sphinx of Foresight          | Optional_YouMay — You may reveal this card from your opening hand. If you do, scry 3
 Swallow:Optional_YouMay        | Tamiyo, Field Researcher     | Optional_YouMay — [+1]: Choose up to two target creatures. Until your next turn, whe
 Swallow:Optional_YouMay        | Tamiyo, the Moon Sage        | Optional_YouMay — [+1]: Tap target permanent. It doesn't untap during its controller
 Swallow:Optional_YouMay        | Treasure Chest               | Optional_YouMay — {4}, Sacrifice this artifact: Roll a d20. 1 | Trapped! — You lose 
 Swallow:Optional_YouMay        | Wizard's Spellbook           | Optional_YouMay — {T}: Exile target instant or sorcery card from a graveyard. Roll a
 Swallow:Optional_YouMay        | Zaffai and the Tempests      | Optional_YouMay — Once during each of your turns, you may cast an instant or sorcery
-Swallow:Optional_YouMay;Swallo | Nephalia Academy             | Replacement_Instead — If a spell or ability an opponent controls causes you to disca
+Swallow:Replacement_Instead    | Nephalia Academy             | Replacement_Instead — If a spell or ability an opponent controls causes you to disca
 Trigger:When a Faerie is champ | Mistbind Clique              | When a Faerie is championed with ~, tap all lands target player controls.
 Trigger:When a player other th | Bronze Bombshell             | When a player other than ~'s owner controls it, that player sacrifices it. If the pl
 Trigger:Whenever ~             | Calix, Guided by Fate        | Whenever ~, you may create a token that's a copy of a nonlegendary enchantment you c
 Trigger:Whenever ~             | Dragon-Kami's Egg            | Whenever ~, you may cast a creature spell from among cards you own in exile with hat
 Trigger:Whenever ~             | Syr Carah, the Bold          | Whenever ~, exile the top card of your library. You may play that card this turn.
-Trigger:Whenever a card leaves | Kishla Skimmer               | Whenever a card leaves your graveyard during your turn, draw a card. This ability tr
 Trigger:Whenever a creature bl | Baneclaw Marauder            | Whenever a creature blocking ~ dies, that creature's controller loses 1 life.
 Trigger:Whenever a creature ca | Erebos's Titan               | Whenever a creature card leaves an opponent's graveyard, you may discard a card. If 
 Trigger:Whenever a creature de | Scythe of the Wretched       | Whenever a creature dealt damage by equipped creature this turn dies, return that ca
 Trigger:Whenever a creature de | Unscythe, Killer of Kings    | Whenever a creature dealt damage by equipped creature this turn dies, you may exile 
-Trigger:Whenever a creature en | Trespasser's Curse           | Whenever a creature enchanted player controls enters, that player loses 1 life and y
 Trigger:Whenever a creature wi | Trophy Hunter                | Whenever a creature with flying dealt damage by ~ this turn dies, put a +1/+1 counte
 Trigger:Whenever a creature yo | Surrak, Elusive Hunter       | Whenever a creature you control, draw a card.
 Trigger:Whenever a creature yo | Firebender Ascension         | Whenever a creature you control attacking causes a triggered ability of that creatur
@@ -1534,9 +1450,7 @@ Trigger:Whenever an opponent i | Pain Magnification           | Whenever an oppo
 Trigger:Whenever another creat | Skophos Maze-Warden          | Whenever another creature becomes the target of an ability of a land you control nam
 Trigger:Whenever another creat | Long Feng, Grand Secretariat | Whenever another creature you control, put a +1/+1 counter on target creature you co
 Trigger:Whenever another creat | Gladewalker Ritualist        | Whenever another creature you control named Gladewalker Ritualist enters, draw a car
-Trigger:Whenever another perma | Suki, Courageous Rescuer     | Whenever another permanent you control leaves the battlefield during your turn, crea
 Trigger:Whenever a permanent o | Kothophed, Soul Hoarder      | Whenever a permanent owned by another player is put into a graveyard from the battle
-Trigger:Whenever a player or p | Loki, God of Mischief        | Whenever a player or permanent becomes the target of an ability you control, draw a 
 Trigger:Whenever a source of t | Circle of Affliction         | Whenever a source of the chosen color deals damage to you, you may pay {1}. If you d
 Trigger:Whenever a source you  | Talon of Pain                | Whenever a source you control other than ~ deals damage to an opponent, put a charge
 Trigger:Whenever a spell or ab | Sacred Ground                | Whenever a spell or ability an opponent controls causes a land to be put into your g
@@ -1547,7 +1461,6 @@ Trigger:Whenever combat damage | Vengeful Pharaoh             | Whenever combat 
 Trigger:Whenever enchanted pla | Grievous Wound               | Whenever enchanted player is dealt damage, they lose half their life, rounded up.
 Trigger:Whenever ~ enlists a c | Guardian of New Benalia      | Whenever ~ enlists a creature, scry 2.
 Trigger:Whenever ~ is dealt 3  | Innocent Bystander           | Whenever ~ is dealt 3 or more damage, investigate.
-Trigger:Whenever one or more a | Oni-Cult Anvil               | Whenever one or more artifacts you control leave the battlefield during your turn, c
 Trigger:Whenever one or more c | Stonebinder's Familiar       | Whenever one or more cards are put into exile during your turn, put a +1/+1 counter 
 Trigger:Whenever one or more c | Dennick, Pious Apparition    | Whenever one or more creature cards are put into graveyards from anywhere, investiga
 Trigger:Whenever one or more c | Tide of War                  | Whenever one or more creatures block, flip a coin. If you win the flip, each blockin

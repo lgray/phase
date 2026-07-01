@@ -1,9 +1,0 @@
-Baron Helmut Zemo	1	MSH	ParseWarning:target-fallback	[warning:target-fallback] parse_target could not classify 'those exiled cards'
-Cosmic Cube	1	MSH	Swallow:DynamicQty	DynamicQty — Ward {2} Whenever you attack, look at the top six cards of your library. You may cast a spell from among them with mana value less than or e
-Doctor Doom	0	MSH	NO-GAP-DETAILS	
-Hawkeye, Master Marksman	0	MSH	NO-GAP-DETAILS	
-Hawkeye, Young Avenger	1	MSH	Swallow:DynamicQty	DynamicQty — Reach If a source you control would deal noncombat damage to an opponent or a permanent an opponent controls, instead it deals that much dam
-Hulkling, Burgeoning Bruiser	1	MSH	Swallow:Condition_If	Condition_If — Vigilance Whenever another creature you control enters, if it has greater power or toughness than Hulkling, put a +1/+1 counter on Hulkling.
-Loki, God of Mischief	1	MSH;PMEI	Trigger:Whenever a player or permanent becomes the target of an ability you control	Whenever a player or permanent becomes the target of an ability you control, draw a card. This ability triggers only once each turn.
-The Incredible Hulk	1	MSH	Swallow:Condition_If	Condition_If — Reach, trample Enrage — Whenever The Incredible Hulk is dealt damage, put a +1/+1 counter on him. If he's attacking, untap him and there i
-The Ruinous Wrecking Crew	0	MSH	NO-GAP-DETAILS	

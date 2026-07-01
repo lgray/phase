@@ -13,13 +13,48 @@ Single source of truth for cross-sub-agent handoff. Spec: `IMPLEMENTATION.md`
 | 3 | classify `emit_resolution_halt` net-progress → live shortcut | **PR-3 STARTS HERE** (see below) | — | — |
 | 4 | (optional) static ability-graph (Engine B) | NOT STARTED | — | — |
 | 5 | `cargo combo-verify` CLI over corpus | NOT STARTED | — | — |
-| 6 | `∞` unbounded-resource display | NOT STARTED | — | — |
+| 6 | `∞` unbounded-resource display (generalize `debug_infinite_mana` → `unbounded_resources: BTreeMap<PlayerId, BTreeSet<ResourceAxis>>` over the whole `ResourceAxis` class; engine-owned `DerivedViews` projection `UnboundedResourceView{player,axis}`; mana byte-preserved; field excluded from PartialEq/normalize/fingerprint) | **MERGED** ✅ (squash-merged as `22b212fab`, 2026-06-30; authfix folded in) | `feat/combo-detect-pr6` → https://github.com/phase-rs/phase/pull/4603 | `22b212fab` (in main) |
+| **6.25** | order-independence soundness — make `group_is_order_independent` provably sound (event-context + sibling read/write-conflict, fail-closed); fixes a latent CR 603.3b auto-ordering bug | **DEFERRED (R3, 2026-06-30)** — review killed the QoL "Case A" as unsound; reshaped to a correctness PR; funded big push. Notes: `PR-6.25-DEFERRED-FINDINGS.md` | — | — |
+| **6.5** | growing-cascade detector for **multiplayer** win-acceleration (≥3p drains grow the stack unboundedly → exact loop-equality never matches → §3 never fires) | **DEFERRED EPIC** — funding-gated. Pathway: distributed-systems cascade-failure analysis / Petri-net coverability. Notes: `PR-6.5-EPIC-GROWING-CASCADE.md` | — | — |
 | 7 | loop shortcut + opponent response window (CR 732.2a/732.5) | NOT STARTED | — | — |
 | 8 | AI coupling (`LoopCertificate` → top line) | NOT STARTED | — | — |
 
 PR-0 was developed in an isolated worktree off `upstream/main` (`9cf4315b6`),
 now removed. Branch pushed to `origin` (`lgray/phase` fork); PR targets
 `phase-rs/phase` base `main`.
+
+## PR convention (NON-NEGOTIABLE for every combo-detector PR)
+
+The combo-detector PRs are a single staged series (PR-0 … PR-8). **Every PR body
+MUST link its immediate predecessor** so a human (or agent) can follow the
+implementation trail end to end without leaving GitHub. Concretely, each PR body
+includes a `## Combo-detector series` section with:
+
+1. The full series table (Pos | PR `#number` | Delivers), with the current PR's
+   row bolded and marked `(this PR)`.
+2. An explicit **`Predecessor: PR-X — #YYYY — <full URL>`** line (number *and*
+   URL, not just `#YYYY`), with a one-clause note on what the predecessor
+   delivered and how this PR builds on it.
+
+PR-0…PR-3 followed this (PR-3 #4480 is the gold-standard format). PR-4a #4493,
+PR-4b #4534, PR-5 #4547 were back-filled to match on 2026-06-28 (their trail
+links had been missing). Series map for copy-paste into future PRs:
+
+| Pos | PR | Delivers |
+|-----|----|----------|
+| PR-0 | #4092 | `ResourceVector` + modulo-resource loop equality (additive). |
+| PR-1 | #4097 | Analysis sim harness feeding `ResourceVector`. |
+| PR-2 | #4119 | Net-progress `detect_loop` → `LoopCertificate` + corpus harness. |
+| PR-3 | #4480 | Live mandatory-loop winner shortcut (drain-cascade, CR 704.5a). |
+| PR-4a | #4493 | Engine B static ability-graph extractor (scaffold + 5 families + SCC). |
+| PR-4b | #4534 | Engine B effect/trigger breadth + life-symmetry cost. |
+| PR-5 | #4547 | `cargo combo-verify` CLI over the 53-row corpus. |
+| PR-6 | #4603 | `∞` unbounded-resource display — generalize infinite-mana to the whole `ResourceAxis` class (engine-owned `DerivedViews` projection). |
+| PR-6.25 | (deferred R3) | Order-independence soundness fix for `group_is_order_independent` (latent CR 603.3b). Notes: `PR-6.25-DEFERRED-FINDINGS.md`. |
+| PR-6.5 | (deferred epic) | Growing-cascade detector for multiplayer win-acceleration; grounded in distributed-systems cascade-failure analysis. Notes: `PR-6.5-EPIC-GROWING-CASCADE.md`. |
+
+When you open the next combo PR (PR-7+), append its row here and link PR-6 (or the
+latest merged predecessor) in its body.
 
 ## Artifacts created by PR-0
 

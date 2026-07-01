@@ -8,7 +8,6 @@ Advice from the Fae	1	SHM	Effect:otherwise	Otherwise
 Aegar, the Freezing Flame	1	KHM;MUL;PRM	Effect:wizard,	Wizard, or spell you controlled dealt damage to it this turn, draw a card
 Aether Revolt	2	MH3;PMH3	Swallow:Condition_AsLongAs;Swallow:Condition_If	Condition_If — Revolt — As long as a permanent left the battlefield under your control this turn, if a source you control would deal noncombat damage to 
 Aeve, Progenitor Ooze	1	J21;MH2;PMH2;PRM	Effect:effect_structure	~ isn't legendary if it's a token.
-Agatha of the Vile Cauldron	1	PWOE;WOE	Effect:static_structure	Activated abilities of creatures you control cost {X} less to activate, where X is ~'s power. This effect can't reduce the mana in that cost to less than one ma
 Agency Coroner	1	MKM	Swallow:Condition_If	Condition_If — {2}{B}, Sacrifice another creature: Draw a card. If the sacrificed creature was suspected, draw two cards instead.
 Ajani Goldmane	1	LRW;M10;M11;PPRO;PRM;SLD	Effect:create	[−6]: Create a white Avatar creature token. It has "~'s power and toughness are each equal to your life total."
 Ajani, Strength of the Pride	1	J22;M20;PLST;PM20	Effect:gain	[+1]: You gain life equal to the number of creatures you control plus the number of planeswalkers you control.
@@ -47,7 +46,6 @@ Arcane Adaptation	1	PLST;PXLN;XLN	Effect:unknown	The same is true for creature s
 Arcanum Wings	1	FUT	Effect:unknown	Aura swap {2}{U}
 Archmage Ascension	1	ZEN	Effect:instead	instead search your library for a card, put that card into your hand, then shuffle
 Ardenvale Paladin	1	ELD	Swallow:Condition_If	Condition_If — Adamant — If at least three white mana was spent to cast this spell, this creature enters with a +1/+1 counter on it.
-Argentum Masticore	1	ONE;PONE	Effect:Unsupported unless clause	sacrifice ~ unless you discard a card. When you discard a card this way, destroy target nonland permanent an opponent controls with mana value less than or equa
 Arid Archway	1	OTJ	Swallow:Condition_If	Condition_If — This land enters tapped. When this land enters, return a land you control to its owner's hand. If another Desert was returned this way, surv
 Arlinn, Embraced by the Moon	1	INR;PLST;PSOI;SIR;SOI;V17	Swallow:DynamicQty	DynamicQty — [+1]: Creatures you control get +1/+1 and gain trample until end of turn. [−1]: Arlinn deals 3 damage to any target. Transform Arlinn. [
 Arna Kennerüd, Skycaptain	1	MH3;PMH3	Effect:for	for each nontoken permanent attached to it
@@ -60,7 +58,7 @@ Ashiok, Wicked Manipulator	2	PWOE;WOE	Swallow:Duration_ThisTurn;Swallow:DynamicQ
 Asmodeus the Archfiend	1	AFR;PAFR;PRM	Swallow:Condition_If	Condition_If — Binding Contract — If you would draw a card, exile the top card of your library face down instead. {B}{B}{B}: Draw seven cards. {B}: Retur
 Assimilate Essence	1	MOM	Effect:you	you incubate 2
 Atemsis, All-Seeing	1	M20;PM20	Swallow:Condition_If	Condition_If — Flying {2}{U}, {T}: Draw two cards, then discard a card. Whenever Atemsis deals damage to an opponent, you may reveal your hand. If cards wi
-Athreos, God of Passage	1	JOU;PIO;PLST;SLD	Effect:Unsupported unless clause	return it to your hand unless target opponent pays 3 life
+Athreos, God of Passage	1	JOU;PIO;PLST;SLD	Effect:Unsupported unless clause	return it to your hand unless target opponent pays 3 life (unless: target opponent pays 3 life)
 Atraxa, Grand Unifier	2	FCA;ONE;PONE	Swallow:DynamicQty;Swallow:Optional_YouMay	Optional_YouMay — Flying, vigilance, deathtouch, lifelink When Atraxa enters, reveal the top ten cards of your library. For each card type, you may put a card
 Auditore Ambush	1	ACR	Swallow:Condition_If	Condition_If — Choose one or both — • Return target creature to its owner's hand. • Target player searches their library and/or graveyard for a card 
 Auratouched Mage	2	PC2;PCA;PSAL;RAV	Effect:otherwise;Effect:reveal	Otherwise
@@ -68,7 +66,6 @@ Aurelia's Fury	1	GTC;PIO;PLST	Effect:players	Players dealt damage this way can't
 Auspicious Starrix	1	IKO;PRM	Swallow:DynamicQty	DynamicQty — Mutate {5}{G} (If you cast this spell for its mutate cost, put it over or under target non-Human creature you own. They mutate into the crea
 Avacyn's Judgment	1	C19;PSOI;SIR;SOI;VOC	Swallow:Condition_If	Condition_If — Madness {X}{R} (If you discard this card, discard it into exile. When you do, cast it for its madness cost or put it into your graveyard.) A
 Avatar Aang	2	PTLA;TLA	Swallow:Condition_If;Swallow:Duration_ThisTurn	Condition_If — Flying, firebending 2 Whenever you waterbend, earthbend, firebend, or airbend, draw a card. Then if you've done all four this turn, transfor
-Avatar of Discord	1	ARC;DIS;GK2;PDIS;PRM	Effect:Unsupported unless clause	sacrifice it unless you discard two cards
 Aven Mindcensor	1	AKH;AKR;CLB;FUT;MP2;PAKH;PLG21;PLST;TSR	Effect:replacement_structure	If an opponent would search a library, that player searches the top four cards of that library instead.
 Awaken the Sleeper	1	ONE	Swallow:Condition_If	Condition_If — Gain control of target creature until end of turn. Untap that creature. It gains haste until end of turn. If it's equipped, you may destroy 
 Azor's Gateway	1	PLST;PRIX;RIX	Swallow:Condition_If	Condition_If — {1}, {T}: Draw a card, then exile a card from your hand. If cards with five or more different mana values are exiled with Azor's Gateway, yo
@@ -81,15 +78,12 @@ Balthier and Fran	1	FIN;PFIN	Trigger:Whenever a Vehicle crewed by ~ this turn at
 Bane Alley Broker	1	GTC	Effect:effect_structure	You may look at cards exiled with ~.
 Baneclaw Marauder	1	DBL;MID	Trigger:Whenever a creature blocking ~ dies	Whenever a creature blocking ~ dies, that creature's controller loses 1 life.
 Barbarian Class	1	AFR	Effect:unknown	If you would roll one or more dice, instead roll that many dice plus one and ignore the lowest roll.
-Baron Helmut Zemo	1	MSH	ParseWarning:target-fallback	[warning:target-fallback] parse_target could not classify 'those exiled cards'
 Barrel Down Sokenzan	1	SOK	Effect:deal	deal damage to target creature equal to twice the number of Mountains returned this way
 Barren Glory	2	FUT	Effect:have;Effect:if	if you control no permanents other than ~
 Barrowin of Clan Undurr	1	AFR	Swallow:Condition_If	Condition_If — When Barrowin enters, venture into the dungeon. (Enter the first room or advance to the next room.) Whenever Barrowin attacks, return up to 
 Baru, Fist of Krosa	1	FUT	Cost:Fist of Krosa	Fist of Krosa
 Battle Cry Goblin	1	AFR;HBG;J25;PLST	Swallow:Condition_If	Condition_If — {1}{R}: Goblins you control get +1/+0 and gain haste until end of turn. Pack tactics — Whenever this creature attacks, if you attacked wit
-Battlefield Improvisation	1	ACR	Swallow:Condition_If	Condition_If — Target creature gets +2/+2 until end of turn. If that creature is attacking, you may attach any number of Equipment you control to it.
 Battle for Bretagard	1	CMM;KHM;PKHM	Swallow:DynamicQty	DynamicQty — (As this Saga enters and after your draw step, add a lore counter. Sacrifice after III.) I — Create a 1/1 white Human Warrior creature tok
-Battletide Alchemist	1	MOR	Swallow:Optional_YouMay	Optional_YouMay — If a source would deal damage to a player, you may prevent X of that damage, where X is the number of Clerics you control.
 Beamsplitter Mage	1	GRN	Effect:the	The copy targets the chosen creature
 Become Anonymous	2	ACR	Effect:shuffle;Effect:they	shuffle that pile, then cloak those cards
 Become Brutes	1	WOE	Effect:for	For each of those creatures, create a Monster Role token attached to it
@@ -100,7 +94,6 @@ Biomancer's Familiar	1	PRNA;RNA	Effect:the	{T}: The next time target creature ad
 Bioplasm	1	GPT	Effect:get	get +X/+Y
 Birgi, God of Storytelling	1	KHM;PKHM;PRM	Swallow:DynamicQty	DynamicQty — Whenever you cast a spell, add {R}. Until end of turn, you don't lose this mana as steps and phases end. Creatures you control can boast twi
 Bladecoil Serpent	1	BRO;PBRO;PRM	Effect:for	for each {U}{U} spent to cast it, draw a card
-Blademane Baku	1	BOK;PSAL	Swallow:DynamicQty	DynamicQty — Whenever you cast a Spirit or Arcane spell, you may put a ki counter on this creature. {1}, Remove X ki counters from this creature: For eac
 Blade of Shared Souls	1	ONE;PONE	Effect:have	have that creature become a copy of another target creature you control
 Blasphemous Edict	1	FDN;PFDN	Swallow:Condition_If	Condition_If — You may pay {B} rather than pay this spell's mana cost if there are thirteen or more creatures on the battlefield. Each player sacrifices th
 Blightbeetle	1	M20;PLST	Effect:static_structure	Creatures your opponents control can't have +1/+1 counters put on them.
@@ -119,7 +112,6 @@ Boseiju, Who Shelters All	1	CHK;LTC;SLD;V12	Swallow:Condition_If	Condition_If �
 Botanical Brawler	2	MOM	Swallow:Condition_If;Swallow:Duration_ThisTurn	Condition_If — Trample This creature enters with two +1/+1 counters on it. Whenever one or more +1/+1 counters are put on another permanent you control, if
 Bounding Felidar	1	OTJ	Swallow:DynamicQty	DynamicQty — Whenever this creature attacks while saddled, put a +1/+1 counter on each other creature you control. You gain 1 life for each of those crea
 Bounty of the Luxa	1	2X2;AKH;C19;PAKH	Effect:otherwise	Otherwise
-Brackish Blunder	1	LCI	Swallow:Condition_If	Condition_If — Return target creature to its owner's hand. If it was tapped, create a Map token. (It's an artifact with "{1}, {T}, Sacrifice this token: Ta
 Braided Net	1	LCI	Swallow:Condition_AsLongAs	Condition_AsLongAs — This artifact enters with three net counters on it. {T}, Remove a net counter from this artifact: Tap another target nonland permanent. Its
 Brain Pry	1	DIS	Swallow:Condition_If	Condition_If — Choose a nonland card name. Target player reveals their hand. That player discards a card with that name. If they can't, you draw a card.
 Breach the Multiverse	1	MOM;PMOM	Swallow:DynamicQty	DynamicQty — Each player mills ten cards. For each player, choose a creature or planeswalker card in that player's graveyard. Put those cards onto the ba
@@ -135,7 +127,7 @@ Bruna, Light of Alabaster	1	AVR;C18;PHEL;SLD	Effect:put	put onto the battlefield
 Brutal Hordechief	2	C16;FRF;PFRF	Effect:choose;Effect:creatures	{3}{R/W}{R/W}: Creatures your opponents control block this turn if able, and you choose how those creatures block.
 Budoka Gardener	1	C18;CHK;PLST	Effect:flip	flip ~
 Budoka Pupil	1	BOK;PBOK;PRM	Effect:flip	flip it
-Bumi, King of Three Trials	1	TLA	Swallow:DynamicQty	DynamicQty — When Bumi enters, choose up to X, where X is the number of Lesson cards in your graveyard — • Put three +1/+1 counters on Bumi. • Targ
+Bumi, King of Three Trials	2	TLA	Swallow:DynamicQty;Swallow:Modal_DynamicMaxDropped	DynamicQty — When Bumi enters, choose up to X, where X is the number of Lesson cards in your graveyard — • Put three +1/+1 counters on Bumi. • Targ
 Bumi, Unleashed	1	PTLA;TLA	Effect:only	Only land creatures can attack during that combat phase
 Burn at the Stake	1	AVR	Effect:deal	~ deals damage to any target equal to three times the number of creatures tapped this way.
 Burning-Eye Zubera	2	SOK	Swallow:Condition_If;Swallow:Duration_ThisTurn	Condition_If — When this creature dies, if 4 or more damage was dealt to it this turn, this creature deals 3 damage to any target.
@@ -171,7 +163,7 @@ Chaos Channeler	1	AFR;PLST	Swallow:Optional_YouMay	Optional_YouMay — Wild Magi
 Charging Hooligan	1	WOE	Swallow:Condition_If	Condition_If — Whenever this creature attacks, it gets +1/+0 until end of turn for each attacking creature. If a Rat is attacking, this creature gains tram
 Check for Traps	1	AFR	Effect:otherwise	Otherwise
 Chef's Kiss	1	MH2;PMH2;PRM	Effect:the	The new targets can't be you or a permanent you control
-Chisei, Heart of Oceans	1	BOK	Effect:Unsupported unless clause	sacrifice ~ unless you remove a counter from a permanent you control
+Chisei, Heart of Oceans	1	BOK	Effect:Unsupported unless clause	sacrifice ~ unless you remove a counter from a permanent you control (unless: you remove a counter from a permanent you control)
 Choice of Damnations	1	SOK	ParseWarning:target-fallback	[warning:target-fallback] parse_target could not classify 'but that many permanents of their ~'
 Choreographed Sparks	1	PSOS;SOS	Effect:the	The copy gains haste and "At the beginning of the end step, sacrifice ~."
 Chorus of the Conclave	2	CMD;RAV	Swallow:Condition_If;Swallow:Optional_YouMay	Optional_YouMay — Forestwalk (This creature can't be blocked as long as defending player controls a Forest.) As an additional cost to cast creature spells, yo
@@ -183,7 +175,6 @@ Circle of Affliction	1	PLC	Trigger:Whenever a source of the chosen color deals d
 Circle of the Moon Druid	1	AFR;HBG	Effect:unknown	Bear Form — During your turn, ~ is a Bear with base power and toughness 4/2.
 Clarion Ultimatum	1	ALA	Effect:for	For each of those permanents, you may search your library for a card with the same name as that permanent
 Clay Champion	1	BRO;PBRO;PRM	Effect:for	For each {W}{W} spent to cast ~, put a +1/+1 counter on each of them
-Cling to Dust	1	PLST;THB	Effect:escape—{3}{b}	Escape—{3}{B}, Exile five other cards from your graveyard.
 Clockspinning	1	TSP;WHO	Effect:remove	Remove that counter from that permanent or card or put another of those counters on it
 Clockwork Servant	1	ELD	Swallow:Condition_If	Condition_If — Adamant — When this creature enters, if at least three mana of the same color was spent to cast it, draw a card.
 Close Encounter	1	EOE	Cost:choose a creature you control or a warped creature card you own in exile	choose a creature you control or a warped creature card you own in exile
@@ -196,7 +187,7 @@ Coiling Rebirth	1	BLB;PBLB	Swallow:Condition_If	Condition_If — Gift a card (Yo
 Combat Celebrant	1	AKH;AKR;BLC;J25;LTC;PAKH	Swallow:Duration_ThisTurn	Duration_ThisTurn — If this creature hasn't been exerted this turn, you may exert it as it attacks. When you do, untap all other creatures you control and after
 Combine Guildmage	2	RNA	Effect:each;Effect:this	{1}{G}, {T}: This turn, each creature you control enters with an additional +1/+1 counter on it.
 Combustible Gearhulk	1	C21;DRC;DSC;FIC;KLD;KLR;M3C;MPS;PKLD;PLST;SCD	Effect:deal	deal damage to that player equal to the total mana value of those cards
-Combustion Man	1	TLA	Effect:Unsupported unless clause	destroy target permanent unless its controller has ~ deal damage to them equal to his power
+Combustion Man	1	TLA	Effect:Unsupported unless clause	destroy target permanent unless its controller has ~ deal damage to them equal to his power (unless: its controller has ~ deal damage to them equal to his power
 Command the Dreadhorde	1	PWAR;WAR	Effect:deal	deal damage to you equal to the total mana value of those cards
 Commence the Endgame	1	DRC;PWAR;WAR	Swallow:DynamicQty	DynamicQty — This spell can't be countered. Draw two cards, then amass Zombies X, where X is the number of cards in your hand. (Put X +1/+1 counters on a
 Concussive Bolt	1	MBS	Effect:creatures	Metalcraft — If you control three or more artifacts, creatures controlled by that player or by that planeswalker's controller can't block this turn.
@@ -208,10 +199,8 @@ Confront the Past	1	PLST;PRM;PSTX;STX	Effect:remove	Remove twice X loyalty count
 Confusion in the Ranks	1	MRD	Effect:exchange	Exchange control of those permanents
 Conjured Currency	1	RTR	Effect:exchange	exchange control of ~ and target permanent you neither own nor control
 Conjurer's Ban	1	GPT	Effect:spells	spells with the chosen name can't be cast and lands with the chosen name can't be played
-Consign to Dream	1	SHM	Swallow:Condition_If	Condition_If — Return target permanent to its owner's hand. If that permanent is red or green, put it on top of its owner's library instead.
 Conspiracy	1	ACR;MMQ;PLST;TSB	Effect:unknown	The same is true for creature spells you control and creature cards you own that aren't on the battlefield.
 Consume Spirit	1	10E;9ED;DDC;DPA;DVD;HOP;M10;M12;MRD;PIDW;PLST;PS11	Effect:spend	Spend only black mana on X. ~ deals X damage to any target and you gain X life.
-Consuming Ashes	1	OTJ	Swallow:Condition_If	Condition_If — Exile target creature. If it had mana value 3 or less, surveil 2. (Look at the top two cards of your library, then put any number of them in
 Consuming Blob	1	DBL;MID;PMID;PRM	Effect:create	create a green Ooze creature token with "~'s power is equal to the number of card types among cards in your graveyard and its toughness is equal to that number 
 Consuming Tide	1	DBL;PRM;PVOW;VOW	Swallow:DynamicQty	DynamicQty — Each player chooses a nonland permanent they control. Return all nonland permanents not chosen this way to their owners' hands. Then you dra
 Conundrum Sphinx	1	C18;CMD;M11	Swallow:Condition_If	Condition_If — Flying Whenever this creature attacks, each player chooses a card name. Then each player reveals the top card of their library. If the card 
@@ -220,7 +209,6 @@ Corpseberry Cultivator	1	BLB	Trigger:Whenever you forage	Whenever you forage, pu
 Corrupted Crossroads	1	M3C;OGW;POGW	Effect:spend	Spend this mana only to cast a spell with devoid
 Corrupted Resolve	1	NPH	Swallow:Condition_If	Condition_If — Counter target spell if its controller is poisoned.
 Corrupted Shapeshifter	1	MH3	Effect:unknown	As ~ enters, it becomes your choice of a 3/3 creature with flying, a 2/5 creature with vigilance, or a 0/12 creature with defender.
-Cosmic Cube	1	MSH	Swallow:DynamicQty	DynamicQty — Ward {2} Whenever you attack, look at the top six cards of your library. You may cast a spell from among them with mana value less than or e
 Cosmos Charger	1	KHM;PKHM;PRM	Effect:static_structure	Foretelling cards from your hand costs {1} less and can be done on any player's turn.
 Council of the Absolute	1	DGM	Effect:unknown	As ~ enters, choose a noncreature, nonland card name.
 Covenant of Minds	1	ALA;CN2	Swallow:Condition_If	Condition_If — Reveal the top three cards of your library. Target opponent may choose to put those cards into your hand. If they don't, put those cards int
@@ -241,15 +229,12 @@ Cunning Bandit	1	BOK	Effect:flip	flip it
 Curator of Sun's Creation	2	LCI	Effect:discover;Trigger:Whenever you discover	Whenever you discover, discover again for the same value. This ability triggers only once each turn.
 Curator's Ward	1	DOM	Swallow:Condition_If	Condition_If — Enchant permanent Enchanted permanent has hexproof. When enchanted permanent leaves the battlefield, if it was historic, draw two cards. (Ar
 Curious Obsession	1	JMP;PLST;RIX	Swallow:Duration_ThisTurn	Duration_ThisTurn — Enchant creature Enchanted creature gets +1/+1 and has "Whenever this creature deals combat damage to a player, you may draw a card." At the
-Curse of Death's Hold	1	ISD	Effect:static_structure	Creatures enchanted player controls get -1/-1.
 Curse of Hospitality	1	DBL;PRM;PVOW;VOW	Effect:static_structure	Creatures attacking enchanted player have trample.
 Curse of Leeches	1	DBL;MID;PMID;PRM	Effect:unknown	As ~ transforms into ~, attach it to a player.
 Curse of Surveillance	1	DBL;MID;PMID;PRM	Effect:draw	draw cards equal to the number of Curses attached to that player
-Curse of the Nightly Hunt	1	C15;CM2;ISD;PLST	Effect:unknown	Creatures enchanted player controls attack each combat if able.
 Curse of Thirst	1	DKA;PRM;PW12	Effect:deal	deal damage to that player equal to the number of Curses attached to them
 Curtain of Light	1	SOK	Effect:become	Target unblocked attacking creature becomes blocked. Draw a card.
 Cut Short	1	MOM	Swallow:Duration_ThisTurn	Duration_ThisTurn — Convoke (Your creatures can help cast this spell. Each creature you tap while casting this spell pays for {1} or one mana of that creature's
-Cut the Tethers	1	CHK	Swallow:Condition_Unless	Condition_Unless — For each Spirit, return it to its owner's hand unless that player pays {3}.
 Cytoshape	1	DIS	Effect:choose	Choose a nonlegendary creature on the battlefield. Target creature becomes a copy of that creature until end of turn.
 Damping Matrix	1	MM3;MRD	Effect:static_structure	Activated abilities of artifacts and creatures can't be activated unless they're mana abilities.
 Damping Sphere	1	DMR;DOM	Effect:effect_structure	If a land is tapped for two or more mana, it produces {C} instead of any other type and amount.
@@ -282,7 +267,7 @@ Descendants' Path	1	AVR;LCC;SLD;TLE	Effect:that	that shares a creature type with
 Descent into Madness	1	AVR	Swallow:DynamicQty	DynamicQty — At the beginning of your upkeep, put a despair counter on this enchantment, then each player exiles X permanents they control and/or cards f
 Desecrator Hag	1	CM2;CMD;EVE	Swallow:Condition_If	Condition_If — When this creature enters, return to your hand the creature card in your graveyard with the greatest power. If two or more cards are tied fo
 Detection Tower	1	M19;PM19	Effect:can	{1}, {T}: Until end of turn, your opponents and creatures your opponents control with hexproof can be the targets of spells and abilities you control as though 
-Development	1	DIS	Effect:repeat	Repeat this process two more times
+Development	2	DIS	Effect:Unsupported unless clause;Effect:repeat	Create a 3/1 red Elemental creature token unless any opponent has you draw a card. Repeat this process two more times.
 Devouring Hellion	2	WAR	Swallow:Condition_If;Swallow:Optional_YouMay	Optional_YouMay — As this creature enters, you may sacrifice any number of creatures and/or planeswalkers. If you do, it enters with twice that many +1/+1 cou
 Diligent Zookeeper	1	PTLA;TLA	Swallow:DynamicQty	DynamicQty — Each non-Human creature you control gets +1/+1 for each of its creature types, to a maximum of 10.
 Dimir Machinations	1	RAV	Effect:put	put the rest back in any order
@@ -294,10 +279,10 @@ Distended Mindbender	1	EMN;INR;PEMN;SIR	Effect:choose	choose from it a nonland c
 Disturbing Conversion	1	MOM;PLST	Effect:static_structure	Enchanted creature gets -X/-0, where X is the number of cards in its controller's graveyard.
 Diviner's Lockbox	1	M20	Swallow:Condition_If	Condition_If — {1}, {T}: Choose a card name, then reveal the top card of your library. If that card has the chosen name, sacrifice this artifact and draw t
 Djinn Illuminatus	1	C20;DDJ;GK1;GPT;PGPT;PLST;PRM	Effect:static_structure	Each instant and sorcery spell you cast has replicate. The replicate cost is equal to its mana cost.
-Doc Aurlock, Grizzled Genius	1	OTJ	Effect:static_structure	Plotting cards from your hand costs {2} less.
 Domri, Anarch of Bolas	1	BLC;PRM;PWAR;SLD;WAR	Effect:creature	Creature spells you cast this turn can't be countered
 Domri, Chaos Bringer	1	MED;RNA	Swallow:Condition_If	Condition_If — [+1]: Add {R} or {G}. If that mana is spent on a creature spell, it gains riot. (It enters with your choice of a +1/+1 counter or haste.) [
 Doom Foretold	1	ELD;PELD	Swallow:Condition_If	Condition_If — At the beginning of each player's upkeep, that player sacrifices a nonland, nontoken permanent of their choice. If that player can't, they d
+Doomsday Excruciator	1	DSK;PDSK	ParseWarning:target-fallback	[warning:target-fallback] parse_target could not classify 'but the bottom six cards of their library face down'
 Doppelgang	1	MKM;PMKM	Effect:for	For each of X target permanents, create X tokens that are copies of that permanent.
 Dormant Gomazoa	1	ROE	Trigger:Whenever you become the target of a spell	Whenever you become the target of a spell, you may untap ~.
 Dose of Dawnglow	1	ECL	Swallow:Condition_If	Condition_If — Return target creature card from your graveyard to the battlefield. Then if it isn't your main phase, blight 2. (Put two -1/-1 counters on a
@@ -305,19 +290,16 @@ Double Major	1	PRM;PSTX;STX	Swallow:Condition_If	Condition_If — Copy target cr
 Dracogenesis	1	PTDM;TDM	Swallow:Optional_YouMay	Optional_YouMay — You may cast Dragon spells without paying their mana costs.
 Draconic Roar	1	DTK;IMA;JMP;PIO	Swallow:Condition_If	Condition_If — As an additional cost to cast this spell, you may reveal a Dragon card from your hand. Draconic Roar deals 3 damage to target creature. If y
 Dragon Egg	1	CMR;EMA;GN2;GN3;IMA;J22;M14;M19;PLST	Swallow:Duration_UntilEndOfTurn	Duration_UntilEndOfTurn — Defender When this creature dies, create a 2/2 red Dragon creature token with flying and "{R}: This token gets +1/+0 until end of turn
-Dragonfire Blade	1	PTDM;TDM	Swallow:DynamicQty	DynamicQty — Equipped creature gets +2/+2 and has hexproof from monocolored. Equip {4}. This ability costs {1} less to activate for each color of the cre
 Dragon Hunter	1	DTK	Effect:effect_structure	~ can block Dragons as though it had reach.
 Dragon-Kami's Egg	1	NEO;PNEO;PRM	Trigger:Whenever ~	Whenever ~, you may cast a creature spell from among cards you own in exile with hatching counters on them without paying its mana cost.
 Dragon's Approach	1	MB2;PLST;STX	Effect:four	four cards named Dragon's Approach from your graveyard
 Dragon's Disciple	1	AFR	Swallow:Condition_If	Condition_If — As this creature enters, you may reveal a Dragon card from your hand. If you do or if you control a Dragon, this creature enters with a +1/+
 Dragon's Fire	1	AFR;HBG;J25	Effect:deal	deal damage equal to the power of that card or creature instead
-Drana and Linvala	1	MOM;PMOM	Effect:static_structure	~ has all activated abilities of all creatures your opponents control. You may spend mana as though it were mana of any color to activate those abilities.
 Drana, the Last Bloodchief	2	PRM;PZNR;SLD;ZNR	Effect:choose;Effect:the	choose a nonlegendary creature card in your graveyard
 Dreadlight Monstrosity	1	DBL;VOW	Swallow:Condition_If	Condition_If — Ward {2} (Whenever this creature becomes the target of a spell or ability an opponent controls, counter it unless that player pays {2}.) {3}
 Dream Devourer	2	KHM;PKHM;PRM	Effect:static_structure;Trigger:Whenever you foretell a card	Each nonland card in your hand without foretell has foretell. Its foretell cost is equal to its mana cost reduced by {2}.
 Dream Leash	1	RAV	Effect:effect_structure	You can't choose an untapped permanent as this spell's target as you cast it.
 Dreams of Steel and Oil	1	BRO	Effect:choose	choose an artifact or creature card from their graveyard
-Driftgloom Coyote	1	BLB	Swallow:Condition_If	Condition_If — When this creature enters, exile target creature an opponent controls until this creature leaves the battlefield. If that creature had power
 Drizzt Do'Urden	1	AFR;PAFR	Effect:put	put a number of +1/+1 counters on ~ equal to the difference
 Drowner of Truth	1	MH3	Swallow:Condition_If	Condition_If — Devoid (This card has no color.) When you cast this spell, if {C} was spent to cast it, create two 0/1 colorless Eldrazi Spawn creature toke
 Drown in the Loch	1	CLB;ELD;PW23;SLD;SPG	Swallow:DynamicQty	DynamicQty — Choose one — • Counter target spell with mana value less than or equal to the number of cards in its controller's graveyard. • Destroy
@@ -337,7 +319,6 @@ Eiganjo Uprising	1	NEO;PNEO;PRM	Effect:create	Each opponent creates X minus one 
 Elbrus, the Binding Blade	1	DKA;PLST;V17	Effect:unattach	unattach ~
 Eldrazi Mimic	1	OGW;POGW	Effect:change	change ~'s base power and toughness to that creature's power and toughness
 Elemental Resonance	1	DIS	Effect:add	add mana equal to enchanted permanent's mana cost
-Elesh Norn	1	MOM;PMOM	Effect:Unsupported unless clause	that source's controller loses 2 life unless they pay {1}
 Elesh Norn, Mother of Machines	1	ONE;PONE	Effect:unknown	Permanents entering don't cause abilities of permanents your opponents control to trigger.
 Eliminate the Impossible	1	MKM	Swallow:Condition_If	Condition_If — Investigate. Creatures your opponents control get -2/-0 until end of turn. If any of them are suspected, they're no longer suspected. (To in
 Elite Arcanist	1	M14	Effect:x	X is the mana value of the exiled card
@@ -373,7 +354,6 @@ Exert Influence	2	BFZ;PBFZ	Swallow:Condition_If;Swallow:DynamicQty	DynamicQty �
 Exhaustion	1	9ED;P02;PLST;POR;PTK;S99;USG	Effect:creatures	Creatures and lands target opponent controls don't untap during their next untap step.
 Exotic Pets	2	SNC	Effect:for;Effect:put	for each kind of counter among creatures you control
 Expel the Interlopers	1	PWOE;TDC;WOE	Swallow:DynamicQty	DynamicQty — Choose a number between 0 and 10. Destroy all creatures with power greater than or equal to the chosen number.
-Experiment Kraj	1	CMM;DIS;GK2	Effect:static_structure	~ has all activated abilities of each other creature with a +1/+1 counter on it.
 Expose the Culprit	1	MKM	Effect:shuffle	shuffle that pile, then cloak them
 Exquisite Archangel	1	AER;PAER	Swallow:DynamicQty	DynamicQty — Flying If you would lose the game, instead exile this creature and your life total becomes equal to your starting life total.
 Extraplanar Lens	1	CMM;MPS;MRD	Trigger:Whenever a land with the same name as the exiled card is tapped for mana	Whenever a land with the same name as the exiled card is tapped for mana, its controller adds one mana of any type that land produced.
@@ -383,13 +363,11 @@ Fact or Fiction	1	BRC;C15;C19;CLB;CM2;CMD;CMM;CMR;CNS;DD2;DMR;EMA;F05;GN3;INV;JV
 Faithful Squire	1	BOK	Effect:flip	flip it
 Falkenrath Gorger	1	INR;PSOI;SIR;SOI;VOC	Effect:static_structure	Each Vampire creature card you own that isn't on the battlefield has madness. The madness cost is equal to its mana cost.
 Fall	1	DDH;DIS	Effect:discard	discard each nonland card revealed this way
-Faller's Faithful	2	EOE	Swallow:Condition_If;Swallow:Duration_ThisTurn	Condition_If — When this creature enters, destroy up to one other target creature. If that creature wasn't dealt damage this turn, its controller draws two
 Fangorn, Tree Shepherd	1	LTR;PLTR	Effect:add	add twice that much {G}
 Faramir, Prince of Ithilien	2	LTR;PLTR	Effect:at;Effect:otherwise	At the beginning of that player's next end step, you draw a card if they didn't attack you that turn
 Farideh, Devil's Chosen	1	AFR	Swallow:Condition_If	Condition_If — Dark One's Own Luck — Whenever you roll one or more dice, Farideh gains flying and menace until end of turn. If any of those results was 1
 Fatespinner	1	MRD;PLST	Effect:phase	phase
 Favor of the Mighty	1	LRW	Effect:static_structure	Each creature with the greatest mana value has protection from each color.
-Fblthp, Lost on the Range	2	OTJ;POTJ	Effect:effect_structure;Effect:static_structure	The top card of your library has plot. The plot cost is equal to its mana cost.
 Fearless Swashbuckler	1	DFT;PDFT	Swallow:Condition_If	Condition_If — Haste Vehicles you control have haste. Whenever you attack, if a Pirate and a Vehicle attacked this combat, draw three cards, then discard t
 Fear of Immobility	1	DSK	Swallow:Condition_If	Condition_If — When this creature enters, tap up to one target creature. If an opponent controls that creature, put a stun counter on it. (If a permanent w
 Feast of Worms	1	CHK	Swallow:Condition_If	Condition_If — Destroy target land. If that land was legendary, its controller sacrifices another land of their choice.
@@ -397,7 +375,6 @@ Feast on the Fallen	1	J22;M15	Swallow:Condition_If	Condition_If — At the begin
 Feral Contest	1	WWK	Effect:another	Another target creature blocks it this turn if able
 Fevered Visions	1	PSOI;SIR;SOI;TLE	Swallow:Condition_If	Condition_If — At the beginning of each player's end step, that player draws a card. If the player is your opponent and has four or more cards in hand, thi
 Fiery Bombardment	1	EVE	Effect:deal	Chroma — {2}, Sacrifice a creature: ~ deals damage to any target equal to the number of red mana symbols in the sacrificed creature's mana cost.
-Filigree Fracture	1	CON	Swallow:Condition_If	Condition_If — Destroy target artifact or enchantment. If that permanent was blue or black, draw a card.
 Final Punishment	1	9ED;SCG	Effect:lose	Target player loses life equal to the damage already dealt to that player this turn.
 Firebender Ascension	1	PTLA;TLA	Trigger:Whenever a creature you control attacking causes a triggered ability of that creature to trigger	Whenever a creature you control attacking causes a triggered ability of that creature to trigger, put a quest counter on ~. Then if it has four or more quest co
 Firemind's Foresight	1	C15;DDS;RTR	Effect:repeat	repeat this process for instant cards with mana values 2 and 1
@@ -413,9 +390,7 @@ Flood of Tears	1	M20;PM20;VOC	Swallow:Condition_If	Condition_If — Return all n
 Fold into Aether	1	5DN	Swallow:Condition_If	Condition_If — Counter target spell. If that spell is countered this way, its controller may put a creature card from their hand onto the battlefield.
 Font of Agonies	1	PRNA;RNA	Trigger:Whenever you pay life	Whenever you pay life, put that many blood counters on ~.
 Foraging Wickermaw	1	ECL	Effect:become	become that color
-Forbidding Spirit	1	GN3;RNA	Effect:Unsupported unless clause	until your next turn, creatures can't attack you or planeswalkers you control unless their controller pays {2} for each of those creatures
 Forge Anew	1	LTR;PLTR;SLD	Effect:unknown	During your turn, you may activate equip abilities any time you could cast an instant.
-Foriysian Totem	1	TSP	Swallow:Condition_AsLongAs	Condition_AsLongAs — {T}: Add {R}. {4}{R}: This artifact becomes a 4/4 red Giant artifact creature with trample until end of turn. As long as this artifact is a
 Forsworn Paladin	1	AFR;PAFR;PRM	Swallow:Condition_If	Condition_If — Menace {1}{B}, {T}, Pay 1 life: Create a Treasure token. {2}{B}: Target creature gets +2/+0 until end of turn. If mana from a Treasure was s
 Foul Emissary	1	EMN	Trigger:When you sacrifice ~ while casting a spell with emerge	When you sacrifice ~ while casting a spell with emerge, create a 3/2 colorless Eldrazi Horror creature token.
 Foul-Tongue Invocation	1	DTK;IMA	Swallow:Condition_If	Condition_If — As an additional cost to cast this spell, you may reveal a Dragon card from your hand. Target player sacrifices a creature of their choice. 
@@ -426,11 +401,8 @@ Friendly Rivalry	1	LTR	Effect:multi_source_compound_each_power_damage	Target cre
 From Under the Floorboards	1	C19;PSOI;SOI	Effect:instead	instead create X of those tokens
 Frontier Mastodon	1	FRF;J22;PLST	Swallow:Condition_If	Condition_If — Ferocious — This creature enters with a +1/+1 counter on it if you control a creature with power 4 or greater.
 Frost Augur	1	KHM	Swallow:Condition_If	Condition_If — {S}, {T}: Look at the top card of your library. If it's a snow card, you may reveal it and put it into your hand. ({S} can be paid with one 
-Frostpyre Arcanist	1	KHM	Swallow:Condition_If	Condition_If — This spell costs {1} less to cast if you control a Giant or a Wizard. When this creature enters, search your library for an instant or sorce
-Fruit of Tizerus	1	THB	Effect:escape—{3}{b}	Escape—{3}{B}, Exile three other cards from your graveyard.
 Full Bore	1	EOE	Swallow:Condition_If	Condition_If — Target creature you control gets +3/+2 until end of turn. If that creature was cast for its warp cost, it also gains trample and haste until
 Fumiko the Lowblood	1	BOK;C15;C20;CM2	Swallow:DynamicQty	DynamicQty — Fumiko has bushido X, where X is the number of attacking creatures. (Whenever this creature blocks or becomes blocked, it gets +X/+X until e
-Furnace Punisher	1	ONE;PLST	Effect:Unsupported unless clause	~ deals 2 damage to that player unless they control two or more basic lands
 Gaea's Will	1	MH2;PLST;PMH2;PRM	Effect:play	Until end of turn, you may play lands and cast spells from your graveyard. If a card would be put into your graveyard from anywhere this turn, exile that card i
 Galloping Lizrog	1	RNA	Effect:remove	remove any number of +1/+1 counters from among creatures you control
 Galvanic Relay	1	J21;MH2	Effect:during	During your next turn
@@ -465,20 +437,17 @@ Gladewalker Ritualist	1	KHM	Trigger:Whenever another creature you control named 
 Glamerdye	1	EVE	Effect:change	Change the text of target spell or permanent by replacing all instances of one color word with another.
 Glaring Spotlight	1	GTC	Effect:static_structure	Creatures your opponents control with hexproof can be the targets of spells and abilities you control as though they didn't have hexproof.
 Glen Elendra's Answer	1	ECL;PECL	Effect:all	all abilities your opponents control
-Glimpse of Freedom	1	THB	Effect:escape—{2}{u}	Escape—{2}{U}, Exile five other cards from your graveyard.
 Glimpse the Cosmos	2	KHM	Swallow:Condition_AsLongAs;Swallow:Condition_If	Condition_If — Look at the top three cards of your library. Put one of them into your hand and the rest on the bottom of your library in any order. As long
 Glimpse the Impossible	1	MH3;PLST	Swallow:DynamicQty	DynamicQty — Exile the top three cards of your library. You may play those cards this turn. At the beginning of the next end step, if any of those cards 
 Glissa Sunseeker	2	MRD;SLD	Swallow:Condition_If;Swallow:DynamicQty	DynamicQty — First strike {T}: Destroy target artifact if its mana value is equal to the amount of unspent mana you have.
 Glittering Frost	1	KHM	Effect:static_structure	Enchanted land is snow.
-Gloomlance	1	SHM	Swallow:Condition_If	Condition_If — Destroy target creature. If that creature was green or white, its controller discards a card.
-Gloomwidow's Feast	1	SHM	Swallow:Condition_If	Condition_If — Destroy target creature with flying. If that creature was blue or black, create a 1/2 green Spider creature token with reach. (It can block 
 Gnoll Hunter	1	AFR;HBG	Swallow:Condition_If	Condition_If — Pack tactics — Whenever this creature attacks, if you attacked with creatures with total power 6 or greater this combat, put a +1/+1 count
 Goblin Charbelcher	1	BRR;DDT;EMA;MB2;MRD;PLST;WC04	Effect:deal	deal damage equal to the number of nonland cards revealed this way to any target
 Goblin Flectomancer	1	GPT	Effect:change	Sacrifice ~: You may change the targets of target instant or sorcery spell.
 Goblin Traprunner	1	MH2	Swallow:DynamicQty	DynamicQty — Whenever this creature attacks, flip three coins. For each flip you win, create a 1/1 red Goblin creature token that's tapped and attacking.
 God-Eternal Kefnet	1	PS19;PWAR;WAR	Effect:static_structure	You may reveal the first card you draw each turn as you draw it. Whenever you reveal an instant or sorcery card this way, copy that card and you may cast the co
 Goldberry, River-Daughter	1	LTR;PLTR	Effect:move	{T}: Move a counter of each kind not on ~ from another target permanent you control onto ~.
-Goliath Hatchery	1	ONE	Swallow:DynamicQty	DynamicQty — When this enchantment enters, create two 3/3 green Phyrexian Beast creature tokens with toxic 1. (Players dealt combat damage by them also g
+Goliath Hatchery	1	ONE	Effect:draw	draw cards equal to its total toxic value
 Gollum, Scheming Guide	2	LTR;PLTC	Effect:an;Effect:otherwise	An opponent guesses whether the top card of your library is the chosen kind
 Grab the Prize	1	DSK	Swallow:Condition_If	Condition_If — As an additional cost to cast this spell, discard a card. Draw two cards. If the discarded card wasn't a land card, Grab the Prize deals 2 d
 Graceful Reprieve	1	MM3;MOR	Trigger:When target creature dies this turn	When target creature dies this turn, return that card to the battlefield under its owner's control.
@@ -519,7 +488,6 @@ Harness Infinity	1	PRM;PSTX;STX	Effect:exchange	Exchange your hand and graveyard
 Harsh Mentor	1	AKH;AKR;DSC;LTC;PAKH	Trigger:Whenever an opponent activates an ability of an artifact, creature, or land on the battlefield	Whenever an opponent activates an ability of an artifact, creature, or land on the battlefield, if it isn't a mana ability, ~ deals 2 damage to that player.
 Hauken's Insight	2	DBL;PVOW;VOW	Effect:look;Effect:unknown	Once during each of your turns, you may play a land or cast a spell from among the cards exiled with ~ without paying its mana cost.
 Havengul Lich	1	C17;DKA;SCD;SIS;SLD	Effect:when	When you cast it this turn, ~ gains all activated abilities of that card
-Hawkeye, Young Avenger	1	MSH	Swallow:DynamicQty	DynamicQty — Reach If a source you control would deal noncombat damage to an opponent or a permanent an opponent controls, instead it deals that much dam
 Hearth Elemental	1	WOE	Swallow:DynamicQty	DynamicQty — This spell costs {X} less to cast, where X is the number of cards in your graveyard that are instant cards, sorcery cards, and/or have an Ad
 Heart of Kiran	1	AER;KLR;PAER	Static:AlternativeKeywordCost(Crew)	You may remove a loyalty counter from a planeswalker you control rather than pay ~'s crew cost.
 Hedonist's Trove	1	C19;DTK	Effect:static_structure	You may cast spells from among cards exiled with ~. You can't cast more than one spell this way each turn.
@@ -539,7 +507,6 @@ Hobgoblin Captain	1	AFR;HBG	Swallow:Condition_If	Condition_If — Pack tactics �
 Hollow Marauder	1	OTJ	Effect:for	For each of those opponents who didn't discard a card with mana value 4 or greater, draw a card
 Holy Frazzle-Cannon	1	MOM	Effect:each	each other creature you control that shares a creature type with it
 Honorable Passage	1	TSB;VIS;WC97	Swallow:Condition_If	Condition_If — The next time a source of your choice would deal damage to any target this turn, prevent that damage. If damage from a red source is prevent
-Hope-Ender Coatl	1	MH3	Effect:Unsupported unless clause	counter target spell an opponent controls unless they pay {1}
 Hope of Ghirapur	1	AER;KLR;PAER;PLST	Effect:can't	Sacrifice ~: Until your next turn, target player who was dealt combat damage by ~ this turn can't cast noncreature spells.
 Hostile Negotiations	1	BRO;PBRO;PRM	Effect:look	Look at the cards in each pile, then turn a pile of your choice face up
 Hotheaded Giant	2	EVE	Swallow:Condition_Unless;Swallow:Duration_ThisTurn	Condition_Unless — Haste This creature enters with two -1/-1 counters on it unless you've cast another red spell this turn.
@@ -548,31 +515,25 @@ Howlpack Piper	1	DBL;PRM;PVOW;VOW	Swallow:Condition_If	Condition_If — This spe
 Howltooth Hollow	1	LRW;SLD	Swallow:Condition_If	Condition_If — Hideaway 4 (When this land enters, look at the top four cards of your library, exile one face down, then put the rest on the bottom in a ran
 Huatli, Warrior Poet	1	PXLN;XLN	Effect:creatures	Creatures dealt damage this way can't block
 Hulking Metamorph	1	BRO	Swallow:DynamicQty	DynamicQty — Prototype {2}{U}{U} — 3/3 (You may cast this spell with different mana cost, color, and size. It keeps its abilities and types.) You may h
-Hulkling, Burgeoning Bruiser	1	MSH	Swallow:Condition_If	Condition_If — Vigilance Whenever another creature you control enters, if it has greater power or toughness than Hulkling, put a +1/+1 counter on Hulkling.
 Hungering Yeti	1	FRF	Swallow:Optional_YouMay	Optional_YouMay — As long as you control a green or blue permanent, you may cast this spell as though it had flash. (You may cast it any time you could cast a
 Hurkyl, Master Wizard	1	BRO;PBRO;PRM	Swallow:Optional_YouMay	Optional_YouMay — At the beginning of your end step, if you've cast a noncreature spell this turn, reveal the top five cards of your library. For each card ty
 Icebreaker Kraken	1	KHM;PKHM;PRM	Effect:artifacts	artifacts and creatures target opponent controls don't untap during that player's next untap step
 Ichormoon Gauntlet	1	ONE;PONE	Effect:put	Put an additional counter of that kind on that permanent
 Identity Crisis	1	ARB	Effect:graveyard	graveyard
-Ignis Scientia	1	FIN	Cost:I've Come Up with a New Recipe! — {1}{G}{U}	I've Come Up with a New Recipe! — {1}{G}{U}
 Imaginary Threats	2	HOU	Effect:creatures;Effect:during	Creatures target opponent controls attack this turn if able. During that player's next untap step, creatures they control don't untap.
 Immolation Shaman	2	PRNA;RNA	Effect:or;Trigger:Whenever an opponent activates an ability of an artifact, creature	Whenever an opponent activates an ability of an artifact, creature, or land that isn't a mana ability, ~ deals 1 damage to that player.
 Immortal Coil	1	ALA	Trigger:When there are no cards in your graveyard	When there are no cards in your graveyard, you lose the game.
 Imperiosaur	1	FUT;MMA;TSR	Effect:unknown	Spend only mana produced by basic lands to cast this spell.
-Incisor Glider	1	ONE	Swallow:Condition_If	Condition_If — Flying Corrupted — Whenever this creature attacks, if an opponent has three or more poison counters, creatures you control get +1/+1 until
 Increasing Vengeance	1	C19;DKA;STA	Effect:orphaned_copy_retarget	You may choose new targets for the copies
-Indulgent Tormentor	1	DDR;IMA;M15;PLST;PM15;PRM;SCD	Effect:Unsupported unless clause	draw a card unless target opponent sacrifices a creature of their choice or pays 3 life
+Indulgent Tormentor	1	DDR;IMA;M15;PLST;PM15;PRM;SCD	Effect:Unsupported unless clause	draw a card unless target opponent sacrifices a creature of their choice or pays 3 life (unless: target opponent sacrifices a creature of their choice or pays 3
 Inferno Hellion	1	JMP;M19	Swallow:Condition_If	Condition_If — Trample (This creature can deal excess combat damage to the player or planeswalker it's attacking.) At the beginning of each end step, if th
 Inferno Trap	1	ARC;DDN;ZEN	Swallow:Duration_ThisTurn	Duration_ThisTurn — If you've been dealt damage by two or more creatures this turn, you may pay {R} rather than pay this spell's mana cost. Inferno Trap deals 4
 Infinite Reflection	1	AVR;C14	Effect:replacement_structure	Nontoken creatures you control enter as a copy of enchanted creature.
 Inga Rune-Eyes	1	CMM;KHM;MUL;PRM	Swallow:Condition_If	Condition_If — When Inga Rune-Eyes enters, scry 3. When Inga Rune-Eyes dies, draw three cards if three or more creatures died this turn.
 Ink-Treader Nephilim	2	GPT	Swallow:Condition_If;Swallow:DynamicQty	DynamicQty — Whenever a player casts an instant or sorcery spell, if that spell targets only this creature, copy the spell for each other creature that s
 Innocent Bystander	1	MKM	Trigger:Whenever ~ is dealt 3 or more damage	Whenever ~ is dealt 3 or more damage, investigate.
-Inquisitive Glimmer	1	DSK	Effect:static_structure	Unlock costs you pay cost {1} less.
-Inquisitor's Snare	1	SHM	Swallow:Condition_If	Condition_If — Prevent all damage target attacking or blocking creature would deal this turn. If that creature is black or red, destroy it.
-In Search of Greatness	1	KHM;PKHM;PRM	Swallow:DynamicQty	DynamicQty — At the beginning of your upkeep, you may cast a permanent spell from your hand with mana value equal to 1 plus the greatest mana value among
 Inspired Idea	1	DBL;PRM;PVOW;VOW	Effect:your	Your maximum hand size is reduced by three
-Instill Furor	1	RAV	Effect:Unsupported unless clause	sacrifice ~ unless it attacked this turn
+Instill Furor	1	RAV	Effect:Unsupported unless clause	sacrifice ~ unless it attacked this turn (unless: it attacked this turn)
 Intet, the Dreamer	1	2X2;C17;CMD;OCMD;PLC	Effect:look	look at that card
 Intrepid Adversary	1	DBL;MID;PMID;PRM	Effect:when	When you pay this cost one or more times, put that many valor counters on ~
 Intrepid Outlander	1	AFR	Swallow:Condition_If	Condition_If — Reach Pack tactics — Whenever this creature attacks, if you attacked with creatures with total power 6 or greater this combat, venture int
@@ -625,7 +586,6 @@ Karn Liberated	1	2XM;J22;MM2;NPH;PLST;PRM;PUMA;SLP;UMA	Effect:restart	[−14]: R
 Karn's Sylex	1	DMU;PDMU	Effect:static_structure	Players can't pay life to cast spells or to activate abilities that aren't mana abilities.
 Kasmina, Enigma Sage	1	PRM;PSTX;STX	Effect:static_structure	Each other planeswalker you control has the loyalty abilities of ~.
 Kassandra, Eagle Bearer	1	ACR	Trigger:Whenever a creature you control with a legendary Equipment attached to it deals combat damage to a player	Whenever a creature you control with a legendary Equipment attached to it deals combat damage to a player, draw a card.
-Katara, Water Tribe's Hope	1	PTLA;TLA	Swallow:ActivateOnlyDuring	ActivateOnlyDuring — Vigilance When Katara enters, create a 1/1 white Ally creature token. Waterbend {X}: Creatures you control have base power and toughness X/
 Katilda, Dawnhart Prime	1	DBL;MID;PMID	Effect:add	{T}: Add one mana of any of ~'s colors.
 Kav Landseeker	1	EOE	Effect:at	At the beginning of the end step on your next turn, sacrifice that token
 Kaya, Bane of the Dead	1	PRM;PWAR;SLD;WAR	Effect:static_structure	Your opponents and permanents your opponents control with hexproof can be the targets of spells and abilities you control as though they didn't have hexproof.
@@ -633,16 +593,13 @@ Kaya, Geist Hunter	1	DBL;PRM;PVOW;TDC;VOW	Effect:twice	[−2]: Until end of turn
 Kaya, Intangible Slayer	1	ONE;PONE	Swallow:Condition_If	Condition_If — Hexproof [+2]: Each opponent loses 3 life and you gain 3 life. [0]: You draw two cards. Then each opponent may scry 1. [−3]: Exile target 
 Kaya, Spirits' Justice	2	MKM;PMKM;PWCS	Effect:choose;Effect:for	For each other player, exile up to one target creature that player controls
 Kaza, Roil Chaser	1	OTC;PRM;PZNR;ZNR	Effect:the	{T}: The next instant or sorcery spell you cast this turn costs {X} less to cast, where X is the number of Wizards you control as this ability resolves.
-Kazuul, Tyrant of the Cliffs	1	C16;CLB;CMM;MKC;NCC;SCD;WWK	Effect:Unsupported unless clause	if you're the defending player, create a 3/3 red Ogre creature token unless that creature's controller pays {3}
 Keen-Eared Sentry	1	AFR	Effect:effect_structure	Each opponent can't venture into the dungeon more than once each turn.
-Kemba's Legion	1	MBS;PLST	Swallow:DynamicQty	DynamicQty — Vigilance This creature can block an additional creature each combat for each Equipment attached to this creature.
+Kemba's Legion	1	MBS;PLST	Effect:effect_structure	~ can block an additional creature each combat for each Equipment attached to ~.
 Kentaro, the Smiling Cat	1	BOK	Swallow:DynamicQty	DynamicQty — Bushido 1 (Whenever this creature blocks or becomes blocked, it gets +1/+1 until end of turn.) You may pay {X} rather than pay the mana cost
 Keral Keep Disciples	1	M21	Trigger:Whenever you activate a loyalty ability of a Chandra planeswalker	Whenever you activate a loyalty ability of a Chandra planeswalker, ~ deals 1 damage to each opponent.
 Keranos, God of Storms	1	JOU;PIO;SLD	Effect:effect_structure	Reveal the first card you draw on each of your turns. Whenever you reveal a land card this way, draw a card. Whenever you reveal a nonland card this way, ~ deal
 Kethis, the Hidden Hand	1	M20;PM20	Swallow:Optional_YouMay	Optional_YouMay — Legendary spells you cast cost {1} less to cast. Exile two legendary cards from your graveyard: Until end of turn, each legendary card in yo
-Kianne, Dean of Substance	1	PRM;PSTX;STX	Swallow:DynamicQty	DynamicQty — {T}: Exile the top card of your library. If it's a land card, put it into your hand. Otherwise, put a study counter on it. {4}{G}: Create a 
 Kill-Suit Cultist	1	DIS	Effect:the	{B}, Sacrifice ~: The next time damage would be dealt to target creature this turn, destroy that creature instead.
-Kishla Skimmer	1	TDM	Trigger:Whenever a card leaves your graveyard during your turn	Whenever a card leaves your graveyard during your turn, draw a card. This ability triggers only once each turn.
 Kitesail Larcenist	1	LCI;PLCI	Effect:for	for each player, choose up to one other target artifact or creature that player controls
 Kitsune Mystic	1	CHK;PSAL	Effect:flip	flip it
 Kjeldoran Royal Guard	1	10E;5ED;6ED;7ED;ICE	Effect:all	{T}: All combat damage that would be dealt to you by unblocked creatures this turn is dealt to ~ instead.
@@ -690,8 +647,6 @@ Living Breakthrough	1	NEO;PNEO;PRM	Effect:with	with the same mana value as that 
 Living Lore	1	C21;DTK;PDTK;UMA	Effect:unknown	As ~ enters, exile an instant or sorcery card from your graveyard.
 Llanowar Greenwidow	1	DMU;PDMU;PRM	Swallow:DynamicQty	DynamicQty — Reach, trample Domain — {7}{G}: Return this card from your graveyard to the battlefield tapped. It gains "If this permanent would leave th
 Locthwain Paladin	1	ELD	Swallow:Condition_If	Condition_If — Menace (This creature can't be blocked except by two or more creatures.) Adamant — If at least three black mana was spent to cast this spe
-Locus of Enlightenment	1	LCI	Effect:static_structure	~ has each activated ability of the exiled cards used to craft it. You may activate each of those abilities only once each turn.
-Loki, God of Mischief	1	MSH;PMEI	Trigger:Whenever a player or permanent becomes the target of an ability you control	Whenever a player or permanent becomes the target of an ability you control, draw a card. This ability triggers only once each turn.
 Long Feng, Grand Secretariat	1	TLA	Trigger:Whenever another creature you control	Whenever another creature you control, put a +1/+1 counter on target creature you control.
 Long List of the Ents	2	LTR	Effect:note;Effect:when	Note a creature type that hasn't been noted for ~
 Long Rest	1	AFR;PAFR;PRM	Swallow:Condition_If	Condition_If — Return X target cards with different mana values from your graveyard to your hand. If eight or more cards were returned to your hand this wa
@@ -710,8 +665,6 @@ Maelstrom Djinn	1	FUT	Effect:gain	gain vanishing
 Maelstrom Muse	1	STX	Effect:the	the next instant or sorcery spell you cast this turn costs {X} less to cast, where X is ~'s power as this ability resolves
 Maestros Ascendancy	1	PSNC;SNC	Swallow:Condition_If	Condition_If — Once during each of your turns, you may cast an instant or sorcery spell from your graveyard by sacrificing a creature in addition to paying
 Maestros Diabolist	1	PSNC;SNC	Effect:create	create a tapped and attacking 1/1 red Devil creature token with "When ~ dies, it deals 1 damage to any target."
-Magitek Scythe	1	FIN	Swallow:Optional_YouMay	Optional_YouMay — A Test of Your Reflexes! — When this Equipment enters, you may attach it to target creature you control. If you do, that creature gains fi
-Magmatic Sprinter	1	ONE	Effect:Unsupported unless clause	return ~ to its owner's hand unless you remove two oil counters from it
 Magus of the Scroll	1	TSP	Swallow:Condition_If	Condition_If — {3}, {T}: Choose a card name, then reveal a card at random from your hand. If that card has the chosen name, this creature deals 2 damage to
 Malamet Battle Glyph	1	LCI	Swallow:Condition_If	Condition_If — Choose target creature you control and target creature you don't control. If the creature you control entered this turn, put a +1/+1 counter
 Mana Clash	1	4BB;4ED;5ED;7ED;8ED;9ED;DRK;REN	Effect:repeat	Repeat this process until both players' coins come up heads on the same flip
@@ -768,11 +721,9 @@ Moratorium Stone	1	GPT	Effect:all	all other cards from graveyards with the same 
 Moraug, Fury of Akoum	1	EOC;PL21;PRM;PZNR;ZNR	Swallow:DynamicQty	DynamicQty — Each creature you control gets +1/+0 for each time it has attacked this turn. Landfall — Whenever a land you control enters, if it's your 
 Mordenkainen	1	AFR;PAFR;PRM	Effect:exchange	[−10]: Exchange your hand and library, then shuffle. You get an emblem with "You have no maximum hand size."
 Morgue Burst	1	DGM	Effect:deal	deal damage to any target equal to the power of the card returned this way
-Morsel Theft	1	MOR	Swallow:Condition_If	Condition_If — Prowl {1}{B} (You may cast this for its prowl cost if you dealt combat damage to a player this turn with a Rogue.) Target player loses 3 lif
 Mount Doom	1	LTR;PLTR	Effect:choose	{5}{B}{R}, {T}, Sacrifice ~ and a legendary artifact: Choose up to two creatures, then destroy the rest. Activate only as a sorcery.
 Multiple Choice	1	J22;PRM;PSTX;STX	Effect:do	If X is 4 or more, do all of the above.
 Murderous Betrayal	1	8ED;NEM	Cost:rounded up	rounded up
-Mutable Explorer	1	ECL;PECL	Effect:create	create a tapped Mutavault token
 Mutagen Connoisseur	1	MOM	Swallow:DynamicQty	DynamicQty — Flying, vigilance This creature gets +1/+0 for each transformed permanent you control.
 Myr Superion	1	DCI;NPH;PRM	Effect:unknown	Spend only mana produced by creatures to cast this spell.
 Mysterious Limousine	1	PRM;PSNC;SNC	Swallow:Condition_If	Condition_If — Whenever this Vehicle enters or attacks, exile up to one other target creature until this Vehicle leaves the battlefield. If a creature is p
@@ -790,13 +741,14 @@ Necrogen Rotpriest	1	ONE	Effect:get	get an additional poison counter
 Necromantic Summons	1	ORI	Swallow:Condition_If	Condition_If — Put target creature card from a graveyard onto the battlefield under your control. Spell mastery — If there are two or more instant and/or
 Needle Drop	1	LRW;PLST	Swallow:Duration_ThisTurn	Duration_ThisTurn — Needle Drop deals 1 damage to any target that was dealt damage this turn. Draw a card.
 Neheb, the Eternal	1	AKR;CMM;HOU;MKC;PHOU	Effect:add	add {R} for each 1 life your opponents have lost
-Nephalia Academy	2	EMN;PLST	Swallow:Optional_YouMay;Swallow:Replacement_Instead	Replacement_Instead — If a spell or ability an opponent controls causes you to discard a card, you may reveal that card and put it on top of your library instea
+Nephalia Academy	1	EMN;PLST	Swallow:Replacement_Instead	Replacement_Instead — If a spell or ability an opponent controls causes you to discard a card, you may reveal that card and put it on top of your library instea
 Neriv, Heart of the Storm	1	PTDM;TDM	Swallow:DynamicQty	DynamicQty — Flying If a creature you control that entered this turn would deal damage, it deals twice that much damage instead.
 New Perspectives	1	AKH;AKR;C20;PAKH	Static:AlternativeKeywordCost(Cycling)	As long as you have seven or more cards in hand, you may pay {0} rather than pay cycling costs.
 Nezumi Graverobber	1	CHK;CM2;CMD;PHUK;PLST;PSAL;TD0	Effect:flip	flip ~
 Nezumi Shortfang	1	CHK;PLST	Effect:flip	flip ~
 Nicanzil, Current Conductor	2	LCI	Trigger:Whenever a creature you control explores a land card;Trigger:Whenever a creature you control explores a nonland card	Whenever a creature you control explores a land card, you may put a land card from your hand onto the battlefield tapped.
 Nicol Bolas, Dragon-God	1	MED;PRM;PS19;PWAR;RVR;SLD;WAR	Effect:static_structure	~ has all loyalty abilities of all other planeswalkers on the battlefield.
+Nicol Bolas, the Arisen	1	M19;PJ21;PM19;SLD	ParseWarning:target-fallback	[warning:target-fallback] parse_target could not classify 'but the bottom card of target player's library'
 Niko Defies Destiny	1	KHM	Effect:spend	Spend this mana only to foretell cards or cast spells that have foretell
 Niko, Light of Hope	1	DSK;PDSK	Effect:shards	Shards you control become copies of it until the next end step
 Nine Lives	1	M21;MAR;OMB;PM21;PRM;SLD	Trigger:When there are nine or more incarnation counters on ~	When there are nine or more incarnation counters on ~, exile it.
@@ -806,26 +758,23 @@ Niv-Mizzet Reborn	1	MUL;PLST;PWAR;RVR;WAR	Effect:for	For each color pair, choose
 Noctis, Prince of Lucis	1	FIN;PFIN	Swallow:Condition_If	Condition_If — Lifelink You may cast artifact spells from your graveyard by paying 3 life in addition to paying their other costs. If you cast a spell this
 Not Forgotten	1	J22;SOI	Effect:put	Put target card from a graveyard on your choice of the top or bottom of its owner's library. Create a 1/1 white Spirit creature token with flying.
 Notion Thief	1	A25;DGM;LTC;PIO;SLD;SPG;ZNC	Effect:draw	draw
-Notorious Throng	1	MOR;ZNC	Swallow:Condition_If	Condition_If — Prowl {5}{U} (You may cast this for its prowl cost if you dealt combat damage to a player this turn with a Rogue.) Create X 1/1 black Faerie
-Nowhere to Run	1	DSK;PW26	Effect:static_structure	Creatures your opponents control can be the targets of spells and abilities as though they didn't have hexproof. Ward abilities of those creatures don't trigger
 No Witnesses	1	MKM;PMKM	Effect:the	Each player who controls the most creatures investigates. Then destroy all creatures.
 Nullstone Gargoyle	1	RAV	Trigger:Whenever the first noncreature spell of a turn is cast	Whenever the first noncreature spell of a turn is cast, counter that spell.
 Nyxathid	1	BBD;CON;JMP	Swallow:DynamicQty	DynamicQty — As this creature enters, choose an opponent. This creature gets -1/-1 for each card in the chosen player's hand.
 Oath of Teferi	1	CMM;DOM;PDOM	Effect:effect_structure	You may activate the loyalty abilities of planeswalkers you control twice each turn rather than only once.
 Oblivion's Hunger	1	ZNR	Swallow:Condition_If	Condition_If — Target creature you control gains indestructible until end of turn. Draw a card if that creature has a +1/+1 counter on it. (Damage and effe
+Oblivious Bookworm	1	DSK	Effect:Unsupported unless clause	discard a card unless a permanent entered the battlefield face down under your control this turn or you turned a permanent face up this turn (unless: a permanen
 Obscura Interceptor	1	PSNC;SNC	Effect:when	When it connives this way, return up to one target spell to its owner's hand
 Obscuring Aether	1	DTK;MKC	Effect:turn	{1}{G}: Turn ~ face down.
 Ochre Jelly	1	AFR;PAFR	Effect:the	The token enters with half that many +1/+1 counters on it, rounded down
 Odric, Master Tactician	1	C20;CMM;E01;M13;MIC;PLST	Effect:choose	choose which creatures block this combat and how those creatures block
 Ogre Geargrabber	1	SOM	Effect:when	When you lose control of that Equipment, unattach it
-Ogre Marauder	1	BOK	Effect:Unsupported unless clause	it gains "~ can't be blocked" until end of turn unless defending player sacrifices a creature of their choice
+Ogre Marauder	1	BOK	Effect:Unsupported unless clause	it gains "~ can't be blocked" until end of turn unless defending player sacrifices a creature of their choice (unless: defending player sacrifices a creature of
 Ojer Axonil, Deepest Might	1	LCI	Swallow:DynamicQty	DynamicQty — Trample If a red source you control would deal an amount of noncombat damage less than Ojer Axonil's power to an opponent, that source deals
 O-Kagachi Made Manifest	1	NEO;PNEO;PRM	Effect:choose	choose a nonland card in your graveyard
 Olag, Ludevic's Hubris	1	DBL;MID;PLST;PMID	Effect:unknown	As ~ transforms into ~, it becomes a copy of a creature card exiled with it, except its name is ~, it's 4/4, and it's a legendary blue and black Zombie in addit
-Omnath, Locus of All	1	MOM;PMOM	Effect:add	add three mana in any combination of its colors
 Omniscience	1	FDN;M13;M19;MP2;P22;PFDN;PM19;WOT	Swallow:Optional_YouMay	Optional_YouMay — You may cast spells from your hand without paying their mana costs.
 One Ring to Rule Them All	1	LTR;PLTR	Effect:mill	mill cards equal to your Ring-bearer's power
-Oni-Cult Anvil	1	BRC;NEO	Trigger:Whenever one or more artifacts you control leave the battlefield during your turn	Whenever one or more artifacts you control leave the battlefield during your turn, create a 1/1 colorless Construct artifact creature token. This ability trigge
 Oni Possession	1	CHK;DDC;DVD	Effect:static_structure	Enchanted creature is a Demon Spirit.
 Open the Way	1	MAT;PMAT;SOC	Effect:x	X can't be greater than the number of players in the game. Reveal cards from the top of your library until you reveal X land cards. Put those land cards onto th
 Oracle's Attendants	1	8ED;9ED;NEM	Effect:all	{T}: All damage that would be dealt to target creature this turn by a source of your choice is dealt to ~ instead.
@@ -842,7 +791,7 @@ Outrageous Robbery	1	MKM;PMKM	Effect:spend	spend mana as though it were mana of 
 Overgrown Zealot	1	DSK	Effect:spend	Spend this mana only to turn permanents face up
 Overpowering Attack	1	ACR	Swallow:Condition_If	Condition_If — Freerunning {2}{R} (You may cast this spell for its freerunning cost if you dealt combat damage to a player this turn with an Assassin or co
 Over the Top	1	BRO;PBRO;PRM	Effect:reveal	Each player reveals a number of cards from the top of their library equal to the number of nonland permanents they control, puts all permanent cards they reveal
-Overwhelming Splendor	1	AKR;HOU;PHOU	Effect:static_structure	Creatures enchanted player controls lose all abilities and have base power and toughness 1/1.
+Overwhelming Splendor	1	AKR;HOU;PHOU	Effect:static_structure	Enchanted player can't activate abilities that aren't mana abilities or loyalty abilities.
 Oviya, Automech Artisan	1	DFT;PDFT	Swallow:Condition_If	Condition_If — Each creature that's attacking one of your opponents has trample. {G}, {T}: You may put a creature or Vehicle card from your hand onto the b
 Page, Loose Leaf	1	SOS	Cost:Loose Leaf	Loose Leaf
 Pain Magnification	1	DIS;PLST	Trigger:Whenever an opponent is dealt 3 or more damage by a single source	Whenever an opponent is dealt 3 or more damage by a single source, that player discards a card.
@@ -858,13 +807,13 @@ Party Dude	1	TMT	Trigger:Whenever one or more of your opponents are attacked	Whe
 Path of Mettle	1	PRIX;RIX	Effect:double	double strike, vigilance, and/or haste
 Pathway Arrows	1	BFZ	Swallow:Condition_If	Condition_If — Equipped creature has "{2}, {T}: This creature deals 1 damage to target creature. If a colorless creature is dealt damage this way, tap it."
 Perilous Predicament	1	AER	Effect:a	a nonartifact creature of their choice
-Perplex	1	RAV	Swallow:Condition_Unless	Condition_Unless — Counter target spell unless its controller discards their hand. Transmute {1}{U}{B} ({1}{U}{B}, Discard this card: Search your library for a
+Perplex	1	RAV	Effect:Unsupported unless clause	Counter target spell unless its controller discards their hand.
 Petals of Insight	1	CHK;MMA	Swallow:Optional_YouMay	Optional_YouMay — Look at the top three cards of your library. You may put those cards on the bottom of your library in any order. If you do, return Petals of
 Phosphorescent Feast	1	EVE;FUT	Swallow:DynamicQty	DynamicQty — Chroma — Reveal any number of cards in your hand. You gain 2 life for each green mana symbol in those cards' mana costs.
 Phylactery Lich	1	M11;M13;M19;PM19	Effect:replacement_structure	As ~ enters, put a phylactery counter on an artifact you control.
 Phyrexian Fleshgorger	1	BRO;PBRO;PRM	Swallow:DynamicQty	DynamicQty — Prototype {1}{B}{B} — 3/3 (You may cast this spell with different mana cost, color, and size. It keeps its abilities and types.) Menace, l
 Phyrexian Ingester	1	C14;CMM;EMA;NPH;PLST	Effect:static_structure	~ gets +X/+Y, where X is the exiled creature card's power and Y is its toughness.
-Pia's Revolution	1	AER;PAER	Effect:Unsupported unless clause	return that card to your hand unless target opponent has ~ deal 3 damage to them
+Pia's Revolution	1	AER;PAER	Effect:Unsupported unless clause	return that card to your hand unless target opponent has ~ deal 3 damage to them (unless: target opponent has ~ deal 3 damage to them)
 Pick the Brain	1	SIR;SOI	Effect:search	Delirium — If there are four or more card types among cards in your graveyard, search that player's graveyard, hand, and library for any number of cards with th
 Pigment Storm	1	J25;STX	Effect:excess	Excess damage is dealt to that creature's controller instead
 Pit Automaton	2	DFT	Effect:orphaned_copy_retarget;Effect:when	{2}, {T}: When you next activate an exhaust ability that isn't a mana ability this turn, copy it. You may choose new targets for the copy.
@@ -911,14 +860,12 @@ Qarsi Deceiver	1	DTK	Effect:spend	Spend this mana only to cast a face-down creat
 Quakebringer	1	KHM;PKHM;PRM	Effect:this	This ability triggers only if ~ is on the battlefield or if ~ is in your graveyard and you control a Giant
 Quarry Colossus	1	JOU	Effect:put	put target creature into its owner's library just beneath the top X cards of that library, where X is the number of Plains you control
 Queen Kayla bin-Kroog	1	BRO;PBRO;PRM	Effect:choose	choose an artifact or creature card with mana value 1 you discarded this way, then do the same for artifact or creature cards with mana values 2 and 3
-Quenchable Fire	1	CON	Effect:deal	deal an additional 3 damage to that player or planeswalker at the beginning of your next upkeep step unless that player or that planeswalker's controller pays {
+Quenchable Fire	1	CON	Effect:Unsupported unless clause	It deals an additional 3 damage to that player or planeswalker at the beginning of your next upkeep step unless that player or that planeswalker's controller pa
 Quick Draw	1	OTJ	Effect:creatures	Creatures target opponent controls lose first strike and double strike
 Quicksilver Fountain	1	MRD	Effect:have	have a flood counter on it
 Quistis Trepe	1	FIN	Swallow:Condition_If	Condition_If — Blue Magic — When Quistis Trepe enters, you may cast target instant or sorcery card from a graveyard, and mana of any type can be spent to
-Radiant Restraints	1	DBL;VOW	Effect:replacement_structure	Creatures enchanted player controls enter tapped.
 Rakdos, the Muscle	1	OTJ;POTJ	Swallow:DynamicQty	DynamicQty — Flying, trample Whenever you sacrifice another creature, exile cards equal to its mana value from the top of target player's library. Until 
 Rakdos, the Showstopper	1	CLU;PRNA;RNA	Swallow:DynamicQty	DynamicQty — Flying, trample When Rakdos enters, flip a coin for each creature that isn't a Demon, Devil, or Imp. Destroy each creature whose coin comes 
-Ral and the Implicit Maze	1	MH3	Effect:create	Create a Spellgorger Weird token
 Ral, Leyline Prodigy	1	MH3;PMH3;PURL	Effect:instant	[+1]: Until your next turn, instant and sorcery spells you cast cost {1} less to cast.
 Rally the Horde	1	SOK	Effect:repeat	repeat this process
 Ral Zarek	1	C19;DGM;PLST;RVR	Swallow:DynamicQty	DynamicQty — [+1]: Tap target permanent, then untap another target permanent. [−2]: Ral Zarek deals 3 damage to any target. [−7]: Flip five coins. Ta
@@ -927,9 +874,7 @@ Rampaging Geoderm	1	MOM	Swallow:Condition_If	Condition_If — Trample, haste Whe
 Ram Through	1	CMM;GN3;IKO;J22;PLST	Effect:excess	excess damage is dealt to that creature's controller instead
 Ran and Shaw	1	PTLA;TLA	Swallow:Condition_If	Condition_If — Flying, firebending 2 When Ran and Shaw enter, if you cast them and there are three or more Dragon and/or Lesson cards in your graveyard, cr
 Raubahn, Bull of Ala Mhigo	1	FIN;PFIN	Swallow:DynamicQty	DynamicQty — Ward—Pay life equal to Raubahn's power. Whenever Raubahn attacks, attach up to one target Equipment you control to target attacking creatu
-Ravenous Necrotitan	1	ONE	Effect:Unsupported unless clause	sacrifice a creature unless an opponent has three or more poison counters
 Ravenous Trap	1	2XM;PLST;ZEN	Swallow:Duration_ThisTurn	Duration_ThisTurn — If an opponent had three or more cards put into their graveyard from anywhere this turn, you may pay {0} rather than pay this spell's mana c
-Reality Smasher	1	OGW;POGW;SCH;SLD	Effect:Unsupported unless clause	counter that spell unless its controller discards a card
 Realmwright	1	GTC	Effect:static_structure	Lands you control are the chosen type in addition to their other types.
 Reaper of Night	1	ELD;PLST;PRM	Swallow:Condition_If	Condition_If — Whenever this creature attacks, if defending player has two or fewer cards in hand, it gains flying until end of turn.
 Reap Intellect	1	DGM	Effect:search	search that player's graveyard, hand, and library for any number of cards with the same name as that card and exile them
@@ -940,7 +885,7 @@ Reflector Mage	1	EA2;OGW;PLST;SLD	Effect:can't	can't cast spells with the same n
 Regenerate	1	M10	Effect:~	~ target creature.
 Reject Imperfection	1	ONE	Swallow:Condition_If	Condition_If — Counter target spell. If that spell's mana value was 3 or less, proliferate. (Choose any number of permanents and/or players, then give each
 Relic Axe	1	J25;ZNR	Swallow:Condition_If	Condition_If — When this Equipment enters, attach it to target creature you control. Equipped creature gets +1/+1. If it's a Warrior, it gets +2/+1 instead
-Remorseless Punishment	1	OGW;PLST;POGW	Swallow:Condition_Unless	Condition_Unless — Target opponent loses 5 life unless that player discards two cards or sacrifices a creature or planeswalker of their choice. Repeat this pro
+Remorseless Punishment	1	OGW;PLST;POGW	Effect:Unsupported unless clause	Target opponent loses 5 life unless that player discards two cards or sacrifices a creature or planeswalker of their choice. Repeat this process once.
 Render Silent	1	DGM;GK2;PDGM;PIO;PRM	Effect:can't	can't cast spells
 Reno and Rude	1	FIN	Swallow:Duration_ThisTurn	Duration_ThisTurn — Menace Whenever Reno and Rude deals combat damage to a player, exile the top card of that player's library. Then you may sacrifice another c
 Repeated Reverberation	1	CMM;M20;PM20	Trigger:When you next cast an instant spell	When you next cast an instant spell, cast a sorcery spell, or activate a loyalty ability this turn, copy that spell or ability twice. You may choose new targets
@@ -958,22 +903,18 @@ Rhys, the Evermore	1	ECL;PECL	Effect:remove	{W}, {T}: Remove any number of count
 Ria Ivor, Bane of Bladehold	1	ONE;PONE	Effect:the	the next time target creature would deal combat damage to one or more players this combat, prevent that damage
 Ride Down	1	EMN;KTK;OTP;SIR	Effect:creatures	Creatures that were blocked by that creature this combat gain trample
 Riftmarked Knight	1	PLC;TSR	Trigger:When the last time counter is removed from this card while it's exiled	When the last time counter is removed from this card while it's exiled, create a 2/2 black Knight creature token with flanking, protection from white, and haste
-Riku of Many Paths	1	OTJ;POTJ	Swallow:DynamicQty	DynamicQty — Whenever you cast a modal spell, choose up to X, where X is the number of times you chose a mode for that spell — • Exile the top card o
+Riku of Many Paths	2	OTJ;POTJ	Swallow:DynamicQty;Swallow:Modal_DynamicMaxDropped	DynamicQty — Whenever you cast a modal spell, choose up to X, where X is the number of times you chose a mode for that spell — • Exile the top card o
 Rimefeather Owl	1	CSP	Effect:unknown	Permanents with ice counters on them are snow.
 Ringwraiths	1	LTR	Swallow:Condition_If	Condition_If — When this creature enters, target creature an opponent controls gets -3/-3 until end of turn. If that creature is legendary, its controller 
 Risen Executioner	2	DTK	Swallow:Condition_If;Swallow:DynamicQty	DynamicQty — This creature can't block. Other Zombie creatures you control get +1/+1. You may cast this creature from your graveyard if you pay {1} more 
 Risona, Asari Commander	1	NEO;PNEO;PRM	Swallow:Condition_If	Condition_If — Haste Whenever Risona deals combat damage to a player, if it doesn't have an indestructible counter on it, put an indestructible counter on 
 Rite of Ruin	3	AVR	Effect:choose;ParseWarning:target-fallback	Choose an order for artifacts, creatures, and lands. Each player sacrifices one permanent of their choice of the first type, sacrifices two of their choice of t
 Rite of the Serpent	1	KTK;PLST	Swallow:Condition_If	Condition_If — Destroy target creature. If that creature had a +1/+1 counter on it, create a 1/1 green Snake creature token.
-Rith, Liberated Primeval	1	DMU;PDMU	Swallow:Duration_ThisTurn	Duration_ThisTurn — Flying, ward {2} Other Dragons you control have ward {2}. At the beginning of your end step, if a creature or planeswalker an opponent contr
 Ritual of the Returned	2	JOU	Effect:create;Effect:its	Create a black Zombie creature token
-River of Tears	1	BRC;CLB;FUT;IMA;MKC;WHO	Effect:add	add {B} instead
 Rogue Class	1	AFR;PAFR	Effect:look	look at it
 Rogues' Gallery	1	SNC	Effect:for	For each color, return up to one target creature card of that color from your graveyard to your hand.
 Roiling Horror	1	PLC	Effect:static_structure	~'s power and toughness are each equal to your life total minus the life total of an opponent with the most life.
 Role Reversal	1	PWAR;WAR	Effect:exchange	Exchange control of two target permanents that share a permanent type.
-Rosheen Meanderer	1	IMA;PLST;SHM	Effect:spend	Spend this mana only on costs that contain {X}
-Rosheen, Roaring Prophet	1	MH3;PMH3	Effect:spend	Spend this mana only on costs that contain {X}
 Rottenmouth Viper	1	BLB;PBLB	Effect:for	for each blight counter on it
 Rowdy Crew	1	PXLN;XLN	Swallow:Condition_If	Condition_If — Trample When this creature enters, draw three cards, then discard two cards at random. If two cards that share a card type are discarded thi
 Rubblebelt Braggart	1	MKM	Swallow:Condition_If	Condition_If — Whenever this creature attacks, if it's not suspected, you may suspect it. (A suspected creature has menace and can't block.)
@@ -1000,8 +941,6 @@ Sarkhan's Unsealing	1	JMP;M19;PM19	Effect:5,	5, or 6
 Sarkhan's Whelp	1	J22;M19;PLST	Trigger:Whenever you activate an ability of a Sarkhan planeswalker	Whenever you activate an ability of a Sarkhan planeswalker, ~ deals 1 damage to any target.
 Sasaya, Orochi Ascendant	1	SOK	Effect:static_structure	Reveal your hand: If you have seven or more land cards in your hand, flip ~.
 Sasaya's Essence	1	SOK	Swallow:DynamicQty	DynamicQty — Whenever a land you control is tapped for mana, add an additional one mana of any type that land produced for each other land you control wi
-Satyr's Cunning	1	THB	Effect:escape—{2}{r}	Escape—{2}{R}, Exile two other cards from your graveyard.
-Sauron, the Necromancer	1	LTR;PLTR	Effect:Unsupported unless clause	exile target creature card from your graveyard. Create a tapped and attacking token that's a copy of that card, except it's a 3/3 black Wraith with menace. At t
 Savage Punch	1	J22;KTK;PIO;PLST	Swallow:Duration_UntilEndOfTurn	Duration_UntilEndOfTurn — Target creature you control fights target creature you don't control. Ferocious — The creature you control gets +2/+2 until end of tur
 Saving Grace	1	HOU	Effect:all	all damage that would be dealt this turn to you and permanents you control is dealt to enchanted creature instead
 Savior of Ollenbock	1	DBL;PRM;PVOW;VOW	Trigger:Whenever ~ trains	Whenever ~ trains, exile up to one other target creature from the battlefield or creature card from a graveyard.
@@ -1025,7 +964,6 @@ Sentinel's Mark	1	RNA	Effect:during	during your main phase, enchanted creature g
 Sen Triplets	3	2XM;ARB;PLST;SLD	Effect:or;Effect:play;Effect:this	This turn
 Septic Rats	1	MBS	Swallow:Condition_If	Condition_If — Infect (This creature deals damage to creatures in the form of -1/-1 counters and to players in the form of poison counters.) Whenever this 
 Serra Paragon	1	DMU;PDMU;PRM;SOC	Effect:static_structure	Once during each of your turns, you may play a land from your graveyard or cast a permanent spell with mana value 3 or less from your graveyard. If you do, it g
-Serum Snare	1	ONE	Swallow:Condition_If	Condition_If — Return target nonland permanent to its owner's hand. If that permanent had mana value 3 or less, proliferate. (Choose any number of permanen
 Sewer Crocodile	1	SNC	Effect:this	This ability costs {3} less to activate if there are five or more mana values among cards in your graveyard
 Shadow of Doubt	1	RAV;SLD	Effect:players	Players can't search libraries this turn. Draw a card.
 Shadow of the Second Sun	1	MH3;PMH3	Effect:there	there is an additional beginning phase after this phase
@@ -1047,7 +985,7 @@ Shinryu, Transcendent Rival	2	FIN;PFIN	Effect:unknown;Trigger:When the chosen pl
 Shirei, Shizo's Caretaker	1	BOK;CMM;UMA	Swallow:Condition_If	Condition_If — Whenever a creature with power 1 or less is put into your graveyard from the battlefield, you may return that card to the battlefield at the
 Show of Confidence	1	STX	Swallow:DynamicQty	DynamicQty — When you cast this spell, copy it for each other instant and sorcery spell you've cast this turn. You may choose new targets for the copies.
 Shrouded Lore	2	PLC;PLST	Effect:choose;Effect:repeat	Target opponent chooses a card in your graveyard. You may pay {B}. If you do, repeat this process except that opponent can't choose a card already chosen for ~.
-Shuriken	1	BOK;PLST	Swallow:Condition_Unless	Condition_Unless — Equipped creature has "{T}, Unattach Shuriken: Shuriken deals 2 damage to target creature. That creature's controller gains control of Shuri
+Shuriken	1	BOK;PLST	Effect:Unsupported unless clause	That creature's controller gains control of ~ unless it was unattached from a Ninja (unless: it was unattached from a ninja)
 Sidequest: Hunt the Mark	1	FIN	Swallow:Duration_ThisTurn	Duration_ThisTurn — When this enchantment enters, destroy up to one target creature. At the beginning of your end step, if a creature died under an opponent's c
 Sideswipe	1	CHK	Effect:change	You may change any targets of target Arcane spell.
 Sigarda, Host of Herons	1	AVR;INR;PHEL;PUMA;SIS;UMA	Effect:unknown	Spells and abilities your opponents control can't cause you to sacrifice permanents.
@@ -1064,18 +1002,15 @@ Skarrgan Hellkite	1	PRNA;RNA;TDC	Swallow:Condition_If	Condition_If — Riot (Thi
 Skoa, Embermage	1	MH3	Cost:Embermage	Embermage
 Skophos Maze-Warden	1	THB	Trigger:Whenever another creature becomes the target of an ability of a land you control named Labyrinth of Skophos	Whenever another creature becomes the target of an ability of a land you control named Labyrinth of Skophos, you may have ~ fight that creature.
 Skulking Killer	2	DBL;VOW	Swallow:Condition_If;Swallow:Duration_UntilEndOfTurn	Duration_UntilEndOfTurn — When this creature enters, target creature an opponent controls gets -2/-2 until end of turn if that opponent controls no other creatu
-Skullcage	1	5DN;ARC	Effect:Unsupported unless clause	~ deals 2 damage to that player unless they have exactly three or exactly four cards in hand
 Skullmulcher	1	2XM;ALA;PLST	Swallow:DynamicQty	DynamicQty — Devour 1 (As this creature enters, you may sacrifice any number of creatures. It enters with that many +1/+1 counters on it.) When this crea
 Skull Raid	1	KHM;PLST	Effect:draw	draw cards equal to the difference
 Skyclave Shade	2	NCC;PLST;PRM;PZNR;ZNR	Effect:if;Effect:it's	if this card is in your graveyard
 Slayer's Cleaver	1	EMN	Effect:attached_grant_unmodeled_conjunct	must be blocked by an eldrazi if able
-Sleep of the Dead	1	THB	Effect:escape—{2}{u}	Escape—{2}{U}, Exile three other cards from your graveyard.
 Slumbering Trudge	1	PSOS;SOS	Swallow:Condition_If	Condition_If — This creature enters with a number of stun counters on it equal to three minus X. If X is 2 or less, it enters tapped. (If a permanent with 
 Smoke Teller	1	KTK	Effect:look	{1}{U}: Look at target face-down creature.
 Sojourner's Companion	1	MH2	Effect:unknown	Artifact landcycling {2}
 Sokenzan Renegade	1	SOK	Effect:have	have the most cards in hand gains control of ~
 Solar Tide	1	MRD	Effect:entwine—sacrifice	Entwine—Sacrifice two lands.
-Sold Out	2	TLA	Swallow:Condition_If;Swallow:Duration_ThisTurn	Condition_If — Exile target creature. If it was dealt damage this turn, create a Clue token. (It's an artifact with "{2}, Sacrifice this token: Draw a card
 Solstice Revelations	1	TLA	Swallow:DynamicQty	DynamicQty — Exile cards from the top of your library until you exile a nonland card. You may cast that card without paying its mana cost if the spell's 
 Sonic Shrieker	1	TDM	Swallow:Condition_If	Condition_If — Flying When this creature enters, it deals 2 damage to any target and you gain 2 life. If a player is dealt damage this way, they discard a 
 Sorcerer Class	1	AFR;PAFR	Effect:spend	Spend this mana only to cast an instant or sorcery spell or to gain a Class level
@@ -1100,7 +1035,6 @@ Spelunking	1	LCI	Swallow:Condition_If	Condition_If — When this enchantment ent
 Sphere of Annihilation	1	AFR;PAFR;PRM	Effect:all	all creatures and planeswalkers with mana value less than or equal to the number of void counters on it
 Sphinx Ambassador	1	M10	Swallow:Condition_If	Condition_If — Flying Whenever this creature deals combat damage to a player, search that player's library for a card, then that player chooses a card name
 Sphinx of Clear Skies	1	DMU;PDMU;PRM	Effect:an	An opponent separates those cards into two piles
-Sphinx of Foresight	1	PRNA;RNA	Swallow:Optional_YouMay	Optional_YouMay — You may reveal this card from your opening hand. If you do, scry 3 at the beginning of your first upkeep. Flying At the beginning of your up
 Sphinx of Uthuun	1	C14;C18;CMR;DDI;DDN;IMA;M12;M13	Effect:an	An opponent separates those cards into two piles
 Sphinx's Decree	1	PRIX;RIX	Effect:during	during that player's next turn
 Sphinx's Tutelage	1	ORI;PIO;PLST;SPG	Effect:repeat	repeat this process
@@ -1116,14 +1050,11 @@ Stalwart Successor	2	TDM	Swallow:Condition_If;Swallow:Duration_ThisTurn	Conditio
 Stand Together	1	DST;PLST	Effect:two	two +1/+1 counters on another target creature
 Stargaze	1	BLB;SOA	Effect:look	Look at twice X cards from the top of your library. Put X cards from among them into your hand and the rest into your graveyard. You lose X life.
 Starving Revenant	1	LCI;PLCI	Effect:for	for each card you put on top of your library
-Steamcore Scholar	1	MKM;PMKM	Effect:Unsupported unless clause	draw two cards. Then discard two cards unless you discard an instant or sorcery card or a creature card with flying
-Steamflogger Boss	1	FUT;PLST;UST	Effect:replacement_structure	If a Rigger you control would assemble a Contraption, it assembles two Contraptions instead.
 Steel Exemplar	1	BRO	Swallow:Condition_Unless	Condition_Unless — Trample This creature enters with two +1/+1 counters on it unless two or more colors of mana were spent to cast it.
 Steer Clear	1	OTJ	Swallow:Condition_If	Condition_If — Steer Clear deals 2 damage to target attacking or blocking creature. Steer Clear deals 4 damage to that creature instead if you controlled a
 Stolen Uniform	1	FIN	Effect:when	When you lose control of that Equipment this turn, if it's attached to a creature you control, unattach it
 Stomping Slabs	1	MOR	Swallow:Condition_If	Condition_If — Reveal the top seven cards of your library, then put those cards on the bottom of your library in any order. If a card named Stomping Slabs 
 Stonebinder's Familiar	1	STX	Trigger:Whenever one or more cards are put into exile during your turn	Whenever one or more cards are put into exile during your turn, put a +1/+1 counter on ~. This ability triggers only once each turn.
-Storm Entity	1	DMR;FUT;PFUT;PLST;PRM;TSR	Swallow:DynamicQty	DynamicQty — Haste This creature enters with a +1/+1 counter on it for each other spell cast this turn.
 Storyweave	1	NEO	Effect:the	The next time one or more enchantment creatures you control enter this turn, each enters with two additional +1/+1 counters on it
 Strange Augmentation	1	EMN	Effect:unknown	Delirium — Enchanted creature gets an additional +2/+2 as long as there are four or more card types among cards in your graveyard.
 Strata Scythe	1	C14;SOM	Swallow:DynamicQty	DynamicQty — Imprint — When this Equipment enters, search your library for a land card, exile it, then shuffle. Equipped creature gets +1/+1 for each l
@@ -1133,7 +1064,6 @@ Struggle for Sanity	1	CHK;PSAL	Effect:repeat	Repeat this process until all cards
 Student of Elements	2	CHK	Effect:flip;Trigger:When ~ has flying	When ~ has flying, flip it.
 Subterranean Schooner	1	LCI;PLCI	Swallow:Duration_ThisTurn	Duration_ThisTurn — Whenever this Vehicle attacks, target creature that crewed it this turn explores. (Reveal the top card of your library. Put that card into y
 Su-Chi Cave Guard	1	BRO	Effect:add	add eight {C}
-Suki, Courageous Rescuer	1	PTLA;TLA	Trigger:Whenever another permanent you control leaves the battlefield during your turn	Whenever another permanent you control leaves the battlefield during your turn, create a 1/1 white Ally creature token. This ability triggers only once each tur
 Summoner's Grimoire	1	FIN;PFIN	Swallow:Condition_If	Condition_If — Job select Equipped creature is a Shaman in addition to its other types and has "Whenever this creature attacks, you may put a creature card
 Suncleanser	1	M19;PM19	Effect:can't	can't have counters put on it
 Suppression Field	1	RAV	Effect:static_structure	Activated abilities cost {2} more to activate unless they're mana abilities.
@@ -1143,10 +1073,8 @@ Surrak, Elusive Hunter	1	PTDM;TDM	Trigger:Whenever a creature you control	Whenev
 Suspend Aggression	1	PSOS;SOS	Swallow:DynamicQty	DynamicQty — Exile target nonland permanent and the top card of your library. For each of those cards, its owner may play it until the end of their next 
 Sutured Ghoul	1	JUD;M12	Effect:unknown	As ~ enters, exile any number of creature cards from your graveyard.
 Sway of the Stars	2	BOK	Effect:all;Effect:shuffle	Each player shuffles their hand, graveyard, and all permanents they own into their library, then draws seven cards. Each player's life total becomes 7.
-Sweep Away	1	JMP;OGW	Swallow:Condition_If	Condition_If — Return target creature to its owner's hand. If that creature is attacking, you may put it on top of its owner's library instead.
-Sweet Oblivion	1	THB	Effect:escape—{3}{u}	Escape—{3}{U}, Exile four other cards from your graveyard.
 Swirl the Mists	1	CHK	Effect:effect_structure	All instances of color words in the text of spells and permanents are changed to the chosen color word.
-Sword-Point Diplomacy	1	PXLN;XLN	Effect:for	For each of those cards, put that card into your hand unless any opponent pays 3 life
+Sword-Point Diplomacy	1	PXLN;XLN	Effect:Unsupported unless clause	For each of those cards, put that card into your hand unless any opponent pays 3 life (unless: any opponent pays 3 life)
 Sylvan Echoes	1	LRW	Trigger:Whenever you clash and win	Whenever you clash and win, you may draw a card.
 Symbiote Spider-Man	1	OM1;PSPM;SPM	Effect:gain	gain this card's other abilities
 Symmetry Matrix	1	BRO	Trigger:Whenever a creature you control with power equal to its toughness enters	Whenever a creature you control with power equal to its toughness enters, you may pay {1}. If you do, draw a card.
@@ -1155,7 +1083,7 @@ Syr Carah, the Bold	1	ELD	Trigger:Whenever ~	Whenever ~, exile the top card of y
 Tablet of the Guilds	2	RTR	Swallow:Condition_If;Swallow:DynamicQty	DynamicQty — As this artifact enters, choose two colors. Whenever you cast a spell, if it's at least one of the chosen colors, you gain 1 life for each o
 Tail Swipe	1	DMU;J25;PLST;SCH	Effect:target	target creature you don't control
 Tainted Adversary	1	DBL;MID;PMID;PRM	Effect:when	When you pay this cost one or more times, put that many +1/+1 counters on ~, then create twice that many 2/2 black Zombie creature tokens with decayed
-Tainted Indulgence	1	SNC	Swallow:Condition_Unless	Condition_Unless — Draw two cards. Then discard a card unless there are five or more mana values among cards in your graveyard.
+Tainted Indulgence	1	SNC	Effect:Unsupported unless clause	discard a card unless there are five or more mana values among cards in your graveyard (unless: there are five or more mana values among cards in your graveyard
 Tainted Sigil	1	ARB	Effect:gain	{T}, Sacrifice ~: You gain life equal to the total life lost by all players this turn.
 Tajuru Preserver	1	ROE	Effect:unknown	Spells and abilities your opponents control can't cause you to sacrifice permanents.
 Takeno, Samurai General	1	CHK	Swallow:DynamicQty	DynamicQty — Bushido 2 (Whenever this creature blocks or becomes blocked, it gets +2/+2 until end of turn.) Each other Samurai creature you control gets 
@@ -1171,7 +1099,6 @@ Tar Fiend	1	ALA	Swallow:DynamicQty	DynamicQty — Devour 2 (As this creature ent
 Targ Nar, Demon-Fang Gnoll	1	AFR	Swallow:Condition_If	Condition_If — Pack tactics — Whenever Targ Nar attacks, if you attacked with creatures with total power 6 or greater this combat, attacking creatures ge
 Taste for Mayhem	1	DIS;RVR	Effect:static_structure	Hellbent — Enchanted creature gets an additional +2/+0 as long as you have no cards in hand.
 Taster of Wares	1	ECL;PECL	Swallow:DynamicQty	DynamicQty — When this creature enters, target opponent reveals X cards from their hand, where X is the number of Goblins you control. You choose one of 
-Tatsunari, Toad Rider	1	NEO;PNEO;PRM	Effect:~	{1}{G/U}: ~ and target Frog you control can't be blocked this turn except by creatures with flying or reach.
 Tax Collector	1	ACR	Effect:spells	spells your opponents cast cost {1} more to cast
 Tazri, Stalwart Survivor	2	MAT;PMAT	Effect:add;Effect:spend	{t}: add one mana of any of ~'s colors. spend this mana only to activate an ability of a creature. activate only if ~ has another activated ability.
 Teferi, Master of Time	1	M21;PM21;PRM	Effect:effect_structure	You may activate loyalty abilities of ~ on any player's turn any time you could cast an instant.
@@ -1193,7 +1120,6 @@ The Dominion Bracelet	1	EOE;PEOE	Effect:this	This ability costs {X} less to acti
 The End	1	PWOE;WOE	Effect:search	Search its controller's graveyard, hand, and library for any number of cards with the same name as that permanent and exile them
 The Eternal Wanderer	2	ONE;PLST;PONE;PW26	Effect:for;Effect:unknown	No more than one creature can attack ~ each combat.
 The Immortal Sun	1	CMM;PRIX;RIX	Effect:unknown	Players can't activate planeswalkers' loyalty abilities.
-The Incredible Hulk	1	MSH	Swallow:Condition_If	Condition_If — Reach, trample Enrage — Whenever The Incredible Hulk is dealt damage, put a +1/+1 counter on him. If he's attacking, untap him and there i
 The Legend of Yangchen	1	PTLA;TLA	Effect:choose	choose permanent with mana value 3 or greater from among permanents your opponents control
 The Millennium Calendar	2	LCI;PLCI	Trigger:When there are 1,000 or more time counters on ~;Trigger:Whenever you untap one or more permanents during your untap step	Whenever you untap one or more permanents during your untap step, put that many time counters on ~.
 The Phasing of Zhalfir	2	DMU;PDMU	Effect:another;Effect:can't	Another target nonland permanent phases out
@@ -1230,13 +1156,12 @@ To the Slaughter	1	PSOI;SOI	Effect:a	a planeswalker of their choice
 Touch of the Eternal	2	M13	Effect:count;Effect:your	count the number of permanents you control
 Tovolar's Packleader	1	DBL;MID;PLST;PMID	Effect:another	{2}{G}{G}: Another target Wolf or Werewolf you control fights target creature you don't control.
 Town Greeter	1	FIN	Swallow:Condition_If	Condition_If — When this creature enters, mill four cards. You may put a land card from among them into your hand. If you put a Town card into your hand th
-Tragic Lesson	1	HOU;J22	Swallow:Condition_Unless	Condition_Unless — Draw two cards. Then discard a card unless you return a land you control to its owner's hand.
 Trait Doctoring	1	DGM	Effect:change	Change the text of target permanent by replacing all instances of one color word with another or one basic land type with another until end of turn.
 Trance Kuja, Fate Defied	1	FIN;PFIN	Swallow:Condition_If	Condition_If — Flare Star — If a Wizard you control would deal damage to a permanent or player, it deals double that damage instead.
+Tranquil Frillback	1	MAT	Swallow:Modal_DynamicMaxDropped	Modal_DynamicMaxDropped — When this creature enters, you may pay {G} up to three times. When you pay this cost one or more times, choose up to that many — • Des
 Transcendent Archaic	1	SOS	Swallow:Condition_If	Condition_If — Vigilance Converge — When this creature enters, you may draw X cards, where X is the number of colors of mana spent to cast this spell. If
 Treacherous Greed	1	MKM;PMKM	Swallow:Duration_ThisTurn	Duration_ThisTurn — As an additional cost to cast this spell, sacrifice a creature that dealt damage this turn. Draw three cards. Each opponent loses 3 life and
 Treasure Chest	1	AFR;PAFR;PRM	Swallow:Optional_YouMay	Optional_YouMay — {4}, Sacrifice this artifact: Roll a d20. 1 | Trapped! — You lose 3 life. 2—9 | Create five Treasure tokens. 10—19 | You gain 3 life a
-Trespasser's Curse	1	AKH;AKR;PLST	Trigger:Whenever a creature enchanted player controls enters	Whenever a creature enchanted player controls enters, that player loses 1 life and you gain 1 life.
 Trickbind	1	SLD;TSP	Effect:activated	activated abilities of that permanent can't be activated
 Triskaidekaphobia	1	A25;INR;J22;PSOI;SIR;SOI	Effect:with	with exactly 13 life loses the game
 Triton Tactics	1	DDT;PLST;THS	Effect:at	At this turn's next end of combat
@@ -1259,7 +1184,6 @@ Ulamog's Despoiler	2	BFZ	Swallow:Condition_If;Swallow:Optional_YouMay	Optional_Y
 Ultimate Spider-Man	1	OM1;PSPM;SPM	Swallow:DynamicQty	DynamicQty — First strike, haste Camouflage — {2}: Put a +1/+1 counter on Ultimate Spider-Man. He gains hexproof and becomes colorless until end of tur
 Ultimecia, Time Sorceress	1	FIN	ParseWarning:target-fallback	[warning:target-fallback] parse_target could not classify 'eight cards from your graveyard'
 Umbra Mystic	1	ROE;WOC	Effect:static_structure	Auras attached to permanents you control have umbra armor.
-Umbra Stalker	1	EVE	Effect:static_structure	Chroma — ~'s power and toughness are each equal to the number of black mana symbols in the mana costs of cards in your graveyard.
 Unblinking Observer	1	DBL;MID	Effect:spend	Spend this mana only to pay a disturb cost or cast an instant or sorcery spell
 Unbound Flourishing	1	MH1;PLST;SLD;SOC	Effect:double	double the value of X
 Undead Sprinter	1	DSK;PDSK	Swallow:Condition_If	Condition_If — Trample, haste You may cast this card from your graveyard if a non-Zombie creature died this turn. If you do, this creature enters with a +1
@@ -1278,7 +1202,6 @@ Urgent Necropsy	1	MKM;PMKM	Swallow:DynamicQty	DynamicQty — As an additional co
 Urgoros, the Empty One	1	DOM;PDOM	Swallow:Condition_If	Condition_If — Flying Whenever Urgoros deals combat damage to a player, that player discards a card at random. If the player can't, you draw a card.
 Urza Assembles the Titans	1	DMU;PDMU	Effect:activate	activate the loyalty abilities of planeswalkers you control twice this turn rather than only once
 Urza, Planeswalker	1	BRO;PBRO	Effect:effect_structure	You may activate the loyalty abilities of ~ twice each turn rather than only once.
-Urza's Tome	1	DOM	Swallow:Condition_Unless	Condition_Unless — {3}, {T}: Draw a card. Then discard a card unless you exile a historic card from your graveyard. (Artifacts, legendaries, and Sagas are hist
 Vaevictis Asmadi, the Dire	2	M19;PLST;PM19;SLD	Effect:for;Effect:who	for each player, choose target permanent that player controls
 Valakut Fireboar	1	ROE	Effect:switch	switch its power and toughness
 Valgavoth, Terror Eater	1	DSK;PDSK	Swallow:Condition_If	Condition_If — Flying, lifelink Ward—Sacrifice three nonland permanents. If a card you didn't control would be put into an opponent's graveyard from anyw
@@ -1288,7 +1211,6 @@ Vannifar, Evolved Enigma	1	MKM;PMKM	Effect:cloak	Cloak a card from your hand
 Vantress Paladin	1	ELD	Swallow:Condition_If	Condition_If — Flying Adamant — If at least three blue mana was spent to cast this spell, this creature enters with a +1/+1 counter on it.
 Vastwood Hydra	1	C20;M14	Effect:distribute	distribute a number of +1/+1 counters equal to the number of +1/+1 counters on ~ among any number of creatures you control
 Veiling Oddity	1	PLC;TSR	Trigger:When the last time counter is removed from this card while it's exiled	When the last time counter is removed from this card while it's exiled, creatures can't be blocked this turn.
-Velomachus Lorehold	1	PRM;PSTX;STX;TDC	Swallow:DynamicQty	DynamicQty — Flying, vigilance, haste Whenever Velomachus Lorehold attacks, look at the top seven cards of your library. You may cast an instant or sorce
 Venarian Glimmer	1	PLC	Effect:choose	choose a nonland card with mana value X or less from it
 Vendilion Clique	1	A25;G11;HA7;J22;MM2;MMA;MOR;PRM;PSPL;SLD	Effect:reveal	reveal the chosen card
 Vengeful Pharaoh	1	M12	Trigger:Whenever combat damage is dealt to you or a planeswalker you control	Whenever combat damage is dealt to you or a planeswalker you control, if this card is in your graveyard, destroy target attacking creature, then put this card o
@@ -1303,7 +1225,6 @@ Vexing Arcanix	1	8ED;ICE	Effect:otherwise	Otherwise
 Vigor Mortis	1	DDJ;GK1;RAV	Swallow:Condition_If	Condition_If — Return target creature card from your graveyard to the battlefield. If {G} was spent to cast this spell, that creature enters with an additi
 Vincent's Limit Break	3	FIN	Effect:{0};Effect:{1};Effect:{3}	• Galian Beast — {0} — 3/2.
 Visions of Beyond	1	M12;SLD;TLE;UMA	Swallow:Condition_If	Condition_If — Draw a card. If a graveyard has twenty or more cards in it, draw three cards instead.
-Vivisection Evangelist	1	ONE	Swallow:Condition_If	Condition_If — Vigilance Corrupted — When this creature enters, if an opponent has three or more poison counters, destroy target creature or planeswalker
 Vizier of the Anointed	1	AKR;HOU	Trigger:Whenever you activate an eternalize or embalm ability	Whenever you activate an eternalize or embalm ability, draw a card.
 Void	1	EMA;INV;TSB	Swallow:DynamicQty	DynamicQty — Choose a number. Destroy all artifacts and creatures with mana value equal to that number. Then target player reveals their hand and discard
 Void Mirror	1	MH2;PMH2;PRM	Swallow:Condition_If	Condition_If — Whenever a player casts a spell, if no colored mana was spent to cast it, counter that spell.
@@ -1318,7 +1239,6 @@ Vraska, Betrayal's Sting	2	ECC;ONE;PONE	Effect:become;Effect:get	[−2]: Target 
 Vraska, the Silencer	2	OTJ;POTJ	Effect:it's;Effect:lose	It's a Treasure artifact with "{T}, Sacrifice ~: Add one mana of any color,"
 Waking the Trolls	1	KHM;PKHM	Swallow:Condition_If	Condition_If — (As this Saga enters and after your draw step, add a lore counter. Sacrifice after III.) I — Destroy target land. II — Put target land c
 Warchanter Skald	1	KHM;PLST	Swallow:Condition_If	Condition_If — Whenever this creature becomes tapped, if it's enchanted or equipped, create a 2/1 red Dwarf Berserker creature token.
-Warden of the Grove	1	PTDM;TDM	Swallow:DynamicQty	DynamicQty — At the beginning of your end step, put a +1/+1 counter on this creature. Whenever another nontoken creature you control enters, it endures X
 Ward of Bones	1	EVE	Effect:static_structure	Each opponent who controls more creatures than you can't cast creature spells. The same is true for artifacts and enchantments.
 Ward of Piety	1	BOK	Effect:the	{1}{W}: The next 1 damage that would be dealt to enchanted creature this turn is dealt to any target instead.
 Warped Space	1	DSK;PDSK	Effect:unknown	Once each turn, you may pay {0} rather than pay the mana cost for a spell you cast from exile.
@@ -1326,7 +1246,7 @@ Warp World	1	10E;M10;PLST;RAV;SLD	Effect:reveal	reveal that many cards from the 
 War Report	1	NPH	Effect:gain	You gain life equal to the number of creatures on the battlefield plus the number of artifacts on the battlefield.
 War's Toll	1	BBD;DIS	Effect:effect_structure	If a creature an opponent controls attacks, all creatures that opponent controls attack if able.
 Watchers of the Dead	1	AKH;AKR	Effect:choose	Exile ~: Each opponent chooses two cards in their graveyard and exiles the rest.
-Waterbending Lesson	1	TLA	Swallow:Condition_Unless	Condition_Unless — Draw three cards. Then discard a card unless you waterbend {2}. (While paying a waterbend cost, you can tap your artifacts and creatures to 
+Waterbending Lesson	1	TLA	Effect:Unsupported unless clause	discard a card unless you waterbend {2} (unless: you waterbend {2})
 Weathered Bodyguards	1	TSP	Swallow:Condition_AsLongAs	Condition_AsLongAs — As long as this creature is untapped, all combat damage that would be dealt to you by unblocked creatures is dealt to this creature instead
 Weftwalking	1	EOE;PEOE	Effect:unknown	The first spell each player casts during each of their turns may be cast without paying its mana cost.
 Weight of Spires	1	DIS	Effect:deal	~ deals damage to target creature equal to the number of nonbasic lands that creature's controller controls.
@@ -1343,14 +1263,12 @@ Wicked Akuba	1	CHK	Swallow:Duration_ThisTurn	Duration_ThisTurn — {B}: Target p
 Widespread Brutality	1	PWAR;WAR	Swallow:DynamicQty	DynamicQty — Amass Zombies 2, then the Army you amassed deals damage equal to its power to each non-Army creature. (To amass Zombies 2, put two +1/+1 cou
 Wild Shape	3	AFR;HBG	Effect:1/3;Effect:1/5;Effect:3/3	1/3 Turtle with hexproof
 Wild Slash	1	FRF;PIO;Q06	Swallow:Condition_If	Condition_If — Ferocious — If you control a creature with power 4 or greater, damage can't be prevented this turn. Wild Slash deals 2 damage to any targe
-Will of the All-Hunter	1	IKO	Effect:instead	instead put two +1/+1 counters on it
 Winding Constrictor	1	AER;KLR;PIP;PLST;SLD	Effect:replacement_structure	If you would get one or more counters, you get that many plus one of each of those kinds of counters instead.
 Winds of Qal Sisma	1	FRF	Swallow:Condition_If	Condition_If — Prevent all combat damage that would be dealt this turn. Ferocious — If you control a creature with power 4 or greater, instead prevent al
 Winnowing	1	ECL;PECL	Effect:for	For each player, you choose a creature that player controls. Then each player sacrifices all other creatures they control that don't share a creature type with 
 Wiretapping	1	PRM;PSNC;SNC	Trigger:Whenever you draw your first card during each of your draw steps	Whenever you draw your first card during each of your draw steps, draw a card. Then if you have nine or more cards in hand, you may play the exiled card without
-Wisecrack	1	MSC;OM1;SPM	Swallow:Condition_If	Condition_If — Target creature deals damage equal to its power to itself. If that creature is attacking, Wisecrack deals 2 damage to that creature's contro
 Witch's Oven	1	ELD;PLST;SLD	Swallow:Condition_If	Condition_If — {T}, Sacrifice a creature: Create a Food token. If the sacrificed creature's toughness was 4 or greater, create two Food tokens instead. (Th
-Withercrown	1	KHM	Effect:Unsupported unless clause	you lose 1 life unless you sacrifice ~
+Withercrown	1	KHM	Effect:Unsupported unless clause	you lose 1 life unless you sacrifice ~ (unless: you sacrifice ~)
 Wizard's Spellbook	1	AFR;PAFR;PRM	Swallow:Optional_YouMay	Optional_YouMay — {T}: Exile target instant or sorcery card from a graveyard. Roll a d20. Activate only as a sorcery. 1—9 | Copy that card. You may cast the
 Woebringer Demon	1	RAV;RVR	Swallow:Condition_If	Condition_If — Flying At the beginning of each player's upkeep, that player sacrifices a creature of their choice. If the player can't, sacrifice this crea
 Wojek Investigator	1	MKM;PMKM	Swallow:DynamicQty	DynamicQty — Flying, vigilance At the beginning of your upkeep, investigate once for each opponent who has more cards in hand than you. (To investigate, 
@@ -1370,7 +1288,6 @@ Zada, Hedron Grinder	1	A25;BFZ;CMM;J25;MUL;PBFZ;PLST;SLD	Swallow:DynamicQty	Dyna
 Zaffai and the Tempests	1	PSOS;SOS	Swallow:Optional_YouMay	Optional_YouMay — Once during each of your turns, you may cast an instant or sorcery spell from your hand without paying its mana cost.
 Zameck Guildmage	2	GK2;GTC;PGTC;PRM	Effect:each;Effect:this	{G}{U}: This turn, each creature you control enters with an additional +1/+1 counter on it.
 Zenos yae Galvus	1	FIN;PFIN	Trigger:When the chosen creature leaves the battlefield	When the chosen creature leaves the battlefield, transform ~.
-Ziatora's Envoy	1	PSNC;SNC	Swallow:DynamicQty	DynamicQty — Trample Whenever this creature deals combat damage to a player, look at the top card of your library. You may play a land from the top of yo
 Zidane, Tantalus Thief	1	FIN;PMEI	Trigger:Whenever an opponent gains control of a permanent from you	Whenever an opponent gains control of a permanent from you, you create a Treasure token.
 Zilortha, Apex of Ikoria	1	MOM;PMOM	Effect:static_structure	For each non-Human creature you control, you may have that creature assign its combat damage as though it weren't blocked.
 Zilortha, Strength Incarnate	1	CMM;IKO	Effect:unknown	Lethal damage dealt to creatures you control is determined by their power rather than their toughness.

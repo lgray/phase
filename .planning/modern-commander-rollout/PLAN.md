@@ -8,13 +8,56 @@ All counts measured from `data/coverage-data.json` × `data/card-data.json`.
 
 ## Where the intersection stands
 
-| metric | value (2026-06-23 @ `ae663ee8c`) | prior (2026-06-22 @ `c55670fd0`) |
-|---|---|---|
-| members (Modern ∩ Commander) | **22,943** | 22,669 |
-| supported | 21,387 (**93.22 %**) | 21,118 (93.16 %) |
-| unsupported | **1,556** | 1,551 |
-| └ parser-gap (`gap_count > 0`) | 1,380 | 1,376 |
-| └ resolver-flagged (`gap_count == 0`, parses fully) | 176 | 175 |
+| metric | value (**2026-06-29 @ `dd6c22ea7`**) | prior (2026-06-27 @ `c1b61ded5`) | prior (2026-06-23 @ `ae663ee8c`) | prior (2026-06-22 @ `c55670fd0`) |
+|---|---|---|---|---|
+| members (Modern ∩ Commander) | **22,943** | 22,943 | 22,943 | 22,669 |
+| supported | **21,474 (93.60 %)** | 21,438 (93.44 %) | 21,387 (93.22 %) | 21,118 (93.16 %) |
+| unsupported | **1,469** | 1,505 | 1,556 | 1,551 |
+| └ parser-gap (`gap_count > 0`) | **1,297** | 1,330 | 1,380 | 1,376 |
+| └ resolver-flagged (`gap_count == 0`, parses fully) | **172** | 175 | 176 | 175 |
+
+> **Net read (re-measured 2026-06-29 @ `dd6c22ea7`, 33-commit ff; card-data regenerated, inputs
+> stamp `2026-06-29T13:58Z`):** pool flat at **22,943**; supported **+36** (21,438 → 21,474),
+> unsupported **1,505 → 1,469 (−36)** — parser-gap 1,330 → 1,297 (−33), resolver-flagged 175 → 172 (−3).
+> **0 unclustered.** Decline stays broad-and-shallow, driven by the Standard cluster dispatches
+> bleeding through (S01/S21 etc.). **Fresh full cluster table (1,469 cards):**
+> S25-effect-verb 511 · S07-condition-if 127 · S19-new-trigger 93 · R2-aslongas 80 · **S21-static 65** ·
+> **S01-reflexive-if 61** · R5-runtime 61 · S24-unknown 60 · S08-foreach-qty 53 · S03-intervening-if 48 ·
+> S10-dynamic-qty 47 · S22-choose 43 · S11-duration 28 · S18-foreach-simple 23 · S05-alt-cost-if 23 ·
+> S12-optional 22 · R3-level-up 21 · S14-unless 20 · S02-cast-context 13 · S23-alt-cost 10 ·
+> S04-activate-if 10 · S17-anaphoric 9 · S13-aslongas-parse 9 · R1-speed 9 · S20-copy-retarget 8 ·
+> S16-foreach-player-HEAVY 6 · S06-saga 3 · S26-alt-keyword-cost 2 · S29-modal 1 · S28-replacement-instead 1 ·
+> S27-trigger-subject 1 · R4-cant-restriction 1. **Cluster movers vs the 2026-06-23 record:**
+> **S01 reflexive-if 76 → 61 (−15)** (Standard S01 dispatches bleed through; the same uncovered
+> reflexive shapes remain), **R2 as-long-as 81 → 80 (−1)**. **Handler-histogram deltas (per-occurrence):**
+> Swallow:Condition_If 306 → 285 (−21), Swallow:DynamicQty 121 → 109 (−12), Effect:static_structure 77 → 67 (−10),
+> Optional_YouMay 35 → 31 (−4), Swallow:Duration_ThisTurn 41 → 38 (−3). Resolver-flagged 172 = R2 (80) +
+> R5 (61) + R3 level-up (21) + R1 speed (9) + R4 (1) — the runtime subsystems still dominate the
+> resolver bucket. **S99-UNCLUSTERED resolved:** the prior Nephalia Academy gap is now absorbed by the
+> S28-replacement-instead bucket (1 card); 0 unclustered.
+
+> **Net read (re-measured 2026-06-27 @ `c1b61ded5`):** pool size held flat at **22,943**
+> while supported rose **+51** (21,387 → 21,438) and unsupported fell **−51**
+> (1,556 → 1,505; 93.22 % → 93.44 %). Split moved to **1,330 parser-gap + 175
+> resolver-flagged** (parser-gap −50, resolver-flagged −1). **This snapshot closes the
+> v0.7.0 measurement gap for this pool** — the intersection was *not* re-measured at
+> v0.7.0/`5eca83b8c`, so this −51 covers the full v0.7.0 + post-v0.7.0 commit window
+> (widest catch-up of any pool). Decline is broad and shallow across the shared Standard
+> building blocks: Swallow:Condition_If 306→295 (−11), Swallow:DynamicQty 121→110 (−11),
+> Effect:static_structure 77→73, Optional_YouMay 35→32, Effect:create 15→13, spend 17→15
+> — no single cluster cleared wholesale; the gains are the Standard cluster dispatches
+> bleeding through. **No regressions:** every card named in the M1–M5 / S26 / S27 clusters
+> below remains unsupported as expected (none were marked DONE), and no card recorded as
+> cleared reappeared in `unsupported.tsv`.
+>
+> **S99 ruleset gap (cluster-assign.sh):** 1 card is `S99-UNCLUSTERED` — **Nephalia
+> Academy** (`Swallow:Replacement_Instead`, "If a spell or ability an opponent controls
+> causes you to discard a card, you may reveal that card and put it on top of your library
+> instead…"). `classify()` has **no bucket for replacement "…instead…" effects**. Proposed
+> rule (lead to land): add an S-cluster matching `Replacement_Instead` handlers / oracle
+> `/ instead /`, e.g. `*Replacement_Instead*|*' instead '*) cluster="S28-replacement-instead" ;;`
+> placed before the catch-all so replacement-instead effects (discard-to-library, damage
+> redirection, ETB substitution) cluster as one reusable building block.
 
 This is ~5× the standard pool (4,924). Because Commander legality is a near-superset of Modern, the intersection ≈ "all Modern cards that aren't Commander-banned" — i.e. the full eternal-ish Modern card base.
 

@@ -139,6 +139,14 @@ Ordered by value-per-risk and dependency. Sizes: **S** ≈ 1–2 days, **M** ≈
 - Generalize the `debug_infinite_mana` precedent into a first-class "this resource is unbounded (confirmed loop)" representation so the engine resolves "deal ∞ / gain ∞ / make ∞ tokens" as game-ending via shortcut (CR 732.2a) **without literally iterating**, and the UI shows `∞` counters/P-T/mana.
 - Files: `types/game_state.rs`, derived views, `engine-wasm` bridge, `client/`. Depends on PR-2/3.
 
+### PR-6.25 — Order-independence soundness (`group_is_order_independent`)  · **M** · risk: medium · **DEFERRED (R3, 2026-06-30)**
+- Originally a QoL widening of auto-resolve for order-irrelevant simultaneous trigger groups; adversarial review proved the widening UNSOUND and surfaced a latent CR 603.3b bug (`triggers.rs:3413` auto-orders order-dependent triggers). Reshaped into a correctness PR (fail-closed, compiler-exhaustive event-context + sibling read/write-conflict classifier). Deferred to a funded big push. A prerequisite ENABLER for PR-6.5 (necessary but insufficient).
+- Full design (R1-staged C0/C1/C2), counterexample, and measured reachability: **`PR-6.25-DEFERRED-FINDINGS.md`**.
+
+### PR-6.5 — Growing-cascade detector for multiplayer win-acceleration  · **L** · risk: high · **DEFERRED EPIC (funding-gated)**
+- 2p combo win-acceleration works; ≥3p fails. All-opponent drains fan out to one trigger per opponent per cycle → the stack grows unboundedly → `loop_states_equal_modulo_resources` never matches a prior state → the §3 live win-shortcut never fires. PR-6.25's order-irrelevance is necessary but insufficient (it does not address unbounded stack growth). Needs a NEW net-progress / growing-cascade detector.
+- **Pathway (the major one): distributed-systems failure analysis** — cascading failures in networks (Motter–Lai), branching-process / epidemic-threshold criticality (mean offspring > 1 ⇒ supercritical), termination detection (Dijkstra–Scholten diffusing computations), and especially **Petri-net coverability + Karp–Miller ω-acceleration** (detect/accelerate the unbounded component symbolically without iterating). Lit-search via the board's maximal spanning graph of triggers. Full notes + grounding corpus: **`PR-6.5-EPIC-GROWING-CASCADE.md`**.
+
 ### PR-7 — Loop shortcut with opponent response window  · **L** · risk: high (interactive protocol)
 - On a confirmed loop in live play, present a CR 732.2a shortcut: a priority window for opponents to respond/break (732.5–732.6), then the controller declares iteration count ("repeat N" / "until lethal"); all-mandatory loop ⇒ draw (732.4). New `WaitingFor`/`GameAction` + frontend modal (mirrors existing interactive-choice patterns).
 - Files: `types/actions.rs`, `game/priority.rs`, resolver, `engine-wasm`, `client/`. Depends on PR-2/3/6. Heaviest; protocol-version bump likely.

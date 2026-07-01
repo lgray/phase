@@ -61,6 +61,7 @@ function classify(g, h, o,   lo) {
   if (h ~ /Optional_YouMay/)        return "S12-optional-youmay-subeffect"
   if (h ~ /Condition_AsLongAs/)     return "S13-aslongas-parse"
   if (h ~ /Condition_Unless/ || h ~ /Unsupported unless/) return "S14-unless-clause"
+  if (h ~ /Replacement_Instead/)    return "S28-replacement-instead"
   if (h ~ /ActivateOnlyDuring/)     return "S15-activate-only-during"
   if (h ~ /(^|;)Effect:for/) {
     if (lo ~ /for each (other )?(player|opponent)|each (other )?player|each player (who|chooses)/) return "S16-foreach-player-object-HEAVY"
@@ -69,6 +70,7 @@ function classify(g, h, o,   lo) {
   if (h ~ /(^|;)Trigger:/)          return "S19-new-trigger-matcher"
   if (h ~ /orphaned_copy_retarget/) return "S20-copy-retarget"
   if (h ~ /static_structure/)       return "S21-static-ability"
+  if (h ~ /Modal_/)                 return "S29-modal-dynamic-choose"
   if (h ~ /Effect:choose/)          return "S22-choose-effect"
   if (h ~ /Effect:unknown/)         return "S24-unknown-effect-bespoke"
   if (h ~ /(^|;)Effect:/)           return "S25-effect-verb-bespoke"
