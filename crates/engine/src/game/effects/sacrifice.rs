@@ -71,7 +71,7 @@ fn resolve_sacrifice_scope(
             .unwrap_or_default()
         }
         Some(ControllerRef::DefendingPlayer) => {
-            crate::game::combat::defending_player_for_attacker(state, ability.source_id)
+            crate::game::combat::resolve_defending_player(state, ability.source_id)
                 .map(|pid| vec![pid])
                 .unwrap_or_default()
         }
@@ -97,6 +97,17 @@ fn resolve_sacrifice_scope(
             .and_then(|event| crate::game::targeting::extract_player_from_event(event, state))
             .map(|pid| vec![pid])
             .unwrap_or_default(),
+        // CR 303.4b: The player an Aura is attached to.
+        Some(ControllerRef::EnchantedPlayer) => crate::game::filter::controller_ref_player(
+            state,
+            ability.source_id,
+            Some(ability.controller),
+            Some(ability),
+            // CR 303.4b: Resolve enchanted player as sacrifice scope.
+            &ControllerRef::EnchantedPlayer,
+        )
+        .map(|pid| vec![pid])
+        .unwrap_or_default(),
     }
 }
 
@@ -310,6 +321,8 @@ pub fn resolve(
             track_exiled_by_source: false,
             // CR 708.2a: sacrifice selection is not a face-down entry.
             face_down_profile: None,
+            enter_with_counters: vec![],
+            conditional_enter_with_counters: vec![],
             count_param: 0,
             library_position: None,
             is_cost_payment: false,

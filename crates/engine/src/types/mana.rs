@@ -43,7 +43,7 @@ impl FromStr for ManaColor {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum ManaType {
     White,
     Blue,
@@ -343,12 +343,22 @@ pub enum SpecialAction {
     /// CR 116.2m + CR 709.5e: Paying a locked Room half's unlock cost to give
     /// the permanent the appropriate unlocked designation.
     UnlockDoor,
+    /// CR 116.2k + CR 702.170a: Exiling a card from hand and paying its plot
+    /// cost to make it a plotted card. The plot ability is synthesized as a
+    /// hand-zone activated ability (`synthesize_plot`); this variant lets a
+    /// `StaticMode::ReduceActionCost { action: Plot, .. }` (Doc Aurlock) reduce
+    /// that plot cost without conflating plot with generic activated-ability
+    /// cost reducers.
+    Plot,
     /// CR 116.2b + CR 702.37e: Paying a face-down permanent's morph/disguise
     /// cost to turn it face up. No payment site emits
     /// `PaymentContext::SpecialAction(TurnFaceUp)` yet (turn-face-up is free in
     /// this engine), so a mana restricted to this action is conservatively
     /// unspendable rather than over-permitted — see the type-level note above.
     TurnFaceUp,
+    /// CR 901.9 / CR 116.2i: Paying the escalating generic cost to roll the
+    /// planar die as a Planechase special action.
+    RollPlanarDie,
 }
 
 /// CR 106.6: The ability-activation half of a "spend only to cast [X] spell or
@@ -653,9 +663,8 @@ impl ManaRestriction {
             ManaRestriction::OnlyForActivation => false,
             // CR 106.6: Tag-scoped activation mana cannot be used to cast spells.
             ManaRestriction::OnlyForTaggedActivation(_) => false,
-            // CR 106.6: X-cost restriction — conservatively disallow for spells.
-            // Full X-cost detection requires ManaCost inspection at the call site.
-            ManaRestriction::OnlyForXCosts => false,
+            // CR 106.6: X-cost restriction — spell must have {X} in its mana cost.
+            ManaRestriction::OnlyForXCosts => meta.has_x_in_cost,
             ManaRestriction::OnlyForSpellWithKeywordKind(required_keyword) => {
                 meta.keyword_kinds.contains(required_keyword)
             }
@@ -891,10 +900,24 @@ pub mod snow_compat {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// Stable per-unit identity for an individual mana pip in a player's pool.
+///
+/// Minted by `GameState::next_pip_id` when mana enters a real pool so that a
+/// player can direct (pin) which specific unit pays a pending cost. The sentinel
+/// `ManaPipId(0)` marks an unstamped unit (convoke markers, detached preview
+/// pools) and never matches a real pin.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct ManaPipId(pub u64);
+
+#[derive(Debug, Clone, Eq, Serialize, Deserialize)]
 pub struct ManaUnit {
     pub color: ManaType,
     pub source_id: ObjectId,
+    /// CR 118.3a: stable identity used to direct which pool unit pays a cost.
+    /// `ManaPipId(0)` = unstamped sentinel (set by constructors; stamped on pool
+    /// entry by `GameState::add_mana_to_pool`).
+    #[serde(default = "unstamped_pip_id")]
+    pub pip_id: ManaPipId,
     #[serde(default, with = "snow_compat", rename = "snow")]
     pub supertype: Option<ManaSupertype>,
     /// True when this unit was produced by a source that could produce two or
@@ -911,6 +934,27 @@ pub struct ManaUnit {
     pub expiry: Option<ManaExpiry>,
 }
 
+// CR 104.4b: `pip_id` is a runtime/UI identity tag (the pin key used to direct
+// which pool unit pays a cost), NOT a game-state-semantic property. It must not
+// participate in `ManaUnit` value-equality, otherwise two pool units that differ
+// only by their monotonic pip_id would compare unequal and break game-state
+// equality — defeating CR 104.4b mandatory-loop detection (a loop that floats
+// mana each iteration would never compare equal) and AI-search state dedup.
+// `Eq` is derived (it only requires `PartialEq` to exist); ignoring one field
+// keeps the relation reflexive/symmetric/transitive.
+impl PartialEq for ManaUnit {
+    fn eq(&self, other: &Self) -> bool {
+        self.color == other.color
+            && self.source_id == other.source_id
+            && self.supertype == other.supertype
+            && self.source_could_produce_two_or_more_colors
+                == other.source_could_produce_two_or_more_colors
+            && self.restrictions == other.restrictions
+            && self.grants == other.grants
+            && self.expiry == other.expiry
+    }
+}
+
 impl ManaUnit {
     /// Construct a standard mana unit with no expiry.
     pub fn new(
@@ -922,6 +966,7 @@ impl ManaUnit {
         Self {
             color,
             source_id,
+            pip_id: ManaPipId(0),
             supertype: snow.then_some(ManaSupertype::Snow),
             source_could_produce_two_or_more_colors: false,
             restrictions,
@@ -941,6 +986,7 @@ impl ManaUnit {
         Self {
             color,
             source_id,
+            pip_id: ManaPipId(0),
             supertype: None,
             source_could_produce_two_or_more_colors: false,
             restrictions: vec![ManaRestriction::ConvokePayment],
@@ -1256,6 +1302,34 @@ impl ManaCost {
         }
     }
 
+    /// CR 107.4 + CR 202.1: Count colored mana symbols in this mana cost.
+    /// `Some(c)` counts symbols contributing to color `c` (hybrid /
+    /// monocolored-hybrid / Phyrexian symbols included via
+    /// `ManaCostShard::contributes_to`). `None` counts each colored shard once
+    /// regardless of color — CR 107.4a/107.4e/107.4f: a hybrid or Phyrexian
+    /// symbol is a single colored mana symbol even though it is all of its
+    /// component colors, so `{G/W}{G/W}` counts as 2 (not 4). Generic, X,
+    /// colorless, and snow shards are not colored and never count.
+    /// `NoCost`/`SelfManaCost`/`SelfManaValue` have no per-shard cost → 0.
+    ///
+    /// Single counting authority shared by `QuantityRef::ManaSymbolsInManaCost`
+    /// (game/quantity.rs) and `FilterProp::ManaSymbolCount` (game/filter.rs).
+    pub fn count_colored_pips(&self, color: Option<ManaColor>) -> i32 {
+        match self {
+            ManaCost::Cost { shards, .. } => {
+                let count = shards
+                    .iter()
+                    .filter(|shard| match color {
+                        Some(c) => shard.contributes_to(c),
+                        None => ManaColor::ALL.iter().any(|c| shard.contributes_to(*c)),
+                    })
+                    .count();
+                i32::try_from(count).unwrap_or(i32::MAX)
+            }
+            ManaCost::NoCost | ManaCost::SelfManaCost | ManaCost::SelfManaValue => 0,
+        }
+    }
+
     /// CR 202.3e: X in a mana cost equals the announced value only while the
     /// object is on the stack; in every other zone, X contributes 0.
     pub fn mana_value_with_x(&self, zone: Zone, cost_x_paid: Option<u32>) -> u32 {
@@ -1369,6 +1443,12 @@ fn is_zero_u32(n: &u32) -> bool {
 
 fn is_false(value: &bool) -> bool {
     !*value
+}
+
+/// Serde default for `ManaUnit::pip_id`: legacy saves and freshly built units
+/// carry the unstamped sentinel until pool entry stamps a real id.
+fn unstamped_pip_id() -> ManaPipId {
+    ManaPipId(0)
 }
 
 impl ColoredManaCount {

@@ -16,8 +16,8 @@ use super::ability_utils::{
     ability_target_legality_needs_chosen_x, assign_selected_slots_in_chain,
     assign_targets_in_chain, auto_select_targets_for_ability, begin_target_selection_for_ability,
     build_chained_resolved, build_target_slots_labelled, choose_target_for_ability,
-    flatten_targets_in_chain, random_select_targets_for_ability, validate_modal_indices,
-    validate_selected_targets_for_ability, TargetSelectionAdvance,
+    distribution_targets, flatten_targets_in_chain, random_select_targets_for_ability,
+    validate_modal_indices, validate_selected_targets_for_ability, TargetSelectionAdvance,
 };
 use super::casting::{emit_targeting_events, pay_ability_cost_for_activation};
 use super::casting_costs::{
@@ -25,6 +25,7 @@ use super::casting_costs::{
     finish_pending_cast_cost_or_pay,
 };
 use super::engine::EngineError;
+use super::priority;
 use super::restrictions;
 use super::stack;
 
@@ -256,7 +257,10 @@ pub(crate) fn handle_select_targets(
     // For X-spells, distribution is deferred to after mana payment (engine.rs).
     if let Some(ref unit) = pending.distribute {
         if let Some(total) = extract_distribution_total(state, &ability, &ability.effect) {
-            let assigned_targets = flatten_targets_in_chain(&ability);
+            // CR 601.2c + CR 601.2d: Divide only among the distributing effect's
+            // own targets; sibling-effect targets became targets already and are
+            // not part of the division.
+            let assigned_targets = distribution_targets(&ability);
             // Store ability + targets on pending_cast for post-distribution resumption.
             let mut pending_dist = PendingCast::new(
                 pending.object_id,
@@ -330,6 +334,13 @@ pub(crate) fn handle_select_targets(
         events.push(GameEvent::AbilityActivated {
             player_id: player,
             source_id: pending.object_id,
+            // CR 606.2: Compute from the source ability's cost; this path covers
+            // boast and other non-targeted activations, so it is normally `Normal`.
+            kind: super::planeswalker::activated_ability_kind(
+                state,
+                pending.object_id,
+                ability_index,
+            ),
         });
         // CR 702.142b: Emit additional event when a boast ability is activated.
         emit_keyword_ability_event_if_tagged(
@@ -339,8 +350,7 @@ pub(crate) fn handle_select_targets(
             player,
             events,
         );
-        state.priority_passes.clear();
-        state.priority_pass_count = 0;
+        priority::clear_priority_passes(state);
         return Ok(WaitingFor::Priority { player });
     }
 
@@ -439,6 +449,18 @@ pub(crate) fn handle_choose_target(
                 events.push(GameEvent::AbilityActivated {
                     player_id: player,
                     source_id: pending.object_id,
+                    // CR 606.2: Targeted activations (most loyalty abilities) finalize
+                    // here. Classify from the source ability's printed cost via
+                    // `activated_ability_kind` rather than `pending.activation_cost`:
+                    // the X-cost path clears `pending.activation_cost` before target
+                    // selection (casting_costs.rs), so a targeted `[-X]` loyalty
+                    // ability would otherwise lose its loyalty kind. The printed cost
+                    // is stable, mirroring the non-targeted path in `planeswalker.rs`.
+                    kind: super::planeswalker::activated_ability_kind(
+                        state,
+                        pending.object_id,
+                        ability_index,
+                    ),
                 });
                 // CR 702.142b: Emit additional event when a boast ability is activated.
                 emit_keyword_ability_event_if_tagged(
@@ -448,8 +470,7 @@ pub(crate) fn handle_choose_target(
                     player,
                     events,
                 );
-                state.priority_passes.clear();
-                state.priority_pass_count = 0;
+                priority::clear_priority_passes(state);
                 return Ok(drain_deferred_triggers_after_stack_object_announcement(
                     state,
                     events,
@@ -487,6 +508,8 @@ fn pay_activation_costs_after_target_selection(
             super::casting::activation_ability_tag(state, pending.object_id, ability_index),
             events,
             &excluded_sources,
+            // Top-level ability activation: no outer cost on the stack.
+            None,
         )?;
     }
 

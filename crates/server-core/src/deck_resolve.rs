@@ -58,6 +58,13 @@ pub fn resolve_deck(db: &CardDatabase, deck: &DeckData) -> Result<PlayerDeckPayl
     let (attraction_deck, mut attraction_missing) =
         resolve_entries(db, &deck.attraction_deck, "attraction_deck");
     missing.append(&mut attraction_missing);
+    let (planar_deck, mut planar_missing) = resolve_entries(db, &deck.planar_deck, "planar_deck");
+    missing.append(&mut planar_missing);
+    let (scheme_deck, mut scheme_missing) = resolve_entries(db, &deck.scheme_deck, "scheme_deck");
+    missing.append(&mut scheme_missing);
+    let (contraption_deck, mut contraption_missing) =
+        resolve_entries(db, &deck.contraption_deck, "contraption_deck");
+    missing.append(&mut contraption_missing);
     let (signature_spell, mut sig_missing) =
         resolve_entries(db, &deck.signature_spell, "signature_spell");
     missing.append(&mut sig_missing);
@@ -76,6 +83,9 @@ pub fn resolve_deck(db: &CardDatabase, deck: &DeckData) -> Result<PlayerDeckPayl
         sideboard,
         commander,
         attraction_deck,
+        planar_deck,
+        scheme_deck,
+        contraption_deck,
         signature_spell,
         sticker_sheets: deck.sticker_sheets.clone(),
         bracket_tier: deck.bracket_tier,

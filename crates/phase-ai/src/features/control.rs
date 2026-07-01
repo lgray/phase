@@ -322,7 +322,8 @@ mod tests {
     use super::*;
     use engine::game::DeckEntry;
     use engine::types::ability::{
-        AbilityDefinition, AbilityKind, BounceSelection, Effect, QuantityExpr, TargetFilter,
+        AbilityDefinition, AbilityKind, BounceSelection, DigSource, Effect, QuantityExpr,
+        TargetFilter,
     };
     use engine::types::card::CardFace;
     use engine::types::card_type::{CardType, CoreType};
@@ -390,6 +391,7 @@ mod tests {
                 enters_attacking: false,
                 up_to: false,
                 enter_with_counters: vec![],
+                conditional_enter_with_counters: vec![],
                 face_down_profile: None,
             },
         )
@@ -523,6 +525,7 @@ mod tests {
                 rest_destination: None,
                 reveal: false,
                 enter_tapped: false,
+                source: DigSource::Library,
             },
         ));
         let deck = vec![entry(face, 4)];
@@ -549,6 +552,7 @@ mod tests {
                 rest_destination: None,
                 reveal: false,
                 enter_tapped: false,
+                source: DigSource::Library,
             },
         ));
         let deck = vec![entry(face, 4)];

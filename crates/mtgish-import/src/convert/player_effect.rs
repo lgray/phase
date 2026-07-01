@@ -316,6 +316,12 @@ fn controller_to_scope(c: &ControllerRef) -> ConvResult<ProhibitionScope> {
             engine_type: "ProhibitionScope",
             needed_variant: "TriggeringPlayer".into(),
         }),
+        // CR 303.4b: The enchanted player has no static `ProhibitionScope`
+        // meaning — strict-fail.
+        ControllerRef::EnchantedPlayer => Err(ConversionGap::EnginePrerequisiteMissing {
+            engine_type: "ProhibitionScope",
+            needed_variant: "EnchantedPlayer".into(),
+        }),
     }
 }
 

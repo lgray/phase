@@ -14,21 +14,22 @@ import { isMultiplayerMode, useGameStore, legalResultState, saveGame, saveCheckp
 import { getOpponentDisplayName } from "../stores/multiplayerStore";
 import { usePreferencesStore } from "../stores/preferencesStore";
 import { useUiStore } from "../stores/uiStore";
-import { stackPressureFromLength, STACK_PRESSURE_ELEVATED } from "../utils/stackPressure";
+import { pressureMultiplier, stackPressureFromLength, STACK_PRESSURE_ELEVATED } from "../utils/stackPressure";
+import { effectiveStackPressure, recordStackResolutions } from "../utils/stackThroughput";
 import { applySpellPaymentPreference } from "./castPaymentMode";
 
 /**
  * Event types whose SFX is deferred to the card slam onImpact callback
  * in AnimationOverlay, so sound aligns with the visual impact moment.
  */
-const SLAM_DEFERRED_SFX = new Set(["DamageDealt"]);
+const SLAM_DEFERRED_SFX = new Set(["DamageDealt", "GroupedDamageFlurry"]);
 
 /** Schedule SFX for each animation step, offset to sync with visual timing. */
 function scheduleSfxForSteps(steps: AnimationStep[], multiplier: number): void {
   let offset = 0;
   for (const step of steps) {
     // Filter out slam-deferred events — their SFX fires at impact time instead
-    const immediate = step.effects.filter((e) => !SLAM_DEFERRED_SFX.has(e.event.type));
+    const immediate = step.effects.filter((e) => !e.displayOnly && !SLAM_DEFERRED_SFX.has(e.event.type));
     if (immediate.length > 0) {
       if (offset === 0) {
         audioManager.playSfxForStep(immediate);
@@ -93,8 +94,58 @@ function actionsEqual(a: GameAction, b: GameAction): boolean {
   return JSON.stringify(a) === JSON.stringify(b);
 }
 
+function waitingForActorMatches(
+  waitingFor: WaitingFor | null,
+  gameState: GameState | null,
+  actor: number,
+): boolean {
+  if (!waitingFor || !("data" in waitingFor)) return false;
+  const data = waitingFor.data;
+  if (typeof data !== "object" || data === null) return false;
+  const fields = data as Record<string, unknown>;
+
+  if (waitingFor.type === "Priority") {
+    return fields.player === actor || gameState?.priority_player === actor;
+  }
+  if (fields.player === actor) return true;
+
+  const pending = fields.pending;
+  return (
+    Array.isArray(pending) &&
+    pending.some((entry) => {
+      if (typeof entry !== "object" || entry === null) return false;
+      return (entry as Record<string, unknown>).player === actor;
+    })
+  );
+}
+
+function queuedLocalActionStillApplies(next: PendingLocalAction): boolean {
+  const { gameState, legalActions, waitingFor } = useGameStore.getState();
+  if (Object.is(next.waitingFor, waitingFor)) return true;
+  if (!waitingForActorMatches(waitingFor, gameState, next.actor)) return false;
+  if (legalActions.some((action) => actionsEqual(action, next.action))) return true;
+  return (
+    next.action.type === "PassPriority" &&
+    waitingFor?.type === "Priority" &&
+    gameState != null
+  );
+}
+
 function isStateLost(err: unknown): boolean {
   return err instanceof AdapterError && err.code === AdapterErrorCode.STATE_LOST;
+}
+
+/**
+ * True when a gameplay round-trip to the engine worker timed out (the worker
+ * wedged and never replied — see `ENGINE_REQUEST_TIMEOUT_MS`). Unlike
+ * STATE_LOST this is NOT rehydratable in place: the worker itself is
+ * unresponsive, so retrying or restoring through it would hang again. Surface
+ * the Layer 3 reload prompt and let the error propagate so the dispatch mutex
+ * is released (the alternative is an infinite freeze with a silently-held mutex
+ * that drops every later click).
+ */
+function isEngineUnresponsive(err: unknown): boolean {
+  return err instanceof AdapterError && err.code === AdapterErrorCode.ENGINE_UNRESPONSIVE;
 }
 
 async function processAction(action: GameAction, actor: number): Promise<void> {
@@ -145,6 +196,13 @@ async function processAction(action: GameAction, actor: number): Promise<void> {
       await routePanic("submitAction-panic", err.panic);
       throw err;
     }
+    // Worker wedged on submitAction: surface recovery and rethrow so the
+    // dispatch mutex is released. Do NOT rehydrate — the worker is the thing
+    // that's hung, so restoreState through it would hang too.
+    if (isEngineUnresponsive(err)) {
+      notifyEngineLost("submitAction-timeout");
+      throw err;
+    }
     if (!isStateLost(err)) throw err;
     debugLog(`processAction: STATE_LOST on ${action.type}; attempting rehydrate`, "warn");
     const recovered = await attemptStateRehydrate();
@@ -188,6 +246,10 @@ async function processAction(action: GameAction, actor: number): Promise<void> {
       await routePanic("getState-panic", err.panic);
       throw err;
     }
+    if (isEngineUnresponsive(err)) {
+      notifyEngineLost("getState-timeout");
+      throw err;
+    }
     if (!isStateLost(err)) throw err;
     debugLog("processAction: STATE_LOST on getState; attempting rehydrate", "warn");
     const recovered = await attemptStateRehydrate();
@@ -208,6 +270,20 @@ async function processAction(action: GameAction, actor: number): Promise<void> {
   }
   const { gameId } = useGameStore.getState();
   if (gameId) saveGame(gameId, newState);
+
+  // 3c. Feed the throughput tracker: count stack entries that left the stack
+  //     this action (resolved, countered, or otherwise removed), id-diffed so a
+  //     resolution that spawns replacement triggers still counts even when net
+  //     stack length is unchanged. Drives rate-based pacing for the
+  //     low-depth-high-churn loops the depth signal can't see (Exquisite Blood +
+  //     Sanguine Bond and friends). Single-dispatch resolves one item per pass;
+  //     the batch path feeds its own gross count below.
+  const nextStackIds = new Set(newState.stack.map((e) => e.id));
+  const resolvedCount = gameState.stack.reduce(
+    (n, e) => (nextStackIds.has(e.id) ? n : n + 1),
+    0,
+  );
+  if (resolvedCount > 0) recordStackResolutions(resolvedCount);
 
   // 4. Checkpoint: save pre-action state on turn boundaries for debug restore
   const turnEvent = events.find((e) => e.type === "TurnStarted");
@@ -244,8 +320,13 @@ async function processAction(action: GameAction, actor: number): Promise<void> {
   const pacingMultipliers = usePreferencesStore.getState().pacingMultipliers;
   const steps = normalizeEvents(events, { pacingMultipliers });
 
-  // 7. Play animations (unless instant — multiplier === 0)
-  const multiplier = usePreferencesStore.getState().animationSpeedMultiplier;
+  // 7. Play animations (unless instant — multiplier === 0). Fold in stack
+  //    pressure so per-resolution timing collapses under depth OR recent churn —
+  //    without this the single-dispatch path animated every oscillation cycle at
+  //    full speed (it previously read only the user speed preference).
+  const multiplier =
+    usePreferencesStore.getState().animationSpeedMultiplier *
+    pressureMultiplier(effectiveStackPressure(newState.stack.length));
 
   if (steps.length > 0 && multiplier > 0) {
     useAnimationStore.getState().setAnimationNewState(newState);
@@ -276,6 +357,10 @@ async function processAction(action: GameAction, actor: number): Promise<void> {
   } catch (err) {
     if (isEnginePanic(err)) {
       notifyEngineLost("getLegalActions-panic", err.panic);
+      throw err;
+    }
+    if (isEngineUnresponsive(err)) {
+      notifyEngineLost("getLegalActions-timeout");
       throw err;
     }
     if (!isStateLost(err)) throw err;
@@ -339,6 +424,11 @@ async function processQueue(): Promise<void> {
     const next = pendingQueue.shift()!;
     try {
       if (next.kind === "local") {
+        if (!queuedLocalActionStillApplies(next)) {
+          debugLog(`dropping stale queued action ${next.action.type}: waitingFor changed`);
+          next.resolve();
+          continue;
+        }
         inFlightLocalAction = { action: next.action, actor: next.actor, waitingFor: next.waitingFor };
         try {
           await processAction(next.action, next.actor);
@@ -359,11 +449,12 @@ async function processQueue(): Promise<void> {
       // de-duped but the log becomes noisy and we waste cycles on doomed
       // rehydrates. User is about to reload; nothing in this queue is
       // going to succeed.
-      if (isStateLost(err) || isEnginePanic(err)) {
-        // Drain on ENGINE_PANIC too: each queued action would otherwise hit
-        // its own catch + (no-op) recovery + re-throw, doubling the noise
-        // for an unrecoverable failure. The first item already fired
-        // notifyEngineLost with the captured panic.
+      if (isStateLost(err) || isEnginePanic(err) || isEngineUnresponsive(err)) {
+        // Drain on ENGINE_PANIC / ENGINE_UNRESPONSIVE too: each queued action
+        // would otherwise hit its own catch + (no-op) recovery + re-throw,
+        // doubling the noise for an unrecoverable failure. The first item
+        // already fired notifyEngineLost (captured panic, or the timeout
+        // recovery prompt) — a wedged worker won't service the rest either.
         while (pendingQueue.length > 0) {
           const stale = pendingQueue.shift()!;
           stale.reject(err);
@@ -653,6 +744,12 @@ export async function dispatchResolveAll(
 
       if (latchedTotal === 0) latchedTotal = batchResult.total;
       resolvedSoFar += batchResult.itemsResolved;
+      // Keep the throughput tracker warm so a storm draining below Instant keeps
+      // its animated tail fast instead of snapping back to full pacing.
+      // `itemsResolved` is a net-shrink count (can lag the true gross when a
+      // resolution spawns triggers) — an acceptable under-count here since the
+      // batch path is already depth-gated, where the depth axis dominates pacing.
+      if (batchResult.itemsResolved > 0) recordStackResolutions(batchResult.itemsResolved);
       // Surface progress only for a genuine storm (trivial multi-item resolves
       // drain too fast to render). Clamp to the latched total: `itemsResolved`
       // is a net-shrink count that can lag the true gross when a resolution

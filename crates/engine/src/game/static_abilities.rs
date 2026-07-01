@@ -103,6 +103,10 @@ pub fn build_static_registry() -> HashMap<StaticMode, StaticAbilityHandler> {
     registry.insert(StaticMode::MustBlock, handle_rule_mod);
     // Note: CantDraw is a data-carrying variant — runtime enforcement is in
     // game/effects/draw.rs. Coverage support is via is_data_carrying_static().
+    // Note: DrawFromBottom (CR 121.1/613.11) is a data-carrying variant — its
+    // top-vs-bottom selection is enforced in
+    // game/effects/draw.rs::select_cards_to_draw, which all four draw-delivery
+    // paths consult. Coverage support is via is_data_carrying_static().
     // Note: DoubleTriggers (CR 603.2d) is a data-carrying variant — runtime
     // enforcement is in triggers.rs::apply_trigger_doubling. Coverage support
     // is via is_data_carrying_static().
@@ -161,6 +165,10 @@ pub fn build_static_registry() -> HashMap<StaticMode, StaticAbilityHandler> {
     registry.insert(StaticMode::Lifelink, handle_static_lifelink);
     registry.insert(StaticMode::CantTap, handle_rule_mod);
     registry.insert(StaticMode::CantUntap, handle_rule_mod);
+    // CR 702.26a + CR 101.2: CantPhaseIn — a continuous restriction that
+    // overrides the phase-in turn-based action. Runtime enforcement lives in
+    // phasing.rs (untap-step TBA) and effects/phase_out.rs (explicit PhaseIn).
+    registry.insert(StaticMode::CantPhaseIn, handle_rule_mod);
     // CR 509.1c: MustBeBlocked — this creature must be blocked if able.
     registry.insert(StaticMode::MustBeBlocked, handle_rule_mod);
     // CR 509.1c: MustBeBlockedByAll — every creature able to block this creature
@@ -192,7 +200,7 @@ pub fn build_static_registry() -> HashMap<StaticMode, StaticAbilityHandler> {
         },
         handle_rule_mod,
     );
-    // CR 702.122c: CantCrew — creature can't be tapped to pay a crew cost.
+    // CR 702.122d: CantCrew — creature can't be tapped to pay a crew cost.
     registry.insert(StaticMode::CantCrew, handle_rule_mod);
     registry.insert(StaticMode::MayLookAtTopOfLibrary, handle_rule_mod);
     // CR 104.3b: CantLoseTheGame — player can't lose the game (Platinum Angel).
@@ -662,6 +670,10 @@ pub fn check_static_ability(
     mode: StaticMode,
     context: &StaticCheckContext,
 ) -> bool {
+    // Perf: this is the O(N) whole-battlefield sweep that combat/untap legality
+    // loops hoist an existence gate in front of (see
+    // `functioning_abilities::any_functioning_static_mode`).
+    crate::game::perf_counters::record_static_full_scan();
     // CR 114.4: Abilities of emblems function in the command zone.
     // Check both battlefield objects and command zone emblems. The functioning
     // gate is applied before context-specific condition evaluation below.
@@ -826,6 +838,71 @@ pub(crate) fn transient_grants_static_mode_to_object(
     false
 }
 
+/// CR 702.26a + CR 101.2 + CR 611.2b: True iff `object_id` currently has an
+/// *active* `CantPhaseIn` restriction. The Pandorica grants this as a
+/// `SpecificObject` transient continuous effect (`AddStaticMode { CantPhaseIn }`)
+/// whose `ForAsLongAs { SourceIsTapped }` duration is re-evaluated on every query
+/// (CR 611.2b), so the lock lifts the instant the source untaps or leaves the
+/// battlefield (CR 110.5d). Mirrors the `cant_untap_ids` raw-id scan in
+/// `turns.rs`, but evaluates the duration/condition gate that the untap scan
+/// leaves to the per-permanent `check_static_ability` pass.
+///
+/// Three classes are covered: (1) the `SpecificObject`-pinned transient grant
+/// (the Pandorica path, which `transient_grants_static_mode_to_object`
+/// deliberately skips); (2) any filter-scoped transient grant; and (3) a printed
+/// static (parity with the `CantUntap` intrinsic path, future-proofing).
+pub(crate) fn object_has_active_cant_phase_in(state: &GameState, object_id: ObjectId) -> bool {
+    let condition_holds = |duration: &Duration,
+                           condition: &Option<crate::types::ability::StaticCondition>,
+                           controller: PlayerId,
+                           source_id: ObjectId|
+     -> bool {
+        if let Duration::ForAsLongAs { condition } = duration {
+            if !evaluate_condition(state, condition, controller, source_id) {
+                return false;
+            }
+        }
+        if let Some(condition) = condition {
+            if !evaluate_condition(state, condition, controller, source_id) {
+                return false;
+            }
+        }
+        true
+    };
+
+    // (1) SpecificObject-pinned transient grant — the Pandorica lock.
+    let pinned = state.transient_continuous_effects.iter().any(|tce| {
+        matches!(tce.affected, TargetFilter::SpecificObject { id } if id == object_id)
+            && tce.modifications.iter().any(|m| {
+                matches!(
+                    m,
+                    ContinuousModification::AddStaticMode {
+                        mode: StaticMode::CantPhaseIn,
+                    }
+                )
+            })
+            && condition_holds(&tce.duration, &tce.condition, tce.controller, tce.source_id)
+    });
+    if pinned {
+        return true;
+    }
+
+    // (2) Filter-scoped transient grant (already condition-gated internally).
+    if transient_grants_static_mode_to_object(state, object_id, &StaticMode::CantPhaseIn) {
+        return true;
+    }
+
+    // (3) Printed static (parity with the CantUntap intrinsic path).
+    check_static_ability(
+        state,
+        StaticMode::CantPhaseIn,
+        &StaticCheckContext {
+            target_id: Some(object_id),
+            ..Default::default()
+        },
+    )
+}
+
 /// CR 609.4b: Check if a player has an unfiltered ("any spell/cost")
 /// "spend mana as any color/type" static active. Scans battlefield and command
 /// zone for `StaticMode::SpendManaAsAnyColor { spell_filter: None }` whose
@@ -963,53 +1040,132 @@ pub fn player_has_cant_win(state: &GameState, player_id: PlayerId) -> bool {
     ) || transient_grants_static_mode_to_player(state, player_id, &StaticMode::CantWinTheGame)
 }
 
-/// CR 119.7: Check if a player has active `CantGainLife` protection.
+/// Single-player check shared by `player_has_cant_gain_life` and
+/// `player_has_cant_lose_life`: does `player_id` itself (battlefield permanent
+/// or spell-applied transient effect) have an active static of `mode`?
+fn life_lock_active_for(state: &GameState, player_id: PlayerId, mode: StaticMode) -> bool {
+    check_static_ability(
+        state,
+        mode.clone(),
+        &StaticCheckContext {
+            player_id: Some(player_id),
+            ..Default::default()
+        },
+    ) || transient_grants_static_mode_to_player(state, player_id, &mode)
+}
+
+/// CR 119.7 + CR 810.9g: Check if a player has active `CantGainLife`
+/// protection.
 ///
 /// When `true`, effects that would cause the player to gain life have no effect
 /// (CR 119.7: "a replacement effect that would replace a life gain event
 /// affecting that player won't do anything"). Callers must short-circuit BEFORE
 /// invoking the replacement pipeline.
 ///
-/// Checks both battlefield permanents and spell-applied transient effects.
+/// Checks both battlefield permanents and spell-applied transient effects. CR
+/// 810.9g: "If an effect says that a player can't gain life, no player on
+/// that player's team can gain life" — in team-based formats the lock also
+/// propagates from either teammate.
 pub fn player_has_cant_gain_life(state: &GameState, player_id: PlayerId) -> bool {
-    check_static_ability(
-        state,
-        StaticMode::CantGainLife,
-        &StaticCheckContext {
-            player_id: Some(player_id),
-            ..Default::default()
-        },
-    ) || transient_grants_static_mode_to_player(state, player_id, &StaticMode::CantGainLife)
+    life_lock_active_for(state, player_id, StaticMode::CantGainLife)
+        || (super::topology::has_two_headed_giant_shared_resources(state)
+            && super::players::teammates(state, player_id)
+                .into_iter()
+                .any(|teammate| life_lock_active_for(state, teammate, StaticMode::CantGainLife)))
 }
 
-/// CR 119.8: Check if a player has active `CantLoseLife` protection.
+/// CR 119.8 + CR 810.9h: Check if a player has active `CantLoseLife`
+/// protection.
 ///
 /// When `true`, effects that would cause the player to lose life (including
 /// damage-to-life-loss conversion per CR 120.3) have no effect.
 ///
-/// Checks both battlefield permanents and spell-applied transient effects.
+/// Checks both battlefield permanents and spell-applied transient effects. CR
+/// 810.9h: "If an effect says that a player can't lose life, no player on
+/// that player's team can lose life or pay any amount of life other than 0"
+/// — in team-based formats the lock also propagates from either teammate.
 pub fn player_has_cant_lose_life(state: &GameState, player_id: PlayerId) -> bool {
-    check_static_ability(
-        state,
-        StaticMode::CantLoseLife,
-        &StaticCheckContext {
-            player_id: Some(player_id),
-            ..Default::default()
-        },
-    ) || transient_grants_static_mode_to_player(state, player_id, &StaticMode::CantLoseLife)
+    life_lock_active_for(state, player_id, StaticMode::CantLoseLife)
+        || (super::topology::has_two_headed_giant_shared_resources(state)
+            && super::players::teammates(state, player_id)
+                .into_iter()
+                .any(|teammate| life_lock_active_for(state, teammate, StaticMode::CantLoseLife)))
 }
 
-/// CR 702.11e: Check if `player_id` may target creatures as though they didn't
-/// have hexproof, including "hexproof from [quality]" variants.
+/// CR 702.11b + CR 702.11e: Check if `player_id` may target creatures as though
+/// they didn't have hexproof, including "hexproof from [quality]" variants
+/// (CR 702.11e: an "as though it didn't have hexproof" effect also defeats
+/// hexproof-from-quality). This is the player-scoped grant (Detection Tower
+/// class — "you may target ... as though it
+/// didn't have hexproof"), keyed on a battlefield `IgnoreHexproof` static with
+/// NO object `affected` filter, plus the per-player transient grant.
+///
+/// Object-scoped `IgnoreHexproof` statics (Nowhere to Run, `affected = Some`)
+/// are deliberately excluded here — they are not player grants and must not
+/// widen the bypass to every target `player_id` chooses. Those are evaluated
+/// per-target by [`target_ignores_hexproof`].
 pub fn player_ignores_hexproof(state: &GameState, player_id: PlayerId) -> bool {
-    check_static_ability(
-        state,
-        StaticMode::IgnoreHexproof,
-        &StaticCheckContext {
-            player_id: Some(player_id),
-            ..Default::default()
-        },
-    ) || transient_grants_static_mode_to_player(state, player_id, &StaticMode::IgnoreHexproof)
+    let player_scoped_grant = game_functioning_statics(state).any(|(obj, def)| {
+        matches!(def.mode, StaticMode::IgnoreHexproof)
+            && def.affected.is_none()
+            && static_condition_matches_context(
+                state,
+                obj.id,
+                obj.controller,
+                def,
+                &StaticCheckContext {
+                    player_id: Some(player_id),
+                    ..Default::default()
+                },
+            )
+    });
+    player_scoped_grant
+        || transient_grants_static_mode_to_player(state, player_id, &StaticMode::IgnoreHexproof)
+}
+
+/// CR 702.11b + CR 702.11e: Whether a FUNCTIONING `IgnoreHexproof` static whose
+/// `condition` currently holds and which is scoped by an object `affected` filter
+/// makes `target_id` targetable as though it had no hexproof (CR 702.11e extends
+/// the bypass to hexproof-from-quality). Nowhere to Run — "Creatures your
+/// opponents control can be the targets of spells and abilities as though they
+/// didn't have hexproof." The card carries no "you control" qualifier on the
+/// spells or abilities, so the bypass applies to ANY targeting player: it is
+/// keyed solely on the would-be target matching the static's `affected` filter
+/// (evaluated from the static's own source), independent of the targeting
+/// source's controller — hexproof (CR 702.11b) only ever blocks opponents, so
+/// removing it for the matched permanents opens them to every player.
+///
+/// CR 604.1 + CR 613.1: mirrors [`player_ignores_hexproof`] — uses
+/// `game_functioning_statics` (so a source whose abilities are suppressed, or a
+/// phased-out / non-functioning source, grants nothing) and gates each static
+/// through `static_condition_matches_context` with `target_id: Some(target_id)`
+/// so an "as long as ..." condition is honored, and a condition that references
+/// the would-be target (the recipient) is evaluated against that target rather
+/// than skipped. Object-scoped (`affected = Some`) only; the player-scoped
+/// Detection Tower form (`affected = None`) is handled by
+/// [`player_ignores_hexproof`].
+pub fn target_ignores_hexproof(state: &GameState, target_id: ObjectId) -> bool {
+    game_functioning_statics(state).any(|(source_obj, def)| {
+        matches!(def.mode, StaticMode::IgnoreHexproof)
+            && def.affected.as_ref().is_some_and(|filter| {
+                matches_target_filter(
+                    state,
+                    target_id,
+                    filter,
+                    &FilterContext::from_source(state, source_obj.id),
+                )
+            })
+            && static_condition_matches_context(
+                state,
+                source_obj.id,
+                source_obj.controller,
+                def,
+                &StaticCheckContext {
+                    target_id: Some(target_id),
+                    ..Default::default()
+                },
+            )
+    })
 }
 
 /// CR 118.3 + CR 119.4b + CR 601.2h + CR 602.2b: Check whether a static
@@ -1327,7 +1483,7 @@ fn static_condition_matches_context(
     })
 }
 
-/// CR 702.122c: Returns true when the creature has an active "can't crew Vehicles" static.
+/// CR 702.122d: Returns true when the creature has an active "can't crew Vehicles" static.
 pub fn object_has_cant_crew(state: &GameState, object_id: ObjectId) -> bool {
     state.objects.get(&object_id).is_some_and(|obj| {
         super::functioning_abilities::active_static_definitions(state, obj)
@@ -1335,7 +1491,7 @@ pub fn object_has_cant_crew(state: &GameState, object_id: ObjectId) -> bool {
     })
 }
 
-/// CR 702.122c / 702.171a / 702.184a: The power a creature contributes toward a
+/// CR 702.122a / 702.171a / 702.184c: The power a creature contributes toward a
 /// crew / saddle / station cost, after applying any active `CrewContribution`
 /// static whose action list contains `action`. "Using its toughness rather than
 /// its power" substitutes the creature's toughness for its base power; "as
@@ -1465,6 +1621,8 @@ pub(crate) fn static_filter_matches(
                         // CR 603.2 + CR 109.4: Triggering-player scope has no
                         // static context. Fail closed.
                         crate::types::ability::ControllerRef::TriggeringPlayer => false,
+                        // CR 303.4b: Enchanted-player scope has no static context. Fail closed.
+                        crate::types::ability::ControllerRef::EnchantedPlayer => false,
                     };
                 }
                 return true;
@@ -1579,8 +1737,9 @@ fn transient_additional_land_drops(state: &GameState, player: PlayerId) -> u8 {
 mod tests {
     use super::*;
     use crate::game::zones::create_object;
+    use crate::parser::oracle_static::parse_static_line;
     use crate::types::ability::StaticCondition;
-    use crate::types::ability::{ControllerRef, StaticDefinition, TargetFilter};
+    use crate::types::ability::{ControllerRef, StaticDefinition, TargetFilter, TypedFilter};
     use crate::types::card_type::CoreType;
     use crate::types::identifiers::CardId;
     use crate::types::statics::StaticMode;
@@ -1958,10 +2117,14 @@ mod tests {
             .static_definitions
             .push(
                 StaticDefinition::new(StaticMode::AdditionalLandDrop { count: 2 })
+                    .affected(TargetFilter::Typed(
+                        TypedFilter::default().controller(ControllerRef::You),
+                    ))
                     .description("You may play two additional lands on each of your turns.".into()),
             );
 
         assert_eq!(additional_land_drops(&state, PlayerId(0)), 2);
+        assert_eq!(additional_land_drops(&state, PlayerId(1)), 0);
     }
 
     #[test]
@@ -1995,6 +2158,96 @@ mod tests {
 
         // CR 305.2: Two Explorations = +2 additional land drops
         assert_eq!(additional_land_drops(&state, PlayerId(0)), 2);
+    }
+
+    #[test]
+    fn test_additional_land_drops_saturates_any_number() {
+        let mut state = setup();
+
+        let fastbond = create_object(
+            &mut state,
+            CardId(1),
+            PlayerId(0),
+            "Fastbond".to_string(),
+            Zone::Battlefield,
+        );
+        state
+            .objects
+            .get_mut(&fastbond)
+            .unwrap()
+            .static_definitions
+            .push(
+                StaticDefinition::new(StaticMode::AdditionalLandDrop { count: u8::MAX })
+                    .affected(TargetFilter::Typed(
+                        TypedFilter::default().controller(ControllerRef::You),
+                    ))
+                    .description("You may play any number of lands on each of your turns.".into()),
+            );
+
+        let exploration = create_object(
+            &mut state,
+            CardId(2),
+            PlayerId(0),
+            "Exploration".to_string(),
+            Zone::Battlefield,
+        );
+        state
+            .objects
+            .get_mut(&exploration)
+            .unwrap()
+            .static_definitions
+            .push(
+                StaticDefinition::new(StaticMode::MayPlayAdditionalLand)
+                    .affected(TargetFilter::Typed(
+                        TypedFilter::default().controller(ControllerRef::You),
+                    ))
+                    .description("You may play an additional land on each of your turns.".into()),
+            );
+
+        assert_eq!(additional_land_drops(&state, PlayerId(0)), u8::MAX);
+        assert_eq!(additional_land_drops(&state, PlayerId(1)), 0);
+    }
+
+    #[test]
+    fn test_parsed_controller_scoped_additional_land_drops_do_not_affect_opponent() {
+        let mut state = setup();
+
+        let fastbond = create_object(
+            &mut state,
+            CardId(1),
+            PlayerId(0),
+            "Fastbond".to_string(),
+            Zone::Battlefield,
+        );
+        state
+            .objects
+            .get_mut(&fastbond)
+            .unwrap()
+            .static_definitions
+            .push(
+                parse_static_line("You may play any number of lands on each of your turns.")
+                    .expect("Fastbond land permission must parse"),
+            );
+
+        let azusa = create_object(
+            &mut state,
+            CardId(2),
+            PlayerId(0),
+            "Azusa, Lost but Seeking".to_string(),
+            Zone::Battlefield,
+        );
+        state
+            .objects
+            .get_mut(&azusa)
+            .unwrap()
+            .static_definitions
+            .push(
+                parse_static_line("You may play two additional lands on each of your turns.")
+                    .expect("Azusa land permission must parse"),
+            );
+
+        assert_eq!(additional_land_drops(&state, PlayerId(0)), u8::MAX);
+        assert_eq!(additional_land_drops(&state, PlayerId(1)), 0);
     }
 
     /// Issue #2879 + CR 305.2 + CR 611.2c: a turn-scoped transient grant (Escape
@@ -2481,6 +2734,7 @@ mod tests {
                 enters_attacking: false,
                 up_to: false,
                 enter_with_counters: vec![],
+                conditional_enter_with_counters: vec![],
                 face_down_profile: None,
             },
             vec![crate::types::ability::TargetRef::Object(token)],

@@ -807,16 +807,16 @@ pub enum Keyword {
     Toxic(u32),
     /// CR 702.171a: Saddle N — tap creatures with total power N+ to saddle this Mount.
     Saddle(u32),
-    /// Teamwork N — "As an additional cost to cast this spell, you may tap any
-    /// number of creatures you control with total power N or more." The spell's
-    /// body then references whether this optional cost was paid ("if this spell
-    /// was cast using teamwork, ...").
+    /// CR 702.194a: Teamwork N — "As an additional cost to cast this spell, you
+    /// may tap any number of creatures you control with total power N or more."
+    /// The spell's body then references whether this optional cost was paid —
+    /// "if this spell was cast using teamwork, ..." (CR 702.194b).
     ///
-    /// Teamwork is not yet in the printed Comprehensive Rules (Marvel Super
-    /// Heroes set keyword). Its tap-any-number-with-total-power-N cost is
-    /// structurally identical to Crew (CR 702.122a) and Saddle (CR 702.171a); it
-    /// is an optional additional cast cost per CR 601.2b/f, and is a keyword
-    /// ability per CR 702.
+    /// Added to the printed Comprehensive Rules in the June 19, 2026 update
+    /// (Marvel Super Heroes set keyword). Its tap-any-number-with-total-power-N
+    /// cost is structurally identical to Crew (CR 702.122a) and Saddle
+    /// (CR 702.171a); paying it follows the additional-cost rules CR 601.2b and
+    /// CR 601.2f–h (CR 702.194a).
     ///
     /// Runtime: `database::synthesis::synthesize_teamwork` builds an
     /// `AdditionalCost::Optional { cost: TapCreatures { requirement:
@@ -1708,6 +1708,11 @@ fn parse_enchant_target(s: &str) -> Option<TargetFilter> {
     // another Aura attached to it" (Daybreak Coronet) narrows the legal target
     // set to objects that already carry an attachment of the named kind.
     let (rest, attachment) = opt(parse_enchant_attachment_qualifier).parse(rest).ok()?;
+    let (rest, without_keyword) =
+        match crate::parser::oracle_target::parse_without_keyword_suffix(rest) {
+            Some((props, consumed)) => (&rest[consumed..], props),
+            None => (rest, Vec::new()),
+        };
     if !rest.trim().is_empty() {
         return None;
     }
@@ -1728,6 +1733,7 @@ fn parse_enchant_target(s: &str) -> Option<TargetFilter> {
     if let Some(prop) = attachment {
         props.push(prop);
     }
+    props.extend(without_keyword);
     let mut filter = TypedFilter::new(type_filter.unwrap_or(TypeFilter::Card));
     if !props.is_empty() {
         filter = filter.properties(props);
@@ -2399,7 +2405,11 @@ fn parse_hexproof_filter(s: &str) -> HexproofFilter {
         // anaphors after a preceding `Choose a color` instruction. Resolved at
         // runtime via `ChosenAttribute::Color` on the granting source. Mirrors
         // `ProtectionTarget::ChosenColor` (CR 702.16).
-        "that color" | "the chosen color" | "chosen color" => HexproofFilter::ChosenColor,
+        "that color"
+        | "the chosen color"
+        | "chosen color"
+        | "the color of your choice"
+        | "color of your choice" => HexproofFilter::ChosenColor,
         _ => HexproofFilter::CardType(lower),
     }
 }
@@ -2422,8 +2432,15 @@ pub(crate) fn parse_protection_target(s: &str) -> ProtectionTarget {
         // monocolored reuses the existing Quality variant (no new variant / no game
         // change). Mirrors parse_hexproof_filter's monocolored→Quality handling.
         "monocolored" => ProtectionTarget::Quality("monocolored".into()),
-        // CR 702.16: "the chosen color" resolves at runtime from chosen_attributes
-        "the chosen color" | "chosen color" => ProtectionTarget::ChosenColor,
+        // CR 702.16 + CR 105.4: "the chosen color" / "the color of your choice"
+        // resolve at runtime from the granting source's `ChosenAttribute::Color`.
+        // "color of your choice" is the as-resolved phrasing (Mother of Runes,
+        // Apostle's Blessing, …); "the chosen color" is the anaphor after a
+        // preceding "choose a color" instruction. Both land on the same variant.
+        "the chosen color"
+        | "chosen color"
+        | "the color of your choice"
+        | "color of your choice" => ProtectionTarget::ChosenColor,
         // CR 702.16 + CR 205.2: "the chosen card type" resolves at
         // runtime from the source permanent's chosen `CardType` attribute.
         "the chosen card type" | "chosen card type" => ProtectionTarget::ChosenCardType,
@@ -3471,6 +3488,33 @@ mod tests {
         );
     }
 
+    /// CR 702.16 + CR 105.4: "the color of your choice" / "color of your choice"
+    /// (the as-resolved phrasing on Mother of Runes, Aven Liberator, Blessed
+    /// Breath, …) parse to the runtime-resolved `ChosenColor` variant — NOT a
+    /// literal `CardType("the color of your choice")` that matches no source.
+    /// Issue #4371. The same alias is mirrored on `parse_hexproof_filter` for
+    /// "gains hexproof from the color of your choice".
+    #[test]
+    fn parse_protection_target_color_of_your_choice_is_chosen_color() {
+        assert_eq!(
+            parse_protection_target("the color of your choice"),
+            ProtectionTarget::ChosenColor
+        );
+        assert_eq!(
+            parse_protection_target("color of your choice"),
+            ProtectionTarget::ChosenColor
+        );
+        // Mirror on the hexproof classifier (CR 702.11d).
+        assert_eq!(
+            parse_hexproof_filter("the color of your choice"),
+            HexproofFilter::ChosenColor
+        );
+        assert_eq!(
+            parse_hexproof_filter("color of your choice"),
+            HexproofFilter::ChosenColor
+        );
+    }
+
     /// CR 702.16 + CR 205.2: "the chosen card type" / "chosen card
     /// type" parse to the runtime-resolved `ChosenCardType` variant. Plus the
     /// Blocker-C regression: the `Quality`/`CardType` fallthrough arms must
@@ -3643,6 +3687,25 @@ mod tests {
 
     /// Regression guard: a plain "Enchant creature" must NOT acquire an
     /// attachment predicate — only the explicit qualifier adds `HasAttachment`.
+    /// CR 702.5a + CR 702.9: Trapped in the Tower / Roots — "Enchant creature
+    /// without flying" must lower to `WithoutKeyword(Flying)` on the Aura target.
+    #[test]
+    fn parse_enchant_creature_without_flying() {
+        use super::super::ability::TypeFilter;
+        let enchant = Keyword::from_str("Enchant:creature without flying").unwrap();
+        let Keyword::Enchant(TargetFilter::Typed(tf)) = enchant else {
+            panic!("expected Typed; got {enchant:?}")
+        };
+        assert_eq!(tf.type_filters, vec![TypeFilter::Creature]);
+        assert!(
+            tf.properties.iter().any(
+                |p| matches!(p, FilterProp::WithoutKeyword { value } if *value == Keyword::Flying)
+            ),
+            "expected WithoutKeyword(Flying); got {:?}",
+            tf.properties
+        );
+    }
+
     #[test]
     fn parse_enchant_plain_creature_has_no_attachment_predicate() {
         use super::super::ability::AttachmentKind;

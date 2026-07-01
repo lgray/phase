@@ -73,6 +73,7 @@ pub(crate) fn affected_filter_uses_object_population(filter: &TargetFilter) -> b
         | TargetFilter::LastCreated
         | TargetFilter::LastRevealed
         | TargetFilter::CostPaidObject
+        | TargetFilter::ChosenCard
         | TargetFilter::TrackedSet { .. }
         | TargetFilter::TrackedSetFiltered { .. }
         | TargetFilter::ExiledBySource
@@ -82,6 +83,7 @@ pub(crate) fn affected_filter_uses_object_population(filter: &TargetFilter) -> b
         | TargetFilter::TriggeringSourceController
         | TargetFilter::TriggeringPlayer
         | TargetFilter::TriggeringSource
+        | TargetFilter::EventTarget
         | TargetFilter::ParentTarget
         | TargetFilter::ParentTargetSlot { .. }
         | TargetFilter::ParentTargetController
@@ -90,6 +92,7 @@ pub(crate) fn affected_filter_uses_object_population(filter: &TargetFilter) -> b
         | TargetFilter::OriginalController
         | TargetFilter::PostReplacementSourceController
         | TargetFilter::PostReplacementDamageTarget
+        | TargetFilter::PostReplacementDamageTargetOwner
         | TargetFilter::DefendingPlayer
         | TargetFilter::HasChosenName
         | TargetFilter::ChosenDamageSource
@@ -140,12 +143,14 @@ fn filter_prop_uses_object_population(prop: &FilterProp) -> bool {
         // single-object, or carry no QuantityExpr threshold, so a board entry/exit
         // cannot change whether a pre-existing object satisfies them.
         // `ColorCount` carries a `u8` constant, not a QuantityExpr.
+        // `ManaSymbolCount` reads only the candidate's own printed mana cost.
         FilterProp::CanEnchant { .. }
         | FilterProp::HasAttachment { .. }
         | FilterProp::HasAnyAttachmentOf { .. }
         | FilterProp::TargetsOnly { .. }
         | FilterProp::Targets { .. }
         | FilterProp::ColorCount { .. }
+        | FilterProp::ManaSymbolCount { .. }
         | FilterProp::ManaValueParity { .. }
         | FilterProp::Token
         | FilterProp::NonToken
@@ -160,6 +165,7 @@ fn filter_prop_uses_object_population(prop: &FilterProp) -> bool {
         | FilterProp::Tapped
         | FilterProp::IsSaddled
         | FilterProp::SaddledSource
+        | FilterProp::ConvokedSource
         | FilterProp::ProtectorMatches { .. }
         | FilterProp::Untapped
         | FilterProp::HasHasteOrControlledSinceTurnBegan
@@ -270,6 +276,7 @@ pub(crate) fn entered_object_perturbs_affected_filter(
         | TargetFilter::LastCreated
         | TargetFilter::LastRevealed
         | TargetFilter::CostPaidObject
+        | TargetFilter::ChosenCard
         | TargetFilter::TrackedSet { .. }
         | TargetFilter::TrackedSetFiltered { .. }
         | TargetFilter::ExiledBySource
@@ -279,6 +286,7 @@ pub(crate) fn entered_object_perturbs_affected_filter(
         | TargetFilter::TriggeringSourceController
         | TargetFilter::TriggeringPlayer
         | TargetFilter::TriggeringSource
+        | TargetFilter::EventTarget
         | TargetFilter::ParentTarget
         | TargetFilter::ParentTargetSlot { .. }
         | TargetFilter::ParentTargetController
@@ -287,6 +295,7 @@ pub(crate) fn entered_object_perturbs_affected_filter(
         | TargetFilter::OriginalController
         | TargetFilter::PostReplacementSourceController
         | TargetFilter::PostReplacementDamageTarget
+        | TargetFilter::PostReplacementDamageTargetOwner
         | TargetFilter::DefendingPlayer
         | TargetFilter::HasChosenName
         | TargetFilter::ChosenDamageSource
@@ -355,6 +364,7 @@ fn entered_object_perturbs_filter_prop(
         | FilterProp::TargetsOnly { .. }
         | FilterProp::Targets { .. }
         | FilterProp::ColorCount { .. }
+        | FilterProp::ManaSymbolCount { .. }
         | FilterProp::ManaValueParity { .. }
         | FilterProp::Token
         | FilterProp::NonToken
@@ -369,6 +379,7 @@ fn entered_object_perturbs_filter_prop(
         | FilterProp::Tapped
         | FilterProp::IsSaddled
         | FilterProp::SaddledSource
+        | FilterProp::ConvokedSource
         | FilterProp::ProtectorMatches { .. }
         | FilterProp::Untapped
         | FilterProp::HasHasteOrControlledSinceTurnBegan
@@ -715,7 +726,7 @@ pub(crate) fn controller_ref_player(
         ControllerRef::ParentTargetController => parent_target_controller_player(state, ability),
         ControllerRef::ParentTargetOwner => parent_target_owner_player(state, ability),
         ControllerRef::DefendingPlayer => {
-            crate::game::combat::defending_player_for_attacker(state, source_id)
+            crate::game::combat::resolve_defending_player(state, source_id)
         }
         // CR 608.2c + CR 109.4: The player chosen by the Nth `Choose(Player)`
         // in this resolution — read from the resolution-scoped list.
@@ -729,9 +740,14 @@ pub(crate) fn controller_ref_player(
         }
         // CR 603.2 + CR 109.4: The player identified by the triggering event.
         ControllerRef::TriggeringPlayer => crate::game::quantity::triggering_event_player(state),
+        // CR 303.4b + CR 702.5a: The player the source Aura is attached to.
+        ControllerRef::EnchantedPlayer => state
+            .objects
+            .get(&source_id)
+            .and_then(|source| source.attached_to)
+            .and_then(|host| host.as_player()),
     }
 }
-
 /// Check if an object matches a typed TargetFilter against the given context.
 ///
 /// This is the unified entry point for filter evaluation. Build a
@@ -743,6 +759,60 @@ pub fn matches_target_filter(
     ctx: &FilterContext<'_>,
 ) -> bool {
     filter_inner(state, object_id, filter, ctx)
+}
+
+/// CR 701.20e + CR 608.2c: Look-then-cast chains publish cards via
+/// `last_revealed_ids` while the parser still binds later steps to
+/// `ExiledBySource`. When resolving those steps against library cards,
+/// treat the exile reference as `LastRevealed`.
+pub fn remap_exiled_by_source_for_looked_cards(filter: &TargetFilter) -> TargetFilter {
+    match filter {
+        TargetFilter::ExiledBySource => TargetFilter::LastRevealed,
+        TargetFilter::And { filters } => TargetFilter::And {
+            filters: filters
+                .iter()
+                .map(remap_exiled_by_source_for_looked_cards)
+                .collect(),
+        },
+        TargetFilter::Or { filters } => TargetFilter::Or {
+            filters: filters
+                .iter()
+                .map(remap_exiled_by_source_for_looked_cards)
+                .collect(),
+        },
+        TargetFilter::Not { filter } => TargetFilter::Not {
+            filter: Box::new(remap_exiled_by_source_for_looked_cards(filter)),
+        },
+        TargetFilter::TrackedSetFiltered {
+            id,
+            filter,
+            caused_by,
+        } => TargetFilter::TrackedSetFiltered {
+            id: *id,
+            filter: Box::new(remap_exiled_by_source_for_looked_cards(filter)),
+            caused_by: *caused_by,
+        },
+        other => other.clone(),
+    }
+}
+
+/// Library cards from `last_revealed_ids` matching a look-then-cast filter.
+pub fn last_revealed_library_ids_matching(
+    state: &GameState,
+    filter: &TargetFilter,
+    ctx: &FilterContext<'_>,
+) -> Vec<ObjectId> {
+    let looked_filter = remap_exiled_by_source_for_looked_cards(filter);
+    state
+        .last_revealed_ids
+        .iter()
+        .copied()
+        .filter(|id| {
+            state.objects.get(id).is_some_and(|obj| {
+                obj.zone == Zone::Library && matches_target_filter(state, *id, &looked_filter, ctx)
+            })
+        })
+        .collect()
 }
 
 /// CR 405.1 + CR 115.9b: Match filters against a spell or ability on the
@@ -870,7 +940,7 @@ fn stack_entry_controller_matches(
         Some(ControllerRef::ParentTargetOwner) => parent_target_owner_player(state, ctx.ability)
             .is_some_and(|pid| pid == entry_controller),
         Some(ControllerRef::DefendingPlayer) => {
-            crate::game::combat::defending_player_for_attacker(state, ctx.source_id)
+            crate::game::combat::resolve_defending_player(state, ctx.source_id)
                 .is_some_and(|pid| pid == entry_controller)
         }
         Some(ControllerRef::SourceChosenPlayer) => {
@@ -885,6 +955,13 @@ fn stack_entry_controller_matches(
             crate::game::quantity::triggering_event_player(state)
                 .is_some_and(|pid| pid == entry_controller)
         }
+        // CR 303.4b: The player the source Aura is attached to.
+        Some(ControllerRef::EnchantedPlayer) => state
+            .objects
+            .get(&ctx.source_id)
+            .and_then(|source| source.attached_to)
+            .and_then(|host| host.as_player())
+            .is_some_and(|pid| pid == entry_controller),
     }
 }
 
@@ -1263,6 +1340,9 @@ pub fn matches_target_filter_on_lki_snapshot(
         is_token: false,
         combat_status: Default::default(),
         co_departed: Vec::new(),
+        attached_to: None,
+        entered_incarnation: None,
+        turn_zone_change_index: 0,
     };
     matches_target_filter_on_zone_change_record(state, &record, filter, ctx)
 }
@@ -1296,7 +1376,45 @@ pub fn matches_zone_change_event_object_filter(
     }
 
     if destination == Zone::Battlefield {
-        matches_target_filter(state, *object_id, filter, ctx)
+        // CR 603.4: the intervening-if is rechecked when the ability resolves.
+        // CR 608.2h: a filter that reads the entrant's characteristics uses its
+        // CURRENT info only while the entrant is still in the public zone it was
+        // expected in (the battlefield); once it has left, it uses the entrant's
+        // LAST KNOWN INFORMATION. CR 603.10a: an ETB trigger is not a look-back
+        // trigger, so the normal CR 608.2h rule applies. CR 400.7: the live
+        // object is reverted to its base characteristics on its zone exit
+        // (zones.rs revert_layered_characteristics_to_base), so reading the live
+        // object after it leaves would compare against baseline P/T rather than
+        // its last on-battlefield values — hence the LKI dispatch below. A
+        // fully-absent entrant (objects.get == None) likewise routes to LKI
+        // rather than a spurious false from matches_target_filter.
+        // CR 400.7: a leave + re-entry reuses the SAME ObjectId but bumps the
+        // object's incarnation (move_to_zone -> reset_for_battlefield_entry). The
+        // original ETB trigger must use the ORIGINAL entrant's info, so the live
+        // object only counts as "still the original entrant" when its incarnation
+        // matches the one captured in the ETB record. A re-entered incarnation is
+        // a different object for this trigger and routes to the original exit LKI
+        // below. `entered_incarnation == None` (legacy/defensive records) falls
+        // back to the zone-only check.
+        let still_on_battlefield = state.objects.get(object_id).is_some_and(|obj| {
+            obj.zone == Zone::Battlefield
+                && record
+                    .entered_incarnation
+                    .is_none_or(|inc| obj.incarnation == inc)
+        });
+        if still_on_battlefield {
+            matches_target_filter(state, *object_id, filter, ctx)
+        } else if let Some(lki) = state.lki_cache.get(object_id) {
+            // CR 608.2h: the entrant has left the battlefield — evaluate against
+            // its exit-time LKI (the most-recently-existed battlefield
+            // characteristics, snapshotted before the base revert).
+            matches_target_filter_on_lki_snapshot(state, *object_id, lki, filter, ctx)
+        } else {
+            // No exit LKI cached (defensive — a battlefield exit always caches
+            // one). Use the zone-change record rather than the reverted live
+            // object so the comparison never regresses to baseline P/T.
+            matches_target_filter_on_zone_change_record(state, record, filter, ctx)
+        }
     } else {
         matches_target_filter_on_zone_change_record(state, record, filter, ctx)
     }
@@ -1457,7 +1575,7 @@ fn filter_inner_for_object(
                         }
                     }
                     ControllerRef::DefendingPlayer => {
-                        match crate::game::combat::defending_player_for_attacker(state, source_id) {
+                        match crate::game::combat::resolve_defending_player(state, source_id) {
                             Some(pid) if pid == obj_ctrl => {}
                             _ => return false,
                         }
@@ -1483,6 +1601,21 @@ fn filter_inner_for_object(
                     // the object's controller against the triggering player.
                     ControllerRef::TriggeringPlayer => {
                         match crate::game::quantity::triggering_event_player(state) {
+                            Some(pid) if pid == obj_ctrl => {}
+                            _ => return false,
+                        }
+                    }
+                    // CR 303.4b: "enchanted player controls" — match the
+                    // object's controller against the player the source Aura
+                    // is attached to.
+                    // CR 303.4b: Resolve enchanted player via source's attached_to.
+                    ControllerRef::EnchantedPlayer => {
+                        match state
+                            .objects
+                            .get(&source_id)
+                            .and_then(|source| source.attached_to)
+                            .and_then(|host| host.as_player())
+                        {
                             Some(pid) if pid == obj_ctrl => {}
                             _ => return false,
                         }
@@ -1590,6 +1723,23 @@ fn filter_inner_for_object(
         TargetFilter::CostPaidObject => ability
             .and_then(|ability| ability.cost_paid_object.as_ref())
             .is_some_and(|snapshot| snapshot.object_id == object_id),
+        // CR 613.1f + CR 611.2c + CR 400.7: the FILTER source's last-remembered
+        // card (`ChosenAttribute::Card`, written by `Effect::RememberCard`). Read
+        // live each layer pass against `source_id` (the permanent that HAS the
+        // granting static — Koh), not the resolving `ability`, so the static grant
+        // resolves it. The `obj.zone == Zone::Exile` guard is the invalidation:
+        // a chosen card that leaves exile becomes a new object (CR 400.7) with a
+        // fresh id, so the stored id stops matching an exiled object and the grant
+        // drops. Re-choosing replaces the stored `Card` (RememberCard is
+        // replace-on-rechoose), so this always reflects the single latest choice.
+        TargetFilter::ChosenCard => {
+            obj.zone == Zone::Exile
+                && state.objects.get(&source_id).is_some_and(|src| {
+                    src.chosen_attributes
+                        .iter()
+                        .any(|attr| matches!(attr, ChosenAttribute::Card(id) if *id == object_id))
+                })
+        }
         // CR 603.7: Match objects in a tracked set from the originating effect.
         TargetFilter::TrackedSet { id } => state
             .tracked_object_sets
@@ -1680,6 +1830,15 @@ fn filter_inner_for_object(
         | TargetFilter::TriggeringPlayer
         | TargetFilter::TriggeringSource
         | TargetFilter::DefendingPlayer => false,
+        // CR 603.2 + CR 120.1 + CR 603.4: "that creature"/"that permanent" bound
+        // to the damaged object of the current trigger event. Matches only the
+        // specific object that received this trigger's damage, so an
+        // intervening-`if` like "if that creature was dealt excess damage this
+        // turn" (Maarika) never fires off an unrelated creature's earlier excess
+        // hit. Resolves through the same event-extraction authority as
+        // `ObjectScope::EventTarget`; inert (matches nothing) outside a trigger.
+        TargetFilter::EventTarget => crate::game::quantity::triggering_event_target_object(state)
+            .is_some_and(|damaged| damaged == object_id),
         // ParentTarget/ParentTargetController/ParentTargetOwner/PostReplacementSourceController
         // resolve at resolution time, not via object matching. ParentTargetOwner
         // mirrors ParentTargetController for the player-axis side of CR 108.3 vs CR 109.4.
@@ -1688,7 +1847,8 @@ fn filter_inner_for_object(
         | TargetFilter::ParentTargetController
         | TargetFilter::ParentTargetOwner
         | TargetFilter::PostReplacementSourceController
-        | TargetFilter::PostReplacementDamageTarget => false,
+        | TargetFilter::PostReplacementDamageTarget
+        | TargetFilter::PostReplacementDamageTargetOwner => false,
         // CR 201.2 + CR 602.5: "card with the chosen name" — match against source's
         // ChosenAttribute::CardName. The chosen name comes from a player UI prompt;
         // the comparison must mirror the spell-cast prohibition path
@@ -1706,10 +1866,32 @@ fn filter_inner_for_object(
         }
         // CR 609.7a: "the chosen source" — match the ObjectId selected by
         // the prior damage-source choice while its continuation resolves.
-        TargetFilter::ChosenDamageSource => state
-            .last_chosen_damage_source
-            .as_ref()
-            .is_some_and(|choice| choice.source_id == object_id),
+        TargetFilter::ChosenDamageSource => {
+            let recheck_ctx = FilterContext {
+                source_id,
+                source_controller,
+                ability,
+                recipient_id,
+                scoped_iteration_player,
+            };
+            state
+                .last_chosen_damage_source
+                .as_ref()
+                .is_some_and(|choice| {
+                    // CR 609.7b: An effect that would prevent or replace damage from a
+                    // chosen source applies only to damage from that source.
+                    choice.source_id == object_id
+                        && (matches!(
+                            &choice.source_filter,
+                            TargetFilter::Any | TargetFilter::ChosenDamageSource
+                        ) || matches_target_filter(
+                            state,
+                            object_id,
+                            &choice.source_filter,
+                            &recheck_ctx,
+                        ))
+                })
+        }
         // "card named [literal]" — static name match.
         TargetFilter::Named { name } => obj.name == *name,
         // CR 400.3: Owner is a player-resolving filter (resolves to the owner of
@@ -1835,6 +2017,21 @@ fn zone_change_filter_inner(
                             _ => return false,
                         }
                     }
+                    // CR 303.4b: "enchanted player controls" — match the
+                    // record's controller against the player the source Aura
+                    // is attached to.
+                    // CR 303.4b: Resolve enchanted player via source's attached_to.
+                    ControllerRef::EnchantedPlayer => {
+                        match state
+                            .objects
+                            .get(&source_id)
+                            .and_then(|source| source.attached_to)
+                            .and_then(|host| host.as_player())
+                        {
+                            Some(pid) if pid == record.controller => {}
+                            _ => return false,
+                        }
+                    }
                     _ => {}
                 }
             }
@@ -1913,6 +2110,7 @@ fn zone_change_filter_inner(
         TargetFilter::LastCreated
         | TargetFilter::LastRevealed
         | TargetFilter::CostPaidObject
+        | TargetFilter::ChosenCard
         | TargetFilter::TrackedSet { .. }
         | TargetFilter::TrackedSetFiltered { .. }
         | TargetFilter::ExiledBySource
@@ -1922,12 +2120,14 @@ fn zone_change_filter_inner(
         | TargetFilter::TriggeringSourceController
         | TargetFilter::TriggeringPlayer
         | TargetFilter::TriggeringSource
+        | TargetFilter::EventTarget
         | TargetFilter::ParentTarget
         | TargetFilter::ParentTargetSlot { .. }
         | TargetFilter::ParentTargetController
         | TargetFilter::ParentTargetOwner
         | TargetFilter::PostReplacementSourceController
         | TargetFilter::PostReplacementDamageTarget
+        | TargetFilter::PostReplacementDamageTargetOwner
         | TargetFilter::DefendingPlayer
         | TargetFilter::StackAbility { .. }
         | TargetFilter::StackSpell
@@ -2121,6 +2321,8 @@ pub fn spell_record_matches_filter(
                     // meaning for a spell-history record (no event context).
                     // Fail closed.
                     ControllerRef::TriggeringPlayer => return false,
+                    // CR 303.4b: Resolve enchanted player via source's attached_to.
+                    ControllerRef::EnchantedPlayer => return false,
                 }
             }
 
@@ -2158,6 +2360,7 @@ pub fn spell_record_matches_filter(
         | TargetFilter::LastCreated
         | TargetFilter::LastRevealed
         | TargetFilter::CostPaidObject
+        | TargetFilter::ChosenCard
         | TargetFilter::TrackedSet { .. }
         | TargetFilter::TrackedSetFiltered { .. }
         | TargetFilter::ExiledBySource
@@ -2167,6 +2370,7 @@ pub fn spell_record_matches_filter(
         | TargetFilter::TriggeringSourceController
         | TargetFilter::TriggeringPlayer
         | TargetFilter::TriggeringSource
+        | TargetFilter::EventTarget
         | TargetFilter::ParentTarget
         | TargetFilter::ParentTargetSlot { .. }
         | TargetFilter::ParentTargetController
@@ -2174,6 +2378,7 @@ pub fn spell_record_matches_filter(
         | TargetFilter::SourceChosenPlayer
         | TargetFilter::PostReplacementSourceController
         | TargetFilter::PostReplacementDamageTarget
+        | TargetFilter::PostReplacementDamageTargetOwner
         | TargetFilter::DefendingPlayer
         | TargetFilter::HasChosenName
         | TargetFilter::ChosenDamageSource
@@ -2400,6 +2605,7 @@ fn spell_object_matches_filter_inner(
         | TargetFilter::LastCreated
         | TargetFilter::LastRevealed
         | TargetFilter::CostPaidObject
+        | TargetFilter::ChosenCard
         | TargetFilter::TrackedSet { .. }
         | TargetFilter::TrackedSetFiltered { .. }
         | TargetFilter::ExiledBySource
@@ -2409,6 +2615,7 @@ fn spell_object_matches_filter_inner(
         | TargetFilter::TriggeringSourceController
         | TargetFilter::TriggeringPlayer
         | TargetFilter::TriggeringSource
+        | TargetFilter::EventTarget
         | TargetFilter::ParentTarget
         | TargetFilter::ParentTargetSlot { .. }
         | TargetFilter::ParentTargetController
@@ -2416,6 +2623,7 @@ fn spell_object_matches_filter_inner(
         | TargetFilter::SourceChosenPlayer
         | TargetFilter::PostReplacementSourceController
         | TargetFilter::PostReplacementDamageTarget
+        | TargetFilter::PostReplacementDamageTargetOwner
         | TargetFilter::DefendingPlayer
         | TargetFilter::HasChosenName
         | TargetFilter::ChosenDamageSource
@@ -2638,6 +2846,11 @@ fn spell_record_matches_property(record: &SpellCastRecord, prop: &FilterProp) ->
         FilterProp::ManaValueParity { parity } => {
             mana_value_matches_parity_source(record.mana_value, parity, None)
         }
+        // CR 202.1: SpellCastRecord retains colors + mana_value but no per-shard
+        // ManaCost, so colored-pip count is unsupported here. RUNTIME: TODO.
+        // (Namor correctness comes from valid_card matching the live stack object
+        // via matches_filter_prop, not from this cast-history record.)
+        FilterProp::ManaSymbolCount { .. } => false,
         // CR 202.1: Exact printed mana cost is not captured in cast-history
         // snapshots. Fail closed rather than approximating with mana value
         // (CR 202.3), which would conflate {W} with {1}.
@@ -2688,6 +2901,7 @@ fn spell_record_matches_property(record: &SpellCastRecord, prop: &FilterProp) ->
         | FilterProp::Tapped
         | FilterProp::IsSaddled
         | FilterProp::SaddledSource
+        | FilterProp::ConvokedSource
         | FilterProp::ProtectorMatches { .. }
         | FilterProp::Untapped
         | FilterProp::HasHasteOrControlledSinceTurnBegan
@@ -3075,6 +3289,13 @@ fn matches_filter_prop(
             .objects
             .get(&source.id)
             .is_some_and(|src| src.saddled_by.contains(&object_id)),
+        // CR 702.51c: a creature tapped to pay the source spell's convoke cost
+        // (recorded in the source's `convoked_creatures`). Source-relative,
+        // mirroring `SaddledSource`.
+        FilterProp::ConvokedSource => state
+            .objects
+            .get(&source.id)
+            .is_some_and(|src| src.convoked_creatures.contains(&object_id)),
         // CR 310.8a: "each battle they protect" — protector is an opponent of
         // the source controller (Joyful Stormsculptor class).
         FilterProp::ProtectorMatches { controller } => {
@@ -3152,6 +3373,14 @@ fn matches_filter_prop(
             let mana_value = obj.mana_cost.mana_value_with_x(obj.zone, obj.cost_x_paid);
             mana_value_matches_parity_source(mana_value, parity, state.last_named_choice.as_ref())
         }
+        // CR 107.4 + CR 202.1: count colored mana symbols in the object's printed
+        // mana cost via the single counting authority, then compare with the
+        // parameterized comparator (Namor's "with one or more blue mana symbols").
+        FilterProp::ManaSymbolCount {
+            color,
+            comparator,
+            value,
+        } => comparator.evaluate(obj.mana_cost.count_colored_pips(*color), *value),
         // CR 202.1: Compare exact printed mana cost, not mana value (CR 202.3).
         FilterProp::ManaCostIn { costs } => costs.iter().any(|cost| cost == &obj.mana_cost),
         // CR 702.143c-d: Foretold is a designation of a card in exile, tracked
@@ -3234,6 +3463,8 @@ fn matches_filter_prop(
                     (Some(ControllerRef::ChosenPlayer { .. }), Some(pid)) => perm.controller == pid,
                     // CR 603.2 + CR 109.4: triggering-player-scoped name match.
                     (Some(ControllerRef::TriggeringPlayer), Some(pid)) => perm.controller == pid,
+                    // CR 303.4b: Resolve enchanted player via source's attached_to.
+                    (Some(ControllerRef::EnchantedPlayer), Some(pid)) => perm.controller == pid,
                     (Some(_), None) => false,
                     (None, _) => true,
                 };
@@ -3270,7 +3501,7 @@ fn matches_filter_prop(
             ControllerRef::ParentTargetOwner => parent_target_owner_player(state, source.ability)
                 .is_some_and(|pid| pid == obj.owner),
             ControllerRef::DefendingPlayer => {
-                crate::game::combat::defending_player_for_attacker(state, source.id)
+                crate::game::combat::resolve_defending_player(state, source.id)
                     .is_some_and(|pid| pid == obj.owner)
             }
             // CR 613.1: Ownership relative to the source's persisted chosen player.
@@ -3288,6 +3519,16 @@ fn matches_filter_prop(
                 crate::game::quantity::triggering_event_player(state)
                     .is_some_and(|pid| pid == obj.owner)
             }
+            // CR 303.4b: Resolve enchanted player via source's attached_to.
+            ControllerRef::EnchantedPlayer => controller_ref_player(
+                state,
+                source.id,
+                source.controller,
+                source.ability,
+                // CR 303.4b: Resolve enchanted player via source's attached_to.
+                &ControllerRef::EnchantedPlayer,
+            )
+            .is_some_and(|pid| pid == obj.owner),
         },
         // CR 303.4 + CR 301.5f: `EnchantedBy` is source-relative when the
         // source is an Aura ("enchanted creature gets +1/+1"). When the source
@@ -3815,6 +4056,9 @@ fn zone_change_record_matches_property(
         // CR 202.1: Zone-change records currently snapshot mana value, not the
         // full printed mana cost. Exact-cost predicates fail closed here.
         FilterProp::ManaCostIn { .. } => false,
+        // CR 202.1: Zone-change record carries no per-shard ManaCost, so
+        // colored-pip count is unsupported here. RUNTIME: TODO.
+        FilterProp::ManaSymbolCount { .. } => false,
         // CR 105.1 / CR 202.2: Color membership on the event-time object.
         FilterProp::HasColor { color } => record.colors.contains(color),
         FilterProp::NotColor { color } => !record.colors.contains(color),
@@ -3885,7 +4129,7 @@ fn zone_change_record_matches_property(
             ControllerRef::ParentTargetOwner => parent_target_owner_player(state, source.ability)
                 .is_some_and(|pid| pid == record.owner),
             ControllerRef::DefendingPlayer => {
-                crate::game::combat::defending_player_for_attacker(state, source.id)
+                crate::game::combat::resolve_defending_player(state, source.id)
                     .is_some_and(|pid| pid == record.owner)
             }
             // CR 613.1: Ownership relative to the source's persisted chosen player.
@@ -3901,6 +4145,11 @@ fn zone_change_record_matches_property(
             // CR 603.2 + CR 109.4: Ownership relative to the triggering player.
             ControllerRef::TriggeringPlayer => {
                 crate::game::quantity::triggering_event_player(state).is_some_and(|pid| pid == record.owner)
+            }
+            // CR 303.4b: Resolve enchanted player via source's attached_to.
+            ControllerRef::EnchantedPlayer => {
+                controller_ref_player(state, source.id, source.controller, source.ability, &ControllerRef::EnchantedPlayer)
+                    .is_some_and(|pid| pid == record.owner)
             }
         },
         // CR 205.3e + CR 205.3m + CR 702.73a: Source's chosen creature type
@@ -3993,9 +4242,10 @@ fn zone_change_record_matches_property(
             .get(&record.object_id)
             .is_some_and(|obj| obj.paired_with.is_none()),
 
-        // These predicates query live battlefield state (tap status, attachment,
-        // current counters, face-down). The snapshot has already left its public
-        // zone, so the predicate is semantically not applicable.
+        // CR 608.2h: predicates whose state IS captured into the exit-time LKI
+        // snapshot (counters, tap status) are answered from `lki_cache`, keyed by
+        // the record's object id. Predicates that are NOT snapshotted (attachment,
+        // face-down, etc.) fall through to the fail-closed group below.
         FilterProp::Counters {
             counters,
             comparator,
@@ -4008,11 +4258,40 @@ fn zone_change_record_matches_property(
             let actual = counter_count_from_map(&lki.counters, selector);
             comparator.evaluate(actual, resolve_filter_threshold(state, count, source))
         }),
-        FilterProp::Tapped
-        | FilterProp::IsSaddled
+        // CR 120.6 + CR 120.9 + CR 608.2h: "was dealt damage this turn" is a
+        // turn-scoped historical fact, not a query against current marked damage.
+        // The `damage_dealt_this_turn` ledger is keyed by the battlefield ObjectId
+        // and survives the object's zone change, so a look-back rider ("Exile
+        // target creature. If it was dealt damage this turn, ..." — Sold Out)
+        // evaluating against the LKI snapshot reads the same ledger the live
+        // evaluator uses, by the snapshot's `object_id`. Mirrors the live arm.
+        FilterProp::WasDealtDamageThisTurn => state
+            .damage_dealt_this_turn
+            .iter()
+            .any(|r| matches!(r.target, TargetRef::Object(id) if id == record.object_id)),
+        // CR 110.5 + CR 110.5d + CR 608.2h: tap status is battlefield-only — once
+        // the object has left its public zone it is neither tapped nor untapped, so
+        // the live object can't answer a look-back "was tapped" rider (Brackish
+        // Blunder, evaluated after the bounce/exile). Read the exit-time tap state
+        // captured into the LKI snapshot at zone exit (zones.rs), keyed by the
+        // record's object id — mirrors the `Counters` arm's `lki_cache` lookup.
+        FilterProp::Tapped => state
+            .lki_cache
+            .get(&record.object_id)
+            .is_some_and(|lki| lki.tapped),
+        // CR 110.5 + CR 110.5d: symmetric sibling of `Tapped`. A look-back
+        // "was untapped" rider reads the exit-time tap state from the LKI
+        // snapshot and asserts it was NOT tapped. Fail-closed (no snapshot ⇒
+        // false) mirrors the `Tapped` arm: a card not on the battlefield is
+        // neither tapped nor untapped, so absence of a snapshot answers neither.
+        FilterProp::Untapped => state
+            .lki_cache
+            .get(&record.object_id)
+            .is_some_and(|lki| !lki.tapped),
+        FilterProp::IsSaddled
         | FilterProp::SaddledSource
+        | FilterProp::ConvokedSource
         | FilterProp::ProtectorMatches { .. }
-        | FilterProp::Untapped
         | FilterProp::HasHasteOrControlledSinceTurnBegan
         | FilterProp::AttackedThisTurn
         | FilterProp::BlockedThisTurn
@@ -4052,7 +4331,6 @@ fn zone_change_record_matches_property(
         | FilterProp::DifferentNameFrom { .. }
         | FilterProp::InAnyZone { .. }
         | FilterProp::SharesQuality { .. }
-        | FilterProp::WasDealtDamageThisTurn
         | FilterProp::EnteredThisTurn
         | FilterProp::ZoneChangedThisTurn { .. }
         // CR 122.6: counters-put-this-turn is a live-history join keyed on the
@@ -4111,10 +4389,8 @@ fn attachment_controller_matches(
         }
         Some(ControllerRef::ParentTargetOwner) => parent_target_owner_player(state, source.ability)
             .is_some_and(|pid| pid == attachment_controller),
-        Some(ControllerRef::DefendingPlayer) => {
-            combat::defending_player_for_attacker(state, source.id)
-                .is_some_and(|pid| pid == attachment_controller)
-        }
+        Some(ControllerRef::DefendingPlayer) => combat::resolve_defending_player(state, source.id)
+            .is_some_and(|pid| pid == attachment_controller),
         // CR 613.1: Attachment controller relative to the source's chosen player.
         Some(ControllerRef::SourceChosenPlayer) => {
             crate::game::game_object::source_chosen_player(state, source.id)
@@ -4130,6 +4406,16 @@ fn attachment_controller_matches(
             crate::game::quantity::triggering_event_player(state)
                 .is_some_and(|pid| pid == attachment_controller)
         }
+        // CR 303.4b: Resolve enchanted player via source's attached_to.
+        Some(ControllerRef::EnchantedPlayer) => controller_ref_player(
+            state,
+            source.id,
+            source.controller,
+            source.ability,
+            // CR 303.4b: Resolve enchanted player via source's attached_to.
+            &ControllerRef::EnchantedPlayer,
+        )
+        .is_some_and(|pid| pid == attachment_controller),
     }
 }
 
@@ -4701,6 +4987,8 @@ fn player_matches_target_filter_with(
             // CR 603.2 + CR 109.4: Triggering-player scope has no meaning
             // without event/game-state context here. Fail closed.
             Some(ControllerRef::TriggeringPlayer) => false,
+            // CR 303.4b: Resolve enchanted player via source's attached_to.
+            Some(ControllerRef::EnchantedPlayer) => false,
             None => true,
         },
         // Typed filters with type_filters don't match players
@@ -5044,6 +5332,7 @@ mod tests {
                 colors: vec![],
                 chosen_attributes: vec![],
                 counters: Default::default(),
+                tapped: false,
             },
         );
 
@@ -8428,6 +8717,7 @@ mod tests {
             colors: vec![],
             chosen_attributes: Vec::new(),
             counters: Default::default(),
+            tapped: false,
         };
         let filter =
             TargetFilter::Typed(TypedFilter::creature().properties(vec![FilterProp::Cmc {
@@ -8470,6 +8760,7 @@ mod tests {
             colors: vec![],
             chosen_attributes: Vec::new(),
             counters: Default::default(),
+            tapped: false,
         };
         let filter =
             TargetFilter::Typed(
@@ -8566,6 +8857,110 @@ mod tests {
             &FilterProp::Historic,
             &state,
             &vanilla_record,
+            &source_ctx,
+        ));
+    }
+
+    /// CR 110.5 + CR 110.5d + CR 400.7: the tap-status LKI-lookback arms of
+    /// `zone_change_record_matches_property` read exit-time tap state from the
+    /// snapshot. `Tapped` matches iff the snapshot recorded a tapped exit;
+    /// `Untapped` is the symmetric sibling, matching iff it recorded an untapped
+    /// exit. Both fail closed when no snapshot exists (a card off the battlefield
+    /// is neither tapped nor untapped, so absence answers neither — CR 110.5d).
+    ///
+    /// Revert-probe: returning `FilterProp::Untapped` to the fail-closed bucket
+    /// (its state on PR #4559 head 428481a) makes the `Untapped`/`untapped_record`
+    /// assertion fail — it returns false despite the snapshot recording an
+    /// untapped exit. This is the exact sibling gap the maintainer flagged.
+    #[test]
+    fn zone_change_record_tap_status_reads_lki_snapshot() {
+        use crate::types::game_state::{LKISnapshot, ZoneChangeRecord};
+
+        let mut state = GameState::default();
+        let source_ctx = SourceContext {
+            id: ObjectId(1),
+            controller: Some(PlayerId(0)),
+            attached_to: None,
+            source_is_aura: false,
+            source_is_equipment: false,
+            chosen_creature_type: None,
+            chosen_attributes: &[],
+            ability: None,
+            recipient_id: None,
+        };
+
+        let lki = |tapped: bool| LKISnapshot {
+            name: "Tap Probe".to_string(),
+            power: None,
+            toughness: None,
+            base_power: None,
+            base_toughness: None,
+            mana_value: 0,
+            controller: PlayerId(0),
+            owner: PlayerId(0),
+            card_types: vec![CoreType::Creature],
+            subtypes: vec![],
+            supertypes: vec![],
+            keywords: vec![],
+            colors: vec![],
+            chosen_attributes: vec![],
+            counters: Default::default(),
+            tapped,
+        };
+
+        // Left the battlefield TAPPED.
+        let tapped_id = ObjectId(60);
+        let tapped_record =
+            ZoneChangeRecord::test_minimal(tapped_id, Some(Zone::Battlefield), Zone::Hand);
+        state.lki_cache.insert(tapped_id, lki(true));
+
+        // Left the battlefield UNTAPPED.
+        let untapped_id = ObjectId(61);
+        let untapped_record =
+            ZoneChangeRecord::test_minimal(untapped_id, Some(Zone::Battlefield), Zone::Hand);
+        state.lki_cache.insert(untapped_id, lki(false));
+
+        // `Tapped`: matches the tapped exit, not the untapped exit.
+        assert!(zone_change_record_matches_property(
+            &FilterProp::Tapped,
+            &state,
+            &tapped_record,
+            &source_ctx,
+        ));
+        assert!(!zone_change_record_matches_property(
+            &FilterProp::Tapped,
+            &state,
+            &untapped_record,
+            &source_ctx,
+        ));
+
+        // `Untapped` (new sibling): matches the untapped exit, not the tapped exit.
+        assert!(zone_change_record_matches_property(
+            &FilterProp::Untapped,
+            &state,
+            &untapped_record,
+            &source_ctx,
+        ));
+        assert!(!zone_change_record_matches_property(
+            &FilterProp::Untapped,
+            &state,
+            &tapped_record,
+            &source_ctx,
+        ));
+
+        // Fail-closed symmetry: no snapshot ⇒ neither predicate matches.
+        let no_lki_record =
+            ZoneChangeRecord::test_minimal(ObjectId(62), Some(Zone::Battlefield), Zone::Hand);
+        assert!(!zone_change_record_matches_property(
+            &FilterProp::Tapped,
+            &state,
+            &no_lki_record,
+            &source_ctx,
+        ));
+        assert!(!zone_change_record_matches_property(
+            &FilterProp::Untapped,
+            &state,
+            &no_lki_record,
             &source_ctx,
         ));
     }
@@ -9270,6 +9665,9 @@ mod tests {
             is_token: false,
             combat_status: Default::default(),
             co_departed: Vec::new(),
+            attached_to: None,
+            entered_incarnation: None,
+            turn_zone_change_index: 0,
         };
         let goblin_filter = make_subtype_filter("Goblin");
         let plains_filter = make_subtype_filter("Plains");
@@ -9360,6 +9758,7 @@ mod tests {
             colors: vec![],
             chosen_attributes: Vec::new(),
             counters: HashMap::new(),
+            tapped: false,
         };
         let land_lki = LKISnapshot {
             name: "Test Land".to_string(),
@@ -9377,6 +9776,7 @@ mod tests {
             colors: vec![],
             chosen_attributes: Vec::new(),
             counters: HashMap::new(),
+            tapped: false,
         };
 
         let filter =
@@ -9519,6 +9919,7 @@ mod tests {
                 colors: vec![],
                 counters: Default::default(),
                 chosen_attributes: vec![],
+                tapped: false,
             },
         );
 
@@ -9586,6 +9987,7 @@ mod tests {
                 colors: vec![],
                 counters: Default::default(),
                 chosen_attributes: vec![],
+                tapped: false,
             },
         );
 

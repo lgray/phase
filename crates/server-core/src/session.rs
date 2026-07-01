@@ -21,7 +21,7 @@ use engine::types::player::PlayerId;
 use phase_ai::config::{AiConfig, AiDifficulty, Platform};
 use phase_ai::session::AiSession;
 use rand::{Rng, SeedableRng};
-use seat_reducer::types::{DeckChoice, SeatDelta, SeatKind, SeatState};
+use seat_reducer::types::{seat_team_info, DeckChoice, SeatDelta, SeatKind, SeatState};
 use tracing::{debug, info, warn};
 
 use crate::filter::filter_state_for_player;
@@ -247,6 +247,7 @@ impl GameSession {
                         String::new()
                     },
                     kind,
+                    team_info: seat_team_info(&self.state.format_config, pid.0),
                     reserved: reservation.is_some(),
                     reservation_expires_at_ms: reservation.and_then(|r| r.expires_at_ms),
                 }
@@ -288,11 +289,18 @@ impl GameSession {
         let format_config = self.state.format_config.clone();
         let match_config = self.state.match_config;
         self.state = GameState::new(format_config, player_count, rand::rng().random());
-        self.state.match_config = if player_count == 2 {
+        // CR 732.2a: re-read the immutable match config (incl. the combo-detector
+        // opt-in) so a Bo3 rematch keeps a consistent detector across games. Bo3 is
+        // 2-player-only; `loop_detection` is player-count-agnostic.
+        let match_config = if player_count == 2 {
             match_config
         } else {
-            MatchConfig::default()
+            MatchConfig {
+                loop_detection: match_config.loop_detection,
+                ..MatchConfig::default()
+            }
         };
+        self.state.set_match_config(match_config);
         // Preserve sandbox seeding through rematch — the format flag is
         // immutable, so debug capability survives the new game. Every seat
         // is permitted by default (see initial create site for rationale);
@@ -400,7 +408,10 @@ impl GameSession {
                 main_deck: deck.main_deck.clone(),
                 sideboard: deck.sideboard.clone(),
                 commander: deck.commander.clone(),
+                planar_deck: deck.planar_deck.clone(),
+                scheme_deck: deck.scheme_deck.clone(),
                 attraction_deck: deck.attraction_deck.clone(),
+                contraption_deck: deck.contraption_deck.clone(),
                 sticker_sheets: deck.sticker_sheets.clone(),
                 signature_spell: deck.signature_spell.clone(),
                 bracket_tier: deck.bracket_tier,
@@ -734,11 +745,20 @@ impl SessionManager {
             player_count,
             rand::rng().random(),
         );
-        state.match_config = if player_count == 2 {
+        // CR 732.2a: Bo3 is inherently 2-player, but the combo-detector opt-in is
+        // player-count-agnostic (infinite loops are a Commander staple), so carry
+        // `loop_detection` through for any table size while resetting `match_type`.
+        // `set_match_config` is the single authority that projects the opt-in onto
+        // the runtime `GameState::loop_detection` gate.
+        let match_config = if player_count == 2 {
             match_config
         } else {
-            MatchConfig::default()
+            MatchConfig {
+                loop_detection: match_config.loop_detection,
+                ..MatchConfig::default()
+            }
         };
+        state.set_match_config(match_config);
         // Sandbox capability: the engine-level `debug_mode` gate must agree
         // with the transport-level `allow_debug_actions` flag, otherwise a
         // sandbox-permitted action would pass the server gate only to be
@@ -1432,6 +1452,104 @@ mod tests {
         assert!(result.is_ok());
         let (token2, _state) = result.unwrap();
         assert_eq!(token2.len(), 32);
+    }
+
+    #[test]
+    fn player_slot_info_omits_team_metadata_for_individual_formats() {
+        for format in [FormatConfig::standard(), FormatConfig::commander()] {
+            let mut mgr = SessionManager::new();
+            let (code, _) = mgr.create_game_n_players(
+                make_deck(),
+                "Host".to_string(),
+                None,
+                2,
+                MatchConfig::default(),
+                Some(format),
+            );
+
+            let slots = mgr.sessions.get(&code).unwrap().player_slot_info();
+            assert_eq!(slots.len(), 2);
+            assert!(slots.iter().all(|slot| slot.team_info.is_none()));
+
+            let json = serde_json::to_value(&slots[0]).unwrap();
+            assert!(json.get("teamInfo").is_none());
+        }
+    }
+
+    #[test]
+    fn player_slot_info_includes_two_headed_giant_team_metadata() {
+        let mut mgr = SessionManager::new();
+        let (code, _) = mgr.create_game_n_players(
+            make_deck(),
+            "Host".to_string(),
+            None,
+            4,
+            MatchConfig::default(),
+            Some(FormatConfig::two_headed_giant()),
+        );
+
+        let slots = mgr.sessions.get(&code).unwrap().player_slot_info();
+        let team_indices: Vec<u8> = slots
+            .iter()
+            .map(|slot| slot.team_info.unwrap().team_index)
+            .collect();
+        let positions: Vec<u8> = slots
+            .iter()
+            .map(|slot| slot.team_info.unwrap().position_in_team)
+            .collect();
+
+        assert_eq!(team_indices, vec![0, 0, 1, 1]);
+        assert_eq!(positions, vec![0, 1, 0, 1]);
+    }
+
+    /// CR 732.2a (#4603 opt-in, Best-of-N): the combo-detector opt-in lives on the
+    /// immutable `MatchConfig` and is projected onto `GameState::loop_detection` by
+    /// `set_match_config` at BOTH game creation AND the between-games rebuild, so a Bo3
+    /// match keeps a consistent detector across every game. No mid-game action can flip
+    /// it (removed as the security fix) — the config is the sole provenance.
+    ///
+    /// REVERT-FAIL: change either provenance site (create_game_n_players or
+    /// rebuild_pregame_state) back to a raw `state.match_config = …` assignment that
+    /// drops the `loop_detection` projection ⇒ the corresponding `is_on()` flips.
+    #[test]
+    fn loop_detection_config_persists_across_bo3_rebuild() {
+        use engine::types::game_state::LoopDetectionMode;
+        use engine::types::match_config::MatchType;
+
+        let mut mgr = SessionManager::new();
+        let (code, _) = mgr.create_game_n_players(
+            make_deck(),
+            "Host".to_string(),
+            None,
+            2,
+            MatchConfig {
+                match_type: MatchType::Bo3,
+                loop_detection: LoopDetectionMode::On,
+            },
+            None,
+        );
+
+        // Game 1: the creation site projects the opt-in onto the runtime flag.
+        assert!(
+            mgr.sessions
+                .get(&code)
+                .unwrap()
+                .state
+                .loop_detection
+                .is_on(),
+            "the MatchConfig opt-in must enable the detector at game-1 creation"
+        );
+
+        // Between-games rebuild (game 2): the immutable config is re-read, so the
+        // detector stays consistent across the whole Bo3 match.
+        mgr.sessions
+            .get_mut(&code)
+            .unwrap()
+            .rebuild_pregame_state(2);
+        assert!(
+            mgr.sessions.get(&code).unwrap().state.loop_detection.is_on(),
+            "the Bo3 between-games rebuild must re-derive the detector from the immutable MatchConfig"
+        );
     }
 
     #[test]

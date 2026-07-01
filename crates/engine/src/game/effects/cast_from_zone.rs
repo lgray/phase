@@ -62,6 +62,8 @@ fn open_private_zone_cast_selection(
         track_exiled_by_source: false,
         // CR 708.2a: cast-from-zone selection is not a face-down entry.
         face_down_profile: None,
+        enter_with_counters: vec![],
+        conditional_enter_with_counters: vec![],
         count_param: 0,
         library_position: None,
         is_cost_payment: false,
@@ -128,6 +130,14 @@ pub fn resolve(
         })
         .collect();
 
+    // CR 701.20e + CR 608.2c: Look-then-cast chains (Kiora) inject the legal
+    // looked-at library cards as targets at the chain seam
+    // (`inject_last_revealed_targets`), already filtered through this cast
+    // filter's `ExiledBySource`→`LastRevealed` remap. Explicitly-supplied
+    // targets from ordinary CastFromZone paths (graveyard/exile free-cast,
+    // Bring to Light, Urza) must NOT be re-filtered through that remap, which
+    // would drop every target not in `last_revealed_ids`. The remap therefore
+    // only applies on the empty-target fallback below.
     if target_ids.is_empty() && target_filter.references_exiled_by_source() {
         let ctx = crate::game::filter::FilterContext::from_ability(ability);
         target_ids = crate::game::players::linked_exile_cards_for_source(state, ability.source_id)
@@ -141,6 +151,14 @@ pub fn resolve(
                     && crate::game::filter::matches_target_filter(state, *id, target_filter, &ctx)
             })
             .collect();
+        // CR 701.20e + CR 608.2c: Look-then-cast chains (Kiora, Sovereign of
+        // the Deep) leave the looked-at cards in the library. `Dig { keep_count:
+        // 0 }` publishes them via `last_revealed_ids`, not exile links, but the
+        // parser still binds the cast step to `ExiledBySource`.
+        if target_ids.is_empty() && !state.last_revealed_ids.is_empty() {
+            target_ids =
+                crate::game::filter::last_revealed_library_ids_matching(state, target_filter, &ctx);
+        }
     }
 
     // CR 310.11b + CR 608.2c: "exile it, then you may cast it transformed" —
@@ -167,6 +185,26 @@ pub fn resolve(
                     events,
                 );
             }
+        }
+        // CR 701.20a + CR 608.2c: "Draw three cards and reveal them. You may cast
+        // one of them" (Mad Wizard's Lair) leaves the revealed cards in hand;
+        // `LastRevealed` must open a hand selection among them, not resolve to
+        // `.first()` or filter them out via the library-only reveal injector.
+        if matches!(target_filter, TargetFilter::LastRevealed)
+            && state.last_revealed_ids.iter().any(|id| {
+                state
+                    .objects
+                    .get(id)
+                    .is_some_and(|obj| obj.zone == Zone::Hand)
+            })
+        {
+            return open_private_zone_cast_selection(
+                state,
+                ability,
+                target_filter,
+                Zone::Hand,
+                events,
+            );
         }
         // No targets resolved — nothing to cast.
         events.push(GameEvent::EffectResolved {
@@ -1139,6 +1177,72 @@ mod tests {
         );
     }
 
+    /// Issue #2019 — Kiora, Sovereign of the Deep: look-then-cast chains leave
+    /// cards in the library via `last_revealed_ids`, but the parser binds the
+    /// cast step to `ExiledBySource`. Without the library fallback the cast
+    /// sub-ability silently no-ops.
+    #[test]
+    fn look_peek_exiled_by_source_cast_uses_last_revealed_library_cards() {
+        let mut state = make_test_state();
+        let source = create_object(
+            &mut state,
+            CardId(999),
+            PlayerId(0),
+            "Source".to_string(),
+            Zone::Battlefield,
+        );
+        let instant = create_object(
+            &mut state,
+            CardId(301),
+            PlayerId(0),
+            "Looked Instant".to_string(),
+            Zone::Library,
+        );
+        state
+            .objects
+            .get_mut(&instant)
+            .unwrap()
+            .card_types
+            .core_types
+            .push(CoreType::Instant);
+        state.objects.get_mut(&instant).unwrap().mana_cost = ManaCost::generic(3);
+        state.last_revealed_ids = vec![instant];
+
+        let ability = ResolvedAbility::new(
+            Effect::CastFromZone {
+                target: TargetFilter::And {
+                    filters: vec![
+                        TargetFilter::Typed(TypedFilter::new(TypeFilter::Instant)),
+                        TargetFilter::ExiledBySource,
+                    ],
+                },
+                without_paying_mana_cost: true,
+                mode: CardPlayMode::Cast,
+                cast_transformed: false,
+                alt_ability_cost: None,
+                constraint: None,
+                duration: None,
+                driver: crate::types::ability::CastFromZoneDriver::LingeringPermission,
+            },
+            vec![],
+            source,
+            PlayerId(0),
+        );
+
+        let mut events = vec![];
+        resolve(&mut state, &ability, &mut events).unwrap();
+
+        let obj = state.objects.get(&instant).expect("looked card");
+        assert_eq!(obj.zone, Zone::Exile, "library cast grant exiles the card");
+        assert!(
+            obj.casting_permissions.iter().any(|p| matches!(
+                p,
+                CastingPermission::ExileWithAltCost { cost, .. } if *cost == ManaCost::zero()
+            )),
+            "looked library card must receive a free cast permission"
+        );
+    }
+
     /// Issue #1313 — Electrodominance's "you may cast a spell with mana value X
     /// or less from your hand" must open a resolution-time hand pick, not
     /// silently no-op when `ability.targets` is empty.
@@ -1330,6 +1434,7 @@ mod tests {
                 enters_attacking: false,
                 up_to: false,
                 enter_with_counters: vec![],
+                conditional_enter_with_counters: vec![],
                 face_down_profile: None,
             },
             vec![],

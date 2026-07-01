@@ -88,11 +88,11 @@ import { StackDisplay } from "../components/stack/StackDisplay.tsx";
 import { TargetingOverlay } from "../components/targeting/TargetingOverlay.tsx";
 import { PlayerHud } from "../components/hud/PlayerHud.tsx";
 import { OpponentHud } from "../components/hud/OpponentHud.tsx";
+import { TurnStatusLine } from "../components/hud/TurnStatusLine.tsx";
 import { GraveyardPile } from "../components/zone/GraveyardPile.tsx";
 import { LibraryPile } from "../components/zone/LibraryPile.tsx";
 import { ExilePile } from "../components/zone/ExilePile.tsx";
 import { CompanionZone } from "../components/zone/CompanionZone.tsx";
-import { ZoneHand } from "../components/hand/ZoneHand.tsx";
 import { ZoneViewer } from "../components/zone/ZoneViewer.tsx";
 import {
   PreferencesModal,
@@ -129,6 +129,7 @@ import {
   useMultiplayerStore,
   type PlayerSlot,
 } from "../stores/multiplayerStore.ts";
+import { formatMetadata, isSetupFormat } from "../data/formatRegistry.ts";
 import { useMultiplayerDraftStore } from "../stores/multiplayerDraftStore.ts";
 import { SpectatorChrome } from "../components/spectator/SpectatorChrome.tsx";
 import { useSpectatorMode } from "../hooks/useSpectatorMode.ts";
@@ -150,6 +151,28 @@ type ZoneRailStyle = CSSProperties & {
 
 function castableZoneViewerAutoOpenKey(target: ZoneViewerTarget): string {
   return `${target.zone}:${target.playerId}:${target.objectIds.join(",")}`;
+}
+
+function isDirectSoloRouteMode(rawMode: string | null): boolean {
+  return ![
+    "p2p-host",
+    "p2p-join",
+    "draft-match",
+    "spectate",
+    "host",
+    "join",
+  ].includes(rawMode ?? "");
+}
+
+function isDirectSetupFormat(format: GameFormat): boolean {
+  const metadata = formatMetadata(format);
+  return Boolean(metadata && isSetupFormat(metadata));
+}
+
+function directSetupFormatConfig(format: GameFormat | null) {
+  if (!format) return undefined;
+  if (!isDirectSetupFormat(format)) return undefined;
+  return FORMAT_DEFAULTS[format];
 }
 
 /**
@@ -190,6 +213,7 @@ export function GamePage() {
   const formatParam = searchParams.get("format") as GameFormat | null;
   const playersParam = searchParams.get("players");
   const matchParam = searchParams.get("match");
+  const loopParam = searchParams.get("loop");
   const firstParam = searchParams.get("first");
   const roomNameParam = searchParams.get("roomName");
   const sourceParam = searchParams.get("source") ?? undefined;
@@ -210,17 +234,25 @@ export function GamePage() {
   // but TypeScript's narrowing produces a fresh binding that the linter
   // treats as new). The explicit memo makes the stability guarantee
   // self-documenting.
-  const formatConfig = useMemo(
-    () => savedFormatConfig ?? (formatParam ? FORMAT_DEFAULTS[formatParam] : undefined),
-    [formatParam, savedFormatConfig],
-  );
+  const formatConfig = useMemo(() => {
+    if (isDirectSoloRouteMode(rawMode)) {
+      if (savedFormatConfig && isDirectSetupFormat(savedFormatConfig.format)) {
+        return savedFormatConfig;
+      }
+      return directSetupFormatConfig(formatParam);
+    }
+    return savedFormatConfig ?? (formatParam ? FORMAT_DEFAULTS[formatParam] : undefined);
+  }, [formatParam, rawMode, savedFormatConfig]);
   // CR 103.1: 0 = play first, 1 = draw first, undefined = random
   const firstPlayer = firstParam === "play" ? 0 : firstParam === "draw" ? 1 : undefined;
   const matchConfig = useMemo<MatchConfig>(
     () => ({
       match_type: matchParam?.toLowerCase() === "bo3" ? "Bo3" : "Bo1",
+      // CR 732.2a: combo (infinite-loop) detector opt-in carried from the local
+      // game-setup screen; immutable once the game starts (engine default Off).
+      loop_detection: loopParam?.toLowerCase() === "on" ? { type: "On" } : { type: "Off" },
     }),
-    [matchParam],
+    [matchParam, loopParam],
   );
 
   // Map URL modes to GameProvider modes
@@ -1247,9 +1279,9 @@ function GamePageContent({
           data-flex-zone="player-row"
         >
           <div className="flex items-end justify-center">
-            <ZoneHand zone="exile" />
+            {/* Castable graveyard/exile cards now render as colored wings inside
+                PlayerHand's own fan (see ZoneFanCard), so the row is just the hand. */}
             <PlayerHand />
-            <ZoneHand zone="graveyard" />
           </div>
           <DraggableWidget
             target={{ kind: "widget", key: "playerPiles" }}
@@ -1303,6 +1335,7 @@ function GamePageContent({
         {showFlowHelpNudge && <FlowHelpNudge />}
         {showSandboxToolsNudge && <SandboxToolsNudge />}
         <CombatPhaseIndicator />
+        <TurnStatusLine />
         {!isSpectatorMode && (
           <>
             <div className="flex items-center gap-1.5">

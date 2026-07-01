@@ -343,6 +343,8 @@ mod tests {
             owner_library: false,
             track_exiled_by_source: false,
             face_down_profile: None,
+            enter_with_counters: vec![],
+            conditional_enter_with_counters: vec![],
             count_param: 0,
             is_cost_payment: false,
             library_position: None,
@@ -444,6 +446,7 @@ mod tests {
             entwine_cost: None,
             chooser: PlayerFilter::Controller,
             selection: engine::types::ability::TargetSelectionMode::Chosen,
+            dynamic_max_choices: None,
         };
         let pending = PendingTrigger {
             source_id,

@@ -614,6 +614,46 @@ pub(crate) fn parse_enchanted_equipped_predicate(
         }
     }
 
+    // CR 502.3: enchanted/equipped host untap restriction with optional trailing
+    // "if …" / "as long as …" (Venarian Gold, Winter's Rest canonical rewrite).
+    if nom_primitives::scan_contains(&pred_lower, "doesn't untap during")
+        || nom_primitives::scan_contains(&pred_lower, "don\u{2019}t untap during")
+    {
+        if let Some(predicate) = parse_rule_static_predicate(predicate) {
+            let mut def = lower_rule_static(predicate, affected.clone(), description);
+            if matches!(predicate, RuleStaticPredicate::CantUntap) {
+                if let Some((_, after_cond)) = pred_tp.split_around(" as long as ") {
+                    let condition_text = after_cond.original.trim().trim_end_matches('.');
+                    def.condition = Some(
+                        parse_static_condition(condition_text)
+                            .or_else(|| parse_attached_static_condition(condition_text))
+                            .unwrap_or(StaticCondition::Unrecognized {
+                                text: condition_text.to_string(),
+                            }),
+                    );
+                } else if let Some(condition) = extract_cant_untap_condition(&pred_lower) {
+                    def.condition = Some(condition);
+                }
+            }
+            return vec![def];
+        }
+    }
+
+    // CR 611.2 + CR 701.27: restriction-only enchanted/equipped predicates
+    // ("can't attack, block, or transform" — Bound by Moonsilver class). Must
+    // precede continuous-grant parsing, which would otherwise return an empty vec
+    // and let the line fall through to a SelfRef combat lock on the Aura source.
+    if let Some(modes) = parse_restriction_modes(pred_lower.trim().trim_end_matches('.')) {
+        return modes
+            .into_iter()
+            .map(|mode| {
+                StaticDefinition::new(mode)
+                    .affected(affected.clone())
+                    .description(description.to_string())
+            })
+            .collect();
+    }
+
     // --- Non-standard keyword phrasings (check before continuous grants) ---
 
     // CR 702.10: "can attack as though it had haste" → AddKeyword(Haste)
@@ -643,7 +683,17 @@ pub(crate) fn parse_enchanted_equipped_predicate(
     }
 
     // CR 509.1b: "can't be blocked" on enchanted/equipped creature
-    let (body_tp, suffix_condition) = if let Some((body_tp, _)) = pred_tp.split_around(" unless ") {
+    //
+    // Only peel a trailing static-grant " unless " rider (Heroic Defiance:
+    // "gets +3/+3 unless it shares a color…") when the split point sits OUTSIDE a
+    // quoted/granted ability. A granted ability's own inner "unless" (e.g. Sunken
+    // Field's "Counter target spell unless its controller pays {1}") must stay
+    // with the quoted text — the body has balanced double quotes iff the split is
+    // outside any "...".
+    let unless_split = pred_tp
+        .split_around(" unless ")
+        .filter(|(body, _)| body.original.chars().filter(|&c| c == '"').count() % 2 == 0);
+    let (body_tp, suffix_condition) = if let Some((body_tp, _)) = unless_split {
         (
             body_tp,
             super::shared::parse_unless_static_condition(&pred_tp),
@@ -747,7 +797,16 @@ pub(crate) fn parse_enchanted_equipped_predicate(
     // is NEVER split. ---
     {
         let mut defs = Vec::new();
-        if let Some(def) = parse_continuous_gets_has(predicate, affected.clone(), description) {
+        // CR 611.3a: parse the grant from the unless/as-long-as-stripped body and
+        // attach any trailing `suffix_condition` (Heroic Defiance: "gets +3/+3
+        // unless it shares a color with the most common color among all
+        // permanents"), rather than parsing the whole predicate and dropping it.
+        if let Some(mut def) =
+            parse_continuous_gets_has(body_tp.original, affected.clone(), description)
+        {
+            if let Some(condition) = &suffix_condition {
+                def.condition = Some(condition.clone());
+            }
             defs.push(def);
         }
         // CR 509.1c: "<grant> and must be blocked by <filter> if able"

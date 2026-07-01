@@ -74,7 +74,6 @@
     "resolveTooltip": "Passez la priorité afin que l'élément du dessus de la pile puisse se résoudre si tous les joueurs passent aussi. Raccourci : Espace.",
     "resolveAll": "Tout résoudre",
     "resolveAllTooltip": "Continuez de passer la priorité pendant que la pile se résout. Un choix requis ou un arrêt peut l'interrompre.",
-    "waiting": "En attente",
     "priorityTooltip": "Passez la priorité. Si la pile est vide, cela avance dans la fenêtre de priorité actuelle. Raccourci : Espace.",
     "pass": "Passer",
     "passToEndTooltip": "Passage automatique jusqu'à l'étape de fin sauf si un choix, un arrêt ou le Contrôle total interrompt. Raccourci : Entrée.",
@@ -341,7 +340,20 @@
     "pendingFlash": "Le prochain sort peut être lancé comme s'il avait la flash",
     "pendingFree": "Le prochain sort sans payer son coût de mana",
     "pendingCheaper": "Le prochain sort coûte {{amount}} de moins",
-    "companion": "Compagnon"
+    "companion": "Compagnon",
+    "unboundedTooltip": "{{resource}} illimité (∞)",
+    "unboundedManaPoolMarker": "Mana illimité (∞)",
+    "unboundedMana": "mana",
+    "unboundedLife": "points de vie",
+    "unboundedDamage": "blessures",
+    "unboundedMill": "meule",
+    "unboundedCounters": "marqueurs",
+    "unboundedTokens": "jetons",
+    "unboundedCards": "cartes",
+    "unboundedCasts": "sorts",
+    "unboundedCombats": "combats",
+    "unboundedTurns": "tours",
+    "unboundedTriggers": "déclenchements"
   },
   "avatar": {
     "underAttack": "{{name}} est attaqué"
@@ -359,7 +371,8 @@
     "onlyForActivation": "À dépenser uniquement pour activer des capacités",
     "onlyForXCosts": "À dépenser uniquement pour des coûts incluant {X}",
     "convokePayment": "Paiement de la convocation",
-    "grantsProperty": "Accorde une propriété au sort"
+    "grantsProperty": "Accorde une propriété au sort",
+    "grantCantBeCountered": "À dépenser pour ce sort afin qu'il ne puisse pas être contrecarré"
   },
   "zone": {
     "commandZone": "Zone de commandement",
@@ -416,6 +429,8 @@
     "paymentPending": "Le paiement est toujours en attente. Engagez des permanents ou annulez cette action.",
     "poolLabel": "Réserve :",
     "poolEmpty": "Vide",
+    "pinUnit": "Épingler ce mana pour payer en premier",
+    "unpinUnit": "Désépingler ce mana",
     "pay": "Payer",
     "chooseAmountTitle": "Choisissez la quantité à payer",
     "chooseAmountAria": "Choisir la quantité à payer",
@@ -423,7 +438,13 @@
     "resourceEnergy": "énergie",
     "resourceMana": "mana",
     "resourceCounters": "marqueurs",
-    "resourceSpeed": "vitesse"
+    "resourceSpeed": "vitesse",
+    "manualMana": "Manuel",
+    "manualManaTooltip": "Mana manuel — cette partie seulement. Engagez vos propres terrains et mana pour payer.",
+    "spendHint": "Cliquez sur votre mana pour le dépenser pour ce coût",
+    "covered": "✓ Couvert",
+    "spending": "Dépense",
+    "fillHint": "(maj+clic pour ajouter toute une source)"
   },
   "hand": {
     "viewFullHand_one": "Voir la main complète ({{count}} carte)",
@@ -890,6 +911,7 @@
     "startMatch": "Démarrer le match",
     "startMatchWithOpponents": "Démarrer le match ({{count}} adv.)",
     "deckNotLegal": "Le deck n'est pas légal en {{format}}.",
+    "aiUnsupportedFormat": "{{format}} est disponible pour héberger des parties multijoueur, mais les parties contre l'IA ne sont pas encore prises en charge.",
     "cedhWarning": "Votre deck est de bracket {{bracket}} face à une IA cEDH — attendez-vous à perdre vite.",
     "cedhWarningUntagged": "non défini",
     "bracketViolation": {
@@ -950,6 +972,7 @@
       "manifest": "Manifester",
       "untap": "Dégager",
       "tap": "Engager",
+      "attach": "Attach",
       "crew": "Équipage ({{power}})",
       "saddle": "Seller ({{power}})",
       "station": "Station (+{{power}})"
@@ -1028,10 +1051,19 @@
       "subtitleManaValueUpTo_other": "Choisissez jusqu'à {{count}} cartes dans la limite de valeur de mana"
     },
     "searchPartition": {
-      "title": "Choisir des cartes pour le champ de bataille",
-      "subtitle_one": "Choisissez {{count}} carte à mettre sur le champ de bataille{{tapped}} ; le reste va dans votre main",
-      "subtitle_other": "Choisissez {{count}} cartes à mettre sur le champ de bataille{{tapped}} ; le reste va dans votre main",
-      "tapped": " engagée(s)"
+      "title": "Choisir des cartes",
+      "subtitle_one": "Choisissez {{count}} carte à mettre {{primary}}{{tapped}} ; le reste va {{rest}}",
+      "subtitle_other": "Choisissez {{count}} cartes à mettre {{primary}}{{tapped}} ; le reste va {{rest}}",
+      "tapped": " engagée(s)",
+      "zones": {
+        "Library": "dans votre bibliothèque",
+        "Hand": "dans votre main",
+        "Battlefield": "sur le champ de bataille",
+        "Graveyard": "dans votre cimetière",
+        "Stack": "sur la pile",
+        "Exile": "en exil",
+        "Command": "dans la zone de commandement"
+      }
     },
     "outsideGame": {
       "title": "Choisir depuis la réserve",
@@ -1057,6 +1089,7 @@
       "titleHand": "Renvoyer",
       "titleUntap": "Dégager",
       "titleTap": "Engager",
+      "titleAttach": "Attach",
       "subtitleSacrificeExact_one": "Choisissez {{count}} permanent à sacrifier",
       "subtitleSacrificeExact_other": "Choisissez {{count}} permanents à sacrifier",
       "subtitleSacrificeUpTo_one": "Choisissez jusqu'à {{count}} permanent à sacrifier",
@@ -1093,6 +1126,12 @@
       "subtitleTapUpTo_other": "Choisissez jusqu'à {{count}} permanents à engager",
       "subtitleTapRange_one": "Choisissez {{min}}-{{count}} permanent à engager",
       "subtitleTapRange_other": "Choisissez {{min}}-{{count}} permanents à engager",
+      "subtitleAttachExact_one": "Choose {{count}} Equipment to attach",
+      "subtitleAttachExact_other": "Choose {{count}} Equipment to attach",
+      "subtitleAttachUpTo_one": "Choose up to {{count}} Equipment to attach",
+      "subtitleAttachUpTo_other": "Choose up to {{count}} Equipment to attach",
+      "subtitleAttachRange_one": "Choose {{min}}-{{count}} Equipment to attach",
+      "subtitleAttachRange_other": "Choose {{min}}-{{count}} Equipment to attach",
       "labelSkip": "Ignorer",
       "labelDecline": "Refuser",
       "labelPutOnTop": "Mettre au-dessus ({{order}})",
@@ -1100,6 +1139,7 @@
       "labelTop": "Dessus ({{selected}}/{{count}})",
       "labelPut": "Placer ({{selected}}/{{count}})",
       "labelReturn": "Renvoyer ({{selected}}/{{count}})",
+      "labelAttach": "Attach ({{selected}}/{{count}})",
       "orderTop": "Dessus"
     },
     "drawnThisTurn": {
@@ -1218,6 +1258,22 @@
       "title": "Collecter des preuves",
       "subtitle": "Exilez des cartes de votre cimetière dont la valeur de mana totale est {{minimum}} ou plus"
     },
+    "bulk": {
+      "selectAll": "Tout sélectionner",
+      "invert": "Inverser",
+      "clear": "Effacer",
+      "sortLabel": "Trier",
+      "groupLabel": "Grouper",
+      "optNone": "Aucun",
+      "optName": "Nom",
+      "optCmc": "Valeur de mana",
+      "optType": "Type",
+      "optColor": "Couleur",
+      "counterDiscard": "Défausser {{selected}} sur {{cap}}",
+      "counterKeep": "Garder {{selected}} sur {{cap}}",
+      "keepInstead": "Garder plutôt",
+      "discardInstead": "Défausser plutôt"
+    },
     "discard": {
       "title": "Défausser",
       "titleAdditionalCost": "Défausser comme coût supplémentaire",
@@ -1232,7 +1288,9 @@
       "subtitleUpTo_other": "Choisissez jusqu'à {{count}} cartes à défausser",
       "subtitleUnless": "Choisissez {{count}} cartes ou 1 carte correspondante à défausser",
       "subtitleExact_one": "Choisissez {{count}} carte à défausser",
-      "subtitleExact_other": "Choisissez {{count}} cartes à défausser"
+      "subtitleExact_other": "Choisissez {{count}} cartes à défausser",
+      "subtitleKeep_one": "Choisissez 1 carte à garder — le reste est défaussé",
+      "subtitleKeep_other": "Choisissez {{count}} cartes à garder — le reste est défaussé"
     },
     "harmonize": {
       "title": "Harmoniser",
@@ -1533,6 +1591,8 @@
     "crashBody": "phase.rs a rencontré une erreur interne et ne peut pas poursuivre cette action en toute sécurité. Votre dernier tour enregistré est préservé — rechargez pour restaurer la partie. <strong>Veuillez le signaler</strong> afin que nous puissions corriger le problème.",
     "connectionTitle": "Connexion au moteur perdue",
     "connectionBody": "phase.rs a perdu son lien avec le moteur de jeu — le plus souvent à cause d'une mise à jour en arrière-plan activée en cours de partie. Votre dernier tour enregistré est préservé ; rechargez pour restaurer la partie.",
+    "timeoutTitle": "Le moteur a mis trop de temps",
+    "timeoutBody": "phase.rs n'a pas pu terminer le calcul de cette action dans le temps imparti. Cela peut arriver sur des champs de bataille très complexes (par exemple, des centaines de jetons). Votre dernier tour enregistré est préservé — rechargez pour restaurer la partie, et pensez à exporter l'état pour le signaler.",
     "diagnostic": "diagnostic : {{reason}}",
     "showDetails": "Afficher les détails",
     "exportGameState": "Exporter l'état de la partie",
@@ -1541,6 +1601,7 @@
     "copyDiagnostic": "Copier le diagnostic",
     "copied": "Copié !",
     "reportOnGithub": "Signaler sur GitHub",
+    "continueWaiting": "Continuer à attendre",
     "reload": "Recharger",
     "reportTitle": "Plantage du moteur : {{summary}}",
     "reportConnectionSummary": "Connexion au moteur perdue",
@@ -1815,5 +1876,41 @@
     "skip": "Skip",
     "groupCount": "{{selected}} / {{count}} selected",
     "groupPower": "Power {{selected}} / {{required}}"
+  },
+  "planechase": {
+    "active": "Active plane",
+    "none": "None",
+    "noPlane": "No plane",
+    "deckCount": "{{count}} in deck",
+    "cost": "Cost",
+    "roll": "Roll planar die"
+  },
+  "archenemy": {
+    "active": "Active scheme",
+    "none": "None",
+    "noScheme": "No scheme",
+    "deckCount": "{{count}} in deck",
+    "heroCount": "{{count}} heroes"
+  },
+  "status": {
+    "yourPriority": "Your priority",
+    "yourPriorityReason": "Your priority — {{reason}}",
+    "waitingFor": "Waiting for <player>{{player}}</player>",
+    "waitingForReason": "Waiting for <player>{{player}}</player> — {{reason}}",
+    "reason": {
+      "declareAttackers": "declaring attackers",
+      "declareBlockers": "declaring blockers",
+      "assigningDamage": "assigning combat damage",
+      "choosingTargets": "choosing targets",
+      "payingCost": "paying a cost",
+      "mulligan": "mulligan decision",
+      "discarding": "discarding",
+      "orderingTriggers": "ordering triggers",
+      "respondingToStack": "responding to the stack",
+      "priorityCombat": "combat",
+      "priorityMain": "main phase",
+      "priority": "priority",
+      "thinking": "deciding"
+    }
   }
 }

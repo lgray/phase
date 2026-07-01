@@ -118,6 +118,14 @@ pub fn parse_zone_controller(input: &str) -> OracleResult<'_, ControllerRef> {
             ControllerRef::DefendingPlayer,
             tag("defending player controls"),
         ),
+        // CR 303.4b + CR 702.5a: "enchanted player controls" — the controller
+        // scope is the player the source Aura is attached to. Resolved at
+        // runtime by reading `source.attached_to.as_player()`. Powers the
+        // Curse cycle (Trespasser's Curse, Curse of Clinging Webs, etc.).
+        value(
+            ControllerRef::EnchantedPlayer,
+            tag("enchanted player controls"),
+        ),
     ))
     .parse(input)
 }

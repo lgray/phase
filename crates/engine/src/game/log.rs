@@ -134,7 +134,8 @@ fn categorize(event: &GameEvent) -> LogCategory {
         | GameEvent::Discarded { .. }
         | GameEvent::Cycled { .. }
         | GameEvent::CardsRevealed { .. }
-        | GameEvent::Foretold { .. } => LogCategory::Zone,
+        | GameEvent::Foretold { .. }
+        | GameEvent::BecameForetold { .. } => LogCategory::Zone,
 
         GameEvent::LifeChanged { .. } => LogCategory::Life,
 
@@ -157,6 +158,7 @@ fn categorize(event: &GameEvent) -> LogCategory {
         | GameEvent::ControllerChanged { .. }
         | GameEvent::Transformed { .. }
         | GameEvent::TurnedFaceUp { .. }
+        | GameEvent::TurnedFaceDown { .. }
         | GameEvent::Regenerated { .. }
         | GameEvent::CreatureSuspected { .. }
         | GameEvent::CreatureNoLongerSuspected { .. }
@@ -217,9 +219,11 @@ fn categorize(event: &GameEvent) -> LogCategory {
         | GameEvent::SchemeAbandoned { .. }
         | GameEvent::InitiativeTaken { .. }
         | GameEvent::AttractionOpened { .. }
+        | GameEvent::ContraptionAssembled { .. }
         | GameEvent::StickerPlaced { .. }
         | GameEvent::AttractionsRolledToVisit { .. }
         | GameEvent::AttractionVisited { .. }
+        | GameEvent::ContraptionCranked { .. }
         | GameEvent::Specialized { .. }
         | GameEvent::Clash { .. }
         | GameEvent::VoteCast { .. }
@@ -287,6 +291,7 @@ fn format_segments(event: &GameEvent, state: &GameState) -> Vec<LogSegment> {
         GameEvent::AbilityActivated {
             player_id,
             source_id,
+            ..
         } => vec![
             player_seg(state, *player_id),
             text(" activates ability: "),
@@ -721,6 +726,10 @@ fn format_segments(event: &GameEvent, state: &GameState) -> Vec<LogSegment> {
             vec![card_seg(state, *object_id), text(" is turned face up")]
         }
 
+        GameEvent::TurnedFaceDown { object_id } => {
+            vec![card_seg(state, *object_id), text(" is turned face down")]
+        }
+
         GameEvent::Regenerated { object_id } => {
             vec![card_seg(state, *object_id), text(" regenerates")]
         }
@@ -1095,6 +1104,16 @@ fn format_segments(event: &GameEvent, state: &GameState) -> Vec<LogSegment> {
         GameEvent::AttractionOpened { object_id, .. } => {
             vec![text("Opened Attraction "), card_seg(state, *object_id)]
         }
+        GameEvent::ContraptionAssembled {
+            object_id,
+            sprocket,
+            ..
+        } => vec![
+            text("Assembled Contraption "),
+            card_seg(state, *object_id),
+            text(" onto sprocket "),
+            text(&sprocket.to_string()),
+        ],
         GameEvent::StickerPlaced {
             object_id, kind, ..
         } => vec![
@@ -1123,6 +1142,16 @@ fn format_segments(event: &GameEvent, state: &GameState) -> Vec<LogSegment> {
                 text(")"),
             ]
         }
+        GameEvent::ContraptionCranked {
+            contraption_id,
+            sprocket,
+            ..
+        } => vec![
+            text("Cranked Contraption "),
+            card_seg(state, *contraption_id),
+            text(" on sprocket "),
+            text(&sprocket.to_string()),
+        ],
         GameEvent::Clash { .. } => vec![text("Clash")],
         GameEvent::VoteCast { voter, choice, .. } => {
             vec![player_seg(state, *voter), text(" voted "), text(choice)]
@@ -1194,6 +1223,11 @@ fn format_segments(event: &GameEvent, state: &GameState) -> Vec<LogSegment> {
             text(" foretold "),
             card_seg(state, *object_id),
         ],
+        // CR 702.143d: an effect made an exiled card foretold (no foretelling
+        // player — the card itself became foretold).
+        GameEvent::BecameForetold { object_id } => {
+            vec![card_seg(state, *object_id), text(" becomes foretold")]
+        }
         // CR 106.12a: `TappedForMana` is the per-resolution trigger event for
         // `TapsForMana` matchers. The per-unit `ManaAdded` events already
         // produce the user-facing "adds X mana" log lines, so this event is
@@ -1306,6 +1340,7 @@ mod tests {
                 colors: vec![],
                 chosen_attributes: Vec::new(),
                 counters: HashMap::new(),
+                tapped: false,
             },
         );
         assert_eq!(resolve_object_name(&state, ObjectId(42)), "Grizzly Bears");

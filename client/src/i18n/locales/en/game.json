@@ -74,7 +74,6 @@
     "resolveTooltip": "Pass priority so the top stack item can resolve if every player also passes. Shortcut: Space.",
     "resolveAll": "Resolve All",
     "resolveAllTooltip": "Keep passing priority while the stack resolves. A required choice or stop can interrupt it.",
-    "waiting": "Waiting",
     "priorityTooltip": "Pass priority. If the stack is empty, this advances through the current priority window. Shortcut: Space.",
     "pass": "Pass",
     "passToEndTooltip": "Auto-pass until the end step unless a choice, stop, or Full Control interrupts. Shortcut: Enter.",
@@ -370,7 +369,20 @@
     "pendingFlash": "Next spell can be cast as though it had flash",
     "pendingFree": "Next spell without paying its mana cost",
     "pendingCheaper": "Next spell costs {{amount}} less",
-    "companion": "Companion"
+    "companion": "Companion",
+    "unboundedTooltip": "Unbounded {{resource}} (∞)",
+    "unboundedManaPoolMarker": "Unbounded mana (∞)",
+    "unboundedMana": "mana",
+    "unboundedLife": "life",
+    "unboundedDamage": "damage",
+    "unboundedMill": "mill",
+    "unboundedCounters": "counters",
+    "unboundedTokens": "tokens",
+    "unboundedCards": "cards",
+    "unboundedCasts": "casts",
+    "unboundedCombats": "combats",
+    "unboundedTurns": "turns",
+    "unboundedTriggers": "triggers"
   },
   "avatar": {
     "underAttack": "{{name}} is under attack"
@@ -388,7 +400,8 @@
     "onlyForActivation": "Spend only to activate abilities",
     "onlyForXCosts": "Spend only on costs that include {X}",
     "convokePayment": "Convoke payment",
-    "grantsProperty": "Grants a property to the spell"
+    "grantsProperty": "Grants a property to the spell",
+    "grantCantBeCountered": "Spend on this spell to make it uncounterable"
   },
   "zone": {
     "commandZone": "Command Zone",
@@ -445,6 +458,8 @@
     "paymentPending": "Payment is still pending. Tap permanents or cancel this action.",
     "poolLabel": "Pool:",
     "poolEmpty": "Empty",
+    "pinUnit": "Pin this mana to pay first",
+    "unpinUnit": "Unpin this mana",
     "pay": "Pay",
     "chooseAmountTitle": "Choose amount to pay",
     "chooseAmountAria": "Choose amount to pay",
@@ -452,7 +467,13 @@
     "resourceEnergy": "energy",
     "resourceMana": "mana",
     "resourceCounters": "counters",
-    "resourceSpeed": "speed"
+    "resourceSpeed": "speed",
+    "manualMana": "Manual",
+    "manualManaTooltip": "Manual mana — this game only. Tap your own lands and mana to pay.",
+    "spendHint": "Click your mana to spend it on this cost",
+    "covered": "✓ Covered",
+    "spending": "Spending",
+    "fillHint": "(shift-click to add all of one source)"
   },
   "hand": {
     "viewFullHand_one": "View full hand ({{count}} card)",
@@ -924,6 +945,7 @@
     "startMatch": "Start Match",
     "startMatchWithOpponents": "Start Match ({{count}} opp.)",
     "deckNotLegal": "Deck is not legal in {{format}}.",
+    "aiUnsupportedFormat": "{{format}} is available for multiplayer hosting, but AI matches are not supported for it yet.",
     "cedhWarning": "Your deck is bracket {{bracket}} vs. a cEDH AI — expect to lose fast.",
     "cedhWarningUntagged": "untagged",
     "bracketViolation": {
@@ -984,6 +1006,7 @@
       "manifest": "Manifest",
       "untap": "Untap",
       "tap": "Tap",
+      "attach": "Attach",
       "crew": "Crew ({{power}})",
       "saddle": "Saddle ({{power}})",
       "station": "Station (+{{power}})"
@@ -1062,10 +1085,19 @@
       "subtitleManaValueUpTo_other": "Choose up to {{count}} cards within the mana value limit"
     },
     "searchPartition": {
-      "title": "Choose Cards for the Battlefield",
-      "subtitle_one": "Choose {{count}} card to put onto the battlefield{{tapped}}; the rest go to your hand",
-      "subtitle_other": "Choose {{count}} cards to put onto the battlefield{{tapped}}; the rest go to your hand",
-      "tapped": " tapped"
+      "title": "Choose Cards",
+      "subtitle_one": "Choose {{count}} card to put into {{primary}}{{tapped}}; the rest go to {{rest}}",
+      "subtitle_other": "Choose {{count}} cards to put into {{primary}}{{tapped}}; the rest go to {{rest}}",
+      "tapped": " tapped",
+      "zones": {
+        "Library": "your library",
+        "Hand": "your hand",
+        "Battlefield": "the battlefield",
+        "Graveyard": "your graveyard",
+        "Stack": "the stack",
+        "Exile": "exile",
+        "Command": "the command zone"
+      }
     },
     "outsideGame": {
       "title": "Choose From Sideboard",
@@ -1091,6 +1123,7 @@
       "titleHand": "Return",
       "titleUntap": "Untap",
       "titleTap": "Tap",
+      "titleAttach": "Attach",
       "subtitleSacrificeExact_one": "Choose {{count}} permanent to sacrifice",
       "subtitleSacrificeExact_other": "Choose {{count}} permanents to sacrifice",
       "subtitleSacrificeUpTo_one": "Choose up to {{count}} permanent to sacrifice",
@@ -1127,6 +1160,12 @@
       "subtitleTapUpTo_other": "Choose up to {{count}} permanents to tap",
       "subtitleTapRange_one": "Choose {{min}}-{{count}} permanent to tap",
       "subtitleTapRange_other": "Choose {{min}}-{{count}} permanents to tap",
+      "subtitleAttachExact_one": "Choose {{count}} Equipment to attach",
+      "subtitleAttachExact_other": "Choose {{count}} Equipment to attach",
+      "subtitleAttachUpTo_one": "Choose up to {{count}} Equipment to attach",
+      "subtitleAttachUpTo_other": "Choose up to {{count}} Equipment to attach",
+      "subtitleAttachRange_one": "Choose {{min}}-{{count}} Equipment to attach",
+      "subtitleAttachRange_other": "Choose {{min}}-{{count}} Equipment to attach",
       "labelSkip": "Skip",
       "labelDecline": "Decline",
       "labelPutOnTop": "Put on top ({{order}})",
@@ -1134,6 +1173,7 @@
       "labelTop": "Top ({{selected}}/{{count}})",
       "labelPut": "Put ({{selected}}/{{count}})",
       "labelReturn": "Return ({{selected}}/{{count}})",
+      "labelAttach": "Attach ({{selected}}/{{count}})",
       "orderTop": "Top"
     },
     "drawnThisTurn": {
@@ -1252,6 +1292,22 @@
       "title": "Collect Evidence",
       "subtitle": "Exile cards from your graveyard with total mana value {{minimum}} or greater"
     },
+    "bulk": {
+      "selectAll": "Select all",
+      "invert": "Invert",
+      "clear": "Clear",
+      "sortLabel": "Sort",
+      "groupLabel": "Group",
+      "optNone": "None",
+      "optName": "Name",
+      "optCmc": "Mana value",
+      "optType": "Type",
+      "optColor": "Color",
+      "counterDiscard": "Discard {{selected}} of {{cap}}",
+      "counterKeep": "Keep {{selected}} of {{cap}}",
+      "keepInstead": "Keep instead",
+      "discardInstead": "Discard instead"
+    },
     "discard": {
       "title": "Discard",
       "titleAdditionalCost": "Discard as additional cost",
@@ -1266,7 +1322,9 @@
       "subtitleUpTo_other": "Choose up to {{count}} cards to discard",
       "subtitleUnless": "Choose {{count}} cards or 1 matching card to discard",
       "subtitleExact_one": "Choose {{count}} card to discard",
-      "subtitleExact_other": "Choose {{count}} cards to discard"
+      "subtitleExact_other": "Choose {{count}} cards to discard",
+      "subtitleKeep_one": "Choose 1 card to keep — the rest are discarded",
+      "subtitleKeep_other": "Choose {{count}} cards to keep — the rest are discarded"
     },
     "harmonize": {
       "title": "Harmonize",
@@ -1567,6 +1625,8 @@
     "crashBody": "phase.rs hit an internal error and can’t safely continue this action. Your last saved turn is preserved — reload to restore the game. <strong>Please report this</strong> so we can fix it.",
     "connectionTitle": "Engine connection lost",
     "connectionBody": "phase.rs lost its link to the game engine — most often caused by a background update activating mid-game. Your last saved turn is preserved; reload to restore the game.",
+    "timeoutTitle": "Engine took too long",
+    "timeoutBody": "phase.rs has been computing this action for a while. This can happen on very complex boards, and the operation is still running. You can keep waiting, or reload if you think it is stuck.",
     "diagnostic": "diagnostic: {{reason}}",
     "showDetails": "Show details",
     "exportGameState": "Export Game State",
@@ -1575,6 +1635,7 @@
     "copyDiagnostic": "Copy diagnostic",
     "copied": "Copied!",
     "reportOnGithub": "Report on GitHub",
+    "continueWaiting": "Continue waiting",
     "reload": "Reload",
     "reportTitle": "Engine crash: {{summary}}",
     "reportConnectionSummary": "Engine connection lost",
@@ -1814,6 +1875,42 @@
     },
     "buttons": {
       "keep": "Keep this"
+    }
+  },
+  "planechase": {
+    "active": "Active plane",
+    "none": "None",
+    "noPlane": "No plane",
+    "deckCount": "{{count}} in deck",
+    "cost": "Cost",
+    "roll": "Roll planar die"
+  },
+  "archenemy": {
+    "active": "Active scheme",
+    "none": "None",
+    "noScheme": "No scheme",
+    "deckCount": "{{count}} in deck",
+    "heroCount": "{{count}} heroes"
+  },
+  "status": {
+    "yourPriority": "Your priority",
+    "yourPriorityReason": "Your priority — {{reason}}",
+    "waitingFor": "Waiting for <player>{{player}}</player>",
+    "waitingForReason": "Waiting for <player>{{player}}</player> — {{reason}}",
+    "reason": {
+      "declareAttackers": "declaring attackers",
+      "declareBlockers": "declaring blockers",
+      "assigningDamage": "assigning combat damage",
+      "choosingTargets": "choosing targets",
+      "payingCost": "paying a cost",
+      "mulligan": "mulligan decision",
+      "discarding": "discarding",
+      "orderingTriggers": "ordering triggers",
+      "respondingToStack": "responding to the stack",
+      "priorityCombat": "combat",
+      "priorityMain": "main phase",
+      "priority": "priority",
+      "thinking": "deciding"
     }
   }
 }

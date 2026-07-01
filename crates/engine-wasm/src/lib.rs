@@ -17,7 +17,7 @@ use engine::game::{
     filter_state_for_viewer, finalize_public_state, is_brawl_commander_eligible,
     is_commander_eligible, is_tiny_leader_eligible, load_and_hydrate_decks,
     rehydrate_game_from_card_db, resolve_deck_list, start_game, start_game_with_starting_player,
-    validate_name_deck_for_format, BracketEstimate, DeckCompatibilityRequest, DeckList,
+    validate_name_deck_for_format_full, BracketEstimate, DeckCompatibilityRequest, DeckList,
     PlayerDeckList,
 };
 use engine::types::format::{FormatConfig, GameFormat};
@@ -224,6 +224,32 @@ pub fn load_card_database(json_str: &str) -> Result<u32, JsValue> {
         *cell.borrow_mut() = Some(db);
     });
     Ok(count)
+}
+
+/// Build a game-scoped AI card-database subset from the loaded full database and
+/// the live game state, serialized as the `AiCardSubsetResult` tagged union
+/// (`{"kind":"full"}` or `{"kind":"subset","json":...,"count":N}`). The MAIN
+/// worker (full CARD_DB + live GAME_STATE) calls this; the AI worker pool loads
+/// the returned subset so its WASM instances don't each parse the full ~93MB
+/// corpus. Returns `{"kind":"full"}` defensively when the database or game state
+/// is absent (the engine is the single authority for this fallback — see
+/// `card_subset::build_ai_card_subset_or_full`). The game state is taken out of
+/// and restored to the thread-local on every path.
+#[wasm_bindgen]
+pub fn build_ai_card_subset() -> Result<String, JsValue> {
+    let result = CARD_DB.with(|db_cell| {
+        let db_ref = db_cell.borrow();
+        GAME_STATE.with(|gs_cell| {
+            let state_opt = gs_cell.take();
+            let r = engine::game::card_subset::build_ai_card_subset_or_full(
+                state_opt.as_ref(),
+                db_ref.as_ref(),
+            );
+            gs_cell.set(state_opt);
+            r
+        })
+    });
+    serde_json::to_string(&result).map_err(|e| JsValue::from_str(&e.to_string()))
 }
 
 /// Look up a card face by name from the loaded card database.
@@ -541,6 +567,12 @@ pub fn initialize_game(
     };
     let count = player_count.unwrap_or(2);
     let game_format = format_config.format;
+    if let Err(reason) = format_config.validate_for_player_count(count) {
+        return to_js(&serde_json::json!({
+            "error": true,
+            "reasons": [reason],
+        }));
+    }
 
     let mut state = GameState::new(format_config, count, seed);
     state.debug_mode = true;
@@ -555,12 +587,17 @@ pub fn initialize_game(
             state.debug_permitted.insert(PlayerId(i));
         }
     }
-    state.match_config = if !match_config_js.is_null() && !match_config_js.is_undefined() {
+    let match_config = if !match_config_js.is_null() && !match_config_js.is_undefined() {
         serde_wasm_bindgen::from_value::<MatchConfig>(match_config_js)
             .unwrap_or_else(|_| MatchConfig::default())
     } else {
         MatchConfig::default()
     };
+    // CR 732.2a: project the immutable match config (incl. the combo-detector opt-in)
+    // onto the runtime `loop_detection` gate via the single engine authority shared
+    // with the server path. The detector is player-count-agnostic, so it carries
+    // through for local 3-/4-player tables too.
+    state.set_match_config(match_config);
 
     // Load deck data if provided — resolve names via the loaded card database.
     //
@@ -606,13 +643,17 @@ pub fn initialize_game(
                     ("Player".to_string(), &deck_list.player),
                     ("AI opponent".to_string(), &deck_list.opponent),
                 ] {
-                    if let Err(reasons) = validate_name_deck_for_format(
+                    if let Err(reasons) = validate_name_deck_for_format_full(
                         db,
                         &deck.main_deck,
                         &deck.sideboard,
                         &deck.commander,
+                        &deck.planar_deck,
+                        &deck.scheme_deck,
+                        &deck.signature_spell,
                         game_format,
                         Some(state.match_config.match_type),
+                        count as usize,
                     ) {
                         return Some(
                             reasons
@@ -624,13 +665,17 @@ pub fn initialize_game(
                 }
                 for (idx, deck) in deck_list.ai_decks.iter().enumerate() {
                     let seat = format!("AI player {}", idx + 2);
-                    if let Err(reasons) = validate_name_deck_for_format(
+                    if let Err(reasons) = validate_name_deck_for_format_full(
                         db,
                         &deck.main_deck,
                         &deck.sideboard,
                         &deck.commander,
+                        &deck.planar_deck,
+                        &deck.scheme_deck,
+                        &deck.signature_spell,
                         game_format,
                         Some(state.match_config.match_type),
+                        count as usize,
                     ) {
                         return Some(
                             reasons
@@ -959,7 +1004,8 @@ pub fn get_filtered_game_state(viewer: u8) -> JsValue {
 /// Returns `{ actions: GameAction[], autoPassRecommended: boolean, spellCosts: Record<ObjectId, ManaCost> }`.
 #[wasm_bindgen]
 pub fn get_legal_actions_js() -> JsValue {
-    match with_state(|state| {
+    match with_state_mut(|state| {
+        engine::game::layers::flush_layers(state);
         let (actions, spell_costs, legal_actions_by_object) = legal_actions_full(state);
         let auto_pass = auto_pass_recommended(state, &actions);
         to_js(&LegalActionsResult {
@@ -981,7 +1027,8 @@ pub fn get_legal_actions_js() -> JsValue {
 /// game logic into the transport adapter.
 #[wasm_bindgen]
 pub fn get_legal_actions_for_viewer_js(player_id: u32) -> JsValue {
-    match with_state(|state| {
+    match with_state_mut(|state| {
+        engine::game::layers::flush_layers(state);
         let (actions, spell_costs, legal_actions_by_object) =
             legal_actions_for_viewer(state, PlayerId(player_id as u8));
         let auto_pass = auto_pass_recommended(state, &actions);
@@ -1019,7 +1066,8 @@ struct ViewerSnapshot {
 
 #[wasm_bindgen]
 pub fn get_viewer_snapshot_js(player_id: u32) -> JsValue {
-    match with_state(|state| {
+    match with_state_mut(|state| {
+        engine::game::layers::flush_layers(state);
         let viewer = PlayerId(player_id as u8);
         let filtered = filter_state_for_viewer(state, viewer);
         let (actions, spell_costs, legal_actions_by_object) =
@@ -1347,6 +1395,9 @@ pub fn apply_seat_mutation(state_json: &str, mutation_json: &str) -> Result<JsVa
                 sideboard: deck_data.sideboard,
                 commander: deck_data.commander,
                 attraction_deck: deck_data.attraction_deck,
+                planar_deck: deck_data.planar_deck,
+                scheme_deck: deck_data.scheme_deck,
+                contraption_deck: deck_data.contraption_deck,
                 sticker_sheets: deck_data.sticker_sheets,
                 signature_spell: deck_data.signature_spell,
                 bracket_tier: deck_data.bracket_tier,
@@ -1375,6 +1426,15 @@ pub fn apply_seat_mutation(state_json: &str, mutation_json: &str) -> Result<JsVa
         Ok(delta) => Ok(to_js(&SeatMutationResult { state, delta })),
         Err(e) => Err(JsValue::from_str(&format!("{e:?}"))),
     }
+}
+
+/// Project an authoritative seat view from Rust so frontend transports do not
+/// need to understand format topology details.
+#[wasm_bindgen]
+pub fn project_seat_view(state_json: &str) -> Result<JsValue, JsValue> {
+    let state: SeatState = serde_json::from_str(state_json)
+        .map_err(|e| JsValue::from_str(&format!("Invalid SeatState: {e}")))?;
+    Ok(to_js(&state.to_view()))
 }
 
 #[cfg(test)]

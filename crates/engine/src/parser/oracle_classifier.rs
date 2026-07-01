@@ -1,7 +1,8 @@
-use crate::parser::oracle_nom::error::OracleError;
+use crate::parser::oracle_nom::bridge::nom_on_lower;
+use crate::parser::oracle_nom::error::{oracle_err, OracleError, OracleResult};
 use nom::branch::alt;
-use nom::bytes::complete::tag;
-use nom::combinator::{opt, verify};
+use nom::bytes::complete::{tag, take_until};
+use nom::combinator::{opt, value, verify};
 use nom::sequence::{preceded, terminated};
 use nom::Parser;
 
@@ -46,6 +47,41 @@ pub(crate) fn is_flashback_equal_mana_cost(lower: &str) -> bool {
     scan_contains(lower, "flashback cost")
         && scan_contains(lower, "equal to")
         && scan_contains(lower, "mana cost")
+}
+
+/// CR 702.34a + CR 601.2f: Split a compound flashback line that also carries a
+/// self-spell cost reduction (Visions of Ruin: "Flashback {8}{R}{R}. This spell
+/// costs {X} less to cast this way, …").
+pub(crate) fn split_flashback_trailing_self_spell_cost_reduction<'a>(
+    line: &'a str,
+    lower: &'a str,
+) -> Option<(&'a str, &'a str)> {
+    const SPELL_MARKER: &str = ". this spell costs ";
+    const CARD_MARKER: &str = ". this card costs ";
+
+    if let Some(((), reduction_text)) = nom_on_lower(line, lower, |input| {
+        preceded(
+            tag("flashback"),
+            value((), (take_until(SPELL_MARKER), tag(". "))),
+        )
+        .parse(input)
+    }) {
+        let flashback_len = line.len() - ". ".len() - reduction_text.len();
+        return Some((line[..flashback_len].trim(), reduction_text.trim()));
+    }
+
+    if let Some(((), reduction_text)) = nom_on_lower(line, lower, |input| {
+        preceded(
+            tag("flashback"),
+            value((), (take_until(CARD_MARKER), tag(". "))),
+        )
+        .parse(input)
+    }) {
+        let flashback_len = line.len() - ". ".len() - reduction_text.len();
+        return Some((line[..flashback_len].trim(), reduction_text.trim()));
+    }
+
+    None
 }
 
 pub(crate) fn is_defiler_cost_pattern(lower: &str) -> bool {
@@ -294,8 +330,7 @@ const STATIC_CONTAINS_PATTERNS: &[&str] = &[
     // quote is required: scan_contains only matches at word starts, and "legend"
     // is glued to its opening quote ("legend) in the Oracle text.
     "\"legend rule\" doesn't apply",
-    "can block an additional",
-    "can block any number",
+    "play any number of lands",
     "play an additional land",
     "play two additional lands",
     "triggers an additional time",
@@ -444,6 +479,10 @@ pub(crate) fn is_static_pattern(lower: &str) -> bool {
         return true;
     }
 
+    if super::oracle_static::is_extra_blockers_static_candidate(lower) {
+        return true;
+    }
+
     if STATIC_CONTAINS_PATTERNS
         .iter()
         .any(|pattern| scan_contains(lower, pattern))
@@ -575,6 +614,29 @@ fn is_static_compound_pattern(lower: &str) -> bool {
     if scan_contains(lower, "face a villainous choice") && scan_contains(lower, "additional time") {
         return true;
     }
+    // CR 701.23f + CR 614.1a: "If an opponent/a player would search a library,
+    // that player searches the top N cards of that library instead." (Aven
+    // Mindcensor) leads with "...would search...", which the Priority-8 "would "
+    // replacement gate would otherwise swallow (there is no Search replacement
+    // event). Route to Priority-7 static. Specific conjunction avoids false hits.
+    if scan_contains(lower, "would search a library") && scan_contains(lower, "instead") {
+        return true;
+    }
+    // CR 121.1 / CR 613.11: "[subject] draw(s) cards from the bottom of [your|
+    // their] library rather than/instead of the top." — River Song's draw-source
+    // redirection static (Meet in Reverse). The body verb is "draw", so none of
+    // the generic static keywords (get/have/can't) anchor it; without this gate
+    // the (ability-word-prefixed) line never reaches Priority 7 and falls to the
+    // spell catch-all as Unimplemented. The "from the bottom of" + "library" +
+    // top-reference combination is the diagnostic; extraction is delegated to
+    // `parse_draw_from_bottom`, which lowers it to `StaticMode::DrawFromBottom`.
+    if scan_contains(lower, "from the bottom of")
+        && scan_contains(lower, "library")
+        && (scan_contains(lower, "rather than the top")
+            || scan_contains(lower, "instead of the top"))
+    {
+        return true;
+    }
     false
 }
 
@@ -636,6 +698,13 @@ const REPLACEMENT_CONTAINS_PATTERNS: &[&str] = &[
 ];
 
 pub(crate) fn is_replacement_pattern(lower: &str) -> bool {
+    // CR 608.2c: reflexive "enters this way" riders on triggered abilities
+    // (Winter Soldier, Reborn Avenger) contain "enters" + "counter" but are
+    // not CR 614.1c ETB replacements.
+    if has_trigger_prefix(lower) && scan_contains(lower, "enters this way,") {
+        return false;
+    }
+
     if is_counter_prohibition_replacement_pattern(lower) {
         return true;
     }
@@ -667,6 +736,15 @@ pub(crate) fn is_replacement_pattern(lower: &str) -> bool {
 
 fn is_replacement_compound_pattern(lower: &str) -> bool {
     if is_as_enters_choose_pattern(lower) {
+        return true;
+    }
+    // CR 614.1c + CR 614.12: "As a [filter] enters, it becomes a [P/T] [type]
+    // creature in addition to its other types" — a replacement from another
+    // source affecting a subset of entrants (Displaced Dinosaurs). Routes to
+    // `parse_replacement_line`. The line does not match `is_static_pattern`
+    // (no "becomes"/"in addition" static-contains entry; the "as " prefix is
+    // not a static-prefix entry), so no Priority-7 reroute is required.
+    if is_as_enters_becomes_in_addition_pattern(lower) {
         return true;
     }
     // CR 614.1c: "enters with [counters]" replacement effects. The plural-subject
@@ -725,6 +803,39 @@ pub(crate) fn is_enters_with_counter_replacement_line(lower: &str) -> bool {
         || scan_contains(lower, "escape with"))
         && scan_contains(lower, "counter")
         && scan_contains(lower, "for each")
+}
+
+/// CR 614.1c + CR 614.12: nom recognizer for the non-self "As a [filter] enters,
+/// it becomes a [P/T] [type] creature in addition to its other types" replacement
+/// template (Displaced Dinosaurs). The subject is a non-empty external permanent
+/// filter (never the bare self anaphor), and the additive "in addition to its
+/// other types" tail (CR 205.1b) is required so this never claims a set-replacing
+/// "becomes" line. Self / copy "enter as a copy" lines are claimed by earlier
+/// handlers and additionally fail the handler's `Typed`-subject guard.
+fn parse_as_enters_becomes_in_addition(input: &str) -> OracleResult<'_, ()> {
+    let (input, _) = tag("as ").parse(input)?;
+    let (input, subject) = take_until(" enters").parse(input)?;
+    if subject.trim().is_empty() || subject.trim() == "~" {
+        return Err(oracle_err(input));
+    }
+    let (input, _) = alt((
+        tag(" enters, it becomes a "),
+        tag(" enters, it becomes an "),
+        tag(" enters the battlefield, it becomes a "),
+        tag(" enters the battlefield, it becomes an "),
+    ))
+    .parse(input)?;
+    // CR 205.1b + CR 105.3: require the full additive marker via the shared
+    // animation combinator so this recognizer covers the entire marker class
+    // (possessive variants, "creature types", "colors and types") rather than
+    // the single hardcoded Displaced Dinosaurs literal.
+    let (input, _) =
+        crate::parser::oracle_effect::animation::locate_in_addition_other_types_marker(input)?;
+    Ok((input, ()))
+}
+
+pub(crate) fn is_as_enters_becomes_in_addition_pattern(lower: &str) -> bool {
+    parse_as_enters_becomes_in_addition(lower).is_ok()
 }
 
 fn is_counter_prohibition_replacement_pattern(lower: &str) -> bool {
@@ -853,6 +964,19 @@ mod tests {
     fn unquoted_cant_block_static_unchanged() {
         // No quotes → fast path → classification unchanged.
         assert!(is_static_pattern("creatures you control can't block"));
+    }
+
+    #[test]
+    fn split_flashback_trailing_self_spell_cost_reduction_splits_visions_line() {
+        let line = "Flashback {8}{R}{R}. This spell costs {X} less to cast this way, where X is the greatest mana value of a commander you own on the battlefield or in the command zone.";
+        let lower = line.to_lowercase();
+        let (flashback, reduction) =
+            split_flashback_trailing_self_spell_cost_reduction(line, &lower).unwrap();
+        assert_eq!(flashback, "Flashback {8}{R}{R}");
+        assert_eq!(
+            reduction,
+            "This spell costs {X} less to cast this way, where X is the greatest mana value of a commander you own on the battlefield or in the command zone."
+        );
     }
 
     #[test]

@@ -1,6 +1,7 @@
 pub mod augment;
 pub mod bracket_lists;
 pub mod card_db;
+pub mod contraptions;
 pub mod embalm_eternalize;
 pub mod encore;
 #[cfg(feature = "forge")]
@@ -13,7 +14,9 @@ pub mod mtgjson;
 pub mod oracle_loader;
 pub mod removed_cards;
 pub mod search;
+pub mod set_catalog;
 pub mod set_gating;
+pub mod subtype_vocab;
 pub mod synthesis;
 pub mod unearth;
 

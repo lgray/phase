@@ -8,7 +8,7 @@ mod prelude {
 
     pub(super) use crate::parser::oracle_nom::error::OracleError;
     pub(super) use nom::branch::alt;
-    pub(super) use nom::bytes::complete::{tag, tag_no_case, take_until};
+    pub(super) use nom::bytes::complete::{tag, tag_no_case, take_until, take_while1};
     pub(super) use nom::character::complete::{alpha1, space0, space1};
     pub(super) use nom::combinator::{all_consuming, eof, map, opt, recognize, rest, value};
     pub(super) use nom::multi::{many0, separated_list1};
@@ -55,14 +55,14 @@ mod prelude {
     };
     pub(super) use crate::types::counter::{parse_counter_type, CounterMatch};
     pub(super) use crate::types::keywords::{Keyword, KeywordKind};
-    pub(super) use crate::types::mana::{ManaColor, ManaCost, ManaType};
+    pub(super) use crate::types::mana::{ManaColor, ManaCost, ManaType, SpecialAction};
     pub(super) use crate::types::phase::Phase;
     pub(super) use crate::types::statics::{
         ActivationExemption, AdditionalCostTaxAction, AttackDefenderScope, BlockExceptionKind,
         CastCostMode, CastExtraCost, CastFreeOrigin, CastFrequency, CastingProhibitionCondition,
         CombatAloneAction, CombatAloneRequirement, CostModifyMode, CostPaymentProhibition,
         CrewAction, CrewContributionKind, ExileCardPool, ExileCastCost, ExileCastTiming,
-        HandSizeModification, ProhibitionScope, StaticMode, TriggerCause,
+        HandSizeModification, ProhibitionScope, StaticMode, SuppressedTriggerEvent, TriggerCause,
     };
     pub(super) use crate::types::zones::Zone;
 }
@@ -116,9 +116,10 @@ mod support {
     };
     pub(super) use super::grammar::*;
     pub(super) use super::keyword_grant::{
-        apply_spell_keyword_subject_constraints, parse_chosen_qualifier_subject,
-        parse_continuous_modifications, parse_quoted_ability_modifications,
-        push_grant_clause_modifications, split_keyword_list, RuleStaticPredicate,
+        apply_spell_keyword_subject_constraints, fold_grant_cap_rider,
+        parse_chosen_qualifier_subject, parse_continuous_modifications,
+        parse_quoted_ability_modifications, push_grant_clause_modifications, split_keyword_list,
+        RuleStaticPredicate,
     };
     pub(super) use super::restriction::{
         parse_cant_be_activated_exemption_in_text, parse_cast_and_activate_only_during,
@@ -138,18 +139,20 @@ pub(crate) use cost_mod::{
     parse_alternative_keyword_cost, parse_cast_spells_alternative_cost_multi,
     parse_collect_evidence_alt_cost, parse_spells_alternative_cost,
 };
-pub(crate) use evasion::classify_block_exception;
+pub(crate) use evasion::{classify_block_exception, is_extra_blockers_static_candidate};
 pub(crate) use keyword_grant::{
     classify_quoted_inner, parse_chosen_qualifier_subject, parse_continuous_modifications,
-    parse_quoted_ability_modifications, split_keyword_list,
+    parse_graveyard_granted_keyword_kind, parse_quoted_ability_modifications, split_keyword_list,
     try_parse_graveyard_keyword_grant_clause, try_parse_graveyard_keyword_grant_static,
 };
 pub(crate) use mana_transform::try_parse_retain_unspent_mana_static;
 pub(crate) use restriction::parse_cant_be_activated_exemption_in_text;
 pub(crate) use shared::parse_cant_attack_defended_scope_nom;
+pub(crate) use shared::parse_conditional_protection_grant_list;
 pub(crate) use shared::parse_dynamic_x_clause;
 pub use shared::parse_static_line_multi;
 pub(crate) use shared::parse_subtype_or_list_insensitive_prefix;
+pub(crate) use shared::target_filter_is_your_graveyard;
 pub(crate) use shared::GraveyardGrantedKeywordKind;
 pub(crate) use shared::{
     is_tiered_enters_with_additional_counters_static,
@@ -165,6 +168,22 @@ pub(crate) use type_change::{
 pub fn parse_static_line(text: &str) -> Option<crate::types::ability::StaticDefinition> {
     let ir = parse_static_line_ir(text)?;
     Some(lower_static_ir(&ir))
+}
+
+/// CR 702.34a + CR 601.2f: Parse a self-spell cost modifier trailing a proven
+/// Flashback clause (Visions of Ruin class).
+pub(crate) fn parse_flashback_trailing_self_spell_cost_reduction(
+    text: &str,
+) -> Option<crate::types::ability::StaticDefinition> {
+    let text = crate::parser::oracle_util::strip_reminder_text(text);
+    let lower = text.to_lowercase();
+    let mut def = static_helpers::try_parse_cost_modification(
+        &text,
+        &lower,
+        Some(crate::types::game_state::CastingVariant::Flashback),
+    )?;
+    shared::populate_active_zones_from_condition(&mut def);
+    Some(def)
 }
 
 /// IR production: parse a static line into `StaticIr` (pre-lowering).

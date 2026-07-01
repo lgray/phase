@@ -39,6 +39,7 @@ import {
 interface PermanentCardProps {
   objectId: number;
   attachmentsLiftedByAncestor?: boolean;
+  attachmentRenderPath?: readonly number[];
   onPrimaryClickOverride?: () => void;
   /** When this card is the visible representative of a collapsed identical-permanent
    *  group (see GroupedPermanent collapsed mode), the full list of object ids it
@@ -171,7 +172,13 @@ function boardChoiceBadgeClass(intent: BoardChoiceIntent): string {
   }
 }
 
-export const PermanentCard = memo(function PermanentCard({ objectId, attachmentsLiftedByAncestor = false, onPrimaryClickOverride, coveredIds }: PermanentCardProps) {
+export const PermanentCard = memo(function PermanentCard({
+  objectId,
+  attachmentsLiftedByAncestor = false,
+  attachmentRenderPath = [],
+  onPrimaryClickOverride,
+  coveredIds,
+}: PermanentCardProps) {
   const { t } = useTranslation("game");
   const isMobile = useIsMobile();
   const canHover = useCanHover();
@@ -222,6 +229,7 @@ export const PermanentCard = memo(function PermanentCard({ objectId, attachments
     incomingAttackerCounts,
     manaTappableObjectIds,
     selectableManaCostCreatureIds,
+    selectableSacrificeObjectIds,
     undoableTapObjectIds,
     validAttackerIds,
     validTargetObjectIds,
@@ -346,11 +354,38 @@ export const PermanentCard = memo(function PermanentCard({ objectId, attachments
 
   const ptDisplay = computePTDisplay(obj);
   const isSelected = selectedObjectId === objectId;
+  // CR 301.5 / CR 303.4: An attached Equipment/Aura is an independent permanent
+  // that can be a valid target, an activation source (re-equip), or a board
+  // choice in its own right. Collapsed behind its host it is unreachable —
+  // clicks land on the host instead, so a "put a counter on target nonland
+  // permanent you control" trigger lands on the creature rather than the chosen
+  // Equipment, and an attached Equipment can't be re-activated to move it. Open
+  // a host's attachments whenever any of them is actionable in the current
+  // waiting state so each is independently clickable without requiring a hover.
+  const attachmentsActionable =
+    obj.attachments.length > 0
+    && obj.attachments.some(
+      (id) =>
+        validTargetObjectIds.has(id)
+        || activatableObjectIds.has(id)
+        || manaTappableObjectIds.has(id)
+        || boardChoiceObjectIds.has(id)
+        || selectableSacrificeObjectIds.has(id)
+        || selectableManaCostCreatureIds.has(id)
+        // An attachment tapped for mana that can still be untapped (undo) is
+        // itself actionable — keep it expanded so the undo affordance stays
+        // clickable. `undoableTapObjectIds` is already gated upstream
+        // (GameBoard `undoLegal`) to the states whose engine match arms accept
+        // the untap, so no extra state check is needed here.
+        || undoableTapObjectIds.has(id),
+    );
   const attachmentsLifted =
     obj.attachments.length > 0
-    && (attachmentsLiftedByAncestor || isInHoveredAttachmentTree || isSelected || isInspected);
+    && (attachmentsLiftedByAncestor || isInHoveredAttachmentTree || isSelected || isInspected || attachmentsActionable);
   const attachmentsExpanded = obj.attachments.length <= 1 || attachmentsLifted;
   const visibleAttachmentIds = attachmentsExpanded ? obj.attachments : obj.attachments.slice(0, 1);
+  const attachmentPathIds = new Set([...attachmentRenderPath, objectId]);
+  const renderableAttachmentIds = visibleAttachmentIds.filter((id) => !attachmentPathIds.has(id));
   const hiddenAttachmentCount = obj.attachments.length - visibleAttachmentIds.length;
   const exileLinksExpanded = exileLinks.length <= 1 || isHovered || isSelected || isInspected;
   const visibleExileLinks = exileLinksExpanded ? exileLinks : exileLinks.slice(0, 1);
@@ -482,9 +517,9 @@ export const PermanentCard = memo(function PermanentCard({ objectId, attachments
       ) {
         toggleSelectedCard(objectId);
       }
-    } else if (combatMode === "attackers") {
+    } else if (combatMode === "attackers" && waitingFor?.type === "DeclareAttackers") {
       if (isValidAttacker) toggleAttacker(objectId);
-    } else if (combatMode === "blockers" && combatClickHandler) {
+    } else if (combatMode === "blockers" && waitingFor?.type === "DeclareBlockers" && combatClickHandler) {
       combatClickHandler(objectId);
     } else if (equipTargetChoice?.valid_targets.includes(objectId)) {
       dispatchAction({
@@ -604,7 +639,7 @@ export const PermanentCard = memo(function PermanentCard({ objectId, attachments
           face. While the host or one of its attachment descendants is
           hovered, lift only the outer permanent tree above sibling
           permanents; internal host/attachment ordering stays unchanged. */}
-      {visibleAttachmentIds.map((attachId, i) => {
+      {renderableAttachmentIds.map((attachId, i) => {
         const peekPx = ATTACHMENT_PEEK_PX + i * ATTACHMENT_STACK_STEP_PX;
         return (
           <div
@@ -616,7 +651,11 @@ export const PermanentCard = memo(function PermanentCard({ objectId, attachments
               zIndex: 5 - i,
             }}
           >
-            <PermanentCard objectId={attachId} attachmentsLiftedByAncestor={attachmentsLifted} />
+            <PermanentCard
+              objectId={attachId}
+              attachmentsLiftedByAncestor={attachmentsLifted}
+              attachmentRenderPath={[...attachmentRenderPath, objectId]}
+            />
             <AttachmentTypeBadge attachId={attachId} />
           </div>
         );

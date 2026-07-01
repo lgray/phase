@@ -641,6 +641,7 @@ pub fn parse_quantity_ref(input: &str) -> OracleResult<'_, QuantityRef> {
         |i| parse_basic_land_types_among_lands_controlled_by_ref(i, ControllerRef::TargetPlayer),
         parse_devotion_ref,
         parse_chroma_devotion_ref,
+        parse_graveyard_chroma_ref,
         parse_counters_among_ref,
         // CR 402.1: "the player with the {most|fewest} cards in hand" — the
         // cross-player hand-size extremum, the hand-zone peer of the life
@@ -1997,6 +1998,8 @@ fn parse_damage_dealt_this_turn_ref(input: &str) -> OracleResult<'_, QuantityRef
                 aggregate: AggregateFunction::Sum,
                 group_by: None,
                 damage_kind: DamageKindFilter::NoncombatOnly,
+
+                excess_only: false,
             },
             tag("total amount of noncombat damage dealt to your opponents this turn"),
         ),
@@ -2014,6 +2017,8 @@ fn parse_damage_dealt_this_turn_ref(input: &str) -> OracleResult<'_, QuantityRef
                 aggregate: AggregateFunction::Sum,
                 group_by: None,
                 damage_kind: DamageKindFilter::Any,
+
+                excess_only: false,
             },
             tag("damage dealt to target opponent this turn"),
         ),
@@ -2341,6 +2346,9 @@ fn parse_cost_paid_object_ref(input: &str) -> OracleResult<'_, QuantityRef> {
         ObjectProperty::ManaValue => QuantityRef::ObjectManaValue {
             scope: ObjectScope::CostPaidObject,
         },
+        // ManaSymbolCount is produced only via `QuantityRef::Aggregate`, never
+        // as a single cost-paid-object reference.
+        ObjectProperty::ManaSymbolCount(_) => return Err(oracle_err(input)),
     };
     Ok((rest, qty))
 }
@@ -2403,8 +2411,11 @@ fn parse_cost_paid_object_chosen_revealed_ref(input: &str) -> OracleResult<'_, Q
         ObjectProperty::Toughness => QuantityRef::Toughness {
             scope: ObjectScope::CostPaidObject,
         },
-        // The leading `alt` only emits Power/Toughness; ManaValue is unreachable.
-        ObjectProperty::ManaValue => return Err(oracle_err(input)),
+        // The leading `alt` only emits Power/Toughness; ManaValue and
+        // ManaSymbolCount are unreachable here.
+        ObjectProperty::ManaValue | ObjectProperty::ManaSymbolCount(_) => {
+            return Err(oracle_err(input))
+        }
     };
     Ok((rest, qty))
 }
@@ -2498,7 +2509,7 @@ fn parse_anaphoric_target_card_property_ref(input: &str) -> OracleResult<'_, Qua
         ObjectProperty::ManaValue => QuantityRef::ObjectManaValue {
             scope: ObjectScope::Target,
         },
-        ObjectProperty::Power | ObjectProperty::Toughness => {
+        ObjectProperty::Power | ObjectProperty::Toughness | ObjectProperty::ManaSymbolCount(_) => {
             return Err(nom::Err::Error(OracleError::new(
                 input,
                 nom::error::ErrorKind::Tag,
@@ -2718,6 +2729,46 @@ fn parse_chroma_devotion_ref(input: &str) -> OracleResult<'_, QuantityRef> {
     ))
 }
 
+/// CR 202.1 + CR 404.2: Graveyard-scope Chroma — "the number of \<color\> mana symbols in
+/// the mana costs of cards in your graveyard" counts colored mana symbols among
+/// cards in the owner's graveyard. Distinct from the permanents-scope
+/// Chroma (devotion, CR 700.5).
+fn parse_graveyard_chroma_ref(input: &str) -> OracleResult<'_, QuantityRef> {
+    let (rest, _) = tag("the number of ").parse(input)?;
+    let (rest, color) = super::primitives::parse_color(rest)?;
+    let (rest, _) =
+        tag(" mana symbols in the mana costs of cards in your graveyard").parse(rest)?;
+    // CR 107.4a + CR 202.1: graveyard-scope chroma is the SUM of per-card
+    // colored-mana-symbol counts over cards in your graveyard — expressed via the
+    // zone-general `Aggregate` / `ObjectProperty::ManaSymbolCount` building block
+    // rather than a graveyard-specific `QuantityRef` leaf. The `InZone { Graveyard }`
+    // filter makes `Aggregate` scan the graveyard.
+    //
+    // CR 404.2: a graveyard is a zone owned by a single player; "your graveyard" is
+    // the graveyard you own. Scope the population with `Owned { You }` (matches by
+    // owner) rather than `.controller(You)`: a card in a graveyard is neither on the
+    // stack nor the battlefield, so the controller filter reads the at-departure
+    // controller via LKI (CR 109.4), which can diverge from ownership (e.g. a card
+    // you owned but an opponent controlled before it died into your graveyard, or
+    // one you controlled before it left for theirs). Ownership is the correct,
+    // LKI-independent axis here.
+    Ok((
+        rest,
+        QuantityRef::Aggregate {
+            function: AggregateFunction::Sum,
+            property: ObjectProperty::ManaSymbolCount(color),
+            filter: TargetFilter::Typed(TypedFilter::card().properties(vec![
+                FilterProp::Owned {
+                    controller: ControllerRef::You,
+                },
+                FilterProp::InZone {
+                    zone: Zone::Graveyard,
+                },
+            ])),
+        },
+    ))
+}
+
 /// Parse "equal to [quantity]" from Oracle text.
 ///
 /// Returns the quantity expression following "equal to ".
@@ -2828,51 +2879,61 @@ pub(crate) fn parse_for_each_clause_ref_with_context<'a>(
     parse_for_each_clause_ref_with_they_controller(input, they_controller)
 }
 
+/// CR 608.2c + CR 609.3: Read the Runes — "for each card[s] drawn this way".
+fn parse_for_each_card_drawn_this_way(input: &str) -> OracleResult<'_, QuantityRef> {
+    let (rest, _) = alt((tag("card drawn this way"), tag("cards drawn this way"))).parse(input)?;
+    Ok((rest, QuantityRef::EventContextAmount))
+}
+
 fn parse_for_each_clause_ref_with_they_controller(
     input: &str,
     they_controller: ControllerRef,
 ) -> OracleResult<'_, QuantityRef> {
     alt((
-        parse_for_each_one_life_changed,
-        parse_for_each_opponents_life_change,
-        parse_counter_added_this_turn_for_each,
-        parse_object_colors_for_each,
-        parse_object_name_word_count_for_each,
-        parse_object_typeline_component_count_for_each,
-        parse_mana_symbols_in_object_mana_cost_for_each,
-        parse_distinct_card_types_in_zone,
-        parse_foretold_cards_owned_in_exile,
-        parse_zone_card_count,
-        parse_for_each_attached_to_source,
-        // CR 201.2: "for each differently named <type>" — distinct-by-name
-        // iteration. Must precede generic type-filter arm.
-        parse_for_each_differently_named,
-        // CR 201.2 + CR 603.4: "for each different <power|mana value> among <type>"
-        // — distinct-by-quality count (Golden Ratio, Lunar Insight, Sudden
-        // Insight). Must precede the generic type-filter arm so the "different
-        // <quality>" adjective prefix is consumed before the bare type word.
-        parse_distinct_quality_among_objects,
-        // CR 700.8: "creature in your party" must precede the generic
-        // "<type> you control" arm — same reason as in
-        // `parse_number_of_inner`.
-        parse_creature_in_party_for_each,
-        parse_player_counter_ref_tail,
-        // CR 700.4: "creature that died this turn" / "creature that
-        // died under your control this turn" — event-based count of dies-events
-        // tracked in `state.zone_changes_this_turn`. Must precede
-        // `parse_for_each_controlled_type` since the leading "creature" token
-        // would otherwise commit the simple `<type> you control` arm.
-        parse_for_each_subtype_died_this_turn,
-        parse_for_each_creature_died_this_turn,
-        // CR 701.21a: "[type] you['ve] sacrificed this turn" — event-based count
-        // of sacrifice events. Must precede `parse_for_each_controlled_type` so the
-        // leading type token does not commit to the generic `<type> you control` arm.
-        parse_for_each_sacrificed_this_turn,
-        // CR 400.7 + CR 603.10a: "creature that left the battlefield under your
-        // control this turn" — destination-agnostic zone-change count, distinct
-        // from the graveyard-only "died" arm above.
-        parse_for_each_creature_left_battlefield_this_turn,
-        parse_entered_this_turn_ref,
+        parse_for_each_card_drawn_this_way,
+        alt((
+            parse_for_each_one_life_changed,
+            parse_for_each_opponents_life_change,
+            parse_counter_added_this_turn_for_each,
+            parse_color_of_object_for_each,
+            parse_object_colors_for_each,
+            parse_object_name_word_count_for_each,
+            parse_object_typeline_component_count_for_each,
+            parse_mana_symbols_in_object_mana_cost_for_each,
+            parse_distinct_card_types_in_zone,
+            parse_foretold_cards_owned_in_exile,
+            parse_zone_card_count,
+            parse_for_each_attached_to_source,
+            // CR 201.2: "for each differently named <type>" — distinct-by-name
+            // iteration. Must precede generic type-filter arm.
+            parse_for_each_differently_named,
+            // CR 201.2 + CR 603.4: "for each different <power|mana value> among <type>"
+            // — distinct-by-quality count (Golden Ratio, Lunar Insight, Sudden
+            // Insight). Must precede the generic type-filter arm so the "different
+            // <quality>" adjective prefix is consumed before the bare type word.
+            parse_distinct_quality_among_objects,
+            // CR 700.8: "creature in your party" must precede the generic
+            // "<type> you control" arm — same reason as in
+            // `parse_number_of_inner`.
+            parse_creature_in_party_for_each,
+            parse_player_counter_ref_tail,
+            // CR 700.4: "creature that died this turn" / "creature that
+            // died under your control this turn" — event-based count of dies-events
+            // tracked in `state.zone_changes_this_turn`. Must precede
+            // `parse_for_each_controlled_type` since the leading "creature" token
+            // would otherwise commit the simple `<type> you control` arm.
+            parse_for_each_subtype_died_this_turn,
+            parse_for_each_creature_died_this_turn,
+            // CR 701.21a: "[type] you['ve] sacrificed this turn" — event-based count
+            // of sacrifice events. Must precede `parse_for_each_controlled_type` so the
+            // leading type token does not commit to the generic `<type> you control` arm.
+            parse_for_each_sacrificed_this_turn,
+            // CR 400.7 + CR 603.10a: "creature that left the battlefield under your
+            // control this turn" — destination-agnostic zone-change count, distinct
+            // from the graveyard-only "died" arm above.
+            parse_for_each_creature_left_battlefield_this_turn,
+            parse_entered_this_turn_ref,
+        )),
     ))
     .or(alt((
         |input| parse_for_each_combat_creature_controlled(input, they_controller.clone()),
@@ -3298,7 +3359,23 @@ fn parse_mana_symbols_in_object_mana_cost_for_each(input: &str) -> OracleResult<
     let (rest, _) = tag(" in ").parse(rest)?;
     let (rest, scope) = parse_object_possessive_scope(rest)?;
     let (rest, _) = tag(" mana cost").parse(rest)?;
-    Ok((rest, QuantityRef::ManaSymbolsInManaCost { scope, color }))
+    Ok((
+        rest,
+        QuantityRef::ManaSymbolsInManaCost {
+            scope,
+            color: Some(color),
+        },
+    ))
+}
+
+/// CR 105.1 + CR 601.2f: "for each color[s] of <object>" — scoped object-color
+/// count for cost reductions and similar per-color riders. Delegates object
+/// binding to `parse_object_color_of_scope` (target/enchanted/equipped/it-
+/// targets anaphors).
+fn parse_color_of_object_for_each(input: &str) -> OracleResult<'_, QuantityRef> {
+    let (rest, _) = alt((tag("color of "), tag("colors of "))).parse(input)?;
+    let (rest, scope) = parse_object_color_of_scope(rest)?;
+    Ok((rest, QuantityRef::ObjectColorCount { scope }))
 }
 
 /// CR 105.1 + CR 105.2: Parse "for each [of] <object>'s colors" into a
@@ -3425,6 +3502,14 @@ fn parse_object_color_of_scope(input: &str) -> OracleResult<'_, ObjectScope> {
         value(ObjectScope::Target, tag("that creature")),
         value(ObjectScope::Target, tag("that permanent")),
         value(ObjectScope::Target, tag("that planeswalker")),
+        value(
+            ObjectScope::Target,
+            (
+                alt((tag("the "), tag("a "))),
+                alt((tag("creature"), tag("permanent"))),
+                tag(" it targets"),
+            ),
+        ),
         value(ObjectScope::Source, tag("~")),
         value(ObjectScope::Source, tag("this creature")),
         value(ObjectScope::Source, tag("this permanent")),
@@ -3744,6 +3829,19 @@ fn parse_for_each_attached_to_source(input: &str) -> OracleResult<'_, QuantityRe
     // `FilterProp` from a typed pair.
     let (rest, prop) = alt((
         value(FilterProp::AttachedToSource, tag(" attached to ~")),
+        // CR 301.5a + CR 303.4: source-anaphoric gendered pronoun denotes the
+        // ability source (same id as `~`) — Winter Soldier, Captain America
+        // (MSH templates). Maps to AttachedToSource, identical to the `~` arm.
+        // Distinct from the recipient pronoun "it"/"that creature" arm below.
+        // Only the unambiguously source-anaphoric "him"/"her" are accepted; the
+        // singular-they "them" is excluded because it is recipient-anaphoric for
+        // player-enchanting Auras (Curse of Thirst: "Curses attached to them" =
+        // the enchanted player, not the Aura source), which would bind the wrong
+        // object set.
+        value(
+            FilterProp::AttachedToSource,
+            alt((tag(" attached to him"), tag(" attached to her"))),
+        ),
         value(
             FilterProp::AttachedToRecipient,
             alt((tag(" attached to it"), tag(" attached to that creature"))),
@@ -4479,6 +4577,86 @@ mod tests {
     }
 
     #[test]
+    fn parse_for_each_attached_to_source_gendered_animate_pronoun() {
+        // CR 301.5a + CR 303.4: MSH/Marvel templates phrase the attachment count
+        // with the source-anaphoric gendered pronoun "him"/"her"
+        // (Winter Soldier "for each Equipment attached to him"). These denote the
+        // SAME object id as `~`, so the combinator must emit `AttachedToSource`.
+        // Fail-before: no "attached to him/her" arm → Err.
+        for pronoun in ["him", "her"] {
+            let clause = format!("equipment attached to {pronoun}");
+            let (rest, q) = parse_for_each_clause_ref(&clause)
+                .unwrap_or_else(|e| panic!("expected Ok for {clause:?}, got {e:?}"));
+            assert_eq!(rest, "", "remainder for {clause:?}");
+            match q {
+                QuantityRef::ObjectCount { filter } => match filter {
+                    TargetFilter::Typed(TypedFilter {
+                        type_filters,
+                        controller,
+                        properties,
+                    }) => {
+                        assert_eq!(controller, None, "controller for {clause:?}");
+                        assert_eq!(
+                            properties,
+                            vec![FilterProp::AttachedToSource],
+                            "properties for {clause:?}"
+                        );
+                        assert_eq!(
+                            type_filters,
+                            vec![TypeFilter::Subtype("Equipment".into())],
+                            "type_filters for {clause:?}"
+                        );
+                    }
+                    other => panic!("expected Typed filter for {clause:?}, got {other:?}"),
+                },
+                other => panic!("expected ObjectCount for {clause:?}, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn parse_for_each_attached_to_them_not_source_bound() {
+        // CR 301.5a + CR 303.4: the singular-they "them" is recipient-anaphoric for
+        // player-enchanting Auras (Curse of Thirst: "Curses attached to them" = the
+        // enchanted player), so it must NOT bind to the source. The gendered arm
+        // deliberately omits "them"; this combinator therefore does not produce an
+        // AttachedToSource count for it (the clause is left unconsumed). Guards
+        // against a future re-add that would silently count the wrong object set.
+        let result = parse_for_each_attached_to_source("curse attached to them");
+        match result {
+            Err(_) => {}
+            Ok((rest, q)) => {
+                // If some other arm consumes it, it must not be AttachedToSource.
+                if let QuantityRef::ObjectCount {
+                    filter: TargetFilter::Typed(TypedFilter { properties, .. }),
+                } = &q
+                {
+                    assert!(
+                        !properties.contains(&FilterProp::AttachedToSource),
+                        "\"attached to them\" must not bind to the source, got {q:?} (rest {rest:?})"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn parse_for_each_attached_to_recipient_it_preserved_after_gendered_arm() {
+        // Discrimination/regression: the recipient authority ("it") must stay
+        // AttachedToRecipient even with the new source-pronoun arm above it.
+        let (rest, q) = parse_for_each_clause_ref("aura attached to it").unwrap();
+        assert_eq!(rest, "");
+        match q {
+            QuantityRef::ObjectCount {
+                filter: TargetFilter::Typed(TypedFilter { properties, .. }),
+            } => {
+                assert_eq!(properties, vec![FilterProp::AttachedToRecipient]);
+            }
+            other => panic!("expected recipient ObjectCount, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn parse_for_each_attached_to_that_creature_recipient() {
         let (rest, q) = parse_for_each_clause_ref("aura attached to that creature").unwrap();
         assert_eq!(rest, "");
@@ -5134,6 +5312,37 @@ mod tests {
         assert_eq!(rest, "");
     }
 
+    /// CR 105.1 + CR 601.2f + CR 115.1: generalized "color of <object>" for-each.
+    #[test]
+    fn test_parse_for_each_color_of_object() {
+        let (rest, q) = parse_for_each_clause_ref("color of the creature it targets").unwrap();
+        assert_eq!(
+            q,
+            QuantityRef::ObjectColorCount {
+                scope: crate::types::ability::ObjectScope::Target
+            }
+        );
+        assert_eq!(rest, "");
+
+        let (rest, q) = parse_for_each_clause_ref("color of target creature").unwrap();
+        assert_eq!(
+            q,
+            QuantityRef::ObjectColorCount {
+                scope: crate::types::ability::ObjectScope::Target
+            }
+        );
+        assert_eq!(rest, "");
+
+        let (rest, q) = parse_for_each_clause_ref("colors of the enchanted creature").unwrap();
+        assert_eq!(
+            q,
+            QuantityRef::ObjectColorCount {
+                scope: crate::types::ability::ObjectScope::Recipient
+            }
+        );
+        assert_eq!(rest, "");
+    }
+
     #[test]
     fn test_parse_for_each_object_name_word_count_recipient_and_target() {
         let (rest, q) = parse_for_each("for each word in its name").unwrap();
@@ -5162,7 +5371,7 @@ mod tests {
             q,
             QuantityRef::ManaSymbolsInManaCost {
                 scope: crate::types::ability::ObjectScope::Recipient,
-                color: ManaColor::White,
+                color: Some(ManaColor::White),
             }
         );
         assert_eq!(rest, "");
@@ -6199,6 +6408,13 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_for_each_card_drawn_this_way() {
+        let (rest, q) = parse_for_each_clause_ref("card drawn this way").unwrap();
+        assert_eq!(q, QuantityRef::EventContextAmount);
+        assert_eq!(rest, "");
+    }
+
+    #[test]
     fn test_parse_event_context_refs() {
         let (rest, q) = parse_quantity_ref("that much life").unwrap();
         assert_eq!(q, QuantityRef::EventContextAmount);
@@ -7143,6 +7359,32 @@ mod tests {
         assert_eq!(rest, "");
     }
 
+    /// CR 202.1 + CR 404.2: graveyard-scope Chroma — "the number of <color> mana symbols in
+    /// the mana costs of cards in your graveyard" (Umbra Stalker).
+    #[test]
+    fn test_parse_graveyard_chroma() {
+        let (rest, q) = parse_quantity_ref(
+            "the number of black mana symbols in the mana costs of cards in your graveyard",
+        )
+        .unwrap();
+        assert_eq!(
+            q,
+            QuantityRef::Aggregate {
+                function: AggregateFunction::Sum,
+                property: ObjectProperty::ManaSymbolCount(ManaColor::Black),
+                filter: TargetFilter::Typed(TypedFilter::card().properties(vec![
+                    FilterProp::Owned {
+                        controller: ControllerRef::You,
+                    },
+                    FilterProp::InZone {
+                        zone: Zone::Graveyard,
+                    },
+                ])),
+            }
+        );
+        assert_eq!(rest, "");
+    }
+
     #[test]
     fn test_parse_devotion_multicolor() {
         let (rest, q) = parse_quantity_ref("your devotion to white and black").unwrap();
@@ -8007,6 +8249,8 @@ mod tests {
                 aggregate: AggregateFunction::Sum,
                 group_by: None,
                 damage_kind: DamageKindFilter::Any,
+
+                excess_only: false,
             }
         );
 
@@ -8042,6 +8286,8 @@ mod tests {
                 aggregate: AggregateFunction::Sum,
                 group_by: None,
                 damage_kind: DamageKindFilter::NoncombatOnly,
+
+                excess_only: false,
             }
         );
     }

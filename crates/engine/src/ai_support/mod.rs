@@ -7,6 +7,7 @@ use std::collections::{HashMap, HashSet};
 
 use serde::Serialize;
 
+use crate::game::layers;
 use crate::game::mana_abilities;
 use crate::game::mana_sources;
 use crate::types::ability::{AbilityKind, CounterCostSelection};
@@ -771,6 +772,18 @@ fn has_feasibly_castable_spell(state: &GameState, player: PlayerId) -> bool {
 /// This centralizes the "meaningful action" classification in the engine so
 /// frontends don't need to inspect game objects or card types.
 pub fn auto_pass_recommended(state: &GameState, actions: &[GameAction]) -> bool {
+    let flushed;
+    let state = if state.layers_dirty.is_dirty() {
+        flushed = {
+            let mut state = state.clone();
+            layers::flush_layers(&mut state);
+            state
+        };
+        &flushed
+    } else {
+        state
+    };
+
     let player = match &state.waiting_for {
         WaitingFor::Priority { player } => *player,
         _ => return false,
@@ -869,6 +882,20 @@ fn target_selection_actions_without_simulation(state: &GameState) -> Option<Vec<
     Some(actions)
 }
 
+/// The flat priority-action list: validated candidate actions minus mana
+/// abilities. This is the single authority for the non-target-selection action
+/// body so the auto-pass probe (`priority_player_has_meaningful_action`) and
+/// `legal_actions_full` cannot drift. Auto-pass consumes only this list; it does
+/// not need the spell-cost map or the grouped per-object map that
+/// `legal_actions_full` additionally builds.
+pub fn flat_priority_actions(state: &GameState) -> Vec<GameAction> {
+    validated_candidate_actions(state)
+        .into_iter()
+        .map(|candidate| candidate.action)
+        .filter(|action| !action.is_mana_ability())
+        .collect()
+}
+
 /// Returns legal actions, spell costs, AND a per-permanent action grouping.
 ///
 /// `legal_actions_by_object` maps each permanent (or hand-zone card) to the
@@ -877,16 +904,20 @@ fn target_selection_actions_without_simulation(state: &GameState) -> Option<Vec<
 /// flat `actions` list; auto-pass consumes the flat list, while board
 /// interaction consumes the grouped map.
 pub fn legal_actions_full(state: &GameState) -> LegalActionsFull {
-    let actions: Vec<GameAction> =
-        if let Some(actions) = target_selection_actions_without_simulation(state) {
-            actions
-        } else {
-            validated_candidate_actions(state)
-                .into_iter()
-                .map(|candidate| candidate.action)
-                .filter(|action| !action.is_mana_ability())
-                .collect()
+    let flushed;
+    let state = if state.layers_dirty.is_dirty() {
+        flushed = {
+            let mut state = state.clone();
+            layers::flush_layers(&mut state);
+            state
         };
+        &flushed
+    } else {
+        state
+    };
+
+    let actions: Vec<GameAction> = target_selection_actions_without_simulation(state)
+        .unwrap_or_else(|| flat_priority_actions(state));
 
     // Build spell costs map. The frontend display layer needs the
     // engine-effective cost (after Affinity / ReduceCost / commander tax / etc.)
@@ -900,6 +931,7 @@ pub fn legal_actions_full(state: &GameState) -> LegalActionsFull {
     // statics) but applies every cost-modifying static the cast pipeline would.
     let mut spell_costs = HashMap::new();
     if let WaitingFor::Priority { player } = &state.waiting_for {
+        crate::game::perf_counters::record_legal_actions_spell_cost_sweep();
         // Zone pre-filter is performance-only: skips the battlefield/stack/library
         // walk that has no chance of yielding a castable spell. Eligibility
         // (controller, foreign-cast permissions, zone) is decided centrally by
@@ -1073,6 +1105,11 @@ pub(super) fn activatable_object_mana_actions_for_player(
     state: &GameState,
     player: PlayerId,
 ) -> Vec<GameAction> {
+    // Loop-invariant hoist: the TapsForMana trigger-source list is identical for
+    // every land in this board-global sweep, so compute it once instead of
+    // re-scanning the whole battlefield per land inside `land_mana_options`.
+    let aura_sources = mana_sources::taps_for_mana_trigger_sources(state);
+    let mana_activation_gates = mana_abilities::ManaActivationGates::compute(state);
     let mut actions = Vec::new();
     for &obj_id in &state.battlefield {
         let Some(obj) = state.objects.get(&obj_id) else {
@@ -1084,7 +1121,13 @@ pub(super) fn activatable_object_mana_actions_for_player(
 
         let mut handled_indices = HashSet::new();
         if obj.card_types.core_types.contains(&CoreType::Land) {
-            let options = mana_sources::activatable_land_mana_options(state, obj_id, player);
+            let options = mana_sources::activatable_land_mana_options_indexed_gated(
+                state,
+                obj_id,
+                player,
+                &aura_sources,
+                &mana_activation_gates,
+            );
             if options.len() == 1
                 && options
                     .first()
@@ -1127,8 +1170,13 @@ pub(super) fn activatable_object_mana_actions_for_player(
             }
             // CR 605.3b: Activation restrictions still apply to mana abilities.
             if mana_sources::activation_condition_satisfied(state, player, obj_id, idx, ability)
-                && mana_abilities::can_activate_mana_ability_now(
-                    state, player, obj_id, idx, ability,
+                && mana_abilities::can_activate_mana_ability_now_gated(
+                    state,
+                    player,
+                    obj_id,
+                    idx,
+                    ability,
+                    &mana_activation_gates,
                 )
             {
                 actions.push(GameAction::ActivateAbility {
@@ -1392,6 +1440,7 @@ mod tests {
         state.players[1].mana_pool.add(ManaUnit {
             color: ManaType::Black,
             source_id: ObjectId(0),
+            pip_id: crate::types::mana::ManaPipId(0),
             supertype: None,
             source_could_produce_two_or_more_colors: false,
             restrictions: Vec::new(),
@@ -2717,6 +2766,7 @@ mod tests {
         state.players[0].mana_pool.add(ManaUnit {
             color: ManaType::Colorless,
             source_id: ObjectId(0),
+            pip_id: crate::types::mana::ManaPipId(0),
             supertype: None,
             source_could_produce_two_or_more_colors: false,
             restrictions: Vec::new(),
@@ -2726,6 +2776,7 @@ mod tests {
         state.players[0].mana_pool.add(ManaUnit {
             color: ManaType::Colorless,
             source_id: ObjectId(0),
+            pip_id: crate::types::mana::ManaPipId(0),
             supertype: None,
             source_could_produce_two_or_more_colors: false,
             restrictions: Vec::new(),

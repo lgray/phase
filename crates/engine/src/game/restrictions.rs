@@ -447,17 +447,22 @@ pub(crate) fn battlefield_entry_matches_filter(
 }
 
 /// CR 400.7: Record a zone-change snapshot for data-driven condition queries.
+/// Returns the per-turn zone-change index assigned to this record.
 pub fn record_zone_change(
     state: &mut crate::types::game_state::GameState,
-    record: crate::types::game_state::ZoneChangeRecord,
-) {
+    mut record: crate::types::game_state::ZoneChangeRecord,
+) -> usize {
     let object_id = record.object_id;
     let to_zone = record.to_zone;
+    let turn_zone_change_index = state.zone_changes_this_turn.len();
+    record.turn_zone_change_index = turn_zone_change_index;
     state.zone_changes_this_turn.push(record);
 
     if to_zone == Zone::Battlefield {
         record_battlefield_entry(state, object_id);
     }
+
+    turn_zone_change_index
 }
 
 /// CR 601.3: Verify casting restrictions are satisfied before allowing a spell to be cast.
@@ -1150,6 +1155,17 @@ pub(crate) fn evaluate_condition(
             }) == 0
         }
         ParsedCondition::YouAttackedThisTurn => state.players_attacked_this_turn.contains(&player),
+        // CR 508.6 + CR 508.5 + CR 109.5: "you attacked [the source's controller]
+        // or a planeswalker they control this turn". `has_attacked` reads
+        // `attacked_defenders_this_turn`, whose entries are the CR-508.5-collapsed
+        // defending player (planeswalker/battle → controller), so both disjuncts
+        // resolve to one membership check. The defender is the SOURCE controller
+        // (CR 109.5 "you" on the static), resolved from `source_id` — never a
+        // hardcoded player. Sandswirl Wanderglyph.
+        ParsedCondition::YouAttackedSourceControllerThisTurn => state
+            .objects
+            .get(&source_id)
+            .is_some_and(|src| state.has_attacked(player, src.controller)),
         // CR 508.1a: "you attacked with N+ [filter] this turn". Unfiltered uses
         // the fast per-player count; filtered scans declaration-time snapshots so
         // attackers that have left the battlefield still count.
@@ -1644,14 +1660,18 @@ pub(crate) fn target_dependent_flash_permission_feasible(
     })
 }
 
-/// CR 307.1: Sorcery-speed timing — main phase, stack empty, active player has priority.
+/// CR 307.1 + CR 805.5a: Sorcery-speed timing — main phase, stack empty,
+/// active player (or, under the shared team turns option, any player on the
+/// active team — CR 805.5a: "A player may cast a spell, activate an ability,
+/// or take a special action when their team has priority") has priority.
 pub(crate) fn is_sorcery_speed_window(
     state: &crate::types::game_state::GameState,
     player: PlayerId,
 ) -> bool {
     matches!(state.phase, Phase::PreCombatMain | Phase::PostCombatMain)
         && state.stack.is_empty()
-        && state.active_player == player
+        && (state.active_player == player
+            || super::players::teammates(state, state.active_player).contains(&player))
 }
 
 fn is_before_attackers_declared(state: &crate::types::game_state::GameState) -> bool {
@@ -1881,7 +1901,10 @@ fn graveyard_has_subtype_card(
 }
 
 /// CR 508.1k: A chosen creature becomes an attacking creature until removed from combat.
-fn is_source_attacking(state: &crate::types::game_state::GameState, source_id: ObjectId) -> bool {
+pub(crate) fn is_source_attacking(
+    state: &crate::types::game_state::GameState,
+    source_id: ObjectId,
+) -> bool {
     state.combat.as_ref().is_some_and(|combat| {
         combat
             .attackers
@@ -1891,7 +1914,10 @@ fn is_source_attacking(state: &crate::types::game_state::GameState, source_id: O
 }
 
 /// CR 509.1g: A chosen creature becomes a blocking creature until removed from combat.
-fn is_source_blocking(state: &crate::types::game_state::GameState, source_id: ObjectId) -> bool {
+pub(crate) fn is_source_blocking(
+    state: &crate::types::game_state::GameState,
+    source_id: ObjectId,
+) -> bool {
     state
         .combat
         .as_ref()
@@ -1899,7 +1925,10 @@ fn is_source_blocking(state: &crate::types::game_state::GameState, source_id: Ob
 }
 
 /// CR 509.1h: An attacking creature with blockers declared for it becomes a blocked creature.
-fn is_source_blocked(state: &crate::types::game_state::GameState, source_id: ObjectId) -> bool {
+pub(crate) fn is_source_blocked(
+    state: &crate::types::game_state::GameState,
+    source_id: ObjectId,
+) -> bool {
     state
         .combat
         .as_ref()
@@ -3640,5 +3669,45 @@ mod tests {
             &state,
             &CastingVariant::Warp
         ));
+    }
+
+    /// CR 805.5a: "A player may cast a spell, activate an ability, or take a
+    /// special action when their team has priority." Under the shared team
+    /// turns option, the nonactive teammate must also have a legal
+    /// sorcery-speed timing window during the active team's main phase, not
+    /// just the literal active player.
+    #[test]
+    fn is_sorcery_speed_window_two_headed_giant_includes_nonactive_teammate() {
+        let mut state = crate::types::game_state::GameState::new(
+            crate::types::format::FormatConfig::two_headed_giant(),
+            4,
+            42,
+        );
+        state.phase = Phase::PreCombatMain;
+        state.active_player = PlayerId(0);
+
+        assert!(is_sorcery_speed_window(&state, PlayerId(0)));
+        // P1 is P0's teammate (CR 805.10 team pairing: seats 0+1, 2+3).
+        assert!(is_sorcery_speed_window(&state, PlayerId(1)));
+        // P2/P3 are the OPPOSING team and have no sorcery-speed window during
+        // the active team's main phase.
+        assert!(!is_sorcery_speed_window(&state, PlayerId(2)));
+        assert!(!is_sorcery_speed_window(&state, PlayerId(3)));
+    }
+
+    /// Outside team-based formats, only the literal active player has a
+    /// sorcery-speed window — no regression from the CR 805.5a widening.
+    #[test]
+    fn is_sorcery_speed_window_non_team_format_excludes_other_players() {
+        let mut state = crate::types::game_state::GameState::new(
+            crate::types::format::FormatConfig::free_for_all(),
+            3,
+            42,
+        );
+        state.phase = Phase::PreCombatMain;
+        assert!(is_sorcery_speed_window(&state, state.active_player));
+        for opponent in crate::game::players::opponents(&state, state.active_player) {
+            assert!(!is_sorcery_speed_window(&state, opponent));
+        }
     }
 }

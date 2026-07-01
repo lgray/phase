@@ -197,6 +197,151 @@ pub fn parse_target(text: &str) -> (TargetFilter, &str) {
     parse_target_with_ctx(text, &mut ParseContext::default())
 }
 
+/// Parse a target noun phrase, additionally consuming an optional trailing
+/// heterogeneous relative-clause disjunction that the base grammar cannot fold
+/// into one typed filter — a card type ("that's an artifact") OR a mana-value
+/// bound ("that has mana value 3 or less"). Desdemona, Freedom's Edge: "target
+/// creature card in your graveyard that's an artifact or that has mana value 3
+/// or less".
+///
+/// CR 115.1 + CR 608.2c: a card type lives in `type_filters` and a mana-value
+/// bound lives in `properties` — both AND-combined within a single
+/// `TypedFilter` — so an "or" *between* the two layers cannot collapse into one
+/// `FilterProp::AnyOf`. Instead the disjunction distributes over the whole typed
+/// filter as `TargetFilter::Or`, one leg per disjunct: each leg is the base
+/// filter plus that disjunct's restriction. A lone (non-"or") relative clause
+/// collapses to a single restricted `TypedFilter`.
+///
+/// Returns the base filter and remainder unchanged when the base is not a single
+/// typed filter or no such relative clause follows — every existing call shape
+/// is preserved.
+pub(crate) fn parse_target_with_disjunctive_restriction(text: &str) -> (TargetFilter, &str) {
+    let (base, rest) = parse_target(text);
+    let TargetFilter::Typed(base_typed) = &base else {
+        return (base, rest);
+    };
+    // The relative clause is case-insensitive; lowercasing is byte-length
+    // preserving for the ASCII relative-clause grammar, so `consumed` maps
+    // directly back onto `rest`.
+    let rest_lower = rest.to_lowercase();
+    let Some((restrictions, consumed)) = parse_disjunctive_relative_restriction(&rest_lower) else {
+        return (base, rest);
+    };
+    let filter = if restrictions.len() == 1 {
+        TargetFilter::Typed(restrictions[0].apply(base_typed))
+    } else {
+        TargetFilter::Or {
+            filters: restrictions
+                .iter()
+                .map(|r| TargetFilter::Typed(r.apply(base_typed)))
+                .collect(),
+        }
+    };
+    (filter, &rest[consumed..])
+}
+
+/// One disjunct of a heterogeneous relative-clause restriction (see
+/// `parse_target_with_disjunctive_restriction`).
+#[derive(Debug, Clone)]
+enum DisjunctRestriction {
+    /// "that's an artifact" — an additional card type AND-merged into the leg's
+    /// `type_filters`.
+    CardType(TypeFilter),
+    /// "that has mana value 3 or less" — a `FilterProp::Cmc` bound AND-merged
+    /// into the leg's `properties` (CR 202.3).
+    ManaValue {
+        comparator: Comparator,
+        value: QuantityExpr,
+    },
+}
+
+impl DisjunctRestriction {
+    /// Build a leg by cloning the base typed filter and applying this disjunct's
+    /// restriction at its native layer (type vs property).
+    fn apply(&self, base: &TypedFilter) -> TypedFilter {
+        let mut leg = base.clone();
+        match self {
+            DisjunctRestriction::CardType(tf) => leg.type_filters.push(tf.clone()),
+            DisjunctRestriction::ManaValue { comparator, value } => {
+                leg.properties.push(FilterProp::Cmc {
+                    comparator: *comparator,
+                    value: value.clone(),
+                });
+            }
+        }
+        leg
+    }
+}
+
+/// Parse `that('s|is|has|have) <disjunct> [ or that(...) <disjunct> ]*` from
+/// already-lowercased text, returning the disjuncts and the bytes consumed
+/// (including any leading whitespace). Returns `None` when the text does not
+/// open a recognized relative-clause disjunct.
+fn parse_disjunctive_relative_restriction(
+    input: &str,
+) -> Option<(Vec<DisjunctRestriction>, usize)> {
+    let trimmed = input.trim_start();
+    let leading_ws = input.len() - trimmed.len();
+    let (mut remaining, first) = parse_disjunct_restriction(trimmed).ok()?;
+    let mut restrictions = vec![first];
+    while let Ok((after_or, _)) = tag::<_, _, OracleError<'_>>(" or ").parse(remaining) {
+        match parse_disjunct_restriction(after_or) {
+            Ok((rest, next)) => {
+                restrictions.push(next);
+                remaining = rest;
+            }
+            // A non-relative-clause "or" (e.g. "or a Goblin you control") ends
+            // the disjunction; leave it for the caller to reject as leftover.
+            Err(_) => break,
+        }
+    }
+    Some((restrictions, leading_ws + (trimmed.len() - remaining.len())))
+}
+
+/// Parse a single "that('s|is|has|have) <card type | mana value bound>" disjunct.
+fn parse_disjunct_restriction(
+    input: &str,
+) -> super::oracle_nom::error::OracleResult<'_, DisjunctRestriction> {
+    let (after_intro, _) = alt((
+        tag::<_, _, OracleError<'_>>("that's "),
+        tag("that is "),
+        tag("that has "),
+        tag("that have "),
+    ))
+    .parse(input)?;
+    alt((parse_disjunct_card_type, parse_disjunct_mana_value)).parse(after_intro)
+}
+
+/// "an artifact" / "a creature" → a card-type restriction.
+fn parse_disjunct_card_type(
+    input: &str,
+) -> super::oracle_nom::error::OracleResult<'_, DisjunctRestriction> {
+    let (after_article, _) = alt((tag::<_, _, OracleError<'_>>("an "), tag("a "))).parse(input)?;
+    let (rest, tf) = nom_target::parse_type_filter_word(after_article)?;
+    Ok((rest, DisjunctRestriction::CardType(tf)))
+}
+
+/// "mana value 3 or less" / "mana value 5 or greater" → a `Cmc` bound (CR 202.3).
+fn parse_disjunct_mana_value(
+    input: &str,
+) -> super::oracle_nom::error::OracleResult<'_, DisjunctRestriction> {
+    let (after_mv, _) = tag::<_, _, OracleError<'_>>("mana value ").parse(input)?;
+    let (after_num, mv) = nom_quantity::parse_quantity_expr_number(after_mv)?;
+    let after_num = after_num.trim_start();
+    let (rest, comparator) = alt((
+        value(Comparator::LE, tag::<_, _, OracleError<'_>>("or less")),
+        value(Comparator::GE, tag("or greater")),
+    ))
+    .parse(after_num)?;
+    Ok((
+        rest,
+        DisjunctRestriction::ManaValue {
+            comparator,
+            value: mv,
+        },
+    ))
+}
+
 /// Context-aware variant of `parse_target`. TargetFallback diagnostics are
 /// accumulated on `ctx.diagnostics` instead of being silently lost.
 ///
@@ -702,6 +847,12 @@ pub fn parse_target_with_syntax<'a>(
         "those tokens",
         "those auras",
         "the revealed cards",
+        // CR 603.7 + CR 707.12: "those exiled cards" / "the copies" — the cards a
+        // prior clause (or, for Baron Helmut Zemo's Boast, the activation COST)
+        // exiled and published into the tracked set. Ordered before "those cards"
+        // so the longer "those exiled cards" anaphor is not shadowed.
+        "those exiled cards",
+        "the copies",
         "those cards",
         "those permanents",
         "those creatures",
@@ -1460,6 +1611,68 @@ pub fn parse_type_phrase(text: &str) -> (TargetFilter, &str) {
     parse_type_phrase_with_ctx(text, &mut ParseContext::default())
 }
 
+/// CR 608.2c: separator byte length for a mass-target union continuation
+/// ("…, all artifacts, and all enchantments"). Longest-match-first over the
+/// comma / "and" / "or" connectors. Returns `None` when `lower` does not start
+/// with a union separator.
+fn match_mass_union_separator(lower: &str) -> Option<usize> {
+    alt((
+        tag::<_, _, OracleError<'_>>(", and/or "),
+        tag(", and "),
+        tag(", or "),
+        tag(", "),
+        tag(" and/or "),
+        tag(" and "),
+        tag(" or "),
+    ))
+    .parse(lower)
+    .ok()
+    .map(|(rest, _)| lower.len() - rest.len())
+}
+
+/// CR 205.2a + CR 205.3a + CR 608.2c: Parse a mass target as a comma/"and"-separated
+/// union of "[all|each] <type-phrase>" legs — where each leg's type word spans both
+/// card types (205.2a: creature/artifact/enchantment) and subtypes (205.3a) — e.g.
+/// "creatures except those that share a
+/// creature type with a creature that convoked this spell, all artifacts, and
+/// all enchantments" (Everything Comes to Dust). Each leg is parsed by the full
+/// `parse_target_with_ctx` grammar (type words, relative clauses, the
+/// "except those" exclusion suffix, and spell-target stack scoping) and the legs
+/// are combined with `merge_or_filters`.
+///
+/// A single-leg input returns exactly what `parse_target_with_ctx` returns, so
+/// every existing `exile all <type>` card is unchanged — the loop only fires on a
+/// repeated-`all`/`each` continuation, which the base grammar's early type-union
+/// (`starts_with_or_article_type_segment` rejects a leading "all") deliberately
+/// stops at.
+pub(crate) fn parse_mass_type_union<'a>(
+    text: &'a str,
+    ctx: &mut ParseContext,
+) -> (TargetFilter, &'a str) {
+    let (mut acc, mut rest) = parse_target_with_ctx(text, ctx);
+    loop {
+        let lower = rest.to_lowercase();
+        let Some(sep_len) = match_mass_union_separator(&lower) else {
+            break;
+        };
+        let after_sep = &rest[sep_len..];
+        let after_sep_lower = after_sep.to_lowercase();
+        // Optional repeated "all "/"each " pluralizer the early union does not fold.
+        let plural_len = alt((tag::<_, _, OracleError<'_>>("all "), tag("each ")))
+            .parse(after_sep_lower.as_str())
+            .map(|(r, _)| after_sep_lower.len() - r.len())
+            .unwrap_or(0);
+        let leg_text = &after_sep[plural_len..];
+        if !starts_with_type_word(&leg_text.to_lowercase()) {
+            break;
+        }
+        let (leg, next) = parse_target_with_ctx(leg_text, ctx);
+        acc = merge_or_filters(acc, leg);
+        rest = next;
+    }
+    (acc, rest)
+}
+
 /// Context-aware variant of `parse_type_phrase`. Enables relative-player scope
 /// resolution via `ctx.relative_player_scope`.
 pub fn parse_type_phrase_with_ctx<'a>(
@@ -2153,6 +2366,53 @@ pub fn parse_type_phrase_with_ctx<'a>(
         pos += consumed;
     }
 
+    // CR 608.2c: "<type> except those that <relative-clause>" / "other than those
+    // that <relative-clause>" — an exclusion suffix. The inner relative clause is
+    // parsed by the same `parse_that_clause_suffix` grammar and the leg matches the
+    // *complement* of the whole clause. `parse_that_clause_suffix` returns its
+    // predicates AND-combined (a conjunctive clause, e.g. "that are attacking and
+    // tapped"), so the complement is the De Morgan dual
+    // Not(X AND Y) = Not(X) OR Not(Y). A single predicate negates directly; a
+    // multi-predicate conjunction folds to a single `AnyOf{[Not(X), Not(Y)]}`
+    // (disjunction of negations) — never per-prop `Not(X) AND Not(Y)`, which would
+    // exclude every object matching X *or* Y rather than only those matching both.
+    // A clause whose disjunction is already a single prop (e.g. "enchanted or
+    // equipped" → `HasAnyAttachmentOf`) stays one prop and its `Not` De Morgans
+    // correctly at runtime. Covers "all creatures except those that share a
+    // creature type with a creature that convoked this spell" (Everything Comes to
+    // Dust) and the general class ("except those that attacked this turn").
+    {
+        let rem = lower[pos..].trim_start();
+        let ws = lower[pos..].len() - rem.len();
+        if let Ok((after_those, _)) = alt((
+            tag::<_, _, OracleError<'_>>("except those "),
+            tag("other than those "),
+        ))
+        .parse(rem)
+        {
+            let prefix_len = rem.len() - after_those.len();
+            if let Some((excl_props, consumed)) = parse_that_clause_suffix(after_those, Some(ctx)) {
+                let negated: Vec<FilterProp> = excl_props
+                    .into_iter()
+                    .map(|prop| FilterProp::Not {
+                        prop: Box::new(prop),
+                    })
+                    .collect();
+                match negated.len() {
+                    0 => {}
+                    1 => properties.push(
+                        negated
+                            .into_iter()
+                            .next()
+                            .expect("len checked to be exactly 1"),
+                    ),
+                    _ => properties.push(FilterProp::AnyOf { props: negated }),
+                }
+                pos += ws + prefix_len + consumed;
+            }
+        }
+    }
+
     // CR 109.4: "that <player> control(s)" relative clause supplying the object
     // controller — e.g. "permanents you own that your opponents control"
     // (Zedruu). Placed after `parse_that_clause_suffix` so the quality/combat/
@@ -2261,6 +2521,31 @@ pub fn parse_type_phrase_with_ctx<'a>(
         };
         properties.push(chosen_prop);
         pos += remaining_offset + of_chosen_len;
+    }
+
+    // CR 115.2: A spell or ability may target an object in a zone other than
+    // the battlefield only when it specifies that zone, so the trailing zone
+    // phrase must be parsed onto the target filter. Zone phrases may trail "of
+    // the chosen type" ("target creature card of the chosen type from your
+    // graveyard", From the Rubble). The primary `parse_zone_suffix` arm above
+    // runs before this suffix.
+    if let Some((zone_props, zone_ctrl, consumed)) = parse_zone_suffix(&lower[pos..]) {
+        properties.extend(zone_props);
+        pos += consumed;
+        if controller.is_none() {
+            controller = zone_ctrl;
+        }
+    }
+
+    // CR 122.1 + CR 400.1: A counter-presence clause may TRAIL a zone clause
+    // ("a creature card in exile with a takeover counter on it" — The Master,
+    // Formed Anew). The pre-zone `parse_counter_suffix` pass above only catches
+    // counters that precede the zone; this second pass catches the
+    // zone-then-counter ordering so the full source-filter phrase is consumed and
+    // no leftover remains (a leftover that the clone-replacement guard rejects).
+    if let Some((prop, consumed)) = parse_counter_suffix(&lower[pos..]) {
+        properties.push(prop);
+        pos += consumed;
     }
 
     let mut exclude_chosen_type = false;
@@ -2796,9 +3081,25 @@ fn scope_target_spell_phrase(filter: TargetFilter, phrase: &str) -> TargetFilter
 }
 
 fn target_phrase_mentions_spell_word(phrase: &str) -> bool {
-    phrase
+    // CR 109.2 + CR 109.2b: the word "spell" makes a head descriptor mean a spell
+    // on the stack, but "this spell" / "that spell" is an anaphoric self-reference
+    // to the source object inside a relative clause — NOT the target's head
+    // descriptor — so it must not trigger spell-target stack scoping (otherwise "a
+    // creature that convoked this spell", Everything Comes to Dust, whose head is
+    // the battlefield permanent "a creature" per CR 109.2, would be wrongly
+    // rewritten to a stack spell). Any other occurrence ("instant and sorcery
+    // spells", "another spell") is a real head-descriptor type noun.
+    let mut previous: Option<&str> = None;
+    for word in phrase
         .split(|ch: char| ch.is_ascii_whitespace() || matches!(ch, ',' | ';' | '(' | ')'))
-        .any(|word| matches!(word, "spell" | "spells"))
+        .filter(|word| !word.is_empty())
+    {
+        if matches!(word, "spell" | "spells") && !matches!(previous, Some("this") | Some("that")) {
+            return true;
+        }
+        previous = Some(word);
+    }
+    false
 }
 
 fn target_phrase_uses_spell_suffix(phrase: &str) -> bool {
@@ -3347,9 +3648,25 @@ fn parse_combat_relation_suffix(text: &str) -> Option<(FilterProp, usize)> {
 /// then verifies a trailing space exists (color as adjective, not standalone).
 fn parse_color_prefix(text: &str) -> Option<(FilterProp, usize)> {
     let (rest, color) = nom_primitives::parse_color(text).ok()?;
-    // Must be followed by a space (color adjective prefix, not standalone color word).
-    let (rest, _) = tag::<_, _, OracleError<'_>>(" ").parse(rest).ok()?;
-    let consumed = text.len() - rest.len();
+    // CR 105.1: A color word is an adjective prefix only when a separator
+    // follows, so a bare color word ("whiteness") never matches. Two separators
+    // are accepted:
+    //   * a trailing space — the ordinary "white creature" prefix (consumed);
+    //   * a comma — the color-list continuation "white, blue, or black
+    //     creature", where the comma is left in place for the `TYPE_SEPARATORS`
+    //     recursion to consume as a ", " / ", or " disjunction separator. That
+    //     recursion + `distribute_core_type_to_or` then assemble the ≥3-color
+    //     prenominal chain into the same Or-of-legs shape the 2-color "green or
+    //     white creature" form already produces, with the core type backfilled
+    //     onto every color-only leg.
+    let consumed = if let Ok((after_space, _)) = tag::<_, _, OracleError<'_>>(" ").parse(rest) {
+        text.len() - after_space.len()
+    } else if peek(tag::<_, _, OracleError<'_>>(",")).parse(rest).is_ok() {
+        // Comma left in place for the `TYPE_SEPARATORS` recursion to consume.
+        text.len() - rest.len()
+    } else {
+        return None;
+    };
     Some((FilterProp::HasColor { color }, consumed))
 }
 
@@ -3591,6 +3908,11 @@ fn superlative_property_filter_prop(
             comparator: Comparator::EQ,
             value,
         },
+        // ManaSymbolCount is a zone-aggregated chroma property (`QuantityRef::
+        // Aggregate`), never a per-object superlative comparison filter.
+        ObjectProperty::ManaSymbolCount(_) => unreachable!(
+            "ManaSymbolCount is aggregated via QuantityRef::Aggregate, not a superlative filter"
+        ),
     }
 }
 
@@ -4401,7 +4723,7 @@ fn parse_keyword_suffix(text: &str) -> Option<(KeywordSuffix, usize)> {
 /// Parse "without [keyword]" suffix — negated keyword filter.
 /// Handles "without flying", "without first strike", etc.
 /// Parallels `parse_keyword_suffix` but emits `WithoutKeyword`.
-fn parse_without_keyword_suffix(text: &str) -> Option<(Vec<FilterProp>, usize)> {
+pub(crate) fn parse_without_keyword_suffix(text: &str) -> Option<(Vec<FilterProp>, usize)> {
     let trimmed = text.trim_start();
     let leading_ws = text.len() - trimmed.len();
     let (after_without, _) = tag::<_, _, OracleError<'_>>("without ")
@@ -5180,6 +5502,12 @@ pub(crate) fn parse_that_clause_suffix<'a>(
         // ability source. Calamity, Galloping Inferno. Longest match first.
         ("saddled it this turn", FilterProp::SaddledSource),
         ("saddled it", FilterProp::SaddledSource),
+        // CR 702.51c: "that convoked this spell" / "that convoked it" — the
+        // creature was tapped to pay the source spell's convoke cost (recorded in
+        // the source's `convoked_creatures`). "it"/"this spell" refer to the
+        // source. Everything Comes to Dust. Longest match first.
+        ("convoked this spell", FilterProp::ConvokedSource),
+        ("convoked it", FilterProp::ConvokedSource),
     ];
 
     for (phrase, prop) in VERB_PHRASES {
@@ -9431,6 +9759,69 @@ mod tests {
         }
     }
 
+    /// CR 122.1 + CR 400.1: a zone clause followed by a counter-presence clause
+    /// ("creature card in exile with a takeover counter on it" — The Master,
+    /// Formed Anew). The whole source-filter phrase must be consumed (no
+    /// leftover) and both the zone (`InZone { Exile }`) and the counter
+    /// constraint (`Counters { OfType("takeover"), GE, 1 }`) must land on the
+    /// filter. Exercises the second `parse_counter_suffix` pass that runs after
+    /// the zone-suffix handling; the pre-zone pass only covers counter-then-zone.
+    #[test]
+    fn parse_type_phrase_zone_then_counter_suffix_consumes_both() {
+        let (filter, leftover) =
+            parse_type_phrase("creature card in exile with a takeover counter on it");
+        assert_eq!(
+            leftover.trim(),
+            "",
+            "whole source-filter phrase must be consumed, got leftover {leftover:?}"
+        );
+        let TargetFilter::Typed(tf) = filter else {
+            panic!("expected Typed filter, got {filter:?}");
+        };
+        assert!(
+            tf.properties
+                .iter()
+                .any(|p| matches!(p, FilterProp::InZone { zone: Zone::Exile })),
+            "zone clause must lower to InZone {{ Exile }}, got {:?}",
+            tf.properties
+        );
+        assert!(
+            tf.properties.iter().any(|p| matches!(
+                p,
+                FilterProp::Counters {
+                    counters: CounterMatch::OfType(CounterType::Generic(ct)),
+                    comparator: Comparator::GE,
+                    count: QuantityExpr::Fixed { value: 1 },
+                } if ct == "takeover"
+            )),
+            "counter clause must lower to GE-1 takeover Counters prop, got {:?}",
+            tf.properties
+        );
+    }
+
+    /// CR 122.1: the pre-existing counter-then-zone ordering still parses — the
+    /// new post-zone pass must not regress the symmetric (pre-zone) case.
+    #[test]
+    fn parse_type_phrase_counter_then_zone_suffix_still_consumes_both() {
+        let (filter, leftover) =
+            parse_type_phrase("creature card with a takeover counter on it in exile");
+        assert_eq!(leftover.trim(), "", "got leftover {leftover:?}");
+        let TargetFilter::Typed(tf) = filter else {
+            panic!("expected Typed filter, got {filter:?}");
+        };
+        assert!(tf
+            .properties
+            .iter()
+            .any(|p| matches!(p, FilterProp::InZone { zone: Zone::Exile })));
+        assert!(tf.properties.iter().any(|p| matches!(
+            p,
+            FilterProp::Counters {
+                counters: CounterMatch::OfType(CounterType::Generic(ct)),
+                ..
+            } if ct == "takeover"
+        )));
+    }
+
     /// "that has a <type> counter on it" relative clause — must lower to the
     /// same `FilterProp::Counters` shape as the `with`-form (Banewhip Punisher,
     /// Triad of Fates). Previously this clause was dropped entirely.
@@ -9875,16 +10266,61 @@ mod tests {
     }
 
     #[test]
+    fn or_color_disjunction_three_colors_backfills_core_type() {
+        // ≥3-color prenominal disjunction class: "target white, blue, or black
+        // creature". Unlike the 2-color "green or white creature" form (which the
+        // bare " or " `TYPE_SEPARATORS` arm assembles), the inner legs here are
+        // comma-separated bare color words ("blue,"). `parse_color_prefix` now
+        // accepts a color followed by a comma, so the leading color is consumed
+        // and the ", " / ", or " separators drive the same recursion; the
+        // [Any]-typed color-only legs are then backfilled to [Creature] by
+        // `distribute_core_type_to_or`. This pins the full parse pipeline (the
+        // surface assembly the distributor-only test below cannot reach).
+        let (f, rest) = parse_target("target white, blue, or black creature");
+        assert_eq!(rest.trim(), "");
+        let TargetFilter::Or { filters } = f else {
+            panic!("expected Or filter, got {f:?}");
+        };
+        assert_eq!(filters.len(), 3, "expected 3-way OR, got {filters:#?}");
+        // Every leg must carry exactly [Creature] (the white/blue legs were [Any]).
+        for (i, leg) in filters.iter().enumerate() {
+            let tf = typed_leg(leg).unwrap_or_else(|| panic!("leg {i} not Typed: {leg:?}"));
+            assert_eq!(
+                tf.type_filters,
+                vec![TypeFilter::Creature],
+                "leg {i} must be [Creature], got {:?}",
+                tf.type_filters
+            );
+        }
+        assert_eq!(
+            leg_color(&filters[0]),
+            Some(ManaColor::White),
+            "leg 0 = white"
+        );
+        assert_eq!(
+            leg_color(&filters[1]),
+            Some(ManaColor::Blue),
+            "leg 1 = blue"
+        );
+        assert_eq!(
+            leg_color(&filters[2]),
+            Some(ManaColor::Black),
+            "leg 2 = black"
+        );
+    }
+
+    #[test]
     fn distribute_core_type_to_or_backfills_every_flat_any_leg() {
         // Building-block test: `merge_or_filters` flattens nested `Or`s, so a
         // ≥3-disjunct list arrives at `distribute_core_type_to_or` as flat
         // siblings. Drive the distributor directly with a flat 3-leg Or in which
         // two legs are the deferred-type `[Any]` shape (color-only) and the last
         // carries the concrete `[Creature]`. EVERY `[Any]` leg must inherit
-        // `[Creature]`; the type-bearing leg is untouched. (The surface parser
-        // does not yet assemble a ≥3 color-only disjunction — comma/no-comma color
-        // chains are a separate gap — so we pin the distributor at its own seam,
-        // which is exactly the level `merge_or_filters` feeds.)
+        // `[Creature]`; the type-bearing leg is untouched. The surface parser now
+        // assembles ≥3-color prenominal chains (see
+        // `or_color_disjunction_three_colors_backfills_core_type`); this test pins
+        // the distributor at its own seam — exactly the level `merge_or_filters`
+        // feeds — independent of the surface grammar.
         let any_leg = |color: ManaColor| {
             TargetFilter::Typed(TypedFilter {
                 type_filters: vec![TypeFilter::Any],
@@ -10374,6 +10810,124 @@ mod tests {
                     .contains(&TypeFilter::Non(Box::new(TypeFilter::Artifact))));
             }
             other => panic!("Expected Typed, got {:?}", other),
+        }
+    }
+
+    // ── Cluster 59: convoke-relative filter + "except those" exclusion + mass union ──
+
+    #[test]
+    fn creature_that_convoked_this_spell_is_convoked_source() {
+        // CR 702.51c: "a creature that convoked this spell" → creature +
+        // ConvokedSource. The "this spell" self-reference must NOT scope the
+        // result to the stack (the spell-suffix guard).
+        let (f, rest) = parse_target("a creature that convoked this spell");
+        assert_eq!(
+            f,
+            TargetFilter::Typed(
+                TypedFilter::creature().properties(vec![FilterProp::ConvokedSource])
+            ),
+            "must stay a battlefield creature filter, not a stack spell"
+        );
+        assert_eq!(rest.trim(), "");
+    }
+
+    #[test]
+    fn convoked_it_alias_is_convoked_source() {
+        let (f, _) = parse_target("a creature that convoked it");
+        assert_eq!(
+            f,
+            TargetFilter::Typed(
+                TypedFilter::creature().properties(vec![FilterProp::ConvokedSource])
+            )
+        );
+    }
+
+    #[test]
+    fn except_those_sharing_type_with_convoker_negates() {
+        // CR 608.2c: "creatures except those that share a creature type with a
+        // creature that convoked this spell" → creature + Not(SharesQuality).
+        let (f, _) = parse_type_phrase(
+            "creatures except those that share a creature type with a creature that convoked this spell",
+        );
+        let expected_ref = TargetFilter::Typed(
+            TypedFilter::creature().properties(vec![FilterProp::ConvokedSource]),
+        );
+        assert_eq!(
+            f,
+            TargetFilter::Typed(TypedFilter::creature().properties(vec![FilterProp::Not {
+                prop: Box::new(FilterProp::SharesQuality {
+                    quality: SharedQuality::CreatureType,
+                    reference: Some(Box::new(expected_ref)),
+                    relation: SharedQualityRelation::Shares,
+                }),
+            }]))
+        );
+    }
+
+    #[test]
+    fn except_those_multi_predicate_folds_to_disjunction_of_negations() {
+        // CR 608.2c De Morgan: "except those that <X> and <Y>" excludes only
+        // objects matching the FULL conjunction X AND Y, so the complement kept by
+        // the leg is the disjunction Not(X) OR Not(Y) — a single `AnyOf`, NEVER
+        // per-prop `Not(X) AND Not(Y)` (which would exclude objects matching X *or*
+        // Y, far too many). Exercised with a clause that `parse_that_clause_suffix`
+        // returns as two props ([Not(AttackedThisTurn), Not(EnteredThisTurn)]).
+        let (f, _) =
+            parse_type_phrase("creatures except those that didn't attack or enter this turn");
+        // The two negated-verb predicates negate (double `Not`) and fold into one
+        // `AnyOf` — the structural signature that distinguishes the De Morgan-correct
+        // disjunction from the broken per-prop conjunction.
+        let expected_props = vec![FilterProp::AnyOf {
+            props: vec![
+                FilterProp::Not {
+                    prop: Box::new(FilterProp::Not {
+                        prop: Box::new(FilterProp::AttackedThisTurn),
+                    }),
+                },
+                FilterProp::Not {
+                    prop: Box::new(FilterProp::Not {
+                        prop: Box::new(FilterProp::EnteredThisTurn),
+                    }),
+                },
+            ],
+        }];
+        assert_eq!(
+            f,
+            TargetFilter::Typed(TypedFilter::creature().properties(expected_props)),
+            "multi-predicate exclusion must fold to AnyOf of negations, not per-prop Not"
+        );
+    }
+
+    #[test]
+    fn mass_type_union_repeated_all() {
+        // CR 205.2a: "creatures, all artifacts, and all enchantments" →
+        // Or[creature, artifact, enchantment] (repeated-`all` continuation over
+        // card types).
+        let mut ctx = ParseContext::default();
+        let (f, rest) =
+            parse_mass_type_union("creatures, all artifacts, and all enchantments", &mut ctx);
+        assert_eq!(
+            f,
+            TargetFilter::Or {
+                filters: vec![
+                    TargetFilter::Typed(TypedFilter::creature()),
+                    TargetFilter::Typed(TypedFilter::new(TypeFilter::Artifact)),
+                    TargetFilter::Typed(TypedFilter::new(TypeFilter::Enchantment)),
+                ],
+            }
+        );
+        assert_eq!(rest.trim(), "");
+    }
+
+    #[test]
+    fn mass_type_union_single_leg_matches_parse_target() {
+        // Regression: inputs without a repeated-`all` continuation must equal the
+        // bare `parse_target` result (the loop must not fire on within-leg unions).
+        let mut ctx = ParseContext::default();
+        for phrase in ["artifacts", "artifacts and creatures", "other spells"] {
+            let (f, _) = parse_mass_type_union(phrase, &mut ctx);
+            let (baseline, _) = parse_target(phrase);
+            assert_eq!(f, baseline, "mass union changed bare parse for {phrase:?}");
         }
     }
 
@@ -13351,5 +13905,64 @@ mod tests {
         );
         assert_eq!(tf.controller, Some(ControllerRef::You));
         assert!(tf.properties.contains(&FilterProp::Another));
+    }
+
+    /// CR 205.3h: `parse_type_phrase` parses "a Plan" — "Plan" is an enchantment
+    /// subtype (Marvel's Spider-Man) — to `Typed{[Subtype("Plan")]}`, fully
+    /// consumed. The elided-verb "or" disjunction ("you control an artifact
+    /// creature or a Plan") is assembled one level up in `parse_you_control_a`,
+    /// so `parse_type_phrase` itself stops at the first segment and leaves the
+    /// connector as remainder (asserted below).
+    #[test]
+    fn parse_type_phrase_recognizes_plan() {
+        let (f, rest) = parse_type_phrase("a Plan");
+        assert!(rest.trim().is_empty(), "remainder must be empty: {rest:?}");
+        let TargetFilter::Typed(tf) = f else {
+            panic!("expected single Typed filter, got {f:?}");
+        };
+        assert_eq!(
+            tf.type_filters,
+            vec![TypeFilter::Subtype("Plan".to_string())]
+        );
+    }
+
+    /// `parse_type_phrase` does NOT swallow an article-led "or" RHS — it stops at
+    /// the first segment and leaves " or a Plan" as remainder. This is the
+    /// load-bearing precondition for the `parse_you_control_a` elided-verb loop:
+    /// the connector must survive so the condition layer can fold the disjuncts.
+    #[test]
+    fn parse_type_phrase_leaves_article_led_or_rhs_as_remainder() {
+        let (f, rest) = parse_type_phrase("an artifact creature or a Plan");
+        assert_eq!(rest, " or a Plan", "article-led or RHS must remain");
+        let TargetFilter::Typed(tf) = f else {
+            panic!("expected single Typed filter, got {f:?}");
+        };
+        assert!(tf.type_filters.contains(&TypeFilter::Artifact));
+        assert!(tf.type_filters.contains(&TypeFilter::Creature));
+    }
+
+    /// Regression: a single article-led conjunction with no connector still
+    /// parses to a single Typed filter (not an Or).
+    #[test]
+    fn single_artifact_creature_still_typed_not_or() {
+        let (f, rest) = parse_type_phrase("an artifact creature");
+        assert!(rest.trim().is_empty(), "remainder must be empty: {rest:?}");
+        let TargetFilter::Typed(tf) = f else {
+            panic!("expected single Typed filter, got {f:?}");
+        };
+        assert!(tf.type_filters.contains(&TypeFilter::Artifact));
+        assert!(tf.type_filters.contains(&TypeFilter::Creature));
+    }
+
+    /// Regression: a bare (no-article) connector RHS still parses to an Or via
+    /// the existing non-comma separator branch (unchanged by this work).
+    #[test]
+    fn bare_connector_rhs_still_or() {
+        let (f, rest) = parse_type_phrase("artifact creature or enchantment");
+        assert!(rest.trim().is_empty(), "remainder must be empty: {rest:?}");
+        assert!(
+            matches!(f, TargetFilter::Or { .. }),
+            "expected Or filter, got {f:?}"
+        );
     }
 }

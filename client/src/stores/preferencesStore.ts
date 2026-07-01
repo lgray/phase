@@ -272,6 +272,8 @@ function buildDefaultPreferences(): PreferencesState {
     audioThemeId: "planeswalker",
     customThemeUrls: [],
     battlefieldCardDisplay: "art_crop",
+    collapsedFolderIds: [],
+    lastSeenChangelogId: undefined,
     commandZoneDisplay: "auto",
     tapRotation: "mtga",
     spellPaymentMode: "auto",
@@ -327,6 +329,14 @@ interface PreferencesState {
   audioThemeId: string;
   customThemeUrls: Array<{ id: string; url: string }>;
   battlefieldCardDisplay: BattlefieldCardDisplay;
+  /** Ids of deck-library folders the user has collapsed (id present = collapsed).
+   * Also holds the sentinel ids for the virtual Starred/Unfiled sections. */
+  collapsedFolderIds: string[];
+  /** Highest changelog entry id the user has seen ("What's New" watermark).
+   * Undefined for first-run / freshly-upgraded users — the changelog hook
+   * silently seeds it to the current latest so they get no unread dot for
+   * entries that predate their first visit. */
+  lastSeenChangelogId?: number;
   /** Command-zone layout mode (inline dock / compact pile / auto-by-viewport). */
   commandZoneDisplay: CommandZoneDisplay;
   tapRotation: TapRotation;
@@ -398,6 +408,9 @@ interface PreferencesActions {
   addCustomThemeUrl: (id: string, url: string) => void;
   removeCustomThemeUrl: (id: string) => void;
   setBattlefieldCardDisplay: (display: BattlefieldCardDisplay) => void;
+  toggleFolderCollapsed: (id: string) => void;
+  setCollapsedFolderIds: (ids: string[]) => void;
+  setLastSeenChangelogId: (id: number) => void;
   setCommandZoneDisplay: (display: CommandZoneDisplay) => void;
   setTapRotation: (rotation: TapRotation) => void;
   setSpellPaymentMode: (mode: SpellPaymentMode) => void;
@@ -538,6 +551,14 @@ export const usePreferencesStore = create<PreferencesState & PreferencesActions>
           ...(state.audioThemeId === id ? { audioThemeId: "planeswalker" } : {}),
         })),
       setBattlefieldCardDisplay: (display) => set({ battlefieldCardDisplay: display }),
+      toggleFolderCollapsed: (id) =>
+        set((state) => ({
+          collapsedFolderIds: state.collapsedFolderIds.includes(id)
+            ? state.collapsedFolderIds.filter((existing) => existing !== id)
+            : [...state.collapsedFolderIds, id],
+        })),
+      setCollapsedFolderIds: (ids) => set({ collapsedFolderIds: ids }),
+      setLastSeenChangelogId: (id) => set({ lastSeenChangelogId: id }),
       setCommandZoneDisplay: (display) => set({ commandZoneDisplay: display }),
       setTapRotation: (rotation) => set({ tapRotation: rotation }),
       setSpellPaymentMode: (mode) => set({ spellPaymentMode: mode }),
@@ -698,7 +719,7 @@ export const usePreferencesStore = create<PreferencesState & PreferencesActions>
     }),
     {
       name: "phase-preferences",
-      version: 16,
+      version: 18,
       // v0 → v1: flat aiDifficulty + aiDeckName become aiSeats[0].
       // v1 → v2: discrete animationSpeed/combatPacing enums become numeric
       //          animationSpeedMultiplier/combatPacingMultiplier.
@@ -727,6 +748,12 @@ export const usePreferencesStore = create<PreferencesState & PreferencesActions>
       //          via the shallow merge. The default bands reproduce today's
       //          gridTemplateRows exactly, so this is a zero-regression seed —
       //          no explicit migration block needed.
+      // v16 → v17: Add collapsedFolderIds; legacy stores default to [] (nothing
+      //          collapsed — the prior behavior) via the shallow merge.
+      // v17 → v18: Add lastSeenChangelogId; legacy stores default to undefined
+      //          via the shallow merge. The changelog hook then silently seeds
+      //          it to the current latest on first load, so existing users get
+      //          no unread dot for entries that predate this upgrade.
       migrate: (persisted: unknown, version: number) => {
         if (!persisted || typeof persisted !== "object") return persisted;
         let migrated = persisted as Record<string, unknown>;
