@@ -21641,6 +21641,14 @@ pub(crate) fn parse_effect_chain_ir(
     // made in earlier chunks. Seeded into each `chunk_ctx` and read back after.
     let mut chain_chosen_player_count: u8 = 0;
     let mut chain_chosen_player_scope: Option<ControllerRef> = None;
+    // CR 601.2c + CR 608.2c: Chain-spanning registry of target slots declared by
+    // a "Choose target X and target Y" head clause, carried to later clauses so
+    // their definite anaphors ("that Equipment", "the chosen creature", "the
+    // artifact card") resolve to `ParentTargetSlot { index }`. Fresh empty per
+    // `parse_effect_chain_ir` call (the per-chain reset), it seeds each
+    // `chunk_ctx.declared_target_slots` and is refreshed from the chunk after
+    // parse (the declaration chunk pushes both slots via `try_parse_two_targets`).
+    let mut chain_declared_target_slots: Vec<TargetFilter> = Vec::new();
     // CR 608.2c + CR 400.7: Chain-spanning source zone of a "choose card(s) in
     // <zone>" producer, carried to a following "put those cards onto the
     // battlefield" consumer so the `TrackedSet` move scans the right zone
@@ -23390,6 +23398,11 @@ pub(crate) fn parse_effect_chain_ir(
             // cards onto the battlefield" anaphor binds its `TrackedSet` move to
             // that origin instead of the impulse-default exile.
             pending_tracked_set_origin: chain_pending_tracked_set_origin,
+            // CR 601.2c + CR 608.2c: seed the declared target-slot registry so a
+            // later clause's definite anaphor ("that Equipment", "the chosen
+            // creature") resolves to the slot the "Choose target X and target Y"
+            // head declared. Refreshed from the chunk after parse.
+            declared_target_slots: chain_declared_target_slots.clone(),
             // CR 116.2b + CR 708.7: a granted activated-ability body context is a
             // property of the whole ability, not of an individual chunk, so all
             // chunks inside it share the flag — the head "turn this creature face
@@ -24491,6 +24504,12 @@ pub(crate) fn parse_effect_chain_ir(
         if let Some(scope @ ControllerRef::ChosenPlayer { .. }) = &chunk_ctx.relative_player_scope {
             chain_chosen_player_scope = Some(scope.clone());
         }
+        // CR 601.2c + CR 608.2c: Carry the declared target-slot registry forward.
+        // The declaration chunk ("Choose target X and target Y") pushed both
+        // slots onto its `chunk_ctx.declared_target_slots`; a non-declaration
+        // chunk leaves the seeded copy untouched — so taking it back either
+        // publishes new slots or preserves the existing ones for the next chunk.
+        chain_declared_target_slots = std::mem::take(&mut chunk_ctx.declared_target_slots);
 
         // CR 608.2c + CR 109.4 (issue #1670): Arm the chain-spanning "its
         // controller" antecedent. The consuming-chunk CLEAR was hoisted above to

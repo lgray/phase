@@ -40187,6 +40187,120 @@ fn combined_spell_ability_def_tags_top_level_spell_tails_sequential_sibling() {
     );
 }
 
+/// S25-B3 claims 1 + 2 (runtime cast+resolve): Stolen Uniform's front half
+/// binds each anaphor to its precise declared target slot. "Gain control of
+/// that Equipment" acts on slot 1 (the Equipment); "Attach it to the chosen
+/// creature" attaches slot 1 (the Equipment) to slot 0 (the creature) — not the
+/// slot-collision `ParentTarget` that grabs both announced targets at once.
+///
+/// Revert-failing assertion: `equip.attached_to == Some(Object(creature))`. On
+/// the pre-change build both anaphors lower to plain `ParentTarget`, so the
+/// Attach resolves `attachment == target == [creature, equipment]` (the
+/// attachment picks the first slot, the creature), and the Equipment never
+/// equips the creature — the assertion fails. The hostile second Equipment
+/// (`other_equip`, pre-attached to `bystander`) proves the binding is
+/// slot-specific, not "all attachments".
+#[test]
+fn stolen_uniform_binds_gaincontrol_and_attach_to_precise_slots() {
+    use crate::game::game_object::AttachTarget;
+    use crate::game::scenario::GameScenario;
+
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(Phase::PreCombatMain);
+
+    // Slot 0 — "target creature you control".
+    let creature = scenario.add_creature(PlayerId(0), "Bearer", 2, 2).id();
+    // P0's other creature: host for the hostile Equipment.
+    let bystander = scenario.add_creature(PlayerId(0), "Bystander", 1, 1).id();
+
+    // Slot 1 — "target Equipment", controlled by the OPPONENT before resolution.
+    let equip = {
+        let state = &mut scenario.state;
+        let id = create_object(
+            state,
+            CardId(9101),
+            PlayerId(1),
+            "Stolen Blade".to_string(),
+            Zone::Battlefield,
+        );
+        let obj = state.objects.get_mut(&id).unwrap();
+        obj.card_types.core_types.push(CoreType::Artifact);
+        obj.card_types.subtypes.push("Equipment".to_string());
+        id
+    };
+    // Hostile fixture: a SECOND Equipment P0 already controls, attached to the
+    // bystander — it must be untouched (proves slot-specific binding).
+    let other_equip = {
+        let state = &mut scenario.state;
+        let id = create_object(
+            state,
+            CardId(9102),
+            PlayerId(0),
+            "Other Blade".to_string(),
+            Zone::Battlefield,
+        );
+        let obj = state.objects.get_mut(&id).unwrap();
+        obj.card_types.core_types.push(CoreType::Artifact);
+        obj.card_types.subtypes.push("Equipment".to_string());
+        id
+    };
+    {
+        let state = &mut scenario.state;
+        state.objects.get_mut(&other_equip).unwrap().attached_to =
+            Some(AttachTarget::Object(bystander));
+        state
+            .objects
+            .get_mut(&bystander)
+            .unwrap()
+            .attachments
+            .push(other_equip);
+    }
+
+    let spell = scenario
+        .add_spell_to_hand_from_oracle(
+            PlayerId(0),
+            "Stolen Uniform",
+            true,
+            "Choose target creature you control and target Equipment. Gain control of that Equipment until end of turn. Attach it to the chosen creature. When you lose control of that Equipment this turn, if it's attached to a creature you control, unattach it.",
+        )
+        .id();
+
+    let mut runner = scenario.build();
+    // Declared intents matched to slots in written order (CR 601.2c): the
+    // creature is slot A, the Equipment is slot B.
+    let outcome = runner
+        .cast(spell)
+        .target_objects(&[creature, equip])
+        .resolve();
+    let state = outcome.state();
+
+    // Claim 1: GainControl bound slot 1 → P0 controls the Equipment.
+    assert_eq!(
+        state.objects[&equip].controller,
+        PlayerId(0),
+        "GainControl must bind slot 1 (the Equipment) so P0 gains control of it"
+    );
+    // Claim 2 (revert-failing): the Equipment (slot 1) equips the chosen
+    // creature (slot 0) — attachment and target are distinct slots.
+    assert_eq!(
+        state.objects[&equip].attached_to,
+        Some(AttachTarget::Object(creature)),
+        "Attach must equip slot 1 (the Equipment) to slot 0 (the chosen creature)"
+    );
+    assert!(
+        state.objects[&creature].attachments.contains(&equip),
+        "the chosen creature must carry the Equipment"
+    );
+    // Hostile: the unrelated pre-attached Equipment is untouched.
+    assert_eq!(
+        state.objects[&other_equip].attached_to,
+        Some(AttachTarget::Object(bystander)),
+        "the unrelated Equipment must not move — the binding is slot-specific"
+    );
+    // The chosen creature stays under P0's control.
+    assert_eq!(state.objects[&creature].controller, PlayerId(0));
+}
+
 #[test]
 fn heal_draws_on_the_next_turns_upkeep() {
     use crate::game::scenario::GameScenario;

@@ -190,6 +190,19 @@ fn gain_control_object_targets(
         return vec![ability.source_id];
     }
 
+    // CR 608.2c: a precise slot anaphor ("gain control of that Equipment" →
+    // slot 1) indexes the whole resolving chain's declared targets. The
+    // per-clause `ability.targets` may carry only the nearest propagated target,
+    // so route through the root-chain authority; `effect_object_targets` would
+    // fall through to "all inherited targets" when the index is out of range.
+    if let TargetFilter::ParentTargetSlot { index } = filter {
+        if let Some(TargetRef::Object(id)) =
+            crate::game::targeting::resolve_parent_slot_from_root(state, ability, *index)
+        {
+            return vec![id];
+        }
+    }
+
     let chosen_objects = super::effect_object_targets(filter, &ability.targets);
 
     if !chosen_objects.is_empty() {

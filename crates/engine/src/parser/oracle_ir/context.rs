@@ -60,6 +60,17 @@ pub(crate) struct ParseContext {
     /// filter ("destroy target X that player controls of their choice"). Snapshotted
     /// into the produced `ClauseIr` alongside `target_selection_mode`.
     pub target_chooser: Option<TargetFilter>,
+    /// CR 601.2c + CR 608.2c: Ordered target slots declared by the current
+    /// effect chain's "Choose target X and target Y" head. Index `i` is the
+    /// filter announced for the `i`-th `target` word (slot 0 = A, slot 1 = B,
+    /// …). Later clauses in the chain resolve definite anaphors ("that
+    /// Equipment", "the chosen creature", "the artifact card") to
+    /// `TargetFilter::ParentTargetSlot { index }` by matching the anaphor's noun
+    /// phrase against these filters. Threaded across chunks via a chain
+    /// loop-local and reset per effect chain in `parse_effect_chain_ir`
+    /// (alongside the existing per-chain resets), so slots never leak across
+    /// cards/abilities.
+    pub declared_target_slots: Vec<TargetFilter>,
     /// CR 303.4 + CR 702.103: Typed self-reference for the enclosing card's
     /// attachment host. Set to `Some(TargetFilter::AttachedTo)` only when the
     /// card being parsed is an Aura or has the Bestow keyword (i.e. it can be

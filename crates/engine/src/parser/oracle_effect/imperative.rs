@@ -3286,7 +3286,7 @@ pub(super) fn parse_choose_ast(
             // single-target Reparse) so the second slot (e.g., Goblin
             // Welder's "artifact card in that player's graveyard") is
             // preserved instead of being silently dropped.
-            if let Some(ast) = try_parse_two_targets(rest) {
+            if let Some(ast) = try_parse_two_targets(rest, ctx) {
                 return Some(ast);
             }
             let inner = super::parse_effect(rest);
@@ -3997,7 +3997,7 @@ fn parse_choose_zone(input: &str) -> nom::IResult<&str, Zone, OracleError<'_>> {
 /// as `TargetFilter::Any` (failed extraction), or when the prefix isn't a
 /// targeting phrase (`is_choose_as_targeting`-style check) — caller handles
 /// the single-target fallback.
-fn try_parse_two_targets(rest: &str) -> Option<ChooseImperativeAst> {
+fn try_parse_two_targets(rest: &str, ctx: &mut ParseContext) -> Option<ChooseImperativeAst> {
     type E<'a> = OracleError<'a>;
 
     // CR 601.2c connector parser: "and target " or "and another target ".
@@ -4036,6 +4036,18 @@ fn try_parse_two_targets(rest: &str) -> Option<ChooseImperativeAst> {
     if matches!(target_b, TargetFilter::Any) {
         return None;
     }
+
+    // CR 601.2c + CR 608.2c: Register the two announced slot filters (A then B)
+    // on the chain's declared-target-slot registry so later clauses in the same
+    // chain can resolve definite anaphors ("that Equipment", "the chosen
+    // creature", "the artifact card") to `ParentTargetSlot { index }`. The chunk
+    // loop in `parse_effect_chain_ir` threads this across chunks. Assigned (not
+    // appended) so a re-parse of the same declaration chunk is idempotent — a
+    // classification pass and the real parse share one `chunk_ctx`, and a
+    // duplicated Equipment slot would make "that Equipment" ambiguously match
+    // two slots. (No current card declares two separate "target … and target …"
+    // heads in one chain; the single-declaration form is the whole class.)
+    ctx.declared_target_slots = vec![target_a.clone(), target_b.clone()];
 
     Some(ChooseImperativeAst::TwoTargets { target_a, target_b })
 }
@@ -4752,7 +4764,7 @@ pub(super) fn parse_utility_imperative_ast(
         nom_on_lower(text, lower, parse_explicit_targeted_attach)
     {
         if rem.trim().is_empty() {
-            let (attachment, _attachment_rem) = parse_target(&attachment_text);
+            let (attachment, _attachment_rem) = parse_attachment_anaphor(&attachment_text, ctx);
             let (target, _target_rem) = parse_attach_recipient(&target_text, ctx);
             #[cfg(debug_assertions)]
             assert_no_compound_remainder(_attachment_rem, text);
@@ -4898,6 +4910,49 @@ fn parse_attach_recipient<'a>(text: &'a str, ctx: &mut ParseContext) -> (TargetF
         }
     }
     (target, rest)
+}
+
+/// CR 608.2c + CR 301.5: Resolve an Attach effect's `attachment` argument.
+///
+/// A bare object pronoun ("Attach **it** to the chosen creature") names the
+/// object being attached. In a chain that declared multiple target slots via
+/// "Choose target X and target Y", that object is the sole attachable
+/// (Equipment/Aura) slot among the declared targets — so bind the pronoun to
+/// that `ParentTargetSlot`, giving the Attach a distinct `attachment` and
+/// `target` (no slot collision). When there is no unique attachable slot (empty
+/// or ambiguous registry), fall back to the normal target parse so every
+/// existing attach card is byte-identical.
+fn parse_attachment_anaphor<'a>(text: &'a str, ctx: &ParseContext) -> (TargetFilter, &'a str) {
+    if is_bare_object_pronoun(text.trim().to_ascii_lowercase().as_str()) {
+        if let Some(index) = unique_attachable_slot(&ctx.declared_target_slots) {
+            return (
+                TargetFilter::ParentTargetSlot { index },
+                &text[text.len()..],
+            );
+        }
+    }
+    parse_target(text)
+}
+
+/// CR 301.5 + CR 303.4: The index of the unique Equipment/Aura slot among the
+/// declared target slots, or `None` when there is zero or more than one — the
+/// only attachable object a bare "it" attachment can name.
+fn unique_attachable_slot(slots: &[TargetFilter]) -> Option<usize> {
+    let mut found = None;
+    for (index, slot) in slots.iter().enumerate() {
+        let TargetFilter::Typed(tf) = slot else {
+            continue;
+        };
+        if tf.get_subtype().is_some_and(|sub| {
+            sub.eq_ignore_ascii_case("Equipment") || sub.eq_ignore_ascii_case("Aura")
+        }) {
+            if found.is_some() {
+                return None;
+            }
+            found = Some(index);
+        }
+    }
+    found
 }
 
 fn parse_attach_anaphor_to_token(
