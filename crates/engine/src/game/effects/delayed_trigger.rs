@@ -2100,6 +2100,7 @@ mod tests {
                 chosen_attributes: Vec::new(),
                 counters: lki_counters,
                 tapped: false,
+                is_suspected: false,
             },
         );
 

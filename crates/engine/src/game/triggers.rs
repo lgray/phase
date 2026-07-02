@@ -10314,6 +10314,7 @@ pub mod tests {
                 chosen_attributes: Vec::new(),
                 counters,
                 tapped: false,
+                is_suspected: false,
             },
         );
 

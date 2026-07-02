@@ -121,7 +121,10 @@ use crate::types::triggers::TriggerMode;
 use crate::types::zones::Zone;
 
 use self::conditions::*;
-pub(crate) use self::conditions::{condition_text_is_rehomeable, split_leading_conditional};
+pub(crate) use self::conditions::{
+    condition_text_is_rehomeable, parse_additional_cost_instead_condition_fragment,
+    split_leading_conditional,
+};
 use self::imperative::{
     lower_imperative_family_ast, lower_shuffle_ast, lower_targeted_action_ast,
     lower_zone_counter_ast, parse_imperative_family_ast, parse_shuffle_ast,
@@ -19970,16 +19973,19 @@ fn try_parse_repeat_process_directive(
 ) -> Option<RepeatProcessOutcome> {
     use crate::types::ability::RepeatContinuation;
 
-    // Strip a leading game-state condition, if any. The card-type strippers
-    // ("if the exiled card is a land card") run alongside the general inner-
-    // condition path ("then if an opponent controls more lands than you").
+    // Strip a leading game-state condition, if any. In the "repeat this process"
+    // context, "if the exiled/revealed card is a <type> card" refers to the card
+    // just revealed by the process (`RevealedHasCardType`, CR 608.2c), so the
+    // card-type strippers run FIRST — otherwise the cost-paid-object look-back
+    // ("the exiled card is a land card") would incorrectly claim it. Non-card-type
+    // predicates ("then if an opponent controls more lands than you") fall through
+    // to the general inner-condition path.
     let (condition, body) = {
-        let (general, rest) = strip_leading_general_conditional(text, ctx);
-        if general.is_some() {
-            (general, rest)
+        let (card_type, rest) = strip_card_type_conditional(text);
+        if card_type.is_some() {
+            (card_type, rest)
         } else {
-            let (card_type, rest2) = strip_card_type_conditional(text);
-            (card_type, rest2)
+            strip_leading_general_conditional(text, ctx)
         }
     };
 

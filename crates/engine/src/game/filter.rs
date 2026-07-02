@@ -1349,6 +1349,9 @@ pub fn matches_target_filter_on_lki_snapshot(
         attached_to: None,
         entered_incarnation: None,
         turn_zone_change_index: 0,
+        // CR 701.60b: Carry suspected status from the LKI snapshot so
+        // `FilterProp::Suspected` reads the cost-paid look-back value.
+        is_suspected: lki.is_suspected,
     };
     matches_target_filter_on_zone_change_record(state, &record, filter, ctx)
 }
@@ -4350,6 +4353,11 @@ fn zone_change_record_matches_property(
         // These could be snapshotted (e.g. suspected status, damage-dealt-this-turn)
         // or require state joins that aren't plumbed to this evaluator. Expand as
         // trigger-filter coverage grows.
+        // CR 701.60b + CR 608.2c: Suspected status as of the zone change. Now
+        // snapshotted onto the record (Agency Coroner: "the sacrificed creature
+        // was suspected" reads the cost-paid LKI, taken before the sacrifice
+        // zone-change reset the flag).
+        FilterProp::Suspected => record.is_suspected,
         FilterProp::IsChosenColor
         | FilterProp::IsChosenCardType
         | FilterProp::IsChosenLandOrNonlandKind
@@ -4357,7 +4365,6 @@ fn zone_change_record_matches_property(
         // ZoneChangeRecord carries no modal field — conservative gap (CR 700.2
         // evaluated on the live stack object, not the snapshot).
         | FilterProp::Modal
-        | FilterProp::Suspected
         | FilterProp::Renowned
         // CR 700.9: Modified is a live-battlefield predicate (counters +
         // attachments) — a zone-change snapshot cannot represent it.
@@ -5376,6 +5383,7 @@ mod tests {
                 chosen_attributes: vec![],
                 counters: Default::default(),
                 tapped: false,
+                is_suspected: false,
             },
         );
 
@@ -8910,6 +8918,7 @@ mod tests {
             chosen_attributes: Vec::new(),
             counters: Default::default(),
             tapped: false,
+            is_suspected: false,
         };
         let filter =
             TargetFilter::Typed(TypedFilter::creature().properties(vec![FilterProp::Cmc {
@@ -8953,6 +8962,7 @@ mod tests {
             chosen_attributes: Vec::new(),
             counters: Default::default(),
             tapped: false,
+            is_suspected: false,
         };
         let filter =
             TargetFilter::Typed(
@@ -9098,6 +9108,7 @@ mod tests {
             chosen_attributes: vec![],
             counters: Default::default(),
             tapped,
+            is_suspected: false,
         };
 
         // Left the battlefield TAPPED.
@@ -9860,6 +9871,7 @@ mod tests {
             attached_to: None,
             entered_incarnation: None,
             turn_zone_change_index: 0,
+            is_suspected: false,
         };
         let goblin_filter = make_subtype_filter("Goblin");
         let plains_filter = make_subtype_filter("Plains");
@@ -9951,6 +9963,7 @@ mod tests {
             chosen_attributes: Vec::new(),
             counters: HashMap::new(),
             tapped: false,
+            is_suspected: false,
         };
         let land_lki = LKISnapshot {
             name: "Test Land".to_string(),
@@ -9969,6 +9982,7 @@ mod tests {
             chosen_attributes: Vec::new(),
             counters: HashMap::new(),
             tapped: false,
+            is_suspected: false,
         };
 
         let filter =
@@ -10112,6 +10126,7 @@ mod tests {
                 counters: Default::default(),
                 chosen_attributes: vec![],
                 tapped: false,
+                is_suspected: false,
             },
         );
 
@@ -10180,6 +10195,7 @@ mod tests {
                 counters: Default::default(),
                 chosen_attributes: vec![],
                 tapped: false,
+                is_suspected: false,
             },
         );
 

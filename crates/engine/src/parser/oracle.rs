@@ -55,8 +55,9 @@ use super::oracle_cost::{parse_oracle_cost, parse_single_cost, try_parse_cost_re
 use super::oracle_dispatch::dispatch_line_nom;
 use super::oracle_effect::sequence::try_parse_same_is_true_continuation;
 use super::oracle_effect::{
-    lower_effect_chain_ir, parse_effect_chain, parse_effect_chain_with_context,
-    rewrite_condition_keyword, try_parse_temporal_delayed_trigger_ability,
+    lower_effect_chain_ir, parse_additional_cost_instead_condition_fragment, parse_effect_chain,
+    parse_effect_chain_with_context, rewrite_condition_keyword,
+    try_parse_temporal_delayed_trigger_ability,
 };
 use super::oracle_ir::context::ParseContext;
 use super::oracle_ir::diagnostic::OracleDiagnostic;
@@ -1506,6 +1507,14 @@ fn strip_instead_clause(
     // Pattern: " instead if [condition]" — mid-line "instead" followed by condition
     if let Some((before, after)) = tp.rsplit_around(" instead if ") {
         let condition_text = after.lower.trim().trim_end_matches('.');
+        // CR 608.2c + CR 601.2b: An inverted additional-cost / gift "instead if"
+        // is folded to the dedicated `AdditionalCostPaidInstead` by the chain's
+        // `strip_additional_cost_conditional`. Defer the whole line so the chain
+        // builds the conditional else_ability (Cinder Strike) rather than the
+        // line-level path dropping the unrecognized condition here.
+        if parse_additional_cost_instead_condition_fragment(condition_text).is_some() {
+            return (text.to_string(), None, false);
+        }
         // CR 614.1a + CR 608.2c: an inverted "instead if <cond>" followed by a further
         // printed instruction (Throw from the Saddle: "… instead if it's a Mount. Then it
         // deals damage …") is an INTRA-CHAIN override, not a whole-line replacement. The

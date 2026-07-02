@@ -259,11 +259,41 @@ pub(crate) fn strip_leading_general_conditional(
         if let Some(condition) = try_nom_condition_as_ability_condition(cond_text, ctx)
             .or_else(|| parse_condition_text(cond_text))
             .or_else(|| parse_control_count_as_ability_condition(cond_text))
+            .or_else(|| parse_and_conjunction_condition(cond_text, ctx))
         {
             return (Some(condition), body);
         }
     }
     (None, text.to_string())
+}
+
+/// CR 608.2c: Parse a top-level `"<cond> and <cond> [and …]"` conjunction into
+/// `AbilityCondition::And`. Last-resort fallback — invoked only after the whole
+/// condition text failed to parse as a single condition, so it does not
+/// mis-split a phrase whose internal `" and "` belongs to one conjunct. Each
+/// conjunct is parsed by the same single-condition dispatchers (no self-
+/// recursion); if any conjunct fails, the whole conjunction fails.
+/// Motivating card: Coiling Rebirth ("if the gift was promised and that
+/// creature isn't legendary, …").
+fn parse_and_conjunction_condition(
+    cond_text: &str,
+    ctx: &mut ParseContext,
+) -> Option<AbilityCondition> {
+    // structural top-level conjunction decomposition (each conjunct is parsed by
+    // nom-backed dispatchers below), not parsing dispatch.
+    let parts: Vec<&str> = cond_text.split(" and ").collect(); // allow-noncombinator: structural conjunction split, conjuncts parsed by nom dispatchers
+    if parts.len() < 2 {
+        return None;
+    }
+    let mut conditions = Vec::with_capacity(parts.len());
+    for part in parts {
+        let part = part.trim();
+        let condition = try_nom_condition_as_ability_condition(part, ctx)
+            .or_else(|| parse_condition_text(part))
+            .or_else(|| parse_control_count_as_ability_condition(part))?;
+        conditions.push(condition);
+    }
+    Some(AbilityCondition::And { conditions })
 }
 
 /// CR 608.2c + CR 608.2d: Strip a leading `"If <condition>, "` head ONLY when the
@@ -406,6 +436,22 @@ fn strip_alternative_mana_cost_conditional<'a>(text: &'a str, lower: &str) -> Op
 
 pub(super) fn strip_additional_cost_conditional(text: &str) -> (Option<AbilityCondition>, String) {
     let lower = text.to_lowercase();
+
+    // CR 608.2c + CR 601.2b: Inverted additional-cost "instead" — "[body] instead
+    // if <additional cost was paid>." (Cinder Strike: "It deals 4 damage to that
+    // creature instead if this spell's additional cost was paid."). The forward
+    // word order ("if <cost was paid>, [body] instead") is handled by the
+    // leading-"if" arms below; this catches the trailing-condition order, which
+    // the line-level `strip_instead_clause` defers into the chain as intra-chain.
+    {
+        let tp = TextPair::new(text, &lower);
+        if let Some((before, after)) = tp.rsplit_around(" instead if ") {
+            let cond_text = after.original.trim().trim_end_matches('.').trim();
+            if let Some(condition) = parse_additional_cost_instead_condition_fragment(cond_text) {
+                return (Some(condition), before.original.trim().to_string());
+            }
+        }
+    }
 
     if let Some((_, rest)) = nom_on_lower(text, &lower, |i| {
         value((), tag("if the gift wasn't promised, ")).parse(i)
@@ -2509,7 +2555,7 @@ pub(super) fn strip_suffix_conditional(
         return (Some(cond), effect_text);
     }
 
-    if let Some(cond) = parse_was_kicked_condition_text(condition_core) {
+    if let Some(cond) = parse_additional_cost_paid_gate_condition_text(condition_core) {
         return (Some(cond), effect_text);
     }
 
@@ -2586,19 +2632,33 @@ fn parse_no_mana_spent_to_cast_target_condition(input: &str) -> OracleResult<'_,
 
 /// CR 702.33d + CR 608.2c: "if it/that spell was kicked" suffix on a targeted
 /// spell effect (Ertai's Trickery).
-fn parse_was_kicked_condition_text(text: &str) -> Option<AbilityCondition> {
+fn parse_additional_cost_paid_gate_condition_text(text: &str) -> Option<AbilityCondition> {
     let lower = text.to_ascii_lowercase();
     nom_parse_lower(&lower, |input| {
-        all_consuming(parse_was_kicked_condition).parse(input)
+        all_consuming(parse_additional_cost_paid_gate_condition).parse(input)
     })
 }
 
-fn parse_was_kicked_condition(input: &str) -> OracleResult<'_, AbilityCondition> {
-    let (rest, _) = (
-        alt((tag("it"), tag("that spell"), tag("this spell"))),
-        tag(" was kicked"),
-    )
-        .parse(input)?;
+/// CR 601.2b + CR 702.33b (kicker) + CR 702.174b (gift): A plain conditional
+/// gate ("[effect] if <additional cost was paid>") — as opposed to the
+/// replacement "instead" fold — that all resolve to the shared
+/// `additional_cost_paid_any()` runtime check. Covers kicked, the gift-promised
+/// phrasing (Longstalk Brawl / Coiling Rebirth), and the generic
+/// "additional cost was paid" wording (used inside `And` gates).
+fn parse_additional_cost_paid_gate_condition(input: &str) -> OracleResult<'_, AbilityCondition> {
+    let (rest, _) = alt((
+        value(
+            (),
+            (
+                alt((tag("it"), tag("that spell"), tag("this spell"))),
+                tag(" was kicked"),
+            ),
+        ),
+        value((), tag("the gift was promised")),
+        value((), tag("this spell's additional cost was paid")),
+        value((), tag("its additional cost was paid")),
+    ))
+    .parse(input)?;
     Ok((rest, AbilityCondition::additional_cost_paid_any()))
 }
 
@@ -2715,7 +2775,7 @@ pub(super) fn parse_condition_text(text: &str) -> Option<AbilityCondition> {
         return Some(condition);
     }
 
-    if let Some(condition) = parse_was_kicked_condition_text(text) {
+    if let Some(condition) = parse_additional_cost_paid_gate_condition_text(text) {
         return Some(condition);
     }
 
@@ -3291,7 +3351,9 @@ pub(super) fn try_parse_dig_instead_alternative(
     Some(result)
 }
 
-fn parse_additional_cost_instead_condition_fragment(text: &str) -> Option<AbilityCondition> {
+pub(crate) fn parse_additional_cost_instead_condition_fragment(
+    text: &str,
+) -> Option<AbilityCondition> {
     let lower = text.trim().to_lowercase();
     let parsed = all_consuming(alt((
         tag::<_, _, OracleError<'_>>("this spell was kicked"),
@@ -4998,32 +5060,57 @@ fn parse_cost_paid_object_definite_noun_form(lower: &str) -> Option<AbilityCondi
     .parse(rest)
     .ok()?;
     let (rest, noun_filter) = parse_cost_paid_object_noun_prefix(rest)?;
-    let (rest, _) = alt((tag::<_, _, OracleError<'_>>("was "), tag("is ")))
-        .parse(rest)
-        .ok()?;
+    // CR 608.2c: The `was`/`is` copula may be negated ("the discarded card
+    // wasn't a land card" — Grab the Prize). Track the polarity so the resulting
+    // `CostPaidObjectMatchesFilter` is wrapped in `Not` for the negated voice.
+    let (rest, negated) = alt((
+        value(
+            true,
+            alt((
+                tag::<_, _, OracleError<'_>>("wasn't "),
+                tag("isn't "),
+                tag("weren't "),
+                tag("was not "),
+                tag("is not "),
+            )),
+        ),
+        value(false, alt((tag("was "), tag("is ")))),
+    ))
+    .parse(rest)
+    .ok()?;
     let predicate = parse_cost_paid_object_predicate(rest)?;
 
     let mut typed = TypedFilter::new(noun_filter);
     match predicate {
-        CostPaidPredicate::Color(prop) => {
+        CostPaidPredicate::Property(prop) => {
             typed = typed.properties(vec![prop]);
         }
         CostPaidPredicate::TypeMatch(tf) => {
             typed = typed.with_type(tf);
         }
     }
-    Some(AbilityCondition::CostPaidObjectMatchesFilter {
+    let condition = AbilityCondition::CostPaidObjectMatchesFilter {
         filter: TargetFilter::Typed(typed),
+    };
+    Some(if negated {
+        AbilityCondition::Not {
+            condition: Box::new(condition),
+        }
+    } else {
+        condition
     })
 }
 
-/// Predicate result for a definite-noun form's property clause. Color-set
-/// predicates land on `TypedFilter::properties`; type-or-subtype predicates
-/// land on `TypedFilter::type_filters` so the conjunction reflects both the
-/// noun ("creature") and the typed match ("a Giant"). See
+/// Predicate result for a definite-noun form's property clause. Property
+/// predicates (color-set, status such as suspected) land on
+/// `TypedFilter::properties`; type-or-subtype predicates land on
+/// `TypedFilter::type_filters` so the conjunction reflects both the noun
+/// ("creature") and the typed match ("a Giant"). See
 /// [`parse_cost_paid_object_definite_noun_form`].
 enum CostPaidPredicate {
-    Color(FilterProp),
+    /// Any orthogonal `FilterProp` applied via `TypedFilter::properties`
+    /// (color-set count, named color, or a status like `Suspected`).
+    Property(FilterProp),
     TypeMatch(TypeFilter),
 }
 
@@ -5057,9 +5144,27 @@ fn parse_cost_paid_object_noun_prefix(input: &str) -> Option<(&str, TypeFilter)>
 /// a type/subtype match introduced by the article `a`/`an` (CR 205).
 fn parse_cost_paid_object_predicate(rest: &str) -> Option<CostPaidPredicate> {
     if let Some(prop) = parse_color_property_predicate(rest) {
-        return Some(CostPaidPredicate::Color(prop));
+        return Some(CostPaidPredicate::Property(prop));
+    }
+    if let Some(prop) = parse_status_property_predicate(rest) {
+        return Some(CostPaidPredicate::Property(prop));
     }
     parse_article_type_predicate(rest).map(CostPaidPredicate::TypeMatch)
+}
+
+/// CR 701.60b: Parse a status-property predicate as a `FilterProp`. Currently
+/// covers "suspected" (Agency Coroner: "the sacrificed creature was
+/// suspected"). Sits beside [`parse_color_property_predicate`] on the same
+/// orthogonal `FilterProp` axis; add further status words here as they appear.
+fn parse_status_property_predicate(input: &str) -> Option<FilterProp> {
+    let trimmed = input.trim().trim_end_matches('.').trim();
+    let (rest, prop) = value(
+        FilterProp::Suspected,
+        tag::<_, _, OracleError<'_>>("suspected"),
+    )
+    .parse(trimmed)
+    .ok()?;
+    rest.trim().is_empty().then_some(prop)
 }
 
 /// Parse an `a [type]` / `an [type]` predicate where `[type]` is any noun the
@@ -5074,7 +5179,12 @@ fn parse_article_type_predicate(rest: &str) -> Option<TypeFilter> {
     ))
     .parse(trimmed)
     .ok()?;
-    parse_cost_paid_object_type_filter(after_article)
+    // CR 205 + CR 108.1: A card-noun predicate ("a land card", "a creature
+    // card") carries a trailing " card" grammatical class word after the type;
+    // strip it so the type word alone drives `parse_cost_paid_object_type_filter`
+    // (which is `all_consuming`). "card" on its own stays `TypeFilter::Card`.
+    let type_text = after_article.strip_suffix(" card").unwrap_or(after_article); // allow-noncombinator: structural class-word strip on a pre-isolated type phrase
+    parse_cost_paid_object_type_filter(type_text)
 }
 
 /// CR 105.2: Parse a color-set property predicate as a `FilterProp`. Covers
@@ -5466,6 +5576,9 @@ fn parse_zone_change_object_type_text(
 }
 
 fn parse_target_supertype_condition_text(lower: &str) -> Option<AbilityCondition> {
+    // CR 205.4: Subject anaphor + copula, tracking negation. "it" carries the
+    // `'s` contraction; the explicit "that creature/permanent/card" anaphors
+    // (Coiling Rebirth: "that creature isn't legendary") use the full copula.
     let (rest, negated) = alt((
         value(
             true,
@@ -5476,6 +5589,28 @@ fn parse_target_supertype_condition_text(lower: &str) -> Option<AbilityCondition
             )),
         ),
         value(false, alt((tag("it is "), tag("it's ")))),
+        value(
+            true,
+            (
+                alt((
+                    tag("that creature"),
+                    tag("that permanent"),
+                    tag("that card"),
+                )),
+                alt((tag(" is not "), tag(" isn't "))),
+            ),
+        ),
+        value(
+            false,
+            (
+                alt((
+                    tag("that creature"),
+                    tag("that permanent"),
+                    tag("that card"),
+                )),
+                tag(" is "),
+            ),
+        ),
     ))
     .parse(lower)
     .ok()?;

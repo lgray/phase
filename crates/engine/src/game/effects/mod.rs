@@ -1388,6 +1388,8 @@ fn lki_snapshot_from_zone_change_record(record: &ZoneChangeRecord) -> LKISnapsho
         chosen_attributes: Vec::new(),
         counters: Default::default(),
         tapped: false,
+        // CR 701.60b: Carry suspected status from the zone-change snapshot.
+        is_suspected: record.is_suspected,
     }
 }
 
@@ -8871,6 +8873,7 @@ mod tests {
                 chosen_attributes: vec![ChosenAttribute::Player(PlayerId(1))],
                 counters: HashMap::new(),
                 tapped: false,
+                is_suspected: false,
             },
         );
 
@@ -11041,6 +11044,7 @@ mod tests {
                 chosen_attributes: Vec::new(),
                 counters: Default::default(),
                 tapped: false,
+                is_suspected: false,
             },
         );
         let events = vec![
@@ -17452,6 +17456,157 @@ mod tests {
         assert!(
             !evaluate_condition(&source_condition, &state, &counter_kicked),
             "Source subject must ignore the target's kicker and read the (empty) own context"
+        );
+    }
+
+    /// Walk a parsed ability tree and return the condition attached to the first
+    /// sub/else ability whose effect matches `want`. Used by the S07 gift-card
+    /// resolver tests to drive the REAL parsed condition (not a hand-built one)
+    /// through `evaluate_condition`.
+    fn s07_find_gated_condition(
+        defs: &[AbilityDefinition],
+        want: fn(&Effect) -> bool,
+    ) -> Option<AbilityCondition> {
+        fn walk(d: &AbilityDefinition, want: fn(&Effect) -> bool) -> Option<AbilityCondition> {
+            if want(&d.effect) {
+                if let Some(c) = &d.condition {
+                    return Some(c.clone());
+                }
+            }
+            if let Some(s) = &d.sub_ability {
+                if let Some(c) = walk(s, want) {
+                    return Some(c);
+                }
+            }
+            if let Some(s) = &d.else_ability {
+                if let Some(c) = walk(s, want) {
+                    return Some(c);
+                }
+            }
+            None
+        }
+        defs.iter().find_map(|d| walk(d, want))
+    }
+
+    /// CR 702.174b + CR 608.2c: Longstalk Brawl — the +1/+1 counter is gated on
+    /// "if the gift was promised", parsed onto the `PutCounter` sub_ability as
+    /// `additional_cost_paid_any()`. Drives the REAL parsed condition through
+    /// `evaluate_condition`: it fires only when the spell's additional cost
+    /// (gift promise) was paid. Reverting the gate recognizer drops the
+    /// condition (`None`) and `s07_find_gated_condition` returns `None`, failing
+    /// the `.expect`.
+    #[test]
+    fn s07_longstalk_brawl_counter_gated_on_gift_promised() {
+        let parsed = crate::parser::oracle::parse_oracle_text(
+            "Choose target creature you control and target creature you don't control. \
+             Put a +1/+1 counter on the creature you control if the gift was promised. \
+             Then those creatures fight each other.",
+            "Longstalk Brawl",
+            &["Gift".to_string()],
+            &["Sorcery".to_string()],
+            &[],
+        );
+        let cond = s07_find_gated_condition(&parsed.abilities, |e| {
+            matches!(e, Effect::PutCounter { .. })
+        })
+        .expect("Longstalk's counter must carry the gift-promised condition");
+
+        let state = GameState::new_two_player(1);
+        let mut ability = ResolvedAbility::new(
+            Effect::Counter {
+                target: TargetFilter::Any,
+                source_rider: None,
+                countered_spell_zone: None,
+            },
+            vec![],
+            ObjectId(99),
+            PlayerId(0),
+        );
+        ability.context.additional_cost_paid = true;
+        assert!(
+            evaluate_condition(&cond, &state, &ability),
+            "gift promised → counter clause fires"
+        );
+        ability.context.additional_cost_paid = false;
+        assert!(
+            !evaluate_condition(&cond, &state, &ability),
+            "gift not promised → counter clause does not fire"
+        );
+    }
+
+    /// CR 702.174b + CR 205.4 + CR 608.2c: Coiling Rebirth — the copy token is
+    /// gated on "if the gift was promised and that creature isn't legendary",
+    /// parsed onto the `CopyTokenOf` sub_ability as
+    /// `And([AdditionalCostPaid, Not(TargetMatchesFilter{Legendary})])`. Drives
+    /// the REAL parsed conjunction through `evaluate_condition` against a
+    /// legendary vs. nonlegendary FIRST target. Reverting the conjunction
+    /// fallback or the "that creature isn't legendary" recognizer drops the
+    /// condition, failing the `.expect` or the polarity assertions.
+    #[test]
+    fn s07_coiling_rebirth_token_gated_on_gift_and_nonlegendary() {
+        let parsed = crate::parser::oracle::parse_oracle_text(
+            "Return target creature card from your graveyard to the battlefield. \
+             Then if the gift was promised and that creature isn't legendary, create a \
+             token that's a copy of that creature, except it's 1/1.",
+            "Coiling Rebirth",
+            &["Gift".to_string()],
+            &["Sorcery".to_string()],
+            &[],
+        );
+        let cond = s07_find_gated_condition(&parsed.abilities, |e| {
+            matches!(e, Effect::CopyTokenOf { .. })
+        })
+        .expect("Coiling's token must carry the gift+nonlegendary condition");
+
+        let mut state = GameState::new_two_player(1);
+        // Nonlegendary target (id 7) and legendary target (id 8).
+        let nonleg = crate::game::game_object::GameObject::new(
+            ObjectId(7),
+            CardId(700),
+            PlayerId(0),
+            "Ordinary Beast".to_string(),
+            Zone::Battlefield,
+        );
+        state.objects.insert(ObjectId(7), nonleg);
+        let mut legendary = crate::game::game_object::GameObject::new(
+            ObjectId(8),
+            CardId(701),
+            PlayerId(0),
+            "Legendary Hero".to_string(),
+            Zone::Battlefield,
+        );
+        legendary
+            .card_types
+            .supertypes
+            .push(crate::types::card_type::Supertype::Legendary);
+        state.objects.insert(ObjectId(8), legendary);
+
+        let build = |target: ObjectId, paid: bool| {
+            let mut ability = ResolvedAbility::new(
+                Effect::Counter {
+                    target: TargetFilter::Any,
+                    source_rider: None,
+                    countered_spell_zone: None,
+                },
+                vec![TargetRef::Object(target)],
+                ObjectId(99),
+                PlayerId(0),
+            );
+            ability.context.additional_cost_paid = paid;
+            ability
+        };
+
+        assert!(
+            evaluate_condition(&cond, &state, &build(ObjectId(7), true)),
+            "gift promised + nonlegendary returned creature → token created"
+        );
+        assert!(
+            !evaluate_condition(&cond, &state, &build(ObjectId(8), true)),
+            "gift promised + LEGENDARY returned creature → no token"
+        );
+        assert!(
+            !evaluate_condition(&cond, &state, &build(ObjectId(7), false)),
+            "gift NOT promised → no token even for a nonlegendary creature"
         );
     }
 
