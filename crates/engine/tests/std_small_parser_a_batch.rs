@@ -3,8 +3,8 @@
 //!
 //! - §16 mana-of-any-type spend permission (Vizier of the Menagerie SHIPPED —
 //!   spell-class-filtered `SpendManaAsAnyColor { spell_filter }`; Outrageous
-//!   Robbery HONEST-DEFER — impulse-exile play infra beyond the existing
-//!   surface).
+//!   Robbery SHIPPED — subject-voice exile-top-X face down + impulse-exile play
+//!   grant with the "any type" mana rider folded onto it).
 //! - §19 Role token attach (Royal Treatment SHIPPED, Become Brutes
 //!   HONEST-DEFER — per-target iteration over the multi-target set).
 //! - §22 "Otherwise" sequence-branch (Wick, the Whorled Mind SHIPPED, Bre of
@@ -360,17 +360,74 @@ fn vizier_filtered_any_type_spend_static_parses() {
     );
 }
 
-// §16 — Outrageous Robbery. The "spend mana ... of any type to cast it" rider
-// rides on top of impulse-exile play infrastructure ("look at and play those
-// cards"), which is not built. Both residuals stay honest.
+// §16 — Outrageous Robbery. Now supported: the subject-voice "target opponent
+// exiles the top X cards of their library face down" lowers to
+// `ExileTop { player: Opponent, count: Variable(X), face_down: true }`, the
+// "look at and play those cards for as long as they remain exiled" clause to a
+// `GrantCastingPermission { PlayFromExile }` over the tracked set, and the "if
+// you cast a spell this way, you may spend mana as though it were mana of any
+// type" rider folds onto that grant as `mana_spend_permission: AnyTypeOrColor`.
+// Revert any of the three parser gaps and an assertion below flips:
+//   * X-count fix reverted    → count is Fixed(1), not Variable(X)
+//   * face-down fix reverted  → face_down is false
+//   * "any type" scan reverted→ a residual Unimplemented reappears + no mana perm
 #[test]
-fn outrageous_robbery_is_honestly_deferred() {
+fn outrageous_robbery_look_and_play_any_type_parses() {
+    use engine::types::ability::{
+        CastingPermission, ManaSpendPermission, QuantityExpr, QuantityRef,
+    };
     const ORACLE: &str = "Target opponent exiles the top X cards of their library face down. You may look at and play those cards for as long as they remain exiled. If you cast a spell this way, you may spend mana as though it were mana of any type to cast it.";
-    let dbg = parsed_debug(ORACLE, "Outrageous Robbery", &["Sorcery".to_string()], &[]);
-    assert!(
-        dbg.contains("Unimplemented") && dbg.contains("look at and play those cards"),
-        "the impulse-exile play clause must remain an honest Unimplemented defer; got:\n{dbg}"
+    let parsed = parse_oracle_text(
+        ORACLE,
+        "Outrageous Robbery",
+        &[],
+        &["Instant".to_string()],
+        &[],
     );
+    let dbg = format!("{parsed:#?}");
+    assert!(
+        !dbg.contains("Unimplemented"),
+        "Outrageous Robbery must have zero Unimplemented nodes, got:\n{dbg}"
+    );
+
+    let head = &parsed.abilities[0];
+    match &*head.effect {
+        Effect::ExileTop {
+            count, face_down, ..
+        } => {
+            assert!(
+                matches!(
+                    count,
+                    QuantityExpr::Ref {
+                        qty: QuantityRef::Variable { name }
+                    } if name == "X"
+                ),
+                "exile count must be the cost's X, got {count:?}"
+            );
+            assert!(*face_down, "exiled cards must be face down (CR 406.3)");
+        }
+        other => panic!("expected ExileTop head, got {other:?}"),
+    }
+
+    let grant = head
+        .sub_ability
+        .as_ref()
+        .expect("ExileTop must chain the play grant");
+    match &*grant.effect {
+        Effect::GrantCastingPermission {
+            permission:
+                CastingPermission::PlayFromExile {
+                    mana_spend_permission,
+                    ..
+                },
+            ..
+        } => assert_eq!(
+            *mana_spend_permission,
+            Some(ManaSpendPermission::AnyTypeOrColor),
+            "the 'spend mana as though any type' rider must fold onto the play grant"
+        ),
+        other => panic!("expected GrantCastingPermission sub-ability, got {other:?}"),
+    }
 }
 
 // §19 — Become Brutes. "For each of those creatures, create a Monster Role

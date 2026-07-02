@@ -11869,13 +11869,15 @@ fn lower_imperative_clause(text: &str, ctx: &mut ParseContext) -> ParsedEffectCl
         return parsed_clause(effect);
     }
 
-    // CR 609.4b: "spend mana as though it were mana of any color to cast ..." /
-    // "mana of any type can be spent to cast ..." — grants any-color mana permission
-    // for a cast-from-exile card. Produce a GenericEffect with SpendManaAsAnyColor static.
+    // CR 609.4b: "spend mana as though it were mana of any [color|type] to cast ..." /
+    // "mana of any type can be spent to cast ..." — grants any-type/any-color mana
+    // permission for a cast-from-exile card (Outrageous Robbery's "any type" rider).
+    // Produce a GenericEffect with SpendManaAsAnyColor static.
     // Variants: "spend colorless mana as though..." / "mana of any color to cast..."
     {
         let lower = text.to_lowercase();
         if nom_primitives::scan_contains(&lower, "as though it were mana of any color")
+            || nom_primitives::scan_contains(&lower, "as though it were mana of any type")
             || nom_primitives::scan_contains(&lower, "mana of any type can be spent to cast")
         {
             return parsed_clause(Effect::GenericEffect {
@@ -15259,7 +15261,7 @@ fn lower_subject_predicate_ast(
                     count,
                 });
             }
-            // CR 701.10a: "<player> exiles the top [N] card(s) of their library"
+            // CR 701.13a: "<player> exiles the top [N] card(s) of their library"
             if alt((tag::<_, _, OracleError<'_>>("exile "), tag("exiles ")))
                 .parse(pred_lower.as_str())
                 .is_ok()
@@ -15267,10 +15269,15 @@ fn lower_subject_predicate_ast(
                 && scan_contains_phrase(&pred_lower, "library")
             {
                 let count = parse_subject_exile_top_count(&pred_lower);
+                // CR 406.3: a trailing "face down" marks a hidden-information
+                // exile (Outrageous Robbery: "exiles the top X cards of their
+                // library face down"). The resolver propagates this to the
+                // moved object's `face_down` flag so `visibility.rs` redacts it.
+                let face_down = scan_contains_phrase(&pred_lower, "face down");
                 return parsed_clause(Effect::ExileTop {
                     player: subject.affected,
                     count,
-                    face_down: false,
+                    face_down,
                 });
             }
             // CR 701.40a + CR 608.2c: "<player> manifests the top [N] card(s) of
@@ -16156,12 +16163,23 @@ fn parse_subject_exile_top_count(pred_lower: &str) -> QuantityExpr {
         // `TargetZoneCardCount` via the shared quantity combinator.
         if let Ok((_, expr)) = super::oracle_nom::quantity::parse_half_rounded(after_top) {
             expr
+        } else if let Ok((_, n)) = nom_primitives::parse_number.parse(after_top) {
+            QuantityExpr::Fixed { value: n as i32 }
+        } else if let Ok((rest, _)) = tag::<_, _, OracleError<'_>>("x").parse(after_top) {
+            // CR 107.3: X placeholder — "exiles the top X cards" (Outrageous
+            // Robbery) binds to the spell's chosen X, resolved at effect time by
+            // `resolve_quantity_with_targets`. Word-boundary guard after the nom
+            // `tag` accepted so a longer identifier does not slice to a bare X.
+            match rest.chars().next() {
+                None | Some(' ') => QuantityExpr::Ref {
+                    qty: crate::types::ability::QuantityRef::Variable {
+                        name: "X".to_string(),
+                    },
+                },
+                _ => QuantityExpr::Fixed { value: 1 },
+            }
         } else {
-            let n = nom_primitives::parse_number
-                .parse(after_top)
-                .map(|(_, n)| n as i32)
-                .unwrap_or(1);
-            QuantityExpr::Fixed { value: n }
+            QuantityExpr::Fixed { value: 1 }
         }
     } else {
         QuantityExpr::Fixed { value: 1 }

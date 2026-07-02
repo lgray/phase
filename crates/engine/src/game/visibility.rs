@@ -283,7 +283,21 @@ pub fn filter_state_for_viewer(state: &GameState, viewer: PlayerId) -> GameState
                             .get(&link.source_id)
                             .is_some_and(|src| can_view_private_for_player(src.controller))
                 });
-                !(foretell_ok || hideaway_lookable_by_viewer)
+                // CR 406.3a + CR 406.3b: a player who holds an active
+                // play-from-exile grant for this face-down card may look at it —
+                // the grant that lets them cast it is the same authority that
+                // lets them look (single source:
+                // `casting::player_may_look_at_facedown_exile`). Scoped by the
+                // grant's `granted_to`, so a face-down card exiled by a different
+                // source (no grant to this viewer) stays redacted, and the
+                // targeted opponent (no grant) cannot see the cards either.
+                let play_from_exile_lookable = state.players.iter().any(|pl| {
+                    can_view_private_for_player(pl.id)
+                        && crate::game::casting::player_may_look_at_facedown_exile(
+                            state, obj, pl.id,
+                        )
+                });
+                !(foretell_ok || hideaway_lookable_by_viewer || play_from_exile_lookable)
             })
         })
         .collect();

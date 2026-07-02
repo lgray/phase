@@ -2058,6 +2058,26 @@ pub(crate) fn play_from_exile_permission_source(
     })
 }
 
+/// CR 406.3a + CR 406.3b: The single authority for "may `player` look at this
+/// face-down card in exile?". A card exiled face down has no characteristics
+/// and can't be examined by any player (CR 406.3a), *except* that the spell or
+/// ability that exiled it may permit it — and CR 406.3b lets a player cast such
+/// a card only if they're allowed to look at it. An active
+/// [`CastingPermission::PlayFromExile`] grant for `player` is exactly that
+/// permission (Outrageous Robbery / Heist / the impulse-exile class): the grant
+/// that lets them play the card is the same authority that lets them look at it,
+/// so look- and play-permission cannot diverge. Routing through
+/// [`play_from_exile_permission_source`] also inherits its `card_filter` /
+/// `single_use` / per-turn gating, so a look is granted only where a cast would
+/// be. Consumed by `visibility.rs` face-down-exile redaction.
+pub(crate) fn player_may_look_at_facedown_exile(
+    state: &GameState,
+    obj: &GameObject,
+    player: PlayerId,
+) -> bool {
+    play_from_exile_permission_source(state, obj, player, state.turn_number).is_some()
+}
+
 /// CR 601.2f: The printed mana-cost increase a spell incurs when it is cast via
 /// an active [`CastingPermission::PlayFromExile`] grant that carries
 /// `cast_cost_raise` ("Each spell cast this way costs {N} more to cast." —
