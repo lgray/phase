@@ -843,7 +843,11 @@ fn build_reflexive_coin_flip_trigger(is_win: bool, inner: AbilityDefinition) -> 
             condition: DelayedTriggerCondition::WhenNextEvent {
                 trigger: Box::new(trigger_def),
                 or_trigger: None,
-                lifetime: DelayedTriggerLifetime::ThisTurn,
+                // CR 603.12: reflexive — one shot on the creating flip's batch;
+                // discarded (not left pending for a later flip) if the result
+                // did not match. Routed through the general reflexive-discard
+                // rule in `check_delayed_triggers`.
+                lifetime: DelayedTriggerLifetime::Reflexive,
             },
             effect: Box::new(inner),
             uses_tracked_set: false,
@@ -1089,6 +1093,120 @@ fn try_parse_when_next_generic_event(tp: TextPair) -> Option<ParsedEffectClause>
         optional: false,
         unless_pay: None,
     })
+}
+
+/// CR 603.12: Parse a reflexive delayed trigger — "When [you] <event> this way,
+/// <effect>" (Prishe's Wanderings' "when you search your library this way …",
+/// Rhino's Rampage's "when excess damage is dealt to the creature an opponent
+/// controls this way …").
+///
+/// A reflexive delayed trigger is created *and* checked during the same
+/// resolution and gets exactly one shot on that creation batch (unlike a bare
+/// CR 603.7b `WhenNextEvent`, which would linger for a later same-turn matching
+/// event). It lowers to a `WhenNextEvent` carrying the `Reflexive` lifetime;
+/// `check_delayed_triggers` discards it if unmatched on its first pass.
+///
+/// The subject-first / player-action condition grammar is shared with
+/// `parse_trigger_condition` ("you search your library" → `SearchedLibrary`); the
+/// damage-first "excess damage is dealt to <subject>" form has no subject-first
+/// spelling and gets a dedicated combinator that scopes the subject to the
+/// reflexive's parent target(s).
+fn try_parse_reflexive_this_way_trigger(tp: TextPair) -> Option<ParsedEffectClause> {
+    // " this way, " is the CR 603.12 reflexive timing marker, distinct from the
+    // CR 603.7b " this turn, " stated-duration one-shot handled upstream.
+    let (before, after) = tp.rsplit_around(" this way, ")?;
+
+    // Must be a "when …" trigger clause.
+    if tag::<_, _, OracleError<'_>>("when ")
+        .parse(before.lower)
+        .is_err()
+    {
+        return None;
+    }
+
+    // CR 603.12: zone-change "this way" reflexives ("when you discard/sacrifice/
+    // put onto the battlefield … this way") are owned by the chunk-loop's
+    // `strip_if_you_do_conditional` → `ZoneChangedThisWay` sub-ability path
+    // (Talion's Messenger, Nyssa of Traken, Gilgamesh). Defer to it so a direct
+    // `parse_effect_clause` caller that hands over the whole sentence cannot be
+    // rerouted through the delayed-trigger machinery.
+    if strip_if_you_do_conditional(tp.original).0.is_some() {
+        return None;
+    }
+
+    let mut inner_ctx = ParseContext::default();
+    let trigger_def = if let Some(def) = parse_reflexive_excess_damage_trigger(before.lower) {
+        def
+    } else {
+        // Reuse the shared trigger-condition parser so the whole matchable class
+        // is covered (SearchedLibrary, and any other supported condition).
+        let (mode, mut def) =
+            crate::parser::oracle_trigger::parse_trigger_condition(before.original, &mut inner_ctx);
+        // An unrecognized condition lowers to `Unknown`; a reflexive keyed on it
+        // could never fire, so keep the clause honestly Unimplemented instead of
+        // producing a never-firing delayed trigger.
+        if matches!(mode, crate::types::triggers::TriggerMode::Unknown(_)) {
+            return None;
+        }
+        def.execute = None;
+        def
+    };
+
+    let inner = parse_effect_chain_with_context(after.original, AbilityKind::Spell, &mut inner_ctx);
+
+    Some(ParsedEffectClause {
+        effect: Effect::CreateDelayedTrigger {
+            condition: DelayedTriggerCondition::WhenNextEvent {
+                trigger: Box::new(trigger_def),
+                or_trigger: None,
+                // CR 603.12: reflexive — one shot on the creating resolution's batch.
+                lifetime: DelayedTriggerLifetime::Reflexive,
+            },
+            effect: Box::new(inner),
+            uses_tracked_set: false,
+        },
+        duration: None,
+        sub_ability: None,
+        distribute: None,
+        multi_target: None,
+        condition: None,
+        optional: false,
+        unless_pay: None,
+    })
+}
+
+/// CR 120.10 + CR 603.12: Recognize the reflexive "when [you next ]excess damage
+/// is dealt to <subject>" condition (Rhino's Rampage). It is damage-first, with
+/// no subject-first spelling `parse_trigger_condition` handles. The resulting
+/// `ExcessDamageAll` trigger is scoped to `And[ParentTarget, <subject>]` so a
+/// Fight's excess damage fires the reflexive only for the fought creature — the
+/// parent target — not for any other permanent dealt excess damage in the same
+/// batch (CR 120.10 checks per permanent).
+fn parse_reflexive_excess_damage_trigger(before_lower: &str) -> Option<TriggerDefinition> {
+    use crate::types::triggers::TriggerMode;
+
+    let (rest, _) = tag::<_, _, OracleError<'_>>("when ")
+        .parse(before_lower)
+        .ok()?;
+    let (rest, _) = opt(tag::<_, _, OracleError<'_>>("you next "))
+        .parse(rest)
+        .ok()?;
+    let (rest, _) = tag::<_, _, OracleError<'_>>("excess damage is dealt to ")
+        .parse(rest)
+        .ok()?;
+    // Strip an optional leading "the " that `parse_type_phrase` does not fold.
+    let (rest, _) = opt(tag::<_, _, OracleError<'_>>("the ")).parse(rest).ok()?;
+
+    let (subject, tail) = parse_type_phrase(rest);
+    if !tail.trim().is_empty() {
+        return None;
+    }
+
+    let mut def = TriggerDefinition::new(TriggerMode::ExcessDamageAll);
+    def.valid_card = Some(TargetFilter::And {
+        filters: vec![TargetFilter::ParentTarget, subject],
+    });
+    Some(def)
 }
 
 /// CR 603.7: nom body for "copy the next [type] spell you cast this turn when
@@ -6299,6 +6417,14 @@ fn parse_effect_clause_inner(text: &str, ctx: &mut ParseContext) -> ParsedEffect
 
     // CR 603.7c: "Whenever X this turn, Y" — multi-fire delayed trigger creation.
     if let Some(clause) = try_parse_whenever_this_turn(tp) {
+        return clause;
+    }
+
+    // CR 603.12: "When [you] <event> this way, ..." — reflexive delayed trigger
+    // (Prishe's Wanderings, Rhino's Rampage). Checked before the CR 603.7b
+    // "this turn" / inline delayed-trigger arms so the " this way, " reflexive
+    // marker is not mis-parsed as a plain lingering one-shot.
+    if let Some(clause) = try_parse_reflexive_this_way_trigger(tp) {
         return clause;
     }
 

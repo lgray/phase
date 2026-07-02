@@ -5243,13 +5243,13 @@ pub fn check_delayed_triggers(state: &mut GameState, events: &[GameEvent]) -> Ve
     let mut to_fire: Vec<(DelayedTrigger, Option<GameEvent>)> = Vec::new();
     let mut to_remove: Vec<(usize, GameEvent)> = Vec::new();
 
-    // CR 603.12: A reflexive coin-flip trigger ("when you win/lose the flip") is
-    // checked immediately after creation and triggers based on whether the flip
-    // occurred during the creating resolution. If the flip happened but its
-    // result did not match the trigger's filter (the "win" reflexive on a lost
-    // flip, or vice versa), the reflexive simply does not trigger — and, being
-    // tied to that one flip, must be discarded rather than left to fire on a
-    // later coin flip this turn (which a bare CR 603.7 `WhenNextEvent` would do).
+    // CR 603.12: A reflexive delayed trigger ("when you [do X] this way, …",
+    // including "when you win/lose the flip") is checked immediately after
+    // creation and triggers only on the event(s) that occurred earlier during the
+    // creating resolution. It gets exactly one shot on that creation batch: if it
+    // did not match on this — its first — `check_delayed_triggers` pass, it must
+    // be discarded rather than left to fire on a later same-turn matching event
+    // (which a bare CR 603.7b `WhenNextEvent` would do).
     let mut to_discard: Vec<usize> = Vec::new();
 
     for (idx, delayed) in state.delayed_triggers.iter().enumerate() {
@@ -5265,14 +5265,10 @@ pub fn check_delayed_triggers(state: &mut GameState, events: &[GameEvent]) -> Ve
             } else {
                 to_fire.push((delayed.clone(), Some(trigger_event)));
             }
-        } else if reflexive_coin_flip_resolved_without_match(
-            &delayed.condition,
-            events,
-            state,
-            delayed.source_id,
-        ) {
-            // CR 603.12: the creating flip occurred but the result was opposite —
-            // discard this reflexive trigger; it never gets a "next" flip.
+        } else if is_reflexive_lifetime(&delayed.condition) {
+            // CR 603.12: an unmatched reflexive trigger, checked on its creation
+            // batch, never gets a "next" event — discard it rather than let it
+            // linger to a later same-turn event.
             to_discard.push(idx);
         }
     }
@@ -5655,6 +5651,26 @@ fn reflexive_coin_flip_resolved_without_match(
         matches!(event, GameEvent::CoinFlipped { .. })
             && super::trigger_matchers::match_flipped_coin(event, &flipper_only, source_id, state)
     })
+}
+
+/// CR 603.12: True when `condition` is a reflexive delayed trigger — a
+/// `WhenNextEvent` carrying the `Reflexive` lifetime ("when you [do X] this
+/// way, …", including the coin-flip "when you win/lose the flip"). A reflexive
+/// is checked on its creation resolution's event batch and gets exactly one
+/// shot: this predicate is consulted only in the unmatched branch of
+/// `check_delayed_triggers`, so a `true` return means "unmatched on the creation
+/// batch — discard". Plain `ThisTurn` / `Persistent` `WhenNextEvent` triggers
+/// keep their CR 603.7b "next time the event occurs" semantics and return
+/// `false`.
+fn is_reflexive_lifetime(condition: &crate::types::ability::DelayedTriggerCondition) -> bool {
+    use crate::types::ability::{DelayedTriggerCondition, DelayedTriggerLifetime};
+    matches!(
+        condition,
+        DelayedTriggerCondition::WhenNextEvent {
+            lifetime: DelayedTriggerLifetime::Reflexive,
+            ..
+        }
+    )
 }
 
 fn delayed_trigger_event_with_index(

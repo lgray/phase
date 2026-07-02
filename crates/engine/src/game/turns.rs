@@ -1603,7 +1603,11 @@ pub fn execute_cleanup(state: &mut GameState, events: &mut Vec<GameEvent>) -> Op
             && !matches!(
                 dt.condition,
                 crate::types::ability::DelayedTriggerCondition::WhenNextEvent {
-                    lifetime: crate::types::ability::DelayedTriggerLifetime::ThisTurn,
+                    // CR 603.7b + CR 603.12: both a stated-"this turn" one-shot and
+                    // any reflexive that (defensively) escaped its creation-batch
+                    // discard are bounded to the creating turn — prune at cleanup.
+                    lifetime: crate::types::ability::DelayedTriggerLifetime::ThisTurn
+                        | crate::types::ability::DelayedTriggerLifetime::Reflexive,
                     ..
                 }
             )

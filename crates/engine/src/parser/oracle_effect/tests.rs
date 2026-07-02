@@ -39430,3 +39430,125 @@ fn monomania_choose_and_discard_rest_routes_to_discard() {
         other => panic!("expected ClampMin(hand size - 1, 0), got {other:?}"),
     }
 }
+
+// ---------------------------------------------------------------------------
+// CR 603.12 reflexive "this way" delayed triggers (S25 building block):
+// Prishe's Wanderings (search) + Rhino's Rampage (excess damage). These lower
+// to `CreateDelayedTrigger` with the `Reflexive` lifetime — a one-shot checked
+// on its creation batch and discarded if unmatched (see the runtime discard
+// tests in the integration suite). On revert of the detector both clauses parse
+// to `Effect::unimplemented` and every assertion below flips.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn prishe_wanderings_search_this_way_lowers_to_reflexive_delayed_trigger() {
+    let def = parse_effect_chain(
+        "When you search your library this way, put a +1/+1 counter on target creature you control.",
+        AbilityKind::Spell,
+    );
+    let Effect::CreateDelayedTrigger {
+        condition:
+            DelayedTriggerCondition::WhenNextEvent {
+                trigger,
+                lifetime,
+                or_trigger,
+            },
+        effect: inner,
+        ..
+    } = &*def.effect
+    else {
+        panic!("expected CreateDelayedTrigger, got {:?}", def.effect);
+    };
+    assert_eq!(
+        *lifetime,
+        DelayedTriggerLifetime::Reflexive,
+        "a 'this way' reflexive is CR 603.12 Reflexive, not a lingering CR 603.7b one-shot"
+    );
+    assert!(or_trigger.is_none(), "no disjunctive branch");
+    assert_eq!(
+        trigger.mode,
+        crate::types::triggers::TriggerMode::SearchedLibrary,
+        "condition is 'you search your library' → SearchedLibrary"
+    );
+    // "when YOU search" is scoped to the controller.
+    assert_eq!(trigger.valid_target, Some(TargetFilter::Controller));
+    // Inner: +1/+1 counter on a FRESH target creature you control (not the
+    // parent target — the reflexive picks its own target on the stack).
+    let Effect::PutCounter {
+        counter_type,
+        target,
+        ..
+    } = &*inner.effect
+    else {
+        panic!("expected inner PutCounter, got {:?}", inner.effect);
+    };
+    assert_eq!(*counter_type, CounterType::Plus1Plus1);
+    assert_ne!(
+        *target,
+        TargetFilter::ParentTarget,
+        "the counter target is freshly chosen, not the parent's target"
+    );
+}
+
+#[test]
+fn rhinos_rampage_excess_damage_this_way_lowers_to_reflexive_destroy() {
+    let def = parse_effect_chain(
+        "When excess damage is dealt to the creature an opponent controls this way, \
+         destroy up to one target noncreature artifact with mana value 3 or less.",
+        AbilityKind::Spell,
+    );
+    let Effect::CreateDelayedTrigger {
+        condition:
+            DelayedTriggerCondition::WhenNextEvent {
+                trigger, lifetime, ..
+            },
+        effect: inner,
+        ..
+    } = &*def.effect
+    else {
+        panic!("expected CreateDelayedTrigger, got {:?}", def.effect);
+    };
+    assert_eq!(*lifetime, DelayedTriggerLifetime::Reflexive);
+    assert_eq!(
+        trigger.mode,
+        crate::types::triggers::TriggerMode::ExcessDamageAll,
+        "damage-first 'excess damage is dealt to <subject>' → ExcessDamageAll"
+    );
+    // valid_card = And[ParentTarget, creature an opponent controls] — scopes the
+    // reflexive to the fight victim (the parent target).
+    let Some(TargetFilter::And { filters }) = &trigger.valid_card else {
+        panic!(
+            "expected And[ParentTarget, subject] valid_card, got {:?}",
+            trigger.valid_card
+        );
+    };
+    assert!(
+        filters
+            .iter()
+            .any(|f| matches!(f, TargetFilter::ParentTarget)),
+        "one conjunct must be ParentTarget (the fight victim)"
+    );
+    assert!(
+        filters.iter().any(|f| matches!(
+            f,
+            TargetFilter::Typed(tf) if tf.controller == Some(ControllerRef::Opponent)
+        )),
+        "the other conjunct is 'creature an opponent controls', got {filters:?}"
+    );
+    // Inner: destroy up to one artifact — MultiTargetSpec::up_to(1) on the sub.
+    assert!(
+        matches!(&*inner.effect, Effect::Destroy { .. }),
+        "inner effect is Destroy, got {:?}",
+        inner.effect
+    );
+    let spec = inner
+        .multi_target
+        .as_ref()
+        .expect("destroy up to one → MultiTargetSpec present");
+    assert_eq!(spec.min, QuantityExpr::Fixed { value: 0 }, "up to → min 0");
+    assert_eq!(
+        spec.max,
+        Some(QuantityExpr::Fixed { value: 1 }),
+        "up to ONE → max 1"
+    );
+}

@@ -2560,6 +2560,14 @@ pub enum DelayedTriggerLifetime {
     /// CR 603.7b (no stated duration): open-ended; persists across turns until
     /// the event fires.
     Persistent,
+    /// CR 603.12: a reflexive delayed trigger ("when you [do X] this way, …").
+    /// It is checked immediately after creation and triggers only on the trigger
+    /// event(s) that occurred earlier during the same resolution that created it.
+    /// Unlike a plain `ThisTurn` `WhenNextEvent` (which would linger for a later
+    /// same-turn matching event, CR 603.7b), a `Reflexive` gets exactly one shot
+    /// on its creation resolution's event batch: if unmatched on that first
+    /// `check_delayed_triggers` pass it is discarded rather than left pending.
+    Reflexive,
 }
 
 impl DelayedTriggerLifetime {
