@@ -66,7 +66,6 @@ use crate::types::game_state::TargetSelectionConstraint;
 /// `true` on an axis means "reads (or may read) that dimension"; the fail-safe
 /// direction for every consumer.
 #[derive(Clone, Copy)]
-#[allow(dead_code)] // TODO(PR-6.5 inc2): remove — consumed once wired via analysis::resource stack_entry_reads_projected_resource / fire_time_conditions_read_projected_resource + game::triggers C0 classifier.
 struct Axes {
     /// Reads a concrete-triggering-event / cost-paid-object characteristic
     /// (CR 603.4 / CR 608.2k). Used by trigger ordering to keep distinct-event
@@ -80,7 +79,6 @@ struct Axes {
     projected: bool,
 }
 
-#[allow(dead_code)] // TODO(PR-6.5 inc2): remove — consumed once wired via analysis::resource stack_entry_reads_projected_resource / fire_time_conditions_read_projected_resource + game::triggers C0 classifier.
 impl Axes {
     /// No read on any axis.
     const NONE: Axes = Axes {
@@ -114,7 +112,6 @@ impl Axes {
 /// `ResolvedAbility` fails to compile here until it is classified, closing the
 /// "unread aux field" hole class at compile time (not just `multi_target` /
 /// `target_constraints`).
-#[allow(dead_code)] // TODO(PR-6.5 inc2): remove — consumed once wired via analysis::resource stack_entry_reads_projected_resource / fire_time_conditions_read_projected_resource + game::triggers C0 classifier.
 fn resolved_ability_axes(a: &ResolvedAbility) -> Axes {
     let ResolvedAbility {
         // ---- read-bearing: scanned into `acc` below ----
@@ -230,7 +227,6 @@ fn resolved_ability_axes(a: &ResolvedAbility) -> Axes {
 /// CR 608.2c / CR 107.1c: a loop-continuation predicate. Only `WhileCondition`
 /// re-reads game state (per-iteration re-evaluation); the controller-prompted and
 /// boolean-stop variants read no dynamic resource.
-#[allow(dead_code)] // TODO(PR-6.5 inc2): remove — consumed once wired via analysis::resource stack_entry_reads_projected_resource / fire_time_conditions_read_projected_resource + game::triggers C0 classifier.
 fn scan_repeat_continuation(r: &RepeatContinuation) -> Axes {
     match r {
         RepeatContinuation::ControllerChoice => Axes::NONE,
@@ -250,7 +246,6 @@ fn scan_repeat_continuation(r: &RepeatContinuation) -> Axes {
 /// remaining fields are cast/announce-time metadata (concrete counts, costs, and
 /// static cast-time predicates) that do not express a resolution-time dynamic read.
 /// Destructured without `..` — a future `ModalChoice` field must be classified here.
-#[allow(dead_code)] // TODO(PR-6.5 inc2): remove — consumed once wired via analysis::resource stack_entry_reads_projected_resource / fire_time_conditions_read_projected_resource + game::triggers C0 classifier.
 fn scan_modal_choice(m: &ModalChoice) -> Axes {
     let ModalChoice {
         dynamic_max_choices,
@@ -277,7 +272,6 @@ fn scan_modal_choice(m: &ModalChoice) -> Axes {
 /// carries a read — its `value` is a `QuantityExpr` documented to hold the where-X
 /// `EventContextAmount` (axis 1); the `Different*` variants are pure structural
 /// predicates over the chosen set with no dynamic read.
-#[allow(dead_code)] // TODO(PR-6.5 inc2): remove — consumed once wired via analysis::resource stack_entry_reads_projected_resource / fire_time_conditions_read_projected_resource + game::triggers C0 classifier.
 fn scan_target_selection_constraint(c: &TargetSelectionConstraint) -> Axes {
     match c {
         TargetSelectionConstraint::DifferentTargetPlayers => Axes::NONE,
@@ -289,7 +283,6 @@ fn scan_target_selection_constraint(c: &TargetSelectionConstraint) -> Axes {
     }
 }
 
-#[allow(dead_code)] // TODO(PR-6.5 inc2): remove — consumed once wired via analysis::resource stack_entry_reads_projected_resource / fire_time_conditions_read_projected_resource + game::triggers C0 classifier.
 fn scan_effect(x: &Effect) -> Axes {
     match x {
         Effect::StartYourEngines { player_scope, .. } => {
@@ -1253,7 +1246,6 @@ fn scan_effect(x: &Effect) -> Axes {
     }
 }
 
-#[allow(dead_code)] // TODO(PR-6.5 inc2): remove — consumed once wired via analysis::resource stack_entry_reads_projected_resource / fire_time_conditions_read_projected_resource + game::triggers C0 classifier.
 fn scan_quantity_ref(x: &QuantityRef) -> Axes {
     match x {
         QuantityRef::HandSize { player, .. } => {
@@ -1718,7 +1710,6 @@ fn scan_quantity_ref(x: &QuantityRef) -> Axes {
     }
 }
 
-#[allow(dead_code)] // TODO(PR-6.5 inc2): remove — consumed once wired via analysis::resource stack_entry_reads_projected_resource / fire_time_conditions_read_projected_resource + game::triggers C0 classifier.
 fn scan_quantity_expr(x: &QuantityExpr) -> Axes {
     match x {
         QuantityExpr::Ref { qty, .. } => {
@@ -1780,7 +1771,6 @@ fn scan_quantity_expr(x: &QuantityExpr) -> Axes {
     }
 }
 
-#[allow(dead_code)] // TODO(PR-6.5 inc2): remove — consumed once wired via analysis::resource stack_entry_reads_projected_resource / fire_time_conditions_read_projected_resource + game::triggers C0 classifier.
 fn scan_ability_condition(x: &AbilityCondition) -> Axes {
     match x {
         AbilityCondition::AdditionalCostPaid { subject, .. } => {
@@ -1956,7 +1946,6 @@ fn scan_ability_condition(x: &AbilityCondition) -> Axes {
     }
 }
 
-#[allow(dead_code)] // TODO(PR-6.5 inc2): remove — consumed once wired via analysis::resource stack_entry_reads_projected_resource / fire_time_conditions_read_projected_resource + game::triggers C0 classifier.
 fn scan_target_filter(x: &TargetFilter) -> Axes {
     match x {
         TargetFilter::None => Axes::NONE,
@@ -2094,7 +2083,6 @@ fn scan_target_filter(x: &TargetFilter) -> Axes {
     }
 }
 
-#[allow(dead_code)] // TODO(PR-6.5 inc2): remove — consumed once wired via analysis::resource stack_entry_reads_projected_resource / fire_time_conditions_read_projected_resource + game::triggers C0 classifier.
 fn scan_object_scope(x: &ObjectScope) -> Axes {
     match x {
         ObjectScope::Source => Axes::NONE,
@@ -2120,7 +2108,6 @@ fn scan_object_scope(x: &ObjectScope) -> Axes {
     }
 }
 
-#[allow(dead_code)] // TODO(PR-6.5 inc2): remove — consumed once wired via analysis::resource stack_entry_reads_projected_resource / fire_time_conditions_read_projected_resource + game::triggers C0 classifier.
 fn scan_trigger_condition(x: &TriggerCondition) -> Axes {
     match x {
         TriggerCondition::GainedLife { .. } => Axes {
@@ -2380,7 +2367,6 @@ fn scan_trigger_condition(x: &TriggerCondition) -> Axes {
     }
 }
 
-#[allow(dead_code)] // TODO(PR-6.5 inc2): remove — consumed once wired via analysis::resource stack_entry_reads_projected_resource / fire_time_conditions_read_projected_resource + game::triggers C0 classifier.
 fn scan_duration(x: &Duration) -> Axes {
     match x {
         Duration::UntilEndOfTurn => Axes::NONE,
@@ -2410,7 +2396,6 @@ fn scan_duration(x: &Duration) -> Axes {
     }
 }
 
-#[allow(dead_code)] // TODO(PR-6.5 inc2): remove — consumed once wired via analysis::resource stack_entry_reads_projected_resource / fire_time_conditions_read_projected_resource + game::triggers C0 classifier.
 fn scan_static_condition(x: &StaticCondition) -> Axes {
     match x {
         StaticCondition::DevotionGE { .. } => Axes {
@@ -2547,7 +2532,6 @@ fn scan_static_condition(x: &StaticCondition) -> Axes {
     }
 }
 
-#[allow(dead_code)] // TODO(PR-6.5 inc2): remove — consumed once wired via analysis::resource stack_entry_reads_projected_resource / fire_time_conditions_read_projected_resource + game::triggers C0 classifier.
 fn scan_player_filter(x: &PlayerFilter) -> Axes {
     match x {
         PlayerFilter::Controller => Axes::NONE,
@@ -2641,7 +2625,6 @@ fn scan_player_filter(x: &PlayerFilter) -> Axes {
     }
 }
 
-#[allow(dead_code)] // TODO(PR-6.5 inc2): remove — consumed once wired via analysis::resource stack_entry_reads_projected_resource / fire_time_conditions_read_projected_resource + game::triggers C0 classifier.
 fn scan_replacement_condition(x: &ReplacementCondition) -> Axes {
     match x {
         ReplacementCondition::And { conditions, .. } => {
@@ -2746,7 +2729,6 @@ fn scan_replacement_condition(x: &ReplacementCondition) -> Axes {
     }
 }
 
-#[allow(dead_code)] // TODO(PR-6.5 inc2): remove — consumed once wired via analysis::resource stack_entry_reads_projected_resource / fire_time_conditions_read_projected_resource + game::triggers C0 classifier.
 fn scan_player_scope(x: &PlayerScope) -> Axes {
     match x {
         PlayerScope::Controller => Axes::NONE,
@@ -2771,7 +2753,6 @@ fn scan_player_scope(x: &PlayerScope) -> Axes {
     }
 }
 
-#[allow(dead_code)] // TODO(PR-6.5 inc2): remove — consumed once wired via analysis::resource stack_entry_reads_projected_resource / fire_time_conditions_read_projected_resource + game::triggers C0 classifier.
 fn scan_controller_ref(x: &ControllerRef) -> Axes {
     match x {
         ControllerRef::You => Axes::NONE,
@@ -2800,7 +2781,6 @@ fn scan_controller_ref(x: &ControllerRef) -> Axes {
     }
 }
 
-#[allow(dead_code)] // TODO(PR-6.5 inc2): remove — consumed once wired via analysis::resource stack_entry_reads_projected_resource / fire_time_conditions_read_projected_resource + game::triggers C0 classifier.
 fn scan_count_scope(x: &CountScope) -> Axes {
     match x {
         CountScope::Controller => Axes::NONE,
@@ -2819,14 +2799,13 @@ fn scan_count_scope(x: &CountScope) -> Axes {
 
 /// Axis 3: does this resolved ability (and its chain/conditions) read a
 /// projected player-level resource or journal? (`analysis::resource` item 4.)
-#[allow(dead_code)] // TODO(PR-6.5 inc2): remove — consumed once wired via analysis::resource stack_entry_reads_projected_resource / fire_time_conditions_read_projected_resource + game::triggers C0 classifier.
+#[allow(dead_code)] // TODO(PR-6.5 inc2b): remove — consumed by analysis::resource stack_entry_reads_projected_resource / fire_time_conditions_read_projected_resource (the cascade detector). C0's two axes (event/sibling) are live as of inc2a.
 pub(crate) fn ability_reads_projected_resource(ability: &ResolvedAbility) -> bool {
     resolved_ability_axes(ability).projected
 }
 
 /// Axis 1: does this resolved ability read the concrete triggering-event /
 /// cost-paid-object context? (CR 603.4; `game::triggers` ordering.)
-#[allow(dead_code)] // TODO(PR-6.5 inc2): remove — consumed once wired via analysis::resource stack_entry_reads_projected_resource / fire_time_conditions_read_projected_resource + game::triggers C0 classifier.
 pub(crate) fn ability_uses_event_context(ability: &ResolvedAbility) -> bool {
     resolved_ability_axes(ability).event
 }
@@ -2835,28 +2814,27 @@ pub(crate) fn ability_uses_event_context(ability: &ResolvedAbility) -> bool {
 /// mutable aggregate a sibling copy could change? (CR 603.3b; `game::triggers`
 /// C2 distinct-event auto-resolve gate — the Rubblebelt Rioters / Orcish
 /// Siegemaster exclusion.)
-#[allow(dead_code)] // TODO(PR-6.5 inc2): remove — consumed once wired via analysis::resource stack_entry_reads_projected_resource / fire_time_conditions_read_projected_resource + game::triggers C0 classifier.
 pub(crate) fn ability_reads_sibling_mutable(ability: &ResolvedAbility) -> bool {
     resolved_ability_axes(ability).sibling
 }
 
 /// Axis 3 on a bare trigger fire-time `condition` (CR 603.4 intervening-if) —
 /// the off-stack scan surface (`analysis::resource` item 5).
-#[allow(dead_code)] // TODO(PR-6.5 inc2): remove — consumed once wired via analysis::resource stack_entry_reads_projected_resource / fire_time_conditions_read_projected_resource + game::triggers C0 classifier.
+#[allow(dead_code)] // TODO(PR-6.5 inc2b): remove — consumed by analysis::resource fire_time_conditions_read_projected_resource (the cascade detector). C0's two axes (event/sibling) are live as of inc2a.
 pub(crate) fn trigger_condition_reads_projected_resource(condition: &TriggerCondition) -> bool {
     scan_trigger_condition(condition).projected
 }
 
 /// Axis 3 on a condition-gated static's `condition` (CR 604.1/613.1) — the
 /// dormant-static off-stack scan surface.
-#[allow(dead_code)] // TODO(PR-6.5 inc2): remove — consumed once wired via analysis::resource stack_entry_reads_projected_resource / fire_time_conditions_read_projected_resource + game::triggers C0 classifier.
+#[allow(dead_code)] // TODO(PR-6.5 inc2b): remove — consumed by analysis::resource fire_time_conditions_read_projected_resource (the cascade detector). C0's two axes (event/sibling) are live as of inc2a.
 pub(crate) fn static_condition_reads_projected_resource(condition: &StaticCondition) -> bool {
     scan_static_condition(condition).projected
 }
 
 /// Axis 3 on a replacement effect's `condition`/body (CR 614.1) — the
 /// off-stack replacement scan surface.
-#[allow(dead_code)] // TODO(PR-6.5 inc2): remove — consumed once wired via analysis::resource stack_entry_reads_projected_resource / fire_time_conditions_read_projected_resource + game::triggers C0 classifier.
+#[allow(dead_code)] // TODO(PR-6.5 inc2b): remove — consumed by analysis::resource fire_time_conditions_read_projected_resource (the cascade detector). C0's two axes (event/sibling) are live as of inc2a.
 pub(crate) fn replacement_condition_reads_projected_resource(
     condition: &ReplacementCondition,
 ) -> bool {
@@ -2864,14 +2842,14 @@ pub(crate) fn replacement_condition_reads_projected_resource(
 }
 
 /// Axis 3 on a bare `AbilityCondition` (resolution-time branch selector).
-#[allow(dead_code)] // TODO(PR-6.5 inc2): remove — consumed once wired via analysis::resource stack_entry_reads_projected_resource / fire_time_conditions_read_projected_resource + game::triggers C0 classifier.
+#[allow(dead_code)] // TODO(PR-6.5 inc2b): remove — consumed by analysis::resource fire_time_conditions_read_projected_resource (the cascade detector). C0's two axes (event/sibling) are live as of inc2a.
 pub(crate) fn ability_condition_reads_projected_resource(condition: &AbilityCondition) -> bool {
     scan_ability_condition(condition).projected
 }
 
 /// Axis 3 on a transient `Duration::ForAsLongAs` condition (CR 604.1) — the
 /// `transient_continuous_effects` off-stack scan surface.
-#[allow(dead_code)] // TODO(PR-6.5 inc2): remove — consumed once wired via analysis::resource stack_entry_reads_projected_resource / fire_time_conditions_read_projected_resource + game::triggers C0 classifier.
+#[allow(dead_code)] // TODO(PR-6.5 inc2b): remove — consumed by analysis::resource fire_time_conditions_read_projected_resource (the cascade detector). C0's two axes (event/sibling) are live as of inc2a.
 pub(crate) fn duration_reads_projected_resource(duration: &Duration) -> bool {
     scan_duration(duration).projected
 }
