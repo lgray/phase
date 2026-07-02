@@ -32,9 +32,9 @@ pub fn resolve(
     let object_ids = gain_control_object_targets(state, ability, target);
 
     for obj_id in object_ids {
-        if !state.objects.contains_key(&obj_id) {
+        let Some(old_controller) = state.objects.get(&obj_id).map(|obj| obj.controller) else {
             return Err(EffectError::ObjectNotFound(obj_id));
-        }
+        };
 
         // CR 613.3: Create a transient continuous effect at Layer 2 (Control).
         state.add_transient_continuous_effect(
@@ -46,6 +46,17 @@ pub fn resolve(
             None,
         );
         mark_echo_due_for_new_controller(state, obj_id);
+
+        // CR 613.1b: emit the control-change event so "when you lose control"
+        // triggers on the *previous* controller observe the loss (mirrors
+        // `GainControlAll` and `GiveControl`). Skip no-op self-handoffs.
+        if old_controller != new_controller {
+            events.push(GameEvent::ControllerChanged {
+                object_id: obj_id,
+                old_controller,
+                new_controller,
+            });
+        }
     }
 
     events.push(GameEvent::EffectResolved {
