@@ -19,9 +19,9 @@ use super::oracle_util::parse_mana_symbols;
 use super::oracle_util::parse_number;
 use super::oracle_util::TextPair;
 use crate::types::ability::{
-    AbilityCost, AggregateFunction, BeholdCostAction, Comparator, ControllerRef, CostReduction,
-    CounterCostSelection, FilterProp, ObjectProperty, PlayerScope, QuantityExpr, QuantityRef,
-    SacrificeCost, TapCreaturesRequirement, TargetFilter, TypedFilter, EXILE_COST_X,
+    AbilityCost, AggregateFunction, BeholdCostAction, ChoiceType, Comparator, ControllerRef,
+    CostReduction, CounterCostSelection, FilterProp, ObjectProperty, PlayerScope, QuantityExpr,
+    QuantityRef, SacrificeCost, TapCreaturesRequirement, TargetFilter, TypedFilter, EXILE_COST_X,
     REMOVE_COUNTER_COST_ALL, REMOVE_COUNTER_COST_ANY_NUMBER, REMOVE_COUNTER_COST_X,
 };
 use crate::types::counter::parse_counter_match;
@@ -231,6 +231,47 @@ fn fixup_bare_noun_continuations(costs: &mut [AbilityCost]) {
     }
 }
 
+/// CR 601.2b + CR 701.4a: Parse the pre-choice behold cost "choose a creature
+/// type and behold N creatures of that type" (Celestial Reunion). Emits a
+/// `Behold { type_choice: Some(CreatureType) }` whose `filter` carries the
+/// `IsChosenCreatureType` leg — the "of that type" scoping resolved at cost time
+/// against the type the player will choose. Combinators only (one `alt` per
+/// axis); the found creatures are beheld from hand/battlefield as usual.
+fn parse_choose_type_and_behold_cost(lower: &str) -> Option<AbilityCost> {
+    type E<'a> = super::oracle_nom::error::OracleError<'a>;
+    let (input, _) = tag::<_, _, E<'_>>("choose ").parse(lower).ok()?;
+    let (input, _) = alt((tag::<_, _, E<'_>>("a "), tag("an ")))
+        .parse(input)
+        .ok()?;
+    let (input, _) = tag::<_, _, E<'_>>("creature type and behold ")
+        .parse(input)
+        .ok()?;
+    let (input, count) =
+        if let Ok((rest, _)) = alt((tag::<_, _, E<'_>>("a "), tag("an "))).parse(input) {
+            (rest, 1)
+        } else if let Ok((rest, count)) =
+            terminated(nom_primitives::parse_number, tag::<_, _, E<'_>>(" ")).parse(input)
+        {
+            (rest, count)
+        } else {
+            return None;
+        };
+    all_consuming(alt((
+        tag::<_, _, E<'_>>("creatures of that type"),
+        tag("creature of that type"),
+    )))
+    .parse(input.trim())
+    .ok()?;
+    Some(AbilityCost::Behold {
+        count,
+        filter: TypedFilter::creature()
+            .properties(vec![FilterProp::IsChosenCreatureType])
+            .into(),
+        action: BeholdCostAction::ChooseOrReveal,
+        type_choice: Some(ChoiceType::CreatureType),
+    })
+}
+
 fn parse_behold_cost(lower: &str) -> Option<AbilityCost> {
     type E<'a> = super::oracle_nom::error::OracleError<'a>;
     let (input, _) = tag::<_, _, E<'_>>("behold ").parse(lower).ok()?;
@@ -272,6 +313,7 @@ fn parse_behold_cost(lower: &str) -> Option<AbilityCost> {
         count,
         filter,
         action,
+        type_choice: None,
     })
 }
 
@@ -338,6 +380,7 @@ fn parse_choose_or_reveal_behold_cost(lower: &str) -> Option<AbilityCost> {
         count: 1,
         filter: choose_filter,
         action: BeholdCostAction::ChooseOrReveal,
+        type_choice: None,
     })
 }
 
@@ -447,11 +490,18 @@ pub fn parse_single_cost(text: &str) -> AbilityCost {
     let text = text.trim();
     let lower = text.to_lowercase();
 
+    // CR 601.2b + CR 701.4a: pre-choice behold ("choose a creature type and
+    // behold N creatures of that type") — tried first so the "choose … and
+    // behold …" shape is not swallowed by the generic choose-effect cost.
+    if let Some(cost) = parse_choose_type_and_behold_cost(&lower) {
+        return cost;
+    }
+
     if let Some(cost) = parse_behold_cost(&lower) {
         return cost;
     }
 
-    // CR 701.4a + CR 601.2b/f: spelled-out "choose … or reveal …" behold cost
+    // CR 701.4a + CR 601.2f: spelled-out "choose … or reveal …" behold cost
     // (Monstrous Emergence). Tried after the keyword form; both yield `Behold`.
     if let Some(cost) = parse_choose_or_reveal_behold_cost(&lower) {
         return cost;

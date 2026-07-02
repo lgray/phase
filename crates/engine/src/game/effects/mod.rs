@@ -2045,6 +2045,26 @@ fn condition_depends_on_zone_change_this_way(condition: &AbilityCondition) -> bo
     }
 }
 
+/// CR 608.2c + CR 400.7j: Whether a condition reads the parent's *suspended-
+/// selection result object* — the found/revealed card that a `SearchLibrary`
+/// injects as the continuation target only after the player responds
+/// (`engine_resolution_choices.rs`, `cont.chain.targets = continuation_targets`).
+/// A `TargetMatchesFilter` gate on "that card" ("the revealed card is the chosen
+/// type") cannot be evaluated until then, so it must be deferred WITH its
+/// condition rather than eagerly read against absent targets. Recurses And/Or/Not
+/// like the sibling `condition_depends_on_effect_performed` predicate. Predicate
+/// helper, not rule-implementing code — the CR annotation lives at the gate.
+fn condition_depends_on_result_object(condition: &AbilityCondition) -> bool {
+    match condition {
+        AbilityCondition::TargetMatchesFilter { .. } => true,
+        AbilityCondition::Not { condition } => condition_depends_on_result_object(condition),
+        AbilityCondition::And { conditions } | AbilityCondition::Or { conditions } => {
+            conditions.iter().any(condition_depends_on_result_object)
+        }
+        _ => false,
+    }
+}
+
 /// CR 603.12: Whether a sub-ability is a *reflexive* trigger — its "do"
 /// depends on whether the just-prompted action actually occurred during this
 /// resolution. A reflexive sub MUST NOT resolve when the optional parent was
@@ -6887,10 +6907,20 @@ fn resolve_chain_body(
             // path; the `DiscardChoice` resume populates `last_zone_changed_ids`
             // from the cards that reached the graveyard before draining, so the
             // re-evaluation at chain top sees the discarded objects.
+            // CR 608.2c: a "that card / the revealed card"-referential destination
+            // gate on a suspended `SearchLibrary` sub can't be evaluated until the
+            // search injects the found card as the continuation target. Scoped to
+            // `SearchChoice` specifically — the ONLY choice whose completion sets
+            // `cont.chain.targets` to the result object; broadening to every
+            // resolution choice would mis-defer e.g. a `Sacrifice`→`EffectZoneChoice`
+            // →`TargetMatchesFilter`-gated sibling, whose completion leaves
+            // `cont.chain.targets` empty (it uses the tracked-set/ParentTarget path).
             if waits_for_resolution_choice(&state.waiting_for)
                 && (condition_depends_on_effect_performed(condition)
                     || condition_depends_on_zone_change_this_way(condition)
-                    || matches!(condition, AbilityCondition::WhenYouDo))
+                    || matches!(condition, AbilityCondition::WhenYouDo)
+                    || (matches!(state.waiting_for, WaitingFor::SearchChoice { .. })
+                        && condition_depends_on_result_object(condition)))
             {
                 let mut sub_clone = sub.as_ref().clone();
                 if sub_clone.targets.is_empty() && !ability.targets.is_empty() {

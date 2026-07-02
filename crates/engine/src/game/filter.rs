@@ -2187,6 +2187,48 @@ fn subtype_matches_host_supertype(subtype: &str, supertypes: &[Supertype]) -> bo
     subtype.eq_ignore_ascii_case("host") && supertypes.contains(&Supertype::Host)
 }
 
+/// CR 701.4a + CR 205.3m + CR 601.2h: the creature types for which the player can
+/// actually pay "choose a creature type and behold N of that type" — types T such
+/// that >= `count` beholdable creatures (hand + controlled battlefield permanents)
+/// are of type T (Changeling counts as every type, CR 702.73a). Single authority
+/// feeding BOTH the Optional-cost payability probe (set non-empty) AND the
+/// `CostTypeChoice` option list (the set itself), so the offered options and the
+/// payability gate can never disagree.
+pub(crate) fn feasible_behold_creature_types(
+    state: &GameState,
+    player: PlayerId,
+    source: ObjectId,
+    behold_filter: &crate::types::ability::TargetFilter,
+    count: u32,
+) -> Vec<String> {
+    // Enumerate against the BASE creature filter — the same filter with the
+    // per-type `IsChosenCreatureType` discriminator removed. With that leg
+    // present and no type chosen yet, `eligible_behold_choices` returns empty.
+    let base = behold_filter.without_prop(&crate::types::ability::FilterProp::IsChosenCreatureType);
+    let candidates = super::casting_costs::eligible_behold_choices(state, player, source, &base);
+    state
+        .all_creature_types
+        .iter()
+        .filter(|t| {
+            candidates
+                .iter()
+                .filter(|&&id| {
+                    state.objects.get(&id).is_some_and(|o| {
+                        subtype_matches_with_changeling(
+                            t,
+                            &o.card_types.subtypes,
+                            &o.keywords,
+                            &state.all_creature_types,
+                        )
+                    })
+                })
+                .count()
+                >= count as usize
+        })
+        .cloned()
+        .collect()
+}
+
 /// Check if an object matches a TypeFilter variant.
 /// Check if an object's card types match a `TypeFilter`.
 /// CR 205.2a: Each card type has its own rules for how it behaves.

@@ -1457,6 +1457,7 @@ fn fallback_action(state: &GameState) -> Option<GameAction> {
             ..
         }
         | WaitingFor::BlightChoice { .. }
+        | WaitingFor::CostTypeChoice { .. }
         | WaitingFor::CollectEvidenceChoice { .. }
         | WaitingFor::HarmonizeTapChoice { .. } => {
             // These are all pending-cast states — the has_pending_cast guard

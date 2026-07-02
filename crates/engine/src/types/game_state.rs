@@ -3994,6 +3994,18 @@ pub enum WaitingFor {
         costs: Vec<AbilityCost>,
         pending_cast: Box<PendingCast>,
     },
+    /// CR 601.2b + CR 701.4a: The player must choose a value (creature type for
+    /// Celestial Reunion) as part of paying a `Behold { type_choice: Some(_) }`
+    /// additional cost, before the behold selection. The chosen value is written
+    /// as a `ChosenAttribute` on the spell object; cost payment then resumes the
+    /// behold step. `options` is the feasible set (types with >= count beholdable
+    /// creatures), so an unpayable type is never offered.
+    CostTypeChoice {
+        player: PlayerId,
+        choice_type: crate::types::ability::ChoiceType,
+        options: Vec<String>,
+        pending_cast: Box<PendingCast>,
+    },
     /// Blight N — player must choose one creature to put N -1/-1 counters on as cost.
     BlightChoice {
         player: PlayerId,
@@ -4672,6 +4684,7 @@ impl WaitingFor {
             WaitingFor::SpecializeColor { .. } => "SpecializeColor",
             WaitingFor::PayCost { .. } => "PayCost",
             WaitingFor::ActivationCostOneOfChoice { .. } => "ActivationCostOneOfChoice",
+            WaitingFor::CostTypeChoice { .. } => "CostTypeChoice",
             WaitingFor::BlightChoice { .. } => "BlightChoice",
             WaitingFor::PayManaAbilityMana { .. } => "PayManaAbilityMana",
             WaitingFor::ChooseManaColor { .. } => "ChooseManaColor",
@@ -4798,6 +4811,7 @@ impl WaitingFor {
             | WaitingFor::SpecializeColor { player, .. }
             | WaitingFor::PayCost { player, .. }
             | WaitingFor::ActivationCostOneOfChoice { player, .. }
+            | WaitingFor::CostTypeChoice { player, .. }
             | WaitingFor::BlightChoice { player, .. }
             | WaitingFor::PayManaAbilityMana { player, .. }
             | WaitingFor::ChooseManaColor { player, .. }
@@ -4903,6 +4917,7 @@ impl WaitingFor {
             | WaitingFor::SpliceOffer { pending_cast, .. }
             | WaitingFor::DefilerPayment { pending_cast, .. }
             | WaitingFor::ActivationCostOneOfChoice { pending_cast, .. }
+            | WaitingFor::CostTypeChoice { pending_cast, .. }
             | WaitingFor::BlightChoice { pending_cast, .. }
             | WaitingFor::HarmonizeTapChoice { pending_cast, .. } => Some(pending_cast),
             WaitingFor::PayCost { resume, .. } => match resume {
@@ -4935,6 +4950,7 @@ impl WaitingFor {
             | WaitingFor::SpliceOffer { pending_cast, .. }
             | WaitingFor::DefilerPayment { pending_cast, .. }
             | WaitingFor::ActivationCostOneOfChoice { pending_cast, .. }
+            | WaitingFor::CostTypeChoice { pending_cast, .. }
             | WaitingFor::BlightChoice { pending_cast, .. }
             | WaitingFor::HarmonizeTapChoice { pending_cast, .. } => Some(pending_cast),
             WaitingFor::PayCost { resume, .. } => match resume {

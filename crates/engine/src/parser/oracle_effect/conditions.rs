@@ -434,6 +434,21 @@ fn strip_alternative_mana_cost_conditional<'a>(text: &'a str, lower: &str) -> Op
     .map(|((), rest)| rest)
 }
 
+/// CR 205.3m: The PREDICATE form "the revealed card is the chosen type" — the
+/// copular clause "<subject> is <the chosen type>", distinct from the adjectival
+/// "of the chosen type" suffix (`oracle_target`). Combinators only.
+fn parse_revealed_card_is_chosen_type(i: &str) -> OracleResult<'_, ()> {
+    value(
+        (),
+        (
+            tag("the revealed card"),
+            tag(" is "),
+            tag("the chosen type"),
+        ),
+    )
+    .parse(i)
+}
+
 pub(super) fn strip_additional_cost_conditional(text: &str) -> (Option<AbilityCondition>, String) {
     let lower = text.to_lowercase();
 
@@ -480,6 +495,33 @@ pub(super) fn strip_additional_cost_conditional(text: &str) -> (Option<AbilityCo
                 text[offset..].to_string(),
             );
         }
+    }
+
+    // CR 608.2c + CR 205.3m: "if this spell's additional cost was paid AND the
+    // revealed card is the chosen type, <body>" (Celestial Reunion) — a
+    // conjunction of the additional-cost-paid leg and a predicate on the found
+    // card. Must be tried before the bare "…was paid, " arm below (which requires
+    // the comma immediately after "paid" and would not match this compound form).
+    if let Some(((), rest)) = nom_on_lower(text, &lower, |i| {
+        let (i, _) = tag("if this spell's additional cost was paid and ").parse(i)?;
+        let (i, _) = parse_revealed_card_is_chosen_type(i)?;
+        let (i, _) = tag(", ").parse(i)?;
+        Ok((i, ()))
+    }) {
+        return (
+            Some(AbilityCondition::And {
+                conditions: vec![
+                    AbilityCondition::additional_cost_paid_any(),
+                    AbilityCondition::TargetMatchesFilter {
+                        filter: TypedFilter::creature()
+                            .properties(vec![FilterProp::IsChosenCreatureType])
+                            .into(),
+                        use_lki: false,
+                    },
+                ],
+            }),
+            rest.to_string(),
+        );
     }
 
     let mut alternative_mana_cost_conditional = false;

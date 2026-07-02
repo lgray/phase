@@ -7037,6 +7037,14 @@ pub enum AbilityCost {
         count: u32,
         filter: TargetFilter,
         action: BeholdCostAction,
+        /// CR 601.2b + CR 701.4a: when `Some`, the player first chooses a value
+        /// of this kind (creature type for Celestial Reunion) as part of paying
+        /// the behold cost. The choice is recorded as a `ChosenAttribute` on the
+        /// spell object; the behold `filter`'s `IsChosenCreatureType` leg then
+        /// scopes "of that type". `None` = the existing fixed-quality behold
+        /// (Monstrous Emergence, Close Encounter).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        type_choice: Option<ChoiceType>,
     },
     Composite {
         costs: Vec<AbilityCost>,
@@ -11617,6 +11625,21 @@ pub enum VoteTally {
 }
 
 impl TargetFilter {
+    /// Clone this filter with any `Typed` property equal to `prop` removed.
+    /// Used to strip a per-item discriminator leg (e.g. `IsChosenCreatureType`)
+    /// so the residual base filter can be enumerated across candidate values.
+    /// Non-`Typed` shapes are returned unchanged.
+    pub fn without_prop(&self, prop: &FilterProp) -> TargetFilter {
+        match self {
+            TargetFilter::Typed(filter) => {
+                let mut filter = filter.clone();
+                filter.properties.retain(|p| p != prop);
+                TargetFilter::Typed(filter)
+            }
+            other => other.clone(),
+        }
+    }
+
     pub fn normalized(self) -> Self {
         match self {
             TargetFilter::Typed(filter) => TargetFilter::Typed(filter.normalized()),

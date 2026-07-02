@@ -1028,6 +1028,108 @@ mod linked_exile_cleanup_tests {
     }
 }
 
+/// True for a `TargetFilter` carrying the `IsChosenCreatureType` discriminator.
+fn filter_has_chosen_creature_type(filter: &TargetFilter) -> bool {
+    matches!(filter, TargetFilter::Typed(f)
+        if f.properties.contains(&FilterProp::IsChosenCreatureType))
+}
+
+/// The destination gate for "put onto the battlefield instead of putting it into
+/// your hand if this spell's additional cost was paid and the revealed card is
+/// the chosen type" — `And{ AdditionalCostPaid, TargetMatchesFilter{chosen type} }`.
+fn is_chosen_type_battlefield_gate(cond: &AbilityCondition) -> bool {
+    match cond {
+        AbilityCondition::And { conditions } => {
+            conditions
+                .iter()
+                .any(|c| matches!(c, AbilityCondition::AdditionalCostPaid { .. }))
+                && conditions.iter().any(|c| {
+                    matches!(c, AbilityCondition::TargetMatchesFilter { filter, .. }
+                        if filter_has_chosen_creature_type(filter))
+                })
+        }
+        _ => false,
+    }
+}
+
+/// CR 608.2c: Rebuild a `Search … reveal … put it into your hand … put onto the
+/// battlefield instead if <cost paid> and <revealed card is the chosen type>`
+/// chain into the canonical conditional-destination form the runtime's search
+/// continuation evaluates: `SearchLibrary → N`, where `N` moves the found card to
+/// the battlefield when its `And` gate holds and otherwise (`else_ability`) to
+/// the hand, with a `Shuffle` in both branches. The lowered chain reaches this
+/// function as a mangled sequence (an unconditional battlefield move, a shuffle,
+/// and a trailing `And`-gated battlefield move); it is folded here rather than
+/// during clause assembly because the "instead of putting it into your hand"
+/// destination-swap is mid-phrase and does not reach the intra-chain instead
+/// composer. Scoped to the exact chosen-creature-type gate so no other card's
+/// search chain is touched.
+fn fold_search_choose_type_conditional_destination(def: &mut AbilityDefinition) {
+    if !matches!(&*def.effect, Effect::SearchLibrary { .. }) {
+        return;
+    }
+    let mut gate: Option<AbilityCondition> = None;
+    let mut move_template: Option<AbilityDefinition> = None;
+    let mut shuffle: Option<AbilityDefinition> = None;
+    let mut cur = def.sub_ability.as_deref();
+    while let Some(node) = cur {
+        if move_template.is_none() && matches!(&*node.effect, Effect::ChangeZone { .. }) {
+            move_template = Some(node.clone());
+        }
+        if shuffle.is_none() && matches!(&*node.effect, Effect::Shuffle { .. }) {
+            shuffle = Some(node.clone());
+        }
+        if gate.is_none() {
+            if let Some(cond) = &node.condition {
+                if is_chosen_type_battlefield_gate(cond)
+                    && matches!(
+                        &*node.effect,
+                        Effect::ChangeZone {
+                            destination: Zone::Battlefield,
+                            ..
+                        }
+                    )
+                {
+                    gate = Some(cond.clone());
+                }
+            }
+        }
+        cur = node.sub_ability.as_deref();
+    }
+    let (Some(gate), Some(mut move_template), Some(mut shuffle)) = (gate, move_template, shuffle)
+    else {
+        return;
+    };
+    // Strip any inherited chain wiring from the reused nodes.
+    move_template.condition = None;
+    move_template.else_ability = None;
+    move_template.sub_ability = None;
+    shuffle.condition = None;
+    shuffle.else_ability = None;
+    shuffle.sub_ability = None;
+
+    let set_destination = |node: &mut AbilityDefinition, dest: Zone| {
+        if let Effect::ChangeZone { destination, .. } = &mut *node.effect {
+            *destination = dest;
+        }
+    };
+
+    // else branch C: put the found card into hand, then shuffle.
+    let mut else_hand = move_template.clone();
+    set_destination(&mut else_hand, Zone::Hand);
+    else_hand.sub_ability = Some(Box::new(shuffle.clone()));
+
+    // then branch N: put the found card onto the battlefield, then shuffle,
+    // gated on the And condition; else_ability is the hand branch.
+    let mut then_bf = move_template;
+    set_destination(&mut then_bf, Zone::Battlefield);
+    then_bf.condition = Some(gate);
+    then_bf.sub_ability = Some(Box::new(shuffle));
+    then_bf.else_ability = Some(Box::new(else_hand));
+
+    def.sub_ability = Some(Box::new(then_bf));
+}
+
 pub(crate) fn lower_effect_chain_ir(ir: &EffectChainIr) -> AbilityDefinition {
     let kind = ir.kind;
 
@@ -2052,6 +2154,7 @@ pub(crate) fn lower_effect_chain_ir(ir: &EffectChainIr) -> AbilityDefinition {
     // CR 608.2c + CR 613.1f: persist a standalone "choose a [type] card exiled
     // with ~" pick as the host's last chosen card (Koh, the Face Stealer).
     append_remember_card_to_standalone_exiled_choice(&mut result);
+    fold_search_choose_type_conditional_destination(&mut result);
     if matches!(&*result.effect, Effect::SearchOutsideGame { .. }) {
         result.optional = false;
         result.optional_for = None;
