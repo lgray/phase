@@ -322,6 +322,17 @@ fn concrete_parent_target_filter(
     let filter = crate::game::filter::normalize_contextual_filter(filter, parent_targets);
     match filter {
         TargetFilter::ParentTarget => parent_targets_filter(parent_targets),
+        // CR 603.7c + CR 608.2c: bind a `ParentTargetSlot { index }` delayed
+        // condition filter to the concrete parent object at that declared slot
+        // (single-slot analogue of the `ParentTarget` arm). Out-of-range/empty
+        // slots fall back to `Any`, matching `parent_targets_filter`'s empty case.
+        TargetFilter::ParentTargetSlot { index } => parent_targets
+            .get(index)
+            .map(|target| match target {
+                TargetRef::Object(id) => TargetFilter::SpecificObject { id: *id },
+                TargetRef::Player(id) => TargetFilter::SpecificPlayer { id: *id },
+            })
+            .unwrap_or(TargetFilter::Any),
         TargetFilter::Not { filter } => TargetFilter::Not {
             filter: Box::new(concrete_parent_target_filter(&filter, parent_targets)),
         },
@@ -693,6 +704,33 @@ mod tests {
     use crate::types::phase::Phase;
     use crate::types::player::PlayerId;
     use crate::types::triggers::TriggerMode;
+
+    /// T5 (s25 site 1) — CR 603.7c + CR 608.2c: `concrete_parent_target_filter`
+    /// binds a `ParentTargetSlot { index }` delayed-condition filter to the
+    /// concrete parent object at that one declared slot (not the first). Pre-fix
+    /// the `other => other` fall-through returned the abstract `ParentTargetSlot`
+    /// unchanged (index dropped), so binding never happened — reverting the arm
+    /// flips these assertions from `SpecificObject` back to `ParentTargetSlot`.
+    #[test]
+    fn concrete_parent_target_filter_binds_parent_target_slot_to_that_slot() {
+        let parents = [
+            TargetRef::Object(ObjectId(7)),
+            TargetRef::Object(ObjectId(8)),
+        ];
+        assert_eq!(
+            concrete_parent_target_filter(&TargetFilter::ParentTargetSlot { index: 1 }, &parents),
+            TargetFilter::SpecificObject { id: ObjectId(8) },
+        );
+        assert_eq!(
+            concrete_parent_target_filter(&TargetFilter::ParentTargetSlot { index: 0 }, &parents),
+            TargetFilter::SpecificObject { id: ObjectId(7) },
+        );
+        // Out-of-range slot falls back to `Any`, matching the empty-slice case.
+        assert_eq!(
+            concrete_parent_target_filter(&TargetFilter::ParentTargetSlot { index: 5 }, &parents),
+            TargetFilter::Any,
+        );
+    }
 
     /// Construct a synthetic GameObject with a known mana value and insert
     /// it into state.objects under the given ObjectId. Used by walker tests

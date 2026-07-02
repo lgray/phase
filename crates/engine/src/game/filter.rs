@@ -460,23 +460,40 @@ fn entered_perturbs_quantity(
 
 /// CR 608.2c: Resolve contextual parent-target exclusions before a mass-effect scan.
 ///
-/// This intentionally supports only `Not(ParentTarget)` inside composite filters.
-/// Positive `ParentTarget` inside `And` / `Or` remains unresolved here.
+/// This intentionally supports only `Not(ParentTarget)` and
+/// `Not(ParentTargetSlot { index })` inside composite filters. Positive
+/// `ParentTarget` / `ParentTargetSlot` inside `And` / `Or` remains unresolved here.
 pub fn normalize_contextual_filter(
     filter: &TargetFilter,
     parent_targets: &[TargetRef],
 ) -> TargetFilter {
     match filter {
         TargetFilter::Not { filter: inner }
-            if matches!(inner.as_ref(), TargetFilter::ParentTarget) =>
+            if matches!(
+                inner.as_ref(),
+                TargetFilter::ParentTarget | TargetFilter::ParentTargetSlot { .. }
+            ) =>
         {
-            let object_ids: Vec<ObjectId> = parent_targets
-                .iter()
-                .filter_map(|target| match target {
-                    TargetRef::Object(id) => Some(*id),
-                    TargetRef::Player(_) => None,
-                })
-                .collect();
+            // CR 608.2c: exclude the concrete parent object(s). `ParentTarget`
+            // excludes every parent object; `ParentTargetSlot { index }` excludes
+            // only the object at that one declared slot.
+            let object_ids: Vec<ObjectId> = match inner.as_ref() {
+                TargetFilter::ParentTargetSlot { index } => parent_targets
+                    .get(*index)
+                    .and_then(|target| match target {
+                        TargetRef::Object(id) => Some(*id),
+                        TargetRef::Player(_) => None,
+                    })
+                    .into_iter()
+                    .collect(),
+                _ => parent_targets
+                    .iter()
+                    .filter_map(|target| match target {
+                        TargetRef::Object(id) => Some(*id),
+                        TargetRef::Player(_) => None,
+                    })
+                    .collect(),
+            };
             match object_ids.as_slice() {
                 [] => TargetFilter::Any,
                 [id] => TargetFilter::Not {
@@ -7620,6 +7637,42 @@ mod tests {
                     ],
                 }),
             }
+        );
+    }
+
+    /// T7 (s25 site 3) — CR 608.2c: `Not(ParentTargetSlot { index })` excludes
+    /// only the parent object at that one declared slot; the other parent object
+    /// remains affected. Pre-fix (no `ParentTargetSlot` arm) the `Not` fell to
+    /// the recursion arm and stayed unresolved as `Not(ParentTargetSlot{..})`
+    /// (excluding nobody concretely) — this asserts the concrete single-slot
+    /// exclusion, so reverting the arm flips both slot assertions.
+    #[test]
+    fn normalize_contextual_filter_not_parent_target_slot_excludes_only_that_slot() {
+        let parents = [
+            TargetRef::Object(ObjectId(7)),
+            TargetRef::Object(ObjectId(8)),
+        ];
+        assert_eq!(
+            normalize_contextual_filter(
+                &TargetFilter::Not {
+                    filter: Box::new(TargetFilter::ParentTargetSlot { index: 0 }),
+                },
+                &parents,
+            ),
+            TargetFilter::Not {
+                filter: Box::new(TargetFilter::SpecificObject { id: ObjectId(7) }),
+            },
+        );
+        assert_eq!(
+            normalize_contextual_filter(
+                &TargetFilter::Not {
+                    filter: Box::new(TargetFilter::ParentTargetSlot { index: 1 }),
+                },
+                &parents,
+            ),
+            TargetFilter::Not {
+                filter: Box::new(TargetFilter::SpecificObject { id: ObjectId(8) }),
+            },
         );
     }
 

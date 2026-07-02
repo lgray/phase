@@ -4105,9 +4105,14 @@ fn effect_iterates_over_parent_target(effect: &Effect) -> bool {
 /// detected wherever it appears (`Or { filters: [..., ParentTargetController, ...] }`).
 fn filter_refs_parent_target(filter: &TargetFilter) -> bool {
     match filter {
+        // CR 603.7c + CR 608.2c: a `ParentTargetSlot { index }` delayed effect
+        // must snapshot the parent targets at creation, exactly like the broad
+        // `ParentTarget` anaphor — the index is honored later by
+        // `effect_object_targets` when the snapshot fires.
         TargetFilter::ParentTargetController
         | TargetFilter::ParentTargetOwner
-        | TargetFilter::ParentTarget => true,
+        | TargetFilter::ParentTarget
+        | TargetFilter::ParentTargetSlot { .. } => true,
         TargetFilter::Typed(typed) => matches!(
             typed.controller,
             Some(ControllerRef::ParentTargetController)
@@ -17516,6 +17521,28 @@ mod tests {
             None
         }
         defs.iter().find_map(|d| walk(d, want))
+    }
+
+    /// T6 (s25 site 2) — CR 603.7c + CR 608.2c: `filter_refs_parent_target`
+    /// treats `ParentTargetSlot` like the broad `ParentTarget` anaphor so a
+    /// slot-referencing delayed effect snapshots the parent targets at creation
+    /// (the index is honored at firing by `effect_object_targets`). Pre-fix the
+    /// missing arm fell to `_ => false`, so the snapshot was skipped and the
+    /// delayed effect no-opped — reverting the arm flips the first two asserts.
+    #[test]
+    fn filter_refs_parent_target_detects_parent_target_slot() {
+        assert!(filter_refs_parent_target(&TargetFilter::ParentTargetSlot {
+            index: 0
+        }));
+        // Recursion must find a slot ref nested inside a composite filter.
+        assert!(filter_refs_parent_target(&TargetFilter::Or {
+            filters: vec![
+                TargetFilter::Any,
+                TargetFilter::ParentTargetSlot { index: 2 },
+            ],
+        }));
+        // Negative control: a plain filter is not a parent-target reference.
+        assert!(!filter_refs_parent_target(&TargetFilter::Any));
     }
 
     /// CR 702.174b + CR 608.2c: Longstalk Brawl — the +1/+1 counter is gated on
