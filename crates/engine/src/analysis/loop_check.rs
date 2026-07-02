@@ -294,6 +294,12 @@ pub(crate) fn live_mandatory_loop_winner(
     // deficit on the winner's own life/mana). Replaces the former `detect_loop(...)`
     // delegation, which re-ran only the exact-depth equality and would reject the
     // growing-cascade board the gate above just accepted.
+    //
+    // The measured per-cycle drain is a LOWER BOUND on the actual drain rate: it is
+    // at least the delta observed between the two compared frames. A super-critical
+    // (μ>1) cascade only ACCELERATES from here — each cycle spawns more drain than
+    // the last — so proving progress on the measured floor is sufficient; the real
+    // trajectory reaches lethal no later than the linear extrapolation implies.
     if !delta.net_progress_for(winner) {
         return None;
     }

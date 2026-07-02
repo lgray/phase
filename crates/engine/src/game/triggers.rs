@@ -22339,6 +22339,358 @@ pub mod tests {
         id
     }
 
+    /// Compiler-exhaustive (NO `_` arm) classifier of every `Keyword` variant —
+    /// the structural-exhaustiveness authority for the guard test below (option
+    /// (i)). Returns `true` iff `KeywordTriggerInstaller::triggers_for` has an
+    /// explicit non-empty arm for the keyword (i.e. it synthesizes a granted
+    /// trigger). Because there is no wildcard arm, a future `Keyword` variant
+    /// FAILS TO COMPILE here until it is classified — so a new keyword whose
+    /// granted trigger carries a fire-time condition cannot silently escape the
+    /// guard. Any keyword placed in the `true` group MUST also have a
+    /// representative in `granted_trigger_producer_representatives()` (the test
+    /// cross-checks this at runtime).
+    fn keyword_synthesizes_granted_trigger(kw: &Keyword) -> bool {
+        match kw {
+            // Producers — `triggers_for` synthesizes at least one granted trigger.
+            Keyword::Afflict(_)
+            | Keyword::Undying
+            | Keyword::Persist
+            | Keyword::Exalted
+            | Keyword::Flanking
+            | Keyword::Evolve
+            | Keyword::Extort
+            | Keyword::Renown(_)
+            | Keyword::Fabricate(_)
+            | Keyword::Annihilator(_)
+            | Keyword::Bushido(_)
+            | Keyword::Frenzy(_)
+            | Keyword::Soulbond
+            | Keyword::Battlecry
+            | Keyword::Afterlife(_)
+            | Keyword::Fading(_)
+            | Keyword::Vanishing(_)
+            | Keyword::Rampage(_)
+            | Keyword::Echo(_)
+            | Keyword::CumulativeUpkeep(_)
+            | Keyword::Gravestorm
+            | Keyword::Ingest
+            | Keyword::Melee
+            | Keyword::Mentor
+            | Keyword::Myriad
+            | Keyword::Provoke
+            | Keyword::Suspend { .. }
+            | Keyword::Enlist
+            | Keyword::Dethrone
+            | Keyword::DoubleTeam
+            | Keyword::Poisonous(_)
+            | Keyword::Graft(_)
+            | Keyword::Soulshift(_)
+            | Keyword::Champion(_)
+            | Keyword::Training
+            | Keyword::Recover(_)
+            | Keyword::Increment => true,
+            // Non-producers — `triggers_for` returns an empty vec (no granted
+            // trigger, so no fire-time condition to scan).
+            Keyword::Flying
+            | Keyword::FirstStrike
+            | Keyword::DoubleStrike
+            | Keyword::Trample
+            | Keyword::TrampleOverPlaneswalkers
+            | Keyword::Deathtouch
+            | Keyword::Lifelink
+            | Keyword::Vigilance
+            | Keyword::Haste
+            | Keyword::Reach
+            | Keyword::Defender
+            | Keyword::Menace
+            | Keyword::Indestructible
+            | Keyword::Hexproof
+            | Keyword::HexproofFrom(_)
+            | Keyword::Shroud
+            | Keyword::Flash
+            | Keyword::Fear
+            | Keyword::Intimidate
+            | Keyword::Skulk
+            | Keyword::Shadow
+            | Keyword::Horsemanship
+            | Keyword::Wither
+            | Keyword::Infect
+            | Keyword::StartingIntensity(_)
+            | Keyword::Prowess
+            | Keyword::Cascade
+            | Keyword::Exploit
+            | Keyword::Explore
+            | Keyword::Ascend
+            | Keyword::StartYourEngines
+            | Keyword::Dredge(_)
+            | Keyword::Modular(_)
+            | Keyword::Tribute(_)
+            | Keyword::Unearth(_)
+            | Keyword::Convoke
+            | Keyword::Waterbend
+            | Keyword::Delve
+            | Keyword::Devoid
+            | Keyword::Changeling
+            | Keyword::Phasing
+            | Keyword::Decayed
+            | Keyword::Unleash
+            | Keyword::Riot
+            | Keyword::Enchant(_)
+            | Keyword::EtbCounter { .. }
+            | Keyword::Reconfigure(_)
+            | Keyword::LivingWeapon
+            | Keyword::JobSelect
+            | Keyword::TotemArmor
+            | Keyword::Bestow(_)
+            | Keyword::Embalm(_)
+            | Keyword::Eternalize(_)
+            | Keyword::Protection(_)
+            | Keyword::Kicker(_)
+            | Keyword::Cycling(_)
+            | Keyword::Flashback(_)
+            | Keyword::Ward(_)
+            | Keyword::Equip(_)
+            | Keyword::Landwalk(_)
+            | Keyword::Absorb(_)
+            | Keyword::Crew { .. }
+            | Keyword::Partner(_)
+            | Keyword::Companion(_)
+            | Keyword::Ninjutsu(_)
+            | Keyword::CommanderNinjutsu(_)
+            | Keyword::Prowl(_)
+            | Keyword::Morph(_)
+            | Keyword::Megamorph(_)
+            | Keyword::Mayhem(_)
+            | Keyword::Madness(_)
+            | Keyword::Miracle(_)
+            | Keyword::Dash(_)
+            | Keyword::Emerge(_)
+            | Keyword::Escape(_)
+            | Keyword::Harmonize(_)
+            | Keyword::Evoke(_)
+            | Keyword::Foretell(_)
+            | Keyword::Mutate(_)
+            | Keyword::Disturb(_)
+            | Keyword::Disguise(_)
+            | Keyword::Blitz(_)
+            | Keyword::Overload(_)
+            | Keyword::Spectacle(_)
+            | Keyword::Surge(_)
+            | Keyword::Encore(_)
+            | Keyword::Buyback(_)
+            | Keyword::Casualty(_)
+            | Keyword::Entwine(_)
+            | Keyword::Outlast(_)
+            | Keyword::Scavenge(_)
+            | Keyword::Reinforce { .. }
+            | Keyword::Fortify(_)
+            | Keyword::Prototype { .. }
+            | Keyword::Plot(_)
+            | Keyword::Craft { .. }
+            | Keyword::Offspring(_)
+            | Keyword::Impending { .. }
+            | Keyword::LevelUp(_)
+            | Keyword::Affinity(_)
+            | Keyword::Banding
+            | Keyword::BandsWithOther(_)
+            | Keyword::Epic
+            | Keyword::Fuse
+            | Keyword::Haunt
+            | Keyword::Hideaway(_)
+            | Keyword::Improvise
+            | Keyword::Rebound
+            | Keyword::Retrace
+            | Keyword::Ripple(_)
+            | Keyword::SplitSecond
+            | Keyword::Storm
+            | Keyword::Totem
+            | Keyword::Warp(_)
+            | Keyword::Sneak(_)
+            | Keyword::WebSlinging(_)
+            | Keyword::Mobilize(_)
+            | Keyword::Gift(_)
+            | Keyword::Discover(_)
+            | Keyword::Spree
+            | Keyword::Ravenous
+            | Keyword::Daybound
+            | Keyword::Nightbound
+            | Keyword::ReadAhead
+            | Keyword::Compleated
+            | Keyword::Conspire
+            | Keyword::Demonstrate
+            | Keyword::LivingMetal
+            | Keyword::Bloodthirst(_)
+            | Keyword::Amplify(_)
+            | Keyword::Devour(_)
+            | Keyword::Toxic(_)
+            | Keyword::Saddle(_)
+            | Keyword::Teamwork(_)
+            | Keyword::Backup(_)
+            | Keyword::Squad(_)
+            | Keyword::Typecycling { .. }
+            | Keyword::Firebending(_)
+            | Keyword::Splice { .. }
+            | Keyword::Bargain
+            | Keyword::Sunburst
+            | Keyword::Assist
+            | Keyword::Augment
+            | Keyword::Aftermath
+            | Keyword::JumpStart
+            | Keyword::Cipher
+            | Keyword::Transmute(_)
+            | Keyword::Transfigure(_)
+            | Keyword::Escalate(_)
+            | Keyword::Cleave(_)
+            | Keyword::Undaunted
+            | Keyword::Paradigm
+            | Keyword::Station
+            | Keyword::Replicate(_)
+            | Keyword::Awaken { .. }
+            | Keyword::ForMirrodin
+            | Keyword::MoreThanMeetsTheEye(_)
+            | Keyword::Freerunning(_)
+            | Keyword::Specialize(_)
+            | Keyword::Offering(_)
+            | Keyword::Unknown(_) => false,
+        }
+    }
+
+    /// Concrete representatives for every keyword classified `true` by
+    /// `keyword_synthesizes_granted_trigger`. Payload values are irrelevant to
+    /// the fire-time-condition invariant (the synthesized condition shape does
+    /// not depend on the specific N / cost), so minimal instances are used.
+    fn granted_trigger_producer_representatives() -> Vec<Keyword> {
+        use crate::types::keywords::EchoCost;
+        vec![
+            Keyword::Echo(EchoCost::Mana(ManaCost::default())),
+            Keyword::CumulativeUpkeep(AbilityCost::Mana {
+                cost: ManaCost::default(),
+            }),
+            Keyword::Undying,
+            Keyword::Persist,
+            Keyword::Afterlife(1),
+            Keyword::Fabricate(1),
+            Keyword::Soulshift(1),
+            Keyword::Annihilator(1),
+            Keyword::Provoke,
+            Keyword::Enlist,
+            Keyword::Renown(1),
+            Keyword::Mentor,
+            Keyword::Graft(1),
+            Keyword::Bushido(1),
+            Keyword::Frenzy(1),
+            Keyword::Battlecry,
+            Keyword::Rampage(1),
+            Keyword::Melee,
+            Keyword::Dethrone,
+            Keyword::Recover(ManaCost::default()),
+            Keyword::Evolve,
+            Keyword::Exalted,
+            Keyword::Flanking,
+            Keyword::Extort,
+            Keyword::Increment,
+            Keyword::Myriad,
+            Keyword::DoubleTeam,
+            Keyword::Soulbond,
+            Keyword::Suspend {
+                count: 1,
+                cost: ManaCost::default(),
+            },
+            Keyword::Afflict(1),
+            Keyword::Training,
+            Keyword::Poisonous(1),
+            Keyword::Ingest,
+            Keyword::Gravestorm,
+            Keyword::Fading(1),
+            Keyword::Vanishing(1),
+            Keyword::Champion("Spirit".to_string()),
+        ]
+    }
+
+    /// Item-5 (`fire_time_conditions_read_projected_resource`, resource.rs) only
+    /// scans an object's own `trigger_definitions` — it does NOT scan the
+    /// runtime-GRANTED keyword triggers that
+    /// `KeywordTriggerInstaller::triggers_for` synthesizes (those are produced
+    /// on-the-fly by `synthesize_granted_keyword_triggers` during trigger
+    /// collection and never land on `trigger_definitions`). This test pins the
+    /// EXACT set of granted-keyword synthesized fire-time conditions that the
+    /// item-5 classifier (`trigger_condition_reads_projected_resource`, whose
+    /// `Axes` walk fails CLOSED — see `Axes::CONSERVATIVE`) flags as reading a
+    /// projected resource, so that set cannot grow unnoticed.
+    ///
+    /// Measured today the flagged set is `{ Dethrone, Increment, Soulbond,
+    /// Training }`, but only ONE is a GENUINE projected-player-resource read:
+    /// - **Dethrone** (CR 702.105a): `QuantityComparison` of the defending
+    ///   player's `LifeTotal` vs the max `LifeTotal` among all players. Life
+    ///   (CR 119) is a projected axis `project_out_resources` zeroes, so a dormant
+    ///   granted Dethrone WOULD arm on a projected read. Because a runtime-GRANTED
+    ///   Dethrone (`Effect::GrantKeywords` / `ContinuousModification::AddKeyword`)
+    ///   lives off-`trigger_definitions`, item-5 does not see it — a KNOWN,
+    ///   UNRESOLVED item-5 gap (dormant-arming false WIN, N1(k) class) whose
+    ///   severity depends on whether granted Dethrone is reachable inside a
+    ///   growing-cascade loop. NOTE: this contradicts the inc2b review's premise
+    ///   that "no granted-keyword condition reads a projected resource".
+    /// - **Increment / Soulbond / Training** are FALSE POSITIVES of the fail-closed
+    ///   walk: Increment reads `ManaSpentToCast` (→ `Axes::CONSERVATIVE`), Soulbond
+    ///   reads control/`Unpaired`/zone-change filters, Training reads a co-attacker
+    ///   `MinCoAttackers` power filter. All are cast/combat/object state that gate
+    ///   (1) strict-compares; the classifier only marks them projected because it
+    ///   does not descend those subtrees. Missing them in item-5 is harmless.
+    ///
+    /// If this set changes, DO NOT just edit the expected list — investigate:
+    /// a NEW genuine projected reader means item-5 must be extended to scan
+    /// granted-keyword defs before it can be trusted; a removed entry means the
+    /// classifier or a builder changed.
+    #[test]
+    fn granted_keyword_trigger_conditions_projected_reads_are_exactly_known_gaps() {
+        use crate::database::synthesis::KeywordTriggerInstaller;
+        use crate::game::ability_scan::trigger_condition_reads_projected_resource;
+        use std::collections::BTreeSet;
+
+        let mut checked_conditions = 0;
+        let mut flagged: BTreeSet<String> = BTreeSet::new();
+        for kw in granted_trigger_producer_representatives() {
+            // The representative list and the exhaustive classifier must agree.
+            assert!(
+                keyword_synthesizes_granted_trigger(&kw),
+                "{kw:?} is in the representative list but classified as a non-producer"
+            );
+            let triggers = KeywordTriggerInstaller::triggers_for(&kw);
+            assert!(
+                !triggers.is_empty(),
+                "{kw:?} is classified as a granted-trigger producer but synthesized no trigger"
+            );
+            for def in &triggers {
+                if let Some(condition) = &def.condition {
+                    checked_conditions += 1;
+                    if trigger_condition_reads_projected_resource(condition) {
+                        flagged.insert(format!("{kw:?}"));
+                    }
+                }
+            }
+        }
+        // Non-vacuity: builders DO synthesize fire-time conditions (Echo→EchoDue,
+        // Renown→Not(IsRenowned), Suspend/…), so the `Some(condition)` arm above
+        // is actually exercised — not passing merely because every condition is
+        // `None`.
+        assert!(
+            checked_conditions > 0,
+            "expected at least one synthesized fire-time condition to scan"
+        );
+        let expected: BTreeSet<String> = ["Dethrone", "Increment", "Soulbond", "Training"]
+            .into_iter()
+            .map(str::to_string)
+            .collect();
+        assert_eq!(
+            flagged, expected,
+            "granted-keyword conditions flagged as projected-reading changed. If a NEW \
+             keyword appears, verify whether it is a GENUINE projected read (extend \
+             fire_time_conditions_read_projected_resource, item-5 in resource.rs, to scan \
+             granted-keyword defs) or another fail-closed false positive; if one \
+             DISAPPEARS, confirm the classifier/builder change is intended."
+        );
+    }
+
     /// Install the synthesized Undying dies-trigger (CR 702.93a) onto a
     /// battlefield creature, mirroring `make_soulbond_creature`.
     fn make_undying_creature(state: &mut GameState, player: PlayerId, name: &str) -> ObjectId {

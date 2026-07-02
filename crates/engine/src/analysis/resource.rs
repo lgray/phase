@@ -916,9 +916,30 @@ fn stack_entry_reads_projected_resource(entry: &StackEntry) -> bool {
 /// Run once on `current` (item-1 board equality makes the definition sets identical).
 /// Fail-closed: any surface the scan cannot classify ⇒ reject (no shortcut).
 ///
-/// Keyword-synthesized granted triggers are NOT scanned: measured — no
-/// `KeywordTriggerInstaller` trigger carries a fire-time `TriggerCondition` (every
-/// builder defaults `condition: None`), so they can express no projected read.
+/// Keyword-synthesized granted triggers (`KeywordTriggerInstaller::triggers_for`
+/// / `synthesize_granted_keyword_triggers`) are NOT scanned here: they are
+/// produced on-the-fly during trigger collection and never land on
+/// `obj.trigger_definitions`, so `active_trigger_definitions` (loop (i)) does not
+/// reach them. Most such triggers carry non-projected fire-time conditions
+/// (Echo→`EchoDue`, Renown→`Not(IsRenowned)`, Suspend/Soulshift/Vanishing/
+/// CumulativeUpkeep→counter/zone conditions, Soulbond→filter conditions).
+///
+/// KNOWN GAP: the item-5 classifier (`trigger_condition_reads_projected_resource`)
+/// flags four granted-keyword conditions as projected-reading — Dethrone,
+/// Increment, Soulbond, Training — but only Dethrone is a GENUINE projected read.
+/// Dethrone (CR 702.105a) compares the defending player's `LifeTotal` to the max
+/// `LifeTotal` among all players (CR 119 life = a PROJECTED axis this pass
+/// zeroes); Increment/Soulbond/Training are fail-closed false positives
+/// (`ManaSpentToCast` / control-filter / co-attacker-power reads the classifier's
+/// `Axes::CONSERVATIVE` walk cannot descend, all cast/combat/object state gate (1)
+/// strict-compares). A runtime-GRANTED Dethrone (`Effect::GrantKeywords` /
+/// `ContinuousModification::AddKeyword`) is invisible to this scan — a latent
+/// dormant-arming risk (false WIN, N1(k) class) bounded only by whether granted
+/// Dethrone is reachable inside a growing-cascade loop. The guard test
+/// `granted_keyword_trigger_conditions_projected_reads_are_exactly_known_gaps` in
+/// `game::triggers` pins that flagged set: if a NEW granted-keyword condition
+/// begins reading a projected resource, that test fails and this scan MUST be
+/// extended to the granted-keyword defs before item-5 can be trusted again.
 fn fire_time_conditions_read_projected_resource(state: &GameState) -> bool {
     // (i) Trigger fire-time intervening-if conditions (CR 603.4). `active_trigger_
     // definitions` is the liveness authority (CR 702.26b phased-out + CR 114.4
@@ -996,8 +1017,12 @@ fn fire_time_conditions_read_projected_resource(state: &GameState) -> bool {
 /// read). `DamageModification::LifeFloor` caps against a player's live life total
 /// (CR 119, projected); `Plus { value }` carries a `QuantityExpr` that MAY read one
 /// — treated fail-closed. `execute` is an `AbilityDefinition` with no C0-walker
-/// predicate ⇒ fail-closed when present. All other modification variants read only
-/// fixed amounts or the source's own (strict-compared) power.
+/// predicate ⇒ fail-closed when present. The un-flagged `DamageModification` /
+/// `QuantityModification` variants are safe to omit because their outputs land in
+/// STRICT-COMPARED state (token/counter counts, source power) — not a projected
+/// axis — so a divergence there already breaks gate (1) directly rather than
+/// arming mid-extrapolation. All other modification variants read only fixed
+/// amounts or the source's own (strict-compared) power.
 fn replacement_body_may_read_projected(def: &crate::types::ability::ReplacementDefinition) -> bool {
     if def.execute.is_some() {
         return true;
