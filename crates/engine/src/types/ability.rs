@@ -2846,6 +2846,17 @@ pub enum ControllerRef {
     /// surfaces a companion `TargetFilter::Player` slot so the player is chosen
     /// as part of CR 601.2c / CR 603.3d target declaration.
     TargetPlayer,
+    // LEGALITY-SCOPE PAIR: TargetPlayer (any) and TargetOpponent (opponent-only)
+    // are runtime-read-identical; they differ ONLY in the companion slot's legal
+    // targets. A THIRD legality-scoped Target* variant MUST NOT be added as a
+    // sibling — at 3 it crosses the /add-engine-variant Stage-2 threshold: refactor
+    // to `TargetPlayer { constraint: PlayerRelation }` instead.
+    /// CR 109.4 + CR 102.2 / CR 102.3: filter controller is the single OPPONENT
+    /// chosen as a target of the enclosing ability. Runtime read is identical to
+    /// `TargetPlayer` (first `TargetRef::Player` in `ability.targets`); the sole
+    /// difference is the companion slot's legal-target set
+    /// (`Typed{controller:Opponent}` → `find_legal_targets` excludes self).
+    TargetOpponent,
     /// CR 608.2c + CR 109.4: Filter controller is the controller of the parent
     /// object target inherited by this chained effect ("that permanent's
     /// controller may sacrifice a land").

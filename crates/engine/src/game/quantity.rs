@@ -2963,14 +2963,17 @@ fn resolve_ref(
                         Some(ControllerRef::ScopedPlayer) => {
                             snap.controller == scoped_player_or_controller(ability, controller)
                         }
-                        Some(ControllerRef::TargetPlayer) => ability
-                            .and_then(|a| {
-                                a.targets.iter().find_map(|t| match t {
-                                    crate::types::ability::TargetRef::Player(pid) => Some(*pid),
-                                    crate::types::ability::TargetRef::Object(_) => None,
+                        // CR 109.4: TargetOpponent reads identically to TargetPlayer.
+                        Some(ControllerRef::TargetPlayer | ControllerRef::TargetOpponent) => {
+                            ability
+                                .and_then(|a| {
+                                    a.targets.iter().find_map(|t| match t {
+                                        crate::types::ability::TargetRef::Player(pid) => Some(*pid),
+                                        crate::types::ability::TargetRef::Object(_) => None,
+                                    })
                                 })
-                            })
-                            .is_some_and(|pid| pid == snap.controller),
+                                .is_some_and(|pid| pid == snap.controller)
+                        }
                         Some(ControllerRef::ParentTargetController) => ability
                             .and_then(|a| {
                                 crate::game::ability_utils::parent_target_controller(a, state)
@@ -3036,7 +3039,8 @@ fn damage_source_controller_matches(
         ControllerRef::You => actual == controller,
         ControllerRef::Opponent => actual != controller,
         ControllerRef::ScopedPlayer => actual == scoped_player_or_controller(ability, controller),
-        ControllerRef::TargetPlayer => ability
+        // CR 109.4: TargetOpponent reads identically to TargetPlayer.
+        ControllerRef::TargetPlayer | ControllerRef::TargetOpponent => ability
             .and_then(|ability| {
                 ability.targets.iter().find_map(|target| match target {
                     TargetRef::Player(player) => Some(*player),

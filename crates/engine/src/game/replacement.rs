@@ -4045,10 +4045,10 @@ fn evaluate_replacement_condition(
             let turn_ok = match active_player_req {
                 Some(ControllerRef::You) => state.active_player == controller,
                 Some(ControllerRef::Opponent) => state.active_player != controller,
-                // CR 109.4: TargetPlayer active-player gate is nonsensical at
-                // replacement-check time (no ability context). Fail closed.
+                // CR 109.4: TargetPlayer / TargetOpponent active-player gate is
+                // nonsensical at replacement-check time (no ability context). Fail closed.
                 Some(ControllerRef::ScopedPlayer) => false,
-                Some(ControllerRef::TargetPlayer) => false,
+                Some(ControllerRef::TargetPlayer | ControllerRef::TargetOpponent) => false,
                 Some(ControllerRef::ParentTargetController) => false,
                 Some(ControllerRef::ParentTargetOwner) => false,
                 Some(ControllerRef::DefendingPlayer) => false,
@@ -4083,10 +4083,10 @@ fn evaluate_replacement_condition(
             let turn_ok = match active_player_req {
                 Some(ControllerRef::You) => state.active_player == controller,
                 Some(ControllerRef::Opponent) => state.active_player != controller,
-                // CR 109.4: TargetPlayer active-player gate is nonsensical at
-                // replacement-check time (no ability context). Fail closed.
+                // CR 109.4: TargetPlayer / TargetOpponent active-player gate is
+                // nonsensical at replacement-check time (no ability context). Fail closed.
                 Some(ControllerRef::ScopedPlayer) => false,
-                Some(ControllerRef::TargetPlayer) => false,
+                Some(ControllerRef::TargetPlayer | ControllerRef::TargetOpponent) => false,
                 Some(ControllerRef::ParentTargetController) => false,
                 Some(ControllerRef::ParentTargetOwner) => false,
                 Some(ControllerRef::DefendingPlayer) => false,
@@ -4254,6 +4254,7 @@ fn evaluate_replacement_condition(
                 ControllerRef::Opponent => event_source_controller != controller,
                 ControllerRef::ScopedPlayer
                 | ControllerRef::TargetPlayer
+                | ControllerRef::TargetOpponent
                 | ControllerRef::ParentTargetController
                 | ControllerRef::ParentTargetOwner
                 | ControllerRef::DefendingPlayer
@@ -4732,6 +4733,9 @@ fn object_replacement_candidate_applies(
                 crate::types::ability::ControllerRef::Opponent => *owner != replacement_player,
                 crate::types::ability::ControllerRef::ScopedPlayer
                 | crate::types::ability::ControllerRef::TargetPlayer
+                // CR 109.4: TargetOpponent has no active-ability context at
+                // replacement-check time — fails closed identically to TargetPlayer.
+                | crate::types::ability::ControllerRef::TargetOpponent
                 | crate::types::ability::ControllerRef::ParentTargetController
                 | crate::types::ability::ControllerRef::ParentTargetOwner
                 | crate::types::ability::ControllerRef::DefendingPlayer

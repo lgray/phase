@@ -219,7 +219,9 @@ fn find_legal_targets_with_context(
                     // candidates (the "target player" is what's being chosen here).
                     // Fail closed.
                     Some(ControllerRef::ScopedPlayer) => false,
-                    Some(ControllerRef::TargetPlayer) => false,
+                    // CR 109.4: TargetOpponent, like TargetPlayer, is what's being
+                    // chosen here — fail closed as a candidate-enumeration scope.
+                    Some(ControllerRef::TargetPlayer | ControllerRef::TargetOpponent) => false,
                     Some(ControllerRef::ParentTargetController) => false,
                     Some(ControllerRef::ParentTargetOwner) => false,
                     Some(ControllerRef::DefendingPlayer) => false,

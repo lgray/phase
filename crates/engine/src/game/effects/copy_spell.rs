@@ -391,6 +391,7 @@ fn resolve_copier_player(
             .next(),
         ControllerRef::ScopedPlayer
         | ControllerRef::TargetPlayer
+        | ControllerRef::TargetOpponent
         | ControllerRef::ParentTargetController
         | ControllerRef::ParentTargetOwner
         | ControllerRef::DefendingPlayer

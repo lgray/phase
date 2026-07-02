@@ -167,6 +167,11 @@ pub fn parse_controller_suffix(input: &str) -> OracleResult<'_, ControllerRef> {
         value(ControllerRef::Opponent, tag("an opponent controls")),
         value(ControllerRef::Opponent, tag("your opponents control")),
         value(ControllerRef::TargetPlayer, tag("target player controls")),
+        // CR 109.4 + CR 102.2 / CR 102.3: opponent-constrained target-player scope.
+        value(
+            ControllerRef::TargetOpponent,
+            tag("target opponent controls"),
+        ),
     ))
     .parse(input)
 }

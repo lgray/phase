@@ -9703,7 +9703,9 @@ mod where_x_tests {
         let TargetFilter::Typed(typed) = filter else {
             panic!("expected typed object count filter, got {filter:?}");
         };
-        assert_eq!(typed.controller, Some(ControllerRef::TargetPlayer));
+        // CR 109.4: "target opponent controls" now lowers to the opponent-constrained
+        // ControllerRef::TargetOpponent (was the looser TargetPlayer).
+        assert_eq!(typed.controller, Some(ControllerRef::TargetOpponent));
         assert!(
             typed
                 .type_filters
