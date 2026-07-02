@@ -534,10 +534,17 @@ fn scan_effect(x: &Effect) -> Axes {
             reveal: _,
             enter_tapped: _,
             source: _,
+            keep_count_expr,
         } => {
             let mut acc = Axes::NONE;
             acc = acc.or(scan_target_filter(player));
             acc = acc.or(scan_quantity_expr(count));
+            // A dynamic keep-count is a projected-resource read (axis 3): "keep N
+            // cards" where N scales with game state feeds the growing-cascade
+            // detector exactly like `count`. Classify it identically, not `_`.
+            if let Some(kce) = keep_count_expr {
+                acc = acc.or(scan_quantity_expr(kce));
+            }
             acc = acc.or(scan_target_filter(filter));
             acc
         }
@@ -3165,6 +3172,10 @@ fn scan_controller_ref(x: &ControllerRef) -> Axes {
         ControllerRef::Opponent => Axes::NONE,
         ControllerRef::ScopedPlayer => Axes::NONE,
         ControllerRef::TargetPlayer => Axes::NONE,
+        // CR 109.4: TargetOpponent is a target-player slot with opponent-only
+        // legality; it is runtime-read-identical to TargetPlayer (the scope
+        // restriction is enforced at target selection, not a walker axis).
+        ControllerRef::TargetOpponent => Axes::NONE,
         ControllerRef::ParentTargetController => Axes {
             event: true,
             sibling: false,
