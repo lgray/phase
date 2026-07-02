@@ -5352,6 +5352,18 @@ fn handle_play_land(
             "Player is under a CantPlayLand static (CR 305.2)".to_string(),
         ));
     }
+    // CR 116.2a + CR 305.1: A `ProhibitPlayFromZone` deny covers the play-land
+    // half of "play" (a land play is a special action, not a cast), so this gate
+    // is the land-side counterpart to the cast-gate check in
+    // `casting::prepare_spell_cast` (Memory Vessel: "can't play cards from their
+    // hand"). The card's current zone is the discriminator.
+    if let Some(obj) = state.objects.get(&object_id) {
+        if super::casting::is_blocked_by_prohibit_play_from_zone(state, obj, player) {
+            return Err(EngineError::ActionNotAllowed(
+                "A temporary effect prevents playing cards from this zone (CR 116.2a)".to_string(),
+            ));
+        }
+    }
     let additional = super::static_abilities::additional_land_drops(state, player);
     let effective_limit = state.max_lands_per_turn.saturating_add(additional);
     // CR 805.4c: per-player land count under team turns (each teammate has

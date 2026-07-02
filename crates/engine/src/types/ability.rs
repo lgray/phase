@@ -2072,6 +2072,17 @@ pub enum ProhibitedActivity {
     Attack {
         defended: crate::types::triggers::AttackTargetFilter,
     },
+    /// CR 116.2a + CR 305.1 + CR 601.2a: Prohibit *playing* (casting a spell OR
+    /// playing a land) cards located in `zone` for the affected players.
+    ///
+    /// Distinct from `CastOnlyFromZones` — that is an ALLOW-list restricted to
+    /// CASTS only. A land play is a special action, not the casting of a spell
+    /// (CR 116.2a, CR 305.1), so an allow-list of cast-legal zones cannot express
+    /// "can't play cards from your hand" (Memory Vessel: each player may play the
+    /// cards they exiled, but not from their hand). This is a DENY axis covering
+    /// both the cast gate and the play-land gate, so it is categorically a
+    /// separate variant, not a parameterization of `CastOnlyFromZones`.
+    ProhibitPlayFromZone { zone: Zone },
 }
 
 /// When a game restriction expires.

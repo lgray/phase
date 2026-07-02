@@ -3034,6 +3034,177 @@ fn try_parse_cant_cast_spells_effect(tp: TextPair<'_>) -> Option<ParsedEffectCla
     })
 }
 
+/// CR 116.2a + CR 305.1 + CR 601.2a: "[scope] can't play [cards|lands or cast
+/// spells] from [zone] [this turn]" → prohibit *playing* (casting a spell OR
+/// playing a land) cards located in `zone` for the affected players. Covers
+/// Memory Vessel's hand clause and Shaman's Trance's graveyard clause. Distinct
+/// from `try_parse_cast_only_from_zones_restriction` (an ALLOW-list over casts
+/// only) — a land play is a special action, not a cast, so this is a DENY axis.
+///
+/// CR 611.2a + CR 514.2: an optional leading duration ("until your next turn,")
+/// is stripped here; the resolved expiry is filled from `ability.duration` at
+/// AddRestriction resolution (the `EndOfTurn` placeholder below is overridden
+/// there). A trailing "this turn" resolves to end-of-turn either way — whether
+/// consumed by `opt(tag(" this turn"))` here or by the shell's trailing-duration
+/// strip upstream.
+fn try_parse_cant_play_from_zone(tp: TextPair<'_>) -> Option<ParsedEffectClause> {
+    let (scope_tp, expiry, duration) = if let Some(((expiry, duration), rest_orig)) =
+        nom_on_lower(tp.original, tp.lower, |input| {
+            alt((
+                value(
+                    (
+                        RestrictionExpiry::EndOfTurn,
+                        Some(Duration::UntilNextTurnOf {
+                            player: PlayerScope::Controller,
+                        }),
+                    ),
+                    tag("until your next turn, "),
+                ),
+                value(
+                    (RestrictionExpiry::EndOfTurn, Some(Duration::UntilEndOfTurn)),
+                    tag("until end of turn, "),
+                ),
+                value((RestrictionExpiry::EndOfTurn, None), tag("this turn, ")),
+            ))
+            .parse(input)
+        }) {
+        let rest_lower = &tp.lower[tp.lower.len() - rest_orig.len()..];
+        (TextPair::new(rest_orig, rest_lower), expiry, duration)
+    } else {
+        (tp, RestrictionExpiry::EndOfTurn, None)
+    };
+
+    let ((affected_players, zone), remaining) =
+        nom_on_lower(scope_tp.original, scope_tp.lower, |input| {
+            let (input, affected_players) = alt((
+                value(
+                    RestrictionPlayerScope::OpponentsOfSourceController,
+                    tag("other players"),
+                ),
+                value(
+                    RestrictionPlayerScope::OpponentsOfSourceController,
+                    tag("your opponents"),
+                ),
+                value(
+                    RestrictionPlayerScope::OpponentsOfSourceController,
+                    tag("each opponent"),
+                ),
+                value(
+                    RestrictionPlayerScope::OpponentsOfSourceController,
+                    tag("opponents"),
+                ),
+                value(RestrictionPlayerScope::AllPlayers, tag("each player")),
+                value(RestrictionPlayerScope::AllPlayers, tag("players")),
+                value(RestrictionPlayerScope::AllPlayers, tag("they")),
+                value(RestrictionPlayerScope::TargetedPlayer, tag("target player")),
+            ))
+            .parse(input)?;
+            let (input, _) = alt((tag(" can't "), tag(" cannot "))).parse(input)?;
+            // Longest-first: the compound "lands or/and cast spells" verbs must
+            // win over the bare "play cards" forms.
+            let (input, _) = alt((
+                tag("play lands or cast spells"),
+                tag("play lands and cast spells"),
+                tag("play cards"),
+                tag("play a card"),
+            ))
+            .parse(input)?;
+            let (input, _) = tag(" from ").parse(input)?;
+            // Longest-first so plural/possessive zones win over their prefixes.
+            let (input, zone) = alt((
+                value(Zone::Hand, tag("their hands")),
+                value(Zone::Hand, tag("their hand")),
+                value(Zone::Hand, tag("your hand")),
+                value(Zone::Hand, tag("hand")),
+                value(Zone::Graveyard, tag("their graveyards")),
+                value(Zone::Graveyard, tag("their graveyard")),
+                value(Zone::Graveyard, tag("graveyard")),
+                value(Zone::Exile, tag("exile")),
+            ))
+            .parse(input)?;
+            let (input, _) = opt(tag(" this turn")).parse(input)?;
+            Ok((input, (affected_players, zone)))
+        })?;
+
+    // Reject trailing riders — a card whose prohibition carries an unrecognized
+    // continuation must fall through to an honest Unimplemented, not silently
+    // drop the tail.
+    if !remaining.trim().trim_end_matches('.').trim().is_empty() {
+        return None;
+    }
+
+    Some(ParsedEffectClause {
+        effect: Effect::AddRestriction {
+            restriction: GameRestriction::ProhibitActivity {
+                source: ObjectId(0),
+                affected_players,
+                expiry,
+                activity: ProhibitedActivity::ProhibitPlayFromZone { zone },
+            },
+        },
+        duration,
+        sub_ability: None,
+        distribute: None,
+        multi_target: None,
+        condition: None,
+        optional: false,
+        unless_pay: None,
+    })
+}
+
+/// CR 611.2a: one leading duration scopes BOTH a per-owner exile-play grant and
+/// a play-from-zone prohibition ("Until your next turn, players may play cards
+/// they exiled this way, and they can't play cards from their hand" — Memory
+/// Vessel). A pure split at ", and " would strand the shared leading duration on
+/// the grant half only (there is no general leading-duration distribution), so
+/// this recognizer OWNS the duration and re-stamps it onto both halves.
+fn try_parse_exile_play_grant_with_play_prohibition(
+    tp: TextPair<'_>,
+    ctx: &ParseContext,
+) -> Option<ParsedEffectClause> {
+    let (dur, body) = strip_leading_duration(tp.original)?;
+    let body_lower = body.to_lowercase();
+    // grant = text BEFORE ", and "; restr = text AFTER (probe-verified mapping).
+    let (grant_text, restr_text) =
+        super::oracle_nom::bridge::split_once_on_lower(body, &body_lower, ", and ")?;
+
+    let grant_lower = grant_text.to_lowercase();
+    let mut grant = try_parse_play_from_exile(TextPair::new(grant_text, &grant_lower), ctx)?;
+    if !matches!(
+        &grant.effect,
+        Effect::GrantCastingPermission {
+            permission: CastingPermission::PlayFromExile { .. },
+            ..
+        }
+    ) {
+        return None;
+    }
+
+    // Routes to `try_parse_cant_play_from_zone` via the effect-clause dispatch.
+    let mut restr_def = parse_effect_chain(restr_text, AbilityKind::Spell);
+    if !matches!(
+        &*restr_def.effect,
+        Effect::AddRestriction {
+            restriction: GameRestriction::ProhibitActivity {
+                activity: ProhibitedActivity::ProhibitPlayFromZone { .. },
+                ..
+            },
+        }
+    ) {
+        return None;
+    }
+
+    // Stamp the shared duration on both halves. `with_clause_duration` patches
+    // the grant's `PlayFromExile.duration` and `clause.duration`; the restriction
+    // def's `duration` becomes `UntilPlayerNextTurn{activator}` at AddRestriction
+    // resolution (CR 514.2 + add_restriction::fill_runtime_fields).
+    grant = with_clause_duration(grant, dur.clone());
+    restr_def.duration = Some(dur);
+    restr_def.sub_link = SubAbilityLink::SequentialSibling;
+    grant.sub_ability = Some(Box::new(restr_def));
+    Some(grant)
+}
+
 fn try_parse_cant_activate_non_mana_abilities_effect(
     tp: TextPair<'_>,
 ) -> Option<ParsedEffectClause> {
@@ -6488,6 +6659,22 @@ fn parse_effect_clause_inner(text: &str, ctx: &mut ParseContext) -> ParsedEffect
         return clause;
     }
 
+    // CR 611.2a: shared-duration exile-play grant + play-from-zone prohibition
+    // ("Until your next turn, players may play cards they exiled this way, and
+    // they can't play cards from their hand" — Memory Vessel). Compound first —
+    // it owns the leading duration; the standalone prohibition below returns
+    // None on this chunk. Both precede the `strip_leading_duration` recursion so
+    // the compound sees the leading duration intact.
+    if let Some(clause) = try_parse_exile_play_grant_with_play_prohibition(tp, ctx) {
+        return clause;
+    }
+
+    // CR 116.2a + CR 305.1: "[scope] can't play cards from [zone]" prohibition
+    // (Shaman's Trance's graveyard clause, Memory Vessel's hand sub-clause).
+    if let Some(clause) = try_parse_cant_play_from_zone(tp) {
+        return clause;
+    }
+
     // CR 500.7 + CR 602.5: "During that turn, power-up abilities can't be
     // activated" (Kang). Tag-scoped prohibition for the granted extra turn — try
     // before the generic non-mana-ability prohibition.
@@ -9472,6 +9659,22 @@ fn try_parse_chosen_kind_filter(filter_text: &str) -> Option<TargetFilter> {
         .then_some(parsed)
 }
 
+/// CR 611.2a + CR 108.3 + CR 400.7i: per-owner exile-play grant phrase —
+/// "[each player|players] may [play|cast] [the] card[s] they exiled this way".
+/// Composed by dimension (subject × verb × object noun) so a single arm covers
+/// both Rocco, Street Chef ("each player may play the card they exiled this
+/// way") and Memory Vessel ("players may play cards they exiled this way")
+/// without enumerating the permutations. The mandatory " they exiled this way"
+/// suffix keeps the grant class scoped to exactly those two cards.
+fn parse_per_owner_exiled_this_way(i: &str) -> OracleResult<'_, ()> {
+    let (i, _) = alt((tag("each player "), tag("players "))).parse(i)?;
+    let (i, _) = alt((tag("may play "), tag("may cast "))).parse(i)?;
+    let (i, _) = opt(tag("the ")).parse(i)?;
+    // Longest-first so "cards" wins over the "card" prefix.
+    let (i, _) = alt((tag("cards"), tag("card"))).parse(i)?;
+    value((), tag(" they exiled this way")).parse(i)
+}
+
 /// CR 611.2a + CR 108.3: Parse per-grantee grant clauses that follow a
 /// compound-exile effect. These clauses bind the resulting `PlayFromExile`
 /// permission to a player OTHER than the ability's controller — the exiled
@@ -9495,17 +9698,15 @@ fn try_parse_per_grantee_play_grant(tp: TextPair<'_>) -> Option<ParsedEffectClau
         tag("for each of those cards, its owner may cast it"),
         tag("its owner may play it"),
         tag("its owner may cast it"),
-        // CR 611.2a + CR 108.3 + CR 400.7i + CR 400.7j: Rocco-class
-        // "each player may play the card they exiled this way" —
-        // multi-player owner-binding grant. The "they exiled this way"
-        // anaphor refers to the per-iteration tracked set published by
-        // the parent player_scope iteration in `resolve_ability_chain`;
-        // the resolver binds `granted_to` to each card's owner via
-        // `PermissionGrantee::ObjectOwner`.
-        tag("each player may play the card they exiled this way"),
-        tag("each player may cast the card they exiled this way"),
-        tag("each player may play the cards they exiled this way"),
-        tag("each player may cast the cards they exiled this way"),
+        // CR 611.2a + CR 108.3 + CR 400.7i + CR 400.7j: per-owner
+        // "[each player|players] may [play|cast] [the] card[s] they exiled this
+        // way" — multi-player owner-binding grant (Rocco, Street Chef +
+        // Memory Vessel). The "they exiled this way" anaphor refers to the
+        // per-iteration tracked set published by the parent player_scope
+        // iteration in `resolve_ability_chain`; the resolver binds `granted_to`
+        // to each card's owner via `PermissionGrantee::ObjectOwner`. B1: the alt
+        // tuple Output is `&str`, so `recognize` (not `value((), ...)`) is used.
+        recognize(parse_per_owner_exiled_this_way),
         // CR 611.2a + CR 108.3 + CR 400.7i: Subject-elided owner-binding grant
         // — Lightstall Inquisitor's "each opponent exiles a card from their hand
         // **and may play that card** for as long as it remains exiled". The

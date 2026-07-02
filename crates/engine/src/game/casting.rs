@@ -562,6 +562,39 @@ fn is_blocked_by_cast_only_from_zones(
         })
 }
 
+/// CR 116.2a + CR 305.1 + CR 601.2a: A `ProhibitPlayFromZone { zone }`
+/// restriction prevents the affected player from playing (casting OR playing as
+/// a land) a card located in `zone`. Consulted by BOTH the spell-cast gate and
+/// the play-land gate (`handle_play_land`) so the deny covers plays that are not
+/// casts (Memory Vessel: "they can't play cards from their hand"). The object's
+/// current zone is the discriminator, so a card that has left the prohibited
+/// zone (e.g. now in exile) is unaffected.
+pub(crate) fn is_blocked_by_prohibit_play_from_zone(
+    state: &GameState,
+    obj: &crate::game::game_object::GameObject,
+    player: PlayerId,
+) -> bool {
+    state
+        .restrictions
+        .iter()
+        .any(|restriction| match restriction {
+            GameRestriction::ProhibitActivity {
+                source,
+                affected_players,
+                activity: ProhibitedActivity::ProhibitPlayFromZone { zone },
+                ..
+            } => {
+                let source_controller = state
+                    .objects
+                    .get(source)
+                    .map(|source_obj| source_obj.controller);
+                restriction_scope_matches_player(source_controller, affected_players, player)
+                    && obj.zone == *zone
+            }
+            _ => false,
+        })
+}
+
 /// CR 101.2: Check if a CantCastSpells restriction prevents the given player
 /// from casting any spells. E.g., Silence: "Your opponents can't cast spells this turn."
 fn is_blocked_by_cant_cast_spells(
@@ -783,6 +816,7 @@ pub fn spell_objects_available_to_cast(state: &GameState, player: PlayerId) -> V
             state.objects.get(obj_id).is_some_and(|obj| {
                 !is_blocked_by_cast_only_from_zones(state, obj, player)
                     && !is_blocked_by_cant_cast_spells(state, player, Some(obj))
+                    && !is_blocked_by_prohibit_play_from_zone(state, obj, player)
             })
         })
         .collect()
@@ -4107,6 +4141,15 @@ fn prepare_spell_cast_with_variant_override_inner(
     if mode == CastingMode::Actual && is_blocked_by_cast_only_from_zones(state, obj, player) {
         return Err(EngineError::ActionNotAllowed(
             "A temporary effect prevents casting from this zone".to_string(),
+        ));
+    }
+
+    // CR 116.2a + CR 601.2a: A `ProhibitPlayFromZone` deny prevents casting a
+    // spell from the named zone (Memory Vessel: "can't play cards from their
+    // hand" — the cast half of "play").
+    if mode == CastingMode::Actual && is_blocked_by_prohibit_play_from_zone(state, obj, player) {
+        return Err(EngineError::ActionNotAllowed(
+            "A temporary effect prevents playing cards from this zone".to_string(),
         ));
     }
 

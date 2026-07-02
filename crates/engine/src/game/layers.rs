@@ -317,14 +317,26 @@ pub fn prune_until_next_turn_casting_permissions(state: &mut GameState, active_p
         }
 
         obj.casting_permissions.retain(|p| match p {
+            // CR 514.2 + CR 611.2a: "until your next turn" expires at the
+            // *granting effect's controller's* next untap step. For a normal
+            // impulse grant `granted_to == exiled_by_ability_controller ==
+            // controller`, so this is unchanged. For a per-owner grant
+            // (`PermissionGrantee::ObjectOwner`) where each card's `granted_to`
+            // is its own owner but "your" refers to the activator (Memory
+            // Vessel: "Until your next turn, players may play cards they exiled
+            // this way"), the expiry must key on the activator, carried by
+            // `exiled_by_ability_controller`. This mirrors the identical
+            // controller-keyed expiry the End-step prune already applies to
+            // `UntilNextStepOf { End }` grants (Rocco, Street Chef).
             CastingPermission::PlayFromExile {
                 duration:
                     Duration::UntilNextTurnOf {
                         player: PlayerScope::Controller,
                     },
                 granted_to,
+                exiled_by_ability_controller,
                 ..
-            } => *granted_to != active_player,
+            } => exiled_by_ability_controller.unwrap_or(*granted_to) != active_player,
             // CR 513.1 + CR 611.2a/b: `UntilNextStepOf { step: End }` is
             // expired by `prune_end_step_casting_permissions` at the end
             // step, NOT at the untap step. Retain here.
