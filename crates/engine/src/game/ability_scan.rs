@@ -3097,7 +3097,6 @@ fn scan_count_scope(x: &CountScope) -> Axes {
 
 /// Axis 3: does this resolved ability (and its chain/conditions) read a
 /// projected player-level resource or journal? (`analysis::resource` item 4.)
-#[allow(dead_code)] // TODO(PR-6.5 inc2b): remove — consumed by analysis::resource stack_entry_reads_projected_resource / fire_time_conditions_read_projected_resource (the cascade detector). C0's two axes (event/sibling) are live as of inc2a.
 pub(crate) fn ability_reads_projected_resource(ability: &ResolvedAbility) -> bool {
     resolved_ability_axes(ability).projected
 }
@@ -3118,21 +3117,18 @@ pub(crate) fn ability_reads_sibling_mutable(ability: &ResolvedAbility) -> bool {
 
 /// Axis 3 on a bare trigger fire-time `condition` (CR 603.4 intervening-if) —
 /// the off-stack scan surface (`analysis::resource` item 5).
-#[allow(dead_code)] // TODO(PR-6.5 inc2b): remove — consumed by analysis::resource fire_time_conditions_read_projected_resource (the cascade detector). C0's two axes (event/sibling) are live as of inc2a.
 pub(crate) fn trigger_condition_reads_projected_resource(condition: &TriggerCondition) -> bool {
     scan_trigger_condition(condition).projected
 }
 
 /// Axis 3 on a condition-gated static's `condition` (CR 604.1/613.1) — the
 /// dormant-static off-stack scan surface.
-#[allow(dead_code)] // TODO(PR-6.5 inc2b): remove — consumed by analysis::resource fire_time_conditions_read_projected_resource (the cascade detector). C0's two axes (event/sibling) are live as of inc2a.
 pub(crate) fn static_condition_reads_projected_resource(condition: &StaticCondition) -> bool {
     scan_static_condition(condition).projected
 }
 
 /// Axis 3 on a replacement effect's `condition`/body (CR 614.1) — the
 /// off-stack replacement scan surface.
-#[allow(dead_code)] // TODO(PR-6.5 inc2b): remove — consumed by analysis::resource fire_time_conditions_read_projected_resource (the cascade detector). C0's two axes (event/sibling) are live as of inc2a.
 pub(crate) fn replacement_condition_reads_projected_resource(
     condition: &ReplacementCondition,
 ) -> bool {
@@ -3140,14 +3136,12 @@ pub(crate) fn replacement_condition_reads_projected_resource(
 }
 
 /// Axis 3 on a bare `AbilityCondition` (resolution-time branch selector).
-#[allow(dead_code)] // TODO(PR-6.5 inc2b): remove — consumed by analysis::resource fire_time_conditions_read_projected_resource (the cascade detector). C0's two axes (event/sibling) are live as of inc2a.
 pub(crate) fn ability_condition_reads_projected_resource(condition: &AbilityCondition) -> bool {
     scan_ability_condition(condition).projected
 }
 
 /// Axis 3 on a transient `Duration::ForAsLongAs` condition (CR 604.1) — the
 /// `transient_continuous_effects` off-stack scan surface.
-#[allow(dead_code)] // TODO(PR-6.5 inc2b): remove — consumed by analysis::resource fire_time_conditions_read_projected_resource (the cascade detector). C0's two axes (event/sibling) are live as of inc2a.
 pub(crate) fn duration_reads_projected_resource(duration: &Duration) -> bool {
     scan_duration(duration).projected
 }

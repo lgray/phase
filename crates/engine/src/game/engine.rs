@@ -340,15 +340,46 @@ fn reconcile_terminal_result(state: &mut GameState, result: &mut ActionResult) {
         let priors: Vec<std::sync::Arc<GameState>> =
             state.loop_detect_ring.iter().cloned().collect();
         let cur = crate::analysis::resource::ResourceVector::snapshot(state);
-        // Carry the matching cycle's `delta` out of `find_map` alongside the winner so
+        // Carry the matching cycle's `delta` out of the scan alongside the winner so
         // the ∞ producer below can name the loop's unbounded axes without recomputing.
-        if let Some((winner, delta)) = priors.iter().find_map(|prior| {
+        // INDEXED scan (not `find_map`) so the matched prior's ring index `k` is known:
+        // the m9 controller-non-dip and R5-B2 faller-simultaneity checks consume the
+        // SAME `frames[k..] ++ live` per-resolution window. On a candidate winner that
+        // fails either seam gate, continue scanning older priors (fail-safe).
+        if let Some((winner, delta)) = priors.iter().enumerate().find_map(|(k, prior)| {
             let delta = crate::analysis::resource::ResourceVector::delta(
                 &crate::analysis::resource::ResourceVector::snapshot(prior),
                 &cur,
             );
-            crate::analysis::loop_check::live_mandatory_loop_winner(prior, state, &delta)
-                .map(|winner| (winner, delta))
+            let winner =
+                crate::analysis::loop_check::live_mandatory_loop_winner(prior, state, &delta)?;
+            // The matched window: the prior frame at `k`, every subsequent ring frame,
+            // then the live state — all per-resolution, no gaps (a non-sampling beat
+            // clears the ring, so a confirmed window is gap-free).
+            let mut frames: Vec<&GameState> = priors[k..].iter().map(|p| p.as_ref()).collect();
+            frames.push(state);
+            // CR 704.5a + CR 104.4a (m9): the controller must never dip across the
+            // window — a transient intra-cycle dip a net-delta check cannot see would
+            // kill it before the extrapolated win.
+            if !crate::analysis::loop_check::controller_life_never_dips(&frames, winner) {
+                return None;
+            }
+            // CR 704.3 + CR 800.4a + CR 104.2a (R5-B2): with ≥2 fallers, require
+            // pairwise-equal faller life at every frame so all cross lethal in ONE SBA
+            // batch (the first elimination is terminal — nothing past it is modeled).
+            let fallers: Vec<crate::types::player::PlayerId> = state
+                .players
+                .iter()
+                .filter(|p| !p.is_eliminated)
+                .map(|p| p.id)
+                .filter(|p| delta.life.get(p).copied().unwrap_or(0) < 0)
+                .collect();
+            if fallers.len() >= 2
+                && !crate::analysis::loop_check::fallers_lives_pairwise_equal(&frames, &fallers)
+            {
+                return None;
+            }
+            Some((winner, delta))
         }) {
             // CR 732.5: shortcut ONLY a loop NO living player can break. The gate runs
             // ONCE after find_map (not per prior). At the per-beat drive this is the

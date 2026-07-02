@@ -25,10 +25,10 @@ use std::collections::{BTreeMap, HashSet};
 
 use serde::{Deserialize, Serialize};
 
-use crate::types::ability::ActivationRestriction;
+use crate::types::ability::{ActivationRestriction, DamageModification};
 use crate::types::card_type::CoreType;
 use crate::types::counter::CounterType;
-use crate::types::game_state::{loop_states_equal, GameState};
+use crate::types::game_state::{loop_states_equal, GameState, StackEntry, StackEntryKind};
 use crate::types::identifiers::ObjectId;
 use crate::types::mana::ManaType;
 use crate::types::phase::Phase;
@@ -624,6 +624,19 @@ fn map_delta<K: Ord + Copy>(
 /// Everything else — controller, zone, tapped, attachments, names, object count,
 /// stack, phase, priority — must still match exactly, so a genuine board change
 /// (an extra permanent, a different tap state, a moved card) returns `false`.
+///
+/// # Inherited extrapolation assumption (R1-B2 honesty; behavior UNCHANGED here)
+///
+/// This constant-depth path extrapolates the per-cycle resource delta over an
+/// unbounded number of cycles WITHOUT a syntactic guard on either the on-stack or
+/// the off-stack fire-time read surface — it trusts that a board-equal-modulo-
+/// resources recurrence keeps reproducing the same delta. That premise is
+/// refutable in principle (a dormant intervening-if / static / replacement that
+/// reads a projected resource could arm mid-extrapolation), but the shipped 2p
+/// drain detection depends on this behavior and it is regression-pinned, so it is
+/// left as-is. The NEW growing-cascade path
+/// ([`loop_states_cover_modulo_growth`]) closes both read surfaces by construction
+/// rather than inheriting this assumption.
 pub fn loop_states_equal_modulo_resources(a: &GameState, b: &GameState) -> bool {
     let pa = project_out_resources(a);
     let pb = project_out_resources(b);
@@ -647,6 +660,352 @@ fn loyalty_activation_counts_match(a: &GameState, b: &GameState) -> bool {
             .get(id)
             .is_none_or(|ob| oa.loyalty_activations_this_turn == ob.loyalty_activations_this_turn)
     })
+}
+
+/// Karp–Miller-style ω-acceleration (Karp–Miller 1969; Finkel et al. 2021), sound
+/// GIVEN the in-loop transition relation — the WHOLE beat: top-of-stack resolution
+/// (CR 608.1) with its resolution-time payments (CR 605.3a/608.2g), trigger
+/// collection (CR 603.4), replacement application (CR 614.1), static condition
+/// gating (CR 604.1/613.1), SBA application (CR 704.3/704.5), and elimination
+/// processing (CR 800.4a) — is invariant under the projected-out player-level
+/// resources. Enforced by construction: object/board axes are STRICT-COMPARED
+/// ([`object_resource_axes_match`] — SBA object reads CR 704.5f/g/i can never
+/// observe hidden drift); the remaining projected set (player monotone resources +
+/// journals) is scanned fail-closed on BOTH read surfaces
+/// ([`stack_entry_reads_projected_resource`] on every current-stack entry,
+/// [`fire_time_conditions_read_projected_resource`] on every live
+/// trigger/replacement/static definition); player-life SBAs are the modeled outcome
+/// itself (controller non-dip + all-fallers-simultaneous, so the first CR 800.4a
+/// elimination is terminal per CR 104.2a); library/poison drift is firewalled to
+/// `None` by the winner predicate. Depth-independence of top-of-stack resolution:
+/// CR 608.1 / CR 405.5.
+///
+/// NOTE: the shipped constant-depth 2p path
+/// ([`loop_states_equal_modulo_resources`]) makes the SAME extrapolation with NONE
+/// of these — that inherited assumption is documented there, not silently claimed
+/// as a theorem here.
+///
+/// Returns `true` iff `current` **covers** `prior`: board equal modulo the narrowed
+/// projection with object resource axes strict-equal (item 1), `prior`'s normalized
+/// stack order-preservingly embeds in `current`'s with strict growth confined to
+/// already-occupied places (item 2), every grown place is a mandatory
+/// no-ordering-input triggered ability (item 3), no current-stack entry reads a
+/// still-projected resource (item 4), and no live fire-time condition reads one
+/// either (item 5).
+pub(crate) fn loop_states_cover_modulo_growth(prior: &GameState, current: &GameState) -> bool {
+    // (1) Board equal modulo the NARROWED projection AND modulo the stack, with the
+    // object resource axes STRICT-COMPARED (R5-B1). Project both, clear both stacks
+    // (the stack is compared separately in (2)), then require full board equality
+    // plus loyalty-activation parity plus strict object damage/counter equality.
+    let mut pa = project_out_resources(prior);
+    let mut pb = project_out_resources(current);
+    pa.stack.clear();
+    pb.stack.clear();
+    if !(loop_states_equal(&pa, &pb)
+        && loyalty_activation_counts_match(&pa, &pb)
+        && object_resource_axes_match(prior, current))
+    {
+        return false;
+    }
+
+    // (2) Stack coverability: order-preserving bottom-up embedding + strict growth
+    // confined to places already occupied in `prior` (CR 608.1/405.5 LIFO freeze).
+    let prior_stack = normalized_stack_entries(prior);
+    let cur_stack = normalized_stack_entries(current);
+    if !stack_covers(&prior_stack, &cur_stack) {
+        return false;
+    }
+
+    // (3) Every grown place is a mandatory, no-ordering-input triggered ability.
+    // Iterate the ORIGINAL current-stack entries (so the mid-construction firewall
+    // sees real stack-entry ids) and check each whose normalized kind strictly grew.
+    for (orig, norm) in current.stack.iter().zip(cur_stack.iter()) {
+        let cn = cur_stack.iter().filter(|e| *e == norm).count();
+        let pn = prior_stack.iter().filter(|e| *e == norm).count();
+        if cn > pn && !stack_entry_has_no_ordering_input(current, orig) {
+            return false;
+        }
+    }
+
+    // (4) On-stack fail-closed resource-read guard: NO entry on `current`'s stack may
+    // carry an AST that reads a still-projected axis (player monotone resources +
+    // journals). Object-axis readers pass — their drift breaks gate (1) instead.
+    if current
+        .stack
+        .iter()
+        .any(stack_entry_reads_projected_resource)
+    {
+        return false;
+    }
+
+    // (5) Off-stack fail-closed fire-time condition guard (the second read surface).
+    if fire_time_conditions_read_projected_resource(current) {
+        return false;
+    }
+
+    true
+}
+
+/// CR 704.5f / CR 704.5g / CR 704.5i: strict-compare the PRE-projection object
+/// resource axes the SBA layer reads every beat — `damage_marked` (lethal marked
+/// damage) and the FULL `counters` map (toughness-lowering `-1/-1`, loyalty). The
+/// inherited `project_out_resources` zeroes these for the 2p equality path (which
+/// NEEDS them projected — lifelink/ping loops mark damage monotonically), so the
+/// coverability path re-asserts them here: a counter/damage rider that drifts
+/// projection-invisibly would otherwise ride a covering pair to a false win, then
+/// graveyard its own churner source mid-extrapolation. Sibling of
+/// [`loyalty_activation_counts_match`] — same shared-object-id iteration, symmetric
+/// because gate (1)'s `loop_states_equal` already requires identical object sets.
+fn object_resource_axes_match(prior: &GameState, current: &GameState) -> bool {
+    prior.objects.iter().all(|(id, oa)| {
+        current
+            .objects
+            .get(id)
+            .is_none_or(|ob| oa.damage_marked == ob.damage_marked && oa.counters == ob.counters)
+    })
+}
+
+/// Normalize a stack into behavioral-identity clones for coverability counting:
+/// zero the volatile top-level `id`/`source_id` and the per-kind inner `source_id`,
+/// and strip nested `source_id`s from the embedded ability
+/// ([`crate::game::triggers::normalize_ability_identity`]). KEEP `controller` (an
+/// opponent's otherwise-identical trigger must never merge with the controller's)
+/// and the entire `kind` payload (`condition`, `trigger_event`,
+/// `subject_match_count`, `die_result`, `description`, `source_name`) — a residual
+/// content difference only SUPPRESSES a match (fail-safe). Two same-controller
+/// entries differing only in `source_id` (two Blight-Priest copies) resolve
+/// identically after the item-4 guard, so identifying them is sound.
+fn normalized_stack_entries(state: &GameState) -> Vec<StackEntry> {
+    state
+        .stack
+        .iter()
+        .map(|entry| {
+            let mut norm = entry.clone();
+            norm.id = ObjectId(0);
+            norm.source_id = ObjectId(0);
+            match &mut norm.kind {
+                StackEntryKind::TriggeredAbility {
+                    source_id, ability, ..
+                } => {
+                    *source_id = ObjectId(0);
+                    crate::game::triggers::normalize_ability_identity(ability);
+                }
+                StackEntryKind::ActivatedAbility { source_id, ability } => {
+                    *source_id = ObjectId(0);
+                    crate::game::triggers::normalize_ability_identity(ability);
+                }
+                StackEntryKind::Spell {
+                    ability: Some(ability),
+                    ..
+                } => crate::game::triggers::normalize_ability_identity(ability),
+                StackEntryKind::Spell { ability: None, .. }
+                | StackEntryKind::KeywordAction { .. } => {}
+            }
+            norm
+        })
+        .collect()
+}
+
+/// Stack coverability (§2.2 item 2): `prior` is an order-preserving bottom-up
+/// SUBSEQUENCE of `current` (2a), at least one normalized kind strictly grew, and
+/// EVERY kind that grew already occurs in `prior` with count ≥ 1 (2b — a
+/// never-before-seen 0→1 entry is rejected outright, its resolution behavior never
+/// having been observed inside the window).
+///
+// ponytail: greedy embedding + per-kind linear counts, n = stack depth (small);
+// revisit only if a deep-stack combo profiles hot.
+fn stack_covers(prior: &[StackEntry], current: &[StackEntry]) -> bool {
+    // (2a) greedy two-pointer subsequence embedding, bottom-up.
+    let mut ci = 0usize;
+    for pe in prior {
+        loop {
+            if ci >= current.len() {
+                return false;
+            }
+            let matched = &current[ci] == pe;
+            ci += 1;
+            if matched {
+                break;
+            }
+        }
+    }
+    // (2b) strict growth confined to already-occupied places.
+    let mut any_growth = false;
+    for (idx, ce) in current.iter().enumerate() {
+        // process each distinct kind once (first occurrence).
+        if current[..idx].iter().any(|e| e == ce) {
+            continue;
+        }
+        let cn = current.iter().filter(|e| *e == ce).count();
+        let pn = prior.iter().filter(|e| *e == ce).count();
+        if cn > pn {
+            if pn == 0 {
+                return false;
+            }
+            any_growth = true;
+        }
+    }
+    any_growth
+}
+
+/// CR 603.3c / CR 603.3d + CR 601.2d: does a stack entry take NO player ordering
+/// input at resolution? Only a `TriggeredAbility` qualifies (`Spell`/
+/// `ActivatedAbility` are player-driven; `KeywordAction` carries no `ResolvedAbility`)
+/// with no targets, no variable-count targeting, no divide/distribute assignment,
+/// and no cross-target constraints on the embedded ability. The mid-construction
+/// modal firewall (`state.pending_trigger_entry != Some(entry.id)`) is unreachable
+/// while both compared states sit at `WaitingFor::Priority`, but keeps the guard
+/// closed under future sampling changes (a chosen mode is otherwise baked into the
+/// entry's `ability`, so the normalized key already separates distinct modes).
+fn stack_entry_has_no_ordering_input(state: &GameState, entry: &StackEntry) -> bool {
+    let StackEntryKind::TriggeredAbility { ability, .. } = &entry.kind else {
+        return false;
+    };
+    if state.pending_trigger_entry == Some(entry.id) {
+        return false;
+    }
+    ability.targets.is_empty()
+        && ability.multi_target.is_none()
+        && ability.distribution.is_none()
+        && ability.target_constraints.is_empty()
+}
+
+/// §2.2 item 4: does this stack entry's AST read ANY still-projected axis (the
+/// narrowed set: player-level monotone resources/tallies + the journal/count block)?
+/// Delegates to the C0 walker's third axis over the embedded ability (which itself
+/// recurses `sub_ability`/`else_ability` and the ability-level `AbilityCondition`),
+/// plus the trigger-level `TriggerCondition` (CR 603.4 intervening-if). Object-axis
+/// readers classify as NON-reading — their drift breaks gate (1) instead. A
+/// `KeywordAction` has no AST to classify ⇒ fail closed (`true`); a permanent
+/// `Spell { ability: None }` reads nothing (its resolution changes the board and
+/// breaks gate (1) anyway) ⇒ `false`.
+fn stack_entry_reads_projected_resource(entry: &StackEntry) -> bool {
+    // Trigger-level intervening-if (CR 603.4) — carried on the kind, not the ability.
+    if let StackEntryKind::TriggeredAbility {
+        condition: Some(condition),
+        ..
+    } = &entry.kind
+    {
+        if crate::game::ability_scan::trigger_condition_reads_projected_resource(condition) {
+            return true;
+        }
+    }
+    match entry.ability() {
+        Some(ability) => {
+            // The resolution-time branch selector (`AbilityCondition`) is scanned
+            // explicitly for self-documenting item-4 coverage; the whole-ability scan
+            // (which recurses `sub_ability`/`else_ability` and re-covers `.condition`)
+            // catches every other read surface.
+            ability
+                .condition
+                .as_ref()
+                .is_some_and(crate::game::ability_scan::ability_condition_reads_projected_resource)
+                || crate::game::ability_scan::ability_reads_projected_resource(ability)
+        }
+        // KeywordAction: no AST to classify ⇒ fail closed. Permanent `Spell { ability:
+        // None }`: nothing to read (its resolution changes the board, breaking gate 1).
+        None => matches!(entry.kind, StackEntryKind::KeywordAction { .. }),
+    }
+}
+
+/// §2.2 item 5 (the R4-G1 second scan surface): does ANY live off-stack fire-time
+/// condition read a still-projected resource? A dormant intervening-if / replacement
+/// / condition-gated static that reads a projected axis (CR 603.4 / CR 614.1 /
+/// CR 604.1 / CR 613.1 / CR 101.2) produces NO stack entry on either compared frame,
+/// so item 4 cannot see it — yet it arms mid-extrapolation and breaks the replay.
+/// Run once on `current` (item-1 board equality makes the definition sets identical).
+/// Fail-closed: any surface the scan cannot classify ⇒ reject (no shortcut).
+///
+/// Keyword-synthesized granted triggers are NOT scanned: measured — no
+/// `KeywordTriggerInstaller` trigger carries a fire-time `TriggerCondition` (every
+/// builder defaults `condition: None`), so they can express no projected read.
+fn fire_time_conditions_read_projected_resource(state: &GameState) -> bool {
+    // (i) Trigger fire-time intervening-if conditions (CR 603.4). `active_trigger_
+    // definitions` is the liveness authority (CR 702.26b phased-out + CR 114.4
+    // command-zone gate) that deliberately does NOT filter by `condition`.
+    for obj in state.objects.values() {
+        for (_, def) in crate::game::functioning_abilities::active_trigger_definitions(state, obj) {
+            if def
+                .condition
+                .as_ref()
+                .is_some_and(crate::game::ability_scan::trigger_condition_reads_projected_resource)
+            {
+                return true;
+            }
+        }
+    }
+    // (ii) Replacement definitions — condition AND body (CR 614.1). A replacement is
+    // an in-loop transition that never lands on the stack, so item 4 never sees it.
+    // The condition + runtime continuation have C0-walker predicates; body payloads
+    // without one (an `execute` `AbilityDefinition`, a state-reading damage-amount
+    // modification) are treated fail-closed — conservative, fail-safe (no shortcut).
+    for (_, _, def) in crate::game::functioning_abilities::active_replacements(state) {
+        if def
+            .condition
+            .as_ref()
+            .is_some_and(crate::game::ability_scan::replacement_condition_reads_projected_resource)
+        {
+            return true;
+        }
+        if def
+            .runtime_execute
+            .as_ref()
+            .is_some_and(|a| crate::game::ability_scan::ability_reads_projected_resource(a))
+        {
+            return true;
+        }
+        if replacement_body_may_read_projected(def) {
+            return true;
+        }
+    }
+    // (iii) Condition-gated statics (CR 604.1/613.1) — ALL modes via `iter_all()`
+    // (NOT the condition-filtered active iterator, whose gate hides exactly the
+    // dormant defs this surface exists to catch), plus transient continuous effects'
+    // `ForAsLongAs`/gating conditions (CR 604.1).
+    for obj in state.objects.values() {
+        if obj.is_phased_out() {
+            continue;
+        }
+        for def in obj.static_definitions.iter_all() {
+            if def
+                .condition
+                .as_ref()
+                .is_some_and(crate::game::ability_scan::static_condition_reads_projected_resource)
+            {
+                return true;
+            }
+        }
+    }
+    for tce in &state.transient_continuous_effects {
+        if crate::game::ability_scan::duration_reads_projected_resource(&tce.duration) {
+            return true;
+        }
+        if tce
+            .condition
+            .as_ref()
+            .is_some_and(crate::game::ability_scan::static_condition_reads_projected_resource)
+        {
+            return true;
+        }
+    }
+    false
+}
+
+/// CR 614.1a: a replacement's BODY (not its `condition`) can read a projected
+/// player resource. `QuantityModification` variants are all fixed constants (no
+/// read). `DamageModification::LifeFloor` caps against a player's live life total
+/// (CR 119, projected); `Plus { value }` carries a `QuantityExpr` that MAY read one
+/// — treated fail-closed. `execute` is an `AbilityDefinition` with no C0-walker
+/// predicate ⇒ fail-closed when present. All other modification variants read only
+/// fixed amounts or the source's own (strict-compared) power.
+fn replacement_body_may_read_projected(def: &crate::types::ability::ReplacementDefinition) -> bool {
+    if def.execute.is_some() {
+        return true;
+    }
+    matches!(
+        def.damage_modification,
+        Some(DamageModification::LifeFloor { .. } | DamageModification::Plus { .. })
+    )
 }
 
 /// Clone a state through `normalize_for_loop` and additionally zero every
@@ -1512,5 +1871,455 @@ mod tests {
             !loop_states_equal_modulo_resources(&a, &c),
             "a trigger from a DIFFERENT source must NOT be equated (content is preserved)"
         );
+    }
+
+    // ===================================================================
+    // N1 — growing-cascade coverability (`loop_states_cover_modulo_growth`)
+    // Positives P1/P2 + hostile revert-fail negatives (a)–(n). Each hostile
+    // returns FALSE; the plan's §5 names the one-line revert that flips it TRUE.
+    // ===================================================================
+
+    use crate::types::ability::{
+        AbilityCondition, CountScope, Effect, QuantityExpr, QuantityRef, ReplacementCondition,
+        ReplacementDefinition, ResolvedAbility, StaticCondition, StaticDefinition, TargetFilter,
+        TargetRef, TriggerCondition, TriggerDefinition,
+    };
+    use crate::types::player::PlayerCounterKind;
+    use crate::types::replacements::ReplacementEvent;
+    use crate::types::statics::StaticMode;
+    use crate::types::triggers::TriggerMode;
+
+    const CHURN_SRC: u64 = 500;
+
+    /// A mandatory, no-ordering-input `TriggeredAbility` stack entry wrapping
+    /// `ability`, with an optional trigger-level intervening-if `condition`.
+    /// `controller` is kept in the normalized key; `entry_id`/`source_id` are
+    /// zeroed by normalization, so kind identity is (controller, ability, condition).
+    fn churn_entry(
+        entry_id: u64,
+        controller: u8,
+        ability: ResolvedAbility,
+        condition: Option<TriggerCondition>,
+    ) -> StackEntry {
+        let src = ObjectId(CHURN_SRC);
+        StackEntry {
+            id: ObjectId(entry_id),
+            source_id: src,
+            controller: PlayerId(controller),
+            kind: StackEntryKind::TriggeredAbility {
+                source_id: src,
+                ability: Box::new(ability),
+                condition,
+                trigger_event: None,
+                description: None,
+                source_name: String::new(),
+                subject_match_count: None,
+                die_result: None,
+            },
+        }
+    }
+
+    /// Fixed-amount `GainLife` ability — reads NO projected resource; distinct
+    /// normalized kinds are produced by varying `amount`.
+    fn gain_ability(amount: i32) -> ResolvedAbility {
+        ResolvedAbility::new(
+            Effect::GainLife {
+                amount: QuantityExpr::Fixed { value: amount },
+                player: TargetFilter::Controller,
+            },
+            vec![],
+            ObjectId(CHURN_SRC),
+            PlayerId(0),
+        )
+    }
+
+    /// A plain fixed-drain churn entry (the target-class shape): controller 0,
+    /// GainLife 1, no condition. `id` keeps entries distinct pre-normalization.
+    fn g(id: u64) -> StackEntry {
+        churn_entry(id, 0, gain_ability(1), None)
+    }
+
+    /// prior `[G,G]`, current `[G,G,G]` — the canonical homogeneous covering pair
+    /// (board equal modulo resources, stack grew on an occupied mandatory place).
+    fn cover_base() -> (GameState, GameState) {
+        let mut prior = GameState::new_two_player(7);
+        prior.stack.push_back(g(10));
+        prior.stack.push_back(g(11));
+        let mut current = prior.clone();
+        current.stack.clear();
+        current.stack.push_back(g(20));
+        current.stack.push_back(g(21));
+        current.stack.push_back(g(22));
+        (prior, current)
+    }
+
+    fn bf_object(state: &mut GameState, id: u64) -> ObjectId {
+        let oid = ObjectId(id);
+        let object = crate::game::game_object::GameObject::new(
+            oid,
+            CardId(7),
+            PlayerId(1),
+            "Test Board Permanent".to_string(),
+            Zone::Battlefield,
+        );
+        state.objects.insert(oid, object);
+        state.battlefield.push_back(oid);
+        oid
+    }
+
+    /// P1: homogeneous `[G,G]` → `[G,G,G]` covers.
+    #[test]
+    fn n1_p1_homogeneous_cover_true() {
+        let (prior, current) = cover_base();
+        assert!(loop_states_cover_modulo_growth(&prior, &current));
+    }
+
+    /// P2: interleaved `[B,A]` → `[B,B,A]` covers (subsequence, non-prefix) —
+    /// pins that embedding is NOT over-tightened to a strict bottom-prefix.
+    #[test]
+    fn n1_p2_interleaved_subsequence_cover_true() {
+        // A = controller-0 kind, B = controller-1 kind (distinct via kept controller).
+        let a = |id| churn_entry(id, 0, gain_ability(1), None);
+        let b = |id| churn_entry(id, 1, gain_ability(1), None);
+        let mut prior = GameState::new_two_player(7);
+        prior.stack.push_back(b(10)); // [B, A]
+        prior.stack.push_back(a(11));
+        let mut current = prior.clone();
+        current.stack.clear();
+        current.stack.push_back(b(20)); // [B, B, A]
+        current.stack.push_back(b(21));
+        current.stack.push_back(a(22));
+        assert!(loop_states_cover_modulo_growth(&prior, &current));
+    }
+
+    /// (a) an extra permanent in `current` ⇒ false (board differs, not just stack).
+    /// Revert-fail: dropping the stack-cleared board compare flips this true.
+    #[test]
+    fn n1_a_extra_permanent_false() {
+        let (prior, mut current) = cover_base();
+        bf_object(&mut current, 900);
+        assert!(!loop_states_cover_modulo_growth(&prior, &current));
+    }
+
+    /// (b) the grown entry carries a TARGET ⇒ false (has-ordering-input guard).
+    /// The kind is occupied in prior so occupancy passes — isolates item 3.
+    #[test]
+    fn n1_b_grown_entry_targeted_false() {
+        let targeted = |id| {
+            let mut ability = gain_ability(1);
+            ability.targets = vec![TargetRef::Player(PlayerId(1))];
+            churn_entry(id, 0, ability, None)
+        };
+        let mut prior = GameState::new_two_player(7);
+        prior.stack.push_back(targeted(10));
+        prior.stack.push_back(targeted(11));
+        let mut current = prior.clone();
+        current.stack.clear();
+        current.stack.push_back(targeted(20));
+        current.stack.push_back(targeted(21));
+        current.stack.push_back(targeted(22));
+        assert!(!loop_states_cover_modulo_growth(&prior, &current));
+    }
+
+    /// (c) the grown entry is a SPELL ⇒ false (not a mandatory trigger). Isolates
+    /// item 3's `TriggeredAbility`-only requirement.
+    #[test]
+    fn n1_c_grown_entry_spell_false() {
+        let spell = |id| StackEntry {
+            id: ObjectId(id),
+            source_id: ObjectId(CHURN_SRC),
+            controller: PlayerId(0),
+            kind: StackEntryKind::Spell {
+                card_id: CardId(1),
+                ability: None,
+                casting_variant: crate::types::game_state::CastingVariant::Normal,
+                actual_mana_spent: 0,
+            },
+        };
+        let mut prior = GameState::new_two_player(7);
+        prior.stack.push_back(spell(10));
+        prior.stack.push_back(spell(11));
+        let mut current = prior.clone();
+        current.stack.clear();
+        current.stack.push_back(spell(20));
+        current.stack.push_back(spell(21));
+        current.stack.push_back(spell(22));
+        assert!(!loop_states_cover_modulo_growth(&prior, &current));
+    }
+
+    /// (d) a prior entry-kind absent from `current` ⇒ false (embedding fails).
+    /// prior `[G, B]`, current `[G, G]` — B (controller 1) never matches.
+    #[test]
+    fn n1_d_embedding_missing_kind_false() {
+        let b = |id| churn_entry(id, 1, gain_ability(1), None);
+        let mut prior = GameState::new_two_player(7);
+        prior.stack.push_back(g(10));
+        prior.stack.push_back(b(11));
+        let mut current = GameState::new_two_player(7);
+        current.stack.push_back(g(20));
+        current.stack.push_back(g(21));
+        assert!(!loop_states_cover_modulo_growth(&prior, &current));
+    }
+
+    /// (e) equal stacks, no strict growth ⇒ false (that is the equality case).
+    #[test]
+    fn n1_e_no_growth_false() {
+        let mut prior = GameState::new_two_player(7);
+        prior.stack.push_back(g(10));
+        prior.stack.push_back(g(11));
+        let current = prior.clone();
+        assert!(!loop_states_cover_modulo_growth(&prior, &current));
+    }
+
+    /// (f) WIPE-PENDING (R1-B1): a distinct mandatory no-input trigger kind absent
+    /// from `prior` grows 0→1 at an UNOCCUPIED place ⇒ false. `W` reads no projected
+    /// resource, so removing the prior-occupancy guard (2b) flips this true — the
+    /// false win fires.
+    #[test]
+    fn n1_f_wipe_pending_unoccupied_growth_false() {
+        // W = a distinct-kind mandatory no-input trigger (GainLife 7, no read).
+        let w = |id| churn_entry(id, 0, gain_ability(7), None);
+        let (mut prior, mut current) = cover_base(); // [G,G] / [G,G,G]
+                                                     // Rebuild current as [G,G,W]: G did not grow, W is the 0→1 new kind.
+        current.stack.clear();
+        current.stack.push_back(g(20));
+        current.stack.push_back(g(21));
+        current.stack.push_back(w(22));
+        let _ = &mut prior;
+        assert!(!loop_states_cover_modulo_growth(&prior, &current));
+    }
+
+    /// (g) PERMUTATION (R1-M3): prior `[B,A]`, current `[A,B,B]` ⇒ false (no
+    /// bottom-up embedding: no A after the first B match). Revert-fail for replacing
+    /// embedding with order-blind multiset containment.
+    #[test]
+    fn n1_g_permutation_false() {
+        let a = |id| churn_entry(id, 0, gain_ability(1), None);
+        let b = |id| churn_entry(id, 1, gain_ability(1), None);
+        let mut prior = GameState::new_two_player(7);
+        prior.stack.push_back(b(10)); // [B, A]
+        prior.stack.push_back(a(11));
+        let mut current = GameState::new_two_player(7);
+        current.stack.push_back(a(20)); // [A, B, B]
+        current.stack.push_back(b(21));
+        current.stack.push_back(b(22));
+        assert!(!loop_states_cover_modulo_growth(&prior, &current));
+    }
+
+    /// (h) RESOURCE-READ (R1-B2): a churning entry whose trigger-level intervening-if
+    /// reads a projected resource (life) ⇒ false. Revert-fail for dropping item 4.
+    #[test]
+    fn n1_h_resource_read_false() {
+        let h = |id| {
+            churn_entry(
+                id,
+                0,
+                gain_ability(1),
+                Some(TriggerCondition::LifeTotalGE { minimum: 10 }),
+            )
+        };
+        let mut prior = GameState::new_two_player(7);
+        prior.stack.push_back(h(10));
+        prior.stack.push_back(h(11));
+        let mut current = prior.clone();
+        current.stack.clear();
+        current.stack.push_back(h(20));
+        current.stack.push_back(h(21));
+        current.stack.push_back(h(22));
+        assert!(!loop_states_cover_modulo_growth(&prior, &current));
+    }
+
+    /// (i) an OPPONENT-controlled otherwise-identical grown trigger ⇒ distinct
+    /// normalized kind (controller kept). prior occupied only by the controller's
+    /// kind ⇒ the grown opponent kind is 0→1 unoccupied ⇒ false. Revert-fail:
+    /// dropping `controller` from the key flips this true.
+    #[test]
+    fn n1_i_opponent_controlled_growth_false() {
+        let (_p, _c) = cover_base();
+        let mut prior = GameState::new_two_player(7);
+        prior.stack.push_back(g(10)); // [G(c0), G(c0)]
+        prior.stack.push_back(g(11));
+        let mut current = prior.clone();
+        current.stack.clear();
+        current.stack.push_back(g(20)); // [G(c0), G(c0), G(c1)]
+        current.stack.push_back(g(21));
+        current
+            .stack
+            .push_back(churn_entry(22, 1, gain_ability(1), None));
+        assert!(!loop_states_cover_modulo_growth(&prior, &current));
+    }
+
+    /// (j) JOURNAL-READER (R2 B-R2-1): a fixed-amount drain churner whose embedded
+    /// ability carries an `NthResolutionThisTurn`-gated branch reads the cleared
+    /// per-ability resolution journal ⇒ false. Revert-fail: narrowing the walker
+    /// guard axis back to resources-only (dropping journal readers) flips this true.
+    #[test]
+    fn n1_j_journal_reader_false() {
+        let j = |id| {
+            let mut ability = gain_ability(1);
+            ability.condition = Some(AbilityCondition::NthResolutionThisTurn { n: 10 });
+            churn_entry(id, 0, ability, None)
+        };
+        let mut prior = GameState::new_two_player(7);
+        prior.stack.push_back(j(10));
+        prior.stack.push_back(j(11));
+        let mut current = prior.clone();
+        current.stack.clear();
+        current.stack.push_back(j(20));
+        current.stack.push_back(j(21));
+        current.stack.push_back(j(22));
+        assert!(!loop_states_cover_modulo_growth(&prior, &current));
+    }
+
+    /// (k) DORMANT-TRIGGER (R4-G1): a genuine covering drain while a battlefield
+    /// permanent carries a mandatory trigger DEFINITION whose fire-time condition
+    /// reads life — it produces NO stack entry on either frame ⇒ false via the
+    /// second (off-stack) scan surface. Revert-fail: removing the item-5 scan.
+    #[test]
+    fn n1_k_dormant_trigger_condition_false() {
+        let (mut prior, mut current) = cover_base();
+        for state in [&mut prior, &mut current] {
+            let oid = bf_object(state, 800);
+            let mut def = TriggerDefinition::new(TriggerMode::LifeLost);
+            def.condition = Some(TriggerCondition::LifeTotalGE { minimum: 6 });
+            state
+                .objects
+                .get_mut(&oid)
+                .unwrap()
+                .trigger_definitions
+                .push(def);
+        }
+        assert!(!loop_states_cover_modulo_growth(&prior, &current));
+    }
+
+    /// (k-r) a battlefield REPLACEMENT definition whose condition reads life ⇒ false.
+    #[test]
+    fn n1_kr_dormant_replacement_condition_false() {
+        let (mut prior, mut current) = cover_base();
+        for state in [&mut prior, &mut current] {
+            let oid = bf_object(state, 801);
+            let mut def = ReplacementDefinition::new(ReplacementEvent::LoseLife);
+            def.condition = Some(ReplacementCondition::UnlessPlayerLifeAtMost { amount: 5 });
+            state
+                .objects
+                .get_mut(&oid)
+                .unwrap()
+                .replacement_definitions
+                .push(def);
+        }
+        assert!(!loop_states_cover_modulo_growth(&prior, &current));
+    }
+
+    /// (k-s) a dormant condition-gated STATIC (any mode) whose condition reads a
+    /// projected axis (poison) ⇒ false (the CR 101.2 firewall reads only live state
+    /// and cannot see it arm; the off-stack static scan catches it).
+    #[test]
+    fn n1_ks_dormant_static_condition_false() {
+        let (mut prior, mut current) = cover_base();
+        for state in [&mut prior, &mut current] {
+            let oid = bf_object(state, 802);
+            let mut def = StaticDefinition::new(StaticMode::CantLoseTheGame);
+            def.condition = Some(StaticCondition::OpponentPoisonAtLeast { count: 1 });
+            state
+                .objects
+                .get_mut(&oid)
+                .unwrap()
+                .static_definitions
+                .push(def);
+        }
+        assert!(!loop_states_cover_modulo_growth(&prior, &current));
+    }
+
+    /// (l) DRIFTING MISSED READER (R4-G3): an on-stack entry whose trigger-level
+    /// intervening-if is `GainedLife` — reads `life_gained_this_turn`, which drifts
+    /// +1/cycle in the very drain window being certified ⇒ false. Revert-fail:
+    /// classifying `GainedLife` as a non-reader in the walker flips this true.
+    #[test]
+    fn n1_l_gained_life_journal_reader_false() {
+        let l = |id| {
+            churn_entry(
+                id,
+                0,
+                gain_ability(1),
+                Some(TriggerCondition::GainedLife { minimum: 30 }),
+            )
+        };
+        let mut prior = GameState::new_two_player(7);
+        prior.stack.push_back(l(10));
+        prior.stack.push_back(l(11));
+        let mut current = prior.clone();
+        current.stack.clear();
+        current.stack.push_back(l(20));
+        current.stack.push_back(l(21));
+        current.stack.push_back(l(22));
+        assert!(!loop_states_cover_modulo_growth(&prior, &current));
+    }
+
+    /// (m) OBJECT-AXIS COUNTER RIDER (R5-B1): a genuine covering drain but `current`
+    /// carries one more monotone `-1/-1` counter on a shared battlefield creature
+    /// than `prior` (projection-invisible) ⇒ false via `object_resource_axes_match`.
+    /// Revert-fail: dropping that strict compare flips this true (and in real play
+    /// CR 704.5f/g graveyards the churner source and the cascade extinguishes).
+    #[test]
+    fn n1_m_object_counter_rider_false() {
+        let (mut prior, mut current) = cover_base();
+        // Shared creature in both frames; monotone -1/-1 counter drifts +1 in current.
+        for (state, extra) in [(&mut prior, 1u32), (&mut current, 2u32)] {
+            let oid = ObjectId(850);
+            let mut object = crate::game::game_object::GameObject::new(
+                oid,
+                CardId(9),
+                PlayerId(0),
+                "Test Churner Source".to_string(),
+                Zone::Battlefield,
+            );
+            object.card_types.core_types = vec![CoreType::Creature];
+            object.counters.insert(CounterType::Minus1Minus1, extra);
+            state.objects.insert(oid, object);
+            state.battlefield.push_back(oid);
+        }
+        // Sanity: the projection hides it (the 2p equality path would still match).
+        let mut pa = project_out_resources(&prior);
+        let mut pb = project_out_resources(&current);
+        pa.stack.clear();
+        pb.stack.clear();
+        assert!(
+            loop_states_equal(&pa, &pb),
+            "fixture: the -1/-1 counter drift is projection-invisible (isolates B1)"
+        );
+        assert!(!loop_states_cover_modulo_growth(&prior, &current));
+    }
+
+    /// (n) PLAYER-COUNTER RIDER (R5-MAJOR): a fixed-amount drain churner whose ability
+    /// reads a projected player-counter axis (experience — NO winner-predicate
+    /// firewall) ⇒ false. Revert-fail: declassifying `PlayerCounter` in the walker.
+    #[test]
+    fn n1_n_player_counter_reader_false() {
+        let n = |id| {
+            let ability = ResolvedAbility::new(
+                Effect::GainLife {
+                    amount: QuantityExpr::Ref {
+                        qty: QuantityRef::PlayerCounter {
+                            kind: PlayerCounterKind::Experience,
+                            scope: CountScope::Controller,
+                        },
+                    },
+                    player: TargetFilter::Controller,
+                },
+                vec![],
+                ObjectId(CHURN_SRC),
+                PlayerId(0),
+            );
+            churn_entry(id, 0, ability, None)
+        };
+        let mut prior = GameState::new_two_player(7);
+        prior.stack.push_back(n(10));
+        prior.stack.push_back(n(11));
+        let mut current = prior.clone();
+        current.stack.clear();
+        current.stack.push_back(n(20));
+        current.stack.push_back(n(21));
+        current.stack.push_back(n(22));
+        assert!(!loop_states_cover_modulo_growth(&prior, &current));
     }
 }
