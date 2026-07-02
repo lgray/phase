@@ -285,7 +285,7 @@ fn scan_target_selection_constraint(c: &TargetSelectionConstraint) -> Axes {
 
 fn scan_effect(x: &Effect) -> Axes {
     match x {
-        Effect::StartYourEngines { player_scope, .. } => {
+        Effect::StartYourEngines { player_scope } => {
             let mut acc = Axes::NONE;
             acc = acc.or(scan_player_filter(player_scope));
             acc
@@ -293,69 +293,80 @@ fn scan_effect(x: &Effect) -> Axes {
         Effect::ChangeSpeed {
             player_scope,
             amount,
-            ..
+            direction: _,
+            floor: _,
         } => {
             let mut acc = Axes::NONE;
             acc = acc.or(scan_player_filter(player_scope));
             acc = acc.or(scan_quantity_expr(amount));
             acc
         }
-        Effect::DealDamage { amount, target, .. } => {
+        Effect::DealDamage {
+            amount,
+            target,
+            damage_source: _,
+        } => {
             let mut acc = Axes::NONE;
             acc = acc.or(scan_quantity_expr(amount));
             acc = acc.or(scan_target_filter(target));
             acc
         }
-        Effect::ApplyPostReplacementDamage { .. } => Axes::NONE,
-        Effect::EachDealsDamageEqualToPower {
-            sources, recipient, ..
-        } => {
+        Effect::ApplyPostReplacementDamage {
+            context: _,
+            target: _,
+            amount: _,
+            is_combat: _,
+        } => Axes::NONE,
+        Effect::EachDealsDamageEqualToPower { sources, recipient } => {
             let mut acc = Axes::NONE;
             acc = acc.or(scan_target_filter(sources));
             acc = acc.or(scan_target_filter(recipient));
             acc
         }
-        Effect::Draw { count, target, .. } => {
+        Effect::Draw { count, target } => {
             let mut acc = Axes::NONE;
             acc = acc.or(scan_quantity_expr(count));
             acc = acc.or(scan_target_filter(target));
             acc
         }
         Effect::Pump { .. } => Axes::CONSERVATIVE,
-        Effect::PairWith { target, .. } => {
+        Effect::PairWith { target } => {
             let mut acc = Axes::NONE;
             acc = acc.or(scan_target_filter(target));
             acc
         }
-        Effect::Destroy { target, .. } => {
+        Effect::Destroy {
+            target,
+            cant_regenerate: _,
+        } => {
             let mut acc = Axes::NONE;
             acc = acc.or(scan_target_filter(target));
             acc
         }
-        Effect::Regenerate { target, .. } => {
+        Effect::Regenerate { target } => {
             let mut acc = Axes::NONE;
             acc = acc.or(scan_target_filter(target));
             acc
         }
-        Effect::RemoveAllDamage { target, .. } => {
+        Effect::RemoveAllDamage { target } => {
             let mut acc = Axes::NONE;
             acc = acc.or(scan_target_filter(target));
             acc
         }
         Effect::Counter { .. } => Axes::CONSERVATIVE,
-        Effect::CounterAll { target, .. } => {
+        Effect::CounterAll { target } => {
             let mut acc = Axes::NONE;
             acc = acc.or(scan_target_filter(target));
             acc
         }
         Effect::Token { .. } => Axes::CONSERVATIVE,
-        Effect::GainLife { amount, player, .. } => {
+        Effect::GainLife { amount, player } => {
             let mut acc = Axes::NONE;
             acc = acc.or(scan_quantity_expr(amount));
             acc = acc.or(scan_target_filter(player));
             acc
         }
-        Effect::LoseLife { amount, target, .. } => {
+        Effect::LoseLife { amount, target } => {
             let mut acc = Axes::NONE;
             acc = acc.or(scan_quantity_expr(amount));
             if let Some(x) = target {
@@ -363,35 +374,51 @@ fn scan_effect(x: &Effect) -> Axes {
             }
             acc
         }
-        Effect::SetTapState { target, .. } => {
+        Effect::SetTapState {
+            target,
+            scope: _,
+            state: _,
+        } => {
             let mut acc = Axes::NONE;
             acc = acc.or(scan_target_filter(target));
             acc
         }
-        Effect::RemoveCounter { count, target, .. } => {
-            let mut acc = Axes::NONE;
-            acc = acc.or(scan_quantity_expr(count));
-            acc = acc.or(scan_target_filter(target));
-            acc
-        }
-        Effect::Sacrifice { target, count, .. } => {
-            let mut acc = Axes::NONE;
-            acc = acc.or(scan_target_filter(target));
-            acc = acc.or(scan_quantity_expr(count));
-            acc
-        }
-        Effect::DiscardCard { target, .. } => {
-            let mut acc = Axes::NONE;
-            acc = acc.or(scan_target_filter(target));
-            acc
-        }
-        Effect::Mill { count, target, .. } => {
+        Effect::RemoveCounter {
+            count,
+            target,
+            counter_type: _,
+        } => {
             let mut acc = Axes::NONE;
             acc = acc.or(scan_quantity_expr(count));
             acc = acc.or(scan_target_filter(target));
             acc
         }
-        Effect::Scry { count, target, .. } => {
+        Effect::Sacrifice {
+            target,
+            count,
+            min_count: _,
+        } => {
+            let mut acc = Axes::NONE;
+            acc = acc.or(scan_target_filter(target));
+            acc = acc.or(scan_quantity_expr(count));
+            acc
+        }
+        Effect::DiscardCard { target, count: _ } => {
+            let mut acc = Axes::NONE;
+            acc = acc.or(scan_target_filter(target));
+            acc
+        }
+        Effect::Mill {
+            count,
+            target,
+            destination: _,
+        } => {
+            let mut acc = Axes::NONE;
+            acc = acc.or(scan_quantity_expr(count));
+            acc = acc.or(scan_target_filter(target));
+            acc
+        }
+        Effect::Scry { count, target } => {
             let mut acc = Axes::NONE;
             acc = acc.or(scan_quantity_expr(count));
             acc = acc.or(scan_target_filter(target));
@@ -402,7 +429,7 @@ fn scan_effect(x: &Effect) -> Axes {
             amount,
             target,
             player_filter,
-            ..
+            damage_source: _,
         } => {
             let mut acc = Axes::NONE;
             acc = acc.or(scan_quantity_expr(amount));
@@ -415,14 +442,16 @@ fn scan_effect(x: &Effect) -> Axes {
         Effect::DamageEachPlayer {
             amount,
             player_filter,
-            ..
         } => {
             let mut acc = Axes::NONE;
             acc = acc.or(scan_quantity_expr(amount));
             acc = acc.or(scan_player_filter(player_filter));
             acc
         }
-        Effect::DestroyAll { target, .. } => {
+        Effect::DestroyAll {
+            target,
+            cant_regenerate: _,
+        } => {
             let mut acc = Axes::NONE;
             acc = acc.or(scan_target_filter(target));
             acc
@@ -433,7 +462,13 @@ fn scan_effect(x: &Effect) -> Axes {
             player,
             count,
             filter,
-            ..
+            destination: _,
+            keep_count: _,
+            up_to: _,
+            rest_destination: _,
+            reveal: _,
+            enter_tapped: _,
+            source: _,
         } => {
             let mut acc = Axes::NONE;
             acc = acc.or(scan_target_filter(player));
@@ -441,57 +476,62 @@ fn scan_effect(x: &Effect) -> Axes {
             acc = acc.or(scan_target_filter(filter));
             acc
         }
-        Effect::GainControl { target, .. } => {
+        Effect::GainControl { target } => {
             let mut acc = Axes::NONE;
             acc = acc.or(scan_target_filter(target));
             acc
         }
-        Effect::GainControlAll { target, .. } => {
+        Effect::GainControlAll { target } => {
             let mut acc = Axes::NONE;
             acc = acc.or(scan_target_filter(target));
             acc
         }
-        Effect::ControlNextTurn { target, .. } => {
-            let mut acc = Axes::NONE;
-            acc = acc.or(scan_target_filter(target));
-            acc
-        }
-        Effect::Attach {
-            attachment, target, ..
+        Effect::ControlNextTurn {
+            target,
+            grant_extra_turn_after: _,
         } => {
+            let mut acc = Axes::NONE;
+            acc = acc.or(scan_target_filter(target));
+            acc
+        }
+        Effect::Attach { attachment, target } => {
             let mut acc = Axes::NONE;
             acc = acc.or(scan_target_filter(attachment));
             acc = acc.or(scan_target_filter(target));
             acc
         }
-        Effect::UnattachAll {
-            attachment, target, ..
-        } => {
+        Effect::UnattachAll { attachment, target } => {
             let mut acc = Axes::NONE;
             acc = acc.or(scan_target_filter(attachment));
             acc = acc.or(scan_target_filter(target));
             acc
         }
-        Effect::Surveil { count, target, .. } => {
+        Effect::Surveil { count, target } => {
             let mut acc = Axes::NONE;
             acc = acc.or(scan_quantity_expr(count));
             acc = acc.or(scan_target_filter(target));
             acc
         }
-        Effect::Fight {
-            target, subject, ..
-        } => {
+        Effect::Fight { target, subject } => {
             let mut acc = Axes::NONE;
             acc = acc.or(scan_target_filter(target));
             acc = acc.or(scan_target_filter(subject));
             acc
         }
-        Effect::Bounce { target, .. } => {
+        Effect::Bounce {
+            target,
+            destination: _,
+            selection: _,
+        } => {
             let mut acc = Axes::NONE;
             acc = acc.or(scan_target_filter(target));
             acc
         }
-        Effect::BounceAll { target, count, .. } => {
+        Effect::BounceAll {
+            target,
+            count,
+            destination: _,
+        } => {
             let mut acc = Axes::NONE;
             acc = acc.or(scan_target_filter(target));
             if let Some(x) = count {
@@ -500,18 +540,18 @@ fn scan_effect(x: &Effect) -> Axes {
             acc
         }
         Effect::Explore => Axes::NONE,
-        Effect::ExploreAll { filter, .. } => {
+        Effect::ExploreAll { filter } => {
             let mut acc = Axes::NONE;
             acc = acc.or(scan_target_filter(filter));
             acc
         }
         Effect::Investigate => Axes::NONE,
-        Effect::Tribute { .. } => Axes::NONE,
+        Effect::Tribute { count: _ } => Axes::NONE,
         Effect::TimeTravel => Axes::NONE,
         Effect::BecomeMonarch => Axes::NONE,
         Effect::NoOp => Axes::NONE,
         Effect::Proliferate => Axes::NONE,
-        Effect::ProliferateTarget { target, .. } => {
+        Effect::ProliferateTarget { target } => {
             let mut acc = Axes::NONE;
             acc = acc.or(scan_target_filter(target));
             acc
@@ -522,14 +562,18 @@ fn scan_effect(x: &Effect) -> Axes {
         Effect::EndCombatPhase => Axes::NONE,
         Effect::Vote { .. } => Axes::CONSERVATIVE,
         Effect::SeparateIntoPiles { .. } => Axes::CONSERVATIVE,
-        Effect::SwitchPT { target, .. } => {
+        Effect::SwitchPT { target } => {
             let mut acc = Axes::NONE;
             acc = acc.or(scan_target_filter(target));
             acc
         }
         Effect::CopySpell { .. } => Axes::CONSERVATIVE,
         Effect::EpicCopy { .. } => Axes::CONSERVATIVE,
-        Effect::CastCopyOfCard { target, count, .. } => {
+        Effect::CastCopyOfCard {
+            target,
+            count,
+            cost: _,
+        } => {
             let mut acc = Axes::NONE;
             acc = acc.or(scan_target_filter(target));
             if let Some(x) = count {
@@ -543,7 +587,10 @@ fn scan_effect(x: &Effect) -> Axes {
             type_filter,
             mv_bound,
             count,
-            ..
+            mv: _,
+            selection: _,
+            tapped: _,
+            enters_attacking: _,
         } => {
             let mut acc = Axes::NONE;
             acc = acc.or(scan_target_filter(owner));
@@ -554,24 +601,32 @@ fn scan_effect(x: &Effect) -> Axes {
         }
         Effect::Myriad => Axes::NONE,
         Effect::Encore => Axes::NONE,
-        Effect::CombineHost { host, .. } => {
+        Effect::CombineHost { host, source: _ } => {
             let mut acc = Axes::NONE;
             acc = acc.or(scan_target_filter(host));
             acc
         }
-        Effect::ChooseAugmentAndCombineWithHost { filter, host, .. } => {
+        Effect::ChooseAugmentAndCombineWithHost {
+            filter,
+            host,
+            zones: _,
+        } => {
             let mut acc = Axes::NONE;
             acc = acc.or(scan_target_filter(filter));
             acc = acc.or(scan_target_filter(host));
             acc
         }
-        Effect::Meld { .. } => Axes::NONE,
-        Effect::ExileHaunting { target, .. } => {
+        Effect::Meld {
+            source: _,
+            partner: _,
+            result: _,
+        } => Axes::NONE,
+        Effect::ExileHaunting { target } => {
             let mut acc = Axes::NONE;
             acc = acc.or(scan_target_filter(target));
             acc
         }
-        Effect::HideawayConceal { target, .. } => {
+        Effect::HideawayConceal { target } => {
             let mut acc = Axes::NONE;
             acc = acc.or(scan_target_filter(target));
             acc
@@ -579,7 +634,6 @@ fn scan_effect(x: &Effect) -> Axes {
         Effect::CopyTokenBlockingAttacker {
             source_filter,
             owner,
-            ..
         } => {
             let mut acc = Axes::NONE;
             acc = acc.or(scan_target_filter(source_filter));
@@ -591,7 +645,6 @@ fn scan_effect(x: &Effect) -> Axes {
             target,
             recipient,
             duration,
-            ..
         } => {
             let mut acc = Axes::NONE;
             acc = acc.or(scan_target_filter(target));
@@ -601,34 +654,54 @@ fn scan_effect(x: &Effect) -> Axes {
             }
             acc
         }
-        Effect::ChooseCard { target, .. } => {
+        Effect::ChooseCard { target, choices: _ } => {
             let mut acc = Axes::NONE;
             acc = acc.or(scan_target_filter(target));
             acc
         }
-        Effect::PutCounter { count, target, .. } => {
-            let mut acc = Axes::NONE;
-            acc = acc.or(scan_quantity_expr(count));
-            acc = acc.or(scan_target_filter(target));
-            acc
-        }
-        Effect::PutCounterAll { count, target, .. } => {
+        Effect::PutCounter {
+            count,
+            target,
+            counter_type: _,
+        } => {
             let mut acc = Axes::NONE;
             acc = acc.or(scan_quantity_expr(count));
             acc = acc.or(scan_target_filter(target));
             acc
         }
-        Effect::MultiplyCounter { target, .. } => {
+        Effect::PutCounterAll {
+            count,
+            target,
+            counter_type: _,
+        } => {
+            let mut acc = Axes::NONE;
+            acc = acc.or(scan_quantity_expr(count));
+            acc = acc.or(scan_target_filter(target));
+            acc
+        }
+        Effect::MultiplyCounter {
+            target,
+            counter_type: _,
+            multiplier: _,
+        } => {
             let mut acc = Axes::NONE;
             acc = acc.or(scan_target_filter(target));
             acc
         }
-        Effect::DoublePT { target, .. } => {
+        Effect::DoublePT {
+            target,
+            mode: _,
+            factor: _,
+        } => {
             let mut acc = Axes::NONE;
             acc = acc.or(scan_target_filter(target));
             acc
         }
-        Effect::DoublePTAll { target, .. } => {
+        Effect::DoublePTAll {
+            target,
+            mode: _,
+            factor: _,
+        } => {
             let mut acc = Axes::NONE;
             acc = acc.or(scan_target_filter(target));
             acc
@@ -637,7 +710,9 @@ fn scan_effect(x: &Effect) -> Axes {
             source,
             count,
             target,
-            ..
+            counter_type: _,
+            mode: _,
+            selection: _,
         } => {
             let mut acc = Axes::NONE;
             acc = acc.or(scan_target_filter(source));
@@ -649,16 +724,25 @@ fn scan_effect(x: &Effect) -> Axes {
         }
         Effect::Animate { .. } => Axes::CONSERVATIVE,
         Effect::ReturnAsAura { .. } => Axes::CONSERVATIVE,
-        Effect::RegisterBending { .. } => Axes::NONE,
+        Effect::RegisterBending { kind: _ } => Axes::NONE,
         Effect::GenericEffect { .. } => Axes::CONSERVATIVE,
-        Effect::Cleanup { .. } => Axes::NONE,
+        Effect::Cleanup {
+            clear_remembered: _,
+            clear_chosen_player: _,
+            clear_chosen_color: _,
+            clear_chosen_type: _,
+            clear_chosen_card: _,
+            clear_imprinted: _,
+            clear_triggers: _,
+            clear_coin_flips: _,
+        } => Axes::NONE,
         Effect::Mana { .. } => Axes::CONSERVATIVE,
         Effect::Discard {
             count,
             target,
             unless_filter,
             filter,
-            ..
+            selection: _,
         } => {
             let mut acc = Axes::NONE;
             acc = acc.or(scan_quantity_expr(count));
@@ -671,18 +755,24 @@ fn scan_effect(x: &Effect) -> Axes {
             }
             acc
         }
-        Effect::Shuffle { target, .. } => {
+        Effect::Shuffle { target } => {
             let mut acc = Axes::NONE;
             acc = acc.or(scan_target_filter(target));
             acc
         }
-        Effect::Transform { target, .. } => {
+        Effect::Transform { target } => {
             let mut acc = Axes::NONE;
             acc = acc.or(scan_target_filter(target));
             acc
         }
         Effect::SearchLibrary { .. } => Axes::CONSERVATIVE,
-        Effect::SearchOutsideGame { filter, count, .. } => {
+        Effect::SearchOutsideGame {
+            filter,
+            count,
+            reveal: _,
+            destination: _,
+            source_pool: _,
+        } => {
             let mut acc = Axes::NONE;
             acc = acc.or(scan_target_filter(filter));
             acc = acc.or(scan_quantity_expr(count));
@@ -692,7 +782,9 @@ fn scan_effect(x: &Effect) -> Axes {
             target,
             card_filter,
             count,
-            ..
+            selection: _,
+            choice_optional: _,
+            reveal: _,
         } => {
             let mut acc = Axes::NONE;
             acc = acc.or(scan_target_filter(target));
@@ -703,60 +795,64 @@ fn scan_effect(x: &Effect) -> Axes {
             acc
         }
         Effect::RevealFromHand { .. } => Axes::CONSERVATIVE,
-        Effect::Reveal { target, .. } => {
+        Effect::Reveal { target } => {
             let mut acc = Axes::NONE;
             acc = acc.or(scan_target_filter(target));
             acc
         }
-        Effect::RevealTop { player, .. } => {
+        Effect::RevealTop { player, count: _ } => {
             let mut acc = Axes::NONE;
             acc = acc.or(scan_target_filter(player));
             acc
         }
-        Effect::ExileTop { player, count, .. } => {
+        Effect::ExileTop {
+            player,
+            count,
+            face_down: _,
+        } => {
             let mut acc = Axes::NONE;
             acc = acc.or(scan_target_filter(player));
             acc = acc.or(scan_quantity_expr(count));
             acc
         }
-        Effect::TargetOnly { target, .. } => {
+        Effect::TargetOnly { target } => {
             let mut acc = Axes::NONE;
             acc = acc.or(scan_target_filter(target));
             acc
         }
         Effect::Choose { .. } => Axes::CONSERVATIVE,
-        Effect::ChooseDamageSource { source_filter, .. } => {
+        Effect::ChooseDamageSource { source_filter } => {
             let mut acc = Axes::NONE;
             acc = acc.or(scan_target_filter(source_filter));
             acc
         }
-        Effect::Suspect { target, .. } => {
+        Effect::Suspect { target, scope: _ } => {
             let mut acc = Axes::NONE;
             acc = acc.or(scan_target_filter(target));
             acc
         }
-        Effect::Unsuspect { target, .. } => {
+        Effect::Unsuspect { target, scope: _ } => {
             let mut acc = Axes::NONE;
             acc = acc.or(scan_target_filter(target));
             acc
         }
-        Effect::Connive { target, count, .. } => {
+        Effect::Connive { target, count } => {
             let mut acc = Axes::NONE;
             acc = acc.or(scan_target_filter(target));
             acc = acc.or(scan_quantity_expr(count));
             acc
         }
-        Effect::PhaseOut { target, .. } => {
+        Effect::PhaseOut { target } => {
             let mut acc = Axes::NONE;
             acc = acc.or(scan_target_filter(target));
             acc
         }
-        Effect::PhaseIn { target, .. } => {
+        Effect::PhaseIn { target } => {
             let mut acc = Axes::NONE;
             acc = acc.or(scan_target_filter(target));
             acc
         }
-        Effect::ForceBlock { target, .. } => {
+        Effect::ForceBlock { target } => {
             let mut acc = Axes::NONE;
             acc = acc.or(scan_target_filter(target));
             acc
@@ -765,7 +861,6 @@ fn scan_effect(x: &Effect) -> Axes {
             target,
             required_player,
             duration,
-            ..
         } => {
             let mut acc = Axes::NONE;
             acc = acc.or(scan_target_filter(target));
@@ -774,26 +869,29 @@ fn scan_effect(x: &Effect) -> Axes {
             acc
         }
         Effect::SolveCase => Axes::NONE,
-        Effect::BecomePrepared { target, .. } => {
+        Effect::BecomePrepared { target } => {
             let mut acc = Axes::NONE;
             acc = acc.or(scan_target_filter(target));
             acc
         }
-        Effect::BecomeUnprepared { target, .. } => {
+        Effect::BecomeUnprepared { target } => {
             let mut acc = Axes::NONE;
             acc = acc.or(scan_target_filter(target));
             acc
         }
-        Effect::BecomeSaddled { target, .. } => {
+        Effect::BecomeSaddled { target } => {
             let mut acc = Axes::NONE;
             acc = acc.or(scan_target_filter(target));
             acc
         }
-        Effect::SetClassLevel { .. } => Axes::NONE,
+        Effect::SetClassLevel { level: _ } => Axes::NONE,
         Effect::CreateDelayedTrigger { .. } => Axes::CONSERVATIVE,
         Effect::AddTargetReplacement { .. } => Axes::CONSERVATIVE,
         Effect::AddRestriction { .. } => Axes::CONSERVATIVE,
-        Effect::ReduceNextSpellCost { spell_filter, .. } => {
+        Effect::ReduceNextSpellCost {
+            spell_filter,
+            amount: _,
+        } => {
             let mut acc = Axes::NONE;
             if let Some(x) = spell_filter {
                 acc = acc.or(scan_target_filter(x));
@@ -803,7 +901,7 @@ fn scan_effect(x: &Effect) -> Axes {
         Effect::GrantNextSpellAbility {
             player,
             spell_filter,
-            ..
+            modifier: _,
         } => {
             let mut acc = Axes::NONE;
             acc = acc.or(scan_player_scope(player));
@@ -812,7 +910,10 @@ fn scan_effect(x: &Effect) -> Axes {
             }
             acc
         }
-        Effect::AddPendingETBCounters { count, .. } => {
+        Effect::AddPendingETBCounters {
+            count,
+            counter_type: _,
+        } => {
             let mut acc = Axes::NONE;
             acc = acc.or(scan_quantity_expr(count));
             acc
@@ -820,7 +921,13 @@ fn scan_effect(x: &Effect) -> Axes {
         Effect::CreateEmblem { .. } => Axes::CONSERVATIVE,
         Effect::PayCost { .. } => Axes::CONSERVATIVE,
         Effect::CastFromZone { .. } => Axes::CONSERVATIVE,
-        Effect::FreeCastFromZones { filter, .. } => {
+        Effect::FreeCastFromZones {
+            filter,
+            count: _,
+            max_total_mv: _,
+            zones: _,
+            exile_instead_of_graveyard: _,
+        } => {
             let mut acc = Axes::NONE;
             acc = acc.or(scan_target_filter(filter));
             acc
@@ -831,7 +938,8 @@ fn scan_effect(x: &Effect) -> Axes {
             target,
             damage_source_filter,
             prevention_duration,
-            ..
+            amount: _,
+            scope: _,
         } => {
             let mut acc = Axes::NONE;
             if let Some(x) = amount_dynamic {
@@ -847,21 +955,19 @@ fn scan_effect(x: &Effect) -> Axes {
             acc
         }
         Effect::CreateDamageReplacement { .. } => Axes::CONSERVATIVE,
-        Effect::CreateDrawReplacement {
-            replacement_effect, ..
-        } => {
+        Effect::CreateDrawReplacement { replacement_effect } => {
             let mut acc = Axes::NONE;
             acc = acc.or(scan_effect(replacement_effect));
             acc
         }
-        Effect::LoseTheGame { target, .. } => {
+        Effect::LoseTheGame { target } => {
             let mut acc = Axes::NONE;
             if let Some(x) = target {
                 acc = acc.or(scan_target_filter(x));
             }
             acc
         }
-        Effect::WinTheGame { target, .. } => {
+        Effect::WinTheGame { target } => {
             let mut acc = Axes::NONE;
             if let Some(x) = target {
                 acc = acc.or(scan_target_filter(x));
@@ -874,33 +980,44 @@ fn scan_effect(x: &Effect) -> Axes {
         Effect::FlipCoinUntilLose { .. } => Axes::CONSERVATIVE,
         Effect::RingTemptsYou => Axes::NONE,
         Effect::VentureIntoDungeon => Axes::NONE,
-        Effect::VentureInto { .. } => Axes::NONE,
+        Effect::VentureInto { dungeon: _ } => Axes::NONE,
         Effect::TakeTheInitiative => Axes::NONE,
         Effect::Planeswalk => Axes::NONE,
-        Effect::OpenAttractions { .. } => Axes::NONE,
+        Effect::OpenAttractions { count: _ } => Axes::NONE,
         Effect::RollToVisitAttractions => Axes::NONE,
-        Effect::AssembleContraptions { count, .. } => {
+        Effect::AssembleContraptions { count } => {
             let mut acc = Axes::NONE;
             acc = acc.or(scan_quantity_expr(count));
             acc
         }
         Effect::AssembleContraptionsFromRollDifference => Axes::NONE,
-        Effect::CrankContraptions { target, .. } => {
+        Effect::CrankContraptions { target } => {
             let mut acc = Axes::NONE;
             acc = acc.or(scan_target_filter(target));
             acc
         }
-        Effect::ReassembleContraption { target, .. } => {
+        Effect::ReassembleContraption {
+            target,
+            control_mode: _,
+        } => {
             let mut acc = Axes::NONE;
             acc = acc.or(scan_target_filter(target));
             acc
         }
-        Effect::AssembleContraptionOnSprocket { target, .. } => {
+        Effect::AssembleContraptionOnSprocket {
+            target,
+            sprocket: _,
+            remaining: _,
+        } => {
             let mut acc = Axes::NONE;
             acc = acc.or(scan_target_filter(target));
             acc
         }
-        Effect::ReassembleContraptionOnSprocket { target, .. } => {
+        Effect::ReassembleContraptionOnSprocket {
+            target,
+            sprocket: _,
+            control_mode: _,
+        } => {
             let mut acc = Axes::NONE;
             acc = acc.or(scan_target_filter(target));
             acc
@@ -909,7 +1026,8 @@ fn scan_effect(x: &Effect) -> Axes {
             target,
             count,
             max_ticket_cost,
-            ..
+            kind: _,
+            ticket_cost_payment: _,
         } => {
             let mut acc = Axes::NONE;
             acc = acc.or(scan_target_filter(target));
@@ -919,28 +1037,50 @@ fn scan_effect(x: &Effect) -> Axes {
             }
             acc
         }
-        Effect::ApplySticker { target, .. } => {
+        Effect::ApplySticker {
+            target,
+            sticker: _,
+            pay_ticket: _,
+        } => {
             let mut acc = Axes::NONE;
             acc = acc.or(scan_target_filter(target));
             acc
         }
         Effect::ProcessRadCounters => Axes::NONE,
         Effect::GrantCastingPermission { .. } => Axes::CONSERVATIVE,
-        Effect::ChooseFromZone { filter, .. } => {
+        Effect::ChooseFromZone {
+            filter,
+            count: _,
+            zone: _,
+            additional_zones: _,
+            zone_owner: _,
+            chooser: _,
+            up_to: _,
+            selection: _,
+            constraint: _,
+        } => {
             let mut acc = Axes::NONE;
             if let Some(x) = filter {
                 acc = acc.or(scan_target_filter(x));
             }
             acc
         }
-        Effect::RememberCard { target, .. } => {
+        Effect::RememberCard { target } => {
             let mut acc = Axes::NONE;
             acc = acc.or(scan_target_filter(target));
             acc
         }
-        Effect::ForEachCategoryExile { .. } => Axes::NONE,
+        Effect::ForEachCategoryExile {
+            category: _,
+            zone: _,
+            chooser: _,
+            up_to: _,
+        } => Axes::NONE,
         Effect::ChooseObjectsIntoTrackedSet {
-            chooser, filter, ..
+            chooser,
+            filter,
+            min: _,
+            max: _,
         } => {
             let mut acc = Axes::NONE;
             acc = acc.or(scan_target_filter(chooser));
@@ -951,7 +1091,8 @@ fn scan_effect(x: &Effect) -> Axes {
             choose_filter,
             sacrifice_filter,
             total_power_cap,
-            ..
+            categories: _,
+            chooser_scope: _,
         } => {
             let mut acc = Axes::NONE;
             acc = acc.or(scan_target_filter(choose_filter));
@@ -961,23 +1102,27 @@ fn scan_effect(x: &Effect) -> Axes {
             }
             acc
         }
-        Effect::Exploit { target, .. } => {
+        Effect::Exploit { target } => {
             let mut acc = Axes::NONE;
             acc = acc.or(scan_target_filter(target));
             acc
         }
-        Effect::GainEnergy { amount, .. } => {
+        Effect::GainEnergy { amount } => {
             let mut acc = Axes::NONE;
             acc = acc.or(scan_quantity_expr(amount));
             acc
         }
-        Effect::GivePlayerCounter { count, target, .. } => {
+        Effect::GivePlayerCounter {
+            count,
+            target,
+            counter_kind: _,
+        } => {
             let mut acc = Axes::NONE;
             acc = acc.or(scan_quantity_expr(count));
             acc = acc.or(scan_target_filter(target));
             acc
         }
-        Effect::LoseAllPlayerCounters { target, .. } => {
+        Effect::LoseAllPlayerCounters { target } => {
             let mut acc = Axes::NONE;
             acc = acc.or(scan_target_filter(target));
             acc
@@ -988,7 +1133,12 @@ fn scan_effect(x: &Effect) -> Axes {
             filter,
             count,
             enters_under,
-            ..
+            matched_disposition: _,
+            kept_destination: _,
+            rest_destination: _,
+            enter_tapped: _,
+            enters_attacking: _,
+            kept_optional_to: _,
         } => {
             let mut acc = Axes::NONE;
             acc = acc.or(scan_target_filter(player));
@@ -1002,29 +1152,30 @@ fn scan_effect(x: &Effect) -> Axes {
         Effect::Discover {
             mana_value_limit,
             player,
-            ..
         } => {
             let mut acc = Axes::NONE;
             acc = acc.or(scan_quantity_expr(mana_value_limit));
             acc = acc.or(scan_target_filter(player));
             acc
         }
-        Effect::Heist { target, .. } => {
+        Effect::Heist {
+            target,
+            look_count: _,
+        } => {
             let mut acc = Axes::NONE;
             acc = acc.or(scan_target_filter(target));
             acc
         }
         Effect::HeistExile => Axes::NONE,
         Effect::Cascade => Axes::NONE,
-        Effect::Ripple { .. } => Axes::NONE,
-        Effect::MiracleCast { .. } => Axes::NONE,
-        Effect::MadnessCast { .. } => Axes::NONE,
+        Effect::Ripple { count: _ } => Axes::NONE,
+        Effect::MiracleCast { cost: _ } => Axes::NONE,
+        Effect::MadnessCast { cost: _ } => Axes::NONE,
         Effect::PutAtLibraryPosition { .. } => Axes::CONSERVATIVE,
         Effect::ChooseDrawnThisTurnPayOrTopdeck {
             count,
             life_payment,
             player,
-            ..
         } => {
             let mut acc = Axes::NONE;
             acc = acc.or(scan_quantity_expr(count));
@@ -1032,42 +1183,42 @@ fn scan_effect(x: &Effect) -> Axes {
             acc = acc.or(scan_target_filter(player));
             acc
         }
-        Effect::PutOnTopOrBottom { target, .. } => {
+        Effect::PutOnTopOrBottom { target } => {
             let mut acc = Axes::NONE;
             acc = acc.or(scan_target_filter(target));
             acc
         }
-        Effect::GiftDelivery { .. } => Axes::NONE,
-        Effect::Goad { target, .. } => {
+        Effect::GiftDelivery { kind: _ } => Axes::NONE,
+        Effect::Goad { target } => {
             let mut acc = Axes::NONE;
             acc = acc.or(scan_target_filter(target));
             acc
         }
-        Effect::GoadAll { target, .. } => {
+        Effect::GoadAll { target } => {
             let mut acc = Axes::NONE;
             acc = acc.or(scan_target_filter(target));
             acc
         }
-        Effect::Detain { target, .. } => {
+        Effect::Detain { target } => {
             let mut acc = Axes::NONE;
             acc = acc.or(scan_target_filter(target));
             acc
         }
-        Effect::SetRoomDoorLock { target, .. } => {
+        Effect::SetRoomDoorLock { target, op: _ } => {
             let mut acc = Axes::NONE;
             acc = acc.or(scan_target_filter(target));
             acc
         }
-        Effect::ExchangeControl {
-            target_a, target_b, ..
-        } => {
+        Effect::ExchangeControl { target_a, target_b } => {
             let mut acc = Axes::NONE;
             acc = acc.or(scan_target_filter(target_a));
             acc = acc.or(scan_target_filter(target_b));
             acc
         }
         Effect::ChangeTargets {
-            target, forced_to, ..
+            target,
+            forced_to,
+            scope: _,
         } => {
             let mut acc = Axes::NONE;
             acc = acc.or(scan_target_filter(target));
@@ -1080,7 +1231,7 @@ fn scan_effect(x: &Effect) -> Axes {
             target,
             count,
             enters_under,
-            ..
+            profile: _,
         } => {
             let mut acc = Axes::NONE;
             acc = acc.or(scan_target_filter(target));
@@ -1091,84 +1242,98 @@ fn scan_effect(x: &Effect) -> Axes {
             acc
         }
         Effect::ManifestDread => Axes::NONE,
-        Effect::Cloak { target, count, .. } => {
+        Effect::Cloak { target, count } => {
             let mut acc = Axes::NONE;
             acc = acc.or(scan_target_filter(target));
             acc = acc.or(scan_quantity_expr(count));
             acc
         }
-        Effect::TurnFaceUp { target, .. } => {
+        Effect::TurnFaceUp { target } => {
             let mut acc = Axes::NONE;
             acc = acc.or(scan_target_filter(target));
             acc
         }
-        Effect::TurnFaceDown { target, .. } => {
+        Effect::TurnFaceDown { target, profile: _ } => {
             let mut acc = Axes::NONE;
             acc = acc.or(scan_target_filter(target));
             acc
         }
-        Effect::ExtraTurn { target, .. } => {
+        Effect::ExtraTurn { target } => {
             let mut acc = Axes::NONE;
             acc = acc.or(scan_target_filter(target));
             acc
         }
-        Effect::GrantExtraLoyaltyActivations { amount, target, .. } => {
+        Effect::GrantExtraLoyaltyActivations { amount, target } => {
             let mut acc = Axes::NONE;
             acc = acc.or(scan_quantity_expr(amount));
             acc = acc.or(scan_target_filter(target));
             acc
         }
-        Effect::SkipNextTurn { target, count, .. } => {
+        Effect::SkipNextTurn { target, count } => {
             let mut acc = Axes::NONE;
             acc = acc.or(scan_target_filter(target));
             acc = acc.or(scan_quantity_expr(count));
             acc
         }
-        Effect::SkipNextStep { target, count, .. } => {
+        Effect::SkipNextStep {
+            target,
+            count,
+            step: _,
+            scope: _,
+        } => {
             let mut acc = Axes::NONE;
             acc = acc.or(scan_target_filter(target));
             acc = acc.or(scan_quantity_expr(count));
             acc
         }
-        Effect::AdditionalPhase { target, count, .. } => {
+        Effect::AdditionalPhase {
+            target,
+            count,
+            phase: _,
+            after: _,
+            followed_by: _,
+        } => {
             let mut acc = Axes::NONE;
             acc = acc.or(scan_target_filter(target));
             acc = acc.or(scan_quantity_expr(count));
             acc
         }
-        Effect::Double { target, .. } => {
+        Effect::Double {
+            target,
+            target_kind: _,
+        } => {
             let mut acc = Axes::NONE;
             acc = acc.or(scan_target_filter(target));
             acc
         }
-        Effect::RuntimeHandled { .. } => Axes::NONE,
-        Effect::Incubate { count, .. } => {
+        Effect::RuntimeHandled { handler: _ } => Axes::NONE,
+        Effect::Incubate { count } => {
             let mut acc = Axes::NONE;
             acc = acc.or(scan_quantity_expr(count));
             acc
         }
-        Effect::Amass { count, .. } => {
+        Effect::Amass { count, subtype: _ } => {
             let mut acc = Axes::NONE;
             acc = acc.or(scan_quantity_expr(count));
             acc
         }
-        Effect::Monstrosity { count, .. } => {
+        Effect::Monstrosity { count } => {
             let mut acc = Axes::NONE;
             acc = acc.or(scan_quantity_expr(count));
             acc
         }
         Effect::Specialize => Axes::NONE,
-        Effect::Renown { count, .. } => {
+        Effect::Renown { count } => {
             let mut acc = Axes::NONE;
             acc = acc.or(scan_quantity_expr(count));
             acc
         }
-        Effect::Bolster { count, .. } => {
+        Effect::Bolster { count } => {
             let mut acc = Axes::NONE;
             acc = acc.or(scan_quantity_expr(count));
             acc
         }
-        Effect::Adapt { count, .. } => {
+        Effect::Adapt { count } => {
             let mut acc = Axes::NONE;
             acc = acc.or(scan_quantity_expr(count));
             acc
@@ -1176,73 +1341,82 @@ fn scan_effect(x: &Effect) -> Axes {
         Effect::Learn => Axes::NONE,
         Effect::Forage => Axes::NONE,
         Effect::Harness => Axes::NONE,
-        Effect::CollectEvidence { .. } => Axes::NONE,
-        Effect::Endure {
-            amount, subject, ..
-        } => {
+        Effect::CollectEvidence { amount: _ } => Axes::NONE,
+        Effect::Endure { amount, subject } => {
             let mut acc = Axes::NONE;
             acc = acc.or(scan_quantity_expr(amount));
             acc = acc.or(scan_target_filter(subject));
             acc
         }
-        Effect::BlightEffect { player, .. } => {
+        Effect::BlightEffect { player, count: _ } => {
             let mut acc = Axes::NONE;
             acc = acc.or(scan_target_filter(player));
             acc
         }
-        Effect::Seek { filter, count, .. } => {
+        Effect::Seek {
+            filter,
+            count,
+            from_top: _,
+            destination: _,
+            enter_tapped: _,
+        } => {
             let mut acc = Axes::NONE;
             acc = acc.or(scan_target_filter(filter));
             acc = acc.or(scan_quantity_expr(count));
             acc
         }
-        Effect::SetLifeTotal { target, amount, .. } => {
+        Effect::SetLifeTotal { target, amount } => {
             let mut acc = Axes::NONE;
             acc = acc.or(scan_target_filter(target));
             acc = acc.or(scan_quantity_expr(amount));
             acc
         }
-        Effect::ExchangeLifeWithStat { player, .. } => {
+        Effect::ExchangeLifeWithStat { player, stat: _ } => {
             let mut acc = Axes::NONE;
             acc = acc.or(scan_target_filter(player));
             acc
         }
-        Effect::ExchangeLifeTotals {
-            player_a, player_b, ..
-        } => {
+        Effect::ExchangeLifeTotals { player_a, player_b } => {
             let mut acc = Axes::NONE;
             acc = acc.or(scan_target_filter(player_a));
             acc = acc.or(scan_target_filter(player_b));
             acc
         }
-        Effect::SetDayNight { .. } => Axes::NONE,
-        Effect::GiveControl {
-            target, recipient, ..
-        } => {
+        Effect::SetDayNight { to: _ } => Axes::NONE,
+        Effect::GiveControl { target, recipient } => {
             let mut acc = Axes::NONE;
             acc = acc.or(scan_target_filter(target));
             acc = acc.or(scan_target_filter(recipient));
             acc
         }
-        Effect::RemoveFromCombat { target, .. } => {
+        Effect::RemoveFromCombat { target } => {
             let mut acc = Axes::NONE;
             acc = acc.or(scan_target_filter(target));
             acc
         }
         Effect::Conjure { .. } => Axes::CONSERVATIVE,
-        Effect::ApplyPerpetual { target, .. } => {
+        Effect::ApplyPerpetual {
+            target,
+            modification: _,
+        } => {
             let mut acc = Axes::NONE;
             acc = acc.or(scan_target_filter(target));
             acc
         }
-        Effect::Intensify { amount, .. } => {
+        Effect::Intensify { amount, scope: _ } => {
             let mut acc = Axes::NONE;
             acc = acc.or(scan_quantity_expr(amount));
             acc
         }
-        Effect::DraftFromSpellbook { .. } => Axes::NONE,
+        Effect::DraftFromSpellbook {
+            destination: _,
+            tapped: _,
+        } => Axes::NONE,
         Effect::ChooseOneOf { .. } => Axes::CONSERVATIVE,
-        Effect::Unimplemented { .. } => Axes::NONE,
+        Effect::Unimplemented {
+            name: _,
+            description: _,
+        } => Axes::NONE,
     }
 }
 
@@ -1253,7 +1427,7 @@ fn scan_quantity_ref(x: &QuantityRef) -> Axes {
             acc = acc.or(scan_player_scope(player));
             acc
         }
-        QuantityRef::LifeTotal { player, .. } => {
+        QuantityRef::LifeTotal { player } => {
             let mut acc = Axes {
                 event: false,
                 sibling: false,
@@ -1273,7 +1447,7 @@ fn scan_quantity_ref(x: &QuantityRef) -> Axes {
             projected: true,
         },
         QuantityRef::StartingLifeTotal => Axes::NONE,
-        QuantityRef::ObjectCount { filter, .. } => {
+        QuantityRef::ObjectCount { filter } => {
             let mut acc = Axes {
                 event: false,
                 sibling: true,
@@ -1282,7 +1456,10 @@ fn scan_quantity_ref(x: &QuantityRef) -> Axes {
             acc = acc.or(scan_target_filter(filter));
             acc
         }
-        QuantityRef::ObjectCountDistinct { filter, .. } => {
+        QuantityRef::ObjectCountDistinct {
+            filter,
+            qualities: _,
+        } => {
             let mut acc = Axes {
                 event: false,
                 sibling: true,
@@ -1291,7 +1468,11 @@ fn scan_quantity_ref(x: &QuantityRef) -> Axes {
             acc = acc.or(scan_target_filter(filter));
             acc
         }
-        QuantityRef::ObjectCountBySharedQuality { filter, .. } => {
+        QuantityRef::ObjectCountBySharedQuality {
+            filter,
+            quality: _,
+            aggregate: _,
+        } => {
             let mut acc = Axes {
                 event: false,
                 sibling: true,
@@ -1300,7 +1481,7 @@ fn scan_quantity_ref(x: &QuantityRef) -> Axes {
             acc = acc.or(scan_target_filter(filter));
             acc
         }
-        QuantityRef::PlayerCount { filter, .. } => {
+        QuantityRef::PlayerCount { filter } => {
             let mut acc = Axes::NONE;
             acc = acc.or(scan_player_filter(filter));
             acc
@@ -1314,7 +1495,10 @@ fn scan_quantity_ref(x: &QuantityRef) -> Axes {
             acc = acc.or(scan_object_scope(scope));
             acc
         }
-        QuantityRef::CountersOnObjects { filter, .. } => {
+        QuantityRef::CountersOnObjects {
+            filter,
+            counter_type: _,
+        } => {
             let mut acc = Axes {
                 event: false,
                 sibling: true,
@@ -1323,7 +1507,7 @@ fn scan_quantity_ref(x: &QuantityRef) -> Axes {
             acc = acc.or(scan_target_filter(filter));
             acc
         }
-        QuantityRef::PlayerCounter { scope, .. } => {
+        QuantityRef::PlayerCounter { scope, kind: _ } => {
             let mut acc = Axes {
                 event: false,
                 sibling: false,
@@ -1332,7 +1516,7 @@ fn scan_quantity_ref(x: &QuantityRef) -> Axes {
             acc = acc.or(scan_count_scope(scope));
             acc
         }
-        QuantityRef::Variable { .. } => Axes::NONE,
+        QuantityRef::Variable { name: _ } => Axes::NONE,
         QuantityRef::Power { scope, .. } => {
             let mut acc = Axes {
                 event: false,
@@ -1369,7 +1553,7 @@ fn scan_quantity_ref(x: &QuantityRef) -> Axes {
             acc = acc.or(scan_object_scope(scope));
             acc
         }
-        QuantityRef::TargetObjectManaValue { filter, .. } => {
+        QuantityRef::TargetObjectManaValue { filter } => {
             let mut acc = Axes {
                 event: false,
                 sibling: true,
@@ -1415,7 +1599,11 @@ fn scan_quantity_ref(x: &QuantityRef) -> Axes {
             acc
         }
         QuantityRef::SelfManaValue => Axes::NONE,
-        QuantityRef::Aggregate { filter, .. } => {
+        QuantityRef::Aggregate {
+            filter,
+            function: _,
+            property: _,
+        } => {
             let mut acc = Axes {
                 event: false,
                 sibling: true,
@@ -1424,7 +1612,10 @@ fn scan_quantity_ref(x: &QuantityRef) -> Axes {
             acc = acc.or(scan_target_filter(filter));
             acc
         }
-        QuantityRef::ControlledByEachPlayer { filter, .. } => {
+        QuantityRef::ControlledByEachPlayer {
+            filter,
+            aggregate: _,
+        } => {
             let mut acc = Axes {
                 event: false,
                 sibling: true,
@@ -1433,7 +1624,7 @@ fn scan_quantity_ref(x: &QuantityRef) -> Axes {
             acc = acc.or(scan_target_filter(filter));
             acc
         }
-        QuantityRef::TargetZoneCardCount { .. } => Axes::NONE,
+        QuantityRef::TargetZoneCardCount { zone: _ } => Axes::NONE,
         QuantityRef::Devotion { .. } => Axes {
             event: false,
             sibling: true,
@@ -1441,8 +1632,13 @@ fn scan_quantity_ref(x: &QuantityRef) -> Axes {
         },
         QuantityRef::DistinctCardTypes { .. } => Axes::CONSERVATIVE,
         QuantityRef::CardsExiledBySource => Axes::NONE,
-        QuantityRef::ExiledCardPower { .. } => Axes::NONE,
-        QuantityRef::ZoneCardCount { filter, scope, .. } => {
+        QuantityRef::ExiledCardPower { index: _ } => Axes::NONE,
+        QuantityRef::ZoneCardCount {
+            filter,
+            scope,
+            zone: _,
+            card_types: _,
+        } => {
             let mut acc = Axes::NONE;
             if let Some(x) = filter {
                 acc = acc.or(scan_target_filter(x));
@@ -1456,15 +1652,21 @@ fn scan_quantity_ref(x: &QuantityRef) -> Axes {
             acc
         }
         QuantityRef::TrackedSetSize => Axes::NONE,
-        QuantityRef::FilteredTrackedSetSize { filter, .. } => {
+        QuantityRef::FilteredTrackedSetSize {
+            filter,
+            caused_by: _,
+        } => {
             let mut acc = Axes::NONE;
             acc = acc.or(scan_target_filter(filter));
             acc
         }
-        QuantityRef::TrackedSetAggregate { .. } => Axes::NONE,
+        QuantityRef::TrackedSetAggregate {
+            function: _,
+            property: _,
+        } => Axes::NONE,
         QuantityRef::ExiledFromHandThisResolution => Axes::NONE,
         QuantityRef::PreviousEffectAmount => Axes::NONE,
-        QuantityRef::LifeLostThisTurn { player, .. } => {
+        QuantityRef::LifeLostThisTurn { player } => {
             let mut acc = Axes {
                 event: false,
                 sibling: false,
@@ -1478,7 +1680,7 @@ fn scan_quantity_ref(x: &QuantityRef) -> Axes {
             acc = acc.or(scan_player_scope(player));
             acc
         }
-        QuantityRef::UnspentMana { .. } => Axes {
+        QuantityRef::UnspentMana { color: _ } => Axes {
             event: false,
             sibling: false,
             projected: true,
@@ -1505,7 +1707,7 @@ fn scan_quantity_ref(x: &QuantityRef) -> Axes {
             sibling: false,
             projected: false,
         },
-        QuantityRef::SpellsCastThisTurn { scope, filter, .. } => {
+        QuantityRef::SpellsCastThisTurn { scope, filter } => {
             let mut acc = Axes {
                 event: false,
                 sibling: false,
@@ -1517,7 +1719,7 @@ fn scan_quantity_ref(x: &QuantityRef) -> Axes {
             }
             acc
         }
-        QuantityRef::EnteredThisTurn { filter, .. } => {
+        QuantityRef::EnteredThisTurn { filter } => {
             let mut acc = Axes {
                 event: false,
                 sibling: true,
@@ -1526,7 +1728,7 @@ fn scan_quantity_ref(x: &QuantityRef) -> Axes {
             acc = acc.or(scan_target_filter(filter));
             acc
         }
-        QuantityRef::SacrificedThisTurn { player, filter, .. } => {
+        QuantityRef::SacrificedThisTurn { player, filter } => {
             let mut acc = Axes {
                 event: false,
                 sibling: false,
@@ -1537,7 +1739,7 @@ fn scan_quantity_ref(x: &QuantityRef) -> Axes {
             acc
         }
         QuantityRef::CrimesCommittedThisTurn => Axes::NONE,
-        QuantityRef::LifeGainedThisTurn { player, .. } => {
+        QuantityRef::LifeGainedThisTurn { player } => {
             let mut acc = Axes {
                 event: false,
                 sibling: false,
@@ -1546,7 +1748,7 @@ fn scan_quantity_ref(x: &QuantityRef) -> Axes {
             acc = acc.or(scan_player_scope(player));
             acc
         }
-        QuantityRef::CardsDrawnThisTurn { player, .. } => {
+        QuantityRef::CardsDrawnThisTurn { player } => {
             let mut acc = Axes {
                 event: false,
                 sibling: false,
@@ -1555,7 +1757,7 @@ fn scan_quantity_ref(x: &QuantityRef) -> Axes {
             acc = acc.or(scan_player_scope(player));
             acc
         }
-        QuantityRef::BattlefieldEntriesThisTurn { player, filter, .. } => {
+        QuantityRef::BattlefieldEntriesThisTurn { player, filter } => {
             let mut acc = Axes {
                 event: false,
                 sibling: false,
@@ -1571,7 +1773,11 @@ fn scan_quantity_ref(x: &QuantityRef) -> Axes {
             acc
         }
         QuantityRef::TurnsTaken => Axes::NONE,
-        QuantityRef::ZoneChangeCountThisTurn { filter, .. } => {
+        QuantityRef::ZoneChangeCountThisTurn {
+            filter,
+            from: _,
+            to: _,
+        } => {
             let mut acc = Axes {
                 event: false,
                 sibling: false,
@@ -1580,7 +1786,13 @@ fn scan_quantity_ref(x: &QuantityRef) -> Axes {
             acc = acc.or(scan_target_filter(filter));
             acc
         }
-        QuantityRef::ZoneChangeAggregateThisTurn { filter, .. } => {
+        QuantityRef::ZoneChangeAggregateThisTurn {
+            filter,
+            from: _,
+            to: _,
+            function: _,
+            property: _,
+        } => {
             let mut acc = Axes {
                 event: false,
                 sibling: false,
@@ -1589,7 +1801,14 @@ fn scan_quantity_ref(x: &QuantityRef) -> Axes {
             acc = acc.or(scan_target_filter(filter));
             acc
         }
-        QuantityRef::DamageDealtThisTurn { source, target, .. } => {
+        QuantityRef::DamageDealtThisTurn {
+            source,
+            target,
+            aggregate: _,
+            group_by: _,
+            damage_kind: _,
+            channel: _,
+        } => {
             let mut acc = Axes {
                 event: false,
                 sibling: false,
@@ -1600,7 +1819,7 @@ fn scan_quantity_ref(x: &QuantityRef) -> Axes {
             acc
         }
         QuantityRef::ChosenNumber => Axes::NONE,
-        QuantityRef::AttackedThisTurn { scope, filter, .. } => {
+        QuantityRef::AttackedThisTurn { scope, filter } => {
             let mut acc = Axes::NONE;
             acc = acc.or(scan_count_scope(scope));
             if let Some(x) = filter {
@@ -1609,7 +1828,7 @@ fn scan_quantity_ref(x: &QuantityRef) -> Axes {
             acc
         }
         QuantityRef::DescendedThisTurn => Axes::NONE,
-        QuantityRef::LoyaltyAbilitiesActivatedThisTurn { player, .. } => {
+        QuantityRef::LoyaltyAbilitiesActivatedThisTurn { player } => {
             let mut acc = Axes {
                 event: false,
                 sibling: false,
@@ -1623,7 +1842,7 @@ fn scan_quantity_ref(x: &QuantityRef) -> Axes {
             sibling: false,
             projected: true,
         },
-        QuantityRef::SpellsCastThisGame { scope, filter, .. } => {
+        QuantityRef::SpellsCastThisGame { scope, filter } => {
             let mut acc = Axes {
                 event: false,
                 sibling: false,
@@ -1635,7 +1854,11 @@ fn scan_quantity_ref(x: &QuantityRef) -> Axes {
             }
             acc
         }
-        QuantityRef::CounterAddedThisTurn { actor, target, .. } => {
+        QuantityRef::CounterAddedThisTurn {
+            actor,
+            target,
+            counters: _,
+        } => {
             let mut acc = Axes {
                 event: false,
                 sibling: false,
@@ -1650,7 +1873,7 @@ fn scan_quantity_ref(x: &QuantityRef) -> Axes {
             acc = acc.or(scan_player_scope(player));
             acc
         }
-        QuantityRef::TokensCreatedThisTurn { player, filter, .. } => {
+        QuantityRef::TokensCreatedThisTurn { player, filter } => {
             let mut acc = Axes {
                 event: false,
                 sibling: false,
@@ -1660,7 +1883,7 @@ fn scan_quantity_ref(x: &QuantityRef) -> Axes {
             acc = acc.or(scan_target_filter(filter));
             acc
         }
-        QuantityRef::PlayerActionsThisTurn { player, .. } => {
+        QuantityRef::PlayerActionsThisTurn { player, action: _ } => {
             let mut acc = Axes {
                 event: false,
                 sibling: false,
@@ -1673,7 +1896,10 @@ fn scan_quantity_ref(x: &QuantityRef) -> Axes {
         QuantityRef::CostXPaid => Axes::NONE,
         QuantityRef::KickerCount => Axes::NONE,
         QuantityRef::AdditionalCostPaymentCount => Axes::NONE,
-        QuantityRef::AdditionalCostPaymentCountFor { .. } => Axes::NONE,
+        QuantityRef::AdditionalCostPaymentCountFor {
+            origin: _,
+            origin_ordinal: _,
+        } => Axes::NONE,
         QuantityRef::ConvokedCreatureCount => Axes::NONE,
         QuantityRef::TimesCostPaidThisResolution => Axes {
             event: true,
@@ -1688,7 +1914,7 @@ fn scan_quantity_ref(x: &QuantityRef) -> Axes {
             acc = acc.or(scan_controller_ref(owner));
             acc
         }
-        QuantityRef::DistinctColorsAmongPermanents { filter, .. } => {
+        QuantityRef::DistinctColorsAmongPermanents { filter } => {
             let mut acc = Axes {
                 event: false,
                 sibling: true,
@@ -1697,7 +1923,7 @@ fn scan_quantity_ref(x: &QuantityRef) -> Axes {
             acc = acc.or(scan_target_filter(filter));
             acc
         }
-        QuantityRef::DistinctCounterKindsAmong { filter, .. } => {
+        QuantityRef::DistinctCounterKindsAmong { filter } => {
             let mut acc = Axes {
                 event: false,
                 sibling: true,
@@ -1706,62 +1932,66 @@ fn scan_quantity_ref(x: &QuantityRef) -> Axes {
             acc = acc.or(scan_target_filter(filter));
             acc
         }
-        QuantityRef::VoteCount { .. } => Axes::NONE,
+        QuantityRef::VoteCount { choice_index: _ } => Axes::NONE,
     }
 }
 
 fn scan_quantity_expr(x: &QuantityExpr) -> Axes {
     match x {
-        QuantityExpr::Ref { qty, .. } => {
+        QuantityExpr::Ref { qty } => {
             let mut acc = Axes::NONE;
             acc = acc.or(scan_quantity_ref(qty));
             acc
         }
-        QuantityExpr::Fixed { .. } => Axes::NONE,
-        QuantityExpr::DivideRounded { inner, .. } => {
+        QuantityExpr::Fixed { value: _ } => Axes::NONE,
+        QuantityExpr::DivideRounded {
+            inner,
+            divisor: _,
+            rounding: _,
+        } => {
             let mut acc = Axes::NONE;
             acc = acc.or(scan_quantity_expr(inner));
             acc
         }
-        QuantityExpr::Offset { inner, .. } => {
+        QuantityExpr::Offset { inner, offset: _ } => {
             let mut acc = Axes::NONE;
             acc = acc.or(scan_quantity_expr(inner));
             acc
         }
-        QuantityExpr::ClampMin { inner, .. } => {
+        QuantityExpr::ClampMin { inner, minimum: _ } => {
             let mut acc = Axes::NONE;
             acc = acc.or(scan_quantity_expr(inner));
             acc
         }
-        QuantityExpr::Multiply { inner, .. } => {
+        QuantityExpr::Multiply { inner, factor: _ } => {
             let mut acc = Axes::NONE;
             acc = acc.or(scan_quantity_expr(inner));
             acc
         }
-        QuantityExpr::Sum { exprs, .. } => {
+        QuantityExpr::Sum { exprs } => {
             let mut acc = Axes::NONE;
             for x in exprs {
                 acc = acc.or(scan_quantity_expr(x));
             }
             acc
         }
-        QuantityExpr::UpTo { max, .. } => {
+        QuantityExpr::UpTo { max } => {
             let mut acc = Axes::NONE;
             acc = acc.or(scan_quantity_expr(max));
             acc
         }
-        QuantityExpr::Power { exponent, .. } => {
+        QuantityExpr::Power { exponent, base: _ } => {
             let mut acc = Axes::NONE;
             acc = acc.or(scan_quantity_expr(exponent));
             acc
         }
-        QuantityExpr::Difference { left, right, .. } => {
+        QuantityExpr::Difference { left, right } => {
             let mut acc = Axes::NONE;
             acc = acc.or(scan_quantity_expr(left));
             acc = acc.or(scan_quantity_expr(right));
             acc
         }
-        QuantityExpr::Max { exprs, .. } => {
+        QuantityExpr::Max { exprs } => {
             let mut acc = Axes::NONE;
             for x in exprs {
                 acc = acc.or(scan_quantity_expr(x));
@@ -1780,24 +2010,29 @@ fn scan_ability_condition(x: &AbilityCondition) -> Axes {
         }
         AbilityCondition::AdditionalCostPaidInstead => Axes::NONE,
         AbilityCondition::AlternativeManaCostPaid => Axes::NONE,
-        AbilityCondition::EffectOutcome { .. } => Axes::NONE,
+        AbilityCondition::EffectOutcome { signal: _ } => Axes::NONE,
         AbilityCondition::EventOutcomeWon => Axes::NONE,
         AbilityCondition::WhenYouDo => Axes::NONE,
-        AbilityCondition::CastFromZone { .. } => Axes::NONE,
-        AbilityCondition::CastDuringPhase { .. } => Axes::NONE,
-        AbilityCondition::CurrentPhaseIs { .. } => Axes::NONE,
-        AbilityCondition::CastTimingPermission { .. } => Axes::NONE,
-        AbilityCondition::ManaColorSpent { .. } => Axes::NONE,
+        AbilityCondition::CastFromZone { zone: _ } => Axes::NONE,
+        AbilityCondition::CastDuringPhase { phases: _ } => Axes::NONE,
+        AbilityCondition::CurrentPhaseIs { phases: _ } => Axes::NONE,
+        AbilityCondition::CastTimingPermission { permission: _ } => Axes::NONE,
+        AbilityCondition::ManaColorSpent {
+            color: _,
+            minimum: _,
+        } => Axes::NONE,
         AbilityCondition::RevealedHasCardType { .. } => Axes::CONSERVATIVE,
         AbilityCondition::ObjectsShareQuality {
-            subject, reference, ..
+            subject,
+            reference,
+            quality: _,
         } => {
             let mut acc = Axes::NONE;
             acc = acc.or(scan_target_filter(subject));
             acc = acc.or(scan_target_filter(reference));
             acc
         }
-        AbilityCondition::TargetSharesNameWithOtherExiledThisWay { target, .. } => {
+        AbilityCondition::TargetSharesNameWithOtherExiledThisWay { target } => {
             let mut acc = Axes::NONE;
             acc = acc.or(scan_target_filter(target));
             acc
@@ -1812,14 +2047,22 @@ fn scan_ability_condition(x: &AbilityCondition) -> Axes {
             acc = acc.or(scan_object_scope(subject));
             acc
         }
-        AbilityCondition::CastVariantPaidInstead { .. } => Axes::NONE,
-        AbilityCondition::QuantityCheck { lhs, rhs, .. } => {
+        AbilityCondition::CastVariantPaidInstead { variant: _ } => Axes::NONE,
+        AbilityCondition::QuantityCheck {
+            lhs,
+            rhs,
+            comparator: _,
+        } => {
             let mut acc = Axes::NONE;
             acc = acc.or(scan_quantity_expr(lhs));
             acc = acc.or(scan_quantity_expr(rhs));
             acc
         }
-        AbilityCondition::PreviousEffectAmount { rhs, .. } => {
+        AbilityCondition::PreviousEffectAmount {
+            rhs,
+            comparator: _,
+            channel: _,
+        } => {
             let mut acc = Axes::NONE;
             acc = acc.or(scan_quantity_expr(rhs));
             acc
@@ -1829,14 +2072,14 @@ fn scan_ability_condition(x: &AbilityCondition) -> Axes {
         AbilityCondition::IsInitiative => Axes::NONE,
         AbilityCondition::HasCityBlessing => Axes::NONE,
         AbilityCondition::IsRingBearer => Axes::NONE,
-        AbilityCondition::TargetHasKeywordInstead { .. } => Axes::NONE,
-        AbilityCondition::TargetMatchesFilter { filter, .. } => {
+        AbilityCondition::TargetHasKeywordInstead { keyword: _ } => Axes::NONE,
+        AbilityCondition::TargetMatchesFilter { filter, use_lki: _ } => {
             let mut acc = Axes::NONE;
             acc = acc.or(scan_target_filter(filter));
             acc
         }
         AbilityCondition::HasObjectTarget => Axes::NONE,
-        AbilityCondition::TriggeringSpellTargetsFilter { filter, .. } => {
+        AbilityCondition::TriggeringSpellTargetsFilter { filter } => {
             let mut acc = Axes {
                 event: true,
                 sibling: false,
@@ -1845,12 +2088,16 @@ fn scan_ability_condition(x: &AbilityCondition) -> Axes {
             acc = acc.or(scan_target_filter(filter));
             acc
         }
-        AbilityCondition::SourceMatchesFilter { filter, .. } => {
+        AbilityCondition::SourceMatchesFilter { filter } => {
             let mut acc = Axes::NONE;
             acc = acc.or(scan_target_filter(filter));
             acc
         }
-        AbilityCondition::ZoneChangeObjectMatchesFilter { filter, .. } => {
+        AbilityCondition::ZoneChangeObjectMatchesFilter {
+            filter,
+            origin: _,
+            destination: _,
+        } => {
             let mut acc = Axes {
                 event: true,
                 sibling: false,
@@ -1859,12 +2106,12 @@ fn scan_ability_condition(x: &AbilityCondition) -> Axes {
             acc = acc.or(scan_target_filter(filter));
             acc
         }
-        AbilityCondition::ControllerControlsMatching { filter, .. } => {
+        AbilityCondition::ControllerControlsMatching { filter } => {
             let mut acc = Axes::NONE;
             acc = acc.or(scan_target_filter(filter));
             acc
         }
-        AbilityCondition::ControllerControlledMatchingAsCast { filter, .. } => {
+        AbilityCondition::ControllerControlledMatchingAsCast { filter } => {
             let mut acc = Axes::NONE;
             acc = acc.or(scan_target_filter(filter));
             acc
@@ -1875,7 +2122,7 @@ fn scan_ability_condition(x: &AbilityCondition) -> Axes {
             acc = acc.or(scan_controller_ref(controller));
             acc
         }
-        AbilityCondition::SpellCastWithVariantThisTurn { .. } => Axes {
+        AbilityCondition::SpellCastWithVariantThisTurn { variant: _ } => Axes {
             event: false,
             sibling: false,
             projected: true,
@@ -1890,7 +2137,7 @@ fn scan_ability_condition(x: &AbilityCondition) -> Axes {
             sibling: false,
             projected: true,
         },
-        AbilityCondition::ZoneChangedThisWay { filter, .. } => {
+        AbilityCondition::ZoneChangedThisWay { filter } => {
             let mut acc = Axes {
                 event: true,
                 sibling: false,
@@ -1899,46 +2146,46 @@ fn scan_ability_condition(x: &AbilityCondition) -> Axes {
             acc = acc.or(scan_target_filter(filter));
             acc
         }
-        AbilityCondition::CostPaidObjectMatchesFilter { filter, .. } => {
+        AbilityCondition::CostPaidObjectMatchesFilter { filter } => {
             let mut acc = Axes::NONE;
             acc = acc.or(scan_target_filter(filter));
             acc
         }
         AbilityCondition::SourceIsTapped => Axes::NONE,
         AbilityCondition::SourceAttachedToCreature => Axes::NONE,
-        AbilityCondition::ConditionInstead { inner, .. } => {
+        AbilityCondition::ConditionInstead { inner } => {
             let mut acc = Axes::NONE;
             acc = acc.or(scan_ability_condition(inner));
             acc
         }
-        AbilityCondition::And { conditions, .. } => {
+        AbilityCondition::And { conditions } => {
             let mut acc = Axes::NONE;
             for x in conditions {
                 acc = acc.or(scan_ability_condition(x));
             }
             acc
         }
-        AbilityCondition::Or { conditions, .. } => {
+        AbilityCondition::Or { conditions } => {
             let mut acc = Axes::NONE;
             for x in conditions {
                 acc = acc.or(scan_ability_condition(x));
             }
             acc
         }
-        AbilityCondition::Not { condition, .. } => {
+        AbilityCondition::Not { condition } => {
             let mut acc = Axes::NONE;
             acc = acc.or(scan_ability_condition(condition));
             acc
         }
         AbilityCondition::DayNightIsNeither => Axes::NONE,
-        AbilityCondition::DayNightIs { .. } => Axes::NONE,
-        AbilityCondition::NthResolutionThisTurn { .. } => Axes {
+        AbilityCondition::DayNightIs { state: _ } => Axes::NONE,
+        AbilityCondition::NthResolutionThisTurn { n: _ } => Axes {
             event: false,
             sibling: false,
             projected: true,
         },
-        AbilityCondition::SourceLacksKeyword { .. } => Axes::NONE,
-        AbilityCondition::ScopedPlayerMatches { filter, .. } => {
+        AbilityCondition::SourceLacksKeyword { keyword: _ } => Axes::NONE,
+        AbilityCondition::ScopedPlayerMatches { filter } => {
             let mut acc = Axes::NONE;
             acc = acc.or(scan_player_filter(filter));
             acc
@@ -1955,19 +2202,19 @@ fn scan_target_filter(x: &TargetFilter) -> Axes {
         TargetFilter::SelfRef => Axes::NONE,
         TargetFilter::SourceOrPaired => Axes::NONE,
         TargetFilter::Typed(..) => Axes::CONSERVATIVE,
-        TargetFilter::Not { filter, .. } => {
+        TargetFilter::Not { filter } => {
             let mut acc = Axes::NONE;
             acc = acc.or(scan_target_filter(filter));
             acc
         }
-        TargetFilter::Or { filters, .. } => {
+        TargetFilter::Or { filters } => {
             let mut acc = Axes::NONE;
             for x in filters {
                 acc = acc.or(scan_target_filter(x));
             }
             acc
         }
-        TargetFilter::And { filters, .. } => {
+        TargetFilter::And { filters } => {
             let mut acc = Axes::NONE;
             for x in filters {
                 acc = acc.or(scan_target_filter(x));
@@ -1982,9 +2229,9 @@ fn scan_target_filter(x: &TargetFilter) -> Axes {
             acc
         }
         TargetFilter::StackSpell => Axes::NONE,
-        TargetFilter::SpecificObject { .. } => Axes::NONE,
-        TargetFilter::SpecificPlayer { .. } => Axes::NONE,
-        TargetFilter::Neighbor { .. } => Axes::NONE,
+        TargetFilter::SpecificObject { id: _ } => Axes::NONE,
+        TargetFilter::SpecificPlayer { id: _ } => Axes::NONE,
+        TargetFilter::Neighbor { direction: _ } => Axes::NONE,
         TargetFilter::ScopedPlayer => Axes::NONE,
         TargetFilter::AttachedTo => Axes::NONE,
         TargetFilter::LastCreated => Axes::NONE,
@@ -1995,14 +2242,18 @@ fn scan_target_filter(x: &TargetFilter) -> Axes {
             projected: false,
         },
         TargetFilter::ChosenCard => Axes::NONE,
-        TargetFilter::TrackedSet { .. } => Axes::NONE,
-        TargetFilter::TrackedSetFiltered { filter, .. } => {
+        TargetFilter::TrackedSet { id: _ } => Axes::NONE,
+        TargetFilter::TrackedSetFiltered {
+            filter,
+            id: _,
+            caused_by: _,
+        } => {
             let mut acc = Axes::NONE;
             acc = acc.or(scan_target_filter(filter));
             acc
         }
         TargetFilter::ExiledBySource => Axes::NONE,
-        TargetFilter::ExiledCardByIndex { .. } => Axes::NONE,
+        TargetFilter::ExiledCardByIndex { index: _ } => Axes::NONE,
         TargetFilter::TriggeringSpellController => Axes {
             event: true,
             sibling: false,
@@ -2077,7 +2328,7 @@ fn scan_target_filter(x: &TargetFilter) -> Axes {
             sibling: false,
             projected: false,
         },
-        TargetFilter::Named { .. } => Axes::NONE,
+        TargetFilter::Named { name: _ } => Axes::NONE,
         TargetFilter::Owner => Axes::NONE,
         TargetFilter::AllPlayers => Axes::NONE,
     }
@@ -2110,7 +2361,7 @@ fn scan_object_scope(x: &ObjectScope) -> Axes {
 
 fn scan_trigger_condition(x: &TriggerCondition) -> Axes {
     match x {
-        TriggerCondition::GainedLife { .. } => Axes {
+        TriggerCondition::GainedLife { minimum: _ } => Axes {
             event: false,
             sibling: false,
             projected: true,
@@ -2121,7 +2372,7 @@ fn scan_trigger_condition(x: &TriggerCondition) -> Axes {
             projected: true,
         },
         TriggerCondition::Descended => Axes::NONE,
-        TriggerCondition::ControlsType { filter, .. } => {
+        TriggerCondition::ControlsType { filter } => {
             let mut acc = Axes {
                 event: false,
                 sibling: true,
@@ -2140,7 +2391,7 @@ fn scan_trigger_condition(x: &TriggerCondition) -> Axes {
             sibling: false,
             projected: true,
         },
-        TriggerCondition::DuringPlayersTurn { player, .. } => {
+        TriggerCondition::DuringPlayersTurn { player } => {
             let mut acc = Axes::NONE;
             acc = acc.or(scan_player_filter(player));
             acc
@@ -2151,7 +2402,7 @@ fn scan_trigger_condition(x: &TriggerCondition) -> Axes {
             projected: true,
         },
         TriggerCondition::EchoDue => Axes::NONE,
-        TriggerCondition::MinCoAttackers { filter, .. } => {
+        TriggerCondition::MinCoAttackers { filter, minimum: _ } => {
             let mut acc = Axes::NONE;
             if let Some(x) = filter {
                 acc = acc.or(scan_target_filter(x));
@@ -2159,9 +2410,9 @@ fn scan_trigger_condition(x: &TriggerCondition) -> Axes {
             acc
         }
         TriggerCondition::SolveConditionMet => Axes::NONE,
-        TriggerCondition::ClassLevelGE { .. } => Axes::NONE,
+        TriggerCondition::ClassLevelGE { level: _ } => Axes::NONE,
         TriggerCondition::SourceIsHarnessed => Axes::NONE,
-        TriggerCondition::AttractionVisitRoll { .. } => Axes::NONE,
+        TriggerCondition::AttractionVisitRoll { min: _, max: _ } => Axes::NONE,
         TriggerCondition::WasCast {
             controller, owner, ..
         } => {
@@ -2175,17 +2426,24 @@ fn scan_trigger_condition(x: &TriggerCondition) -> Axes {
             acc
         }
         TriggerCondition::WasPlayed => Axes::NONE,
-        TriggerCondition::AdditionalCostPaid { .. } => Axes::NONE,
+        TriggerCondition::AdditionalCostPaid {
+            source: _,
+            origin: _,
+            origin_ordinal: _,
+            variant: _,
+            kicker_cost: _,
+            min_count: _,
+        } => Axes::NONE,
         TriggerCondition::SourceIsAttacking => Axes::NONE,
-        TriggerCondition::CastVariantPaid { .. } => Axes::NONE,
-        TriggerCondition::CastVariantPaidPersistent { .. } => Axes::NONE,
+        TriggerCondition::CastVariantPaid { variant: _ } => Axes::NONE,
+        TriggerCondition::CastVariantPaidPersistent { variant: _ } => Axes::NONE,
         TriggerCondition::ActivatedAbilityIsNonMana => Axes::NONE,
         TriggerCondition::DealtDamageBySourceThisTurn => Axes {
             event: false,
             sibling: false,
             projected: true,
         },
-        TriggerCondition::DealtDamageThisTurnBySource { source, .. } => {
+        TriggerCondition::DealtDamageThisTurnBySource { source } => {
             let mut acc = Axes {
                 event: false,
                 sibling: false,
@@ -2195,13 +2453,13 @@ fn scan_trigger_condition(x: &TriggerCondition) -> Axes {
             acc
         }
         TriggerCondition::FirstTimeObjectTappedThisTurn => Axes::NONE,
-        TriggerCondition::WasType { .. } => Axes::NONE,
-        TriggerCondition::LifeTotalGE { .. } => Axes {
+        TriggerCondition::WasType { card_type: _ } => Axes::NONE,
+        TriggerCondition::LifeTotalGE { minimum: _ } => Axes {
             event: false,
             sibling: false,
             projected: true,
         },
-        TriggerCondition::ControlCount { filter, .. } => {
+        TriggerCondition::ControlCount { filter, minimum: _ } => {
             let mut acc = Axes {
                 event: false,
                 sibling: true,
@@ -2210,7 +2468,7 @@ fn scan_trigger_condition(x: &TriggerCondition) -> Axes {
             acc = acc.or(scan_target_filter(filter));
             acc
         }
-        TriggerCondition::ControlsNone { filter, .. } => {
+        TriggerCondition::ControlsNone { filter } => {
             let mut acc = Axes::NONE;
             acc = acc.or(scan_target_filter(filter));
             acc
@@ -2221,7 +2479,7 @@ fn scan_trigger_condition(x: &TriggerCondition) -> Axes {
             sibling: false,
             projected: true,
         },
-        TriggerCondition::CastSpellThisTurn { filter, .. } => {
+        TriggerCondition::CastSpellThisTurn { filter } => {
             let mut acc = Axes {
                 event: false,
                 sibling: false,
@@ -2232,7 +2490,11 @@ fn scan_trigger_condition(x: &TriggerCondition) -> Axes {
             }
             acc
         }
-        TriggerCondition::QuantityComparison { lhs, rhs, .. } => {
+        TriggerCondition::QuantityComparison {
+            lhs,
+            rhs,
+            comparator: _,
+        } => {
             let mut acc = Axes::NONE;
             acc = acc.or(scan_quantity_expr(lhs));
             acc = acc.or(scan_quantity_expr(rhs));
@@ -2247,18 +2509,18 @@ fn scan_trigger_condition(x: &TriggerCondition) -> Axes {
             acc = acc.or(scan_controller_ref(controller));
             acc
         }
-        TriggerCondition::SpellCastWithVariantThisTurn { .. } => Axes {
+        TriggerCondition::SpellCastWithVariantThisTurn { variant: _ } => Axes {
             event: false,
             sibling: false,
             projected: true,
         },
         TriggerCondition::HasCityBlessing => Axes::NONE,
-        TriggerCondition::CompletedDungeon { .. } => Axes::NONE,
+        TriggerCondition::CompletedDungeon { specific: _ } => Axes::NONE,
         TriggerCondition::SourceIsTapped => Axes::NONE,
         TriggerCondition::SourceIsTransformed => Axes::NONE,
         TriggerCondition::SourceIsFaceUp => Axes::NONE,
         TriggerCondition::SourceIsFaceDown => Axes::NONE,
-        TriggerCondition::SourceInZone { .. } => Axes::NONE,
+        TriggerCondition::SourceInZone { zone: _ } => Axes::NONE,
         TriggerCondition::CounterAddedThisTurn => Axes {
             event: false,
             sibling: false,
@@ -2269,20 +2531,23 @@ fn scan_trigger_condition(x: &TriggerCondition) -> Axes {
             sibling: false,
             projected: true,
         },
-        TriggerCondition::DefendingPlayerControlsNone { filter, .. } => {
+        TriggerCondition::DefendingPlayerControlsNone { filter } => {
             let mut acc = Axes::NONE;
             acc = acc.or(scan_target_filter(filter));
             acc
         }
         TriggerCondition::TributeNotPaid => Axes::NONE,
-        TriggerCondition::CastDuringPhase { .. } => Axes::NONE,
-        TriggerCondition::CastTimingPermission { .. } => Axes::NONE,
-        TriggerCondition::ManaColorSpent { .. } => Axes {
+        TriggerCondition::CastDuringPhase { phases: _ } => Axes::NONE,
+        TriggerCondition::CastTimingPermission { permission: _ } => Axes::NONE,
+        TriggerCondition::ManaColorSpent {
+            color: _,
+            minimum: _,
+        } => Axes {
             event: false,
             sibling: false,
             projected: true,
         },
-        TriggerCondition::ManaSpentCondition { .. } => Axes {
+        TriggerCondition::ManaSpentCondition { text: _ } => Axes {
             event: false,
             sibling: false,
             projected: true,
@@ -2292,14 +2557,18 @@ fn scan_trigger_condition(x: &TriggerCondition) -> Axes {
             sibling: true,
             projected: false,
         },
-        TriggerCondition::ControlsCommander { .. } => Axes::NONE,
-        TriggerCondition::IsRenowned { .. } => Axes::NONE,
+        TriggerCondition::ControlsCommander { ownership: _ } => Axes::NONE,
+        TriggerCondition::IsRenowned { subject: _ } => Axes::NONE,
         TriggerCondition::HasCounters { .. } => Axes {
             event: false,
             sibling: true,
             projected: false,
         },
-        TriggerCondition::ZoneChangeObjectMatchesFilter { filter, .. } => {
+        TriggerCondition::ZoneChangeObjectMatchesFilter {
+            filter,
+            origin: _,
+            destination: _,
+        } => {
             let mut acc = Axes {
                 event: true,
                 sibling: false,
@@ -2313,12 +2582,12 @@ fn scan_trigger_condition(x: &TriggerCondition) -> Axes {
             sibling: false,
             projected: false,
         },
-        TriggerCondition::SourceMatchesFilter { filter, .. } => {
+        TriggerCondition::SourceMatchesFilter { filter } => {
             let mut acc = Axes::NONE;
             acc = acc.or(scan_target_filter(filter));
             acc
         }
-        TriggerCondition::EventDamageSourceMatchesFilter { filter, .. } => {
+        TriggerCondition::EventDamageSourceMatchesFilter { filter } => {
             let mut acc = Axes {
                 event: true,
                 sibling: false,
@@ -2332,11 +2601,11 @@ fn scan_trigger_condition(x: &TriggerCondition) -> Axes {
             sibling: false,
             projected: false,
         },
-        TriggerCondition::ChosenLabelIs { .. } => Axes::NONE,
+        TriggerCondition::ChosenLabelIs { label: _ } => Axes::NONE,
         TriggerCondition::AttackersDeclaredCount { .. } => Axes::CONSERVATIVE,
         TriggerCondition::ExceptFirstDrawInDrawStep => Axes::NONE,
         TriggerCondition::PlacedByAbilitySource => Axes::NONE,
-        TriggerCondition::TriggeringSpellTargetsFilter { filter, .. } => {
+        TriggerCondition::TriggeringSpellTargetsFilter { filter } => {
             let mut acc = Axes {
                 event: true,
                 sibling: false,
@@ -2345,21 +2614,21 @@ fn scan_trigger_condition(x: &TriggerCondition) -> Axes {
             acc = acc.or(scan_target_filter(filter));
             acc
         }
-        TriggerCondition::And { conditions, .. } => {
+        TriggerCondition::And { conditions } => {
             let mut acc = Axes::NONE;
             for x in conditions {
                 acc = acc.or(scan_trigger_condition(x));
             }
             acc
         }
-        TriggerCondition::Or { conditions, .. } => {
+        TriggerCondition::Or { conditions } => {
             let mut acc = Axes::NONE;
             for x in conditions {
                 acc = acc.or(scan_trigger_condition(x));
             }
             acc
         }
-        TriggerCondition::Not { condition, .. } => {
+        TriggerCondition::Not { condition } => {
             let mut acc = Axes::NONE;
             acc = acc.or(scan_trigger_condition(condition));
             acc
@@ -2387,7 +2656,7 @@ fn scan_duration(x: &Duration) -> Axes {
             acc = acc.or(scan_player_scope(player));
             acc
         }
-        Duration::ForAsLongAs { condition, .. } => {
+        Duration::ForAsLongAs { condition } => {
             let mut acc = Axes::NONE;
             acc = acc.or(scan_static_condition(condition));
             acc
@@ -2403,56 +2672,60 @@ fn scan_static_condition(x: &StaticCondition) -> Axes {
             sibling: true,
             projected: false,
         },
-        StaticCondition::IsPresent { filter, .. } => {
+        StaticCondition::IsPresent { filter } => {
             let mut acc = Axes::NONE;
             if let Some(x) = filter {
                 acc = acc.or(scan_target_filter(x));
             }
             acc
         }
-        StaticCondition::ChosenColorIs { .. } => Axes::NONE,
-        StaticCondition::ChosenLabelIs { .. } => Axes::NONE,
-        StaticCondition::QuantityComparison { lhs, rhs, .. } => {
+        StaticCondition::ChosenColorIs { color: _ } => Axes::NONE,
+        StaticCondition::ChosenLabelIs { label: _ } => Axes::NONE,
+        StaticCondition::QuantityComparison {
+            lhs,
+            rhs,
+            comparator: _,
+        } => {
             let mut acc = Axes::NONE;
             acc = acc.or(scan_quantity_expr(lhs));
             acc = acc.or(scan_quantity_expr(rhs));
             acc
         }
         StaticCondition::HasMaxSpeed => Axes::NONE,
-        StaticCondition::SpeedGE { .. } => Axes::NONE,
-        StaticCondition::And { conditions, .. } => {
+        StaticCondition::SpeedGE { threshold: _ } => Axes::NONE,
+        StaticCondition::And { conditions } => {
             let mut acc = Axes::NONE;
             for x in conditions {
                 acc = acc.or(scan_static_condition(x));
             }
             acc
         }
-        StaticCondition::Or { conditions, .. } => {
+        StaticCondition::Or { conditions } => {
             let mut acc = Axes::NONE;
             for x in conditions {
                 acc = acc.or(scan_static_condition(x));
             }
             acc
         }
-        StaticCondition::Not { condition, .. } => {
+        StaticCondition::Not { condition } => {
             let mut acc = Axes::NONE;
             acc = acc.or(scan_static_condition(condition));
             acc
         }
-        StaticCondition::DayNightIs { .. } => Axes::NONE,
+        StaticCondition::DayNightIs { state: _ } => Axes::NONE,
         StaticCondition::HasCounters { .. } => Axes {
             event: false,
             sibling: true,
             projected: false,
         },
-        StaticCondition::CastVariantPaid { .. } => Axes::NONE,
+        StaticCondition::CastVariantPaid { variant: _ } => Axes::NONE,
         StaticCondition::RecipientHasCounters { .. } => Axes {
             event: false,
             sibling: true,
             projected: false,
         },
-        StaticCondition::ClassLevelGE { .. } => Axes::NONE,
-        StaticCondition::DefendingPlayerControls { filter, .. } => {
+        StaticCondition::ClassLevelGE { level: _ } => Axes::NONE,
+        StaticCondition::DefendingPlayerControls { filter } => {
             let mut acc = Axes::NONE;
             acc = acc.or(scan_target_filter(filter));
             acc
@@ -2471,18 +2744,18 @@ fn scan_static_condition(x: &StaticCondition) -> Axes {
             acc = acc.or(scan_controller_ref(controller));
             acc
         }
-        StaticCondition::SpellCastWithVariantThisTurn { .. } => Axes {
+        StaticCondition::SpellCastWithVariantThisTurn { variant: _ } => Axes {
             event: false,
             sibling: false,
             projected: true,
         },
-        StaticCondition::OpponentPoisonAtLeast { .. } => Axes {
+        StaticCondition::OpponentPoisonAtLeast { count: _ } => Axes {
             event: false,
             sibling: false,
             projected: true,
         },
         StaticCondition::UnlessPay { .. } => Axes::CONSERVATIVE,
-        StaticCondition::Unrecognized { .. } => Axes::NONE,
+        StaticCondition::Unrecognized { text: _ } => Axes::NONE,
         StaticCondition::DuringYourTurn => Axes::NONE,
         StaticCondition::SharesColorWithMostCommonColorAmongPermanents => Axes::NONE,
         StaticCondition::SourceEnteredThisTurn => Axes {
@@ -2495,10 +2768,10 @@ fn scan_static_condition(x: &StaticCondition) -> Axes {
             sibling: false,
             projected: true,
         },
-        StaticCondition::WasCast { .. } => Axes::NONE,
+        StaticCondition::WasCast { zone: _ } => Axes::NONE,
         StaticCondition::IsRingBearer => Axes::NONE,
-        StaticCondition::RingLevelAtLeast { .. } => Axes::NONE,
-        StaticCondition::ControlsCommander { .. } => Axes::NONE,
+        StaticCondition::RingLevelAtLeast { level: _ } => Axes::NONE,
+        StaticCondition::ControlsCommander { ownership: _ } => Axes::NONE,
         StaticCondition::SourceIsTapped => Axes::NONE,
         StaticCondition::IsTapped { scope, .. } => {
             let mut acc = Axes::NONE;
@@ -2506,28 +2779,28 @@ fn scan_static_condition(x: &StaticCondition) -> Axes {
             acc
         }
         StaticCondition::SourceIsSaddled => Axes::NONE,
-        StaticCondition::SourceControllerEquals { .. } => Axes::NONE,
+        StaticCondition::SourceControllerEquals { player: _ } => Axes::NONE,
         StaticCondition::SourceIsEquipped => Axes::NONE,
         StaticCondition::SourceIsEnchanted => Axes::NONE,
         StaticCondition::SourceIsMonstrous => Axes::NONE,
         StaticCondition::SourceIsHarnessed => Axes::NONE,
         StaticCondition::SourceAttachedToCreature => Axes::NONE,
-        StaticCondition::SourceMatchesFilter { filter, .. } => {
+        StaticCondition::SourceMatchesFilter { filter } => {
             let mut acc = Axes::NONE;
             acc = acc.or(scan_target_filter(filter));
             acc
         }
-        StaticCondition::RecipientMatchesFilter { filter, .. } => {
+        StaticCondition::RecipientMatchesFilter { filter } => {
             let mut acc = Axes::NONE;
             acc = acc.or(scan_target_filter(filter));
             acc
         }
-        StaticCondition::RecipientAttackingOwnerTarget { .. } => Axes::NONE,
+        StaticCondition::RecipientAttackingOwnerTarget { target: _ } => Axes::NONE,
         StaticCondition::SourceIsPaired => Axes::NONE,
-        StaticCondition::SourceInZone { .. } => Axes::NONE,
+        StaticCondition::SourceInZone { zone: _ } => Axes::NONE,
         StaticCondition::EnchantedIsFaceDown => Axes::NONE,
         StaticCondition::AdditionalCostPaid => Axes::NONE,
-        StaticCondition::CastingAsVariant { .. } => Axes::NONE,
+        StaticCondition::CastingAsVariant { variant: _ } => Axes::NONE,
         StaticCondition::None => Axes::NONE,
     }
 }
@@ -2548,7 +2821,7 @@ fn scan_player_filter(x: &PlayerFilter) -> Axes {
             projected: true,
         },
         PlayerFilter::HasLostTheGame => Axes::NONE,
-        PlayerFilter::OpponentDealtCombatDamage { source, .. } => {
+        PlayerFilter::OpponentDealtCombatDamage { source } => {
             let mut acc = Axes {
                 event: false,
                 sibling: false,
@@ -2559,16 +2832,22 @@ fn scan_player_filter(x: &PlayerFilter) -> Axes {
             }
             acc
         }
-        PlayerFilter::OpponentAttacked { .. } => Axes::NONE,
+        PlayerFilter::OpponentAttacked {
+            subject: _,
+            scope: _,
+        } => Axes::NONE,
         PlayerFilter::All => Axes::NONE,
-        PlayerFilter::AllExcept { exclude, .. } => {
+        PlayerFilter::AllExcept { exclude } => {
             let mut acc = Axes::NONE;
             acc = acc.or(scan_player_filter(exclude));
             acc
         }
         PlayerFilter::HighestSpeed => Axes::NONE,
         PlayerFilter::ZoneChangedThisWay => Axes::NONE,
-        PlayerFilter::PerformedActionThisWay { .. } => Axes::NONE,
+        PlayerFilter::PerformedActionThisWay {
+            relation: _,
+            action: _,
+        } => Axes::NONE,
         PlayerFilter::OwnersOfCardsExiledBySource => Axes::NONE,
         PlayerFilter::TriggeringPlayer => Axes {
             event: true,
@@ -2590,13 +2869,18 @@ fn scan_player_filter(x: &PlayerFilter) -> Axes {
             sibling: false,
             projected: false,
         },
-        PlayerFilter::VotedFor { .. } => Axes::NONE,
+        PlayerFilter::VotedFor { choice_index: _ } => Axes::NONE,
         PlayerFilter::ParentObjectTargetController => Axes {
             event: true,
             sibling: false,
             projected: false,
         },
-        PlayerFilter::ControlsCount { filter, count, .. } => {
+        PlayerFilter::ControlsCount {
+            filter,
+            count,
+            relation: _,
+            comparator: _,
+        } => {
             let mut acc = Axes {
                 event: false,
                 sibling: true,
@@ -2606,7 +2890,12 @@ fn scan_player_filter(x: &PlayerFilter) -> Axes {
             acc = acc.or(scan_quantity_expr(count));
             acc
         }
-        PlayerFilter::PlayerAttribute { attr, value, .. } => {
+        PlayerFilter::PlayerAttribute {
+            attr,
+            value,
+            relation: _,
+            comparator: _,
+        } => {
             let mut acc = Axes {
                 event: false,
                 sibling: false,
@@ -2616,7 +2905,7 @@ fn scan_player_filter(x: &PlayerFilter) -> Axes {
             acc = acc.or(scan_quantity_expr(value));
             acc
         }
-        PlayerFilter::ChosenPlayer { .. } => Axes::NONE,
+        PlayerFilter::ChosenPlayer { index: _ } => Axes::NONE,
         PlayerFilter::ParentObjectTargetOwner => Axes {
             event: true,
             sibling: false,
@@ -2627,26 +2916,26 @@ fn scan_player_filter(x: &PlayerFilter) -> Axes {
 
 fn scan_replacement_condition(x: &ReplacementCondition) -> Axes {
     match x {
-        ReplacementCondition::And { conditions, .. } => {
+        ReplacementCondition::And { conditions } => {
             let mut acc = Axes::NONE;
             for x in conditions {
                 acc = acc.or(scan_replacement_condition(x));
             }
             acc
         }
-        ReplacementCondition::UnlessControlsSubtype { .. } => Axes::NONE,
+        ReplacementCondition::UnlessControlsSubtype { subtypes: _ } => Axes::NONE,
         ReplacementCondition::UnlessControlsOtherLeq { .. } => Axes::CONSERVATIVE,
-        ReplacementCondition::UnlessControlsMatching { filter, .. } => {
+        ReplacementCondition::UnlessControlsMatching { filter } => {
             let mut acc = Axes::NONE;
             acc = acc.or(scan_target_filter(filter));
             acc
         }
-        ReplacementCondition::UnlessControlsCountMatching { filter, .. } => {
+        ReplacementCondition::UnlessControlsCountMatching { filter, minimum: _ } => {
             let mut acc = Axes::NONE;
             acc = acc.or(scan_target_filter(filter));
             acc
         }
-        ReplacementCondition::UnlessPlayerLifeAtMost { .. } => Axes {
+        ReplacementCondition::UnlessPlayerLifeAtMost { amount: _ } => Axes {
             event: false,
             sibling: false,
             projected: true,
@@ -2657,7 +2946,7 @@ fn scan_replacement_condition(x: &ReplacementCondition) -> Axes {
             lhs,
             rhs,
             active_player_req,
-            ..
+            comparator: _,
         } => {
             let mut acc = Axes::NONE;
             acc = acc.or(scan_quantity_expr(lhs));
@@ -2671,7 +2960,7 @@ fn scan_replacement_condition(x: &ReplacementCondition) -> Axes {
             lhs,
             rhs,
             active_player_req,
-            ..
+            comparator: _,
         } => {
             let mut acc = Axes::NONE;
             acc = acc.or(scan_quantity_expr(lhs));
@@ -2683,9 +2972,12 @@ fn scan_replacement_condition(x: &ReplacementCondition) -> Axes {
         }
         ReplacementCondition::HasMaxSpeed => Axes::NONE,
         ReplacementCondition::CastViaEscape => Axes::NONE,
-        ReplacementCondition::CastVariantPaid { .. } => Axes::NONE,
-        ReplacementCondition::CastFromZone { .. } => Axes::NONE,
-        ReplacementCondition::EnteredFromZone { .. } => Axes::NONE,
+        ReplacementCondition::CastVariantPaid { variant: _ } => Axes::NONE,
+        ReplacementCondition::CastFromZone { zone: _ } => Axes::NONE,
+        ReplacementCondition::EnteredFromZone {
+            origin_constraint: _,
+            cast_origin: _,
+        } => Axes::NONE,
         ReplacementCondition::YouAttackedThisTurn => Axes {
             event: false,
             sibling: false,
@@ -2696,9 +2988,12 @@ fn scan_replacement_condition(x: &ReplacementCondition) -> Axes {
             sibling: false,
             projected: true,
         },
-        ReplacementCondition::CastViaKicker { .. } => Axes::NONE,
-        ReplacementCondition::SourceTappedState { .. } => Axes::NONE,
-        ReplacementCondition::DealtDamageThisTurnBySource { source, .. } => {
+        ReplacementCondition::CastViaKicker {
+            variant: _,
+            kicker_cost: _,
+        } => Axes::NONE,
+        ReplacementCondition::SourceTappedState { tapped: _ } => Axes::NONE,
+        ReplacementCondition::DealtDamageThisTurnBySource { source } => {
             let mut acc = Axes {
                 event: false,
                 sibling: false,
@@ -2714,18 +3009,21 @@ fn scan_replacement_condition(x: &ReplacementCondition) -> Axes {
         }
         ReplacementCondition::EffectCausedDiscard => Axes::NONE,
         ReplacementCondition::OnlyExtraTurn => Axes::NONE,
-        ReplacementCondition::TokenSubtypeMatches { .. } => Axes::NONE,
-        ReplacementCondition::TokenCoreTypeMatches { .. } => Axes::NONE,
+        ReplacementCondition::TokenSubtypeMatches { subtypes: _ } => Axes::NONE,
+        ReplacementCondition::TokenCoreTypeMatches { core_types: _ } => Axes::NONE,
         ReplacementCondition::ExceptFirstDrawInDrawStep => Axes::NONE,
-        ReplacementCondition::IfControlsMatching { filter, .. } => {
+        ReplacementCondition::IfControlsMatching { filter, minimum: _ } => {
             let mut acc = Axes::NONE;
             acc = acc.or(scan_target_filter(filter));
             acc
         }
-        ReplacementCondition::ClassLevelGE { .. } => Axes::NONE,
+        ReplacementCondition::ClassLevelGE { level: _ } => Axes::NONE,
         ReplacementCondition::DuringUntapStep => Axes::NONE,
-        ReplacementCondition::ControllerControlsSource { .. } => Axes::NONE,
-        ReplacementCondition::Unrecognized { .. } => Axes::NONE,
+        ReplacementCondition::ControllerControlsSource {
+            source: _,
+            controller: _,
+        } => Axes::NONE,
+        ReplacementCondition::Unrecognized { text: _ } => Axes::NONE,
     }
 }
 
@@ -2734,7 +3032,7 @@ fn scan_player_scope(x: &PlayerScope) -> Axes {
         PlayerScope::Controller => Axes::NONE,
         PlayerScope::ScopedPlayer => Axes::NONE,
         PlayerScope::Target => Axes::NONE,
-        PlayerScope::Opponent { .. } => Axes::NONE,
+        PlayerScope::Opponent { aggregate: _ } => Axes::NONE,
         PlayerScope::AllPlayers { exclude, .. } => {
             let mut acc = Axes::NONE;
             if let Some(x) = exclude {
@@ -2770,7 +3068,7 @@ fn scan_controller_ref(x: &ControllerRef) -> Axes {
             projected: false,
         },
         ControllerRef::DefendingPlayer => Axes::NONE,
-        ControllerRef::ChosenPlayer { .. } => Axes::NONE,
+        ControllerRef::ChosenPlayer { index: _ } => Axes::NONE,
         ControllerRef::SourceChosenPlayer => Axes::NONE,
         ControllerRef::TriggeringPlayer => Axes {
             event: true,
