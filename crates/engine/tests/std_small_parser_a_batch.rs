@@ -8,7 +8,8 @@
 //! - §19 Role token attach (Royal Treatment SHIPPED, Become Brutes
 //!   HONEST-DEFER — per-target iteration over the multi-target set).
 //! - §22 "Otherwise" sequence-branch (Wick, the Whorled Mind SHIPPED, Bre of
-//!   Clan Stoutarm HONEST-DEFER — spell-MV-vs-life-gained comparison gate).
+//!   Clan Stoutarm SHIPPED — spell-MV-vs-life-gained comparison gate re-homed
+//!   onto the cast clause so "Otherwise" routes to `else_ability`).
 //!
 //! The SHIPPED cards each carry a discriminating test that drives the
 //! production path (`resolve_ability_chain` or the cast cost-payment path) and
@@ -449,28 +450,38 @@ fn become_brutes_for_each_target_role_is_honestly_deferred() {
     );
 }
 
-// §22 — Bre of Clan Stoutarm. The "Otherwise, put it into your hand" branch
-// depends on the antecedent gate "if the spell's mana value is less than or
-// equal to the amount of life you gained this turn" — a spell-MV-vs-dynamic-
-// life-gained QuantityCheck that is not modeled. Without the gate there is no
-// conditional for Otherwise to attach to, so it stays an honest fallback.
+// §22 — Bre of Clan Stoutarm (SHIPPED). The spell-MV-vs-dynamic-life-gained
+// gate "if the spell's mana value is less than or equal to the amount of life
+// you gained this turn" is now re-homed onto the cast clause as a
+// `QuantityCheck` condition (`ObjectManaValue { Target } <= LifeGainedThisTurn
+// { Controller }`), which in turn routes "Otherwise, put it into your hand" to
+// the cast's `else_ability` (`ChangeZone -> Hand`) instead of an Unimplemented
+// fallback. Runtime coverage: `bre_of_clan_stoutarm_endstep.rs`.
 #[test]
-fn bre_otherwise_mv_vs_life_gate_is_honestly_deferred() {
+fn bre_otherwise_mv_vs_life_gate_parses_to_conditional_cast() {
     const ORACLE: &str = "{1}{W}, {T}: Another target creature you control gains flying and lifelink until end of turn.\nAt the beginning of your end step, if you gained life this turn, exile cards from the top of your library until you exile a nonland card. You may cast that card without paying its mana cost if the spell's mana value is less than or equal to the amount of life you gained this turn. Otherwise, put it into your hand.";
     let dbg = parsed_debug(
         ORACLE,
         "Bre of Clan Stoutarm",
         &creature_types(),
-        &["Dwarf".to_string(), "Cleric".to_string()],
+        &["Dwarf".to_string(), "Warrior".to_string()],
+    );
+    // The gate is modeled, so the whole card is now free of Unimplemented nodes.
+    assert!(
+        !dbg.contains("Unimplemented"),
+        "Bre's gate is now modeled; expected zero Unimplemented nodes, got:\n{dbg}"
+    );
+    // The exile-until body, the gated free cast, and the else->hand branch.
+    assert!(
+        dbg.contains("ExileFromTopUntil") && dbg.contains("CastFromZone"),
+        "exile-until + cast must parse:\n{dbg}"
     );
     assert!(
-        dbg.contains("Unimplemented") && dbg.contains("otherwise"),
-        "Bre's Otherwise branch must remain an honest Unimplemented defer; got:\n{dbg}"
+        dbg.contains("ObjectManaValue") && dbg.contains("LifeGainedThisTurn"),
+        "cast clause must carry the MV<=life-gained gate:\n{dbg}"
     );
-    // The flying+lifelink activated ability and the end-step exile-until trigger
-    // must still parse around the deferred gate.
     assert!(
-        dbg.contains("ExileFromTopUntil"),
-        "exile-until must still parse"
+        dbg.contains("else_ability") && dbg.contains("ChangeZone"),
+        "Otherwise must route to else_ability ChangeZone->Hand:\n{dbg}"
     );
 }
