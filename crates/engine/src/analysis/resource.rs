@@ -917,29 +917,34 @@ fn stack_entry_reads_projected_resource(entry: &StackEntry) -> bool {
 /// Fail-closed: any surface the scan cannot classify ⇒ reject (no shortcut).
 ///
 /// Keyword-synthesized granted triggers (`KeywordTriggerInstaller::triggers_for`
-/// / `synthesize_granted_keyword_triggers`) are NOT scanned here: they are
-/// produced on-the-fly during trigger collection and never land on
-/// `obj.trigger_definitions`, so `active_trigger_definitions` (loop (i)) does not
-/// reach them. Most such triggers carry non-projected fire-time conditions
-/// (Echo→`EchoDue`, Renown→`Not(IsRenowned)`, Suspend/Soulshift/Vanishing/
-/// CumulativeUpkeep→counter/zone conditions, Soulbond→filter conditions).
+/// / `synthesize_granted_keyword_triggers`) ARE scanned here — loop (iv), via
+/// `crate::game::triggers::granted_keyword_triggers_in_zone` (the same synthesis
+/// authority the live trigger-collection path uses). They are produced
+/// on-the-fly during trigger collection and (for off-zone grants, and in any
+/// state where layer 6 has not reinstalled them) never land on
+/// `obj.trigger_definitions`, so `active_trigger_definitions` (loop (i)) cannot
+/// be relied on to reach them. Most such triggers carry non-projected fire-time
+/// conditions (Echo→`EchoDue`, Renown→`Not(IsRenowned)`, Suspend/Soulshift/
+/// Vanishing/CumulativeUpkeep→counter/zone conditions, Soulbond→filter
+/// conditions), but Dethrone does not — see below.
 ///
-/// KNOWN GAP: the item-5 classifier (`trigger_condition_reads_projected_resource`)
-/// flags four granted-keyword conditions as projected-reading — Dethrone,
-/// Increment, Soulbond, Training — but only Dethrone is a GENUINE projected read.
-/// Dethrone (CR 702.105a) compares the defending player's `LifeTotal` to the max
+/// The item-5 classifier (`trigger_condition_reads_projected_resource`) flags
+/// four granted-keyword conditions as projected-reading — Dethrone, Increment,
+/// Soulbond, Training — but only Dethrone is a GENUINE projected read. Dethrone
+/// (CR 702.105a) compares the defending player's `LifeTotal` to the max
 /// `LifeTotal` among all players (CR 119 life = a PROJECTED axis this pass
 /// zeroes); Increment/Soulbond/Training are fail-closed false positives
 /// (`ManaSpentToCast` / control-filter / co-attacker-power reads the classifier's
 /// `Axes::CONSERVATIVE` walk cannot descend, all cast/combat/object state gate (1)
-/// strict-compares). A runtime-GRANTED Dethrone (`Effect::GrantKeywords` /
-/// `ContinuousModification::AddKeyword`) is invisible to this scan — a latent
-/// dormant-arming risk (false WIN, N1(k) class) bounded only by whether granted
-/// Dethrone is reachable inside a growing-cascade loop. The guard test
+/// strict-compares). Because loop (iv) now scans these synthesized defs, a
+/// runtime-GRANTED Dethrone (`Effect::GrantKeywords` /
+/// `ContinuousModification::AddKeyword`) whose dormant condition would arm
+/// mid-extrapolation is caught (fail-safe reject) — closing the inc2b
+/// dormant-arming hole (false WIN, N1(k) class). This makes item-5 structurally
+/// complete for granted keywords rather than a hand-list. The guard test
 /// `granted_keyword_trigger_conditions_projected_reads_are_exactly_known_gaps` in
-/// `game::triggers` pins that flagged set: if a NEW granted-keyword condition
-/// begins reading a projected resource, that test fails and this scan MUST be
-/// extended to the granted-keyword defs before item-5 can be trusted again.
+/// `game::triggers` still pins the flagged set so a NEW projected-reading
+/// granted-keyword condition surfaces as a review signal.
 fn fire_time_conditions_read_projected_resource(state: &GameState) -> bool {
     // (i) Trigger fire-time intervening-if conditions (CR 603.4). `active_trigger_
     // definitions` is the liveness authority (CR 702.26b phased-out + CR 114.4
@@ -1007,6 +1012,32 @@ fn fire_time_conditions_read_projected_resource(state: &GameState) -> bool {
             .is_some_and(crate::game::ability_scan::static_condition_reads_projected_resource)
         {
             return true;
+        }
+    }
+    // (iv) Runtime-GRANTED keyword synthesized trigger defs (CR 603.4). These are
+    // produced on-the-fly during trigger collection by
+    // `synthesize_granted_keyword_triggers` / `KeywordTriggerInstaller` and — for
+    // off-zone grants, and in any state where layer 6 has not (re)installed them —
+    // never land on `obj.trigger_definitions`, so loop (i) cannot reach them. A
+    // granted Dethrone (CR 702.105a) carries a fire-time intervening-if reading the
+    // defending player's `LifeTotal` (CR 119, a projected axis this pass zeroes); a
+    // dormant such condition would arm mid-extrapolation and break the replay.
+    // Reuse the collection path's synthesis authority (single authority, no
+    // duplicated synthesis) via `granted_keyword_triggers_in_zone`, which applies
+    // the same zone gate. Fail-closed: the classifier's `Axes::CONSERVATIVE` walk
+    // rejects any condition subtree it cannot descend.
+    for obj in state.objects.values() {
+        if obj.is_phased_out() {
+            continue;
+        }
+        for def in crate::game::triggers::granted_keyword_triggers_in_zone(state, obj) {
+            if def
+                .condition
+                .as_ref()
+                .is_some_and(crate::game::ability_scan::trigger_condition_reads_projected_resource)
+            {
+                return true;
+            }
         }
     }
     false
@@ -2213,6 +2244,35 @@ mod tests {
                 .unwrap()
                 .trigger_definitions
                 .push(def);
+        }
+        assert!(!loop_states_cover_modulo_growth(&prior, &current));
+    }
+
+    /// (k-g) DORMANT GRANTED-KEYWORD TRIGGER (inc2b hole): a genuine covering drain
+    /// while a battlefield permanent carries a runtime-GRANTED Dethrone (CR 702.105a)
+    /// whose synthesized fire-time intervening-if reads `LifeTotal` (CR 119,
+    /// projected). The granted trigger is NOT on `obj.trigger_definitions` — it is
+    /// synthesized on-the-fly by `synthesize_granted_keyword_triggers`, so loop (i)
+    /// never sees it; only loop (iv)'s reuse of `granted_keyword_triggers_in_zone`
+    /// catches the dormant condition ⇒ false. Revert-fail: deleting loop (iv) leaves
+    /// the synthesized def unscanned, item-5 returns false, and the cover shortcut
+    /// (a false WIN, N1(k) class) is wrongly taken ⇒ this assertion flips to true.
+    #[test]
+    fn n1_kg_dormant_granted_keyword_trigger_condition_false() {
+        let (mut prior, mut current) = cover_base();
+        for state in [&mut prior, &mut current] {
+            let oid = bf_object(state, 803);
+            // Granted (not printed): push onto `keywords` only, leaving
+            // `base_keywords` empty so `synthesize_granted_keyword_triggers`
+            // classifies it as granted and produces the life-reading trigger. The
+            // trigger itself is deliberately NOT installed on `trigger_definitions`
+            // (that is what makes loop (i) miss it, per the inc2b hole).
+            state
+                .objects
+                .get_mut(&oid)
+                .unwrap()
+                .keywords
+                .push(crate::types::keywords::Keyword::Dethrone);
         }
         assert!(!loop_states_cover_modulo_growth(&prior, &current));
     }

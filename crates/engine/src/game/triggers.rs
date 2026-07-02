@@ -361,6 +361,40 @@ fn synthesize_granted_keyword_triggers<'a>(
         .collect()
 }
 
+/// Runtime-GRANTED keyword synthesized trigger definitions for `obj` that
+/// FUNCTION in its current zone, produced through the SAME synthesis authority
+/// (`synthesize_granted_keyword_triggers` / `KeywordTriggerInstaller`) the live
+/// trigger-collection path uses — single authority, no duplicated synthesis.
+/// Battlefield objects contribute their effective keywords (`obj.keywords`,
+/// which layer 6 has already merged base + granted; `synthesize_granted_keyword_
+/// triggers` subtracts `base_keywords` to isolate the granted set); off-zone
+/// objects contribute `effective_off_zone_keywords` (CR 604.1 + CR 702.62a). The
+/// zone gate mirrors the collection loop exactly: empty `trigger_zones` ⇒
+/// battlefield-only (engine-internal triggers), else the object's current zone
+/// must be listed.
+///
+/// Consumed by the growing-cascade item-5 fire-time scan
+/// (`fire_time_conditions_read_projected_resource`, analysis/resource.rs): these
+/// synthesized defs never land on `obj.trigger_definitions` for off-zone grants
+/// (and item-5 must not assume layer 6 installed them), so scanning them here is
+/// the only way that pass sees a dormant granted Dethrone-class fire-time
+/// condition (CR 702.105a reads `LifeTotal`, CR 119 — a projected axis).
+pub(crate) fn granted_keyword_triggers_in_zone(
+    state: &GameState,
+    obj: &GameObject,
+) -> Vec<TriggerDefinition> {
+    let keywords: Vec<Keyword> = if obj.zone == Zone::Battlefield {
+        obj.keywords.clone()
+    } else {
+        crate::game::off_zone_characteristics::effective_off_zone_keywords(state, obj.id)
+    };
+    synthesize_granted_keyword_triggers(obj, keywords.iter())
+        .into_iter()
+        .filter(|(_, def)| trigger_definition_functions_in_zone(def, obj.zone))
+        .map(|(_, def)| def)
+        .collect()
+}
+
 fn keyword_kind_for_trigger(
     keywords: &[Keyword],
     trigger: &TriggerDefinition,
