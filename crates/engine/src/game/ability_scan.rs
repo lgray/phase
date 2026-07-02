@@ -54,11 +54,29 @@
 //! and `ModalChoice` fields are destructured without `..`, so a new field must be
 //! classified before it compiles. Any type outside this set that can reach a read
 //! is in the conservative set above.
+//!
+//! # Resolution-time choice classifier (a SEPARATE question family)
+//!
+//! Alongside the three read-axes lives an independent classifier
+//! (`effect_resolution_choice_freedom` / `ability_resolution_choice_freedom`,
+//! consumed by `analysis::resource::loop_states_cover_modulo_growth` item 6)
+//! answering a FOURTH, orthogonal question (CR 608.2d): can resolving this
+//! ability enter a resolution-time player choice (a non-priority `WaitingFor`)?
+//! This is deliberately NOT a fourth `Axes` axis — `Axes::NONE` means "no
+//! reads", which is orthogonal to "never prompts" (`Effect::Scry` reads nothing
+//! yet always prompts), so folding a choice bit into `Axes` would make every
+//! existing `NONE` arm silently claim choice-freeness. The classifier is
+//! fail-closed (`MayPrompt` default — an unproven claim only costs a
+//! false-negative cover rejection); promoting a variant to a choice-free
+//! verdict is a SOUNDNESS claim ("resolving can never enter a non-priority
+//! `WaitingFor`, for ANY state") and requires a resolver trace cited in the arm
+//! plus a `..`-free destructure so a future field forces re-audit.
 
 use crate::types::ability::{
     AbilityCondition, ControllerRef, CountScope, Duration, Effect, ModalChoice, MultiTargetSpec,
     ObjectScope, PlayerFilter, PlayerScope, QuantityExpr, QuantityRef, RepeatContinuation,
-    ReplacementCondition, ResolvedAbility, StaticCondition, TargetFilter, TriggerCondition,
+    ReplacementCondition, ResolvedAbility, StaticCondition, TargetChoiceTiming, TargetFilter,
+    TriggerCondition,
 };
 use crate::types::game_state::TargetSelectionConstraint;
 
@@ -3146,6 +3164,393 @@ pub(crate) fn duration_reads_projected_resource(duration: &Duration) -> bool {
     scan_duration(duration).projected
 }
 
+// ---------------------------------------------------------------------------
+// Resolution-time choice-freeness classifier (`analysis::resource` item 6).
+// A separate question family from the three read-axes above — see the module
+// header. Fail-closed default is `MayPrompt`.
+// ---------------------------------------------------------------------------
+
+/// CR 732.2a + CR 608.2d: resolution-time choice-freeness verdict for the
+/// growing-cascade cover gate (`analysis::resource` item 6). NOT an `Axes`
+/// axis — this classifies RESOLVER prompting behavior, not AST reads (module
+/// header rationale).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum ResolutionChoiceFreedom {
+    /// Resolving can never enter a non-priority `WaitingFor` in ANY state,
+    /// EXCEPT through the life-event replacement pipeline (single optional
+    /// candidate, replacement.rs:6221; CR 616.1 material ordering,
+    /// replacement.rs:6263; mandatory body-continuation drain,
+    /// replacement.rs:5511-5524 → engine_replacement.rs:1159). Callers MUST
+    /// pair this verdict with `analysis::resource::life_event_replacements_may_prompt`
+    /// — the paired environmental obligation is part of this variant's contract.
+    ///
+    /// There is deliberately no plain `Free` variant yet: both allow-listed
+    /// kinds (`GainLife`/`LoseLife`) genuinely can prompt via the life-event
+    /// replacement pipeline, so `Free` would be uninhabited today. Adding it
+    /// later is compiler-guided (a new variant flags every exhaustive match).
+    FreeUnlessLifeReplacements,
+    /// May prompt, or unproven — the fail-closed default.
+    MayPrompt,
+}
+
+impl ResolutionChoiceFreedom {
+    /// Worst-of join for a resolution chain: `MayPrompt` dominates (a chain that
+    /// can prompt on either branch can prompt).
+    fn join(self, other: ResolutionChoiceFreedom) -> ResolutionChoiceFreedom {
+        if matches!(self, ResolutionChoiceFreedom::FreeUnlessLifeReplacements)
+            && matches!(other, ResolutionChoiceFreedom::FreeUnlessLifeReplacements)
+        {
+            ResolutionChoiceFreedom::FreeUnlessLifeReplacements
+        } else {
+            ResolutionChoiceFreedom::MayPrompt
+        }
+    }
+}
+
+/// CR 608.2d: can resolving this single `Effect` ever offer a resolution-time
+/// player choice? Exhaustive `match` with NO wildcard catch-all arm — a NEW
+/// `Effect` variant fails to compile here until it is classified. Only the two
+/// allow-list arms make a soundness claim (grounded by a resolver trace); every
+/// other variant is the fail-closed `MayPrompt` (an ungrounded reject is only a
+/// false-negative cover rejection, so grouped arms need no per-kind evidence).
+fn effect_resolution_choice_freedom(e: &Effect) -> ResolutionChoiceFreedom {
+    match e {
+        // ---- allow-list: choice-free EXCEPT the life-event replacement
+        //      pipeline (destructured WITHOUT `..` so a new field forces a
+        //      re-audit of the soundness claim) ----
+        //
+        // CR 119.3 + CR 732.2a: resolver trace effects/life.rs — resolve_gain
+        // (life.rs:19-110) runs its OWN inline replace_event pipeline; its only
+        // prompt is ReplacementResult::NeedsChoice (life.rs:96-101). Player
+        // selection = pure filter eval (game/filter.rs: no WaitingFor); amount =
+        // pure quantity eval (game/quantity.rs: no WaitingFor). Verdict is
+        // payload-independent. CR 119.7 can't-gain short-circuit is deterministic.
+        // PAIRED OBLIGATION: caller runs life_event_replacements_may_prompt
+        // (resource.rs item 6), which also covers the mandatory body-continuation
+        // drain (H4 route c) and the Execute-arm stack.rs drain.
+        Effect::GainLife {
+            amount: _,
+            player: _,
+        } => ResolutionChoiceFreedom::FreeUnlessLifeReplacements,
+        // CR 119.3 + CR 732.2a: same shape — resolve_lose (life.rs:293-365),
+        // only prompt = NeedsChoice (life.rs:352-355). CR 119.8 can't-lose
+        // short-circuit is deterministic. Same PAIRED OBLIGATION.
+        Effect::LoseLife {
+            amount: _,
+            target: _,
+        } => ResolutionChoiceFreedom::FreeUnlessLifeReplacements,
+        // ---- everything else: fail-closed MayPrompt. Grouped so the compiler
+        //      still enforces exhaustiveness (every variant is named); no payload
+        //      scanning needed on the reject side. ----
+        Effect::StartYourEngines { .. }
+        | Effect::ChangeSpeed { .. }
+        | Effect::DealDamage { .. }
+        | Effect::ApplyPostReplacementDamage { .. }
+        | Effect::EachDealsDamageEqualToPower { .. }
+        | Effect::Draw { .. }
+        | Effect::Pump { .. }
+        | Effect::PairWith { .. }
+        | Effect::Destroy { .. }
+        | Effect::Regenerate { .. }
+        | Effect::RemoveAllDamage { .. }
+        | Effect::Counter { .. }
+        | Effect::CounterAll { .. }
+        | Effect::Token { .. }
+        | Effect::SetTapState { .. }
+        | Effect::RemoveCounter { .. }
+        | Effect::Sacrifice { .. }
+        | Effect::DiscardCard { .. }
+        | Effect::Mill { .. }
+        | Effect::Scry { .. }
+        | Effect::PumpAll { .. }
+        | Effect::DamageAll { .. }
+        | Effect::DamageEachPlayer { .. }
+        | Effect::DestroyAll { .. }
+        | Effect::ChangeZone { .. }
+        | Effect::ChangeZoneAll { .. }
+        | Effect::Dig { .. }
+        | Effect::GainControl { .. }
+        | Effect::GainControlAll { .. }
+        | Effect::ControlNextTurn { .. }
+        | Effect::Attach { .. }
+        | Effect::UnattachAll { .. }
+        | Effect::Surveil { .. }
+        | Effect::Fight { .. }
+        | Effect::Bounce { .. }
+        | Effect::BounceAll { .. }
+        | Effect::Explore
+        | Effect::ExploreAll { .. }
+        | Effect::Investigate
+        | Effect::Tribute { .. }
+        | Effect::TimeTravel
+        | Effect::BecomeMonarch
+        | Effect::NoOp
+        | Effect::Proliferate
+        | Effect::ProliferateTarget { .. }
+        | Effect::Populate
+        | Effect::Clash
+        | Effect::EndTheTurn
+        | Effect::EndCombatPhase
+        | Effect::Vote { .. }
+        | Effect::SeparateIntoPiles { .. }
+        | Effect::SwitchPT { .. }
+        | Effect::CopySpell { .. }
+        | Effect::EpicCopy { .. }
+        | Effect::CastCopyOfCard { .. }
+        | Effect::CopyTokenOf { .. }
+        | Effect::CreateTokenCopyFromPool { .. }
+        | Effect::Myriad
+        | Effect::Encore
+        | Effect::CombineHost { .. }
+        | Effect::ChooseAugmentAndCombineWithHost { .. }
+        | Effect::Meld { .. }
+        | Effect::ExileHaunting { .. }
+        | Effect::HideawayConceal { .. }
+        | Effect::CopyTokenBlockingAttacker { .. }
+        | Effect::BecomeCopy { .. }
+        | Effect::GainActivatedAbilitiesOfTarget { .. }
+        | Effect::ChooseCard { .. }
+        | Effect::PutCounter { .. }
+        | Effect::PutCounterAll { .. }
+        | Effect::MultiplyCounter { .. }
+        | Effect::DoublePT { .. }
+        | Effect::DoublePTAll { .. }
+        | Effect::MoveCounters { .. }
+        | Effect::Animate { .. }
+        | Effect::ReturnAsAura { .. }
+        | Effect::RegisterBending { .. }
+        | Effect::GenericEffect { .. }
+        | Effect::Cleanup { .. }
+        | Effect::Mana { .. }
+        | Effect::Discard { .. }
+        | Effect::Shuffle { .. }
+        | Effect::Transform { .. }
+        | Effect::SearchLibrary { .. }
+        | Effect::SearchOutsideGame { .. }
+        | Effect::RevealHand { .. }
+        | Effect::RevealFromHand { .. }
+        | Effect::Reveal { .. }
+        | Effect::RevealTop { .. }
+        | Effect::ExileTop { .. }
+        | Effect::TargetOnly { .. }
+        | Effect::Choose { .. }
+        | Effect::ChooseDamageSource { .. }
+        | Effect::Suspect { .. }
+        | Effect::Unsuspect { .. }
+        | Effect::Connive { .. }
+        | Effect::PhaseOut { .. }
+        | Effect::PhaseIn { .. }
+        | Effect::ForceBlock { .. }
+        | Effect::ForceAttack { .. }
+        | Effect::SolveCase
+        | Effect::BecomePrepared { .. }
+        | Effect::BecomeUnprepared { .. }
+        | Effect::BecomeSaddled { .. }
+        | Effect::SetClassLevel { .. }
+        | Effect::CreateDelayedTrigger { .. }
+        | Effect::AddTargetReplacement { .. }
+        | Effect::AddRestriction { .. }
+        | Effect::ReduceNextSpellCost { .. }
+        | Effect::GrantNextSpellAbility { .. }
+        | Effect::AddPendingETBCounters { .. }
+        | Effect::CreateEmblem { .. }
+        | Effect::PayCost { .. }
+        | Effect::CastFromZone { .. }
+        | Effect::FreeCastFromZones { .. }
+        | Effect::ExileResolvingSpellInsteadOfGraveyard
+        | Effect::PreventDamage { .. }
+        | Effect::CreateDamageReplacement { .. }
+        | Effect::CreateDrawReplacement { .. }
+        | Effect::LoseTheGame { .. }
+        | Effect::WinTheGame { .. }
+        | Effect::RollDie { .. }
+        | Effect::FlipCoin { .. }
+        | Effect::FlipCoins { .. }
+        | Effect::FlipCoinUntilLose { .. }
+        | Effect::RingTemptsYou
+        | Effect::VentureIntoDungeon
+        | Effect::VentureInto { .. }
+        | Effect::TakeTheInitiative
+        | Effect::Planeswalk
+        | Effect::OpenAttractions { .. }
+        | Effect::RollToVisitAttractions
+        | Effect::AssembleContraptions { .. }
+        | Effect::AssembleContraptionsFromRollDifference
+        | Effect::CrankContraptions { .. }
+        | Effect::ReassembleContraption { .. }
+        | Effect::AssembleContraptionOnSprocket { .. }
+        | Effect::ReassembleContraptionOnSprocket { .. }
+        | Effect::PutSticker { .. }
+        | Effect::ApplySticker { .. }
+        | Effect::ProcessRadCounters
+        | Effect::GrantCastingPermission { .. }
+        | Effect::ChooseFromZone { .. }
+        | Effect::RememberCard { .. }
+        | Effect::ForEachCategoryExile { .. }
+        | Effect::ChooseObjectsIntoTrackedSet { .. }
+        | Effect::ChooseAndSacrificeRest { .. }
+        | Effect::Exploit { .. }
+        | Effect::GainEnergy { .. }
+        | Effect::GivePlayerCounter { .. }
+        | Effect::LoseAllPlayerCounters { .. }
+        | Effect::ExileFromTopUntil { .. }
+        | Effect::RevealUntil { .. }
+        | Effect::Discover { .. }
+        | Effect::Heist { .. }
+        | Effect::HeistExile
+        | Effect::Cascade
+        | Effect::Ripple { .. }
+        | Effect::MiracleCast { .. }
+        | Effect::MadnessCast { .. }
+        | Effect::PutAtLibraryPosition { .. }
+        | Effect::ChooseDrawnThisTurnPayOrTopdeck { .. }
+        | Effect::PutOnTopOrBottom { .. }
+        | Effect::GiftDelivery { .. }
+        | Effect::Goad { .. }
+        | Effect::GoadAll { .. }
+        | Effect::Detain { .. }
+        | Effect::SetRoomDoorLock { .. }
+        | Effect::ExchangeControl { .. }
+        | Effect::ChangeTargets { .. }
+        | Effect::Manifest { .. }
+        | Effect::ManifestDread
+        | Effect::Cloak { .. }
+        | Effect::TurnFaceUp { .. }
+        | Effect::TurnFaceDown { .. }
+        | Effect::ExtraTurn { .. }
+        | Effect::GrantExtraLoyaltyActivations { .. }
+        | Effect::SkipNextTurn { .. }
+        | Effect::SkipNextStep { .. }
+        | Effect::AdditionalPhase { .. }
+        | Effect::Double { .. }
+        | Effect::RuntimeHandled { .. }
+        | Effect::Incubate { .. }
+        | Effect::Amass { .. }
+        | Effect::Monstrosity { .. }
+        | Effect::Specialize
+        | Effect::Renown { .. }
+        | Effect::Bolster { .. }
+        | Effect::Adapt { .. }
+        | Effect::Learn
+        | Effect::Forage
+        | Effect::Harness
+        | Effect::CollectEvidence { .. }
+        | Effect::Endure { .. }
+        | Effect::BlightEffect { .. }
+        | Effect::Seek { .. }
+        | Effect::SetLifeTotal { .. }
+        | Effect::ExchangeLifeWithStat { .. }
+        | Effect::ExchangeLifeTotals { .. }
+        | Effect::SetDayNight { .. }
+        | Effect::GiveControl { .. }
+        | Effect::RemoveFromCombat { .. }
+        | Effect::Conjure { .. }
+        | Effect::ApplyPerpetual { .. }
+        | Effect::Intensify { .. }
+        | Effect::DraftFromSpellbook { .. }
+        | Effect::ChooseOneOf { .. }
+        | Effect::Unimplemented { .. } => ResolutionChoiceFreedom::MayPrompt,
+    }
+}
+
+/// CR 608.2d + CR 732.2a: does resolving this ability (its whole chain) ever
+/// enter a resolution-time player choice? The `ResolvedAbility` destructure is
+/// EXHAUSTIVE with no `..` — the read-walk's `resolved_ability_axes` (:116)
+/// classifications are deliberately NOT reused (this is a different question:
+/// e.g. `optional` is read-free yet choice-bearing). A FUTURE field fails to
+/// compile here until classified for the choice question.
+pub(crate) fn ability_resolution_choice_freedom(a: &ResolvedAbility) -> ResolutionChoiceFreedom {
+    let ResolvedAbility {
+        // ---- choice-bearing: folded into the verdict below ----
+        effect,
+        sub_ability,
+        else_ability,
+        optional,
+        optional_for,
+        optional_targeting,
+        unless_pay,
+        target_chooser,
+        target_choice_timing,
+        modal,
+        mode_abilities,
+        repeat_until,
+        // ---- choice-free: bound `_` with a one-line justification ----
+        condition: _, // resolution branch selector, pure eval (both branches recursed)
+        duration: _,  // continuous-effect lifetime, no prompt
+        player_scope: _, // iteration fan-out, pure player-filter eval
+        starting_with: _, // APNAP start override, no prompt
+        repeat_for: _, // "for each" count, pure quantity eval (game/quantity.rs)
+        multi_target: _, // announce-time variable-count bounds (Resolution case caught by timing)
+        target_constraints: _, // announce-time cross-target legality, no resolution prompt
+        distribution: _, // CR 601.2d concrete pre-assigned portions (announce-time)
+        targets: _,   // concrete announced target refs (already resolved)
+        source_id: _, // object id
+        source_incarnation: _, // epoch guard token
+        controller: _, // player id
+        original_controller: _, // player id
+        scoped_player: _, // player id (iteration binding)
+        kind: _,      // AbilityKind tag (no payload)
+        context: _,   // SpellContext: cast-time fact snapshot, not a live choice
+        description: _, // display string
+        min_x_value: _, // u32
+        cant_be_copied: _, // bool
+        copy_count_status: _, // status tag
+        forward_result: _, // bool
+        chosen_x: _,  // concrete cast-time X (chosen at announcement, not resolution)
+        cost_paid_object: _, // concrete captured-object snapshot
+        effect_context_object: _, // concrete captured-object snapshot
+        ability_index: _, // usize provenance
+        may_trigger_origin: _, // provenance tag
+        target_selection_mode: _, // Chosen/Random tag (announce-time)
+        chosen_players: _, // concrete chosen player ids (already selected)
+        sub_link: _,  // SubAbilityLink kind tag
+        dig_found_nothing_for_parent_target: _, // bool seam flag
+    } = a;
+
+    // CR 608.2d: an optional effect / optional targeting / opponent-may
+    // effect prompts the controller (or opponent) before execution
+    // (WaitingFor::OptionalEffectChoice, effects/mod.rs:4294).
+    if *optional || *optional_targeting || optional_for.is_some() {
+        return ResolutionChoiceFreedom::MayPrompt;
+    }
+    // CR 118.12: "unless a player pays {cost}" is a resolution-time pay prompt
+    // (also item-4 redundant — ability_scan.rs sets `projected` for it).
+    if unless_pay.is_some() {
+        return ResolutionChoiceFreedom::MayPrompt;
+    }
+    // CR 601.2c + CR 603.3d: a resolution-time target chooser announces targets (H3).
+    if target_chooser.is_some() {
+        return ResolutionChoiceFreedom::MayPrompt;
+    }
+    // CR 608.2d: resolution-timed target selection is a resolution-time choice even
+    // though `targets` is empty on the stack, which the ordering gate can't see (H3).
+    if matches!(target_choice_timing, TargetChoiceTiming::Resolution) {
+        return ResolutionChoiceFreedom::MayPrompt;
+    }
+    // CR 700.2b + CR 603.3c: a modal header / reflexive per-mode abilities open a
+    // mode choice at resolution (conservative — rejected even when the mode is baked).
+    if modal.is_some() || !mode_abilities.is_empty() {
+        return ResolutionChoiceFreedom::MayPrompt;
+    }
+    // CR 608.2c + CR 107.1c: only the controller-prompted repeat variant is a
+    // player choice; while / until-stop predicates are pure re-evaluation.
+    if matches!(repeat_until, Some(RepeatContinuation::ControllerChoice)) {
+        return ResolutionChoiceFreedom::MayPrompt;
+    }
+
+    // CR 608.2c: the chain resolves the effect and, on the taken branch, a
+    // sub_ability / else_ability effect — join both (fail-safe: reject if either
+    // can prompt).
+    let mut acc = effect_resolution_choice_freedom(effect);
+    if let Some(sub) = sub_ability {
+        acc = acc.join(ability_resolution_choice_freedom(sub));
+    }
+    if let Some(else_branch) = else_ability {
+        acc = acc.join(ability_resolution_choice_freedom(else_branch));
+    }
+    acc
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3390,5 +3795,129 @@ mod tests {
         )));
         // Fixed drain reads no sibling-mutable state — safe to auto-resolve.
         assert!(!ability_reads_sibling_mutable(&fixed_drain()));
+    }
+
+    // ---- Resolution-time choice classifier: pinned in BOTH directions ----
+    /// Guard test (9092a8961 standard): pins `effect_resolution_choice_freedom`
+    /// and the ability-level wrapper flips.
+    ///
+    /// The `FreeUnlessLifeReplacements` allow set is EXACTLY
+    /// `{Effect::GainLife, Effect::LoseLife}` — asserted below and pinned by the
+    /// allow-arm census (`rg -c 'ResolutionChoiceFreedom::FreeUnlessLifeReplacements'
+    /// ability_scan.rs` == 2, both inside `effect_resolution_choice_freedom`). A
+    /// future third allow arm must update this pin, the census, and add a
+    /// resolver-trace grounding row.
+    ///
+    /// Compiler-exhaustiveness leg: `effect_resolution_choice_freedom`'s match has
+    /// no wildcard catch-all, so a NEW `Effect` variant fails to compile until classified.
+    /// Executed revert-fail (documented in the commit): classifying `Effect::Scry`
+    /// ⇒ `FreeUnlessLifeReplacements` turns this test RED.
+    #[test]
+    fn resolution_choice_verdicts_are_exactly_pinned() {
+        use crate::types::ability::{
+            AbilityCost, AbilityDefinition, AbilityKind, UnlessPayModifier,
+        };
+        use ResolutionChoiceFreedom::{FreeUnlessLifeReplacements, MayPrompt};
+
+        // Allow-list (soundness claims) ⇒ FreeUnlessLifeReplacements.
+        let gain = Effect::GainLife {
+            amount: QuantityExpr::Fixed { value: 1 },
+            player: TargetFilter::Controller,
+        };
+        let lose = Effect::LoseLife {
+            amount: QuantityExpr::Fixed { value: 1 },
+            target: None,
+        };
+        assert_eq!(
+            effect_resolution_choice_freedom(&gain),
+            FreeUnlessLifeReplacements
+        );
+        assert_eq!(
+            effect_resolution_choice_freedom(&lose),
+            FreeUnlessLifeReplacements
+        );
+
+        // Reject side: the finding's kinds + adjacent siblings ⇒ MayPrompt, each
+        // with its resolver-prompt raise-site citation.
+        let rejects = [
+            Effect::Proliferate, // WaitingFor::ProliferateChoice — proliferate.rs:109
+            Effect::Populate,    // WaitingFor::PopulateChoice — populate.rs:50
+            Effect::Clash,       // WaitingFor::ClashChooseOpponent — clash.rs:47
+            Effect::Explore,     // WaitingFor::ExploreChoice — explore.rs:191
+            Effect::Scry {
+                count: QuantityExpr::Fixed { value: 1 },
+                target: TargetFilter::Controller,
+            }, // Scry always prompts (bottom/top ordering)
+            Effect::Sacrifice {
+                target: TargetFilter::Any,
+                count: QuantityExpr::Fixed { value: 1 },
+                min_count: 0,
+            }, // WaitingFor::EffectZoneChoice — sacrifice.rs:306
+            Effect::DiscardCard {
+                count: 1,
+                target: TargetFilter::Any,
+            }, // discard selection prompt
+        ];
+        for e in &rejects {
+            assert_eq!(
+                effect_resolution_choice_freedom(e),
+                MayPrompt,
+                "{e:?} must be MayPrompt"
+            );
+        }
+
+        // Explicit allow-set pin: exactly {GainLife, LoseLife}. Every other kind
+        // sampled above is on the reject side; the allow-arm census is the
+        // structural guard against a silent third allow arm.
+        assert!(
+            rejects
+                .iter()
+                .all(|e| effect_resolution_choice_freedom(e) == MayPrompt),
+            "the FreeUnlessLifeReplacements set is exactly {{Effect::GainLife, Effect::LoseLife}}"
+        );
+
+        // Ability-level wrapper flips: base ⇒ Free (paired positive reach-guard),
+        // each single-field mutation ⇒ MayPrompt (proves the FLIP, not something
+        // upstream, causes the rejection).
+        let base = ResolvedAbility::new(gain.clone(), Vec::new(), ObjectId(1), PlayerId(0));
+        assert_eq!(
+            ability_resolution_choice_freedom(&base),
+            FreeUnlessLifeReplacements
+        );
+
+        let mut a = base.clone();
+        a.optional = true;
+        assert_eq!(ability_resolution_choice_freedom(&a), MayPrompt);
+
+        let mut a = base.clone();
+        a.optional_targeting = true;
+        assert_eq!(ability_resolution_choice_freedom(&a), MayPrompt);
+
+        let mut a = base.clone();
+        a.unless_pay = Some(UnlessPayModifier {
+            cost: AbilityCost::Tap,
+            payer: TargetFilter::Controller,
+        });
+        assert_eq!(ability_resolution_choice_freedom(&a), MayPrompt);
+
+        let mut a = base.clone();
+        a.target_chooser = Some(TargetFilter::Controller);
+        assert_eq!(ability_resolution_choice_freedom(&a), MayPrompt);
+
+        let mut a = base.clone();
+        a.target_choice_timing = TargetChoiceTiming::Resolution;
+        assert_eq!(ability_resolution_choice_freedom(&a), MayPrompt);
+
+        let mut a = base.clone();
+        a.mode_abilities = vec![AbilityDefinition::new(AbilityKind::Spell, Effect::NoOp)];
+        assert_eq!(ability_resolution_choice_freedom(&a), MayPrompt);
+
+        let mut a = base.clone();
+        a.repeat_until = Some(RepeatContinuation::ControllerChoice);
+        assert_eq!(ability_resolution_choice_freedom(&a), MayPrompt);
+
+        let mut a = base.clone();
+        a.modal = Some(ModalChoice::default());
+        assert_eq!(ability_resolution_choice_freedom(&a), MayPrompt);
     }
 }

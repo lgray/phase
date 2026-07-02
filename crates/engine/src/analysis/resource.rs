@@ -33,6 +33,7 @@ use crate::types::identifiers::ObjectId;
 use crate::types::mana::ManaType;
 use crate::types::phase::Phase;
 use crate::types::player::PlayerId;
+use crate::types::replacements::ReplacementEvent;
 
 /// WUBRG + colorless, the canonical index order used by [`ResourceVector::mana`].
 ///
@@ -690,8 +691,10 @@ fn loyalty_activation_counts_match(a: &GameState, b: &GameState) -> bool {
 /// stack order-preservingly embeds in `current`'s with strict growth confined to
 /// already-occupied places (item 2), every grown place is a mandatory
 /// no-ordering-input triggered ability (item 3), no current-stack entry reads a
-/// still-projected resource (item 4), and no live fire-time condition reads one
-/// either (item 5).
+/// still-projected resource (item 4), no live fire-time condition reads one
+/// either (item 5), and no current-stack entry can open a resolution-time player
+/// choice — either intrinsically or through the life-event replacement
+/// environment (item 6, CR 732.2a + CR 608.2d).
 pub(crate) fn loop_states_cover_modulo_growth(prior: &GameState, current: &GameState) -> bool {
     // (1) Board equal modulo the NARROWED projection AND modulo the stack, with the
     // object resource axes STRICT-COMPARED (R5-B1). Project both, clear both stacks
@@ -740,6 +743,43 @@ pub(crate) fn loop_states_cover_modulo_growth(prior: &GameState, current: &GameS
 
     // (5) Off-stack fail-closed fire-time condition guard (the second read surface).
     if fire_time_conditions_read_projected_resource(current) {
+        return false;
+    }
+
+    // (6) CR 732.2a + CR 608.2d: resolution-time choice gate, fail-closed, over
+    // EVERY current-stack entry — the extrapolation models future resolutions the
+    // window never observed (grown kinds) and re-runs observed kinds in states that
+    // differ on projected axes, where a resolver's choice surface (e.g. proliferate
+    // eligibility over player counters, CR 701.34a) can open a prompt that the
+    // AST-level item-4 scan cannot see. Verdicts come from the ability_scan
+    // classifier (pure fact-producers — rejection is decided ONLY here);
+    // FreeUnlessLifeReplacements additionally requires the CR 616.1 environmental
+    // guard below. THIS block is the single gate seam for resolution-choice
+    // rejection (item 3 is untouched and gates a different fact — announcement-time
+    // ordering input). Perf: O(stack × AST) + O(objects × defs) via the guard —
+    // same order as items (4)/(5).
+    //
+    // EXTENSION POINT — pinned fixed choices (CR 732.2a): a shortcut proposal MAY
+    // pre-specify choices in advance ("always choose permanent P"); only
+    // CONDITIONAL actions are forbidden. A future consumer may treat a MayPrompt
+    // entry as choice-free when a pin covers it, PROVIDED: (a) the pin is a
+    // STATE-INDEPENDENT designation whose option remains legal at every iteration
+    // of the growing state (never "the newest copy"); (b) cover-modulo-growth
+    // still holds under the pinned outcomes; (c) only the acting player's own
+    // choices are pinnable — opponent-choice entries remain rejectors unless EVERY
+    // option preserves the certificate (the win stays forced per the
+    // CR 104.2a-grounded winner predicate). Plug pins in at THIS seam as an
+    // additional input; do not rewire the classifiers or spread the decision.
+    let mut needs_life_guard = false;
+    for entry in &current.stack {
+        match stack_entry_resolution_choice_freedom(entry) {
+            crate::game::ability_scan::ResolutionChoiceFreedom::MayPrompt => return false,
+            crate::game::ability_scan::ResolutionChoiceFreedom::FreeUnlessLifeReplacements => {
+                needs_life_guard = true
+            }
+        }
+    }
+    if needs_life_guard && life_event_replacements_may_prompt(current) {
         return false;
     }
 
@@ -857,6 +897,12 @@ fn stack_covers(prior: &[StackEntry], current: &[StackEntry]) -> bool {
 /// while both compared states sit at `WaitingFor::Priority`, but keeps the guard
 /// closed under future sampling changes (a chosen mode is otherwise baked into the
 /// entry's `ability`, so the normalized key already separates distinct modes).
+///
+/// Contract boundary: this gate owns only ANNOUNCEMENT-time ordering input
+/// (targets, divide/distribute, cross-target constraints). Resolution-time
+/// choices (CR 608.2d — proliferate/populate/sacrifice-choice/optional/…) are
+/// owned by item 6 (`stack_entry_resolution_choice_freedom`), applied to every
+/// current-stack entry, not just grown ones.
 fn stack_entry_has_no_ordering_input(state: &GameState, entry: &StackEntry) -> bool {
     let StackEntryKind::TriggeredAbility { ability, .. } = &entry.kind else {
         return false;
@@ -905,6 +951,30 @@ fn stack_entry_reads_projected_resource(entry: &StackEntry) -> bool {
         // KeywordAction: no AST to classify ⇒ fail closed. Permanent `Spell { ability:
         // None }`: nothing to read (its resolution changes the board, breaking gate 1).
         None => matches!(entry.kind, StackEntryKind::KeywordAction { .. }),
+    }
+}
+
+/// §2.2 item 6: can resolving this stack entry offer a resolution-time player
+/// choice (a non-priority `WaitingFor` the C2/no-ordering-input gate cannot see)?
+/// Delegates to the ability_scan choice classifier over the embedded ability.
+/// Exhaustive over all four `StackEntryKind`s (no wildcard): only a
+/// `TriggeredAbility` carries a `ResolvedAbility` to classify; `Spell`/
+/// `ActivatedAbility`/`KeywordAction` are fail-closed `MayPrompt` — even a
+/// bottom-frozen entry the extrapolation never resolves rejects the cover.
+/// (Ceiling + upgrade path: model which stack suffix resolves per cycle only if
+/// a real fixture needs it.) The trigger-level `condition` (intervening-if
+/// re-check, CR 603.4) is pure evaluation and contributes no prompt.
+fn stack_entry_resolution_choice_freedom(
+    entry: &StackEntry,
+) -> crate::game::ability_scan::ResolutionChoiceFreedom {
+    use crate::game::ability_scan::ResolutionChoiceFreedom;
+    match &entry.kind {
+        StackEntryKind::TriggeredAbility { ability, .. } => {
+            crate::game::ability_scan::ability_resolution_choice_freedom(ability)
+        }
+        StackEntryKind::Spell { .. }
+        | StackEntryKind::ActivatedAbility { .. }
+        | StackEntryKind::KeywordAction { .. } => ResolutionChoiceFreedom::MayPrompt,
     }
 }
 
@@ -1041,6 +1111,143 @@ fn fire_time_conditions_read_projected_resource(state: &GameState) -> bool {
         }
     }
     false
+}
+
+/// The proposed-event class a life-affecting `ReplacementEvent` watches. CR 616.1
+/// material-ordering competition is counted PER proposed-event class, because a
+/// single `ProposedEvent::LifeLoss` draws candidates from every LifeLoss-matching
+/// registry key at once (`LoseLife` + `LifeReduced` + `PayLife`).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum LifeEventClass {
+    /// Matches `ProposedEvent::LifeGain`.
+    LifeGain,
+    /// Matches `ProposedEvent::LifeLoss`.
+    LifeLoss,
+}
+
+/// CR 614.1a: is this replacement event in the LIFE class — i.e. does its
+/// registry matcher match `ProposedEvent::LifeGain` or `ProposedEvent::LifeLoss`?
+/// Compiler-exhaustive over ALL `ReplacementEvent` variants (no wildcard) so a
+/// NEW variant fails to compile until classified against the coupling rule.
+///
+/// COUPLING RULE (grep-enforced when the set is edited): life-class ⇔ the event's
+/// registry matcher (`crate::game::replacement`) matches a life `ProposedEvent`.
+/// Measured (`rg -n 'ProposedEvent::Life(Gain|Loss)'` over the matcher fns):
+/// `gain_life_matcher` (GainLife → LifeGain), `lose_life_matcher` (LoseLife →
+/// LifeLoss), `life_reduced_matcher` (LifeReduced → LifeLoss), `pay_life_matcher`
+/// (PayLife → LifeLoss). Classify by the MATCHER, not the name — a hand-picked
+/// set had already missed `PayLife` and `LifeReduced`.
+fn replacement_event_matches_life(event: &ReplacementEvent) -> Option<LifeEventClass> {
+    match event {
+        ReplacementEvent::GainLife => Some(LifeEventClass::LifeGain),
+        ReplacementEvent::LoseLife | ReplacementEvent::LifeReduced | ReplacementEvent::PayLife => {
+            Some(LifeEventClass::LifeLoss)
+        }
+        // Non-life events (explicitly listed ⇒ None, so a new variant must be
+        // classified against the coupling rule before it compiles).
+        ReplacementEvent::DamageDone
+        | ReplacementEvent::Destroy
+        | ReplacementEvent::Discard
+        | ReplacementEvent::Draw
+        | ReplacementEvent::TurnFaceUp
+        | ReplacementEvent::Counter
+        | ReplacementEvent::ChangeZone
+        | ReplacementEvent::Moved
+        | ReplacementEvent::AddCounter
+        | ReplacementEvent::RemoveCounter
+        | ReplacementEvent::CreateToken
+        | ReplacementEvent::Tap
+        | ReplacementEvent::Untap
+        | ReplacementEvent::DealtDamage
+        | ReplacementEvent::Mill
+        | ReplacementEvent::Attached
+        | ReplacementEvent::DrawCards
+        | ReplacementEvent::ProduceMana
+        | ReplacementEvent::Scry
+        | ReplacementEvent::CoinFlip
+        | ReplacementEvent::Transform
+        | ReplacementEvent::Explore
+        | ReplacementEvent::Connive
+        | ReplacementEvent::AssembleContraption
+        | ReplacementEvent::BeginPhase
+        | ReplacementEvent::BeginTurn
+        | ReplacementEvent::Cascade
+        | ReplacementEvent::CopySpell
+        | ReplacementEvent::DeclareBlocker
+        | ReplacementEvent::GameLoss
+        | ReplacementEvent::GameWin
+        | ReplacementEvent::Learn
+        | ReplacementEvent::LoseMana
+        | ReplacementEvent::PlanarDiceResult
+        | ReplacementEvent::Planeswalk
+        | ReplacementEvent::Proliferate
+        | ReplacementEvent::Other(_) => None,
+    }
+}
+
+/// §2.2 item 6 environmental guard (CR 616.1 + CR 614.1a): can the current
+/// life-event replacement environment open a resolution-time prompt on an
+/// allow-listed `GainLife`/`LoseLife` resolution? Paired obligation of
+/// `ResolutionChoiceFreedom::FreeUnlessLifeReplacements`.
+///
+/// Over-approximates `find_applicable_replacements` fail-closed: conditions,
+/// `valid_player` scopes, and amounts are deliberately ignored (over-count ⇒
+/// over-reject ⇒ fail-safe). Def sources = object-attached defs
+/// (`active_replacements`, item 5's authority) CHAINED with the game-state-level
+/// floating store `state.pending_damage_replacements` (sentinel `ObjectId(0)`,
+/// scanned by `find_applicable_replacements` replacement.rs:4838-4862; skip
+/// `is_consumed`, mirroring :4859-4861). `pending_step_end_mana_handlers` is a
+/// different type gated behind `ProposedEvent::EmptyManaPool`
+/// (replacement.rs:4971-4980) that structurally cannot produce a life-class
+/// candidate ⇒ excluded. There are NO virtual life candidates in
+/// `find_applicable_replacements` (measured — the only `ProposedEvent::LifeGain`
+/// there is a `valid_player` filter, not a candidate creator, replacement.rs:4674).
+///
+/// Rejects when a life-class def is:
+/// (a) OPTIONAL — a single optional candidate prompts (replacement.rs:6221-6247);
+/// (b) carries a body continuation (`execute`/`runtime_execute`) — a MANDATORY
+///     body is stashed as `PostReplacementContinuation::Resolved`
+///     (replacement.rs:5511-5524) and drained via
+///     `apply_pending_post_replacement_effect` (engine_replacement.rs:1159),
+///     which runs an arbitrary `ResolvedAbility` and can set a non-priority
+///     `waiting_for` (e.g. a Sacrifice body ⇒ EffectZoneChoice). `execute` is
+///     also rejected by item 5 (resource.rs:1058-1060); re-checked here so the
+///     guard does not depend on item ordering, and `runtime_execute` is NOT
+///     otherwise covered (item 5 scans it only for projected reads,
+///     resource.rs:976-981);
+/// (c) one of ≥2 defs competing for the SAME proposed-event class — CR 616.1
+///     material-ordering prompt (replacement.rs:6263-6279). A single mandatory
+///     quantity-mod def with no body (Bloodletter / Rhox Faithmender class)
+///     trips NONE of these and resolves deterministically (replacement.rs:6250-6261).
+fn life_event_replacements_may_prompt(state: &GameState) -> bool {
+    let object_defs =
+        crate::game::functioning_abilities::active_replacements(state).map(|(_, _, def)| def);
+    let floating_defs = state
+        .pending_damage_replacements
+        .iter()
+        .filter(|def| !def.is_consumed);
+
+    let mut gain_defs = 0usize;
+    let mut loss_defs = 0usize;
+    for def in object_defs.chain(floating_defs) {
+        let Some(class) = replacement_event_matches_life(&def.event) else {
+            continue;
+        };
+        // (a) single optional candidate prompts.
+        if crate::game::replacement::replacement_mode_is_optional(&def.mode) {
+            return true;
+        }
+        // (b) mandatory body-continuation drain is prompt-capable.
+        if def.execute.is_some() || def.runtime_execute.is_some() {
+            return true;
+        }
+        match class {
+            LifeEventClass::LifeGain => gain_defs += 1,
+            LifeEventClass::LifeLoss => loss_defs += 1,
+        }
+    }
+    // (c) ≥2 defs competing for one proposed-event class ⇒ CR 616.1 ordering prompt.
+    gain_defs >= 2 || loss_defs >= 2
 }
 
 /// CR 614.1a: a replacement's BODY (not its `condition`) can read a projected
@@ -2406,5 +2613,276 @@ mod tests {
         current.stack.push_back(n(21));
         current.stack.push_back(n(22));
         assert!(!loop_states_cover_modulo_growth(&prior, &current));
+    }
+
+    // ===================================================================
+    // N1 item-6 hostiles (resolution-time choice gate). n1_o/q/r/s.
+    // ===================================================================
+
+    /// A no-ordering-input `Effect::Proliferate` churner (unit variant, empty
+    /// announced targets) — passes items 1-5 (Proliferate reads no projected
+    /// axis, scan_effect ⇒ Axes::NONE) but is a resolution-choice opener (item 6).
+    fn proliferate_ability() -> ResolvedAbility {
+        ResolvedAbility::new(
+            Effect::Proliferate,
+            vec![],
+            ObjectId(CHURN_SRC),
+            PlayerId(0),
+        )
+    }
+
+    /// Fixed-amount `LoseLife` churner — allow-listed
+    /// (`FreeUnlessLifeReplacements`), reads no projected resource. Distinct
+    /// normalized kind from `gain_ability`.
+    fn lose_ability(amount: i32) -> ResolvedAbility {
+        ResolvedAbility::new(
+            Effect::LoseLife {
+                amount: QuantityExpr::Fixed { value: amount },
+                target: None,
+            },
+            vec![],
+            ObjectId(CHURN_SRC),
+            PlayerId(0),
+        )
+    }
+
+    /// (o) GROWN CHOICE-OPENING KIND (finding fixtures i + iii): prior `[G, P]`,
+    /// current `[G, P, P]` — `P` (Proliferate) grows on an occupied place. ZERO
+    /// counters anywhere, so in `current` the grown `P` would AUTO-resolve without
+    /// a prompt (`eligible.is_empty()`, proliferate.rs:90) — proving the gate is
+    /// STRUCTURAL, not observational (the projected poison axis, CR 701.34a, can
+    /// inhabit the option surface mid-extrapolation). Item 4 does NOT mask this:
+    /// `scan_effect(Proliferate)` is `Axes::NONE`. Revert-fail: delete the item-6
+    /// loop, or classify `Proliferate` ⇒ `FreeUnlessLifeReplacements`.
+    #[test]
+    fn n1_o_grown_choice_opening_proliferate_false() {
+        let p = |id| churn_entry(id, 0, proliferate_ability(), None);
+        let mut prior = GameState::new_two_player(7);
+        prior.stack.push_back(g(10)); // [G, P]
+        prior.stack.push_back(p(11));
+        let mut current = prior.clone();
+        current.stack.clear();
+        current.stack.push_back(g(20)); // [G, P, P]
+        current.stack.push_back(p(21));
+        current.stack.push_back(p(22));
+        assert!(!loop_states_cover_modulo_growth(&prior, &current));
+
+        // Reach-guard: swap `P` for a distinct GainLife kind (gain_ability(2)) ⇒
+        // the same growth passes items 1-5 AND item 6 (all allow-listed, no life
+        // replacements) ⇒ cover true. Isolates item 6's Proliferate reject.
+        let g2 = |id| churn_entry(id, 0, gain_ability(2), None);
+        let mut prior2 = GameState::new_two_player(7);
+        prior2.stack.push_back(g(30));
+        prior2.stack.push_back(g2(31));
+        let mut current2 = prior2.clone();
+        current2.stack.clear();
+        current2.stack.push_back(g(40));
+        current2.stack.push_back(g2(41));
+        current2.stack.push_back(g2(42));
+        assert!(loop_states_cover_modulo_growth(&prior2, &current2));
+    }
+
+    /// (q) UN-GROWN CHOICE-OPENING ENTRY (H2 discriminator): prior `[P, G]`,
+    /// current `[P, G, G]` — `P` count EQUAL (un-grown), `G` (allow-listed) grows.
+    /// Item 3 only checks GROWN entries, so the un-grown `P` is invisible to it;
+    /// ONLY item 6's all-entries scope rejects the `P`. Revert-fail: scope item 6
+    /// to `cn > pn` entries only ⇒ this flips true.
+    #[test]
+    fn n1_q_ungrown_choice_opening_entry_false() {
+        let p = |id| churn_entry(id, 0, proliferate_ability(), None);
+        let mut prior = GameState::new_two_player(7);
+        prior.stack.push_back(p(10)); // [P, G]
+        prior.stack.push_back(g(11));
+        let mut current = prior.clone();
+        current.stack.clear();
+        current.stack.push_back(p(20)); // [P, G, G]
+        current.stack.push_back(g(21));
+        current.stack.push_back(g(22));
+        assert!(!loop_states_cover_modulo_growth(&prior, &current));
+
+        // Reach-guard: drop the un-grown `P` ⇒ pure GainLife growth ⇒ cover true.
+        let mut prior2 = GameState::new_two_player(7);
+        prior2.stack.push_back(g(30));
+        let mut current2 = prior2.clone();
+        current2.stack.clear();
+        current2.stack.push_back(g(40));
+        current2.stack.push_back(g(41));
+        assert!(loop_states_cover_modulo_growth(&prior2, &current2));
+    }
+
+    /// (r) LIFE-REPLACEMENT ENVIRONMENT (H4): a genuine covering drain while a
+    /// battlefield (or floating) replacement can open a resolution-time prompt on
+    /// the grown `GainLife`/`LoseLife` resolution. Five arms — each def is
+    /// condition-free with no projected-reading body, so it SURVIVES items 1-5
+    /// and ONLY item 6's environmental guard rejects. The shared reach-guard (a
+    /// non-life event ⇒ cover true) proves the fixtures pass gates 1-5.
+    #[test]
+    fn n1_r_life_replacement_environment_false() {
+        use crate::types::ability::ReplacementMode;
+
+        // Install a replacement def on a battlefield object present in BOTH states.
+        fn with_object_def(def: ReplacementDefinition) -> (GameState, GameState) {
+            let (mut prior, mut current) = cover_base();
+            for state in [&mut prior, &mut current] {
+                let oid = bf_object(state, 810);
+                state
+                    .objects
+                    .get_mut(&oid)
+                    .unwrap()
+                    .replacement_definitions
+                    .push(def.clone());
+            }
+            (prior, current)
+        }
+
+        // Arm 1 (clause a): a single OPTIONAL GainLife def ⇒ prompt
+        // (replacement.rs:6221). Mutation: delete the `needs_life_guard` block ⇒ RED.
+        let mut def = ReplacementDefinition::new(ReplacementEvent::GainLife);
+        def.mode = ReplacementMode::Optional { decline: None };
+        let (prior, current) = with_object_def(def);
+        assert!(
+            !loop_states_cover_modulo_growth(&prior, &current),
+            "arm1 optional GainLife"
+        );
+
+        // Arm 2 (clause c): TWO MANDATORY GainLife defs ⇒ ≥2 per LifeGain class
+        // (CR 616.1 material ordering). Mutation: drop clause (c) ⇒ RED.
+        {
+            let (mut prior, mut current) = cover_base();
+            for state in [&mut prior, &mut current] {
+                let oid = bf_object(state, 811);
+                let obj = state.objects.get_mut(&oid).unwrap();
+                obj.replacement_definitions
+                    .push(ReplacementDefinition::new(ReplacementEvent::GainLife));
+                obj.replacement_definitions
+                    .push(ReplacementDefinition::new(ReplacementEvent::GainLife));
+            }
+            assert!(
+                !loop_states_cover_modulo_growth(&prior, &current),
+                "arm2 two mandatory GainLife defs"
+            );
+        }
+
+        // Arm 3 (B1 — PayLife class-set completeness): an optional PayLife def
+        // (matcher matches ProposedEvent::LifeLoss, replacement.rs:3324) over a
+        // LoseLife drain ⇒ prompt. Mutation: narrow the life-class set to
+        // {GainLife, LoseLife} (drop PayLife) ⇒ RED.
+        {
+            let l = |id| churn_entry(id, 0, lose_ability(1), None);
+            let mut prior = GameState::new_two_player(7);
+            prior.stack.push_back(l(10));
+            prior.stack.push_back(l(11));
+            let mut current = prior.clone();
+            current.stack.clear();
+            current.stack.push_back(l(20));
+            current.stack.push_back(l(21));
+            current.stack.push_back(l(22));
+            for state in [&mut prior, &mut current] {
+                let oid = bf_object(state, 812);
+                let mut def = ReplacementDefinition::new(ReplacementEvent::PayLife);
+                def.mode = ReplacementMode::Optional { decline: None };
+                state
+                    .objects
+                    .get_mut(&oid)
+                    .unwrap()
+                    .replacement_definitions
+                    .push(def);
+            }
+            assert!(
+                !loop_states_cover_modulo_growth(&prior, &current),
+                "arm3 optional PayLife over LoseLife drain"
+            );
+        }
+
+        // Arm 4 (B2 — clause b): a single MANDATORY GainLife def with a
+        // prompt-capable, non-projected-reading `runtime_execute` body ⇒ prompt.
+        // Mutation: drop the `runtime_execute.is_some()` half of clause (b) ⇒ RED.
+        {
+            let runtime_body = ResolvedAbility::new(
+                Effect::Sacrifice {
+                    target: TargetFilter::Any,
+                    count: QuantityExpr::Fixed { value: 1 },
+                    min_count: 0,
+                },
+                vec![],
+                ObjectId(CHURN_SRC),
+                PlayerId(0),
+            );
+            // Item-5 pass proof: the body reads NO projected resource, so item 5
+            // (which scans `runtime_execute` only for projected reads) lets the def
+            // through — only clause (b) rejects.
+            assert!(!crate::game::ability_scan::ability_reads_projected_resource(&runtime_body));
+            let def = ReplacementDefinition::new(ReplacementEvent::GainLife)
+                .runtime_execute(runtime_body);
+            let (prior, current) = with_object_def(def);
+            assert!(
+                !loop_states_cover_modulo_growth(&prior, &current),
+                "arm4 mandatory GainLife with runtime_execute body"
+            );
+        }
+
+        // Arm 5 (M3 — floating store): the arm-1 optional GainLife def placed in
+        // `state.pending_damage_replacements` (no object def) ⇒ prompt. Mutation:
+        // drop the floating-store chain from the guard's def sources ⇒ RED.
+        {
+            let (mut prior, mut current) = cover_base();
+            let mut def = ReplacementDefinition::new(ReplacementEvent::GainLife);
+            def.mode = ReplacementMode::Optional { decline: None };
+            for state in [&mut prior, &mut current] {
+                state.pending_damage_replacements.push(def.clone());
+            }
+            assert!(
+                !loop_states_cover_modulo_growth(&prior, &current),
+                "arm5 floating-store optional GainLife"
+            );
+        }
+
+        // Shared reach-guard: the arm-1 def with a NON-LIFE event (Mill) ⇒ cover
+        // true (proves the fixtures pass gates 1-5; only the life-class match rejects).
+        {
+            let mut def = ReplacementDefinition::new(ReplacementEvent::Mill);
+            def.mode = ReplacementMode::Optional { decline: None };
+            let (prior, current) = with_object_def(def);
+            assert!(
+                loop_states_cover_modulo_growth(&prior, &current),
+                "reach-guard: non-life (Mill) replacement does not reject"
+            );
+        }
+    }
+
+    /// (s) RESOLUTION-TIMING TARGET SLOTS (H3): a grown GainLife whose ability
+    /// defers target choice to RESOLUTION (CR 608.2d). `targets` is empty on the
+    /// stack, so today's ordering gate (item 3) passes it; only item 6's
+    /// `target_choice_timing == Resolution` row rejects. Revert-fail: remove the
+    /// `target_choice_timing` row from the ability classifier ⇒ this flips true.
+    #[test]
+    fn n1_s_resolution_timing_targets_false() {
+        use crate::types::ability::TargetChoiceTiming;
+        let res = |id| {
+            let mut ability = gain_ability(1);
+            ability.target_choice_timing = TargetChoiceTiming::Resolution;
+            churn_entry(id, 0, ability, None)
+        };
+        let mut prior = GameState::new_two_player(7);
+        prior.stack.push_back(res(10));
+        prior.stack.push_back(res(11));
+        let mut current = prior.clone();
+        current.stack.clear();
+        current.stack.push_back(res(20));
+        current.stack.push_back(res(21));
+        current.stack.push_back(res(22));
+        assert!(!loop_states_cover_modulo_growth(&prior, &current));
+
+        // Reach-guard: identical ability with STACK timing ⇒ cover true.
+        let stk = |id| churn_entry(id, 0, gain_ability(1), None);
+        let mut prior2 = GameState::new_two_player(7);
+        prior2.stack.push_back(stk(10));
+        prior2.stack.push_back(stk(11));
+        let mut current2 = prior2.clone();
+        current2.stack.clear();
+        current2.stack.push_back(stk(20));
+        current2.stack.push_back(stk(21));
+        current2.stack.push_back(stk(22));
+        assert!(loop_states_cover_modulo_growth(&prior2, &current2));
     }
 }
