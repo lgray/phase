@@ -1986,6 +1986,7 @@ pub(crate) fn lower_effect_chain_ir(ir: &EffectChainIr) -> AbilityDefinition {
         if let Effect::Dig {
             reveal: false,
             keep_count: None,
+            keep_count_expr: None,
             filter: TargetFilter::Any,
             destination: None,
             rest_destination: None,
@@ -9861,6 +9862,7 @@ mod where_x_tests {
                                 count: x_ref(),
                                 destination: Some(Zone::Battlefield),
                                 keep_count: Some(1),
+                                keep_count_expr: None,
                                 up_to: true,
                                 filter: TargetFilter::Typed(
                                     TypedFilter::new(TypeFilter::Permanent).properties(vec![

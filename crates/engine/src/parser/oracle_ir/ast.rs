@@ -447,8 +447,40 @@ pub(crate) enum ContinuationAst {
 pub(crate) enum PutCount {
     All,
     AnyNumber,
-    Up(u32),
-    Exactly(u32),
+    /// "up to N" — the bound is a `QuantityExpr` so dynamic keep counts
+    /// ("put up to X cards ...") carry through to `Effect::Dig.keep_count_expr`.
+    Up(QuantityExpr),
+    /// "exactly N" — dynamic form ("put X cards from among them", Stargaze).
+    Exactly(QuantityExpr),
+}
+
+impl PutCount {
+    /// `Up` with a literal bound — the common fixed-count call site.
+    pub(crate) fn up(n: u32) -> Self {
+        Self::Up(QuantityExpr::Fixed { value: n as i32 })
+    }
+
+    /// `Exactly` with a literal bound.
+    pub(crate) fn exactly(n: u32) -> Self {
+        Self::Exactly(QuantityExpr::Fixed { value: n as i32 })
+    }
+
+    /// CR 701.20e: Lower a `PutCount` to an `Effect::Dig` keep specification:
+    /// `(keep_count, keep_count_expr, up_to)`. Fixed bounds stay on the
+    /// `keep_count` u32 path (identical lowering to the pre-widen code); a
+    /// dynamic bound routes to `keep_count_expr` and leaves `keep_count` None
+    /// so the resolver reads the expression. `u32::MAX` is the unbounded
+    /// sentinel the resolver clamps to the number of seen cards.
+    pub(crate) fn to_dig_keep(&self) -> (Option<u32>, Option<QuantityExpr>, bool) {
+        match self {
+            PutCount::All => (Some(u32::MAX), None, false),
+            PutCount::AnyNumber => (Some(u32::MAX), None, true),
+            PutCount::Up(QuantityExpr::Fixed { value }) => (Some(*value as u32), None, true),
+            PutCount::Up(e) => (None, Some(e.clone()), true),
+            PutCount::Exactly(QuantityExpr::Fixed { value }) => (Some(*value as u32), None, false),
+            PutCount::Exactly(e) => (None, Some(e.clone()), false),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]

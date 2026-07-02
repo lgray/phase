@@ -9012,6 +9012,17 @@ pub enum Effect {
         /// to the number of seen cards.
         #[serde(default)]
         keep_count: Option<u32>,
+        /// CR 701.20e + CR 608.2c: dynamic keep count ("put X cards from among
+        /// them", Stargaze). When `Some`, resolved against game state as the
+        /// keep count; mutually exclusive with the `keep_count == u32::MAX`
+        /// "all" sentinel. `None` = the fixed `keep_count` path. Added
+        /// additively (rather than widening `keep_count` to `QuantityExpr`) to
+        /// avoid serialize round-trip churn on the many fixed-count `Dig`
+        /// snapshots — `PutCount`/`Dig` transient state is Serialize-only, so a
+        /// bare-int re-emit would rewrite byte-identical snapshots for no
+        /// behavioral gain.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        keep_count_expr: Option<QuantityExpr>,
         /// True = select 0..=keep_count ("up to N"), false = exactly keep_count.
         #[serde(default)]
         up_to: bool,

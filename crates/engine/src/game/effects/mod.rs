@@ -21671,6 +21671,7 @@ mod tests {
                 count: QuantityExpr::Fixed { value: 2 },
                 destination: None,
                 keep_count: Some(0),
+                keep_count_expr: None,
                 up_to: false,
                 filter: TargetFilter::Any,
                 rest_destination: None,

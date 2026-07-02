@@ -425,18 +425,14 @@ fn look_at_count_from_top_word_order_parses_dig() {
 }
 
 #[test]
-fn stargaze_variable_count_dig_is_deferred() {
+fn stargaze_variable_count_dig_is_supported() {
     // Stargaze ("Look at twice X cards ... Put X cards from among them into your
-    // hand ...") is DEFERRED, not shipped: both the look count (Multiply{2,X})
-    // and the keep count (X) are dynamic, but `Effect::Dig.count` survives only a
-    // `Fixed` value through the count-leading arm and `Effect::Dig.keep_count` is
-    // `Option<u32>` — a "Put X cards" keep silently collapses to 1.
-    //
-    // Coverage-honesty guard (the assertion that flips on revert): the
-    // count-leading arm must REFUSE the non-fixed count so Stargaze stays
-    // honestly Unimplemented. Pre-fix the arm accepted "twice X", the keep-count
-    // collapsed to 1, and the whole card parsed to 0-Unimplemented while putting
-    // a single card into hand at runtime — a silent over-claim.
+    // hand ...") is now SHIPPED: the look count (Multiply{2,X}) rides
+    // `Effect::Dig.count` (runtime-resolved) and the dynamic keep (X) rides the
+    // added `Effect::Dig.keep_count_expr`. Full runtime coverage (cast X=2, keep 2
+    // of 4, life/zone deltas) lives in `tests/stargaze_dynamic_keep.rs`. Here we
+    // assert the count-leading arm no longer refuses the dynamic count — the
+    // assertion that flips if the look-guard relaxation is reverted.
     let dbg = parsed_debug(
         "Look at twice X cards from the top of your library. Put X cards from among them into your hand and the rest into your graveyard. You lose X life.",
         "Stargaze",
@@ -444,8 +440,14 @@ fn stargaze_variable_count_dig_is_deferred() {
         &[],
     );
     assert!(
-        dbg.contains("Unimplemented"),
-        "Stargaze's variable look/keep count must stay honestly Unimplemented (not silently collapse to a 1-card dig); parse was:\n{dbg}"
+        !dbg.contains("Unimplemented"),
+        "Stargaze must now parse fully (no Unimplemented); parse was:\n{dbg}"
+    );
+    // `keep_count_expr` is `skip_serializing_if = "Option::is_none"`, so its
+    // presence in the serialized parse proves the dynamic keep (X) was captured.
+    assert!(
+        dbg.contains("keep_count_expr"),
+        "Stargaze's dynamic keep (X) must ride keep_count_expr; parse was:\n{dbg}"
     );
 }
 
@@ -502,22 +504,41 @@ fn count_leading_word_order_requires_fixed_count() {
         other => panic!("fixed-count look must stay a 3-card Dig; got {other:?}"),
     }
 
-    // A non-FIXED count ("twice X") must NOT be silently accepted in EITHER
-    // direction — both over-claim at runtime (reveal collapses to RevealTop{1},
-    // look pairs with a keep-count that drops to 1). The arm declines so the form
-    // stays honestly Unimplemented. These are the assertions that flip on revert.
-    for verb in ["Reveal", "Look at"] {
-        let oracle = format!("{verb} twice X cards from the top of your library.");
-        let dbg = parsed_debug(
-            &oracle,
-            "Variable Count Tester",
-            &["Sorcery".to_string()],
-            &[],
-        );
-        assert!(
-            dbg.contains("Unimplemented"),
-            "a non-fixed (twice X) {verb} count must stay Unimplemented, not collapse to a 1-card dig; parse was:\n{dbg}"
-        );
+    // Coverage-honesty split (Step 4): the two count-leading directions now
+    // diverge on a non-`Fixed` ("twice X") count.
+    //
+    // REVEAL still over-claims — an unpatched reveal-Dig demotes to
+    // `RevealTop { count: u32 }`, which has no dynamic-count path — so it stays
+    // honestly Unimplemented. Assertion flips if the reveal Fixed-only guard is
+    // dropped.
+    let reveal_dbg = parsed_debug(
+        "Reveal twice X cards from the top of your library.",
+        "Variable Reveal Tester",
+        &["Sorcery".to_string()],
+        &[],
+    );
+    assert!(
+        reveal_dbg.contains("Unimplemented"),
+        "a non-fixed (twice X) reveal count must stay Unimplemented; parse was:\n{reveal_dbg}"
+    );
+
+    // LOOK now rides `Effect::Dig.count` (runtime-resolved), so "Look at twice X"
+    // lowers to a dynamic-count Dig. Assertion flips if the look-guard relaxation
+    // is reverted (it would fall through to Unimplemented).
+    let look = parse_oracle_text(
+        "Look at twice X cards from the top of your library.",
+        "Variable Look Tester",
+        &[],
+        &["Sorcery".to_string()],
+        &[],
+    );
+    match &*look.abilities[0].effect {
+        Effect::Dig {
+            count: QuantityExpr::Multiply { factor: 2, .. },
+            reveal: false,
+            ..
+        } => {}
+        other => panic!("look at twice X must lower to a dynamic-count Dig; got {other:?}"),
     }
 }
 

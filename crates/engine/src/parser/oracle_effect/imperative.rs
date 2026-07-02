@@ -2440,20 +2440,16 @@ pub(super) fn parse_search_and_creation_ast(
     // "look at the top N cards" form handled above. `reveal` distinguishes the
     // public reveal (CR 701.20a) from the private look (CR 701.20e).
     //
-    // Coverage-honesty guard: only a `Fixed` count is supported on this arm.
-    // A non-`Fixed` count cannot be carried losslessly to runtime in either
-    // direction, so a variable/multiplicative count-leading dig would falsely
-    // claim support:
+    // Coverage-honesty guard, split by mode:
+    //   * private look (CR 701.20e): `Effect::Dig.count` is a `QuantityExpr`
+    //     resolved at runtime and dynamic keep counts now flow through
+    //     `Dig.keep_count_expr`, so ANY count expression is accepted (Stargaze's
+    //     "look at twice X cards ... put X cards from among them ...");
     //   * reveal (CR 701.20a) is demoted in `lower.rs` to
-    //     `Effect::RevealTop { count: u32 }`, collapsing every non-`Fixed` count
-    //     to 1 card revealed;
-    //   * the variable-count look forms in practice pair with a "put X cards
-    //     from among them" keep-count (Stargaze), and `Effect::Dig.keep_count`
-    //     is `Option<u32>` — it silently drops the dynamic keep to 1.
-    // Both are coverage-honesty bugs (the form would parse to 0-Unimplemented
-    // while behaving wrong at runtime). Non-fixed count-leading digs fall
-    // through and stay honestly Unimplemented until `Dig.count`/`keep_count`
-    // become `QuantityExpr` end-to-end (the documented Stargaze deferral).
+    //     `Effect::RevealTop { count: u32 }`, which has no dynamic-count path and
+    //     collapses every non-`Fixed` count to 1 — so a variable-count *reveal*
+    //     stays Fixed-only and otherwise falls through to remain honestly
+    //     Unimplemented until RevealTop gains a `QuantityExpr` count.
     if let Some((reveal, remainder)) = nom_on_lower(text, lower, |input| {
         alt((
             value(false, tag("look at ")),
@@ -2468,20 +2464,29 @@ pub(super) fn parse_search_and_creation_ast(
         // tags below match lowercase, so feed the lowercase slice (not the
         // original-case `remainder`) to keep the remainder lowercase too.
         let rest_lower = &lower[lower.len() - remainder.len()..];
-        if let Some((QuantityExpr::Fixed { value }, after_count)) = parse_count_expr(rest_lower) {
+        if let Some((count, after_count)) = parse_count_expr(rest_lower) {
+            // CR 701.20e: `Effect::Dig.count` is runtime-resolved, so a private
+            // "look at ..." accepts ANY count expression (e.g. Stargaze's
+            // "twice X"). A reveal-form stays Fixed-only: an unpatched reveal-Dig
+            // demotes to `Effect::RevealTop` (lower.rs), which has no dynamic-count
+            // path, so a variable-count *reveal* would resolve wrong — keep it
+            // honestly Unimplemented until RevealTop gains a QuantityExpr count.
+            let count_ok = !reveal || matches!(count, QuantityExpr::Fixed { .. });
             let after_count = after_count.trim_start();
-            if let Ok((owner_lower, _)) = alt((
-                tag::<_, _, OracleError<'_>>("cards from the top of "),
-                tag::<_, _, OracleError<'_>>("card from the top of "),
-            ))
-            .parse(after_count)
-            {
-                let player = parse_dig_library_owner(owner_lower);
-                return Some(SearchCreationImperativeAst::Dig {
-                    count: QuantityExpr::Fixed { value },
-                    reveal,
-                    player,
-                });
+            if count_ok {
+                if let Ok((owner_lower, _)) = alt((
+                    tag::<_, _, OracleError<'_>>("cards from the top of "),
+                    tag::<_, _, OracleError<'_>>("card from the top of "),
+                ))
+                .parse(after_count)
+                {
+                    let player = parse_dig_library_owner(owner_lower);
+                    return Some(SearchCreationImperativeAst::Dig {
+                        count,
+                        reveal,
+                        player,
+                    });
+                }
             }
         }
     }
@@ -2760,6 +2765,7 @@ pub(super) fn lower_search_and_creation_ast(ast: SearchCreationImperativeAst) ->
             count,
             destination: None,
             keep_count: None,
+            keep_count_expr: None,
             up_to: false,
             filter: TargetFilter::Any,
             rest_destination: None,
