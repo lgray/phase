@@ -247,7 +247,7 @@ pub(crate) fn live_mandatory_loop_winner(
     let winner = nonfallers[0];
 
     // Second-loss-path firewall (life axis only), over ALL living players — keep the
-    // 2p behavior generalized to the pod. CR 704.5b/121.4: any library loss is a
+    // 2p behavior generalized to the pod. CR 704.5b / CR 121.4: any library loss is a
     // second determinate-loss path.
     if living
         .iter()
@@ -267,8 +267,8 @@ pub(crate) fn live_mandatory_loop_winner(
         return None;
     }
 
-    // CR 101.2 firewalls, generalized. CR 104.3b + 101.2: NO faller may be a player
-    // who can't lose the game (Platinum Angel). CR 104.2b + 101.2: the winner can't
+    // CR 101.2 firewalls, generalized. CR 104.3b + CR 101.2: NO faller may be a player
+    // who can't lose the game (Platinum Angel). CR 104.2b + CR 101.2: the winner can't
     // be named if they can't win (Abyssal Persecutor). Evaluated on the LIVE
     // `cycle_end` so static effects see the real board.
     if fallers
@@ -328,23 +328,26 @@ pub(crate) fn live_mandatory_loop_winner(
     Some(winner)
 }
 
-/// CR 704.5a + CR 104.4a: the loop's controller (a strict non-faller) must never dip
-/// below its prior life at ANY per-resolution ring frame. A transient intra-cycle
-/// dip that recovers to a non-negative NET delta would still kill the controller via
-/// the CR 704.5a SBA at low absolute life before the extrapolated win — a net-delta
-/// check cannot see it. Per-resolution granularity IS SBA granularity here (CR 704.3
-/// checks whenever a player would get priority, between resolutions), and consecutive
-/// ring frames are consecutive resolutions (a non-sampling beat clears the ring), so
-/// requiring `life[controller]` non-decreasing across the matched window (prior frame
-/// → every subsequent ring frame → the live state) is exactly right. Controller
-/// draw-from-empty is correctly unreachable (a non-faller never crosses a loss SBA).
-pub(crate) fn controller_life_never_dips(frames: &[&GameState], controller: PlayerId) -> bool {
+/// CR 704.5a + CR 104.4a: the loop's winner (the sole strict non-faller) must never
+/// dip below its prior life at ANY per-resolution ring frame. Named for the winner,
+/// NOT the loop's controller: a mandatory-loop trigger can be controlled by a faller,
+/// so the controller is not necessarily the player this guard protects — the winner
+/// (the one non-faller) is. A transient intra-cycle dip that recovers to a
+/// non-negative NET delta would still kill the winner via the CR 704.5a SBA at low
+/// absolute life before the extrapolated win — a net-delta check cannot see it.
+/// Per-resolution granularity IS SBA granularity here (CR 704.3 checks whenever a
+/// player would get priority, between resolutions), and consecutive ring frames are
+/// consecutive resolutions (a non-sampling beat clears the ring), so requiring
+/// `life[winner]` non-decreasing across the matched window (prior frame → every
+/// subsequent ring frame → the live state) is exactly right. Winner draw-from-empty
+/// is correctly unreachable (a non-faller never crosses a loss SBA).
+pub(crate) fn winner_life_never_dips(frames: &[&GameState], winner: PlayerId) -> bool {
     let mut prev: Option<i32> = None;
     for frame in frames {
         let Some(life) = frame
             .players
             .iter()
-            .find(|p| p.id == controller)
+            .find(|p| p.id == winner)
             .map(|p| p.life)
         else {
             continue;
@@ -1307,19 +1310,19 @@ mod tests {
         s
     }
 
-    /// N5: `controller_life_never_dips` — monotone non-decreasing ⇒ true; a
+    /// N5: `winner_life_never_dips` — monotone non-decreasing ⇒ true; a
     /// dip-and-recover whose NET delta is ≥ 0 (a net-delta check cannot see it) ⇒
     /// false. REVERT-FAIL: gutting the fn (or dropping its seam call) admits the dip.
     #[test]
-    fn n5_controller_life_never_dips() {
+    fn n5_winner_life_never_dips() {
         let mono = [frame(&[5]), frame(&[5]), frame(&[7])];
         let mono_refs: Vec<&GameState> = mono.iter().collect();
-        assert!(controller_life_never_dips(&mono_refs, pid(0)));
+        assert!(winner_life_never_dips(&mono_refs, pid(0)));
 
         let dip = [frame(&[5]), frame(&[2]), frame(&[5])];
         let dip_refs: Vec<&GameState> = dip.iter().collect();
         assert!(
-            !controller_life_never_dips(&dip_refs, pid(0)),
+            !winner_life_never_dips(&dip_refs, pid(0)),
             "a 5→2→5 intra-window dip (net ≥ 0) must be rejected"
         );
     }

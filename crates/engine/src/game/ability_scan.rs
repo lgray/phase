@@ -1,4 +1,4 @@
-//! CR 603.3b + CR 603.4 + CR 106.1/119/122.1: the PR-6.25/PR-6.5 fail-closed AST
+//! CR 603.3b + CR 603.4 + CR 106.1 / CR 119 / CR 122.1: the PR-6.25/PR-6.5 fail-closed AST
 //! scanner — a single compiler-exhaustive, wildcard-free walk of a resolved
 //! ability's typed AST that answers three independent classification questions
 //! ("axes") used by trigger ordering (CR 603.3b) and the growing-cascade
@@ -75,7 +75,7 @@ struct Axes {
     /// could mutate (CR 603.3b ordering-relevance).
     sibling: bool,
     /// Reads a player-level monotone resource / per-turn journal that
-    /// `project_out_resources` neutralizes (CR 106.1/119/122.1).
+    /// `project_out_resources` neutralizes (CR 106.1 / CR 119 / CR 122.1).
     projected: bool,
 }
 
@@ -3121,7 +3121,7 @@ pub(crate) fn trigger_condition_reads_projected_resource(condition: &TriggerCond
     scan_trigger_condition(condition).projected
 }
 
-/// Axis 3 on a condition-gated static's `condition` (CR 604.1/613.1) — the
+/// Axis 3 on a condition-gated static's `condition` (CR 604.1 / CR 613.1) — the
 /// dormant-static off-stack scan surface.
 pub(crate) fn static_condition_reads_projected_resource(condition: &StaticCondition) -> bool {
     scan_static_condition(condition).projected

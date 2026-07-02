@@ -664,9 +664,9 @@ fn loyalty_activation_counts_match(a: &GameState, b: &GameState) -> bool {
 
 /// Karp–Miller-style ω-acceleration (Karp–Miller 1969; Finkel et al. 2021), sound
 /// GIVEN the in-loop transition relation — the WHOLE beat: top-of-stack resolution
-/// (CR 608.1) with its resolution-time payments (CR 605.3a/608.2g), trigger
+/// (CR 608.1) with its resolution-time payments (CR 605.3a / CR 608.2g), trigger
 /// collection (CR 603.4), replacement application (CR 614.1), static condition
-/// gating (CR 604.1/613.1), SBA application (CR 704.3/704.5), and elimination
+/// gating (CR 604.1 / CR 613.1), SBA application (CR 704.3 / CR 704.5), and elimination
 /// processing (CR 800.4a) — is invariant under the projected-out player-level
 /// resources. Enforced by construction: object/board axes are STRICT-COMPARED
 /// ([`object_resource_axes_match`] — SBA object reads CR 704.5f/g/i can never
@@ -709,7 +709,7 @@ pub(crate) fn loop_states_cover_modulo_growth(prior: &GameState, current: &GameS
     }
 
     // (2) Stack coverability: order-preserving bottom-up embedding + strict growth
-    // confined to places already occupied in `prior` (CR 608.1/405.5 LIFO freeze).
+    // confined to places already occupied in `prior` (CR 608.1 / CR 405.5 LIFO freeze).
     let prior_stack = normalized_stack_entries(prior);
     let cur_stack = normalized_stack_entries(current);
     if !stack_covers(&prior_stack, &cur_stack) {
@@ -984,7 +984,7 @@ fn fire_time_conditions_read_projected_resource(state: &GameState) -> bool {
             return true;
         }
     }
-    // (iii) Condition-gated statics (CR 604.1/613.1) — ALL modes via `iter_all()`
+    // (iii) Condition-gated statics (CR 604.1 / CR 613.1) — ALL modes via `iter_all()`
     // (NOT the condition-filtered active iterator, whose gate hides exactly the
     // dormant defs this surface exists to catch), plus transient continuous effects'
     // `ForAsLongAs`/gating conditions (CR 604.1).

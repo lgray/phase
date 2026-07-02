@@ -358,10 +358,10 @@ fn reconcile_terminal_result(state: &mut GameState, result: &mut ActionResult) {
             // clears the ring, so a confirmed window is gap-free).
             let mut frames: Vec<&GameState> = priors[k..].iter().map(|p| p.as_ref()).collect();
             frames.push(state);
-            // CR 704.5a + CR 104.4a (m9): the controller must never dip across the
-            // window — a transient intra-cycle dip a net-delta check cannot see would
-            // kill it before the extrapolated win.
-            if !crate::analysis::loop_check::controller_life_never_dips(&frames, winner) {
+            // CR 704.5a + CR 104.4a (m9): the winner (sole non-faller) must never dip
+            // across the window — a transient intra-cycle dip a net-delta check cannot
+            // see would kill it before the extrapolated win.
+            if !crate::analysis::loop_check::winner_life_never_dips(&frames, winner) {
                 return None;
             }
             // CR 704.3 + CR 800.4a + CR 104.2a (R5-B2): with ≥2 fallers, require
