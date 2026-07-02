@@ -110,15 +110,13 @@ If you've made it through all three stages with EXTEND_OK / WITHIN_SECTION verdi
 
 2. **Update all exhaustive `match` statements.** Use `cargo check -p engine` to find them. NO wildcard fallback arms to silence the compiler — those mask future variant additions.
 
-3. **Classify the variant in the fail-closed ability-scan walker.** If the enum is traversed by `crates/engine/src/game/ability_scan.rs` (the C0 classifier: `Effect`, `QuantityRef`, `QuantityExpr`, `TargetFilter`, `TriggerCondition`, `StaticCondition`, `ReplacementCondition`, `AbilityCondition`, `Duration`, `PlayerFilter`, `ObjectScope`, `ControllerRef`, and their sub-enums), a NEW *variant* fails to compile there (exhaustive, no `_` fallback) — add an explicit per-axis classification arm. A NEW *field on an EXISTING variant* is only caught if that variant's arm destructures without `..`: NONE arms and projected-resource (axis-3) arms already do (compiler-enforced), but CONSERVATIVE arms keep `..`. So if you add a read-bearing field to a variant the walker classifies as CONSERVATIVE, promote its arm to an explicit destructure and classify the field on every axis. The growing-cascade detector's soundness rests on axis 3, so a silently-dropped projected-resource read is a false combo-win.
+3. **Document runtime status.** If the variant is type-only (no runtime handler yet), add `// RUNTIME: TODO — converter accepts this; engine handler is a no-op stub. CR <X>` on the variant doc-comment. Type-only stubs are acceptable; silent runtime stubs are not.
 
-4. **Document runtime status.** If the variant is type-only (no runtime handler yet), add `// RUNTIME: TODO — converter accepts this; engine handler is a no-op stub. CR <X>` on the variant doc-comment. Type-only stubs are acceptable; silent runtime stubs are not.
+4. **Pair with converter arm in one commit.** Engine extensions ship with the converter arm that uses them, in a single coherent commit. Don't batch unrelated engine extensions.
 
-5. **Pair with converter arm in one commit.** Engine extensions ship with the converter arm that uses them, in a single coherent commit. Don't batch unrelated engine extensions.
+5. **Concurrency contract.** Engine extensions ship in a separate PR before the converter PR depending on them, OR in one paired commit if the work is done by a single agent. No half-extensions.
 
-6. **Concurrency contract.** Engine extensions ship in a separate PR before the converter PR depending on them, OR in one paired commit if the work is done by a single agent. No half-extensions.
-
-7. **Serialized-surface audit.** Before implementation is complete, determine whether the enum appears in game state, `GameAction`, `WaitingFor`, card-data export, AI/community scenario fixtures, saved test fixtures, client adapter types, or any wire-visible protocol. If yes, add the required serde defaults, migration / compatibility path, regenerated fixture, or protocol version bump. Include a test or CI evidence that existing repo-owned serialized data still loads. If protocol-visible, bump the wire contract or prove no serialized shape changed.
+6. **Serialized-surface audit.** Before implementation is complete, determine whether the enum appears in game state, `GameAction`, `WaitingFor`, card-data export, AI/community scenario fixtures, saved test fixtures, client adapter types, or any wire-visible protocol. If yes, add the required serde defaults, migration / compatibility path, regenerated fixture, or protocol version bump. Include a test or CI evidence that existing repo-owned serialized data still loads. If protocol-visible, bump the wire contract or prove no serialized shape changed.
 
 ## Anti-patterns this skill prevents
 
