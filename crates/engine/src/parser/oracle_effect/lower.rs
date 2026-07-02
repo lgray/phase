@@ -1874,6 +1874,7 @@ pub(crate) fn lower_effect_chain_ir(ir: &EffectChainIr) -> AbilityDefinition {
     // effect. Rewrite those subs by cloning the previous effect with an
     // updated count (Rite of Replication / Saproling Migration / Krothuss).
     resolve_those_tokens_anaphors(&mut defs);
+    resolve_populated_unsuspect_anaphors(&mut defs);
 
     // CR 701.36a + CR 603.7c: Resolve "the token created this way …" and the
     // "sacrifice it" anaphors that follow a token-creating effect (Populate,
@@ -2381,6 +2382,56 @@ fn resolve_those_tokens_anaphors(defs: &mut [AbilityDefinition]) {
         let prev = &prev_rest[i - 1];
         let cur = &mut cur_rest[0];
         rewrite_those_tokens_from_antecedent(&mut cur.effect, &prev.effect);
+    }
+}
+
+/// CR 701.60a + CR 608.2c: Resolve the plural population anaphor in
+/// "[mass P/T modification to a population]. ... they're no longer suspected"
+/// (Eliminate the Impossible: "Creatures your opponents control get -2/-0 ...
+/// they're no longer suspected"). The un-suspect body parses to
+/// `Unsuspect { ParentTarget, Single }` because "they"/"them" is anaphoric, but
+/// the antecedent is a non-targeting `PumpAll` *population* — not an announced
+/// target — so `ParentTarget` resolves to nothing. Rebind the un-suspect to the
+/// preceding `PumpAll`'s population filter with `All` scope (CR 701.60a removes
+/// the designation from every matching permanent). Applying Unsuspect to a
+/// non-suspected creature is a no-op, so the redundant "if any of them are
+/// suspected" gate the card prints needs no separate condition.
+fn resolve_populated_unsuspect_anaphors(defs: &mut [AbilityDefinition]) {
+    for i in 1..defs.len() {
+        let population = match &*defs[i - 1].effect {
+            Effect::PumpAll { target, .. } if !matches!(target, TargetFilter::None) => {
+                target.clone()
+            }
+            _ => continue,
+        };
+        if let Effect::Unsuspect { target, scope } = &mut *defs[i].effect {
+            if matches!(target, TargetFilter::ParentTarget) && matches!(scope, EffectScope::Single)
+            {
+                // CR 701.60a: un-designate every member of the antecedent
+                // population.
+                *target = population.clone();
+                *scope = EffectScope::All;
+                // CR 608.2c: represent the printed "if any of them are suspected"
+                // gate as an existential over the population restricted to the
+                // suspected status. Redundant with the un-suspect no-op, but it
+                // makes the condition explicit (and rules-faithful) rather than
+                // dropped. `defs[i]` carries no prior condition (the anaphor body
+                // parsed conditionless), so this is a pure add.
+                if defs[i].condition.is_none() {
+                    let mut suspected = population;
+                    if let TargetFilter::Typed(typed) = &mut suspected {
+                        typed.properties.push(FilterProp::Suspected);
+                    }
+                    defs[i].condition = Some(AbilityCondition::QuantityCheck {
+                        lhs: QuantityExpr::Ref {
+                            qty: QuantityRef::ObjectCount { filter: suspected },
+                        },
+                        comparator: Comparator::GE,
+                        rhs: QuantityExpr::Fixed { value: 1 },
+                    });
+                }
+            }
+        }
     }
 }
 

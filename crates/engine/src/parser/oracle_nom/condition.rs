@@ -2871,8 +2871,17 @@ pub(crate) fn parse_control_conditions(input: &str) -> OracleResult<'_, StaticCo
         parse_control_count_eq,
         // "you control a/an/another [type]" → IsPresent with filter
         parse_you_control_a,
-        // CR 508.1: "a[n] [filter] creature is attacking[ you]" → IsPresent(filter + attacking)
+        // CR 508.1: "a[n] [filter] creature is attacking[ you]" → IsPresent(filter + Attacking).
+        // Upstream #4918 generalized the former bare "a creature is attacking you" literal over the
+        // filter axis while keeping the defender-scoped "attacking you" form, so it subsumes batch-3's
+        // parse_creature_attacking_you (dropped — its "a creature is attacking you" behavior is
+        // reproduced here). Tried FIRST so the defender-scoped "attacking you" form keeps priority.
         parse_filtered_creature_is_attacking,
+        // CR 508.1 + CR 509.1: "a/an <type> is attacking [or blocking]" → IsPresent(type + combat
+        // state). Retained for the "[or blocking]" predicate that the attacking-only filtered form
+        // above does not cover; tried after it so filtered owns the attacking/defender form (the
+        // attacking case here yields the identical IsPresent, so filtered simply reaches it first).
+        parse_a_type_is_in_combat,
         // "you don't control a/an [type]" → Not(IsPresent)
         parse_you_dont_control_a,
         // "you control no [type]" → Not(IsPresent)
@@ -3130,6 +3139,42 @@ fn parse_filtered_creature_is_attacking(input: &str) -> OracleResult<'_, StaticC
         after,
         StaticCondition::IsPresent {
             filter: Some(filter),
+        },
+    ))
+}
+
+/// CR 508.1 + CR 509.1: existential "a/an <type> is attacking [or blocking]" —
+/// true when at least one permanent matching `<type>` is in the named combat
+/// state (Charging Hooligan: "If a Rat is attacking, ..."). Complements
+/// `parse_filtered_creature_is_attacking` (which owns the attacking / "attacking
+/// you" defender form): this arm uniquely adds the `is blocking` predicate over
+/// the same type axis (via `parse_type_phrase`, so any subtype/core type works).
+/// The attacking case overlaps that combinator and yields the identical
+/// `IsPresent`; it is registered first, so this arm is reached for the blocking form.
+/// No controller restriction — a matching attacker/blocker controlled by any
+/// player qualifies. The singular article requirement rejects the plural count
+/// form ("creatures are attacking"), which `parse_creatures_are_attacking_count_ge`
+/// owns.
+fn parse_a_type_is_in_combat(input: &str) -> OracleResult<'_, StaticCondition> {
+    // Require a singular article; `parse_type_phrase` strips it itself.
+    nom::combinator::peek(alt((tag("a "), tag("an "))).map(|_| ())).parse(input)?;
+    let (filter, remainder) = parse_type_phrase(input);
+    let TargetFilter::Typed(mut typed) = filter else {
+        return Err(oracle_err(input));
+    };
+    let (rest, prop) = alt((
+        value(
+            FilterProp::Attacking { defender: None },
+            tag("is attacking"),
+        ),
+        value(FilterProp::Blocking, tag("is blocking")),
+    ))
+    .parse(remainder.trim_start())?;
+    typed.properties.push(prop);
+    Ok((
+        rest,
+        StaticCondition::IsPresent {
+            filter: Some(TargetFilter::Typed(typed)),
         },
     ))
 }

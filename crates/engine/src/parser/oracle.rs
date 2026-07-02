@@ -1528,6 +1528,19 @@ fn strip_instead_clause(
             // pattern-3 `before_trim.contains('.')` guard below), not parsing dispatch
             return (text.to_string(), None, false);
         }
+        // CR 608.2c + CR 614.1a: A multi-sentence effect line
+        // ("[prior sentence]. [effect] instead if <cond>", e.g. Steer Clear) is an
+        // INTRA-CHAIN override — the "instead" replaces only the trailing sentence's
+        // effect, not the whole line, and its condition ("you controlled a Mount as
+        // you cast this spell") is owned by the chain-level `parse_condition_text`
+        // recognizers, not the line-level `parse_inner_condition`. Defer the whole
+        // line to the chain parser (mirrors the pattern-3 `before_trim.contains('.')`
+        // guard below) so `try_parse_generic_instead_clause` builds the conditional
+        // sub-ability and the prior sentence is preserved.
+        if before.original.trim().trim_end_matches('.').contains('.') {
+            // allow-noncombinator: structural sentence-boundary split, not parsing dispatch
+            return (text.to_string(), None, false);
+        }
         let condition = parse_inner_condition(condition_text)
             .ok()
             .and_then(|(rest, condition)| rest.trim().is_empty().then_some(condition))

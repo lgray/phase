@@ -4344,6 +4344,18 @@ pub(super) fn try_nom_condition_as_ability_condition(
         return Some(condition);
     }
 
+    // CR 109.4 + CR 608.2c: "an opponent controls that creature" — first object
+    // target is opponent-controlled (Fear of Immobility stun gate).
+    if let Some(condition) = parse_opponent_controls_target_condition(lower.as_str()) {
+        return Some(condition);
+    }
+
+    // CR 111.1 + CR 608.2c: "the token is a/an <type>" — the just-created token
+    // matches a type (Yenna, Redtooth Regent untap/scry gate).
+    if let Some(condition) = parse_the_token_is_type_condition(lower.as_str()) {
+        return Some(condition);
+    }
+
     if let Some(condition) = parse_entered_or_cast_from_zone_ability_condition(lower.as_str()) {
         return Some(condition);
     }
@@ -4955,6 +4967,61 @@ fn parse_you_controlled_parent_target_condition(lower: &str) -> Option<AbilityCo
         AbilityCondition::TargetMatchesFilter { filter, use_lki },
         negated,
     ))
+}
+
+/// CR 109.4 + CR 608.2c: "an opponent controls that creature / that permanent /
+/// it" — the ability's first object target is controlled by an opponent (Fear of
+/// Immobility: "If an opponent controls that creature, put a stun counter on
+/// it"). Emits `TargetMatchesFilter` with an `Opponent` controller restriction,
+/// resolved against `targets[0]`. `use_lki: false` — the tapped target is still
+/// on the battlefield when the rider resolves, so its live controller is
+/// authoritative (CR 109.4).
+fn parse_opponent_controls_target(input: &str) -> OracleResult<'_, AbilityCondition> {
+    let (rest, _) = tag("an opponent controls ").parse(input)?;
+    let (rest, _) = alt((tag("that creature"), tag("that permanent"), tag("it"))).parse(rest)?;
+    Ok((
+        rest,
+        AbilityCondition::TargetMatchesFilter {
+            filter: TargetFilter::Typed(TypedFilter::default().controller(ControllerRef::Opponent)),
+            use_lki: false,
+        },
+    ))
+}
+
+fn parse_opponent_controls_target_condition(lower: &str) -> Option<AbilityCondition> {
+    all_consuming(parse_opponent_controls_target)
+        .parse(lower)
+        .ok()
+        .map(|(_, c)| c)
+}
+
+/// CR 111.1 + CR 608.2c: "the token is a/an <type>" — the token created by the
+/// immediately-preceding `Effect::Token`/`CopyTokenOf` matches `<type>` (Yenna,
+/// Redtooth Regent: "Create a token that's a copy of it ... If the token is an
+/// Aura, untap ~, then scry 2"). Represented as an existential over
+/// `And([LastCreated, <type>])`: `LastCreated` reads `state.last_created_token_ids`,
+/// so the count is 1 exactly when the just-created token matches the type. This is
+/// the field-expressive form — a bare `TargetMatchesFilter{LastCreated}` would test
+/// the ability's chosen target (the copied enchantment), not the created token.
+fn parse_the_token_is_type_condition(lower: &str) -> Option<AbilityCondition> {
+    let (rest, _) = tag::<_, _, OracleError<'_>>("the token is ")
+        .parse(lower)
+        .ok()?;
+    let (filter, remainder) = parse_type_phrase(rest);
+    if !matches!(filter, TargetFilter::Typed(_)) || !remainder.trim().is_empty() {
+        return None;
+    }
+    Some(AbilityCondition::QuantityCheck {
+        lhs: QuantityExpr::Ref {
+            qty: QuantityRef::ObjectCount {
+                filter: TargetFilter::And {
+                    filters: vec![TargetFilter::LastCreated, filter],
+                },
+            },
+        },
+        comparator: Comparator::GE,
+        rhs: QuantityExpr::Fixed { value: 1 },
+    })
 }
 
 /// CR 109.4 + CR 608.2c: Recognize a leading **inverse** anaphoric-control
