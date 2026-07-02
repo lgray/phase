@@ -2204,6 +2204,43 @@ fn strip_represented_replacement_instead_sentences(
     out
 }
 
+/// CR 122.1 + CR 614.1c + CR 608.2c + CR 400.7: "If you put a[n] <type> onto the
+/// battlefield this way, put [N] +1/+1 counters on it" (Oviya, Automech Artisan)
+/// is represented by the typed `Effect::ChangeZone.conditional_enter_with_counters`
+/// gate — the moved object's entry-time counters are applied only when it matches
+/// the carried filter (runtime-verified in
+/// `change_zone::enter_with_counters_for_object`), so the leading "if" is a
+/// representation marker, not a swallowed condition.
+///
+/// Mirrors `enters_modified_if_is_only_if_marker`: an inside AST probe
+/// (`conditional_enter_with_counters` carries `skip_serializing_if = Vec::is_empty`,
+/// so the key serializes ONLY when non-empty — keying tightly on the
+/// ChangeScope→Battlefield-with-counters shape the resolver handles) plus
+/// text-scoping — the represented put-onto-battlefield-this-way counter clause is
+/// located via the shared `is_moved_object_put_onto_battlefield_counters_clause`
+/// combinator and dropped sentence-by-sentence, and suppression fires ONLY when no
+/// OTHER bare " if " survives, so a compound card carrying the gate AND a separate
+/// unrelated " if " still flags.
+fn conditional_enter_counters_if_is_only_if_marker(stripped: &str, ast_json: &str) -> bool {
+    // allow-noncombinator: structural AST-shape JSON probe (mirrors enters_modified_if)
+    if !ast_json.contains("\"conditional_enter_with_counters\":") {
+        return false;
+    }
+    let residual: String = stripped
+        .split('.')
+        .filter(|sentence| {
+            !crate::parser::oracle_effect::sequence::is_moved_object_put_onto_battlefield_counters_clause(
+                sentence,
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(".");
+    let has_other_if = residual.contains(" if ") // allow-noncombinator: swallow detector marker scan on classified text
+        && !residual.contains(" as if ") // allow-noncombinator: swallow detector marker scan on classified text
+        && !residual.contains(" even if "); // allow-noncombinator: swallow detector marker scan on classified text
+    !has_other_if
+}
+
 // ── Detector G: Condition_If ────────────────────────────────────────────
 
 /// CR 608.2c: "if [condition], [effect]" — conditional gate. Must be
@@ -2294,6 +2331,12 @@ fn detect_condition_if(
     // `enters_modified_if` gate on the absorbed ChangeZone. Text-scoped: only
     // suppresses when that enters-modifier clause is the card's only bare " if ".
     if enters_modified_if_is_only_if_marker(&stripped, ast_json) {
+        return;
+    }
+    // CR 122.1 + CR 614.1c + CR 608.2c: "If you put a[n] <type> onto the
+    // battlefield this way, put [N] +1/+1 counters on it" (Oviya) is represented
+    // by `Effect::ChangeZone.conditional_enter_with_counters`.
+    if conditional_enter_counters_if_is_only_if_marker(&stripped, ast_json) {
         return;
     }
     // CR 615.5: "If damage is prevented this way, [effect]" is not an
@@ -4346,6 +4389,58 @@ mod tests {
                 >= 2,
             "expected tiered ETB-counter statics, got {:?}",
             parsed.statics
+        );
+    }
+
+    /// CR 122.1 + CR 614.1c + CR 608.2c: Oviya's "If you put an artifact onto the
+    /// battlefield this way, put two +1/+1 counters on it" rider is represented by
+    /// `Effect::ChangeZone.conditional_enter_with_counters`, so the leading "if"
+    /// must NOT be reported as a swallowed condition. REVERT: without the
+    /// `conditional_enter_counters_if_is_only_if_marker` guard the false
+    /// `Condition_If` swallow returns and this assertion flips.
+    #[test]
+    fn condition_if_accepts_conditional_enter_with_counters_put_this_way() {
+        let parsed = parse_named(
+            "Each creature that's attacking one of your opponents has trample.\n\
+             {G}, {T}: You may put a creature or Vehicle card from your hand onto the battlefield. \
+             If you put an artifact onto the battlefield this way, put two +1/+1 counters on it.",
+            "Oviya, Automech Artisan",
+            &["Creature"],
+        );
+
+        assert!(
+            !has_swallowed_detector(&parsed, "Condition_If"),
+            "represented conditional_enter_with_counters put-this-way rider must not report Condition_If: {:?}",
+            parsed.parse_warnings
+        );
+    }
+
+    /// The put-this-way counter guard is text-scoped: a card carrying the
+    /// represented rider PLUS a separate, genuinely-unrepresented " if " must still
+    /// flag Condition_If (mirrors `represented_tiered_counter_pair_does_not_hide_unrelated_if`).
+    #[test]
+    fn conditional_enter_counters_does_not_hide_unrelated_if() {
+        let parsed = parse_named(
+            "{G}, {T}: You may put a creature or Vehicle card from your hand onto the battlefield. \
+             If you put an artifact onto the battlefield this way, put two +1/+1 counters on it.",
+            "Oviya, Automech Artisan",
+            &["Creature"],
+        );
+        let synthetic = format!(
+            "{}\nDraw a card if the moon is bright.",
+            "You may put a creature card from your hand onto the battlefield. \
+             If you put an artifact onto the battlefield this way, put two +1/+1 counters on it."
+        );
+        let mut diagnostics = Vec::new();
+
+        check_swallowed_clauses(&synthetic, &parsed, &mut diagnostics);
+
+        assert!(
+            diagnostics.iter().any(|warning| matches!(
+                warning,
+                OracleDiagnostic::SwallowedClause { detector, .. } if detector == "Condition_If"
+            )),
+            "separate unrelated if text must remain visible to Condition_If, got {diagnostics:?}"
         );
     }
 
