@@ -371,6 +371,7 @@ mod gate_reflexive_rider_tests {
                     TypedFilter::default().properties(vec![FilterProp::WasDealtDamageThisTurn]),
                 ),
                 use_lki: true,
+                subject_slot: None,
             }),
         }
     }
@@ -2137,6 +2138,11 @@ pub(crate) fn lower_effect_chain_ir(ir: &EffectChainIr) -> AbilityDefinition {
     fold_enters_this_way_counter_rider(&mut result);
     wire_optional_cast_decline_fallback(&mut result);
     retarget_counter_additional_cost_to_target(&mut result);
+    // CR 608.2c: two-target "put a counter on the you-control creature, then those
+    // creatures fight each other" (Malamet/Longstalk/Duel) — re-key the counter's
+    // ParentTarget anaphor to chain slot 0 and bind its condition subject to the
+    // same slot under most-recent-only propagation.
+    rewrite_two_target_counter_chain(&mut result);
     // CR 608.2c + CR 608.2b: resolve a chained tap/untap anaphor against a
     // SelfRef-subject head (The Incredible Hulk's "untap him") — rewrite its
     // ParentTarget to SelfRef so it binds the source, while a real/optional
@@ -2289,6 +2295,73 @@ fn target_choice_timing_for_clause(clause_ir: &ClauseIr) -> TargetChoiceTiming {
 /// CR 122.1 + CR 614.1c: "If a Hero enters this way, it enters with an
 /// additional +1/+1 counter on it" riders on a parent battlefield zone change
 /// are entry replacement properties, not post-move `PutCounter` subs.
+/// CR 608.2c: Malamet Battle Glyph / Longstalk Brawl / Duel for Dominance —
+/// "Choose target creature you control and target creature you don't control. …
+/// put a +1/+1 counter on [the you-control creature]. Then those creatures fight
+/// each other." Chain descent propagates only the most-recent (opponent) target
+/// to later nodes, so the counter's `ParentTarget` anaphor — and any
+/// entered-this-turn condition subject — would bind the OPPONENT's creature. When
+/// the chain declares >= 2 `TargetOnly` object slots, re-key each
+/// `PutCounter{ParentTarget}` to `ParentTargetSlot { index: 0 }` (the
+/// first-declared you-control creature — `try_parse_two_targets` emits it first)
+/// and bind that node's `TargetMatchesFilter` condition to the same slot 0.
+/// Scoped to `PutCounter` (excludes Tail Swipe's `Pump`) and only rekeys a
+/// `ParentTarget` counter (measured: exactly these 3 cards; 0 cards already use
+/// `ParentTargetSlot`). Longstalk's `AdditionalCostPaid` and Duel's count gate
+/// are not `TargetMatchesFilter`, so their conditions stay node-local. Consumes
+/// increment-A's `ParentTargetSlot` counter resolver + `subject_slot` eval.
+fn rewrite_two_target_counter_chain(def: &mut AbilityDefinition) {
+    if count_typed_target_only_slots(def) >= 2 {
+        rekey_counter_slot_in_chain(def);
+    }
+}
+
+fn count_typed_target_only_slots(def: &AbilityDefinition) -> usize {
+    let here = usize::from(matches!(
+        &*def.effect,
+        Effect::TargetOnly {
+            target: TargetFilter::Typed(_)
+        }
+    ));
+    here + def
+        .sub_ability
+        .as_deref()
+        .map_or(0, count_typed_target_only_slots)
+        + def
+            .else_ability
+            .as_deref()
+            .map_or(0, count_typed_target_only_slots)
+}
+
+fn rekey_counter_slot_in_chain(def: &mut AbilityDefinition) {
+    let rekeyed = if let Effect::PutCounter { target, .. } = &mut *def.effect {
+        if matches!(target, TargetFilter::ParentTarget) {
+            *target = TargetFilter::ParentTargetSlot { index: 0 };
+            true
+        } else {
+            false
+        }
+    } else {
+        false
+    };
+    if rekeyed {
+        // CR 608.2c: the counter node's own condition ("if the creature you
+        // control entered this turn") must test slot 0, not this node's
+        // most-recent (opponent) local target.
+        if let Some(AbilityCondition::TargetMatchesFilter { subject_slot, .. }) =
+            def.condition.as_mut()
+        {
+            *subject_slot = Some(0);
+        }
+    }
+    if let Some(sub) = def.sub_ability.as_mut() {
+        rekey_counter_slot_in_chain(sub);
+    }
+    if let Some(els) = def.else_ability.as_mut() {
+        rekey_counter_slot_in_chain(els);
+    }
+}
+
 fn fold_enters_this_way_counter_rider(def: &mut AbilityDefinition) {
     let parent_moves_to_battlefield = matches!(
         *def.effect,

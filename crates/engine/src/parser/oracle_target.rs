@@ -353,6 +353,31 @@ pub fn parse_target_with_ctx<'a>(text: &'a str, ctx: &mut ParseContext) -> (Targ
     (filter, rest)
 }
 
+/// CR 701.14a: Parse the object of a `fight` clause. The reciprocal "each other"
+/// ("those creatures fight each other" — Malamet Battle Glyph, Longstalk Brawl,
+/// Duel for Dominance, and 7 siblings) is NOT an independent target: both
+/// fighters are the two earlier-declared chosen creatures. Emit
+/// `TargetFilter::ParentTarget` so fight slot-gen (`ability_utils`) creates no
+/// spurious target slot — otherwise the unrecognized "each other" falls back to
+/// an empty `Typed` filter that generates an illegal all-players slot and panics
+/// the cast. Every non-reciprocal object ("~ fights target creature", "it fights
+/// target creature") delegates unchanged to `parse_target_with_ctx`, keeping its
+/// explicit target slot. Shared by BOTH `fight ` dispatchers
+/// (`parse_targeted_action_ast`, `try_parse_verb_and_target`) so neither path
+/// silently no-ops.
+pub fn parse_fight_target<'a>(text: &'a str, ctx: &mut ParseContext) -> (TargetFilter, &'a str) {
+    let lower = text.trim().to_ascii_lowercase();
+    if let Ok((rest, _)) = tag::<_, _, OracleError<'_>>("each other").parse(lower.as_str()) {
+        // Structural trailing-period cleanup after the `each other` tag matched.
+        // allow-noncombinator: punctuation strip on a matched chunk, not dispatch.
+        let rest = rest.strip_prefix('.').unwrap_or(rest);
+        if rest.trim().is_empty() {
+            return (TargetFilter::ParentTarget, "");
+        }
+    }
+    parse_target_with_ctx(text, ctx)
+}
+
 /// Context-aware target parser that additionally reports whether the phrase
 /// used the "target" keyword (`TargetKeyword`) or a descriptor scope
 /// (`Descriptor`). CR 115.1 + Whitemane Lion ruling distinguishes these for

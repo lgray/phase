@@ -517,6 +517,7 @@ pub(super) fn strip_additional_cost_conditional(text: &str) -> (Option<AbilityCo
                             .properties(vec![FilterProp::IsChosenCreatureType])
                             .into(),
                         use_lki: false,
+                        subject_slot: None,
                     },
                 ],
             }),
@@ -1059,6 +1060,7 @@ pub(super) fn card_type_condition_as_target_match(
         // riders evaluate; use last-known information so a creature that is being
         // destroyed this way still matches.
         use_lki: true,
+        subject_slot: None,
     })
 }
 
@@ -1221,6 +1223,7 @@ fn parse_its_a_card_type_gate_body<'a>(
                     AbilityCondition::TargetMatchesFilter {
                         filter,
                         use_lki: false,
+                        subject_slot: None,
                     },
                     negated,
                 ),
@@ -1329,7 +1332,11 @@ fn parse_target_color_condition(
     Ok((
         rest,
         maybe_negate(
-            AbilityCondition::TargetMatchesFilter { filter, use_lki },
+            AbilityCondition::TargetMatchesFilter {
+                filter,
+                use_lki,
+                subject_slot: None,
+            },
             negated,
         ),
     ))
@@ -1392,7 +1399,11 @@ fn parse_target_type_membership_condition(
     Ok((
         remainder,
         maybe_negate(
-            AbilityCondition::TargetMatchesFilter { filter, use_lki },
+            AbilityCondition::TargetMatchesFilter {
+                filter,
+                use_lki,
+                subject_slot: None,
+            },
             negated,
         ),
     ))
@@ -1494,6 +1505,7 @@ fn parse_target_attacked_this_turn_condition(
                         .properties(vec![FilterProp::AttackedThisTurn { defender: None }]),
                 ),
                 use_lki: false,
+                subject_slot: None,
             },
             negated,
         ),
@@ -1515,6 +1527,68 @@ fn parse_anaphoric_attacked_tense_polarity(input: &str) -> OracleResult<'_, bool
 fn parse_target_attacked_this_turn_condition_text(text: &str) -> Option<AbilityCondition> {
     let lower = text.trim().trim_end_matches('.').to_ascii_lowercase();
     let parsed = all_consuming(parse_target_attacked_this_turn_condition)
+        .parse(lower.as_str())
+        .ok()
+        .map(|(_, c)| c);
+    parsed
+}
+
+/// Subject of a per-target "entered this turn" gate. Two forms:
+///   (i) named filter — "the creature you control" → the parsed `Typed` filter,
+///       carrying its type + controller restriction (do NOT hardcode `creature()`;
+///       "the artifact you control entered this turn" must keep its type).
+///   (ii) anaphor — "it" / "that creature" → `creature()` (the sibling
+///       attacked-this-turn form's default subject).
+/// The returned filter has NO `EnteredThisTurn` property yet — the caller
+/// appends it after matching the verb. `parse_type_phrase` returns a suffix
+/// slice of `input`, so its remainder is a valid nom continuation.
+fn parse_entered_this_turn_subject(input: &str) -> OracleResult<'_, TargetFilter> {
+    if let Ok((rest, _)) = tag::<_, _, OracleError<'_>>("the ").parse(input) {
+        let (filter, remainder) = parse_type_phrase(rest);
+        if matches!(filter, TargetFilter::Typed(_)) && remainder.len() < rest.len() {
+            return Ok((remainder, filter));
+        }
+    }
+    let (rest, _) = parse_target_anaphoric_subject(input)?;
+    Ok((rest, TargetFilter::Typed(TypedFilter::creature())))
+}
+
+/// CR 400.7 + CR 608.2c: per-target "if <subject> entered this turn" gate — the
+/// anaphoric or filter-named subject is a permanent that entered the battlefield
+/// this turn (Malamet Battle Glyph: "If the creature you control entered this
+/// turn, put a +1/+1 counter on it"). Direct sibling of
+/// `parse_target_attacked_this_turn_condition`, swapping the combat verb for the
+/// ETB verb and the `AttackedThisTurn` property for `EnteredThisTurn`
+/// (evaluated per-object at `filter.rs`: `entered_battlefield_turn ==
+/// Some(turn_number)`). `use_lki: false` — the creature is on the battlefield
+/// when the counter condition evaluates, so its live ETB turn is authoritative.
+/// `subject_slot: None` here; the two-target counter-chain rewrite in
+/// `lower_effect_chain_ir` re-keys it to `Some(0)` so the condition tests the
+/// first-declared fighter under most-recent-only chain propagation.
+fn parse_target_entered_this_turn_condition(input: &str) -> OracleResult<'_, AbilityCondition> {
+    let (rest, mut filter) = parse_entered_this_turn_subject(input)?;
+    // "entered" (past, CR 400.7) or "enters" (present) — both denote the
+    // this-turn ETB predicate on the subject.
+    let (rest, _) = alt((tag(" entered"), tag(" enters"))).parse(rest)?;
+    let (rest, _) = tag(" this turn").parse(rest)?;
+    if let TargetFilter::Typed(ref mut tf) = filter {
+        if !tf.properties.contains(&FilterProp::EnteredThisTurn) {
+            tf.properties.push(FilterProp::EnteredThisTurn);
+        }
+    }
+    Ok((
+        rest,
+        AbilityCondition::TargetMatchesFilter {
+            filter,
+            use_lki: false,
+            subject_slot: None,
+        },
+    ))
+}
+
+fn parse_target_entered_this_turn_condition_text(text: &str) -> Option<AbilityCondition> {
+    let lower = text.trim().trim_end_matches('.').to_ascii_lowercase();
+    let parsed = all_consuming(parse_target_entered_this_turn_condition)
         .parse(lower.as_str())
         .ok()
         .map(|(_, c)| c);
@@ -1630,6 +1704,7 @@ fn parse_target_reflexive_property_condition(
             AbilityCondition::TargetMatchesFilter {
                 filter: TargetFilter::Typed(TypedFilter::default().properties(vec![prop])),
                 use_lki,
+                subject_slot: None,
             },
             negated,
         ),
@@ -1695,6 +1770,7 @@ fn parse_target_possessive_pt_comparison(
                 },
             ])),
             use_lki: false,
+            subject_slot: None,
         },
     ))
 }
@@ -1838,6 +1914,7 @@ pub(super) fn strip_property_conditional(
                     Some(AbilityCondition::TargetMatchesFilter {
                         filter,
                         use_lki: *use_lki,
+                        subject_slot: None,
                     }),
                     before.original.to_string(),
                 );
@@ -2183,6 +2260,7 @@ pub(super) fn strip_mana_value_conditional(text: &str) -> (Option<AbilityConditi
                     },
                 ])),
                 use_lki: true,
+                subject_slot: None,
             };
             return (
                 Some(condition),
@@ -2199,6 +2277,7 @@ pub(super) fn strip_mana_value_conditional(text: &str) -> (Option<AbilityConditi
                     TypedFilter::default().properties(vec![FilterProp::Cmc { comparator, value }]),
                 ),
                 use_lki: false,
+                subject_slot: None,
             };
             return (
                 Some(condition),
@@ -2224,6 +2303,7 @@ pub(super) fn strip_mana_value_conditional(text: &str) -> (Option<AbilityConditi
             let condition = AbilityCondition::TargetMatchesFilter {
                 filter: TargetFilter::Typed(TypedFilter::default().properties(vec![prop])),
                 use_lki: false,
+                subject_slot: None,
             };
             return (
                 Some(condition),
@@ -2296,6 +2376,7 @@ fn parse_leading_mana_value_condition_body(
             },
         }])),
         use_lki,
+        subject_slot: None,
     };
     Some((condition, original[body_start..].to_string()))
 }
@@ -2378,6 +2459,7 @@ pub(super) fn strip_target_supertype_conditional(text: &str) -> (Option<AbilityC
                         .properties(vec![FilterProp::HasSupertype { value: supertype }]),
                 ),
                 use_lki: false,
+                subject_slot: None,
             };
             return (
                 Some(maybe_negate(condition, *negated)),
@@ -2397,6 +2479,7 @@ fn nonbasic_land_lki_condition() -> AbilityCondition {
             },
         ])),
         use_lki: true,
+        subject_slot: None,
     }
 }
 
@@ -4350,6 +4433,18 @@ pub(super) fn try_nom_condition_as_ability_condition(
         return Some(condition);
     }
 
+    // CR 400.7 + CR 608.2c: per-target "if <subject> entered this turn" ETB gate
+    // (Malamet Battle Glyph). Registered right after the attacked-this-turn
+    // sibling and BEFORE the control-count / existential paths: its
+    // `all_consuming` wrap and anaphor/"the <type>"-only subject parser reject
+    // control-count ("if you control a creature that entered this turn"),
+    // existential ("if a creature entered the battlefield this turn"), and the
+    // source-referential "~ entered this turn" (SourceEnteredThisTurn) forms, so
+    // those still reach their own recognizers.
+    if let Some(condition) = parse_target_entered_this_turn_condition_text(lower.as_str()) {
+        return Some(condition);
+    }
+
     // CR 608.2c + CR 205.3m: target-anaphoric type / subtype-membership gate
     // ("that creature is a Mutant, Ninja, or Turtle" — Turtle Van). Tried after
     // the more specific anaphoric combat-history form above; its predicate tail is
@@ -4659,6 +4754,7 @@ pub(super) fn try_nom_condition_as_ability_condition(
             AbilityCondition::TargetMatchesFilter {
                 filter: TargetFilter::Typed(TypedFilter::new(type_filter)),
                 use_lki: true,
+                subject_slot: None,
             },
             negated,
         ));
@@ -4687,6 +4783,7 @@ pub(super) fn try_nom_condition_as_ability_condition(
                     AbilityCondition::TargetMatchesFilter {
                         filter,
                         use_lki: true,
+                        subject_slot: None,
                     },
                     negated_lki,
                 ));
@@ -4723,6 +4820,7 @@ pub(super) fn try_nom_condition_as_ability_condition(
                         ..Default::default()
                     }),
                     use_lki: true,
+                    subject_slot: None,
                 };
                 return Some(maybe_negate(cond, negated));
             }
@@ -4772,6 +4870,7 @@ pub(super) fn try_nom_condition_as_ability_condition(
                     AbilityCondition::TargetMatchesFilter {
                         filter,
                         use_lki: false,
+                        subject_slot: None,
                     },
                     negated,
                 ));
@@ -4843,6 +4942,7 @@ pub(super) fn try_nom_condition_as_ability_condition(
                     AbilityCondition::TargetMatchesFilter {
                         filter: filter.clone(),
                         use_lki: false,
+                        subject_slot: None,
                     },
                     negated,
                 ));
@@ -4867,6 +4967,7 @@ pub(super) fn try_nom_condition_as_ability_condition(
                     ..Default::default()
                 }),
                 use_lki: false,
+                subject_slot: None,
             });
         }
     }
@@ -4892,6 +4993,7 @@ pub(super) fn try_nom_condition_as_ability_condition(
                         ..Default::default()
                     }),
                     use_lki: false,
+                    subject_slot: None,
                 },
                 // CR 611.2b: a self-subject predicate with a dedicated precise
                 // `AbilityCondition` variant (e.g. "tapped" → `SourceIsTapped`) must
@@ -5006,7 +5108,11 @@ fn parse_you_controlled_parent_target_condition(lower: &str) -> Option<AbilityCo
         .parse(lower)
         .ok()?;
     Some(maybe_negate(
-        AbilityCondition::TargetMatchesFilter { filter, use_lki },
+        AbilityCondition::TargetMatchesFilter {
+            filter,
+            use_lki,
+            subject_slot: None,
+        },
         negated,
     ))
 }
@@ -5026,6 +5132,7 @@ fn parse_opponent_controls_target(input: &str) -> OracleResult<'_, AbilityCondit
         AbilityCondition::TargetMatchesFilter {
             filter: TargetFilter::Typed(TypedFilter::default().controller(ControllerRef::Opponent)),
             use_lki: false,
+            subject_slot: None,
         },
     ))
 }
@@ -5735,6 +5842,7 @@ fn parse_target_supertype_condition_text(lower: &str) -> Option<AbilityCondition
                     .properties(vec![FilterProp::HasSupertype { value: supertype }]),
             ),
             use_lki: false,
+            subject_slot: None,
         },
         negated,
     ))
@@ -6208,6 +6316,7 @@ mod tests {
                 AbilityCondition::TargetMatchesFilter {
                     filter: TargetFilter::Typed(tf),
                     use_lki: false,
+                    ..
                 } => match tf.properties.as_slice() {
                     [FilterProp::PtComparison {
                         stat,
@@ -6602,6 +6711,7 @@ mod tests {
             AbilityCondition::TargetMatchesFilter {
                 filter: TargetFilter::Typed(tf),
                 use_lki,
+                ..
             } => {
                 assert!(
                     !use_lki,
@@ -7000,7 +7110,10 @@ mod tests {
             &mut ParseContext::default(),
         );
         assert_eq!(body, "gain 3 life.");
-        let Some(AbilityCondition::TargetMatchesFilter { filter, use_lki }) = condition else {
+        let Some(AbilityCondition::TargetMatchesFilter {
+            filter, use_lki, ..
+        }) = condition
+        else {
             panic!("expected TargetMatchesFilter, got {condition:?}");
         };
         assert!(!use_lki);
@@ -7026,7 +7139,10 @@ mod tests {
             &mut ParseContext::default(),
         );
         assert_eq!(body, "you may cast it this turn.");
-        let Some(AbilityCondition::TargetMatchesFilter { filter, use_lki }) = condition else {
+        let Some(AbilityCondition::TargetMatchesFilter {
+            filter, use_lki, ..
+        }) = condition
+        else {
             panic!("expected TargetMatchesFilter, got {condition:?}");
         };
         assert!(!use_lki);
@@ -7049,7 +7165,10 @@ mod tests {
             &mut ParseContext::default(),
         );
         assert_eq!(body, "Counter target spell");
-        let Some(AbilityCondition::TargetMatchesFilter { filter, use_lki }) = condition else {
+        let Some(AbilityCondition::TargetMatchesFilter {
+            filter, use_lki, ..
+        }) = condition
+        else {
             panic!("expected TargetMatchesFilter, got {condition:?}");
         };
         assert!(!use_lki);
@@ -7177,7 +7296,10 @@ mod tests {
             body,
             "Put target creature card from an opponent's graveyard onto the battlefield under your control"
         );
-        let Some(AbilityCondition::TargetMatchesFilter { filter, use_lki }) = condition else {
+        let Some(AbilityCondition::TargetMatchesFilter {
+            filter, use_lki, ..
+        }) = condition
+        else {
             panic!("expected TargetMatchesFilter, got {condition:?}");
         };
         assert!(!use_lki);
@@ -7539,7 +7661,10 @@ mod tests {
         let cond = parse_target_type_membership_condition_text(
             "that creature is a Mutant, Ninja, or Turtle",
         );
-        let Some(AbilityCondition::TargetMatchesFilter { filter, use_lki }) = cond else {
+        let Some(AbilityCondition::TargetMatchesFilter {
+            filter, use_lki, ..
+        }) = cond
+        else {
             panic!("expected TargetMatchesFilter, got {cond:?}");
         };
         assert!(
@@ -7596,7 +7721,10 @@ mod tests {
     // polarity) is load-bearing.
 
     fn single_prop(cond: &AbilityCondition) -> (&FilterProp, bool) {
-        let AbilityCondition::TargetMatchesFilter { filter, use_lki } = cond else {
+        let AbilityCondition::TargetMatchesFilter {
+            filter, use_lki, ..
+        } = cond
+        else {
             panic!("expected TargetMatchesFilter, got {cond:?}");
         };
         let TargetFilter::Typed(tf) = filter else {
@@ -7848,7 +7976,10 @@ mod tests {
     #[test]
     fn strip_card_type_conditional_permanent() {
         let (cond, body) = strip_card_type_conditional("If it's a permanent card, draw a card.");
-        let Some(AbilityCondition::TargetMatchesFilter { filter, use_lki }) = cond else {
+        let Some(AbilityCondition::TargetMatchesFilter {
+            filter, use_lki, ..
+        }) = cond
+        else {
             panic!("expected TargetMatchesFilter for 'permanent', got {cond:?}");
         };
         assert!(!use_lki, "present-tense 'it's a' check must not use LKI");
@@ -7868,7 +7999,10 @@ mod tests {
         let (cond, body) = strip_card_type_conditional(
             "If it's a permanent card of the chosen type, draw a card.",
         );
-        let Some(AbilityCondition::TargetMatchesFilter { filter, use_lki }) = cond else {
+        let Some(AbilityCondition::TargetMatchesFilter {
+            filter, use_lki, ..
+        }) = cond
+        else {
             panic!("expected TargetMatchesFilter for permanent chosen type, got {cond:?}");
         };
         assert!(!use_lki, "present-tense 'it's a' check must not use LKI");
@@ -7914,7 +8048,10 @@ mod tests {
             &mut ParseContext::default(),
         );
         assert_eq!(body, "destroy it.");
-        let Some(AbilityCondition::TargetMatchesFilter { filter, use_lki }) = cond else {
+        let Some(AbilityCondition::TargetMatchesFilter {
+            filter, use_lki, ..
+        }) = cond
+        else {
             panic!("expected TargetMatchesFilter for 'Goblin' subtype, got {cond:?}");
         };
         assert!(!use_lki, "present-tense 'it's a' check must not use LKI");
@@ -7938,7 +8075,10 @@ mod tests {
             &mut ParseContext::default(),
         );
         assert_eq!(body, "create three 1/1 green Elf Warrior creature tokens.");
-        let Some(AbilityCondition::TargetMatchesFilter { filter, use_lki }) = cond else {
+        let Some(AbilityCondition::TargetMatchesFilter {
+            filter, use_lki, ..
+        }) = cond
+        else {
             panic!("expected TargetMatchesFilter for 'Elf' subtype, got {cond:?}");
         };
         assert!(!use_lki, "present-tense 'it's an' check must not use LKI");
@@ -7963,7 +8103,10 @@ mod tests {
             &mut ParseContext::default(),
         );
         assert_eq!(body, "destroy it.");
-        let Some(AbilityCondition::TargetMatchesFilter { filter, use_lki }) = cond else {
+        let Some(AbilityCondition::TargetMatchesFilter {
+            filter, use_lki, ..
+        }) = cond
+        else {
             panic!("expected TargetMatchesFilter for 'flying' keyword, got {cond:?}");
         };
         assert!(!use_lki);
@@ -8281,7 +8424,9 @@ mod tests {
             try_nom_condition_as_ability_condition("it's tapped", &mut ParseContext::default())
                 .expect("'it's tapped' should parse");
         match cond {
-            AbilityCondition::TargetMatchesFilter { filter, use_lki } => {
+            AbilityCondition::TargetMatchesFilter {
+                filter, use_lki, ..
+            } => {
                 assert!(!use_lki, "present-tense status uses current state");
                 assert_eq!(
                     filter,
@@ -8310,6 +8455,7 @@ mod tests {
                     ..Default::default()
                 }),
                 use_lki: false,
+                subject_slot: None,
             }
         );
     }
@@ -8452,6 +8598,101 @@ mod tests {
             ),
             None,
             "SourceIsBlocked must remain unmapped (no clean FilterProp::Blocked)"
+        );
+    }
+
+    /// CR 400.7 + CR 608.2c: the per-target "entered this turn" detector (a)
+    /// recognizes both the filter-named subject ("the creature you control") and
+    /// the anaphor ("it"), carrying the subject's type + controller and appending
+    /// `EnteredThisTurn`. The subject_slot is `None` at parse time — the two-target
+    /// counter rewrite sets it to `Some(0)`.
+    #[test]
+    fn entered_this_turn_detector_named_and_anaphor_subjects() {
+        // Filter-named subject keeps its controller (You).
+        let cond = parse_target_entered_this_turn_condition_text(
+            "the creature you control entered this turn",
+        )
+        .expect("named-filter subject parses");
+        match cond {
+            AbilityCondition::TargetMatchesFilter {
+                filter: TargetFilter::Typed(tf),
+                use_lki,
+                subject_slot,
+            } => {
+                assert!(tf.type_filters.contains(&TypeFilter::Creature));
+                assert_eq!(tf.controller, Some(ControllerRef::You));
+                assert!(tf.properties.contains(&FilterProp::EnteredThisTurn));
+                assert!(
+                    !use_lki,
+                    "creature is on the battlefield — live state (CR 400.7)"
+                );
+                assert_eq!(
+                    subject_slot, None,
+                    "slot binding is set later by the rewrite"
+                );
+            }
+            other => panic!("expected TargetMatchesFilter, got {other:?}"),
+        }
+
+        // Anaphor subject defaults to creature() (no controller restriction).
+        let cond = parse_target_entered_this_turn_condition_text("it entered this turn")
+            .expect("anaphor subject parses");
+        match cond {
+            AbilityCondition::TargetMatchesFilter {
+                filter: TargetFilter::Typed(tf),
+                ..
+            } => {
+                assert!(tf.type_filters.contains(&TypeFilter::Creature));
+                assert!(tf.properties.contains(&FilterProp::EnteredThisTurn));
+            }
+            other => panic!("expected TargetMatchesFilter, got {other:?}"),
+        }
+    }
+
+    /// A2 over-fire guards: `all_consuming` must reject the control-count,
+    /// existential, and source-referential forms so they still reach their own
+    /// recognizers (QuantityCheck / SourceEnteredThisTurn) rather than being
+    /// cannibalized into a per-target `TargetMatchesFilter`.
+    #[test]
+    fn entered_this_turn_detector_rejects_non_per_target_forms() {
+        assert!(
+            parse_target_entered_this_turn_condition_text(
+                "you control a creature that entered this turn"
+            )
+            .is_none(),
+            "control-count form must not parse as the per-target detector"
+        );
+        assert!(
+            parse_target_entered_this_turn_condition_text(
+                "a creature entered the battlefield this turn"
+            )
+            .is_none(),
+            "existential form must not parse as the per-target detector"
+        );
+        assert!(
+            parse_target_entered_this_turn_condition_text("~ entered this turn").is_none(),
+            "source-referential form stays with SourceEnteredThisTurn"
+        );
+    }
+
+    /// The dispatcher routes the filter-named form to the new per-target detector
+    /// (proving the registration point), and does NOT route the control-count
+    /// form to it.
+    #[test]
+    fn dispatcher_routes_entered_this_turn_to_per_target_detector() {
+        let routed = try_nom_condition_as_ability_condition(
+            "the creature you control entered this turn",
+            &mut ParseContext::default(),
+        );
+        assert!(
+            matches!(
+                routed,
+                Some(AbilityCondition::TargetMatchesFilter {
+                    subject_slot: None,
+                    ..
+                })
+            ),
+            "dispatcher routes the named-subject entered-this-turn gate to the detector, got {routed:?}"
         );
     }
 }

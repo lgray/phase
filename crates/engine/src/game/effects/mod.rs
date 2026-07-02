@@ -7905,32 +7905,48 @@ pub(crate) fn evaluate_condition(
             })
             .is_some_and(|obj| obj.has_keyword(keyword)),
         // CR 400.7 + CR 608.2c: "if that creature was a [type]" — check target or its LKI.
-        AbilityCondition::TargetMatchesFilter { filter, use_lki } => {
-            // CR 109.4 + CR 603.2: "that creature" / "it" is the ability's first
-            // object target, OR — for subject-based triggers that carry no chosen
-            // target (e.g. "Whenever one or more -1/-1 counters are put on a
-            // creature, draw a card if you control that creature.") — the
-            // triggering event's subject object. Mirror the `ParentTargetController`
-            // fallback (targeting.rs): when `targets` has no object, resolve the
-            // anaphor against `TriggeringSource` from the current trigger event.
-            let target_id = ability
-                .targets
-                .iter()
-                .find_map(|t| match t {
-                    TargetRef::Object(id) => Some(*id),
+        AbilityCondition::TargetMatchesFilter {
+            filter,
+            use_lki,
+            subject_slot,
+        } => {
+            // CR 608.2c: An explicit `subject_slot` tests a specific declared
+            // chain slot (Malamet's condition reads slot 0, the you-control
+            // fighter) — the current node's local `targets` were overwritten by
+            // most-recent-only chain propagation, so resolve against the
+            // flattened root chain instead of `targets.first()`.
+            // CR 109.4 + CR 603.2: without a slot, "that creature" / "it" is the
+            // ability's first object target, OR — for subject-based triggers that
+            // carry no chosen target — the triggering event's subject object.
+            // Mirror the `ParentTargetController` fallback (targeting.rs): when
+            // `targets` has no object, resolve the anaphor against
+            // `TriggeringSource` from the current trigger event.
+            let target_id = if let Some(index) = subject_slot {
+                match crate::game::targeting::resolve_parent_slot_from_root(state, ability, *index)
+                {
+                    Some(TargetRef::Object(id)) => Some(id),
                     _ => None,
-                })
-                .or_else(|| {
-                    crate::game::targeting::resolve_event_context_target(
-                        state,
-                        &TargetFilter::TriggeringSource,
-                        ability.source_id,
-                    )
-                    .and_then(|t| match t {
-                        TargetRef::Object(id) => Some(id),
-                        TargetRef::Player(_) => None,
+                }
+            } else {
+                ability
+                    .targets
+                    .iter()
+                    .find_map(|t| match t {
+                        TargetRef::Object(id) => Some(*id),
+                        _ => None,
                     })
-                });
+                    .or_else(|| {
+                        crate::game::targeting::resolve_event_context_target(
+                            state,
+                            &TargetFilter::TriggeringSource,
+                            ability.source_id,
+                        )
+                        .and_then(|t| match t {
+                            TargetRef::Object(id) => Some(id),
+                            TargetRef::Player(_) => None,
+                        })
+                    })
+            };
             let matched = if let Some(id) = target_id {
                 if *use_lki {
                     if let Some(GameEvent::ZoneChanged { record, .. }) =
@@ -11658,6 +11674,7 @@ mod tests {
         .condition(AbilityCondition::TargetMatchesFilter {
             filter: TargetFilter::Typed(TypedFilter::permanent().controller(ControllerRef::You)),
             use_lki: true,
+            subject_slot: None,
         });
         let ability = ResolvedAbility::new(
             Effect::Bounce {

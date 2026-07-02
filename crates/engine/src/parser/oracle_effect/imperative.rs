@@ -45,8 +45,8 @@ use crate::types::statics::StaticMode;
 use crate::types::zones::Zone;
 
 use super::super::oracle_target::{
-    parse_mass_type_union, parse_target, parse_target_with_ctx, parse_target_with_syntax,
-    parse_type_phrase, resolve_pronoun_target, TargetSyntax,
+    parse_fight_target, parse_mass_type_union, parse_target, parse_target_with_ctx,
+    parse_target_with_syntax, parse_type_phrase, resolve_pronoun_target, TargetSyntax,
 };
 use super::super::oracle_util::{
     contains_possessive, contains_self_or_object_pronoun, parse_count_expr, parse_mana_symbols,
@@ -1839,7 +1839,7 @@ pub(super) fn parse_targeted_action_ast(
         // Preserve the optional-target spec through the AST; it is stamped onto
         // the clause in `lower_imperative_family_ast`.
         let (target_text, multi_target) = super::strip_optional_target_prefix(rest);
-        let (target, _rem) = parse_target_with_ctx(target_text, ctx);
+        let (target, _rem) = parse_fight_target(target_text, ctx);
         #[cfg(debug_assertions)]
         assert_no_compound_remainder(_rem, text);
         return Some(TargetedImperativeAst::Fight {

@@ -14985,7 +14985,9 @@ fn instead_condition_recognizes_that_permanent_is_color() {
         .expect("instead sub_ability must carry a condition");
     match cond {
         AbilityCondition::ConditionInstead { inner } => match inner.as_ref() {
-            AbilityCondition::TargetMatchesFilter { filter, use_lki } => {
+            AbilityCondition::TargetMatchesFilter {
+                filter, use_lki, ..
+            } => {
                 assert!(!use_lki, "present-tense 'is' should not use LKI");
                 match filter {
                     TargetFilter::Typed(typed) => {
@@ -15182,6 +15184,7 @@ fn instead_condition_preserves_it_apostrophe_s_color_form() {
             AbilityCondition::TargetMatchesFilter {
                 filter: TargetFilter::Typed(typed),
                 use_lki: false,
+                ..
             } => {
                 assert!(
                     typed.properties.iter().any(|p| matches!(
@@ -15241,6 +15244,7 @@ fn instead_condition_recognizes_disjunctive_color() {
             AbilityCondition::TargetMatchesFilter {
                 filter: TargetFilter::Or { filters },
                 use_lki: false,
+                ..
             } => {
                 assert_eq!(filters.len(), 2, "expected 2 color filters in Or");
                 assert!(
@@ -16566,6 +16570,7 @@ fn expected_creature_target_match() -> AbilityCondition {
     AbilityCondition::TargetMatchesFilter {
         filter: TargetFilter::Typed(TypedFilter::creature()),
         use_lki: true,
+        subject_slot: None,
     }
 }
 
@@ -23855,7 +23860,10 @@ fn parse_an_article_subtype_addendum_condition() {
         .sub_ability
         .as_ref()
         .expect("expected conditional token addendum");
-    let Some(AbilityCondition::TargetMatchesFilter { filter, use_lki }) = &sub.condition else {
+    let Some(AbilityCondition::TargetMatchesFilter {
+        filter, use_lki, ..
+    }) = &sub.condition
+    else {
         panic!(
             "expected TargetMatchesFilter condition, got {:?}",
             sub.condition
@@ -23887,7 +23895,10 @@ fn parse_controlled_parent_target_addendum_condition() {
         .sub_ability
         .as_ref()
         .expect("expected controlled-parent-target addendum");
-    let Some(AbilityCondition::TargetMatchesFilter { filter, use_lki }) = &sub.condition else {
+    let Some(AbilityCondition::TargetMatchesFilter {
+        filter, use_lki, ..
+    }) = &sub.condition
+    else {
         panic!(
             "expected TargetMatchesFilter condition, got {:?}",
             sub.condition
@@ -23913,7 +23924,10 @@ fn parse_you_controlled_parent_target_condition_variants() {
         &mut ParseContext::default(),
     )
     .expect("artifact condition should parse");
-    let AbilityCondition::TargetMatchesFilter { filter, use_lki } = artifact else {
+    let AbilityCondition::TargetMatchesFilter {
+        filter, use_lki, ..
+    } = artifact
+    else {
         panic!("expected TargetMatchesFilter condition");
     };
     assert!(use_lki);
@@ -23928,7 +23942,10 @@ fn parse_you_controlled_parent_target_condition_variants() {
     let it =
         try_nom_condition_as_ability_condition("you controlled it", &mut ParseContext::default())
             .expect("it condition should parse");
-    let AbilityCondition::TargetMatchesFilter { filter, use_lki } = it else {
+    let AbilityCondition::TargetMatchesFilter {
+        filter, use_lki, ..
+    } = it
+    else {
         panic!("expected TargetMatchesFilter condition");
     };
     assert!(use_lki);
@@ -23948,6 +23965,7 @@ fn parse_you_controlled_parent_target_condition_variants() {
     let AbilityCondition::TargetMatchesFilter {
         filter: present_filter,
         use_lki,
+        ..
     } = present
     else {
         panic!("expected TargetMatchesFilter condition");
@@ -23969,7 +23987,10 @@ fn parse_you_controlled_parent_target_condition_variants() {
     let AbilityCondition::Not { condition } = negative_present else {
         panic!("expected negated condition");
     };
-    let AbilityCondition::TargetMatchesFilter { filter, use_lki } = *condition else {
+    let AbilityCondition::TargetMatchesFilter {
+        filter, use_lki, ..
+    } = *condition
+    else {
         panic!("expected inner TargetMatchesFilter condition");
     };
     assert!(!use_lki);
@@ -23989,7 +24010,10 @@ fn parse_you_controlled_parent_target_condition_variants() {
     let AbilityCondition::Not { condition } = negative_past else {
         panic!("expected negated condition");
     };
-    let AbilityCondition::TargetMatchesFilter { filter, use_lki } = *condition else {
+    let AbilityCondition::TargetMatchesFilter {
+        filter, use_lki, ..
+    } = *condition
+    else {
         panic!("expected inner TargetMatchesFilter condition");
     };
     assert!(use_lki);
@@ -24272,6 +24296,7 @@ fn strip_suffix_conditional_parses_lki_combat_status() {
             AbilityCondition::TargetMatchesFilter {
                 filter: TargetFilter::Typed(ref tf),
                 use_lki: true,
+                ..
             } => {
                 assert_eq!(tf.properties, vec![expected_prop]);
             }
@@ -27488,7 +27513,9 @@ fn suffix_legendary_condition_gates_counter_and_anaphoric_fight_subject() {
         );
 
     match def.condition {
-        Some(AbilityCondition::TargetMatchesFilter { filter, use_lki }) => {
+        Some(AbilityCondition::TargetMatchesFilter {
+            filter, use_lki, ..
+        }) => {
             assert!(!use_lki);
             let TargetFilter::Typed(tf) = filter else {
                 panic!("expected typed condition filter");
@@ -29837,7 +29864,9 @@ fn strip_mv_conditional_suffix_le() {
     assert!(cond.is_some(), "should extract MV ≤ 2 condition");
     assert_eq!(text, "Destroy target creature");
     match cond.unwrap() {
-        AbilityCondition::TargetMatchesFilter { filter, use_lki } => {
+        AbilityCondition::TargetMatchesFilter {
+            filter, use_lki, ..
+        } => {
             assert!(!use_lki);
             if let TargetFilter::Typed(tf) = filter {
                 assert!(tf.properties.iter().any(|p| matches!(
@@ -29885,7 +29914,9 @@ fn strip_mv_conditional_past_tense_uses_lki() {
     assert!(cond.is_some(), "should extract past-tense MV condition");
     assert_eq!(text, "Scry 1");
     match cond.unwrap() {
-        AbilityCondition::TargetMatchesFilter { filter, use_lki } => {
+        AbilityCondition::TargetMatchesFilter {
+            filter, use_lki, ..
+        } => {
             assert!(use_lki);
             if let TargetFilter::Typed(tf) = filter {
                 assert!(tf.properties.iter().any(|p| matches!(
@@ -29912,7 +29943,9 @@ fn strip_mv_conditional_leading_past_tense_uses_lki() {
     );
     assert_eq!(text, "scry 1.");
     match cond.unwrap() {
-        AbilityCondition::TargetMatchesFilter { filter, use_lki } => {
+        AbilityCondition::TargetMatchesFilter {
+            filter, use_lki, ..
+        } => {
             assert!(use_lki);
             if let TargetFilter::Typed(tf) = filter {
                 assert!(tf.properties.iter().any(|p| matches!(
@@ -29940,7 +29973,9 @@ fn strip_mv_conditional_leading_present_tense() {
     );
     assert_eq!(text, "scry 1.");
     match cond.unwrap() {
-        AbilityCondition::TargetMatchesFilter { filter, use_lki } => {
+        AbilityCondition::TargetMatchesFilter {
+            filter, use_lki, ..
+        } => {
             assert!(!use_lki, "present-tense check must not use LKI");
             if let TargetFilter::Typed(tf) = filter {
                 assert!(tf.properties.iter().any(|p| matches!(
@@ -29968,7 +30003,9 @@ fn strip_mv_conditional_leading_present_tense_greater() {
     );
     assert_eq!(text, "draw a card.");
     match cond.unwrap() {
-        AbilityCondition::TargetMatchesFilter { filter, use_lki } => {
+        AbilityCondition::TargetMatchesFilter {
+            filter, use_lki, ..
+        } => {
             assert!(!use_lki);
             if let TargetFilter::Typed(tf) = filter {
                 assert!(tf.properties.iter().any(|p| matches!(
@@ -30000,7 +30037,9 @@ fn strip_target_supertype_conditional_leading_nonbasic_land_uses_lki() {
     assert!(cond.is_some(), "should extract nonbasic land condition");
     assert_eq!(text, "~ deals 2 damage.");
     match cond.unwrap() {
-        AbilityCondition::TargetMatchesFilter { filter, use_lki } => {
+        AbilityCondition::TargetMatchesFilter {
+            filter, use_lki, ..
+        } => {
             assert!(use_lki);
             let TargetFilter::Typed(tf) = filter else {
                 panic!("expected Typed filter");
@@ -30027,7 +30066,9 @@ fn strip_target_supertype_conditional_suffix_nonbasic_land_uses_lki() {
     assert!(cond.is_some(), "should extract nonbasic land condition");
     assert_eq!(text, "~ deals 2 damage");
     match cond.unwrap() {
-        AbilityCondition::TargetMatchesFilter { filter, use_lki } => {
+        AbilityCondition::TargetMatchesFilter {
+            filter, use_lki, ..
+        } => {
             assert!(use_lki);
             let TargetFilter::Typed(tf) = filter else {
                 panic!("expected Typed filter");

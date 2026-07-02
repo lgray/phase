@@ -2096,7 +2096,18 @@ fn scan_ability_condition(x: &AbilityCondition) -> Axes {
         AbilityCondition::HasCityBlessing => Axes::NONE,
         AbilityCondition::IsRingBearer => Axes::NONE,
         AbilityCondition::TargetHasKeywordInstead { keyword: _ } => Axes::NONE,
-        AbilityCondition::TargetMatchesFilter { filter, use_lki: _ } => {
+        // `subject_slot: _` is a target-slot INDEX selector (CR 608.2c): `Some(n)`
+        // tests `filter` against declared chain slot `n` (via
+        // `resolve_parent_slot_from_root`), `None` against the local most-recent
+        // target. It reroutes WHICH already-declared target the filter reads and
+        // introduces no new event/sibling/projected resource — the game-state read
+        // is entirely through `filter` (scanned below). Axes-neutral; destructured
+        // without `..` so a future read-bearing field forces re-audit.
+        AbilityCondition::TargetMatchesFilter {
+            filter,
+            use_lki: _,
+            subject_slot: _,
+        } => {
             let mut acc = Axes::NONE;
             acc = acc.or(scan_target_filter(filter));
             acc

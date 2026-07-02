@@ -76,7 +76,7 @@ use super::oracle_quantity::{
     parse_for_each_object_filter_clause,
 };
 use super::oracle_target::{
-    parse_event_context_ref, parse_target, parse_target_with_ctx,
+    parse_event_context_ref, parse_fight_target, parse_target, parse_target_with_ctx,
     parse_target_with_disjunctive_restriction, parse_target_with_syntax, parse_type_phrase,
     parse_type_phrase_with_ctx, TargetSyntax,
 };
@@ -11711,7 +11711,7 @@ fn try_parse_verb_and_target<'a>(
         // CR 115.6: preserve "up to N target …" optionality through the AST so
         // the compound-splitter path lowers it onto the clause's multi_target.
         let (target_text, multi_target) = strip_optional_target_prefix(rest);
-        let (target, rem) = parse_target_with_ctx(target_text, ctx);
+        let (target, rem) = parse_fight_target(target_text, ctx);
         return Some((
             TargetedImperativeAst::Fight {
                 target,
