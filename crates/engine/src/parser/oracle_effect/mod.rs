@@ -15383,10 +15383,25 @@ fn has_typed_target_widened(effect: &Effect) -> bool {
 /// succeeds at the originating typed clause. It stops at the first clause that is
 /// conditional or is neither typed nor a `ParentTarget` carrier, so it never
 /// reaches across an unrelated referent.
-fn chain_has_prior_typed_referent(clauses: &[ClauseIr]) -> bool {
+fn chain_has_prior_typed_referent(clauses: &[ClauseIr], skip_first_conditional: bool) -> bool {
+    // CR 608.2c: An `Otherwise` else-branch anaphor ("... and it's a 3/3 Robot ...")
+    // binds to the referent that was in scope BEFORE the paired conditional it is the
+    // else of (Brilliance Unleashed: "Choose target artifact card ... Return it ... if
+    // it's an artifact creature card. Otherwise, return it ... and it's a 3/3 Robot
+    // ..."). When `skip_first_conditional` is set, the FIRST conditional clause
+    // encountered (the paired conditional) does not bail the walk — it is still
+    // evaluated as a possible typed introducer / `ParentTarget` carrier, so the walk
+    // reaches the originating `Choose target artifact card`. A SECOND conditional
+    // still bails (never walk across an unrelated conditional). Default `false`
+    // preserves the byte-for-byte behavior of the non-else callers.
+    let mut skipped_conditional = false;
     for prev in clauses.iter().rev() {
         if prev.condition.is_some() {
-            return false;
+            if skip_first_conditional && !skipped_conditional {
+                skipped_conditional = true;
+            } else {
+                return false;
+            }
         }
         // CR 608.2c: Chain clauses resolve in written order; an earlier typed referent is visible to a later anaphor.
         // `has_typed_target_widened` mirrors `has_typed_target`'s effect-kind
@@ -15408,6 +15423,41 @@ fn chain_has_prior_typed_referent(clauses: &[ClauseIr]) -> bool {
         return false;
     }
     false
+}
+
+/// CR 611.2a + CR 400.7: An `Otherwise, return it ... and it's a <animation>` else
+/// branch (Brilliance Unleashed: "... Otherwise, return it to the battlefield and
+/// it's a 3/3 Robot artifact creature with flying") installs its animation as an
+/// indefinite continuous effect on the RETURNED object. Because `ObjectId` is storage
+/// identity that persists across the return (zones.rs:125), a `Permanent` effect
+/// bound to that id would wrongly re-apply if the object later leaves and re-enters
+/// (a new object per CR 400.7). Rebind such an animation to `UntilHostLeavesPlay` so
+/// it ends with the returned object — matching the non-copy reanimate precedent
+/// `install_aura_continuous_effect` (return_as_aura.rs:247). Scoped to a
+/// return-to-battlefield head so ordinary (non-reanimate) animations keep their
+/// established `Permanent` duration.
+fn rebind_reanimate_animation_until_leaves(def: &mut AbilityDefinition) {
+    if !matches!(
+        def.effect.as_ref(),
+        Effect::ChangeZone {
+            destination: Zone::Battlefield,
+            ..
+        }
+    ) {
+        return;
+    }
+    let mut node = def.sub_ability.as_deref_mut();
+    while let Some(sub) = node {
+        if let Effect::GenericEffect { duration, .. } = sub.effect.as_mut() {
+            if matches!(duration, Some(Duration::Permanent)) {
+                *duration = Some(Duration::UntilHostLeavesPlay);
+            }
+        }
+        if matches!(sub.duration, Some(Duration::Permanent)) {
+            sub.duration = Some(Duration::UntilHostLeavesPlay);
+        }
+        node = sub.sub_ability.as_deref_mut();
+    }
 }
 
 /// CR 608.2c + CR 601.2a: Does the chain's prior referent come from an explicit
@@ -22055,10 +22105,26 @@ pub(crate) fn parse_effect_chain_ir(
             .parse(i)
         });
         if let Some((_, else_text)) = otherwise_rest {
-            let else_def = {
+            // CR 608.2c: The else-branch is parsed as its own chain, so its anaphors
+            // must inherit the referent established BEFORE the paired conditional it
+            // is the else of. Walk the outer chain past that one conditional
+            // (`skip_first_conditional`); if a typed referent exists (Brilliance
+            // Unleashed's "Choose target artifact card"), seed
+            // `ctx.parent_target_available` so the recursive parse binds the else
+            // anaphor ("... and it's a 3/3 Robot ...") to `ParentTarget`. Saved and
+            // restored so sibling outer chunks are unaffected.
+            let else_inherits_parent = chain_has_prior_typed_referent(&clauses, true);
+            let saved_parent_target_available = ctx.parent_target_available;
+            ctx.parent_target_available = saved_parent_target_available || else_inherits_parent;
+            let mut else_def = {
                 let ir = parse_effect_chain_ir(else_text, kind, ctx);
                 lower_effect_chain_ir(&ir)
             };
+            ctx.parent_target_available = saved_parent_target_available;
+            // CR 611.2a + CR 400.7: an else that returns an object then animates it
+            // (Brilliance Unleashed) must bind the animation to the returned object's
+            // lifetime, not `Permanent` (see helper doc).
+            rebind_reanimate_animation_until_leaves(&mut else_def);
             // Check whether a prior clause has a condition — lowering will attach as else_ability
             let has_condition = clauses.iter().any(|c| c.condition.is_some());
             // CR 608.2d + CR 101.4: a standalone "If no one does, X" reward on an
@@ -23439,8 +23505,17 @@ pub(crate) fn parse_effect_chain_ir(
         } else {
             if_you_do_anchor.clone().or_else(|| ctx.subject.clone())
         };
-        let parent_target_available =
-            if_you_do_anchor.is_some() || chain_has_prior_typed_referent(&clauses);
+        // CR 608.2c: `ctx.parent_target_available` carries an enclosing chain's
+        // referent into a nested chain — an `Otherwise` else-branch is parsed by a
+        // recursive `parse_effect_chain_ir` whose own `clauses` start empty, so its
+        // anaphors ("... and it's a 3/3 Robot ...") would otherwise lose the typed
+        // referent established before the paired conditional. The else handler seeds
+        // this flag when the outer chain has such a referent (Brilliance Unleashed).
+        // It is false on every top-level and non-else nested parse, so this OR is a
+        // no-op for all pre-existing cards.
+        let parent_target_available = ctx.parent_target_available
+            || if_you_do_anchor.is_some()
+            || chain_has_prior_typed_referent(&clauses, false);
         // CR 608.2c + CR 601.2a: a strict subset of `parent_target_available`
         // restricted to chosen-target referents (Emry), excluding impulse
         // publishers (Territorial Bruntar's `ExileFromTopUntil`). An "if you
@@ -24048,7 +24123,7 @@ pub(crate) fn parse_effect_chain_ir(
         // (Nissa, Who Shakes the World).
         if condition.is_none()
             && !is_distributed_chunk
-            && chain_has_prior_typed_referent(&clauses)
+            && chain_has_prior_typed_referent(&clauses, false)
             && has_anaphoric_reference(&text_lower)
             && !typed_trigger_subject
             && !explicit_any_target_clause(&clause.effect, &text_lower)

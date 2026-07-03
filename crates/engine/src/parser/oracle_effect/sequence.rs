@@ -966,6 +966,23 @@ pub(super) fn split_clause_sequence(text: &str) -> Vec<ClauseChunk> {
                             &before_lower,
                             &remainder_trimmed.to_ascii_lowercase(),
                         );
+                        // CR 205.1a + CR 613.1d: "It's a(n) <types> [with '<ability>']
+                        // and it loses all other card types" (Vraska, the Silencer) is a
+                        // single type-REPLACEMENT copula. The "loses all other card
+                        // types" tail is the CR 205.1a signal that the copula SETS (not
+                        // adds) the card types, so it must reach
+                        // `parse_its_a_type_loses_others` attached to the copula head
+                        // rather than being bisected into a verb-less "loses ..."
+                        // sub_ability. This phrase is unique to the replacement form, so
+                        // a bare " and " immediately before it is always an internal
+                        // conjunct, never a clause boundary.
+                        let remainder_lower_for_loses = remainder_trimmed.to_ascii_lowercase();
+                        let loses_all_other_card_types_continuation = alt((
+                            tag::<_, _, OracleError<'_>>("it loses all other card types"),
+                            tag("loses all other card types"),
+                        ))
+                        .parse(remainder_lower_for_loses.as_str())
+                        .is_ok();
                         let suppress = (nom_primitives::scan_contains(&before_lower, "from among")
                         && !sacrifice_rest_remainder)
                         || is_inside_temporal_prefix(&before_lower)
@@ -983,6 +1000,7 @@ pub(super) fn split_clause_sequence(text: &str) -> Vec<ClauseChunk> {
                         || roll_die_modifier_continuation
                         || bare_becomes_continuation
                         || mass_exile_union_continuation
+                        || loses_all_other_card_types_continuation
                         || inside_prefix_comma_and_continuation;
                         if !suppress && starts_bare_and_clause(remainder_trimmed) {
                             push_clause_chunk(&mut chunks, before_and, Some(ClauseBoundary::Comma));

@@ -302,6 +302,54 @@ fn try_parse_contracted_subject_additive_type_clause(
     let predicate = format!("is {rest_original}");
     let application = additive_type_subject_application(subject_text, ctx)?;
 
+    // CR 205.1a + CR 205.1b + CR 613.1d + CR 611.2a + CR 400.7 + CR 603.6:
+    // type-REPLACEMENT copula — "It's a Treasure artifact with '<ability>', and it
+    // loses all other card types" (Vraska, the Silencer). The "loses all other card
+    // types" tail (kept attached to the copula by the sequence splitter) routes this
+    // to the shared `SetCardTypes` + subtype + granted-ability builder — the same
+    // modifications the copy path already emits (Shelob) — reused here on the
+    // subject-copula path. Tried BEFORE the additive form because the replacement
+    // tail must win over the type-addition reading (mirrors the copy-path ordering
+    // in `parse_except_body`). Like the animation arm below, this anaphor names the
+    // object the PRECEDING clause returned (a reanimated card), never the source
+    // permanent, so gate on a real prior referent (`ParentTarget`, or the
+    // `TriggeringSource` that was returned by a dies-trigger reanimate) and decline
+    // `SelfRef` so a source-permanent misbind honest-defers instead. Installed as an
+    // indefinite continuous effect that ends when the returned object leaves play
+    // (CR 611.2a: no stated duration; CR 400.7: a new object on re-entry is not the
+    // same object — mirrors `install_aura_continuous_effect`).
+    if let Some((_, modifications)) =
+        super::become_copy_except::parse_its_a_type_loses_others(&lower)
+    {
+        let affected = static_affected_for_application(&application);
+        if matches!(
+            affected,
+            TargetFilter::ParentTarget | TargetFilter::TriggeringSource
+        ) {
+            return Some(ClauseAst::SubjectPredicate {
+                subject: Box::new(SubjectPhraseAst {
+                    affected: application.affected.clone(),
+                    target: application.target.clone(),
+                    multi_target: application.multi_target.clone(),
+                    inherits_parent: application.inherits_parent,
+                    is_optional: application.is_optional,
+                }),
+                predicate: Box::new(PredicateAst::Become {
+                    effect: Effect::GenericEffect {
+                        static_abilities: vec![StaticDefinition::continuous()
+                            .affected(affected)
+                            .modifications(modifications)
+                            .description(predicate.clone())],
+                        duration: Some(Duration::UntilHostLeavesPlay),
+                        target: application.target.clone(),
+                    },
+                    duration: Some(Duration::UntilHostLeavesPlay),
+                    sub_ability: None,
+                }),
+            });
+        }
+    }
+
     // CR 205.1b: additive form first — "it's a [type] in addition to its other
     // types" retains prior types (AddType/AddSubtype only).
     if let Some(clause) = build_additive_type_continuous_clause(&application, &predicate) {
