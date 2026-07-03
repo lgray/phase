@@ -75,7 +75,7 @@ use crate::types::ability::{
     AbilityCondition, AbilityDefinition, ContinuousModification, ControllerRef, Duration, Effect,
     ModalChoice, MultiTargetSpec, ObjectScope, PlayerFilter, PlayerScope, QuantityExpr,
     QuantityRef, RepeatContinuation, ResolvedAbility, StaticCondition, StaticDefinition,
-    TargetFilter, TriggerCondition, TriggerDefinition, TypeFilter, TypedFilter,
+    TargetFilter, TriggerCondition, TriggerDefinition, TypeFilter, TypedFilter, ZoneRef,
 };
 use crate::types::game_state::TargetSelectionConstraint;
 use crate::types::zones::Zone;
@@ -109,6 +109,14 @@ pub(crate) enum StateKind {
     StackShape,
     /// CR 301.5/302.6: tap state.
     TapState,
+    /// CR 500 (turn structure) + CR 506.4c (remove from combat) + CR 614.10
+    /// (skip step/turn): game-sequencing writes — extra turns/phases, skipped
+    /// steps, combat removal. Idempotent/additive among identical siblings (two
+    /// extra turns commute; removing an already-removed creature is a no-op) and
+    /// observed by NO profiled read, so this kind only self-conflicts (a future
+    /// sequencing READ would fail-closed against it) — never the `Other`
+    /// catch-all, which conflicts with every read.
+    TurnStructure,
     /// Unclassifiable — conflicts with everything (fail-closed).
     Other,
 }
@@ -126,6 +134,7 @@ pub(crate) struct KindSet {
     journal_cast: bool,
     stack_shape: bool,
     tap_state: bool,
+    turn_structure: bool,
     other: bool,
 }
 
@@ -141,6 +150,7 @@ impl KindSet {
         journal_cast: false,
         stack_shape: false,
         tap_state: false,
+        turn_structure: false,
         other: false,
     };
     const ALL: KindSet = KindSet {
@@ -154,6 +164,7 @@ impl KindSet {
         journal_cast: true,
         stack_shape: true,
         tap_state: true,
+        turn_structure: true,
         other: true,
     };
 
@@ -174,6 +185,7 @@ impl KindSet {
             StateKind::JournalCast => self.journal_cast = true,
             StateKind::StackShape => self.stack_shape = true,
             StateKind::TapState => self.tap_state = true,
+            StateKind::TurnStructure => self.turn_structure = true,
             StateKind::Other => self.other = true,
         }
     }
@@ -189,6 +201,7 @@ impl KindSet {
             journal_cast: self.journal_cast || o.journal_cast,
             stack_shape: self.stack_shape || o.stack_shape,
             tap_state: self.tap_state || o.tap_state,
+            turn_structure: self.turn_structure || o.turn_structure,
             other: self.other || o.other,
         }
     }
@@ -204,6 +217,7 @@ impl KindSet {
             journal_cast: self.journal_cast && !o.journal_cast,
             stack_shape: self.stack_shape && !o.stack_shape,
             tap_state: self.tap_state && !o.tap_state,
+            turn_structure: self.turn_structure && !o.turn_structure,
             other: self.other && !o.other,
         }
     }
@@ -392,6 +406,15 @@ pub(crate) struct RwProfile {
     /// (`ChangeZone{SelfRef}`) or a `CopyTokenOf{SelfRef}` created copy (CR 707.2,
     /// §1.3.1-F). `membership_census_of` merges `source_census` when this is set.
     writes_membership_self: bool,
+    /// CR 400.1: the zone(s) a self-scoped `SetMembership` write touches. A self
+    /// MOVE (`ChangeZone{SelfRef}`) records its actual origin+destination; a self
+    /// CREATION (`CopyTokenOf{SelfRef}`, CR 111.1) touches only the battlefield.
+    /// Previously every self membership write forced `Any` (fail-closed), so a
+    /// battlefield self-copy falsely fed a graveyard/departure read (Compy Swarm ×
+    /// "a creature died this turn"). `Any` stays the default when a self write's
+    /// endpoints are unrecorded, and a self-sacrifice (bf→graveyard) still overlaps
+    /// a graveyard read (Chorale of the Void).
+    writes_membership_self_zones: ZoneSpan,
     /// Census of external/creation/event-object `SetMembership` writes.
     writes_membership_external_census: Census,
     /// CR 400.1: zones the external/creation/event-object `SetMembership` writes
@@ -430,6 +453,7 @@ impl RwProfile {
             writes_created: KindSet::EMPTY,
             writes_reentry_hazard: false,
             writes_membership_self: false,
+            writes_membership_self_zones: ZoneSpan::None,
             writes_membership_external_census: Census::None,
             writes_membership_external_zones: ZoneSpan::None,
             reads_membership_census: Census::None,
@@ -449,6 +473,7 @@ impl RwProfile {
         p.writes_membership_external_census = Census::Any;
         p.writes_membership_external_zones = ZoneSpan::Any;
         p.writes_membership_self = true;
+        p.writes_membership_self_zones = ZoneSpan::Any;
         p.reads_membership_census = Census::Any;
         p.reads_membership_zones = ZoneSpan::Any;
         p.writes_external_counter_census = Census::Any;
@@ -468,6 +493,8 @@ impl RwProfile {
         self.writes_created = self.writes_created.union(o.writes_created);
         self.writes_reentry_hazard |= o.writes_reentry_hazard;
         self.writes_membership_self |= o.writes_membership_self;
+        self.writes_membership_self_zones
+            .merge(o.writes_membership_self_zones);
         self.writes_membership_external_census
             .merge(o.writes_membership_external_census);
         self.writes_membership_external_zones
@@ -505,6 +532,7 @@ impl RwProfile {
         self.writes_created = KindSet::EMPTY;
         self.writes_reentry_hazard = false;
         self.writes_membership_self = false;
+        self.writes_membership_self_zones = ZoneSpan::None;
         self.writes_membership_external_census = Census::None;
         self.writes_membership_external_zones = ZoneSpan::None;
         self.writes_external_counter_census = Census::None;
@@ -569,6 +597,10 @@ fn feeds(
         || (reads.journal_cast && writes.journal_cast)
         || (reads.stack_shape && writes.stack_shape)
         || (reads.tap_state && writes.tap_state)
+        // CR 500 / CR 506.4c / CR 614.10: sequencing writes only conflict with a
+        // sequencing READ. No profiled read produces `turn_structure` today, so
+        // this row is dormant — but a future sequencing read fails closed here.
+        || (reads.turn_structure && writes.turn_structure)
     {
         return true;
     }
@@ -678,6 +710,7 @@ pub(crate) fn profiles_conflict(p: &RwProfile, s: &GroupStructure) -> bool {
         src_writes,
         &p.writes_membership_external_zones,
         src_self_membership,
+        &p.writes_membership_self_zones,
     );
     if s.all_same_source {
         src_writes = src_writes.union(p.writes_self);
@@ -705,6 +738,7 @@ pub(crate) fn profiles_conflict(p: &RwProfile, s: &GroupStructure) -> bool {
         board_writes,
         &p.writes_membership_external_zones,
         p.writes_membership_self,
+        &p.writes_membership_self_zones,
     );
     let board_reads = p.reads_board.union(p.reads_player);
     if feeds(
@@ -748,13 +782,17 @@ fn membership_zones_of(
     write_kinds: KindSet,
     external_zones: &ZoneSpan,
     self_in_scope: bool,
+    self_zones: &ZoneSpan,
 ) -> ZoneSpan {
     let mut z = ZoneSpan::None;
     if write_kinds.set_membership {
         z.merge(external_zones.clone());
     }
     if self_in_scope {
-        z.merge(ZoneSpan::Any);
+        // CR 400.1: the recorded self-write endpoints (fail-closed `Any` when a
+        // self write left them unrecorded) — no longer a blanket `Any`, so a
+        // battlefield self-copy is zone-disjoint from a graveyard read.
+        z.merge(self_zones.clone());
     }
     z
 }
@@ -900,6 +938,10 @@ fn place_membership_write(
         WriteScope::SelfSource => {
             p.writes_self.set(StateKind::SetMembership);
             p.writes_membership_self = true;
+            // CR 400.1: record the actual self-move endpoints (Chorale of the
+            // Void's self-sacrifice bf→graveyard keeps overlapping a graveyard
+            // "left this turn" read).
+            p.writes_membership_self_zones.merge(move_zones);
         }
         WriteScope::External => {
             p.writes_external.set(StateKind::SetMembership);
@@ -953,9 +995,13 @@ fn census_of_filter(f: &TargetFilter) -> Census {
     }
 }
 
-fn census_of_typed(tf: &TypedFilter) -> Census {
-    let mut tags: BTreeSet<String> = BTreeSet::new();
-    for t in &tf.type_filters {
+/// CR 205: collect core-type + subtype tags from a bare `TypeFilter` slice into
+/// `tags`. Returns `Some(Census::Any)` on the first broad / negative / disjunctive
+/// constraint (unextractable ⇒ fail-closed); `None` when every entry was a
+/// concrete positive tag. Shared by `census_of_typed` and the
+/// `QuantityRef::ZoneCardCount { card_types }` census (§L1).
+fn collect_type_tags(type_filters: &[TypeFilter], tags: &mut BTreeSet<String>) -> Option<Census> {
+    for t in type_filters {
         match t {
             TypeFilter::Creature => tags.insert("creature".into()),
             TypeFilter::Land => tags.insert("land".into()),
@@ -968,9 +1014,17 @@ fn census_of_typed(tf: &TypedFilter) -> Census {
             TypeFilter::Kindred => tags.insert("kindred".into()),
             TypeFilter::Subtype(s) => tags.insert(s.to_lowercase()),
             // Broad / non-positive / disjunctive type constraints ⇒ unextractable.
-            TypeFilter::Permanent | TypeFilter::Card | TypeFilter::Any => return Census::Any,
-            TypeFilter::Non(_) | TypeFilter::AnyOf(_) => return Census::Any,
+            TypeFilter::Permanent | TypeFilter::Card | TypeFilter::Any => return Some(Census::Any),
+            TypeFilter::Non(_) | TypeFilter::AnyOf(_) => return Some(Census::Any),
         };
+    }
+    None
+}
+
+fn census_of_typed(tf: &TypedFilter) -> Census {
+    let mut tags: BTreeSet<String> = BTreeSet::new();
+    if let Some(c) = collect_type_tags(&tf.type_filters, &mut tags) {
+        return c;
     }
     for prop in &tf.properties {
         match prop {
@@ -987,6 +1041,32 @@ fn census_of_typed(tf: &TypedFilter) -> Census {
         Census::Any
     } else {
         Census::Tags(tags)
+    }
+}
+
+/// CR 604.3 + CR 205: census of a `QuantityRef::ZoneCardCount { card_types }`
+/// list — the same tag extraction as `census_of_typed` but over a bare
+/// `TypeFilter` slice with no properties. Empty `card_types` (all cards) ⇒ `Any`.
+fn census_of_zone_card_types(card_types: &[TypeFilter]) -> Census {
+    let mut tags: BTreeSet<String> = BTreeSet::new();
+    if let Some(c) = collect_type_tags(card_types, &mut tags) {
+        return c;
+    }
+    if tags.is_empty() {
+        Census::Any
+    } else {
+        Census::Tags(tags)
+    }
+}
+
+/// CR 400.1: the concrete battlefield-external zone a `ZoneRef` names, for the
+/// `QuantityRef::ZoneCardCount { zone }` membership-read zone (§L1).
+fn zone_of_zone_ref(z: &ZoneRef) -> Zone {
+    match z {
+        ZoneRef::Graveyard => Zone::Graveyard,
+        ZoneRef::Exile => Zone::Exile,
+        ZoneRef::Library => Zone::Library,
+        ZoneRef::Hand => Zone::Hand,
     }
 }
 
@@ -1017,6 +1097,14 @@ pub(crate) fn filter_excludes_source(f: &TargetFilter) -> bool {
             .iter()
             .any(|p| matches!(p, FilterProp::Another)),
         TargetFilter::And { filters } => filters.iter().any(filter_excludes_source),
+        // §L6 (CR 303.4d + CR 301.5c): the object an Aura/Equipment is ATTACHED to
+        // is a DIFFERENT object than the source itself — an Aura can't enchant
+        // itself (CR 303.4d) and an Equipment can't equip itself (CR 301.5c). So an
+        // `AttachedTo` `valid_card` (the enchanted/equipped creature — e.g. the
+        // Ordeals' "whenever enchanted creature attacks") provably excludes every
+        // group member's source, dropping the event-object counter write from the
+        // source-scoped counter-read feed.
+        TargetFilter::AttachedTo => true,
         _ => false,
     }
 }
@@ -2428,6 +2516,18 @@ fn board_membership_read(filter: &TargetFilter) -> RwProfile {
     p
 }
 
+/// §L2 (CR 400.7 + CR 400.1): a zone-change per-turn journal read, keyed to its
+/// DESTINATION zone when known. A `None` destination stays fail-closed (`Any`
+/// zones, via `board_membership_read`). Never overrides a self-scoped read (whose
+/// filter routes to `reads_src`, not the membership feed).
+fn journal_zone_change_read(filter: &TargetFilter, to: Option<&Zone>) -> RwProfile {
+    let mut p = board_membership_read(filter);
+    if let (Some(z), false) = (to, filter_is_self_scoped(filter)) {
+        p.reads_membership_zones = ZoneSpan::one(*z);
+    }
+    p
+}
+
 /// A board VALUE aggregate (power/counter aggregate) over `filter`: records the
 /// value kind AND `SetMembership` (a membership write changes the aggregate, §2).
 fn board_value_aggregate_read(filter: &TargetFilter, value: StateKind) -> RwProfile {
@@ -2453,6 +2553,27 @@ fn read_object_scope(scope: &ObjectScope, kind: StateKind) -> RwProfile {
         ObjectScope::EventSource | ObjectScope::EventTarget => reads_event_live(),
         // D5 carrier: `CostPaidObject` is one of the 12 retained refs.
         ObjectScope::CostPaidObject => legacy_ref(),
+    }
+}
+
+/// §L7 (CR 608.2c + CR 603.3b): classify one `ObjectsShareQuality` operand by
+/// scope. `LastRevealed` is the card the member's OWN reveal surfaced this
+/// resolution — a per-resolution local (like `ObjectScope::Recipient`), observed
+/// by no sibling write (mirrors `RevealedHasCardType => EMPTY`). A source operand
+/// reads the source's own FIXED printed type — not a mutable board characteristic
+/// a sibling reorders — so it too contributes NO observable read (crucially it
+/// must NOT set `reads_src`, which would flip an otherwise source-INDEPENDENT
+/// ability off the sound T1 fast path and re-expose an unrelated board-read×write
+/// as a false prompt — Plane-Merge Elf's PumpAll, Sensation Gorger's HandSize
+/// discard). Every OTHER operand (a live board object) keeps the fail-closed
+/// board `ObjectPt` characteristic read.
+fn share_quality_operand_read(f: &TargetFilter) -> RwProfile {
+    match f {
+        TargetFilter::LastRevealed | TargetFilter::SelfRef | TargetFilter::SourceOrPaired => {
+            RwProfile::empty()
+        }
+        // Fail-closed: any other reference is a live board characteristic read.
+        _ => reads_board_of(StateKind::ObjectPt),
     }
 }
 
@@ -2583,9 +2704,13 @@ fn walk_ability(a: &ResolvedAbility, chain_root: Option<WriteScope>, acc: &mut R
     if let Some(m) = modal {
         acc.merge(rw_modal_choice(m));
     }
-    // CR 700.2b: reflexive-modal per-mode defs are not descended — conservative.
-    if !mode_abilities.is_empty() {
-        acc.merge(RwProfile::conservative());
+    // §voltstorm (CR 700.2): a modal resolves exactly ONE mode. Descend every
+    // mode as a UNION (mirrors `Effect::ChooseOneOf` branch descent): if the union
+    // of all modes' reads/writes has no feed, then no single choice — and no
+    // cross-choice sibling pair — is order-observable. Independent reflexive-modal
+    // choices commute (Voltstorm Angel). Fail-closed: the union over-approximates.
+    for m in mode_abilities {
+        walk_definition(m, child_root, acc);
     }
 }
 
@@ -2676,8 +2801,9 @@ fn walk_definition(a: &AbilityDefinition, chain_root: Option<WriteScope>, acc: &
     if let Some(m) = modal {
         acc.merge(rw_modal_choice(m));
     }
-    if !mode_abilities.is_empty() {
-        acc.merge(RwProfile::conservative());
+    // §voltstorm (CR 700.2): descend each mode as a union (see `walk_ability`).
+    for m in mode_abilities {
+        walk_definition(m, child_root, acc);
     }
 }
 
@@ -3425,6 +3551,13 @@ fn rw_effect(x: &Effect, chain_root: Option<WriteScope>) -> (RwProfile, Option<W
                 // is what clears Scute Swarm (creature token ≠ its Lands read,
                 // census-disjoint — §1.3.1-F) instead of over-conflicting on Any.
                 p.writes_membership_self = true;
+                // CR 111.1: a token copy is CREATED on the battlefield — its self
+                // membership write touches only that zone, NOT the blanket `Any` a
+                // self MOVE gets. So it is zone-disjoint from a graveyard/departure
+                // read (Compy Swarm / Phoenix Fleet Airship's "a creature died /
+                // you sacrificed a permanent this turn" ×2).
+                p.writes_membership_self_zones
+                    .merge(ZoneSpan::one(Zone::Battlefield));
                 // Copiable-values read (fail-closed source dependence).
                 p.reads_src.set(StateKind::ObjectPt);
             } else {
@@ -3595,13 +3728,19 @@ fn rw_effect(x: &Effect, chain_root: Option<WriteScope>) -> (RwProfile, Option<W
         } => {
             // CR 707.10/707.10c: SelfRef / explicit-target copies read the
             // original by id (clean); the untargeted top-of-stack fallback reads
-            // the mutable stack top (D4).
+            // the mutable stack top (D4). §L9: `TriggeringSource` (the spell that
+            // caused the trigger) and a chain-referenced `ParentTarget` also
+            // address the original BY ID, not the mutable stack shape — independent
+            // copies commute (Pyromancer Ascension / Ominous Lockbox / Curse of
+            // Echoes / Locus of Enlightenment).
             let mut p = ext_write(StateKind::StackShape);
             if !matches!(
                 target,
                 TargetFilter::SelfRef
                     | TargetFilter::StackSpell
                     | TargetFilter::SpecificObject { .. }
+                    | TargetFilter::TriggeringSource
+                    | TargetFilter::ParentTarget
             ) {
                 p.reads_board.set(StateKind::StackShape);
             }
@@ -3612,6 +3751,24 @@ fn rw_effect(x: &Effect, chain_root: Option<WriteScope>) -> (RwProfile, Option<W
             source_rider: _,
             countered_spell_zone: _,
         } => (ext_write(StateKind::StackShape), None),
+        // §L9 (CR 115.7): changing the target(s) of a spell/ability on the stack is
+        // a StackShape write, NOT the maximal-conservative fallback (which set a
+        // board `ObjectPt`/… read that falsely conflicted with the sibling
+        // CopySpell). Each per-player copy retargets its OWN copy independently, so
+        // identical siblings commute (Curse of Echoes). Fail-closed batch parity
+        // via the D5 write-target flag.
+        Effect::ChangeTargets {
+            target,
+            scope: _,
+            forced_to,
+        } => {
+            let mut p = ext_write(StateKind::StackShape);
+            flag_legacy_write_target(&mut p, target);
+            if let Some(ft) = forced_to {
+                flag_legacy_write_target(&mut p, ft);
+            }
+            (p, None)
+        }
         Effect::CastCopyOfCard {
             target: _,
             count,
@@ -3812,15 +3969,36 @@ fn rw_effect(x: &Effect, chain_root: Option<WriteScope>) -> (RwProfile, Option<W
         // event-context ref there retains the batch prompt (CR 603.10a).
         Effect::Goad { target }
         | Effect::GoadAll { target }
-        | Effect::ExtraTurn { target }
-        | Effect::Suspect { target, scope: _ }
-        | Effect::Unsuspect { target, scope: _ }
         | Effect::BecomePrepared { target }
         | Effect::ApplyPerpetual {
             target,
             modification: _,
         } => {
             let mut p = ext_write(StateKind::Other);
+            flag_legacy_write_target(&mut p, target);
+            (p, None)
+        }
+        // §L12 (CR 701.60 suspect / CR 701.60a unsuspect): suspected is an
+        // IDEMPOTENT designation — suspecting an already-suspected creature is a
+        // no-op, and identical siblings suspect/unsuspect the SAME (or self)
+        // targets, so the write is order-invariant. Like `PairWith`/`Attach`, no
+        // LIVE read observes it (the status is read only via source-referential
+        // `SourceMatchesFilter{Suspected}`), so NO observable RW kind — never the
+        // `Other` catch-all, which falsely conflicted with Frantic Scapegoat's
+        // "if ~ is suspected" source read. The write target still flags D5 batch
+        // parity (CR 603.10a).
+        Effect::Suspect { target, scope: _ } | Effect::Unsuspect { target, scope: _ } => {
+            let mut p = RwProfile::empty();
+            flag_legacy_write_target(&mut p, target);
+            (p, None)
+        }
+        // §L14 (CR 500 + CR 505.6): extra turns/phases are game-SEQUENCING writes
+        // (two extra turns commute) — a dedicated turn-structure kind that no
+        // profiled read observes, NOT the `Other` catch-all (which falsely
+        // conflicted with a co-occurring source counter/life read on Lighthouse
+        // Chronologist / Second Chance / Regenerations Restored / Time Bends).
+        Effect::ExtraTurn { target } => {
+            let mut p = ext_write(StateKind::TurnStructure);
             flag_legacy_write_target(&mut p, target);
             (p, None)
         }
@@ -3852,16 +4030,45 @@ fn rw_effect(x: &Effect, chain_root: Option<WriteScope>) -> (RwProfile, Option<W
             p.merge(rw_duration(duration));
             (p, None)
         }
+        // §L14 (CR 500.8): an additional phase/step is a turn-structure write.
         Effect::AdditionalPhase {
             target: _,
             count,
             phase: _,
             after: _,
             followed_by: _,
-            attacker_restriction: _,
+            attacker_restriction,
         } => {
-            let mut p = ext_write(StateKind::Other);
+            let mut p = ext_write(StateKind::TurnStructure);
             p.merge(rw_quantity_expr(count));
+            // CR 608.2h + 611.2c: Some(filter) snapshots the eligible-attacker set
+            // at resolution (a board membership read) before installing the
+            // restriction on the added combat.
+            if let Some(filter) = attacker_restriction {
+                p.merge(board_membership_read(filter));
+            }
+            (p, None)
+        }
+        // §L13 (CR 614.10) + §L14: skipping a step/turn is a turn-structure write.
+        Effect::SkipNextStep {
+            target: _,
+            step: _,
+            count,
+            scope: _,
+        }
+        | Effect::SkipNextTurn { target: _, count } => {
+            let mut p = ext_write(StateKind::TurnStructure);
+            p.merge(rw_quantity_expr(count));
+            (p, None)
+        }
+        // §L13 (CR 506.4c): removing a creature from combat is idempotent (a
+        // no-op on an already-removed creature) and observed by no profiled read —
+        // a turn/combat-structure write, NOT the maximal-conservative fallback
+        // that falsely conflicted (Gustcloak Savior / Lost in the Woods / Time
+        // Bends to My Will).
+        Effect::RemoveFromCombat { target } => {
+            let mut p = ext_write(StateKind::TurnStructure);
+            flag_legacy_write_target(&mut p, target);
             (p, None)
         }
         Effect::AssembleContraptions { count } => {
@@ -3984,11 +4191,7 @@ fn rw_effect(x: &Effect, chain_root: Option<WriteScope>) -> (RwProfile, Option<W
         | Effect::GiftDelivery { .. }
         | Effect::Detain { .. }
         | Effect::SetRoomDoorLock { .. }
-        | Effect::ChangeTargets { .. }
         | Effect::GrantExtraLoyaltyActivations { .. }
-        | Effect::SkipNextTurn { .. }
-        | Effect::SkipNextStep { .. }
-        | Effect::RemoveFromCombat { .. }
         | Effect::ExchangeLifeWithStat { .. }
         | Effect::ExchangeLifeTotals { .. }
         | Effect::SetDayNight { .. }
@@ -4152,18 +4355,63 @@ fn rw_quantity_ref(x: &QuantityRef) -> RwProfile {
         | QuantityRef::CommanderManaValue { .. }
         | QuantityRef::Speed { .. }
         | QuantityRef::VoteCount { .. } => RwProfile::empty(),
-        QuantityRef::ZoneCardCount { filter, .. } => match filter {
+        QuantityRef::ZoneCardCount {
+            zone,
+            card_types,
+            filter,
+            scope: _,
+        } => match filter {
             Some(f) => board_membership_read(f),
-            None => reads_zone_membership(),
+            // §L1 (CR 604.3 + CR 205 + CR 400.1): extract the census from
+            // `card_types` and the read zone from the `ZoneRef`, instead of
+            // discarding both to `Any`/`Any`. "creature cards in your graveyard"
+            // observes only the GRAVEYARD for a CREATURE census — zone-disjoint
+            // from a battlefield token write (Hallowed Spiritkeeper) and
+            // census-disjoint from creature writes when counting lands (Cavalier
+            // of Flame / Scouring Swarm). `scope` (controller/owner) is not
+            // carried into the membership feed (fail-closed on controller).
+            None => {
+                let mut p = reads_board_of(StateKind::SetMembership);
+                p.reads_membership_census = census_of_zone_card_types(card_types);
+                p.reads_membership_zones = ZoneSpan::one(zone_of_zone_ref(zone));
+                p
+            }
         },
-        // Object-population "this turn" journals ⇒ membership-fed board reads.
+        // §L2: object-population per-turn journals. A ZONE-CHANGE journal counts a
+        // SETTLED event keyed by its DESTINATION zone (CR 400.7 + CR 400.1), so a
+        // battlefield token CREATION is zone-disjoint from a graveyard "died this
+        // turn" read (Compy Swarm / Dripping-Tongue Zubera) while a self-sacrifice
+        // bf→graveyard still overlaps (Chorale of the Void, held). ENTRY journals
+        // keep the filter's zones (fail-closed) — a creation DOES feed them.
+        QuantityRef::ZoneChangeCountThisTurn {
+            to,
+            filter,
+            from: _,
+        } => journal_zone_change_read(filter, to.as_ref()),
+        QuantityRef::ZoneChangeAggregateThisTurn {
+            to,
+            filter,
+            from: _,
+            function: _,
+            property: _,
+        } => journal_zone_change_read(filter, to.as_ref()),
+        // CR 701.21a: a sacrifice moves the permanent to its owner's graveyard.
+        QuantityRef::SacrificedThisTurn { filter, player: _ } => {
+            let mut p = board_membership_read(filter);
+            p.reads_membership_zones = ZoneSpan::one(Zone::Graveyard);
+            p
+        }
         QuantityRef::EnteredThisTurn { filter }
-        | QuantityRef::SacrificedThisTurn { filter, .. }
         | QuantityRef::BattlefieldEntriesThisTurn { filter, .. }
-        | QuantityRef::ZoneChangeCountThisTurn { filter, .. }
-        | QuantityRef::ZoneChangeAggregateThisTurn { filter, .. }
         | QuantityRef::TokensCreatedThisTurn { filter, .. } => board_membership_read(filter),
-        QuantityRef::CounterAddedThisTurn { .. } => reads_board_of(StateKind::ObjectCounters),
+        // §L2 (CR 122.3 + CR 603.3b): "a +1/+1 counter was put on a permanent this
+        // turn" is a settled, MONOTONE-UP per-turn journal — counters are only
+        // ADDED to it, so a sibling PutCounter keeps an intervening-if satisfied
+        // and identical siblings resolve order-invariantly. Modeled as a frozen
+        // look-back read (CR 603.10a — never fed while the freeze is valid) rather
+        // than a LIVE counter read, so a self PutCounter does not falsely conflict
+        // (Fairgrounds Trumpeter). Fail-closed on a departure reentry hazard.
+        QuantityRef::CounterAddedThisTurn { .. } => reads_frozen_of(StateKind::ObjectCounters),
         // Player-resource journals.
         QuantityRef::LifeLostThisTurn { player: _ }
         | QuantityRef::LifeGainedThisTurn { player: _ }
@@ -4205,16 +4453,49 @@ fn rw_ability_condition(x: &AbilityCondition) -> RwProfile {
             comparator: _,
             channel: _,
         } => rw_quantity_expr(rhs),
+        // §L7 (CR 608.2c + CR 603.3b): route EACH operand by scope. An operand
+        // that is the card THIS resolution revealed (`LastRevealed`) is a
+        // per-resolution local — no sibling write observes it (mirror
+        // `RevealedHasCardType => EMPTY`); a source operand is a source-scoped
+        // read. Only a LIVE board operand keeps the board `ObjectPt` read. Clears
+        // "if the revealed card shares a creature type with ~" (Winnower Patrol /
+        // Kithkin Zephyrnaut / Mudbutton Clanger / Waterspout Weavers).
         AbilityCondition::ObjectsShareQuality {
-            subject: _,
-            reference: _,
+            subject,
+            reference,
             quality: _,
-        } => reads_board_of(StateKind::ObjectPt),
+        } => {
+            let mut p = share_quality_operand_read(subject);
+            p.merge(share_quality_operand_read(reference));
+            p
+        }
+        // §L3 (CR 400.7 + CR 603.10a): "if that creature WAS a [type]" reads the
+        // target's LAST-KNOWN information — a frozen read of the departed/event
+        // object, settled at the event and never altered by a sibling board write.
+        // Present-tense (`use_lki: false`) stays a LIVE board `ObjectPt` read
+        // (fail-closed). Clears "if that [died/entered] creature was X, put a
+        // counter on ~" (Taborax / Uglúk / Venom / Locus Cobra / Overgrowth
+        // Elemental / Magnanimous Magistrate / Prowling Geistcatcher).
         AbilityCondition::TargetMatchesFilter {
             filter: _,
-            use_lki: _,
+            use_lki,
             subject_slot: _,
-        } => reads_board_of(StateKind::ObjectPt),
+        } => {
+            if *use_lki {
+                frozen_source_read()
+            } else {
+                reads_board_of(StateKind::ObjectPt)
+            }
+        }
+        // PR-6.75 residual: two context-free-unclassifiable singletons stay safe
+        // conservative over-prompts here, with no recognizer. Paroxysm's present-
+        // tense `TargetMatchesFilter { use_lki: false }` fires on a card the member
+        // itself revealed this resolution (a per-resolution local, not a live board
+        // read), but that provenance is not visible on the AST at this leaf, so the
+        // fail-closed live `ObjectPt` read is retained. Flamewake Phoenix's
+        // begin-combat return is gated on controlling a creature with power >= 4 (a
+        // P/T-constrained control census) — proving disjointness needs the runtime
+        // source P/T the profile cannot see, so its control read stays fail-closed.
         AbilityCondition::SourceMatchesFilter { filter: _ } => reads_src_of(StateKind::ObjectPt),
         AbilityCondition::SourceIsTapped => reads_src_of(StateKind::TapState),
         AbilityCondition::ControllerControlsMatching { filter } => board_membership_read(filter),
@@ -4632,7 +4913,7 @@ fn rw_controller_ref(x: &ControllerRef) -> RwProfile {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::ability::{AbilityKind, Comparator, PtValue};
+    use crate::types::ability::{AbilityKind, Comparator, CountScope, PtValue};
     use crate::types::counter::CounterType;
     use crate::types::identifiers::ObjectId;
     use crate::types::player::PlayerId;
@@ -5279,6 +5560,534 @@ mod tests {
         assert!(
             !tlegacy(&TriggerCondition::SourceIsTapped),
             "SourceIsTapped carries no frozen tag"
+        );
+    }
+
+    // ===================== PR-6.75 commit-4 read/write levers =====================
+    // Each lever gets a discriminating POSITIVE (the commuting shape no longer
+    // conflicts) + NEGATIVE control (a structurally-adjacent NON-commuting shape
+    // still conflicts, so the POS can't pass vacuously). Revert-fail evidence (the
+    // pre-lever mutation that turns each POS red) is recorded in the driver report.
+
+    /// §L1: `QuantityRef::ZoneCardCount { zone, card_types, filter: None }` now
+    /// extracts BOTH the read census (from `card_types`, CR 205) and the read zone
+    /// (from `ZoneRef`, CR 400.1) instead of collapsing to `Any`/`Any`. "creature
+    /// cards in your graveyard" reads a GRAVEYARD/creature census — zone-disjoint
+    /// from a battlefield creature token, but zone+census-overlapping a creature
+    /// written INTO the graveyard.
+    #[test]
+    fn l1_zone_card_count_census_and_zone_extraction() {
+        let gy_creatures = QuantityRef::ZoneCardCount {
+            zone: ZoneRef::Graveyard,
+            card_types: vec![TypeFilter::Creature],
+            filter: None,
+            scope: CountScope::Controller,
+        };
+        // POS: graveyard/creature read × battlefield creature-token write —
+        // census overlaps (creature) but zones are disjoint ⇒ no feed.
+        let pos = cond(
+            ra(token(&["Creature"], qfix(1))),
+            qcheck(gy_creatures.clone(), 1),
+        );
+        assert!(
+            !conflicts(&pos, &batch()),
+            "graveyard-creature read × battlefield token ⇒ zone-disjoint ⇒ clean"
+        );
+        // NEG: same read × a creature written INTO the graveyard — census AND zone
+        // overlap ⇒ conflict. A zone-blind (pre-lever `Any`) census would also
+        // conflict on the POS, so this pins the discrimination on the zone axis.
+        let neg = cond(
+            ra(change_zone(
+                Some(Zone::Battlefield),
+                Zone::Graveyard,
+                creature(),
+            )),
+            qcheck(gy_creatures, 1),
+        );
+        assert!(
+            conflicts(&neg, &batch()),
+            "graveyard-creature read × creature-to-graveyard write ⇒ zone+census overlap ⇒ conflict"
+        );
+    }
+
+    /// §L2 (CR 400.7 + CR 400.1): a per-turn zone-change journal read is keyed to
+    /// its DESTINATION zone, so a "died this turn" (→graveyard) read is disjoint
+    /// from a battlefield token creation while an "entered this turn" (→battlefield)
+    /// read overlaps it. `SacrificedThisTurn` is graveyard-keyed the same way.
+    #[test]
+    fn l2_zone_journal_reads_keyed_to_destination_zone() {
+        let died = |to: Zone| QuantityRef::ZoneChangeCountThisTurn {
+            from: Some(Zone::Battlefield),
+            to: Some(to),
+            filter: creature(),
+        };
+        // POS: "a creature died this turn" (→graveyard) × battlefield token ⇒
+        // zone-disjoint ⇒ clean.
+        let pos = cond(
+            ra(token(&["Creature"], qfix(1))),
+            qcheck(died(Zone::Graveyard), 1),
+        );
+        assert!(
+            !conflicts(&pos, &batch()),
+            "died(graveyard) × battlefield token ⇒ clean"
+        );
+        // NEG: "a creature entered this turn" (→battlefield) × the same token ⇒
+        // zone overlap ⇒ conflict.
+        let neg = cond(
+            ra(token(&["Creature"], qfix(1))),
+            qcheck(died(Zone::Battlefield), 1),
+        );
+        assert!(
+            conflicts(&neg, &batch()),
+            "entered(battlefield) × battlefield token ⇒ conflict"
+        );
+
+        // SacrificedThisTurn is pinned to the graveyard (CR 701.21a): disjoint from
+        // a battlefield token, overlapping a creature moved into the graveyard.
+        let sac = QuantityRef::SacrificedThisTurn {
+            player: PlayerScope::Controller,
+            filter: creature(),
+        };
+        let sac_pos = cond(ra(token(&["Creature"], qfix(1))), qcheck(sac.clone(), 1));
+        assert!(
+            !conflicts(&sac_pos, &batch()),
+            "sacrificed(graveyard) × battlefield token ⇒ clean"
+        );
+        let sac_neg = cond(
+            ra(change_zone(
+                Some(Zone::Battlefield),
+                Zone::Graveyard,
+                creature(),
+            )),
+            qcheck(sac, 1),
+        );
+        assert!(
+            conflicts(&sac_neg, &batch()),
+            "sacrificed(graveyard) × creature-to-graveyard ⇒ conflict"
+        );
+    }
+
+    /// §L2 (CR 122.3 + CR 603.10a): "a counter was put on a permanent this turn" is
+    /// a settled monotone-up look-back — a FROZEN read that a sibling PutCounter
+    /// never feeds (Fairgrounds Trumpeter). A LIVE counter read on the same self
+    /// write still conflicts.
+    #[test]
+    fn l2_counter_added_this_turn_is_frozen_lookback() {
+        let added = QuantityRef::CounterAddedThisTurn {
+            actor: CountScope::Controller,
+            counters: crate::types::counter::CounterMatch::Any,
+            target: creature(),
+        };
+        // POS: frozen journal read × self PutCounter ⇒ never fed ⇒ clean.
+        let pos = cond(
+            ra(put_counter(qfix(1), TargetFilter::SelfRef)),
+            qcheck(added, 1),
+        );
+        assert!(
+            !conflicts(&pos, &se()),
+            "monotone journal look-back × self counter ⇒ clean"
+        );
+        // NEG: a LIVE board counter read (`CountersOn{Target}`) × the same self
+        // counter write ⇒ same-kind ObjectCounters feed ⇒ conflict.
+        let live = QuantityRef::CountersOn {
+            scope: ObjectScope::Target,
+            counter_type: None,
+        };
+        let neg = cond(
+            ra(put_counter(qfix(1), TargetFilter::SelfRef)),
+            qcheck(live, 1),
+        );
+        assert!(
+            conflicts(&neg, &se()),
+            "live board counter read × self counter write ⇒ conflict"
+        );
+    }
+
+    /// §L3 (CR 400.7 + CR 603.10a): "if that creature WAS a [type]"
+    /// (`use_lki: true`) is a frozen LKI read of the departed/event object, never
+    /// altered by a sibling board write. Present-tense (`use_lki: false`) stays a
+    /// live board `ObjectPt` read.
+    #[test]
+    fn l3_target_matches_filter_lki_is_frozen_read() {
+        let put_self = || ra(put_counter(qfix(1), TargetFilter::SelfRef));
+        // POS: LKI "was a Cleric" × PutCounter{self} ⇒ frozen read ⇒ clean
+        // (Taborax / Uglúk / Overgrowth Elemental).
+        let pos = cond(
+            put_self(),
+            AbilityCondition::TargetMatchesFilter {
+                filter: creature(),
+                use_lki: true,
+                subject_slot: None,
+            },
+        );
+        assert!(
+            !conflicts(&pos, &se()),
+            "LKI 'was X' read × self counter ⇒ frozen ⇒ clean"
+        );
+        // NEG: present-tense "is a Cleric" × the same write ⇒ live ObjectPt read ×
+        // ObjectCounters write ⇒ CR 613.4 feed ⇒ conflict.
+        let neg = cond(
+            put_self(),
+            AbilityCondition::TargetMatchesFilter {
+                filter: creature(),
+                use_lki: false,
+                subject_slot: None,
+            },
+        );
+        assert!(
+            conflicts(&neg, &se()),
+            "live 'is X' read × self counter ⇒ conflict"
+        );
+    }
+
+    /// §L6 (CR 303.4d + CR 301.5c): an Aura/Equipment is never attached to itself
+    /// (an Aura can't enchant itself, an Equipment can't equip itself),
+    /// so an `AttachedTo` `valid_card` (the enchanted creature — the Ordeals'
+    /// "whenever enchanted creature attacks") provably EXCLUDES every source. The
+    /// classifier output is wired straight into the group structure so the excluded
+    /// event-object counter write drops from the source-counter-read feed.
+    #[test]
+    fn l6_attached_to_excludes_source() {
+        // Direct classifier assertions (the lever).
+        assert!(
+            filter_excludes_source(&TargetFilter::AttachedTo),
+            "AttachedTo excludes source"
+        );
+        assert!(
+            !filter_excludes_source(&TargetFilter::SelfRef),
+            "SelfRef does not exclude"
+        );
+        assert!(
+            !filter_excludes_source(&creature()),
+            "a bare creature filter does not exclude"
+        );
+
+        // Ordeal shape: source Aura reads its own 3-counter quest, event-object
+        // write puts a counter on the enchanted creature (TriggeringSource).
+        let ordeal = cond(
+            ra(put_counter(qfix(1), TargetFilter::TriggeringSource)),
+            qcheck(counters_src(), 3),
+        );
+        // POS: AttachedTo ⇒ excludes=true ⇒ event-object write dropped ⇒ clean.
+        let pos = gs(
+            true,
+            false,
+            false,
+            filter_excludes_source(&TargetFilter::AttachedTo),
+            true,
+            SourceCensus::unknown(),
+        );
+        assert!(!profiles_conflict(&ability_rw_profile(&ordeal), &pos));
+        // NEG: SelfRef ⇒ excludes=false ⇒ the counter write feeds the read ⇒ conflict.
+        let neg = gs(
+            true,
+            false,
+            false,
+            filter_excludes_source(&TargetFilter::SelfRef),
+            true,
+            SourceCensus::unknown(),
+        );
+        assert!(profiles_conflict(&ability_rw_profile(&ordeal), &neg));
+    }
+
+    /// §L7 (CR 608.2c + CR 603.3b): an `ObjectsShareQuality` operand that is the
+    /// card THIS resolution revealed (`LastRevealed`) is a per-resolution local —
+    /// observed by no sibling write (mirrors `RevealedHasCardType => EMPTY`). A live
+    /// board operand keeps the fail-closed `ObjectPt` read.
+    #[test]
+    fn l7_objects_share_quality_last_revealed_is_local() {
+        let share = |subject: TargetFilter, reference: TargetFilter| {
+            AbilityCondition::ObjectsShareQuality {
+                subject,
+                reference,
+                quality: crate::types::ability::SharedQuality::CreatureType,
+            }
+        };
+        // POS: revealed-card × revealed-card ⇒ both local ⇒ no read × self counter
+        // write ⇒ clean (Winnower Patrol / Kithkin Zephyrnaut).
+        let pos = cond(
+            ra(put_counter(qfix(1), TargetFilter::SelfRef)),
+            share(TargetFilter::LastRevealed, TargetFilter::LastRevealed),
+        );
+        assert!(
+            !conflicts(&pos, &se()),
+            "revealed × revealed operands ⇒ local ⇒ clean"
+        );
+        // NEG: a LIVE board operand (a creature you control) × revealed card ⇒
+        // board ObjectPt read × ObjectCounters write ⇒ conflict.
+        let neg = cond(
+            ra(put_counter(qfix(1), TargetFilter::SelfRef)),
+            share(creature(), TargetFilter::LastRevealed),
+        );
+        assert!(
+            conflicts(&neg, &se()),
+            "live board operand × revealed card ⇒ conflict"
+        );
+    }
+
+    /// §L9 (CR 707.10 + CR 115.7): a `CopySpell` targeting `TriggeringSource` /
+    /// `ParentTarget` reads the original BY ID, not the mutable stack top — so
+    /// independent copies commute (Pyromancer Ascension / Curse of Echoes /
+    /// Ominous Lockbox). `ChangeTargets` is a precise StackShape write, not the
+    /// maximal-conservative board read.
+    #[test]
+    fn l9_copy_spell_by_id_and_change_targets_stack_write() {
+        // POS: id-referential copies carry no StackShape BOARD read ⇒ commute.
+        for by_id in [TargetFilter::TriggeringSource, TargetFilter::ParentTarget] {
+            let p = ability_rw_profile(&ra(copy_spell(by_id.clone())));
+            assert!(
+                !p.reads_board.stack_shape,
+                "{by_id:?} copies the original by id"
+            );
+            assert!(
+                !conflicts(&ra(copy_spell(by_id.clone())), &batch()),
+                "{by_id:?} copies commute"
+            );
+        }
+        // NEG: the untargeted top-of-stack fallback reads the MUTABLE stack top.
+        let fb = ability_rw_profile(&ra(copy_spell(TargetFilter::Any)));
+        assert!(
+            fb.reads_board.stack_shape,
+            "untargeted fallback reads the stack top"
+        );
+        assert!(conflicts(&ra(copy_spell(TargetFilter::Any)), &batch()));
+
+        // ChangeTargets: a StackShape write only — NOT the conservative board read.
+        let ct = ability_rw_profile(&ra(Effect::ChangeTargets {
+            target: TargetFilter::StackSpell,
+            scope: crate::types::game_state::RetargetScope::Single,
+            forced_to: None,
+        }));
+        assert!(
+            ct.writes_external.stack_shape,
+            "ChangeTargets writes StackShape"
+        );
+        assert!(
+            !ct.reads_board.object_pt,
+            "ChangeTargets is not the maximal-conservative read"
+        );
+        assert!(
+            !conflicts(
+                &ra(Effect::ChangeTargets {
+                    target: TargetFilter::StackSpell,
+                    scope: crate::types::game_state::RetargetScope::Single,
+                    forced_to: None,
+                }),
+                &batch()
+            ),
+            "independent per-copy retargets commute"
+        );
+    }
+
+    /// §L12 (CR 701.60 + CR 701.60a): suspect/unsuspect is an idempotent
+    /// designation with NO observable RW kind — never the `Other` catch-all that
+    /// falsely conflicted with Frantic Scapegoat's "if ~ is suspected" source read.
+    #[test]
+    fn l12_suspect_unsuspect_no_observable_write() {
+        // "if ~ is suspected" — a source read (SourceMatchesFilter ⇒ reads_src).
+        let is_suspected = || AbilityCondition::SourceMatchesFilter { filter: creature() };
+        // POS: Suspect (empty profile) × the source read ⇒ no write to feed ⇒ clean.
+        for status in [
+            Effect::Suspect {
+                target: creature(),
+                scope: crate::types::ability::EffectScope::Single,
+            },
+            Effect::Unsuspect {
+                target: creature(),
+                scope: crate::types::ability::EffectScope::Single,
+            },
+        ] {
+            let pos = cond(ra(status), is_suspected());
+            assert!(
+                !conflicts(&pos, &se()),
+                "idempotent status designation × source read ⇒ clean"
+            );
+        }
+        // NEG control: an effect that DOES write `Other` (Goad) × the same source
+        // read ⇒ `Other` conflicts with any read ⇒ conflict.
+        let neg = cond(ra(Effect::Goad { target: creature() }), is_suspected());
+        assert!(
+            conflicts(&neg, &se()),
+            "an `Other` write × source read ⇒ conflict"
+        );
+    }
+
+    /// §L13 (CR 506.4c + CR 614.10): removing from combat / skipping a step or turn
+    /// is an idempotent SEQUENCING write (`TurnStructure`) observed by no profiled
+    /// read — not the maximal-conservative fallback (Gustcloak Savior / Lost in the
+    /// Woods / Time Bends). `TurnStructure` only self-conflicts.
+    #[test]
+    fn l13_remove_from_combat_and_skips_are_turn_structure() {
+        for eff in [
+            Effect::RemoveFromCombat {
+                target: TargetFilter::Any,
+            },
+            Effect::SkipNextStep {
+                target: TargetFilter::Controller,
+                step: crate::types::ability::StepSkipTarget::CombatPhase,
+                count: qfix(1),
+                scope: crate::types::ability::SkipScope::NextOccurrence,
+            },
+            Effect::SkipNextTurn {
+                target: TargetFilter::Controller,
+                count: qfix(1),
+            },
+        ] {
+            let p = ability_rw_profile(&ra(eff.clone()));
+            assert!(
+                p.writes_external.turn_structure,
+                "{eff:?} is a TurnStructure write"
+            );
+            assert!(
+                !p.reads_board.object_pt,
+                "{eff:?} is not the conservative fallback"
+            );
+        }
+        // POS: RemoveFromCombat (TurnStructure write) × a live board ObjectPt read ⇒
+        // TurnStructure feeds no ObjectPt read ⇒ clean.
+        let pos = cond(
+            ra(Effect::RemoveFromCombat {
+                target: TargetFilter::Any,
+            }),
+            AbilityCondition::TargetMatchesFilter {
+                filter: creature(),
+                use_lki: false,
+                subject_slot: None,
+            },
+        );
+        assert!(
+            !conflicts(&pos, &batch()),
+            "TurnStructure write × board ObjectPt read ⇒ clean"
+        );
+        // NEG: the dormant self-conflict row — a (hand-built) TurnStructure READ ×
+        // a TurnStructure write DOES feed (fail-closed for any future sequencing read).
+        let mut self_conflict = RwProfile::empty();
+        self_conflict.reads_board.set(StateKind::TurnStructure);
+        self_conflict.writes_external.set(StateKind::TurnStructure);
+        assert!(
+            profiles_conflict(&self_conflict, &batch()),
+            "TurnStructure read × write ⇒ conflict"
+        );
+    }
+
+    /// §L14 (CR 500 + CR 500.8): extra turns / additional phases are `TurnStructure`
+    /// sequencing writes (two extra turns commute), not the `Other` catch-all that
+    /// falsely conflicted with a co-occurring source read (Lighthouse Chronologist /
+    /// Second Chance / Regenerations Restored / Time Bends).
+    #[test]
+    fn l14_extra_turn_and_phase_are_turn_structure_not_other() {
+        // AdditionalPhase is likewise a TurnStructure write, never `Other`.
+        let ap = ability_rw_profile(&ra(Effect::AdditionalPhase {
+            target: TargetFilter::Controller,
+            phase: crate::types::phase::Phase::PostCombatMain,
+            after: crate::types::phase::Phase::PostCombatMain,
+            followed_by: vec![],
+            count: qfix(1),
+            attacker_restriction: None,
+        }));
+        assert!(
+            ap.writes_external.turn_structure,
+            "AdditionalPhase is a TurnStructure write"
+        );
+        assert!(
+            !ap.writes_external.other,
+            "AdditionalPhase is not the `Other` catch-all"
+        );
+
+        // A source counter read co-occurring with the sequencing write.
+        let extra_turn = || {
+            cond(
+                ra(Effect::ExtraTurn {
+                    target: TargetFilter::Controller,
+                }),
+                qcheck(counters_src(), 3),
+            )
+        };
+        // POS: ExtraTurn (TurnStructure) × source counter read ⇒ no feed ⇒ clean.
+        assert!(
+            !conflicts(&extra_turn(), &se()),
+            "TurnStructure write × source counter read ⇒ clean"
+        );
+        // NEG: the SAME read × an `Other` write (Goad) ⇒ conflict — proving
+        // TurnStructure is not `Other`.
+        let other = cond(
+            ra(Effect::Goad { target: creature() }),
+            qcheck(counters_src(), 3),
+        );
+        assert!(
+            conflicts(&other, &se()),
+            "`Other` write × source counter read ⇒ conflict"
+        );
+    }
+
+    /// §voltstorm (CR 700.2): a modal resolves ONE mode; the classifier descends
+    /// every `mode_abilities` entry as a UNION rather than falling to
+    /// `conservative()`. If the union has no feed, no single choice (and no
+    /// cross-choice sibling pair) is order-observable (Voltstorm Angel).
+    #[test]
+    fn voltstorm_mode_abilities_descend_as_union() {
+        // Base effect is inert (PairWith{Self} ⇒ empty profile), isolating the union.
+        let base = || Effect::PairWith {
+            target: TargetFilter::SelfRef,
+        };
+        // POS: all modes independent (a life gain and a draw — writes, no reads) ⇒
+        // union has no feed ⇒ clean.
+        let mut pos = ra(base());
+        pos.mode_abilities = vec![
+            def(gain_life(qfix(1))),
+            def(Effect::Draw {
+                count: qfix(1),
+                target: TargetFilter::Controller,
+            }),
+        ];
+        assert!(
+            !conflicts(&pos, &batch()),
+            "independent modes ⇒ union clean"
+        );
+        // NEG: one mode writes counters on creatures, another reads a board
+        // ObjectPt ⇒ the UNION feeds (counters change P/T) ⇒ conflict.
+        let mut reader = def(gain_life(qfix(1)));
+        reader.condition = Some(AbilityCondition::TargetMatchesFilter {
+            filter: creature(),
+            use_lki: false,
+            subject_slot: None,
+        });
+        let mut neg = ra(base());
+        neg.mode_abilities = vec![def(put_counter_all(qfix(1), creature())), reader];
+        assert!(
+            conflicts(&neg, &batch()),
+            "one mode reads what another mode writes ⇒ union conflict"
+        );
+    }
+
+    /// The new `StateKind::TurnStructure` kind: `KindSet` add/union/subtract behave,
+    /// and the `feeds` matrix isolates it — a sequencing read × sequencing write
+    /// conflicts, but it neither feeds nor is fed by `ObjectPt`.
+    #[test]
+    fn turn_structure_kind_isolated_self_conflict() {
+        let ts = KindSet::one(StateKind::TurnStructure);
+        assert!(ts.turn_structure);
+        assert!(
+            KindSet::EMPTY.union(ts).turn_structure,
+            "union carries TurnStructure"
+        );
+        assert!(
+            !ts.minus(ts).turn_structure,
+            "subtract clears TurnStructure"
+        );
+        let (nc, nz) = (Census::None, ZoneSpan::None);
+        assert!(
+            feeds(ts, ts, &nc, &nc, &nz, &nz),
+            "TurnStructure read × write ⇒ self-conflict"
+        );
+        let pt = KindSet::one(StateKind::ObjectPt);
+        assert!(
+            !feeds(pt, ts, &nc, &nc, &nz, &nz),
+            "TurnStructure write does not feed ObjectPt"
+        );
+        assert!(
+            !feeds(ts, pt, &nc, &nc, &nz, &nz),
+            "ObjectPt write does not feed TurnStructure"
         );
     }
 
