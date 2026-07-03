@@ -629,7 +629,19 @@ pub(crate) fn parse_static_line_inner(
                     return Some(def);
                 }
             }
-            if let Some(def) = parse_static_line_inner(&split.canonical, InvertedAsLongAs::Skip) {
+            if let Some(mut def) = parse_static_line_inner(&split.canonical, InvertedAsLongAs::Skip)
+            {
+                // CR 611.3a: the split stripped the "as long as <condition>" gate
+                // from the canonical rewrite, so the recursed effect parser (e.g.
+                // DoubleTriggers, which carries no condition of its own) never sees
+                // it. Re-attach the split condition whenever the recursed def
+                // didn't derive one itself — this restores the gate for the whole
+                // class of split inverted-as-long-as statics, not just Cloud.
+                if def.condition.is_none() {
+                    if let Some(condition) = parse_static_condition(&split.condition_text) {
+                        def.condition = Some(condition);
+                    }
+                }
                 return Some(def.description(text.to_string()));
             }
             // CR 601.3b + CR 702.8a: Inverted flash-grant conditional:
