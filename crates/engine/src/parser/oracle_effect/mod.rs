@@ -81,8 +81,8 @@ use super::oracle_target::{
     parse_type_phrase_with_ctx, TargetSyntax,
 };
 use super::oracle_util::{
-    contains_possessive, has_unconsumed_conditional, parse_count_expr, parse_mana_symbols,
-    parse_number, split_around, starts_with_possessive, strip_after, TextPair,
+    contains_possessive, has_unconsumed_conditional, parse_count_expr, parse_creature_subtype,
+    parse_mana_symbols, parse_number, split_around, starts_with_possessive, strip_after, TextPair,
 };
 use crate::game::triggers;
 use crate::parser::oracle_effect::subject::parse_subject_application;
@@ -161,6 +161,48 @@ pub(crate) fn is_bare_object_pronoun(text: &str) -> bool {
         text,
         "it" | "itself" | "him" | "himself" | "her" | "herself" | "them" | "themselves"
     )
+}
+
+/// CR 608.2c anaphora: substitute `replacement` for the FIRST bare object
+/// pronoun word ("it"/"them"/…) in `body`, leaving any later pronouns intact so
+/// a downstream "and it gains …" still chains to the now-declared target via
+/// `ParentTarget`. Word-bounded (checks a whitespace-delimited token, stripping
+/// trailing punctuation) so "its"/"item" are never touched. Returns `None` when
+/// the body contains no bare object pronoun.
+///
+/// Used by the target-declaring "if target … is the chosen type, <body>" strip
+/// (A Killer Among Us) to hoist the condition's target into the body so ordinary
+/// target parsing declares it as slot 0.
+///
+/// ponytail: rewrites the FIRST pronoun only; upgrade to per-pronoun tracking
+/// iff a multi-target "chosen type" card ever appears.
+pub(crate) fn replace_first_object_pronoun(body: &str, replacement: &str) -> Option<String> {
+    let bytes = body.as_bytes();
+    let mut i = 0;
+    while i < body.len() {
+        while i < body.len() && bytes[i].is_ascii_whitespace() {
+            i += 1;
+        }
+        if i >= body.len() {
+            break;
+        }
+        let start = i;
+        while i < body.len() && !bytes[i].is_ascii_whitespace() {
+            i += 1;
+        }
+        let word = &body[start..i];
+        let alpha = word.trim_end_matches(|c: char| !c.is_alphanumeric());
+        if is_bare_object_pronoun(alpha) {
+            let trailing = &word[alpha.len()..];
+            let mut out = String::with_capacity(body.len() + replacement.len());
+            out.push_str(&body[..start]);
+            out.push_str(replacement);
+            out.push_str(trailing);
+            out.push_str(&body[i..]);
+            return Some(out);
+        }
+    }
+    None
 }
 
 /// CR 608.2k: Resolve bare pronoun ("it"/"itself"/"its") based on parser context.
@@ -17870,6 +17912,30 @@ fn is_card_type_enumeration(rest: &str) -> bool {
     }
 }
 
+/// CR 205.3m: Recognize an *enumerated* creature-type choice — an explicit
+/// Oracle-listed candidate set such as A Killer Among Us' "Human, Merfolk, or
+/// Goblin". Returns the candidate creature types in source order (canonicalized)
+/// when `rest` is a 2+-element list of creature-type words, else `None`. This is
+/// the creature-type analogue of `is_card_type_enumeration`, but yields the
+/// restricted `options` list rather than collapsing to the generic chooser
+/// (a partial candidate set is the whole point — CR 205.3m + CR 607.2d).
+fn parse_creature_type_enumeration(rest: &str) -> Option<Vec<String>> {
+    fn creature_type_word(input: &str) -> nom::IResult<&str, String, OracleError<'_>> {
+        match parse_creature_subtype(input) {
+            Some((canonical, len)) => Ok((&input[len..], canonical)),
+            None => Err(oracle_err(input)),
+        }
+    }
+    fn separator(input: &str) -> nom::IResult<&str, &str, OracleError<'_>> {
+        alt((tag(", or "), tag(", "), tag(" or "))).parse(input)
+    }
+    let rest = rest.trim_end_matches('.').trim_end();
+    match all_consuming(nom::multi::separated_list1(separator, creature_type_word)).parse(rest) {
+        Ok((_, items)) if items.len() >= 2 => Some(items),
+        _ => None,
+    }
+}
+
 /// Match "choose a creature type", "choose a color", "choose odd or even",
 /// "choose a basic land type", "choose a card type" from lowercased Oracle text.
 pub(crate) fn try_parse_named_choice(lower: &str) -> Option<ChoiceType> {
@@ -17881,7 +17947,12 @@ pub(crate) fn try_parse_named_choice(lower: &str) -> Option<ChoiceType> {
     .ok()?;
     type E<'a> = OracleError<'a>;
     if tag::<_, _, E>("a creature type").parse(rest).is_ok() {
-        Some(ChoiceType::CreatureType)
+        Some(ChoiceType::creature_type())
+    } else if let Some(options) = parse_creature_type_enumeration(rest) {
+        // CR 205.3m + CR 607.2d: "secretly choose Human, Merfolk, or Goblin"
+        // (A Killer Among Us) — an explicit candidate set. Preserve source order
+        // so the restricted `WaitingFor::NamedChoice.options` matches the print.
+        Some(ChoiceType::creature_type_from(options))
     } else if let Ok((_, excluded)) = preceded(
         tag::<_, _, E>("a color other than "),
         nom_primitives::parse_color,
@@ -21693,6 +21764,21 @@ pub(crate) fn parse_effect_chain_ir(
         }
 
         let (condition, text) = strip_additional_cost_conditional(normalized_text);
+        // CR 205.3m + CR 607.2d + CR 608.2h: target-declaring leading-if that
+        // gates the ability's target on the source's chosen creature type
+        // ("If target attacking creature token is the chosen type, <body>",
+        // A Killer Among Us). Runs after the additional-cost stripper (so
+        // Celestial's compound arm still wins first) and before the general
+        // handler (which would drop the target-hoist). Rewrites the body to
+        // declare the target as slot 0.
+        let (condition, text) = if condition.is_none() {
+            match conditions::strip_target_declaring_chosen_type_conditional(&text) {
+                Some((cond, body)) => (Some(cond), body),
+                None => (None, text),
+            }
+        } else {
+            (condition, text)
+        };
         // CR 608.2c: General leading conditional — "if [condition], [effect]".
         // Runs only when no dedicated leading stripper matched. Handles patterns like
         // "if you control 3 or more creatures, draw a card".

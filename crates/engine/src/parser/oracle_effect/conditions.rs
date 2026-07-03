@@ -16,7 +16,7 @@ use super::super::oracle_nom::condition::{
 use super::super::oracle_nom::primitives as nom_primitives;
 use super::super::oracle_nom::quantity as nom_quantity;
 use super::super::oracle_quantity::{canonicalize_quantity_ref, parse_cda_quantity};
-use super::super::oracle_target::{parse_type_phrase, parse_zone_word};
+use super::super::oracle_target::{parse_target, parse_type_phrase, parse_zone_word};
 use super::super::oracle_util::{parse_comparison_suffix, parse_subtype, TextPair};
 use super::sequence::parse_dig_from_among;
 use super::{parse_effect_chain, scan_contains_phrase, ParseContext};
@@ -447,6 +447,55 @@ fn parse_revealed_card_is_chosen_type(i: &str) -> OracleResult<'_, ()> {
         ),
     )
     .parse(i)
+}
+
+/// CR 205.3m + CR 607.2d + CR 608.2h: A leading-if that DECLARES the ability's
+/// target and gates it on the source's chosen creature type — "If target
+/// <filter> is the chosen type, <body>" (A Killer Among Us). This grammar is
+/// novel: the target is introduced INSIDE the condition, not by the body. If the
+/// gate were emitted with `subject_slot: None` and the target left in the
+/// condition, the body would declare no object target and the buff would land on
+/// an unbound `TriggeringSource` (dead for an activated ability). So the captured
+/// target phrase is HOISTED into the body's first bare object pronoun: ordinary
+/// target parsing then declares it as slot 0, and the gate binds to slot 0.
+///
+/// Returns `(TargetMatchesFilter{ IsChosenCreatureType, subject_slot: Some(0) },
+/// rewritten_body)` or `None` when the leading clause is not this shape.
+pub(super) fn strip_target_declaring_chosen_type_conditional(
+    text: &str,
+) -> Option<(AbilityCondition, String)> {
+    let lower = text.to_lowercase();
+    let ((), after_if) = nom_on_lower(text, &lower, |i| {
+        value((), tag::<_, _, OracleError<'_>>("if ")).parse(i)
+    })?;
+    // Parse the target phrase introduced by the condition ("target attacking
+    // creature token"). Must be a single typed filter to carry the chosen-type
+    // leg and to declare a slot-0 target when hoisted into the body.
+    let (filter, remainder) = parse_target(after_if);
+    let TargetFilter::Typed(mut typed) = filter else {
+        return None;
+    };
+    // The copula must be exactly " is the chosen type, " — the present-tense
+    // creature-type gate, distinct from the "of the chosen type" adjectival
+    // suffix — with a trailing comma separating it from the body.
+    let rem_lower = remainder.to_lowercase();
+    let ((), body) = nom_on_lower(remainder, &rem_lower, |i| {
+        value((), tag::<_, _, OracleError<'_>>(" is the chosen type, ")).parse(i)
+    })?;
+    // The literal target phrase consumed by `parse_target` (original case).
+    let target_phrase = &after_if[..after_if.len() - remainder.len()];
+    let rewritten_body = super::replace_first_object_pronoun(body, target_phrase)?;
+    // CR 205.3e + CR 205.3m + CR 702.73a: gate the declared target on the
+    // source's chosen creature type.
+    typed.properties.push(FilterProp::IsChosenCreatureType);
+    Some((
+        AbilityCondition::TargetMatchesFilter {
+            filter: TargetFilter::Typed(typed),
+            use_lki: false,
+            subject_slot: Some(0),
+        },
+        rewritten_body,
+    ))
 }
 
 pub(super) fn strip_additional_cost_conditional(text: &str) -> (Option<AbilityCondition>, String) {

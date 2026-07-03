@@ -10873,7 +10873,7 @@ mod tests {
         assert!(matches!(
             *execute.effect,
             Effect::Choose {
-                choice_type: ChoiceType::CreatureType,
+                choice_type: ChoiceType::CreatureType { .. },
                 persist: true,
                 ..
             }

@@ -12228,7 +12228,7 @@ fn choose_a_creature_type() {
     assert_eq!(
         e,
         Effect::Choose {
-            choice_type: ChoiceType::CreatureType,
+            choice_type: ChoiceType::creature_type(),
             persist: true,
             selection: crate::types::ability::TargetSelectionMode::Chosen,
         }
@@ -17245,7 +17245,7 @@ fn become_creature_type_of_choice() {
         matches!(
             e,
             Effect::Choose {
-                choice_type: ChoiceType::CreatureType,
+                choice_type: ChoiceType::CreatureType { .. },
                 ..
             }
         ),
@@ -31937,7 +31937,7 @@ fn kindred_dominance_excludes_chosen_creature_type() {
     else {
         panic!("expected Choose, got {:?}", def.effect);
     };
-    assert_eq!(*choice_type, ChoiceType::CreatureType);
+    assert_eq!(*choice_type, ChoiceType::creature_type());
     assert!(*persist);
 
     let destroy = def.sub_ability.as_ref().expect("destroy continuation");

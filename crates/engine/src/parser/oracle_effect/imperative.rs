@@ -4274,7 +4274,7 @@ pub(super) fn lower_choose_ast(ast: ChooseImperativeAst) -> Effect {
             persist: matches!(
                 choice_type,
                 ChoiceType::CardName
-                    | ChoiceType::CreatureType
+                    | ChoiceType::CreatureType { .. }
                     | ChoiceType::CardType { .. }
                     | ChoiceType::Labeled { .. }
                     | ChoiceType::Keyword { .. }

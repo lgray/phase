@@ -297,7 +297,15 @@ pub enum OpponentMayScope {
 /// What kind of named choice the player must make at resolution time.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ChoiceType {
-    CreatureType,
+    /// CR 205.3m: A choice among creature types. `options`, when non-empty,
+    /// narrows the offered set below the full creature-type list to an explicit
+    /// Oracle-listed candidate set (e.g. A Killer Among Us' "secretly choose
+    /// Human, Merfolk, or Goblin") — mirrors the `Color { excluded }` /
+    /// `CardType { excluded }` restriction axis. Empty ⇒ all creature types
+    /// (Morophon / Changeling), which keeps existing card-data JSON byte-stable.
+    CreatureType {
+        options: Vec<String>,
+    },
     Color {
         /// Colors that cannot be chosen by this prompt.
         ///
@@ -368,6 +376,19 @@ pub enum ChoiceType {
 }
 
 impl ChoiceType {
+    /// Unrestricted creature-type choice (all creature types offered).
+    pub fn creature_type() -> Self {
+        Self::CreatureType {
+            options: Vec::new(),
+        }
+    }
+
+    /// Creature-type choice restricted to an explicit Oracle-listed candidate
+    /// set (CR 205.3m), e.g. "secretly choose Human, Merfolk, or Goblin".
+    pub fn creature_type_from(options: Vec<String>) -> Self {
+        Self::CreatureType { options }
+    }
+
     pub fn color() -> Self {
         Self::Color {
             excluded: Vec::new(),
@@ -417,8 +438,19 @@ impl Serialize for ChoiceType {
         S: Serializer,
     {
         match self {
-            Self::CreatureType => {
-                serializer.serialize_unit_variant("ChoiceType", 0, "CreatureType")
+            // Serialize the unrestricted form as the legacy unit variant
+            // "CreatureType" so existing Morophon/Changeling card-data JSON
+            // stays byte-stable; only emit the struct form when a candidate
+            // restriction is present.
+            Self::CreatureType { options } => {
+                if options.is_empty() {
+                    serializer.serialize_unit_variant("ChoiceType", 0, "CreatureType")
+                } else {
+                    let mut variant =
+                        serializer.serialize_struct_variant("ChoiceType", 0, "CreatureType", 1)?;
+                    variant.serialize_field("options", options)?;
+                    variant.end()
+                }
             }
             Self::Color { excluded } => {
                 if excluded.is_empty() {
@@ -513,6 +545,10 @@ impl<'de> Deserialize<'de> for ChoiceType {
 
         #[derive(Deserialize)]
         enum ChoiceTypeData {
+            CreatureType {
+                #[serde(default)]
+                options: Vec<String>,
+            },
             Color {
                 #[serde(default)]
                 excluded: Vec<ManaColor>,
@@ -547,7 +583,7 @@ impl<'de> Deserialize<'de> for ChoiceType {
 
         match ChoiceTypeRepr::deserialize(deserializer)? {
             ChoiceTypeRepr::Unit(value) => match value.as_str() {
-                "CreatureType" => Ok(Self::CreatureType),
+                "CreatureType" => Ok(Self::creature_type()),
                 "Color" => Ok(Self::color()),
                 "OddOrEven" => Ok(Self::OddOrEven),
                 "BasicLandType" => Ok(Self::BasicLandType),
@@ -578,6 +614,7 @@ impl<'de> Deserialize<'de> for ChoiceType {
                 )),
             },
             ChoiceTypeRepr::Data(data) => match data {
+                ChoiceTypeData::CreatureType { options } => Ok(Self::CreatureType { options }),
                 ChoiceTypeData::Color { excluded } => Ok(Self::Color { excluded }),
                 ChoiceTypeData::CardType { excluded } => Ok(Self::CardType { excluded }),
                 ChoiceTypeData::NumberRange { min, max } => Ok(Self::NumberRange { min, max }),
@@ -920,7 +957,7 @@ impl ChosenAttribute {
     pub fn choice_type(&self) -> ChoiceType {
         match self {
             Self::Color(_) => ChoiceType::color(),
-            Self::CreatureType(_) => ChoiceType::CreatureType,
+            Self::CreatureType(_) => ChoiceType::creature_type(),
             Self::BasicLandType(_) => ChoiceType::BasicLandType,
             Self::CardType(_) => ChoiceType::card_type(),
             Self::OddOrEven(_) => ChoiceType::OddOrEven,
@@ -1020,7 +1057,7 @@ impl ChoiceValue {
                 let color = value.parse::<ManaColor>().ok()?;
                 (!excluded.contains(&color)).then_some(Self::Color(color))
             }
-            ChoiceType::CreatureType => Some(Self::CreatureType(value.to_string())),
+            ChoiceType::CreatureType { .. } => Some(Self::CreatureType(value.to_string())),
             ChoiceType::BasicLandType => {
                 value.parse::<BasicLandType>().ok().map(Self::BasicLandType)
             }

@@ -1324,7 +1324,7 @@ fn chosen_subtype_kind_from_persisted_choice(
 fn chosen_subtype_kind_from_ability(def: &AbilityDefinition) -> Option<ChosenSubtypeKind> {
     match def.effect.as_ref() {
         Effect::Choose {
-            choice_type: ChoiceType::CreatureType,
+            choice_type: ChoiceType::CreatureType { .. },
             persist: true,
             ..
         } => Some(ChosenSubtypeKind::CreatureType),

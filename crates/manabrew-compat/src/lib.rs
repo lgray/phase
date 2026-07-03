@@ -735,7 +735,7 @@ pub fn build_prompt(
             insert_json(&mut fields, "validTypes", options);
             match choice_type {
                 ChoiceType::Color { .. } => "chooseColor",
-                ChoiceType::CreatureType
+                ChoiceType::CreatureType { .. }
                 | ChoiceType::CardType { .. }
                 | ChoiceType::LandType
                 | ChoiceType::BasicLandType => "chooseType",
@@ -2385,7 +2385,7 @@ mod tests {
                 "chooseType",
                 WaitingFor::NamedChoice {
                     player: PlayerId(0),
-                    choice_type: ChoiceType::CreatureType,
+                    choice_type: ChoiceType::creature_type(),
                     options: vec!["Wizard".to_string()],
                     source_id: Some(ObjectId(1)),
                 },
