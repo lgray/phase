@@ -4711,6 +4711,16 @@ pub enum QuantityRef {
     },
     /// CR 710.2: Number of crimes the controller has committed this turn.
     CrimesCommittedThisTurn,
+    /// CR 701.65b / 701.66b / 701.67c / 702.189b: count of distinct bend types
+    /// (air/earth/water/fire) the controller has performed this turn — these are
+    /// the "whenever a player [airbends/earthbends/waterbends/firebends]" trigger
+    /// rules that `game::bending::record_bending` records. Reads
+    /// `Player::bending_types_this_turn.len()` (a `HashSet<BendingType>` with
+    /// exactly four possible members). Backs Avatar Aang's "if you've done all
+    /// four this turn" (`>= 4` means every distinct bend type). Controller-scoped,
+    /// mirroring the bare `CrimesCommittedThisTurn` / `DescendedThisTurn` per-turn
+    /// accumulator siblings.
+    BendTypesThisTurn,
     /// CR 119.4: Amount of life gained this turn, scoped by `player` per the
     /// workspace "Parameterize, don't proliferate" principle (Round Π-4 — mirrors
     /// `LifeLostThisTurn`'s Π-3 lift). `Controller` reads

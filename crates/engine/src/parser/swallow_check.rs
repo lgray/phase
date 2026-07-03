@@ -3128,6 +3128,9 @@ fn detect_duration_this_turn(
         "CardsDrawnThisTurn",
         "BattlefieldEntriesThisTurn",
         "PlayerActionsThisTurn",
+        // CR 603.4: "if you've done all four this turn" — the distinct-bend-count
+        // intervening-if condition consumes the "this turn" scope (Avatar Aang).
+        "BendTypesThisTurn",
         "OpponentLostLife",
         "OpponentDealtCombatDamage",
         // CR 611.3: a condition slot serialized as the typed `Unrecognized`

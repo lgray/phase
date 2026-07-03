@@ -4180,6 +4180,13 @@ fn parse_youve_this_turn(input: &str) -> OracleResult<'_, StaticCondition> {
         parse_youve_life_history_condition,
         parse_youve_combat_history_condition,
         parse_youve_player_action_history_condition,
+        // CR 603.4 + CR 608.2c: "you've done all four this turn" — back-references
+        // the four bend verbs in Avatar Aang's trigger head; `>= 4` means every
+        // distinct bend type was performed this turn.
+        value(
+            make_quantity_ge(QuantityRef::BendTypesThisTurn, 4),
+            tag("done all four this turn"),
+        ),
         // CR 305.1 + CR 305.2a: "you've played a land [this turn]" — present-
         // perfect land-play history. Shares `parse_played_a_land_this_turn_body`
         // with the simple-past / "you have" dispatcher. Backs intervening-if
@@ -7582,6 +7589,30 @@ mod tests {
     };
     use crate::types::card_type::Supertype;
     use crate::types::mana::{ManaColor, ManaCost};
+
+    /// CR 603.4 + CR 608.2c: Avatar Aang's intervening-if "you've done all four
+    /// this turn" parses to a distinct-bend-count comparison (`>= 4`).
+    #[test]
+    fn parse_youve_done_all_four_this_turn_is_bend_count_ge_four() {
+        let (rest, cond) =
+            parse_condition("if you've done all four this turn").expect("must parse");
+        assert_eq!(
+            rest, "",
+            "condition should be fully consumed, remainder {rest:?}"
+        );
+        match cond {
+            StaticCondition::QuantityComparison {
+                lhs: QuantityExpr::Ref { qty },
+                comparator,
+                rhs: QuantityExpr::Fixed { value },
+            } => {
+                assert_eq!(qty, QuantityRef::BendTypesThisTurn);
+                assert_eq!(comparator, Comparator::GE);
+                assert_eq!(value, 4);
+            }
+            other => panic!("expected QuantityComparison BendTypesThisTurn>=4, got {other:?}"),
+        }
+    }
 
     /// CR 603.12 + CR 701.21a: the active-voice reflexive sacrifice gate
     /// ("you sacrifice [quantifier] [type] this way") parses to its filter for

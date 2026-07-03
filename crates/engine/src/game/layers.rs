@@ -2112,6 +2112,8 @@ fn quantity_ref_reads_zone(qty: &QuantityRef, zone: Zone) -> bool {
         | QuantityRef::AdditionalCostPaymentCountFor { .. }
         | QuantityRef::AttackedThisTurn { .. }
         | QuantityRef::BattlefieldEntriesThisTurn { .. }
+        // Per-turn bend-type tracking (Avatar Aang) — turn history, not a zone read.
+        | QuantityRef::BendTypesThisTurn
         | QuantityRef::ChosenNumber
         | QuantityRef::ColorsInCommandersColorIdentity
         | QuantityRef::CommanderCastFromCommandZoneCount

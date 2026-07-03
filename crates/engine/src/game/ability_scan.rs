@@ -1762,6 +1762,9 @@ fn scan_quantity_ref(x: &QuantityRef) -> Axes {
             acc
         }
         QuantityRef::CrimesCommittedThisTurn => Axes::NONE,
+        // Controller turn-accumulator: no event/sibling/projected axis (mirrors
+        // CrimesCommittedThisTurn / DescendedThisTurn).
+        QuantityRef::BendTypesThisTurn => Axes::NONE,
         QuantityRef::LifeGainedThisTurn { player } => {
             let mut acc = Axes {
                 event: false,

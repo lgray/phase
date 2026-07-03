@@ -384,6 +384,7 @@ fn quantity_ref_uses_unspent_mana(qty: &QuantityRef) -> bool {
         | QuantityRef::SpellsCastThisTurn { .. }
         | QuantityRef::SacrificedThisTurn { .. }
         | QuantityRef::CrimesCommittedThisTurn
+        | QuantityRef::BendTypesThisTurn
         | QuantityRef::LifeGainedThisTurn { .. }
         | QuantityRef::CardsDrawnThisTurn { .. }
         | QuantityRef::BattlefieldEntriesThisTurn { .. }
@@ -636,6 +637,7 @@ fn quantity_ref_uses_object_count(qty: &QuantityRef) -> bool {
         | QuantityRef::SpellsCastThisTurn { .. }
         | QuantityRef::SacrificedThisTurn { .. }
         | QuantityRef::CrimesCommittedThisTurn
+        | QuantityRef::BendTypesThisTurn
         | QuantityRef::LifeGainedThisTurn { .. }
         | QuantityRef::CardsDrawnThisTurn { .. }
         | QuantityRef::BattlefieldEntriesThisTurn { .. }
@@ -821,6 +823,7 @@ fn entered_object_perturbs_quantity_ref(
         | QuantityRef::SpellsCastThisTurn { .. }
         | QuantityRef::SacrificedThisTurn { .. }
         | QuantityRef::CrimesCommittedThisTurn
+        | QuantityRef::BendTypesThisTurn
         | QuantityRef::LifeGainedThisTurn { .. }
         | QuantityRef::CardsDrawnThisTurn { .. }
         | QuantityRef::BattlefieldEntriesThisTurn { .. }
@@ -2565,6 +2568,11 @@ fn resolve_ref(
         QuantityRef::CrimesCommittedThisTurn => {
             player.map_or(0, |p| u32_to_i32_saturating(p.crimes_committed_this_turn))
         }
+        // CR 701.65b/701.66b/701.67c/702.189b: distinct bend types the controller
+        // performed this turn — reads the tracked `HashSet<BendingType>` cardinality.
+        QuantityRef::BendTypesThisTurn => player.map_or(0, |p| {
+            usize_to_i32_saturating(p.bending_types_this_turn.len())
+        }),
         // CR 119.4: Life gained this turn, scoped via PlayerScope (Π-4).
         QuantityRef::LifeGainedThisTurn { player } => {
             resolve_per_player_scalar(state, player, controller, ctx, targets, ability, |p| {
