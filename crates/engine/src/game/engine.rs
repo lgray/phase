@@ -4193,6 +4193,29 @@ fn apply_action(
                 return Err(EngineError::NotYourPriority);
             }
             let p = *player;
+            // CR 116.2b + CR 702.37e / CR 702.168d / CR 701.40b + CR 106.6: turning
+            // a face-down permanent face up is a special action whose morph/disguise/
+            // manifest cost must be paid *before* the flip. `turn_face_up_prepare`
+            // validates the action and derives that cost; payment routes through
+            // `PaymentContext::SpecialAction(TurnFaceUp)` so spend-restricted mana
+            // ("only to turn permanents face up", Overgrown Zealot / Tin Street
+            // Gossip) is eligible here while other-context mana is rejected. Mirrors
+            // the `UnlockDoor` special-action handler.
+            let cost = super::morph::turn_face_up_prepare(state, object_id, p)?;
+            let cost = casting::apply_special_action_cost_reduction(
+                state,
+                p,
+                crate::types::mana::SpecialAction::TurnFaceUp,
+                cost,
+            );
+            casting::pay_special_action_mana_cost(
+                state,
+                p,
+                Some(object_id),
+                &cost,
+                crate::types::mana::SpecialAction::TurnFaceUp,
+                &mut events,
+            )?;
             super::morph::turn_face_up(state, p, object_id, &mut events)?;
             WaitingFor::Priority { player: p }
         }

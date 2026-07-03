@@ -202,17 +202,27 @@ pub(crate) fn is_blocked_by_cant_be_turned_face_up(state: &GameState, object_id:
     false
 }
 
-/// CR 702.37c: Turning a face-down permanent face up restores its original characteristics.
+/// CR 702.37e / CR 702.168d / CR 701.40b: Validate a turn-face-up special action
+/// and derive the mana cost that must be paid before the permanent is flipped.
 ///
-/// Validates that the player controls the permanent and that it has morph/disguise
-/// cost data stored. Sets `face_down = false`, restores characteristics from
-/// stored `back_face`, and emits `GameEvent::TurnedFaceUp`.
-pub fn turn_face_up(
-    state: &mut GameState,
-    player: PlayerId,
+/// Shared front half of [`turn_face_up`]: checks controller, face-down state,
+/// battlefield zone, and the `CantBeTurnedFaceUp` static (CR 116.2b + CR 708.7),
+/// then extracts the cost to pay:
+/// - a morph/megamorph/disguise keyword's stored cost (CR 702.37e / CR 702.168d), or
+/// - a manifested creature card's mana cost (CR 701.40b).
+///
+/// CR 701.40b: a face-down permanent that is neither (no morph/disguise cost and
+/// not a creature card) can't be turned face up this way — returns `Err`.
+///
+/// Kept separate from the commit half so the paid `GameAction::TurnFaceUp`
+/// special-action handler can charge the returned cost through
+/// `pay_special_action_mana_cost` before `turn_face_up` flips the permanent,
+/// while the free direct callers (grant path, tests) reuse the same guards.
+pub(crate) fn turn_face_up_prepare(
+    state: &GameState,
     object_id: ObjectId,
-    events: &mut Vec<GameEvent>,
-) -> Result<(), EngineError> {
+    player: PlayerId,
+) -> Result<ManaCost, EngineError> {
     let obj = state
         .objects
         .get(&object_id)
@@ -250,31 +260,57 @@ pub fn turn_face_up(
 
     let back_face = obj
         .back_face
-        .clone()
+        .as_ref()
         .ok_or_else(|| EngineError::InvalidAction("No stored face data".to_string()))?;
 
-    // Check that the card actually has a morph or disguise cost
-    let has_morph_cost = back_face.keywords.iter().any(|k| {
-        matches!(
-            k,
-            Keyword::Morph(_) | Keyword::Megamorph(_) | Keyword::Disguise(_)
-        )
-    });
+    // CR 702.37e / CR 702.168d: the morph/megamorph/disguise cost is the cost
+    // paid to turn the permanent face up. CR 701.40b: a manifested creature card
+    // is turned up by paying its mana cost; a non-creature or no-mana-cost
+    // manifest can't be turned up this way.
+    back_face
+        .keywords
+        .iter()
+        .find_map(|k| match k {
+            Keyword::Morph(c) | Keyword::Megamorph(c) | Keyword::Disguise(c) => Some(c.clone()),
+            _ => None,
+        })
+        .or_else(|| {
+            back_face
+                .card_types
+                .core_types
+                .contains(&CoreType::Creature)
+                .then(|| back_face.mana_cost.clone())
+        })
+        .ok_or_else(|| {
+            EngineError::InvalidAction("Card cannot be turned face up (no morph cost)".to_string())
+        })
+}
 
-    // For manifest: creature cards can be turned face up by paying mana cost
-    // (handled separately -- here we just need morph/disguise keywords OR
-    // we allow turning up if the card has a mana cost and is a creature)
-    let is_manifested_creature = !has_morph_cost
-        && back_face
-            .card_types
-            .core_types
-            .contains(&CoreType::Creature);
+/// CR 702.37c: Turning a face-down permanent face up restores its original characteristics.
+///
+/// Validates that the player controls the permanent and that it has morph/disguise
+/// cost data stored. Sets `face_down = false`, restores characteristics from
+/// stored `back_face`, and emits `GameEvent::TurnedFaceUp`.
+pub fn turn_face_up(
+    state: &mut GameState,
+    player: PlayerId,
+    object_id: ObjectId,
+    events: &mut Vec<GameEvent>,
+) -> Result<(), EngineError> {
+    // All validation + cost derivation lives in `turn_face_up_prepare` so the
+    // paid `GameAction::TurnFaceUp` special-action route and the free direct
+    // callers agree on legality. The derived cost is charged by the special-action
+    // handler before it calls this commit half; the free callers discard it.
+    turn_face_up_prepare(state, object_id, player)?;
 
-    if !has_morph_cost && !is_manifested_creature {
-        return Err(EngineError::InvalidAction(
-            "Card cannot be turned face up (no morph cost)".to_string(),
-        ));
-    }
+    // `turn_face_up_prepare` guaranteed the stored face is present; re-clone it
+    // for the commit. The immutable borrow ends before `next_timestamp` below
+    // (which takes `&mut self`).
+    let back_face = state
+        .objects
+        .get(&object_id)
+        .and_then(|obj| obj.back_face.clone())
+        .ok_or_else(|| EngineError::InvalidAction("No stored face data".to_string()))?;
 
     // CR 613.7f: a permanent receives a new timestamp when it turns face up.
     // (Turning face DOWN in place is unreachable in the engine today — only

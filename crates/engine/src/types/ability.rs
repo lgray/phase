@@ -1898,10 +1898,11 @@ pub enum ManaSpendRestriction {
     /// Zealot; Tin Street Gossip). A leaf of the [`ManaSpendRestriction::Any`]
     /// disjunction. Lowered to
     /// [`ManaRestriction::OnlyForSpecialAction(SpecialAction::TurnFaceUp)`](super::mana::ManaRestriction::OnlyForSpecialAction).
-    /// The runtime gate is honest-deferred: no payment site emits
-    /// `PaymentContext::SpecialAction(TurnFaceUp)` yet (turn-face-up charges no
-    /// mana in this engine), so such mana is conservatively unspendable rather
-    /// than over-permitted — see [`SpecialAction::TurnFaceUp`](super::mana::SpecialAction::TurnFaceUp).
+    /// The runtime gate is **live**: the `GameAction::TurnFaceUp` handler pays the
+    /// morph/disguise/manifest turn-face-up cost through
+    /// `PaymentContext::SpecialAction(TurnFaceUp)`, so such mana is spendable there
+    /// and correctly rejected for any other context — see
+    /// [`SpecialAction::TurnFaceUp`](super::mana::SpecialAction::TurnFaceUp).
     TurnPermanentFaceUp,
     /// CR 106.6: Disjunction of spend restrictions ("cast X or Y or activate Z").
     /// Lowered to `ManaRestriction::OnlyForAny`.
@@ -1919,9 +1920,11 @@ impl ManaSpendRestriction {
     /// parser seam (see `parser::oracle_effect::sequence`), so the surrounding
     /// `Effect::Mana` line lowers to `Effect::Unimplemented` — honest coverage
     /// **red** — rather than masquerading as supported while every action it names
-    /// is non-functional at runtime. (False-green example: Overgrown Zealot's
-    /// "turn permanents face up" and Tin Street Gossip's "cast face-down spells or
-    /// turn creatures face up" — every branch dead today.)
+    /// is non-functional at runtime. (Dead example today: a lone `FaceDownSpell`
+    /// leaf — no production path casts a spell *through spell payment* face down,
+    /// so `SpellMeta.is_face_down` is never `true` at a payment site. The
+    /// turn-face-up leaf is now live via the paid `GameAction::TurnFaceUp`
+    /// special action.)
     ///
     /// Any `grants` paired with an all-dead restriction drop with it. This is
     /// intentional: no real card pairs a mana-spell grant with a restriction whose
@@ -1940,14 +1943,13 @@ impl ManaSpendRestriction {
             // sets `true` at a payment site (no production path casts a spell face
             // down *through spell payment*), so the gate is never satisfied.
             ManaSpendRestriction::FaceDownSpell => false,
-            // CR 116.2b + CR 702.37e: lowered to
-            // `OnlyForSpecialAction(SpecialAction::TurnFaceUp)`, which only fires on
-            // a `PaymentContext::SpecialAction(TurnFaceUp)` that no production site
-            // emits (turn-face-up charges no mana here; the sole special-action
-            // emit is `UnlockDoor`).
-            ManaSpendRestriction::TurnPermanentFaceUp => false,
             // LIVE — at least one reachable production payment site accepts a spend.
-            ManaSpendRestriction::SpellOnly
+            // CR 116.2b + CR 702.37e / CR 702.168d / CR 701.40b: lowered to
+            // `OnlyForSpecialAction(SpecialAction::TurnFaceUp)`, now satisfiable —
+            // the `GameAction::TurnFaceUp` handler pays the morph/disguise/manifest
+            // cost through `PaymentContext::SpecialAction(TurnFaceUp)`.
+            ManaSpendRestriction::TurnPermanentFaceUp
+            | ManaSpendRestriction::SpellOnly
             | ManaSpendRestriction::SpellType(_)
             | ManaSpendRestriction::ChosenCreatureType
             | ManaSpendRestriction::SpellTypeOrAbilityActivation { .. }
@@ -18827,13 +18829,16 @@ mod tests {
     ///
     /// Revert direction (each assertion pins one classification):
     /// - Flipping a LIVE arm to `false` fails its `assert!(... .has_payable_branch())`.
-    /// - Flipping a DEAD arm (`XCostOnly`, `FaceDownSpell`, `TurnPermanentFaceUp`)
-    ///   to `true` fails its `assert!(!...)`.
-    /// - The all-dead `Any([FaceDownSpell, TurnPermanentFaceUp])` pins the `Any`
-    ///   short-circuit in the `false` direction (returning `true` on an all-dead
-    ///   set fails it); the mixed `Any([SpellType, UnlockDoor, TurnPermanentFaceUp])`
-    ///   pins it in the `true` direction (treating any dead leaf as poisoning the
-    ///   whole disjunction fails it).
+    ///   `TurnPermanentFaceUp` is live via the paid `GameAction::TurnFaceUp`
+    ///   special action (CR 116.2b + CR 702.37e); reverting that flip fails its
+    ///   positive assertion below.
+    /// - Flipping a DEAD arm (`FaceDownSpell`) to `true` fails its `assert!(!...)`.
+    /// - The all-dead `Any([FaceDownSpell])` pins the `Any` short-circuit in the
+    ///   `false` direction (returning `true` on an all-dead set fails it); the
+    ///   mixed `Any([FaceDownSpell, TurnPermanentFaceUp])` (Tin Street Gossip) and
+    ///   `Any([SpellType, UnlockDoor, TurnPermanentFaceUp])` (Creeping Peeper) pin
+    ///   it in the `true` direction (treating any dead leaf as poisoning the whole
+    ///   disjunction fails it).
     #[test]
     fn has_payable_branch_distinguishes_live_and_dead_leaves() {
         // LIVE: at least one reachable production payment site accepts a spend.
@@ -18841,21 +18846,34 @@ mod tests {
         assert!(ManaSpendRestriction::UnlockDoor.has_payable_branch());
         assert!(ManaSpendRestriction::SpellType("Enchantment".into()).has_payable_branch());
         assert!(ManaSpendRestriction::ActivateOnly.has_payable_branch());
-
-        // DEAD: every lowered gate is hardcoded-false or never reached today.
+        // CR 116.2b + CR 702.37e: the paid `GameAction::TurnFaceUp` handler makes
+        // the turn-face-up special-action gate satisfiable.
+        assert!(ManaSpendRestriction::TurnPermanentFaceUp.has_payable_branch());
+        // XCostOnly is live via `SpellMeta.has_x_in_cost`.
         assert!(ManaSpendRestriction::XCostOnly.has_payable_branch());
-        assert!(!ManaSpendRestriction::FaceDownSpell.has_payable_branch());
-        assert!(!ManaSpendRestriction::TurnPermanentFaceUp.has_payable_branch());
 
-        // All-dead disjunction is dead (Tin Street Gossip).
-        assert!(!ManaSpendRestriction::Any(vec![
+        // DEAD: `FaceDownSpell` is the only remaining hardcoded-false leaf — no
+        // production path casts a spell through spell payment face down.
+        assert!(!ManaSpendRestriction::FaceDownSpell.has_payable_branch());
+
+        // All-dead disjunction is dead: an `Any` whose only leaf is the dead
+        // `FaceDownSpell` has no payable branch.
+        assert!(
+            !ManaSpendRestriction::Any(vec![ManaSpendRestriction::FaceDownSpell,])
+                .has_payable_branch()
+        );
+
+        // Mixed disjunction with a live branch stays payable — a dead leaf must not
+        // poison the whole `Any`. Tin Street Gossip's `Any([FaceDownSpell,
+        // TurnPermanentFaceUp])` is payable via its live turn-face-up leaf.
+        assert!(ManaSpendRestriction::Any(vec![
             ManaSpendRestriction::FaceDownSpell,
             ManaSpendRestriction::TurnPermanentFaceUp,
         ])
         .has_payable_branch());
 
-        // Mixed disjunction with a live branch stays payable (Creeping Peeper /
-        // Smoky Lounge class): a dead leaf must not poison the whole `Any`.
+        // Creeping Peeper / Smoky Lounge class: live spell-type + unlock branches
+        // alongside the (now live) turn-up leaf stay payable.
         assert!(ManaSpendRestriction::Any(vec![
             ManaSpendRestriction::SpellType("Enchantment".into()),
             ManaSpendRestriction::UnlockDoor,
