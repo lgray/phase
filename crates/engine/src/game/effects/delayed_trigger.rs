@@ -173,13 +173,19 @@ pub fn resolve(
     Ok(())
 }
 
-/// CR 603.7c: A delayed triggered ability that refers to a particular object
-/// snapshots that object at creation time. The parent ability's chosen targets
-/// (e.g. Flickerwisp's exiled victim) are the snapshot; only when the parent
-/// carried no targets do we fall back to the triggering source.
+/// CR 603.7c + CR 608.2c: A delayed triggered ability that refers to a
+/// particular object snapshots that object at creation time. The snapshot is
+/// seeded from the FLATTENED ROOT chain (`parent_chain_targets_from_root`), not
+/// the current node's per-clause `targets`: for a multi-clause parent chain the
+/// tail clause carries only its own local slot, so an inner delayed
+/// `ParentTargetSlot { index }` anaphor pointing at an earlier slot would index
+/// out of range and degrade to `Any`. Flattening the root chain exposes every
+/// declared slot in order so the indexed anaphor resolves. Only when the root
+/// chain is empty do we fall back to the triggering source (unchanged).
 fn parent_target_snapshot(state: &GameState, ability: &ResolvedAbility) -> Vec<TargetRef> {
-    if !ability.targets.is_empty() {
-        return ability.targets.clone();
+    let root_chain = crate::game::targeting::parent_chain_targets_from_root(state, ability);
+    if !root_chain.is_empty() {
+        return root_chain;
     }
 
     crate::game::targeting::resolve_event_context_target(
@@ -1597,6 +1603,72 @@ mod tests {
             state.delayed_triggers[0].ability.targets,
             vec![TargetRef::Object(vehicle_id)],
             "delayed ParentTarget effects must remember the object from the parent resolution"
+        );
+    }
+
+    /// CR 603.7c + CR 608.2c: For a MULTI-CLAUSE parent chain, the snapshot must
+    /// seed from the flattened ROOT chain, not the tail clause's local `targets`.
+    /// The tail clause here carries only slot 0 (`slot0`); slot 1 (`slot1`) lives
+    /// on the parent's `sub_ability`. The inner delayed effect references
+    /// `ParentTargetSlot { index: 1 }`, which is only reachable via the root
+    /// flatten. `flatten_targets_in_chain` walks `sub_ability`, producing
+    /// `[slot0, slot1]`.
+    ///
+    /// Non-vacuity / discrimination: with the old `ability.targets` early-return
+    /// the snapshot is `[slot0]` and this assertion FAILS (slot1 absent, the
+    /// index-1 anaphor would index out of range). Reverting the fn to that form
+    /// makes this test panic — proven by the driver's revert run.
+    #[test]
+    fn delayed_parent_slot_snapshots_full_root_chain() {
+        let mut state = GameState::new_two_player(42);
+        let slot0 = ObjectId(10);
+        let slot1 = ObjectId(11);
+
+        // Inner delayed effect points at the SECOND declared slot — only present
+        // in the flattened root chain, never in the tail clause's local targets.
+        let inner_def = AbilityDefinition::new(
+            AbilityKind::Spell,
+            Effect::Bounce {
+                target: TargetFilter::ParentTargetSlot { index: 1 },
+                destination: None,
+                selection: BounceSelection::Targeted,
+            },
+        );
+
+        // Tail clause (the CreateDelayedTrigger node) carries only slot0 locally.
+        let mut ability = ResolvedAbility::new(
+            Effect::CreateDelayedTrigger {
+                condition: DelayedTriggerCondition::AtNextPhaseForPlayer {
+                    phase: Phase::End,
+                    player: PlayerId(0),
+                },
+                effect: Box::new(inner_def),
+                uses_tracked_set: false,
+            },
+            vec![TargetRef::Object(slot0)],
+            ObjectId(5),
+            PlayerId(0),
+        );
+        // Earlier chain clause holding slot1; flatten_targets_in_chain walks it.
+        ability.sub_ability = Some(Box::new(ResolvedAbility::new(
+            Effect::Bounce {
+                target: TargetFilter::ParentTarget,
+                destination: None,
+                selection: BounceSelection::Targeted,
+            },
+            vec![TargetRef::Object(slot1)],
+            ObjectId(5),
+            PlayerId(0),
+        )));
+
+        let mut events = Vec::new();
+        resolve(&mut state, &ability, &mut events).expect("resolve must succeed");
+        assert_eq!(state.delayed_triggers.len(), 1);
+        assert_eq!(
+            state.delayed_triggers[0].ability.targets,
+            vec![TargetRef::Object(slot0), TargetRef::Object(slot1)],
+            "delayed ParentTargetSlot snapshot must carry the FULL flattened root \
+             chain so index-1 anaphors resolve, not just the tail clause's slot"
         );
     }
 
