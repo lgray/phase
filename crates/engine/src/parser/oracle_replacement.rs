@@ -4638,6 +4638,22 @@ fn parse_damage_modification_replacement(
     if let Some(cs) = combat_scope {
         def = def.combat_scope(cs);
     }
+    // CR 614.1a: A "while [condition]" gate in the antecedent (Delirium threshold
+    // on The Rollercrusher Ride — "... would deal noncombat damage to a permanent
+    // or player while there are four or more card types among cards in your
+    // graveyard, ...") suppresses the doubler when the condition is false. Reuses
+    // the `parse_while_antecedent` building block and the
+    // `ReplacementCondition::OnlyIfQuantity` typed surface. The anchor is
+    // "would deal " (a substring of both "would deal damage" and "would deal
+    // noncombat damage"); a no-`while` clause yields `Absent` → ungated, so
+    // unconditional damage doublers (Trance Kuja) are unaffected.
+    match parse_while_antecedent(norm_lower, "would deal ") {
+        WhileAntecedent::Parsed(condition) => def = def.condition(condition),
+        // Guard present but unparseable: fail closed rather than emit an
+        // unconditional damage doubler.
+        WhileAntecedent::Unparsed => return None,
+        WhileAntecedent::Absent => {}
+    }
     Some(def)
 }
 
@@ -6184,11 +6200,17 @@ fn parse_while_antecedent(lower: &str, verb_anchor: &str) -> WhileAntecedent {
     else {
         return WhileAntecedent::Absent;
     };
-    let Ok((_, condition_text)) = nom::sequence::preceded(
+    // The " while " gate need not be flush against the verb anchor: for damage
+    // replacements the recipient clause ("noncombat damage to a permanent or
+    // player") sits between the anchor and the gate, so scan forward to the gate
+    // marker. The life-gain caller's flush case is the empty-prefix match.
+    let Ok((_, (_, _, condition_text))) = (
+        take_until::<_, _, OracleError<'_>>(" while "),
         tag::<_, _, OracleError<'_>>(" while "),
         take_until::<_, _, OracleError<'_>>(","),
     )
-    .parse(after_verb) else {
+        .parse(after_verb)
+    else {
         return WhileAntecedent::Absent;
     };
     // A guard clause IS present from here on; every failure path below must fail

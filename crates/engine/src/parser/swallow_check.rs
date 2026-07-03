@@ -1141,6 +1141,46 @@ fn any_replacement_has_may_cost_decline(parsed: &ParsedAbilities) -> bool {
     })
 }
 
+/// CR 614.1a + CR 120.8: "If a [source] would deal damage ..., it deals double
+/// that damage instead" is an UNCONDITIONAL value-modifier replacement (CR 120.8
+/// damage-increase replacement). The leading "if" is CR 614.1a replacement
+/// syntax introducing the replacement's applicability — NOT an independent
+/// CR 608.2c game-state gate — and is fully represented by the
+/// `ReplacementDefinition`'s `damage_modification`/`quantity_modification` with
+/// no `condition`. Only false-positives on ability-word-prefixed lines
+/// ("Flare Star — if a wizard ...") where the `— if` injects the leading space
+/// the bare-" if " marker keys on. The single-`if` + no-residual-gate guard
+/// keeps a genuinely gated value-modifier (a delirium/threshold clause that DOES
+/// want a `condition` field) from being masked here.
+fn unconditional_valmod_leading_if_is_only_if_marker(
+    stripped: &str,
+    parsed: &ParsedAbilities,
+) -> bool {
+    let Some(body) = super::oracle_modal::strip_ability_word(stripped) else {
+        return false;
+    };
+    let body = body.trim_start();
+    // allow-noncombinator: swallow detector marker scan on classified text
+    if !body.starts_with("if ") {
+        return false;
+    }
+    // A residual while/as-long-as/only-if is a genuine second gate (card 2's
+    // delirium threshold) that must still flag / be captured as `condition`.
+    // allow-noncombinator: swallow detector marker scan on classified text
+    if body.contains("while") || body.contains("as long as") || body.contains("only if") {
+        return false;
+    }
+    // Exactly the single leading replacement-`if`; a future value-modifier card
+    // carrying a SECOND genuine if-gate must still flag.
+    if body.split_whitespace().filter(|w| *w == "if").count() != 1 {
+        return false;
+    }
+    parsed.replacements.iter().any(|r| {
+        (r.damage_modification.is_some() || r.quantity_modification.is_some())
+            && r.condition.is_none()
+    })
+}
+
 fn target_filter_has_targets_property(filter: &TargetFilter) -> bool {
     match filter {
         TargetFilter::Typed(tf) => tf.properties.iter().any(|prop| {
@@ -2392,6 +2432,14 @@ fn detect_condition_if(
     // payment trigger, not a conditional check on game state.
     let has_pay_phrase = stripped.contains("if you pay "); // allow-noncombinator: swallow detector marker scan on classified text
     if parsed.casting_options.iter().any(|o| o.cost.is_some()) && has_pay_phrase {
+        return;
+    }
+    // CR 614.1a + CR 120.8: unconditional value-modifier replacement whose
+    // ability-word-stripped line leads with its own CR 614.1a applicability "if"
+    // ("Flare Star — if a wizard you control would deal damage ... it deals
+    // double that damage instead") — represented by the replacement's
+    // damage/quantity modification, not a swallowed conditional gate.
+    if unconditional_valmod_leading_if_is_only_if_marker(&stripped, parsed) {
         return;
     }
     // Bare " if " — covers prefix conditional ("if X, do Y") and suffix
@@ -4481,6 +4529,61 @@ mod tests {
             !has_swallowed_detector(&parsed, "Condition_If"),
             "lost-life-this-way result-reference draw must not report a swallowed condition: {:?}",
             parsed.parse_warnings
+        );
+    }
+
+    /// CR 614.1a + CR 120.8: An UNCONDITIONAL value-modifier replacement whose
+    /// ability-word-stripped body leads with its own CR 614.1a applicability
+    /// "if" ("Flare Star — If a Wizard you control would deal damage ..., it
+    /// deals double that damage instead") is fully represented by the
+    /// `ReplacementDefinition`'s `damage_modification` — the leading "if" is
+    /// replacement syntax, not a swallowed CR 608.2c gate. Revert discriminator:
+    /// removing the `unconditional_valmod_leading_if_is_only_if_marker` exemption
+    /// re-emits the `Condition_If` warning and this assertion flips.
+    #[test]
+    fn condition_if_accepts_unconditional_valmod_leading_if() {
+        let parsed = parse_named(
+            "Flare Star — If a Wizard you control would deal damage to a permanent \
+             or player, it deals double that damage instead.",
+            "Trance Kuja, Fate Defied",
+            &["Legendary", "Creature", "Wizard"],
+        );
+
+        assert!(
+            !has_swallowed_detector(&parsed, "Condition_If"),
+            "unconditional value-modifier replacement's leading applicability-if \
+             must not report a swallowed condition: {:?}",
+            parsed.parse_warnings
+        );
+    }
+
+    /// The exemption is guarded: a value-modifier replacement that ALSO carries a
+    /// genuine `while` gate (The Rollercrusher Ride's delirium threshold) does
+    /// NOT take the unconditional carve-out — its residual `while` blocks it. The
+    /// gate is instead captured as a `condition`, which self-suppresses
+    /// `Condition_If` via the `"condition":{` marker. Either way the warning must
+    /// be absent, but for the RIGHT reason (captured gate, not blanket exemption).
+    #[test]
+    fn condition_if_gated_valmod_captures_condition_not_blanket_exemption() {
+        let parsed = parse_named(
+            "Delirium — If a source you control would deal noncombat damage to a \
+             permanent or player while there are four or more card types among \
+             cards in your graveyard, it deals double that damage instead.",
+            "The Rollercrusher Ride",
+            &["Legendary", "Enchantment"],
+        );
+
+        assert!(
+            !has_swallowed_detector(&parsed, "Condition_If"),
+            "gated value-modifier must capture its while-gate as a condition and \
+             not report a swallowed condition: {:?}",
+            parsed.parse_warnings
+        );
+        assert!(
+            parsed.replacements.iter().any(|r| r.condition.is_some()),
+            "the delirium while-gate must be captured as a replacement condition, \
+             not dropped: {:?}",
+            parsed.replacements
         );
     }
 
