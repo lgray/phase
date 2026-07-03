@@ -361,6 +361,176 @@ fn zones_of_filter(f: &TargetFilter) -> ZoneSpan {
 }
 
 // ---------------------------------------------------------------------------
+// PlayerSpan (PR-6.75): gate-scoped relative player-identity span for the
+// player-resource and membership-controller feed rows. Mirrors Census/ZoneSpan.
+// ---------------------------------------------------------------------------
+
+/// CR 102.2 + CR 109.5: a relative player-identity span for scope-gated feed
+/// refinement. Meaningful ONLY under `GroupStructure.same_controller` (all
+/// members' relative sets `You`/`Opponents` then denote the SAME concrete players
+/// — `You == {c0}`, `Opponents == all − {c0}`, disjoint at any player count). Dead
+/// otherwise: `profiles_conflict` never consults a span when `same_controller` is
+/// false, so every value is byte-inert in the ungated path.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum PlayerSpan {
+    /// No player-keyed read/write on this side — overlaps nothing. Also the
+    /// top-level "unscoped" pscope sentinel (no enclosing per-player iteration).
+    None,
+    /// The controller `c0` (CR 109.5 "you/your").
+    You,
+    /// Every opponent of `c0` (CR 102.2/102.3).
+    Opponents,
+    /// Unextractable / mixed / unrefined — assume overlap (fail-closed).
+    Any,
+}
+
+impl PlayerSpan {
+    /// Mixing `You`+`Opponents` or anything+`Any` ⇒ `Any`; `None` is identity.
+    fn merge(self, o: PlayerSpan) -> PlayerSpan {
+        match (self, o) {
+            (PlayerSpan::None, x) | (x, PlayerSpan::None) => x,
+            (PlayerSpan::Any, _) | (_, PlayerSpan::Any) => PlayerSpan::Any,
+            (PlayerSpan::You, PlayerSpan::You) => PlayerSpan::You,
+            (PlayerSpan::Opponents, PlayerSpan::Opponents) => PlayerSpan::Opponents,
+            (PlayerSpan::You, PlayerSpan::Opponents) | (PlayerSpan::Opponents, PlayerSpan::You) => {
+                PlayerSpan::Any
+            }
+        }
+    }
+}
+
+/// CR 102.2 + CR 109.5 relative-player overlap: two spans can name a common
+/// player iff — under `same_controller` — their relative sets intersect. `None`
+/// overlaps nothing; `Any` overlaps every non-`None`; `You`×`Opponents` is the
+/// only disjoint concrete pair (mirrors `census_overlap`).
+fn player_span_overlap(a: PlayerSpan, b: PlayerSpan) -> bool {
+    match (a, b) {
+        (PlayerSpan::None, _) | (_, PlayerSpan::None) => false,
+        (PlayerSpan::Any, _) | (_, PlayerSpan::Any) => true,
+        (PlayerSpan::You, PlayerSpan::You) | (PlayerSpan::Opponents, PlayerSpan::Opponents) => true,
+        (PlayerSpan::You, PlayerSpan::Opponents) | (PlayerSpan::Opponents, PlayerSpan::You) => {
+            false
+        }
+    }
+}
+
+/// Effective-Any rule (§4.1 fail-closed): a span consulted while its kind-bit is
+/// present in the effective set but whose value was never refined (`None`) reads
+/// as `Any`. This is what lets the ~40 `ext_write`/`life_writes` and other
+/// unrefined callers stay conservative WITHOUT edits — an unrefined player /
+/// membership read or write overlaps every player.
+fn effective_span(span: PlayerSpan, kind_present: bool) -> PlayerSpan {
+    if kind_present && span == PlayerSpan::None {
+        PlayerSpan::Any
+    } else {
+        span
+    }
+}
+
+/// CR 108.3 + CR 110.2: the controller-field span of a membership write set —
+/// external membership ctrl when an external membership write is present, merged
+/// with `You` when a self membership write is in scope (the chokepoint guarantees
+/// `obj.controller == c0`). Mirrors `membership_census_of`.
+fn membership_ctrl_of(
+    write_kinds: KindSet,
+    external_ctrl: PlayerSpan,
+    self_in_scope: bool,
+) -> PlayerSpan {
+    let mut c = PlayerSpan::None;
+    if write_kinds.set_membership {
+        c = c.merge(external_ctrl);
+    }
+    if self_in_scope {
+        c = c.merge(PlayerSpan::You);
+    }
+    c
+}
+
+/// CR 109.5 / CR 102.2: relative player span of a `PlayerScope` (HandSize/player
+/// reads). `ScopedPlayer` is a documented ceiling — not threaded into the quantity
+/// walk — and every non-{Controller,Opponent} scope is a multi-player / unrefined
+/// population ⇒ `Any` (fail-closed).
+fn player_span_of_scope(ps: &PlayerScope) -> PlayerSpan {
+    match ps {
+        PlayerScope::Controller => PlayerSpan::You,
+        PlayerScope::Opponent { .. } => PlayerSpan::Opponents,
+        _ => PlayerSpan::Any,
+    }
+}
+
+/// CR 109.5 / CR 102.2: relative player span of a `ControllerRef` (membership
+/// read/write controller key). `You`⇒You, `Opponent`⇒Opponents, everything else
+/// (ScopedPlayer/Target/Chosen/… — unrefined or multi-player) ⇒ `Any`.
+fn player_span_of_ctrl_ref(cr: &ControllerRef) -> PlayerSpan {
+    match cr {
+        ControllerRef::You => PlayerSpan::You,
+        ControllerRef::Opponent => PlayerSpan::Opponents,
+        _ => PlayerSpan::Any,
+    }
+}
+
+/// CR 108.3 / CR 110.2: relative player span of a filter's controller key. Only a
+/// bare `Typed` filter carries an unambiguous controller; composite / broad
+/// filters ⇒ `Any` (fail-closed).
+fn ctrl_span_of_filter(f: &TargetFilter) -> PlayerSpan {
+    match f {
+        TargetFilter::Typed(tf) => tf
+            .controller
+            .as_ref()
+            .map_or(PlayerSpan::Any, player_span_of_ctrl_ref),
+        _ => PlayerSpan::Any,
+    }
+}
+
+/// CR 109.4 / CR 109.5: relative player span of an `AbilityDefinition`/
+/// `ResolvedAbility` `player_scope` (the per-player iteration context threaded
+/// through the walk). `Controller`⇒You, `Opponent`⇒Opponents; every other filter
+/// (`All`/`DefendingPlayer`/`AllExcept`/… — may include or vary across players)
+/// ⇒ `Any` (fail-closed).
+fn player_span_of_filter(pf: &PlayerFilter) -> PlayerSpan {
+    match pf {
+        PlayerFilter::Controller => PlayerSpan::You,
+        PlayerFilter::Opponent => PlayerSpan::Opponents,
+        _ => PlayerSpan::Any,
+    }
+}
+
+/// CR 400.3 (+ engine owner-default battlefield entry, `change_zone.rs:79`): a
+/// `SearchLibrary` of the controller's OWN library (no `target_player`, or a
+/// `Controller`-form one) selects only cards whose owner is the controller, so a
+/// chained battlefield entry enters under `You`. Emitted as the chain move-owner
+/// fact (threaded like `chain_root`) so the ChangeZone consumer can claim a `You`
+/// membership-controller span. A search of another player's library (`target_player
+/// Some(other)`) yields no fact ⇒ the consumer stays `Any`.
+///
+/// §10.4 ENGINE COUPLING: this fact plus the `ChangeZone` consumer below are the
+/// TWO annotated ends of the entry-default coupling — if `change_zone.rs:79`'s
+/// "None keeps the default (owner's control)" ever changes to the CR 110.2a
+/// instructing-player default, this span rule must be revisited.
+fn effect_move_owner(x: &Effect) -> Option<PlayerSpan> {
+    match x {
+        Effect::SearchLibrary { target_player, .. }
+            if target_player.is_none()
+                || matches!(target_player, Some(TargetFilter::Controller)) =>
+        {
+            Some(PlayerSpan::You)
+        }
+        _ => None,
+    }
+}
+
+/// The opaque forwarded move-target class (`Any`/`ParentTarget`) whose concrete
+/// cards are supplied by an earlier chain link (e.g. the search selection), so its
+/// controller span is carried by the inherited chain move-owner fact rather than
+/// the filter itself.
+fn is_opaque_forwarded_target(f: &TargetFilter) -> bool {
+    matches!(
+        f,
+        TargetFilter::Any | TargetFilter::ParentTarget | TargetFilter::ParentTargetSlot { .. }
+    )
+}
+
+// ---------------------------------------------------------------------------
 // RwProfile (§2 D-profile).
 // ---------------------------------------------------------------------------
 
@@ -436,6 +606,29 @@ pub(crate) struct RwProfile {
     has_pay_or_unless: bool,
     /// The ability writes the mana pool (`Effect::Mana`).
     writes_pool: bool,
+    // --- PR-6.75 gate-scoped player-identity spans (consulted ONLY under
+    // GroupStructure.same_controller; every value is byte-inert otherwise). ---
+    /// CR 109.5/102.2: relative-player span of the player-resource READS
+    /// (`HandSize`; life reads stay unrefined ⇒ effective-Any). A single merged
+    /// span across kinds — mixing kinds degrades to `Any` (ceiling documented).
+    reads_player_span: PlayerSpan,
+    /// CR 109.5/102.2: relative-player span of the player-resource WRITES
+    /// (`Discard` scope / self hand-move ⇒ You). Merged across kinds.
+    writes_player_span: PlayerSpan,
+    /// CR 110.2: controller-field span of all `SetMembership` READS (from the
+    /// filter's `controller`; unrefined ⇒ effective-Any).
+    reads_membership_ctrl: PlayerSpan,
+    /// CR 110.2: controller-field span of EXTERNAL `SetMembership` writes
+    /// (SearchLibrary self-library ⇒ You, ChangeZone entry ⇒ chain move-owner).
+    /// Self writes contribute `You` via `membership_ctrl_of`. Unrefined external
+    /// writes stay `None` here and read as `Any` (effective-Any) at conflict time.
+    writes_membership_external_ctrl: PlayerSpan,
+    /// §4.4 fused read-modify-write player read (`Discard{count: HandSize{
+    /// ScopedPlayer}, target: Controller}` — "discards their hand"). Kept OUT of
+    /// `reads_player`/`reads_player_span`: dropped under the gate (identical
+    /// members' per-player fixed points compose symmetrically, Canopy Gargantuan
+    /// RwProfile doc), unioned back into `reads_player` when ungated (byte-identical).
+    reads_player_fused: KindSet,
 }
 
 impl RwProfile {
@@ -461,6 +654,11 @@ impl RwProfile {
             writes_external_counter_census: Census::None,
             has_pay_or_unless: false,
             writes_pool: false,
+            reads_player_span: PlayerSpan::None,
+            writes_player_span: PlayerSpan::None,
+            reads_membership_ctrl: PlayerSpan::None,
+            writes_membership_external_ctrl: PlayerSpan::None,
+            reads_player_fused: KindSet::EMPTY,
         }
     }
 
@@ -477,6 +675,11 @@ impl RwProfile {
         p.reads_membership_census = Census::Any;
         p.reads_membership_zones = ZoneSpan::Any;
         p.writes_external_counter_census = Census::Any;
+        // PR-6.75: an unclassified subtree may read/write any player ⇒ spans `Any`.
+        p.reads_player_span = PlayerSpan::Any;
+        p.writes_player_span = PlayerSpan::Any;
+        p.reads_membership_ctrl = PlayerSpan::Any;
+        p.writes_membership_external_ctrl = PlayerSpan::Any;
         p
     }
 
@@ -506,6 +709,13 @@ impl RwProfile {
             .merge(o.writes_external_counter_census);
         self.has_pay_or_unless |= o.has_pay_or_unless;
         self.writes_pool |= o.writes_pool;
+        self.reads_player_span = self.reads_player_span.merge(o.reads_player_span);
+        self.writes_player_span = self.writes_player_span.merge(o.writes_player_span);
+        self.reads_membership_ctrl = self.reads_membership_ctrl.merge(o.reads_membership_ctrl);
+        self.writes_membership_external_ctrl = self
+            .writes_membership_external_ctrl
+            .merge(o.writes_membership_external_ctrl);
+        self.reads_player_fused = self.reads_player_fused.union(o.reads_player_fused);
     }
 
     /// CR 603.3b T1 (§1.2): the resolution function never consults the source
@@ -537,6 +747,8 @@ impl RwProfile {
         self.writes_membership_external_zones = ZoneSpan::None;
         self.writes_external_counter_census = Census::None;
         self.writes_pool = false;
+        self.writes_player_span = PlayerSpan::None;
+        self.writes_membership_external_ctrl = PlayerSpan::None;
     }
 }
 
@@ -564,11 +776,48 @@ pub(crate) struct GroupStructure {
     pub(crate) event_object_present: bool,
     /// The live source census, for the membership census-overlap row (§2).
     pub(crate) source_census: SourceCensus,
+    /// PR-6.75 (CR 603.3b + CR 110.2 + CR 108.3): the group is controller-uniform
+    /// AND owner-aligned — every member's pending controller is one shared player
+    /// `c0` and each live source object is both controlled and owned by `c0`. ONLY
+    /// then do the relative player-identity spans (`You`/`Opponents`) denote the
+    /// same concrete players across members (owner-alignment additionally makes
+    /// owner-keyed self-write destinations, CR 400.3 hand/graveyard, controller-
+    /// resolvable). `false` ⇒ NO span/fused refinement is consulted ⇒ the conflict
+    /// decision is byte-identical to the pre-PR engine (structural zero-delta).
+    pub(crate) same_controller: bool,
 }
 
 // ---------------------------------------------------------------------------
 // feeds matrix (§2).
 // ---------------------------------------------------------------------------
+
+/// PR-6.75 gate-scoped span bundle for `feeds` — the effective (already
+/// effective-Any-promoted) relative-player spans of the player-resource and
+/// membership rows plus the `gate` (`same_controller`). When `gate` is false the
+/// span conjuncts collapse to `true`, so the feed matrix is byte-identical.
+#[derive(Clone, Copy)]
+struct SpanGate {
+    gate: bool,
+    read_player: PlayerSpan,
+    write_player: PlayerSpan,
+    read_mctrl: PlayerSpan,
+    write_mctrl: PlayerSpan,
+}
+
+impl SpanGate {
+    /// The ungated bundle (src-row call, §4.5): no player-kind reads route to
+    /// `reads_src`, so the player/membership rows never fire here — `gate = false`
+    /// keeps the conjuncts inert.
+    fn ungated() -> SpanGate {
+        SpanGate {
+            gate: false,
+            read_player: PlayerSpan::None,
+            write_player: PlayerSpan::None,
+            read_mctrl: PlayerSpan::None,
+            write_mctrl: PlayerSpan::None,
+        }
+    }
+}
 
 /// CR 603.3b feed matrix: same-kind rows + the cross rows (`ObjectCounters →
 /// ObjectPt`, `PlayerLife → JournalLife`, `HandLibrary → JournalCards`), with the
@@ -584,14 +833,19 @@ fn feeds(
     write_census: &Census,
     read_zones: &ZoneSpan,
     write_zones: &ZoneSpan,
+    spans: SpanGate,
 ) -> bool {
+    // PR-6.75 (CR 102.2/109.5): under `same_controller`, a player-keyed read and
+    // write of the SAME kind conflict only when their relative-player spans can
+    // name a common player. `!gate` ⇒ byte-identical (conjunct is `true`).
+    let player_ok = !spans.gate || player_span_overlap(spans.read_player, spans.write_player);
+    // PR-6.75 (CR 110.2): same, for the membership same-kind row's controller key.
+    let mctrl_ok = !spans.gate || player_span_overlap(spans.read_mctrl, spans.write_mctrl);
     if (writes.other && reads.any()) || (reads.other && writes.any()) {
         return true;
     }
     if (reads.object_pt && writes.object_pt)
         || (reads.object_counters && writes.object_counters)
-        || (reads.player_life && writes.player_life)
-        || (reads.hand_library && writes.hand_library)
         || (reads.journal_life && writes.journal_life)
         || (reads.journal_cards && writes.journal_cards)
         || (reads.journal_cast && writes.journal_cast)
@@ -601,6 +855,13 @@ fn feeds(
         // sequencing READ. No profiled read produces `turn_structure` today, so
         // this row is dormant — but a future sequencing read fails closed here.
         || (reads.turn_structure && writes.turn_structure)
+    {
+        return true;
+    }
+    // CR 119 / CR 401/402: player-resource same-kind rows, gate-refined by the
+    // relative-player span (Rekindled/Brink — opp-hand read × your-hand write).
+    if (reads.player_life && writes.player_life && player_ok)
+        || (reads.hand_library && writes.hand_library && player_ok)
     {
         return true;
     }
@@ -617,12 +878,15 @@ fn feeds(
         return true;
     }
     // SetMembership same-kind, census- AND zone-refined (§2; CR 205 type tags +
-    // CR 400.1 zones). A battlefield token creation cannot feed a graveyard read
-    // even though both name "creature" — their zones are disjoint (Tombstone).
+    // CR 400.1 zones), and PR-6.75 controller-refined (`mctrl_ok`, CR 110.2). A
+    // battlefield token creation cannot feed a graveyard read even though both
+    // name "creature" — their zones are disjoint (Tombstone); and an opponents'-
+    // board count cannot feed a your-cards battlefield entry (Defense of the Heart).
     if reads.set_membership
         && writes.set_membership
         && census_overlap(read_census, write_census)
         && zone_overlap(read_zones, write_zones)
+        && mctrl_ok
     {
         return true;
     }
@@ -722,6 +986,9 @@ pub(crate) fn profiles_conflict(p: &RwProfile, s: &GroupStructure) -> bool {
         &src_write_census,
         &p.reads_membership_zones,
         &src_write_zones,
+        // §4.5: no player-kind read routes to `reads_src`, so the gated rows never
+        // fire here — pass the inert ungated bundle (fail-closed, documented).
+        SpanGate::ungated(),
     ) {
         return true;
     }
@@ -740,7 +1007,34 @@ pub(crate) fn profiles_conflict(p: &RwProfile, s: &GroupStructure) -> bool {
         p.writes_membership_self,
         &p.writes_membership_self_zones,
     );
-    let board_reads = p.reads_board.union(p.reads_player);
+    // §4.4 fused RMW: the "discards their hand" count read is a symmetric
+    // per-player fixed-point input among identical members ⇒ dropped under the
+    // gate; unioned back into `reads_player` when ungated (byte-identical to today,
+    // where the count read was recorded in `reads_player`).
+    let effective_reads_player = if s.same_controller {
+        p.reads_player
+    } else {
+        p.reads_player.union(p.reads_player_fused)
+    };
+    let board_reads = p.reads_board.union(effective_reads_player);
+    // PR-6.75 effective spans (effective-Any promotes an unrefined-but-present
+    // kind to `Any`). The external membership-ctrl is promoted only when an
+    // EXTERNAL membership write is present (`effective_external.set_membership`);
+    // a self-only membership write contributes `You` via `membership_ctrl_of`.
+    let board_player_read_present =
+        effective_reads_player.player_life || effective_reads_player.hand_library;
+    let board_player_write_present = board_writes.player_life || board_writes.hand_library;
+    let eff_external_ctrl = effective_span(
+        p.writes_membership_external_ctrl,
+        effective_external.set_membership,
+    );
+    let board_spans = SpanGate {
+        gate: s.same_controller,
+        read_player: effective_span(p.reads_player_span, board_player_read_present),
+        write_player: effective_span(p.writes_player_span, board_player_write_present),
+        read_mctrl: effective_span(p.reads_membership_ctrl, board_reads.set_membership),
+        write_mctrl: membership_ctrl_of(board_writes, eff_external_ctrl, p.writes_membership_self),
+    };
     if feeds(
         board_reads,
         board_writes,
@@ -748,6 +1042,7 @@ pub(crate) fn profiles_conflict(p: &RwProfile, s: &GroupStructure) -> bool {
         &board_write_census,
         &p.reads_membership_zones,
         &board_write_zones,
+        board_spans,
     ) {
         return true;
     }
@@ -805,7 +1100,7 @@ fn membership_zones_of(
 /// `ParentTarget` is parentless (§2 rule 1) ⇒ chain-root context starts empty.
 pub(crate) fn ability_rw_profile(a: &ResolvedAbility) -> RwProfile {
     let mut p = RwProfile::empty();
-    walk_ability(a, None, &mut p);
+    walk_ability(a, None, None, PlayerSpan::None, &mut p);
     // CR 603.10a + CR 603.3b: `legacy_batch_prompt` is computed AUTHORITATIVELY by
     // the decoupled `contains_legacy_event_ref` visitor, not by whichever leaf
     // sites the read/write walk happened to descend into. This overwrites (never
@@ -967,6 +1262,14 @@ fn place_membership_write(
     }
     if is_hand_or_library(dest) || origin.is_some_and(is_hand_or_library) {
         p.writes_external.set(StateKind::HandLibrary);
+        // §4.3.4 (CR 400.3 + owner-alignment gate): a SELF hand/library move
+        // (Rekindled Flame's `Bounce{SelfRef}` → hand) touches the owner-of-self's
+        // hand, which equals the controller's under `same_controller` ⇒ You.
+        // External/event/created endpoints leave the span unrefined (`None` ⇒
+        // effective-Any at conflict time).
+        if matches!(sc, WriteScope::SelfSource) {
+            p.writes_player_span = PlayerSpan::You;
+        }
     }
 }
 
@@ -2513,6 +2816,10 @@ fn board_membership_read(filter: &TargetFilter) -> RwProfile {
     // (Tombstone Stairwell's Zombie count reads the GRAVEYARD, not the battlefield
     // its own tokens enter). No `InZone` ⇒ `Any` (fail-closed, unchanged behavior).
     p.reads_membership_zones = zones_of_filter(filter);
+    // §4.3.7 (CR 110.2): the controller-field span the read observes (Defense of
+    // the Heart's "creatures an opponent controls" ⇒ Opponents). Unrefined /
+    // composite filters ⇒ Any.
+    p.reads_membership_ctrl = ctrl_span_of_filter(filter);
     p
 }
 
@@ -2610,7 +2917,13 @@ fn target_recipient(f: &TargetFilter) -> (bool, bool) {
 // Ability walk (mirrors `resolved_ability_axes`, with chain-root threading).
 // ---------------------------------------------------------------------------
 
-fn walk_ability(a: &ResolvedAbility, chain_root: Option<WriteScope>, acc: &mut RwProfile) {
+fn walk_ability(
+    a: &ResolvedAbility,
+    chain_root: Option<WriteScope>,
+    chain_move_owner: Option<PlayerSpan>,
+    pscope_in: PlayerSpan,
+    acc: &mut RwProfile,
+) {
     let ResolvedAbility {
         effect,
         sub_ability,
@@ -2656,15 +2969,21 @@ fn walk_ability(a: &ResolvedAbility, chain_root: Option<WriteScope>, acc: &mut R
         dig_found_nothing_for_parent_target: _,
     } = a;
 
-    let (eff, own_scope) = rw_effect(effect, chain_root);
+    // §4.3.2: a definition's own `player_scope` overrides the inherited scope for
+    // its effect and descendants (matches runtime scoped iteration).
+    let pscope = player_scope
+        .as_ref()
+        .map_or(pscope_in, player_span_of_filter);
+    let (eff, own_scope) = rw_effect(effect, chain_root, pscope, chain_move_owner);
     acc.merge(eff);
     let child_root = own_scope.or(chain_root);
+    let child_move_owner = effect_move_owner(effect).or(chain_move_owner);
 
     if let Some(sub) = sub_ability {
-        walk_ability(sub, child_root, acc);
+        walk_ability(sub, child_root, child_move_owner, pscope, acc);
     }
     if let Some(els) = else_ability {
-        walk_ability(els, chain_root, acc);
+        walk_ability(els, chain_root, chain_move_owner, pscope, acc);
     }
     if let Some(c) = condition {
         acc.merge(rw_ability_condition(c));
@@ -2710,13 +3029,19 @@ fn walk_ability(a: &ResolvedAbility, chain_root: Option<WriteScope>, acc: &mut R
     // cross-choice sibling pair — is order-observable. Independent reflexive-modal
     // choices commute (Voltstorm Angel). Fail-closed: the union over-approximates.
     for m in mode_abilities {
-        walk_definition(m, child_root, acc);
+        walk_definition(m, child_root, child_move_owner, pscope, acc);
     }
 }
 
 /// Descend a choice/RNG sub-body (`AbilityDefinition`). `..`-free so a future
 /// field forces a decision (§2 choice-wrapper / RNG union descent).
-fn walk_definition(a: &AbilityDefinition, chain_root: Option<WriteScope>, acc: &mut RwProfile) {
+fn walk_definition(
+    a: &AbilityDefinition,
+    chain_root: Option<WriteScope>,
+    chain_move_owner: Option<PlayerSpan>,
+    pscope_in: PlayerSpan,
+    acc: &mut RwProfile,
+) {
     let AbilityDefinition {
         effect,
         sub_ability,
@@ -2755,15 +3080,21 @@ fn walk_definition(a: &AbilityDefinition, chain_root: Option<WriteScope>, acc: &
         iteration_kind_binding: _,
     } = a;
 
-    let (eff, own_scope) = rw_effect(effect, chain_root);
+    // §4.3.2: own `player_scope` overrides the inherited scope (Brink's Discard
+    // sub-ability carries `player_scope: Opponent`).
+    let pscope = player_scope
+        .as_ref()
+        .map_or(pscope_in, player_span_of_filter);
+    let (eff, own_scope) = rw_effect(effect, chain_root, pscope, chain_move_owner);
     acc.merge(eff);
     let child_root = own_scope.or(chain_root);
+    let child_move_owner = effect_move_owner(effect).or(chain_move_owner);
 
     if let Some(sub) = sub_ability {
-        walk_definition(sub, child_root, acc);
+        walk_definition(sub, child_root, child_move_owner, pscope, acc);
     }
     if let Some(els) = else_ability {
-        walk_definition(els, chain_root, acc);
+        walk_definition(els, chain_root, chain_move_owner, pscope, acc);
     }
     if let Some(c) = condition {
         acc.merge(rw_ability_condition(c));
@@ -2803,7 +3134,7 @@ fn walk_definition(a: &AbilityDefinition, chain_root: Option<WriteScope>, acc: &
     }
     // §voltstorm (CR 700.2): descend each mode as a union (see `walk_ability`).
     for m in mode_abilities {
-        walk_definition(m, child_root, acc);
+        walk_definition(m, child_root, child_move_owner, pscope, acc);
     }
 }
 
@@ -2900,7 +3231,12 @@ fn damage_writes(target: &TargetFilter) -> RwProfile {
 // Returns (profile, primary object-write scope for chain-root propagation).
 // ---------------------------------------------------------------------------
 
-fn rw_effect(x: &Effect, chain_root: Option<WriteScope>) -> (RwProfile, Option<WriteScope>) {
+fn rw_effect(
+    x: &Effect,
+    chain_root: Option<WriteScope>,
+    pscope: PlayerSpan,
+    chain_move_owner: Option<PlayerSpan>,
+) -> (RwProfile, Option<WriteScope>) {
     // Object write of `kind` targeting `target`, placed by scope.
     let obj = |kind: StateKind, target: &TargetFilter| -> (RwProfile, Option<WriteScope>) {
         let sc = scope_of(target, chain_root);
@@ -2931,10 +3267,11 @@ fn rw_effect(x: &Effect, chain_root: Option<WriteScope>) -> (RwProfile, Option<W
         flag_legacy_write_target(&mut p, target);
         (p, Some(sc))
     };
-    // Deferred body (CR 603.7): descend reads, drop writes.
+    // Deferred body (CR 603.7): descend reads, drop writes. Resolved in a future
+    // scope context ⇒ pscope resets to unscoped (`None`; reads stay conservative).
     let deferred = |def: &AbilityDefinition| -> RwProfile {
         let mut p = RwProfile::empty();
-        walk_definition(def, None, &mut p);
+        walk_definition(def, None, None, PlayerSpan::None, &mut p);
         p.drop_writes();
         p
     };
@@ -2998,13 +3335,43 @@ fn rw_effect(x: &Effect, chain_root: Option<WriteScope>) -> (RwProfile, Option<W
         }
         Effect::Discard {
             count,
-            target: _,
+            target,
             unless_filter: _,
             filter: _,
             selection: _,
         } => {
             let mut p = ext_write(StateKind::HandLibrary);
-            p.merge(rw_quantity_expr(count));
+            // CR 401/402 (+ CR 400.3 owner-keyed hand): the discarding player's
+            // hand. From the scoped-player iteration context when present (Brink:
+            // each opponent ⇒ Opponents), else the effect target (`Controller` ⇒
+            // You), else `Any` (fail-closed).
+            p.writes_player_span = if pscope != PlayerSpan::None {
+                pscope
+            } else if matches!(target, TargetFilter::Controller) {
+                PlayerSpan::You
+            } else {
+                PlayerSpan::Any
+            };
+            // §4.4 fused read-modify-write: `Discard{count: HandSize{ScopedPlayer},
+            // target: Controller}` — "discards their hand" reads the very hand this
+            // instruction empties. Its per-player fixed point composes symmetrically
+            // among identical members (Canopy Gargantuan RwProfile doc), so record
+            // it in `reads_player_fused` (dropped under the gate, unioned back into
+            // `reads_player` when ungated ⇒ byte-identical). Otherwise the count is a
+            // genuine player read.
+            let fused = matches!(
+                count,
+                QuantityExpr::Ref {
+                    qty: QuantityRef::HandSize {
+                        player: PlayerScope::ScopedPlayer
+                    }
+                }
+            ) && matches!(target, TargetFilter::Controller);
+            if fused {
+                p.reads_player_fused.set(StateKind::HandLibrary);
+            } else {
+                p.merge(rw_quantity_expr(count));
+            }
             (p, None)
         }
         Effect::DiscardCard {
@@ -3243,7 +3610,7 @@ fn rw_effect(x: &Effect, chain_root: Option<WriteScope>) -> (RwProfile, Option<W
             target,
             owner_library: _,
             enter_transformed: _,
-            enters_under: _,
+            enters_under,
             enter_tapped: _,
             enters_attacking: _,
             up_to: _,
@@ -3253,6 +3620,30 @@ fn rw_effect(x: &Effect, chain_root: Option<WriteScope>) -> (RwProfile, Option<W
             enters_modified_if: _,
         } => {
             let (mut p, sc) = mem(target, *origin, *destination);
+            // §4.3.6 / §10.4 ENGINE COUPLING (CR 110.2 + CR 110.2a; the entering
+            // controller default is the moved card's OWNER, `change_zone.rs:79`
+            // "None keeps the default (owner's control)" — NOT the CR 110.2a
+            // instructing-player default). The membership-controller span of an
+            // EXTERNAL battlefield entry:
+            //   * `enters_under Some(cref)` ⇒ the ControllerRef's span (CR 110.2a).
+            //   * no `enters_under`, opaque forwarded set (`Any`/`ParentTarget`)
+            //     from `Library` ⇒ the inherited chain move-owner fact (CR 400.3: a
+            //     library holds only its owner's cards; a search of the controller's
+            //     own library ⇒ owner == controller ⇒ You — Defense of the Heart).
+            //   * otherwise `Any` (fail-closed). If `change_zone.rs:79`'s default
+            //     ever changes, revisit this arm and `effect_move_owner`.
+            if *destination == Zone::Battlefield && matches!(sc, Some(WriteScope::External)) {
+                p.writes_membership_external_ctrl = match enters_under {
+                    Some(cref) => player_span_of_ctrl_ref(cref),
+                    None => {
+                        if *origin == Some(Zone::Library) && is_opaque_forwarded_target(target) {
+                            chain_move_owner.unwrap_or(PlayerSpan::Any)
+                        } else {
+                            PlayerSpan::Any
+                        }
+                    }
+                };
+            }
             for (_ct, q) in enter_with_counters {
                 p.merge(rw_quantity_expr(q));
             }
@@ -3362,7 +3753,7 @@ fn rw_effect(x: &Effect, chain_root: Option<WriteScope>) -> (RwProfile, Option<W
             filter: _,
             count,
             reveal: _,
-            target_player: _,
+            target_player,
             selection_constraint: _,
             split: _,
         } => {
@@ -3370,6 +3761,16 @@ fn rw_effect(x: &Effect, chain_root: Option<WriteScope>) -> (RwProfile, Option<W
             p.writes_external.set(StateKind::HandLibrary);
             p.writes_membership_external_census.merge(Census::Any);
             p.writes_membership_external_zones.merge(ZoneSpan::Any);
+            // §4.3.5 (CR 400.3): searching the controller's OWN library (no
+            // `target_player`, or a `Controller`-form one) touches only owner ==
+            // controller cards ⇒ the phantom membership write's controller / hand
+            // spans are You. A search of another player's library leaves both
+            // unrefined (`None` ⇒ effective-Any). The chained ChangeZone entry
+            // consumes the emitted `effect_move_owner` fact (§10.4 both ends).
+            if target_player.is_none() || matches!(target_player, Some(TargetFilter::Controller)) {
+                p.writes_membership_external_ctrl = PlayerSpan::You;
+                p.writes_player_span = PlayerSpan::You;
+            }
             p.merge(rw_quantity_expr(count));
             (p, None)
         }
@@ -3824,7 +4225,7 @@ fn rw_effect(x: &Effect, chain_root: Option<WriteScope>) -> (RwProfile, Option<W
             uses_tracked_set: _,
         } => (deferred(effect), None),
         Effect::CreateDrawReplacement { replacement_effect } => {
-            let (mut b, _) = rw_effect(replacement_effect, None);
+            let (mut b, _) = rw_effect(replacement_effect, None, pscope, chain_move_owner);
             b.drop_writes();
             (b, None)
         }
@@ -3867,7 +4268,7 @@ fn rw_effect(x: &Effect, chain_root: Option<WriteScope>) -> (RwProfile, Option<W
         Effect::ChooseOneOf { chooser, branches } => {
             let mut p = rw_player_filter(chooser);
             for b in branches {
-                walk_definition(b, chain_root, &mut p);
+                walk_definition(b, chain_root, chain_move_owner, pscope, &mut p);
             }
             (p, None)
         }
@@ -3885,7 +4286,7 @@ fn rw_effect(x: &Effect, chain_root: Option<WriteScope>) -> (RwProfile, Option<W
         } => {
             let mut p = rw_controller_ref(starting_with);
             for b in per_choice_effect {
-                walk_definition(b, chain_root, &mut p);
+                walk_definition(b, chain_root, chain_move_owner, pscope, &mut p);
             }
             (p, None)
         }
@@ -3899,7 +4300,7 @@ fn rw_effect(x: &Effect, chain_root: Option<WriteScope>) -> (RwProfile, Option<W
         } => {
             let mut p = rw_quantity_expr(count);
             for r in results {
-                walk_definition(&r.effect, chain_root, &mut p);
+                walk_definition(&r.effect, chain_root, chain_move_owner, pscope, &mut p);
             }
             (p, None)
         }
@@ -3910,10 +4311,10 @@ fn rw_effect(x: &Effect, chain_root: Option<WriteScope>) -> (RwProfile, Option<W
         } => {
             let mut p = RwProfile::empty();
             if let Some(w) = win_effect {
-                walk_definition(w, chain_root, &mut p);
+                walk_definition(w, chain_root, chain_move_owner, pscope, &mut p);
             }
             if let Some(l) = lose_effect {
-                walk_definition(l, chain_root, &mut p);
+                walk_definition(l, chain_root, chain_move_owner, pscope, &mut p);
             }
             (p, None)
         }
@@ -3925,16 +4326,16 @@ fn rw_effect(x: &Effect, chain_root: Option<WriteScope>) -> (RwProfile, Option<W
         } => {
             let mut p = rw_quantity_expr(count);
             if let Some(w) = win_effect {
-                walk_definition(w, chain_root, &mut p);
+                walk_definition(w, chain_root, chain_move_owner, pscope, &mut p);
             }
             if let Some(l) = lose_effect {
-                walk_definition(l, chain_root, &mut p);
+                walk_definition(l, chain_root, chain_move_owner, pscope, &mut p);
             }
             (p, None)
         }
         Effect::FlipCoinUntilLose { win_effect } => {
             let mut p = RwProfile::empty();
-            walk_definition(win_effect, chain_root, &mut p);
+            walk_definition(win_effect, chain_root, chain_move_owner, pscope, &mut p);
             (p, None)
         }
 
@@ -4278,7 +4679,13 @@ fn rw_quantity_expr(x: &QuantityExpr) -> RwProfile {
 
 fn rw_quantity_ref(x: &QuantityRef) -> RwProfile {
     match x {
-        QuantityRef::HandSize { .. } => reads_player_of(StateKind::HandLibrary),
+        // §4.3.1 (CR 401/402): a hand-size read, refined by its player axis
+        // (Rekindled `Opponent` ⇒ Opponents, Brink cond `Controller` ⇒ You).
+        QuantityRef::HandSize { player } => {
+            let mut p = reads_player_of(StateKind::HandLibrary);
+            p.reads_player_span = player_span_of_scope(player);
+            p
+        }
         QuantityRef::LifeTotal { player: _ } | QuantityRef::LifeAboveStarting => {
             reads_player_of(StateKind::PlayerLife)
         }
@@ -5071,6 +5478,9 @@ mod tests {
             event_object_excludes_sources: excludes,
             event_object_present: present,
             source_census,
+            // PR-6.75: default false ⇒ every prior verdict is byte-preserved (spans
+            // unconsulted). The §4.3 span pins below set it true explicitly.
+            same_controller: false,
         }
     }
 
@@ -6076,17 +6486,18 @@ mod tests {
             "subtract clears TurnStructure"
         );
         let (nc, nz) = (Census::None, ZoneSpan::None);
+        let sg = SpanGate::ungated();
         assert!(
-            feeds(ts, ts, &nc, &nc, &nz, &nz),
+            feeds(ts, ts, &nc, &nc, &nz, &nz, sg),
             "TurnStructure read × write ⇒ self-conflict"
         );
         let pt = KindSet::one(StateKind::ObjectPt);
         assert!(
-            !feeds(pt, ts, &nc, &nc, &nz, &nz),
+            !feeds(pt, ts, &nc, &nc, &nz, &nz, sg),
             "TurnStructure write does not feed ObjectPt"
         );
         assert!(
-            !feeds(ts, pt, &nc, &nc, &nz, &nz),
+            !feeds(ts, pt, &nc, &nc, &nz, &nz, sg),
             "ObjectPt write does not feed TurnStructure"
         );
     }
@@ -6094,5 +6505,159 @@ mod tests {
     // ---- test-local helper ----
     fn def(effect: Effect) -> AbilityDefinition {
         AbilityDefinition::new(AbilityKind::Spell, effect)
+    }
+
+    // ===================== PR-6.75 S-7 per-arm span pins =====================
+    // Shape-level pins on each refined extraction arm's span field, paired
+    // positive/negative on the arm's own axis. These SUPPORT the S1–S6
+    // production-path discriminators (which drive `group_is_order_independent`).
+
+    fn discard(count: QuantityExpr, target: TargetFilter) -> Effect {
+        Effect::Discard {
+            count,
+            target,
+            unless_filter: None,
+            filter: None,
+            selection: crate::types::ability::CardSelectionMode::Chosen,
+        }
+    }
+    fn handsize(player: PlayerScope) -> QuantityExpr {
+        qref(QuantityRef::HandSize { player })
+    }
+    fn opp_scope() -> PlayerScope {
+        PlayerScope::Opponent {
+            aggregate: crate::types::ability::AggregateFunction::Min,
+        }
+    }
+    fn scoped(mut a: ResolvedAbility, pf: PlayerFilter) -> ResolvedAbility {
+        a.player_scope = Some(pf);
+        a
+    }
+    fn search_own() -> Effect {
+        Effect::SearchLibrary {
+            source_zones: vec![Zone::Library],
+            filter: creature(),
+            count: qfix(1),
+            reveal: false,
+            target_player: None,
+            selection_constraint: crate::types::ability::SearchSelectionConstraint::None,
+            split: None,
+        }
+    }
+    fn change_zone_under(target: TargetFilter, enters_under: Option<ControllerRef>) -> Effect {
+        Effect::ChangeZone {
+            origin: Some(Zone::Library),
+            destination: Zone::Battlefield,
+            target,
+            owner_library: false,
+            enter_transformed: false,
+            enters_under,
+            enter_tapped: crate::types::zones::EtbTapState::default(),
+            enters_attacking: false,
+            up_to: false,
+            enter_with_counters: vec![],
+            conditional_enter_with_counters: vec![],
+            face_down_profile: None,
+            enters_modified_if: None,
+        }
+    }
+    fn bounce(target: TargetFilter) -> Effect {
+        Effect::Bounce {
+            target,
+            destination: None,
+            selection: crate::types::ability::BounceSelection::default(),
+        }
+    }
+
+    #[test]
+    fn s7_handsize_read_span_player_axis() {
+        // §4.3.1: HandSize player axis → reads_player_span (You vs Opponents).
+        let you = ability_rw_profile(&ra(Effect::Draw {
+            count: handsize(PlayerScope::Controller),
+            target: TargetFilter::Controller,
+        }));
+        assert_eq!(you.reads_player_span, PlayerSpan::You);
+        let opp = ability_rw_profile(&ra(Effect::Draw {
+            count: handsize(opp_scope()),
+            target: TargetFilter::Controller,
+        }));
+        assert_eq!(opp.reads_player_span, PlayerSpan::Opponents);
+    }
+
+    #[test]
+    fn s7_discard_write_span_scope_threading() {
+        // §4.3.3: scoped-Opponent Discard ⇒ Opponents; unscoped, target Controller ⇒ You.
+        let scoped_opp = scoped(
+            ra(discard(qfix(1), TargetFilter::Controller)),
+            PlayerFilter::Opponent,
+        );
+        assert_eq!(
+            ability_rw_profile(&scoped_opp).writes_player_span,
+            PlayerSpan::Opponents
+        );
+        let you = ra(discard(qfix(1), TargetFilter::Controller));
+        assert_eq!(ability_rw_profile(&you).writes_player_span, PlayerSpan::You);
+    }
+
+    #[test]
+    fn s7_discard_fused_pattern_match_and_non_match() {
+        // §4.4: fused count HandSize{ScopedPlayer} + target Controller ⇒
+        // reads_player_fused, NOT reads_player.
+        let fused = ability_rw_profile(&ra(discard(
+            handsize(PlayerScope::ScopedPlayer),
+            TargetFilter::Controller,
+        )));
+        assert!(fused.reads_player_fused.hand_library);
+        assert!(!fused.reads_player.hand_library);
+        // Non-fused: a genuine opp-hand count ⇒ reads_player, NOT fused.
+        let plain = ability_rw_profile(&ra(discard(
+            handsize(opp_scope()),
+            TargetFilter::Controller,
+        )));
+        assert!(plain.reads_player.hand_library);
+        assert!(!plain.reads_player_fused.hand_library);
+        // Non-fused: HandSize{ScopedPlayer} but target NOT Controller ⇒ not fused.
+        let wrong_target = ability_rw_profile(&ra(discard(
+            handsize(PlayerScope::ScopedPlayer),
+            TargetFilter::Any,
+        )));
+        assert!(!wrong_target.reads_player_fused.hand_library);
+        assert!(wrong_target.reads_player.hand_library);
+    }
+
+    #[test]
+    fn s7_search_change_zone_chain_fact() {
+        // §4.3.5/6: Search(own library) → ChangeZone{Library→Bf, Any} ⇒ You.
+        let present = ra(search_own()).sub_ability(ra(change_zone_under(TargetFilter::Any, None)));
+        assert_eq!(
+            ability_rw_profile(&present).writes_membership_external_ctrl,
+            PlayerSpan::You
+        );
+        // Explicit enters_under Opponent conflicts with the search's You ⇒ Any.
+        let opp_entry = ra(search_own()).sub_ability(ra(change_zone_under(
+            TargetFilter::Any,
+            Some(ControllerRef::Opponent),
+        )));
+        assert_eq!(
+            ability_rw_profile(&opp_entry).writes_membership_external_ctrl,
+            PlayerSpan::Any
+        );
+        // Absent chain (bare ChangeZone, no search, no enters_under) ⇒ Any (fail-closed).
+        let absent = ability_rw_profile(&ra(change_zone_under(TargetFilter::Any, None)));
+        assert_eq!(absent.writes_membership_external_ctrl, PlayerSpan::Any);
+    }
+
+    #[test]
+    fn s7_self_bounce_hand_span() {
+        // §4.3.4: a self hand-move (Bounce{SelfRef}→hand) ⇒ You; an external bounce
+        // leaves the hand write unrefined (None ⇒ effective-Any at conflict time).
+        assert_eq!(
+            ability_rw_profile(&ra(bounce(TargetFilter::SelfRef))).writes_player_span,
+            PlayerSpan::You
+        );
+        assert_eq!(
+            ability_rw_profile(&ra(bounce(creature()))).writes_player_span,
+            PlayerSpan::None
+        );
     }
 }

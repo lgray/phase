@@ -20,17 +20,20 @@ use crate::game::ability_rw::{
     trigger_condition_rw_profile, GroupStructure, SourceCensus,
 };
 use crate::game::ability_utils::{build_resolved_from_def, build_target_slots};
+use crate::game::game_object::GameObject;
 use crate::test_support::shared_card_db;
 use crate::types::ability::{
-    AbilityCondition, AbilityDefinition, Comparator, Effect, ObjectScope, QuantityExpr,
-    QuantityRef, ResolvedAbility, TargetFilter, TriggerCondition, TriggerDefinition, TypedFilter,
+    AbilityCondition, AbilityDefinition, AggregateFunction, Comparator, ControllerRef, Effect,
+    ObjectScope, PlayerFilter, PlayerScope, QuantityExpr, QuantityRef, ResolvedAbility,
+    SearchSelectionConstraint, TargetFilter, TriggerCondition, TriggerConstraint,
+    TriggerDefinition, TypedFilter,
 };
 use crate::types::card::CardFace;
 use crate::types::card_type::Supertype;
 use crate::types::counter::CounterType;
 use crate::types::events::GameEvent;
 use crate::types::game_state::{GameState, ZoneChangeRecord};
-use crate::types::identifiers::ObjectId;
+use crate::types::identifiers::{CardId, ObjectId};
 use crate::types::player::PlayerId;
 use crate::types::triggers::TriggerMode;
 use crate::types::zones::Zone;
@@ -328,6 +331,23 @@ fn ability_rw_profile_merged(
     p
 }
 
+/// PR-6.75 (CR 603.3b + CR 500.1): the CLOSED sweep-side controller-privacy
+/// predicate. A `Phase` trigger carrying the `OnlyDuringYourTurn` constraint fires
+/// only when `state.active_player == controller` (fire-time gate,
+/// `triggers.rs:702` → `check_trigger_constraint`), and one `PhaseChanged` event
+/// has exactly one active player — so EVERY reachable same-event group of such a
+/// trigger is same-controller. Fail-closed for every other shape: "each [player's]"
+/// phases parse to `constraint: None` (`oracle_trigger.rs`), opponent possessives
+/// to `OnlyDuringOpponentsTurn`, and enchanted/chosen-player forms to a
+/// `valid_target` with `constraint: None` — all ⇒ `false` here. The owner-alignment
+/// half of `same_controller` is computed LIVE and fail-closed in production; the
+/// sweep models the reachable canonical group (an exotic donated-source variant
+/// merely over-prompts in production, never under-prompts).
+fn trigger_is_controller_private(trig: &TriggerDefinition) -> bool {
+    matches!(trig.mode, TriggerMode::Phase)
+        && matches!(trig.constraint, Some(TriggerConstraint::OnlyDuringYourTurn))
+}
+
 #[test]
 fn ordering_parity_sweep() {
     let db = shared_card_db();
@@ -380,22 +400,28 @@ fn ordering_parity_sweep() {
             let has_src_read = reads_source_pt_or_counter(&value);
             let hadcounters = matches!(trig.condition, Some(TriggerCondition::HadCounters { .. }));
 
-            let mk =
-                |same_event: bool, all_same_source: bool, self_departed: bool| GroupStructure {
-                    same_event,
-                    all_same_source,
-                    all_sources_self_departed: self_departed,
-                    event_object_excludes_sources: if self_ref { false } else { excludes },
-                    event_object_present: event_present,
-                    source_census: census.clone(),
-                };
+            let mk = |same_event: bool,
+                      all_same_source: bool,
+                      self_departed: bool,
+                      same_controller: bool| GroupStructure {
+                same_event,
+                all_same_source,
+                all_sources_self_departed: self_departed,
+                event_object_excludes_sources: if self_ref { false } else { excludes },
+                event_object_present: event_present,
+                source_census: census.clone(),
+                same_controller,
+            };
 
             // --- Same-event, distinct-source observer (S2) ---
             // §5.2: only where a 2-copy same-event group is REACHABLE (CLASS-A
             // guard — skip legendary / per-source-event / condition-self-excluding
-            // shapes where the structure can never form).
+            // shapes where the structure can never form). PR-6.75: the modeled
+            // canonical S2 group is controller-private exactly for the fire-time-
+            // pinned Phase+OnlyDuringYourTurn class (`trigger_is_controller_private`);
+            // production additionally computes owner-alignment live and fail-closed.
             if !self_ref && same_event_group_reachable(face, trig, &census) {
-                let se = mk(true, false, false);
+                let se = mk(true, false, false, trigger_is_controller_private(trig));
                 let conflict = profiles_conflict(&profile, &se);
                 let decision_new = !conflict; // decision_old (same-event) == auto == true
                 compared += 1;
@@ -415,10 +441,13 @@ fn ordering_parity_sweep() {
 
             // --- Departure-batch structures (S3 self-departed / S5 mixed obs) ---
             if is_departure {
+                // §5: batch rows model `same_controller = false` (different-
+                // controller co-deaths are reachable) — the static sweep's batch
+                // model is fail-closed; production computes it live.
                 let batch = if self_ref {
-                    mk(false, false, true) // self-dies
+                    mk(false, false, true, false) // self-dies
                 } else {
-                    mk(false, false, false) // observer batch
+                    mk(false, false, false, false) // observer batch
                 };
                 let batch_conflict = legacy_prompt || profiles_conflict(&profile, &batch);
                 let decision_new = !batch_conflict;
@@ -920,5 +949,413 @@ fn n_g_dropped_target_legacy_ref_retains_batch_prompt() {
     assert!(
         group_is_order_independent(&state, &control_group, false),
         "identical Discard with no frozen tag (Controller) ⇒ auto-order"
+    );
+}
+
+// ===================================================================
+// PR-6.75 `same_controller` span discriminators (S1–S6), driven through the
+// production authority `group_is_order_independent`. POSITIVE (auto) groups
+// install source objects owned AND controlled by the pending controller so the
+// LIVE `same_controller` check holds; each NEG breaks exactly ONE axis (span
+// disjointness, controller-uniformity, or owner-alignment) and must re-prompt —
+// the paired positive reach-guard proves the auto is delivered by the refined
+// row, not an upstream fast-path short-circuit.
+// ===================================================================
+
+/// Install a battlefield source with explicit owner + controller (the live-state
+/// precondition the chokepoint reads: `o.controller == o.owner == c0`).
+fn install_source(state: &mut GameState, id: u64, owner: u8, controller: u8) {
+    let mut o = GameObject::new(
+        ObjectId(id),
+        CardId(1),
+        PlayerId(owner),
+        "Src".to_string(),
+        Zone::Battlefield,
+    );
+    o.owner = PlayerId(owner);
+    o.controller = PlayerId(controller);
+    state.objects.insert(ObjectId(id), o);
+}
+
+/// A pending-trigger context with an explicit controller (S4/S5/S6 vary it).
+fn ctx_c(
+    source: u64,
+    controller: u8,
+    ability: ResolvedAbility,
+    condition: Option<TriggerCondition>,
+    event: Option<GameEvent>,
+) -> PendingTriggerContext {
+    PendingTriggerContext::single(PendingTrigger {
+        source_id: ObjectId(source),
+        controller: PlayerId(controller),
+        condition,
+        ability,
+        timestamp: 0,
+        target_constraints: Vec::new(),
+        distribute: None,
+        trigger_event: event,
+        modal: None,
+        mode_abilities: vec![],
+        description: None,
+        may_trigger_origin: None,
+        subject_match_count: None,
+        die_result: None,
+    })
+}
+
+fn creatures_of(cr: ControllerRef) -> TargetFilter {
+    let mut tf = TypedFilter::creature();
+    tf.controller = Some(cr);
+    TargetFilter::Typed(tf)
+}
+
+fn sacrifice_self() -> Effect {
+    Effect::Sacrifice {
+        target: TargetFilter::SelfRef,
+        count: qfix(1),
+        min_count: 0,
+    }
+}
+/// Defense-of-the-Heart shape: search the CONTROLLER's own library (no
+/// `target_player`) → the phantom write earns a `You` chain move-owner fact.
+fn search_own_creatures() -> Effect {
+    Effect::SearchLibrary {
+        source_zones: vec![Zone::Library],
+        filter: creature(),
+        count: QuantityExpr::UpTo {
+            max: Box::new(qfix(2)),
+        },
+        reveal: false,
+        target_player: None,
+        selection_constraint: SearchSelectionConstraint::None,
+        split: None,
+    }
+}
+/// The chained opaque battlefield entry (`Library → Battlefield`, `Any` target,
+/// no `enters_under`) that consumes the search's `You` move-owner fact.
+fn change_zone_lib_to_bf() -> Effect {
+    Effect::ChangeZone {
+        origin: Some(Zone::Library),
+        destination: Zone::Battlefield,
+        target: TargetFilter::Any,
+        owner_library: false,
+        enter_transformed: false,
+        enters_under: None,
+        enter_tapped: crate::types::zones::EtbTapState::default(),
+        enters_attacking: false,
+        up_to: false,
+        enter_with_counters: vec![],
+        conditional_enter_with_counters: vec![],
+        face_down_profile: None,
+        enters_modified_if: None,
+    }
+}
+fn shuffle_ctrl() -> Effect {
+    Effect::Shuffle {
+        target: TargetFilter::Controller,
+    }
+}
+fn bounce_self() -> Effect {
+    Effect::Bounce {
+        target: TargetFilter::SelfRef,
+        destination: None,
+        selection: crate::types::ability::BounceSelection::default(),
+    }
+}
+fn discard_hand(count: QuantityExpr, target: TargetFilter) -> Effect {
+    Effect::Discard {
+        count,
+        target,
+        unless_filter: None,
+        filter: None,
+        selection: crate::types::ability::CardSelectionMode::Chosen,
+    }
+}
+fn obj_count_cmp(filter: TargetFilter, cmp: Comparator, rhs: i32) -> TriggerCondition {
+    TriggerCondition::QuantityComparison {
+        lhs: qref(QuantityRef::ObjectCount { filter }),
+        rhs: qfix(rhs),
+        comparator: cmp,
+    }
+}
+fn handsize_cmp(player: PlayerScope, cmp: Comparator, rhs: i32) -> TriggerCondition {
+    TriggerCondition::QuantityComparison {
+        lhs: qref(QuantityRef::HandSize { player }),
+        rhs: qfix(rhs),
+        comparator: cmp,
+    }
+}
+
+/// Defense-of-the-Heart chain: `Sacrifice{SelfRef}` → `SearchLibrary` →
+/// `ChangeZone{Library→Bf, Any}` → `Shuffle`.
+fn defense_ability() -> ResolvedAbility {
+    let cz = ra(change_zone_lib_to_bf()).sub_ability(ra(shuffle_ctrl()));
+    let search = ra(search_own_creatures()).sub_ability(cz);
+    ra(sacrifice_self()).sub_ability(search)
+}
+
+/// S-1 — Defense of the Heart shape. POS: same-event 2-copy, both P0, sources
+/// installed owner==controller==P0; the opponents'-board census read is
+/// ctrl-disjoint (Opponents) from the your-library battlefield entry (You) ⇒
+/// AUTO. NEG reach-guard: flip the read's controller to `You` ⇒ ctrl spans
+/// overlap ⇒ PROMPT. The NEG also proves the auto is NOT a `source_independent`
+/// fast-path fluke — `Sacrifice{SelfRef}` keeps `source_independent` false in
+/// both, so only the membership-ctrl span differs.
+#[test]
+fn s1_defense_membership_ctrl_span() {
+    let mut state = empty_state();
+    install_source(&mut state, 10, 0, 0);
+    install_source(&mut state, 11, 0, 0);
+    let ev = shared_etb_event();
+
+    let pos_cond = || obj_count_cmp(creatures_of(ControllerRef::Opponent), Comparator::GE, 3);
+    let pos = vec![
+        ctx_c(10, 0, defense_ability(), Some(pos_cond()), ev.clone()),
+        ctx_c(11, 0, defense_ability(), Some(pos_cond()), ev.clone()),
+    ];
+    assert!(
+        group_is_order_independent(&state, &pos, false),
+        "S1 POS: opponents'-board read × your-library entry are ctrl-disjoint ⇒ auto"
+    );
+
+    let neg_cond = || obj_count_cmp(creatures_of(ControllerRef::You), Comparator::GE, 3);
+    let neg = vec![
+        ctx_c(10, 0, defense_ability(), Some(neg_cond()), ev.clone()),
+        ctx_c(11, 0, defense_ability(), Some(neg_cond()), ev),
+    ];
+    assert!(
+        !group_is_order_independent(&state, &neg, false),
+        "S1 NEG: your-board read × your-library entry ctrl spans overlap ⇒ prompt"
+    );
+}
+
+/// S-2 — Rekindled Flame shape (`Bounce{SelfRef}` + `HandSize{Opponent} EQ 0`
+/// intervening-if). POS: opp-hand read (Opponents) × your-hand self-bounce write
+/// (You) ⇒ AUTO. Sibling NEG: read `HandSize{Controller}` (You) ⇒ hand spans
+/// overlap ⇒ PROMPT.
+#[test]
+fn s2_rekindled_player_hand_span() {
+    let mut state = empty_state();
+    install_source(&mut state, 10, 0, 0);
+    install_source(&mut state, 11, 0, 0);
+    let ev = shared_etb_event();
+
+    let pos_cond = || {
+        handsize_cmp(
+            PlayerScope::Opponent {
+                aggregate: AggregateFunction::Min,
+            },
+            Comparator::EQ,
+            0,
+        )
+    };
+    let pos = vec![
+        ctx_c(10, 0, ra(bounce_self()), Some(pos_cond()), ev.clone()),
+        ctx_c(11, 0, ra(bounce_self()), Some(pos_cond()), ev.clone()),
+    ];
+    assert!(
+        group_is_order_independent(&state, &pos, false),
+        "S2 POS: opp-hand read × your-hand self-bounce are player-disjoint ⇒ auto"
+    );
+
+    let neg_cond = || handsize_cmp(PlayerScope::Controller, Comparator::EQ, 0);
+    let neg = vec![
+        ctx_c(10, 0, ra(bounce_self()), Some(neg_cond()), ev.clone()),
+        ctx_c(11, 0, ra(bounce_self()), Some(neg_cond()), ev),
+    ];
+    assert!(
+        !group_is_order_independent(&state, &neg, false),
+        "S2 NEG: your-hand read × your-hand write overlap ⇒ prompt"
+    );
+}
+
+/// Brink-of-Madness chain: `Sacrifice{SelfRef}` → scoped-Opponent
+/// `Discard{count, target: Controller}`.
+fn brink_ability(count: QuantityExpr) -> ResolvedAbility {
+    let mut discard = ra(discard_hand(count, TargetFilter::Controller));
+    discard.player_scope = Some(PlayerFilter::Opponent);
+    ra(sacrifice_self()).sub_ability(discard)
+}
+
+/// S-3 — Brink of Madness fused RMW discriminator. POS: `count:
+/// HandSize{ScopedPlayer}` is the fused "discards their hand" read ⇒ dropped
+/// under the gate, leaving the your-hand intervening-if (You) vs the opp-hand
+/// Discard write (Opponents) ⇒ AUTO. Fusion NEG: the SAME opp-scoped Discard but
+/// `count: HandSize{Opponent}` — a genuine (non-fused) opp-hand observation that
+/// is NOT dropped ⇒ read span degrades to Any ⇒ overlaps the write ⇒ PROMPT.
+/// Isolates the fusion arm exactly (same write both sides).
+#[test]
+fn s3_brink_fused_discard_span() {
+    let mut state = empty_state();
+    install_source(&mut state, 10, 0, 0);
+    install_source(&mut state, 11, 0, 0);
+    let ev = shared_etb_event();
+    let cond = || handsize_cmp(PlayerScope::Controller, Comparator::EQ, 0);
+
+    let fused = qref(QuantityRef::HandSize {
+        player: PlayerScope::ScopedPlayer,
+    });
+    let pos = vec![
+        ctx_c(
+            10,
+            0,
+            brink_ability(fused.clone()),
+            Some(cond()),
+            ev.clone(),
+        ),
+        ctx_c(11, 0, brink_ability(fused), Some(cond()), ev.clone()),
+    ];
+    assert!(
+        group_is_order_independent(&state, &pos, false),
+        "S3 POS: fused HandSize{{ScopedPlayer}} count dropped ⇒ You-cond × Opp-write disjoint ⇒ auto"
+    );
+
+    let unfused = qref(QuantityRef::HandSize {
+        player: PlayerScope::Opponent {
+            aggregate: AggregateFunction::Min,
+        },
+    });
+    let neg = vec![
+        ctx_c(
+            10,
+            0,
+            brink_ability(unfused.clone()),
+            Some(cond()),
+            ev.clone(),
+        ),
+        ctx_c(11, 0, brink_ability(unfused), Some(cond()), ev),
+    ];
+    assert!(
+        !group_is_order_independent(&state, &neg, false),
+        "S3 NEG: non-fused opp-hand count read is a live player read ⇒ prompt"
+    );
+}
+
+/// S-4 — load-bearing shared-event observer (the gate is load-bearing). Two
+/// Rekindled-shape triggers off ONE event with controllers P0 and P1: mixed
+/// controllers ⇒ `same_controller = false` ⇒ the spans are UNCONSULTED ⇒ the
+/// hand row fires ⇒ PROMPT. Revert-fail foil (same shapes, both P0): the ONLY
+/// change is the controller/owner of source 11 ⇒ `same_controller = true` ⇒
+/// AUTO. Deleting the gate in `profiles_conflict` would flip the P0/P1 case to
+/// auto (RED).
+#[test]
+fn s4_gate_is_load_bearing() {
+    let mut state = empty_state();
+    install_source(&mut state, 10, 0, 0);
+    install_source(&mut state, 11, 1, 1); // owned + controlled by P1
+    let ev = shared_etb_event();
+    let cond = || {
+        handsize_cmp(
+            PlayerScope::Opponent {
+                aggregate: AggregateFunction::Min,
+            },
+            Comparator::EQ,
+            0,
+        )
+    };
+
+    let mixed = vec![
+        ctx_c(10, 0, ra(bounce_self()), Some(cond()), ev.clone()),
+        ctx_c(11, 1, ra(bounce_self()), Some(cond()), ev.clone()),
+    ];
+    assert!(
+        !group_is_order_independent(&state, &mixed, false),
+        "S4 NEG: mixed controllers ⇒ same_controller false ⇒ spans unconsulted ⇒ prompt"
+    );
+
+    // Revert-fail foil: reinstall source 11 under P0 and flip the pending
+    // controller — the sole change that makes the group controller-private.
+    install_source(&mut state, 11, 0, 0);
+    let uniform = vec![
+        ctx_c(10, 0, ra(bounce_self()), Some(cond()), ev.clone()),
+        ctx_c(11, 0, ra(bounce_self()), Some(cond()), ev),
+    ];
+    assert!(
+        group_is_order_independent(&state, &uniform, false),
+        "S4 foil: both P0 ⇒ same_controller true ⇒ span disjointness clears ⇒ auto"
+    );
+}
+
+/// S-5 — MULTIPLAYER (3 players). (a) members P0 and P1: mixed controllers ⇒
+/// same_controller false ⇒ PROMPT (at 3p, P1's opponents include P0, so treating
+/// them as controller-private would be unsound — the gate correctly refuses).
+/// (b) both members P0: `You == {P0}` vs `Opponents == {P1,P2}` disjointness is
+/// NOT a two-player artifact ⇒ AUTO at N players.
+#[test]
+fn s5_multiplayer_three_players() {
+    let mut state = GameState::new(crate::types::format::FormatConfig::standard(), 3, 7);
+    install_source(&mut state, 10, 0, 0);
+    install_source(&mut state, 11, 1, 1);
+    install_source(&mut state, 12, 0, 0);
+    let ev = shared_etb_event();
+    let cond = || {
+        handsize_cmp(
+            PlayerScope::Opponent {
+                aggregate: AggregateFunction::Min,
+            },
+            Comparator::EQ,
+            0,
+        )
+    };
+
+    let mixed = vec![
+        ctx_c(10, 0, ra(bounce_self()), Some(cond()), ev.clone()),
+        ctx_c(11, 1, ra(bounce_self()), Some(cond()), ev.clone()),
+    ];
+    assert!(
+        !group_is_order_independent(&state, &mixed, false),
+        "S5a: 3p mixed controllers ⇒ same_controller false ⇒ prompt"
+    );
+
+    let both_p0 = vec![
+        ctx_c(10, 0, ra(bounce_self()), Some(cond()), ev.clone()),
+        ctx_c(12, 0, ra(bounce_self()), Some(cond()), ev),
+    ];
+    assert!(
+        group_is_order_independent(&state, &both_p0, false),
+        "S5b: 3p both P0 ⇒ You={{P0}} vs Opponents={{P1,P2}} disjoint ⇒ auto (not a 2p artifact)"
+    );
+}
+
+/// S-6 — owner-alignment discriminator (the `o.owner == c0` conjunct is
+/// load-bearing). Rekindled shape, both members controlled by P0, but source 11
+/// is OWNED by P1 (donated / control-changed). NEG: owner mismatch ⇒
+/// same_controller false ⇒ PROMPT — and this is a REAL under-prompt guard: the
+/// self-bounce would put source 11 in P1's hand, which the `HandSize{Opponent}`
+/// read observes. Revert-fail foil (source 11 owned by P0): same_controller true
+/// ⇒ AUTO. Dropping the owner conjunct would auto the NEG (RED).
+#[test]
+fn s6_owner_alignment() {
+    let mut state = empty_state();
+    install_source(&mut state, 10, 0, 0);
+    install_source(&mut state, 11, 1, 0); // owner P1, controller P0 (donated)
+    let ev = shared_etb_event();
+    let cond = || {
+        handsize_cmp(
+            PlayerScope::Opponent {
+                aggregate: AggregateFunction::Min,
+            },
+            Comparator::EQ,
+            0,
+        )
+    };
+
+    let donated = vec![
+        ctx_c(10, 0, ra(bounce_self()), Some(cond()), ev.clone()),
+        ctx_c(11, 0, ra(bounce_self()), Some(cond()), ev.clone()),
+    ];
+    assert!(
+        !group_is_order_independent(&state, &donated, false),
+        "S6 NEG: source owned by an opponent ⇒ owner-misaligned ⇒ prompt (real under-prompt guard)"
+    );
+
+    install_source(&mut state, 11, 0, 0); // now owner == controller == P0
+    let aligned = vec![
+        ctx_c(10, 0, ra(bounce_self()), Some(cond()), ev.clone()),
+        ctx_c(11, 0, ra(bounce_self()), Some(cond()), ev),
+    ];
+    assert!(
+        group_is_order_independent(&state, &aligned, false),
+        "S6 foil: owner == controller == P0 ⇒ same_controller true ⇒ auto"
     );
 }

@@ -3633,6 +3633,25 @@ fn group_is_order_independent(
         event_object_id.is_some_and(|eid| group.iter().all(|ctx| ctx.pending.source_id != eid));
     let source_census = group_source_census(state, group);
 
+    // PR-6.75 (CR 603.3b + CR 110.2 + CR 108.3): controller-private group — every
+    // member's pending controller is one shared player `c0` AND each live source
+    // object is both controlled and owned by `c0`. Owner-alignment makes owner-keyed
+    // self-write destinations (CR 400.3 hand/graveyard) controller-resolvable.
+    // Computed live from `state.objects` (mirrors `group_source_census`): a missing
+    // object or any drift between the pending controller and the live object's
+    // controller/owner ⇒ fail-closed `false`, closing the fire-vs-ordering
+    // control-change race.
+    let same_controller = {
+        let c0 = first.pending.controller;
+        group.iter().all(|ctx| {
+            ctx.pending.controller == c0
+                && state
+                    .objects
+                    .get(&ctx.pending.source_id)
+                    .is_some_and(|o| o.controller == c0 && o.owner == c0)
+        })
+    };
+
     let same_event_structure = crate::game::ability_rw::GroupStructure {
         same_event: true,
         all_same_source,
@@ -3640,6 +3659,7 @@ fn group_is_order_independent(
         event_object_excludes_sources,
         event_object_present,
         source_census: source_census.clone(),
+        same_controller,
     };
     let batch_structure = crate::game::ability_rw::GroupStructure {
         same_event: false,
@@ -3648,6 +3668,7 @@ fn group_is_order_independent(
         event_object_excludes_sources,
         event_object_present,
         source_census,
+        same_controller,
     };
     let same_event_conflict =
         crate::game::ability_rw::profiles_conflict(&profile, &same_event_structure);
