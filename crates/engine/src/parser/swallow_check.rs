@@ -942,6 +942,53 @@ fn any_ability_has_dealt_damage_this_way_life_lock(parsed: &ParsedAbilities) -> 
         })
 }
 
+/// CR 608.2c: True when any ability/trigger tree contains an `Effect::Discard`
+/// whose target is `ParentTarget` — the structural encoding of Sonic Shrieker's
+/// "If a player is dealt damage this way, they discard a card" rider. The
+/// `ParentTarget` target IS the CR 608.2c "this way" back-reference: it resolves
+/// to the damage recipient and only forces a discard when that recipient is a
+/// player (a creature/planeswalker target no-ops), so the leading "if" is
+/// represented, not swallowed. Mirrors `def_tree_has_parent_target_cant_gain_life`.
+/// ponytail: prevented-damage ceiling (CR 615.5) not gated — a fully prevented
+/// hit still discards here, the identical fidelity ceiling Screaming Nemesis
+/// ships; upgrade path = damage-recipient AbilityCondition when a card forces it.
+fn def_tree_has_parent_target_discard(def: &AbilityDefinition) -> bool {
+    if matches!(
+        &*def.effect,
+        Effect::Discard {
+            target: TargetFilter::ParentTarget,
+            ..
+        }
+    ) {
+        return true;
+    }
+    if let Some(ref sub) = def.sub_ability {
+        if def_tree_has_parent_target_discard(sub) {
+            return true;
+        }
+    }
+    if let Some(ref else_ab) = def.else_ability {
+        if def_tree_has_parent_target_discard(else_ab) {
+            return true;
+        }
+    }
+    def.mode_abilities
+        .iter()
+        .any(def_tree_has_parent_target_discard)
+}
+
+fn any_ability_has_parent_target_discard(parsed: &ParsedAbilities) -> bool {
+    parsed
+        .abilities
+        .iter()
+        .any(def_tree_has_parent_target_discard)
+        || parsed.triggers.iter().any(|t| {
+            t.execute
+                .as_deref()
+                .is_some_and(def_tree_has_parent_target_discard)
+        })
+}
+
 fn any_ability_has_exile_parent_rider(parsed: &ParsedAbilities) -> bool {
     let has = |f: fn(&AbilityDefinition) -> bool| {
         parsed.abilities.iter().any(f)
@@ -2350,6 +2397,14 @@ fn detect_condition_if(
     let stripped = strip_represented_replacement_instead_sentences(&stripped, parsed);
     let stripped =
         strip_represented_tiered_enters_with_additional_counter_if_pairs(&stripped, parsed);
+    // CR 608.2c: "if a player is dealt damage this way, they discard" — the ParentTarget
+    // discard rider is structurally represented (Effect::Discard{target:ParentTarget}); the
+    // leading "if" is the CR 608.2c back-reference, not a swallowed game-state condition.
+    // Mirrors the Screaming Nemesis "dealt damage this way" life-lock exemption above.
+    // allow-noncombinator: swallow detector marker scan on classified text
+    if stripped.contains("dealt damage this way") && any_ability_has_parent_target_discard(parsed) {
+        return;
+    }
     // CR 702.170c: "[you may] exile a card. If you do, it becomes plotted." —
     // the "if you do" is the optional-exile linkage, represented by the
     // chained `Plotted` casting-permission grant (see `any_ability_has_plotted_grant`).

@@ -560,6 +560,7 @@ mod springheart_realdb_repro;
 mod squirrel_mob_dynamic_pump;
 mod std_counters_grammar_axes;
 mod std_longtail_b_delayed_effects;
+mod std_s07_batch5a;
 mod std_s07_damage_doublers;
 mod steadfast_armasaur_lki_toughness;
 mod steelform_sliver_toughness_anthem;
