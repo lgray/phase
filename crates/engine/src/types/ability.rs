@@ -9576,10 +9576,16 @@ pub enum Effect {
         /// The donor, chosen via targeting (BecomeCopy-style).
         #[serde(default = "default_target_filter_any")]
         target: TargetFilter,
-        /// Who receives the abilities: `SelfRef` (Quicksilver Elemental) or a
-        /// typed group filter (Grell Philosopher: each Horror you control).
+        /// Who receives the abilities: `SelfRef` (Quicksilver Elemental), a
+        /// typed group filter (Grell Philosopher: each Horror you control), or
+        /// `ParentTarget` (Symbiote Spider-Man: "It" = the +1/+1-counter target).
         #[serde(default = "default_target_filter_self_ref")]
         recipient: TargetFilter,
+        /// CR 611.2c: which of the donor's abilities the resolution-time grant
+        /// snapshots. `ActivatedOnly` (default — Quicksilver/Grell/Havengul) or
+        /// `AllOther` (Symbiote's "this card's OTHER abilities").
+        #[serde(default)]
+        scope: GrantedAbilityScope,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         duration: Option<Duration>,
     },
@@ -11706,6 +11712,25 @@ pub enum CopyRetargetPermission {
     KeepOriginalTargets,
     /// Oracle text grants "you may choose new targets for the copy."
     MayChooseNewTargets,
+}
+
+/// CR 611.2c: Which of a donor object's abilities a resolution-time
+/// `Effect::GainActivatedAbilitiesOfTarget` grant snapshots. This is a static
+/// selector fixed by the card's Oracle text (not a game-state read), so the
+/// grant enumerates the chosen ability categories once when the effect
+/// resolves. Distinct from the static-side `GrantAll{Activated,Triggered}AbilitiesOf`
+/// meta-modifications, which re-scan every layer pass (CR 604/611.3).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum GrantedAbilityScope {
+    /// CR 602.1: activated abilities only (Quicksilver Elemental "all activated
+    /// abilities of target creature", Grell Philosopher, Havengul Lich).
+    #[default]
+    ActivatedOnly,
+    /// CR 602.1 + CR 603.1: every ability of the donor EXCEPT the granting
+    /// ability itself — activated abilities (`obj.abilities`) plus triggered
+    /// abilities (`obj.trigger_definitions`, a separate store). Symbiote
+    /// Spider-Man "It gains this card's OTHER abilities".
+    AllOther,
 }
 
 pub(crate) fn default_target_filter_any() -> TargetFilter {

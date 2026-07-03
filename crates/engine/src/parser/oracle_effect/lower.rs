@@ -2161,6 +2161,7 @@ pub(crate) fn lower_effect_chain_ir(ir: &EffectChainIr) -> AbilityDefinition {
     rewire_cross_sentence_token_counter_attach(&mut result);
     rewire_token_attach_sibling(&mut result);
     fold_token_it_has_grants_into_token_statics(&mut result);
+    fold_copy_spell_gains_haste_and_quoted_grant(&mut result);
     nest_whenever_this_turn_token_cleanup_delayed_trigger(&mut result);
     rewire_result_anchored_subchain(&mut result);
     fold_enters_this_way_counter_rider(&mut result);
@@ -2202,6 +2203,83 @@ pub(crate) fn lower_effect_chain_ir(ir: &EffectChainIr) -> AbilityDefinition {
     }
 
     result
+}
+
+/// CR 707.10f + CR 608.3f: Fold a spell-copy rider "The copy gains haste and
+/// \"<quoted triggered ability>\"" (Choreographed Sparks; Nalfeshnee via its
+/// trigger-execute chain) into the preceding `CopySpell.additional_modifications`.
+///
+/// This is NOT a chained effect: a `CopySpell` puts the copy on the STACK, and
+/// it becomes a token only as it resolves (CR 707.10f / CR 608.3f). A chained
+/// effect running at CopySpell resolution would act on a stack object, not the
+/// resulting permanent. `additional_modifications` is the carrier that rides the
+/// copy through the stack→token transition (as Ob Nixilis's RemoveSupertype
+/// does) — `apply_spell_copy_modifications` stamps AddKeyword/GrantTrigger onto
+/// the copy at creation. Walking the whole assembled tree makes this fire at the
+/// `lower_effect_chain_ir` chokepoint for the trigger-execute form (Nalfeshnee),
+/// which never passes through the activated-ability `parse_effect_chain` wrappers.
+///
+/// CR 611.2c deviation (Nalfeshnee): Nalfeshnee's grant is conditional ("If it's
+/// a permanent spell"); that condition is dropped upstream, so the rider is
+/// appended unconditionally. Practically harmless — Choreographed mode-2 targets
+/// a creature spell (always a permanent); a non-permanent copy's haste is inert
+/// and its granted end-step-sacrifice trigger never fires (a copy of a
+/// non-permanent spell ceases to exist as it resolves, CR 707.10).
+fn fold_copy_spell_gains_haste_and_quoted_grant(def: &mut AbilityDefinition) {
+    if matches!(&*def.effect, Effect::CopySpell { .. }) {
+        if let Some(mut sub) = def.sub_ability.take() {
+            let folded = (sub.sub_link == SubAbilityLink::SequentialSibling)
+                .then(|| match sub.effect.as_ref() {
+                    Effect::Unimplemented {
+                        description: Some(desc),
+                        ..
+                    } => parse_copy_gains_haste_and_quoted_grant(desc),
+                    _ => None,
+                })
+                .flatten();
+            match folded {
+                Some(mods) => {
+                    if let Effect::CopySpell {
+                        additional_modifications,
+                        ..
+                    } = &mut *def.effect
+                    {
+                        additional_modifications.extend(mods);
+                    }
+                    // Drop the folded Unimplemented, preserving any deeper chain.
+                    def.sub_ability = sub.sub_ability.take();
+                }
+                None => def.sub_ability = Some(sub),
+            }
+        }
+    }
+    if let Some(sub) = def.sub_ability.as_mut() {
+        fold_copy_spell_gains_haste_and_quoted_grant(sub);
+    }
+    if let Some(els) = def.else_ability.as_mut() {
+        fold_copy_spell_gains_haste_and_quoted_grant(els);
+    }
+}
+
+/// CR 702.10a + CR 603.1 + CR 701.21a: Decompose "[Tt]he copy gains
+/// <keyword(s)> and \"<quoted triggered ability>\"" into `ContinuousModification`s
+/// (the granted quoted ability here being the CR 701.21a end-step "sacrifice ~"
+/// trigger), reusing the shared keyword-list and quoted-ability classifiers.
+/// Returns `None` unless the text has BOTH a keyword grant and a quoted-ability
+/// grant, so an unrelated "the copy ..." Unimplemented is never mis-folded.
+fn parse_copy_gains_haste_and_quoted_grant(desc: &str) -> Option<Vec<ContinuousModification>> {
+    let lower = desc.to_lowercase();
+    let tp = TextPair::new(desc, &lower);
+    // Strip the "the copy " subject (case-insensitive), leaving "gains <...>" so
+    // the shared keyword-clause extractor still sees the "gains" verb.
+    let rest = tp.strip_prefix("the copy ")?.original;
+    let mut mods = crate::parser::oracle_static::parse_continuous_modifications(rest);
+    let quoted = crate::parser::oracle_static::parse_quoted_ability_modifications(rest);
+    if mods.is_empty() || quoted.is_empty() {
+        return None;
+    }
+    mods.extend(quoted);
+    Some(mods)
 }
 
 /// CR 608.2c + CR 613.1f: A standalone "choose a [type] card exiled with ~"
@@ -8764,9 +8842,9 @@ mod tests {
     };
     use crate::parser::oracle_util::TextPair;
     use crate::types::ability::{
-        AbilityDefinition, AbilityKind, AggregateFunction, DelayedTriggerCondition, Duration,
-        Effect, ObjectProperty, ObjectScope, PtValue, QuantityExpr, QuantityRef, TargetFilter,
-        TriggerDefinition,
+        AbilityDefinition, AbilityKind, AggregateFunction, ContinuousModification,
+        DelayedTriggerCondition, Duration, Effect, ObjectProperty, ObjectScope, PtValue,
+        QuantityExpr, QuantityRef, TargetFilter, TriggerDefinition,
     };
     use crate::types::counter::CounterType;
     use crate::types::phase::Phase;
@@ -8843,6 +8921,121 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    /// CR 707.10f + CR 702.10a + CR 603.1: Choreographed Sparks' mode-2 "Copy
+    /// target creature spell you control. The copy gains haste and \"At the
+    /// beginning of the end step, sacrifice ~.\"" must fold the grant into the
+    /// `CopySpell.additional_modifications` (AddKeyword(Haste) + GrantTrigger),
+    /// leaving no residual `Unimplemented` sub-ability.
+    #[test]
+    fn choreographed_sparks_folds_copy_gains_haste_and_sac_into_additional_mods() {
+        const TEXT: &str = "This spell can't be copied.\nChoose one or both —\n• Copy target instant or sorcery spell you control. You may choose new targets for the copy.\n• Copy target creature spell you control. The copy gains haste and \"At the beginning of the end step, sacrifice this token.\"";
+        let parsed = crate::parser::oracle::parse_oracle_text(
+            TEXT,
+            "Choreographed Sparks",
+            &[],
+            &["Instant".to_string()],
+            &[],
+        );
+        let mods = parsed
+            .abilities
+            .iter()
+            .filter_map(find_copy_spell_additional_mods)
+            .find(|mods| !mods.is_empty())
+            .expect("mode-2 CopySpell must carry additional_modifications after the fold");
+        assert_copy_gains_haste_and_sac(&mods);
+        assert!(
+            !parsed
+                .abilities
+                .iter()
+                .any(ability_chain_has_unimplemented_the),
+            "the 'the copy gains...' clause must no longer be Unimplemented"
+        );
+    }
+
+    /// CR 707.10f + CR 603.1: Nalfeshnee's grant lives in a TRIGGER-execute chain
+    /// ("Whenever you cast a spell from exile, copy it. ... the copy gains haste
+    /// and \"...\""), which bypasses the `parse_effect_chain` wrappers. Folding at
+    /// the `lower_effect_chain_ir` chokepoint (not the wrappers) is what makes
+    /// this byte-identical grant flip supported too — the ≥2-class proof.
+    #[test]
+    fn nalfeshnee_trigger_folds_copy_gains_haste_and_sac_into_additional_mods() {
+        const TEXT: &str = "Flying\nWhenever you cast a spell from exile, copy it. You may choose new targets for the copy. If it's a permanent spell, the copy gains haste and \"At the beginning of the end step, sacrifice this permanent.\" (A copy of a permanent spell becomes a token.)";
+        let parsed = crate::parser::oracle::parse_oracle_text(
+            TEXT,
+            "Nalfeshnee",
+            &[],
+            &["Creature".to_string()],
+            &["Beast".to_string(), "Demon".to_string()],
+        );
+        let mods = parsed
+            .triggers
+            .iter()
+            .filter_map(|t| t.execute.as_deref())
+            .filter_map(find_copy_spell_additional_mods)
+            .find(|mods| !mods.is_empty())
+            .expect("Nalfeshnee's trigger-execute CopySpell must carry additional_modifications");
+        assert_copy_gains_haste_and_sac(&mods);
+        assert!(
+            !parsed
+                .triggers
+                .iter()
+                .filter_map(|t| t.execute.as_deref())
+                .any(ability_chain_has_unimplemented_the),
+            "the 'the copy gains...' clause must no longer be Unimplemented"
+        );
+    }
+
+    /// Walk a def chain for a `CopySpell` and return its `additional_modifications`.
+    fn find_copy_spell_additional_mods(
+        def: &AbilityDefinition,
+    ) -> Option<Vec<ContinuousModification>> {
+        let mut cur = Some(def);
+        while let Some(d) = cur {
+            if let Effect::CopySpell {
+                additional_modifications,
+                ..
+            } = d.effect.as_ref()
+            {
+                return Some(additional_modifications.clone());
+            }
+            cur = d.sub_ability.as_deref();
+        }
+        None
+    }
+
+    fn ability_chain_has_unimplemented_the(def: &AbilityDefinition) -> bool {
+        let mut cur = Some(def);
+        while let Some(d) = cur {
+            if matches!(d.effect.as_ref(), Effect::Unimplemented { name, .. } if name == "the") {
+                return true;
+            }
+            cur = d.sub_ability.as_deref();
+        }
+        false
+    }
+
+    fn assert_copy_gains_haste_and_sac(mods: &[ContinuousModification]) {
+        use crate::types::keywords::Keyword;
+        assert!(
+            mods.iter().any(|m| matches!(
+                m,
+                ContinuousModification::AddKeyword {
+                    keyword: Keyword::Haste
+                }
+            )),
+            "expected AddKeyword(Haste); got {mods:?}"
+        );
+        assert!(
+            mods.iter().any(|m| matches!(
+                m,
+                ContinuousModification::GrantTrigger { trigger }
+                    if matches!(trigger.execute.as_deref().map(|e| e.effect.as_ref()),
+                        Some(Effect::Sacrifice { .. }))
+            )),
+            "expected GrantTrigger wrapping an end-step Sacrifice; got {mods:?}"
+        );
     }
 
     /// CR 702.62b + CR 122.1 + CR 608.2c: Amy Pond's combat-damage trigger effect

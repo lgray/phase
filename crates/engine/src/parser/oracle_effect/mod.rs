@@ -15550,7 +15550,15 @@ fn lower_subject_predicate_ast(
             // rather than the spell source. The donor `target` and `duration`
             // were already parsed by the imperative combinator.
             if let Effect::GainActivatedAbilitiesOfTarget { recipient, .. } = &mut clause.effect {
-                *recipient = subject.affected.clone();
+                // Grell/Quicksilver's imperative arm leaves the default `SelfRef`
+                // recipient for the subject layer to rebind (to the group filter,
+                // or back to `SelfRef` for a self-subject). Symbiote's
+                // `try_parse_gain_this_cards_other_abilities` arm instead pins
+                // `recipient = ParentTarget` ("It" = the +1/+1 target); do NOT
+                // clobber that explicit binding with the bare-pronoun subject.
+                if matches!(recipient, TargetFilter::SelfRef) {
+                    *recipient = subject.affected.clone();
+                }
                 return clause;
             }
             if matches!(

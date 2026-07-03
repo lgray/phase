@@ -33,8 +33,8 @@ use crate::types::ability::{
     AbilityCost, AbilityDefinition, AbilityKind, BounceSelection, CardSelectionMode,
     CategoryChooserScope, ChoiceType, Chooser, ContinuousModification, ControllerRef,
     CopyRetargetPermission, DigSource, DoorLockOp, Duration, Effect, EffectScope, FaceDownProfile,
-    FilterProp, LibraryPosition, MultiTargetSpec, OutsideGameSourcePool, PlayerScope,
-    PreventionAmount, PreventionScope, PtStat, PtValue, QuantityExpr, QuantityRef,
+    FilterProp, GrantedAbilityScope, LibraryPosition, MultiTargetSpec, OutsideGameSourcePool,
+    PlayerScope, PreventionAmount, PreventionScope, PtStat, PtValue, QuantityExpr, QuantityRef,
     ReassembleControlMode, SearchSelectionConstraint, StaticDefinition, StickerTicketCostPayment,
     TapStateChange, TargetFilter, TargetSelectionMode, TypeFilter, TypedFilter, ZoneOwner,
 };
@@ -5396,7 +5396,40 @@ fn try_parse_gain_all_activated_abilities_of_target(text: &str) -> Option<Effect
     Some(Effect::GainActivatedAbilitiesOfTarget {
         target,
         recipient: TargetFilter::SelfRef,
+        // CR 602.1: "all ACTIVATED abilities of" — the default scope.
+        scope: GrantedAbilityScope::ActivatedOnly,
         duration: duration.or(Some(Duration::UntilEndOfTurn)),
+    })
+}
+
+/// CR 602.1 + CR 603.1 + CR 611.2a: Parse "gain[s] this card's other abilities"
+/// (Symbiote Spider-Man's Find New Host: "Put a +1/+1 counter on target creature
+/// you control. It gains this card's other abilities.") into
+/// `Effect::GainActivatedAbilitiesOfTarget` with the `AllOther` scope.
+///
+/// This is the mirror of `try_parse_gain_all_activated_abilities_of_target`:
+/// the donor is `SelfRef` ("this card" — the source), the recipient is
+/// `ParentTarget` ("It" — the just-counter'd creature), and the scope is
+/// `AllOther` (every ability of the donor except the granting ability). Per CR
+/// 611.2a the grant states no duration, so it lasts until the end of the game
+/// (`Duration::Permanent`) — NOT the imperative default of until-end-of-turn.
+fn try_parse_gain_this_cards_other_abilities(text: &str) -> Option<Effect> {
+    let lower = text.to_lowercase();
+    // nom: the fixed lead-in, composing the two subject-normalized verb forms.
+    let matched = nom_parse_lower(&lower, |input| {
+        let (input, _) = alt((tag("gains "), tag("gain "))).parse(input)?;
+        value((), tag("this card's other abilities")).parse(input)
+    })
+    .is_some();
+    if !matched {
+        return None;
+    }
+
+    Some(Effect::GainActivatedAbilitiesOfTarget {
+        target: TargetFilter::SelfRef, // donor = "this card" (the source)
+        recipient: TargetFilter::ParentTarget, // recipient = "It" (the +1/+1 target)
+        scope: GrantedAbilityScope::AllOther,
+        duration: Some(Duration::Permanent), // CR 611.2a: no duration stated
     })
 }
 
@@ -8989,6 +9022,12 @@ pub(super) fn parse_imperative_family_ast(
                 // target <donor> [until end of turn]" (Quicksilver Elemental,
                 // Grell Philosopher). Tried BEFORE the bare-keyword/quoted-ability
                 // arms so the longer, more specific phrase is not shadowed.
+                Some(ImperativeFamilyAst::GainKeyword(effect))
+            } else if let Some(effect) = try_parse_gain_this_cards_other_abilities(text) {
+                // CR 602.1 + CR 603.1 + CR 611.2a: "gains this card's other
+                // abilities" (Symbiote Spider-Man) — the `AllOther`-scope mirror
+                // (donor = SelfRef, recipient = ParentTarget). Same precedence
+                // rationale as the sibling above.
                 Some(ImperativeFamilyAst::GainKeyword(effect))
             } else if let Some(effect) =
                 try_parse_gain_keyword(text).or_else(|| try_parse_gain_quoted_ability(text))
@@ -16204,11 +16243,17 @@ mod tests {
         let Effect::GainActivatedAbilitiesOfTarget {
             target,
             recipient,
+            scope,
             duration,
         } = effect
         else {
             panic!("expected GainActivatedAbilitiesOfTarget, got something else");
         };
+        assert_eq!(
+            scope,
+            GrantedAbilityScope::ActivatedOnly,
+            "Quicksilver donor scope is activated-only"
+        );
         assert_eq!(recipient, TargetFilter::SelfRef, "implicit self-recipient");
         assert_eq!(duration, Some(Duration::UntilEndOfTurn));
         let TargetFilter::Typed(tf) = target else {
@@ -16377,6 +16422,7 @@ mod tests {
         let Effect::GainActivatedAbilitiesOfTarget {
             target,
             recipient,
+            scope: _,
             duration,
         } = gain
         else {
@@ -16417,6 +16463,75 @@ mod tests {
         );
 
         assert_eq!(*duration, Some(Duration::UntilEndOfTurn));
+    }
+
+    /// CR 602.1 + CR 603.1 + CR 611.2a: full real-Oracle-text parse-through of
+    /// Symbiote Spider-Man's Find New Host. Its "It gains this card's other
+    /// abilities" sub-clause must lower to `GainActivatedAbilitiesOfTarget` with
+    /// `scope = AllOther`, `target = SelfRef` (donor = "this card"), `recipient =
+    /// ParentTarget` ("It" = the +1/+1 target), and `duration = Permanent` (no
+    /// duration stated) — and no residual `Unimplemented` "gain" clause.
+    #[test]
+    fn symbiote_find_new_host_lowers_all_other_grant() {
+        const TEXT: &str = "Find New Host — {2}{U/B}, Exile this card from your graveyard: Put a +1/+1 counter on target creature you control. It gains this card's other abilities. Activate only as a sorcery.";
+        let parsed = crate::parser::oracle::parse_oracle_text(
+            TEXT,
+            "Symbiote Spider-Man",
+            &[],
+            &["Creature".to_string()],
+            &["Alien".to_string()],
+        );
+
+        fn find_gain(def: &AbilityDefinition) -> Option<&Effect> {
+            let mut cur = Some(def);
+            while let Some(d) = cur {
+                if matches!(
+                    d.effect.as_ref(),
+                    Effect::GainActivatedAbilitiesOfTarget { .. }
+                ) {
+                    return Some(d.effect.as_ref());
+                }
+                cur = d.sub_ability.as_deref();
+            }
+            None
+        }
+        let gain = parsed
+            .abilities
+            .iter()
+            .find_map(find_gain)
+            .expect("Find New Host's grant must lower to GainActivatedAbilitiesOfTarget");
+        let Effect::GainActivatedAbilitiesOfTarget {
+            target,
+            recipient,
+            scope,
+            duration,
+        } = gain
+        else {
+            unreachable!()
+        };
+        assert_eq!(*target, TargetFilter::SelfRef, "donor = 'this card'");
+        assert_eq!(*recipient, TargetFilter::ParentTarget, "recipient = 'It'");
+        assert_eq!(*scope, GrantedAbilityScope::AllOther, "'OTHER abilities'");
+        assert_eq!(
+            *duration,
+            Some(Duration::Permanent),
+            "CR 611.2a: no duration stated → until end of game"
+        );
+
+        assert!(
+            !parsed.abilities.iter().any(|a| {
+                let mut cur = Some(a);
+                while let Some(d) = cur {
+                    if matches!(d.effect.as_ref(), Effect::Unimplemented { name, .. } if name == "gain")
+                    {
+                        return true;
+                    }
+                    cur = d.sub_ability.as_deref();
+                }
+                false
+            }),
+            "the 'gain' clause must no longer be Unimplemented"
+        );
     }
 
     /// CR 122.1b: "put that many <keyword> counter(s) on <target>" must

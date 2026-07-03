@@ -716,6 +716,10 @@ fn scan_effect(x: &Effect) -> Axes {
         Effect::GainActivatedAbilitiesOfTarget {
             target,
             recipient,
+            // `scope` is a static compile-time selector of WHICH donor ability
+            // categories to snapshot (activated-only vs. all-other); it reads no
+            // game state, so it contributes no projected-resource/choice axis.
+            scope: _,
             duration,
         } => {
             let mut acc = Axes::NONE;
