@@ -564,10 +564,10 @@ fn sandman_compound_self_target_return_is_deferred() {
 }
 
 #[test]
-fn choreographed_sparks_copy_grant_is_deferred() {
-    // The CopySpell resolver does not apply AddKeyword/GrantTrigger modifications
-    // to the copy, so "The copy gains haste and '<delayed-sac>'" stays an honest
-    // gap rather than silently dropping the grants.
+fn choreographed_sparks_copy_grant_is_supported() {
+    // P2f: apply_spell_copy_modifications now applies AddKeyword/GrantTrigger to the
+    // copy (base+live stores), so "The copy gains haste and '<delayed-sac>'" lowers
+    // fully — no longer an honest gap. Regression guard for the supported state.
     let dbg = parsed_debug(
         "This spell can't be copied.\nChoose one or both —\n• Copy target instant or sorcery spell you control. You may choose new targets for the copy.\n• Copy target creature spell you control. The copy gains haste and \"At the beginning of the end step, sacrifice this token.\"",
         "Choreographed Sparks",
@@ -575,8 +575,8 @@ fn choreographed_sparks_copy_grant_is_deferred() {
         &[],
     );
     assert!(
-        dbg.contains("Unimplemented"),
-        "Choreographed Sparks copy-grant must remain honestly Unimplemented"
+        !dbg.contains("Unimplemented"),
+        "Choreographed Sparks copy-grant is now implemented (P2f haste + delayed-sac fold); must not regress to Unimplemented: {dbg}"
     );
 }
 
