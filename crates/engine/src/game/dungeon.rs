@@ -431,18 +431,38 @@ pub fn room_effects(
             ability.player_scope = Some(PlayerFilter::All);
             (ability, vec![])
         }
-        // 2: Oubliette — "Discard a card"
-        (DungeonId::TombOfAnnihilation, 2) => (
-            simple(
+        // 2: Oubliette — "Discard a card and sacrifice a creature, an artifact,
+        //    and a land."
+        // CR 701.9a (discard) + CR 701.21a (sacrifice: the controller sacrifices
+        // permanents they control). The controller discards a card, then
+        // sacrifices one creature, one artifact, and one land, chained in
+        // printed order via sub_ability. Each sacrifice is a count of one with
+        // min_count 0 so it resolves to zero when the controller has no
+        // permanent of that type (CR 701.21a: you can only sacrifice what you
+        // control).
+        (DungeonId::TombOfAnnihilation, 2) => {
+            let sac = |filter: TypedFilter| Effect::Sacrifice {
+                target: TargetFilter::Typed(filter),
+                count: QuantityExpr::Fixed { value: 1 },
+                min_count: 0,
+            };
+            let sac_land = simple(sac(TypedFilter::land()), source_id, controller);
+            let sac_artifact =
+                simple(sac(TypedFilter::new(TypeFilter::Artifact)), source_id, controller)
+                    .sub_ability(sac_land);
+            let sac_creature = simple(sac(TypedFilter::creature()), source_id, controller)
+                .sub_ability(sac_artifact);
+            let discard = simple(
                 Effect::DiscardCard {
                     count: 1,
                     target: TargetFilter::Any,
                 },
                 source_id,
                 controller,
-            ),
-            vec![],
-        ),
+            )
+            .sub_ability(sac_creature);
+            (discard, vec![])
+        }
         // 3: Sandfall Cell — "You lose 2 life and create a 2/2 black Zombie creature token"
         (DungeonId::TombOfAnnihilation, 3) => {
             let mut lose = simple(
