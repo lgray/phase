@@ -854,3 +854,71 @@ fn class_a_damage_done_exempts_self_source_not_observer() {
         "observer damage (valid_source non-SelfRef) ⇒ shared source event ⇒ compared"
     );
 }
+
+/// N-G (D5, CR 603.10a): the fail-open batch-prompt hole this commit closes,
+/// proven through the production ordering authority. A co-departing pair of
+/// identical "when this leaves the battlefield, target player discards" triggers
+/// carries `TargetFilter::TriggeringPlayer` in the `Discard` TARGET position —
+/// one of the 12 frozen event-context tags. `rw_effect`'s `Discard` arm ignores
+/// its `target` field, so before this commit the read/write walk never routed
+/// the tag through a legacy leaf detector and `legacy_batch_prompt` stayed false:
+/// the departure batch auto-ordered where the shipped engine prompted.
+///
+/// Revert-fail witness: removing the `p.legacy_batch_prompt =
+/// contains_legacy_event_ref(a)` override in `ability_rw_profile` makes the
+/// legacy group auto-order and flips the first assertion. The `Controller`
+/// control (identical discard, no frozen tag) proves the prompt is driven by the
+/// tag itself, not by `Discard`'s effect shape.
+#[test]
+fn n_g_dropped_target_legacy_ref_retains_batch_prompt() {
+    let state = empty_state();
+    let discard = |t: TargetFilter| Effect::Discard {
+        count: qfix(1),
+        target: t,
+        unless_filter: None,
+        filter: None,
+        selection: crate::types::ability::CardSelectionMode::Chosen,
+    };
+
+    let legacy_group = vec![
+        ctx(
+            10,
+            ra(discard(TargetFilter::TriggeringPlayer)),
+            None,
+            self_departure(10, &[11]),
+            None,
+        ),
+        ctx(
+            11,
+            ra(discard(TargetFilter::TriggeringPlayer)),
+            None,
+            self_departure(11, &[10]),
+            None,
+        ),
+    ];
+    assert!(
+        !group_is_order_independent(&state, &legacy_group, false),
+        "Discard{{TriggeringPlayer}} on a departure batch carries a frozen tag ⇒ retain prompt"
+    );
+
+    let control_group = vec![
+        ctx(
+            10,
+            ra(discard(TargetFilter::Controller)),
+            None,
+            self_departure(10, &[11]),
+            None,
+        ),
+        ctx(
+            11,
+            ra(discard(TargetFilter::Controller)),
+            None,
+            self_departure(11, &[10]),
+            None,
+        ),
+    ];
+    assert!(
+        group_is_order_independent(&state, &control_group, false),
+        "identical Discard with no frozen tag (Controller) ⇒ auto-order"
+    );
+}

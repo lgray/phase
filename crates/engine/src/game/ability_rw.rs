@@ -72,10 +72,10 @@
 
 use crate::types::ability::FilterProp;
 use crate::types::ability::{
-    AbilityCondition, AbilityDefinition, ControllerRef, Duration, Effect, ModalChoice,
-    MultiTargetSpec, ObjectScope, PlayerFilter, PlayerScope, QuantityExpr, QuantityRef,
-    RepeatContinuation, ResolvedAbility, StaticCondition, TargetFilter, TriggerCondition,
-    TypeFilter, TypedFilter,
+    AbilityCondition, AbilityDefinition, ContinuousModification, ControllerRef, Duration, Effect,
+    ModalChoice, MultiTargetSpec, ObjectScope, PlayerFilter, PlayerScope, QuantityExpr,
+    QuantityRef, RepeatContinuation, ResolvedAbility, StaticCondition, StaticDefinition,
+    TargetFilter, TriggerCondition, TriggerDefinition, TypeFilter, TypedFilter,
 };
 use crate::types::game_state::TargetSelectionConstraint;
 use crate::types::zones::Zone;
@@ -768,13 +768,24 @@ fn membership_zones_of(
 pub(crate) fn ability_rw_profile(a: &ResolvedAbility) -> RwProfile {
     let mut p = RwProfile::empty();
     walk_ability(a, None, &mut p);
+    // CR 603.10a + CR 603.3b: `legacy_batch_prompt` is computed AUTHORITATIVELY by
+    // the decoupled `contains_legacy_event_ref` visitor, not by whichever leaf
+    // sites the read/write walk happened to descend into. This overwrites (never
+    // ORs) the walk's intermediate value: the visitor is a superset of the walk's
+    // legacy leaf-hooking and additionally covers the effect target/count
+    // positions the walk drops (the D5 fail-open holes).
+    p.legacy_batch_prompt = contains_legacy_event_ref(a);
     p
 }
 
 /// Profile a bare trigger-level `condition` (CR 603.4 intervening-if — re-checked
 /// at resolution, so its reads are order-relevant).
 pub(crate) fn trigger_condition_rw_profile(c: &TriggerCondition) -> RwProfile {
-    rw_trigger_condition(c)
+    let mut p = rw_trigger_condition(c);
+    // CR 603.10a: authoritative D5 flag for the trigger-level condition (merged
+    // into the batch profile by `group_is_order_independent`).
+    p.legacy_batch_prompt = legacy_trigger_condition(c);
+    p
 }
 
 // ---------------------------------------------------------------------------
@@ -1060,6 +1071,1270 @@ fn target_is_legacy_ref(f: &TargetFilter) -> bool {
 fn flag_legacy_write_target(p: &mut RwProfile, target: &TargetFilter) {
     if target_is_legacy_ref(target) {
         p.legacy_batch_prompt = true;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// D5 decoupled legacy event-context visitor (CR 603.10a + CR 603.3b).
+//
+// `legacy_batch_prompt` must be true whenever the resolved ability references
+// ANY of the 12 frozen event-context tags in ANY position — the batch/departure
+// ordering path keeps prompting them for strict D3 parity with the deleted serde
+// allowlist (CR 603.10a look-back reads). The read/write PROFILE walk sets the
+// flag only at the leaf detectors it happens to DESCEND into; an arm that ignores
+// its target/count field (`Discard { target: _ }`, `PutAtLibraryPosition`,
+// `Sacrifice`'s `EventContextAmount` count, …) silently dropped the tag and the
+// batch group auto-ordered where the shipped engine prompted (a fail-open D5/D3
+// widening).
+//
+// This visitor is the SINGLE AUTHORITY for `legacy_batch_prompt` (wired into
+// `ability_rw_profile` / `trigger_condition_rw_profile`), DECOUPLED from the
+// profile walk's descent decisions: it performs its own exhaustive, wildcard-free
+// descent of every position where one of the 5 tag-bearing typed enums appears,
+// so the flag can never again depend on whether the profiling walk descended. A
+// future variant of any visited enum fails to COMPILE until classified (CR
+// 603.3b ordering correctness). It intentionally reproduces the profile walk's
+// legacy coverage for non-effect positions (already proven equal to the frozen
+// serde oracle by the §5.2 parity sweep) and ADDS the effect target/count
+// positions the walk drops.
+//
+// The 12 frozen tags and their carrier enums:
+//   * TargetFilter: TriggeringSpellController, TriggeringSpellOwner,
+//     TriggeringPlayer, TriggeringSource, ParentTarget, ParentTargetController,
+//     ParentTargetOwner, StackSpell, CostPaidObject.
+//   * QuantityRef: EventContextAmount, EventContextSourceCostX, ManaSpentToCast.
+//   * ObjectScope: CostPaidObject.  * PlayerFilter: TriggeringPlayer.
+//   * ControllerRef: TriggeringPlayer, ParentTargetController, ParentTargetOwner.
+// `TargetFilter::ParentTargetSlot` is EXCLUDED — it is NOT one of the 12 (it
+// serializes as an object key the frozen serde oracle's value-walk never matched).
+// ---------------------------------------------------------------------------
+
+/// D5 (CR 603.10a): does a resolved ability reference any of the 12 frozen
+/// event-context tags anywhere in its typed AST? The single authority for
+/// `legacy_batch_prompt` (CR 603.3b batch-ordering parity).
+fn contains_legacy_event_ref(a: &ResolvedAbility) -> bool {
+    legacy_effect(&a.effect)
+        || a.sub_ability
+            .as_deref()
+            .is_some_and(contains_legacy_event_ref)
+        || a.else_ability
+            .as_deref()
+            .is_some_and(contains_legacy_event_ref)
+        || a.condition.as_ref().is_some_and(legacy_ability_condition)
+        || a.duration.as_ref().is_some_and(legacy_duration)
+        || a.player_scope.as_ref().is_some_and(legacy_player_filter)
+        || a.starting_with.as_ref().is_some_and(legacy_controller_ref)
+        || a.repeat_for.as_ref().is_some_and(legacy_quantity_expr)
+        || a.multi_target.as_ref().is_some_and(legacy_multi_target)
+        || a.target_constraints.iter().any(legacy_target_constraint)
+        || a.target_chooser.as_ref().is_some_and(legacy_target_filter)
+        || a.repeat_until
+            .as_ref()
+            .is_some_and(legacy_repeat_continuation)
+        || a.modal.as_ref().is_some_and(legacy_modal_choice)
+        || a.mode_abilities.iter().any(legacy_definition)
+}
+
+/// D5: the same descent over a nested `AbilityDefinition` body (deferred
+/// triggers, choice branches, coin/die sub-effects, modal modes).
+fn legacy_definition(a: &AbilityDefinition) -> bool {
+    legacy_effect(&a.effect)
+        || a.sub_ability.as_deref().is_some_and(legacy_definition)
+        || a.else_ability.as_deref().is_some_and(legacy_definition)
+        || a.condition.as_ref().is_some_and(legacy_ability_condition)
+        || a.duration.as_ref().is_some_and(legacy_duration)
+        || a.player_scope.as_ref().is_some_and(legacy_player_filter)
+        || a.starting_with.as_ref().is_some_and(legacy_controller_ref)
+        || a.repeat_for.as_ref().is_some_and(legacy_quantity_expr)
+        || a.multi_target.as_ref().is_some_and(legacy_multi_target)
+        || a.target_constraints.iter().any(legacy_target_constraint)
+        || a.target_chooser.as_ref().is_some_and(legacy_target_filter)
+        || a.repeat_until
+            .as_ref()
+            .is_some_and(legacy_repeat_continuation)
+        || a.modal.as_ref().is_some_and(legacy_modal_choice)
+        || a.mode_abilities.iter().any(legacy_definition)
+}
+
+fn legacy_multi_target(m: &MultiTargetSpec) -> bool {
+    legacy_quantity_expr(&m.min) || m.max.as_ref().is_some_and(legacy_quantity_expr)
+}
+
+fn legacy_target_constraint(c: &TargetSelectionConstraint) -> bool {
+    match c {
+        TargetSelectionConstraint::TotalManaValue { value, .. } => legacy_quantity_expr(value),
+        TargetSelectionConstraint::DifferentTargetPlayers
+        | TargetSelectionConstraint::DifferentObjectControllers => false,
+    }
+}
+
+fn legacy_repeat_continuation(r: &RepeatContinuation) -> bool {
+    match r {
+        RepeatContinuation::WhileCondition { condition, .. } => legacy_ability_condition(condition),
+        RepeatContinuation::ControllerChoice | RepeatContinuation::UntilStopConditions { .. } => {
+            false
+        }
+    }
+}
+
+fn legacy_modal_choice(m: &ModalChoice) -> bool {
+    legacy_player_filter(&m.chooser)
+        || m.dynamic_max_choices
+            .as_ref()
+            .is_some_and(legacy_quantity_expr)
+}
+
+/// D5 trigger-level condition entry (CR 603.4 intervening-if — re-checked at
+/// resolution, so a legacy ref there also retains the batch prompt).
+fn legacy_trigger_condition(x: &TriggerCondition) -> bool {
+    match x {
+        TriggerCondition::QuantityComparison { lhs, rhs, .. } => {
+            legacy_quantity_expr(lhs) || legacy_quantity_expr(rhs)
+        }
+        TriggerCondition::DuringPlayersTurn { player } => legacy_player_filter(player),
+        TriggerCondition::And { conditions } | TriggerCondition::Or { conditions } => {
+            conditions.iter().any(legacy_trigger_condition)
+        }
+        TriggerCondition::Not { condition } => legacy_trigger_condition(condition),
+        TriggerCondition::GainedLife { .. }
+        | TriggerCondition::LostLife
+        | TriggerCondition::LostLifeLastTurn
+        | TriggerCondition::DealtDamageBySourceThisTurn
+        | TriggerCondition::DealtDamageThisTurnBySource { .. }
+        | TriggerCondition::LifeTotalGE { .. }
+        | TriggerCondition::ControlsType { .. }
+        | TriggerCondition::ControlCount { .. }
+        | TriggerCondition::ControlsNone { .. }
+        | TriggerCondition::DefendingPlayerControlsNone { .. }
+        | TriggerCondition::HadCounters { .. }
+        | TriggerCondition::HasCounters { .. }
+        | TriggerCondition::CounterAddedThisTurn
+        | TriggerCondition::SourceIsTapped
+        | TriggerCondition::SourceMatchesFilter { .. }
+        | TriggerCondition::NoSpellsCastLastTurn
+        | TriggerCondition::TwoOrMoreSpellsCastLastTurn
+        | TriggerCondition::CastSpellThisTurn { .. }
+        | TriggerCondition::SpellCastWithVariantThisTurn { .. }
+        | TriggerCondition::SourceEnteredThisTurn
+        | TriggerCondition::SourceIsHarnessed
+        | TriggerCondition::SourceIsAttacking
+        | TriggerCondition::SourceIsTransformed
+        | TriggerCondition::SourceIsFaceUp
+        | TriggerCondition::SourceIsFaceDown
+        | TriggerCondition::SourceInZone { .. }
+        | TriggerCondition::IsRenowned { .. }
+        | TriggerCondition::WasStartingPlayer { .. }
+        | TriggerCondition::ZoneChangeObjectMatchesFilter { .. }
+        | TriggerCondition::ZoneChangeObjectIsTapped
+        | TriggerCondition::EventDamageSourceMatchesFilter { .. }
+        | TriggerCondition::DamagedPlayerIsEventSourceOwner
+        | TriggerCondition::TriggeringSpellTargetsFilter { .. }
+        | TriggerCondition::ManaColorSpent { .. }
+        | TriggerCondition::ManaSpentCondition { .. }
+        | TriggerCondition::AttackersDeclaredCount { .. }
+        | TriggerCondition::Descended
+        | TriggerCondition::EchoDue
+        | TriggerCondition::MinCoAttackers { .. }
+        | TriggerCondition::SolveConditionMet
+        | TriggerCondition::ClassLevelGE { .. }
+        | TriggerCondition::AttractionVisitRoll { .. }
+        | TriggerCondition::WasCast { .. }
+        | TriggerCondition::WasPlayed
+        | TriggerCondition::AdditionalCostPaid { .. }
+        | TriggerCondition::CastVariantPaid { .. }
+        | TriggerCondition::CastVariantPaidPersistent { .. }
+        | TriggerCondition::ActivatedAbilityIsNonMana
+        | TriggerCondition::FirstTimeObjectTappedThisTurn
+        | TriggerCondition::WasType { .. }
+        | TriggerCondition::AttackedThisTurn
+        | TriggerCondition::FirstCombatPhaseOfTurn
+        | TriggerCondition::HasMaxSpeed
+        | TriggerCondition::IsMonarch
+        | TriggerCondition::IsInitiative
+        | TriggerCondition::NoMonarch
+        | TriggerCondition::HasCityBlessing
+        | TriggerCondition::CompletedDungeon { .. }
+        | TriggerCondition::TributeNotPaid
+        | TriggerCondition::CastDuringPhase { .. }
+        | TriggerCondition::CastTimingPermission { .. }
+        | TriggerCondition::ControlsCommander { .. }
+        | TriggerCondition::ChosenLabelIs { .. }
+        | TriggerCondition::ExceptFirstDrawInDrawStep
+        | TriggerCondition::PlacedByAbilitySource => false,
+    }
+}
+
+fn legacy_ability_condition(x: &AbilityCondition) -> bool {
+    match x {
+        AbilityCondition::QuantityCheck { lhs, rhs, .. } => {
+            legacy_quantity_expr(lhs) || legacy_quantity_expr(rhs)
+        }
+        AbilityCondition::PreviousEffectAmount { rhs, .. } => legacy_quantity_expr(rhs),
+        AbilityCondition::ScopedPlayerMatches { filter } => legacy_player_filter(filter),
+        AbilityCondition::ConditionInstead { inner }
+        | AbilityCondition::Not { condition: inner } => legacy_ability_condition(inner),
+        AbilityCondition::And { conditions } | AbilityCondition::Or { conditions } => {
+            conditions.iter().any(legacy_ability_condition)
+        }
+        AbilityCondition::ObjectsShareQuality { .. }
+        | AbilityCondition::TargetMatchesFilter { .. }
+        | AbilityCondition::SourceMatchesFilter { .. }
+        | AbilityCondition::SourceIsTapped
+        | AbilityCondition::ControllerControlsMatching { .. }
+        | AbilityCondition::TriggeringSpellTargetsFilter { .. }
+        | AbilityCondition::ZoneChangeObjectMatchesFilter { .. }
+        | AbilityCondition::ZoneChangedThisWay { .. }
+        | AbilityCondition::CostPaidObjectMatchesFilter { .. }
+        | AbilityCondition::EventOutcomeWon
+        | AbilityCondition::SpellCastWithVariantThisTurn { .. }
+        | AbilityCondition::NthResolutionThisTurn { .. }
+        | AbilityCondition::RevealedHasCardType { .. }
+        | AbilityCondition::SourceEnteredThisTurn
+        | AbilityCondition::AdditionalCostPaid { .. }
+        | AbilityCondition::CastVariantPaid { .. }
+        | AbilityCondition::SourceAttachedToCreature
+        | AbilityCondition::ControllerControlledMatchingAsCast { .. }
+        | AbilityCondition::SourceLacksKeyword { .. }
+        | AbilityCondition::WasStartingPlayer { .. }
+        | AbilityCondition::AdditionalCostPaidInstead
+        | AbilityCondition::AlternativeManaCostPaid
+        | AbilityCondition::EffectOutcome { .. }
+        | AbilityCondition::WhenYouDo
+        | AbilityCondition::CastFromZone { .. }
+        | AbilityCondition::CastDuringPhase { .. }
+        | AbilityCondition::CurrentPhaseIs { .. }
+        | AbilityCondition::CastTimingPermission { .. }
+        | AbilityCondition::ManaColorSpent { .. }
+        | AbilityCondition::TargetSharesNameWithOtherExiledThisWay { .. }
+        | AbilityCondition::CastVariantPaidInstead { .. }
+        | AbilityCondition::HasMaxSpeed
+        | AbilityCondition::IsMonarch
+        | AbilityCondition::IsInitiative
+        | AbilityCondition::HasCityBlessing
+        | AbilityCondition::IsRingBearer
+        | AbilityCondition::TargetHasKeywordInstead { .. }
+        | AbilityCondition::HasObjectTarget
+        | AbilityCondition::IsYourTurn
+        | AbilityCondition::FirstCombatPhaseOfTurn
+        | AbilityCondition::FirstEndStepOfTurn
+        | AbilityCondition::DayNightIsNeither
+        | AbilityCondition::DayNightIs { .. } => false,
+    }
+}
+
+fn legacy_static_condition(x: &StaticCondition) -> bool {
+    match x {
+        StaticCondition::QuantityComparison { lhs, rhs, .. } => {
+            legacy_quantity_expr(lhs) || legacy_quantity_expr(rhs)
+        }
+        StaticCondition::IsTapped { scope, .. } => legacy_object_scope(scope),
+        StaticCondition::And { conditions } | StaticCondition::Or { conditions } => {
+            conditions.iter().any(legacy_static_condition)
+        }
+        StaticCondition::Not { condition } => legacy_static_condition(condition),
+        StaticCondition::DevotionGE { .. }
+        | StaticCondition::SharesColorWithMostCommonColorAmongPermanents
+        | StaticCondition::IsPresent { .. }
+        | StaticCondition::DefendingPlayerControls { .. }
+        | StaticCondition::HasCounters { .. }
+        | StaticCondition::SourceIsTapped
+        | StaticCondition::OpponentPoisonAtLeast { .. }
+        | StaticCondition::SpellCastWithVariantThisTurn { .. }
+        | StaticCondition::SourceMatchesFilter { .. }
+        | StaticCondition::UnlessPay { .. }
+        | StaticCondition::SourceAttackingAlone
+        | StaticCondition::SourceIsAttacking
+        | StaticCondition::SourceIsBlocking
+        | StaticCondition::SourceIsBlocked
+        | StaticCondition::SourceEnteredThisTurn
+        | StaticCondition::SourceHasDealtDamage
+        | StaticCondition::SourceIsSaddled
+        | StaticCondition::SourceIsEquipped
+        | StaticCondition::SourceIsEnchanted
+        | StaticCondition::SourceIsMonstrous
+        | StaticCondition::SourceIsHarnessed
+        | StaticCondition::SourceAttachedToCreature
+        | StaticCondition::SourceIsPaired
+        | StaticCondition::SourceInZone { .. }
+        | StaticCondition::WasStartingPlayer { .. }
+        | StaticCondition::RecipientHasCounters { .. }
+        | StaticCondition::RecipientMatchesFilter { .. }
+        | StaticCondition::RecipientAttackingOwnerTarget { .. }
+        | StaticCondition::ChosenColorIs { .. }
+        | StaticCondition::ChosenLabelIs { .. }
+        | StaticCondition::HasMaxSpeed
+        | StaticCondition::SpeedGE { .. }
+        | StaticCondition::DayNightIs { .. }
+        | StaticCondition::CastVariantPaid { .. }
+        | StaticCondition::ClassLevelGE { .. }
+        | StaticCondition::IsMonarch
+        | StaticCondition::IsInitiative
+        | StaticCondition::NoMonarch
+        | StaticCondition::HasCityBlessing
+        | StaticCondition::CompletedADungeon
+        | StaticCondition::Unrecognized { .. }
+        | StaticCondition::DuringYourTurn
+        | StaticCondition::WasCast { .. }
+        | StaticCondition::IsRingBearer
+        | StaticCondition::RingLevelAtLeast { .. }
+        | StaticCondition::ControlsCommander { .. }
+        | StaticCondition::SourceControllerEquals { .. }
+        | StaticCondition::EnchantedIsFaceDown
+        | StaticCondition::AdditionalCostPaid
+        | StaticCondition::CastingAsVariant { .. }
+        | StaticCondition::None => false,
+    }
+}
+
+fn legacy_duration(x: &Duration) -> bool {
+    match x {
+        Duration::ForAsLongAs { condition } => legacy_static_condition(condition),
+        Duration::UntilEndOfTurn
+        | Duration::UntilEndOfCombat
+        | Duration::UntilHostLeavesPlay
+        | Duration::Permanent
+        | Duration::UntilNextTurnOf { .. }
+        | Duration::UntilEndOfNextTurnOf { .. }
+        | Duration::UntilNextStepOf { .. } => false,
+    }
+}
+
+fn legacy_quantity_expr(x: &QuantityExpr) -> bool {
+    match x {
+        QuantityExpr::Ref { qty } => legacy_quantity_ref(qty),
+        QuantityExpr::Fixed { value: _ } => false,
+        QuantityExpr::DivideRounded { inner, .. }
+        | QuantityExpr::Offset { inner, .. }
+        | QuantityExpr::ClampMin { inner, .. }
+        | QuantityExpr::Multiply { inner, .. }
+        | QuantityExpr::UpTo { max: inner } => legacy_quantity_expr(inner),
+        QuantityExpr::Power { exponent, base: _ } => legacy_quantity_expr(exponent),
+        QuantityExpr::Difference { left, right } => {
+            legacy_quantity_expr(left) || legacy_quantity_expr(right)
+        }
+        QuantityExpr::Sum { exprs } | QuantityExpr::Max { exprs } => {
+            exprs.iter().any(legacy_quantity_expr)
+        }
+    }
+}
+
+fn legacy_quantity_ref(x: &QuantityRef) -> bool {
+    match x {
+        // 3 of the 12 frozen tags are QuantityRefs.
+        QuantityRef::EventContextAmount
+        | QuantityRef::EventContextSourceCostX
+        | QuantityRef::ManaSpentToCast { .. } => true,
+        // Object-scope carriers: `ObjectScope::CostPaidObject` is a 12th tag.
+        QuantityRef::CountersOn { scope, .. }
+        | QuantityRef::Intensity { scope, .. }
+        | QuantityRef::Power { scope, .. }
+        | QuantityRef::Toughness { scope, .. }
+        | QuantityRef::ObjectManaValue { scope, .. }
+        | QuantityRef::ObjectColorCount { scope, .. }
+        | QuantityRef::ObjectNameWordCount { scope, .. }
+        | QuantityRef::ObjectTypelineComponentCount { scope, .. }
+        | QuantityRef::ManaSymbolsInManaCost { scope, .. } => legacy_object_scope(scope),
+        QuantityRef::HandSize { .. }
+        | QuantityRef::LifeTotal { .. }
+        | QuantityRef::LifeAboveStarting
+        | QuantityRef::StartingLifeTotal
+        | QuantityRef::GraveyardSize { .. }
+        | QuantityRef::ObjectCount { .. }
+        | QuantityRef::ObjectCountDistinct { .. }
+        | QuantityRef::ObjectCountBySharedQuality { .. }
+        | QuantityRef::ControlledByEachPlayer { .. }
+        | QuantityRef::DistinctColorsAmongPermanents { .. }
+        | QuantityRef::CountersOnObjects { .. }
+        | QuantityRef::DistinctCounterKindsAmong { .. }
+        | QuantityRef::Aggregate { .. }
+        | QuantityRef::PlayerCount { .. }
+        | QuantityRef::TargetObjectManaValue { .. }
+        | QuantityRef::PlayerCounter { .. }
+        | QuantityRef::TargetControllerCounter { .. }
+        | QuantityRef::Variable { .. }
+        | QuantityRef::SelfManaValue
+        | QuantityRef::TargetZoneCardCount { .. }
+        | QuantityRef::Devotion { .. }
+        | QuantityRef::DistinctCardTypes { .. }
+        | QuantityRef::BasicLandTypeCount { .. }
+        | QuantityRef::PartySize { .. }
+        | QuantityRef::CardsExiledBySource
+        | QuantityRef::ExiledCardPower { .. }
+        | QuantityRef::TrackedSetSize
+        | QuantityRef::FilteredTrackedSetSize { .. }
+        | QuantityRef::TrackedSetAggregate { .. }
+        | QuantityRef::ExiledFromHandThisResolution
+        | QuantityRef::PreviousEffectAmount
+        | QuantityRef::TurnsTaken
+        | QuantityRef::CrimesCommittedThisTurn
+        | QuantityRef::ChosenNumber
+        | QuantityRef::AttackedThisTurn { .. }
+        | QuantityRef::DescendedThisTurn
+        // CR 701.65b/701.66b/701.67c: controller-scoped per-turn bend accumulator
+        // (Avatar Aang), same class as CrimesCommittedThisTurn — not a frozen tag.
+        | QuantityRef::BendTypesThisTurn
+        | QuantityRef::LandsPlayedThisTurn { .. }
+        | QuantityRef::DungeonsCompleted
+        | QuantityRef::CostXPaid
+        | QuantityRef::KickerCount
+        | QuantityRef::AdditionalCostPaymentCount
+        | QuantityRef::AdditionalCostPaymentCountFor { .. }
+        | QuantityRef::ConvokedCreatureCount
+        | QuantityRef::ColorsInCommandersColorIdentity
+        | QuantityRef::CommanderCastFromCommandZoneCount
+        | QuantityRef::CommanderManaValue { .. }
+        | QuantityRef::Speed { .. }
+        | QuantityRef::VoteCount { .. }
+        | QuantityRef::ZoneCardCount { .. }
+        | QuantityRef::EnteredThisTurn { .. }
+        | QuantityRef::SacrificedThisTurn { .. }
+        | QuantityRef::BattlefieldEntriesThisTurn { .. }
+        | QuantityRef::ZoneChangeCountThisTurn { .. }
+        | QuantityRef::ZoneChangeAggregateThisTurn { .. }
+        | QuantityRef::TokensCreatedThisTurn { .. }
+        | QuantityRef::CounterAddedThisTurn { .. }
+        | QuantityRef::LifeLostThisTurn { .. }
+        | QuantityRef::LifeGainedThisTurn { .. }
+        | QuantityRef::DamageDealtThisTurn { .. }
+        | QuantityRef::CardsDrawnThisTurn { .. }
+        | QuantityRef::CardsDiscardedThisTurn { .. }
+        | QuantityRef::SpellsCastThisTurn { .. }
+        | QuantityRef::SpellsCastLastTurn
+        | QuantityRef::SpellsCastThisGame { .. }
+        | QuantityRef::LoyaltyAbilitiesActivatedThisTurn { .. }
+        | QuantityRef::PlayerActionsThisTurn { .. }
+        | QuantityRef::UnspentMana { .. }
+        | QuantityRef::AttachmentsOnLeavingObject { .. }
+        | QuantityRef::TimesCostPaidThisResolution => false,
+    }
+}
+
+fn legacy_object_scope(s: &ObjectScope) -> bool {
+    match s {
+        ObjectScope::CostPaidObject => true,
+        ObjectScope::Source
+        | ObjectScope::Recipient
+        | ObjectScope::Target
+        | ObjectScope::Anaphoric
+        | ObjectScope::Demonstrative
+        | ObjectScope::EventSource
+        | ObjectScope::EventTarget => false,
+    }
+}
+
+fn legacy_player_filter(x: &PlayerFilter) -> bool {
+    match x {
+        PlayerFilter::TriggeringPlayer => true,
+        PlayerFilter::ControlsCount { count, .. } => legacy_quantity_expr(count),
+        PlayerFilter::PlayerAttribute { attr, value, .. } => {
+            legacy_quantity_ref(attr) || legacy_quantity_expr(value)
+        }
+        PlayerFilter::AllExcept { exclude } => legacy_player_filter(exclude),
+        PlayerFilter::OpponentLostLife
+        | PlayerFilter::OpponentGainedLife
+        | PlayerFilter::OpponentDealtCombatDamage { .. }
+        | PlayerFilter::OpponentOtherThanTriggering
+        | PlayerFilter::OpponentOfTriggeringPlayer
+        | PlayerFilter::OpponentOfTriggeringPlayerNotAttacked
+        | PlayerFilter::ParentObjectTargetController
+        | PlayerFilter::ParentObjectTargetOwner
+        | PlayerFilter::Controller
+        | PlayerFilter::Opponent
+        | PlayerFilter::DefendingPlayer
+        | PlayerFilter::HasLostTheGame
+        | PlayerFilter::OpponentAttacked { .. }
+        | PlayerFilter::All
+        | PlayerFilter::HighestSpeed
+        | PlayerFilter::ZoneChangedThisWay
+        | PlayerFilter::PerformedActionThisWay { .. }
+        | PlayerFilter::OwnersOfCardsExiledBySource
+        | PlayerFilter::VotedFor { .. }
+        | PlayerFilter::ChosenPlayer { .. } => false,
+    }
+}
+
+fn legacy_controller_ref(x: &ControllerRef) -> bool {
+    match x {
+        ControllerRef::ParentTargetController
+        | ControllerRef::ParentTargetOwner
+        | ControllerRef::TriggeringPlayer => true,
+        ControllerRef::You
+        | ControllerRef::Opponent
+        | ControllerRef::ScopedPlayer
+        | ControllerRef::TargetPlayer
+        | ControllerRef::DefendingPlayer
+        | ControllerRef::ChosenPlayer { .. }
+        | ControllerRef::SourceChosenPlayer
+        | ControllerRef::EnchantedPlayer => false,
+    }
+}
+
+/// The 9 `TargetFilter` carriers of the 12 tags, position-agnostic: a nested tag
+/// inside `Not`/`And`/`Or`/`TrackedSetFiltered` is caught (mirrors the frozen
+/// serde oracle's whole-value walk). `ParentTargetSlot` is deliberately excluded.
+fn legacy_target_filter(f: &TargetFilter) -> bool {
+    match f {
+        TargetFilter::TriggeringSpellController
+        | TargetFilter::TriggeringSpellOwner
+        | TargetFilter::TriggeringPlayer
+        | TargetFilter::TriggeringSource
+        | TargetFilter::ParentTarget
+        | TargetFilter::ParentTargetController
+        | TargetFilter::ParentTargetOwner
+        | TargetFilter::StackSpell
+        | TargetFilter::CostPaidObject => true,
+        TargetFilter::Not { filter } | TargetFilter::TrackedSetFiltered { filter, .. } => {
+            legacy_target_filter(filter)
+        }
+        TargetFilter::And { filters } | TargetFilter::Or { filters } => {
+            filters.iter().any(legacy_target_filter)
+        }
+        // A `Typed` filter carries a `controller` (`ControllerRef`) and
+        // `properties` (`FilterProp`), each of which can nest a frozen tag
+        // (e.g. `creature <ParentTargetController> controls`, or a
+        // `SharesQuality`/`PtComparison` prop referencing a `TriggeringSource`
+        // filter / `CostPaidObject` scope). The serde oracle walked these; we
+        // must too. `type_filters` (`TypeFilter`) carry no tag.
+        TargetFilter::Typed(tf) => {
+            tf.controller.as_ref().is_some_and(legacy_controller_ref)
+                || tf.properties.iter().any(legacy_filter_prop)
+        }
+        TargetFilter::ParentTargetSlot { .. }
+        | TargetFilter::EventTarget
+        | TargetFilter::TriggeringSourceController
+        | TargetFilter::PostReplacementSourceController
+        | TargetFilter::PostReplacementDamageTarget
+        | TargetFilter::PostReplacementDamageTargetOwner
+        | TargetFilter::ChosenDamageSource
+        | TargetFilter::None
+        | TargetFilter::Any
+        | TargetFilter::Player
+        | TargetFilter::Controller
+        | TargetFilter::SelfRef
+        | TargetFilter::SourceOrPaired
+        | TargetFilter::StackAbility { .. }
+        | TargetFilter::SpecificObject { .. }
+        | TargetFilter::SpecificPlayer { .. }
+        | TargetFilter::Neighbor { .. }
+        | TargetFilter::ScopedPlayer
+        | TargetFilter::AttachedTo
+        | TargetFilter::LastCreated
+        | TargetFilter::LastRevealed
+        | TargetFilter::ChosenCard
+        | TargetFilter::TrackedSet { .. }
+        | TargetFilter::ExiledBySource
+        | TargetFilter::ExiledCardByIndex { .. }
+        | TargetFilter::SourceChosenPlayer
+        | TargetFilter::OriginalController
+        | TargetFilter::DefendingPlayer
+        | TargetFilter::HasChosenName
+        | TargetFilter::Named { .. }
+        | TargetFilter::Owner
+        | TargetFilter::AllPlayers => false,
+    }
+}
+
+/// A `FilterProp` interior can nest each of the tag-bearing enums: a
+/// `TargetFilter` (`SharesQuality`/`CanEnchant`/`Targets`/…), a `QuantityExpr`
+/// (`Counters`/`Cmc`/`PtComparison` values → `EventContext*` / `CostPaidObject`
+/// scope), a `ControllerRef` (`Owned`/`Attacking`/…), or a nested `FilterProp`
+/// (`AnyOf`/`Not`). Exhaustive & wildcard-free so a future prop must be
+/// classified (a `_ =>` here would silently re-open the D5 hole class).
+fn legacy_filter_prop(p: &FilterProp) -> bool {
+    match p {
+        FilterProp::CanEnchant { target } => legacy_target_filter(target),
+        FilterProp::DifferentNameFrom { filter }
+        | FilterProp::TargetsOnly { filter }
+        | FilterProp::Targets { filter } => legacy_target_filter(filter),
+        FilterProp::SharesQuality { reference, .. } => {
+            reference.as_deref().is_some_and(legacy_target_filter)
+        }
+        FilterProp::Counters { count, .. } => legacy_quantity_expr(count),
+        FilterProp::Cmc { value, .. } | FilterProp::PtComparison { value, .. } => {
+            legacy_quantity_expr(value)
+        }
+        FilterProp::ProtectorMatches { controller }
+        | FilterProp::Owned { controller }
+        | FilterProp::MostPrevalentCreatureTypeIn {
+            scope: controller, ..
+        } => legacy_controller_ref(controller),
+        FilterProp::Attacking { defender: c }
+        | FilterProp::AttackedThisTurn { defender: c }
+        | FilterProp::HasAttachment { controller: c, .. }
+        | FilterProp::HasAnyAttachmentOf { controller: c, .. }
+        | FilterProp::NameMatchesAnyPermanent { controller: c } => {
+            c.as_ref().is_some_and(legacy_controller_ref)
+        }
+        FilterProp::AnyOf { props } => props.iter().any(legacy_filter_prop),
+        FilterProp::Not { prop } => legacy_filter_prop(prop),
+        FilterProp::Token
+        | FilterProp::NonToken
+        | FilterProp::WasPlayed
+        | FilterProp::Blocking
+        | FilterProp::BlockingSource
+        | FilterProp::CombatRelation { .. }
+        | FilterProp::Unblocked
+        | FilterProp::AttackingAlone
+        | FilterProp::BlockingAlone
+        | FilterProp::Tapped
+        | FilterProp::Untapped
+        | FilterProp::IsSaddled
+        | FilterProp::SaddledSource
+        | FilterProp::ConvokedSource
+        | FilterProp::HasHasteOrControlledSinceTurnBegan
+        | FilterProp::WithKeyword { .. }
+        | FilterProp::HasKeywordKind { .. }
+        | FilterProp::WithoutKeyword { .. }
+        | FilterProp::WithoutKeywordKind { .. }
+        | FilterProp::ManaValueParity { .. }
+        | FilterProp::ManaCostIn { .. }
+        | FilterProp::InZone { .. }
+        | FilterProp::Foretold
+        | FilterProp::EnchantedBy
+        | FilterProp::EquippedBy
+        | FilterProp::AttachedToSource
+        | FilterProp::AttachedToRecipient
+        | FilterProp::Another
+        | FilterProp::Unpaired
+        | FilterProp::OtherThanTriggerObject
+        | FilterProp::HasColor { .. }
+        | FilterProp::PowerGTSource
+        | FilterProp::ColorCount { .. }
+        | FilterProp::ManaSymbolCount { .. }
+        | FilterProp::HasSupertype { .. }
+        | FilterProp::IsChosenCreatureType
+        | FilterProp::IsChosenColor
+        | FilterProp::IsChosenCardType
+        | FilterProp::IsChosenLandOrNonlandKind
+        | FilterProp::HasSingleTarget
+        | FilterProp::Modal
+        | FilterProp::NotColor { .. }
+        | FilterProp::NotSupertype { .. }
+        | FilterProp::Suspected
+        | FilterProp::Renowned
+        | FilterProp::ToughnessGTPower
+        | FilterProp::PowerExceedsBase
+        | FilterProp::InAnyZone { .. }
+        | FilterProp::WasDealtDamageThisTurn
+        | FilterProp::EnteredThisTurn
+        | FilterProp::ZoneChangedThisTurn { .. }
+        | FilterProp::BlockedThisTurn
+        | FilterProp::AttackedOrBlockedThisTurn
+        | FilterProp::CountersPutOnThisTurn { .. }
+        | FilterProp::FaceDown
+        | FilterProp::HasXInManaCost
+        | FilterProp::HasXInActivationCost
+        | FilterProp::WasKicked
+        | FilterProp::HasManaAbility
+        | FilterProp::HasNoAbilities
+        | FilterProp::Named { .. }
+        | FilterProp::SameName
+        | FilterProp::SameNameAsParentTarget
+        | FilterProp::IsCommander
+        | FilterProp::Modified
+        | FilterProp::Historic
+        | FilterProp::NotHistoric
+        | FilterProp::Other { .. } => false,
+    }
+}
+
+/// A static ability granted by an effect (`Token`/`GenericEffect`/`CreateEmblem`)
+/// can nest a frozen tag in its affected filter, its `as long as` gate, or a
+/// granted modification (e.g. a `GrantTrigger` whose body references
+/// `ParentTarget` — Rekindling Phoenix's token upkeep trigger).
+fn legacy_static_definition(s: &StaticDefinition) -> bool {
+    s.affected.as_ref().is_some_and(legacy_target_filter)
+        || s.condition.as_ref().is_some_and(legacy_static_condition)
+        || s.modifications.iter().any(legacy_continuous_modification)
+}
+
+/// A layer-6 grant (`GrantAbility`/`GrantTrigger`/`GrantStaticAbility`), an
+/// all-of-source grant filter, or a dynamic P/T/counter value can each nest a
+/// frozen tag. Exhaustive & wildcard-free so a future modification is classified.
+fn legacy_continuous_modification(m: &ContinuousModification) -> bool {
+    match m {
+        ContinuousModification::GrantAbility { definition } => legacy_definition(definition),
+        ContinuousModification::GrantStaticAbility { definition } => {
+            legacy_static_definition(definition)
+        }
+        ContinuousModification::GrantTrigger { trigger } => legacy_trigger_definition(trigger),
+        ContinuousModification::GrantAllActivatedAbilitiesOf { source, .. }
+        | ContinuousModification::GrantAllTriggeredAbilitiesOf { source } => {
+            legacy_target_filter(source)
+        }
+        ContinuousModification::SetDynamicPower { value }
+        | ContinuousModification::SetDynamicToughness { value }
+        | ContinuousModification::SetPowerDynamic { value }
+        | ContinuousModification::SetToughnessDynamic { value }
+        | ContinuousModification::AddDynamicPower { value }
+        | ContinuousModification::AddDynamicToughness { value }
+        | ContinuousModification::AddDynamicKeyword { value, .. }
+        | ContinuousModification::AddCounterOnEnter { count: value, .. } => {
+            legacy_quantity_expr(value)
+        }
+        ContinuousModification::CopyValues { .. }
+        | ContinuousModification::SetName { .. }
+        | ContinuousModification::AddPower { .. }
+        | ContinuousModification::AddToughness { .. }
+        | ContinuousModification::SetPower { .. }
+        | ContinuousModification::SetToughness { .. }
+        | ContinuousModification::AddKeyword { .. }
+        | ContinuousModification::RemoveKeyword { .. }
+        | ContinuousModification::RemoveAllAbilities
+        | ContinuousModification::AddType { .. }
+        | ContinuousModification::RemoveType { .. }
+        | ContinuousModification::AddSubtype { .. }
+        | ContinuousModification::RemoveSubtype { .. }
+        | ContinuousModification::SetCardTypes { .. }
+        | ContinuousModification::RemoveAllSubtypes { .. }
+        | ContinuousModification::AddAllCreatureTypes
+        | ContinuousModification::AddAllBasicLandTypes
+        | ContinuousModification::AddAllLandTypes
+        | ContinuousModification::AddChosenSubtype { .. }
+        | ContinuousModification::AddChosenColor
+        | ContinuousModification::RemoveChosenKeyword
+        | ContinuousModification::AddChosenKeyword
+        | ContinuousModification::SetColor { .. }
+        | ContinuousModification::AddColor { .. }
+        // A granted rule-modification mode (`AddStaticMode`) carries no frozen tag
+        // in the corpus; the §5.2 sweep is the arbiter if one ever hides there.
+        | ContinuousModification::AddStaticMode { .. }
+        | ContinuousModification::SwitchPowerToughness
+        | ContinuousModification::AssignDamageFromToughness
+        | ContinuousModification::AssignDamageAsThoughUnblocked
+        | ContinuousModification::AssignNoCombatDamage
+        | ContinuousModification::ChangeController
+        | ContinuousModification::SetBasicLandType { .. }
+        | ContinuousModification::SetChosenBasicLandType
+        // CR 612.8 + 613.1c: Layer-3 name-set from source's chosen name (Psychic
+        // Paper); a granted continuous mod, no frozen event-context tag.
+        | ContinuousModification::SetChosenName
+        | ContinuousModification::RetainPrintedTriggerFromSource { .. }
+        | ContinuousModification::RetainPrintedAbilityFromSource { .. }
+        | ContinuousModification::AddSupertype { .. }
+        | ContinuousModification::RemoveSupertype { .. }
+        | ContinuousModification::SetStartingLoyalty { .. }
+        | ContinuousModification::RemoveManaCost => false,
+    }
+}
+
+/// A granted / emblem `TriggerDefinition` can carry a frozen tag in its firing
+/// filters (`valid_card`/`valid_source`), its intervening-if condition, or its
+/// execute body.
+fn legacy_trigger_definition(td: &TriggerDefinition) -> bool {
+    td.execute.as_deref().is_some_and(legacy_definition)
+        || td.condition.as_ref().is_some_and(legacy_trigger_condition)
+        || td.valid_card.as_ref().is_some_and(legacy_target_filter)
+        || td.valid_source.as_ref().is_some_and(legacy_target_filter)
+}
+
+/// D5: every effect position where a frozen tag can appear. `{ .. }` elides
+/// fields that carry no tag-bearing enum; the match is exhaustive at the VARIANT
+/// level (a new `Effect` variant fails to compile). Effect TARGET/COUNT positions
+/// are checked here even where the read/write profile walk drops them — this is
+/// the class of 50 D5 holes this visitor closes (CR 603.10a).
+fn legacy_effect(x: &Effect) -> bool {
+    // Small helpers for optional carriers.
+    let otf = |o: &Option<TargetFilter>| o.as_ref().is_some_and(legacy_target_filter);
+    let oqe = |o: &Option<QuantityExpr>| o.as_ref().is_some_and(legacy_quantity_expr);
+    let ocr = |o: &Option<ControllerRef>| o.as_ref().is_some_and(legacy_controller_ref);
+    let odur = |o: &Option<Duration>| o.as_ref().is_some_and(legacy_duration);
+    let odef = |o: &Option<Box<AbilityDefinition>>| o.as_deref().is_some_and(legacy_definition);
+    match x {
+        // ---- Single `TargetFilter` target (only tag-bearing field) ----
+        Effect::Pump { target, .. }
+        | Effect::PairWith { target }
+        | Effect::Destroy { target, .. }
+        | Effect::Regenerate { target }
+        | Effect::RemoveAllDamage { target }
+        | Effect::Counter { target, .. }
+        | Effect::CounterAll { target }
+        | Effect::SetTapState { target, .. }
+        | Effect::MultiplyCounter { target, .. }
+        | Effect::DoublePT { target, .. }
+        | Effect::DoublePTAll { target, .. }
+        | Effect::PumpAll { target, .. }
+        | Effect::GainControl { target }
+        | Effect::GainControlAll { target }
+        | Effect::ControlNextTurn { target, .. }
+        | Effect::Bounce { target, .. }
+        | Effect::DestroyAll { target, .. }
+        | Effect::SwitchPT { target }
+        | Effect::ExileHaunting { target }
+        | Effect::HideawayConceal { target }
+        | Effect::ChooseCard { target, .. }
+        | Effect::Transform { target }
+        | Effect::Shuffle { target }
+        | Effect::Reveal { target }
+        | Effect::TargetOnly { target }
+        | Effect::Suspect { target, .. }
+        | Effect::Unsuspect { target, .. }
+        | Effect::PhaseOut { target }
+        | Effect::PhaseIn { target }
+        | Effect::ForceBlock { target }
+        | Effect::BecomePrepared { target }
+        | Effect::BecomeUnprepared { target }
+        | Effect::BecomeSaddled { target }
+        | Effect::ProliferateTarget { target }
+        | Effect::Exploit { target }
+        | Effect::LoseAllPlayerCounters { target }
+        | Effect::Heist { target, .. }
+        | Effect::PutOnTopOrBottom { target }
+        | Effect::Goad { target }
+        | Effect::GoadAll { target }
+        | Effect::Detain { target }
+        | Effect::SetRoomDoorLock { target, .. }
+        | Effect::RemoveFromCombat { target }
+        | Effect::ApplyPerpetual { target, .. }
+        | Effect::TurnFaceUp { target }
+        | Effect::TurnFaceDown { target, .. }
+        | Effect::ExtraTurn { target }
+        | Effect::Double { target, .. }
+        | Effect::CrankContraptions { target }
+        | Effect::ReassembleContraption { target, .. }
+        | Effect::AssembleContraptionOnSprocket { target, .. }
+        | Effect::ReassembleContraptionOnSprocket { target, .. }
+        | Effect::ApplySticker { target, .. }
+        | Effect::RememberCard { target }
+        | Effect::GrantCastingPermission { target, .. }
+        | Effect::AddTargetReplacement { target, .. }
+        | Effect::DiscardCard { target, .. }
+        | Effect::Animate { target, .. } => legacy_target_filter(target),
+
+        Effect::GainActivatedAbilitiesOfTarget {
+            target,
+            recipient,
+            duration,
+        } => legacy_target_filter(target) || legacy_target_filter(recipient) || odur(duration),
+
+        // ---- Single filter-typed field under a different name ----
+        Effect::ExploreAll { filter: target, .. }
+        | Effect::FreeCastFromZones { filter: target, .. }
+        | Effect::ChooseDamageSource {
+            source_filter: target,
+        }
+        | Effect::ReturnAsAura {
+            enchant_filter: target,
+            ..
+        }
+        | Effect::RevealTop { player: target, .. }
+        | Effect::BlightEffect { player: target, .. }
+        | Effect::ExileFromTopUntil { player: target, .. }
+        | Effect::ExchangeLifeWithStat { player: target, .. } => legacy_target_filter(target),
+
+        // `host` is `Box<TargetFilter>` — deref-coerced in the call.
+        Effect::CombineHost { host, .. } => legacy_target_filter(host),
+
+        // ---- `count`/`amount` (QuantityExpr) + `target` ----
+        Effect::Draw { count, target }
+        | Effect::Mill { count, target, .. }
+        | Effect::Scry { count, target }
+        | Effect::Surveil { count, target }
+        | Effect::RemoveCounter { count, target, .. }
+        | Effect::Sacrifice { target, count, .. }
+        | Effect::PutCounter { count, target, .. }
+        | Effect::PutCounterAll { count, target, .. }
+        | Effect::Connive { target, count }
+        | Effect::GivePlayerCounter { count, target, .. }
+        | Effect::PutAtLibraryPosition { target, count, .. }
+        | Effect::SkipNextTurn { target, count }
+        | Effect::SkipNextStep { target, count, .. }
+        | Effect::AdditionalPhase { target, count, .. }
+        | Effect::Cloak { target, count }
+        | Effect::GrantExtraLoyaltyActivations {
+            amount: count,
+            target,
+        } => legacy_quantity_expr(count) || legacy_target_filter(target),
+        Effect::SetLifeTotal { target, amount } | Effect::DealDamage { amount, target, .. } => {
+            legacy_quantity_expr(amount) || legacy_target_filter(target)
+        }
+        Effect::Endure {
+            amount: count,
+            subject: target,
+        }
+        | Effect::Discover {
+            mana_value_limit: count,
+            player: target,
+        }
+        | Effect::ExileTop {
+            count,
+            player: target,
+            ..
+        } => legacy_quantity_expr(count) || legacy_target_filter(target),
+
+        // ---- `count`-only (QuantityExpr) ----
+        Effect::Monstrosity { count }
+        | Effect::Incubate { count }
+        | Effect::Amass { count, .. }
+        | Effect::Renown { count }
+        | Effect::Bolster { count }
+        | Effect::Adapt { count }
+        | Effect::AssembleContraptions { count }
+        | Effect::AddPendingETBCounters { count, .. } => legacy_quantity_expr(count),
+        Effect::GainEnergy { amount } | Effect::Intensify { amount, .. } => {
+            legacy_quantity_expr(amount)
+        }
+
+        // ---- Pairs of filters / mixed shapes ----
+        Effect::Fight { target, subject } => {
+            legacy_target_filter(target) || legacy_target_filter(subject)
+        }
+        Effect::EachDealsDamageEqualToPower { sources, recipient } => {
+            legacy_target_filter(sources) || legacy_target_filter(recipient)
+        }
+        Effect::Attach { attachment, target } | Effect::UnattachAll { attachment, target } => {
+            legacy_target_filter(attachment) || legacy_target_filter(target)
+        }
+        Effect::ExchangeControl { target_a, target_b }
+        | Effect::ExchangeLifeTotals {
+            player_a: target_a,
+            player_b: target_b,
+        } => legacy_target_filter(target_a) || legacy_target_filter(target_b),
+        Effect::GiveControl { target, recipient }
+        | Effect::CopyTokenBlockingAttacker {
+            source_filter: target,
+            owner: recipient,
+        }
+        | Effect::ChooseObjectsIntoTrackedSet {
+            chooser: target,
+            filter: recipient,
+            ..
+        } => legacy_target_filter(target) || legacy_target_filter(recipient),
+        Effect::ChooseAugmentAndCombineWithHost { filter, host, .. } => {
+            legacy_target_filter(filter) || legacy_target_filter(host)
+        }
+        Effect::GainLife { amount, player } => {
+            legacy_quantity_expr(amount) || legacy_target_filter(player)
+        }
+        Effect::LoseLife { amount, target } => legacy_quantity_expr(amount) || otf(target),
+        Effect::DamageAll {
+            amount,
+            target,
+            player_filter,
+            ..
+        } => {
+            legacy_quantity_expr(amount)
+                || legacy_target_filter(target)
+                || player_filter.as_ref().is_some_and(legacy_player_filter)
+        }
+        Effect::DamageEachPlayer {
+            amount,
+            player_filter,
+        } => legacy_quantity_expr(amount) || legacy_player_filter(player_filter),
+        Effect::Discard {
+            count,
+            target,
+            unless_filter,
+            filter,
+            ..
+        } => {
+            legacy_quantity_expr(count)
+                || legacy_target_filter(target)
+                || otf(unless_filter)
+                || otf(filter)
+        }
+        Effect::Dig {
+            player,
+            count,
+            filter,
+            ..
+        } => {
+            legacy_target_filter(player)
+                || legacy_quantity_expr(count)
+                || legacy_target_filter(filter)
+        }
+        Effect::Seek { filter, count, .. } | Effect::SearchOutsideGame { filter, count, .. } => {
+            legacy_target_filter(filter) || legacy_quantity_expr(count)
+        }
+        Effect::SearchLibrary {
+            filter,
+            count,
+            target_player,
+            ..
+        } => legacy_target_filter(filter) || legacy_quantity_expr(count) || otf(target_player),
+        Effect::ChooseAndSacrificeRest {
+            choose_filter,
+            sacrifice_filter,
+            total_power_cap,
+            ..
+        } => {
+            legacy_target_filter(choose_filter)
+                || legacy_target_filter(sacrifice_filter)
+                || oqe(total_power_cap)
+        }
+        Effect::ChangeSpeed {
+            player_scope,
+            amount,
+            ..
+        } => legacy_player_filter(player_scope) || legacy_quantity_expr(amount),
+        Effect::StartYourEngines { player_scope } => legacy_player_filter(player_scope),
+        Effect::ChooseOneOf { chooser, branches } => {
+            legacy_player_filter(chooser) || branches.iter().any(legacy_definition)
+        }
+        Effect::PutSticker {
+            target,
+            count,
+            max_ticket_cost,
+            ..
+        } => legacy_target_filter(target) || legacy_quantity_expr(count) || oqe(max_ticket_cost),
+        Effect::ChooseDrawnThisTurnPayOrTopdeck {
+            count,
+            life_payment,
+            player,
+        } => {
+            legacy_quantity_expr(count)
+                || legacy_quantity_expr(life_payment)
+                || legacy_target_filter(player)
+        }
+
+        // ---- Options-only carriers ----
+        Effect::Mana { target, .. }
+        | Effect::LoseTheGame { target }
+        | Effect::WinTheGame { target } => otf(target),
+        Effect::ChooseFromZone { filter, .. } => otf(filter),
+        Effect::ReduceNextSpellCost { spell_filter, .. }
+        | Effect::GrantNextSpellAbility { spell_filter, .. } => otf(spell_filter),
+        Effect::PreventDamage {
+            amount_dynamic,
+            target,
+            ..
+        } => oqe(amount_dynamic) || legacy_target_filter(target),
+        Effect::PayCost { scale, payer, .. } => oqe(scale) || legacy_target_filter(payer),
+        Effect::ChangeTargets {
+            target, forced_to, ..
+        } => legacy_target_filter(target) || otf(forced_to),
+        Effect::CreateDamageReplacement {
+            source_filter,
+            redirect_object_filter,
+            recipient_object_filter,
+            ..
+        } => otf(source_filter) || otf(redirect_object_filter) || otf(recipient_object_filter),
+
+        // ---- ControllerRef / Duration riders on a target ----
+        Effect::Manifest {
+            target,
+            count,
+            enters_under,
+            ..
+        } => legacy_target_filter(target) || legacy_quantity_expr(count) || ocr(enters_under),
+        Effect::RevealUntil {
+            player,
+            filter,
+            count,
+            enters_under,
+            ..
+        } => {
+            legacy_target_filter(player)
+                || legacy_target_filter(filter)
+                || legacy_quantity_expr(count)
+                || ocr(enters_under)
+        }
+        Effect::BecomeCopy {
+            target, duration, ..
+        }
+        | Effect::CastFromZone {
+            target, duration, ..
+        } => legacy_target_filter(target) || odur(duration),
+        Effect::GenericEffect {
+            duration,
+            target,
+            static_abilities,
+        } => odur(duration) || otf(target) || static_abilities.iter().any(legacy_static_definition),
+        Effect::CreateEmblem { statics, triggers } => {
+            statics.iter().any(legacy_static_definition)
+                || triggers.iter().any(legacy_trigger_definition)
+        }
+        Effect::ForceAttack {
+            target,
+            required_player,
+            duration,
+        } => {
+            legacy_target_filter(target)
+                || legacy_target_filter(required_player)
+                || legacy_duration(duration)
+        }
+
+        // ---- Token creation / counters with enter-with-counters ----
+        Effect::Token {
+            count,
+            owner,
+            attach_to,
+            enter_with_counters,
+            static_abilities,
+            ..
+        } => {
+            legacy_quantity_expr(count)
+                || legacy_target_filter(owner)
+                || otf(attach_to)
+                || enter_with_counters
+                    .iter()
+                    .any(|(_, q)| legacy_quantity_expr(q))
+                || static_abilities.iter().any(legacy_static_definition)
+        }
+        Effect::CopyTokenOf {
+            target,
+            owner,
+            source_filter,
+            count,
+            ..
+        } => {
+            legacy_target_filter(target)
+                || legacy_target_filter(owner)
+                || otf(source_filter)
+                || legacy_quantity_expr(count)
+        }
+        Effect::CreateTokenCopyFromPool {
+            owner,
+            type_filter,
+            mv_bound,
+            count,
+            ..
+        } => {
+            legacy_target_filter(owner)
+                || legacy_target_filter(type_filter)
+                || legacy_quantity_expr(mv_bound)
+                || legacy_quantity_expr(count)
+        }
+        Effect::ChangeZone {
+            target,
+            enters_under,
+            enter_with_counters,
+            conditional_enter_with_counters,
+            enters_modified_if,
+            ..
+        } => {
+            legacy_target_filter(target)
+                || ocr(enters_under)
+                || enter_with_counters
+                    .iter()
+                    .any(|(_, q)| legacy_quantity_expr(q))
+                || conditional_enter_with_counters
+                    .iter()
+                    .any(|(f, _, q)| legacy_target_filter(f) || legacy_quantity_expr(q))
+                || otf(enters_modified_if)
+        }
+        Effect::ChangeZoneAll {
+            target,
+            enters_under,
+            enter_with_counters,
+            ..
+        } => {
+            legacy_target_filter(target)
+                || ocr(enters_under)
+                || enter_with_counters
+                    .iter()
+                    .any(|(_, q)| legacy_quantity_expr(q))
+        }
+        Effect::MoveCounters {
+            source,
+            count,
+            target,
+            ..
+        } => legacy_target_filter(source) || oqe(count) || legacy_target_filter(target),
+        Effect::BounceAll { target, count, .. } | Effect::CastCopyOfCard { target, count, .. } => {
+            legacy_target_filter(target) || oqe(count)
+        }
+        Effect::RevealHand {
+            target,
+            card_filter,
+            count,
+            ..
+        } => legacy_target_filter(target) || legacy_target_filter(card_filter) || oqe(count),
+
+        // ---- Nested ability/effect bodies ----
+        Effect::Vote {
+            per_choice_effect,
+            starting_with,
+            ..
+        } => {
+            legacy_controller_ref(starting_with)
+                || per_choice_effect.iter().any(|d| legacy_definition(d))
+        }
+        Effect::SeparateIntoPiles {
+            object_filter,
+            chosen_pile_effect,
+            ..
+        } => legacy_target_filter(object_filter) || legacy_definition(chosen_pile_effect),
+        Effect::EpicCopy { spell } => contains_legacy_event_ref(spell),
+        Effect::CreateDelayedTrigger { effect, .. } => legacy_definition(effect),
+        Effect::CreateDrawReplacement { replacement_effect } => legacy_effect(replacement_effect),
+        Effect::RollDie { count, results, .. } => {
+            legacy_quantity_expr(count) || results.iter().any(|r| legacy_definition(&r.effect))
+        }
+        Effect::FlipCoin {
+            win_effect,
+            lose_effect,
+            flipper,
+        } => odef(win_effect) || odef(lose_effect) || legacy_target_filter(flipper),
+        Effect::FlipCoins {
+            count,
+            win_effect,
+            lose_effect,
+            flipper,
+        } => {
+            legacy_quantity_expr(count)
+                || odef(win_effect)
+                || odef(lose_effect)
+                || legacy_target_filter(flipper)
+        }
+        Effect::FlipCoinUntilLose { win_effect } => legacy_definition(win_effect),
+        Effect::RevealFromHand {
+            filter, on_decline, ..
+        } => legacy_target_filter(filter) || odef(on_decline),
+        Effect::CopySpell { target, copier, .. } => legacy_target_filter(target) || ocr(copier),
+
+        // ---- No tag-bearing field (info / terminal / plumbing / undescended
+        // sub-structures the profile walk also does not descend for legacy —
+        // §5.2 sweep is the arbiter). ----
+        Effect::Explore
+        | Effect::Investigate
+        | Effect::Tribute { .. }
+        | Effect::TimeTravel
+        | Effect::BecomeMonarch
+        | Effect::NoOp
+        | Effect::Proliferate
+        | Effect::Populate
+        | Effect::Clash
+        | Effect::EndTheTurn
+        | Effect::EndCombatPhase
+        | Effect::Myriad
+        | Effect::Encore
+        | Effect::Meld { .. }
+        | Effect::RegisterBending { .. }
+        | Effect::Cleanup { .. }
+        | Effect::Learn
+        | Effect::Forage
+        | Effect::Harness
+        | Effect::CollectEvidence { .. }
+        | Effect::Specialize
+        | Effect::SolveCase
+        | Effect::SetClassLevel { .. }
+        | Effect::AddRestriction { .. }
+        | Effect::ExileResolvingSpellInsteadOfGraveyard
+        | Effect::RingTemptsYou
+        | Effect::VentureIntoDungeon
+        | Effect::VentureInto { .. }
+        | Effect::TakeTheInitiative
+        | Effect::Planeswalk
+        | Effect::OpenAttractions { .. }
+        | Effect::RollToVisitAttractions
+        | Effect::AssembleContraptionsFromRollDifference
+        | Effect::ProcessRadCounters
+        | Effect::ForEachCategoryExile { .. }
+        | Effect::GiftDelivery { .. }
+        | Effect::SetDayNight { .. }
+        | Effect::Conjure { .. }
+        | Effect::DraftFromSpellbook { .. }
+        | Effect::RuntimeHandled { .. }
+        | Effect::HeistExile
+        | Effect::Cascade
+        | Effect::Ripple { .. }
+        | Effect::MiracleCast { .. }
+        | Effect::MadnessCast { .. }
+        | Effect::ManifestDread
+        | Effect::Choose { .. }
+        | Effect::ApplyPostReplacementDamage { .. }
+        | Effect::Unimplemented { .. } => false,
     }
 }
 
@@ -3836,6 +5111,175 @@ mod tests {
         assert!(conflicts(&ast, &se()));
         // (c) Phase trigger (no event object) ⇒ None ⇒ no write ⇒ clean.
         assert!(!conflicts(&ast, &se_phase()));
+    }
+
+    // ===================== D5 legacy-visitor tag × position matrix =====================
+
+    /// Mechanical proof that `legacy_batch_prompt` (via the authoritative
+    /// `contains_legacy_event_ref` visitor, driven through the production
+    /// `ability_rw_profile` / `trigger_condition_rw_profile` entry points) fires
+    /// for EACH of the 12 frozen event-context tags in EACH structural position —
+    /// including the effect target/count positions the read/write walk drops (the
+    /// D5 holes). This is the coverage whose absence let the 50-card fail-open ship.
+    /// Revert-fail witness: dropping the `p.legacy_batch_prompt =
+    /// contains_legacy_event_ref(a)` override flips every `Discard`/
+    /// `PutAtLibraryPosition`/`Sacrifice`-count/`GainEnergy` assertion below to
+    /// false (the walk never routes those fields through a legacy leaf detector).
+    #[test]
+    fn d5_legacy_visitor_tag_x_position_matrix() {
+        use crate::types::ability::{
+            CardSelectionMode, CastManaObjectScope, CastManaSpentMetric, ControllerRef,
+            LibraryPosition, PlayerFilter,
+        };
+
+        // Production profiling entry points — NOT the private visitor directly.
+        let legacy = |a: &ResolvedAbility| ability_rw_profile(a).legacy_batch_prompt();
+        let tlegacy = |c: &TriggerCondition| trigger_condition_rw_profile(c).legacy_batch_prompt();
+
+        // Dropped-target effects (the D5 hole class: `target: _` in `rw_effect`).
+        let discard = |t: TargetFilter| Effect::Discard {
+            count: qfix(1),
+            target: t,
+            unless_filter: None,
+            filter: None,
+            selection: CardSelectionMode::Chosen,
+        };
+        let put_at_lib = |t: TargetFilter| Effect::PutAtLibraryPosition {
+            target: t,
+            count: qfix(1),
+            position: LibraryPosition::Top,
+        };
+        let destroy = |t: TargetFilter| Effect::Destroy {
+            target: t,
+            cant_regenerate: false,
+        };
+
+        // ---- The 9 TargetFilter carriers × 5 positions ----
+        let tf_tags = [
+            TargetFilter::TriggeringSpellController,
+            TargetFilter::TriggeringSpellOwner,
+            TargetFilter::TriggeringPlayer,
+            TargetFilter::TriggeringSource,
+            TargetFilter::ParentTarget,
+            TargetFilter::ParentTargetController,
+            TargetFilter::ParentTargetOwner,
+            TargetFilter::StackSpell,
+            TargetFilter::CostPaidObject,
+        ];
+        for tag in &tf_tags {
+            // dropped-target effect positions (the fail-open holes).
+            assert!(legacy(&ra(discard(tag.clone()))), "Discard target {tag:?}");
+            assert!(
+                legacy(&ra(put_at_lib(tag.clone()))),
+                "PutAtLibraryPosition target {tag:?}"
+            );
+            // routed effect target.
+            assert!(legacy(&ra(destroy(tag.clone()))), "Destroy target {tag:?}");
+            // sub-ability (chained) target.
+            assert!(
+                legacy(&ra(gain_life(qfix(1))).sub_ability(ra(discard(tag.clone())))),
+                "sub-ability target {tag:?}"
+            );
+            // nested filter position.
+            assert!(
+                legacy(&ra(destroy(TargetFilter::And {
+                    filters: vec![creature(), tag.clone()],
+                }))),
+                "nested And filter {tag:?}"
+            );
+        }
+
+        // ---- The 3 QuantityRef carriers × 3 positions ----
+        let qr_tags = [
+            QuantityRef::EventContextAmount,
+            QuantityRef::EventContextSourceCostX,
+            QuantityRef::ManaSpentToCast {
+                scope: CastManaObjectScope::TriggeringSpell,
+                metric: CastManaSpentMetric::Total,
+            },
+        ];
+        for tag in &qr_tags {
+            // effect count (god-eternal bontu class).
+            assert!(
+                legacy(&ra(Effect::Sacrifice {
+                    target: creature(),
+                    count: qref(tag.clone()),
+                    min_count: 0,
+                })),
+                "Sacrifice count {tag:?}"
+            );
+            // effect amount (dropped-target effect with a dynamic amount).
+            assert!(
+                legacy(&ra(Effect::GainEnergy {
+                    amount: qref(tag.clone()),
+                })),
+                "GainEnergy amount {tag:?}"
+            );
+            // trigger-level intervening-if condition.
+            assert!(
+                tlegacy(&TriggerCondition::QuantityComparison {
+                    lhs: qref(tag.clone()),
+                    rhs: qfix(0),
+                    comparator: Comparator::GE,
+                }),
+                "trigger condition {tag:?}"
+            );
+        }
+
+        // ---- ObjectScope::CostPaidObject (the 12th tag) as a quantity scope ----
+        assert!(
+            legacy(&ra(Effect::GainEnergy {
+                amount: qref(QuantityRef::Power {
+                    scope: ObjectScope::CostPaidObject,
+                }),
+            })),
+            "CostPaidObject quantity scope"
+        );
+
+        // ---- PlayerFilter::TriggeringPlayer (effect player_filter + ability scope) ----
+        assert!(
+            legacy(&ra(Effect::DamageEachPlayer {
+                amount: qfix(1),
+                player_filter: PlayerFilter::TriggeringPlayer,
+            })),
+            "DamageEachPlayer player_filter TriggeringPlayer"
+        );
+        let mut with_scope = ra(gain_life(qfix(1)));
+        with_scope.player_scope = Some(PlayerFilter::TriggeringPlayer);
+        assert!(legacy(&with_scope), "ability player_scope TriggeringPlayer");
+
+        // ---- ControllerRef carriers (ability starting_with) ----
+        for cr in [
+            ControllerRef::TriggeringPlayer,
+            ControllerRef::ParentTargetController,
+            ControllerRef::ParentTargetOwner,
+        ] {
+            let mut a = ra(gain_life(qfix(1)));
+            a.starting_with = Some(cr.clone());
+            assert!(legacy(&a), "starting_with {cr:?}");
+        }
+
+        // ---- NEGATIVE controls (discrimination: no tag ⇒ false) ----
+        assert!(
+            !legacy(&ra(discard(TargetFilter::Controller))),
+            "Discard{{Controller}} carries no frozen tag"
+        );
+        assert!(
+            !legacy(&ra(destroy(creature()))),
+            "Destroy{{creature}} carries no frozen tag"
+        );
+        assert!(
+            !legacy(&ra(Effect::Sacrifice {
+                target: creature(),
+                count: qfix(1),
+                min_count: 0,
+            })),
+            "Sacrifice with a fixed count carries no frozen tag"
+        );
+        assert!(
+            !tlegacy(&TriggerCondition::SourceIsTapped),
+            "SourceIsTapped carries no frozen tag"
+        );
     }
 
     // ---- test-local helper ----
