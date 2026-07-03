@@ -592,6 +592,33 @@ pub fn filter_state_for_viewer(state: &GameState, viewer: PlayerId) -> GameState
         }
     }
 
+    // CR 400.2: Hand and library are hidden zones. The `options` on a
+    // `CostTypeChoice` (Celestial Reunion's pre-cost "choose a creature type")
+    // is the set of creature types the caster can actually pay for — computed by
+    // `feasible_behold_creature_types` over beholdable cards, which INCLUDE the
+    // caster's hand. Serialized in full, it leaks private hand contents to
+    // opponents (e.g. offering "Goblin" reveals a Goblin is beholdable from hand)
+    // before the behold selection is even made. Redact `options` to empty for
+    // viewers who cannot see the caster's private zones; `choice_type` and
+    // `pending_cast` are public (CR 400.2 — the stack is a public zone), and the
+    // acting player still receives the full list to choose from.
+    if let WaitingFor::CostTypeChoice {
+        player,
+        ref choice_type,
+        ref options,
+        ref pending_cast,
+    } = state.waiting_for
+    {
+        if !can_view_private_for_player(player) && !options.is_empty() {
+            filtered.waiting_for = WaitingFor::CostTypeChoice {
+                player,
+                choice_type: choice_type.clone(),
+                options: Vec::new(),
+                pending_cast: pending_cast.clone(),
+            };
+        }
+    }
+
     if let WaitingFor::EffectZoneChoice {
         player,
         ref cards,

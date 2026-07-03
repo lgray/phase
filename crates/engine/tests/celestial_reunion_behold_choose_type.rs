@@ -19,7 +19,7 @@
 //! Each of the And gate's two legs, the provenance write, and the deferral
 //! disjunct independently flips case 1 to hand when reverted.
 
-use engine::game::scenario::{GameScenario, P0};
+use engine::game::scenario::{GameScenario, P0, P1};
 use engine::game::zones::create_object;
 use engine::types::actions::GameAction;
 use engine::types::card_type::CoreType;
@@ -337,4 +337,189 @@ fn ai_legal_actions_mirror_feasible_options() {
         matches!(choose[0], GameAction::ChooseOption { choice } if choice == "Elf"),
         "the sole ChooseOption must be Elf: {choose:?}"
     );
+}
+
+// ── Review round (PR #4990) — CostTypeChoice hardening ───────────────────
+
+/// Finding #1 (review MED): backing out of a cast AFTER the pre-cost creature
+/// type was chosen must rewind that choice. The type is recorded as a
+/// `ChosenAttribute::CreatureType` on the spell object during cost payment; if it
+/// survives the rewind, the `already_chosen` guard in
+/// `pay_additional_cost_with_source` skips the `CostTypeChoice` prompt on the
+/// NEXT cast and silently reuses the stale type.
+///
+/// Discriminating on two independent axes, BOTH of which fail if the
+/// `retain(!CreatureType)` rewind in `handle_cancel_cast` is reverted:
+///   (a) after cancel, the spell object carries NO `CreatureType` chosen attr;
+///   (b) the re-cast re-presents `CostTypeChoice` rather than skipping straight
+///       to the behold `PayCost` with the stale type.
+#[test]
+fn cancel_after_type_choice_rewinds_and_recast_reprompts() {
+    let mut s = setup();
+    let card_id = s.runner.state().objects[&s.spell].card_id;
+
+    // First cast: advance to CostTypeChoice, choose "Elf" (records the attribute),
+    // then stop at the behold PayCost.
+    s.runner
+        .act(GameAction::CastSpell {
+            object_id: s.spell,
+            card_id,
+            targets: vec![],
+            payment_mode: engine::types::game_state::CastPaymentMode::Auto,
+        })
+        .expect("cast accepted");
+    let mut reached_paycost = false;
+    for _ in 0..12 {
+        match s.runner.state().waiting_for.clone() {
+            WaitingFor::ChooseXValue { .. } => {
+                s.runner.act(GameAction::ChooseX { value: 3 }).unwrap();
+            }
+            WaitingFor::OptionalCostChoice { .. } => {
+                s.runner
+                    .act(GameAction::DecideOptionalCost { pay: true })
+                    .unwrap();
+            }
+            WaitingFor::CostTypeChoice { .. } => {
+                s.runner
+                    .act(GameAction::ChooseOption {
+                        choice: "Elf".to_string(),
+                    })
+                    .unwrap();
+            }
+            WaitingFor::PayCost { .. } => {
+                reached_paycost = true;
+                break;
+            }
+            other => panic!("unexpected prompt before behold: {other:?}"),
+        }
+    }
+    assert!(
+        reached_paycost,
+        "should reach the behold PayCost after choosing the type"
+    );
+    assert!(
+        s.runner.state().objects[&s.spell]
+            .chosen_attributes
+            .iter()
+            .any(|a| matches!(a, engine::types::ability::ChosenAttribute::CreatureType(t) if t == "Elf")),
+        "precondition: the chosen creature type is recorded during cost payment"
+    );
+
+    // (a) Cancel — the fix rewinds the chosen attribute.
+    s.runner
+        .act(GameAction::CancelCast)
+        .expect("cancel is legal at the behold PayCost");
+    assert!(
+        s.runner.state().players[0].hand.contains(&s.spell),
+        "spell returns to hand on cancel"
+    );
+    assert!(
+        !s.runner.state().objects[&s.spell]
+            .chosen_attributes
+            .iter()
+            .any(|a| matches!(a, engine::types::ability::ChosenAttribute::CreatureType(_))),
+        "REVERT-PROOF (a): cancel must remove the stale chosen creature type"
+    );
+
+    // (b) Re-cast: the type prompt must re-appear (not be skipped). Mana spend is
+    // deferred to finalize, so the pool is intact; top up defensively regardless.
+    add_mana(&mut s.runner, 4);
+    s.runner
+        .act(GameAction::CastSpell {
+            object_id: s.spell,
+            card_id,
+            targets: vec![],
+            payment_mode: engine::types::game_state::CastPaymentMode::Auto,
+        })
+        .expect("re-cast accepted");
+    let mut saw_cost_type_choice = false;
+    for _ in 0..12 {
+        match s.runner.state().waiting_for.clone() {
+            WaitingFor::ChooseXValue { .. } => {
+                s.runner.act(GameAction::ChooseX { value: 3 }).unwrap();
+            }
+            WaitingFor::OptionalCostChoice { .. } => {
+                s.runner
+                    .act(GameAction::DecideOptionalCost { pay: true })
+                    .unwrap();
+            }
+            WaitingFor::CostTypeChoice { .. } => {
+                saw_cost_type_choice = true;
+                break;
+            }
+            // Reaching the behold selection WITHOUT a type prompt means the stale
+            // type was silently reused — the bug this fix closes.
+            WaitingFor::PayCost { .. } => break,
+            other => panic!("unexpected prompt on re-cast: {other:?}"),
+        }
+    }
+    assert!(
+        saw_cost_type_choice,
+        "REVERT-PROOF (b): re-cast must re-present CostTypeChoice, not skip to behold with the stale type"
+    );
+}
+
+/// Finding #2 (review MED): `CostTypeChoice.options` is computed from the
+/// caster's beholdable cards (including hand), so serializing it in full leaks
+/// private hand contents. `filter_state_for_viewer` must empty `options` for a
+/// viewer who cannot see the caster's private zones, while the caster keeps the
+/// full list. Reverting the redaction arm re-exposes the options to the opponent.
+#[test]
+fn cost_type_choice_options_redacted_for_opponent_viewer() {
+    use engine::game::visibility::filter_state_for_viewer;
+
+    let mut s = setup();
+    let card_id = s.runner.state().objects[&s.spell].card_id;
+    s.runner
+        .act(GameAction::CastSpell {
+            object_id: s.spell,
+            card_id,
+            targets: vec![],
+            payment_mode: engine::types::game_state::CastPaymentMode::Auto,
+        })
+        .expect("cast accepted");
+    for _ in 0..10 {
+        match s.runner.state().waiting_for.clone() {
+            WaitingFor::ChooseXValue { .. } => {
+                s.runner.act(GameAction::ChooseX { value: 3 }).unwrap();
+            }
+            WaitingFor::OptionalCostChoice { .. } => {
+                s.runner
+                    .act(GameAction::DecideOptionalCost { pay: true })
+                    .unwrap();
+            }
+            WaitingFor::CostTypeChoice { .. } => break,
+            other => panic!("unexpected prompt: {other:?}"),
+        }
+    }
+
+    // Precondition: the real (unfiltered) prompt offers a non-empty option list
+    // that reveals a hand-beholdable type.
+    match s.runner.state().waiting_for.clone() {
+        WaitingFor::CostTypeChoice { options, .. } => assert!(
+            options.contains(&"Elf".to_string()),
+            "precondition: CostTypeChoice offers the hand-derived type Elf: {options:?}"
+        ),
+        other => panic!("expected CostTypeChoice, got {other:?}"),
+    }
+
+    // Caster (P0) — active player — retains the full option list to choose from.
+    let caster_view = filter_state_for_viewer(s.runner.state(), P0);
+    match caster_view.waiting_for {
+        WaitingFor::CostTypeChoice { ref options, .. } => assert!(
+            options.contains(&"Elf".to_string()),
+            "caster must retain the full option list: {options:?}"
+        ),
+        ref other => panic!("expected CostTypeChoice in caster view, got {other:?}"),
+    }
+
+    // Opponent (P1) must NOT see any hand-derived options.
+    let opponent_view = filter_state_for_viewer(s.runner.state(), P1);
+    match opponent_view.waiting_for {
+        WaitingFor::CostTypeChoice { ref options, .. } => assert!(
+            options.is_empty(),
+            "REVERT-PROOF: opponent must see NO hand-derived creature-type options, got {options:?}"
+        ),
+        ref other => panic!("expected CostTypeChoice in opponent view, got {other:?}"),
+    }
 }
