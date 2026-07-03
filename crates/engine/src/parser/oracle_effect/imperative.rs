@@ -8549,44 +8549,69 @@ pub(super) fn parse_imperative_family_ast(
             }
         }
         // CR 701.58a: "cloak the top card of your library" / "cloak the top N
-        // cards of [your / that player's] library" — face-down 2/2 with ward {2}.
-        // First pass covers the top-of-library source (Cryptic Coat, Ransom
-        // Note); cloaking from hand / a face-down pile is deferred.
+        // cards of [your / that player's] library" (library-top source: Cryptic
+        // Coat, Ransom Note) and "cloak a card from your hand" (chosen-object
+        // source: Vannifar). The from-hand form lowers to a `ChooseFromZone`
+        // parent + `Cloak` sub-chain in `lower_imperative_family_ast`.
         "cloak" | "cloaks" => {
-            let that_player_target = that_player_library_filter(ctx);
-            let parsed = all_consuming((
-                alt((
-                    tag::<_, _, OracleError<'_>>("cloak the top "),
-                    tag("cloaks the top "),
-                )),
-                alt((
-                    value(
-                        QuantityExpr::Fixed { value: 1 },
-                        alt((tag::<_, _, OracleError<'_>>("cards"), tag("card"))),
-                    ),
-                    terminated(
-                        map(nom_primitives::parse_number, |n| QuantityExpr::Fixed {
-                            value: n as i32,
-                        }),
-                        preceded(
-                            space1::<_, OracleError<'_>>,
-                            alt((tag("cards"), tag("card"))),
-                        ),
-                    ),
-                )),
-                space1::<_, OracleError<'_>>,
-                alt((
-                    value(TargetFilter::Controller, tag("of your library")),
-                    value(that_player_target, tag("of that player's library")),
-                )),
+            let trimmed = lower.trim();
+            // "cloak a card from your hand" — cloak a card the controller
+            // chooses from their hand (the `Some(Zone::Hand)` discriminant).
+            let from_hand = all_consuming((
+                alt((tag::<_, _, OracleError<'_>>("cloak "), tag("cloaks "))),
+                alt((tag("a card"), tag("one card"))),
+                tag(" from your hand"),
                 opt(tag(".")),
             ))
-            .parse(lower.trim());
+            .parse(trimmed)
+            .is_ok();
 
-            if let Ok((_, (_, count, _, target, _))) = parsed {
-                Some(ImperativeFamilyAst::Cloak { target, count })
+            if from_hand {
+                Some(ImperativeFamilyAst::Cloak {
+                    target: TargetFilter::Controller,
+                    count: QuantityExpr::Fixed { value: 1 },
+                    from_zone: Some(Zone::Hand),
+                })
             } else {
-                None
+                let that_player_target = that_player_library_filter(ctx);
+                let parsed = all_consuming((
+                    alt((
+                        tag::<_, _, OracleError<'_>>("cloak the top "),
+                        tag("cloaks the top "),
+                    )),
+                    alt((
+                        value(
+                            QuantityExpr::Fixed { value: 1 },
+                            alt((tag::<_, _, OracleError<'_>>("cards"), tag("card"))),
+                        ),
+                        terminated(
+                            map(nom_primitives::parse_number, |n| QuantityExpr::Fixed {
+                                value: n as i32,
+                            }),
+                            preceded(
+                                space1::<_, OracleError<'_>>,
+                                alt((tag("cards"), tag("card"))),
+                            ),
+                        ),
+                    )),
+                    space1::<_, OracleError<'_>>,
+                    alt((
+                        value(TargetFilter::Controller, tag("of your library")),
+                        value(that_player_target, tag("of that player's library")),
+                    )),
+                    opt(tag(".")),
+                ))
+                .parse(trimmed);
+
+                if let Ok((_, (_, count, _, target, _))) = parsed {
+                    Some(ImperativeFamilyAst::Cloak {
+                        target,
+                        count,
+                        from_zone: None,
+                    })
+                } else {
+                    None
+                }
             }
         }
         "proliferate" => Some(ImperativeFamilyAst::Proliferate),
@@ -10299,6 +10324,40 @@ pub(super) fn lower_imperative_family_ast(ast: ImperativeFamilyAst) -> ParsedEff
                 UtilityImperativeAst::Prevent { text: text.clone() },
             ))
         }
+        // CR 701.58a: "cloak a card from your hand" (Vannifar). The controller
+        // chooses a card from their hand — delegated to the `ChooseFromZone`
+        // building block — then cloaks it (CR 701.58a). The `Cloak` sub-ability
+        // reads the chosen card from `object_source` (`ParentTarget`, resolved
+        // against the `ability.targets` the choose forwards — CR 608.2c: later
+        // instructions read the earlier selection). Intercepted here because a
+        // bare Effect cannot express the parent + sub chain — only
+        // `ParsedEffectClause` can (mirrors the SearchLibrary sub_ability chain).
+        ImperativeFamilyAst::Cloak {
+            target,
+            count,
+            from_zone: Some(zone),
+        } => {
+            let mut clause = parsed_clause(Effect::ChooseFromZone {
+                count: 1,
+                zone,
+                additional_zones: Vec::new(),
+                zone_owner: ZoneOwner::Controller,
+                filter: None,
+                chooser: Chooser::Controller,
+                up_to: false,
+                selection: crate::types::ability::CardSelectionMode::Chosen,
+                constraint: None,
+            });
+            clause.sub_ability = Some(Box::new(AbilityDefinition::new(
+                AbilityKind::Spell,
+                Effect::Cloak {
+                    target,
+                    count,
+                    object_source: Some(TargetFilter::ParentTarget),
+                },
+            )));
+            clause
+        }
         // All other arms produce a bare Effect with no sub_ability chain.
         other => parsed_clause(lower_imperative_family_effect(other)),
     }
@@ -10375,8 +10434,14 @@ fn lower_imperative_family_effect(ast: ImperativeFamilyAst) -> Effect {
             enters_under: None,
         },
         ImperativeFamilyAst::ManifestDread => Effect::ManifestDread,
-        // CR 701.58a: Cloak the top card(s) of a library (face-down 2/2 + ward {2}).
-        ImperativeFamilyAst::Cloak { target, count } => Effect::Cloak { target, count },
+        // CR 701.58a: Cloak the top card(s) of a library (face-down 2/2 + ward
+        // {2}). The from-hand form (`from_zone: Some`) is intercepted upstream in
+        // `lower_imperative_family_ast`; only the library-top source reaches here.
+        ImperativeFamilyAst::Cloak { target, count, .. } => Effect::Cloak {
+            target,
+            count,
+            object_source: None,
+        },
         // CR 406.3: Turn the exiled card(s) face up (Imprint flip cards).
         ImperativeFamilyAst::TurnFaceUp { target } => Effect::TurnFaceUp { target },
         // CR 708.2a: Turn target permanent(s) face down (Cyber Conversion).

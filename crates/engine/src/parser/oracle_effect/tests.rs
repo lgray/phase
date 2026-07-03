@@ -9319,16 +9319,21 @@ fn agitator_ant_end_step_counters_and_goad_parsed() {
 #[test]
 fn effect_cloak_top_card() {
     // CR 701.58a: Cryptic Coat / Ransom Note — "cloak the top card of your library".
+    // Negative sibling to the from-hand form: the library-top source must keep
+    // `object_source: None` (asserted explicitly, not `..`-masked) so the two
+    // cloak sources never collapse — reverting the from-hand intercept must not
+    // route this through ChooseFromZone.
     let e = parse_effect("Cloak the top card of your library");
     assert!(
         matches!(
             e,
             Effect::Cloak {
                 target: TargetFilter::Controller,
-                count: QuantityExpr::Fixed { value: 1 }
+                count: QuantityExpr::Fixed { value: 1 },
+                object_source: None,
             }
         ),
-        "expected Cloak {{ Controller, count: 1 }}, got: {e:?}"
+        "expected Cloak {{ Controller, count: 1, object_source: None }}, got: {e:?}"
     );
 }
 
@@ -9340,10 +9345,11 @@ fn effect_cloak_top_n_cards() {
             e,
             Effect::Cloak {
                 target: TargetFilter::Controller,
-                count: QuantityExpr::Fixed { value: 2 }
+                count: QuantityExpr::Fixed { value: 2 },
+                object_source: None,
             }
         ),
-        "expected Cloak {{ Controller, count: 2 }}, got: {e:?}"
+        "expected Cloak {{ Controller, count: 2, object_source: None }}, got: {e:?}"
     );
 }
 
@@ -9353,6 +9359,42 @@ fn effect_cloak_rejects_unsupported_source_suffix() {
     assert!(
         matches!(e, Effect::Unimplemented { .. }),
         "unsupported cloak source must not default to Controller: {e:?}"
+    );
+}
+
+#[test]
+fn effect_cloak_a_card_from_your_hand_lowers_to_choose_from_zone_then_cloak() {
+    // CR 701.58a: Vannifar's "Cloak a card from your hand" is NOT a library-top
+    // cloak — it lowers to a ChooseFromZone{Hand} parent whose Cloak sub-ability
+    // cloaks the chosen object (`object_source: Some(_)`). Reverting the from-hand
+    // parser alt() drops it to Effect::Unimplemented → this fails.
+    let def = parse_effect_chain("Cloak a card from your hand", AbilityKind::Spell);
+    assert!(
+        matches!(
+            def.effect.as_ref(),
+            Effect::ChooseFromZone {
+                count: 1,
+                zone: Zone::Hand,
+                ..
+            }
+        ),
+        "expected ChooseFromZone{{Hand,count:1}} parent, got: {:?}",
+        def.effect
+    );
+    let sub = def
+        .sub_ability
+        .as_ref()
+        .expect("from-hand cloak must chain a Cloak sub-ability");
+    assert!(
+        matches!(
+            sub.effect.as_ref(),
+            Effect::Cloak {
+                object_source: Some(_),
+                ..
+            }
+        ),
+        "sub-ability must be Cloak with an explicit object_source, got: {:?}",
+        sub.effect
     );
 }
 

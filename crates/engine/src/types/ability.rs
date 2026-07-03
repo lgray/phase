@@ -11093,6 +11093,17 @@ pub enum Effect {
     Cloak {
         target: TargetFilter,
         count: QuantityExpr,
+        /// CR 701.58a: The objects to cloak. `None` (serde default) is the
+        /// CR 701.58e library-top source — the resolver cloaks the top `count`
+        /// cards of `target`'s library one at a time (Cryptic Coat, Ransom
+        /// Note). `Some(filter)` names explicit objects already chosen upstream
+        /// (Vannifar's "cloak a card from your hand"): the objects are resolved
+        /// from the resolving ability's `targets` via `effect_object_targets`,
+        /// which a preceding `Effect::ChooseFromZone` populated. Kept off
+        /// `target_filter()` so cloak stays a non-targeted keyword action (the
+        /// object selection is the parent `ChooseFromZone`'s responsibility).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        object_source: Option<TargetFilter>,
     },
     /// CR 406.3 + CR 701.20a: Turn a face-down card face up via a resolving effect (not the
     /// morph special action). Used by the Imprint "flip" cards — Clone Shell,

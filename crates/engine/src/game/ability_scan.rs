@@ -1323,10 +1323,17 @@ fn scan_effect(x: &Effect) -> Axes {
             acc
         }
         Effect::ManifestDread => Axes::NONE,
-        Effect::Cloak { target, count } => {
+        Effect::Cloak {
+            target,
+            count,
+            object_source,
+        } => {
             let mut acc = Axes::NONE;
             acc = acc.or(scan_target_filter(target));
             acc = acc.or(scan_quantity_expr(count));
+            if let Some(f) = object_source {
+                acc = acc.or(scan_target_filter(f));
+            }
             acc
         }
         Effect::TurnFaceUp { target } => {

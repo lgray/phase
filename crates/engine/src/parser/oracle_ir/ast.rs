@@ -555,11 +555,16 @@ pub(crate) enum ImperativeFamilyAst {
     },
     /// CR 701.62a: Manifest dread.
     ManifestDread,
-    /// CR 701.58a: Cloak the top card(s) of a library — face-down 2/2 with
-    /// ward {2}, turnable face up for its mana cost if it's a creature card.
+    /// CR 701.58a: Cloak card(s) — face-down 2/2 with ward {2}, turnable face up
+    /// for its mana cost if it's a creature card. `from_zone` is the source
+    /// discriminant: `None` cloaks the top `count` cards of `target`'s library
+    /// (Cryptic Coat, Ransom Note); `Some(zone)` cloaks a card the controller
+    /// chooses from that zone (Vannifar's "cloak a card from your hand"), which
+    /// lowers to a `ChooseFromZone` parent + `Cloak { object_source }` sub-chain.
     Cloak {
         target: TargetFilter,
         count: QuantityExpr,
+        from_zone: Option<Zone>,
     },
     /// CR 406.3 + CR 701.20a: Turn an exiled face-down card face up via a
     /// resolving effect (not the morph special action). The Imprint "flip"
