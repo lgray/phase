@@ -4049,6 +4049,11 @@ fn effect_refs_parent_target(effect: &Effect) -> bool {
 ///    only when `attachment.is_context_ref()`, mirroring the guards above (a
 ///    non-context-ref `attachment` can never be a parent-ref, so excluding it
 ///    cannot change the gate result).
+///  * `Effect::UnattachAll` surfaces `target` but hides `attachment`, exactly as
+///    `Effect::Attach` does; the same context-ref guard applies. A delayed
+///    "when you lose control of this, unattach it" trigger rebinds the per-source
+///    `attachment` through this hidden slot (Stolen Uniform, Ogre Geargrabber);
+///    without the arm the `_ => {}` fallback snapshots nothing and it resolves inert.
 ///
 /// NOTE: the `_ => {}` arm means "no hidden object slot beyond `target_filter()`".
 /// Any FUTURE effect that hides an object slot behind `target_filter()` MUST add
@@ -4065,6 +4070,9 @@ fn effect_parent_ref_slots(effect: &Effect) -> Vec<&TargetFilter> {
             attach_to: Some(f), ..
         } if f.is_context_ref() => slots.push(f),
         Effect::Attach { attachment, .. } if attachment.is_context_ref() => slots.push(attachment),
+        Effect::UnattachAll { attachment, .. } if attachment.is_context_ref() => {
+            slots.push(attachment)
+        }
         _ => {}
     }
     slots
@@ -8623,6 +8631,37 @@ mod tests {
 
     /// CR 608.2c: a single tapped creature becomes the resolution's anaphoric
     /// referent, so a later "that creature's power" (Enlist) reads it.
+    #[test]
+    fn effect_parent_ref_slots_surfaces_context_ref_unattach_all_attachment() {
+        // `Effect::UnattachAll` hides its `attachment` behind `target_filter()`
+        // (which surfaces `target`), exactly like `Effect::Attach`. A context-ref
+        // attachment — a delayed "when you lose control of this, unattach it"
+        // trigger (Stolen Uniform, Ogre Geargrabber) — must be surfaced so the
+        // per-source rebind finds it. Without the `UnattachAll` arm in
+        // `effect_parent_ref_slots` the `_ => {}` fallback drops it: this asserts
+        // the arm surfaces it (revert the arm → SelfRef absent → this fails).
+        let effect = Effect::UnattachAll {
+            attachment: TargetFilter::SelfRef,
+            target: TargetFilter::Any,
+        };
+        let slots = effect_parent_ref_slots(&effect);
+        assert!(
+            slots.iter().any(|s| matches!(s, TargetFilter::SelfRef)),
+            "context-ref UnattachAll attachment must surface as a parent-ref slot; got {slots:?}"
+        );
+        // Guard: a non-context-ref attachment must NOT be surfaced by the arm.
+        let non_ctx = Effect::UnattachAll {
+            attachment: TargetFilter::Any,
+            target: TargetFilter::SelfRef,
+        };
+        assert!(
+            !effect_parent_ref_slots(&non_ctx)
+                .iter()
+                .any(|s| matches!(s, TargetFilter::Any)),
+            "non-context-ref UnattachAll attachment must not be surfaced"
+        );
+    }
+
     #[test]
     fn tapped_creature_is_captured_as_anaphoric_referent() {
         let mut state = GameState::new_two_player(42);
