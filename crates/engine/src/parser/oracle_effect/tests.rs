@@ -10263,6 +10263,203 @@ fn effect_chain_create_single_token_with_keyword_conjunction_does_not_split() {
     }
 }
 
+/// Walk a `create A, B, and C` chain: head `def.effect` plus every `sub_ability`
+/// node, in written order.
+fn token_sequence_chain(def: &AbilityDefinition) -> Vec<&Effect> {
+    let mut out = vec![&*def.effect];
+    let mut cur = def.sub_ability.as_deref();
+    while let Some(node) = cur {
+        out.push(&*node.effect);
+        cur = node.sub_ability.as_deref();
+    }
+    out
+}
+
+// CR 608.2c: "create A, a B, and a C token" is a do-ALL list in written order;
+// the middle item must not be dropped. Each test below fails if the N-way split
+// regresses to the old binary (first+last only) form.
+
+#[test]
+fn effect_chain_bestial_menace_preserves_middle_token() {
+    let def = parse_effect_chain(
+        "Create a 1/1 green Snake creature token, a 2/2 green Wolf creature token, and a 3/3 green Elephant creature token.",
+        AbilityKind::Spell,
+    );
+    let nodes = token_sequence_chain(&def);
+    assert_eq!(nodes.len(), 3, "expected 3 chained tokens, got {nodes:?}");
+    // node[1] = the middle token the old binary split silently dropped.
+    match nodes[1] {
+        Effect::Token {
+            name,
+            power,
+            toughness,
+            ..
+        } => {
+            assert_eq!(name, "Wolf");
+            assert_eq!(*power, PtValue::Fixed(2));
+            assert_eq!(*toughness, PtValue::Fixed(2));
+        }
+        other => panic!("expected Wolf 2/2 at node[1], got {other:?}"),
+    }
+}
+
+#[test]
+fn effect_chain_fae_offering_preserves_middle_token() {
+    let def = parse_effect_chain(
+        "Create a Clue token, a Food token, and a Treasure token.",
+        AbilityKind::Spell,
+    );
+    let nodes = token_sequence_chain(&def);
+    assert_eq!(nodes.len(), 3, "expected 3 chained tokens, got {nodes:?}");
+    match nodes[1] {
+        Effect::Token { name, .. } => assert_eq!(name, "Food"),
+        other => panic!("expected Food at node[1], got {other:?}"),
+    }
+}
+
+#[test]
+fn effect_chain_triplicate_titan_middle_keyword_no_oversplit() {
+    // Each item carries a trailing "with <keyword>" clause; the intra-item
+    // separators (", and " for the coordinator only) must not split on the
+    // keyword commas, and "with vigilance" must land on the MIDDLE token.
+    let def = parse_effect_chain(
+        "Create a 3/3 colorless Golem artifact creature token with flying, a 3/3 colorless Golem artifact creature token with vigilance, and a 3/3 colorless Golem artifact creature token with trample.",
+        AbilityKind::Spell,
+    );
+    let nodes = token_sequence_chain(&def);
+    assert_eq!(nodes.len(), 3, "expected exactly 3 tokens, got {nodes:?}");
+    match nodes[1] {
+        Effect::Token { keywords, .. } => {
+            assert_eq!(keywords, &vec![Keyword::Vigilance]);
+        }
+        other => panic!("expected Golem/Vigilance at node[1], got {other:?}"),
+    }
+}
+
+#[test]
+fn effect_chain_trostanis_summoner_mixed_keywords() {
+    let def = parse_effect_chain(
+        "Create a 2/2 white Knight creature token with vigilance, a 3/3 green Centaur creature token, and a 4/4 green Rhino creature token with trample.",
+        AbilityKind::Spell,
+    );
+    let nodes = token_sequence_chain(&def);
+    assert_eq!(nodes.len(), 3, "expected 3 tokens, got {nodes:?}");
+    match nodes[0] {
+        Effect::Token { name, keywords, .. } => {
+            assert_eq!(name, "Knight");
+            assert_eq!(keywords, &vec![Keyword::Vigilance]);
+        }
+        other => panic!("expected Knight/Vigilance at node[0], got {other:?}"),
+    }
+    match nodes[1] {
+        Effect::Token {
+            name,
+            power,
+            toughness,
+            keywords,
+            ..
+        } => {
+            assert_eq!(name, "Centaur");
+            assert_eq!(*power, PtValue::Fixed(3));
+            assert_eq!(*toughness, PtValue::Fixed(3));
+            assert!(keywords.is_empty(), "middle Centaur carries no keyword");
+        }
+        other => panic!("expected Centaur 3/3 at node[1], got {other:?}"),
+    }
+    match nodes[2] {
+        Effect::Token { name, keywords, .. } => {
+            assert_eq!(name, "Rhino");
+            assert_eq!(keywords, &vec![Keyword::Trample]);
+        }
+        other => panic!("expected Rhino/Trample at node[2], got {other:?}"),
+    }
+}
+
+/// The Companion of the Wilds — the strongest discriminating witness. The old
+/// binary split wrongly attached the quoted "can't block" static to the FIRST
+/// token (Food) and dropped the Rat entirely. The quote-swallowing item unit
+/// keeps the comma inside `"…can't block,"` from severing the Rat item, so the
+/// `CantBlock` static lands on node[1] (Rat), not node[0] (Food).
+#[test]
+fn effect_chain_companion_of_the_wilds_cant_block_on_rat_not_food() {
+    let def = parse_effect_chain(
+        "Create a Food token, a 1/1 black Rat creature token with \"This creature can't block,\" and a Royal role token attached to a creature you control.",
+        AbilityKind::Spell,
+    );
+    let nodes = token_sequence_chain(&def);
+    assert_eq!(nodes.len(), 3, "expected 3 tokens, got {nodes:?}");
+    // node[0] = Food, and it must NOT carry the can't-block static.
+    match nodes[0] {
+        Effect::Token {
+            name,
+            static_abilities,
+            ..
+        } => {
+            assert_eq!(name, "Food");
+            assert!(
+                !static_abilities
+                    .iter()
+                    .any(|s| s.mode == crate::types::statics::StaticMode::CantBlock),
+                "CantBlock must not land on Food (node[0])"
+            );
+        }
+        other => panic!("expected Food at node[0], got {other:?}"),
+    }
+    // node[1] = the 1/1 black Rat with the CantBlock static.
+    match nodes[1] {
+        Effect::Token {
+            name,
+            power,
+            toughness,
+            colors,
+            static_abilities,
+            ..
+        } => {
+            assert_eq!(name, "Rat");
+            assert_eq!(*power, PtValue::Fixed(1));
+            assert_eq!(*toughness, PtValue::Fixed(1));
+            assert_eq!(colors, &vec![ManaColor::Black]);
+            assert!(
+                static_abilities
+                    .iter()
+                    .any(|s| s.mode == crate::types::statics::StaticMode::CantBlock),
+                "CantBlock must land on the Rat (node[1]), got {static_abilities:?}"
+            );
+        }
+        other => panic!("expected Rat 1/1 black at node[1], got {other:?}"),
+    }
+}
+
+/// [REVIEW A2] The only test that exercises the new step-2 `peek` guard. The
+/// gate-PASSING "…, and a 1/1 Bird…" coordinator lets the splitter run, but the
+/// intra-item "with menace, vigilance," keyword comma must NOT split off a bare
+/// "vigilance" item. Reverting the peek makes ", " after "menace" a split point
+/// → 3 items, "vigilance" not a Token → the whole clause becomes unimplemented →
+/// this exact assertion fails.
+#[test]
+fn effect_chain_intra_item_keyword_comma_does_not_oversplit() {
+    let def = parse_effect_chain(
+        "Create a 2/2 black Zombie creature token with menace, vigilance, and a 1/1 white Bird creature token with flying.",
+        AbilityKind::Spell,
+    );
+    let nodes = token_sequence_chain(&def);
+    assert_eq!(nodes.len(), 2, "expected exactly 2 tokens, got {nodes:?}");
+    match nodes[0] {
+        Effect::Token { name, keywords, .. } => {
+            assert_eq!(name, "Zombie");
+            assert_eq!(keywords, &vec![Keyword::Menace, Keyword::Vigilance]);
+        }
+        other => panic!("expected Zombie(menace,vigilance) at node[0], got {other:?}"),
+    }
+    match nodes[1] {
+        Effect::Token { name, keywords, .. } => {
+            assert_eq!(name, "Bird");
+            assert_eq!(keywords, &vec![Keyword::Flying]);
+        }
+        other => panic!("expected Bird(flying) at node[1], got {other:?}"),
+    }
+}
+
 #[test]
 fn effect_create_treasure_token() {
     let e = parse_effect("Create a Treasure token");

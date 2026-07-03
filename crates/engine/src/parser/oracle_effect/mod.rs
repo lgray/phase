@@ -3537,50 +3537,117 @@ fn try_parse_create_token_sequence(
     let consumed = tp.original.len() - after_create_original.len();
     let after_create = TextPair::new(after_create_original, &tp.lower[consumed..]);
 
-    let (left_original, left_lower, right_original, right_lower) =
-        split_create_token_sequence(after_create)?;
-    let left_effect = token::try_parse_token(left_lower, left_original.trim(), ctx)?;
-    let right_effect = token::try_parse_token(right_lower, right_original.trim(), ctx)?;
+    let items = split_create_token_sequence(after_create)?;
 
-    if !matches!(left_effect, Effect::Token { .. }) || !matches!(right_effect, Effect::Token { .. })
-    {
-        return None;
+    // Parse every list item as a predefined/created token in written order
+    // (CR 608.2c). If the conjunctive "and"-gate fired and produced >= 2 items
+    // but some item is not an `Effect::Token`, do NOT fall through to the silent
+    // single-leading-token path — that is exactly the middle-drop bug this fix
+    // removes. Surface an honest `Effect::unimplemented` for the whole clause so
+    // coverage stays red rather than claiming partial support.
+    let mut effects: Vec<(&str, Effect)> = Vec::with_capacity(items.len());
+    for (orig, lower) in items {
+        match token::try_parse_token(lower, orig.trim(), ctx) {
+            Some(effect @ Effect::Token { .. }) => effects.push((orig, effect)),
+            _ => {
+                return Some(parsed_clause(Effect::unimplemented(
+                    "create_token_sequence_non_token_item",
+                    tp.original,
+                )));
+            }
+        }
     }
 
-    let mut right_def = AbilityDefinition::new(AbilityKind::Spell, right_effect);
-    right_def.description = Some(format!("create {}", right_original.trim()));
+    // Chain every token via `sub_ability` in written order, reproducing the
+    // former binary builder shape (head clause + trailing sub-abilities). Both
+    // `AbilityDefinition::new` and `parsed_clause` take `Effect` by value, so the
+    // owned effects are consumed here (`into_iter`, not `iter`).
+    let mut iter = effects.into_iter();
+    let (_, head_effect) = iter.next()?;
+    let tail: Vec<(&str, Effect)> = iter.collect();
 
-    let mut clause = parsed_clause(left_effect);
-    clause.sub_ability = Some(Box::new(right_def));
+    let mut chain: Option<Box<AbilityDefinition>> = None;
+    for (orig, effect) in tail.into_iter().rev() {
+        let mut def = AbilityDefinition::new(AbilityKind::Spell, effect);
+        def.description = Some(format!("create {}", orig.trim()));
+        def.sub_ability = chain.take();
+        chain = Some(Box::new(def));
+    }
+
+    let mut clause = parsed_clause(head_effect);
+    clause.sub_ability = chain;
     Some(clause)
 }
 
-fn split_create_token_sequence<'a>(
-    after_create: TextPair<'a>,
-) -> Option<(&'a str, &'a str, &'a str, &'a str)> {
-    let mut search_lower = after_create.lower;
-    while let Some((before_lower, (), right_lower)) =
-        nom_primitives::scan_preceded(search_lower, parse_token_sequence_conjunction)
-    {
-        let split_offset = after_create.lower.len() - search_lower.len() + before_lower.len();
-        let right_offset = after_create.lower.len() - right_lower.len();
-        let left_original = &after_create.original[..split_offset];
-        let left_lower = &after_create.lower[..split_offset];
-        let right_original = &after_create.original[right_offset..];
+/// Split a conjunctive create-ALL token list into its item slices `(orig, lower)`.
+///
+/// CR 608.2c: "create A, B, and C" is a do-ALL instruction in written order. The
+/// list is always terminated by an "and" coordinator followed by a token noun
+/// phrase; a pure-disjunctive "A, B, or C" lacks that and is declined here so the
+/// modal choice parser (`try_parse_create_token_choice`) handles it.
+///
+/// Splitting reuses the two protections proven by the sibling
+/// `split_choice_list_items`: a `peek(parse_token_noun_start)` guard on every
+/// separator (so an intra-item keyword comma — "with menace, vigilance, and …" —
+/// is not mistaken for a list break) and a quote-swallowing item unit (so a comma
+/// inside a granted-ability quote — The Companion's Rat "…can't block," — never
+/// severs an item).
+//
+// ponytail: named-token-first ceiling. A hypothetical "create Boo, a legendary
+// 1/1 Hamster token, and a Treasure token" would over-split the bare name "Boo"
+// (", " + "a legendary" peek passes) → "Boo" is not an `Effect::Token` → the
+// caller emits `unimplemented`. Zero such cards in the corpus today; teach the
+// item unit a leading named-token preamble only if one ever appears.
+fn split_create_token_sequence<'a>(after_create: TextPair<'a>) -> Option<Vec<(&'a str, &'a str)>> {
+    // Disjunctive rejector — require a conjunctive "and <noun>" coordinator.
+    nom_primitives::scan_preceded(after_create.lower, parse_token_sequence_conjunction)?;
 
-        if token::parse_token_description(left_original.trim()).is_some()
-            && token::parse_token_description(right_original.trim()).is_some()
-        {
-            return Some((left_original, left_lower, right_original, right_lower));
-        }
-
-        search_lower = right_lower;
+    let unit = alt((
+        recognize((tag("\""), take_until("\""), tag("\""))),
+        recognize(preceded(not(parse_token_sequence_separator), anychar)),
+    ));
+    let item = recognize(many1(unit));
+    let (_, lower_items) = all_consuming(separated_list1(parse_token_sequence_separator, item))
+        .parse(after_create.lower)
+        .ok()?;
+    if lower_items.len() < 2 {
+        return None;
     }
-    None
+
+    // Map each lowercase item slice back to the original text by byte offset.
+    // `to_lowercase()` preserves byte offsets for the ASCII create-token span
+    // (the former binary split relied on the same parity).
+    let base = after_create.lower.as_ptr() as usize;
+    let items = lower_items
+        .into_iter()
+        .map(|lower_item| {
+            let start = lower_item.as_ptr() as usize - base;
+            (
+                &after_create.original[start..start + lower_item.len()],
+                lower_item,
+            )
+        })
+        .collect();
+    Some(items)
 }
 
 fn parse_token_sequence_conjunction(input: &str) -> OracleResult<'_, ()> {
     preceded(tag("and "), peek(parse_token_noun_start)).parse(input)
+}
+
+/// Conjunctive-only separator for create-ALL token lists (CR 608.2c). Mirrors
+/// `parse_choice_list_separator` minus the disjunctive `" or "` / `", or "`
+/// coordinators, and additionally requires a token noun phrase after the
+/// comma/coordinator so an intra-item keyword comma is not read as a list break.
+fn parse_token_sequence_separator(input: &str) -> OracleResult<'_, ()> {
+    value(
+        (),
+        (
+            alt((tag(", and "), tag(", "), tag(" and "))),
+            peek(parse_token_noun_start),
+        ),
+    )
+    .parse(input)
 }
 
 fn parse_token_noun_start(input: &str) -> OracleResult<'_, ()> {
