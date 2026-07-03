@@ -77,7 +77,8 @@ use super::oracle_quantity::{
     parse_for_each_object_filter_clause_with_context,
 };
 use super::oracle_target::{
-    parse_event_context_ref, parse_fight_target, parse_target, parse_target_with_ctx,
+    parse_definite_parent_reference, parse_event_context_ref, parse_fight_target, parse_target,
+    parse_target_with_ctx,
     parse_target_with_disjunctive_restriction, parse_target_with_syntax, parse_type_phrase,
     parse_type_phrase_with_ctx, TargetSyntax,
 };
@@ -895,6 +896,104 @@ fn build_when_next_delayed_trigger(
         optional: false,
         unless_pay: None,
     }
+}
+
+/// CR 603.7 + CR 603.4 + CR 701.3d: "When you lose control of that <permanent>
+/// this turn[, if it's attached to <host>], unattach it." — the lose-control
+/// delayed triggered ability (Stolen Uniform's last sentence).
+///
+/// General recognizer in SHAPE — the anaphor type, the `this turn` window, and
+/// the intervening-if are all parameterized (`opt`) so the head/body grammar
+/// covers the whole "lose control of that <permanent> … unattach it" class. But
+/// the runtime unlock is Stolen Uniform ONLY: the "that <permanent>" anaphor
+/// resolves to a declared target slot via `parse_definite_parent_reference`,
+/// which returns `None` on an empty slot registry. Only the dual-target head
+/// parser (`try_parse_two_targets`) populates `ctx.declared_target_slots`;
+/// single-target gain-control cards (Ogre Geargrabber) never register a slot, so
+/// their last sentence stays honestly `Effect::unimplemented` until the front
+/// half registers single-target gain-control slots — deliberately NOT done here,
+/// as it would reopen broad single-target anaphor coverage-regression risk, and
+/// Ogre is out of this tranche.
+///
+/// CR 603.4 intervening-if FOLD: "if it's attached to a creature you control" is
+/// folded into `UnattachAll.target = Typed{Creature, You}` (the host scope), NOT
+/// a separate `AbilityCondition`. `resolve_unattach_all` scopes hosts by the
+/// target filter, so an Equipment attached to an opponent's creature is never a
+/// host and is correctly NOT unattached. The fold DROPS CR 603.4's placement-time
+/// (trigger-placement / first) intervening-if check: the trigger fires
+/// unconditionally and no-ops when the host filter matches no host. For a body
+/// whose sole effect is the unattach, the observable game state is identical. The
+/// one reorder divergence (E attached to an opponent's creature at loss-of-
+/// control, then moved onto a creature you control before the trigger resolves)
+/// is practically unreachable — equip is sorcery-speed and cannot respond to a
+/// cleanup-step trigger — so this is not full CR 603.4 equivalence but is
+/// behaviorally equivalent for every reachable state.
+fn try_parse_lose_control_delayed_trigger(
+    tp: TextPair,
+    ctx: &mut ParseContext,
+) -> Option<ParsedEffectClause> {
+    use crate::types::triggers::TriggerMode;
+
+    // Split head from body on the FIRST comma — the comma terminating the trigger
+    // head ("… this turn,"). The body ("if it's attached …, unattach it") keeps
+    // its own inner comma.
+    let (head, body) = tp.split_around(", ")?;
+
+    // Head: "when you lose control of " + a "that <type>" slot anaphor + optional
+    // " this turn". Reject (None) if the anaphor does not resolve to a declared
+    // slot — no silent guess (empty registry / single-target card ⇒ None).
+    let (after_kw, _) = tag::<_, _, OracleError<'_>>("when you lose control of ")
+        .parse(head.lower)
+        .ok()?;
+    let (valid_card, after_anaphor) =
+        parse_definite_parent_reference(after_kw, &ctx.declared_target_slots)?;
+    let (head_rest, _) = opt(tag::<_, _, OracleError<'_>>(" this turn"))
+        .parse(after_anaphor)
+        .ok()?;
+    if !head_rest.trim().is_empty() {
+        return None;
+    }
+
+    // Body: an optional intervening-if host filter, then "unattach it".
+    // CR 603.4 fold: "if it's attached to <host>" → the UnattachAll host scope.
+    let (after_if, host_filter) = match opt(tag::<_, _, OracleError<'_>>("if it's attached to "))
+        .parse(body.lower)
+        .ok()?
+    {
+        (rest, Some(_)) => {
+            let (host, host_rest) = parse_type_phrase(rest);
+            let (rest, _) = tag::<_, _, OracleError<'_>>(", ").parse(host_rest).ok()?;
+            (rest, host)
+        }
+        (rest, None) => (rest, TargetFilter::Any),
+    };
+    let (leaf_rest, _) = tag::<_, _, OracleError<'_>>("unattach it")
+        .parse(after_if.trim_start())
+        .ok()?;
+    if !leaf_rest.trim_end_matches('.').trim().is_empty() {
+        return None;
+    }
+
+    // CR 701.3d: the "unattach it" leaf. `attachment` binds the same Equipment
+    // slot as the trigger's `valid_card` (B3 §7.2); `target` scopes the host
+    // (folded intervening-if, or `Any` for the no-if form).
+    let inner = AbilityDefinition::new(
+        AbilityKind::Spell,
+        Effect::UnattachAll {
+            attachment: valid_card.clone(),
+            target: host_filter,
+        },
+    );
+
+    // CR 603.7 + CR 603.2: a one-shot ThisTurn ChangesController delayed trigger,
+    // `valid_card` bound to the Equipment slot so it fires on the loss of that
+    // specific Equipment.
+    Some(build_when_next_delayed_trigger(
+        TriggerMode::ChangesController,
+        valid_card,
+        inner,
+        None,
+    ))
 }
 
 /// CR 122.1 + CR 608.2c: "it enters with an additional +1/+1 counter on it" rider
@@ -6601,6 +6700,15 @@ fn parse_effect_clause_inner(text: &str, ctx: &mut ParseContext) -> ParsedEffect
 
     // CR 603.7: "When you next cast a [type] spell this turn, ..." — one-shot delayed trigger.
     if let Some(clause) = try_parse_when_next_event(tp) {
+        return clause;
+    }
+
+    // CR 603.7 + CR 603.4 + CR 701.3d: "When you lose control of that <permanent>
+    // this turn[, if it's attached to <host>], unattach it." — the lose-control
+    // delayed unattach trigger (Stolen Uniform). Checked before the generic
+    // "when …, …" inline delayed-trigger arm so the slot-anaphor head and the
+    // folded intervening-if are not lost to `scan_delayed_condition_kind`.
+    if let Some(clause) = try_parse_lose_control_delayed_trigger(tp, ctx) {
         return clause;
     }
 

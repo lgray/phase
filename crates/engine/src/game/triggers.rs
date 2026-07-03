@@ -7470,6 +7470,18 @@ pub(crate) fn extract_target_filter_from_effect(effect: &Effect) -> Option<&Targ
     if matches!(effect, Effect::Sacrifice { .. }) {
         return None;
     }
+    // CR 701.3d + CR 115.1: `UnattachAll` is a non-targeted mass effect. Its
+    // `target` is a resolution-time host-scope filter that `resolve_unattach_all`
+    // mass-scans (never a chosen target), and its `attachment` is a context-ref
+    // anaphor ("unattach it") resolved from the snapshot. Surfacing the host
+    // filter here would create a spurious required target slot (Stolen Uniform's
+    // "unattach it" would demand the controller pick among the creatures they
+    // control), stalling the delayed trigger unresolved. Mirrors the Sacrifice
+    // carve-out above; matches the `None` its mass siblings (DestroyAll/BounceAll)
+    // return from `Effect::target_filter`.
+    if matches!(effect, Effect::UnattachAll { .. }) {
+        return None;
+    }
     // CR 115.1 + Whitemane Lion ruling: A `Bounce` whose Oracle text omitted
     // the word "target" ("return a creature you control to its owner's hand")
     // is NOT a targeted effect — the controller chooses an eligible permanent
@@ -16304,6 +16316,23 @@ pub mod tests {
         assert!(
             extract_target_filter_from_effect(&effect).is_none(),
             "Sacrifice should not extract a target filter (resolution-time selection)"
+        );
+    }
+
+    /// CR 701.3d + CR 115.1: `UnattachAll` is a non-targeted mass effect — its
+    /// host `target` is mass-scanned at resolution time and its `attachment` is a
+    /// context-ref anaphor ("unattach it"), so it must not extract a target filter.
+    /// Surfacing one creates a spurious required slot that stalls the Stolen Uniform
+    /// lose-control delayed trigger unresolved. Reverting the carve-out flips this.
+    #[test]
+    fn extract_target_skips_unattach_all() {
+        let effect = Effect::UnattachAll {
+            attachment: TargetFilter::ParentTargetSlot { index: 1 },
+            target: TargetFilter::Typed(TypedFilter::creature().controller(ControllerRef::You)),
+        };
+        assert!(
+            extract_target_filter_from_effect(&effect).is_none(),
+            "UnattachAll must not extract a target filter (mass resolution-time scan)"
         );
     }
 

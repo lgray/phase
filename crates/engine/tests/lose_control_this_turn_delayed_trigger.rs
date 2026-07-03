@@ -1,7 +1,8 @@
 //! CR 514.2 + CR 514.3a + CR 613.1b runtime coverage for the "when you lose
 //! control of that <permanent> this turn" delayed-trigger seam (the B1 runtime
-//! half of Stolen Uniform — its parser front half is not yet supported, so the
-//! card itself stays honestly `Effect::unimplemented`).
+//! half of Stolen Uniform. As of block-D + fix#2 the card's parser is fully
+//! supported (front half B3 + the last-sentence lose-control delayed trigger);
+//! this file's hand-installed trigger remains a valid focused runtime unit).
 //!
 //! These drive the REAL cleanup / priority / delayed-trigger-dispatch pipeline
 //! (`GameRunner::advance_to_phase` → `auto_advance` → `execute_cleanup`, and the

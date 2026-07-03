@@ -39552,3 +39552,164 @@ fn rhinos_rampage_excess_damage_this_way_lowers_to_reflexive_destroy() {
         "up to ONE → max 1"
     );
 }
+
+// ── S25-B3 block-D: "when you lose control of that <permanent> this turn,
+// [if it's attached to <host>], unattach it" delayed unattach trigger ──
+
+/// Collect an ability's effects in `sub_ability`-chain order.
+fn chain_effects(ad: &AbilityDefinition) -> Vec<Effect> {
+    let mut out = vec![(*ad.effect).clone()];
+    let mut cur = ad.sub_ability.as_deref();
+    while let Some(sub) = cur {
+        out.push((*sub.effect).clone());
+        cur = sub.sub_ability.as_deref();
+    }
+    out
+}
+
+/// Whether an ability tree contains any `Effect::Unimplemented`.
+fn tree_has_unimplemented(ad: &AbilityDefinition) -> bool {
+    fn eff(e: &Effect) -> bool {
+        matches!(e, Effect::Unimplemented { .. })
+    }
+    eff(&ad.effect)
+        || ad
+            .sub_ability
+            .as_deref()
+            .is_some_and(tree_has_unimplemented)
+        || ad
+            .else_ability
+            .as_deref()
+            .is_some_and(tree_has_unimplemented)
+}
+
+/// S25-B3 block-D claims 1–3 (parser shape): Stolen Uniform's last sentence
+/// lowers to a real `CreateDelayedTrigger` — a one-shot ThisTurn ChangesController
+/// trigger whose `valid_card` AND whose `UnattachAll` body `attachment` both bind
+/// the Equipment slot (`ParentTargetSlot { index: 1 }`), with the intervening-if
+/// folded into the `UnattachAll.target` host scope (`Typed{Creature, You}`).
+///
+/// Baseline (pre-block-D): the same clause was `Effect::unimplemented("when", …)`
+/// (see the S25-B3-blockD plan §0 live-parse dump). Revert-failing assertions:
+/// the last effect flips back to `Unimplemented` (claim 1); both `ParentTargetSlot`
+/// bindings degrade to `ParentTarget`/`Any` (claim 2); the folded host filter
+/// degrades to `Any` if "you control" were dropped (claim 3).
+#[test]
+fn stolen_uniform_lose_control_delayed_trigger_shape() {
+    let parsed = parse_oracle_text(
+        "Choose target creature you control and target Equipment. Gain control of that \
+         Equipment until end of turn. Attach it to the chosen creature. When you lose control \
+         of that Equipment this turn, if it's attached to a creature you control, unattach it.",
+        "Stolen Uniform",
+        &[],
+        &["Instant".to_string()],
+        &[],
+    );
+
+    let ability = parsed
+        .abilities
+        .first()
+        .expect("Stolen Uniform lowers to a spell ability chain");
+
+    // Claim 1: zero residual Unimplemented across the whole chain.
+    assert!(
+        !tree_has_unimplemented(ability),
+        "Stolen Uniform must have zero Unimplemented nodes; got {ability:#?}"
+    );
+
+    // The last effect in the sub-ability chain is the delayed trigger.
+    let effects = chain_effects(ability);
+    let last = effects.last().expect("non-empty effect chain");
+    let Effect::CreateDelayedTrigger {
+        condition, effect, ..
+    } = last
+    else {
+        panic!("last sentence must lower to CreateDelayedTrigger, got {last:?}");
+    };
+
+    // Claim 1 + firing shape: one-shot ThisTurn ChangesController, valid_card = slot 1.
+    let DelayedTriggerCondition::WhenNextEvent {
+        trigger, lifetime, ..
+    } = condition
+    else {
+        panic!("delayed condition must be WhenNextEvent, got {condition:?}");
+    };
+    assert_eq!(
+        *lifetime,
+        DelayedTriggerLifetime::ThisTurn,
+        "lose-control delayed trigger is ThisTurn-scoped"
+    );
+    assert_eq!(
+        trigger.mode,
+        TriggerMode::ChangesController,
+        "trigger fires on the control change"
+    );
+    // Claim 2: valid_card binds the Equipment slot, not the collision ParentTarget.
+    assert_eq!(
+        trigger.valid_card,
+        Some(TargetFilter::ParentTargetSlot { index: 1 }),
+        "valid_card must be ParentTargetSlot{{1}} (the Equipment), got {:?}",
+        trigger.valid_card
+    );
+
+    // Claims 2 + 3: the delayed body ability is UnattachAll with the Equipment
+    // slot as attachment and the folded "creature you control" host scope as target.
+    let Effect::UnattachAll { attachment, target } = &*effect.effect else {
+        panic!("delayed body must be UnattachAll, got {:?}", effect.effect);
+    };
+    assert_eq!(
+        *attachment,
+        TargetFilter::ParentTargetSlot { index: 1 },
+        "UnattachAll.attachment must be ParentTargetSlot{{1}} (the Equipment)"
+    );
+    match target {
+        TargetFilter::Typed(tf) => {
+            assert_eq!(
+                tf.controller,
+                Some(ControllerRef::You),
+                "folded intervening-if must preserve 'you control' as controller=You"
+            );
+            assert!(
+                tf.type_filters.contains(&TypeFilter::Creature),
+                "folded host filter must be a creature, got {:?}",
+                tf.type_filters
+            );
+        }
+        other => panic!(
+            "intervening-if fold must yield Typed{{Creature, You}} host, got {other:?} \
+             (dropping 'you control' would degrade this to Any)"
+        ),
+    }
+}
+
+/// C2 (honest Ogre pin — measured limitation, NOT a false unlock): Ogre
+/// Geargrabber's identical-shape last sentence STAYS `Effect::Unimplemented`.
+/// Ogre is single-target ("gain control of target Equipment"), so the dual-target
+/// head parser never registers a slot, `parse_definite_parent_reference` returns
+/// `None` on the empty registry, and the recognizer declines rather than guess.
+/// This documents block-D's Stolen-only runtime unlock as a measured fact; it
+/// will fail loudly the day a single-target gain-control registry lands (forcing
+/// a deliberate Ogre flip). Do NOT hand-feed a slot — that would falsely pass.
+#[test]
+fn ogre_geargrabber_lose_control_stays_unimplemented() {
+    let parsed = parse_oracle_text(
+        "Whenever this creature attacks, gain control of target Equipment an opponent controls \
+         until end of turn. Attach it to this creature. When you lose control of that Equipment, \
+         unattach it.",
+        "Ogre Geargrabber",
+        &[],
+        &["Creature".to_string()],
+        &["Ogre".to_string(), "Warrior".to_string()],
+    );
+
+    // Ogre's gain-control clause is an attack TRIGGER; its last sentence is the
+    // deferred lose-control clause. Assert an Unimplemented("when"/"unattach")
+    // survives somewhere in the parse (the empty-registry decline).
+    let dbg = format!("{parsed:#?}");
+    assert!(
+        dbg.contains("Unimplemented"),
+        "Ogre Geargrabber (single-target, empty slot registry) must keep its \
+         lose-control last sentence Unimplemented — block-D runtime-unlocks Stolen \
+         ONLY. Parse:\n{dbg}"
+    );
+}

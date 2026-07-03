@@ -1560,7 +1560,7 @@ fn parse_selected_from_set_reference(input: &str) -> Option<&str> {
 /// so no anaphor is ever bound to a specific slot on a guess.
 ///
 /// `input` is lowercase; the returned remainder is a slice of `input`.
-fn parse_definite_parent_reference<'a>(
+pub(super) fn parse_definite_parent_reference<'a>(
     input: &'a str,
     slots: &[TargetFilter],
 ) -> Option<(TargetFilter, &'a str)> {

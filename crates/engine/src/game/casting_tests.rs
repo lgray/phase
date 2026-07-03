@@ -40301,6 +40301,282 @@ fn stolen_uniform_binds_gaincontrol_and_attach_to_precise_slots() {
     assert_eq!(state.objects[&creature].controller, PlayerId(0));
 }
 
+/// S25-B3 block-D claim 8 (B1↔B3 end-to-end runtime): the whole Stolen Uniform
+/// resolves — front half gains control of the opponent's Equipment E and equips
+/// it to your creature C, AND the last sentence's delayed trigger fires when you
+/// LOSE control of E at end-of-turn cleanup and unattaches E — but ONLY E.
+///
+/// Revert-failing on BOTH block-D and its s07 dependency:
+///   (a) drop the s07 `effect_parent_ref_slots` UnattachAll arm (db603310f) →
+///       the delayed ability snapshots `targets = []` → `attachment:
+///       ParentTargetSlot{1}` resolves against nothing → E stays attached → the
+///       "E unattached" assertion flips.
+///   (b) revert the block-D recognizer → the last sentence is `Unimplemented`,
+///       no delayed trigger is created → E stays attached → same assertion flips.
+///   (c) mis-bind the slot (`attachment: Any`) → the hostile second Equipment F
+///       (attached to another creature you control) is ALSO unattached → the
+///       "F still attached" assertion flips.
+///
+/// BLOCKED PRE-FIX#2 (measured, S25-B3 block-D impl): the runtime did not fire. The
+/// s07-frozen `parent_target_snapshot` (delayed_trigger.rs:180) seeds
+/// `delayed_ability.targets` from the resolving clause's per-clause
+/// `ability.targets`, which for Stolen's tail clause is `[E]` (single element,
+/// E at index 0) — NOT the root chain `[C, E]`. So `ParentTargetSlot{1}` binds
+/// against index 1 → out of range → `valid_card` degrades to `Any` (the trigger
+/// never keys on E) and the effect `attachment` resolves to nothing. Plan §2.5's
+/// premise (snapshot == `[C, E]`) is empirically false; db603310f is necessary
+/// but NOT sufficient. FIX (s07-frozen, out of block-D scope): seed the snapshot
+/// from `parent_chain_targets_from_root(state, ability)` (= `[C, E]`, the exact
+/// root-chain flatten the front-half's `resolve_parent_slot_from_root` already
+/// uses) — then `ParentTargetSlot{1}` → E consistently. Un-`ignore` when that
+/// lands.
+///
+/// RESOLVED by fix#2 (cherry-pick `a410d2d74`, delayed_trigger.rs root-chain reseed):
+/// `parent_target_snapshot` now seeds `[C, E]` → `ParentTargetSlot{1}` binds E. Un-ignored.
+#[test]
+fn stolen_uniform_lose_control_unattaches_only_that_equipment() {
+    use crate::game::game_object::AttachTarget;
+    use crate::game::scenario::GameScenario;
+
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(Phase::PreCombatMain);
+
+    // Slot 0 — "target creature you control": the equip host C.
+    let creature = scenario.add_creature(PlayerId(0), "Bearer", 2, 2).id();
+    // A second creature you control, host for the hostile Equipment F.
+    let other_creature = scenario
+        .add_creature(PlayerId(0), "Second Bearer", 1, 1)
+        .id();
+
+    // Slot 1 — "target Equipment", controlled by the OPPONENT before resolution.
+    let equip = {
+        let state = &mut scenario.state;
+        let id = create_object(
+            state,
+            CardId(9111),
+            PlayerId(1),
+            "Stolen Blade".to_string(),
+            Zone::Battlefield,
+        );
+        let obj = state.objects.get_mut(&id).unwrap();
+        obj.card_types.core_types.push(CoreType::Artifact);
+        obj.card_types.subtypes.push("Equipment".to_string());
+        id
+    };
+    // Hostile fixture: a SECOND Equipment F you already control, attached to the
+    // other creature you control — it must stay attached (proves the delayed
+    // trigger binds E specifically via ParentTargetSlot{1}, not "all attachments").
+    let other_equip = {
+        let state = &mut scenario.state;
+        let id = create_object(
+            state,
+            CardId(9112),
+            PlayerId(0),
+            "Loyal Blade".to_string(),
+            Zone::Battlefield,
+        );
+        let obj = state.objects.get_mut(&id).unwrap();
+        obj.card_types.core_types.push(CoreType::Artifact);
+        obj.card_types.subtypes.push("Equipment".to_string());
+        id
+    };
+    {
+        let state = &mut scenario.state;
+        state.objects.get_mut(&other_equip).unwrap().attached_to =
+            Some(AttachTarget::Object(other_creature));
+        state
+            .objects
+            .get_mut(&other_creature)
+            .unwrap()
+            .attachments
+            .push(other_equip);
+    }
+
+    let spell = scenario
+        .add_spell_to_hand_from_oracle(
+            PlayerId(0),
+            "Stolen Uniform",
+            true,
+            "Choose target creature you control and target Equipment. Gain control of that Equipment until end of turn. Attach it to the chosen creature. When you lose control of that Equipment this turn, if it's attached to a creature you control, unattach it.",
+        )
+        .id();
+
+    let mut runner = scenario.build();
+    runner
+        .cast(spell)
+        .target_objects(&[creature, equip])
+        .resolve();
+
+    // Front half resolved: you control E and it equips C.
+    assert_eq!(
+        runner.state().objects[&equip].controller,
+        PlayerId(0),
+        "GainControl (slot 1) — you control the Equipment after resolution"
+    );
+    assert_eq!(
+        runner.state().objects[&equip].attached_to,
+        Some(AttachTarget::Object(creature)),
+        "Attach (slot 1 → slot 0) — E equips the chosen creature"
+    );
+
+    // Tap both your creatures so combat surfaces no attackers (CR 508.8) and the
+    // turn advances cleanly to the next upkeep through this turn's cleanup.
+    for c in [creature, other_creature] {
+        runner.state_mut().objects.get_mut(&c).unwrap().tapped = true;
+    }
+
+    // Advance through this turn's cleanup: the until-EOT GainControl ends, control
+    // of E reverts to owner P1 (CR 514.2 / 613.1b), the ControllerChanged event
+    // fires the ThisTurn delayed trigger (CR 603.7), and UnattachAll resolves.
+    runner.advance_to_phase(Phase::Upkeep);
+    runner.advance_until_stack_empty();
+
+    assert_eq!(
+        runner.state().objects[&equip].controller,
+        PlayerId(1),
+        "control of E reverts to owner P1 at cleanup"
+    );
+    // (a)+(b): the delayed trigger fired and unattached E.
+    assert_eq!(
+        runner.state().objects[&equip].attached_to,
+        None,
+        "the lose-control delayed trigger must UNATTACH E at cleanup"
+    );
+    assert!(
+        !runner.state().objects[&creature]
+            .attachments
+            .contains(&equip),
+        "E must no longer be listed among C's attachments after unattaching"
+    );
+    // (c): the hostile second Equipment F is untouched — slot-specific binding.
+    assert_eq!(
+        runner.state().objects[&other_equip].attached_to,
+        Some(AttachTarget::Object(other_creature)),
+        "the unrelated Equipment F must stay attached — the trigger binds E only"
+    );
+}
+
+/// S25-B3 block-D claim 8 (hostile-if, runtime fold discrimination): the folded
+/// intervening-if host scope (`UnattachAll.target = Typed{Creature, You}`) means
+/// an Equipment attached to an OPPONENT's creature at loss-of-control is NOT a
+/// host and is correctly left attached. Revert-failing: if the fold degraded the
+/// host filter to `Any`, E would be unattached even though its host is not a
+/// creature you control — the final assertion flips.
+///
+/// BLOCKED PRE-FIX#2 (same s07-frozen `parent_target_snapshot` root-chain gap as
+/// `stolen_uniform_lose_control_unattaches_only_that_equipment`): until the
+/// snapshot seeds `[C, E]`, the delayed trigger never fires, so this test would
+/// pass VACUOUSLY (E stays attached because nothing runs). Un-`ignore` with the
+/// fix so it becomes a genuine fold discriminator.
+/// RESOLVED by fix#2 (cherry-pick `a410d2d74`): snapshot now seeds `[C, E]`; the trigger
+/// fires, so this fold discriminator runs genuinely (no longer vacuous). Un-ignored.
+#[test]
+fn stolen_uniform_lose_control_fold_leaves_opponent_hosted_equipment() {
+    use crate::game::game_object::AttachTarget;
+    use crate::game::scenario::GameScenario;
+
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(Phase::PreCombatMain);
+
+    let creature = scenario.add_creature(PlayerId(0), "Bearer", 2, 2).id();
+    // An opponent's creature — E will be moved onto it before cleanup.
+    let opp_creature = scenario.add_creature(PlayerId(1), "Opp Beast", 3, 3).id();
+
+    let equip = {
+        let state = &mut scenario.state;
+        let id = create_object(
+            state,
+            CardId(9121),
+            PlayerId(1),
+            "Stolen Blade".to_string(),
+            Zone::Battlefield,
+        );
+        let obj = state.objects.get_mut(&id).unwrap();
+        obj.card_types.core_types.push(CoreType::Artifact);
+        obj.card_types.subtypes.push("Equipment".to_string());
+        id
+    };
+
+    let spell = scenario
+        .add_spell_to_hand_from_oracle(
+            PlayerId(0),
+            "Stolen Uniform",
+            true,
+            "Choose target creature you control and target Equipment. Gain control of that Equipment until end of turn. Attach it to the chosen creature. When you lose control of that Equipment this turn, if it's attached to a creature you control, unattach it.",
+        )
+        .id();
+
+    let mut runner = scenario.build();
+    runner
+        .cast(spell)
+        .target_objects(&[creature, equip])
+        .resolve();
+    assert_eq!(
+        runner.state().objects[&equip].attached_to,
+        Some(AttachTarget::Object(creature)),
+        "front half equips E onto your creature"
+    );
+
+    // Move E onto the OPPONENT's creature before cleanup (E is still controlled by
+    // you via the until-EOT GainControl; only its host changes). The folded host
+    // filter must therefore exclude it at resolution.
+    scenario_move_attachment(runner.state_mut(), equip, creature, opp_creature);
+
+    // Tap both creatures so combat surfaces no attackers and the turn advances.
+    runner
+        .state_mut()
+        .objects
+        .get_mut(&creature)
+        .unwrap()
+        .tapped = true;
+    runner
+        .state_mut()
+        .objects
+        .get_mut(&opp_creature)
+        .unwrap()
+        .tapped = true;
+
+    runner.advance_to_phase(Phase::Upkeep);
+    runner.advance_until_stack_empty();
+
+    assert_eq!(
+        runner.state().objects[&equip].controller,
+        PlayerId(1),
+        "control of E reverts at cleanup"
+    );
+    // The fold: E's host is an opponent's creature, so E is NOT a host of a
+    // "creature you control" — it stays attached.
+    assert_eq!(
+        runner.state().objects[&equip].attached_to,
+        Some(AttachTarget::Object(opp_creature)),
+        "E on an opponent's creature must NOT be unattached (folded 'you control' host scope)"
+    );
+}
+
+/// Move `attachment` from host `from` to host `to`, keeping both attachment lists
+/// consistent.
+fn scenario_move_attachment(
+    state: &mut crate::types::game_state::GameState,
+    attachment: ObjectId,
+    from: ObjectId,
+    to: ObjectId,
+) {
+    use crate::game::game_object::AttachTarget;
+    state
+        .objects
+        .get_mut(&from)
+        .unwrap()
+        .attachments
+        .retain(|&a| a != attachment);
+    state.objects.get_mut(&attachment).unwrap().attached_to = Some(AttachTarget::Object(to));
+    state
+        .objects
+        .get_mut(&to)
+        .unwrap()
+        .attachments
+        .push(attachment);
+}
+
 #[test]
 fn heal_draws_on_the_next_turns_upkeep() {
     use crate::game::scenario::GameScenario;
