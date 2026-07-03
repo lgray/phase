@@ -39755,3 +39755,111 @@ fn ogre_geargrabber_lose_control_stays_unimplemented() {
          ONLY. Parse:\n{dbg}"
     );
 }
+
+/// CR 702.168: "creatures you control with disguise" routes "with disguise" to
+/// the keyword-CLASS discriminant (`FilterProp::HasKeywordKind { Disguise }`),
+/// not an exact-cost `WithKeyword`, so it matches any Disguise creature
+/// regardless of its individual disguise cost.
+#[test]
+fn parse_type_phrase_creatures_you_control_with_disguise() {
+    let (filter, rem) = parse_type_phrase("creatures you control with disguise");
+    assert!(
+        rem.trim().is_empty(),
+        "must fully consume, leftover: {rem:?}"
+    );
+    assert_eq!(
+        filter,
+        TargetFilter::Typed(
+            TypedFilter::creature()
+                .controller(ControllerRef::You)
+                .properties(vec![FilterProp::HasKeywordKind {
+                    value: crate::types::keywords::KeywordKind::Disguise,
+                }])
+        )
+    );
+}
+
+/// CR 701.24a + CR 701.58a/e + CR 608.2c: Expose the Culprit's mode 2 lowers to
+/// the interactive pile-selection → pile-shuffle → cloak chain and lands as
+/// modal ability[1], leaving mode 1 (`TurnFaceUp`) at ability[0] untouched.
+#[test]
+fn expose_the_culprit_mode2_lowers_to_choose_shuffle_cloak_chain() {
+    let parsed = parse_oracle_text(
+        "Choose one or both —\n\
+         • Turn target face-down creature face up.\n\
+         • Exile any number of face-up creatures you control with disguise in a face-down pile, shuffle that pile, then cloak them.",
+        "Expose the Culprit",
+        &[],
+        &["Instant".to_string()],
+        &[],
+    );
+
+    assert!(parsed.modal.is_some(), "must parse as a modal card");
+    assert!(
+        parsed.abilities.len() >= 2,
+        "two modes expected, got {}",
+        parsed.abilities.len()
+    );
+
+    // Mode 0 (TurnFaceUp) is untouched by the mode-2 detector.
+    assert!(
+        matches!(&*parsed.abilities[0].effect, Effect::TurnFaceUp { .. }),
+        "mode 0 must remain TurnFaceUp, got {:?}",
+        parsed.abilities[0].effect
+    );
+
+    // Mode 1 head: ChooseObjectsIntoTrackedSet { Controller, disguise filter, 0..=None }.
+    let head = &parsed.abilities[1];
+    let Effect::ChooseObjectsIntoTrackedSet {
+        chooser,
+        filter,
+        min,
+        max,
+    } = &*head.effect
+    else {
+        panic!(
+            "mode 1 head must be ChooseObjectsIntoTrackedSet, got {:?}",
+            head.effect
+        );
+    };
+    assert_eq!(*chooser, TargetFilter::Controller);
+    assert_eq!((*min, *max), (0, None));
+    assert!(
+        matches!(filter, TargetFilter::Typed(t)
+        if t.properties.iter().any(|p| matches!(
+            p,
+            FilterProp::HasKeywordKind { value }
+                if *value == crate::types::keywords::KeywordKind::Disguise
+        ))),
+        "filter must be Typed with HasKeywordKind{{Disguise}}, got {filter:?}"
+    );
+
+    // Sub: Shuffle { TrackedSet }.
+    let shuffle = head
+        .sub_ability
+        .as_ref()
+        .expect("head has a Shuffle sub-ability");
+    assert!(
+        matches!(&*shuffle.effect, Effect::Shuffle { target }
+            if matches!(target, TargetFilter::TrackedSet { .. })),
+        "sub must be Shuffle{{TrackedSet}}, got {:?}",
+        shuffle.effect
+    );
+
+    // Sub-sub: Cloak { object_source: Some(TrackedSet), .. }.
+    let cloak = shuffle
+        .sub_ability
+        .as_ref()
+        .expect("Shuffle has a Cloak sub-ability");
+    assert!(
+        matches!(
+            &*cloak.effect,
+            Effect::Cloak {
+                object_source: Some(TargetFilter::TrackedSet { .. }),
+                ..
+            }
+        ),
+        "sub-sub must be Cloak{{object_source: Some(TrackedSet)}}, got {:?}",
+        cloak.effect
+    );
+}

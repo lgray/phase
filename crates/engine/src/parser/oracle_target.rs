@@ -5184,6 +5184,21 @@ fn parse_keyword_match(text: &str) -> Option<KeywordMatch> {
         }
     }
 
+    // CR 702.168: Disguise is a parameterized keyword (`Disguise(ManaCost)`), so
+    // the `Keyword::from_str` fallback would yield a concrete `Keyword::Disguise(cost)`
+    // and force an exact-cost match. "creatures you control with disguise" names
+    // the keyword class regardless of cost, so map it to the discriminant `Kind`.
+    if let Ok((rest, kind)) = value(
+        KeywordKind::Disguise,
+        tag::<_, _, OracleError<'_>>("disguise"),
+    )
+    .parse(text)
+    {
+        if rest.is_empty() {
+            return Some(KeywordMatch::Kind(kind));
+        }
+    }
+
     // CR 702.113: "card with awaken" (and the other parameterized graveyard/cast
     // keywords) is a keyword-presence meta-reference that must match by
     // discriminant, not exact payload — a `WithKeyword(Awaken { count, cost })`

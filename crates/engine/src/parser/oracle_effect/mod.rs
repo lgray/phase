@@ -21252,6 +21252,9 @@ pub(crate) fn parse_effect_chain_with_context(
     if let Some(def) = try_parse_for_each_attacker_copy_blocker(text, kind) {
         return def;
     }
+    if let Some(def) = try_parse_exile_pile_shuffle_cloak(text, kind) {
+        return def;
+    }
     let ir = parse_effect_chain_ir(text, kind, ctx);
     let mut def = lower_effect_chain_ir(&ir);
     sequence::patch_reveal_until_for_library_category_exile(&mut def);
@@ -21259,6 +21262,92 @@ pub(crate) fn parse_effect_chain_with_context(
     rewrite_choose_tracked_set_exclusion(&mut def);
     fold_additional_combat_attacker_restriction(&mut def);
     def
+}
+
+/// CR 701.24a + CR 701.58a/e + CR 608.2c: Expose the Culprit mode 2 — "Exile any
+/// number of face-up creatures you control with disguise in a face-down pile,
+/// shuffle that pile, then cloak them."
+///
+/// Lowers to the interactive-selection → pile-shuffle → cloak chain:
+/// ```text
+/// ChooseObjectsIntoTrackedSet { chooser: Controller, filter, min: 0, max: None }
+///   └ Shuffle { target: TrackedSet(0) }                  // reorder the pile; no library-shuffle trigger
+///       └ Cloak { object_source: Some(TrackedSet(0)) }   // exile-and-return each member, face down
+/// ```
+///
+/// The `TrackedSetId(0)` sentinel is bound to the chain's published set at
+/// resolution time (`resolve_tracked_set_sentinel`), so both the `Shuffle` and
+/// the `Cloak` read the exact creatures the controller selected. "face-up" needs
+/// no filter prop: a face-down disguise permanent is an ability-less 2/2 whose
+/// keyword vec lacks Disguise, so `HasKeywordKind { Disguise }` inherently
+/// matches only the face-up ones (CR 702.168 / CR 708.2a).
+///
+/// The recognizer is deliberately narrow (the full pile/shuffle/cloak sentence
+/// is unique to this card) so it cannot swallow clauses on any other card.
+fn try_parse_exile_pile_shuffle_cloak(text: &str, kind: AbilityKind) -> Option<AbilityDefinition> {
+    let lower = text.to_ascii_lowercase();
+
+    // Head: "exile any number of face-up " — nom dispatch (the "any number of"
+    // quantifier fixes the min/max axis to 0..=None).
+    let (_, rest) = nom_on_lower(text, &lower, |input| {
+        value((), tag("exile any number of face-up ")).parse(input)
+    })?;
+    let rest_lower = &lower[lower.len() - rest.len()..];
+    let rest_tp = TextPair::new(rest, rest_lower);
+
+    // Structural split on the pile/shuffle/cloak marker: the head is the filter
+    // phrase ("creatures you control with disguise"), the tail must be empty (or
+    // a bare period).
+    let marker = " in a face-down pile, shuffle that pile, then cloak them";
+    let (filter_tp, after_tp) = rest_tp.split_around(marker)?;
+    if !matches!(after_tp.lower.trim(), "" | ".") {
+        return None;
+    }
+
+    // Parse the filter phrase in its original case — `parse_type_phrase` folds
+    // "you control" into `ControllerRef::You` and "with disguise" into
+    // `FilterProp::HasKeywordKind { Disguise }`. Require a full, non-`None` parse
+    // so a partial match falls through to the generic pipeline.
+    let (filter, filter_rem) = parse_type_phrase(filter_tp.original.trim());
+    if matches!(filter, TargetFilter::None) || !filter_rem.trim().is_empty() {
+        return None;
+    }
+
+    let tracked_sentinel = TargetFilter::TrackedSet {
+        id: crate::types::identifiers::TrackedSetId(0),
+    };
+
+    // CR 701.58a/e: cloak them — exile-and-return each pile member face down.
+    let cloak = AbilityDefinition::new(
+        kind,
+        Effect::Cloak {
+            target: TargetFilter::Controller,
+            count: QuantityExpr::Fixed { value: 1 },
+            object_source: Some(tracked_sentinel.clone()),
+        },
+    );
+    // CR 701.24a: shuffle that pile — reorder the tracked set; the resolver emits
+    // no `ShuffledLibrary` action, so library-shuffle triggers do not fire.
+    let mut shuffle = AbilityDefinition::new(
+        kind,
+        Effect::Shuffle {
+            target: tracked_sentinel,
+        },
+    );
+    shuffle.sub_ability = Some(Box::new(cloak));
+    // CR 608.2c: head — interactive selection of the eligible creatures into the
+    // chain's tracked set (the "face-down pile").
+    let mut head = AbilityDefinition::new(
+        kind,
+        Effect::ChooseObjectsIntoTrackedSet {
+            chooser: TargetFilter::Controller,
+            filter,
+            min: 0,
+            max: None,
+        },
+    );
+    head.sub_ability = Some(Box::new(shuffle));
+    Some(head)
 }
 
 /// CR 509.1g + CR 506.3e + CR 707.2 + CR 603.7: Mirror Match's whole-card idiom
