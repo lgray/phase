@@ -23,6 +23,19 @@
 //! and are inherited unchanged (zero ordering-decision change). Damage kinds are
 //! therefore RECIPIENT-classified, not source-bound (CR 704.5a / CR 800.4a).
 //!
+//! A SECOND inherited fail-open: `reads_event_live` is consulted ONLY on the
+//! batch path (`profiles_conflict`: the `all_same_source` fast path and the
+//! freeze-invalidation row, both guarded `!same_event`) — never in same-event
+//! feed analysis. So a same-event group that WRITES the triggering object and
+//! then READS that now-modified object's characteristic ("put a +1/+1 counter on
+//! it, then transform ~ if that creature's power ≥ 6" ×2 — order-observable,
+//! `source_independent` false so the T1 fast path is skipped, yet the
+//! event-object read×write feed is uncaught ⇒ auto) is not gated. This is
+//! DISTINCT from the PR-6.25 Case A board-write × source-read feed (which IS
+//! caught). Like the source-actor residual it is inherited from the pre-C1
+//! always-auto short-circuit (NOT a regression) and is left OPEN deliberately:
+//! closing it would ADD a prompt = a D3 widening needing its own proof.
+//!
 //! # M3 binding mandate (review-blocking)
 //!
 //! Every NON-fully-conservative arm binds ALL payload fields of its variant;
@@ -53,15 +66,13 @@
 //! (CopyTokenOf template read), CR 702.15 / CR 702.2 / CR 704.5a / CR 800.4a
 //! (source-actor residual).
 
-// Consumers land in commit 2 (triggers.rs rewiring); until then the classifier
-// is exercised only by its #[cfg(test)] unit pairings. Mirrors the inc2b axis-3
-// readout pattern (landed with allow(dead_code) until its consumer). Commit 2
-// removes this attribute.
-#![allow(dead_code)]
+// Consumers landed in commit 2: `game::triggers::group_is_order_independent`
+// calls `ability_rw_profile` / `trigger_condition_rw_profile` / `profiles_conflict`
+// on the legacy same-event and departure-batch ordering paths (CR 603.3b).
 
 use crate::types::ability::FilterProp;
 use crate::types::ability::{
-    AbilityCondition, AbilityDefinition, ControllerRef, CountScope, Duration, Effect, ModalChoice,
+    AbilityCondition, AbilityDefinition, ControllerRef, Duration, Effect, ModalChoice,
     MultiTargetSpec, ObjectScope, PlayerFilter, PlayerScope, QuantityExpr, QuantityRef,
     RepeatContinuation, ResolvedAbility, StaticCondition, TargetFilter, TriggerCondition,
     TypeFilter, TypedFilter,
@@ -270,6 +281,72 @@ impl SourceCensus {
 }
 
 // ---------------------------------------------------------------------------
+// ZoneSpan (§2 census-overlap refinement — the ZONE axis of the SetMembership
+// same-kind row; CR 400.1 a zone is where objects live).
+// ---------------------------------------------------------------------------
+
+/// CR 400.1: the zone(s) a `SetMembership` read observes / a membership write
+/// touches. A whole-zone or `InZone`-free read is `Any` (fail-closed); a
+/// creation write touches only its DESTINATION (battlefield for a token); a move
+/// is recorded fail-closed `Any` (both endpoints matter but are not tracked
+/// precisely). The membership feed row (§2) requires zone overlap IN ADDITION to
+/// type-census overlap, so a battlefield-destination token creation cannot feed
+/// a graveyard-count read (Tombstone Stairwell). `merge` is fail-closed — `Any`
+/// swallows any precise set — so a mix of a precise write and an unrefined `Any`
+/// write yields `Any` (never fewer conflicts than a single unrefined write).
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub(crate) enum ZoneSpan {
+    /// No membership read/write on this side — overlaps nothing.
+    None,
+    /// Unextractable / untracked — assume overlap (fail-closed).
+    Any,
+    /// A concrete zone set.
+    Zones(std::collections::HashSet<Zone>),
+}
+
+impl ZoneSpan {
+    fn one(z: Zone) -> ZoneSpan {
+        ZoneSpan::Zones(std::iter::once(z).collect())
+    }
+    fn merge(&mut self, o: ZoneSpan) {
+        let taken = std::mem::replace(self, ZoneSpan::None);
+        *self = match (taken, o) {
+            (ZoneSpan::None, x) | (x, ZoneSpan::None) => x,
+            (ZoneSpan::Any, _) | (_, ZoneSpan::Any) => ZoneSpan::Any,
+            (ZoneSpan::Zones(mut a), ZoneSpan::Zones(b)) => {
+                a.extend(b);
+                ZoneSpan::Zones(a)
+            }
+        };
+    }
+}
+
+/// CR 400.1 zone overlap: two spans can name a common zone iff they share one;
+/// `None` overlaps nothing, `Any` overlaps every non-`None` (mirrors
+/// `census_overlap`).
+fn zone_overlap(a: &ZoneSpan, b: &ZoneSpan) -> bool {
+    match (a, b) {
+        (ZoneSpan::None, _) | (_, ZoneSpan::None) => false,
+        (ZoneSpan::Any, _) | (_, ZoneSpan::Any) => true,
+        (ZoneSpan::Zones(x), ZoneSpan::Zones(y)) => x.intersection(y).next().is_some(),
+    }
+}
+
+/// CR 400.1: the zones a read filter observes — its explicit `InZone`/`InAnyZone`
+/// constraints (`TargetFilter::extract_zones`), or `Any` when it declares none (a
+/// bare board read defaults to the battlefield, but we stay fail-closed rather
+/// than assume it, so an `InZone`-free read still conflicts with every membership
+/// write as before; only a filter with an EXPLICIT zone gets precise treatment).
+fn zones_of_filter(f: &TargetFilter) -> ZoneSpan {
+    let zones = f.extract_zones();
+    if zones.is_empty() {
+        ZoneSpan::Any
+    } else {
+        ZoneSpan::Zones(zones.into_iter().collect())
+    }
+}
+
+// ---------------------------------------------------------------------------
 // RwProfile (§2 D-profile).
 // ---------------------------------------------------------------------------
 
@@ -310,12 +387,27 @@ pub(crate) struct RwProfile {
     /// the battlefield or whose origin is exile — re-enters/overwrites a
     /// departed member's LKI. Feeds the freeze-invalidation row.
     writes_reentry_hazard: bool,
-    /// A self-scoped `SetMembership` write exists; its census = the source.
+    /// A `SetMembership` write whose census IS the source's typeline, resolved
+    /// against `source_census` at conflict time: either a self-scoped move
+    /// (`ChangeZone{SelfRef}`) or a `CopyTokenOf{SelfRef}` created copy (CR 707.2,
+    /// §1.3.1-F). `membership_census_of` merges `source_census` when this is set.
     writes_membership_self: bool,
     /// Census of external/creation/event-object `SetMembership` writes.
     writes_membership_external_census: Census,
+    /// CR 400.1: zones the external/creation/event-object `SetMembership` writes
+    /// touch (ZONE axis of the membership feed row — a battlefield creation vs a
+    /// graveyard read is zone-disjoint, Tombstone Stairwell).
+    writes_membership_external_zones: ZoneSpan,
     /// Census requirements of all `SetMembership` reads.
     reads_membership_census: Census,
+    /// CR 400.1: zones all `SetMembership` reads observe (from their filter's
+    /// `InZone`; `Any` when unextractable — fail-closed).
+    reads_membership_zones: ZoneSpan,
+    /// CR 122.1: census of EXTERNAL `ObjectCounters` writes' target filters —
+    /// object-scope disjointness for the source-scoped counter read (§2; a quest
+    /// read on an enchantment source × a +1/+1 write on creatures is
+    /// object-disjoint, Earthbender Ascension). `Any` when unrefined (fail-closed).
+    writes_external_counter_census: Census,
     /// A resolution-time payment (`unless_pay` / `PayCost`) is present (CR
     /// 603.5). With `writes_pool`, trips the Mana×unless-pay guard.
     has_pay_or_unless: bool,
@@ -339,7 +431,10 @@ impl RwProfile {
             writes_reentry_hazard: false,
             writes_membership_self: false,
             writes_membership_external_census: Census::None,
+            writes_membership_external_zones: ZoneSpan::None,
             reads_membership_census: Census::None,
+            reads_membership_zones: ZoneSpan::None,
+            writes_external_counter_census: Census::None,
             has_pay_or_unless: false,
             writes_pool: false,
         }
@@ -352,12 +447,15 @@ impl RwProfile {
         p.writes_self = KindSet::ALL;
         p.writes_external = KindSet::ALL;
         p.writes_membership_external_census = Census::Any;
+        p.writes_membership_external_zones = ZoneSpan::Any;
         p.writes_membership_self = true;
         p.reads_membership_census = Census::Any;
+        p.reads_membership_zones = ZoneSpan::Any;
+        p.writes_external_counter_census = Census::Any;
         p
     }
 
-    fn merge(&mut self, o: RwProfile) {
+    pub(crate) fn merge(&mut self, o: RwProfile) {
         self.reads_src = self.reads_src.union(o.reads_src);
         self.reads_board = self.reads_board.union(o.reads_board);
         self.reads_player = self.reads_player.union(o.reads_player);
@@ -372,8 +470,13 @@ impl RwProfile {
         self.writes_membership_self |= o.writes_membership_self;
         self.writes_membership_external_census
             .merge(o.writes_membership_external_census);
+        self.writes_membership_external_zones
+            .merge(o.writes_membership_external_zones);
         self.reads_membership_census
             .merge(o.reads_membership_census);
+        self.reads_membership_zones.merge(o.reads_membership_zones);
+        self.writes_external_counter_census
+            .merge(o.writes_external_counter_census);
         self.has_pay_or_unless |= o.has_pay_or_unless;
         self.writes_pool |= o.writes_pool;
     }
@@ -386,6 +489,13 @@ impl RwProfile {
         self.reads_src.is_empty() && self.writes_self.is_empty() && self.reads_frozen.is_empty()
     }
 
+    /// D5 (CR 603.10a): true iff one of the 12 retained-prompt event-context refs
+    /// is present. Consulted ONLY by the batch branch (`batch_conflict`) to keep
+    /// the legacy departure-batch prompting parity (D3 zero widening).
+    pub(crate) fn legacy_batch_prompt(&self) -> bool {
+        self.legacy_batch_prompt
+    }
+
     /// Drop all writes (deferred-body descent, CR 603.7: writes happen
     /// post-window, so reads descend but writes are not counted).
     fn drop_writes(&mut self) {
@@ -396,6 +506,8 @@ impl RwProfile {
         self.writes_reentry_hazard = false;
         self.writes_membership_self = false;
         self.writes_membership_external_census = Census::None;
+        self.writes_membership_external_zones = ZoneSpan::None;
+        self.writes_external_counter_census = Census::None;
         self.writes_pool = false;
     }
 }
@@ -437,7 +549,14 @@ pub(crate) struct GroupStructure {
 /// aggregate reads already carry a `SetMembership` tag. `Other` conflicts with
 /// everything. `PlayerLife → SetMembership` is deliberately ABSENT (the CR 800.4a
 /// player-loss cascade is the documented source-actor residual, §1.2).
-fn feeds(reads: KindSet, writes: KindSet, read_census: &Census, write_census: &Census) -> bool {
+fn feeds(
+    reads: KindSet,
+    writes: KindSet,
+    read_census: &Census,
+    write_census: &Census,
+    read_zones: &ZoneSpan,
+    write_zones: &ZoneSpan,
+) -> bool {
     if (writes.other && reads.any()) || (reads.other && writes.any()) {
         return true;
     }
@@ -465,8 +584,14 @@ fn feeds(reads: KindSet, writes: KindSet, read_census: &Census, write_census: &C
     if reads.journal_cards && writes.hand_library {
         return true;
     }
-    // SetMembership same-kind, census-refined (§2).
-    if reads.set_membership && writes.set_membership && census_overlap(read_census, write_census) {
+    // SetMembership same-kind, census- AND zone-refined (§2; CR 205 type tags +
+    // CR 400.1 zones). A battlefield token creation cannot feed a graveyard read
+    // even though both name "creature" — their zones are disjoint (Tombstone).
+    if reads.set_membership
+        && writes.set_membership
+        && census_overlap(read_census, write_census)
+        && zone_overlap(read_zones, write_zones)
+    {
         return true;
     }
     false
@@ -525,12 +650,34 @@ pub(crate) fn profiles_conflict(p: &RwProfile, s: &GroupStructure) -> bool {
     if s.same_event && s.event_object_excludes_sources && s.event_object_present {
         src_writes = src_writes.minus(p.writes_event_object);
     }
+    // CR 122.1 object-scope disjointness (§2 Earthbender): an EXTERNAL counter
+    // write feeds a SOURCE-scoped counter read only if the write filter can match
+    // the source (census overlap; fail-closed — an unrefined counter write is
+    // `Any`, and `None` here means no external counter write). A quest read on an
+    // enchantment source × a +1/+1 write on creatures is object-disjoint ⇒ drop
+    // `ObjectCounters` from the source-read feed. The same-source SELF counter
+    // write is added AFTER this gate (a self write on the shared source DOES feed).
+    if p.reads_src.object_counters && src_writes.object_counters {
+        let ext_counter_census = if matches!(p.writes_external_counter_census, Census::None) {
+            Census::Any // membership present but census unrecorded ⇒ fail-closed
+        } else {
+            p.writes_external_counter_census.clone()
+        };
+        if !census_overlap(&s.source_census.as_census(), &ext_counter_census) {
+            src_writes = src_writes.minus(KindSet::one(StateKind::ObjectCounters));
+        }
+    }
     let src_self_membership = s.all_same_source && p.writes_membership_self;
     let src_write_census = membership_census_of(
         src_writes,
         &p.writes_membership_external_census,
         src_self_membership,
         s,
+    );
+    let src_write_zones = membership_zones_of(
+        src_writes,
+        &p.writes_membership_external_zones,
+        src_self_membership,
     );
     if s.all_same_source {
         src_writes = src_writes.union(p.writes_self);
@@ -540,6 +687,8 @@ pub(crate) fn profiles_conflict(p: &RwProfile, s: &GroupStructure) -> bool {
         src_writes,
         &p.reads_membership_census,
         &src_write_census,
+        &p.reads_membership_zones,
+        &src_write_zones,
     ) {
         return true;
     }
@@ -552,12 +701,19 @@ pub(crate) fn profiles_conflict(p: &RwProfile, s: &GroupStructure) -> bool {
         p.writes_membership_self,
         s,
     );
+    let board_write_zones = membership_zones_of(
+        board_writes,
+        &p.writes_membership_external_zones,
+        p.writes_membership_self,
+    );
     let board_reads = p.reads_board.union(p.reads_player);
     if feeds(
         board_reads,
         board_writes,
         &p.reads_membership_census,
         &board_write_census,
+        &p.reads_membership_zones,
+        &board_write_zones,
     ) {
         return true;
     }
@@ -582,6 +738,25 @@ fn membership_census_of(
         c.merge(s.source_census.as_census());
     }
     c
+}
+
+/// CR 400.1: the membership-write ZONE span for an effective write set — the
+/// external/creation zones if any external membership write is present, plus
+/// `Any` (fail-closed) when a self membership move is in scope (its endpoints are
+/// untracked). Mirrors `membership_census_of`.
+fn membership_zones_of(
+    write_kinds: KindSet,
+    external_zones: &ZoneSpan,
+    self_in_scope: bool,
+) -> ZoneSpan {
+    let mut z = ZoneSpan::None;
+    if write_kinds.set_membership {
+        z.merge(external_zones.clone());
+    }
+    if self_in_scope {
+        z.merge(ZoneSpan::Any);
+    }
+    z
 }
 
 // ---------------------------------------------------------------------------
@@ -704,6 +879,12 @@ fn place_membership_write(
     let hazard = matches!(sc, WriteScope::External)
         && (dest == Zone::Battlefield || origin == Some(Zone::Exile))
         && origin != Some(Zone::Library);
+    // CR 400.1: a MOVE touches both endpoints (origin removal + dest addition), so
+    // a graveyard-count read IS fed by a graveyard→battlefield return.
+    let mut move_zones = ZoneSpan::one(dest);
+    if let Some(o) = origin {
+        move_zones.merge(ZoneSpan::one(o));
+    }
     match sc {
         WriteScope::SelfSource => {
             p.writes_self.set(StateKind::SetMembership);
@@ -712,19 +893,23 @@ fn place_membership_write(
         WriteScope::External => {
             p.writes_external.set(StateKind::SetMembership);
             p.writes_membership_external_census.merge(census);
+            p.writes_membership_external_zones.merge(move_zones);
             p.writes_reentry_hazard |= hazard;
         }
         WriteScope::EventObject => {
             p.writes_external.set(StateKind::SetMembership);
             p.writes_event_object.set(StateKind::SetMembership);
-            // Event object identity is unknown at profile time ⇒ census Any.
+            // Event object identity is unknown at profile time ⇒ census + zone Any
+            // (the precise `move_zones` is used only by the External/Created arms).
             p.writes_membership_external_census.merge(Census::Any);
+            p.writes_membership_external_zones.merge(ZoneSpan::Any);
             p.writes_reentry_hazard |= hazard;
         }
         WriteScope::Created => {
             p.writes_external.set(StateKind::SetMembership);
             p.writes_created.set(StateKind::SetMembership);
             p.writes_membership_external_census.merge(census);
+            p.writes_membership_external_zones.merge(move_zones);
         }
     }
     if is_hand_or_library(dest) || origin.is_some_and(is_hand_or_library) {
@@ -806,7 +991,14 @@ fn filter_is_self_scoped(f: &TargetFilter) -> bool {
 
 /// CR 111.1: the filter's `valid_card` provably excludes every group member's
 /// source (an `Another` component) — the object-disjointness signal (§2 rule 2).
-/// A helper for the commit-2 chokepoint; exposed here beside the rule it feeds.
+/// Consumed by the parity sweep's STATIC event-object-disjointness model
+/// (`triggers_ordering_parity_tests`). The production chokepoint
+/// (`group_is_order_independent`) instead uses the DYNAMIC id-disjointness check
+/// (the event object's id vs the members' `source_id`s) because `valid_card` is
+/// not carried on `PendingTrigger`; the dynamic check is a sound, at-least-as-
+/// precise witness of the same relation. `#[allow(dead_code)]` covers the
+/// non-test lib build where only the sweep (a `#[cfg(test)]` consumer) calls it.
+#[allow(dead_code)]
 pub(crate) fn filter_excludes_source(f: &TargetFilter) -> bool {
     match f {
         TargetFilter::Typed(tf) => tf
@@ -815,6 +1007,59 @@ pub(crate) fn filter_excludes_source(f: &TargetFilter) -> bool {
             .any(|p| matches!(p, FilterProp::Another)),
         TargetFilter::And { filters } => filters.iter().any(filter_excludes_source),
         _ => false,
+    }
+}
+
+/// CR 205: does a printed source's type census overlap a filter's type census
+/// (fail-closed — either side unextractable ⇒ `Any` ⇒ overlap)? Used by the
+/// parity sweep's condition-based reachability guard (§1.3.1-F): a same-event
+/// 2-copy group is unreachable when the source itself matches an
+/// `Another`-self-exclusion count the intervening-if requires to be zero
+/// (Thopter Assembly). `#[allow(dead_code)]` covers the non-test lib build where
+/// only the sweep (a `#[cfg(test)]` consumer) calls it.
+#[allow(dead_code)]
+pub(crate) fn source_census_overlaps_filter(s: &SourceCensus, f: &TargetFilter) -> bool {
+    census_overlap(&s.as_census(), &census_of_filter(f))
+}
+
+/// D5 (CR 603.10a): the 9 `TargetFilter` carriers of the 12 retained-prompt
+/// event-context refs (the other 3 — `EventContextAmount`,
+/// `EventContextSourceCostX`, `ManaSpentToCast` — are `QuantityRef`s, handled by
+/// the read path). The frozen serde oracle
+/// (`value_contains_trigger_event_context_ref`) matched these tags ANYWHERE in
+/// the serialized ability — read OR write position — so a tag as an effect WRITE
+/// TARGET must also set `legacy_batch_prompt` for the batch branch to retain its
+/// prompt (D3 zero-widening). Each of the 9 is a unit variant serializing to a
+/// bare string, exactly what the oracle matched; the struct-variant
+/// `ParentTargetSlot` is deliberately EXCLUDED (it serializes as an object key,
+/// which the oracle's value-walk never matches). Composite filters are descended
+/// so a nested tag is still caught (position-agnostic like the oracle).
+fn target_is_legacy_ref(f: &TargetFilter) -> bool {
+    match f {
+        TargetFilter::TriggeringSpellController
+        | TargetFilter::TriggeringSpellOwner
+        | TargetFilter::TriggeringPlayer
+        | TargetFilter::TriggeringSource
+        | TargetFilter::ParentTarget
+        | TargetFilter::ParentTargetController
+        | TargetFilter::ParentTargetOwner
+        | TargetFilter::StackSpell
+        | TargetFilter::CostPaidObject => true,
+        TargetFilter::Not { filter } => target_is_legacy_ref(filter),
+        TargetFilter::And { filters } | TargetFilter::Or { filters } => {
+            filters.iter().any(target_is_legacy_ref)
+        }
+        _ => false,
+    }
+}
+
+/// Set `legacy_batch_prompt` when an effect write target carries a D5 event-
+/// context ref (§D5, CR 603.10a) — mirrors the read-carrier path
+/// (`rw_target_filter` → `legacy_ref`) for write position. Position-agnostic:
+/// applied at every write-target-bearing arm so the tag anywhere ⇒ prompt.
+fn flag_legacy_write_target(p: &mut RwProfile, target: &TargetFilter) {
+    if target_is_legacy_ref(target) {
+        p.legacy_batch_prompt = true;
     }
 }
 
@@ -836,6 +1081,10 @@ fn reads_board_of(k: StateKind) -> RwProfile {
 fn reads_zone_membership() -> RwProfile {
     let mut p = reads_board_of(StateKind::SetMembership);
     p.reads_membership_census = Census::Any;
+    // CR 400.1: a whole-zone read's zone is not extractable here (GraveyardSize
+    // = graveyard, Devotion = battlefield, … — one helper, many zones) ⇒ `Any`,
+    // fail-closed (conflicts with every membership write, as before).
+    p.reads_membership_zones = ZoneSpan::Any;
     p
 }
 fn reads_player_of(k: StateKind) -> RwProfile {
@@ -897,6 +1146,10 @@ fn board_membership_read(filter: &TargetFilter) -> RwProfile {
         p.reads_board = KindSet::one(StateKind::SetMembership);
     }
     p.reads_membership_census = census_of_filter(filter);
+    // CR 400.1: the zone(s) the read counts, from the filter's explicit `InZone`
+    // (Tombstone Stairwell's Zombie count reads the GRAVEYARD, not the battlefield
+    // its own tokens enter). No `InZone` ⇒ `Any` (fail-closed, unchanged behavior).
+    p.reads_membership_zones = zones_of_filter(filter);
     p
 }
 
@@ -1233,7 +1486,11 @@ fn damage_writes(target: &TargetFilter) -> RwProfile {
         p.writes_external.set(StateKind::SetMembership);
         p.writes_membership_external_census
             .merge(census_of_filter(target));
+        // CR 120.3e + CR 704.5g: lethal damage moves a creature battlefield →
+        // graveyard as an SBA ⇒ both zones (fail-closed Any).
+        p.writes_membership_external_zones.merge(ZoneSpan::Any);
     }
+    flag_legacy_write_target(&mut p, target);
     p
 }
 
@@ -1248,6 +1505,18 @@ fn rw_effect(x: &Effect, chain_root: Option<WriteScope>) -> (RwProfile, Option<W
         let sc = scope_of(target, chain_root);
         let mut p = RwProfile::empty();
         place_object_write(&mut p, kind, sc);
+        // CR 122.1 object-scope disjointness (§2): record the census of an EXTERNAL
+        // counter write's target filter, so a source-scoped counter read only
+        // conflicts when the write filter can match the source (Earthbender: a
+        // `+1/+1` write on creatures can't reach an enchantment source's quest
+        // counter). Self/created writes are handled by their own scoping.
+        if kind == StateKind::ObjectCounters
+            && matches!(sc, WriteScope::External | WriteScope::EventObject)
+        {
+            p.writes_external_counter_census
+                .merge(census_of_filter(target));
+        }
+        flag_legacy_write_target(&mut p, target);
         (p, Some(sc))
     };
     // Membership move targeting `target` with the given zone endpoints.
@@ -1258,6 +1527,7 @@ fn rw_effect(x: &Effect, chain_root: Option<WriteScope>) -> (RwProfile, Option<W
         let sc = scope_of(target, chain_root);
         let mut p = RwProfile::empty();
         place_membership_write(&mut p, sc, census_of_filter(target), origin, dest);
+        flag_legacy_write_target(&mut p, target);
         (p, Some(sc))
     };
     // Deferred body (CR 603.7): descend reads, drop writes.
@@ -1296,6 +1566,9 @@ fn rw_effect(x: &Effect, chain_root: Option<WriteScope>) -> (RwProfile, Option<W
             p.writes_external.set(StateKind::SetMembership);
             p.writes_membership_external_census
                 .merge(census_of_filter(target));
+            // CR 704.5g: SBA deaths move battlefield → graveyard (fail-closed Any).
+            p.writes_membership_external_zones.merge(ZoneSpan::Any);
+            flag_legacy_write_target(&mut p, target);
             if player_filter.is_some() {
                 p.merge(life_writes());
             }
@@ -1376,18 +1649,23 @@ fn rw_effect(x: &Effect, chain_root: Option<WriteScope>) -> (RwProfile, Option<W
         }
 
         // ---- Life ----
-        Effect::GainLife { amount, player: _ } => {
+        Effect::GainLife { amount, player } => {
             let mut p = life_writes();
+            flag_legacy_write_target(&mut p, player);
             p.merge(rw_quantity_expr(amount));
             (p, None)
         }
-        Effect::LoseLife { amount, target: _ } => {
+        Effect::LoseLife { amount, target } => {
             let mut p = life_writes();
+            if let Some(t) = target {
+                flag_legacy_write_target(&mut p, t);
+            }
             p.merge(rw_quantity_expr(amount));
             (p, None)
         }
-        Effect::SetLifeTotal { target: _, amount } => {
+        Effect::SetLifeTotal { target, amount } => {
             let mut p = life_writes();
+            flag_legacy_write_target(&mut p, target);
             p.merge(rw_quantity_expr(amount));
             (p, None)
         }
@@ -1398,10 +1676,11 @@ fn rw_effect(x: &Effect, chain_root: Option<WriteScope>) -> (RwProfile, Option<W
         }
         Effect::GivePlayerCounter {
             count,
-            target: _,
+            target,
             counter_kind: _,
         } => {
             let mut p = ext_write(StateKind::PlayerLife);
+            flag_legacy_write_target(&mut p, target);
             p.merge(rw_quantity_expr(count));
             (p, None)
         }
@@ -1448,11 +1727,14 @@ fn rw_effect(x: &Effect, chain_root: Option<WriteScope>) -> (RwProfile, Option<W
             selection: _,
         } => {
             let (mut p, sc) = obj(StateKind::ObjectCounters, target);
-            place_object_write(
-                &mut p,
-                StateKind::ObjectCounters,
-                scope_of(source, chain_root),
-            );
+            let source_sc = scope_of(source, chain_root);
+            place_object_write(&mut p, StateKind::ObjectCounters, source_sc);
+            // CR 122.1 object-scope (§2): the donor is also an external counter write.
+            if matches!(source_sc, WriteScope::External | WriteScope::EventObject) {
+                p.writes_external_counter_census
+                    .merge(census_of_filter(source));
+            }
+            flag_legacy_write_target(&mut p, source);
             if let Some(c) = count {
                 p.merge(rw_quantity_expr(c));
             }
@@ -1460,6 +1742,8 @@ fn rw_effect(x: &Effect, chain_root: Option<WriteScope>) -> (RwProfile, Option<W
         }
         Effect::Bolster { count } => {
             let mut p = ext_write(StateKind::ObjectCounters);
+            // Untargeted external counter write ⇒ census Any (fail-closed, §2).
+            p.writes_external_counter_census.merge(Census::Any);
             p.merge(rw_quantity_expr(count));
             (p, Some(WriteScope::External))
         }
@@ -1467,6 +1751,7 @@ fn rw_effect(x: &Effect, chain_root: Option<WriteScope>) -> (RwProfile, Option<W
             let (mut p, sc) = obj(StateKind::ObjectCounters, subject);
             p.writes_external.set(StateKind::SetMembership);
             p.writes_membership_external_census.merge(Census::Any);
+            p.writes_membership_external_zones.merge(ZoneSpan::Any);
             p.merge(rw_quantity_expr(amount));
             (p, sc)
         }
@@ -1481,17 +1766,22 @@ fn rw_effect(x: &Effect, chain_root: Option<WriteScope>) -> (RwProfile, Option<W
         Effect::Proliferate => {
             let mut p = ext_write(StateKind::ObjectCounters);
             p.writes_external.set(StateKind::PlayerLife);
+            // Any counter on any permanent/player with a counter ⇒ census Any.
+            p.writes_external_counter_census.merge(Census::Any);
             (p, Some(WriteScope::External))
         }
         Effect::Amass { count, subtype: _ } => {
             let mut p = ext_write(StateKind::SetMembership);
             p.writes_external.set(StateKind::ObjectCounters);
+            p.writes_external_counter_census.merge(Census::Any);
             p.writes_membership_external_census.merge(Census::Any);
+            p.writes_membership_external_zones.merge(ZoneSpan::Any);
             p.merge(rw_quantity_expr(count));
             (p, Some(WriteScope::External))
         }
         Effect::Intensify { amount, scope: _ } => {
             let mut p = ext_write(StateKind::ObjectCounters);
+            p.writes_external_counter_census.merge(Census::Any);
             p.merge(rw_quantity_expr(amount));
             (p, Some(WriteScope::External))
         }
@@ -1648,6 +1938,7 @@ fn rw_effect(x: &Effect, chain_root: Option<WriteScope>) -> (RwProfile, Option<W
             let mut p = ext_write(StateKind::SetMembership);
             p.writes_external.set(StateKind::HandLibrary);
             p.writes_membership_external_census.merge(Census::Any);
+            p.writes_membership_external_zones.merge(ZoneSpan::Any);
             p.merge(rw_quantity_expr(count));
             (p, None)
         }
@@ -1661,6 +1952,7 @@ fn rw_effect(x: &Effect, chain_root: Option<WriteScope>) -> (RwProfile, Option<W
             let mut p = ext_write(StateKind::SetMembership);
             p.writes_external.set(StateKind::HandLibrary);
             p.writes_membership_external_census.merge(Census::Any);
+            p.writes_membership_external_zones.merge(ZoneSpan::Any);
             p.merge(rw_quantity_expr(count));
             (p, None)
         }
@@ -1676,6 +1968,7 @@ fn rw_effect(x: &Effect, chain_root: Option<WriteScope>) -> (RwProfile, Option<W
             let mut p = ext_write(StateKind::SetMembership);
             p.writes_external.set(StateKind::HandLibrary);
             p.writes_membership_external_census.merge(Census::Any);
+            p.writes_membership_external_zones.merge(ZoneSpan::Any);
             p.merge(rw_quantity_expr(count));
             (p, None)
         }
@@ -1693,6 +1986,7 @@ fn rw_effect(x: &Effect, chain_root: Option<WriteScope>) -> (RwProfile, Option<W
             let mut p = ext_write(StateKind::SetMembership);
             p.writes_external.set(StateKind::HandLibrary);
             p.writes_membership_external_census.merge(Census::Any);
+            p.writes_membership_external_zones.merge(ZoneSpan::Any);
             (p, None)
         }
         Effect::Explore => {
@@ -1704,6 +1998,7 @@ fn rw_effect(x: &Effect, chain_root: Option<WriteScope>) -> (RwProfile, Option<W
             let mut p = ext_write(StateKind::SetMembership);
             p.writes_external.set(StateKind::HandLibrary);
             p.writes_membership_external_census.merge(Census::Any);
+            p.writes_membership_external_zones.merge(ZoneSpan::Any);
             (p, None)
         }
         Effect::Connive { target, count } => {
@@ -1716,6 +2011,7 @@ fn rw_effect(x: &Effect, chain_root: Option<WriteScope>) -> (RwProfile, Option<W
             let mut p = ext_write(StateKind::SetMembership);
             p.writes_external.set(StateKind::HandLibrary);
             p.writes_membership_external_census.merge(Census::Any);
+            p.writes_membership_external_zones.merge(ZoneSpan::Any);
             (p, None)
         }
         Effect::Discover {
@@ -1726,6 +2022,7 @@ fn rw_effect(x: &Effect, chain_root: Option<WriteScope>) -> (RwProfile, Option<W
             p.writes_external.set(StateKind::HandLibrary);
             p.writes_external.set(StateKind::StackShape);
             p.writes_membership_external_census.merge(Census::Any);
+            p.writes_membership_external_zones.merge(ZoneSpan::Any);
             p.merge(rw_quantity_expr(mana_value_limit));
             (p, None)
         }
@@ -1744,6 +2041,7 @@ fn rw_effect(x: &Effect, chain_root: Option<WriteScope>) -> (RwProfile, Option<W
             let mut p = ext_write(StateKind::SetMembership);
             p.writes_external.set(StateKind::HandLibrary);
             p.writes_membership_external_census.merge(Census::Any);
+            p.writes_membership_external_zones.merge(ZoneSpan::Any);
             p.merge(rw_quantity_expr(count));
             (p, None)
         }
@@ -1756,6 +2054,7 @@ fn rw_effect(x: &Effect, chain_root: Option<WriteScope>) -> (RwProfile, Option<W
             let mut p = ext_write(StateKind::SetMembership);
             p.writes_external.set(StateKind::HandLibrary);
             p.writes_membership_external_census.merge(Census::Any);
+            p.writes_membership_external_zones.merge(ZoneSpan::Any);
             p.merge(rw_quantity_expr(count));
             (p, None)
         }
@@ -1763,12 +2062,14 @@ fn rw_effect(x: &Effect, chain_root: Option<WriteScope>) -> (RwProfile, Option<W
             let mut p = ext_write(StateKind::SetMembership);
             p.writes_external.set(StateKind::HandLibrary);
             p.writes_membership_external_census.merge(Census::Any);
+            p.writes_membership_external_zones.merge(ZoneSpan::Any);
             (p, None)
         }
         Effect::Cloak { target: _, count } => {
             let mut p = ext_write(StateKind::SetMembership);
             p.writes_external.set(StateKind::HandLibrary);
             p.writes_membership_external_census.merge(Census::Any);
+            p.writes_membership_external_zones.merge(ZoneSpan::Any);
             p.merge(rw_quantity_expr(count));
             (p, None)
         }
@@ -1779,6 +2080,7 @@ fn rw_effect(x: &Effect, chain_root: Option<WriteScope>) -> (RwProfile, Option<W
         } => {
             let mut p = ext_write(StateKind::SetMembership);
             p.writes_membership_external_census.merge(Census::Any);
+            p.writes_membership_external_zones.merge(ZoneSpan::Any);
             (p, None)
         }
         Effect::PhaseOut { target } => obj_membership_scope(target, chain_root),
@@ -1786,6 +2088,7 @@ fn rw_effect(x: &Effect, chain_root: Option<WriteScope>) -> (RwProfile, Option<W
             let mut p = ext_write(StateKind::SetMembership);
             p.writes_external.set(StateKind::StackShape);
             p.writes_membership_external_census.merge(Census::Any);
+            p.writes_membership_external_zones.merge(ZoneSpan::Any);
             (p, None)
         }
 
@@ -1811,6 +2114,12 @@ fn rw_effect(x: &Effect, chain_root: Option<WriteScope>) -> (RwProfile, Option<W
             p.writes_created.set(StateKind::SetMembership);
             p.writes_membership_external_census
                 .merge(census_of_types(types));
+            // CR 111.1 + CR 400.1: a token is CREATED on the battlefield — it
+            // touches ONLY that zone (no origin), so it cannot feed a graveyard /
+            // hand / library read (Tombstone Stairwell: battlefield Zombie tokens
+            // vs a graveyard-creature count are zone-disjoint).
+            p.writes_membership_external_zones
+                .merge(ZoneSpan::one(Zone::Battlefield));
             for (_ct, q) in enter_with_counters {
                 p.merge(rw_quantity_expr(q));
             }
@@ -1820,7 +2129,7 @@ fn rw_effect(x: &Effect, chain_root: Option<WriteScope>) -> (RwProfile, Option<W
         Effect::CopyTokenOf {
             target,
             owner: _,
-            source_filter: _,
+            source_filter,
             enters_attacking: _,
             tapped: _,
             count,
@@ -1830,13 +2139,33 @@ fn rw_effect(x: &Effect, chain_root: Option<WriteScope>) -> (RwProfile, Option<W
             let mut p = RwProfile::empty();
             p.writes_external.set(StateKind::SetMembership);
             p.writes_created.set(StateKind::SetMembership);
-            p.writes_membership_external_census.merge(Census::Any);
-            // CR 707.2: a SelfRef template copies the source's copiable values —
-            // conservatively recorded reads_src (fail-closed; census clears in
-            // practice, §1.3.1-F).
+            // CR 707.2: the created token acquires the copy SOURCE's copiable
+            // values (card type / subtypes), so its membership census is the
+            // source's typeline — NOT `Census::Any`.
             if matches!(target, TargetFilter::SelfRef) {
+                // A SelfRef copy's census is the group's live source census,
+                // resolved at `profiles_conflict` time — reproduce the SelfRef
+                // membership-move representation (`writes_membership_self`), which
+                // `membership_census_of` resolves against `source_census`. This
+                // is what clears Scute Swarm (creature token ≠ its Lands read,
+                // census-disjoint — §1.3.1-F) instead of over-conflicting on Any.
+                p.writes_membership_self = true;
+                // Copiable-values read (fail-closed source dependence).
                 p.reads_src.set(StateKind::ObjectPt);
+            } else {
+                // Non-SelfRef: census from the copy-source filter where
+                // extractable (`source_filter` for the "for each" variant, else
+                // the targeted `target`), else `Census::Any` (fail-closed).
+                let copy_source = source_filter.as_ref().unwrap_or(target);
+                p.writes_membership_external_census
+                    .merge(census_of_filter(copy_source));
+                // CR 111.1: the copy is created on the battlefield.
+                p.writes_membership_external_zones
+                    .merge(ZoneSpan::one(Zone::Battlefield));
             }
+            // D5: an event-context write target (e.g. `CopyTokenOf{TriggeringSource}`)
+            // retains the batch prompt (CR 603.10a).
+            flag_legacy_write_target(&mut p, target);
             p.merge(rw_quantity_expr(count));
             (p, Some(WriteScope::Created))
         }
@@ -1849,6 +2178,7 @@ fn rw_effect(x: &Effect, chain_root: Option<WriteScope>) -> (RwProfile, Option<W
             p.writes_external.set(StateKind::SetMembership);
             p.writes_created.set(StateKind::SetMembership);
             p.writes_membership_external_census.merge(Census::Any);
+            p.writes_membership_external_zones.merge(ZoneSpan::Any);
             if is_hand_or_library(*destination) {
                 p.writes_external.set(StateKind::HandLibrary);
             }
@@ -1859,6 +2189,7 @@ fn rw_effect(x: &Effect, chain_root: Option<WriteScope>) -> (RwProfile, Option<W
             p.writes_external.set(StateKind::SetMembership);
             p.writes_created.set(StateKind::SetMembership);
             p.writes_membership_external_census.merge(Census::Any);
+            p.writes_membership_external_zones.merge(ZoneSpan::Any);
             p.merge(rw_quantity_expr(count));
             (p, Some(WriteScope::Created))
         }
@@ -1867,6 +2198,7 @@ fn rw_effect(x: &Effect, chain_root: Option<WriteScope>) -> (RwProfile, Option<W
             p.writes_external.set(StateKind::SetMembership);
             p.writes_created.set(StateKind::SetMembership);
             p.writes_membership_external_census.merge(Census::Any);
+            p.writes_membership_external_zones.merge(ZoneSpan::Any);
             (p, Some(WriteScope::Created))
         }
         Effect::Investigate => {
@@ -1878,6 +2210,9 @@ fn rw_effect(x: &Effect, chain_root: Option<WriteScope>) -> (RwProfile, Option<W
                     "clue".into(),
                     "artifact".into(),
                 ])));
+            // CR 111.1: the Clue token is created on the battlefield.
+            p.writes_membership_external_zones
+                .merge(ZoneSpan::one(Zone::Battlefield));
             (p, Some(WriteScope::Created))
         }
 
@@ -1971,6 +2306,7 @@ fn rw_effect(x: &Effect, chain_root: Option<WriteScope>) -> (RwProfile, Option<W
         } => {
             let mut p = ext_write(StateKind::SetMembership);
             p.writes_membership_external_census.merge(Census::Any);
+            p.writes_membership_external_zones.merge(ZoneSpan::Any);
             (p, Some(WriteScope::External))
         }
 
@@ -2010,6 +2346,7 @@ fn rw_effect(x: &Effect, chain_root: Option<WriteScope>) -> (RwProfile, Option<W
             p.writes_external.set(StateKind::SetMembership);
             p.writes_external.set(StateKind::HandLibrary);
             p.writes_membership_external_census.merge(Census::Any);
+            p.writes_membership_external_zones.merge(ZoneSpan::Any);
             if let Some(c) = count {
                 p.merge(rw_quantity_expr(c));
             }
@@ -2173,28 +2510,46 @@ fn rw_effect(x: &Effect, chain_root: Option<WriteScope>) -> (RwProfile, Option<W
         // M3: all fields bound (no `..` on a non-conservative RHS) so a future
         // read/write-bearing field forces reclassification. Count/min/max leaves
         // here are fixed numbers (ability_scan does not descend them). ----
-        Effect::Attach {
+        // CR 702.95 soulbond / CR 701 attach: an attachment/pairing DESIGNATION.
+        // It mutates only pairing/attachment state, which EVERY reader consults
+        // through a FROZEN source condition (SourceIsPaired / SourceAttachedTo-
+        // Creature / SourceIsEquipped ⇒ `frozen_source_read`, never fed), so no
+        // LIVE read observes it ⇒ NO observable RW kind. The plan's status-tail
+        // `Other` default is parity-safe only where no co-occurring read exists,
+        // but Deadeye Navigator's soulbond trigger reads `SourceMatchesFilter`
+        // ObjectPt alongside the `PairWith` write, so `Other` (which conflicts with
+        // any read) falsely prompts. Order-independence proof: two identical
+        // soulbond triggers off ONE creature-enters event each pair their own
+        // source with the event object; pairing is a symmetric designation and the
+        // ObjectPt read sees only the frozen pre-write source ⇒ identical board in
+        // either order (no feed — attachment/pairing state is read only frozen).
+        // The write target still flags D5 batch parity (CR 603.10a).
+        Effect::PairWith { target }
+        | Effect::Attach {
             attachment: _,
-            target: _,
+            target,
+        } => {
+            let mut p = RwProfile::empty();
+            flag_legacy_write_target(&mut p, target);
+            (p, None)
         }
-        | Effect::PairWith { target: _ }
-        | Effect::Goad { target: _ }
-        | Effect::GoadAll { target: _ }
-        | Effect::ExtraTurn { target: _ }
-        | Effect::Suspect {
-            target: _,
-            scope: _,
-        }
-        | Effect::Unsuspect {
-            target: _,
-            scope: _,
-        }
-        | Effect::BecomePrepared { target: _ }
+        // Target-bearing status effects: `target` is a write recipient, so a D5
+        // event-context ref there retains the batch prompt (CR 603.10a).
+        Effect::Goad { target }
+        | Effect::GoadAll { target }
+        | Effect::ExtraTurn { target }
+        | Effect::Suspect { target, scope: _ }
+        | Effect::Unsuspect { target, scope: _ }
+        | Effect::BecomePrepared { target }
         | Effect::ApplyPerpetual {
-            target: _,
+            target,
             modification: _,
+        } => {
+            let mut p = ext_write(StateKind::Other);
+            flag_legacy_write_target(&mut p, target);
+            (p, None)
         }
-        | Effect::OpenAttractions { count: _ }
+        Effect::OpenAttractions { count: _ }
         | Effect::RegisterBending { kind: _ }
         | Effect::BlightEffect {
             player: _,
@@ -2213,11 +2568,12 @@ fn rw_effect(x: &Effect, chain_root: Option<WriteScope>) -> (RwProfile, Option<W
         | Effect::VentureIntoDungeon
         | Effect::SolveCase => (ext_write(StateKind::Other), None),
         Effect::ForceAttack {
-            target: _,
+            target,
             required_player: _,
             duration,
         } => {
             let mut p = ext_write(StateKind::Other);
+            flag_legacy_write_target(&mut p, target);
             p.merge(rw_duration(duration));
             (p, None)
         }
@@ -2397,6 +2753,7 @@ fn obj_membership_scope(
         Some(Zone::Battlefield),
         Zone::Exile,
     );
+    flag_legacy_write_target(&mut p, target);
     (p, Some(sc))
 }
 
@@ -2596,7 +2953,23 @@ fn rw_ability_condition(x: &AbilityCondition) -> RwProfile {
         | AbilityCondition::NthResolutionThisTurn { n: _ } => {
             reads_player_of(StateKind::JournalCast)
         }
-        AbilityCondition::RevealedHasCardType { .. } => RwProfile::conservative(),
+        // CR 701.20 + CR 603.3b: "if a card revealed THIS WAY has card type T" —
+        // a read of the card the member's OWN parent reveal surfaced (a per-
+        // resolution local, like an `ObjectScope::Recipient` read-modify-write:
+        // §2 read-carrier closure). No sibling write can change the TYPE of the
+        // card MY reveal surfaces; a sibling that reorders/moves the library only
+        // changes WHICH card each identical member reveals, and identical
+        // top-consuming functions compose order-independently (CR 603.3b T1:
+        // f∘f = f∘f). Order-independence proof: two Delvers of Secrets off one
+        // upkeep each look at the top card (a non-mutating Dig) and Transform{Self}
+        // iff it is instant/sorcery — both read the SAME frozen top card and each
+        // transforms its OWN source ⇒ identical board in either order; two Lurking
+        // Predators off one spell cast each reveal-and-route the then-current top,
+        // so the top-N cards are each routed by their own type regardless of which
+        // copy processed which ⇒ identical library/battlefield in either order (no
+        // feed — the read is the write's own reveal output). So `conservative()`
+        // (which the coarse fallback assigned) falsely conflicts.
+        AbilityCondition::RevealedHasCardType { .. } => RwProfile::empty(),
         AbilityCondition::SourceEnteredThisTurn
         | AbilityCondition::AdditionalCostPaid { .. }
         | AbilityCondition::CastVariantPaid { .. }
@@ -2643,11 +3016,20 @@ fn rw_trigger_condition(x: &TriggerCondition) -> RwProfile {
     match x {
         TriggerCondition::GainedLife { minimum: _ }
         | TriggerCondition::LostLife
-        | TriggerCondition::DealtDamageBySourceThisTurn
         | TriggerCondition::LostLifeLastTurn => reads_player_of(StateKind::JournalLife),
-        TriggerCondition::DealtDamageThisTurnBySource { source: _ } => {
-            reads_player_of(StateKind::JournalLife)
-        }
+        // CR 120.3e + CR 603.3b: "dealt damage this turn" is combat/marked-damage
+        // history (CR 120), NOT a life-total change (CR 119) — a frozen per-turn
+        // fact about the damaged object, settled at damage time. A sibling
+        // GainLife/LoseLife (a `PlayerLife`/`JournalLife` write) cannot alter it, so
+        // it must NOT ride the life-journal row (the coarse conflation that flipped
+        // Abattoir Ghoul). Order-independence proof: two Abattoir Ghouls off ONE
+        // creature's death both read the SAME frozen "dealt damage this turn" flag
+        // and gain that creature's (LKI-frozen) toughness ⇒ identical life in either
+        // order (no feed: a life write doesn't change a damage-history fact).
+        // `frozen_source_read` never feeds while the freeze is valid (marks
+        // source/history dependence; fail-closed on a reentry hazard).
+        TriggerCondition::DealtDamageBySourceThisTurn
+        | TriggerCondition::DealtDamageThisTurnBySource { source: _ } => frozen_source_read(),
         TriggerCondition::LifeTotalGE { minimum: _ } => reads_player_of(StateKind::PlayerLife),
         TriggerCondition::ControlsType { filter }
         | TriggerCondition::ControlCount { filter, .. }
@@ -2828,13 +3210,16 @@ fn rw_target_filter(x: &TargetFilter) -> RwProfile {
         | TargetFilter::TriggeringPlayer
         | TargetFilter::TriggeringSource
         | TargetFilter::ParentTarget
-        | TargetFilter::ParentTargetSlot { .. }
         | TargetFilter::ParentTargetController
         | TargetFilter::ParentTargetOwner
         | TargetFilter::StackSpell
         | TargetFilter::CostPaidObject => legacy_ref(),
-        // Non-D5 event refs.
-        TargetFilter::EventTarget
+        // Non-D5 event refs. `ParentTargetSlot` is NOT one of the 12 retained tags
+        // (it serializes as an object key the frozen serde oracle never matched —
+        // the write path `target_is_legacy_ref` excludes it too), so it must NOT
+        // set `legacy_batch_prompt`; it is a live event read like the others here.
+        TargetFilter::ParentTargetSlot { .. }
+        | TargetFilter::EventTarget
         | TargetFilter::TriggeringSourceController
         | TargetFilter::PostReplacementSourceController
         | TargetFilter::PostReplacementDamageTarget
@@ -2961,17 +3346,6 @@ fn rw_controller_ref(x: &ControllerRef) -> RwProfile {
         | ControllerRef::ChosenPlayer { .. }
         | ControllerRef::SourceChosenPlayer
         | ControllerRef::EnchantedPlayer => RwProfile::empty(),
-    }
-}
-
-fn rw_count_scope(x: &CountScope) -> RwProfile {
-    match x {
-        CountScope::Controller
-        | CountScope::Owner
-        | CountScope::ScopedPlayer
-        | CountScope::SourceChosenPlayer
-        | CountScope::All
-        | CountScope::Opponents => RwProfile::empty(),
     }
 }
 
@@ -3352,6 +3726,50 @@ mod tests {
             ),
         );
         assert!(conflicts(&a, &batch()));
+    }
+
+    #[test]
+    fn zone_census_battlefield_write_vs_graveyard_read_discriminates() {
+        // Tombstone Stairwell: a battlefield Zombie-token creation (Token{creature}
+        // ⇒ SetMembership dest = Battlefield) whose COUNT reads the GRAVEYARD
+        // creature count. The write and the read overlap on TYPE (creature) but
+        // their ZONES are disjoint (CR 400.1: a fresh token touches only the
+        // battlefield; the count reads the graveyard) ⇒ no feed ⇒ clean. The
+        // frozen source condition (`SourceEnteredThisTurn`) only disables the T1
+        // source-independent fast path so the feed rows are reached — exactly what
+        // Tombstone's `SourceInZone{Battlefield}` intervening-if does.
+        let in_zone = |z: Zone| {
+            let mut tf = TypedFilter::creature();
+            tf.properties.push(FilterProp::InZone { zone: z });
+            TargetFilter::Typed(tf)
+        };
+        let disjoint = cond(
+            ra(token(
+                &["Creature"],
+                qref(obj_count(in_zone(Zone::Graveyard))),
+            )),
+            AbilityCondition::SourceEnteredThisTurn,
+        );
+        assert!(
+            !conflicts(&disjoint, &se()),
+            "battlefield token write × GRAVEYARD creature-count read ⇒ zone-disjoint ⇒ clean"
+        );
+
+        // The SAME read/write with the count scoped to the BATTLEFIELD (matching
+        // zones) ⇒ census AND zone overlap ⇒ conflict. This is the discriminating
+        // witness: a zone-BLIND census would report the disjoint pairing as a
+        // conflict too, so dropping the zone check flips the first assertion.
+        let same_zone = cond(
+            ra(token(
+                &["Creature"],
+                qref(obj_count(in_zone(Zone::Battlefield))),
+            )),
+            AbilityCondition::SourceEnteredThisTurn,
+        );
+        assert!(
+            conflicts(&same_zone, &se()),
+            "battlefield token write × BATTLEFIELD creature-count read ⇒ same zone ⇒ conflict"
+        );
     }
 
     // ===================== (v) chain-root =====================

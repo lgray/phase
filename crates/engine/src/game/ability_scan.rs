@@ -71,6 +71,23 @@
 //! verdict is a SOUNDNESS claim ("resolving can never enter a non-priority
 //! `WaitingFor`, for ANY state") and requires a resolver trace cited in the arm
 //! plus a `..`-free destructure so a future field forces re-audit.
+//!
+//! # Consumers of the read-axis classifiers after PR-6.75
+//!
+//! CR 603.3b: the legacy UNGATED trigger-ordering paths (same firing event, and
+//! the explicitly-simultaneous ZoneChanged departure batch) no longer consume the
+//! event-context / sibling-mutable read classifiers of this scanner. They consume
+//! the richer kind/scope read/write conflict profile in the sibling module
+//! `ability_rw.rs` (`ability_rw_profile` / `trigger_condition_rw_profile` /
+//! `profiles_conflict`), which answers "which kinds of state does the ability READ
+//! and WRITE, at what scope" — the precise read/write predicate those paths require
+//! (PR-6.25 §3 C0(ii)). The event-context and sibling-mutable read classifiers here
+//! are now consumed ONLY by the gated growing-cascade C2 distinct-event term
+//! (`group_is_order_independent`, gated on `loop_detection.is_on()`), where a
+//! conservative verdict means a prompt — fail-safe when the detector is OFF and a
+//! safe over-reject when ON. The projected-resource classifier (question 3) and the
+//! resolution-time choice classifier (question 4) are unchanged. See `ability_rw.rs`
+//! for the conflict model and its CR 603.3b commutation argument.
 
 use crate::types::ability::{
     AbilityCondition, ControllerRef, CountScope, Duration, EachDamageRecipient, Effect,

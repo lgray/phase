@@ -3398,47 +3398,19 @@ pub(crate) fn normalize_ability_identity(ability: &mut ResolvedAbility) {
     }
 }
 
-/// Legacy fail-open event-context allowlist. RETAINED for the pre-feature
-/// same-event and ZoneChanged same-departure-batch auto-resolve paths, whose
-/// shipped behavior depends on this classifier's exact (fail-open) semantics —
-/// notably co-departing death triggers that read `EventSource` power (issue
-/// #4269) auto-order today because this allowlist does NOT list `EventSource`.
-/// The fail-closed `ability_scan` walker is used ONLY for the new gated-C2
-/// distinct-event term; replacing this allowlist wholesale on the legacy paths
-/// regresses those cards (see inc2a report — C0 full replacement is DEFERRED).
-fn value_contains_trigger_event_context_ref(value: &serde_json::Value) -> bool {
-    match value {
-        serde_json::Value::String(tag) => matches!(
-            tag.as_str(),
-            "TriggeringSpellController"
-                | "TriggeringSpellOwner"
-                | "TriggeringPlayer"
-                | "TriggeringSource"
-                | "ParentTarget"
-                | "ParentTargetController"
-                | "ParentTargetOwner"
-                | "StackSpell"
-                | "CostPaidObject"
-                | "EventContextAmount"
-                | "EventContextSourceCostX"
-                | "ManaSpentToCast"
-        ),
-        serde_json::Value::Array(values) => {
-            values.iter().any(value_contains_trigger_event_context_ref)
-        }
-        serde_json::Value::Object(map) => {
-            map.values().any(value_contains_trigger_event_context_ref)
-        }
-        _ => false,
-    }
-}
-
-fn ability_uses_trigger_event_context(ability: &ResolvedAbility) -> bool {
-    serde_json::to_value(ability)
-        .map(|value| value_contains_trigger_event_context_ref(&value))
-        .unwrap_or(true)
-}
-
+/// CR 603.2c + CR 603.10a: Are two ZoneChanged events part of ONE explicitly
+/// simultaneous departure batch? True iff both moved between the same zones and
+/// each event's `co_departed` set names the other's object — i.e. the two
+/// objects left together in a single state-based / effect batch, so their death
+/// triggers see a shared LKI freeze (CR 603.10a) and their placement order is
+/// unobservable (CR 603.2c). The mutual `co_departed` sets are stamped by the
+/// same producers in ALL detector modes: `zones::mark_simultaneous_departures`
+/// (zones.rs:787) over `zones::departed_subset` (zones.rs:816) at the four
+/// batch-departure sites (sba.rs:679/:835/:1264/:1319), and the SBA-batch stamp
+/// `zones::stamp_simultaneous_from_slice` (zones.rs:832, called sba.rs:258).
+/// Reachable in ALL modes; single caller (`trigger_events_match_for_ordering`'s
+/// batch branch), retained because the OFF-path departure-batch auto-resolve is
+/// live.
 fn zone_changes_are_same_departure_batch(a: &GameEvent, b: &GameEvent) -> bool {
     let (
         GameEvent::ZoneChanged {
@@ -3467,28 +3439,45 @@ fn zone_changes_are_same_departure_batch(a: &GameEvent, b: &GameEvent) -> bool {
 fn trigger_events_match_for_ordering(
     first: &PendingTrigger,
     candidate: &PendingTrigger,
-    legacy_uses_trigger_event: bool,
+    same_event_conflict: bool,
+    batch_conflict: bool,
     c2_order_independent: bool,
+    loop_detection_on: bool,
 ) -> bool {
-    // Same firing event (CR 603.2c): pre-feature auto-order, UNCHANGED. Gating
-    // this on soundness is the C1 CR 603.3b fix — DEFERRED (see inc2a report):
-    // the committed `ability_scan` walker classifies ~46 common effect kinds
-    // (CopySpell/Token/Pump/Mana/ChangeZone/…) as conservative, so `sibling`
-    // reads true for them; gating same-event on that axis would over-prompt
-    // printed copy/token keywords (Demonstrate, Replicate) in all modes,
-    // contradicting the "affects no printed card" guarantee. Needs a precise
-    // read/write predicate first.
+    // C1 (CR 603.3b): same firing event auto-orders only when the identical
+    // siblings' resolution functions provably COMMUTE — the `ability_rw` kind/
+    // scope read/write conflict profile (§1.2), the precise read/write predicate
+    // the shipped deferral demanded (replacing the C0-full fail-open serde
+    // allowlist). Commutation is proven MODULO the documented source-actor
+    // residual: per-source granted lifelink/deathtouch-class state (CR 702.15 /
+    // CR 702.2) and the CR 800.4a player-loss object-removal cascade modulate
+    // resolution without appearing in the normalized AST or any profiled read
+    // (see the `ability_rw` module doc). Both channels were auto-ordered
+    // UNCONDITIONALLY by the pre-C1 short-circuit and are inherited unchanged
+    // (zero ordering-decision change; strictly less total unsoundness; the
+    // constructive close is ledgered). The visible surface of this gate is
+    // exactly the proven-order-dependent groups (PR-6.25 §1 Case A: two
+    // byte-identical "+1/+1 on each creature; draw if this creature's power ≥ 6"
+    // off one event — a counter write feeds the sibling's live power read), which
+    // the shipped engine silently auto-ordered, removing the controller's
+    // mandatory CR 603.3b ordering choice.
     if first.trigger_event == candidate.trigger_event {
-        return true;
+        return !same_event_conflict;
     }
 
-    // Distinct firing events. Pre-feature (and OFF): only an explicitly
-    // simultaneous ZoneChanged same-departure batch (CR 603.2c) with no
-    // event-context read auto-resolves. Gated by the LEGACY allowlist (not the
-    // walker) so shipped co-departing death triggers reading `EventSource` power
-    // (issue #4269) keep auto-ordering — the walker correctly flags EventSource
-    // event-context, which would defeat this batch path.
-    if !legacy_uses_trigger_event {
+    // C0-full (CR 603.2c + CR 603.10a): explicitly simultaneous ZoneChanged
+    // departure batch. The departed sources' object reads (`Power{Source}` — the
+    // #4269 Nested Shambler class parses `Power { scope: Source }`, NOT
+    // `EventSource`) are LKI-FROZEN at battlefield exit (zones.rs freeze at exit;
+    // quantity.rs zone-guarded reads select the LKI snapshot for a departed
+    // source, CR 603.10a) AND STAY frozen only while no group write can re-enter a
+    // member's object: ObjectId is stable across zone moves, so an external move
+    // with battlefield destination (or exile origin) re-binds the same id to live
+    // state / overwrites the LKI snapshot — the `ability_rw` freeze-invalidation
+    // row prompts those groups fail-closed. Otherwise only a live-read/write feed
+    // (or a retained legacy-prompt event ref, D3 parity) makes `batch_conflict`
+    // true; a conflict-clean co-departure batch auto-resolves.
+    if !batch_conflict {
         if let (Some(first_event), Some(candidate_event)) =
             (&first.trigger_event, &candidate.trigger_event)
         {
@@ -3498,11 +3487,13 @@ fn trigger_events_match_for_ordering(
         }
     }
 
-    // Distinct firing events whose ability reads neither event context nor
-    // sibling-mutable state are indistinguishable for CR 603.3b ordering. This
-    // finite ordering UX is intentionally independent from loop detection,
-    // which only controls optional infinite-combo shortcutting.
-    c2_order_independent
+    // C2 (GATED on `loop_detection.is_on()`, UNCHANGED): when the growing-cascade
+    // detector is ON, a distinct-event group the fail-closed C0 walker deems order
+    // independent (reads neither event context nor sibling-mutable state) also
+    // auto-resolves so the loop-detect ring can accumulate the super-critical
+    // fan-out. When OFF this term is false, so distinct-event non-ZoneChanged
+    // groups PROMPT exactly as pre-feature (default gameplay byte-preserved).
+    loop_detection_on && c2_order_independent
 }
 
 /// CR 603.3c/603.3d + CR 601.2c/601.2d: A trigger requires ordering-relevant
@@ -3522,6 +3513,32 @@ fn trigger_has_no_ordering_input(t: &PendingTrigger) -> bool {
         && t.ability.distribution.is_none()
 }
 
+/// CR 205: The union of the group's LIVE source objects' type census — core
+/// types + subtypes + token-ness, lowercased into the tag space `ability_rw`'s
+/// membership-overlap row compares against. A member whose source object is
+/// missing from `state.objects` ⇒ census unknown ⇒ overlap assumed (fail-closed).
+/// Read ONCE here at the ordering chokepoint (the same atomic-ordering-window
+/// assumption the shipped classifier already makes).
+fn group_source_census(
+    state: &GameState,
+    group: &[PendingTriggerContext],
+) -> crate::game::ability_rw::SourceCensus {
+    let mut tags: Vec<String> = Vec::new();
+    for ctx in group {
+        let Some(obj) = state.objects.get(&ctx.pending.source_id) else {
+            return crate::game::ability_rw::SourceCensus::unknown();
+        };
+        for ct in &obj.card_types.core_types {
+            tags.push(ct.to_string());
+        }
+        for st in &obj.card_types.subtypes {
+            tags.push(st.clone());
+        }
+        tags.push(if obj.is_token { "token" } else { "nontoken" }.to_string());
+    }
+    crate::game::ability_rw::SourceCensus::from_tags(tags)
+}
+
 /// CR 603.3b: Returns true when every trigger in `group` is mutually
 /// INDISTINGUISHABLE, so the controller's CR 603.3b freedom to place them "in
 /// any order they choose" is genuinely immaterial and the engine may auto-order
@@ -3535,25 +3552,32 @@ fn trigger_has_no_ordering_input(t: &PendingTrigger) -> bool {
 /// the trigger-level `condition`, the batched `subject_match_count`
 /// (CR 603.2c — one event with multiple occurrences fires a batched trigger
 /// once per occurrence, each carrying its own subject count; read at
-/// resolution), and the `may_trigger_origin`.
-// CR 603.2c / CR 603.4: `trigger_event` (the firing event itself) is NOT part
-// of the equality check for explicitly simultaneous ZoneChanged departure
-// batches — when N co-departing events all match the same trigger definition
-// and the effect is fixed (e.g. three Liliana, Dreadhorde General draws from
-// one board wipe), placement order is unobservable and a prompt is noise — and
-// for any distinct-event group the C0 walker deems order independent. The
-// same-event and ZoneChanged paths keep using the legacy allowlist
-// `ability_uses_trigger_event_context` (its exact fail-open semantics are
-// shipped behavior — see that fn's doc). The C2 term instead consults the
-// fail-closed `ability_scan` walker over TWO distinct axes
-// (categorical-boundary rule): (i) `ability_uses_event_context` — the concrete
-// firing event is resolution-visible, and (ii) `ability_reads_sibling_mutable`
-// — a source/recipient or board-scoped aggregate a sibling copy resolving
-// first could change. `subject_match_count` is kept in the equality because
-// that is the per-batch count the effect reads at resolution and *can* differ
-// across pending triggers if two distinct batched events satisfy the same
-// definition.
-fn group_is_order_independent(group: &[PendingTriggerContext]) -> bool {
+/// resolution), the `may_trigger_origin`, AND the stamped `die_result`
+/// (CR 706.2 + CR 603.12 — the captured roll is part of the resolution
+/// function's identity; a pair differing only in it is not the same state
+/// transformation).
+// CR 603.3b: `trigger_event` (the firing event itself) is NOT compared as an
+// equality field — instead `trigger_events_match_for_ordering` classifies the
+// pair by the `ability_rw` read/write CONFLICT profile (§1.2). A same-event
+// group auto-orders iff its identical siblings' resolution functions provably
+// COMMUTE (`same_event_conflict` false, C1 / CR 603.3b), replacing the shipped
+// fail-open serde allowlist; an explicitly-simultaneous ZoneChanged departure
+// batch auto-orders iff `batch_conflict` false (C0-full / CR 603.2c + CR 603.10a
+// LKI freeze, plus the D5 retained-prompt parity via `legacy_batch_prompt`); and,
+// when the growing-cascade detector is ON, a distinct-event group the fail-closed
+// `ability_scan` walker deems order-independent also auto-orders (C2, unchanged,
+// gated). The conflict verdicts are computed ONCE from `profile`
+// (`ability_rw_profile(reference)` OR-merged with the trigger-level condition's
+// `trigger_condition_rw_profile`, CR 603.4) against the group's structure
+// (`all_same_source`, `all_sources_self_departed`, `event_object_present`/
+// `event_object_excludes_sources`, `source_census`). `is_on` threads
+// `loop_detection.is_on()` to the gated C2 term; `state` supplies the live source
+// census (CR 205).
+fn group_is_order_independent(
+    state: &GameState,
+    group: &[PendingTriggerContext],
+    is_on: bool,
+) -> bool {
     let Some((first, rest)) = group.split_first() else {
         return false;
     };
@@ -3565,9 +3589,75 @@ fn group_is_order_independent(group: &[PendingTriggerContext]) -> bool {
     }
     let mut reference = first.pending.ability.clone();
     normalize_ability_identity(&mut reference);
-    // Legacy allowlist: drives the pre-feature same-event / ZoneChanged paths.
-    let legacy_uses_trigger_event = ability_uses_trigger_event_context(&reference);
-    // C0 (fail-closed AST walker): two distinct soundness axes (event context,
+
+    // CR 603.3b conflict profile (replaces the fail-open serde allowlist): the
+    // ability's read/write profile OR-merged with the trigger-level
+    // intervening-`if` condition (CR 603.4 — re-checked at resolution, so its
+    // reads are order-relevant).
+    let mut profile = crate::game::ability_rw::ability_rw_profile(&reference);
+    if let Some(cond) = &first.pending.condition {
+        profile.merge(crate::game::ability_rw::trigger_condition_rw_profile(cond));
+    }
+
+    // GroupStructure (computed once). `all_same_source`: every member shares one
+    // source. `all_sources_self_departed`: every member's firing event is a
+    // battlefield-departure of its OWN source (event-structural, state-free —
+    // the CR 603.10a frozen-read premise).
+    let all_same_source = group
+        .iter()
+        .all(|ctx| ctx.pending.source_id == first.pending.source_id);
+    let all_sources_self_departed = group.iter().all(|ctx| {
+        matches!(
+            &ctx.pending.trigger_event,
+            Some(GameEvent::ZoneChanged { object_id, from: Some(Zone::Battlefield), .. })
+                if *object_id == ctx.pending.source_id
+        )
+    });
+    // The firing event's object (CR 603.7c). `extract_source_from_event` is the
+    // resolver authority for `TriggeringSource`-class writes; `None` ⇒ no event
+    // object (e.g. `Phase`) ⇒ those writes no-op at resolution (targeting.rs), so
+    // the profile drops them. `event_object_excludes_sources` is the object-
+    // disjointness signal (§2 rule 2), computed DYNAMICALLY for this group: the
+    // one shared event object is provably no member's source iff its id differs
+    // from every member's `source_id` (valid_card is not carried on
+    // `PendingTrigger`; the concrete event-object id is a sound and at-least-as-
+    // precise witness of the "another"/not-self relation — writes to an object
+    // that is no group source cannot feed any member's `reads_src`).
+    let event_object_id = first
+        .pending
+        .trigger_event
+        .as_ref()
+        .and_then(crate::game::targeting::extract_source_from_event);
+    let event_object_present = event_object_id.is_some();
+    let event_object_excludes_sources =
+        event_object_id.is_some_and(|eid| group.iter().all(|ctx| ctx.pending.source_id != eid));
+    let source_census = group_source_census(state, group);
+
+    let same_event_structure = crate::game::ability_rw::GroupStructure {
+        same_event: true,
+        all_same_source,
+        all_sources_self_departed,
+        event_object_excludes_sources,
+        event_object_present,
+        source_census: source_census.clone(),
+    };
+    let batch_structure = crate::game::ability_rw::GroupStructure {
+        same_event: false,
+        all_same_source,
+        all_sources_self_departed,
+        event_object_excludes_sources,
+        event_object_present,
+        source_census,
+    };
+    let same_event_conflict =
+        crate::game::ability_rw::profiles_conflict(&profile, &same_event_structure);
+    // D3 / D5: the batch branch keeps prompting the 12 retained event-context
+    // refs (`legacy_batch_prompt`) for strict parity, plus the freeze-invalidation
+    // / live-read/write feed rows from `profiles_conflict`.
+    let batch_conflict = profile.legacy_batch_prompt()
+        || crate::game::ability_rw::profiles_conflict(&profile, &batch_structure);
+
+    // C2 (fail-closed AST walker): two distinct soundness axes (event context,
     // sibling-mutable) — consumed ONLY by the gated-C2 distinct-event term.
     let c2_order_independent = !crate::game::ability_scan::ability_uses_event_context(&reference)
         && !crate::game::ability_scan::ability_reads_sibling_mutable(&reference);
@@ -3579,11 +3669,16 @@ fn group_is_order_independent(group: &[PendingTriggerContext]) -> bool {
             && trigger_events_match_for_ordering(
                 &first.pending,
                 t,
-                legacy_uses_trigger_event,
+                same_event_conflict,
+                batch_conflict,
                 c2_order_independent,
+                is_on,
             )
             && t.subject_match_count == first.pending.subject_match_count
             && t.may_trigger_origin == first.pending.may_trigger_origin
+            // CR 706.2 + CR 603.12: the stamped die-roll result is part of the
+            // resolution function's identity (defense-in-depth; N-F pins it).
+            && t.die_result == first.pending.die_result
             && {
                 let mut candidate = t.ability.clone();
                 normalize_ability_identity(&mut candidate);
@@ -3633,8 +3728,11 @@ fn begin_trigger_ordering(
     // no-input triggers, commute under any permutation — auto-order them so the
     // player isn't prompted for an immaterial choice (matching MTG Arena). Any
     // field divergence is a safe false-negative: the group still prompts.
+    let loop_detection_on = state.loop_detection.is_on();
     for g in groups.iter_mut() {
-        if g.triggers.len() <= 1 || group_is_order_independent(&g.triggers) {
+        if g.triggers.len() <= 1
+            || group_is_order_independent(state, &g.triggers, loop_detection_on)
+        {
             g.ordered = true;
         }
     }
@@ -21289,14 +21387,20 @@ pub mod tests {
         )
     }
 
-    /// C1 status (DEFERRED — see inc2a report): the same-event short-circuit
-    /// stays pre-feature (unconditional auto-order) in BOTH detector modes, because
-    /// gating it on the committed walker's conservative `sibling` axis would
-    /// over-prompt printed copy/token/pump keywords. This test pins the preserved
-    /// pre-feature behavior: a same-event identical no-input group auto-resolves
-    /// (NoChoiceNeeded) regardless of whether its ability reads sibling-mutable
-    /// state. When C1's precise soundness gate lands, the sibling-mutable arm here
-    /// must flip to PromptForChoice (its future revert-fail).
+    /// C1 (CR 603.3b, LANDED in PR-6.75): the same-event branch now auto-orders
+    /// iff the `ability_rw` conflict profile shows the identical siblings' writes
+    /// don't feed each other's live reads (`!same_event_conflict`). Both arms of
+    /// this fixture STILL auto-order (assertions unchanged): the sound arm
+    /// (`GainLife` fixed) reads nothing; the "sibling-mutable" arm
+    /// (`GainLife = Power{Source}`, distinct sources) reads source P/T LIVE but
+    /// writes only `PlayerLife`/`JournalLife` — and `ObjectPt` reads are NOT fed
+    /// by `PlayerLife` writes, so the resolution functions commute and the group
+    /// correctly stays auto (no conflict). The earlier prophecy that the
+    /// sibling-mutable arm "must flip to PromptForChoice" was WRONG under the
+    /// kind/scope conflict gate — a bare source READ is not a feed; only a
+    /// read/write feed (e.g. Case A's counter write into a live power read)
+    /// prompts. That real order-dependent surface is pinned by N-C in the parity
+    /// test module, not here.
     #[test]
     fn pr625_c1_same_event_groups_auto_order_pre_feature_preserved() {
         let event = Some(GameEvent::LifeChanged {
@@ -21324,7 +21428,7 @@ pub mod tests {
                     ),
                 ];
                 assert!(
-                    group_is_order_independent(&group),
+                    group_is_order_independent(&state, &group, mode.is_on()),
                     "pre-feature: same-event identical group auto-orders ({mode:?})"
                 );
                 match begin_trigger_ordering(&mut state, group) {
@@ -21337,12 +21441,13 @@ pub mod tests {
         }
     }
 
-    /// C2: two byte-identical no-input SOUND triggers off DISTINCT life-loss
-    /// events (the ≥3p all-opponent-drain fan-out) auto-order even when loop
-    /// detection is OFF. Loop detection controls infinite-combo shortcutting;
-    /// it does not gate finite CR 603.3b ordering UX.
+    /// C2 (GATED on `loop_detection.is_on()`): two byte-identical no-input SOUND
+    /// triggers off DISTINCT life-loss events (the ≥3p all-opponent-drain fan-out).
+    /// OFF ⇒ still PROMPT (pre-feature preserved); ON ⇒ auto-resolve so the ring
+    /// can accumulate. Revert-fail: dropping the `is_on()` conjunct makes the OFF
+    /// arm auto-resolve, flipping its assertion.
     #[test]
-    fn pr625_c2_distinct_event_auto_orders_even_when_loop_detection_off() {
+    fn pr625_c2_distinct_event_gate_off_prompts_on_auto_resolves() {
         let ev_a = Some(GameEvent::LifeChanged {
             player_id: PlayerId(0),
             amount: -1,
@@ -21372,13 +21477,13 @@ pub mod tests {
             ),
         ];
         assert!(
-            group_is_order_independent(&off_group),
-            "C2 OFF: distinct-event sound group must auto-order"
+            !group_is_order_independent(&off, &off_group, false),
+            "C2 OFF: distinct-event sound group must PROMPT (pre-feature preserved)"
         );
         match begin_trigger_ordering(&mut off, off_group) {
-            TriggerOrderingDisposition::NoChoiceNeeded(_) => {}
-            TriggerOrderingDisposition::PromptForChoice(_) => {
-                panic!("C2 OFF: distinct-event group must auto-order when loop_detection Off")
+            TriggerOrderingDisposition::PromptForChoice(_) => {}
+            TriggerOrderingDisposition::NoChoiceNeeded(_) => {
+                panic!("C2 OFF: distinct-event group must prompt when loop_detection Off")
             }
         }
 
@@ -21402,7 +21507,7 @@ pub mod tests {
             ),
         ];
         assert!(
-            group_is_order_independent(&on_group),
+            group_is_order_independent(&on, &on_group, true),
             "C2 ON: distinct-event sound group must auto-resolve"
         );
         match begin_trigger_ordering(&mut on, on_group) {
@@ -21447,7 +21552,7 @@ pub mod tests {
             ),
         ];
         assert!(
-            !group_is_order_independent(&group),
+            !group_is_order_independent(&on, &group, true),
             "C0: sibling-mutable distinct-event group must NOT auto-resolve even ON"
         );
         match begin_trigger_ordering(&mut on, group) {
@@ -25244,6 +25349,12 @@ pub mod tests {
 #[cfg(test)]
 #[path = "triggers_dedup_regression_tests.rs"]
 mod dedup_regression_tests;
+
+// CR 603.3b: PR-6.75 trigger-ordering conflict-gate tests — the corpus parity
+// sweep (C0-full allowlist parity) + the C1/C0-full discriminators (N-A..N-F).
+#[cfg(test)]
+#[path = "triggers_ordering_parity_tests.rs"]
+mod ordering_parity_tests;
 
 #[cfg(test)]
 #[path = "triggers_devour_runtime_tests.rs"]
