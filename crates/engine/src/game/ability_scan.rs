@@ -2312,6 +2312,9 @@ fn scan_target_filter(x: &TargetFilter) -> Axes {
         TargetFilter::Player => Axes::NONE,
         TargetFilter::Controller => Axes::NONE,
         TargetFilter::SelfRef => Axes::NONE,
+        // CR 201.5a: a source-relative object ref (the granting object), like
+        // SelfRef — no event/sibling/projected resource axis.
+        TargetFilter::GrantingObject => Axes::NONE,
         TargetFilter::SourceOrPaired => Axes::NONE,
         TargetFilter::Typed(..) => Axes::CONSERVATIVE,
         TargetFilter::Not { filter } => {

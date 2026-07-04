@@ -98,6 +98,9 @@ pub(crate) fn affected_filter_uses_object_population(filter: &TargetFilter) -> b
         | TargetFilter::ChosenDamageSource
         | TargetFilter::Named { .. }
         | TargetFilter::Owner
+        // CR 201.5a: append-only; GrantingObject is concretized to SpecificObject
+        // at grant-clone and never reaches this object predicate.
+        | TargetFilter::GrantingObject
         | TargetFilter::AllPlayers => false,
     }
 }
@@ -305,6 +308,9 @@ pub(crate) fn entered_object_perturbs_affected_filter(
         | TargetFilter::ChosenDamageSource
         | TargetFilter::Named { .. }
         | TargetFilter::Owner
+        // CR 201.5a: append-only; GrantingObject is concretized to SpecificObject
+        // at grant-clone and never reaches this object predicate.
+        | TargetFilter::GrantingObject
         | TargetFilter::AllPlayers => false,
     }
 }
@@ -1926,7 +1932,8 @@ fn filter_inner_for_object(
         TargetFilter::Named { name } => obj.name == *name,
         // CR 400.3: Owner is a player-resolving filter (resolves to the owner of
         // source_id), meaningless as an object-matching predicate.
-        TargetFilter::Owner => false,
+        // CR 201.5a: GrantingObject appended append-only (concretized before runtime).
+        TargetFilter::Owner | TargetFilter::GrantingObject => false,
     }
 }
 
@@ -2162,6 +2169,8 @@ fn zone_change_filter_inner(
         | TargetFilter::DefendingPlayer
         | TargetFilter::StackAbility { .. }
         | TargetFilter::StackSpell
+        // CR 201.5a: append-only (concretized before runtime).
+        | TargetFilter::GrantingObject
         | TargetFilter::Owner => false,
     }
 }
@@ -2456,6 +2465,8 @@ pub fn spell_record_matches_filter(
         | TargetFilter::HasChosenName
         | TargetFilter::ChosenDamageSource
         | TargetFilter::Named { .. }
+        // CR 201.5a: append-only (concretized before runtime).
+        | TargetFilter::GrantingObject
         | TargetFilter::Owner => false,
     }
 }
@@ -2703,6 +2714,8 @@ fn spell_object_matches_filter_inner(
         | TargetFilter::HasChosenName
         | TargetFilter::ChosenDamageSource
         | TargetFilter::Named { .. }
+        // CR 201.5a: append-only (concretized before runtime).
+        | TargetFilter::GrantingObject
         | TargetFilter::Owner => false,
     }
 }

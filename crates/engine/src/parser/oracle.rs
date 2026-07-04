@@ -96,7 +96,7 @@ use super::oracle_static::{
 use super::oracle_trigger::{lower_trigger_ir, parse_trigger_lines_at_index};
 use super::oracle_util::{
     normalize_card_name_refs, parse_mana_symbols, parse_number, split_same_is_true_static_tail,
-    strip_reminder_text, TextPair,
+    strip_reminder_text, TextPair, GRANTING_SELF_PLACEHOLDER,
 };
 
 /// Collected parsed abilities from Oracle text.
@@ -4704,7 +4704,88 @@ pub fn parse_oracle_text(
         types,
         subtypes,
     );
-    lower_oracle_ir(&ir)
+    let mut parsed = lower_oracle_ir(&ir);
+    scrub_granting_placeholder_descriptions(&mut parsed);
+    parsed
+}
+
+/// CR 201.5a: Single post-parse degrade net for [`GRANTING_SELF_PLACEHOLDER`].
+/// The masker inserts the placeholder into verb-object self-ref positions so the
+/// self-ref combinators can map it to `TargetFilter::GrantingObject`. After
+/// parsing, any residual placeholder lives ONLY in display `description` strings
+/// (which embed the raw quoted text, e.g. an equipment's outer "…has \"…\""
+/// static description); it must render as `~` and never leak the raw private-use
+/// char into card-data. This is the shared-parse-entry cleanup the plan promised
+/// — one sweep, not a per-consumer patch.
+fn scrub_granting_placeholder_descriptions(parsed: &mut ParsedAbilities) {
+    for def in &mut parsed.abilities {
+        scrub_ability_descriptions(def);
+    }
+    for trig in &mut parsed.triggers {
+        scrub_trigger_descriptions(trig);
+    }
+    for st in &mut parsed.statics {
+        scrub_static_descriptions(st);
+    }
+    for rep in &mut parsed.replacements {
+        scrub_replacement_descriptions(rep);
+    }
+}
+
+fn scrub_description(desc: &mut Option<String>) {
+    if let Some(s) = desc {
+        if s.contains(GRANTING_SELF_PLACEHOLDER) {
+            *s = s.replace(GRANTING_SELF_PLACEHOLDER, "~");
+        }
+    }
+}
+
+fn scrub_ability_descriptions(def: &mut AbilityDefinition) {
+    scrub_description(&mut def.description);
+    // allow-noncombinator: destructure-read of the Unimplemented gap description
+    // (a display string), not a hand-constructed literal or parsing dispatch.
+    if let Effect::Unimplemented { description, .. } = def.effect.as_mut() {
+        scrub_description(description);
+    }
+    if let Some(sub) = def.sub_ability.as_mut() {
+        scrub_ability_descriptions(sub);
+    }
+    if let Some(els) = def.else_ability.as_mut() {
+        scrub_ability_descriptions(els);
+    }
+    for mode in def.mode_abilities.iter_mut() {
+        scrub_ability_descriptions(mode);
+    }
+}
+
+fn scrub_trigger_descriptions(trig: &mut TriggerDefinition) {
+    scrub_description(&mut trig.description);
+    if let Some(execute) = trig.execute.as_mut() {
+        scrub_ability_descriptions(execute);
+    }
+}
+
+fn scrub_static_descriptions(st: &mut StaticDefinition) {
+    scrub_description(&mut st.description);
+    for modification in st.modifications.iter_mut() {
+        match modification {
+            ContinuousModification::GrantAbility { definition } => {
+                scrub_ability_descriptions(definition)
+            }
+            ContinuousModification::GrantTrigger { trigger } => scrub_trigger_descriptions(trigger),
+            ContinuousModification::GrantStaticAbility { definition } => {
+                scrub_static_descriptions(definition)
+            }
+            _ => {}
+        }
+    }
+}
+
+fn scrub_replacement_descriptions(rep: &mut ReplacementDefinition) {
+    scrub_description(&mut rep.description);
+    if let Some(execute) = rep.execute.as_mut() {
+        scrub_ability_descriptions(execute);
+    }
 }
 
 /// Try to parse "Equip {cost}" or "Equip — {cost}" lines.
@@ -5045,7 +5126,7 @@ fn parse_loyalty_number(s: &str) -> Option<i32> {
 /// a cost reduction pattern. If found, remove it from the chain and return the parsed
 /// `CostReduction`. The cost reduction may be several levels deep (e.g., Boseiju has
 /// SearchLibrary → ChangeZone → ChangeZone → Unimplemented(cost reduction)).
-fn extract_cost_reduction_from_chain(def: &mut AbilityDefinition) {
+pub(crate) fn extract_cost_reduction_from_chain(def: &mut AbilityDefinition) {
     if let Some(reduction) = strip_cost_reduction_node(&mut def.sub_ability) {
         def.cost_reduction = Some(reduction);
     }
