@@ -40143,3 +40143,186 @@ fn expose_the_culprit_mode2_lowers_to_choose_shuffle_cloak_chain() {
         cloak.effect
     );
 }
+
+// ── S25 P3 W1 #2 — self-and-target reanimation (Sandman / Slimefoot) ──
+
+/// Recursively report whether any node in an ability tree is `Unimplemented`.
+fn reanimate_subtree_has_unimplemented(def: &AbilityDefinition) -> bool {
+    matches!(&*def.effect, Effect::Unimplemented { .. })
+        || def
+            .sub_ability
+            .as_deref()
+            .is_some_and(reanimate_subtree_has_unimplemented)
+        || def
+            .else_ability
+            .as_deref()
+            .is_some_and(reanimate_subtree_has_unimplemented)
+}
+
+/// CR 400.7 + CR 601.2c (SHAPE): "Return this card and target land card from
+/// your graveyard to the battlefield tapped" (Sandman, Shifting Scoundrel)
+/// lowers to a BARE self-move primary plus a targeted-land sub_ability, with the
+/// graveyard stamped as the activation zone (CR 113.6m). Revert-fail: without
+/// the recognizer this parses to an inert `And[SelfRef, gy]` primary +
+/// `Unimplemented{"target"}` sub with a null activation_zone (verified in
+/// card-data.json before the fix).
+#[test]
+fn sandman_reanimate_self_and_land_shape() {
+    let parsed = parse_oracle_text(
+        "Sandman's power and toughness are each equal to the number of lands you control.\n\
+         Sandman can't be blocked by creatures with power 2 or less.\n\
+         {3}{G}{G}: Return this card and target land card from your graveyard to the battlefield tapped.",
+        "Sandman, Shifting Scoundrel",
+        &[],
+        &["Legendary".to_string(), "Creature".to_string()],
+        &["Human".to_string(), "Rogue".to_string()],
+    );
+
+    let ability = parsed
+        .abilities
+        .iter()
+        .find(|a| a.activation_zone == Some(Zone::Graveyard))
+        .expect("the return ability must be activatable from the graveyard (CR 113.6m)");
+
+    // Primary = bare self-move to the battlefield, entering tapped (CR 400.7:
+    // SelfRef names only the source object; not wrapped in a non-resolvable And).
+    match &*ability.effect {
+        Effect::ChangeZone {
+            origin: Some(Zone::Graveyard),
+            destination: Zone::Battlefield,
+            target: TargetFilter::SelfRef,
+            enter_tapped,
+            ..
+        } => assert!(enter_tapped.is_tapped(), "Sandman itself enters tapped"),
+        other => {
+            panic!("primary must be a bare SelfRef graveyard→battlefield ChangeZone, got {other:?}")
+        }
+    }
+
+    // Sub = the chosen land card (CR 601.2c + CR 115.1), entering tapped.
+    let sub = ability
+        .sub_ability
+        .as_ref()
+        .expect("the targeted-land sub_ability");
+    match &*sub.effect {
+        Effect::ChangeZone {
+            origin: Some(Zone::Graveyard),
+            destination: Zone::Battlefield,
+            target: TargetFilter::Typed(tf),
+            enter_tapped,
+            ..
+        } => {
+            assert!(
+                tf.type_filters.contains(&TypeFilter::Land),
+                "sub targets a land card, got {:?}",
+                tf.type_filters
+            );
+            assert!(
+                tf.properties.iter().any(|p| matches!(
+                    p,
+                    FilterProp::InZone {
+                        zone: Zone::Graveyard
+                    }
+                )),
+                "sub land must be constrained to the graveyard, got {:?}",
+                tf.properties
+            );
+            assert!(enter_tapped.is_tapped(), "the returned land enters tapped");
+        }
+        other => {
+            panic!("sub must be a targeted-land graveyard→battlefield ChangeZone, got {other:?}")
+        }
+    }
+
+    assert!(
+        !reanimate_subtree_has_unimplemented(ability),
+        "the reanimation ability must have no Unimplemented node: {ability:#?}"
+    );
+}
+
+/// CR 400.7 + CR 115.1d (SHAPE): the same idiom with the "up to one other target
+/// creature card" variant (Slimefoot and Squee) — the sub carries the up-to-one
+/// cardinality (which the generic compound splitter drops), targets ANOTHER
+/// creature card, and — with no "tapped" clause — neither object enters tapped.
+/// Positive reach-guard: the ChangeZone/`up_to` assertions prove the parse
+/// reached the real reanimation arm (not a degenerate Unimplemented).
+#[test]
+fn slimefoot_reanimate_self_and_up_to_one_creature_shape() {
+    let parsed = parse_oracle_text(
+        "Whenever Slimefoot and Squee enters or attacks, create a 1/1 green Saproling creature token.\n\
+         {1}{B}{R}{G}, Sacrifice a Saproling: Return this card and up to one other target creature card from your graveyard to the battlefield. Activate only as a sorcery.",
+        "Slimefoot and Squee",
+        &[],
+        &["Legendary".to_string(), "Creature".to_string()],
+        &["Goblin".to_string()],
+    );
+
+    let ability = parsed
+        .abilities
+        .iter()
+        .find(|a| a.activation_zone == Some(Zone::Graveyard))
+        .expect("the return ability must be activatable from the graveyard (CR 113.6m)");
+
+    match &*ability.effect {
+        Effect::ChangeZone {
+            origin: Some(Zone::Graveyard),
+            destination: Zone::Battlefield,
+            target: TargetFilter::SelfRef,
+            enter_tapped,
+            ..
+        } => assert!(
+            !enter_tapped.is_tapped(),
+            "no 'tapped' clause — Slimefoot enters untapped"
+        ),
+        other => {
+            panic!("primary must be a bare SelfRef graveyard→battlefield ChangeZone, got {other:?}")
+        }
+    }
+
+    let sub = ability
+        .sub_ability
+        .as_ref()
+        .expect("the targeted-creature sub_ability");
+    match &*sub.effect {
+        Effect::ChangeZone {
+            origin: Some(Zone::Graveyard),
+            destination: Zone::Battlefield,
+            target: TargetFilter::Typed(tf),
+            enter_tapped,
+            ..
+        } => {
+            assert!(
+                tf.type_filters.contains(&TypeFilter::Creature),
+                "sub targets a creature card, got {:?}",
+                tf.type_filters
+            );
+            assert!(
+                tf.properties
+                    .iter()
+                    .any(|p| matches!(p, FilterProp::Another)),
+                "sub must be ANOTHER creature ('other'), got {:?}",
+                tf.properties
+            );
+            assert!(
+                !enter_tapped.is_tapped(),
+                "no 'tapped' clause — the returned creature enters untapped"
+            );
+        }
+        other => panic!(
+            "sub must be a targeted-creature graveyard→battlefield ChangeZone, got {other:?}"
+        ),
+    }
+
+    // CR 115.1d: the "up to one" cardinality must survive onto the sub_ability
+    // (the generic try_split wrapper drops it) so the player may return 0 or 1.
+    assert_eq!(
+        sub.multi_target,
+        Some(MultiTargetSpec::up_to(QuantityExpr::Fixed { value: 1 })),
+        "sub must carry up-to-one target cardinality"
+    );
+
+    assert!(
+        !reanimate_subtree_has_unimplemented(ability),
+        "the reanimation ability must have no Unimplemented node: {ability:#?}"
+    );
+}

@@ -12158,6 +12158,15 @@ fn lower_imperative_clause(text: &str, ctx: &mut ParseContext) -> ParsedEffectCl
     if let Some(clause) = try_parse_multi_target_counter_chain(text, ctx) {
         return clause;
     }
+    // CR 400.7 + CR 608.2c: "Return this card and target land card from your
+    // graveyard to the battlefield tapped" (Sandman) and "... up to one other
+    // target creature card ..." (Slimefoot and Squee) — the self-and-target
+    // reanimation idiom. Must run before the generic shared-destination
+    // splitter, which mis-parses it into an inert `And`-primary + Unimplemented
+    // sub (see fn docs).
+    if let Some(clause) = try_parse_reanimate_self_and_target(text, ctx) {
+        return clause;
+    }
     if let Some(clause) = try_split_targeted_compound(text, ctx) {
         return clause;
     }
@@ -12863,6 +12872,99 @@ fn try_parse_verb_and_target<'a>(
     }
 
     None
+}
+
+/// CR 400.7 + CR 608.2c: Leaf recognizer for the two-object self-and-target
+/// reanimation idiom — "Return this card and <target> card from your graveyard
+/// to the battlefield[ tapped]" (Sandman, Shifting Scoundrel) and its
+/// "up to one other target creature card" variant (Slimefoot and Squee).
+///
+/// Mirrors the shipped Coastal Wizard / Lady Sun two-chained idiom (a primary
+/// self-move plus a targeted sub_ability), but for a battlefield destination.
+/// The second conjunct reuses the full return-to-battlefield lowering, so its
+/// origin (CR 400.6), entry riders (CR 614.1 "tapped"), and enter counters all
+/// come from the shared path rather than being re-derived here.
+///
+/// Emitted shape:
+///   - primary  `ChangeZone { target: SelfRef, origin, destination: Battlefield, .. }`
+///     — a BARE self-move (not an `And`), so `activation_zone_from_self_effect`
+///     (CR 113.6m) stamps the graveyard as the activation zone, matching
+///     Bloodsoaked Champion. CR 400.7: SelfRef names only the source object.
+///   - sub      `ChangeZone { target: Typed[..], origin, destination: Battlefield }`
+///     — the graveyard card is the chosen target (CR 601.2c + CR 115.1);
+///     SelfRef is not a target.
+///
+/// Both conjuncts share the sub-clause's entry riders, so "to the battlefield
+/// tapped" enters BOTH objects tapped.
+///
+/// Runs BEFORE `try_split_targeted_compound`: the generic shared-destination
+/// splitter mis-parses this idiom (SelfRef gets wrapped into a non-resolvable
+/// `And`, and the verbless second conjunct is left `Unimplemented`, leaving
+/// the whole card inert). The gate is self-validating: it fires only when the
+/// second conjunct genuinely lowered to a non-battlefield-origin → battlefield
+/// `ChangeZone`, so non-reanimation "return A and B" cards fall through
+/// unchanged (e.g. Coastal Wizard's return-to-hand).
+fn try_parse_reanimate_self_and_target(
+    text: &str,
+    ctx: &mut ParseContext,
+) -> Option<ParsedEffectClause> {
+    let lower = text.to_lowercase();
+
+    // "return " head.
+    let (_, after_return) = nom_on_lower(text, &lower, |i| value((), tag("return ")).parse(i))?;
+
+    // CR 400.7: the first conjunct must be the source object itself.
+    let (first_filter, after_first) = parse_target(after_return);
+    if first_filter != TargetFilter::SelfRef {
+        return None;
+    }
+
+    // " and " connector between the two objects.
+    let after_first_lower = after_first.to_lowercase();
+    let (_, rest) = nom_on_lower(after_first, &after_first_lower, |i| {
+        value((), tag(" and ")).parse(i)
+    })?;
+
+    // CR 115.1d: recover the "up to N" target cardinality (Slimefoot's "up to
+    // one other target ...") before the return-to-battlefield lowering drops
+    // it, then reuse that lowering for the second conjunct.
+    let (target_text, multi_target) = strip_optional_target_prefix(rest);
+    let sub_text = format!("return {target_text}");
+    let sub_clause = parse_imperative_effect(&sub_text, ctx);
+
+    // Self-validating gate: only fire when the second conjunct lowered to a
+    // non-battlefield-origin → battlefield ChangeZone (the reanimation shape).
+    let Effect::ChangeZone {
+        origin: Some(origin),
+        destination: Zone::Battlefield,
+        ..
+    } = &sub_clause.effect
+    else {
+        return None;
+    };
+    if *origin == Zone::Battlefield {
+        return None;
+    }
+
+    // Primary = the self-move: clone the sub's ChangeZone (carrying its origin,
+    // destination, and entry riders) and retarget it at the source.
+    let mut primary = sub_clause.effect.clone();
+    if let Effect::ChangeZone { target, up_to, .. } = &mut primary {
+        *target = TargetFilter::SelfRef;
+        *up_to = false;
+    }
+
+    // Wrap the second conjunct as the chained sub_ability, preserving the
+    // "up to N" cardinality (which the generic try_split wrapper omits).
+    let mut sub_ability = AbilityDefinition::new(AbilityKind::Spell, sub_clause.effect);
+    sub_ability.sub_ability = sub_clause.sub_ability;
+    sub_ability.multi_target = multi_target;
+    sub_ability.optional = sub_clause.optional;
+
+    Some(ParsedEffectClause {
+        sub_ability: Some(Box::new(sub_ability)),
+        ..parsed_clause(primary)
+    })
 }
 
 /// CR 608.2c: Split compound targeted actions like "tap target creature and put a stun

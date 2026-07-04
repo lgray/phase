@@ -547,10 +547,14 @@ fn count_leading_word_order_requires_fixed_count() {
 // ===========================================================================
 
 #[test]
-fn sandman_compound_self_target_return_is_deferred() {
-    // "Return this card and target land card from your graveyard to the
-    // battlefield tapped." The compound self+target return to the battlefield is
-    // not modeled; the residual is exactly the second subject clause.
+fn sandman_compound_self_target_return_is_supported() {
+    // S25 P3 W1 #2: "Return this card and target land card from your graveyard to
+    // the battlefield tapped." The self+target reanimation idiom now lowers via
+    // `try_parse_reanimate_self_and_target` to a bare `ChangeZone { SelfRef }`
+    // primary + a targeted-land `ChangeZone` sub_ability (CR 400.7 + CR 608.2c) —
+    // no residual Unimplemented. Full runtime + parser-shape coverage lives in
+    // `sandman_reanimate_self_and_land_s25.rs` and `oracle_effect::tests`; this
+    // guards the coverage-honesty flip from deferred → supported.
     let dbg = parsed_debug(
         "Sandman's power and toughness are each equal to the number of lands you control.\nSandman can't be blocked by creatures with power 2 or less.\n{3}{G}{G}: Return this card and target land card from your graveyard to the battlefield tapped.",
         "Sandman, Shifting Scoundrel",
@@ -558,8 +562,14 @@ fn sandman_compound_self_target_return_is_deferred() {
         &["Human".to_string(), "Rogue".to_string()],
     );
     assert!(
-        dbg.contains("Unimplemented"),
-        "Sandman compound return must remain honestly Unimplemented (not over-claimed)"
+        !dbg.contains("Unimplemented"),
+        "Sandman's compound reanimation must lower fully (no Unimplemented); parse was:\n{dbg}"
+    );
+    // Positive reach-guard: the parse reached the reanimation arm (a bare SelfRef
+    // graveyard→battlefield move), not some unrelated fallback.
+    assert!(
+        dbg.contains("ChangeZone") && dbg.contains("SelfRef") && dbg.contains("Graveyard"),
+        "Sandman must lower to a SelfRef graveyard ChangeZone reanimation; parse was:\n{dbg}"
     );
 }
 
