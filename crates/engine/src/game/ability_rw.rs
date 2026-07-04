@@ -17,11 +17,18 @@
 //!
 //! Commutation is proven **modulo the source-actor residual** (§1.2 side
 //! condition): per-source granted state (lifelink CR 702.15 / deathtouch
-//! CR 702.2) and the CR 800.4a player-loss object-removal cascade modulate
-//! resolution without appearing in the normalized AST or any profiled read.
-//! Both channels were auto-ordered UNCONDITIONALLY by the pre-C1 short-circuit
-//! and are inherited unchanged (zero ordering-decision change). Damage kinds are
-//! therefore RECIPIENT-classified, not source-bound (CR 704.5a / CR 800.4a).
+//! CR 702.2), the `DamagedPlayerIsEventSourceOwner` referent (a damage-cause
+//! source-owner read, `types/ability.rs`), and the CR 800.4a player-loss
+//! object-removal cascade modulate resolution without appearing in the normalized
+//! AST or any profiled read. Both channels were auto-ordered UNCONDITIONALLY by
+//! the pre-C1 short-circuit and are inherited unchanged (zero ordering-decision
+//! change). Damage kinds are therefore RECIPIENT-classified, not source-bound
+//! (CR 704.5a / CR 800.4a). PR-6.75 c5 note: the batch-T1 path now clears at
+//! `Uniform` (controller-equal) as well as `UniformAligned` (owner-equal), so —
+//! unlike the owner-aligned span gate — it no longer equalizes source OWNER across
+//! members. The `DamagedPlayerIsEventSourceOwner` / lifelink / deathtouch residual
+//! exposure on the batch path is thus identical to the same-event T1 path already
+//! documented, and bounded by the §7.1 `old=false, new=true` zero-movement grep.
 //!
 //! A SECOND inherited fail-open: `reads_event_live` is consulted ONLY on the
 //! batch path (`profiles_conflict`: the `all_same_source` fast path and the
@@ -366,11 +373,11 @@ fn zones_of_filter(f: &TargetFilter) -> ZoneSpan {
 // ---------------------------------------------------------------------------
 
 /// CR 102.2 + CR 109.5: a relative player-identity span for scope-gated feed
-/// refinement. Meaningful ONLY under `GroupStructure.same_controller` (all
+/// refinement. Meaningful ONLY under `ControllerUniformity::UniformAligned` (all
 /// members' relative sets `You`/`Opponents` then denote the SAME concrete players
 /// — `You == {c0}`, `Opponents == all − {c0}`, disjoint at any player count). Dead
-/// otherwise: `profiles_conflict` never consults a span when `same_controller` is
-/// false, so every value is byte-inert in the ungated path.
+/// otherwise: `profiles_conflict` never consults a span when the gate is off
+/// (not `UniformAligned`), so every value is byte-inert in the ungated path.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum PlayerSpan {
     /// No player-keyed read/write on this side — overlaps nothing. Also the
@@ -400,7 +407,7 @@ impl PlayerSpan {
 }
 
 /// CR 102.2 + CR 109.5 relative-player overlap: two spans can name a common
-/// player iff — under `same_controller` — their relative sets intersect. `None`
+/// player iff — under `UniformAligned` — their relative sets intersect. `None`
 /// overlaps nothing; `Any` overlaps every non-`None`; `You`×`Opponents` is the
 /// only disjoint concrete pair (mirrors `census_overlap`).
 fn player_span_overlap(a: PlayerSpan, b: PlayerSpan) -> bool {
@@ -556,6 +563,14 @@ pub(crate) struct RwProfile {
     /// D5: one of the 12 retained-prompt event-context refs is present.
     /// Consulted ONLY by the batch branch (commit 2).
     legacy_batch_prompt: bool,
+    /// CR 603.10a (PR-6.75 c5): the resolution consumes a binding resolved per
+    /// member instance — per-source tracked/chosen storage, an attachment, or an
+    /// event/replacement-context referent outside the legacy-12 /
+    /// `writes_event_object` carriers — so members' resolution functions are NOT one
+    /// shared `f`. Refutes batch-T1 (`!reads_member_bound` conjunct). Walk-computed
+    /// single-bit read fact (precedent: `legacy_batch_prompt`); `drop_writes` keeps
+    /// it (a read).
+    reads_member_bound: bool,
     /// Writes scoped to the member's own Source/Recipient object.
     writes_self: KindSet,
     /// Board-/player-/stack-scoped writes (INCLUDES creation, event-object, and
@@ -607,7 +622,7 @@ pub(crate) struct RwProfile {
     /// The ability writes the mana pool (`Effect::Mana`).
     writes_pool: bool,
     // --- PR-6.75 gate-scoped player-identity spans (consulted ONLY under
-    // GroupStructure.same_controller; every value is byte-inert otherwise). ---
+    // ControllerUniformity::UniformAligned; every value is byte-inert otherwise). ---
     /// CR 109.5/102.2: relative-player span of the player-resource READS
     /// (`HandSize`; life reads stay unrefined ⇒ effective-Any). A single merged
     /// span across kinds — mixing kinds degrades to `Any` (ceiling documented).
@@ -640,6 +655,7 @@ impl RwProfile {
             reads_frozen: KindSet::EMPTY,
             reads_event_live: false,
             legacy_batch_prompt: false,
+            reads_member_bound: false,
             writes_self: KindSet::EMPTY,
             writes_external: KindSet::EMPTY,
             writes_event_object: KindSet::EMPTY,
@@ -680,6 +696,9 @@ impl RwProfile {
         p.writes_player_span = PlayerSpan::Any;
         p.reads_membership_ctrl = PlayerSpan::Any;
         p.writes_membership_external_ctrl = PlayerSpan::Any;
+        // CR 603.10a: an unclassified subtree may consult a per-member binding ⇒
+        // fail-closed (refuses batch-T1).
+        p.reads_member_bound = true;
         p
     }
 
@@ -690,6 +709,7 @@ impl RwProfile {
         self.reads_frozen = self.reads_frozen.union(o.reads_frozen);
         self.reads_event_live |= o.reads_event_live;
         self.legacy_batch_prompt |= o.legacy_batch_prompt;
+        self.reads_member_bound |= o.reads_member_bound;
         self.writes_self = self.writes_self.union(o.writes_self);
         self.writes_external = self.writes_external.union(o.writes_external);
         self.writes_event_object = self.writes_event_object.union(o.writes_event_object);
@@ -756,6 +776,37 @@ impl RwProfile {
 // GroupStructure.
 // ---------------------------------------------------------------------------
 
+/// CR 603.3b + CR 110.2 + CR 108.3 + CR 805.7: the controller structure of an
+/// ordering group, as one ordered refinement axis (parameterizes the former
+/// `same_controller` + would-be `controllers_uniform` two-correlated-bool sibling
+/// cluster). `Mixed` is the fail-closed floor; each higher level unlocks strictly
+/// more refinement. Ordering is meaningful only for the two consulting sites
+/// (`profiles_conflict` batch-T1 checks `!= Mixed`; the span/fused gate checks
+/// `UniformAligned`) — the enum itself is not `Ord`.
+///
+/// `Mixed` is reachable ONLY via team-pooled trigger placement (CR 805.7):
+/// `begin_trigger_ordering` partitions groups by controller (CR 109.5 triggered-
+/// ability "you" = the controller when it triggered), so every non-team topology
+/// is controller-uniform by construction.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum ControllerUniformity {
+    /// Divergent pending controllers (CR 805.7 team pool). No refinement consulted
+    /// ⇒ conflict decision is byte-identical to the pre-uniformity engine.
+    Mixed,
+    /// Every member's `pending.controller` is one shared player `c0` (CR 109.5).
+    /// The relative player-identity spans still cannot be trusted (owner may
+    /// diverge), but the batch-T1 identical-function fast path is sound: an f that
+    /// consults no source binding, no member-bound storage, and no live event is
+    /// one shared f(state, c0).
+    Uniform,
+    /// `Uniform` AND each live source object is both controlled and owned by `c0`
+    /// (CR 108.3 owner). Only then do the relative player-identity spans
+    /// (`You`/`Opponents`) denote the same concrete players across members, and
+    /// owner-keyed self-write destinations (CR 400.3 hand/graveyard) become
+    /// controller-resolvable — the precondition of the span/fused gate.
+    UniformAligned,
+}
+
 pub(crate) struct GroupStructure {
     /// All members fired on ONE trigger event.
     pub(crate) same_event: bool,
@@ -776,15 +827,13 @@ pub(crate) struct GroupStructure {
     pub(crate) event_object_present: bool,
     /// The live source census, for the membership census-overlap row (§2).
     pub(crate) source_census: SourceCensus,
-    /// PR-6.75 (CR 603.3b + CR 110.2 + CR 108.3): the group is controller-uniform
-    /// AND owner-aligned — every member's pending controller is one shared player
-    /// `c0` and each live source object is both controlled and owned by `c0`. ONLY
-    /// then do the relative player-identity spans (`You`/`Opponents`) denote the
-    /// same concrete players across members (owner-alignment additionally makes
-    /// owner-keyed self-write destinations, CR 400.3 hand/graveyard, controller-
-    /// resolvable). `false` ⇒ NO span/fused refinement is consulted ⇒ the conflict
-    /// decision is byte-identical to the pre-PR engine (structural zero-delta).
-    pub(crate) same_controller: bool,
+    /// PR-6.75 (CR 603.3b + CR 110.2 + CR 108.3 + CR 805.7): the controller
+    /// structure of this ordering group. `UniformAligned` reproduces the former
+    /// `same_controller == true` exactly (span/fused gate consults it verbatim);
+    /// `Uniform` additionally unlocks only the batch-T1 identical-function fast
+    /// path (`!= Mixed`); `Mixed` consults no refinement ⇒ byte-identical to the
+    /// pre-uniformity engine (structural zero-delta).
+    pub(crate) controller_uniformity: ControllerUniformity,
 }
 
 // ---------------------------------------------------------------------------
@@ -793,7 +842,7 @@ pub(crate) struct GroupStructure {
 
 /// PR-6.75 gate-scoped span bundle for `feeds` — the effective (already
 /// effective-Any-promoted) relative-player spans of the player-resource and
-/// membership rows plus the `gate` (`same_controller`). When `gate` is false the
+/// membership rows plus the `gate` (`UniformAligned`). When `gate` is false the
 /// span conjuncts collapse to `true`, so the feed matrix is byte-identical.
 #[derive(Clone, Copy)]
 struct SpanGate {
@@ -835,7 +884,7 @@ fn feeds(
     write_zones: &ZoneSpan,
     spans: SpanGate,
 ) -> bool {
-    // PR-6.75 (CR 102.2/109.5): under `same_controller`, a player-keyed read and
+    // PR-6.75 (CR 102.2/109.5): under `UniformAligned`, a player-keyed read and
     // write of the SAME kind conflict only when their relative-player spans can
     // name a common player. `!gate` ⇒ byte-identical (conjunct is `true`).
     let player_ok = !spans.gate || player_span_overlap(spans.read_player, spans.write_player);
@@ -912,6 +961,26 @@ pub(crate) fn profiles_conflict(p: &RwProfile, s: &GroupStructure) -> bool {
         return false;
     }
     if s.all_same_source && !p.reads_event_live {
+        return false;
+    }
+    // CR 603.3b batch T1 (PR-6.75 c5): in a controller-uniform co-departure group of
+    // normalized-identical members, a resolution that consults neither its source
+    // binding (`source_independent`: CR 603.10a), nor per-member bound storage
+    // (`reads_member_bound`), nor its firing event (`reads_event_live` / event-object
+    // writes) is ONE function f(state, c0) shared by every member — any permutation
+    // is f∘…∘f, so CR 603.3b ordering is unobservable. Sound modulo the source-actor
+    // residual (module doc), inherited unchanged from the pre-C1 batch short-circuit.
+    // Never bypasses the freeze-invalidation row below: that row requires a
+    // frozen/src/event-live read, all excluded here. `Mixed` (CR 805.7 team pool)
+    // fails closed — the divergent-controller cause-source channel is order-observable
+    // (Dodecapod / EventSourceControlledBy).
+    if !s.same_event
+        && !matches!(s.controller_uniformity, ControllerUniformity::Mixed)
+        && p.source_independent()
+        && !p.reads_member_bound
+        && !p.reads_event_live
+        && !p.writes_event_object.any()
+    {
         return false;
     }
 
@@ -1011,7 +1080,10 @@ pub(crate) fn profiles_conflict(p: &RwProfile, s: &GroupStructure) -> bool {
     // per-player fixed-point input among identical members ⇒ dropped under the
     // gate; unioned back into `reads_player` when ungated (byte-identical to today,
     // where the count read was recorded in `reads_player`).
-    let effective_reads_player = if s.same_controller {
+    let effective_reads_player = if matches!(
+        s.controller_uniformity,
+        ControllerUniformity::UniformAligned
+    ) {
         p.reads_player
     } else {
         p.reads_player.union(p.reads_player_fused)
@@ -1029,7 +1101,10 @@ pub(crate) fn profiles_conflict(p: &RwProfile, s: &GroupStructure) -> bool {
         effective_external.set_membership,
     );
     let board_spans = SpanGate {
-        gate: s.same_controller,
+        gate: matches!(
+            s.controller_uniformity,
+            ControllerUniformity::UniformAligned
+        ),
         read_player: effective_span(p.reads_player_span, board_player_read_present),
         write_player: effective_span(p.writes_player_span, board_player_write_present),
         read_mctrl: effective_span(p.reads_membership_ctrl, board_reads.set_membership),
@@ -1264,7 +1339,7 @@ fn place_membership_write(
         p.writes_external.set(StateKind::HandLibrary);
         // §4.3.4 (CR 400.3 + owner-alignment gate): a SELF hand/library move
         // (Rekindled Flame's `Bounce{SelfRef}` → hand) touches the owner-of-self's
-        // hand, which equals the controller's under `same_controller` ⇒ You.
+        // hand, which equals the controller's under `UniformAligned` ⇒ You.
         // External/event/created endpoints leave the span unrefined (`None` ⇒
         // effective-Any at conflict time).
         if matches!(sc, WriteScope::SelfSource) {
@@ -1462,6 +1537,16 @@ fn target_is_legacy_ref(f: &TargetFilter) -> bool {
 fn flag_legacy_write_target(p: &mut RwProfile, target: &TargetFilter) {
     if target_is_legacy_ref(target) {
         p.legacy_batch_prompt = true;
+    }
+}
+
+/// Set `reads_member_bound` when an effect WRITE target names a per-member-bound
+/// referent (CR 603.10a, PR-6.75 c5) — the write path's counterpart to
+/// `member_bound_target_filter` read-position wiring. A `ChangeZone{TrackedSet}`
+/// return (Day of the Dragons) writes a per-source set ⇒ members diverge.
+fn flag_member_bound_write_target(p: &mut RwProfile, target: &TargetFilter) {
+    if member_bound_target_filter(target) {
+        p.reads_member_bound = true;
     }
 }
 
@@ -2058,6 +2143,224 @@ fn legacy_filter_prop(p: &FilterProp) -> bool {
         }
         FilterProp::AnyOf { props } => props.iter().any(legacy_filter_prop),
         FilterProp::Not { prop } => legacy_filter_prop(prop),
+        FilterProp::Token
+        | FilterProp::NonToken
+        | FilterProp::WasPlayed
+        | FilterProp::Blocking
+        | FilterProp::BlockingSource
+        | FilterProp::CombatRelation { .. }
+        | FilterProp::Unblocked
+        | FilterProp::AttackingAlone
+        | FilterProp::BlockingAlone
+        | FilterProp::Tapped
+        | FilterProp::Untapped
+        | FilterProp::IsSaddled
+        | FilterProp::SaddledSource
+        | FilterProp::ConvokedSource
+        | FilterProp::HasHasteOrControlledSinceTurnBegan
+        | FilterProp::WithKeyword { .. }
+        | FilterProp::HasKeywordKind { .. }
+        | FilterProp::WithoutKeyword { .. }
+        | FilterProp::WithoutKeywordKind { .. }
+        | FilterProp::ManaValueParity { .. }
+        | FilterProp::ManaCostIn { .. }
+        | FilterProp::InZone { .. }
+        | FilterProp::Foretold
+        | FilterProp::EnchantedBy
+        | FilterProp::EquippedBy
+        | FilterProp::AttachedToSource
+        | FilterProp::AttachedToRecipient
+        | FilterProp::Another
+        | FilterProp::Unpaired
+        | FilterProp::OtherThanTriggerObject
+        | FilterProp::HasColor { .. }
+        | FilterProp::PowerGTSource
+        | FilterProp::ColorCount { .. }
+        | FilterProp::ManaSymbolCount { .. }
+        | FilterProp::HasSupertype { .. }
+        | FilterProp::IsChosenCreatureType
+        | FilterProp::IsChosenColor
+        | FilterProp::IsChosenCardType
+        | FilterProp::IsChosenLandOrNonlandKind
+        | FilterProp::HasSingleTarget
+        | FilterProp::Modal
+        | FilterProp::NotColor { .. }
+        | FilterProp::NotSupertype { .. }
+        | FilterProp::Suspected
+        | FilterProp::Renowned
+        | FilterProp::ToughnessGTPower
+        | FilterProp::PowerExceedsBase
+        | FilterProp::InAnyZone { .. }
+        | FilterProp::WasDealtDamageThisTurn
+        | FilterProp::EnteredThisTurn
+        | FilterProp::ZoneChangedThisTurn { .. }
+        | FilterProp::BlockedThisTurn
+        | FilterProp::AttackedOrBlockedThisTurn
+        | FilterProp::CountersPutOnThisTurn { .. }
+        | FilterProp::FaceDown
+        | FilterProp::HasXInManaCost
+        | FilterProp::HasXInActivationCost
+        | FilterProp::WasKicked
+        | FilterProp::HasManaAbility
+        | FilterProp::HasNoAbilities
+        | FilterProp::Named { .. }
+        | FilterProp::SameName
+        | FilterProp::SameNameAsParentTarget
+        | FilterProp::IsCommander
+        | FilterProp::Modified
+        | FilterProp::Historic
+        | FilterProp::NotHistoric
+        | FilterProp::Other { .. } => false,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Member-bound referent detection (CR 603.10a, PR-6.75 c5).
+//
+// A `TargetFilter`/`ControllerRef`/`FilterProp` is MEMBER-BOUND when the object
+// or player it resolves to is bound per member instance — per-source tracked or
+// chosen storage, an attachment, or an event/replacement-context referent — so
+// two normalized-identical members do NOT share one resolution function `f`.
+// Position-agnostic and exhaustive (wildcard-free) so a future variant must be
+// classified — mirrors `legacy_target_filter`'s descent structure exactly.
+//
+// Each FALSE arm's soundness rests on ONE of:
+//   * source carrier — `SelfRef`/`SourceOrPaired` set `writes_self`/`reads_src`
+//     ⇒ `source_independent()` already false.
+//   * event-object carrier — `TriggeringSource` / parentless `ParentTarget` set
+//     `writes_event_object` ⇒ T1's `!writes_event_object.any()` conjunct fires.
+//   * legacy-12 carrier — the 9 frozen `TargetFilter` tags set
+//     `legacy_batch_prompt` (OR-ed OUTSIDE `profiles_conflict`).
+//   * resolution-local — `ScopedPlayer`/`LastRevealed`/`LastCreated`: bound
+//     within the single resolution, no cross-member storage.
+//   * member-invariant under uniformity — `Controller`/`Player`/`AllPlayers`/
+//     `DefendingPlayer`/`Named`/`Specific*`: one shared `c0` (or a constant) ⇒
+//     identical for every member.
+//   * `Owner`: owner-partition-commutative among identical members — owner is NOT
+//     controller-invariant, but an owner-keyed partition of identical members
+//     composes commutatively (each member's owner-slice is disjoint and the
+//     aggregate is order-free), so it needs no member-bound refusal.
+// ---------------------------------------------------------------------------
+
+/// CR 603.10a: does `f` resolve to a per-member-bound object/player? Mirrors
+/// `legacy_target_filter`'s descent (composites + `Typed.controller`/`properties`)
+/// but classifies for member-boundness, not the frozen-12 tags.
+fn member_bound_target_filter(f: &TargetFilter) -> bool {
+    match f {
+        // Per-source tracked/exiled/chosen storage, attachments, event- and
+        // replacement-context referents (fail-closed: `ParentTargetSlot`/
+        // `StackAbility` are parent/stack-context referents outside the legacy-12
+        // and `writes_event_object` carriers).
+        TargetFilter::TrackedSet { .. }
+        | TargetFilter::TrackedSetFiltered { .. }
+        | TargetFilter::ExiledBySource
+        | TargetFilter::ExiledCardByIndex { .. }
+        | TargetFilter::ChosenCard
+        | TargetFilter::HasChosenName
+        | TargetFilter::SourceChosenPlayer
+        | TargetFilter::ChosenDamageSource
+        | TargetFilter::AttachedTo
+        | TargetFilter::Neighbor { .. }
+        | TargetFilter::OriginalController
+        | TargetFilter::EventTarget
+        | TargetFilter::TriggeringSourceController
+        | TargetFilter::PostReplacementSourceController
+        | TargetFilter::PostReplacementDamageTarget
+        | TargetFilter::PostReplacementDamageTargetOwner
+        | TargetFilter::ParentTargetSlot { .. }
+        | TargetFilter::StackAbility { .. } => true,
+        TargetFilter::Not { filter } => member_bound_target_filter(filter),
+        TargetFilter::And { filters } | TargetFilter::Or { filters } => {
+            filters.iter().any(member_bound_target_filter)
+        }
+        TargetFilter::Typed(tf) => {
+            tf.controller
+                .as_ref()
+                .is_some_and(member_bound_controller_ref)
+                || tf.properties.iter().any(member_bound_filter_prop)
+        }
+        // Source carriers (`writes_self`/`reads_src`), event-object carriers, the
+        // legacy-12 tags (`legacy_batch_prompt`), resolution-local refs, and
+        // uniformity-/owner-partition-invariant refs — all documented above.
+        TargetFilter::SelfRef
+        | TargetFilter::SourceOrPaired
+        | TargetFilter::TriggeringSource
+        | TargetFilter::ParentTarget
+        | TargetFilter::TriggeringSpellController
+        | TargetFilter::TriggeringSpellOwner
+        | TargetFilter::TriggeringPlayer
+        | TargetFilter::ParentTargetController
+        | TargetFilter::ParentTargetOwner
+        | TargetFilter::StackSpell
+        | TargetFilter::CostPaidObject
+        | TargetFilter::ScopedPlayer
+        | TargetFilter::LastCreated
+        | TargetFilter::LastRevealed
+        | TargetFilter::None
+        | TargetFilter::Any
+        | TargetFilter::Player
+        | TargetFilter::Controller
+        | TargetFilter::SpecificObject { .. }
+        | TargetFilter::SpecificPlayer { .. }
+        | TargetFilter::DefendingPlayer
+        | TargetFilter::Named { .. }
+        | TargetFilter::Owner
+        | TargetFilter::AllPlayers => false,
+    }
+}
+
+/// CR 603.10a: a `ControllerRef` is member-bound when it names a per-source chosen
+/// player or an attachment-relative player. `You`/`Opponent`/`ScopedPlayer`/
+/// `DefendingPlayer` are member-invariant under uniformity; `TargetPlayer` is
+/// closed by the no-ordering-input target gate; the three legacy-12 refs ride
+/// `legacy_batch_prompt`.
+fn member_bound_controller_ref(x: &ControllerRef) -> bool {
+    match x {
+        ControllerRef::ChosenPlayer { .. }
+        | ControllerRef::SourceChosenPlayer
+        | ControllerRef::EnchantedPlayer => true,
+        ControllerRef::ParentTargetController
+        | ControllerRef::ParentTargetOwner
+        | ControllerRef::TriggeringPlayer
+        | ControllerRef::You
+        | ControllerRef::Opponent
+        | ControllerRef::ScopedPlayer
+        | ControllerRef::TargetPlayer
+        | ControllerRef::DefendingPlayer => false,
+    }
+}
+
+/// CR 603.10a: a `FilterProp` interior nests a member-bound referent when its
+/// inner `TargetFilter` / `ControllerRef` / `QuantityExpr` does. Mirrors
+/// `legacy_filter_prop`'s exhaustive descent; quantity nesting reuses the
+/// authoritative `rw_quantity_expr` member-bound bit.
+fn member_bound_filter_prop(p: &FilterProp) -> bool {
+    match p {
+        FilterProp::CanEnchant { target } => member_bound_target_filter(target),
+        FilterProp::DifferentNameFrom { filter }
+        | FilterProp::TargetsOnly { filter }
+        | FilterProp::Targets { filter } => member_bound_target_filter(filter),
+        FilterProp::SharesQuality { reference, .. } => {
+            reference.as_deref().is_some_and(member_bound_target_filter)
+        }
+        FilterProp::Counters { count, .. } => rw_quantity_expr(count).reads_member_bound,
+        FilterProp::Cmc { value, .. } | FilterProp::PtComparison { value, .. } => {
+            rw_quantity_expr(value).reads_member_bound
+        }
+        FilterProp::ProtectorMatches { controller }
+        | FilterProp::Owned { controller }
+        | FilterProp::MostPrevalentCreatureTypeIn {
+            scope: controller, ..
+        } => member_bound_controller_ref(controller),
+        FilterProp::Attacking { defender: c }
+        | FilterProp::AttackedThisTurn { defender: c }
+        | FilterProp::HasAttachment { controller: c, .. }
+        | FilterProp::HasAnyAttachmentOf { controller: c, .. }
+        | FilterProp::NameMatchesAnyPermanent { controller: c } => {
+            c.as_ref().is_some_and(member_bound_controller_ref)
+        }
+        FilterProp::AnyOf { props } => props.iter().any(member_bound_filter_prop),
+        FilterProp::Not { prop } => member_bound_filter_prop(prop),
         FilterProp::Token
         | FilterProp::NonToken
         | FilterProp::WasPlayed
@@ -2785,6 +3088,15 @@ fn legacy_ref() -> RwProfile {
     p.legacy_batch_prompt = true;
     p
 }
+/// CR 603.10a (PR-6.75 c5): a standalone per-source look-back player referent
+/// (source-chosen / attachment-relative) at a scope/anchor position — carries the
+/// member-bound channel `member_bound_controller_ref` classifies for `Typed`
+/// filters, fail-closed at the scope positions that never route through a filter.
+fn member_bound_read() -> RwProfile {
+    let mut p = RwProfile::empty();
+    p.reads_member_bound = true;
+    p
+}
 fn writes_pool_profile() -> RwProfile {
     let mut p = RwProfile::empty();
     p.writes_pool = true;
@@ -2820,6 +3132,9 @@ fn board_membership_read(filter: &TargetFilter) -> RwProfile {
     // the Heart's "creatures an opponent controls" ⇒ Opponents). Unrefined /
     // composite filters ⇒ Any.
     p.reads_membership_ctrl = ctrl_span_of_filter(filter);
+    // CR 603.10a (PR-6.75 c5): a read whose filter names a per-member-bound set /
+    // attachment / chosen referent is member-distinct ⇒ refuses batch-T1.
+    p.reads_member_bound |= member_bound_target_filter(filter);
     p
 }
 
@@ -3254,6 +3569,7 @@ fn rw_effect(
                 .merge(census_of_filter(target));
         }
         flag_legacy_write_target(&mut p, target);
+        flag_member_bound_write_target(&mut p, target);
         (p, Some(sc))
     };
     // Membership move targeting `target` with the given zone endpoints.
@@ -3265,6 +3581,7 @@ fn rw_effect(
         let mut p = RwProfile::empty();
         place_membership_write(&mut p, sc, census_of_filter(target), origin, dest);
         flag_legacy_write_target(&mut p, target);
+        flag_member_bound_write_target(&mut p, target);
         (p, Some(sc))
     };
     // Deferred body (CR 603.7): descend reads, drop writes. Resolved in a future
@@ -4533,11 +4850,6 @@ fn rw_effect(
             count: _,
         }
         | Effect::TargetOnly { target: _ }
-        | Effect::Choose {
-            choice_type: _,
-            persist: _,
-            selection: _,
-        }
         | Effect::LoseTheGame { target: _ }
         | Effect::WinTheGame { target: _ }
         | Effect::RemoveAllDamage { target: _ }
@@ -4548,6 +4860,18 @@ fn rw_effect(
         | Effect::NoOp
         | Effect::EndTheTurn
         | Effect::EndCombatPhase => (RwProfile::empty(), None),
+
+        // CR 603.10a (PR-6.75 c5): a PERSISTED choice writes per-source storage
+        // (`chosen_attributes`) that a later resolution reads ⇒ member-bound; a
+        // resolution-local choice (`persist: false`) leaves no cross-member binding
+        // (slithermuse's `Choose{Opponent, persist:false}`).
+        Effect::Choose { persist, .. } => {
+            let mut p = RwProfile::empty();
+            if *persist {
+                p.reads_member_bound = true;
+            }
+            (p, None)
+        }
 
         // ---- Histogram-absent ⇒ fail-closed conservative ----
         Effect::StartYourEngines { .. }
@@ -4735,16 +5059,32 @@ fn rw_quantity_ref(x: &QuantityRef) -> RwProfile {
         | QuantityRef::DistinctCardTypes { .. }
         | QuantityRef::BasicLandTypeCount { .. }
         | QuantityRef::PartySize { .. } => reads_zone_membership(),
+        // CR 603.10a (PR-6.75 c5): per-source tracked/exiled/chosen storage and
+        // per-instance cast-context memory (X paid, kicker/convoke/vote/additional-
+        // cost counts) are bound per member instance — each trigger stack object
+        // carries its own stored value ⇒ refuse batch-T1 (fail-closed).
         QuantityRef::CardsExiledBySource
         | QuantityRef::ExiledCardPower { .. }
         | QuantityRef::TrackedSetSize
         | QuantityRef::FilteredTrackedSetSize { .. }
         | QuantityRef::TrackedSetAggregate { .. }
-        | QuantityRef::ExiledFromHandThisResolution
+        | QuantityRef::ChosenNumber
+        | QuantityRef::CostXPaid
+        | QuantityRef::KickerCount
+        | QuantityRef::AdditionalCostPaymentCount
+        | QuantityRef::AdditionalCostPaymentCountFor { .. }
+        | QuantityRef::ConvokedCreatureCount
+        | QuantityRef::VoteCount { .. } => {
+            let mut p = RwProfile::empty();
+            p.reads_member_bound = true;
+            p
+        }
+        // Resolution-local / turn- / commander-scoped: no per-source binding
+        // (member-invariant under uniformity).
+        QuantityRef::ExiledFromHandThisResolution
         | QuantityRef::PreviousEffectAmount
         | QuantityRef::TurnsTaken
         | QuantityRef::CrimesCommittedThisTurn
-        | QuantityRef::ChosenNumber
         | QuantityRef::AttackedThisTurn { .. }
         | QuantityRef::DescendedThisTurn
         // CR 701.65b/701.66b/701.67c: controller-scoped per-turn accumulator; no
@@ -4752,16 +5092,10 @@ fn rw_quantity_ref(x: &QuantityRef) -> RwProfile {
         | QuantityRef::BendTypesThisTurn
         | QuantityRef::LandsPlayedThisTurn { .. }
         | QuantityRef::DungeonsCompleted
-        | QuantityRef::CostXPaid
-        | QuantityRef::KickerCount
-        | QuantityRef::AdditionalCostPaymentCount
-        | QuantityRef::AdditionalCostPaymentCountFor { .. }
-        | QuantityRef::ConvokedCreatureCount
         | QuantityRef::ColorsInCommandersColorIdentity
         | QuantityRef::CommanderCastFromCommandZoneCount
         | QuantityRef::CommanderManaValue { .. }
-        | QuantityRef::Speed { .. }
-        | QuantityRef::VoteCount { .. } => RwProfile::empty(),
+        | QuantityRef::Speed { .. } => RwProfile::empty(),
         QuantityRef::ZoneCardCount {
             zone,
             card_types,
@@ -4886,13 +5220,21 @@ fn rw_ability_condition(x: &AbilityCondition) -> RwProfile {
         AbilityCondition::TargetMatchesFilter {
             filter: _,
             use_lki,
-            subject_slot: _,
+            subject_slot,
         } => {
-            if *use_lki {
+            let mut p = if *use_lki {
                 frozen_source_read()
             } else {
                 reads_board_of(StateKind::ObjectPt)
+            };
+            // CR 608.2c (PR-6.75 c5): Some(n) tests a specific DECLARED chain slot
+            // resolved per member instance — the same per-member binding
+            // member_bound_target_filter flags for TargetFilter::ParentTargetSlot.
+            // Fail-closed: refuse batch-T1 (a member-bound read).
+            if subject_slot.is_some() {
+                p.reads_member_bound = true;
             }
+            p
         }
         // PR-6.75 residual: two context-free-unclassifiable singletons stay safe
         // conservative over-prompts here, with no recognizer. Paroxysm's present-
@@ -5166,7 +5508,7 @@ fn rw_static_condition(x: &StaticCondition) -> RwProfile {
 /// are read-free; event-context refs contribute event reads (and D5 flags for
 /// the 12 tags). Composite filters descend to catch nested event refs.
 fn rw_target_filter(x: &TargetFilter) -> RwProfile {
-    match x {
+    let mut p = match x {
         // D5 carriers (9 TargetFilter tags of the 12).
         TargetFilter::TriggeringSpellController
         | TargetFilter::TriggeringSpellOwner
@@ -5224,7 +5566,12 @@ fn rw_target_filter(x: &TargetFilter) -> RwProfile {
         | TargetFilter::Named { .. }
         | TargetFilter::Owner
         | TargetFilter::AllPlayers => RwProfile::empty(),
-    }
+    };
+    // CR 603.10a (PR-6.75 c5): a member-bound referent used as a read carrier
+    // (target_chooser / nested filter) refuses batch-T1. Position-agnostic —
+    // `member_bound_target_filter` descends composites itself.
+    p.reads_member_bound |= member_bound_target_filter(x);
+    p
 }
 
 fn rw_player_filter(x: &PlayerFilter) -> RwProfile {
@@ -5263,6 +5610,9 @@ fn rw_player_filter(x: &PlayerFilter) -> RwProfile {
             p
         }
         PlayerFilter::AllExcept { exclude } => rw_player_filter(exclude),
+        // CR 603.10a: the owners of the per-source exile set are a member-bound
+        // look-back referent ⇒ refuse batch-T1.
+        PlayerFilter::OwnersOfCardsExiledBySource => member_bound_read(),
         PlayerFilter::Controller
         | PlayerFilter::Opponent
         | PlayerFilter::DefendingPlayer
@@ -5272,7 +5622,6 @@ fn rw_player_filter(x: &PlayerFilter) -> RwProfile {
         | PlayerFilter::HighestSpeed
         | PlayerFilter::ZoneChangedThisWay
         | PlayerFilter::PerformedActionThisWay { .. }
-        | PlayerFilter::OwnersOfCardsExiledBySource
         | PlayerFilter::VotedFor { .. }
         | PlayerFilter::ChosenPlayer { .. } => RwProfile::empty(),
     }
@@ -5285,13 +5634,14 @@ fn rw_player_scope(x: &PlayerScope) -> RwProfile {
             Some(e) => rw_player_scope(e),
             None => RwProfile::empty(),
         },
+        // CR 603.10a: per-source look-back referent ⇒ member-bound.
+        PlayerScope::SourceChosenPlayer => member_bound_read(),
         PlayerScope::Controller
         | PlayerScope::ScopedPlayer
         | PlayerScope::Target
         | PlayerScope::Opponent { .. }
         | PlayerScope::RecipientController
-        | PlayerScope::DefendingPlayer
-        | PlayerScope::SourceChosenPlayer => RwProfile::empty(),
+        | PlayerScope::DefendingPlayer => RwProfile::empty(),
     }
 }
 
@@ -5301,14 +5651,17 @@ fn rw_controller_ref(x: &ControllerRef) -> RwProfile {
         ControllerRef::ParentTargetController
         | ControllerRef::ParentTargetOwner
         | ControllerRef::TriggeringPlayer => legacy_ref(),
+        // CR 603.10a: per-source look-back referents (Vote anchored on the source's
+        // chosen player is a global APNAP interaction, not rescued by owner-partition
+        // commutativity) ⇒ member-bound.
+        ControllerRef::SourceChosenPlayer | ControllerRef::EnchantedPlayer => member_bound_read(),
         ControllerRef::You
         | ControllerRef::Opponent
         | ControllerRef::ScopedPlayer
         | ControllerRef::TargetPlayer
         | ControllerRef::DefendingPlayer
-        | ControllerRef::ChosenPlayer { .. }
-        | ControllerRef::SourceChosenPlayer
-        | ControllerRef::EnchantedPlayer => RwProfile::empty(),
+        // resolution-local (ResolvedAbility.chosen_players)
+        | ControllerRef::ChosenPlayer { .. } => RwProfile::empty(),
     }
 }
 
@@ -5320,9 +5673,11 @@ fn rw_controller_ref(x: &ControllerRef) -> RwProfile {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::ability::{AbilityKind, Comparator, CountScope, PtValue};
+    use crate::types::ability::{
+        AbilityKind, ChoiceType, Comparator, CountScope, PtValue, TargetSelectionMode,
+    };
     use crate::types::counter::CounterType;
-    use crate::types::identifiers::ObjectId;
+    use crate::types::identifiers::{ObjectId, TrackedSetId};
     use crate::types::player::PlayerId;
 
     // ---- builders ----
@@ -5463,6 +5818,13 @@ mod tests {
     fn batch() -> GroupStructure {
         gs(false, false, true, false, true, SourceCensus::unknown())
     }
+    /// A controller-uniform (not owner-aligned) co-departure batch — the PR-6.75 c5
+    /// batch-T1 shape.
+    fn batch_uniform() -> GroupStructure {
+        let mut s = batch();
+        s.controller_uniformity = ControllerUniformity::Uniform;
+        s
+    }
     fn gs(
         same_event: bool,
         all_same_source: bool,
@@ -5478,14 +5840,193 @@ mod tests {
             event_object_excludes_sources: excludes,
             event_object_present: present,
             source_census,
-            // PR-6.75: default false ⇒ every prior verdict is byte-preserved (spans
-            // unconsulted). The §4.3 span pins below set it true explicitly.
-            same_controller: false,
+            // PR-6.75: default `Mixed` ⇒ every prior verdict is byte-preserved (no
+            // span/fused refinement and no batch-T1 consulted). Uniformity pins pass
+            // `Uniform`/`UniformAligned` explicitly.
+            controller_uniformity: ControllerUniformity::Mixed,
         }
     }
 
     fn conflicts(a: &ResolvedAbility, s: &GroupStructure) -> bool {
         profiles_conflict(&ability_rw_profile(a), s)
+    }
+
+    // ===================== PR-6.75 c5 batch-T1 unit pins (B-4 / B-7) =====================
+
+    fn typed_ctrl(c: ControllerRef) -> TargetFilter {
+        let mut tf = TypedFilter::creature();
+        tf.controller = Some(c);
+        TargetFilter::Typed(tf)
+    }
+
+    /// B-7 — `member_bound_target_filter` family axis (each TRUE row is a per-source
+    /// tracked/chosen/attachment/event-context referent; each FALSE row rides
+    /// another carrier or is uniformity-/owner-invariant). Nested composites descend.
+    #[test]
+    fn b7_member_bound_target_filter_families() {
+        let ts = || TargetFilter::TrackedSet {
+            id: TrackedSetId(0),
+        };
+        // TRUE: tracked/exiled/chosen/attachment/event-context refs + nesting.
+        for f in [
+            ts(),
+            TargetFilter::Not {
+                filter: Box::new(ts()),
+            },
+            TargetFilter::And {
+                filters: vec![TargetFilter::Controller, ts()],
+            },
+            TargetFilter::TrackedSetFiltered {
+                id: TrackedSetId(0),
+                filter: Box::new(creature()),
+                caused_by: None,
+            },
+            TargetFilter::ChosenCard,
+            TargetFilter::HasChosenName,
+            TargetFilter::AttachedTo,
+            TargetFilter::EventTarget,
+            TargetFilter::TriggeringSourceController,
+            TargetFilter::OriginalController,
+            typed_ctrl(ControllerRef::SourceChosenPlayer),
+        ] {
+            assert!(
+                member_bound_target_filter(&f),
+                "member-bound TRUE expected for {f:?}"
+            );
+        }
+        // FALSE: source carriers, legacy-12, resolution-local, uniformity-/owner-invariant.
+        for f in [
+            TargetFilter::SelfRef,
+            TargetFilter::TriggeringSource,
+            TargetFilter::ParentTarget,
+            TargetFilter::Controller,
+            TargetFilter::Owner,
+            TargetFilter::ScopedPlayer,
+            TargetFilter::LastRevealed,
+            TargetFilter::DefendingPlayer,
+            typed_ctrl(ControllerRef::You),
+            TargetFilter::None,
+        ] {
+            assert!(
+                !member_bound_target_filter(&f),
+                "member-bound FALSE expected for {f:?}"
+            );
+        }
+    }
+
+    /// B-7 — the quantity-arm split: per-source tracked/exiled/cast-context refs set
+    /// `reads_member_bound`; turn-/commander-scoped refs stay clean.
+    #[test]
+    fn b7_quantity_member_bound_split() {
+        for r in [
+            QuantityRef::TrackedSetSize,
+            QuantityRef::CardsExiledBySource,
+            QuantityRef::CostXPaid,
+            QuantityRef::ChosenNumber,
+            QuantityRef::ConvokedCreatureCount,
+        ] {
+            assert!(
+                rw_quantity_ref(&r).reads_member_bound,
+                "quantity member-bound expected for {r:?}"
+            );
+        }
+        for r in [
+            QuantityRef::TurnsTaken,
+            QuantityRef::DungeonsCompleted,
+            QuantityRef::ExiledFromHandThisResolution,
+        ] {
+            assert!(
+                !rw_quantity_ref(&r).reads_member_bound,
+                "quantity member-unbound expected for {r:?}"
+            );
+        }
+    }
+
+    /// B-7 — `Choose{persist:true}` stores per-source `chosen_attributes` (member-
+    /// bound); `persist:false` is resolution-local (slithermuse, member-unbound).
+    #[test]
+    fn b7_choose_persist_member_bound() {
+        let choose = |persist: bool| Effect::Choose {
+            choice_type: ChoiceType::Opponent { restriction: None },
+            persist,
+            selection: TargetSelectionMode::default(),
+        };
+        assert!(
+            ability_rw_profile(&ra(choose(true))).reads_member_bound,
+            "persist:true ⇒ member-bound"
+        );
+        assert!(
+            !ability_rw_profile(&ra(choose(false))).reads_member_bound,
+            "persist:false ⇒ member-unbound"
+        );
+    }
+
+    /// B-7 — the `gs()` default is fail-closed `Mixed` (every prior verdict byte-
+    /// preserved: no span/fused refinement and no batch-T1 consulted).
+    #[test]
+    fn b7_gs_default_is_mixed() {
+        assert!(matches!(
+            batch().controller_uniformity,
+            ControllerUniformity::Mixed
+        ));
+        assert!(matches!(
+            batch_uniform().controller_uniformity,
+            ControllerUniformity::Uniform
+        ));
+    }
+
+    /// B-7 — the batch-T1 clause in `profiles_conflict`: a source-independent,
+    /// member-unbound, no-event profile whose sibling membership feed WOULD conflict
+    /// is auto-ordered under `Uniform`, prompted under `Mixed`, and prompted under
+    /// `Uniform` once `reads_member_bound` is set. Pins the `!= Mixed` and
+    /// `!reads_member_bound` conjuncts against the SAME feed.
+    #[test]
+    fn b7_batch_t1_clause_conjuncts() {
+        let feed = || {
+            let mut p = RwProfile::empty();
+            p.reads_board = KindSet::one(StateKind::SetMembership);
+            p.reads_membership_census = Census::Any;
+            p.reads_membership_zones = ZoneSpan::Any;
+            p.writes_external = KindSet::one(StateKind::SetMembership);
+            p.writes_membership_external_census = Census::Any;
+            p.writes_membership_external_zones = ZoneSpan::Any;
+            p
+        };
+        assert!(
+            !profiles_conflict(&feed(), &batch_uniform()),
+            "T1: uniform + source-independent + member-unbound ⇒ auto"
+        );
+        assert!(
+            profiles_conflict(&feed(), &batch()),
+            "T1 != Mixed conjunct: Mixed ⇒ gate off ⇒ membership feed prompts"
+        );
+        let mut mb = feed();
+        mb.reads_member_bound = true;
+        assert!(
+            profiles_conflict(&mb, &batch_uniform()),
+            "T1 !reads_member_bound conjunct: member-bound ⇒ T1 refused ⇒ feed prompts"
+        );
+    }
+
+    /// B-4 — the `!writes_event_object.any()` conjunct. An event-object counter
+    /// write (unreachable in isolation via the AST — every event-object write also
+    /// sets `legacy_batch_prompt`/`reads_member_bound` — so pinned on a constructed
+    /// profile) refuses T1, letting the counter feed prompt; clearing it auto-orders.
+    #[test]
+    fn b4_writes_event_object_conjunct() {
+        let mut p = RwProfile::empty();
+        p.reads_board = KindSet::one(StateKind::ObjectCounters);
+        p.writes_external = KindSet::one(StateKind::ObjectCounters);
+        p.writes_event_object = KindSet::one(StateKind::ObjectCounters);
+        assert!(
+            profiles_conflict(&p, &batch_uniform()),
+            "B-4: event-object write refuses T1 ⇒ counter feed reached ⇒ prompt"
+        );
+        p.writes_event_object = KindSet::EMPTY;
+        assert!(
+            !profiles_conflict(&p, &batch_uniform()),
+            "B-4 revert: without the event-object write, T1 auto-orders"
+        );
     }
 
     // ===================== base shapes =====================

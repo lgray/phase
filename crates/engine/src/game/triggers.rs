@@ -3633,23 +3633,31 @@ fn group_is_order_independent(
         event_object_id.is_some_and(|eid| group.iter().all(|ctx| ctx.pending.source_id != eid));
     let source_census = group_source_census(state, group);
 
-    // PR-6.75 (CR 603.3b + CR 110.2 + CR 108.3): controller-private group — every
-    // member's pending controller is one shared player `c0` AND each live source
-    // object is both controlled and owned by `c0`. Owner-alignment makes owner-keyed
-    // self-write destinations (CR 400.3 hand/graveyard) controller-resolvable.
-    // Computed live from `state.objects` (mirrors `group_source_census`): a missing
-    // object or any drift between the pending controller and the live object's
-    // controller/owner ⇒ fail-closed `false`, closing the fire-vs-ordering
-    // control-change race.
-    let same_controller = {
+    // PR-6.75 (CR 603.3b + CR 110.2 + CR 108.3 + CR 805.7): the group's controller
+    // structure, computed LIVE from `state.objects` (mirrors `group_source_census`).
+    // `Uniform` iff every member's pending controller is one shared `c0` (CR 109.5
+    // triggered-ability "you"); `UniformAligned` iff additionally each live source
+    // object is controlled AND owned by `c0` (CR 108.3) — the precondition for
+    // owner-keyed self-write destinations (CR 400.3 hand/graveyard) to be
+    // controller-resolvable. A missing object or any drift between the pending
+    // controller and the live object's controller/owner fails closed (never upgrades
+    // past `Uniform`), closing the fire-vs-ordering control-change race. `Mixed`
+    // (divergent pending controllers) is reachable only via team-pooled placement
+    // (CR 805.7).
+    let controller_uniformity = {
         let c0 = first.pending.controller;
-        group.iter().all(|ctx| {
-            ctx.pending.controller == c0
-                && state
-                    .objects
-                    .get(&ctx.pending.source_id)
-                    .is_some_and(|o| o.controller == c0 && o.owner == c0)
-        })
+        if !group.iter().all(|ctx| ctx.pending.controller == c0) {
+            crate::game::ability_rw::ControllerUniformity::Mixed
+        } else if group.iter().all(|ctx| {
+            state
+                .objects
+                .get(&ctx.pending.source_id)
+                .is_some_and(|o| o.controller == c0 && o.owner == c0)
+        }) {
+            crate::game::ability_rw::ControllerUniformity::UniformAligned
+        } else {
+            crate::game::ability_rw::ControllerUniformity::Uniform
+        }
     };
 
     let same_event_structure = crate::game::ability_rw::GroupStructure {
@@ -3659,7 +3667,7 @@ fn group_is_order_independent(
         event_object_excludes_sources,
         event_object_present,
         source_census: source_census.clone(),
-        same_controller,
+        controller_uniformity,
     };
     let batch_structure = crate::game::ability_rw::GroupStructure {
         same_event: false,
@@ -3668,7 +3676,7 @@ fn group_is_order_independent(
         event_object_excludes_sources,
         event_object_present,
         source_census,
-        same_controller,
+        controller_uniformity,
     };
     let same_event_conflict =
         crate::game::ability_rw::profiles_conflict(&profile, &same_event_structure);

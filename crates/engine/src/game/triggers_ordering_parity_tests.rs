@@ -17,16 +17,16 @@
 use super::*;
 use crate::game::ability_rw::{
     ability_rw_profile, filter_excludes_source, profiles_conflict, source_census_overlaps_filter,
-    trigger_condition_rw_profile, GroupStructure, SourceCensus,
+    trigger_condition_rw_profile, ControllerUniformity, GroupStructure, SourceCensus,
 };
 use crate::game::ability_utils::{build_resolved_from_def, build_target_slots};
 use crate::game::game_object::GameObject;
 use crate::test_support::shared_card_db;
 use crate::types::ability::{
-    AbilityCondition, AbilityDefinition, AggregateFunction, Comparator, ControllerRef, Effect,
-    ObjectScope, PlayerFilter, PlayerScope, QuantityExpr, QuantityRef, ResolvedAbility,
-    SearchSelectionConstraint, TargetFilter, TriggerCondition, TriggerConstraint,
-    TriggerDefinition, TypedFilter,
+    AbilityCondition, AbilityDefinition, AggregateFunction, ChoiceType, Comparator, ControllerRef,
+    Effect, ObjectScope, PlayerFilter, PlayerScope, QuantityExpr, QuantityRef, ResolvedAbility,
+    SearchSelectionConstraint, TargetFilter, TargetSelectionMode, TriggerCondition,
+    TriggerConstraint, TriggerDefinition, TypedFilter,
 };
 use crate::types::card::CardFace;
 use crate::types::card_type::Supertype;
@@ -340,7 +340,7 @@ fn ability_rw_profile_merged(
 /// phases parse to `constraint: None` (`oracle_trigger.rs`), opponent possessives
 /// to `OnlyDuringOpponentsTurn`, and enchanted/chosen-player forms to a
 /// `valid_target` with `constraint: None` — all ⇒ `false` here. The owner-alignment
-/// half of `same_controller` is computed LIVE and fail-closed in production; the
+/// owner-alignment half (`UniformAligned`) is computed LIVE and fail-closed in production; the
 /// sweep models the reachable canonical group (an exotic donated-source variant
 /// merely over-prompts in production, never under-prompts).
 fn trigger_is_controller_private(trig: &TriggerDefinition) -> bool {
@@ -400,18 +400,19 @@ fn ordering_parity_sweep() {
             let has_src_read = reads_source_pt_or_counter(&value);
             let hadcounters = matches!(trig.condition, Some(TriggerCondition::HadCounters { .. }));
 
-            let mk = |same_event: bool,
-                      all_same_source: bool,
-                      self_departed: bool,
-                      same_controller: bool| GroupStructure {
-                same_event,
-                all_same_source,
-                all_sources_self_departed: self_departed,
-                event_object_excludes_sources: if self_ref { false } else { excludes },
-                event_object_present: event_present,
-                source_census: census.clone(),
-                same_controller,
-            };
+            let mk =
+                |same_event: bool,
+                 all_same_source: bool,
+                 self_departed: bool,
+                 controller_uniformity: ControllerUniformity| GroupStructure {
+                    same_event,
+                    all_same_source,
+                    all_sources_self_departed: self_departed,
+                    event_object_excludes_sources: if self_ref { false } else { excludes },
+                    event_object_present: event_present,
+                    source_census: census.clone(),
+                    controller_uniformity,
+                };
 
             // --- Same-event, distinct-source observer (S2) ---
             // §5.2: only where a 2-copy same-event group is REACHABLE (CLASS-A
@@ -421,7 +422,20 @@ fn ordering_parity_sweep() {
             // pinned Phase+OnlyDuringYourTurn class (`trigger_is_controller_private`);
             // production additionally computes owner-alignment live and fail-closed.
             if !self_ref && same_event_group_reachable(face, trig, &census) {
-                let se = mk(true, false, false, trigger_is_controller_private(trig));
+                // §5.2: the modeled canonical S2 group is controller-private (fire-
+                // time-pinned Phase+OnlyDuringYourTurn) ⇒ `UniformAligned` (owner-
+                // alignment computed live in production); every other shape ⇒ `Mixed`
+                // (fail-closed). Only `UniformAligned` unlocks the span/fused gate.
+                let se = mk(
+                    true,
+                    false,
+                    false,
+                    if trigger_is_controller_private(trig) {
+                        ControllerUniformity::UniformAligned
+                    } else {
+                        ControllerUniformity::Mixed
+                    },
+                );
                 let conflict = profiles_conflict(&profile, &se);
                 let decision_new = !conflict; // decision_old (same-event) == auto == true
                 compared += 1;
@@ -441,13 +455,18 @@ fn ordering_parity_sweep() {
 
             // --- Departure-batch structures (S3 self-departed / S5 mixed obs) ---
             if is_departure {
-                // §5: batch rows model `same_controller = false` (different-
-                // controller co-deaths are reachable) — the static sweep's batch
-                // model is fail-closed; production computes it live.
+                // §5: batch rows model `ControllerUniformity::Uniform`. Production
+                // ordering groups are partitioned by `trigger_order_controller`
+                // (triggers.rs), so every non-team co-departure group is controller-
+                // uniform BY CONSTRUCTION; team-pooled groups (CR 805.7) compute the
+                // fact live and fail-closed to `Mixed` ⇒ over-prompt (never under-
+                // prompt). `Uniform` (not `UniformAligned`) keeps the span/fused gate
+                // OFF — the span model is byte-identical; the only clause it newly
+                // unlocks is batch-T1.
                 let batch = if self_ref {
-                    mk(false, false, true, false) // self-dies
+                    mk(false, false, true, ControllerUniformity::Uniform) // self-dies
                 } else {
-                    mk(false, false, false, false) // observer batch
+                    mk(false, false, false, ControllerUniformity::Uniform) // observer batch
                 };
                 let batch_conflict = legacy_prompt || profiles_conflict(&profile, &batch);
                 let decision_new = !batch_conflict;
@@ -953,10 +972,10 @@ fn n_g_dropped_target_legacy_ref_retains_batch_prompt() {
 }
 
 // ===================================================================
-// PR-6.75 `same_controller` span discriminators (S1–S6), driven through the
+// PR-6.75 controller-uniformity span discriminators (S1–S6), driven through the
 // production authority `group_is_order_independent`. POSITIVE (auto) groups
 // install source objects owned AND controlled by the pending controller so the
-// LIVE `same_controller` check holds; each NEG breaks exactly ONE axis (span
+// LIVE controller-uniformity check holds; each NEG breaks exactly ONE axis (span
 // disjointness, controller-uniformity, or owner-alignment) and must re-prompt —
 // the paired positive reach-guard proves the auto is delivered by the refined
 // row, not an upstream fast-path short-circuit.
@@ -1233,9 +1252,9 @@ fn s3_brink_fused_discard_span() {
 
 /// S-4 — load-bearing shared-event observer (the gate is load-bearing). Two
 /// Rekindled-shape triggers off ONE event with controllers P0 and P1: mixed
-/// controllers ⇒ `same_controller = false` ⇒ the spans are UNCONSULTED ⇒ the
+/// controllers ⇒ `Mixed` ⇒ the spans are UNCONSULTED ⇒ the
 /// hand row fires ⇒ PROMPT. Revert-fail foil (same shapes, both P0): the ONLY
-/// change is the controller/owner of source 11 ⇒ `same_controller = true` ⇒
+/// change is the controller/owner of source 11 ⇒ `UniformAligned` ⇒
 /// AUTO. Deleting the gate in `profiles_conflict` would flip the P0/P1 case to
 /// auto (RED).
 #[test]
@@ -1260,7 +1279,7 @@ fn s4_gate_is_load_bearing() {
     ];
     assert!(
         !group_is_order_independent(&state, &mixed, false),
-        "S4 NEG: mixed controllers ⇒ same_controller false ⇒ spans unconsulted ⇒ prompt"
+        "S4 NEG: mixed controllers ⇒ Mixed ⇒ spans unconsulted ⇒ prompt"
     );
 
     // Revert-fail foil: reinstall source 11 under P0 and flip the pending
@@ -1272,12 +1291,12 @@ fn s4_gate_is_load_bearing() {
     ];
     assert!(
         group_is_order_independent(&state, &uniform, false),
-        "S4 foil: both P0 ⇒ same_controller true ⇒ span disjointness clears ⇒ auto"
+        "S4 foil: both P0 ⇒ UniformAligned ⇒ span disjointness clears ⇒ auto"
     );
 }
 
 /// S-5 — MULTIPLAYER (3 players). (a) members P0 and P1: mixed controllers ⇒
-/// same_controller false ⇒ PROMPT (at 3p, P1's opponents include P0, so treating
+/// Mixed ⇒ PROMPT (at 3p, P1's opponents include P0, so treating
 /// them as controller-private would be unsound — the gate correctly refuses).
 /// (b) both members P0: `You == {P0}` vs `Opponents == {P1,P2}` disjointness is
 /// NOT a two-player artifact ⇒ AUTO at N players.
@@ -1304,7 +1323,7 @@ fn s5_multiplayer_three_players() {
     ];
     assert!(
         !group_is_order_independent(&state, &mixed, false),
-        "S5a: 3p mixed controllers ⇒ same_controller false ⇒ prompt"
+        "S5a: 3p mixed controllers ⇒ Mixed ⇒ prompt"
     );
 
     let both_p0 = vec![
@@ -1320,9 +1339,9 @@ fn s5_multiplayer_three_players() {
 /// S-6 — owner-alignment discriminator (the `o.owner == c0` conjunct is
 /// load-bearing). Rekindled shape, both members controlled by P0, but source 11
 /// is OWNED by P1 (donated / control-changed). NEG: owner mismatch ⇒
-/// same_controller false ⇒ PROMPT — and this is a REAL under-prompt guard: the
+/// Mixed ⇒ PROMPT — and this is a REAL under-prompt guard: the
 /// self-bounce would put source 11 in P1's hand, which the `HandSize{Opponent}`
-/// read observes. Revert-fail foil (source 11 owned by P0): same_controller true
+/// read observes. Revert-fail foil (source 11 owned by P0): UniformAligned
 /// ⇒ AUTO. Dropping the owner conjunct would auto the NEG (RED).
 #[test]
 fn s6_owner_alignment() {
@@ -1356,6 +1375,359 @@ fn s6_owner_alignment() {
     ];
     assert!(
         group_is_order_independent(&state, &aligned, false),
-        "S6 foil: owner == controller == P0 ⇒ same_controller true ⇒ auto"
+        "S6 foil: owner == controller == P0 ⇒ UniformAligned ⇒ auto"
+    );
+}
+
+// ===================================================================
+// PR-6.75 c5 — batch-T1 uniformity theorem discriminators (B-1..B-6 + the
+// executable Dodecapod negative), driven through the production authority
+// `group_is_order_independent`. Co-departure groups use DEAD sources (NOT
+// installed in `state.objects`) so the chokepoint yields `Uniform` (pending
+// controllers equal) rather than `UniformAligned` (live owner==controller) — the
+// exact production shape of an SBA co-death batch. Each NEG breaks ONE T1 conjunct
+// and is paired with a POS reach-guard proving the group reaches the batch-T1
+// clause (not short-circuited upstream).
+// ===================================================================
+
+/// Mindslicer's fused self-emptying discard ("each player discards their hand") —
+/// source-independent, no member-bound storage, no event read.
+fn fused_discard_each() -> ResolvedAbility {
+    let mut d = ra(discard_hand(
+        qref(QuantityRef::HandSize {
+            player: PlayerScope::ScopedPlayer,
+        }),
+        TargetFilter::Controller,
+    ));
+    d.player_scope = Some(PlayerFilter::All);
+    d
+}
+
+/// Yukora/Emrakul removes-all: sacrifice all your matching creatures, `count =
+/// ObjectCount` of the same filter — a pure f(state, controller).
+fn sacrifice_all_own_creatures() -> ResolvedAbility {
+    ra(Effect::Sacrifice {
+        target: creatures_of(ControllerRef::You),
+        count: qref(QuantityRef::ObjectCount {
+            filter: creatures_of(ControllerRef::You),
+        }),
+        min_count: 0,
+    })
+}
+
+/// A `ChangeZone{target → Battlefield, enters_under: You}` return (Exile → bf).
+fn change_zone_return(target: TargetFilter) -> Effect {
+    Effect::ChangeZone {
+        origin: Some(Zone::Exile),
+        destination: Zone::Battlefield,
+        target,
+        owner_library: false,
+        enter_transformed: false,
+        enters_under: Some(ControllerRef::You),
+        enter_tapped: crate::types::zones::EtbTapState::default(),
+        enters_attacking: false,
+        up_to: false,
+        enter_with_counters: vec![],
+        conditional_enter_with_counters: vec![],
+        face_down_profile: None,
+        enters_modified_if: None,
+    }
+}
+
+/// Slithermuse's resolution-local choice: `Choose{Opponent, persist:false}` → draw.
+/// `persist:false` writes NO source storage ⇒ member-unbound ⇒ T1-clean.
+fn choose_opponent_then_draw() -> ResolvedAbility {
+    let draw = ra(Effect::Draw {
+        count: qfix(1),
+        target: TargetFilter::Controller,
+    });
+    ra(Effect::Choose {
+        choice_type: ChoiceType::Opponent { restriction: None },
+        persist: false,
+        selection: TargetSelectionMode::default(),
+    })
+    .sub_ability(draw)
+}
+
+/// B-1 — the uniformity gate is load-bearing. Two byte-identical mindslicer fused
+/// discards co-depart with DEAD sources. POS: both P0 ⇒ `Uniform` ⇒ batch-T1
+/// clears ⇒ AUTO. NEG: controllers P0/P1 (a CR 805.7 team-pooled group) ⇒ `Mixed`
+/// ⇒ T1 gated OFF ⇒ the fused hand read unions back and overlaps the discard's
+/// hand write ⇒ PROMPT. Revert-fail (measured in the impl report): forcing
+/// `Uniform`/deleting the `!= Mixed` conjunct flips the NEG to AUTO (RED).
+#[test]
+fn b1_mindslicer_uniformity_gate() {
+    let state = empty_state();
+    let pos = vec![
+        ctx(
+            10,
+            fused_discard_each(),
+            None,
+            self_departure(10, &[11]),
+            None,
+        ),
+        ctx(
+            11,
+            fused_discard_each(),
+            None,
+            self_departure(11, &[10]),
+            None,
+        ),
+    ];
+    assert!(
+        group_is_order_independent(&state, &pos, false),
+        "B-1 POS: uniform fused-discard co-departure batch ⇒ batch-T1 auto"
+    );
+
+    // CR 805.7 team-pool: divergent pending controllers ⇒ `Mixed` ⇒ T1 off.
+    let neg = vec![
+        ctx_c(10, 0, fused_discard_each(), None, self_departure(10, &[11])),
+        ctx_c(11, 1, fused_discard_each(), None, self_departure(11, &[10])),
+    ];
+    assert!(
+        !group_is_order_independent(&state, &neg, false),
+        "B-1 NEG: mixed-controller (team-pool) batch ⇒ Mixed ⇒ fused read × hand write ⇒ prompt"
+    );
+}
+
+/// B-2 — the member-bound flag is the Day-of-the-Dragons soundness pin. POS:
+/// yukora removes-all, uniform ⇒ T1 clears ⇒ AUTO. NEG: the DotD twin — the SAME
+/// removes-all PLUS a sub `ChangeZone{TrackedSet(0) → Battlefield}` return. The
+/// per-source tracked set sets `reads_member_bound` ⇒ T1 refused ⇒ the count-read
+/// × return-write membership feed (reached ONLY because T1 is blocked) ⇒ PROMPT.
+/// Revert-fail (measured): removing `TrackedSet` from `member_bound_target_filter`
+/// drops the flag ⇒ T1 fires and short-circuits before the feed ⇒ AUTO (RED).
+#[test]
+fn b2_dotd_member_bound_pin() {
+    let state = empty_state();
+    let pos = vec![
+        ctx(
+            10,
+            sacrifice_all_own_creatures(),
+            None,
+            self_departure(10, &[11]),
+            None,
+        ),
+        ctx(
+            11,
+            sacrifice_all_own_creatures(),
+            None,
+            self_departure(11, &[10]),
+            None,
+        ),
+    ];
+    assert!(
+        group_is_order_independent(&state, &pos, false),
+        "B-2 POS: uniform removes-all ⇒ batch-T1 auto"
+    );
+
+    let dotd = || {
+        sacrifice_all_own_creatures().sub_ability(ra(change_zone_return(
+            TargetFilter::TrackedSet {
+                id: crate::types::identifiers::TrackedSetId(0),
+            },
+        )))
+    };
+    let neg = vec![
+        ctx(10, dotd(), None, self_departure(10, &[11]), None),
+        ctx(11, dotd(), None, self_departure(11, &[10]), None),
+    ];
+    assert!(
+        !group_is_order_independent(&state, &neg, false),
+        "B-2 NEG: DotD TrackedSet return ⇒ member-bound ⇒ T1 refused ⇒ prompt"
+    );
+}
+
+/// B-3 — the `source_independent` (self-write) conjunct + slithermuse's
+/// `persist:false` clear. POS-a: slithermuse's `Choose{Opponent, persist:false}`
+/// then draw, uniform ⇒ AUTO (a resolution-local choice is T1-clean). POS-b:
+/// yukora removes-all ⇒ AUTO (the reach-guard: proves the shape reaches T1). NEG: add a
+/// sub `ChangeZone{SelfRef, Battlefield → Graveyard}` self-sacrifice ⇒
+/// `writes_self` ⇒ `source_independent()` false ⇒ T1 refused ⇒ the `ObjectCount`
+/// membership read × the self bf→gy move feed ⇒ PROMPT (skyfisher class).
+/// Revert-fail (measured): dropping `source_independent()` from batch-T1 flips the
+/// NEG to AUTO (RED).
+#[test]
+fn b3_source_independent_and_persist_false() {
+    let state = empty_state();
+    let pos_slithermuse = vec![
+        ctx(
+            10,
+            choose_opponent_then_draw(),
+            None,
+            self_departure(10, &[11]),
+            None,
+        ),
+        ctx(
+            11,
+            choose_opponent_then_draw(),
+            None,
+            self_departure(11, &[10]),
+            None,
+        ),
+    ];
+    assert!(
+        group_is_order_independent(&state, &pos_slithermuse, false),
+        "B-3 POS-a: slithermuse persist:false choice is T1-clean ⇒ auto"
+    );
+
+    let self_sac = || {
+        sacrifice_all_own_creatures().sub_ability(ra(Effect::ChangeZone {
+            origin: Some(Zone::Battlefield),
+            destination: Zone::Graveyard,
+            target: TargetFilter::SelfRef,
+            owner_library: false,
+            enter_transformed: false,
+            enters_under: None,
+            enter_tapped: crate::types::zones::EtbTapState::default(),
+            enters_attacking: false,
+            up_to: false,
+            enter_with_counters: vec![],
+            conditional_enter_with_counters: vec![],
+            face_down_profile: None,
+            enters_modified_if: None,
+        }))
+    };
+    let neg = vec![
+        ctx(10, self_sac(), None, self_departure(10, &[11]), None),
+        ctx(11, self_sac(), None, self_departure(11, &[10]), None),
+    ];
+    assert!(
+        !group_is_order_independent(&state, &neg, false),
+        "B-3 NEG: SelfRef self-move ⇒ writes_self ⇒ source_independent false ⇒ prompt"
+    );
+}
+
+/// B-5 — the `reads_event_live` conjunct and its clause PLACEMENT (T1 sits ABOVE
+/// the freeze-invalidation row). Both members `Draw{count} + ChangeZone{Any →
+/// Battlefield}` (a reentry hazard ⇒ freeze invalid). POS: `count: Fixed` ⇒ no
+/// event read ⇒ T1 clears ⇒ AUTO (reach-guard: the reentry hazard alone does not
+/// prompt a T1-clean uniform batch). NEG: `count: Power{EventSource}` ⇒
+/// `reads_event_live` ⇒ T1 refused ⇒ the freeze-invalidation row (reentry hazard ×
+/// event-live read) ⇒ PROMPT. Revert-fail (measured): deleting `!reads_event_live`
+/// from batch-T1 lets T1 fire and short-circuit BEFORE the freeze row ⇒ AUTO (RED).
+#[test]
+fn b5_event_live_read_freeze_placement() {
+    let state = empty_state();
+    let with_count = |count: QuantityExpr| {
+        ra(Effect::Draw {
+            count,
+            target: TargetFilter::Controller,
+        })
+        .sub_ability(ra(change_zone_return(TargetFilter::Any)))
+    };
+    let pos = vec![
+        ctx(
+            10,
+            with_count(qfix(1)),
+            None,
+            self_departure(10, &[11]),
+            None,
+        ),
+        ctx(
+            11,
+            with_count(qfix(1)),
+            None,
+            self_departure(11, &[10]),
+            None,
+        ),
+    ];
+    assert!(
+        group_is_order_independent(&state, &pos, false),
+        "B-5 POS: T1-clean uniform batch with a reentry hazard ⇒ auto (reach-guard)"
+    );
+
+    let ev_read = || {
+        with_count(qref(QuantityRef::Power {
+            scope: ObjectScope::EventSource,
+        }))
+    };
+    let neg = vec![
+        ctx(10, ev_read(), None, self_departure(10, &[11]), None),
+        ctx(11, ev_read(), None, self_departure(11, &[10]), None),
+    ];
+    assert!(
+        !group_is_order_independent(&state, &neg, false),
+        "B-5 NEG: Power{{EventSource}} read × reentry hazard ⇒ freeze row ⇒ prompt"
+    );
+}
+
+/// B-6 — multiplayer (3 players). A uniform P0 removes-all co-departure group
+/// auto-orders at N players (POS); a mixed P0/P1 group prompts (NEG) — the
+/// uniformity gate is not a two-player artifact (S-5 style).
+#[test]
+fn b6_multiplayer_uniform_vs_mixed() {
+    let state = GameState::new(crate::types::format::FormatConfig::standard(), 3, 7);
+    let pos = vec![
+        ctx(
+            10,
+            sacrifice_all_own_creatures(),
+            None,
+            self_departure(10, &[11]),
+            None,
+        ),
+        ctx(
+            11,
+            sacrifice_all_own_creatures(),
+            None,
+            self_departure(11, &[10]),
+            None,
+        ),
+    ];
+    assert!(
+        group_is_order_independent(&state, &pos, false),
+        "B-6 POS: 3p uniform P0 removes-all batch ⇒ auto"
+    );
+
+    let neg = vec![
+        ctx_c(
+            10,
+            0,
+            sacrifice_all_own_creatures(),
+            None,
+            self_departure(10, &[11]),
+        ),
+        ctx_c(
+            11,
+            1,
+            sacrifice_all_own_creatures(),
+            None,
+            self_departure(11, &[10]),
+        ),
+    ];
+    assert!(
+        !group_is_order_independent(&state, &neg, false),
+        "B-6 NEG: 3p mixed P0/P1 batch ⇒ Mixed ⇒ prompt"
+    );
+}
+
+/// ★ CONDITION 1 — the executable Dodecapod negative (the load-bearing negative
+/// for the whole controller-uniformity pivot). A genuinely order-observable
+/// MIXED-controller co-departure batch: two members controlled by P0 and P1 (a
+/// CR 805.7 team-pooled group in a 3-player game), each an `EventSourceControlledBy`
+/// -class consumer — a `Discard` whose downstream replacement (Dodecapod-style)
+/// reads the DISCARD CAUSE's source controller. Whichever member resolves first
+/// stamps ITS OWN source as the cause, so `event_source_controller != affected`
+/// flips between orders (events.rs `Discarded.source_id`; replacement.rs
+/// `EventSourceControlledBy`). The chokepoint yields `Mixed` ⇒ batch-T1 is gated
+/// OFF ⇒ the group STILL PROMPTS (auto-ordering would be an unsound under-prompt).
+/// Revert-fail (measured in the impl report): forcing the chokepoint to `Uniform`
+/// (or deleting the `!= Mixed` conjunct) auto-orders this mixed batch = RED —
+/// proving the uniformity gate is exactly what preserves the mixed-batch prompt.
+#[test]
+fn condition1_dodecapod_mixed_controller_still_prompts() {
+    let state = GameState::new(crate::types::format::FormatConfig::standard(), 3, 7);
+    // A source-independent "each player discards their hand" — the Dodecapod
+    // discard channel. Under a MIXED batch the cause-source controller is
+    // order-observable; the profile itself is T1-clean, so ONLY the `!= Mixed`
+    // uniformity gate keeps it prompting.
+    let dodecapod = vec![
+        ctx_c(10, 0, fused_discard_each(), None, self_departure(10, &[11])),
+        ctx_c(11, 1, fused_discard_each(), None, self_departure(11, &[10])),
+    ];
+    assert!(
+        !group_is_order_independent(&state, &dodecapod, false),
+        "Condition-1: mixed-controller Dodecapod discard batch ⇒ Mixed ⇒ STILL PROMPTS \
+         (auto would be an unsound under-prompt on the cause-source controller channel)"
     );
 }
