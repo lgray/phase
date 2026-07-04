@@ -4143,10 +4143,16 @@ pub(super) fn parse_intrinsic_continuation_ast(
             let full_lower = full_text.to_ascii_lowercase();
             // CR 400.7 + CR 701.23 + CR 701.24: Name-hate compounds ("search … graveyard,
             // hand, and library … with the same name as that {creature,spell,…} and exile
-            // them") lower to `ChangeZoneAll { SameNameAsParentTarget }`, not SearchLibrary
-            // + SearchDestination. Suppress the generic put/exile step when the full
-            // sentence matches the multi-zone same-name exile recognizer.
-            if super::imperative::try_parse_multi_zone_same_name_exile(&full_lower).is_some() {
+            // them"). The mandatory "all cards" form lowers to
+            // `ChangeZoneAll { SameNameAsParentTarget }` (NOT SearchLibrary) and handles
+            // the exile itself — suppress the generic put/exile step for it. The
+            // interactive "any number" / "up to N" forms DO lower to `SearchLibrary`
+            // (§9 R1 / D2) and need this intrinsic `ChangeZone { Exile }` destination to
+            // remove the found set, so do NOT suppress them.
+            if matches!(
+                super::imperative::try_parse_multi_zone_same_name_exile(&full_lower),
+                Some((_, MultiZoneExileQuantifier::All))
+            ) {
                 return None;
             }
             // CR 608.2c: Conditional result destinations ("put it onto the

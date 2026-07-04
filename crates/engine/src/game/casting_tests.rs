@@ -20073,6 +20073,438 @@ fn kozileks_command_modes_scry_draw_and_exile_graveyard_end_to_end() {
     outcome.assert_zone(&[gy_a, gy_b], Zone::Exile);
 }
 
+const DEADLY_ORACLE: &str = "As an additional cost to cast this spell, you may collect evidence 6.\nDestroy all creatures. If evidence was collected, exile a card from an opponent's graveyard. Then search its owner's graveyard, hand, and library for any number of cards with that name and exile them. That player shuffles, then draws a card for each card exiled from their hand this way.";
+
+/// Deadly Cover-Up fixture: P1 owns two `Grizzly Bears` in GY + one in hand
+/// (same-named), a `Llanowar Elves` decoy in GY and hand, and a two-card library
+/// with no Bears (so a draw is the only library change). P0 owns a same-named
+/// `Grizzly Bears` in hand (owner-axis scoping proof — must survive) and two
+/// MV-3 evidence cards in GY (collect evidence 6 = 3 + 3). Returns
+/// `(runner, [p1_gy_bears x2], p1_gy_elves, p1_hand_bears, p1_hand_elves,
+///  p0_hand_bears, deadly, p1_lib_before)`.
+#[allow(clippy::type_complexity)]
+fn deadly_fixture() -> (
+    crate::game::scenario::GameRunner,
+    [ObjectId; 2],
+    ObjectId,
+    ObjectId,
+    ObjectId,
+    ObjectId,
+    ObjectId,
+    usize,
+) {
+    use crate::game::scenario::{GameScenario, P0, P1};
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(Phase::PreCombatMain);
+    let deadly = scenario
+        .add_spell_to_hand_from_oracle(P0, "Deadly Cover-Up", false, DEADLY_ORACLE)
+        .id();
+    scenario
+        .add_spell_to_graveyard(P0, "Evidence A", false)
+        .with_mana_cost(ManaCost::generic(3));
+    scenario
+        .add_spell_to_graveyard(P0, "Evidence B", false)
+        .with_mana_cost(ManaCost::generic(3));
+    let p1_gy_bears = [
+        scenario
+            .add_creature_to_graveyard(P1, "Grizzly Bears", 2, 2)
+            .id(),
+        scenario
+            .add_creature_to_graveyard(P1, "Grizzly Bears", 2, 2)
+            .id(),
+    ];
+    let p1_gy_elves = scenario
+        .add_creature_to_graveyard(P1, "Llanowar Elves", 1, 1)
+        .id();
+    let p1_hand_bears = scenario.add_card_to_hand(P1, "Grizzly Bears");
+    let p1_hand_elves = scenario.add_card_to_hand(P1, "Llanowar Elves");
+    scenario.add_card_to_library_top(P1, "Forest");
+    scenario.add_card_to_library_top(P1, "Island");
+    let p0_hand_bears = scenario.add_card_to_hand(P0, "Grizzly Bears");
+    let mut runner = scenario.build();
+    runner.state_mut().active_player = P0;
+    runner.state_mut().priority_player = P0;
+    let p1_lib_before = runner
+        .state()
+        .players
+        .iter()
+        .find(|p| p.id == P1)
+        .unwrap()
+        .library
+        .len();
+    (
+        runner,
+        p1_gy_bears,
+        p1_gy_elves,
+        p1_hand_bears,
+        p1_hand_elves,
+        p0_hand_bears,
+        deadly,
+        p1_lib_before,
+    )
+}
+
+/// Drive Deadly through the full cast+resolution pipeline. The seed exile
+/// ("exile a card from an opponent's graveyard") surfaces a cast-time
+/// `TargetSelection` — a same-named `Grizzly Bears` is chosen as the seed so
+/// `SameNameAsParentTarget` binds that name. Collect evidence is opted in/out via
+/// `pay_evidence`; `SearchChoice` selects all offered (name-matched) cards.
+fn drive_deadly(
+    runner: &mut crate::game::scenario::GameRunner,
+    deadly: ObjectId,
+    pay_evidence: bool,
+) {
+    use crate::types::ability::TargetRef;
+    let card_id = runner.state().objects[&deadly].card_id;
+    runner
+        .act(GameAction::CastSpell {
+            object_id: deadly,
+            card_id,
+            targets: vec![],
+            payment_mode: crate::types::game_state::CastPaymentMode::Auto,
+        })
+        .expect("Deadly cast accepted");
+    for _ in 0..25 {
+        match runner.state().waiting_for.clone() {
+            WaitingFor::TargetSelection {
+                target_slots,
+                selection,
+                ..
+            } => {
+                let slot = &target_slots[selection.current_slot];
+                // Choose a Grizzly Bears (not the decoy) as the seed — its name
+                // is what SameNameAsParentTarget matches.
+                let bears = slot
+                    .legal_targets
+                    .iter()
+                    .find(|t| {
+                        matches!(t, TargetRef::Object(id)
+                            if runner.state().objects.get(id).map(|o| o.name.as_str())
+                                == Some("Grizzly Bears"))
+                    })
+                    .cloned();
+                assert!(
+                    bears.is_some(),
+                    "seed must have a Grizzly Bears legal target"
+                );
+                runner
+                    .act(GameAction::ChooseTarget { target: bears })
+                    .expect("seed target accepted");
+            }
+            WaitingFor::OptionalCostChoice { .. } => {
+                runner
+                    .act(GameAction::DecideOptionalCost { pay: pay_evidence })
+                    .expect("optional collect-evidence decision accepted");
+            }
+            WaitingFor::CollectEvidenceChoice { cards, .. } => {
+                runner
+                    .act(GameAction::SelectCards { cards })
+                    .expect("collect-evidence selection accepted");
+            }
+            WaitingFor::SearchChoice { cards, .. } => {
+                runner
+                    .act(GameAction::SelectCards { cards })
+                    .expect("search selection accepted");
+            }
+            WaitingFor::Priority { .. } => {
+                if runner.state().stack.is_empty() {
+                    break;
+                }
+                runner.pass_both_players();
+            }
+            other => panic!("unexpected Deadly prompt: {other:?}"),
+        }
+    }
+}
+
+fn p1_library_len(runner: &crate::game::scenario::GameRunner) -> usize {
+    use crate::game::scenario::P1;
+    runner
+        .state()
+        .players
+        .iter()
+        .find(|p| p.id == P1)
+        .unwrap()
+        .library
+        .len()
+}
+
+/// CR 701.59b + CR 608.2c: Deadly Cover-Up Case A — collect evidence DECLINED.
+/// The seed exile ("if evidence was collected") is skipped, so the same-name
+/// search never runs: nothing is exiled from P1's zones and P1 draws 0.
+#[test]
+fn deadly_cover_up_case_a_no_evidence_no_exile_no_draw() {
+    let (
+        mut runner,
+        p1_gy_bears,
+        p1_gy_elves,
+        p1_hand_bears,
+        p1_hand_elves,
+        p0_hand_bears,
+        deadly,
+        p1_lib_before,
+    ) = deadly_fixture();
+    drive_deadly(&mut runner, deadly, false);
+
+    // Evidence declined → seed + search skipped: every card survives in place.
+    for id in p1_gy_bears {
+        assert_eq!(
+            runner.state().objects[&id].zone,
+            Zone::Graveyard,
+            "P1 GY Bears survives (no evidence)"
+        );
+    }
+    assert_eq!(runner.state().objects[&p1_gy_elves].zone, Zone::Graveyard);
+    assert_eq!(runner.state().objects[&p1_hand_bears].zone, Zone::Hand);
+    assert_eq!(runner.state().objects[&p1_hand_elves].zone, Zone::Hand);
+    assert_eq!(runner.state().objects[&p0_hand_bears].zone, Zone::Hand);
+    // No hand exile → no draw.
+    assert_eq!(
+        p1_library_len(&runner),
+        p1_lib_before,
+        "P1 draws 0 with no evidence"
+    );
+}
+
+/// CR 701.23a + CR 108.3 + CR 400.7: Deadly Cover-Up Case B — collect evidence
+/// PAID. The seed (a P1-GY Bears) is exiled, then the owner-axis
+/// (`ParentTargetOwner`) same-name search exiles every other same-named card
+/// across P1's GY/hand/library; P1 shuffles and draws one per Bears exiled from
+/// P1's HAND. Exercises W4's `parent_target_owner_player` branch (distinct from
+/// The End's controller path), W5, and W6 on the owner axis.
+///
+/// Revert-to-red (measured): revert W4 → P0's own hand Bears is exiled and P1's
+/// copies survive (caster searches its own zones), P1 draws 0; revert W5 → draw
+/// 0; revert W6 → caster draws (P1 library unchanged).
+#[test]
+fn deadly_cover_up_case_b_evidence_exiles_owner_zones_and_draws() {
+    let (
+        mut runner,
+        p1_gy_bears,
+        p1_gy_elves,
+        p1_hand_bears,
+        p1_hand_elves,
+        p0_hand_bears,
+        deadly,
+        p1_lib_before,
+    ) = deadly_fixture();
+    drive_deadly(&mut runner, deadly, true);
+
+    // Seed + search: all three P1 same-named Bears (2 GY + 1 hand) exiled.
+    for id in p1_gy_bears {
+        assert_eq!(
+            runner.state().objects[&id].zone,
+            Zone::Exile,
+            "P1 GY Bears exiled (seed + search)"
+        );
+    }
+    assert_eq!(
+        runner.state().objects[&p1_hand_bears].zone,
+        Zone::Exile,
+        "P1 hand Bears exiled by search"
+    );
+    // Decoys survive.
+    assert_eq!(runner.state().objects[&p1_gy_elves].zone, Zone::Graveyard);
+    assert_eq!(runner.state().objects[&p1_hand_elves].zone, Zone::Hand);
+    // W4 owner-axis scoping: the caster's own same-named card is untouched.
+    assert_eq!(
+        runner.state().objects[&p0_hand_bears].zone,
+        Zone::Hand,
+        "caster's Bears survives (W4 owner axis)"
+    );
+    // W5 + W6: P1 (owner) drew exactly 1 (one Bears exiled from P1's hand); the
+    // draw is the only change to P1's library (no Bears there to exile).
+    assert_eq!(
+        p1_library_len(&runner),
+        p1_lib_before - 1,
+        "P1 (owner) draws exactly 1 (W5 count + W6 owner axis)"
+    );
+}
+
+/// R3 [REQUIRED] — CR 701.6a + CR 701.23a + CR 109.4: Test of Talents (S25-P2a).
+/// The seed is a COUNTERED SPELL (not an exiled permanent): the countered spell
+/// is put into its owner's graveyard, `SameNameAsParentTarget` binds that spell's
+/// NAME, and the controller-axis search exiles every same-named card from the
+/// spell's controller's (P1's) zones — who then draws one per card exiled from
+/// their HAND. A path no exiled-permanent test reaches.
+///
+/// Revert-to-red (measured): revert W6 → the caster (P0) draws, P1 library
+/// unchanged; revert W5 → draw 0, P1 library unchanged.
+#[test]
+fn test_of_talents_counters_spell_and_draws_for_its_controller() {
+    use crate::game::scenario::{GameScenario, P0, P1};
+    use crate::types::game_state::{CastingVariant, StackEntry, StackEntryKind};
+    const TOT: &str = "Counter target instant or sorcery spell. Search its controller's graveyard, hand, and library for any number of cards with the same name as that spell and exile them. That player shuffles, then draws a card for each card exiled from their hand this way.";
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(Phase::PreCombatMain);
+    let tot = scenario
+        .add_spell_to_hand_from_oracle(P0, "Test of Talents", true, TOT)
+        .id();
+    // Same-named copies (name matches the countered spell) + decoys in P1's zones.
+    let p1_gy_bolt = scenario
+        .add_spell_to_graveyard(P1, "Lightning Bolt", true)
+        .id();
+    let p1_gy_decoy = scenario
+        .add_creature_to_graveyard(P1, "Llanowar Elves", 1, 1)
+        .id();
+    let p1_hand_bolt = scenario.add_card_to_hand(P1, "Lightning Bolt");
+    let p1_hand_decoy = scenario.add_card_to_hand(P1, "Llanowar Elves");
+    scenario.add_card_to_library_top(P1, "Forest");
+    scenario.add_card_to_library_top(P1, "Island");
+    // Caster's scoping decoy: a same-named card in P0's hand that must survive.
+    let p0_decoy = scenario.add_card_to_hand(P0, "Lightning Bolt");
+    let mut runner = scenario.build();
+    // Put P1's Lightning Bolt (instant) on the stack as the counter target.
+    let bolt_card = crate::types::identifiers::CardId(9_500);
+    let stack_bolt = crate::game::zones::create_object(
+        runner.state_mut(),
+        bolt_card,
+        P1,
+        "Lightning Bolt".to_string(),
+        Zone::Stack,
+    );
+    runner
+        .state_mut()
+        .objects
+        .get_mut(&stack_bolt)
+        .unwrap()
+        .card_types
+        .core_types = vec![CoreType::Instant];
+    runner.state_mut().stack.push_back(StackEntry {
+        id: stack_bolt,
+        source_id: stack_bolt,
+        controller: P1,
+        kind: StackEntryKind::Spell {
+            card_id: bolt_card,
+            ability: None,
+            casting_variant: CastingVariant::Normal,
+            actual_mana_spent: 1,
+        },
+    });
+    runner.state_mut().active_player = P0;
+    runner.state_mut().priority_player = P0;
+    let p1_lib_before = p1_library_len(&runner);
+
+    let outcome = runner
+        .cast(tot)
+        .target_objects(&[stack_bolt])
+        .search_first_legal()
+        .resolve();
+
+    // The countered spell goes to P1's GY, then the same-name search (its own name
+    // matches) exiles it along with the pre-existing GY + hand copies.
+    outcome.assert_zone(&[stack_bolt, p1_gy_bolt, p1_hand_bolt], Zone::Exile);
+    outcome.assert_zone(&[p1_gy_decoy], Zone::Graveyard);
+    outcome.assert_zone(&[p1_hand_decoy], Zone::Hand);
+    // Caster's own same-named card is untouched (controller-axis scoping).
+    outcome.assert_zone(&[p0_decoy], Zone::Hand);
+    // W5 + W6: the countered spell's controller (P1) drew exactly 1 (one Bolt
+    // exiled from P1's hand); the draw is the only change to P1's library.
+    let p1_lib_after = outcome
+        .state()
+        .players
+        .iter()
+        .find(|p| p.id == P1)
+        .unwrap()
+        .library
+        .len();
+    assert_eq!(
+        p1_lib_after,
+        p1_lib_before - 1,
+        "spell controller (P1) draws exactly 1 (W5 count + W6 controller axis)"
+    );
+}
+
+/// CR 701.23a + CR 108.3 + CR 400.7: The End (S25-P2a) — interactive
+/// object-relative multi-zone name-hate search, driven through the full cast
+/// pipeline. Verifies the three runtime behavioral claims:
+/// - W4: the CASTER searches the SEARCHED player's zones (P1), not their own.
+/// - W5: the shared draw rider counts cards exiled from the searched player's HAND.
+/// - W6: "That player ... draws" draws for the SEARCHED player (P1), not the caster.
+///
+/// Discriminating negatives (each flips when the mapped work item is reverted):
+/// - `p0_decoy` (caster's own same-named card) survives → W4 (revert: caster
+///   searches own zones, so it is exiled and the P1 copies survive).
+/// - P1 library drops by exactly 1 → W5 count (revert: 0 draws) AND W6 axis
+///   (revert: the caster draws from their own library, P1's is untouched).
+#[test]
+fn the_end_searches_target_controller_zones_and_draws_for_them() {
+    use crate::game::scenario::{GameScenario, P0, P1};
+    const THE_END: &str = "This spell costs {2} less to cast if your life total is 5 or less.\nExile target creature or planeswalker. Search its controller's graveyard, hand, and library for any number of cards with the same name as that permanent and exile them. That player shuffles, then draws a card for each card exiled from their hand this way.";
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(Phase::PreCombatMain);
+    let the_end = scenario
+        .add_spell_to_hand_from_oracle(P0, "The End", true, THE_END)
+        .id();
+    // P1's targeted permanent + same-named copies in GY and hand (exiled); a
+    // Llanowar Elves decoy in each zone (survives). No "Grizzly Bears" in P1's
+    // library, so the draw is the ONLY change to P1's library size.
+    let p1_target = scenario.add_creature(P1, "Grizzly Bears", 2, 2).id();
+    let p1_gy_bears = scenario
+        .add_creature_to_graveyard(P1, "Grizzly Bears", 2, 2)
+        .id();
+    let p1_gy_decoy = scenario
+        .add_creature_to_graveyard(P1, "Llanowar Elves", 1, 1)
+        .id();
+    let p1_hand_bears = scenario.add_card_to_hand(P1, "Grizzly Bears");
+    let p1_hand_decoy = scenario.add_card_to_hand(P1, "Llanowar Elves");
+    // P1 library filler (draw source), no same-named card.
+    scenario.add_card_to_library_top(P1, "Forest");
+    scenario.add_card_to_library_top(P1, "Island");
+    scenario.add_card_to_library_top(P1, "Mountain");
+    // Caster's scoping decoy: a same-named Bears in P0's hand that must NOT be
+    // exiled (proves the caster searched P1's zones, not their own — W4).
+    let p0_decoy = scenario.add_card_to_hand(P0, "Grizzly Bears");
+    scenario.with_mana_pool(
+        P0,
+        vec![
+            ManaUnit::new(ManaType::Colorless, ObjectId(9_990), false, vec![]),
+            ManaUnit::new(ManaType::Colorless, ObjectId(9_991), false, vec![]),
+            ManaUnit::new(ManaType::Black, ObjectId(9_992), false, vec![]),
+            ManaUnit::new(ManaType::Black, ObjectId(9_993), false, vec![]),
+        ],
+    );
+    let mut runner = scenario.build();
+    let p1_lib_before = runner
+        .state()
+        .players
+        .iter()
+        .find(|p| p.id == P1)
+        .unwrap()
+        .library
+        .len();
+
+    let outcome = runner
+        .cast(the_end)
+        .target_objects(&[p1_target])
+        .search_first_legal()
+        .resolve();
+
+    // Name-match + W4: the targeted permanent and every P1 same-named copy exiled.
+    outcome.assert_zone(&[p1_target, p1_gy_bears, p1_hand_bears], Zone::Exile);
+    // Decoys (different name) survive in their zones.
+    outcome.assert_zone(&[p1_gy_decoy], Zone::Graveyard);
+    outcome.assert_zone(&[p1_hand_decoy], Zone::Hand);
+    // W4 discriminator: the caster's own same-named card is untouched.
+    outcome.assert_zone(&[p0_decoy], Zone::Hand);
+    // W5 + W6: P1 (the searched player) drew exactly 1 (one Bears exiled from
+    // P1's hand). The draw is the only change to P1's library, so its size drops
+    // by exactly 1.
+    let p1_lib_after = outcome
+        .state()
+        .players
+        .iter()
+        .find(|p| p.id == P1)
+        .unwrap()
+        .library
+        .len();
+    assert_eq!(
+        p1_lib_after,
+        p1_lib_before - 1,
+        "P1 must draw exactly 1 from their own library (W5 count + W6 axis)"
+    );
+}
+
 /// CR 700.2 + CR 700.2d: Kozilek's Command is a "Choose two —" spell, so
 /// `validate_modal_indices` must reject both under-selection (one mode) and
 /// over-selection (three modes) of the real parsed modal metadata.

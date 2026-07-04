@@ -2165,16 +2165,30 @@ pub(super) fn lower_targeted_action_ast(ast: TargetedImperativeAst) -> Effect {
 ///     " with that name and exile them"
 /// ```
 ///
-/// Only the mandatory "all cards" quantifier is lowered here. "Any number of
-/// cards" / "a card" variants require an interactive search choice and must
-/// not auto-exile every match (Surgical Extraction, Crumble to Dust).
+/// The `quantifier` axis distinguishes the mandatory "all cards" mass exile
+/// (`Effect::ChangeZoneAll`) from the interactive "any number of cards" / "up to
+/// N cards" forms (`Effect::SearchLibrary`; CR 701.23b — the searcher may fail
+/// to find), so both classes share this one recognizer's grammar and correct
+/// same-name semantics (The End, Deadly Cover-Up, Crumble to Dust, Surgical
+/// Extraction, Test of Talents, Deicide).
 ///
-/// Returns `Some(owner)` on match — the lowering step constructs the
-/// `Effect::ChangeZoneAll` directly (multi-zone origin + filter + destination
-/// are fixed by the matched pattern). Returns `None` for any other shape so
-/// the regular library-search branch can run.
-pub(super) fn try_parse_multi_zone_same_name_exile(lower: &str) -> Option<ControllerRef> {
-    fn run(input: &str) -> Result<(&str, ControllerRef), nom::Err<OracleError<'_>>> {
+/// R1 object-relative guard (CR 108.3 / CR 109.4): the interactive quantifier
+/// arms match ONLY when `owner` is object-relative (`ParentTargetOwner` /
+/// `ParentTargetController`), because this recognizer hard-codes
+/// `SameNameAsParentTarget`. Player-possessive "any number of cards with that
+/// name" spells (Lost Legacy, Unmoored Ego, Memoricide, …) name their card via
+/// a "Choose a card name" clause (`HasChosenName`), NOT the parent target — they
+/// must decline here and route through the general `HasChosenName` search path.
+/// The `All` arm keeps accepting every possessive (unchanged).
+///
+/// Returns `Some((owner, quantifier))` on match. Returns `None` for any other
+/// shape so the regular library-search branch can run.
+pub(super) fn try_parse_multi_zone_same_name_exile(
+    lower: &str,
+) -> Option<(ControllerRef, MultiZoneExileQuantifier)> {
+    fn run(
+        input: &str,
+    ) -> Result<(&str, (ControllerRef, MultiZoneExileQuantifier)), nom::Err<OracleError<'_>>> {
         // search <possessive> graveyard, hand, and library
         let (input, _) = tag::<_, _, OracleError<'_>>("search ").parse(input)?;
         let (input, owner) = alt((
@@ -2202,9 +2216,41 @@ pub(super) fn try_parse_multi_zone_same_name_exile(lower: &str) -> Option<Contro
             tag("library, graveyard, and hand"),
         ))
         .parse(input)?;
-        // for all cards with that name and exile them
+        // for <quantifier> cards with that name and exile them
         let (input, _) = tag::<_, _, OracleError<'_>>(" for ").parse(input)?;
-        let (input, _) = tag::<_, _, OracleError<'_>>("all cards").parse(input)?;
+        // CR 107.1c + CR 701.23b: one composed `alt` axis over the quantifier —
+        // "all cards" (mandatory), "any number of cards" (interactive), or
+        // "up to N cards" (interactive, capped). `parse_number_or_x` reuses the
+        // shared numeric primitive (X resolves to 0 for the count cap).
+        let (input, quantifier) = alt((
+            value(MultiZoneExileQuantifier::All, tag("all cards")),
+            value(
+                MultiZoneExileQuantifier::AnyNumber,
+                tag("any number of cards"),
+            ),
+            map(
+                preceded(
+                    tag("up to "),
+                    terminated(nom_primitives::parse_number_or_x, tag(" cards")),
+                ),
+                MultiZoneExileQuantifier::UpTo,
+            ),
+        ))
+        .parse(input)?;
+        // R1 (CR 108.3 / CR 109.4): the interactive arms only claim
+        // object-relative possessives. A typed `match` on the already-parsed
+        // `owner` — nom-compliant (no string dispatch). Player-possessive "any
+        // number"/"up to N" decline here → general HasChosenName search path.
+        match (quantifier, &owner) {
+            (MultiZoneExileQuantifier::All, _) => {}
+            (_, ControllerRef::ParentTargetOwner | ControllerRef::ParentTargetController) => {}
+            _ => {
+                return Err(nom::Err::Error(OracleError::from_error_kind(
+                    input,
+                    nom::error::ErrorKind::Verify,
+                )))
+            }
+        }
         // Match the trailing same-name suffix. The name source is either a
         // previously-named card ("with that name", Lost Legacy / Deadly Cover-Up)
         // or the spell's exiled/countered target referenced by its card type
@@ -2236,9 +2282,9 @@ pub(super) fn try_parse_multi_zone_same_name_exile(lower: &str) -> Option<Contro
             ),
         ))
         .parse(input)?;
-        Ok((input, owner))
+        Ok((input, (owner, quantifier)))
     }
-    run(lower).ok().map(|(_, owner)| owner)
+    run(lower).ok().map(|(_, result)| result)
 }
 
 /// Parse output of the multi-zone player-exile recognizer: remaining input paired
@@ -2351,8 +2397,8 @@ pub(super) fn parse_search_and_creation_ast(
     // and library for [filter] and exile them" — multi-zone exile of every card
     // matching the filter. Recognized before the single-zone library search
     // because both patterns share the "search " prefix; multi-zone wins on match.
-    if let Some(owner) = try_parse_multi_zone_same_name_exile(lower) {
-        return Some(SearchCreationImperativeAst::MultiZoneSameNameExile { owner });
+    if let Some((owner, quantifier)) = try_parse_multi_zone_same_name_exile(lower) {
+        return Some(SearchCreationImperativeAst::MultiZoneSameNameExile { owner, quantifier });
     }
     if starts_with_possessive(lower, "search", "library")
         // CR 701.23a: God-Pharaoh's-Gift-class multi-zone tutors ("search your
@@ -2831,13 +2877,19 @@ pub(super) fn lower_search_and_creation_ast(ast: SearchCreationImperativeAst) ->
             destination,
             enter_tapped: crate::types::zones::EtbTapState::from_legacy_bool(enter_tapped),
         },
-        // CR 400.7 + CR 701.23 + CR 701.24: Multi-zone same-name exile.
-        // The target filter encodes both the zone union (graveyard, hand,
-        // library) via `InAnyZone` and the name match against the parent
-        // target via `SameNameAsParentTarget`. The ChangeZoneAll resolver
-        // reads multi-zone origins from the filter and per-object zone-of-
-        // origin to track hand-origin exiles for the downstream draw count.
-        SearchCreationImperativeAst::MultiZoneSameNameExile { owner } => Effect::ChangeZoneAll {
+        // CR 400.7 + CR 701.23 + CR 701.24: Multi-zone same-name exile. The
+        // quantifier axis selects the lowering (§9 R1 / D2).
+        //
+        // `All` — mandatory mass exile → `Effect::ChangeZoneAll`. The target
+        // filter encodes both the zone union (graveyard, hand, library) via
+        // `InAnyZone` and the name match against the parent target via
+        // `SameNameAsParentTarget`. The ChangeZoneAll resolver reads multi-zone
+        // origins from the filter and per-object zone-of-origin to track
+        // hand-origin exiles for the downstream draw count.
+        SearchCreationImperativeAst::MultiZoneSameNameExile {
+            owner,
+            quantifier: MultiZoneExileQuantifier::All,
+        } => Effect::ChangeZoneAll {
             origin: None,
             destination: Zone::Exile,
             target: TargetFilter::Typed(TypedFilter::default().controller(owner).properties(vec![
@@ -2853,6 +2905,39 @@ pub(super) fn lower_search_and_creation_ast(ast: SearchCreationImperativeAst) ->
             library_position: None,
             random_order: false,
         },
+        // CR 107.1c + CR 701.23a + CR 701.23b: "any number" / "up to N" →
+        // interactive `Effect::SearchLibrary`. The searcher (caster, CR 701.23a
+        // asymmetric) chooses a subset and may find none. `source_zones` carries
+        // the zone union; the filter is the bare `SameNameAsParentTarget` name
+        // match; `target_player` carries the searched player as an object-relative
+        // controller-ref, resolved by `resolve_library_owner` (W4). Keeping
+        // `target_player` a `Typed` wrapper (not the bare `ParentTargetController`
+        // variant) makes `searcher_is_library_owner` return false so the caster —
+        // not the searched player — makes the fail-to-find choice.
+        // The intrinsic SearchDestination continuation (`sequence.rs`) attaches
+        // the `ChangeZone { destination: Exile }` that removes the found set.
+        SearchCreationImperativeAst::MultiZoneSameNameExile { owner, quantifier } => {
+            let cap = match quantifier {
+                // "any number" is bounded only by the matching-set size; the
+                // resolver floors `UpTo` to the actual candidates.
+                MultiZoneExileQuantifier::AnyNumber => i32::MAX,
+                MultiZoneExileQuantifier::UpTo(n) => n as i32,
+                MultiZoneExileQuantifier::All => unreachable!("All handled above"),
+            };
+            Effect::SearchLibrary {
+                source_zones: vec![Zone::Graveyard, Zone::Hand, Zone::Library],
+                filter: TargetFilter::Typed(TypedFilter::default().properties(vec![
+                    crate::types::ability::FilterProp::SameNameAsParentTarget,
+                ])),
+                count: QuantityExpr::up_to(QuantityExpr::Fixed { value: cap }),
+                reveal: false,
+                target_player: Some(TargetFilter::Typed(
+                    TypedFilter::default().controller(owner),
+                )),
+                selection_constraint: SearchSelectionConstraint::None,
+                split: None,
+            }
+        }
     }
 }
 
@@ -16057,45 +16142,79 @@ mod tests {
         );
     }
 
-    /// CR 400.7 + CR 701.23: Multi-zone same-name exile combinator covers
-    /// the mandatory "all cards" sibling class (Eradicate, Quash, Counterbore).
-    /// Both "with that name" and "with the same name as that card" forms are
-    /// accepted. "Any number of cards" / "a card" quantifiers are rejected here.
+    /// CR 400.7 + CR 701.23 + CR 107.1c: Multi-zone same-name exile combinator.
+    /// The `All` ("all cards") quantifier accepts every possessive (mandatory
+    /// mass-exile class: Eradicate, Quash, Counterbore, Lost Legacy). The
+    /// interactive `AnyNumber` / `UpTo` quantifiers accept ONLY object-relative
+    /// possessives (`its owner's` / `its controller's`) — the §9 R1 guard —
+    /// because this recognizer binds `SameNameAsParentTarget`; player-possessive
+    /// interactive forms name their card via a "Choose a card name" clause and
+    /// must route through the general `HasChosenName` path. Both "with that name"
+    /// and "with the same name as that <noun>" forms are accepted.
     #[test]
     fn parse_multi_zone_same_name_exile_pattern() {
+        use MultiZoneExileQuantifier::{All, AnyNumber, UpTo};
         let positives = [
+            // `All` — every possessive accepted.
             (
                 "search target player's graveyard, hand, and library for all cards with that name and exile them",
                 ControllerRef::TargetPlayer,
+                All,
             ),
             (
                 "search its controller's graveyard, hand, and library for all cards with the same name as that creature and exile them",
                 ControllerRef::ParentTargetController,
+                All,
             ),
             (
                 "search its controller's graveyard, hand, and library for all cards with the same name as that spell and exile them",
                 ControllerRef::ParentTargetController,
+                All,
             ),
             (
                 "search its owner's graveyard, hand, and library for all cards with the same name as that card and exile them",
                 ControllerRef::ParentTargetOwner,
+                All,
+            ),
+            // Interactive — object-relative possessives only (R1). Deadly Cover-Up,
+            // Surgical Extraction, Crumble to Dust, The End class.
+            (
+                "search its owner's graveyard, hand, and library for any number of cards with that name and exile them",
+                ControllerRef::ParentTargetOwner,
+                AnyNumber,
+            ),
+            (
+                "search its owner's graveyard, hand, and library for any number of cards with the same name as that card and exile them",
+                ControllerRef::ParentTargetOwner,
+                AnyNumber,
+            ),
+            (
+                "search its controller's graveyard, hand, and library for any number of cards with the same name as that land and exile them",
+                ControllerRef::ParentTargetController,
+                AnyNumber,
+            ),
+            // "up to N cards" interactive form, object-relative.
+            (
+                "search its controller's graveyard, hand, and library for up to four cards with the same name as that spell and exile them",
+                ControllerRef::ParentTargetController,
+                UpTo(4),
             ),
         ];
-        for (text, owner) in positives {
+        for (text, owner, quantifier) in positives {
             assert_eq!(
                 try_parse_multi_zone_same_name_exile(text),
-                Some(owner.clone()),
-                "expected match with owner {owner:?} for: {text}"
+                Some((owner.clone(), quantifier)),
+                "expected match ({owner:?}, {quantifier:?}) for: {text}"
             );
         }
 
         let negatives = [
-            // Interactive-quantity variants — not auto-exile.
-            "search its owner's graveyard, hand, and library for any number of cards with that name and exile them",
+            // R1: player-possessive interactive forms decline here (→ HasChosenName path).
             "search target player's graveyard, hand, and library for any number of cards with that name and exile them",
-            "search its owner's graveyard, hand, and library for any number of cards with the same name as that card and exile them",
+            "search their graveyard, hand, and library for up to four cards with that name and exile them",
+            "search target opponent's graveyard, hand, and library for up to four cards with that name and exile them",
+            // "a card" quantifier is not in the axis.
             "search their graveyard, hand, and library for a card with that name and exile them",
-            "search its controller's graveyard, hand, and library for any number of cards with the same name as that land and exile them",
             // Library-only — handled by the regular SearchLibrary branch.
             "search your library for a card",
             // Two-zone permutation we don't recognize (deliberate scope cut).
@@ -16242,11 +16361,19 @@ mod tests {
             other => panic!("Expected ChangeZoneAll, got {other:?}"),
         }
 
+        // S25-P2a (W1'): the object-relative "any number" quantifier now lowers
+        // to an interactive `Effect::SearchLibrary` (CR 701.23b — the searcher may
+        // fail to find), NOT the mandatory `ChangeZoneAll` mass exile.
         let any_number = "search its owner's graveyard, hand, and library for any number of cards with that name and exile them";
-        assert!(
+        let any_number_ast =
             parse_search_and_creation_ast(any_number, any_number, &mut ParseContext::default())
-                .is_none(),
-            "any-number multi-zone same-name exile must not auto-lower"
+                .expect("object-relative any-number multi-zone same-name exile must parse (W1')");
+        assert!(
+            matches!(
+                lower_search_and_creation_ast(any_number_ast),
+                Effect::SearchLibrary { .. }
+            ),
+            "any-number object-relative multi-zone same-name exile must lower to SearchLibrary"
         );
     }
 

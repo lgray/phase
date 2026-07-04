@@ -1082,14 +1082,29 @@ pub(crate) enum SearchCreationImperativeAst {
         extra_filters: Vec<TargetFilter>,
     },
     /// CR 400.7 + CR 701.23 + CR 701.24: "Search [possessive] graveyard, hand,
-    /// and library for all cards with that name and exile them."
-    /// Lowered to `Effect::ChangeZoneAll` with multi-zone origin
-    /// (`InAnyZone[Graveyard, Hand, Library]`) + `SameNameAsParentTarget` filter,
-    /// scoped to the player named by the possessive zone phrase. "Any number of
-    /// cards" / "a card" variants are excluded — they require SearchChoice.
+    /// and library for `<quantifier>` cards with that name and exile them."
+    /// The `quantifier` axis selects the lowering:
+    /// - `All` → `Effect::ChangeZoneAll` (mandatory mass exile) with multi-zone
+    ///   origin (`InAnyZone[Graveyard, Hand, Library]`) + `SameNameAsParentTarget`.
+    /// - `AnyNumber` / `UpTo(n)` → interactive `Effect::SearchLibrary` (CR 701.23b:
+    ///   the searcher may fail to find), `count: UpTo`, `SameNameAsParentTarget`.
+    ///
+    /// Both are scoped to the player named by the possessive zone phrase (`owner`).
     MultiZoneSameNameExile {
         owner: ControllerRef,
+        quantifier: MultiZoneExileQuantifier,
     },
+}
+
+/// CR 107.1c + CR 701.23b: How many name-matched cards a multi-zone same-name
+/// exile removes. `All` is the mandatory mass-exile form ("all cards");
+/// `AnyNumber` ("any number of cards") and `UpTo(n)` ("up to N cards") are the
+/// interactive forms where the searcher chooses a subset (and may find none).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub(crate) enum MultiZoneExileQuantifier {
+    All,
+    AnyNumber,
+    UpTo(u32),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]

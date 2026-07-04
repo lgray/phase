@@ -291,6 +291,28 @@ fn validate_dig_selection(
 
 /// CR 701.23a + CR 614.1 / CR 110.5b: Apply a cultivate-class search-destination
 /// split. `primary_ids` are routed to `primary_destination` through the full
+/// CR 400.7 + CR 608.2c: True when a search continuation's chain relocates the
+/// found set to exile (a `ChangeZone { destination: Exile }` anywhere in the
+/// chain). Distinguishes name-hate exile searches (whose hand-origin members
+/// feed the `ExiledFromHandThisResolution` draw rider) from tutors that put the
+/// found card into a hand or onto the battlefield.
+fn continuation_exiles_found_set(chain: &ResolvedAbility) -> bool {
+    let mut cursor = Some(chain);
+    while let Some(def) = cursor {
+        if matches!(
+            &def.effect,
+            Effect::ChangeZone {
+                destination: Zone::Exile,
+                ..
+            }
+        ) {
+            return true;
+        }
+        cursor = def.sub_ability.as_deref();
+    }
+    false
+}
+
 /// `change_zone::resolve` ETB pipeline (carrying `enter_tapped` so ETB-tapped
 /// REPLACEMENT effects can intercept — "lands you control enter untapped
 /// instead"); `rest_ids` are routed to `rest_destination` via the shared rest
@@ -2112,6 +2134,34 @@ pub(super) fn handle_resolution_choice(
             }
 
             set_priority(state, player);
+            // CR 400.7 + CR 608.2c: Count found-set cards exiled from a hand so
+            // the shared "That player ... draws a card for each card exiled from
+            // their hand this way" rider (The End, Deadly Cover-Up, Test of
+            // Talents) resolves. The interactive found-set exile runs through the
+            // pending continuation's single ChangeZone, which bypasses the
+            // mass-move counter at change_zone.rs:1422. Count here, before the
+            // drain runs the Draw, and gate on the continuation actually exiling
+            // the set so a tutor-to-hand never increments it. The count is taken
+            // just before the move (a rare replacement that prevents an exile
+            // would over-count — the plan's completion-site pin).
+            let continuation_exiles_set = state
+                .pending_continuation
+                .as_ref()
+                .is_some_and(|cont| continuation_exiles_found_set(&cont.chain));
+            if continuation_exiles_set {
+                let hand_exiles = chosen
+                    .iter()
+                    .filter(|id| {
+                        state
+                            .objects
+                            .get(id)
+                            .is_some_and(|obj| obj.zone == Zone::Hand)
+                    })
+                    .count() as u32;
+                state.exiled_from_hand_this_resolution = state
+                    .exiled_from_hand_this_resolution
+                    .saturating_add(hand_exiles);
+            }
             if let Some(cont) = state.pending_continuation.as_mut() {
                 let mut continuation_targets: Vec<_> =
                     chosen.iter().map(|&id| TargetRef::Object(id)).collect();

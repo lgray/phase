@@ -32564,6 +32564,286 @@ fn name_hate_owner_axis_shuffle_inherits_parent_target_owner() {
     panic!("expected Shuffle sub-ability in owner-axis name-hate chain");
 }
 
+// ---------------------------------------------------------------------------
+// S25-P2a: interactive "any number" multi-zone same-name search-and-exile.
+// ---------------------------------------------------------------------------
+
+fn collect_chain_defs<'a>(def: &'a AbilityDefinition, out: &mut Vec<&'a AbilityDefinition>) {
+    out.push(def);
+    if let Some(sub) = def.sub_ability.as_deref() {
+        collect_chain_defs(sub, out);
+    }
+    if let Some(els) = def.else_ability.as_deref() {
+        collect_chain_defs(els, out);
+    }
+}
+
+fn find_search_library(def: &AbilityDefinition) -> Option<&Effect> {
+    let mut all = Vec::new();
+    collect_chain_defs(def, &mut all);
+    all.into_iter()
+        .map(|d| d.effect.as_ref())
+        .find(|e| matches!(e, Effect::SearchLibrary { .. }))
+}
+
+fn filter_has_same_name_as_parent(filter: &TargetFilter) -> bool {
+    matches!(filter, TargetFilter::Typed(tf)
+        if tf.properties.contains(&FilterProp::SameNameAsParentTarget))
+}
+
+/// CR 107.1c + CR 701.23a/b: The interactive "any number of cards" class lowers
+/// its search clause to `Effect::SearchLibrary` (NOT `ChangeZoneAll`, NOT
+/// `Unimplemented`) with the multi-zone origin, an `UpTo` count, the
+/// `SameNameAsParentTarget` name match, and the object-relative searched-player
+/// axis. The intrinsic `ChangeZone { Exile }` continuation (proving the
+/// sequence.rs suppression is quantifier-gated) removes the found set.
+///
+/// Revert-to-red: reverting W1' returns the recognizer to `all cards`-only, so
+/// each search clause falls to `Effect::unimplemented("search")` and both the
+/// `SearchLibrary` and the `ChangeZone { Exile }` assertions fail.
+#[test]
+fn name_hate_any_number_lowers_to_interactive_search_library() {
+    use crate::types::ability::ControllerRef;
+    for (label, text, axis) in [
+        (
+            "The End",
+            "Exile target creature or planeswalker. Search its controller's graveyard, hand, and library for any number of cards with the same name as that permanent and exile them. That player shuffles, then draws a card for each card exiled from their hand this way.",
+            ControllerRef::ParentTargetController,
+        ),
+        (
+            "Crumble to Dust",
+            "Exile target nonbasic land. Search its controller's graveyard, hand, and library for any number of cards with the same name as that land and exile them. Then that player shuffles.",
+            ControllerRef::ParentTargetController,
+        ),
+        (
+            "Surgical Extraction",
+            "Choose target card in a graveyard other than a basic land card. Search its owner's graveyard, hand, and library for any number of cards with the same name as that card and exile them. Then that player shuffles.",
+            ControllerRef::ParentTargetOwner,
+        ),
+        (
+            "Test of Talents",
+            "Counter target instant or sorcery spell. Search its controller's graveyard, hand, and library for any number of cards with the same name as that spell and exile them. That player shuffles, then draws a card for each card exiled from their hand this way.",
+            ControllerRef::ParentTargetController,
+        ),
+    ] {
+        let def = parse_effect_chain(text, AbilityKind::Spell);
+        assert!(
+            !matches!(def.effect.as_ref(), Effect::Unimplemented { .. }),
+            "{label}: root must not be Unimplemented: {:?}",
+            def.effect
+        );
+        // Not the mandatory mass-exile path.
+        assert!(
+            !chain_contains_multi_zone_same_name_exile(&def),
+            "{label}: any-number must NOT lower to ChangeZoneAll: {def:#?}"
+        );
+        let search = find_search_library(&def)
+            .unwrap_or_else(|| panic!("{label}: expected SearchLibrary in chain: {def:#?}"));
+        let Effect::SearchLibrary {
+            source_zones,
+            filter,
+            count,
+            target_player,
+            ..
+        } = search
+        else {
+            unreachable!()
+        };
+        assert_eq!(
+            *source_zones,
+            vec![Zone::Graveyard, Zone::Hand, Zone::Library],
+            "{label}: multi-zone origin"
+        );
+        assert!(
+            matches!(count, QuantityExpr::UpTo { .. }),
+            "{label}: count must be UpTo, got {count:?}"
+        );
+        assert!(
+            filter_has_same_name_as_parent(filter),
+            "{label}: filter must bind SameNameAsParentTarget, got {filter:?}"
+        );
+        // Discriminator vs the chosen-name path (D1): never HasChosenName here.
+        assert_ne!(
+            *filter,
+            TargetFilter::HasChosenName,
+            "{label}: object-relative search must NOT be HasChosenName"
+        );
+        assert_eq!(
+            *target_player,
+            Some(TargetFilter::Typed(
+                crate::types::ability::TypedFilter::default().controller(axis.clone())
+            )),
+            "{label}: searched player axis must be Typed(controller={axis:?})"
+        );
+        // The intrinsic SearchDestination attaches the exile move (sequence.rs
+        // suppression must be quantifier-gated so this is NOT stripped).
+        let mut all = Vec::new();
+        collect_chain_defs(&def, &mut all);
+        assert!(
+            all.iter().any(|d| matches!(
+                d.effect.as_ref(),
+                Effect::ChangeZone { destination: Zone::Exile, .. }
+            )),
+            "{label}: expected intrinsic ChangeZone{{Exile}} continuation: {def:#?}"
+        );
+    }
+}
+
+/// CR 400.7 + CR 608.2c: The draw rider "That player ... draws a card for each
+/// card exiled from their hand this way" must draw for the SEARCHED player
+/// (W6 anchor) counting hand-exiles (`ExiledFromHandThisResolution`). Both the
+/// Shuffle and the Draw inherit the object-relative axis.
+///
+/// Revert-to-red: reverting W6 (the `Effect::Draw` arm) leaves the Draw target
+/// at the caster default (`Controller`), flipping the `target` assertion.
+#[test]
+fn name_hate_draw_rider_targets_searched_player() {
+    use crate::types::ability::{ControllerRef, QuantityRef};
+    for (label, text, axis) in [
+        (
+            "The End",
+            "Exile target creature or planeswalker. Search its controller's graveyard, hand, and library for any number of cards with the same name as that permanent and exile them. That player shuffles, then draws a card for each card exiled from their hand this way.",
+            ControllerRef::ParentTargetController,
+        ),
+        (
+            "Test of Talents",
+            "Counter target instant or sorcery spell. Search its controller's graveyard, hand, and library for any number of cards with the same name as that spell and exile them. That player shuffles, then draws a card for each card exiled from their hand this way.",
+            ControllerRef::ParentTargetController,
+        ),
+    ] {
+        let def = parse_effect_chain(text, AbilityKind::Spell);
+        let mut all = Vec::new();
+        collect_chain_defs(&def, &mut all);
+        let draw = all
+            .iter()
+            .find_map(|d| match d.effect.as_ref() {
+                Effect::Draw { count, target } => Some((count, target)),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("{label}: expected Draw in chain: {def:#?}"));
+        assert_eq!(
+            *draw.0,
+            QuantityExpr::Ref {
+                qty: QuantityRef::ExiledFromHandThisResolution
+            },
+            "{label}: draw count must be ExiledFromHandThisResolution"
+        );
+        let expected_axis = match axis {
+            ControllerRef::ParentTargetController => TargetFilter::ParentTargetController,
+            ControllerRef::ParentTargetOwner => TargetFilter::ParentTargetOwner,
+            _ => unreachable!(),
+        };
+        assert_eq!(
+            *draw.1, expected_axis,
+            "{label}: draw must target the searched player, got {:?}",
+            draw.1
+        );
+    }
+}
+
+/// R2 [BLOCKER] — CR 201.2 + CR 701.23a: A player-possessive chosen-name spell
+/// ("Choose a card name. Search target opponent's ... for up to four cards with
+/// that name ...") must route through the general `HasChosenName` search path,
+/// NOT be stolen by the widened object-relative recognizer. This exercises the
+/// REAL dispatch (`parse_effect_chain`), unlike the existing
+/// `multi_zone_chosen_name_exile_search_has_exile_destination` which calls
+/// `parse_search_library_details` directly and would stay green even if stolen.
+///
+/// Revert-to-red: removing the §9 R1 object-relative guard lets the recognizer
+/// claim this (owner = Opponent) and the filter flips to SameNameAsParentTarget.
+#[test]
+fn chosen_name_up_to_search_stays_has_chosen_name() {
+    let def = parse_effect_chain(
+        "Choose a card name. Search target opponent's graveyard, hand, and library for up to four cards with that name and exile them. Then that player shuffles.",
+        AbilityKind::Spell,
+    );
+    // Reach-guard: the chain parses to a real search, not Unimplemented.
+    assert!(
+        !matches!(def.effect.as_ref(), Effect::Unimplemented { .. }),
+        "chosen-name root must not be Unimplemented: {:?}",
+        def.effect
+    );
+    let search =
+        find_search_library(&def).unwrap_or_else(|| panic!("expected SearchLibrary: {def:#?}"));
+    let Effect::SearchLibrary { filter, .. } = search else {
+        unreachable!()
+    };
+    // The general path yields `And[Typed(Card), HasChosenName]`; assert the
+    // chosen-name marker is present (recursively) and the object-relative name
+    // match is NOT (i.e., the widened recognizer did not steal this card).
+    fn filter_mentions(filter: &TargetFilter, needle: &TargetFilter) -> bool {
+        if filter == needle {
+            return true;
+        }
+        match filter {
+            TargetFilter::And { filters } | TargetFilter::Or { filters } => {
+                filters.iter().any(|f| filter_mentions(f, needle))
+            }
+            _ => false,
+        }
+    }
+    assert!(
+        filter_mentions(filter, &TargetFilter::HasChosenName),
+        "chosen-name search must stay HasChosenName, got {filter:?}"
+    );
+    assert!(
+        !filter_has_same_name_as_parent(filter),
+        "chosen-name search must NOT be stolen to SameNameAsParentTarget"
+    );
+}
+
+/// R3 [REQUIRED] — CR 201.2: Deicide's leading "If the exiled card is a God
+/// card" conditional gates the same-name search; it must survive the clause
+/// shell peel (else Deicide auto-exiles unconditionally). The search still lowers
+/// to `SearchLibrary` (W1'), and a condition must remain on the search def or an
+/// ancestor guarding it.
+#[test]
+fn deicide_god_card_conditional_survives() {
+    let def = parse_effect_chain(
+        "Exile target enchantment. If the exiled card is a God card, search its controller's graveyard, hand, and library for any number of cards with the same name as that card and exile them. Then that player shuffles.",
+        AbilityKind::Spell,
+    );
+    assert!(
+        !matches!(def.effect.as_ref(), Effect::Unimplemented { .. }),
+        "Deicide root must not be Unimplemented: {:?}",
+        def.effect
+    );
+    let mut all = Vec::new();
+    collect_chain_defs(&def, &mut all);
+    // The search clause must be present (W1') ...
+    let search_present = all
+        .iter()
+        .any(|d| matches!(d.effect.as_ref(), Effect::SearchLibrary { .. }));
+    assert!(
+        search_present,
+        "Deicide search must lower to SearchLibrary: {def:#?}"
+    );
+    // ... AND the God-card condition must guard the SEARCH def itself or an
+    // ancestor on the chain path to it — an unrelated condition elsewhere in the
+    // chain does not count (else Deicide auto-exiles unconditionally).
+    fn search_is_condition_guarded(def: &AbilityDefinition, ancestor_guarded: bool) -> bool {
+        let guarded = ancestor_guarded || def.condition.is_some();
+        if matches!(def.effect.as_ref(), Effect::SearchLibrary { .. }) {
+            return guarded;
+        }
+        if let Some(sub) = def.sub_ability.as_deref() {
+            if search_is_condition_guarded(sub, guarded) {
+                return true;
+            }
+        }
+        if let Some(els) = def.else_ability.as_deref() {
+            if search_is_condition_guarded(els, guarded) {
+                return true;
+            }
+        }
+        false
+    }
+    assert!(
+        search_is_condition_guarded(&def, false),
+        "Deicide 'if the exiled card is a God card' condition must guard the search def or an ancestor (not dropped): {def:#?}"
+    );
+}
+
 /// CR 400.3 + CR 404.1 + CR 406.2 + CR 108.2: Identity Crisis — "Exile all cards from target
 /// player's hand and graveyard." is a mass exile across a *union* of the
 /// targeted player's zones. The zone union rides on the target filter via

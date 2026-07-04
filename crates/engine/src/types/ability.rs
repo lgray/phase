@@ -12859,8 +12859,32 @@ impl Effect {
                     Some(player)
                 }
             }
-            // CR 701.23a: SearchLibrary has an optional player target for opponent search.
-            Effect::SearchLibrary { target_player, .. } => target_player.as_ref(),
+            // CR 701.23a: SearchLibrary has an optional player target for opponent
+            // search ("search target opponent's library" → a stack-time slot).
+            // CR 608.2c + CR 108.3 / CR 109.4: an object-relative searched player
+            // ("search ITS controller's/owner's graveyard, hand, and library" —
+            // the name-hate class) is carried as a `Typed` controller context-ref
+            // and resolved at resolution by `resolve_library_owner` (never a
+            // cast-time target). It stays a `Typed` wrapper (not the bare
+            // `ParentTargetController` variant) so `searcher_is_library_owner`
+            // returns false and the caster remains the searcher (CR 701.23a
+            // asymmetric); surface no slot for it, mirroring `RevealUntil`.
+            Effect::SearchLibrary { target_player, .. } => match target_player {
+                Some(TargetFilter::Typed(tf))
+                    if tf.type_filters.is_empty()
+                        && tf.properties.is_empty()
+                        && matches!(
+                            tf.controller,
+                            Some(
+                                ControllerRef::ParentTargetOwner
+                                    | ControllerRef::ParentTargetController
+                            )
+                        ) =>
+                {
+                    None
+                }
+                other => other.as_ref(),
+            },
             Effect::ChooseDrawnThisTurnPayOrTopdeck { player, .. } => Some(player),
         }
     }

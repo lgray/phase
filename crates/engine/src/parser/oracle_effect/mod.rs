@@ -78,9 +78,8 @@ use super::oracle_quantity::{
 };
 use super::oracle_target::{
     parse_definite_parent_reference, parse_event_context_ref, parse_fight_target, parse_target,
-    parse_target_with_ctx,
-    parse_target_with_disjunctive_restriction, parse_target_with_syntax, parse_type_phrase,
-    parse_type_phrase_with_ctx, TargetSyntax,
+    parse_target_with_ctx, parse_target_with_disjunctive_restriction, parse_target_with_syntax,
+    parse_type_phrase, parse_type_phrase_with_ctx, TargetSyntax,
 };
 use super::oracle_util::{
     contains_possessive, has_unconsumed_conditional, parse_count_expr, parse_creature_subtype,
@@ -6340,9 +6339,9 @@ fn parse_effect_clause_inner(text: &str, ctx: &mut ParseContext) -> ParsedEffect
     // are a single structured instruction. Route them before broader clause
     // shortcuts can reinterpret the trailing "exile them" as a generic
     // ParentTarget zone move.
-    if let Some(owner) = imperative::try_parse_multi_zone_same_name_exile(&lower) {
+    if let Some((owner, quantifier)) = imperative::try_parse_multi_zone_same_name_exile(&lower) {
         return parsed_clause(imperative::lower_search_and_creation_ast(
-            SearchCreationImperativeAst::MultiZoneSameNameExile { owner },
+            SearchCreationImperativeAst::MultiZoneSameNameExile { owner, quantifier },
         ));
     }
 
@@ -16038,6 +16037,21 @@ fn apply_anchor_subject(effect: &mut Effect, anchor: &TargetFilter) {
             *tp = Some(anchor.clone());
         }
         Effect::ChangeZoneAll { target, .. } if *target == TargetFilter::Controller => {
+            *target = anchor.clone();
+        }
+        // CR 608.2c + CR 121.1: "That player shuffles, then draws a card for
+        // each card exiled from their hand this way" (The End, Deadly Cover-Up,
+        // Test of Talents) — the trailing Draw defaults its target to the caster
+        // (`Controller`) but must draw for the SEARCHED player carried on the
+        // anchor. Mirrors the `Shuffle` arm above (same caster-default set).
+        Effect::Draw { target, .. }
+            if matches!(
+                *target,
+                TargetFilter::Controller
+                    | TargetFilter::Player
+                    | TargetFilter::ParentTargetController
+            ) =>
+        {
             *target = anchor.clone();
         }
         _ => {}
