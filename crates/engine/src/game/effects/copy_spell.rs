@@ -893,6 +893,7 @@ mod tests {
                 amount: QuantityExpr::Fixed { value: 0 },
                 target: TargetFilter::Any,
                 damage_source: None,
+                excess: None,
             },
             vec![],
             ObjectId(10),
