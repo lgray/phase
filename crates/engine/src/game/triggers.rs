@@ -3544,7 +3544,12 @@ fn group_source_census(
 /// any order they choose" is genuinely immaterial and the engine may auto-order
 /// them with no prompt (matching MTG Arena). Conservative by construction: any
 /// field divergence makes this return false and the group still prompts (a safe
-/// false-negative); it can never auto-order order-sensitive triggers.
+/// false-negative); it never auto-orders triggers whose order-dependence is VISIBLE
+/// in the profiled read/write sets (CR 603.3b). Sound MODULO two profile-INVISIBLE
+/// residuals documented in the `ability_rw` module doc — the source-actor granted-
+/// state channel and the board-wide-write × event-live-read channel — each SYMMETRIC
+/// across the same-event and departure-batch depths, so neither introduces an
+/// asymmetric auto-order.
 ///
 /// Two triggers are indistinguishable when both require no ordering input and
 /// they match on the normalized ability (CR 603.4 intervening-`if` rides in

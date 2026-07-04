@@ -30,18 +30,41 @@
 //! exposure on the batch path is thus identical to the same-event T1 path already
 //! documented, and bounded by the §7.1 `old=false, new=true` zero-movement grep.
 //!
-//! A SECOND inherited fail-open: `reads_event_live` is consulted ONLY on the
-//! batch path (`profiles_conflict`: the `all_same_source` fast path and the
-//! freeze-invalidation row, both guarded `!same_event`) — never in same-event
-//! feed analysis. So a same-event group that WRITES the triggering object and
-//! then READS that now-modified object's characteristic ("put a +1/+1 counter on
-//! it, then transform ~ if that creature's power ≥ 6" ×2 — order-observable,
-//! `source_independent` false so the T1 fast path is skipped, yet the
-//! event-object read×write feed is uncaught ⇒ auto) is not gated. This is
-//! DISTINCT from the PR-6.25 Case A board-write × source-read feed (which IS
-//! caught). Like the source-actor residual it is inherited from the pre-C1
-//! always-auto short-circuit (NOT a regression) and is left OPEN deliberately:
-//! closing it would ADD a prompt = a D3 widening needing its own proof.
+//! ## The event-object read/write feed (R4 review) — CLOSED at both depths
+//!
+//! A same-event group that WRITES the shared triggering object and then READS its
+//! LIVE characteristic ("put a +1/+1 counter on it, then transform ~ if that
+//! creature's power ≥ 6" ×2) is order-observable (CR 608.2h: the read uses the event
+//! object's CURRENT information). `reads_event_live` records no KindSet, so the
+//! `feeds()` matrix is structurally blind to it — the feed is instead gated by
+//! `reads_and_writes_event_object` (`reads_event_live && writes_event_object.any()`):
+//! the same-event discriminator (`s.same_event && s.event_object_present &&
+//! reads_and_writes_event_object`) PROMPTS it, and the T1 fast-path disjunct excludes
+//! it. The BATCH depth is protected differently: a co-departure event object is a
+//! DEPARTED, FROZEN LKI (CR 603.10a) — a write no-ops (stable read ⇒ auto correct) or
+//! is a reentry hazard ⇒ the freeze-invalidation row prompts. The `event_object_present`
+//! conjunct mirrors `effective_external` (a write to a non-present event object no-ops,
+//! targeting.rs:951), so a Phase-mode trigger stays auto (no live object ⇒ no feed).
+//!
+//! ## Residuals that REMAIN — both SYMMETRIC across batch and same-event depths
+//!
+//! 1. The **source-actor residual** (above): per-source granted state and the
+//!    CR 800.4a player-loss cascade, invisible to the normalized AST.
+//! 2. A **board-wide external write × event-live read**: a `writes_external` write NOT
+//!    scoped to the event object (e.g. "each creature") that happens to mutate the
+//!    event object, feeding an event-live read. `reads_and_writes_event_object` keys on
+//!    `writes_event_object` (event-object-SCOPED writes) only, and `feeds()` stays blind
+//!    (the live read carries no KindSet) — so this is uncaught. It is SYMMETRIC: the
+//!    batch T1 conjunct also keys on `writes_event_object` (not `writes_external`), so
+//!    the batch depth is equally open. Closing it needs either KindSet-recording
+//!    event-live reads (so `feeds()` catches board writes) or promoting any
+//!    `writes_external` to an event-object write under `reads_event_live` (a large
+//!    over-prompt) — out of scope; documented-open.
+//!
+//! Both residuals are profile-INVISIBLE (the dependency is absent from the profiled
+//! read/write sets) and equal-strength across depths. The gate is therefore sound
+//! MODULO these two symmetric residuals — the exact scope the `group_is_order_
+//! independent` contract (triggers.rs) records.
 //!
 //! # M3 binding mandate (review-blocking)
 //!
@@ -556,9 +579,12 @@ pub(crate) struct RwProfile {
     /// CR 603.10a look-back class: `HadCounters`, source cast-time facts. Never
     /// conflict WHILE THE FREEZE IS VALID (see `writes_reentry_hazard`).
     reads_frozen: KindSet,
-    /// Event reads not proven frozen (`EventSource`/`EventTarget`/…). Consulted
-    /// by T1's fast path and the freeze-invalidation row; the batch structure
-    /// treats them as frozen.
+    /// An event-context read: a LIVE event-object characteristic (`EventSource`/
+    /// `EventTarget`) OR a frozen event-context amount (`EventContextAmount`/
+    /// `EventOutcomeWon`/… via `legacy_ref`) — the bit does not distinguish them.
+    /// Consulted by T1's fast path, the freeze-invalidation row, and the same-event
+    /// event-object discriminator (which thus conservatively over-prompts the frozen
+    /// sub-case — a write can't feed a frozen amount, so it stays order-invariant).
     reads_event_live: bool,
     /// D5: one of the 12 retained-prompt event-context refs is present.
     /// Consulted ONLY by the batch branch (commit 2).
@@ -744,6 +770,20 @@ impl RwProfile {
     /// `reads_frozen`).
     pub(crate) fn source_independent(&self) -> bool {
         self.reads_src.is_empty() && self.writes_self.is_empty() && self.reads_frozen.is_empty()
+    }
+
+    /// CR 603.3b + CR 608.2h: the same-event event-object read/write feed — the
+    /// resolution WRITES the shared triggering object (`writes_event_object`) AND
+    /// READS its live characteristic (`reads_event_live`, which records NO KindSet,
+    /// so `feeds()` is structurally blind to this feed). On the same-event path every
+    /// member shares ONE live event object (CR 608.2h current-information read), so a
+    /// member's write is observed by a sibling's live read ⇒ order-observable.
+    /// Fail-closed conjunction of two profiled facts. Consumed by
+    /// `profiles_conflict`'s same-event discriminator and (as the class predicate) by
+    /// the ordering-parity sweep — a single source of truth (mirrors
+    /// `source_independent`).
+    pub(crate) fn reads_and_writes_event_object(&self) -> bool {
+        self.reads_event_live && self.writes_event_object.any()
     }
 
     /// D5 (CR 603.10a): true iff one of the 12 retained-prompt event-context refs
@@ -973,9 +1013,23 @@ pub(crate) fn profiles_conflict(p: &RwProfile, s: &GroupStructure) -> bool {
     // ExiledBySource / ChosenCard, `member_bound_target_filter`) is NOT one shared
     // f(state) — member A reads A's storage, member B reads B's — so the identical-
     // function commutation proof breaks and the group must prompt (discriminator
-    // below). `all_same_source` stays exempt: one shared source ⇒ one shared storage
-    // ⇒ f_A = f_B literally, order-independent.
-    if s.same_event && (s.all_same_source || (p.source_independent() && !p.reads_member_bound)) {
+    // below). It ALSO requires `!reads_and_writes_event_object`: a same-event group
+    // can be `source_independent` yet WRITE the shared triggering object and READ its
+    // live characteristic (`writes_event_object` ∉ `writes_self`, `reads_event_live` ∉
+    // `reads_src`) — an order-observable feed `feeds()` cannot see (CR 608.2h; the
+    // event-object discriminator below). The event-object conjunct is gated on
+    // `s.event_object_present` — mirroring `effective_external` (below), which drops
+    // `writes_event_object` when the trigger carries no event object (the write
+    // no-ops, targeting.rs:951): with no live event object there is no feed, so such
+    // a group stays on the fast path (auto). `all_same_source` stays exempt: one
+    // shared source ⇒ one shared storage AND one shared event object ⇒ f_A = f_B
+    // literally (deterministic accumulation), order-independent.
+    if s.same_event
+        && (s.all_same_source
+            || (p.source_independent()
+                && !p.reads_member_bound
+                && !(s.event_object_present && p.reads_and_writes_event_object())))
+    {
         return false;
     }
     // CR 603.3b + CR 603.10a: the same-event member-bound discriminator (the batch
@@ -986,6 +1040,28 @@ pub(crate) fn profiles_conflict(p: &RwProfile, s: &GroupStructure) -> bool {
     // handles member-bound via its own conjunct plus the freeze/feed rows, so batch
     // ordering decisions are byte-inert.
     if s.same_event && p.reads_member_bound {
+        return true;
+    }
+    // CR 603.3b + CR 608.2h: the same-event event-object read/write feed
+    // discriminator. `reads_event_live` (EventSource/EventTarget characteristic
+    // reads, CR 608.2h current-information) records NO KindSet, so `feeds()` cannot
+    // see a `writes_event_object` mutation feeding an event-object LIVE read. Same-
+    // event members share ONE live event object ⇒ a member's event-object write is
+    // observed by a sibling's live read ⇒ order-observable. DERIVED (not copied) from
+    // the batch-T1 event-object conjunct (`!reads_event_live && !writes_event_object
+    // .any()`): that guard is a disjunction-of-negations because refusing the batch
+    // fast path only DEFERS to the feed rows, whereas this returns a PROMPT, so it
+    // fires only on a real feed = BOTH endpoints (a conjunction, `reads_and_writes_
+    // event_object`). Gated on `s.event_object_present` (mirrors `effective_external`
+    // below): no live event object ⇒ the `writes_event_object` write no-ops
+    // (targeting.rs:951) ⇒ no feed ⇒ auto (a genuine feed always has a live event
+    // object, so this never drops one). `all_same_source` stays auto-ordered (returned
+    // false at the fast path above — one shared source ⇒ identical f over one shared
+    // event object, deterministic accumulation, order-immaterial). Guarded by
+    // `s.same_event`; the batch path is byte-inert (its event-object reads are frozen
+    // LKI, CR 603.10a, handled by the freeze-invalidation row below — the
+    // batch/same-event asymmetry).
+    if s.same_event && s.event_object_present && p.reads_and_writes_event_object() {
         return true;
     }
     if s.all_same_source && !p.reads_event_live {
@@ -6136,6 +6212,64 @@ mod tests {
         assert!(
             !profiles_conflict(&p, &batch_uniform()),
             "B-4 revert: without the event-object write, T1 auto-orders"
+        );
+    }
+
+    /// R4 — the same-event event-object read/write feed discriminator
+    /// (`profiles_conflict`: `s.same_event && s.event_object_present &&
+    /// reads_and_writes_event_object`, CR 603.3b + CR 608.2h). A same-event group of
+    /// DISTINCT sources that WRITES the shared triggering object AND READS its live
+    /// characteristic is order-observable — but `feeds()` is structurally blind
+    /// (`reads_event_live` records no KindSet). This pins the fix + all three guards.
+    /// Revert-fail (measured): the NEG is `source_independent`, so BOTH edits are
+    /// load-bearing — dropping the `:992` fast-path exclusion auto-orders it at the
+    /// T1 disjunct, and dropping the discriminator lets it fall through every row to
+    /// the final `return false` (the feed rows never see the KindSet-less live read).
+    #[test]
+    fn r4_same_event_event_object_feed_conjunct() {
+        let feed = || {
+            let mut p = RwProfile::empty();
+            p.reads_event_live = true;
+            p.writes_external = KindSet::one(StateKind::ObjectCounters);
+            p.writes_event_object = KindSet::one(StateKind::ObjectCounters);
+            p
+        };
+        // NEG (the fix): same-event, event object present, live read × event-object
+        // write ⇒ PROMPT. `se()` is distinct-source, event_object_present true.
+        assert!(
+            profiles_conflict(&feed(), &se()),
+            "R4 NEG: same-event event-object read×write feed ⇒ prompt"
+        );
+        // Conjunction guard A — the live READ alone (no event-object write) ⇒ AUTO.
+        // Proves it is a feed (both endpoints), not a blanket same-event event-live
+        // prompt: `reads_event_live` alone stays source-independent T1-clean.
+        let mut read_only = feed();
+        read_only.writes_external = KindSet::EMPTY;
+        read_only.writes_event_object = KindSet::EMPTY;
+        assert!(
+            !profiles_conflict(&read_only, &se()),
+            "R4 guard-A: event-live read with NO event-object write ⇒ auto"
+        );
+        // Conjunction guard B — the event-object WRITE alone (no live read) ⇒ AUTO
+        // (an unread write is applied identically by every member, order-invariant).
+        let mut write_only = feed();
+        write_only.reads_event_live = false;
+        assert!(
+            !profiles_conflict(&write_only, &se()),
+            "R4 guard-B: event-object write with NO event-live read ⇒ auto"
+        );
+        // event_object_present guard — the full feed but a Phase event (no live event
+        // object; the write no-ops, targeting.rs:951) ⇒ AUTO (mirrors effective_external).
+        assert!(
+            !profiles_conflict(&feed(), &se_phase()),
+            "R4 event_object_present guard: no live event object ⇒ write no-ops ⇒ auto"
+        );
+        // all_same_source guard — the feed on ONE shared source ⇒ identical f over one
+        // shared event object (deterministic accumulation) ⇒ AUTO.
+        let same_src = gs(true, true, false, false, true, SourceCensus::unknown());
+        assert!(
+            !profiles_conflict(&feed(), &same_src),
+            "R4 all_same_source guard: shared source ⇒ f_A = f_B ⇒ auto"
         );
     }
 

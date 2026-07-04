@@ -247,6 +247,23 @@ const SAME_EVENT_MEMBER_BOUND_GENUINE: &[&str] = &[
     "blood tyrant",
 ];
 
+/// R4 (PR #5072 review): SAME-EVENT GENUINE event-object read/write order-dependence —
+/// the honesty list for the same-event event-object discriminator (`profiles_conflict`:
+/// `if s.same_event && s.event_object_present && p.reads_and_writes_event_object()`),
+/// analogous to `SAME_EVENT_MEMBER_BOUND_GENUINE`. **EMPTY — 0 genuine among the 13
+/// flips (all conservative).** GOVERNING THEOREM (why R4 differs from R3): the
+/// discriminator groups IDENTICAL siblings, and every R4 write targets either the
+/// SHARED event object (`TriggeringSource` / parentless `ParentTarget`) or each copy's
+/// OWN disjoint self. Identical `f∘f` on ONE shared object is relabel-invariant; disjoint
+/// self-writes never interact — so the final STATE is order-invariant either way. R3's
+/// genuine members instead wrote to PER-SOURCE storage (imprint pile A ≠ pile B), an
+/// asymmetric destination that IS order-divergent. R4 has no per-source-divergent write,
+/// hence 0 genuine. The class below is a pure fail-closed safety over-prompt: sound but
+/// never necessary. Full per-card both-orders evidence: `.pr675-r4-classification.md`.
+/// A populated-but-unhit entry trips the completeness assert (a future genuine card is
+/// added HERE, not manufactured). CR 603.3b + CR 608.2h.
+const SAME_EVENT_EVENT_OBJECT_GENUINE: &[&str] = &[];
+
 /// The census of a printed card's source (core types + subtypes + non-token).
 fn face_census(face: &CardFace) -> SourceCensus {
     let mut tags: Vec<String> = Vec::new();
@@ -474,6 +491,10 @@ fn ordering_parity_sweep() {
     // rebased head can regenerate — rider-1).
     let mut se_mb_genuine_hit: BTreeSet<String> = BTreeSet::new();
     let mut se_member_bound_class: BTreeSet<String> = BTreeSet::new();
+    // R4: same-event event-object genuine hits (empty exact-set) + the conservative
+    // event-object over-prompt class-count's derived membership (evidence artifact).
+    let mut se_event_object_genuine_hit: BTreeSet<String> = BTreeSet::new();
+    let mut se_event_object_class: BTreeSet<String> = BTreeSet::new();
 
     // Non-vacuity floors (full-DB; the committed fixture is a subset).
     let mut floor_batch_obs = 0usize;
@@ -564,6 +585,11 @@ fn ordering_parity_sweep() {
                         // Checked BEFORE the class-count so a genuine flip is never
                         // mislabeled conservative (rider-3 honesty).
                         se_mb_genuine_hit.insert(name.clone());
+                    } else if SAME_EVENT_EVENT_OBJECT_GENUINE.contains(&name.as_str()) {
+                        // R4 honesty list (EMPTY — 0 genuine). Checked before the
+                        // event-object class-count for symmetry with the member-bound
+                        // genuine list; a future genuine card is added to the const.
+                        se_event_object_genuine_hit.insert(name.clone());
                     } else if DOCUMENTED_OVER_PROMPT.contains(&name.as_str()) {
                         over_prompt_hit.insert(name.clone());
                     } else if profile.reads_member_bound() {
@@ -581,6 +607,25 @@ fn ordering_parity_sweep() {
                         // sorted membership is emitted below as the §7 evidence
                         // artifact.
                         se_member_bound_class.insert(name.clone());
+                    } else if se.event_object_present && profile.reads_and_writes_event_object() {
+                        // R4: the same-event event-object read/write over-prompt CLASS.
+                        // Predicate-keyed EXACTLY like the discriminator's own gate
+                        // (`s.same_event && s.event_object_present &&
+                        // p.reads_and_writes_event_object()` — one predicate, two
+                        // consumers), membership DERIVED (rider-1). Placed AFTER the
+                        // `reads_member_bound()` branch, so a both-carrier card is
+                        // attributed to `se_member_bound_class` (row order = attribution
+                        // order) ⇒ the two classes are DISJOINT BY CONSTRUCTION (asserted
+                        // below, rider-1). CONSERVATIVE by the governing theorem: every
+                        // write targets the SHARED event object (identical f∘f, relabel-
+                        // invariant) or disjoint self ⇒ order-invariant final state; 0
+                        // genuine (carved out above). NOTE: a Phase-mode trigger such as
+                        // `sidequest: catch a fish` sits OUTSIDE this class by the
+                        // `event_object_present` conjunct — no live event object ⇒ its
+                        // `TriggeringSource` write no-ops (targeting.rs:951) ⇒ it stays
+                        // AUTO, NOT a missed member. Sorted membership emitted below as
+                        // the §8 evidence artifact.
+                        se_event_object_class.insert(name.clone());
                     } else {
                         unexplained.push(format!(
                             "SAME-EVENT auto->prompt on '{name}' (not a category-(1) row)"
@@ -662,13 +707,16 @@ fn ordering_parity_sweep() {
     eprintln!(
         "ordering_parity_sweep: full_db={full_db} swept={swept} compared={compared} \
          unexplained={} cat1_hit={:?} over_prompt_hit={} batch_genuine_hit={} \
-         se_mb_genuine={:?} se_member_bound_class={}",
+         se_mb_genuine={:?} se_member_bound_class={} \
+         se_event_object_genuine={:?} se_event_object_class={}",
         unexplained.len(),
         cat1_hit,
         over_prompt_hit.len(),
         batch_genuine_hit.len(),
         se_mb_genuine_hit,
-        se_member_bound_class.len()
+        se_member_bound_class.len(),
+        se_event_object_genuine_hit,
+        se_event_object_class.len()
     );
     eprintln!(
         "floors: batch_obs={floor_batch_obs} \
@@ -683,6 +731,14 @@ fn ordering_parity_sweep() {
         "se_member_bound_class members ({}): {:?}",
         se_member_bound_class.len(),
         se_member_bound_class
+    );
+    // R4 (rider-1): DERIVED membership of the same-event event-object over-prompt CLASS
+    // — the §8 / handoff evidence artifact (mirrors se_member_bound_class). Sorted, so a
+    // stable diff the rebased head regenerates. Enumeration lives HERE, never in code.
+    eprintln!(
+        "se_event_object_class members ({}): {:?}",
+        se_event_object_class.len(),
+        se_event_object_class
     );
 
     assert!(
@@ -731,9 +787,13 @@ fn ordering_parity_sweep() {
         // R3 HIGH-1: measured drops to 2830 (−40) — the 40 source-INDEPENDENT members
         // of the same-event member-bound over-prompt CLASS now correctly PROMPT
         // (discriminator) instead of auto-ordering, so they no longer increment this
-        // auto counter. The floor is UNCHANGED (2830 > 2727, still passes) — this is
-        // an accounted movement, NOT a blanket bump (rider-4); the moved population is
-        // exactly the source-independent slice of `se_member_bound_class`.
+        // auto counter. R4: a FURTHER −11 (measured 2820 @ rebased corpus) — the
+        // source-independent slice of `se_event_object_class` (11 of the 13; the other
+        // 2 are non-source-independent, e.g. self-writing) now prompts via the event-
+        // object discriminator. The floor is UNCHANGED (2820 > 2727, still passes) —
+        // both are accounted movements, NOT blanket bumps (rider-4); the moved
+        // populations are exactly the source-independent slices of the two over-prompt
+        // classes.
         assert!(
             floor_t1_source_indep >= 2727,
             "T1 source-independent auto floor: {floor_t1_source_indep} < 2727"
@@ -779,6 +839,41 @@ fn ordering_parity_sweep() {
             se_member_bound_class.len() >= 35,
             "same-event member-bound over-prompt class floor: {} < 35",
             se_member_bound_class.len()
+        );
+        // R4: the same-event event-object GENUINE exact-set — EMPTY (0 genuine among
+        // the 13 flips; governing theorem: all writes are to the SHARED event object or
+        // disjoint self ⇒ relabel-invariant final state). A future genuine flip (parse/
+        // corpus drift) lands in `se_event_object_class` and trips the STRICT PROOF-GATE
+        // only if not added HERE — so this exact-set forces the §8 honesty bookkeeping.
+        let expected_se_event_object_genuine: BTreeSet<String> = SAME_EVENT_EVENT_OBJECT_GENUINE
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        assert_eq!(
+            se_event_object_genuine_hit, expected_se_event_object_genuine,
+            "SAME_EVENT_EVENT_OBJECT_GENUINE stale/unhit entries"
+        );
+        // se_event_object_class: measured 13 @ rebased corpus; floor = ⌊13·0.7⌋ (~30%
+        // churn tolerance, `>=`, predicate-keyed so membership churns with the corpus).
+        // NON-vacuity / mutation tripwire: deleting the discriminator row (`s.same_event
+        // && s.event_object_present && p.reads_and_writes_event_object()`) makes every
+        // member auto-order ⇒ this count collapses to 0 ⇒ floor trips. Guards the R4 fix
+        // against silent regression.
+        assert!(
+            se_event_object_class.len() >= 9,
+            "same-event event-object over-prompt class floor: {} < 9",
+            se_event_object_class.len()
+        );
+        // rider-1: the two same-event over-prompt classes are DISJOINT by construction
+        // (the `reads_member_bound()` classify branch precedes the event-object branch,
+        // so a both-carrier card is attributed to `se_member_bound_class`). Asserted so
+        // a future reorder that double-counts a card trips here.
+        assert!(
+            se_member_bound_class.is_disjoint(&se_event_object_class),
+            "rider-1: se_member_bound_class ∩ se_event_object_class must be empty; overlap = {:?}",
+            se_member_bound_class
+                .intersection(&se_event_object_class)
+                .collect::<Vec<_>>()
         );
         // cat-1 exact-hit: the 6 measured same-event flips. Your Inescapable Doom is
         // expected-UNHIT (its counter feed parses to Any so the sweep never forms its
