@@ -2423,6 +2423,12 @@ pub fn spell_record_matches_filter(
         TargetFilter::Not { filter: inner } => {
             !spell_record_matches_filter(record, inner, controller, all_creature_types)
         }
+        // CR 201.2: name filter over spell history — the recorded card name (captured
+        // at cast time) must equal `name`. Mirrors the object matcher (`obj.name`) and
+        // the zone-change record matcher (`record.name`); without this, `Not(Named{X})`
+        // over a spell record was `!false = true` always, silently no-opping name
+        // self-exclusions like Alania's "first Otter spell other than ~".
+        TargetFilter::Named { name } => record.name == *name,
         // All remaining variants are inapplicable to spell snapshots.
         TargetFilter::None
         | TargetFilter::Player
@@ -2464,7 +2470,6 @@ pub fn spell_record_matches_filter(
         | TargetFilter::DefendingPlayer
         | TargetFilter::HasChosenName
         | TargetFilter::ChosenDamageSource
-        | TargetFilter::Named { .. }
         // CR 201.5a: append-only (concretized before runtime).
         | TargetFilter::GrantingObject
         | TargetFilter::Owner => false,

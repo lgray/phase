@@ -16434,6 +16434,16 @@ pub enum TriggerCondition {
     /// when the filter carries `FilterProp::Another` / "other" (Orvar, the All-Form).
     TriggeringSpellTargetsFilter { filter: TargetFilter },
 
+    /// CR 601.2a + CR 603.4: True when the spell object named by the triggering
+    /// `GameEvent::SpellCast` matches `filter`. The cast-spell "what it IS" sibling
+    /// of `TriggeringSpellTargetsFilter` (what it targets), `SourceMatchesFilter`,
+    /// `ZoneChangeObjectMatchesFilter`, and `EventDamageSourceMatchesFilter` in the
+    /// "match-event-subject" cluster. Composes with `QuantityComparison` over
+    /// `QuantityRef::SpellsCastThisTurn` to express "if it's the n-th [type] spell
+    /// you've cast this turn" without a bundled ordinal variant (Alania, Divergent
+    /// Storm's disjunctive first-of-type intervening-if).
+    TriggeringSpellMatchesFilter { filter: TargetFilter },
+
     // -- Combinators --
     /// All conditions must be true ("if you gained and lost life this turn")
     And { conditions: Vec<TriggerCondition> },

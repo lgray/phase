@@ -6862,6 +6862,23 @@ pub(crate) fn check_trigger_condition(
                     context_source_id,
                 )
             }),
+        // CR 601.2a + CR 603.4: spell-cast intervening-if on the triggering spell's
+        // own characteristics — true when the spell object named by the SpellCast
+        // event matches `filter`. Anchors to the event's `object_id` (not the live
+        // stack top) so the CR 603.4 resolution re-check evaluates the correct spell.
+        TriggerCondition::TriggeringSpellMatchesFilter { filter } => trigger_event
+            .and_then(|event| match event {
+                GameEvent::SpellCast { object_id, .. } => Some(*object_id),
+                _ => None,
+            })
+            .is_some_and(|spell_id| {
+                crate::game::trigger_matchers::target_filter_matches_object(
+                    state,
+                    spell_id,
+                    filter,
+                    source_id.unwrap_or(spell_id),
+                )
+            }),
     }
 }
 

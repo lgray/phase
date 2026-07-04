@@ -3581,6 +3581,9 @@ fn fmt_trigger_condition(cond: &crate::types::ability::TriggerCondition) -> Stri
         TC::TriggeringSpellTargetsFilter { filter } => {
             format!("triggering spell targets {}", fmt_target(filter))
         }
+        TC::TriggeringSpellMatchesFilter { filter } => {
+            format!("triggering spell is {}", fmt_target(filter))
+        }
         TC::And { conditions } => {
             let parts: Vec<String> = conditions.iter().map(fmt_trigger_condition).collect();
             parts.join(" and ")

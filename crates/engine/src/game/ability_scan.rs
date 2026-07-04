@@ -2739,6 +2739,15 @@ fn scan_trigger_condition(x: &TriggerCondition) -> Axes {
             acc = acc.or(scan_target_filter(filter));
             acc
         }
+        TriggerCondition::TriggeringSpellMatchesFilter { filter } => {
+            let mut acc = Axes {
+                event: true,
+                sibling: false,
+                projected: false,
+            };
+            acc = acc.or(scan_target_filter(filter));
+            acc
+        }
         TriggerCondition::And { conditions } => {
             let mut acc = Axes::NONE;
             for x in conditions {
