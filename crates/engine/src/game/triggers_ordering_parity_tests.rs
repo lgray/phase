@@ -123,6 +123,98 @@ const CATEGORY_1_ROWS: &[&str] = &[
     "complex automaton",
 ];
 
+/// §7 documented-conservative over-prompts: cards whose sweep decision-diff is a
+/// PROVEN-SAFE conservative prompt (auto would also be sound, but no in-scope
+/// structural recognizer proves it context-free). Listing here ONLY suppresses the
+/// sweep's unexplained-flag — it never changes a runtime ordering decision.
+/// Suppression is direction-gated: only old=auto→new=prompt (over-prompt) rows may
+/// match; an under-prompt diff is NEVER suppressible (fail-closed, CR 603.3b).
+/// Grouped by class; each entry carries its one-line safety argument (§7 ledger
+/// source of truth).
+const DOCUMENTED_OVER_PROMPT: &[&str] = &[
+    // ---- L8-held: a self-scoped write can flip a sibling's re-checked
+    // intervening-if (CR 603.4), but the flip is monotone/self-limiting, so
+    // identical siblings still commute semantically. The L8 idempotence recognizer
+    // is deliberately HELD (a wrong recognizer would UNDER-prompt = rules-wrong;
+    // the conservative prompt is fail-closed = rules-correct). ----
+    // end-step ZoneChangeCountThisTurn read × self-Sacrifice — self-limiting.
+    "chorale of the void",
+    // Mill membership write × ZoneCardCount(gy, Creature) self-transform threshold —
+    // monotone graveyard growth.
+    "deathbonnet sprout",
+    // HandSize(you > opp) read × self-return-to-hand — the write monotonically
+    // strengthens the condition.
+    "death of a thousand stings",
+    // Upkeep hand-size read × self-return-to-hand (same shape as death of a
+    // thousand stings).
+    "exile into darkness",
+    // SourceIsTapped read; the Glimmer-token write feeds the Glimmer-count branch —
+    // self-limiting.
+    "glimmer seeker",
+    // ControlCount(SelfRef) read × Meld consumes the shared pair — self-limiting.
+    "graf rats",
+    // Control(blue) read × CopyTokenOf{self} blue-token write — monotone;
+    // already-true stays true.
+    "mirror-sigil sergeant",
+    // GraveyardSize read × self-return-from-graveyard — self-limiting threshold.
+    "persistent marshstalker",
+    // Control(another nonland) read × self-Sacrifice — self-limiting.
+    "reclusive wight",
+    // Not(SourceIsTapped) read × untap-ALL write — idempotent.
+    "reveille squad",
+    // Token write × ObjectCount == 13 self-sacrifice — equality over symmetric writes.
+    "stensia uprising",
+    // Mill + self-exile + put-on-top writes × ZoneCardCount(Library == 0) read.
+    "stillness in motion",
+    // ---- osseous-class: owner-keyed read × owner-misaligned write ----
+    // DistinctCardTypes{your gy} GE 4 read × opponent-Sacrifice write that lands in
+    // the sacrificed permanent's OWNER's graveyard (CR 701.21a): a control-changed
+    // permanent you own makes the write-span truly Any; only the monotone GE
+    // comparator commutes it (deferred L8).
+    "osseous sticktwister",
+    // ---- context-free-unclassifiable singletons ----
+    // RevealTop → Destroy{ParentTarget}: the filter-on-revealed read is
+    // resolution-local, but the AST has no scope distinguishing it from a live
+    // board read.
+    "paroxysm",
+    // ControlsType{Creature power GE 4} re-check × graveyard→battlefield self-return
+    // commutes ONLY because the phoenix's own power (2 < 4) — runtime P/T, invisible
+    // to a context-free recognizer.
+    "flamewake phoenix",
+    // ---- parse-blocked commutes (underneath the mis-parse, the structure
+    // commutes) ----
+    // RemoveCounter{TriggeringSource} mis-parse (should be SelfRef): each removes
+    // its own time counter.
+    "deep-sea kraken",
+    // HasCounters(oil) mis-reads the source Golem (should be the entering creature):
+    // both writes are monotone oil-adds on the shared object.
+    "ichorplate golem",
+    // ---- owner-misalignment (osseous-class), batch — aligned-safe via sum-symmetry ----
+    // dies-batch GainLife{ZoneCardCount(your gy, Creature)} + self-exile-from-gy:
+    // the count-read × graveyard-self-exile is a genuine structural RW conflict, so
+    // production prompts; but for the OWNER-ALIGNED co-departure (all copies land in
+    // your graveyard) each resolution removes exactly itself, so the multiset of
+    // per-copy gains {1..N} — and the total — is order-invariant. No in-scope
+    // recognizer proves that sum-symmetry, so the prompt is conservative. (Owner-
+    // MISaligned copies go to a different graveyard and are correctly prompted by
+    // the same conflict — see the impl-report soundness note.)
+    "skyfisher spider",
+];
+
+/// Batch-depth GENUINE order-dependence (kept SEPARATE from the same-event
+/// CATEGORY_1_ROWS — different oracle: these diff against the legacy serde walk).
+/// The new prompt is CORRECT (CR 603.3b: the controller chooses the order), i.e.
+/// an intended prompt the legacy engine wrongly auto-ordered — not an over-prompt.
+const BATCH_GENUINE_ROWS: &[&str] = &[
+    // LTB: Sacrifice{Dragons-you-control, count: ObjectCount{same}} → sub
+    // ChangeZone{TrackedSet(0) → Battlefield, enters_under: You} (AST measured).
+    // Each co-departing member returns ITS OWN tracked exile set, and returned
+    // creatures can be Dragons the OTHER member's re-sacrifice then consumes —
+    // final state differs by order (CR 603.3b intended prompt). Runtime pin:
+    // b2_dotd_member_bound_pin (reads_member_bound refuses batch-T1).
+    "day of the dragons",
+];
+
 /// The census of a printed card's source (core types + subtypes + non-token).
 fn face_census(face: &CardFace) -> SourceCensus {
     let mut tags: Vec<String> = Vec::new();
@@ -301,25 +393,6 @@ fn sweep_no_ordering_input(
             .unwrap_or(false)
 }
 
-/// A trigger's ability reads a live source P/T / counter characteristic
-/// (`Power`/`Toughness`/`CountersOn` at `ObjectScope::Source`).
-fn reads_source_pt_or_counter(value: &serde_json::Value) -> bool {
-    match value {
-        serde_json::Value::Object(map) => {
-            let is_src_read = ["Power", "Toughness", "CountersOn"].iter().any(|k| {
-                map.get(*k).is_some_and(|inner| {
-                    serde_json::to_string(inner)
-                        .map(|s| s.contains("\"Source\""))
-                        .unwrap_or(false)
-                })
-            });
-            is_src_read || map.values().any(reads_source_pt_or_counter)
-        }
-        serde_json::Value::Array(vs) => vs.iter().any(reads_source_pt_or_counter),
-        _ => false,
-    }
-}
-
 fn ability_rw_profile_merged(
     resolved: &ResolvedAbility,
     trig_condition: Option<&TriggerCondition>,
@@ -361,9 +434,10 @@ fn ordering_parity_sweep() {
     let mut compared = 0usize;
     let mut unexplained: Vec<String> = Vec::new();
     let mut cat1_hit: BTreeSet<String> = BTreeSet::new();
+    let mut over_prompt_hit: BTreeSet<String> = BTreeSet::new();
+    let mut batch_genuine_hit: BTreeSet<String> = BTreeSet::new();
 
     // Non-vacuity floors (full-DB; the committed fixture is a subset).
-    let mut floor_batch_self_srcread = 0usize;
     let mut floor_batch_obs = 0usize;
     let mut floor_hadcounters_batch_self = 0usize;
     let mut floor_retained_prompt = 0usize;
@@ -397,7 +471,6 @@ fn ordering_parity_sweep() {
                 .unwrap_or(false);
             let event_present = mode_carries_event_object(&trig.mode);
             let is_departure = mode_is_battlefield_departure(&trig.mode, trig);
-            let has_src_read = reads_source_pt_or_counter(&value);
             let hadcounters = matches!(trig.condition, Some(TriggerCondition::HadCounters { .. }));
 
             let mk =
@@ -440,9 +513,13 @@ fn ordering_parity_sweep() {
                 let decision_new = !conflict; // decision_old (same-event) == auto == true
                 compared += 1;
                 if !decision_new {
-                    // A same-event diff (auto -> prompt): must be a category-(1) row.
+                    // A same-event diff (auto -> prompt): a proven category-(1)
+                    // genuine flip, or a documented-conservative over-prompt (this
+                    // arm is inherently over-prompt-direction — decision_old == auto).
                     if CATEGORY_1_ROWS.contains(&name.as_str()) {
                         cat1_hit.insert(name.clone());
+                    } else if DOCUMENTED_OVER_PROMPT.contains(&name.as_str()) {
+                        over_prompt_hit.insert(name.clone());
                     } else {
                         unexplained.push(format!(
                             "SAME-EVENT auto->prompt on '{name}' (not a category-(1) row)"
@@ -473,12 +550,23 @@ fn ordering_parity_sweep() {
                 let decision_old = !legacy_serde;
                 compared += 1;
                 if decision_new != decision_old {
-                    // Batch parity is ZERO-diff by design (D3). Any batch diff is a
-                    // finding — no category exists for it.
-                    unexplained.push(format!(
-                        "BATCH decision diff on '{name}' (old={decision_old}, new={decision_new}, \
-                         legacy_serde={legacy_serde}, legacy_prompt={legacy_prompt})"
-                    ));
+                    // Fail-closed direction gate: only the conservative direction
+                    // (old=auto → new=prompt) is allowlistable; an under-prompt diff
+                    // (old=prompt → new=auto) is ALWAYS unexplained — a rules-required
+                    // prompt is NEVER suppressible (CR 603.3b soundness invariant).
+                    let over_prompt_direction = decision_old && !decision_new;
+                    if over_prompt_direction && BATCH_GENUINE_ROWS.contains(&name.as_str()) {
+                        batch_genuine_hit.insert(name.clone());
+                    } else if over_prompt_direction
+                        && DOCUMENTED_OVER_PROMPT.contains(&name.as_str())
+                    {
+                        over_prompt_hit.insert(name.clone());
+                    } else {
+                        unexplained.push(format!(
+                            "BATCH decision diff on '{name}' (old={decision_old}, new={decision_new}, \
+                             legacy_serde={legacy_serde}, legacy_prompt={legacy_prompt})"
+                        ));
+                    }
                 }
                 // Retained-prompt parity (D5): every legacy-ref trigger must still
                 // prompt on the batch path.
@@ -492,9 +580,13 @@ fn ordering_parity_sweep() {
                 }
                 if decision_new {
                     if self_ref {
-                        if has_src_read {
-                            floor_batch_self_srcread += 1;
-                        }
+                        // batch_self_srcread floor REMOVED: the {self-departure ∧
+                        // Power/Toughness/CountersOn{Source} read} cell is EMPTY
+                        // in-corpus — dies-triggers reading "its power/counters" parse
+                        // to event-context scopes (TriggeringSource-class), so post-N-G
+                        // that whole class correctly prompts and is counted by
+                        // retained_prompt; the freeze-auto behavior it witnessed is
+                        // pinned by units N-A/N-B.
                         if hadcounters {
                             floor_hadcounters_batch_self += 1;
                         }
@@ -508,12 +600,14 @@ fn ordering_parity_sweep() {
 
     eprintln!(
         "ordering_parity_sweep: full_db={full_db} swept={swept} compared={compared} \
-         unexplained={} cat1_hit={:?}",
+         unexplained={} cat1_hit={:?} over_prompt_hit={} batch_genuine_hit={}",
         unexplained.len(),
-        cat1_hit
+        cat1_hit,
+        over_prompt_hit.len(),
+        batch_genuine_hit.len()
     );
     eprintln!(
-        "floors: batch_self_srcread={floor_batch_self_srcread} batch_obs={floor_batch_obs} \
+        "floors: batch_obs={floor_batch_obs} \
          hadcounters_batch_self={floor_hadcounters_batch_self} \
          retained_prompt={floor_retained_prompt} t1_source_indep={floor_t1_source_indep}"
     );
@@ -530,26 +624,77 @@ fn ordering_parity_sweep() {
     assert!(compared > 0, "sweep compared zero decisions");
 
     if full_db {
-        // §5.2 positive floors (full-DB measured minima).
+        // §5.2 positive floors (full-DB measured minima @ b1b3c873e; floor =
+        // measured − 5% corpus-churn tolerance so a classifier regression trips it).
+        // The `batch_self_srcread` floor is REMOVED — its cell is empty in-corpus
+        // (see the loop comment); its old ≥40 was a D5 fail-open-hole artifact now
+        // counted by `retained_prompt`.
+
+        // batch_obs: measured 494 @ b1b3c873e; floor = ⌊494·0.95⌋. Zero batch-T1
+        // dependence (all 5 T1-carried autos are self_ref) — guards sweep
+        // reachability + mass-classification health; a classifier regression (M6/M8)
+        // collapses it toward 0.
         assert!(
-            floor_batch_self_srcread >= 40,
-            "batch_self src-P/T/counter readers auto floor: {floor_batch_self_srcread} < 40"
+            floor_batch_obs >= 469,
+            "batch_obs auto floor: {floor_batch_obs} < 469"
         );
+        // hadcounters_batch_self: measured 1 @ b1b3c873e; floor = measured − 0. Sole
+        // witness: Promising Duskmage (HadCounters{P1P1} dies → Draw — a pure
+        // CR 603.10a frozen look-back read, auto under a valid freeze). N=1 corpus
+        // cell; fragility accepted (only full-DB witness of the frozen-look-back auto
+        // class). Mutation M5 (freeze_valid=false) drops it to 0.
         assert!(
-            floor_batch_obs >= 8,
-            "batch_obs auto floor: {floor_batch_obs} < 8"
+            floor_hadcounters_batch_self >= 1,
+            "HadCounters batch_self auto floor: {floor_hadcounters_batch_self} < 1"
         );
+        // retained_prompt: measured 285 @ b1b3c873e; floor = ⌈285·0.95⌉. Makes the D5
+        // legacy-prompt override population a real regression tripwire (M4 → 0).
         assert!(
-            floor_hadcounters_batch_self >= 57,
-            "HadCounters batch_self auto floor: {floor_hadcounters_batch_self} < 57"
+            floor_retained_prompt >= 271,
+            "retained-prompt floor: {floor_retained_prompt} < 271"
         );
+        // t1_source_indep: measured 2871 @ b1b3c873e; floor = ⌊2871·0.95⌋.
+        // Deterministic tripwire for the `source_independent` predicate (M1 → 0).
         assert!(
-            floor_retained_prompt >= 1,
-            "retained-prompt floor: {floor_retained_prompt} < 1"
+            floor_t1_source_indep >= 2727,
+            "T1 source-independent auto floor: {floor_t1_source_indep} < 2727"
         );
-        assert!(
-            floor_t1_source_indep >= 38,
-            "T1 source-independent auto floor: {floor_t1_source_indep} < 38"
+
+        // Ledger completeness (full-DB only — the committed fixture lacks these
+        // cards). Every allowlist entry MUST be consumed: an unhit entry is stale
+        // bookkeeping (the card cleared — remove it — or its name drifted).
+        let expected_over_prompt: BTreeSet<String> = DOCUMENTED_OVER_PROMPT
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        assert_eq!(
+            over_prompt_hit, expected_over_prompt,
+            "DOCUMENTED_OVER_PROMPT stale/unhit entries"
+        );
+        let expected_batch_genuine: BTreeSet<String> =
+            BATCH_GENUINE_ROWS.iter().map(|s| s.to_string()).collect();
+        assert_eq!(
+            batch_genuine_hit, expected_batch_genuine,
+            "BATCH_GENUINE_ROWS stale/unhit entries"
+        );
+        // cat-1 exact-hit: the 6 measured same-event flips. Your Inescapable Doom is
+        // expected-UNHIT (its counter feed parses to Any so the sweep never forms its
+        // group); if that parser gap is ever fixed it starts hitting and this assert
+        // forces the bookkeeping update.
+        let expected_cat1: BTreeSet<String> = [
+            "complex automaton",
+            "docent of perfection",
+            "ouroboroid",
+            "promise of tomorrow",
+            "sidequest: hunt the mark",
+            "spawn of mayhem",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        assert_eq!(
+            cat1_hit, expected_cat1,
+            "CATEGORY_1_ROWS measured-hit set drift"
         );
     }
 }
