@@ -51,7 +51,8 @@ links had been missing). Series map for copy-paste into future PRs:
 | PR-5 | #4547 | `cargo combo-verify` CLI over the 53-row corpus. |
 | PR-6 | #4603 | `∞` unbounded-resource display — generalize infinite-mana to the whole `ResourceAxis` class (engine-owned `DerivedViews` projection). |
 | PR-6.25 | (deferred R3) | Order-independence soundness fix for `group_is_order_independent` (latent CR 603.3b). Notes: `PR-6.25-DEFERRED-FINDINGS.md`. |
-| PR-6.5 | (deferred epic) | Growing-cascade detector for multiplayer win-acceleration; grounded in distributed-systems cascade-failure analysis. Notes: `PR-6.5-EPIC-GROWING-CASCADE.md`. |
+| PR-6.5 | #4904 | Growing-cascade detector for multiplayer win-acceleration (ω-coverability modulo growth) + C0 fail-closed walker + C2 gated order-independent auto-resolve. Notes: `PR-6.5-EPIC-GROWING-CASCADE.md`. |
+| PR-6.75 | (planning) | C0-full + C1 precision pass — read/write conflict-profile module (`ability_rw.rs`), latent CR 603.3b same-event fix. Plan: `PR-6.75-C0FULL-C1-PLAN.md`. |
 
 When you open the next combo PR (PR-7+), append its row here and link PR-6 (or the
 latest merged predecessor) in its body.

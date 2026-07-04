@@ -1,3 +1,13 @@
+# ⛔ OLD PLAN — SUPERSEDED 2026-07-03, DO NOT USE FOR NEW WORK ⛔
+
+> This document is retained ONLY so in-flight tranches keep their meaning (the S25 40-card
+> tranche and anything else already dispatched under these cluster definitions finishes under
+> them). For ALL new tranche selection and ranking use **`PLAN-V2-TRACE.md`** in this
+> directory — a trace-keyed re-clustering (cards grouped by the parser code path a fix must
+> touch, per the S07 batching model) derived from measured data by
+> `.planning/coverage-analysis/trace_cluster.py` @ main `b7194fc30`. The S/R cluster names
+> below (S01…S29, R1…R5) remain valid HISTORICAL identifiers for shipped/in-flight work only.
+
 # Standard-legal rollout plan
 
 > **Hard rule (user, 2026-06-22): every card MUST be implemented. No "defer", no "out-of-scope."**

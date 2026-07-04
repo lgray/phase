@@ -1,0 +1,19 @@
+lane	cards	primary_file	families	top_families
+L06	32	parser/oracle_quantity.rs	32	~ deals N damage to target creature an×1 | copy it for each other instant and sor×1 | as an additional cost to cast this spe×1
+L04	31	parser/oracle_nom/condition.rs	31	~ enters, if he was cast, return targe×1 | ~ enter, if you cast them and there×1 | {M}: add N mana of any color. /×1
+L01	28	engine-runtime	3	R5-runtime-bespoke×10 | R2-aslongas-conditional-static×9 | R1-speed-mechanic×9
+L02	24	parser/oracle_effect/imperative.rs	24	search its controller's graveyard, han×1 | search its owner's graveyard, hand, an×1 | the first sorcery spell, or the first ×1
+L10	20	parser/oracle_trigger.rs	22	whenever ~ is dealt N or more damage,×1 | whenever you untap N or more permanent×1 | whenever you tap N or more untapped cr×1
+L03	19	parser/oracle_effect/mod.rs	17	you may choose new targets for the cop×3 | once each turn, you may pay {M} rather×1 | as ~ enters, look at an opponent's han×1
+L08	15	parser/oracle_effect/search.rs	15	shuffle that pile, then cloak them×1 | put up to N lore counters on it×1 | for each player, you choose a creature×1
+L16	12	parser/oracle_nom/duration.rs	12	{M}, {M}, sacrifice this artifact: des×1 | your hand this turn and this creature ×1 | when this enchantment enters, destroy ×1
+L11	10	parser/oracle_effect/	12	your turn, you may play cards from you×1 | your turn, you may cast creature spell×1 | whenever a creature you control enters×1
+L09	7	parser/oracle_effect/conditions.rs	7	otherwise×1 | you control that player during their n×1 | {M}, {M}: when you next activate an ex×1
+L23	4	parser/oracle_target.rs	3	parse_target could not classify 'N car×2 | parse_target could not classify 'the b×1 | parse_target could not classify 'but t×1
+L20	3	parser/oracle_casting.rs	3	choose a creature you control or a war×1 | behold a dragon×1 | loose leaf×1
+L14	3	parser/oracle_effect/become_copy_except.rs	3	it's a treasure artifact with "{M}, sa×1 | it enters with a finality counter on i×1 | it's a N/N robot artifact creature wit×1
+L12	2	parser/oracle_effect/counter.rs	2	target land card from your graveyard×1 | all abilities your opponents control×1
+L26	2	parser/oracle_effect/sequence.rs	2	~ enters, choose up to N, where N×1 | modal spell, choose up to N, where N×1
+L05	2	parser/oracle_dispatch.rs	2	as ~ enters or is turned face up,×1 | the first time you would create N or×1
+L07	1	parser/oracle_effect/mana.rs	1	creatures target opponent controls los×1
+L17	1	parser/oracle_util.rs	1	at the beginning of the end step on×1

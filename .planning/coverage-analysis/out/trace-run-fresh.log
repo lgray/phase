@@ -1,0 +1,91 @@
+
+== standard: top 15 trace families (192 families, 200 cards) ==
+     22.8  n=10   xpool=71   near=0.00 L01 engine-runtime                               R5-runtime-bespoke
+     22.0  n=9    xpool=70   near=0.00 L01 engine-runtime                               R2-aslongas-conditional-static
+      8.2  n=3    xpool=5    near=1.00 L03 parser/oracle_effect/mod.rs                  Effect:orphaned_copy_retarget::you may choose new targets for the copy
+      6.8  n=9    xpool=9    near=0.00 L01 engine-runtime                               R1-speed-mechanic
+      5.9  n=1    xpool=17   near=0.12 L09 parser/oracle_effect/conditions.rs           Effect:otherwise::otherwise
+      4.5  n=1    xpool=4    near=1.00 L02 parser/oracle_effect/imperative.rs           Effect:search::search its controller's graveyard, hand, and library fo
+      3.0  n=1    xpool=2    near=1.00 L06 parser/oracle_quantity.rs                    Swallow:DynamicQty::~ deals N damage to target creature and
+      3.0  n=1    xpool=2    near=1.00 L06 parser/oracle_quantity.rs                    Swallow:DynamicQty::copy it for each other instant and sorcery
+      3.0  n=1    xpool=2    near=1.00 L06 parser/oracle_quantity.rs                    Swallow:DynamicQty::as an additional cost to cast this spell,
+      3.0  n=1    xpool=2    near=1.00 L03 parser/oracle_effect/mod.rs                  Effect:unknown::once each turn, you may pay {M} rather
+      3.0  n=1    xpool=2    near=1.00 L03 parser/oracle_effect/mod.rs                  Effect:unknown::as ~ enters, look at an opponent's hand,
+      3.0  n=1    xpool=2    near=1.00 L02 parser/oracle_effect/imperative.rs           Effect:search::search its owner's graveyard, hand, and library for
+      2.2  n=1    xpool=1    near=1.00 L10 parser/oracle_trigger.rs                     Trigger:Whenever ~ is dealt 3 or more damage::whenever ~ is dealt N or
+      2.2  n=1    xpool=1    near=1.00 L10 parser/oracle_trigger.rs                     Trigger:Whenever you untap one or more permanents during your untap st
+      2.2  n=1    xpool=1    near=1.00 L10 parser/oracle_trigger.rs                     Trigger:Whenever you tap one or more untapped creatures your opponents
+
+== modern+commander: top 15 trace families (1196 families, 1366 cards) ==
+     38.0  n=71   xpool=10   near=0.00 L01 engine-runtime                               R5-runtime-bespoke
+     37.2  n=70   xpool=9    near=0.00 L01 engine-runtime                               R2-aslongas-conditional-static
+     12.0  n=8    xpool=0    near=1.00 L02 parser/oracle_effect/imperative.rs           Effect:flip::flip ~
+     12.0  n=8    xpool=0    near=1.00 L02 parser/oracle_effect/imperative.rs           Effect:flip::flip it
+     10.8  n=17   xpool=1    near=0.12 L09 parser/oracle_effect/conditions.rs           Effect:otherwise::otherwise
+     10.5  n=21   xpool=0    near=0.00 L01 engine-runtime                               R3-level-up
+      9.8  n=5    xpool=3    near=1.00 L03 parser/oracle_effect/mod.rs                  Effect:orphaned_copy_retarget::you may choose new targets for the copy
+      7.5  n=5    xpool=0    near=1.00 L04 parser/oracle_nom/condition.rs               Swallow:Condition_If::creature attacks, if you attacked with creatures
+      7.5  n=5    xpool=0    near=1.00 L09 parser/oracle_effect/conditions.rs           Effect:when::when you pay this cost N or more
+      6.8  n=9    xpool=9    near=0.00 L01 engine-runtime                               R1-speed-mechanic
+      6.8  n=4    xpool=1    near=1.00 L02 parser/oracle_effect/imperative.rs           Effect:search::search its controller's graveyard, hand, and library fo
+      4.5  n=3    xpool=0    near=1.00 L04 parser/oracle_nom/condition.rs               Swallow:Condition_If::as an additional cost to cast this spell,
+      4.5  n=3    xpool=0    near=1.00 L04 parser/oracle_nom/condition.rs               Swallow:Condition_If::add {M}. if that mana is spent on
+      4.5  n=3    xpool=0    near=1.00 L03 parser/oracle_effect/mod.rs                  Effect:unknown::spells and abilities your opponents control can't caus
+      4.5  n=3    xpool=0    near=1.00 L02 parser/oracle_effect/imperative.rs           Effect:look::look at that card
+
+== standard: lane rollup (tranche seeds) ==
+  L06    32 cards   32 fams  parser/oracle_quantity.rs                ~ deals N damage to target creature an×1 | copy it for each other inst
+  L04    31 cards   31 fams  parser/oracle_nom/condition.rs           ~ enters, if he was cast, return targe×1 | ~ enter, if you cast them a
+  L01    28 cards    3 fams  engine-runtime                           R5-runtime-bespoke×10 | R2-aslongas-conditional-static×9 | R1-speed-me
+  L02    24 cards   24 fams  parser/oracle_effect/imperative.rs       search its controller's graveyard, han×1 | search its owner's graveyar
+  L10    20 cards   22 fams  parser/oracle_trigger.rs                 whenever ~ is dealt N or more damage,×1 | whenever you untap N or more
+  L03    19 cards   17 fams  parser/oracle_effect/mod.rs              you may choose new targets for the cop×3 | once each turn, you may pay
+  L08    15 cards   15 fams  parser/oracle_effect/search.rs           shuffle that pile, then cloak them×1 | put up to N lore counters on it
+  L16    12 cards   12 fams  parser/oracle_nom/duration.rs            {M}, {M}, sacrifice this artifact: des×1 | your hand this turn and thi
+  L11    10 cards   12 fams  parser/oracle_effect/                    your turn, you may play cards from you×1 | your turn, you may cast cre
+  L09     7 cards    7 fams  parser/oracle_effect/conditions.rs       otherwise×1 | you control that player during their n×1 | {M}, {M}: whe
+  L23     4 cards    3 fams  parser/oracle_target.rs                  parse_target could not classify 'N car×2 | parse_target could not clas
+  L20     3 cards    3 fams  parser/oracle_casting.rs                 choose a creature you control or a war×1 | behold a dragon×1 | loose l
+  L14     3 cards    3 fams  parser/oracle_effect/become_copy_except.rs it's a treasure artifact with "{M}, sa×1 | it enters with a finality c
+  L12     2 cards    2 fams  parser/oracle_effect/counter.rs          target land card from your graveyard×1 | all abilities your opponents 
+  L26     2 cards    2 fams  parser/oracle_effect/sequence.rs         ~ enters, choose up to N, where N×1 | modal spell, choose up to N, whe
+  L05     2 cards    2 fams  parser/oracle_dispatch.rs                as ~ enters or is turned face up,×1 | the first time you would create 
+  L07     1 cards    1 fams  parser/oracle_effect/mana.rs             creatures target opponent controls los×1
+  L17     1 cards    1 fams  parser/oracle_util.rs                    at the beginning of the end step on×1
+
+== modern+commander: lane rollup (tranche seeds) ==
+  L02   256 cards  230 fams  parser/oracle_effect/imperative.rs       flip ~×8 | flip it×8 | search its controller's graveyard, han×4
+  L04   247 cards  233 fams  parser/oracle_nom/condition.rs           creature attacks, if you attacked with×5 | as an additional cost to ca
+  L01   174 cards    5 fams  engine-runtime                           R5-runtime-bespoke×71 | R2-aslongas-conditional-static×70 | R3-level-u
+  L06   105 cards  100 fams  parser/oracle_quantity.rs                ~ deals N damage to target creature an×2 | copy it for each other inst
+  L05    99 cards   98 fams  parser/oracle_dispatch.rs                you may reveal this card from your ope×2 | you may look at cards exile
+  L03    94 cards   82 fams  parser/oracle_effect/mod.rs              you may choose new targets for the cop×5 | spells and abilities your o
+  L10    87 cards   87 fams  parser/oracle_trigger.rs                 whenever a creature dealt damage by eq×2 | whenever ~ is dealt N or mo
+  L11    85 cards   76 fams  parser/oracle_effect/                    repeat this process N more times×3 | repeat this process×5 | your turn
+  L08    80 cards   73 fams  parser/oracle_effect/search.rs           an opponent separates those cards into×7 | shuffle that pile×2 | for e
+  L09    49 cards   28 fams  parser/oracle_effect/conditions.rs       otherwise×17 | when you pay this cost N or more×5 | when it connives t
+  L07    39 cards   36 fams  parser/oracle_effect/mana.rs             your life total becomes that number×2 | can't attack or block, and its
+  L16    38 cards   37 fams  parser/oracle_nom/duration.rs            {M}, {M}, sacrifice this artifact: des×1 | your hand this turn and thi
+  L12    20 cards   16 fams  parser/oracle_effect/counter.rs          target creature you don't control×3 | double the value of N×1 | double
+  L13    14 cards   12 fams  parser/oracle_effect/subject.rs          sacrifice ~: you may change the target×1 | {M}, {M}: until end of turn
+  L20    14 cards   16 fams  parser/oracle_casting.rs                 choose a creature you control or a war×1 | all slivers have "{M}: choo
+  L14    13 cards   14 fams  parser/oracle_effect/become_copy_except.rs it's a treasure artifact with "{M}, sa×1 | their owners shuffle those 
+  L23    11 cards   10 fams  parser/oracle_target.rs                  parse_target could not classify 'inste×2 | search-filter-suffix unmatc
+  L18     8 cards    8 fams  parser/oracle_effect/token.rs            {M}, {M}, sacrifice a creature: count ×1 | count the number of permane
+  L15     7 cards    6 fams  parser/oracle_effect/animation.rs        N can't be greater than the number of×1 | in turn order×1 | N is the m
+  L17     6 cards    5 fams  parser/oracle_util.rs                    at the beginning of the end step on×1 | at the beginning of your next 
+  L19     3 cards    3 fams  parser/oracle.rs                         trigger subject parse fell back to any×1 | activate the loyalty abilit
+  L21     3 cards    3 fams  parser/oracle_replacement.rs             or is turned face up×1 | N/N white fox with vigilance×1 | N/N spider w
+  L26     3 cards    3 fams  parser/oracle_effect/sequence.rs         ~ enters, choose up to N, where N×1 | modal spell, choose up to N, whe
+  L27     3 cards    2 fams  parser/oracle_effect/lower.rs            damage that would reduce your life tot×2 | Effect:empty×1
+  L22     2 cards    2 fams  parser/oracle_static/grammar.rs          must be blocked by an eldrazi if able×1 | N/N black rat with lifelink×
+  L24     2 cards    2 fams  parser/oracle_static/dispatch.rs         skip their next untap step×1 | activated abilities of that permanent ×
+  L30     2 cards    2 fams  parser/oracle_separate_piles.rs          starting with you, each player separat×1 | [−N]: separate all permanen
+  L31     2 cards    2 fams  parser/oracle_nom/primitives.rs          N loyalty counters on each other plane×1 | N/N elephant with trample×1
+  L25     1 cards    1 fams  parser/oracle_nom/filter.rs              nontoken permanents with the same name×1
+  L28     1 cards    1 fams  parser/oracle_keyword.rs                 who sacrificed a permanent this way re×1
+  L29     1 cards    1 fams  parser/oracle_modal.rs                   look at the top N cards of your×1
+  L32     1 cards    1 fams  parser/oracle_saga.rs                    • you gain N ~×1
+  L33     1 cards    1 fams  parser/oracle_class.rs                   ~ and up to N other target creature×1
+
+wrote out/<pool>/trace-clusters.tsv, trace-families.tsv, out/cross-pool-overlap.tsv  · stamp: {"standard": {"unsupported_rows": 220, "families": 192}, "modern+commander": {"unsupported_rows": 1494, "families": 1196}}

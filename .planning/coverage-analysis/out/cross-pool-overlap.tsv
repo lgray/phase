@@ -1,0 +1,193 @@
+family	standard	modern+commander
+Cost:Loose Leaf::loose leaf	1	1
+Cost:choose a creature you control or a warped creature card you own in exile::choose a creature you control or a warped	1	1
+Effect:Unsupported unless clause::destroy target permanent unless its controller has ~	1	1
+Effect:Unsupported unless clause::discard a card unless a permanent entered the	1	1
+Effect:Unsupported unless clause::discard a card unless you waterbend {M}	1	1
+Effect:add::add {M}, {M}, {M}, {M}, and {M}	1	1
+Effect:all::all abilities your opponents control	1	1
+Effect:at::at the beginning of the end step on	1	1
+Effect:become::become that color	1	1
+Effect:behold::behold a dragon	1	1
+Effect:choose::choose a creature card from among them	1	1
+Effect:choose::choose a nonlegendary creature that saddled it this	1	1
+Effect:choose::choose permanent with mana value N or greater	1	1
+Effect:choose::{M}: choose another player. that player gains control	1	1
+Effect:cloak::cloak a card from your hand	1	1
+Effect:create::create a green fungus dinosaur creature token with	1	1
+Effect:creatures::creatures target opponent controls lose first strike and	1	1
+Effect:discover::discover again for the same value	1	1
+Effect:fearless::fearless l'cie, you may pay {M}	1	1
+Effect:for::for each blight counter on it	1	1
+Effect:for::for each card you put on top of	1	1
+Effect:for::for each color, put a +N/+N counter on	1	1
+Effect:for::for each creature you control with power greater	1	1
+Effect:for::for each mana in this ability's activation cost,	1	1
+Effect:for::for each of N target permanents, create N	1	1
+Effect:for::for each of those creatures, create a monster	1	1
+Effect:for::for each of those opponents who didn't discard	1	1
+Effect:for::for each other player, exile up to N	1	1
+Effect:for::for each player, choose a creature with power	1	1
+Effect:for::for each player, choose up to N other	1	1
+Effect:for::for each player, you choose a creature that	1	1
+Effect:for::for each rat you control	1	1
+Effect:gain::gain this card's other abilities	1	1
+Effect:it's::it's a N/N robot artifact creature with flying	1	1
+Effect:it's::it's a treasure artifact with "{M}, sacrifice ~:	1	1
+Effect:it::it enters with a finality counter on it	1	1
+Effect:look::look at twice N cards from the top	1	1
+Effect:lose::lose all other card types	1	1
+Effect:lose::lose life equal to the mana value of	1	1
+Effect:multi_source_compound_each_power_damage::any number of target enchanted creatures you control	1	1
+Effect:only::only land creatures can attack during that combat	1	1
+Effect:orphaned_copy_retarget::you may choose new targets for the copy	3	5
+Effect:otherwise::otherwise	1	17
+Effect:phase::you control target opponent during their next combat	1	1
+Effect:players::players may play cards they exiled this way,	1	1
+Effect:put::put up to N lore counters on it	1	1
+Effect:remove::{M}, {M}: remove any number of counters from	1	1
+Effect:repeat::repeat this process N more times	1	3
+Effect:replacement_structure::as ~ enters or is turned face up,	1	1
+Effect:replacement_structure::the first time you would create N or	1	1
+Effect:search::search its controller's graveyard, hand, and library for	1	4
+Effect:search::search its owner's graveyard, hand, and library for	1	2
+Effect:shards::shards you control become copies of it until	1	1
+Effect:shuffle::shuffle that pile, then cloak them	1	1
+Effect:spend::spend mana as though it were mana of	1	1
+Effect:spend::spend this mana only to cast face-down spells	1	1
+Effect:spend::spend this mana only to turn permanents face	1	1
+Effect:target::target land card from your graveyard	1	1
+Effect:the::each player who controls the most creatures investigates.	1	1
+Effect:the::the copy gains haste and "at the beginning	1	1
+Effect:the::the first sorcery spell, or the first otter	1	1
+Effect:this::this ability costs {M} less to activate, where	1	1
+Effect:unknown::N-headed coin — the first time you flip	1	1
+Effect:unknown::as ~ enters, look at an opponent's hand,	1	2
+Effect:unknown::as ~ transforms into ~, choose an opponent	1	1
+Effect:unknown::during your turn, as long as you haven't	1	1
+Effect:unknown::during your turn, you may cast creature spells	1	1
+Effect:unknown::during your turn, you may play cards you	1	1
+Effect:unknown::once each turn, you may pay {M} rather	1	2
+Effect:unknown::the first spell each player casts during each	1	1
+Effect:unknown::the same is true for creature spells you	1	4
+Effect:unless_payment::counter up to N target spell unless its	1	1
+Effect:when::when excess damage is dealt to the creature	1	1
+Effect:when::when that mana is spent to cast a	1	1
+Effect:when::when you lose control of that equipment this	1	1
+Effect:when::when you search your library this way, put	1	1
+Effect:when::{M}, {M}: when you next activate an exhaust	1	1
+Effect:you::you control that player during their next turn	1	1
+Effect:{0}::• galian beast — {M} — N/N	1	1
+Effect:{1}::• death gigas — {M} — N/N	1	1
+Effect:{3}::• hellmasker — {M} — N/N	1	1
+ParseWarning:target-fallback::parse_target could not classify 'N cards from your	2	2
+ParseWarning:target-fallback::parse_target could not classify 'but the bottom N	1	1
+ParseWarning:target-fallback::parse_target could not classify 'the blighted creature'	1	1
+R1-speed-mechanic	9	9
+R2-aslongas-conditional-static	9	70
+R5-runtime-bespoke	10	71
+Swallow:Condition_AsLongAs::flash / when this creature enters, counter up	1	1
+Swallow:Condition_AsLongAs::this artifact enters with N net counters on	1	1
+Swallow:Condition_AsLongAs::your turn, as long as ~ is equipped,	1	1
+Swallow:Condition_If::/ i — until your next turn, each	1	1
+Swallow:Condition_If::/ {M}: add {M}. remove a time counter	1	1
+Swallow:Condition_If::N cards. if N cards that sha	1	1
+Swallow:Condition_If::activate only if N or more cards left	1	1
+Swallow:Condition_If::activate only if a player has N or	1	1
+Swallow:Condition_If::activate only if red sources you controlled de	1	1
+Swallow:Condition_If::activate only if the number of othe	1	1
+Swallow:Condition_If::activate only if there are N or more	1	1
+Swallow:Condition_If::activate only if this artifact or another artifact	1	1
+Swallow:Condition_If::control enters, if its power is greater than	1	1
+Swallow:Condition_If::creature attacks, if it's not suspected, you may	1	1
+Swallow:Condition_If::had flash if you behold a dragon as	1	1
+Swallow:Condition_If::mana cost if there are N or more	1	1
+Swallow:Condition_If::mayhem {M} / all creatures	1	1
+Swallow:Condition_If::menace / creatures you control have wither. /	1	1
+Swallow:Condition_If::menace / whenever N or more counters are	1	1
+Swallow:Condition_If::on it if it wasn't cast or no	1	1
+Swallow:Condition_If::other costs. if you cast a spell this	1	1
+Swallow:Condition_If::permanents. / if a card you didn't control	1	1
+Swallow:Condition_If::tokens. then if this spell was cast from	1	1
+Swallow:Condition_If::when this artifact enters, draw a card, then	1	1
+Swallow:Condition_If::with prowess. if this spell was cast from	1	1
+Swallow:Condition_If::you attack, if a pirate and a vehicle	1	1
+Swallow:Condition_If::your graveyard if a non-zombie creature died this	1	1
+Swallow:Condition_If::your graveyard. if you c	1	1
+Swallow:Condition_If::{M}: add N mana of any color. /	1	1
+Swallow:Condition_If::~ enter, if you cast them and there	1	1
+Swallow:Condition_If::~ enters, if he was cast, return target	1	1
+Swallow:Duration_ThisTurn::bargain / ~ deals N damage to target	1	1
+Swallow:Duration_ThisTurn::crewed it this turn explores. (reveal the top	1	1
+Swallow:Duration_ThisTurn::dealt damage this turn. / draw N cards.	1	1
+Swallow:Duration_ThisTurn::if you would pay life while your library	1	1
+Swallow:Duration_ThisTurn::lost life this turn. / whenever a clue	1	1
+Swallow:Duration_ThisTurn::menace / whenever N or more counters are	1	1
+Swallow:Duration_ThisTurn::menace / whenever ~ deals combat damage to	1	1
+Swallow:Duration_ThisTurn::sneak {M} (you may cast this spell for	1	1
+Swallow:Duration_ThisTurn::when this enchantment enters, destroy up to N	1	1
+Swallow:Duration_ThisTurn::your control this turn and you control a	1	1
+Swallow:Duration_ThisTurn::your hand this turn and this creature doesn't	1	1
+Swallow:Duration_ThisTurn::{M}, {M}, sacrifice this artifact: destroy target nonland	1	1
+Swallow:DynamicQty::N life for each of those crea	1	1
+Swallow:DynamicQty::[+N]: surveil N. / [−N]: any number of	1	1
+Swallow:DynamicQty::as an additional cost to cast this spell,	1	2
+Swallow:DynamicQty::at least that many cards in it, exile	1	1
+Swallow:DynamicQty::at the beginning of combat on your turn,	1	1
+Swallow:DynamicQty::control enter, for each of them, create a	1	1
+Swallow:DynamicQty::copy it for each other instant and sorcery	1	2
+Swallow:DynamicQty::exile cards equal to its mana value from	1	1
+Swallow:DynamicQty::exile cards from the top of your library	1	1
+Swallow:DynamicQty::first strike, haste / camouflage — {M}: put	1	1
+Swallow:DynamicQty::flying / if a creature you control that	1	1
+Swallow:DynamicQty::gets +N/+N for each of its creature types,	1	1
+Swallow:DynamicQty::investigate once for each opponent who has more	1	1
+Swallow:DynamicQty::job select / equipped creature gets +N/+N fo	1	1
+Swallow:DynamicQty::on it for each other creature you control.	1	1
+Swallow:DynamicQty::step, investigate for each opponent who lost life	1	1
+Swallow:DynamicQty::than or equal to the amount of man	1	1
+Swallow:DynamicQty::than or equal to the chosen number	1	1
+Swallow:DynamicQty::than or equal to the n	1	1
+Swallow:DynamicQty::that token for each spell	1	1
+Swallow:DynamicQty::this spell costs {M} less to cast, where	1	1
+Swallow:DynamicQty::toughness each equal to N plus N. (it	1	1
+Swallow:DynamicQty::trample / if a red source you control	1	1
+Swallow:DynamicQty::treasure token for each creature that crewed it	1	1
+Swallow:DynamicQty::ward—pay life equal to ~'s power. / whenever	1	1
+Swallow:DynamicQty::when this creature enters, target opponent reveals N	1	1
+Swallow:DynamicQty::when ~ enters, choose up to N, where	1	1
+Swallow:DynamicQty::when ~ enters, target opponent mills N cards.	1	1
+Swallow:DynamicQty::whenever you cast a modal spell, choose up	1	1
+Swallow:DynamicQty::your library. for each of those cards, its	1	1
+Swallow:DynamicQty::{M}: add {M}. / {M}: this land becomes	1	1
+Swallow:DynamicQty::~ deals N damage to target creature and	1	2
+Swallow:Modal_DynamicMaxDropped::modal spell, choose up to N, where N	1	1
+Swallow:Modal_DynamicMaxDropped::~ enters, choose up to N, where N	1	1
+Swallow:Optional_YouMay::each turn, you may instead create th	1	1
+Swallow:Optional_YouMay::graveyard. / you may cast dinosaur creature spells	1	1
+Swallow:Optional_YouMay::whenever a creature you control enters, you gain	1	1
+Swallow:Optional_YouMay::your turn, you may cast creature spells with	1	1
+Swallow:Optional_YouMay::your turn, you may play cards from your	1	1
+Trigger:When the chosen creature leaves the battlefield::when the chosen creature leaves the battlefield, transform	1	1
+Trigger:When the chosen player loses the game::when the chosen player loses the game, you	1	1
+Trigger:When there are 1,000 or more time counters on ~::when there are N,N or more time counters	1	1
+Trigger:When there are four or more page counters on ~::when there are N or more page counters	1	1
+Trigger:Whenever a Vehicle crewed by ~ this turn attacks::whenever a vehicle crewed by ~ this turn	1	1
+Trigger:Whenever a creature you control attacking causes a triggered ability of that creature to trigger::whenever a creature you control attacking causes a	1	1
+Trigger:Whenever a creature you control explores a land card::whenever a creature you control explores a land	1	1
+Trigger:Whenever a creature you control explores a nonland card::whenever a creature you control explores a nonland	1	1
+Trigger:Whenever a creature you control::whenever a creature you control, draw a card	1	1
+Trigger:Whenever an Aura you control becomes attached to a nonland permanent an opponent controls with mana value less than or equal to that Aura's mana value::whenever an aura you control becomes attached to	1	1
+Trigger:Whenever an opponent gains control of a permanent from you::whenever an opponent gains control of a permanent	1	1
+Trigger:Whenever another creature you control::whenever another creature you control, put a +N/+N	1	1
+Trigger:Whenever enchanted player is dealt damage::whenever enchanted player is dealt damage, they lose	1	1
+Trigger:Whenever one or more of your opponents are attacked::whenever N or more of your opponents are	1	1
+Trigger:Whenever you activate an ability that targets a creature or player::whenever you activate an ability that targets a	1	1
+Trigger:Whenever you discover::whenever you discover, discover again for the same	1	1
+Trigger:Whenever you draw your first or second card each turn::whenever you draw your first or second card	1	1
+Trigger:Whenever you forage::whenever you forage, put a +N/+N counter on	1	1
+Trigger:Whenever you give a gift::whenever you give a gift, draw a card	1	1
+Trigger:Whenever you solve a Case::whenever you solve a case, look at the	1	1
+Trigger:Whenever you tap one or more untapped creatures your opponents control::whenever you tap N or more untapped creatures	1	1
+Trigger:Whenever you untap one or more permanents during your untap step::whenever you untap N or more permanents during	1	1
+Trigger:Whenever ~ is dealt 3 or more damage::whenever ~ is dealt N or more damage,	1	1

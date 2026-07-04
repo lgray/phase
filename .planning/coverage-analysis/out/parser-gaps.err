@@ -1,0 +1,64 @@
+   Compiling engine v0.14.0 (/home/lgray/vibe-coding/phase-rs-workdir/crates/engine)
+    Finished `tool` profile [optimized + debuginfo] target(s) in 3m 59s
+     Running `target/tool/parser-gap-analyzer data/`
+Analyzing coverage...
+Classifying gaps...
+
+Parser Gap Analysis: 4084 unsupported cards, 4590 classified gaps
+
+  A_verb_variation — 2883 gaps, 2080 single-gap unlocks
+    verb 'cast': 241 gaps, 190 single-gap unlocks
+      «the horde casts that card» ×5
+      «can't cast spells» ×2
+    verb 'choose': 287 gaps, 182 single-gap unlocks
+      «choose a letter» ×3
+      «choose a card revealed this way» ×2
+    verb 'deal': 153 gaps, 119 single-gap unlocks
+      «deal damage to you equal to the number of cards revealed this way» ×2
+      «[warning:swallowed-clause] replacement_instead — lava burst deals x damage to any target. if lava burst would deal damage to a creature, that damage can't be prevented or dealt instead to a» ×1
+    verb 'attack': 141 gaps, 117 single-gap unlocks
+      «attack during its controller's next combat phase if able» ×3
+      «can't attack or block, and its activated abilities can't be activated» ×2
+    verb 'put': 173 gaps, 114 single-gap unlocks
+      «{x}, {t}: put up to x +1/+0 counters on ~. this ability can't cause the total number of +1/+0 counters on ~ to be greater than four. activate only during your upkeep» ×3
+      «put them back in any order» ×2
+  B_subject_stripping — 235 gaps, 164 single-gap unlocks
+    verb 'deal': 30 gaps, 24 single-gap unlocks
+      «~ deals π damage to each non-clown creature» ×1
+      «target creature you control climbs into ~. you slide them on their merry way. if the creature stayed on, it deals damage equal to its toughness to each other creature touched during the slide» ×1
+    verb 'have': 29 gaps, 22 single-gap unlocks
+      «each nonland card in your hand without foretell has foretell. its foretell cost is equal to its mana cost reduced by {2}» ×3
+      «each enchantment card in your hand has miracle. its miracle cost is equal to its mana cost reduced by {4}» ×1
+    verb 'cast': 22 gaps, 19 single-gap unlocks
+      «each opponent who controls more creatures than you can't cast creature spells. the same is true for artifacts and enchantments» ×1
+      «you can't cast keeper of the yellow hat during your first seven turns of the game» ×1
+    verb 'choose': 30 gaps, 13 single-gap unlocks
+      «you may choose new targets for the copy» ×7
+      «each player secretly chooses a creature they control and a creature they don't control. then those choices are revealed. destroy each creature chosen this way» ×1
+    verb 'get': 17 gaps, 11 single-gap unlocks
+      «equipped creature gets +x/+y, where x is the first chosen result and y is the second» ×1
+      «equipped creature gets +x/+x, where x is ~'s intensity» ×1
+  C_trigger_effect — 99 gaps, 0 single-gap unlocks
+    «scry 1. when you do» ×1
+    «whenever damage is dealt to one of the chosen players, the other chosen player also loses that much life» ×1
+    «whenever a mana ability of ~ resolves, put a number of +1/+1 counters on it equal to the amount of mana ~ produced. this ability triggers only once each turn» ×1
+  F_new_mechanic — 248 gaps, 193 single-gap unlocks
+    «abandon this scheme» ×16
+    «remove this card from your deck before playing if you're not playing for ante» ×8
+    «it unspecializes» ×5
+  G_unclassified — 1125 gaps, 665 single-gap unlocks
+    «otherwise» ×50
+    «repeat this process» ×8
+    «ready to run» ×8
+
+Quick wins (sorted by cards unlocked):
+  1. G_unclassified: "otherwise" (665 cards) — unlocks 665 cards
+  2. F_new_mechanic: "abandon this scheme" (193 cards) — unlocks 193 cards
+  3. Handle 'cast' variation: "the horde casts that card" (190 cards) — unlocks 190 cards
+  4. Handle 'choose' variation: "choose a letter" (182 cards) — unlocks 182 cards
+  5. Handle 'deal' variation: "deal damage to you equal to the number of cards revealed this way" (119 cards) — unlocks 119 cards
+  6. Handle 'attack' variation: "attack during its controller's next combat phase if able" (117 cards) — unlocks 117 cards
+  7. Handle 'put' variation: "{x}, {t}: put up to x +1/+0 counters on ~. this ability can't cause the total number of +1/+0 counters on ~ to be greater than four. activate only during your upkeep" (114 cards) — unlocks 114 cards
+  8. Handle 'create' variation: "create a copy of the card with the chosen name" (104 cards) — unlocks 104 cards
+  9. Handle 'have' variation: "have the indicated effect" (99 cards) — unlocks 99 cards
+  10. Handle 'sacrifice' variation: "when there are no creatures on the battlefield, sacrifice ~" (87 cards) — unlocks 87 cards

@@ -1,0 +1,34 @@
+lane	cards	primary_file	families	top_families
+L02	256	parser/oracle_effect/imperative.rs	230	flip ~×8 | flip it×8 | search its controller's graveyard, han×4
+L04	247	parser/oracle_nom/condition.rs	233	creature attacks, if you attacked with×5 | as an additional cost to cast this spe×3 | add {M}. if that mana is spent on×3
+L01	174	engine-runtime	5	R5-runtime-bespoke×71 | R2-aslongas-conditional-static×70 | R3-level-up×21
+L06	105	parser/oracle_quantity.rs	100	~ deals N damage to target creature an×2 | copy it for each other instant and sor×2 | as an additional cost to cast this spe×2
+L05	99	parser/oracle_dispatch.rs	98	you may reveal this card from your ope×2 | you may look at cards exiled with ~×2 | as ~ enters or is turned face up,×1
+L03	94	parser/oracle_effect/mod.rs	82	you may choose new targets for the cop×5 | spells and abilities your opponents co×3 | once each turn, you may pay {M} rather×2
+L10	87	parser/oracle_trigger.rs	87	whenever a creature dealt damage by eq×2 | whenever ~ is dealt N or more damage,×1 | whenever you untap N or more permanent×1
+L11	85	parser/oracle_effect/	76	repeat this process N more times×3 | repeat this process×5 | your turn, you may play cards from you×1
+L08	80	parser/oracle_effect/search.rs	73	an opponent separates those cards into×7 | shuffle that pile×2 | for each color, return up to N target×2
+L09	49	parser/oracle_effect/conditions.rs	28	otherwise×17 | when you pay this cost N or more×5 | when it connives this way, return up t×2
+L07	39	parser/oracle_effect/mana.rs	36	your life total becomes that number×2 | can't attack or block, and its activat×2 | a spell cast this way costs {M} more×2
+L16	38	parser/oracle_nom/duration.rs	37	{M}, {M}, sacrifice this artifact: des×1 | your hand this turn and this creature ×1 | when this enchantment enters, destroy ×1
+L12	20	parser/oracle_effect/counter.rs	16	target creature you don't control×3 | double the value of N×1 | double strike, vigilance, and/or haste×1
+L13	14	parser/oracle_effect/subject.rs	12	sacrifice ~: you may change the target×1 | {M}, {M}: until end of turn, your oppo×1 | can cast only N more spell×1
+L20	14	parser/oracle_casting.rs	16	choose a creature you control or a war×1 | all slivers have "{M}: choose a card n×1 | as long as you have N or more×1
+L14	13	parser/oracle_effect/become_copy_except.rs	14	it's a treasure artifact with "{M}, sa×1 | their owners shuffle those cards into ×1 | its power is equal to ~'s power and×1
+L23	11	parser/oracle_target.rs	10	parse_target could not classify 'inste×2 | search-filter-suffix unmatched 'that's×1 | parse_target could not classify 'of th×1
+L18	8	parser/oracle_effect/token.rs	8	{M}, {M}, sacrifice a creature: count ×1 | count the number of permanents you con×1 | count the number of cards in your libr×1
+L15	7	parser/oracle_effect/animation.rs	6	N can't be greater than the number of×1 | in turn order×1 | N is the mana value of that card×2
+L17	6	parser/oracle_util.rs	5	at the beginning of the end step on×1 | at the beginning of your next first ma×1 | at the beginning of the next combat, r×1
+L19	3	parser/oracle.rs	3	trigger subject parse fell back to any×1 | activate the loyalty abilities of plan×1 | activate loyalty abilities of ~ twice ×1
+L21	3	parser/oracle_replacement.rs	3	or is turned face up×1 | N/N white fox with vigilance×1 | N/N spider with reach×1
+L26	3	parser/oracle_effect/sequence.rs	3	~ enters, choose up to N, where N×1 | modal spell, choose up to N, where N×1 | more times, choose up to that many —×1
+L27	3	parser/oracle_effect/lower.rs	2	damage that would reduce your life tot×2 | Effect:empty×1
+L22	2	parser/oracle_static/grammar.rs	2	must be blocked by an eldrazi if able×1 | N/N black rat with lifelink×1
+L24	2	parser/oracle_static/dispatch.rs	2	skip their next untap step×1 | activated abilities of that permanent ×1
+L30	2	parser/oracle_separate_piles.rs	2	starting with you, each player separat×1 | [−N]: separate all permanents target p×1
+L31	2	parser/oracle_nom/primitives.rs	2	N loyalty counters on each other plane×1 | N/N elephant with trample×1
+L25	1	parser/oracle_nom/filter.rs	1	nontoken permanents with the same name×1
+L28	1	parser/oracle_keyword.rs	1	who sacrificed a permanent this way re×1
+L29	1	parser/oracle_modal.rs	1	look at the top N cards of your×1
+L32	1	parser/oracle_saga.rs	1	• you gain N ~×1
+L33	1	parser/oracle_class.rs	1	~ and up to N other target creature×1

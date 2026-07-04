@@ -1,3 +1,11 @@
+# ⛔ OLD PLAN — SUPERSEDED 2026-07-03, DO NOT USE FOR NEW WORK ⛔
+
+> Retained ONLY so in-flight work keeps its meaning. For ALL new tranche selection and
+> ranking use **`PLAN-V2-TRACE.md`** in this directory — a trace-keyed re-clustering (cards
+> grouped by the parser code path a fix must touch, per the S07 batching model) derived from
+> measured data by `.planning/coverage-analysis/trace_cluster.py` @ main `b7194fc30`. The S/R
+> cluster names below remain valid HISTORICAL identifiers for shipped/in-flight work only.
+
 # Modern ∩ Commander rollout plan
 
 **Set:** cards legal in **both** Modern **and** Commander (intersection).

@@ -1,0 +1,1197 @@
+family	pool_count	xpool_count	near_miss_share	primary_file	lane	score	examples
+R5-runtime-bespoke	71	10	0.00	engine-runtime	L01	38.0	Aerial Formation; Ajani's Presence; Arcane Investigator; Blinkmoth Nexus
+R2-aslongas-conditional-static	70	9	0.00	engine-runtime	L01	37.2	Apostle of Invasion; Armament of Nyx; Aven Heartstabber; Bloodfire Enforcers
+Effect:flip::flip ~	8	0	1.00	parser/oracle_effect/imperative.rs	L02	12.0	Budoka Gardener; Bushi Tenderfoot; Jushi Apprentice; Kuon, Ogre Ascendant
+Effect:flip::flip it	8	0	1.00	parser/oracle_effect/imperative.rs	L02	12.0	Akki Lavarunner; Budoka Pupil; Callow Jushi; Cunning Bandit
+Effect:otherwise::otherwise	17	1	0.12	parser/oracle_effect/conditions.rs	L09	10.8	Advice from the Fae; Auratouched Mage; Bounty of the Luxa; Bre of Clan Stoutarm
+R3-level-up	21	0	0.00	engine-runtime	L01	10.5	Beastbreaker of Bala Ged; Brimstone Mage; Caravan Escort; Coralhelm Commander
+Effect:orphaned_copy_retarget::you may choose new targets for the copy	5	3	1.00	parser/oracle_effect/mod.rs	L03	9.8	Pit Automaton; Primal Wellspring; Pyromancer's Goggles; Spider-Verse
+Swallow:Condition_If::creature attacks, if you attacked with creatures with	5	0	1.00	parser/oracle_nom/condition.rs	L04	7.5	Gnoll Hunter; Hobgoblin Captain; Intrepid Outlander; Minion of the Mighty
+Effect:when::when you pay this cost N or more	5	0	1.00	parser/oracle_effect/conditions.rs	L09	7.5	Bloodthirsty Adversary; Intrepid Adversary; Primal Adversary; Spectral Adversary
+R1-speed-mechanic	9	9	0.00	engine-runtime	L01	6.8	Burnout Bashtronaut; Gastal Raider; Gastal Thrillseeker; Lightwheel Enhancements
+Effect:search::search its controller's graveyard, hand, and library for	4	1	1.00	parser/oracle_effect/imperative.rs	L02	6.8	Crumble to Dust; Deicide; Test of Talents; The End
+Swallow:Condition_If::as an additional cost to cast this spell,	3	0	1.00	parser/oracle_nom/condition.rs	L04	4.5	Anchor to Reality; Foul-Tongue Invocation; Lethal Throwdown
+Swallow:Condition_If::add {M}. if that mana is spent on	3	0	1.00	parser/oracle_nom/condition.rs	L04	4.5	Boseiju, Who Shelters All; Generator Servant; Hall of the Bandit Lord
+Effect:unknown::spells and abilities your opponents control can't cause	3	0	1.00	parser/oracle_effect/mod.rs	L03	4.5	Sigarda, Host of Herons; Tajuru Preserver; Tamiyo, Collector of Tales
+Effect:look::look at that card	3	0	1.00	parser/oracle_effect/imperative.rs	L02	4.5	Hauken's Insight; Intet, the Dreamer; Jacob Hauken, Inspector
+Effect:deal::deal damage to that player equal to the	3	0	1.00	parser/oracle_effect/imperative.rs	L02	4.5	Cerebral Vortex; Combustible Gearhulk; Curse of Thirst
+Swallow:DynamicQty::~ deals N damage to target creature and	2	1	1.00	parser/oracle_quantity.rs	L06	3.8	Judgment Bolt; Synchronized Spellcraft
+Swallow:DynamicQty::copy it for each other instant and sorcery	2	1	1.00	parser/oracle_quantity.rs	L06	3.8	Show of Confidence; Thousand-Year Storm
+Swallow:DynamicQty::as an additional cost to cast this spell,	2	1	1.00	parser/oracle_quantity.rs	L06	3.8	Titan's Presence; Urgent Necropsy
+Effect:unknown::once each turn, you may pay {M} rather	2	1	1.00	parser/oracle_effect/mod.rs	L03	3.8	As Foretold; Warped Space
+Effect:unknown::as ~ enters, look at an opponent's hand,	2	1	1.00	parser/oracle_effect/mod.rs	L03	3.8	Anointed Peacekeeper; Sorcerous Spyglass
+Effect:search::search its owner's graveyard, hand, and library for	2	1	1.00	parser/oracle_effect/imperative.rs	L02	3.8	Deadly Cover-Up; Surgical Extraction
+Effect:an::an opponent separates those cards into N piles	7	0	0.00	parser/oracle_effect/search.rs	L08	3.5	Boneyard Parley; Brilliant Ultimatum; Fact or Fiction; Jace, Architect of Thought
+Trigger:Whenever a creature dealt damage by equipped creature this turn dies::whenever a creature dealt damage by equipped creature	2	0	1.00	parser/oracle_trigger.rs	L10	3.0	Scythe of the Wretched; Unscythe, Killer of Kings
+Swallow:DynamicQty::{M}, {M}: double the number of each kind	2	0	1.00	parser/oracle_quantity.rs	L06	3.0	Gilder Bairn; Vorel of the Hull Clade
+Swallow:DynamicQty::devour N / when thi	2	0	1.00	parser/oracle_quantity.rs	L06	3.0	Marrow Chomper; Tar Fiend
+Swallow:Condition_If::target spell. if that spell is countered this	2	0	1.00	parser/oracle_nom/condition.rs	L04	3.0	Fold into Aether; Hinder
+Swallow:Condition_If::target creature if its power is less than	2	0	1.00	parser/oracle_nom/condition.rs	L04	3.0	Exert Influence; Titan's Presence
+Swallow:Condition_If::of turn. if mana from a treasure was	2	0	1.00	parser/oracle_nom/condition.rs	L04	3.0	Forsworn Paladin; Jetmir's Fixer
+Swallow:Condition_If::hideaway N (when this land enters, look at	2	0	1.00	parser/oracle_nom/condition.rs	L04	3.0	Howltooth Hollow; Shelldock Isle
+Swallow:Condition_If::freerunning cost if you dealt combat damage to	2	0	1.00	parser/oracle_nom/condition.rs	L04	3.0	Chain Assassination; Monastery Raid
+Swallow:Condition_If::each upkeep, if you lost life last turn,	2	0	1.00	parser/oracle_nom/condition.rs	L04	3.0	First Response; Paladin of Atonement
+Swallow:Condition_If::creature dies, if N or more damage was	2	0	1.00	parser/oracle_nom/condition.rs	L04	3.0	Burning-Eye Zubera; Rushing-Tide Zubera
+ParseWarning:target-fallback::parse_target could not classify 'instead if that target	2	0	1.00	parser/oracle_target.rs	L23	3.0	Light Up the Night; Lithomantic Barrage
+Effect:your::your life total becomes that number	2	0	1.00	parser/oracle_effect/mana.rs	L07	3.0	Invincible Hymn; Touch of the Eternal
+Effect:when::when it connives this way, return up to	2	0	1.00	parser/oracle_effect/conditions.rs	L09	3.0	Obscura Interceptor; Psychic Pickpocket
+Effect:unknown::as ~ enters, choose another creature you control	2	0	1.00	parser/oracle_effect/mod.rs	L03	3.0	Dauntless Bodyguard; Tyrannical Pitlord
+Effect:spend::spend this mana only to cast an instant	2	0	1.00	parser/oracle_effect/imperative.rs	L02	3.0	Sorcerer Class; Volshe Tideturner
+Effect:spend::spend this mana only to cast a spell	2	0	1.00	parser/oracle_effect/imperative.rs	L02	3.0	Corrupted Crossroads; Titans' Nest
+Effect:shuffle::shuffle that pile	2	0	1.00	parser/oracle_effect/search.rs	L08	3.0	Ghastly Conscription; Jeskai Infiltrator
+Effect:search::search that player's graveyard, hand, and library for	2	0	1.00	parser/oracle_effect/imperative.rs	L02	3.0	Kotose, the Silent Spider; Reap Intellect
+Effect:search::if there are N or more card types	2	0	1.00	parser/oracle_effect/imperative.rs	L02	3.0	Invasive Surgery; Pick the Brain
+Effect:manifest::manifest those cards	2	0	1.00	parser/oracle_effect/imperative.rs	L02	3.0	Ghastly Conscription; Jeskai Infiltrator
+Effect:for::for each color, return up to N target	2	0	1.00	parser/oracle_effect/search.rs	L08	3.0	All Suns' Dawn; Rogues' Gallery
+Effect:effect_structure::you may reveal this card from your opening	2	0	1.00	parser/oracle_dispatch.rs	L05	3.0	Chancellor of the Annex; Chancellor of the Tangle
+Effect:effect_structure::you may look at cards exiled with ~	2	0	1.00	parser/oracle_dispatch.rs	L05	3.0	Bane Alley Broker; Grimoire Thief
+Effect:deal::~ deals damage to any target equal to	2	0	1.00	parser/oracle_effect/imperative.rs	L02	3.0	Burn at the Stake; Soulblast
+Effect:deal::deal damage to any target equal to the	2	0	1.00	parser/oracle_effect/imperative.rs	L02	3.0	Morgue Burst; Rumbling Aftershocks
+Effect:create::create a tapped and attacking N/N red devil	2	0	1.00	parser/oracle_effect/imperative.rs	L02	3.0	Maestros Diabolist; Pugnacious Pugilist
+Effect:can't::can't attack or block, and its activated abilities	2	0	1.00	parser/oracle_effect/mana.rs	L07	3.0	Academic Probation; Linvala, Shield of Sea Gate
+Effect:add::{M}: add N mana of any of ~'s	2	0	1.00	parser/oracle_effect/imperative.rs	L02	3.0	Katilda, Dawnhart Prime; Tazri, Stalwart Survivor
+Effect:add::add {M} at the beginning of your next	2	0	1.00	parser/oracle_effect/imperative.rs	L02	3.0	Conduit of Emrakul; Conduit of Storms
+Effect:a::a spell cast this way costs {M} more	2	0	1.00	parser/oracle_effect/mana.rs	L07	3.0	Elite Spellbinder; Invasion of Gobakhan
+Effect:repeat::repeat this process N more times	3	1	0.33	parser/oracle_effect/	L11	2.9	Another Round; Development; Professor Onyx
+Effect:repeat::repeat this process	5	0	0.00	parser/oracle_effect/	L11	2.5	Demonlord Belzenlok; Grist, the Hunger Tide; Rally the Horde; Scalpelexis
+Trigger:Whenever ~ is dealt 3 or more damage::whenever ~ is dealt N or more damage,	1	1	1.00	parser/oracle_trigger.rs	L10	2.2	Innocent Bystander
+Trigger:Whenever you untap one or more permanents during your untap step::whenever you untap N or more permanents during	1	1	1.00	parser/oracle_trigger.rs	L10	2.2	The Millennium Calendar
+Trigger:Whenever you tap one or more untapped creatures your opponents control::whenever you tap N or more untapped creatures	1	1	1.00	parser/oracle_trigger.rs	L10	2.2	Sharae of Numbing Depths
+Trigger:Whenever you solve a Case::whenever you solve a case, look at the	1	1	1.00	parser/oracle_trigger.rs	L10	2.2	Case File Auditor
+Trigger:Whenever you give a gift::whenever you give a gift, draw a card	1	1	1.00	parser/oracle_trigger.rs	L10	2.2	Jolly Gerbils
+Trigger:Whenever you forage::whenever you forage, put a +N/+N counter on	1	1	1.00	parser/oracle_trigger.rs	L10	2.2	Corpseberry Cultivator
+Trigger:Whenever you draw your first or second card each turn::whenever you draw your first or second card	1	1	1.00	parser/oracle_trigger.rs	L10	2.2	Lady Octopus, Inspired Inventor
+Trigger:Whenever you discover::whenever you discover, discover again for the same	1	1	1.00	parser/oracle_trigger.rs	L10	2.2	Curator of Sun's Creation
+Trigger:Whenever you activate an ability that targets a creature or player::whenever you activate an ability that targets a	1	1	1.00	parser/oracle_trigger.rs	L10	2.2	Ertha Jo, Frontier Mentor
+Trigger:Whenever one or more of your opponents are attacked::whenever N or more of your opponents are	1	1	1.00	parser/oracle_trigger.rs	L10	2.2	Party Dude
+Trigger:Whenever another creature you control::whenever another creature you control, put a +N/+N	1	1	1.00	parser/oracle_trigger.rs	L10	2.2	Long Feng, Grand Secretariat
+Trigger:Whenever an opponent gains control of a permanent from you::whenever an opponent gains control of a permanent	1	1	1.00	parser/oracle_trigger.rs	L10	2.2	Zidane, Tantalus Thief
+Trigger:Whenever an Aura you control becomes attached to a nonland permanent an opponent controls with mana value less than or equal to that Aura's mana value::whenever an aura you control becomes attached to	1	1	1.00	parser/oracle_trigger.rs	L10	2.2	Eriette, the Beguiler
+Trigger:Whenever a creature you control::whenever a creature you control, draw a card	1	1	1.00	parser/oracle_effect/mod.rs	L03	2.2	Surrak, Elusive Hunter
+Trigger:Whenever a creature you control explores a nonland card::whenever a creature you control explores a nonland	1	1	1.00	parser/oracle_trigger.rs	L10	2.2	Nicanzil, Current Conductor
+Trigger:Whenever a creature you control explores a land card::whenever a creature you control explores a land	1	1	1.00	parser/oracle_trigger.rs	L10	2.2	Nicanzil, Current Conductor
+Trigger:Whenever a creature you control attacking causes a triggered ability of that creature to trigger::whenever a creature you control attacking causes a	1	1	1.00	parser/oracle_trigger.rs	L10	2.2	Firebender Ascension
+Trigger:Whenever a Vehicle crewed by ~ this turn attacks::whenever a vehicle crewed by ~ this turn	1	1	1.00	parser/oracle_trigger.rs	L10	2.2	Balthier and Fran
+Trigger:When there are four or more page counters on ~::when there are N or more page counters	1	1	1.00	parser/oracle_trigger.rs	L10	2.2	Mazemind Tome
+Trigger:When there are 1,000 or more time counters on ~::when there are N,N or more time counters	1	1	1.00	parser/oracle_trigger.rs	L10	2.2	The Millennium Calendar
+Trigger:When the chosen player loses the game::when the chosen player loses the game, you	1	1	1.00	parser/oracle_trigger.rs	L10	2.2	Shinryu, Transcendent Rival
+Trigger:When the chosen creature leaves the battlefield::when the chosen creature leaves the battlefield, transform	1	1	1.00	parser/oracle_trigger.rs	L10	2.2	Zenos yae Galvus
+Swallow:Optional_YouMay::your turn, you may play cards from your	1	1	1.00	parser/oracle_effect/	L11	2.2	Hades, Sorcerer of Eld
+Swallow:Optional_YouMay::your turn, you may cast creature spells with	1	1	1.00	parser/oracle_effect/	L11	2.2	Leonardo, Sewer Samurai
+Swallow:Optional_YouMay::whenever a creature you control enters, you gain	1	1	1.00	parser/oracle_effect/	L11	2.2	Case of the Uneaten Feast
+Swallow:Optional_YouMay::graveyard. / you may cast dinosaur creature spells	1	1	1.00	parser/oracle_effect/	L11	2.2	Intrepid Paleontologist
+Swallow:Optional_YouMay::each turn, you may instead create th	1	1	1.00	parser/oracle_effect/	L11	2.2	Mirrormind Crown
+Swallow:Modal_DynamicMaxDropped::~ enters, choose up to N, where N	1	1	1.00	parser/oracle_effect/sequence.rs	L26	2.2	Bumi, King of Three Trials
+Swallow:Modal_DynamicMaxDropped::modal spell, choose up to N, where N	1	1	1.00	parser/oracle_effect/sequence.rs	L26	2.2	Riku of Many Paths
+Swallow:DynamicQty::{M}: add {M}. / {M}: this land becomes	1	1	1.00	parser/oracle_quantity.rs	L06	2.2	Cavernous Maw
+Swallow:DynamicQty::your library. for each of those cards, its	1	1	1.00	parser/oracle_quantity.rs	L06	2.2	Suspend Aggression
+Swallow:DynamicQty::whenever you cast a modal spell, choose up	1	1	1.00	parser/oracle_quantity.rs	L06	2.2	Riku of Many Paths
+Swallow:DynamicQty::when ~ enters, target opponent mills N cards.	1	1	1.00	parser/oracle_quantity.rs	L06	2.2	Hama, the Bloodbender
+Swallow:DynamicQty::when ~ enters, choose up to N, where	1	1	1.00	parser/oracle_quantity.rs	L06	2.2	Bumi, King of Three Trials
+Swallow:DynamicQty::when this creature enters, target opponent reveals N	1	1	1.00	parser/oracle_quantity.rs	L06	2.2	Taster of Wares
+Swallow:DynamicQty::ward—pay life equal to ~'s power. / whenever	1	1	1.00	parser/oracle_quantity.rs	L06	2.2	Raubahn, Bull of Ala Mhigo
+Swallow:DynamicQty::treasure token for each creature that crewed it	1	1	1.00	parser/oracle_quantity.rs	L06	2.2	Luxurious Locomotive
+Swallow:DynamicQty::trample / if a red source you control	1	1	1.00	parser/oracle_quantity.rs	L06	2.2	Ojer Axonil, Deepest Might
+Swallow:DynamicQty::toughness each equal to N plus N. (it	1	1	1.00	parser/oracle_quantity.rs	L06	2.2	Fractalize
+Swallow:DynamicQty::this spell costs {M} less to cast, where	1	1	1.00	parser/oracle_quantity.rs	L06	2.2	Hearth Elemental
+Swallow:DynamicQty::that token for each spell	1	1	1.00	parser/oracle_quantity.rs	L06	2.2	Outlaw Stitcher
+Swallow:DynamicQty::than or equal to the n	1	1	1.00	parser/oracle_quantity.rs	L06	2.2	Squirming Emergence
+Swallow:DynamicQty::than or equal to the chosen number	1	1	1.00	parser/oracle_quantity.rs	L06	2.2	Expel the Interlopers
+Swallow:DynamicQty::than or equal to the amount of man	1	1	1.00	parser/oracle_quantity.rs	L06	2.2	Mockingbird
+Swallow:DynamicQty::step, investigate for each opponent who lost life	1	1	1.00	parser/oracle_quantity.rs	L06	2.2	Teysa, Opulent Oligarch
+Swallow:DynamicQty::job select / equipped creature gets +N/+N fo	1	1	1.00	parser/oracle_quantity.rs	L06	2.2	Machinist's Arsenal
+Swallow:DynamicQty::investigate once for each opponent who has more	1	1	1.00	parser/oracle_quantity.rs	L06	2.2	Wojek Investigator
+Swallow:DynamicQty::gets +N/+N for each of its creature types,	1	1	1.00	parser/oracle_quantity.rs	L06	2.2	Diligent Zookeeper
+Swallow:DynamicQty::flying / if a creature you control that	1	1	1.00	parser/oracle_quantity.rs	L06	2.2	Neriv, Heart of the Storm
+Swallow:DynamicQty::first strike, haste / camouflage — {M}: put	1	1	1.00	parser/oracle_quantity.rs	L06	2.2	Ultimate Spider-Man
+Swallow:DynamicQty::exile cards from the top of your library	1	1	1.00	parser/oracle_quantity.rs	L06	2.2	Solstice Revelations
+Swallow:DynamicQty::exile cards equal to its mana value from	1	1	1.00	parser/oracle_quantity.rs	L06	2.2	Rakdos, the Muscle
+Swallow:DynamicQty::control enter, for each of them, create a	1	1	1.00	parser/oracle_quantity.rs	L06	2.2	Kambal, Profiteering Mayor
+Swallow:DynamicQty::at the beginning of combat on your turn,	1	1	1.00	parser/oracle_quantity.rs	L06	2.2	Zimone, Paradox Sculptor
+Swallow:DynamicQty::at least that many cards in it, exile	1	1	1.00	parser/oracle_quantity.rs	L06	2.2	Ashiok, Wicked Manipulator
+Swallow:DynamicQty::[+N]: surveil N. / [−N]: any number of	1	1	1.00	parser/oracle_quantity.rs	L06	2.2	Ral Zarek, Guest Lecturer
+Swallow:DynamicQty::N life for each of those crea	1	1	1.00	parser/oracle_quantity.rs	L06	2.2	Bounding Felidar
+Swallow:Duration_ThisTurn::{M}, {M}, sacrifice this artifact: destroy target nonland	1	1	1.00	parser/oracle_nom/duration.rs	L16	2.2	Thaumaton Torpedo
+Swallow:Duration_ThisTurn::your hand this turn and this creature doesn't	1	1	1.00	parser/oracle_nom/duration.rs	L16	2.2	Inventive Wingsmith
+Swallow:Duration_ThisTurn::when this enchantment enters, destroy up to N	1	1	1.00	parser/oracle_nom/duration.rs	L16	2.2	Sidequest: Hunt the Mark
+Swallow:Duration_ThisTurn::sneak {M} (you may cast this spell for	1	1	1.00	parser/oracle_nom/duration.rs	L16	2.2	Karai, Future of the Foot
+Swallow:Duration_ThisTurn::menace / whenever ~ deals combat damage to	1	1	1.00	parser/oracle_nom/duration.rs	L16	2.2	Reno and Rude
+Swallow:Duration_ThisTurn::menace / whenever N or more counters are	1	1	1.00	parser/oracle_nom/duration.rs	L16	2.2	Stalwart Successor
+Swallow:Duration_ThisTurn::lost life this turn. / whenever a clue	1	1	1.00	parser/oracle_nom/duration.rs	L16	2.2	Teysa, Opulent Oligarch
+Swallow:Duration_ThisTurn::if you would pay life while your library	1	1	1.00	parser/oracle_nom/duration.rs	L16	2.2	Ashiok, Wicked Manipulator
+Swallow:Duration_ThisTurn::dealt damage this turn. / draw N cards.	1	1	1.00	parser/oracle_nom/duration.rs	L16	2.2	Treacherous Greed
+Swallow:Duration_ThisTurn::crewed it this turn explores. (reveal the top	1	1	1.00	parser/oracle_nom/duration.rs	L16	2.2	Subterranean Schooner
+Swallow:Duration_ThisTurn::bargain / ~ deals N damage to target	1	1	1.00	parser/oracle_nom/duration.rs	L16	2.2	Torch the Tower
+Swallow:Condition_If::~ enters, if he was cast, return target	1	1	1.00	parser/oracle_nom/condition.rs	L04	2.2	Anti-Venom, Horrifying Healer
+Swallow:Condition_If::~ enter, if you cast them and there	1	1	1.00	parser/oracle_nom/condition.rs	L04	2.2	Ran and Shaw
+Swallow:Condition_If::{M}: add N mana of any color. /	1	1	1.00	parser/oracle_nom/condition.rs	L04	2.2	Intrepid Paleontologist
+Swallow:Condition_If::your graveyard. if you c	1	1	1.00	parser/oracle_nom/condition.rs	L04	2.2	Leonardo, Sewer Samurai
+Swallow:Condition_If::your graveyard if a non-zombie creature died this	1	1	1.00	parser/oracle_nom/condition.rs	L04	2.2	Undead Sprinter
+Swallow:Condition_If::you attack, if a pirate and a vehicle	1	1	1.00	parser/oracle_nom/condition.rs	L04	2.2	Fearless Swashbuckler
+Swallow:Condition_If::with prowess. if this spell was cast from	1	1	1.00	parser/oracle_nom/condition.rs	L04	2.2	Otterball Antics
+Swallow:Condition_If::when this artifact enters, draw a card, then	1	1	1.00	parser/oracle_nom/condition.rs	L04	2.2	Puca's Eye
+Swallow:Condition_If::tokens. then if this spell was cast from	1	1	1.00	parser/oracle_nom/condition.rs	L04	2.2	Antiquities on the Loose
+Swallow:Condition_If::permanents. / if a card you didn't control	1	1	1.00	parser/oracle_nom/condition.rs	L04	2.2	Valgavoth, Terror Eater
+Swallow:Condition_If::other costs. if you cast a spell this	1	1	1.00	parser/oracle_nom/condition.rs	L04	2.2	Noctis, Prince of Lucis
+Swallow:Condition_If::on it if it wasn't cast or no	1	1	1.00	parser/oracle_nom/condition.rs	L04	2.2	Freestrider Commando
+Swallow:Condition_If::menace / whenever N or more counters are	1	1	1.00	parser/oracle_nom/condition.rs	L04	2.2	Stalwart Successor
+Swallow:Condition_If::menace / creatures you control have wither. /	1	1	1.00	parser/oracle_nom/condition.rs	L04	2.2	Massacre Girl, Known Killer
+Swallow:Condition_If::mayhem {M} / all creatures	1	1	1.00	parser/oracle_nom/condition.rs	L04	2.2	Sandman's Quicksand
+Swallow:Condition_If::mana cost if there are N or more	1	1	1.00	parser/oracle_nom/condition.rs	L04	2.2	Blasphemous Edict
+Swallow:Condition_If::had flash if you behold a dragon as	1	1	1.00	parser/oracle_nom/condition.rs	L04	2.2	Molten Exhale
+Swallow:Condition_If::creature attacks, if it's not suspected, you may	1	1	1.00	parser/oracle_nom/condition.rs	L04	2.2	Rubblebelt Braggart
+Swallow:Condition_If::activate only if this artifact or another artifact	1	1	1.00	parser/oracle_nom/condition.rs	L04	2.2	Master's Manufactory
+Swallow:Condition_If::activate only if there are N or more	1	1	1.00	parser/oracle_nom/condition.rs	L04	2.2	Matzalantli, the Great Door
+Swallow:Condition_If::activate only if the number of othe	1	1	1.00	parser/oracle_nom/condition.rs	L04	2.2	Cavernous Maw
+Swallow:Condition_If::activate only if red sources you controlled de	1	1	1.00	parser/oracle_nom/condition.rs	L04	2.2	Temple of Power
+Swallow:Condition_If::activate only if a player has N or	1	1	1.00	parser/oracle_nom/condition.rs	L04	2.2	Temple of the Dead
+Swallow:Condition_If::activate only if N or more cards left	1	1	1.00	parser/oracle_nom/condition.rs	L04	2.2	Bonecache Overseer
+Swallow:Condition_If::N cards. if N cards that sha	1	1	1.00	parser/oracle_nom/condition.rs	L04	2.2	The Tale of Tamiyo
+Swallow:Condition_If::/ {M}: add {M}. remove a time counter	1	1	1.00	parser/oracle_nom/condition.rs	L04	2.2	Temple of Cyclical Time
+Swallow:Condition_If::/ i — until your next turn, each	1	1	1.00	parser/oracle_nom/condition.rs	L04	2.2	Maximum Carnage
+Swallow:Condition_AsLongAs::your turn, as long as ~ is equipped,	1	1	1.00	parser/oracle_nom/condition.rs	L04	2.2	Cloud, Planet's Champion
+Swallow:Condition_AsLongAs::this artifact enters with N net counters on	1	1	1.00	parser/oracle_nom/condition.rs	L04	2.2	Braided Net
+Effect:you::you control that player during their next turn	1	1	1.00	parser/oracle_effect/conditions.rs	L09	2.2	Secret of Bloodbending
+Effect:when::{M}, {M}: when you next activate an exhaust	1	1	1.00	parser/oracle_effect/conditions.rs	L09	2.2	Pit Automaton
+Effect:when::when you search your library this way, put	1	1	1.00	parser/oracle_effect/conditions.rs	L09	2.2	Prishe's Wanderings
+Effect:when::when you lose control of that equipment this	1	1	1.00	parser/oracle_effect/conditions.rs	L09	2.2	Stolen Uniform
+Effect:when::when that mana is spent to cast a	1	1	1.00	parser/oracle_effect/conditions.rs	L09	2.2	Pyromancer's Goggles
+Effect:when::when excess damage is dealt to the creature	1	1	1.00	parser/oracle_effect/conditions.rs	L09	2.2	Rhino's Rampage
+Effect:unless_payment::counter up to N target spell unless its	1	1	1.00	parser/oracle_effect/mod.rs	L03	2.2	Repulsive Mutation
+Effect:unknown::the same is true for creature spells you	4	1	0.00	parser/oracle_effect/mod.rs	L03	2.2	Arcane Adaptation; Conspiracy; Leyline of Transformation; Maskwood Nexus
+Effect:unknown::the first spell each player casts during each	1	1	1.00	parser/oracle_effect/mod.rs	L03	2.2	Weftwalking
+Effect:unknown::during your turn, you may play cards you	1	1	1.00	parser/oracle_effect/mod.rs	L03	2.2	Tinybones, Bauble Burglar
+Effect:unknown::during your turn, you may cast creature spells	1	1	1.00	parser/oracle_effect/mod.rs	L03	2.2	Dawnhand Dissident
+Effect:unknown::as ~ transforms into ~, choose an opponent	1	1	1.00	parser/oracle_effect/mod.rs	L03	2.2	Shinryu, Transcendent Rival
+Effect:unknown::N-headed coin — the first time you flip	1	1	1.00	parser/oracle_effect/mod.rs	L03	2.2	Edgar, King of Figaro
+Effect:the::the first sorcery spell, or the first otter	1	1	1.00	parser/oracle_effect/imperative.rs	L02	2.2	Alania, Divergent Storm
+Effect:the::the copy gains haste and "at the beginning	1	1	1.00	parser/oracle_effect/imperative.rs	L02	2.2	Choreographed Sparks
+Effect:the::each player who controls the most creatures investigates.	1	1	1.00	parser/oracle_effect/imperative.rs	L02	2.2	No Witnesses
+Effect:spend::spend this mana only to turn permanents face	1	1	1.00	parser/oracle_effect/imperative.rs	L02	2.2	Overgrown Zealot
+Effect:spend::spend this mana only to cast face-down spells	1	1	1.00	parser/oracle_effect/imperative.rs	L02	2.2	Tin Street Gossip
+Effect:spend::spend mana as though it were mana of	1	1	1.00	parser/oracle_effect/imperative.rs	L02	2.2	Outrageous Robbery
+Effect:shuffle::shuffle that pile, then cloak them	1	1	1.00	parser/oracle_effect/search.rs	L08	2.2	Expose the Culprit
+Effect:shards::shards you control become copies of it until	1	1	1.00	parser/oracle_effect/	L11	2.2	Niko, Light of Hope
+Effect:replacement_structure::as ~ enters or is turned face up,	1	1	1.00	parser/oracle_dispatch.rs	L05	2.2	Crowd-Control Warden
+Effect:remove::{M}, {M}: remove any number of counters from	1	1	1.00	parser/oracle_effect/imperative.rs	L02	2.2	Rhys, the Evermore
+Effect:put::put up to N lore counters on it	1	1	1.00	parser/oracle_effect/search.rs	L08	2.2	Esper Terra
+Effect:phase::you control target opponent during their next combat	1	1	1.00	parser/oracle_effect/imperative.rs	L02	2.2	Secret of Bloodbending
+Effect:only::only land creatures can attack during that combat	1	1	1.00	parser/oracle_effect/	L11	2.2	Bumi, Unleashed
+Effect:lose::lose life equal to the mana value of	1	1	1.00	parser/oracle_effect/imperative.rs	L02	2.2	Parker Luck
+Effect:lose::lose all other card types	1	1	1.00	parser/oracle_effect/imperative.rs	L02	2.2	Vraska, the Silencer
+Effect:look::look at twice N cards from the top	1	1	1.00	parser/oracle_effect/imperative.rs	L02	2.2	Stargaze
+Effect:it's::it's a treasure artifact with "{M}, sacrifice ~:	1	1	1.00	parser/oracle_effect/become_copy_except.rs	L14	2.2	Vraska, the Silencer
+Effect:gain::gain this card's other abilities	1	1	1.00	parser/oracle_effect/imperative.rs	L02	2.2	Symbiote Spider-Man
+Effect:for::for each player, you choose a creature that	1	1	1.00	parser/oracle_effect/search.rs	L08	2.2	Winnowing
+Effect:for::for each player, choose up to N other	1	1	1.00	parser/oracle_effect/search.rs	L08	2.2	Kitesail Larcenist
+Effect:for::for each player, choose a creature with power	1	1	1.00	parser/oracle_effect/search.rs	L08	2.2	Unstable Glyphbridge
+Effect:for::for each other player, exile up to N	1	1	1.00	parser/oracle_effect/search.rs	L08	2.2	Kaya, Spirits' Justice
+Effect:for::for each of those opponents who didn't discard	1	1	1.00	parser/oracle_effect/search.rs	L08	2.2	Hollow Marauder
+Effect:for::for each of those creatures, create a monster	1	1	1.00	parser/oracle_effect/search.rs	L08	2.2	Become Brutes
+Effect:for::for each of N target permanents, create N	1	1	1.00	parser/oracle_effect/search.rs	L08	2.2	Doppelgang
+Effect:for::for each mana in this ability's activation cost,	1	1	1.00	parser/oracle_effect/search.rs	L08	2.2	Heirloom Epic
+Effect:for::for each creature you control with power greater	1	1	1.00	parser/oracle_effect/search.rs	L08	2.2	Sovereign Okinec Ahau
+Effect:for::for each color, put a +N/+N counter on	1	1	1.00	parser/oracle_effect/search.rs	L08	2.2	Call the Spirit Dragons
+Effect:for::for each card you put on top of	1	1	1.00	parser/oracle_effect/search.rs	L08	2.2	Starving Revenant
+Effect:for::for each blight counter on it	1	1	1.00	parser/oracle_effect/search.rs	L08	2.2	Rottenmouth Viper
+Effect:fearless::fearless l'cie, you may pay {M}	1	1	1.00	parser/oracle_effect/	L11	2.2	Vanille, Cheerful l'Cie
+Effect:discover::discover again for the same value	1	1	1.00	parser/oracle_effect/mod.rs	L03	2.2	Curator of Sun's Creation
+Effect:creatures::creatures target opponent controls lose first strike and	1	1	1.00	parser/oracle_effect/mana.rs	L07	2.2	Quick Draw
+Effect:create::create a green fungus dinosaur creature token with	1	1	1.00	parser/oracle_effect/imperative.rs	L02	2.2	The Skullspore Nexus
+Effect:choose::{M}: choose another player. that player gains control	1	1	1.00	parser/oracle_effect/imperative.rs	L02	2.2	Discerning Financier
+Effect:choose::choose permanent with mana value N or greater	1	1	1.00	parser/oracle_effect/imperative.rs	L02	2.2	The Legend of Yangchen
+Effect:choose::choose a nonlegendary creature that saddled it this	1	1	1.00	parser/oracle_effect/imperative.rs	L02	2.2	Calamity, Galloping Inferno
+Effect:choose::choose a creature card from among them	1	1	1.00	parser/oracle_effect/imperative.rs	L02	2.2	Kaya, Spirits' Justice
+Effect:become::become that color	1	1	1.00	parser/oracle_effect/imperative.rs	L02	2.2	Foraging Wickermaw
+Effect:at::at the beginning of the end step on	1	1	1.00	parser/oracle_util.rs	L17	2.2	Kav Landseeker
+Effect:add::add {M}, {M}, {M}, {M}, and {M}	1	1	1.00	parser/oracle_effect/imperative.rs	L02	2.2	Esper Terra
+Effect:Unsupported unless clause::discard a card unless you waterbend {M}	1	1	1.00	parser/oracle_effect/mod.rs	L03	2.2	Waterbending Lesson
+Effect:Unsupported unless clause::discard a card unless a permanent entered the	1	1	1.00	parser/oracle_effect/mod.rs	L03	2.2	Oblivious Bookworm
+Effect:Unsupported unless clause::destroy target permanent unless its controller has ~	1	1	1.00	parser/oracle_effect/mod.rs	L03	2.2	Combustion Man
+Cost:choose a creature you control or a warped creature card you own in exile::choose a creature you control or a warped	1	1	1.00	parser/oracle_casting.rs	L20	2.2	Close Encounter
+Trigger:When the last time counter is removed from this card while it's exiled::when the last time counter is removed from	2	0	0.50	parser/oracle_trigger.rs	L10	2.0	Riftmarked Knight; Veiling Oddity
+Effect:excess::excess damage is dealt to that creature's controller	4	0	0.00	parser/oracle_effect/	L11	2.0	Flame Spill; Gandalf's Sanction; Pigment Storm; Ram Through
+Effect:damage::damage that would reduce your life total to	2	0	0.50	parser/oracle_effect/lower.rs	L27	2.0	Angel of Grace; Angel's Grace
+Trigger:whenever a mana ability of ~ resolves::whenever a mana ability of ~ resolves, put	1	0	1.00	parser/oracle_trigger.rs	L10	1.5	Tyvar the Bellicose
+Trigger:Whenever ~::whenever ~, you may create a token that's	1	0	1.00	parser/oracle_nom/condition.rs	L04	1.5	Calix, Guided by Fate
+Trigger:Whenever ~::whenever ~, you may cast a creature spell	1	0	1.00	parser/oracle_nom/condition.rs	L04	1.5	Dragon-Kami's Egg
+Trigger:Whenever ~::whenever ~, exile the top card of your	1	0	1.00	parser/oracle_nom/condition.rs	L04	1.5	Syr Carah, the Bold
+Trigger:Whenever ~'s cumulative upkeep is paid::whenever ~'s cumulative upkeep is paid, it gets	1	0	1.00	parser/oracle_trigger.rs	L10	1.5	Balduvian Fallen
+Trigger:Whenever ~ trains::whenever ~ trains, exile up to N other	1	0	1.00	parser/oracle_trigger.rs	L10	1.5	Savior of Ollenbock
+Trigger:Whenever ~ enlists a creature::whenever ~ enlists a creature, scry N	1	0	1.00	parser/oracle_trigger.rs	L10	1.5	Guardian of New Benalia
+Trigger:Whenever you::whenever you, counter that spell or ability unless	1	0	1.00	parser/oracle_effect/mod.rs	L03	1.5	Unsettled Mariner
+Trigger:Whenever you play a card with the same name as one of the exiled cards::whenever you play a card with the same	1	0	1.00	parser/oracle_trigger.rs	L10	1.5	Search the City
+Trigger:Whenever you pay ~'s cumulative upkeep::whenever you pay ~'s cumulative upkeep, you may	1	0	1.00	parser/oracle_trigger.rs	L10	1.5	Hibernation's End
+Trigger:Whenever you pay life::whenever you pay life, put that many blood	1	0	1.00	parser/oracle_trigger.rs	L10	1.5	Font of Agonies
+Trigger:Whenever you foretell a card::whenever you foretell a card, ~ gets +N/+N	1	0	1.00	parser/oracle_trigger.rs	L10	1.5	Dream Devourer
+Trigger:Whenever you draw your first card during each of your draw steps::whenever you draw your first card during each	1	0	1.00	parser/oracle_trigger.rs	L10	1.5	Wiretapping
+Trigger:Whenever you clash and win::whenever you clash and win, you may draw	1	0	1.00	parser/oracle_trigger.rs	L10	1.5	Sylvan Echoes
+Trigger:Whenever you choose to put one or more cards on the bottom of your library while scrying::whenever you choose to put N or more	1	0	1.00	parser/oracle_trigger.rs	L10	1.5	The Temporal Anchor
+Trigger:Whenever you choose a creature as your Ring-bearer::whenever you choose a creature as your ring-bearer,	1	0	1.00	parser/oracle_trigger.rs	L10	1.5	Call of the Ring
+Trigger:Whenever you become the target of a spell::whenever you become the target of a spell,	1	0	1.00	parser/oracle_trigger.rs	L10	1.5	Dormant Gomazoa
+Trigger:Whenever you and/or at least one permanent you control becomes the target of a spell or ability an opponent controls::whenever you and/or at least N permanent you	1	0	1.00	parser/oracle_trigger.rs	L10	1.5	Leyline of Combustion
+Trigger:Whenever you activate an eternalize or embalm ability::whenever you activate an eternalize or embalm ability,	1	0	1.00	parser/oracle_trigger.rs	L10	1.5	Vizier of the Anointed
+Trigger:Whenever you activate an ability of a Sarkhan planeswalker::whenever you activate an ability of a sarkhan	1	0	1.00	parser/oracle_trigger.rs	L10	1.5	Sarkhan's Whelp
+Trigger:Whenever the first noncreature spell of a turn is cast::whenever the first noncreature spell of a turn	1	0	1.00	parser/oracle_trigger.rs	L10	1.5	Nullstone Gargoyle
+Trigger:Whenever the final chapter ability of a Saga you control resolves::whenever the final chapter ability of a saga	1	0	1.00	parser/oracle_trigger.rs	L10	1.5	Tom Bombadil
+Trigger:Whenever one or more loyalty counters are removed from ~::whenever N or more loyalty counters are removed	1	0	1.00	parser/oracle_trigger.rs	L10	1.5	Chandra, Fire Artisan
+Trigger:Whenever one or more creatures block::whenever N or more creatures block, flip a	1	0	1.00	parser/oracle_trigger.rs	L10	1.5	Tide of War
+Trigger:Whenever one or more creature cards are put into graveyards from anywhere::whenever N or more creature cards are put	1	0	1.00	parser/oracle_trigger.rs	L10	1.5	Dennick, Pious Apparition
+Trigger:Whenever one or more cards are put into exile during your turn::whenever N or more cards are put into	1	0	1.00	parser/oracle_trigger.rs	L10	1.5	Stonebinder's Familiar
+Trigger:Whenever fortified land becomes tapped::whenever fortified land becomes tapped, target creature gets	1	0	1.00	parser/oracle_trigger.rs	L10	1.5	Darksteel Garrison
+Trigger:Whenever combat damage is dealt to you or a planeswalker you control::whenever combat damage is dealt to you or	1	0	1.00	parser/oracle_trigger.rs	L10	1.5	Vengeful Pharaoh
+Trigger:Whenever another creature you control named Gladewalker Ritualist enters::whenever another creature you control named ~ enters,	1	0	1.00	parser/oracle_trigger.rs	L10	1.5	Gladewalker Ritualist
+Trigger:Whenever another creature becomes the target of an ability of a land you control named Labyrinth of Skophos::whenever another creature becomes the target of an	1	0	1.00	parser/oracle_trigger.rs	L10	1.5	Skophos Maze-Warden
+Trigger:Whenever an opponent is dealt 3 or more damage by a single source::whenever an opponent is dealt N or more	1	0	1.00	parser/oracle_trigger.rs	L10	1.5	Pain Magnification
+Trigger:Whenever an opponent activates an ability of an artifact, creature::whenever an opponent activates an ability of an	1	0	1.00	parser/oracle_trigger.rs	L10	1.5	Immolation Shaman
+Trigger:Whenever an opponent activates an ability of an artifact, creature, or land on the battlefield::whenever an opponent activates an ability of an	1	0	1.00	parser/oracle_trigger.rs	L10	1.5	Harsh Mentor
+Trigger:Whenever an Aura you control becomes attached to a creature you control::whenever an aura you control becomes attached to	1	0	1.00	parser/oracle_trigger.rs	L10	1.5	Siona, Captain of the Pyleas
+Trigger:Whenever a white instant or sorcery spell causes you to gain life::whenever a white instant or sorcery spell causes	1	0	1.00	parser/oracle_trigger.rs	L10	1.5	Firesong and Sunspeaker
+Trigger:Whenever a spell or ability causes a player to shuffle their library::whenever a spell or ability causes a player	1	0	1.00	parser/oracle_trigger.rs	L10	1.5	Psychogenic Probe
+Trigger:Whenever a spell or ability an opponent controls causes a land to be put into your graveyard from the battlefield::whenever a spell or ability an opponent controls	1	0	1.00	parser/oracle_trigger.rs	L10	1.5	Sacred Ground
+Trigger:Whenever a source you control other than ~ deals damage to an opponent::whenever a source you control other than ~	1	0	1.00	parser/oracle_trigger.rs	L10	1.5	Talon of Pain
+Trigger:Whenever a source of the chosen color deals damage to you::whenever a source of the chosen color deals	1	0	1.00	parser/oracle_trigger.rs	L10	1.5	Circle of Affliction
+Trigger:Whenever a permanent owned by another player is put into a graveyard from the battlefield::whenever a permanent owned by another player is	1	0	1.00	parser/oracle_trigger.rs	L10	1.5	Kothophed, Soul Hoarder
+Trigger:Whenever a land's ability causes you to add one or more mana of the chosen color::whenever a land's ability causes you to add	1	0	1.00	parser/oracle_trigger.rs	L10	1.5	Caged Sun
+Trigger:Whenever a land with the same name as the exiled card is tapped for mana::whenever a land with the same name as	1	0	1.00	parser/oracle_trigger.rs	L10	1.5	Extraplanar Lens
+Trigger:Whenever a land an opponent controls with the same name as the exiled card enters::whenever a land an opponent controls with the	1	0	1.00	parser/oracle_trigger.rs	L10	1.5	Invader Parasite
+Trigger:Whenever a creature you control with power equal to its toughness enters::whenever a creature you control with power equal	1	0	1.00	parser/oracle_trigger.rs	L10	1.5	Symmetry Matrix
+Trigger:Whenever a creature you control with power equal to its toughness attacks::whenever a creature you control with power equal	1	0	1.00	parser/oracle_trigger.rs	L10	1.5	Master Symmetrist
+Trigger:Whenever a creature you control with a legendary Equipment attached to it deals combat damage to a player::whenever a creature you control with a legendary	1	0	1.00	parser/oracle_trigger.rs	L10	1.5	Kassandra, Eagle Bearer
+Trigger:Whenever a creature with flying dealt damage by ~ this turn dies::whenever a creature with flying dealt damage by	1	0	1.00	parser/oracle_trigger.rs	L10	1.5	Trophy Hunter
+Trigger:Whenever a creature card leaves an opponent's graveyard::whenever a creature card leaves an opponent's graveyard,	1	0	1.00	parser/oracle_trigger.rs	L10	1.5	Erebos's Titan
+Trigger:Whenever a creature blocking ~ dies::whenever a creature blocking ~ dies, that creature's	1	0	1.00	parser/oracle_trigger.rs	L10	1.5	Baneclaw Marauder
+Trigger:When ~'s echo cost is paid::when ~'s echo cost is paid, each opponent	1	0	1.00	parser/oracle_trigger.rs	L10	1.5	Shah of Naar Isle
+Trigger:When ~ has flying::when ~ has flying, flip it	1	0	1.00	parser/oracle_trigger.rs	L10	1.5	Student of Elements
+Trigger:When you sacrifice ~ while casting a spell with emerge::when you sacrifice ~ while casting a spell	1	0	1.00	parser/oracle_trigger.rs	L10	1.5	Foul Emissary
+Trigger:When you roll a natural 20::when you roll a natural N, return this	1	0	1.00	parser/oracle_trigger.rs	L10	1.5	Critical Hit
+Trigger:When you play a card exiled with ~::when you play a card exiled with ~,	1	0	1.00	parser/oracle_trigger.rs	L10	1.5	Voltaic Visionary
+Trigger:When you next cast an instant spell::when you next cast an instant spell, cast	1	0	1.00	parser/oracle_trigger.rs	L10	1.5	Repeated Reverberation
+Trigger:When you have 30 or more life::when you have N or more life, flip	1	0	1.00	parser/oracle_trigger.rs	L10	1.5	Rune-Tail, Kitsune Ascendant
+Trigger:When you control seven or more Thrulls::when you control N or more thrulls, sacrifice	1	0	1.00	parser/oracle_trigger.rs	L10	1.5	Endrek Sahr, Master Breeder
+Trigger:When you control no permanents of the chosen color::when you control no permanents of the chosen	1	0	1.00	parser/oracle_trigger.rs	L10	1.5	Lurebound Scarecrow
+Trigger:When there are no creatures on the battlefield::when there are no creatures on the battlefield,	1	0	1.00	parser/oracle_trigger.rs	L10	1.5	Porphyry Nodes
+Trigger:When there are no cards in your graveyard::when there are no cards in your graveyard,	1	0	1.00	parser/oracle_trigger.rs	L10	1.5	Immortal Coil
+Trigger:When there are nine or more incarnation counters on ~::when there are N or more incarnation counters	1	0	1.00	parser/oracle_trigger.rs	L10	1.5	Nine Lives
+Trigger:When the chosen player draws a card with the chosen name::when the chosen player draws a card with	1	0	1.00	parser/oracle_trigger.rs	L10	1.5	Booby Trap
+Trigger:When target creature dies this turn::when target creature dies this turn, return that	1	0	1.00	parser/oracle_trigger.rs	L10	1.5	Graceful Reprieve
+Trigger:When a player other than ~'s owner controls it::when a player other than ~'s owner controls	1	0	1.00	parser/oracle_trigger.rs	L10	1.5	Bronze Bombshell
+Trigger:When a Faerie is championed with ~::when a faerie is championed with ~, tap	1	0	1.00	parser/oracle_trigger.rs	L10	1.5	Mistbind Clique
+Trigger:When Garruk has two or fewer loyalty counters on him::when garruk has N or fewer loyalty counters	1	0	1.00	parser/oracle_trigger.rs	L10	1.5	Garruk Relentless
+Swallow:Replacement_Instead::your library instead	1	0	1.00	parser/oracle_effect/	L11	1.5	Nephalia Academy
+Swallow:Optional_YouMay::{M}, sacrifice this artifact: roll a d20. /	1	0	1.00	parser/oracle_effect/	L11	1.5	Treasure Chest
+Swallow:Optional_YouMay::your turn, you may choose N. each mode	1	0	1.00	parser/oracle_effect/	L11	1.5	Shadrix Silverquill
+Swallow:Optional_YouMay::your library. you may put those cards on	1	0	1.00	parser/oracle_effect/	L11	1.5	Petals of Insight
+Swallow:Optional_YouMay::your library. you may put a creature card	1	0	1.00	parser/oracle_effect/	L11	1.5	Turntimber Symbiosis
+Swallow:Optional_YouMay::your library. you may play it this turn.	1	0	1.00	parser/oracle_effect/	L11	1.5	Chaos Channeler
+Swallow:Optional_YouMay::you may cast up to N instant and/or	1	0	1.00	parser/oracle_effect/	L11	1.5	Invoke Calamity
+Swallow:Optional_YouMay::whenever ~ attacks, choose target creature you control,	1	0	1.00	parser/oracle_effect/	L11	1.5	Delina, Wild Mage
+Swallow:Optional_YouMay::this turn. you may look at each face-down	1	0	1.00	parser/oracle_effect/	L11	1.5	Revealing Wind
+Swallow:Optional_YouMay::that card. you may cast the	1	0	1.00	parser/oracle_effect/	L11	1.5	Wizard's Spellbook
+Swallow:Optional_YouMay::main phase, you may add an amount of	1	0	1.00	parser/oracle_effect/	L11	1.5	Scattering Stroke
+Swallow:Optional_YouMay::legendary spells you cast cost {M} less to	1	0	1.00	parser/oracle_effect/	L11	1.5	Kethis, the Hidden Hand
+Swallow:Optional_YouMay::learn. (you may reveal a lesson card you	1	0	1.00	parser/oracle_effect/	L11	1.5	Retriever Phoenix
+Swallow:Optional_YouMay::forestwalk / as an additional cost to cast	1	0	1.00	parser/oracle_effect/	L11	1.5	Chorus of the Conclave
+Swallow:Optional_YouMay::creature enters, you may sacrifice any number of	1	0	1.00	parser/oracle_effect/	L11	1.5	Devouring Hellion
+Swallow:Optional_YouMay::creature enters, you may return a nonland permanent	1	0	1.00	parser/oracle_effect/	L11	1.5	Rescuer Sphinx
+Swallow:Optional_YouMay::creature enters, you may put N cards your	1	0	1.00	parser/oracle_effect/	L11	1.5	Ulamog's Despoiler
+Swallow:Optional_YouMay::card type, you may put a card	1	0	1.00	parser/oracle_effect/	L11	1.5	Atraxa, Grand Unifier
+Swallow:Optional_YouMay::blue permanent, you may cast this spell as	1	0	1.00	parser/oracle_effect/	L11	1.5	Hungering Yeti
+Swallow:Optional_YouMay::at the beginning of your end step, if	1	0	1.00	parser/oracle_effect/	L11	1.5	Hurkyl, Master Wizard
+Swallow:Optional_YouMay::[+N]: tap target permanent. it doesn't untap during	1	0	1.00	parser/oracle_effect/	L11	1.5	Tamiyo, the Moon Sage
+Swallow:Optional_YouMay::N—N | you may put	1	0	1.00	parser/oracle_effect/	L11	1.5	Aberrant Mind Sorcerer
+Swallow:Modal_DynamicMaxDropped::more times, choose up to that many —	1	0	1.00	parser/oracle_effect/sequence.rs	L26	1.5	Tranquil Frillback
+Swallow:DynamicQty::your library. for each card type, you may	1	0	1.00	parser/oracle_quantity.rs	L06	1.5	Atraxa, Grand Unifier
+Swallow:DynamicQty::whenever you cast a spell, add {M}. until	1	0	1.00	parser/oracle_quantity.rs	L06	1.5	Birgi, God of Storytelling
+Swallow:DynamicQty::when ~ enters, amass orcs N. when you	1	0	1.00	parser/oracle_quantity.rs	L06	1.5	Grishnákh, Brash Instigator
+Swallow:DynamicQty::when this creature enters, create N N/N colorless	1	0	1.00	parser/oracle_quantity.rs	L06	1.5	Precursor Golem
+Swallow:DynamicQty::value is equal to the amount of unspent	1	0	1.00	parser/oracle_quantity.rs	L06	1.5	Glissa Sunseeker
+Swallow:DynamicQty::total becomes equal to your starting life total	1	0	1.00	parser/oracle_quantity.rs	L06	1.5	Exquisite Archangel
+Swallow:DynamicQty::this spell for each creature sacrificed	1	0	1.00	parser/oracle_quantity.rs	L06	1.5	Plumb the Forbidden
+Swallow:DynamicQty::this spell can't be countered. / draw N	1	0	1.00	parser/oracle_quantity.rs	L06	1.5	Commence the Endgame
+Swallow:DynamicQty::this creature can't block. / other zombie creatures	1	0	1.00	parser/oracle_quantity.rs	L06	1.5	Risen Executioner
+Swallow:DynamicQty::the spell for each other creature that s	1	0	1.00	parser/oracle_quantity.rs	L06	1.5	Ink-Treader Nephilim
+Swallow:DynamicQty::that spell for each other creature you control	1	0	1.00	parser/oracle_quantity.rs	L06	1.5	Zada, Hedron Grinder
+Swallow:DynamicQty::that spell for each other cre	1	0	1.00	parser/oracle_quantity.rs	L06	1.5	Mirrorwing Dragon
+Swallow:DynamicQty::than or equal to the number of colors	1	0	1.00	parser/oracle_quantity.rs	L06	1.5	Exert Influence
+Swallow:DynamicQty::than or equal to the number of cards	1	0	1.00	parser/oracle_quantity.rs	L06	1.5	Drown in the Loch
+Swallow:DynamicQty::search your library for a snow permanent card,	1	0	1.00	parser/oracle_quantity.rs	L06	1.5	Search for Glory
+Swallow:DynamicQty::search your library for a basic land card,	1	0	1.00	parser/oracle_quantity.rs	L06	1.5	Emergent Sequence
+Swallow:DynamicQty::sacrifice this creature: destroy target nonblack creature. /	1	0	1.00	parser/oracle_quantity.rs	L06	1.5	Garza's Assassin
+Swallow:DynamicQty::reach, trample / domain — {M}: return this	1	0	1.00	parser/oracle_quantity.rs	L06	1.5	Llanowar Greenwidow
+Swallow:DynamicQty::prototype {M} — N/N / you may h	1	0	1.00	parser/oracle_quantity.rs	L06	1.5	Hulking Metamorph
+Swallow:DynamicQty::prototype {M} — N/N / when this	1	0	1.00	parser/oracle_quantity.rs	L06	1.5	Woodcaller Automaton
+Swallow:DynamicQty::prototype {M} — N/N / menace, l	1	0	1.00	parser/oracle_quantity.rs	L06	1.5	Phyrexian Fleshgorger
+Swallow:DynamicQty::player investigates for each	1	0	1.00	parser/oracle_quantity.rs	L06	1.5	Declaration in Stone
+Swallow:DynamicQty::on it equal to the greatest number of	1	0	1.00	parser/oracle_quantity.rs	L06	1.5	Investigator's Journal
+Swallow:DynamicQty::of turn for each creature it'	1	0	1.00	parser/oracle_quantity.rs	L06	1.5	Guardian of the Gateless
+Swallow:DynamicQty::of cards equal to the sacrificed creature's	1	0	1.00	parser/oracle_quantity.rs	L06	1.5	Tormented Thoughts
+Swallow:DynamicQty::mutate {M} (if you cast this spell for	1	0	1.00	parser/oracle_quantity.rs	L06	1.5	Auspicious Starrix
+Swallow:DynamicQty::multikicker {M} / counter target spell unless its	1	0	1.00	parser/oracle_quantity.rs	L06	1.5	Spell Contortion
+Swallow:DynamicQty::mana value equal to the chosen number can't	1	0	1.00	parser/oracle_quantity.rs	L06	1.5	Sanctum Prelate
+Swallow:DynamicQty::mana value equal to that number. then target	1	0	1.00	parser/oracle_quantity.rs	L06	1.5	Void
+Swallow:DynamicQty::land produced for each other land you control	1	0	1.00	parser/oracle_quantity.rs	L06	1.5	Sasaya's Essence
+Swallow:DynamicQty::gets -N/-N for each card in the chosen	1	0	1.00	parser/oracle_quantity.rs	L06	1.5	Nyxathid
+Swallow:DynamicQty::gets +N/+N for each transformed permanent you control	1	0	1.00	parser/oracle_quantity.rs	L06	1.5	Mutagen Connoisseur
+Swallow:DynamicQty::gets +N/+N for each time it has attacked	1	0	1.00	parser/oracle_quantity.rs	L06	1.5	Moraug, Fury of Akoum
+Swallow:DynamicQty::gets +N/+N for each l	1	0	1.00	parser/oracle_quantity.rs	L06	1.5	Strata Scythe
+Swallow:DynamicQty::gets +N/+N for each card you've drawn this	1	0	1.00	parser/oracle_quantity.rs	L06	1.5	Fists of Flame
+Swallow:DynamicQty::fumiko has bushido N, where N is the	1	0	1.00	parser/oracle_quantity.rs	L06	1.5	Fumiko the Lowblood
+Swallow:DynamicQty::flying / when this creature enters, target player	1	0	1.00	parser/oracle_quantity.rs	L06	1.5	Thieving Sprite
+Swallow:DynamicQty::flying / infect / wheneve	1	0	1.00	parser/oracle_quantity.rs	L06	1.5	Whispering Specter
+Swallow:DynamicQty::exile the top N cards of your library.	1	0	1.00	parser/oracle_quantity.rs	L06	1.5	Glimpse the Impossible
+Swallow:DynamicQty::evolve (whenever a creature you control enters, if	1	0	1.00	parser/oracle_quantity.rs	L06	1.5	Simic Manipulator
+Swallow:DynamicQty::each player chooses a nonland permanent they control.	1	0	1.00	parser/oracle_quantity.rs	L06	1.5	Consuming Tide
+Swallow:DynamicQty::devour N / when this crea	1	0	1.00	parser/oracle_quantity.rs	L06	1.5	Skullmulcher
+Swallow:DynamicQty::deals damage equal to its power to each	1	0	1.00	parser/oracle_quantity.rs	L06	1.5	Widespread Brutality
+Swallow:DynamicQty::creature tokens. for each of them, put your	1	0	1.00	parser/oracle_quantity.rs	L06	1.5	Invoke the Ancients
+Swallow:DynamicQty::creature token for each white mana symbol in	1	0	1.00	parser/oracle_quantity.rs	L06	1.5	Springjack Shepherd
+Swallow:DynamicQty::choose a card name. reveal cards from the	1	0	1.00	parser/oracle_quantity.rs	L06	1.5	Spoils of the Vault
+Swallow:DynamicQty::bushido N / you may pay {M} rather	1	0	1.00	parser/oracle_quantity.rs	L06	1.5	Kentaro, the Smiling Cat
+Swallow:DynamicQty::bushido N / each other samurai creature you	1	0	1.00	parser/oracle_quantity.rs	L06	1.5	Takeno, Samurai General
+Swallow:DynamicQty::at the beginning of your upkeep, put a	1	0	1.00	parser/oracle_quantity.rs	L06	1.5	Descent into Madness
+Swallow:DynamicQty::additional {M} for each card named ~ in	1	0	1.00	parser/oracle_quantity.rs	L06	1.5	Rune Snag
+Swallow:DynamicQty::a flip. for each flip you won, create	1	0	1.00	parser/oracle_quantity.rs	L06	1.5	Mirror March
+Swallow:DynamicQty::a coin for each creature that isn't a	1	0	1.00	parser/oracle_quantity.rs	L06	1.5	Rakdos, the Showstopper
+Swallow:DynamicQty::[+N]: tap target permanent, then untap another target	1	0	1.00	parser/oracle_quantity.rs	L06	1.5	Ral Zarek
+Swallow:DynamicQty::[+N]: creatures you control get +N/+N and gain	1	0	1.00	parser/oracle_quantity.rs	L06	1.5	Arlinn, Embraced by the Moon
+Swallow:DynamicQty::N life for each o	1	0	1.00	parser/oracle_quantity.rs	L06	1.5	Tablet of the Guilds
+Swallow:DynamicQty::N life for each green mana symbol in	1	0	1.00	parser/oracle_quantity.rs	L06	1.5	Phosphorescent Feast
+Swallow:DynamicQty::N life for each card fewer than N	1	0	1.00	parser/oracle_quantity.rs	L06	1.5	Stabwhisker the Odious
+Swallow:DynamicQty::N coins. for each flip you win, create	1	0	1.00	parser/oracle_quantity.rs	L06	1.5	Goblin Traprunner
+Swallow:DynamicQty::N cards. for each player, choose a creature	1	0	1.00	parser/oracle_quantity.rs	L06	1.5	Breach the Multiverse
+Swallow:DynamicQty::/ i — create a N/N white human	1	0	1.00	parser/oracle_quantity.rs	L06	1.5	Battle for Bretagard
+Swallow:DynamicQty::/ destroy target creature. if its controller has	1	0	1.00	parser/oracle_quantity.rs	L06	1.5	Isildur's Fateful Strike
+Swallow:Duration_UntilEndOfTurn::gets -N/-N until end of turn if that	1	0	1.00	parser/oracle_nom/duration.rs	L16	1.5	Skulking Killer
+Swallow:Duration_UntilEndOfTurn::gets +N/+N until end of turn."	1	0	1.00	parser/oracle_nom/duration.rs	L16	1.5	Dragon Egg
+Swallow:Duration_UntilEndOfTurn::gets +N/+N until end of turn be	1	0	1.00	parser/oracle_nom/duration.rs	L16	1.5	Savage Punch
+Swallow:Duration_ThisTurn::whenever you cast a red spell, untap ~.	1	0	1.00	parser/oracle_nom/duration.rs	L16	1.5	Chandra, Fire of Kaladesh
+Swallow:Duration_ThisTurn::when this enchantment enters, draw a card. /	1	0	1.00	parser/oracle_nom/duration.rs	L16	1.5	Confounding Conundrum
+Swallow:Duration_ThisTurn::trample / whenever you cast an enchantment spell,	1	0	1.00	parser/oracle_nom/duration.rs	L16	1.5	Kami of Transience
+Swallow:Duration_ThisTurn::trample / whenever this creature deals damage, put	1	0	1.00	parser/oracle_nom/duration.rs	L16	1.5	Vessel of the All-Consuming
+Swallow:Duration_ThisTurn::trample / this creature enters with N +N/+N	1	0	1.00	parser/oracle_nom/duration.rs	L16	1.5	Botanical Brawler
+Swallow:Duration_ThisTurn::to it this turn, this creature deals N	1	0	1.00	parser/oracle_nom/duration.rs	L16	1.5	Burning-Eye Zubera
+Swallow:Duration_ThisTurn::to it this turn, draw N cards	1	0	1.00	parser/oracle_nom/duration.rs	L16	1.5	Rushing-Tide Zubera
+Swallow:Duration_ThisTurn::this creature this turn loses N life	1	0	1.00	parser/oracle_nom/duration.rs	L16	1.5	Wicked Akuba
+Swallow:Duration_ThisTurn::red spell this turn	1	0	1.00	parser/oracle_nom/duration.rs	L16	1.5	Hotheaded Giant
+Swallow:Duration_ThisTurn::more creatures this turn, you may pay {M}	1	0	1.00	parser/oracle_nom/duration.rs	L16	1.5	Inferno Trap
+Swallow:Duration_ThisTurn::devoid / target creature you control fights target	1	0	1.00	parser/oracle_nom/duration.rs	L16	1.5	Unnatural Aggression
+Swallow:Duration_ThisTurn::dealt damage this turn. / draw a card	1	0	1.00	parser/oracle_nom/duration.rs	L16	1.5	Needle Drop
+Swallow:Duration_ThisTurn::dealt damage this turn to its owner's hand	1	0	1.00	parser/oracle_nom/duration.rs	L16	1.5	Restore the Peace
+Swallow:Duration_ThisTurn::crewed it this turn to its owner's hand.	1	0	1.00	parser/oracle_nom/duration.rs	L16	1.5	Getaway Car
+Swallow:Duration_ThisTurn::creature spell this turn, create a N/N green	1	0	1.00	parser/oracle_nom/duration.rs	L16	1.5	Predatory Advantage
+Swallow:Duration_ThisTurn::convoke (your creatures can help cast this spell.	1	0	1.00	parser/oracle_nom/duration.rs	L16	1.5	Cut Short
+Swallow:Duration_ThisTurn::black spell this turn, look at the top	1	0	1.00	parser/oracle_nom/duration.rs	L16	1.5	Sandstalker Moloch
+Swallow:Duration_ThisTurn::been exerted this turn, you may exert it	1	0	1.00	parser/oracle_nom/duration.rs	L16	1.5	Combat Celebrant
+Swallow:Duration_ThisTurn::a spell this turn with the same name	1	0	1.00	parser/oracle_nom/duration.rs	L16	1.5	Grim Reminder
+Swallow:Duration_ThisTurn::a creature this turn, sac	1	0	1.00	parser/oracle_nom/duration.rs	L16	1.5	Thirsting Axe
+Swallow:Condition_Unless::on it unless you've cast another red spell	1	0	1.00	parser/oracle_nom/condition.rs	L04	1.5	Hotheaded Giant
+Swallow:Condition_Unless::on it unless N or more colors of	1	0	1.00	parser/oracle_nom/condition.rs	L04	1.5	Steel Exemplar
+Swallow:Condition_If::~ can't be blocked. / whenever ~ deals	1	0	1.00	parser/oracle_nom/condition.rs	L04	1.5	Etrata, the Silencer
+Swallow:Condition_If::~ attacks, if you attacked with creatures with	1	0	1.00	parser/oracle_nom/condition.rs	L04	1.5	Targ Nar, Demon-Fang Gnoll
+Swallow:Condition_If::~ attacks, if an assassin crewed	1	0	1.00	parser/oracle_nom/condition.rs	L04	1.5	Adrestia
+Swallow:Condition_If::{M}, {M}: if this creature is on the	1	0	1.00	parser/oracle_nom/condition.rs	L04	1.5	Durkwood Tracker
+Swallow:Condition_If::your library. if that card has the chosen	1	0	1.00	parser/oracle_nom/condition.rs	L04	1.5	Diviner's Lockbox
+Swallow:Condition_If::your library. if it's a snow card, you	1	0	1.00	parser/oracle_nom/condition.rs	L04	1.5	Frost Augur
+Swallow:Condition_If::your hand. if you return a nonland card	1	0	1.00	parser/oracle_nom/condition.rs	L04	1.5	Vengeful Rebirth
+Swallow:Condition_If::your hand. if you do or if you	1	0	1.00	parser/oracle_nom/condition.rs	L04	1.5	Dragon's Disciple
+Swallow:Condition_If::your hand. if they don't, put those cards	1	0	1.00	parser/oracle_nom/condition.rs	L04	1.5	Covenant of Minds
+Swallow:Condition_If::your hand. if that card has the chosen	1	0	1.00	parser/oracle_nom/condition.rs	L04	1.5	Magus of the Scroll
+Swallow:Condition_If::your hand. if cards with N or more	1	0	1.00	parser/oracle_nom/condition.rs	L04	1.5	Azor's Gateway
+Swallow:Condition_If::your hand. if cards wi	1	0	1.00	parser/oracle_nom/condition.rs	L04	1.5	Atemsis, All-Seeing
+Swallow:Condition_If::your hand. if N or more cards were	1	0	1.00	parser/oracle_nom/condition.rs	L04	1.5	Long Rest
+Swallow:Condition_If::your graveyard if you pay {M} more	1	0	1.00	parser/oracle_nom/condition.rs	L04	1.5	Risen Executioner
+Swallow:Condition_If::your graveyard if a creature not named ~	1	0	1.00	parser/oracle_nom/condition.rs	L04	1.5	Ebondeath, Dracolich
+Swallow:Condition_If::you own. if that permanent or card has	1	0	1.00	parser/oracle_nom/condition.rs	L04	1.5	Jhoira's Timebug
+Swallow:Condition_If::you may pay {M} rather than pay this	1	0	1.00	parser/oracle_nom/condition.rs	L04	1.5	Verdant Mastery
+Swallow:Condition_If::you may cast up to N instant and/or	1	0	1.00	parser/oracle_nom/condition.rs	L04	1.5	Invoke Calamity
+Swallow:Condition_If::you get {M} , then you may pay	1	0	1.00	parser/oracle_nom/condition.rs	L04	1.5	Wheel of Potential
+Swallow:Condition_If::you control. if it isn't a creature or	1	0	1.00	parser/oracle_nom/condition.rs	L04	1.5	Lifecraft Awakening
+Swallow:Condition_If::you control, if this creature has defender, it	1	0	1.00	parser/oracle_nom/condition.rs	L04	1.5	Guardian of the Ages
+Swallow:Condition_If::with flying. if that permanent's mana value was	1	0	1.00	parser/oracle_nom/condition.rs	L04	1.5	Carnivorous Canopy
+Swallow:Condition_If::whenever you scry, put a verse counter on	1	0	1.00	parser/oracle_nom/condition.rs	L04	1.5	Lost Isle Calling
+Swallow:Condition_If::whenever a creature with power N or less	1	0	1.00	parser/oracle_nom/condition.rs	L04	1.5	Shirei, Shizo's Caretaker
+Swallow:Condition_If::when this enchantment enters, you get {M} .	1	0	1.00	parser/oracle_nom/condition.rs	L04	1.5	Primal Prayers
+Swallow:Condition_If::ward {M} / {M}	1	0	1.00	parser/oracle_nom/condition.rs	L04	1.5	Dreadlight Monstrosity
+Swallow:Condition_If::trample, protection from enchantments / {M}: monstrosity N.	1	0	1.00	parser/oracle_nom/condition.rs	L04	1.5	Polis Crusher
+Swallow:Condition_If::trample / this creature enters with N +N/+N	1	0	1.00	parser/oracle_nom/condition.rs	L04	1.5	Botanical Brawler
+Swallow:Condition_If::to it. if a dinos	1	0	1.00	parser/oracle_nom/condition.rs	L04	1.5	Marauding Raptor
+Swallow:Condition_If::to cast if it targets a creature whose	1	0	1.00	parser/oracle_nom/condition.rs	L04	1.5	Lullmage's Domination
+Swallow:Condition_If::to cast if it has mutate. / whenever	1	0	1.00	parser/oracle_nom/condition.rs	L04	1.5	Pollywog Symbiote
+Swallow:Condition_If::to cast if an opponent controls no basic	1	0	1.00	parser/oracle_nom/condition.rs	L04	1.5	Hagra Mauling
+Swallow:Condition_If::this turn. if that spell has mana value	1	0	1.00	parser/oracle_nom/condition.rs	L04	1.5	Prismari Apprentice
+Swallow:Condition_If::this turn. if it's renowned, untap it	1	0	1.00	parser/oracle_nom/condition.rs	L04	1.5	Enshrouding Mist
+Swallow:Condition_If::this turn, if a source you control would	1	0	1.00	parser/oracle_nom/condition.rs	L04	1.5	Aether Revolt
+Swallow:Condition_If::this spell, if {M} wasn't spent to cast	1	0	1.00	parser/oracle_nom/condition.rs	L04	1.5	Wumpus Aberration
+Swallow:Condition_If::this spell, if {M} was spent to cast	1	0	1.00	parser/oracle_nom/condition.rs	L04	1.5	Drowner of Truth
+Swallow:Condition_If::this spell costs {M} less to cast for	1	0	1.00	parser/oracle_nom/condition.rs	L04	1.5	Bloodsoaked Insight
+Swallow:Condition_If::their library. if the card	1	0	1.00	parser/oracle_nom/condition.rs	L04	1.5	Conundrum Sphinx
+Swallow:Condition_If::their hand. if that card has the chosen	1	0	1.00	parser/oracle_nom/condition.rs	L04	1.5	Dementia Sliver
+Swallow:Condition_If::their hand. if a card with the chosen	1	0	1.00	parser/oracle_nom/condition.rs	L04	1.5	Isperia the Inscrutable
+Swallow:Condition_If::their choice. if the player can't, sacrifice this	1	0	1.00	parser/oracle_nom/condition.rs	L04	1.5	Woebringer Demon
+Swallow:Condition_If::their choice. if that player can't, they d	1	0	1.00	parser/oracle_nom/condition.rs	L04	1.5	Doom Foretold
+Swallow:Condition_If::the game if you control a land of	1	0	1.00	parser/oracle_nom/condition.rs	L04	1.5	Coalition Victory
+Swallow:Condition_If::the battlefield. if {M} was spent to cast	1	0	1.00	parser/oracle_nom/condition.rs	L04	1.5	Vigor Mortis
+Swallow:Condition_If::the battlefield. if that card has mana value	1	0	1.00	parser/oracle_nom/condition.rs	L04	1.5	Turntimber Symbiosis
+Swallow:Condition_If::the battlefield. if it's a wolf or werewolf,	1	0	1.00	parser/oracle_nom/condition.rs	L04	1.5	Howlpack Piper
+Swallow:Condition_If::the battlefield. if a creature is p	1	0	1.00	parser/oracle_nom/condition.rs	L04	1.5	Mysterious Limousine
+Swallow:Condition_If::the battlefield. if a creature enters this way,	1	0	1.00	parser/oracle_nom/condition.rs	L04	1.5	Recommission
+Swallow:Condition_If::the battlefield if it has the same name	1	0	1.00	parser/oracle_nom/condition.rs	L04	1.5	Mitotic Manipulation
+Swallow:Condition_If::that name. if they can't, you draw a	1	0	1.00	parser/oracle_nom/condition.rs	L04	1.5	Brain Pry
+Swallow:Condition_If::that damage. if damage from a red source	1	0	1.00	parser/oracle_nom/condition.rs	L04	1.5	Honorable Passage
+Swallow:Condition_If::that artifact if it's on the battlefield	1	0	1.00	parser/oracle_nom/condition.rs	L04	1.5	Ouphe Vandals
+Swallow:Condition_If::tempts you, if you chose a creature other	1	0	1.00	parser/oracle_nom/condition.rs	L04	1.5	Gandalf, Friend of the Shire
+Swallow:Condition_If::target spell. if that spell's mana value was	1	0	1.00	parser/oracle_nom/condition.rs	L04	1.5	Reject Imperfection
+Swallow:Condition_If::target spell if it has the same mana	1	0	1.00	parser/oracle_nom/condition.rs	L04	1.5	Hisoka, Minamo Sensei
+Swallow:Condition_If::target land. if that land was legendary, its	1	0	1.00	parser/oracle_nom/condition.rs	L04	1.5	Feast of Worms
+Swallow:Condition_If::target equipment. if that equipment was attached to	1	0	1.00	parser/oracle_nom/condition.rs	L04	1.5	Unforge
+Swallow:Condition_If::target creature. if y	1	0	1.00	parser/oracle_nom/condition.rs	L04	1.5	Draconic Roar
+Swallow:Condition_If::target creature. if that creature had a +N/+N	1	0	1.00	parser/oracle_nom/condition.rs	L04	1.5	Rite of the Serpent
+Swallow:Condition_If::target creature. if its controller has	1	0	1.00	parser/oracle_nom/condition.rs	L04	1.5	Isildur's Fateful Strike
+Swallow:Condition_If::target creature. if a werewolf is dealt damage	1	0	1.00	parser/oracle_nom/condition.rs	L04	1.5	Silver Bolt
+Swallow:Condition_If::target creature. if a colorless creature is dealt	1	0	1.00	parser/oracle_nom/condition.rs	L04	1.5	Pathway Arrows
+Swallow:Condition_If::target creature if it has the least power	1	0	1.00	parser/oracle_nom/condition.rs	L04	1.5	Wretched Banquet
+Swallow:Condition_If::target artifact. if that artifact is put into	1	0	1.00	parser/oracle_nom/condition.rs	L04	1.5	Tuktuk Scrapper
+Swallow:Condition_If::target artifact. if that artifact had counters on	1	0	1.00	parser/oracle_nom/condition.rs	L04	1.5	Dismantle
+Swallow:Condition_If::target artifact if its mana value is equal	1	0	1.00	parser/oracle_nom/condition.rs	L04	1.5	Glissa Sunseeker
+Swallow:Condition_If::sorcery spell, if that spell targets only this	1	0	1.00	parser/oracle_nom/condition.rs	L04	1.5	Ink-Treader Nephilim
+Swallow:Condition_If::riot / flying / {M}: this creature deals	1	0	1.00	parser/oracle_nom/condition.rs	L04	1.5	Skarrgan Hellkite
+Swallow:Condition_If::reveal them. if you reveal N cards with	1	0	1.00	parser/oracle_nom/condition.rs	L04	1.5	Signal the Clans
+Swallow:Condition_If::red spell, if this creature has fewer than	1	0	1.00	parser/oracle_nom/condition.rs	L04	1.5	Runaway Steam-Kin
+Swallow:Condition_If::prowess / whenever this creature attacks, you may	1	0	1.00	parser/oracle_nom/condition.rs	L04	1.5	Sage-Eye Avengers
+Swallow:Condition_If::powerstone tokens. if the sacrificed artifact was legenda	1	0	1.00	parser/oracle_nom/condition.rs	L04	1.5	Splitting the Powerstone
+Swallow:Condition_If::planeswalker. then if that player or that planeswalker's	1	0	1.00	parser/oracle_nom/condition.rs	L04	1.5	Pulse of the Forge
+Swallow:Condition_If::owners' hands. if you return N or more	1	0	1.00	parser/oracle_nom/condition.rs	L04	1.5	Flood of Tears
+Swallow:Condition_If::owners' graveyards. if you do, this creature enters	1	0	1.00	parser/oracle_nom/condition.rs	L04	1.5	Ulamog's Despoiler
+Swallow:Condition_If::owner's hand. if you do, this creature enters	1	0	1.00	parser/oracle_nom/condition.rs	L04	1.5	Rescuer Sphinx
+Swallow:Condition_If::or {M}. if that mana is spent on	1	0	1.00	parser/oracle_nom/condition.rs	L04	1.5	Domri, Chaos Bringer
+Swallow:Condition_If::or planeswalker. if a nonred permanent is dealt	1	0	1.00	parser/oracle_nom/condition.rs	L04	1.5	Redcap Melee
+Swallow:Condition_If::opponent controls. if {M} was spent to cast	1	0	1.00	parser/oracle_nom/condition.rs	L04	1.5	Berg Strider
+Swallow:Condition_If::once during each of your turns, you may	1	0	1.00	parser/oracle_nom/condition.rs	L04	1.5	Maestros Ascendancy
+Swallow:Condition_If::on it. if N is N or more,	1	0	1.00	parser/oracle_nom/condition.rs	L04	1.5	Apocalypse Hydra
+Swallow:Condition_If::on it if you didn't cast it from	1	0	1.00	parser/oracle_nom/condition.rs	L04	1.5	Epochrasite
+Swallow:Condition_If::on it if you control a permanent with	1	0	1.00	parser/oracle_nom/condition.rs	L04	1.5	Ascendant Packleader
+Swallow:Condition_If::on it if yo	1	0	1.00	parser/oracle_nom/condition.rs	L04	1.5	Scaleguard Sentinels
+Swallow:Condition_If::of turn. if it's paired with a creature,	1	0	1.00	parser/oracle_nom/condition.rs	L04	1.5	Joint Assault
+Swallow:Condition_If::of turn. if it's equipped, you may destroy	1	0	1.00	parser/oracle_nom/condition.rs	L04	1.5	Awaken the Sleeper
+Swallow:Condition_If::of turn. if it's attacking a battle, put	1	0	1.00	parser/oracle_nom/condition.rs	L04	1.5	Rampaging Geoderm
+Swallow:Condition_If::of turn. if it's a goblin or orc,	1	0	1.00	parser/oracle_nom/condition.rs	L04	1.5	Rush the Room
+Swallow:Condition_If::of turn. if exactly N colors of mana	1	0	1.00	parser/oracle_nom/condition.rs	L04	1.5	Paragon of Modernity
+Swallow:Condition_If::of turn. if any of those results was	1	0	1.00	parser/oracle_nom/condition.rs	L04	1.5	Farideh, Devil's Chosen
+Swallow:Condition_If::of turn if that opponent controls no other	1	0	1.00	parser/oracle_nom/condition.rs	L04	1.5	Skulking Killer
+Swallow:Condition_If::of combat, if ~ and at least N	1	0	1.00	parser/oracle_nom/condition.rs	L04	1.5	Kytheon, Hero of Akros
+Swallow:Condition_If::mastery — if there are N or more	1	0	1.00	parser/oracle_nom/condition.rs	L04	1.5	Necromantic Summons
+Swallow:Condition_If::mana cost. if you do, it enters with	1	0	1.00	parser/oracle_nom/condition.rs	L04	1.5	Worldheart Phoenix
+Swallow:Condition_If::mana cost if it has the same name	1	0	1.00	parser/oracle_nom/condition.rs	L04	1.5	Twinning Glass
+Swallow:Condition_If::madness {M} / w	1	0	1.00	parser/oracle_nom/condition.rs	L04	1.5	Grave Scrabbler
+Swallow:Condition_If::madness {M} / a	1	0	1.00	parser/oracle_nom/condition.rs	L04	1.5	Avacyn's Judgment
+Swallow:Condition_If::look at the top N cards of your	1	0	1.00	parser/oracle_nom/condition.rs	L04	1.5	See the Truth
+Swallow:Condition_If::isn't legendary if the spell is legendary	1	0	1.00	parser/oracle_nom/condition.rs	L04	1.5	Double Major
+Swallow:Condition_If::infect / whenever this	1	0	1.00	parser/oracle_nom/condition.rs	L04	1.5	Septic Rats
+Swallow:Condition_If::hexproof / [+N]: each opponent loses N life	1	0	1.00	parser/oracle_nom/condition.rs	L04	1.5	Kaya, Intangible Slayer
+Swallow:Condition_If::greatest power. if N or more cards are	1	0	1.00	parser/oracle_nom/condition.rs	L04	1.5	Desecrator Hag
+Swallow:Condition_If::gets +N/+N. if it's a warrior, it gets	1	0	1.00	parser/oracle_nom/condition.rs	L04	1.5	Relic Axe
+Swallow:Condition_If::forestwalk / as an additional cost to cast	1	0	1.00	parser/oracle_nom/condition.rs	L04	1.5	Chorus of the Conclave
+Swallow:Condition_If::food token. if the sacrificed creature's toughness was	1	0	1.00	parser/oracle_nom/condition.rs	L04	1.5	Witch's Oven
+Swallow:Condition_If::flying / you may look at the top	1	0	1.00	parser/oracle_nom/condition.rs	L04	1.5	Vesuvan Drifter
+Swallow:Condition_If::flying / whenever this creature deals combat damage	1	0	1.00	parser/oracle_nom/condition.rs	L04	1.5	Sphinx Ambassador
+Swallow:Condition_If::ferocious — if you control a creature with	1	0	1.00	parser/oracle_nom/condition.rs	L04	1.5	Wild Slash
+Swallow:Condition_If::extort / [+N]: create a foo	1	0	1.00	parser/oracle_nom/condition.rs	L04	1.5	Sorin, Ravenous Neonate
+Swallow:Condition_If::exile target permanent you control. return that card	1	0	1.00	parser/oracle_nom/condition.rs	L04	1.5	Teferi's Time Twist
+Swallow:Condition_If::exile target instant or sorcery card from your	1	0	1.00	parser/oracle_nom/condition.rs	L04	1.5	Spelltwine
+Swallow:Condition_If::exile any number of target creatures and/or planeswalkers	1	0	1.00	parser/oracle_nom/condition.rs	L04	1.5	Semester's End
+Swallow:Condition_If::end step, if an enchantment w	1	0	1.00	parser/oracle_nom/condition.rs	L04	1.5	Kami of Transience
+Swallow:Condition_If::each upkeep, if an opponent lost life last	1	0	1.00	parser/oracle_nom/condition.rs	L04	1.5	Feast on the Fallen
+Swallow:Condition_If::each combat if able and attack a player	1	0	1.00	parser/oracle_nom/condition.rs	L04	1.5	Kardur, Doomscourge
+Swallow:Condition_If::devour N / this creature	1	0	1.00	parser/oracle_nom/condition.rs	L04	1.5	Hellkite Hatchling
+Swallow:Condition_If::damage instead if that target is a creature	1	0	1.00	parser/oracle_nom/condition.rs	L04	1.5	Light Up the Night
+Swallow:Condition_If::damage instead if that targ	1	0	1.00	parser/oracle_nom/condition.rs	L04	1.5	Lithomantic Barrage
+Swallow:Condition_If::creature spell, if {M} of any of that	1	0	1.00	parser/oracle_nom/condition.rs	L04	1.5	Boreal Outrider
+Swallow:Condition_If::creature enters, if you re	1	0	1.00	parser/oracle_nom/condition.rs	L04	1.5	Orator of Ojutai
+Swallow:Condition_If::creature enters, if it's on the battlefield, it	1	0	1.00	parser/oracle_nom/condition.rs	L04	1.5	Stalking Yeti
+Swallow:Condition_If::creature enters, if it was the second spell	1	0	1.00	parser/oracle_nom/condition.rs	L04	1.5	Codespell Cleric
+Swallow:Condition_If::creature enters, if at least N mana of	1	0	1.00	parser/oracle_nom/condition.rs	L04	1.5	Clockwork Servant
+Swallow:Condition_If::creature enters, if an opponent cast a blue	1	0	1.00	parser/oracle_nom/condition.rs	L04	1.5	Sandstalker Moloch
+Swallow:Condition_If::creature dies, if its power was N or	1	0	1.00	parser/oracle_nom/condition.rs	L04	1.5	Deathknell Berserker
+Swallow:Condition_If::creature dies, if an aura you controlled was	1	0	1.00	parser/oracle_nom/condition.rs	L04	1.5	Dawn Evangel
+Swallow:Condition_If::creature attacks, if you attacked with exactly N	1	0	1.00	parser/oracle_nom/condition.rs	L04	1.5	Creepy Puppeteer
+Swallow:Condition_If::creature attacks, if you attacked wit	1	0	1.00	parser/oracle_nom/condition.rs	L04	1.5	Battle Cry Goblin
+Swallow:Condition_If::creature attacks, if defending player has N or	1	0	1.00	parser/oracle_nom/condition.rs	L04	1.5	Reaper of Night
+Swallow:Condition_If::controls enters, if that player had another land	1	0	1.00	parser/oracle_nom/condition.rs	L04	1.5	Confounding Conundrum
+Swallow:Condition_If::control enters, if that creature is N/N, put	1	0	1.00	parser/oracle_nom/condition.rs	L04	1.5	Sigil Captain
+Swallow:Condition_If::control enters, if that creature entered from a	1	0	1.00	parser/oracle_nom/condition.rs	L04	1.5	Breathless Knight
+Swallow:Condition_If::control enters, if it doesn't have the same	1	0	1.00	parser/oracle_nom/condition.rs	L04	1.5	Guardian Project
+Swallow:Condition_If::choose N or both — / • return	1	0	1.00	parser/oracle_nom/condition.rs	L04	1.5	Auditore Ambush
+Swallow:Condition_If::cast it if it's an instant or sorcery	1	0	1.00	parser/oracle_nom/condition.rs	L04	1.5	Nivix, Aerie of the Firemind
+Swallow:Condition_If::cards. then if there is a colorless creature	1	0	1.00	parser/oracle_nom/condition.rs	L04	1.5	Grizzled Angler
+Swallow:Condition_If::becomes tapped, if it isn't being declared as	1	0	1.00	parser/oracle_nom/condition.rs	L04	1.5	Verity Circle
+Swallow:Condition_If::at random. if you discard a creature card	1	0	1.00	parser/oracle_nom/condition.rs	L04	1.5	Cragganwick Cremator
+Swallow:Condition_If::at random. if the player can't, you draw	1	0	1.00	parser/oracle_nom/condition.rs	L04	1.5	Urgoros, the Empty One
+Swallow:Condition_If::at random. if N cards that share a	1	0	1.00	parser/oracle_nom/condition.rs	L04	1.5	Rowdy Crew
+Swallow:Condition_If::any target. if a player is dealt damage	1	0	1.00	parser/oracle_nom/condition.rs	L04	1.5	Play with Fire
+Swallow:Condition_If::any target. if a creature is dealt damage	1	0	1.00	parser/oracle_nom/condition.rs	L04	1.5	Provoke the Trolls
+Swallow:Condition_If::any order. if a card named ~	1	0	1.00	parser/oracle_nom/condition.rs	L04	1.5	Stomping Slabs
+Swallow:Condition_If::and/or planeswalkers. if you do, it enters with	1	0	1.00	parser/oracle_nom/condition.rs	L04	1.5	Devouring Hellion
+Swallow:Condition_If::addendum — if you cast this spell during	1	0	1.00	parser/oracle_nom/condition.rs	L04	1.5	Code of Constraint
+Swallow:Condition_If::adamant — if at least N white mana	1	0	1.00	parser/oracle_nom/condition.rs	L04	1.5	Ardenvale Paladin
+Swallow:Condition_If::adamant — if at least N red mana	1	0	1.00	parser/oracle_nom/condition.rs	L04	1.5	Embereth Paladin
+Swallow:Condition_If::adamant — if at least N mana of	1	0	1.00	parser/oracle_nom/condition.rs	L04	1.5	Henge Walker
+Swallow:Condition_If::adamant — if at least N green mana	1	0	1.00	parser/oracle_nom/condition.rs	L04	1.5	Garenbrig Paladin
+Swallow:Condition_If::adamant — if at least N blue mana	1	0	1.00	parser/oracle_nom/condition.rs	L04	1.5	Vantress Paladin
+Swallow:Condition_If::adamant — if at least N black mana	1	0	1.00	parser/oracle_nom/condition.rs	L04	1.5	Locthwain Paladin
+Swallow:Condition_If::a spell, if the amount of mana sp	1	0	1.00	parser/oracle_nom/condition.rs	L04	1.5	Liberator, Urza's Battlethopter
+Swallow:Condition_If::a spell, if no colored mana was spent	1	0	1.00	parser/oracle_nom/condition.rs	L04	1.5	Void Mirror
+Swallow:Condition_If::a spell, if it's at least N of	1	0	1.00	parser/oracle_nom/condition.rs	L04	1.5	Tablet of the Guilds
+Swallow:Condition_If::a player, if it has dealt N	1	0	1.00	parser/oracle_nom/condition.rs	L04	1.5	Vessel of the All-Consuming
+Swallow:Condition_If::a player, if it doesn't have an indestructible	1	0	1.00	parser/oracle_nom/condition.rs	L04	1.5	Risona, Asari Commander
+Swallow:Condition_If::a graveyard. if a card is put into	1	0	1.00	parser/oracle_nom/condition.rs	L04	1.5	Corpse Appraiser
+Swallow:Condition_If::a card. if the player is your opponent	1	0	1.00	parser/oracle_nom/condition.rs	L04	1.5	Fevered Visions
+Swallow:Condition_If::a card. if that player discards an artifact	1	0	1.00	parser/oracle_nom/condition.rs	L04	1.5	Lumengrid Augur
+Swallow:Condition_If::a card. if a graveyard has N or	1	0	1.00	parser/oracle_nom/condition.rs	L04	1.5	Visions of Beyond
+Swallow:Condition_If::a card if you had N or more	1	0	1.00	parser/oracle_nom/condition.rs	L04	1.5	Park Heights Pegasus
+Swallow:Condition_If::a card if that creature has a +N/+N	1	0	1.00	parser/oracle_nom/condition.rs	L04	1.5	Oblivion's Hunger
+Swallow:Condition_If::N {M}. if you pay, untap all	1	0	1.00	parser/oracle_nom/condition.rs	L04	1.5	Lightning Runner
+Swallow:Condition_If::N life. if the sacrificed creature was legendary,	1	0	1.00	parser/oracle_nom/condition.rs	L04	1.5	Gríma Wormtongue
+Swallow:Condition_If::N cards. if the sacrificed creature was legendary,	1	0	1.00	parser/oracle_nom/condition.rs	L04	1.5	Nasty End
+Swallow:Condition_If::N cards if N or more creatures died	1	0	1.00	parser/oracle_nom/condition.rs	L04	1.5	Inga Rune-Eyes
+Swallow:Condition_If::/ i — destroy target land. / ii	1	0	1.00	parser/oracle_nom/condition.rs	L04	1.5	Waking the Trolls
+Swallow:Condition_If	1	0	1.00	parser/oracle_nom/condition.rs	L04	1.5	Invasion of Pyrulea
+Swallow:Condition_AsLongAs::revolt — as long as a permanent left	1	0	1.00	parser/oracle_nom/condition.rs	L04	1.5	Aether Revolt
+Swallow:Condition_AsLongAs::permanent. for as long as that card remains	1	0	1.00	parser/oracle_nom/condition.rs	L04	1.5	Soul Partition
+Swallow:Condition_AsLongAs::it. / as long as this creature has	1	0	1.00	parser/oracle_nom/condition.rs	L04	1.5	Woolly Razorback
+Swallow:Condition_AsLongAs::from exile as long as you contr	1	0	1.00	parser/oracle_nom/condition.rs	L04	1.5	Lukka, Coppercoat Outcast
+Swallow:Condition_AsLongAs::[+N]: until your next turn, prevent all damage	1	0	1.00	parser/oracle_nom/condition.rs	L04	1.5	Gideon of the Trials
+Swallow:ActivateOnlyDuring::all slivers have "{M}: choose a card name.	1	0	1.00	parser/oracle_casting.rs	L20	1.5	Dementia Sliver
+Static:AlternativeKeywordCost(Cycling)::as long as you have N or more	1	0	1.00	parser/oracle_casting.rs	L20	1.5	New Perspectives
+Static:AlternativeKeywordCost(Crew)::you may remove a loyalty counter from a	1	0	1.00	parser/oracle_casting.rs	L20	1.5	Heart of Kiran
+R4-cant-restriction-static	3	0	0.00	engine-runtime	L01	1.5	Blinding Flare; Orgg; Tromokratis
+ParseWarning:target-fallback::search-filter-suffix unmatched 'that's exactly that many colors plus	1	0	1.00	parser/oracle_target.rs	L23	1.5	Evolving Door
+ParseWarning:target-fallback::parse_target could not classify 'of the third type'	1	0	1.00	parser/oracle_target.rs	L23	1.5	Rite of Ruin
+ParseWarning:target-fallback::parse_target could not classify 'of the second type'	1	0	1.00	parser/oracle_target.rs	L23	1.5	Rite of Ruin
+ParseWarning:target-fallback::parse_target could not classify 'N cards from your	2	2	0.00	parser/oracle_target.rs	L23	1.5	Emeritus of Ideation; Ultimecia, Time Sorceress
+Effect:•::• you gain N ~	1	0	1.00	parser/oracle_saga.rs	L32	1.5	Life of Toshiro Umezawa
+Effect:~::~ and up to N other target creature	1	0	1.00	parser/oracle_class.rs	L33	1.5	Ballroom Brawlers
+Effect:you::you start the bidding with a bid of	1	0	1.00	parser/oracle_effect/conditions.rs	L09	1.5	Pain's Reward
+Effect:you::you incubate N	1	0	1.00	parser/oracle_effect/conditions.rs	L09	1.5	Assimilate Essence
+Effect:x::N can't be greater than the number of	1	0	1.00	parser/oracle_effect/animation.rs	L15	1.5	Open the Way
+Effect:wizard,::wizard, or spell you controlled dealt damage to	1	0	1.00	parser/oracle_effect/	L11	1.5	Aegar, the Freezing Flame
+Effect:with::with the chosen name	1	0	1.00	parser/oracle_effect/search.rs	L08	1.5	Academic Probation
+Effect:with::with exactly N life loses the game	1	0	1.00	parser/oracle_effect/search.rs	L08	1.5	Triskaidekaphobia
+Effect:who::who sacrificed a permanent this way reveals the	1	0	1.00	parser/oracle_keyword.rs	L28	1.5	Vaevictis Asmadi, the Dire
+Effect:when::when you next cast a creature spell of	1	0	1.00	parser/oracle_effect/conditions.rs	L09	1.5	Long List of the Ents
+Effect:when::when you lose control of that equipment, unattach	1	0	1.00	parser/oracle_effect/conditions.rs	L09	1.5	Ogre Geargrabber
+Effect:when::when you cast your next instant or sorcery	1	0	1.00	parser/oracle_effect/conditions.rs	L09	1.5	Twinferno
+Effect:when::when you cast it this turn, ~ gains	1	0	1.00	parser/oracle_effect/conditions.rs	L09	1.5	Havengul Lich
+Effect:when::when you cast a spell with the chosen	1	0	1.00	parser/oracle_effect/conditions.rs	L09	1.5	Medomai's Prophecy
+Effect:when::when this ability resolves for the third time	1	0	1.00	parser/oracle_effect/conditions.rs	L09	1.5	Gimli, Mournful Avenger
+Effect:when::when that mana is spent to cast an	1	0	1.00	parser/oracle_effect/conditions.rs	L09	1.5	Primal Wellspring
+Effect:when::when it's put into a graveyard this turn,	1	0	1.00	parser/oracle_effect/conditions.rs	L09	1.5	Melira, the Living Cure
+Effect:when::when it deals excess damage this way, destroy	1	0	1.00	parser/oracle_effect/conditions.rs	L09	1.5	Unleash the Inferno
+Effect:when::[−N]: when you next cast an instant or	1	0	1.00	parser/oracle_effect/conditions.rs	L09	1.5	Narset Transcendent
+Effect:wandering::wandering monster N or more times this game,	1	0	1.00	parser/oracle_effect/	L11	1.5	Yidaro, Wandering Monster
+Effect:unless_payment::counter target spell unless its controller pays twice	1	0	1.00	parser/oracle_effect/mod.rs	L03	1.5	Thassa's Intervention
+Effect:unless_payment::counter target spell unless its controller discards their	1	0	1.00	parser/oracle_effect/mod.rs	L03	1.5	Perplex
+Effect:unknown::~—{M}, exile N other cards from your graveyard	1	0	1.00	parser/oracle_effect/mod.rs	L03	1.5	Escape Velocity
+Effect:unknown::while you're searching your library, you may cast	1	0	1.00	parser/oracle_effect/mod.rs	L03	1.5	Panglacial Wurm
+Effect:unknown::the chosen player reveals each card they draw	1	0	1.00	parser/oracle_effect/mod.rs	L03	1.5	Booby Trap
+Effect:unknown::tapped creatures you control can block as though	1	0	1.00	parser/oracle_effect/mod.rs	L03	1.5	Masako the Humorless
+Effect:unknown::spend only mana produced by creatures to cast	1	0	1.00	parser/oracle_effect/mod.rs	L03	1.5	Myr Superion
+Effect:unknown::spend only mana produced by basic lands to	1	0	1.00	parser/oracle_effect/mod.rs	L03	1.5	Imperiosaur
+Effect:unknown::once during each of your turns, you may	1	0	1.00	parser/oracle_effect/mod.rs	L03	1.5	Hauken's Insight
+Effect:unknown::no more than N creature can attack ~	1	0	1.00	parser/oracle_effect/mod.rs	L03	1.5	The Eternal Wanderer
+Effect:unknown::mana of any type can be spent to	1	0	1.00	parser/oracle_effect/mod.rs	L03	1.5	Sharkey, Tyrant of the Shire
+Effect:unknown::if you would roll N or more dice,	1	0	1.00	parser/oracle_effect/mod.rs	L03	1.5	Barbarian Class
+Effect:unknown::during your turn, you may activate equip abilities	1	0	1.00	parser/oracle_effect/mod.rs	L03	1.5	Forge Anew
+Effect:unknown::as ~ transforms into ~, it becomes a	1	0	1.00	parser/oracle_effect/mod.rs	L03	1.5	Olag, Ludevic's Hubris
+Effect:unknown::as ~ transforms into ~, attach it to	1	0	1.00	parser/oracle_effect/mod.rs	L03	1.5	Curse of Leeches
+Effect:unknown::as ~ enters, you may choose a nonland	1	0	1.00	parser/oracle_effect/mod.rs	L03	1.5	Scheming Fence
+Effect:unknown::as ~ enters, note your life total	1	0	1.00	parser/oracle_effect/mod.rs	L03	1.5	Sigarda's Splendor
+Effect:unknown::as ~ enters, mill N cards for each	1	0	1.00	parser/oracle_effect/mod.rs	L03	1.5	Urborg Lhurgoyf
+Effect:unknown::as ~ enters, if it was kicked, mill	1	0	1.00	parser/oracle_effect/mod.rs	L03	1.5	Monstrous War-Leech
+Effect:unknown::as ~ enters, flip a coin. if the	1	0	1.00	parser/oracle_effect/mod.rs	L03	1.5	Molten Sentry
+Effect:unknown::as ~ enters, exile any number of creature	1	0	1.00	parser/oracle_effect/mod.rs	L03	1.5	Sutured Ghoul
+Effect:unknown::as ~ enters, exile an instant or sorcery	1	0	1.00	parser/oracle_effect/mod.rs	L03	1.5	Living Lore
+Effect:unknown::as ~ enters, exile a creature card from	1	0	1.00	parser/oracle_effect/mod.rs	L03	1.5	Dermotaxi
+Effect:unknown::as ~ enters, each opponent reveals their hand.	1	0	1.00	parser/oracle_effect/mod.rs	L03	1.5	Alhammarret, High Arbiter
+Effect:unknown::as ~ enters, choose a planeswalker type	1	0	1.00	parser/oracle_effect/mod.rs	L03	1.5	Deification
+Effect:unknown::as ~ enters, choose a noncreature, nonland card	1	0	1.00	parser/oracle_effect/mod.rs	L03	1.5	Council of the Absolute
+Effect:unknown::as ~ enters, choose a nonbasic land card	1	0	1.00	parser/oracle_effect/mod.rs	L03	1.5	Alpine Moon
+Effect:unknown::as ~ enters, choose a creature you control	1	0	1.00	parser/oracle_effect/mod.rs	L03	1.5	Grifter's Blade
+Effect:unknown::as ~ enters, choose a creature	1	0	1.00	parser/oracle_effect/mod.rs	L03	1.5	Metamorphic Alteration
+Effect:unknown::as ~ enters, choose N, N, or N	1	0	1.00	parser/oracle_effect/mod.rs	L03	1.5	Haktos the Unscarred
+Effect:unattach::{M}: you may unattach an equipment from a	1	0	1.00	parser/oracle_effect/imperative.rs	L02	1.5	Akiri, Fearless Voyager
+Effect:unattach::unattach ~: prevent all combat damage that would	1	0	1.00	parser/oracle_effect/imperative.rs	L02	1.5	Blinding Powder
+Effect:unattach::unattach ~	1	0	1.00	parser/oracle_effect/imperative.rs	L02	1.5	Elbrus, the Binding Blade
+Effect:unattach::unattach it	1	0	1.00	parser/oracle_effect/imperative.rs	L02	1.5	Tamiyo's Compleation
+Effect:turn::{M}, {M}, sacrifice ~: each player turns face	1	0	1.00	parser/oracle_effect/imperative.rs	L02	1.5	Pyxis of Pandemonium
+Effect:top::top the high bid	1	0	1.00	parser/oracle_effect/mod.rs	L03	1.5	Pain's Reward
+Effect:they::they may play it	1	0	1.00	parser/oracle_effect/imperative.rs	L02	1.5	Urabrask, Heretic Praetor
+Effect:they::they enter tapped	1	0	1.00	parser/oracle_effect/imperative.rs	L02	1.5	Become Anonymous
+Effect:there::there is an additional beginning phase after this	1	0	1.00	parser/oracle_effect/	L11	1.5	Shadow of the Second Sun
+Effect:there::there are N or more card types among	1	0	1.00	parser/oracle_effect/	L11	1.5	Happily Ever After
+Effect:their::their owners shuffle those cards into their libraries	1	0	1.00	parser/oracle_effect/become_copy_except.rs	L14	1.5	The Three Seasons
+Effect:the::{M}: the next time you cast an instant	1	0	1.00	parser/oracle_effect/imperative.rs	L02	1.5	Soulfire Grand Master
+Effect:the::{M}: the next instant or sorcery spell you	1	0	1.00	parser/oracle_effect/imperative.rs	L02	1.5	Kaza, Roil Chaser
+Effect:the::{M}, {M}: the controller of target instant or	1	0	1.00	parser/oracle_effect/imperative.rs	L02	1.5	Meletis Charlatan
+Effect:the::{M}, sacrifice ~: the next time damage would	1	0	1.00	parser/oracle_effect/imperative.rs	L02	1.5	Kill-Suit Cultist
+Effect:the::the next time they would draw a card	1	0	1.00	parser/oracle_effect/imperative.rs	L02	1.5	Urabrask, Heretic Praetor
+Effect:the::the next time target creature would deal combat	1	0	1.00	parser/oracle_effect/imperative.rs	L02	1.5	Ria Ivor, Bane of Bladehold
+Effect:the::the next time N or more creatures or	1	0	1.00	parser/oracle_effect/imperative.rs	L02	1.5	Mystic Reflection
+Effect:the::the next instant or sorcery spell you cast	1	0	1.00	parser/oracle_effect/imperative.rs	L02	1.5	Maelstrom Muse
+Effect:the::the next creature card you play this turn	1	0	1.00	parser/oracle_effect/imperative.rs	L02	1.5	Scout's Warning
+Effect:the::the exiled card's owner may cast that card	1	0	1.00	parser/oracle_effect/imperative.rs	L02	1.5	Spell Queller
+Effect:the::the creature is a vampire in addition to	1	0	1.00	parser/oracle_effect/imperative.rs	L02	1.5	Drana, the Last Bloodchief
+Effect:the::the creature gains "whenever ~ deals combat damage,	1	0	1.00	parser/oracle_effect/imperative.rs	L02	1.5	Flash Conscription
+Effect:the::the copy targets ~	1	0	1.00	parser/oracle_effect/imperative.rs	L02	1.5	Ivy, Gleeful Spellthief
+Effect:the::the copy targets the chosen creature	1	0	1.00	parser/oracle_effect/imperative.rs	L02	1.5	Beamsplitter Mage
+Effect:the::the controller of target artifact sacrifices it, then	1	0	1.00	parser/oracle_effect/imperative.rs	L02	1.5	Shape Anew
+Effect:the::the bidding ends if the high bid stands	1	0	1.00	parser/oracle_effect/imperative.rs	L02	1.5	Pain's Reward
+Effect:the::if at least N green mana was spent	1	0	1.00	parser/oracle_effect/imperative.rs	L02	1.5	Outmuscle
+Effect:that::that player equal to the revealed card's mana	1	0	1.00	parser/oracle_effect/imperative.rs	L02	1.5	Friendly Fire
+Effect:target::target creature you don't control	3	0	0.00	parser/oracle_effect/counter.rs	L12	1.5	Blizzard Brawl; Joust; Tail Swipe
+Effect:sword::{M}: if you control equipment named ~, sword	1	0	1.00	parser/oracle_effect/	L11	1.5	Helm of Kaldra
+Effect:static_structure::~'s equip ability costs {M} less to activate	1	0	1.00	parser/oracle_dispatch.rs	L05	1.5	Ghostfire Blade
+Effect:static_structure::~ has all loyalty abilities of all other	1	0	1.00	parser/oracle_dispatch.rs	L05	1.5	Nicol Bolas, Dragon-God
+Effect:static_structure::~ gets +N/+y, where N is the exiled	1	0	1.00	parser/oracle_dispatch.rs	L05	1.5	Phyrexian Ingester
+Effect:static_structure::your opponents and permanents your opponents control with	1	0	1.00	parser/oracle_dispatch.rs	L05	1.5	Kaya, Bane of the Dead
+Effect:static_structure::you, planeswalkers you control, and other creatures you	1	0	1.00	parser/oracle_dispatch.rs	L05	1.5	Shalai, Voice of Plenty
+Effect:static_structure::you may reveal the first card you draw	1	0	1.00	parser/oracle_dispatch.rs	L05	1.5	God-Eternal Kefnet
+Effect:static_structure::you may cast spells from among cards exiled	1	0	1.00	parser/oracle_dispatch.rs	L05	1.5	Hedonist's Trove
+Effect:static_structure::the chosen creature gets +N/+N and has flying	1	0	1.00	parser/oracle_dispatch.rs	L05	1.5	Tyrannical Pitlord
+Effect:static_structure::skip your upkeep step if you have no	1	0	1.00	parser/oracle_dispatch.rs	L05	1.5	Gibbering Descent
+Effect:static_structure::saproling creatures and other treefolk creatures get +N/+N	1	0	1.00	parser/oracle_dispatch.rs	L05	1.5	Verdeloth the Ancient
+Effect:static_structure::reveal your hand: if you have N or	1	0	1.00	parser/oracle_dispatch.rs	L05	1.5	Sasaya, Orochi Ascendant
+Effect:static_structure::players can't search libraries. any player may pay	1	0	1.00	parser/oracle_dispatch.rs	L05	1.5	Leonin Arbiter
+Effect:static_structure::players can't pay life to cast spells or	1	0	1.00	parser/oracle_dispatch.rs	L05	1.5	Karn's Sylex
+Effect:static_structure::players can't cast noncreature spells from graveyards or	1	0	1.00	parser/oracle_dispatch.rs	L05	1.5	Soulless Jailer
+Effect:static_structure::other transformed permanents you control have trample and	1	0	1.00	parser/oracle_dispatch.rs	L05	1.5	Gargantuan Slabhorn
+Effect:static_structure::once during each of your turns, you may	1	0	1.00	parser/oracle_dispatch.rs	L05	1.5	Serra Paragon
+Effect:static_structure::nonland permanents you control are white. the same	1	0	1.00	parser/oracle_dispatch.rs	L05	1.5	Celestial Dawn
+Effect:static_structure::fortified land has indestructible	1	0	1.00	parser/oracle_dispatch.rs	L05	1.5	Darksteel Garrison
+Effect:static_structure::foretelling cards from your hand costs {M} less	1	0	1.00	parser/oracle_dispatch.rs	L05	1.5	Cosmos Charger
+Effect:static_structure::for each non-human creature you control, you may	1	0	1.00	parser/oracle_dispatch.rs	L05	1.5	Zilortha, Apex of Ikoria
+Effect:static_structure::equipped creature gets ~/~	1	0	1.00	parser/oracle_dispatch.rs	L05	1.5	+2 Mace
+Effect:static_structure::equipped creature gets +N/+N, where N is the	1	0	1.00	parser/oracle_dispatch.rs	L05	1.5	Cranial Ram
+Effect:static_structure::enchanted creature is a copy of the chosen	1	0	1.00	parser/oracle_dispatch.rs	L05	1.5	Metamorphic Alteration
+Effect:static_structure::each vampire creature card you own that isn't	1	0	1.00	parser/oracle_dispatch.rs	L05	1.5	Falkenrath Gorger
+Effect:static_structure::each player may play lands and cast spells	1	0	1.00	parser/oracle_dispatch.rs	L05	1.5	Uba Mask
+Effect:static_structure::each player may look at cards they exiled	1	0	1.00	parser/oracle_dispatch.rs	L05	1.5	Shared Fate
+Effect:static_structure::each other planeswalker you control has the loyalty	1	0	1.00	parser/oracle_dispatch.rs	L05	1.5	Kasmina, Enigma Sage
+Effect:static_structure::each opponent who controls more creatures than you	1	0	1.00	parser/oracle_dispatch.rs	L05	1.5	Ward of Bones
+Effect:static_structure::each opponent can't cast noncreature spells with mana	1	0	1.00	parser/oracle_dispatch.rs	L05	1.5	Lavinia, Azorius Renegade
+Effect:static_structure::each nonland card in your hand without foretell	1	0	1.00	parser/oracle_dispatch.rs	L05	1.5	Dream Devourer
+Effect:static_structure::each noncreature, non-equipment artifact is an equipment with	1	0	1.00	parser/oracle_dispatch.rs	L05	1.5	Bludgeon Brawl
+Effect:static_structure::each instant and sorcery spell you cast has	1	0	1.00	parser/oracle_dispatch.rs	L05	1.5	Djinn Illuminatus
+Effect:static_structure::each creature you control has vigilance if it's	1	0	1.00	parser/oracle_dispatch.rs	L05	1.5	Scion of Draco
+Effect:static_structure::each creature with the greatest mana value has	1	0	1.00	parser/oracle_dispatch.rs	L05	1.5	Favor of the Mighty
+Effect:static_structure::each creature spell you cast has emerge. the	1	0	1.00	parser/oracle_dispatch.rs	L05	1.5	Herigast, Erupting Nullkite
+Effect:static_structure::each creature card in your graveyard has the	1	0	1.00	parser/oracle_dispatch.rs	L05	1.5	Ashes of the Fallen
+Effect:static_structure::creatures your opponents control with hexproof can be	1	0	1.00	parser/oracle_dispatch.rs	L05	1.5	Glaring Spotlight
+Effect:static_structure::creatures your opponents control can't have +N/+N counters	1	0	1.00	parser/oracle_dispatch.rs	L05	1.5	Blightbeetle
+Effect:static_structure::creatures you control enter as a copy of	1	0	1.00	parser/oracle_dispatch.rs	L05	1.5	Essence of the Wild
+Effect:static_structure::creatures you control can't have -N/-N counters put	1	0	1.00	parser/oracle_dispatch.rs	L05	1.5	Melira, Sylvok Outcast
+Effect:static_structure::creatures of the chosen color without flying can't	1	0	1.00	parser/oracle_dispatch.rs	L05	1.5	Teferi's Moat
+Effect:static_structure::creatures blocking or blocked by ~ have lifelink	1	0	1.00	parser/oracle_dispatch.rs	L05	1.5	Alms Beast
+Effect:static_structure::auras attached to permanents you control have umbra	1	0	1.00	parser/oracle_dispatch.rs	L05	1.5	Umbra Mystic
+Effect:static_structure::as ~ enters or is turned face up,	1	0	1.00	parser/oracle_dispatch.rs	L05	1.5	Vesuvan Shapeshifter
+Effect:static_structure::activated abilities of the chosen permanent can't be	1	0	1.00	parser/oracle_dispatch.rs	L05	1.5	Scheming Fence
+Effect:static_structure::activated abilities of lands your opponents control can't	1	0	1.00	parser/oracle_dispatch.rs	L05	1.5	Sharkey, Tyrant of the Shire
+Effect:spend::spend this mana only to pay a disturb	1	0	1.00	parser/oracle_effect/imperative.rs	L02	1.5	Unblinking Observer
+Effect:spend::spend this mana only to foretell cards or	1	0	1.00	parser/oracle_effect/imperative.rs	L02	1.5	Niko Defies Destiny
+Effect:spend::spend this mana only to foretell a card	1	0	1.00	parser/oracle_effect/imperative.rs	L02	1.5	Karfell Harbinger
+Effect:spend::spend this mana only to cast a face-down	1	0	1.00	parser/oracle_effect/imperative.rs	L02	1.5	Qarsi Deceiver
+Effect:spend::spend this mana only to cast a colorless	1	0	1.00	parser/oracle_effect/imperative.rs	L02	1.5	Cultivator Drone
+Effect:spend::spend this mana only to activate an ability	1	0	1.00	parser/oracle_effect/imperative.rs	L02	1.5	Tazri, Stalwart Survivor
+Effect:spend::spend only black mana on N. / ~	1	0	1.00	parser/oracle_effect/imperative.rs	L02	1.5	Consume Spirit
+Effect:spend::spend only black mana on N	1	0	1.00	parser/oracle_effect/imperative.rs	L02	1.5	Crypt Rats
+Effect:spells::spells your opponents cast cost {M} more to	1	0	1.00	parser/oracle_effect/mana.rs	L07	1.5	Tax Collector
+Effect:spells::spells with the chosen name can't be cast	1	0	1.00	parser/oracle_effect/mana.rs	L07	1.5	Conjurer's Ban
+Effect:spells::spells they cast this turn cost {M} more	1	0	1.00	parser/oracle_effect/mana.rs	L07	1.5	Academy Loremaster
+Effect:skip::skip their next untap step	1	0	1.00	parser/oracle_static/dispatch.rs	L24	1.5	Brine Elemental
+Effect:shuffle::shuffles the rest into their library	1	0	1.00	parser/oracle_effect/search.rs	L08	1.5	Worldpurge
+Effect:shuffle::shuffle their libraries	1	0	1.00	parser/oracle_effect/search.rs	L08	1.5	Void Stalker
+Effect:shuffle::shuffle the chosen cards into your library and	1	0	1.00	parser/oracle_effect/search.rs	L08	1.5	Ecological Appreciation
+Effect:shuffle::shuffle that pile, then cloak those cards	1	0	1.00	parser/oracle_effect/search.rs	L08	1.5	Become Anonymous
+Effect:shuffle::each player shuffles their hand, graveyard, and all	1	0	1.00	parser/oracle_effect/search.rs	L08	1.5	Sway of the Stars
+Effect:separate::starting with you, each player separates all permanents	1	0	1.00	parser/oracle_separate_piles.rs	L30	1.5	Whims of the Fates
+Effect:separate::[−N]: separate all permanents target player controls into	1	0	1.00	parser/oracle_separate_piles.rs	L30	1.5	Liliana of the Veil
+Effect:sanctum::sanctum of nature, exile them, then meld them	1	0	1.00	parser/oracle_effect/	L11	1.5	Titania, Voice of Gaea
+Effect:reveal::reveal their library	1	0	1.00	parser/oracle_effect/search.rs	L08	1.5	Mindblaze
+Effect:reveal::reveal the chosen card	1	0	1.00	parser/oracle_effect/search.rs	L08	1.5	Vendilion Clique
+Effect:reveal::reveal the aura card	1	0	1.00	parser/oracle_effect/search.rs	L08	1.5	Auratouched Mage
+Effect:reveal::reveal that many cards from the top of	1	0	1.00	parser/oracle_effect/search.rs	L08	1.5	Warp World
+Effect:reveal::reveal cards from the top of your library	1	0	1.00	parser/oracle_effect/search.rs	L08	1.5	Mass Polymorph
+Effect:reveal::reveal a card you own named ~ from	1	0	1.00	parser/oracle_effect/search.rs	L08	1.5	Legion Angel
+Effect:reveal::each player reveals a number of cards from	1	0	1.00	parser/oracle_effect/search.rs	L08	1.5	Over the Top
+Effect:restart::[−N]: restart the game, leaving in exile all	1	0	1.00	parser/oracle_effect/	L11	1.5	Karn Liberated
+Effect:replacement_structure::if ~ would be put into a graveyard	1	0	1.00	parser/oracle_dispatch.rs	L05	1.5	Ugin's Nexus
+Effect:replacement_structure::if your life total would be reduced to	1	0	1.00	parser/oracle_dispatch.rs	L05	1.5	Enduring Angel
+Effect:replacement_structure::if you would get N or more {M}	1	0	1.00	parser/oracle_dispatch.rs	L05	1.5	Izzet Generatorium
+Effect:replacement_structure::if you would get N or more poison	1	0	1.00	parser/oracle_dispatch.rs	L05	1.5	Melira, the Living Cure
+Effect:replacement_structure::if you would get N or more counters,	1	0	1.00	parser/oracle_dispatch.rs	L05	1.5	Winding Constrictor
+Effect:replacement_structure::if a spell or ability you control would	1	0	1.00	parser/oracle_dispatch.rs	L05	1.5	Guile
+Effect:replacement_structure::if a modular triggered ability would put N	1	0	1.00	parser/oracle_dispatch.rs	L05	1.5	Zabaz, the Glimmerwasp
+Effect:replacement_structure::if a cycling ability of another nonland card	1	0	1.00	parser/oracle_dispatch.rs	L05	1.5	Unpredictable Cyclone
+Effect:replacement_structure::if a card would be put into an	1	0	1.00	parser/oracle_dispatch.rs	L05	1.5	Dauthi Voidwalker
+Effect:replacement_structure::grant an advantage — if you would roll	1	0	1.00	parser/oracle_dispatch.rs	L05	1.5	Pixie Guide
+Effect:replacement_structure::as ~ enters, put a phylactery counter on	1	0	1.00	parser/oracle_dispatch.rs	L05	1.5	Phylactery Lich
+Effect:repeat::repeat this process until no N pays life	1	0	1.00	parser/oracle_effect/	L11	1.5	Plague of Vermin
+Effect:repeat::repeat this process until both players' coins come	1	0	1.00	parser/oracle_effect/	L11	1.5	Mana Clash
+Effect:repeat::repeat this process until all cards in that	1	0	1.00	parser/oracle_effect/	L11	1.5	Struggle for Sanity
+Effect:repeat::repeat this process until all cards exiled this	1	0	1.00	parser/oracle_effect/	L11	1.5	Thieves' Auction
+Effect:repeat::repeat this process except that opponent can't choose	1	0	1.00	parser/oracle_effect/	L11	1.5	Shrouded Lore
+Effect:remove::remove twice N loyalty counters from target planeswalker	1	0	1.00	parser/oracle_effect/imperative.rs	L02	1.5	Confront the Past
+Effect:remove::remove that counter from that permanent or card	1	0	1.00	parser/oracle_effect/imperative.rs	L02	1.5	Clockspinning
+Effect:remove::remove any number of +N/+N counters from among	1	0	1.00	parser/oracle_effect/imperative.rs	L02	1.5	Galloping Lizrog
+Effect:remove::remove a number of loyalty counters equal to	1	0	1.00	parser/oracle_effect/imperative.rs	L02	1.5	Jace, Mirror Mage
+Effect:put::put your choice of a counter from among	1	0	1.00	parser/oracle_effect/search.rs	L08	1.5	Aragorn, Company Leader
+Effect:put::put them back in any order	1	0	1.00	parser/oracle_effect/search.rs	L08	1.5	Descendant of Soramaro
+Effect:put::put the rest back in any order	1	0	1.00	parser/oracle_effect/search.rs	L08	1.5	Dimir Machinations
+Effect:put::put the other on the top or bottom	1	0	1.00	parser/oracle_effect/search.rs	L08	1.5	Write into Being
+Effect:put::put target creature into its owner's library just	1	0	1.00	parser/oracle_effect/search.rs	L08	1.5	Quarry Colossus
+Effect:put::put target card from a graveyard on your	1	0	1.00	parser/oracle_effect/search.rs	L08	1.5	Not Forgotten
+Effect:put::put onto the battlefield attached to it any	1	0	1.00	parser/oracle_effect/search.rs	L08	1.5	Bruna, Light of Alabaster
+Effect:put::put it on your choice of the top	1	0	1.00	parser/oracle_effect/search.rs	L08	1.5	Arashin Sovereign
+Effect:put::put an additional counter of that kind on	1	0	1.00	parser/oracle_effect/search.rs	L08	1.5	Ichormoon Gauntlet
+Effect:put::put a number of +N/+N counters on it	1	0	1.00	parser/oracle_effect/search.rs	L08	1.5	Tyvar the Bellicose
+Effect:put::put a counter of that kind on ~	1	0	1.00	parser/oracle_effect/search.rs	L08	1.5	Crystalline Giant
+Effect:put::put a counter of that kind on either	1	0	1.00	parser/oracle_effect/search.rs	L08	1.5	Exotic Pets
+Effect:put::put a +N/+N counter or a loyalty counter	1	0	1.00	parser/oracle_effect/search.rs	L08	1.5	Elspeth Conquers Death
+Effect:put::put a +N/+N counter and a counter from	1	0	1.00	parser/oracle_effect/search.rs	L08	1.5	Elspeth Resplendent
+Effect:players::players dealt damage this way can't cast noncreature	1	0	1.00	parser/oracle_effect/imperative.rs	L02	1.5	Aurelia's Fury
+Effect:players::players can't search libraries this turn. / draw	1	0	1.00	parser/oracle_effect/imperative.rs	L02	1.5	Shadow of Doubt
+Effect:play::until end of turn, you may play lands	1	0	1.00	parser/oracle_effect/search.rs	L08	1.5	Gaea's Will
+Effect:play::play lands	3	0	0.00	parser/oracle_effect/search.rs	L08	1.5	Brilliant Ultimatum; Gix, Yawgmoth Praetor; Sen Triplets
+Effect:phase::phase	1	0	1.00	parser/oracle_effect/imperative.rs	L02	1.5	Fatespinner
+Effect:permanents::permanents enter tapped this turn. / draw a	1	0	1.00	parser/oracle_effect/mana.rs	L07	1.5	Due Respect
+Effect:pay::pay any amount of {M}	1	0	1.00	parser/oracle_effect/imperative.rs	L02	1.5	Leyline Tyrant
+Effect:other::other red attacking creatures you control gain trample	1	0	1.00	parser/oracle_effect/imperative.rs	L02	1.5	Tori D'Avenant, Fury Rider
+Effect:or::or land that isn't a mana ability	1	0	1.00	parser/oracle_effect/mana.rs	L07	1.5	Immolation Shaman
+Effect:only::only you draw a card	1	0	1.00	parser/oracle_effect/	L11	1.5	Kumena's Awakening
+Effect:note::note your life total	1	0	1.00	parser/oracle_effect/	L11	1.5	Sigarda's Splendor
+Effect:note::note a creature type that hasn't been noted	1	0	1.00	parser/oracle_effect/	L11	1.5	Long List of the Ents
+Effect:nonland::nonland card, you may reveal it	1	0	1.00	parser/oracle_effect/search.rs	L08	1.5	Narset Transcendent
+Effect:nonland::nonland card, you gain N life	1	0	1.00	parser/oracle_effect/search.rs	L08	1.5	Druidic Satchel
+Effect:noncreature::noncreature spells your opponents cast cost {M} more	1	0	1.00	parser/oracle_effect/search.rs	L08	1.5	Elspeth Conquers Death
+Effect:multi_source_compound_each_power_damage::target creature you control and up to N	1	0	1.00	parser/oracle_effect/mod.rs	L03	1.5	Friendly Rivalry
+Effect:modal_mode_unsupported_qualifier::look at the top N cards of your	1	0	1.00	parser/oracle_modal.rs	L29	1.5	Ao, the Dawn Sky
+Effect:mill::mill cards equal to your ring-bearer's power	1	0	1.00	parser/oracle_effect/imperative.rs	L02	1.5	One Ring to Rule Them All
+Effect:manifest::manifest N of those cards	1	0	1.00	parser/oracle_effect/imperative.rs	L02	1.5	Write into Being
+Effect:manifest::manifest N cards from their hands	1	0	1.00	parser/oracle_effect/imperative.rs	L02	1.5	Kozilek, the Broken Reality
+Effect:lose::target player loses life equal to the damage	1	0	1.00	parser/oracle_effect/imperative.rs	L02	1.5	Final Punishment
+Effect:lose::lose life equal to the total mana value	1	0	1.00	parser/oracle_effect/imperative.rs	L02	1.5	Palantír of Orthanc
+Effect:lose::lose all unspent mana	1	0	1.00	parser/oracle_effect/imperative.rs	L02	1.5	Worldpurge
+Effect:lose::lose all abilities	1	0	1.00	parser/oracle_effect/imperative.rs	L02	1.5	Monument to Perfection
+Effect:look::{M}: look at target face-down creature	1	0	1.00	parser/oracle_effect/imperative.rs	L02	1.5	Smoke Teller
+Effect:look::look at those cards	1	0	1.00	parser/oracle_effect/imperative.rs	L02	1.5	Jester's Scepter
+Effect:look::look at the cards in each pile, then	1	0	1.00	parser/oracle_effect/imperative.rs	L02	1.5	Hostile Negotiations
+Effect:look::look at it	1	0	1.00	parser/oracle_effect/imperative.rs	L02	1.5	Rogue Class
+Effect:leave::leave the chosen cards in your graveyard and	1	0	1.00	parser/oracle_trigger.rs	L10	1.5	Deliver Unto Evil
+Effect:its::its power is equal to ~'s power and	1	0	1.00	parser/oracle_effect/become_copy_except.rs	L14	1.5	Gemini Engine
+Effect:its::its power is equal to that creature's power	1	0	1.00	parser/oracle_effect/become_copy_except.rs	L14	1.5	Kalitas, Bloodchief of Ghet
+Effect:its::its power is equal to that card's power	1	0	1.00	parser/oracle_effect/become_copy_except.rs	L14	1.5	Ritual of the Returned
+Effect:it::it enters tapped and attacking	1	0	1.00	parser/oracle_effect/become_copy_except.rs	L14	1.5	Mishra, Claimed by Gix
+Effect:instead::instead that player skips that draw	1	0	1.00	parser/oracle_effect/search.rs	L08	1.5	Plagiarize
+Effect:instead::instead search your library for a card, put	1	0	1.00	parser/oracle_effect/search.rs	L08	1.5	Archmage Ascension
+Effect:instead::instead gain control of that creature	1	0	1.00	parser/oracle_effect/search.rs	L08	1.5	Welcome to the Fold
+Effect:instead::instead exile it, then return that card to	1	0	1.00	parser/oracle_effect/search.rs	L08	1.5	Meticulous Excavation
+Effect:instead::instead create N of those tokens	1	0	1.00	parser/oracle_effect/search.rs	L08	1.5	From Under the Floorboards
+Effect:instant::[+N]: until your next turn, instant and sorcery	1	0	1.00	parser/oracle_effect/search.rs	L08	1.5	Ral, Leyline Prodigy
+Effect:in::in turn order	1	0	1.00	parser/oracle_effect/animation.rs	L15	1.5	Pain's Reward
+Effect:if::if you control no permanents other than ~	1	0	1.00	parser/oracle_effect/conditions.rs	L09	1.5	Barren Glory
+Effect:have::you may have creatures you control assign their	1	0	1.00	parser/oracle_effect/imperative.rs	L02	1.5	Predatory Focus
+Effect:have::have the most cards in hand gains control	1	0	1.00	parser/oracle_effect/imperative.rs	L02	1.5	Sokenzan Renegade
+Effect:have::have the base power and toughness of other	1	0	1.00	parser/oracle_effect/imperative.rs	L02	1.5	Tanazir Quandrix
+Effect:have::have that creature become a copy of another	1	0	1.00	parser/oracle_effect/imperative.rs	L02	1.5	Blade of Shared Souls
+Effect:have::have shapeshifters you control become copies of that	1	0	1.00	parser/oracle_effect/imperative.rs	L02	1.5	Absorb Identity
+Effect:have::have no cards in hand	1	0	1.00	parser/oracle_effect/imperative.rs	L02	1.5	Barren Glory
+Effect:have::have creatures you control other than ~ become	1	0	1.00	parser/oracle_effect/imperative.rs	L02	1.5	Deceiver of Form
+Effect:have::have an awakening counter on it	1	0	1.00	parser/oracle_effect/imperative.rs	L02	1.5	Liege of the Tangle
+Effect:have::have a flood counter on it	1	0	1.00	parser/oracle_effect/imperative.rs	L02	1.5	Quicksilver Fountain
+Effect:get::get that many poison counters	1	0	1.00	parser/oracle_effect/imperative.rs	L02	1.5	Etali, Primal Sickness
+Effect:get::get an additional poison counter	1	0	1.00	parser/oracle_effect/imperative.rs	L02	1.5	Necrogen Rotpriest
+Effect:get::get an additional -N/-N until end of turn	1	0	1.00	parser/oracle_effect/imperative.rs	L02	1.5	Lethal Exploit
+Effect:get::get +N/+y	1	0	1.00	parser/oracle_effect/imperative.rs	L02	1.5	Bioplasm
+Effect:get::[−N]: if target player has fewer than N	1	0	1.00	parser/oracle_effect/imperative.rs	L02	1.5	Vraska, Betrayal's Sting
+Effect:gain::{M}, sacrifice ~: you gain life equal to	1	0	1.00	parser/oracle_effect/imperative.rs	L02	1.5	Tainted Sigil
+Effect:gain::you gain life equal to the number of	1	0	1.00	parser/oracle_effect/imperative.rs	L02	1.5	War Report
+Effect:gain::gain your choice of deathtouch or lifelink	1	0	1.00	parser/oracle_effect/imperative.rs	L02	1.5	Alchemist's Gift
+Effect:gain::gain vanishing	1	0	1.00	parser/oracle_effect/imperative.rs	L02	1.5	Maelstrom Djinn
+Effect:gain::gain no life	1	0	1.00	parser/oracle_effect/imperative.rs	L02	1.5	Flames of the Blood Hand
+Effect:gain::gain life equal to the greatest power among	1	0	1.00	parser/oracle_effect/imperative.rs	L02	1.5	Discerning Taste
+Effect:gain::gain life equal to that creature's power plus	1	0	1.00	parser/oracle_effect/imperative.rs	L02	1.5	Predator's Rapport
+Effect:gain::gain haste until end of turn if it	1	0	1.00	parser/oracle_effect/imperative.rs	L02	1.5	Silumgar Scavenger
+Effect:gain::[+N]: you gain life equal to the number	1	0	1.00	parser/oracle_effect/imperative.rs	L02	1.5	Ajani, Strength of the Pride
+Effect:freerunning—return::freerunning—return a blue creature you control to its	1	0	1.00	parser/oracle_effect/	L11	1.5	Escape Detection
+Effect:for::for each {M} spent to cast ~, put	1	0	1.00	parser/oracle_effect/search.rs	L08	1.5	Clay Champion
+Effect:for::for each {M} spent to cast it, draw	1	0	1.00	parser/oracle_effect/search.rs	L08	1.5	Bladecoil Serpent
+Effect:for::for each spell and ability your opponents control,	1	0	1.00	parser/oracle_effect/search.rs	L08	1.5	Whirlwind Denial
+Effect:for::for each player, choose target permanent that player	1	0	1.00	parser/oracle_effect/search.rs	L08	1.5	Vaevictis Asmadi, the Dire
+Effect:for::for each of those tokens, you may attach	1	0	1.00	parser/oracle_effect/search.rs	L08	1.5	Reckless Crew
+Effect:for::for each of those permanents, you may search	1	0	1.00	parser/oracle_effect/search.rs	L08	1.5	Clarion Ultimatum
+Effect:for::for each of those permanents, its controller creates	1	0	1.00	parser/oracle_effect/search.rs	L08	1.5	Soul of Emancipation
+Effect:for::for each kind of counter among creatures you	1	0	1.00	parser/oracle_effect/search.rs	L08	1.5	Exotic Pets
+Effect:for::for each creature card you own in exile	1	0	1.00	parser/oracle_effect/search.rs	L08	1.5	Altaïr Ibn-La'Ahad
+Effect:for::for each copy, the player may cast the	1	0	1.00	parser/oracle_effect/search.rs	L08	1.5	Eye of the Storm
+Effect:for::for each color pair, choose a card that's	1	0	1.00	parser/oracle_effect/search.rs	L08	1.5	Niv-Mizzet Reborn
+Effect:for::for each blue mana symbol in the mana	1	0	1.00	parser/oracle_effect/search.rs	L08	1.5	Sanity Grinding
+Effect:for::[−N]: for each player, choose a creature that	1	0	1.00	parser/oracle_effect/search.rs	L08	1.5	The Eternal Wanderer
+Effect:face-up::sacrifice ~: until end of turn, face-up nontoken	1	0	1.00	parser/oracle_effect/	L11	1.5	Whisperwood Elemental
+Effect:exchange::exchange your hand and graveyard	1	0	1.00	parser/oracle_effect/imperative.rs	L02	1.5	Harness Infinity
+Effect:exchange::exchange control of ~ and target permanent you	1	0	1.00	parser/oracle_effect/imperative.rs	L02	1.5	Conjured Currency
+Effect:exchange::exchange control of those permanents	1	0	1.00	parser/oracle_effect/imperative.rs	L02	1.5	Confusion in the Ranks
+Effect:exchange::[−N]: exchange your hand and library, then shuffle.	1	0	1.00	parser/oracle_effect/imperative.rs	L02	1.5	Mordenkainen
+Effect:effect_structure::~ can block dragons as though it had	1	0	1.00	parser/oracle_dispatch.rs	L05	1.5	Dragon Hunter
+Effect:effect_structure::~ can block an additional creature each combat	1	0	1.00	parser/oracle_dispatch.rs	L05	1.5	Kemba's Legion
+Effect:effect_structure::you may spend white mana as though it	1	0	1.00	parser/oracle_dispatch.rs	L05	1.5	Celestial Dawn
+Effect:effect_structure::you may play lands and cast spells from	1	0	1.00	parser/oracle_dispatch.rs	L05	1.5	Grolnok, the Omnivore
+Effect:effect_structure::you may look at an additional N cards	1	0	1.00	parser/oracle_dispatch.rs	L05	1.5	Enhanced Surveillance
+Effect:effect_structure::you may activate loyalty abilities of ~ on	1	0	1.00	parser/oracle_dispatch.rs	L05	1.5	Teferi, Master of Time
+Effect:effect_structure::you may activate equip abilities any time you	1	0	1.00	parser/oracle_dispatch.rs	L05	1.5	Leonin Shikari
+Effect:effect_structure::you can't get poison counters	1	0	1.00	parser/oracle_dispatch.rs	L05	1.5	Melira, Sylvok Outcast
+Effect:effect_structure::you can't choose an untapped permanent as this	1	0	1.00	parser/oracle_dispatch.rs	L05	1.5	Dream Leash
+Effect:effect_structure::you can't choose an untapped creature as this	1	0	1.00	parser/oracle_dispatch.rs	L05	1.5	Enthralling Hold
+Effect:effect_structure::reveal the first card you draw on each	1	0	1.00	parser/oracle_dispatch.rs	L05	1.5	Keranos, God of Storms
+Effect:effect_structure::if a creature an opponent controls attacks, all	1	0	1.00	parser/oracle_dispatch.rs	L05	1.5	War's Toll
+Effect:effect_structure::each opponent must attack you or a planeswalker	1	0	1.00	parser/oracle_dispatch.rs	L05	1.5	Trove of Temptation
+Effect:during::during that player's next untap step, creatures they	1	0	1.00	parser/oracle_effect/	L11	1.5	Imaginary Threats
+Effect:during::[+N]: during target opponent's next turn, creatures that	1	0	1.00	parser/oracle_effect/	L11	1.5	Gideon Jura
+Effect:draw::draw cards equal to the number of curses	1	0	1.00	parser/oracle_effect/imperative.rs	L02	1.5	Curse of Surveillance
+Effect:draw::draw cards equal to the difference	1	0	1.00	parser/oracle_effect/imperative.rs	L02	1.5	Skull Raid
+Effect:draw::draw cards equal to its total toxic value	1	0	1.00	parser/oracle_effect/imperative.rs	L02	1.5	Goliath Hatchery
+Effect:draw::draw	1	0	1.00	parser/oracle_effect/imperative.rs	L02	1.5	Notion Thief
+Effect:double::double the value of N	1	0	1.00	parser/oracle_effect/counter.rs	L12	1.5	Unbound Flourishing
+Effect:double::double strike, vigilance, and/or haste	1	0	1.00	parser/oracle_effect/counter.rs	L12	1.5	Path of Mettle
+Effect:distribute::distribute a number of +N/+N counters equal to	1	0	1.00	parser/oracle_effect/	L11	1.5	Vastwood Hydra
+Effect:discard::discard each nonland card revealed this way	1	0	1.00	parser/oracle_effect/imperative.rs	L02	1.5	Fall
+Effect:discard::discard each card with the same name as	1	0	1.00	parser/oracle_effect/imperative.rs	L02	1.5	Minamo's Meddling
+Effect:discard::discard cards equal to the damage	1	0	1.00	parser/oracle_effect/imperative.rs	L02	1.5	Jagged Poppet
+Effect:deal::~ deals damage to target creature equal to	1	0	1.00	parser/oracle_effect/imperative.rs	L02	1.5	Weight of Spires
+Effect:deal::~ deals damage equal to the total mana	1	0	1.00	parser/oracle_effect/imperative.rs	L02	1.5	Nahiri's Wrath
+Effect:deal::~ deals N times N damage to each	1	0	1.00	parser/oracle_effect/imperative.rs	L02	1.5	Crackle with Power
+Effect:deal::{M}, sacrifice a creature: ~ deals damage to	1	0	1.00	parser/oracle_effect/imperative.rs	L02	1.5	Fiery Bombardment
+Effect:deal::if you control N or more artifacts, ~	1	0	1.00	parser/oracle_effect/imperative.rs	L02	1.5	Molten Psyche
+Effect:deal::deal damage to you equal to the total	1	0	1.00	parser/oracle_effect/imperative.rs	L02	1.5	Command the Dreadhorde
+Effect:deal::deal damage to you equal to the number	1	0	1.00	parser/oracle_effect/imperative.rs	L02	1.5	Madcap Experiment
+Effect:deal::deal damage to that player equal to their	1	0	1.00	parser/oracle_effect/imperative.rs	L02	1.5	Angrath, Minotaur Pirate
+Effect:deal::deal damage to that permanent or player equal	1	0	1.00	parser/oracle_effect/imperative.rs	L02	1.5	Heretic's Punishment
+Effect:deal::deal damage to that creature	1	0	1.00	parser/oracle_effect/imperative.rs	L02	1.5	Friendly Fire
+Effect:deal::deal damage to target player or planeswalker equal	1	0	1.00	parser/oracle_effect/imperative.rs	L02	1.5	Deathforge Shaman
+Effect:deal::deal damage to target creature equal to twice	1	0	1.00	parser/oracle_effect/imperative.rs	L02	1.5	Barrel Down Sokenzan
+Effect:deal::deal damage to each opponent equal to the	1	0	1.00	parser/oracle_effect/imperative.rs	L02	1.5	Mjölnir, Storm Hammer
+Effect:deal::deal damage to each creature equal to the	1	0	1.00	parser/oracle_effect/imperative.rs	L02	1.5	Structural Assault
+Effect:deal::deal damage to any target equal to twice	1	0	1.00	parser/oracle_effect/imperative.rs	L02	1.5	Voracious Dragon
+Effect:deal::deal damage equal to the power of that	1	0	1.00	parser/oracle_effect/imperative.rs	L02	1.5	Dragon's Fire
+Effect:deal::deal damage equal to the number of nonland	1	0	1.00	parser/oracle_effect/imperative.rs	L02	1.5	Goblin Charbelcher
+Effect:deal::deal damage equal to the excess to any	1	0	1.00	parser/oracle_effect/imperative.rs	L02	1.5	Toralf, God of Fury
+Effect:deal::deal damage equal to its power divided as	1	0	1.00	parser/oracle_effect/imperative.rs	L02	1.5	Master of the Wild Hunt
+Effect:deal::deal an amount of damage of your choice	1	0	1.00	parser/oracle_effect/imperative.rs	L02	1.5	Volcano Hellion
+Effect:creatures::{M}: creatures your opponents control block this turn	1	0	1.00	parser/oracle_effect/mana.rs	L07	1.5	Brutal Hordechief
+Effect:creatures::until your next turn, creatures can't attack you.	1	0	1.00	parser/oracle_effect/mana.rs	L07	1.5	Chronomantic Escape
+Effect:creatures::if you control N or more artifacts, creatures	1	0	1.00	parser/oracle_effect/mana.rs	L07	1.5	Concussive Bolt
+Effect:creatures::creatures your opponents control with power less than	1	0	1.00	parser/oracle_effect/mana.rs	L07	1.5	Rumbling Ruin
+Effect:creatures::creatures your opponents control attack each combat if	1	0	1.00	parser/oracle_effect/mana.rs	L07	1.5	The Akroan War
+Effect:creatures::creatures that were blocked by that creature this	1	0	1.00	parser/oracle_effect/mana.rs	L07	1.5	Ride Down
+Effect:creatures::creatures target opponent controls attack this turn if	1	0	1.00	parser/oracle_effect/mana.rs	L07	1.5	Imaginary Threats
+Effect:creatures::creatures it was blocking that hadn't become blocked	1	0	1.00	parser/oracle_effect/mana.rs	L07	1.5	Balduvian Warlord
+Effect:creatures::creatures dealt damage this way can't block	1	0	1.00	parser/oracle_effect/mana.rs	L07	1.5	Huatli, Warrior Poet
+Effect:creatures::creatures and lands target opponent controls don't untap	1	0	1.00	parser/oracle_effect/mana.rs	L07	1.5	Exhaustion
+Effect:creature::creature spells you cast this turn can't be	1	0	1.00	parser/oracle_effect/become_copy_except.rs	L14	1.5	Domri, Anarch of Bolas
+Effect:creature,::creature, enchantment, or land card, the player may	1	0	1.00	parser/oracle_effect/	L11	1.5	Gate to the Aether
+Effect:create::fateful hour — if you have N or	1	0	1.00	parser/oracle_effect/imperative.rs	L02	1.5	Gather the Townsfolk
+Effect:create::create a tapped and attacking N/N green dinosaur	1	0	1.00	parser/oracle_effect/imperative.rs	L02	1.5	Ghalta and Mavren
+Effect:create::create a green ooze creature token with "~'s	1	0	1.00	parser/oracle_effect/imperative.rs	L02	1.5	Consuming Blob
+Effect:create::create a copy of the card with the	1	0	1.00	parser/oracle_effect/imperative.rs	L02	1.5	Garth One-Eye
+Effect:create::create a colorless construct artifact creature token named	1	0	1.00	parser/oracle_effect/imperative.rs	L02	1.5	Gemini Engine
+Effect:create::create a black zombie creature token with power	1	0	1.00	parser/oracle_effect/imperative.rs	L02	1.5	Soul Separator
+Effect:create::create a black zombie creature token	1	0	1.00	parser/oracle_effect/imperative.rs	L02	1.5	Ritual of the Returned
+Effect:create::create a black vampire creature token	1	0	1.00	parser/oracle_effect/imperative.rs	L02	1.5	Kalitas, Bloodchief of Ghet
+Effect:create::[−N]: create a white avatar creature token. it	1	0	1.00	parser/oracle_effect/imperative.rs	L02	1.5	Ajani Goldmane
+Effect:count::{M}, {M}, sacrifice a creature: count the colors	1	0	1.00	parser/oracle_effect/token.rs	L18	1.5	Evolving Door
+Effect:count::count the number of permanents you control	1	0	1.00	parser/oracle_effect/token.rs	L18	1.5	Touch of the Eternal
+Effect:count::count the number of cards in your library.	1	0	1.00	parser/oracle_effect/token.rs	L18	1.5	Invincible Hymn
+Effect:count::count the number of +N/+N counters on creatures	1	0	1.00	parser/oracle_effect/token.rs	L18	1.5	Rumbling Ruin
+Effect:choose::{M}: choose a creature card exiled with ~	1	0	1.00	parser/oracle_effect/imperative.rs	L02	1.5	Valki, God of Lies
+Effect:choose::{M}, {M}: choose a creature at random that	1	0	1.00	parser/oracle_effect/imperative.rs	L02	1.5	Metzali, Tower of Triumph
+Effect:choose::{M}, {M}, sacrifice ~ and a legendary artifact:	1	0	1.00	parser/oracle_effect/imperative.rs	L02	1.5	Mount Doom
+Effect:choose::{M}, sacrifice ~: choose up to N face-up	1	0	1.00	parser/oracle_effect/imperative.rs	L02	1.5	Mirror of Fate
+Effect:choose::{M}, sacrifice ~: choose an exiled card an	1	0	1.00	parser/oracle_effect/imperative.rs	L02	1.5	Dauthi Voidwalker
+Effect:choose::you choose which creatures attack this turn	1	0	1.00	parser/oracle_effect/imperative.rs	L02	1.5	Master Warcraft
+Effect:choose::target opponent chooses an artifact card in their	1	0	1.00	parser/oracle_effect/imperative.rs	L02	1.5	Scrounge
+Effect:choose::target opponent chooses a card in your graveyard.	1	0	1.00	parser/oracle_effect/imperative.rs	L02	1.5	Shrouded Lore
+Effect:choose::exile ~: each opponent chooses N cards in	1	0	1.00	parser/oracle_effect/imperative.rs	L02	1.5	Watchers of the Dead
+Effect:choose::choose which creatures block this combat and how	1	0	1.00	parser/oracle_effect/imperative.rs	L02	1.5	Odric, Master Tactician
+Effect:choose::choose up to N creature. destroy the rest	1	0	1.00	parser/oracle_effect/imperative.rs	L02	1.5	Duneblast
+Effect:choose::choose the permanents for each player	1	0	1.00	parser/oracle_effect/imperative.rs	L02	1.5	Mythos of Snapdax
+Effect:choose::choose how those creatures block	1	0	1.00	parser/oracle_effect/imperative.rs	L02	1.5	Brutal Hordechief
+Effect:choose::choose from it a nonland card with mana	1	0	1.00	parser/oracle_effect/imperative.rs	L02	1.5	Distended Mindbender
+Effect:choose::choose creatures tapped this way	1	0	1.00	parser/oracle_effect/imperative.rs	L02	1.5	Suppression Ray
+Effect:choose::choose cards in their hand	1	0	1.00	parser/oracle_effect/imperative.rs	L02	1.5	Worldpurge
+Effect:choose::choose artifact and/or land cards revealed this way	1	0	1.00	parser/oracle_effect/imperative.rs	L02	1.5	Hew the Entwood
+Effect:choose::choose an order for artifacts, creatures, and lands.	1	0	1.00	parser/oracle_effect/imperative.rs	L02	1.5	Rite of Ruin
+Effect:choose::choose an instant or sorcery card exiled this	1	0	1.00	parser/oracle_effect/imperative.rs	L02	1.5	Chandra, Pyromaster
+Effect:choose::choose an artifact or creature card with mana	1	0	1.00	parser/oracle_effect/imperative.rs	L02	1.5	Queen Kayla bin-Kroog
+Effect:choose::choose an artifact or creature card from their	1	0	1.00	parser/oracle_effect/imperative.rs	L02	1.5	Dreams of Steel and Oil
+Effect:choose::choose an artifact card name. search target opponent's	1	0	1.00	parser/oracle_effect/imperative.rs	L02	1.5	Dispossess
+Effect:choose::choose a permanent type. return all cards of	1	0	1.00	parser/oracle_effect/imperative.rs	L02	1.5	Creeping Renaissance
+Effect:choose::choose a nonlegendary creature on the battlefield. target	1	0	1.00	parser/oracle_effect/imperative.rs	L02	1.5	Cytoshape
+Effect:choose::choose a nonlegendary creature card in your graveyard	1	0	1.00	parser/oracle_effect/imperative.rs	L02	1.5	Drana, the Last Bloodchief
+Effect:choose::choose a nonland card with mana value N	1	0	1.00	parser/oracle_effect/imperative.rs	L02	1.5	Venarian Glimmer
+Effect:choose::choose a nonland card in your graveyard	1	0	1.00	parser/oracle_effect/imperative.rs	L02	1.5	O-Kagachi Made Manifest
+Effect:choose::choose a nonland card exiled this way	1	0	1.00	parser/oracle_effect/imperative.rs	L02	1.5	Plargg and Nassari
+Effect:choose::choose a noncreature, nonland card from among them	1	0	1.00	parser/oracle_effect/imperative.rs	L02	1.5	Capricious Hellraiser
+Effect:choose::choose a nonartifact, nonland card name. search target	1	0	1.00	parser/oracle_effect/imperative.rs	L02	1.5	Lost Legacy
+Effect:choose::choose a kind of counter at random that	1	0	1.00	parser/oracle_effect/imperative.rs	L02	1.5	Crystalline Giant
+Effect:choose::choose a creature on the battlefield. any number	1	0	1.00	parser/oracle_effect/imperative.rs	L02	1.5	Polymorphous Rush
+Effect:choose::choose a creature card and/or a land card	1	0	1.00	parser/oracle_effect/imperative.rs	L02	1.5	Green Sun's Twilight
+Effect:choose::choose a card revealed this way	1	0	1.00	parser/oracle_effect/imperative.rs	L02	1.5	Psychotic Episode
+Effect:choose::choose N of their piles at random and	1	0	1.00	parser/oracle_effect/imperative.rs	L02	1.5	Whims of the Fates
+Effect:choose::choose N of the exiled cards and put	1	0	1.00	parser/oracle_effect/imperative.rs	L02	1.5	Dubious Challenge
+Effect:choose::choose N of the exiled cards	1	0	1.00	parser/oracle_effect/imperative.rs	L02	1.5	Thieves' Auction
+Effect:choose::choose N cards in each graveyard	1	0	1.00	parser/oracle_effect/imperative.rs	L02	1.5	The Three Seasons
+Effect:choose::choose N cards from it	1	0	1.00	parser/oracle_effect/imperative.rs	L02	1.5	Gruesome Discovery
+Effect:change::sacrifice ~: you may change the targets of	1	0	1.00	parser/oracle_effect/subject.rs	L13	1.5	Goblin Flectomancer
+Effect:can::{M}, {M}: until end of turn, your opponents	1	0	1.00	parser/oracle_effect/subject.rs	L13	1.5	Detection Tower
+Effect:can::can cast only N more spell	1	0	1.00	parser/oracle_effect/subject.rs	L13	1.5	Irencrag Feat
+Effect:can't::you can't lose the game this turn and	1	0	1.00	parser/oracle_effect/mana.rs	L07	1.5	Angel's Grace
+Effect:can't::target player can't play lands this turn if	1	0	1.00	parser/oracle_effect/mana.rs	L07	1.5	Moonhold
+Effect:can't::sacrifice ~: until your next turn, target player	1	0	1.00	parser/oracle_effect/mana.rs	L07	1.5	Hope of Ghirapur
+Effect:can't::can't have counters put on it	1	0	1.00	parser/oracle_effect/mana.rs	L07	1.5	Suncleanser
+Effect:can't::can't cast spells with the same name as	1	0	1.00	parser/oracle_effect/mana.rs	L07	1.5	Reflector Mage
+Effect:can't::can't cast spells	1	0	1.00	parser/oracle_effect/mana.rs	L07	1.5	Render Silent
+Effect:can't::can't cast additional spells	1	0	1.00	parser/oracle_effect/mana.rs	L07	1.5	Conduit of Worlds
+Effect:block::block an attacking creature of your choice	1	0	1.00	parser/oracle_effect/imperative.rs	L02	1.5	Balduvian Warlord
+Effect:bid::each player may bid life. you start the	1	0	1.00	parser/oracle_effect/	L11	1.5	Pain's Reward
+Effect:become::{M}: until end of turn, target land you	1	0	1.00	parser/oracle_effect/imperative.rs	L02	1.5	Navigator's Compass
+Effect:become::target unblocked attacking creature becomes blocked. / draw	1	0	1.00	parser/oracle_effect/imperative.rs	L02	1.5	Curtain of Light
+Effect:become::[−N]: target creature becomes a treasure artifact with	1	0	1.00	parser/oracle_effect/imperative.rs	L02	1.5	Vraska, Betrayal's Sting
+Effect:attack::attack during its controller's next combat phase if	1	0	1.00	parser/oracle_effect/imperative.rs	L02	1.5	Sizzling Soloist
+Effect:attack::[+N]: up to N target creature an opponent	1	0	1.00	parser/oracle_effect/imperative.rs	L02	1.5	Gideon, Battle-Forged
+Effect:attack::[+N]: until your next turn, up to N	1	0	1.00	parser/oracle_effect/imperative.rs	L02	1.5	Nahiri, the Unforgiving
+Effect:attached_grant_unmodeled_conjunct::must be blocked by an eldrazi if able	1	0	1.00	parser/oracle_static/grammar.rs	L22	1.5	Slayer's Cleaver
+Effect:at::at the beginning of your next first main	1	0	1.00	parser/oracle_util.rs	L17	1.5	Plasm Capture
+Effect:at::at the beginning of the next combat, return	1	0	1.00	parser/oracle_util.rs	L17	1.5	Legion's Initiative
+Effect:at::at the beginning of that player's next end	1	0	1.00	parser/oracle_util.rs	L17	1.5	Faramir, Prince of Ithilien
+Effect:assign::sacrifice a food: until end of turn, target	1	0	1.00	parser/oracle_effect/subject.rs	L13	1.5	Bill the Pony
+Effect:artifacts::artifacts and creatures target opponent controls don't untap	1	0	1.00	parser/oracle_effect/subject.rs	L13	1.5	Icebreaker Kraken
+Effect:any::any other player may pay N life	1	0	1.00	parser/oracle_effect/subject.rs	L13	1.5	Zur's Weirding
+Effect:another::{M}: another target wolf or werewolf you control	1	0	1.00	parser/oracle_effect/token.rs	L18	1.5	Tovolar's Packleader
+Effect:another::another target nonland permanent phases out	1	0	1.00	parser/oracle_effect/token.rs	L18	1.5	The Phasing of Zhalfir
+Effect:another::another target creature blocks it this turn if	1	0	1.00	parser/oracle_effect/token.rs	L18	1.5	Feral Contest
+Effect:and::and you both own and control them, exile	1	0	1.00	parser/oracle_effect/become_copy_except.rs	L14	1.5	Mishra, Claimed by Gix
+Effect:all::all permanents they own into their library	1	0	1.00	parser/oracle_effect/counter.rs	L12	1.5	Sway of the Stars
+Effect:all::all damage that would be dealt this turn	3	0	0.00	parser/oracle_effect/counter.rs	L12	1.5	Gideon's Sacrifice; Kor Dirge; Saving Grace
+Effect:add::{M}: add N mana of any type that	1	0	1.00	parser/oracle_effect/imperative.rs	L02	1.5	Plaza of Harmony
+Effect:add::add {M} for each {M} spent to cast	1	0	1.00	parser/oracle_effect/imperative.rs	L02	1.5	Tundra Fumarole
+Effect:add::add {M} for each N life your opponents	1	0	1.00	parser/oracle_effect/imperative.rs	L02	1.5	Neheb, the Eternal
+Effect:add::add twice that much {M}	1	0	1.00	parser/oracle_effect/imperative.rs	L02	1.5	Fangorn, Tree Shepherd
+Effect:add::add that much {M}	1	0	1.00	parser/oracle_effect/imperative.rs	L02	1.5	Mana Seism
+Effect:add::add N {M}	1	0	1.00	parser/oracle_effect/imperative.rs	L02	1.5	Su-Chi Cave Guard
+Effect:a::a creature dealt damage this way can't block	1	0	1.00	parser/oracle_effect/mana.rs	L07	1.5	Ballista Wielder
+Effect:Unsupported unless clause::you lose N life unless you sacrifice ~	1	0	1.00	parser/oracle_effect/mod.rs	L03	1.5	Withercrown
+Effect:Unsupported unless clause::that creature's controller gains control of ~ unless	1	0	1.00	parser/oracle_effect/mod.rs	L03	1.5	Shuriken
+Effect:Unsupported unless clause::target opponent loses N life unless that player	1	0	1.00	parser/oracle_effect/mod.rs	L03	1.5	Remorseless Punishment
+Effect:Unsupported unless clause::sacrifice ~ unless you remove a counter from	1	0	1.00	parser/oracle_effect/mod.rs	L03	1.5	Chisei, Heart of Oceans
+Effect:Unsupported unless clause::sacrifice ~ unless it attacked this turn	1	0	1.00	parser/oracle_effect/mod.rs	L03	1.5	Instill Furor
+Effect:Unsupported unless clause::return that card to your hand unless target	1	0	1.00	parser/oracle_effect/mod.rs	L03	1.5	Pia's Revolution
+Effect:Unsupported unless clause::it gains "~ can't be blocked" until end	1	0	1.00	parser/oracle_effect/mod.rs	L03	1.5	Ogre Marauder
+Effect:Unsupported unless clause::it deals an additional N damage to that	1	0	1.00	parser/oracle_effect/mod.rs	L03	1.5	Quenchable Fire
+Effect:Unsupported unless clause::for each of those cards, put that card	1	0	1.00	parser/oracle_effect/mod.rs	L03	1.5	Sword-Point Diplomacy
+Effect:Unsupported unless clause::discard a card unless there are N or	1	0	1.00	parser/oracle_effect/mod.rs	L03	1.5	Tainted Indulgence
+Effect:Unsupported unless clause::create a N/N red elemental creature token unless	1	0	1.00	parser/oracle_effect/mod.rs	L03	1.5	Development
+Cost:Remove a +1/+1 counter or a charge counter from a permanent you control::remove a +N/+N counter or a charge counter	1	0	1.00	parser/oracle_casting.rs	L20	1.5	Ion Storm
+Swallow:Duration_ThisTurn::enchant creature / enchanted creature gets +N/+N and	2	0	0.00	parser/oracle_nom/duration.rs	L16	1.0	Curious Obsession; See Red
+Effect:x::N is the mana value of that card	2	0	0.00	parser/oracle_effect/animation.rs	L15	1.0	Prototype Portal; Soul Foundry
+Effect:this::this ability costs {M} less to activate if	2	0	0.00	parser/oracle_effect/imperative.rs	L02	1.0	Kami of Jealous Thirst; Sewer Crocodile
+Effect:static_structure::enchanted creature gets -N/-N, where N is the	2	0	0.00	parser/oracle_dispatch.rs	L05	1.0	Death's Approach; Disturbing Conversion
+Effect:entwine—sacrifice::entwine—sacrifice N lands	2	0	0.00	parser/oracle_effect/	L11	1.0	Betrayal of Flesh; Solar Tide
+Effect:each::each creature you control enters with an additional	2	0	0.00	parser/oracle_effect/imperative.rs	L02	1.0	Combine Guildmage; Zameck Guildmage
+Effect:change::change the text of target spell or permanent	2	0	0.00	parser/oracle_effect/subject.rs	L13	1.0	Glamerdye; Spectral Shift
+Effect:change::change the text of target permanent by replacing	2	0	0.00	parser/oracle_effect/subject.rs	L13	1.0	Mind Bend; Trait Doctoring
+Effect:at::at this turn's next end of combat	2	0	0.00	parser/oracle_util.rs	L17	1.0	Gaze of the Gorgon; Triton Tactics
+Effect:5,::N, or N	2	0	0.00	parser/oracle_effect/	L11	1.0	Kozilek's Unsealing; Sarkhan's Unsealing
+Effect:"::"	2	0	0.00	parser/oracle_effect/	L11	1.0	Can't Stay Away; Tamiyo, Compleated Sage
+Trigger:Whenever enchanted player is dealt damage::whenever enchanted player is dealt damage, they lose	1	1	0.00	parser/oracle_trigger.rs	L10	0.8	Grievous Wound
+Swallow:DynamicQty::on it for each other creature you control.	1	1	0.00	parser/oracle_quantity.rs	L06	0.8	Sheriff of Safe Passage
+Swallow:Duration_ThisTurn::your control this turn and you control a	1	1	0.00	parser/oracle_nom/duration.rs	L16	0.8	Zimone, All-Questioning
+Swallow:Condition_If::control enters, if its power is greater than	1	1	0.00	parser/oracle_nom/condition.rs	L04	0.8	Sharp-Eyed Rookie
+Swallow:Condition_AsLongAs::flash / when this creature enters, counter up	1	1	0.00	parser/oracle_nom/condition.rs	L04	0.8	Tishana's Tidebinder
+ParseWarning:target-fallback::parse_target could not classify 'the blighted creature'	1	1	0.00	parser/oracle_target.rs	L23	0.8	Grub, Notorious Auntie
+ParseWarning:target-fallback::parse_target could not classify 'but the bottom N	1	1	0.00	parser/oracle_target.rs	L23	0.8	Doomsday Excruciator
+Effect:{3}::• hellmasker — {M} — N/N	1	1	0.00	parser/oracle_effect/	L11	0.8	Vincent's Limit Break
+Effect:{1}::• death gigas — {M} — N/N	1	1	0.00	parser/oracle_effect/	L11	0.8	Vincent's Limit Break
+Effect:{0}::• galian beast — {M} — N/N	1	1	0.00	parser/oracle_effect/	L11	0.8	Vincent's Limit Break
+Effect:unknown::during your turn, as long as you haven't	1	1	0.00	parser/oracle_effect/mod.rs	L03	0.8	Elvish Refueler
+Effect:this::this ability costs {M} less to activate, where	1	1	0.00	parser/oracle_effect/imperative.rs	L02	0.8	The Dominion Bracelet
+Effect:target::target land card from your graveyard	1	1	0.00	parser/oracle_effect/counter.rs	L12	0.8	Sandman, Shifting Scoundrel
+Effect:replacement_structure::the first time you would create N or	1	1	0.00	parser/oracle_dispatch.rs	L05	0.8	Moonlit Meditation
+Effect:players::players may play cards they exiled this way,	1	1	0.00	parser/oracle_effect/imperative.rs	L02	0.8	Memory Vessel
+Effect:multi_source_compound_each_power_damage::any number of target enchanted creatures you control	1	1	0.00	parser/oracle_effect/mod.rs	L03	0.8	Graceful Takedown
+Effect:it::it enters with a finality counter on it	1	1	0.00	parser/oracle_effect/become_copy_except.rs	L14	0.8	The Tomb of Aclazotz
+Effect:it's::it's a N/N robot artifact creature with flying	1	1	0.00	parser/oracle_effect/become_copy_except.rs	L14	0.8	Brilliance Unleashed
+Effect:for::for each rat you control	1	1	0.00	parser/oracle_effect/search.rs	L08	0.8	Twisted Sewer-Witch
+Effect:cloak::cloak a card from your hand	1	1	0.00	parser/oracle_effect/imperative.rs	L02	0.8	Vannifar, Evolved Enigma
+Effect:behold::behold a dragon	1	1	0.00	parser/oracle_casting.rs	L20	0.8	Sarkhan, Dragon Ascendant
+Effect:all::all abilities your opponents control	1	1	0.00	parser/oracle_effect/counter.rs	L12	0.8	Glen Elendra's Answer
+Cost:Loose Leaf::loose leaf	1	1	0.00	parser/oracle_casting.rs	L20	0.8	Page, Loose Leaf
+Swallow:DynamicQty::on it for each different mana cost among	1	0	0.00	parser/oracle_quantity.rs	L06	0.5	Embodiment of Agonies
+Swallow:DynamicQty::on it equal to this creature's power and	1	0	0.00	parser/oracle_quantity.rs	L06	0.5	Master Biomancer
+Swallow:DynamicQty::exile cards equal to its power from the	1	0	0.00	parser/oracle_quantity.rs	L06	0.5	Dead Man's Chest
+Swallow:DynamicQty::a card for each aura you control that's	1	0	0.00	parser/oracle_quantity.rs	L06	0.5	Sage's Reverie
+Swallow:DynamicQty::[+N]: venture into the dungeon. / [−N]: look	1	0	0.00	parser/oracle_quantity.rs	L06	0.5	Ellywick Tumblestrum
+Swallow:Duration_ThisTurn::their control this turn, thi	1	0	0.00	parser/oracle_nom/duration.rs	L16	0.5	Tunnel Ignus
+Swallow:Condition_If::~'s power is equal to your devotion to	1	0	0.00	parser/oracle_nom/condition.rs	L04	0.5	Anax, Hardened in the Forge
+Swallow:Condition_If::when barrowin enters, venture into the dungeon. /	1	0	0.00	parser/oracle_nom/condition.rs	L04	0.5	Barrowin of Clan Undurr
+Swallow:Condition_If::their choice. if the play	1	0	0.00	parser/oracle_nom/condition.rs	L04	0.5	Cruel Reality
+Swallow:Condition_If::the battlefield, if it was historic, draw N	1	0	0.00	parser/oracle_nom/condition.rs	L04	0.5	Curator's Ward
+Swallow:Condition_If::target spell if you control more creatures than	1	0	0.00	parser/oracle_nom/condition.rs	L04	0.5	Unified Will
+Swallow:Condition_If::opponent's control, if that player had another land	1	0	0.00	parser/oracle_nom/condition.rs	L04	0.5	Tunnel Ignus
+Swallow:Condition_If::on it if you control a modified creature.	1	0	0.00	parser/oracle_nom/condition.rs	L04	0.5	Heir of the Ancient Fang
+Swallow:Condition_If::on it if you control a creature with	1	0	0.00	parser/oracle_nom/condition.rs	L04	0.5	Frontier Mastodon
+Swallow:Condition_If::becomes tapped, if it's enchanted or equipped, create	1	0	0.00	parser/oracle_nom/condition.rs	L04	0.5	Warchanter Skald
+Swallow:Condition_If::aura enters, if enchanted permanent is tapped, untap	1	0	0.00	parser/oracle_nom/condition.rs	L04	0.5	Volition Reins
+Swallow:Condition_If::aura enters, if enchanted creature has toxic, that	1	0	0.00	parser/oracle_nom/condition.rs	L04	0.5	Maze's Mantle
+Swallow:Condition_AsLongAs::flying / as long as this creature is	1	0	0.00	parser/oracle_nom/condition.rs	L04	0.5	Dearly Departed
+Swallow:Condition_AsLongAs::as long as this creature is untapped, all	1	0	0.00	parser/oracle_nom/condition.rs	L04	0.5	Weathered Bodyguards
+ParseWarning:trigger-subject::trigger subject parse fell back to any 'enchanted	1	0	0.00	parser/oracle.rs	L19	0.5	Psychic Possession
+ParseWarning:target-fallback::parse_target could not classify 'but the bottom card	1	0	0.00	parser/oracle_target.rs	L23	0.5	Nicol Bolas, the Arisen
+ParseWarning:target-fallback::parse_target could not classify 'but that many permanents	1	0	0.00	parser/oracle_target.rs	L23	0.5	Choice of Damnations
+ParseWarning:target-fallback::parse_target could not classify 'any of them that	1	0	0.00	parser/oracle_target.rs	L23	0.5	Blow Your House Down
+Effect:your::your maximum hand size is reduced by N	1	0	0.00	parser/oracle_effect/mana.rs	L07	0.5	Inspired Idea
+Effect:you::you skip your next N turns	1	0	0.00	parser/oracle_effect/conditions.rs	L09	0.5	Eater of Days
+Effect:you::you do the same with the top N	1	0	0.00	parser/oracle_effect/conditions.rs	L09	0.5	Guild Feud
+Effect:x::N is the number of creatures you control	1	0	0.00	parser/oracle_effect/animation.rs	L15	0.5	Lantern Flare
+Effect:x::N is the mana value of the exiled	1	0	0.00	parser/oracle_effect/animation.rs	L15	0.5	Elite Arcanist
+Effect:x::N can't be greater than the amount of	1	0	0.00	parser/oracle_effect/animation.rs	L15	0.5	Shanna, Purifying Blade
+Effect:with::with the same mana value as that spell	1	0	0.00	parser/oracle_effect/search.rs	L08	0.5	Living Breakthrough
+Effect:until::until the beginning of your next upkeep, you	1	0	0.00	parser/oracle_effect/mod.rs	L03	0.5	Grinning Totem
+Effect:unknown::~ is a N/N golem artifact creature as	1	0	0.00	parser/oracle_effect/mod.rs	L03	0.5	Rusted Relic
+Effect:unknown::your opponents can't play land cards from graveyards	1	0	0.00	parser/oracle_effect/mod.rs	L03	0.5	Tomik, Distinguished Advokist
+Effect:unknown::your devotion to each color and each combination	1	0	0.00	parser/oracle_effect/mod.rs	L03	0.5	Altar of the Pantheon
+Effect:unknown::the same is true for landwalk, protection	1	0	0.00	parser/oracle_effect/mod.rs	L03	0.5	Cairn Wanderer
+Effect:unknown::players can't activate planeswalkers' loyalty abilities	1	0	0.00	parser/oracle_effect/mod.rs	L03	0.5	The Immortal Sun
+Effect:unknown::planeswalkers' loyalty abilities you activate cost an additional	1	0	0.00	parser/oracle_effect/mod.rs	L03	0.5	Carth the Lion
+Effect:unknown::permanents entering don't cause abilities of permanents your	1	0	0.00	parser/oracle_effect/mod.rs	L03	0.5	Elesh Norn, Mother of Machines
+Effect:unknown::mana abilities of ~ cost an additional N	1	0	0.00	parser/oracle_effect/mod.rs	L03	0.5	Thran Portal
+Effect:unknown::lethal damage dealt to creatures you control is	1	0	0.00	parser/oracle_effect/mod.rs	L03	0.5	Zilortha, Strength Incarnate
+Effect:unknown::enchanted creature gets an additional +N/+N as long	1	0	0.00	parser/oracle_effect/mod.rs	L03	0.5	Strange Augmentation
+Effect:unknown::each creature card in your starting deck is	1	0	0.00	parser/oracle_effect/mod.rs	L03	0.5	Kaheera, the Orphanguard
+Effect:unknown::bear form — during your turn, ~ is	1	0	0.00	parser/oracle_effect/mod.rs	L03	0.5	Circle of the Moon Druid
+Effect:unknown::aura swap {M}	1	0	0.00	parser/oracle_effect/mod.rs	L03	0.5	Arcanum Wings
+Effect:unknown::as ~ enters, turn all other nontoken creatures	1	0	0.00	parser/oracle_effect/mod.rs	L03	0.5	Ixidron
+Effect:unknown::artifact landcycling {M}	1	0	0.00	parser/oracle_effect/mod.rs	L03	0.5	Sojourner's Companion
+Effect:unattach::unattach enchanted equipment	1	0	0.00	parser/oracle_effect/imperative.rs	L02	0.5	Carry Away
+Effect:two::N +N/+N counters on another target creature	1	0	0.00	parser/oracle_effect/token.rs	L18	0.5	Stand Together
+Effect:twice::[−N]: until end of turn, if N or	1	0	0.00	parser/oracle_effect/conditions.rs	L09	0.5	Kaya, Geist Hunter
+Effect:this::{M}: this turn, each creature you control enters	1	0	0.00	parser/oracle_effect/imperative.rs	L02	0.5	Zameck Guildmage
+Effect:this::{M}, {M}: this turn, each creature you control	1	0	0.00	parser/oracle_effect/imperative.rs	L02	0.5	Combine Guildmage
+Effect:this::this turn	1	0	0.00	parser/oracle_effect/imperative.rs	L02	0.5	Sen Triplets
+Effect:this::this ability triggers only if ~ is on	1	0	0.00	parser/oracle_effect/imperative.rs	L02	0.5	Quakebringer
+Effect:this::this ability costs {M} less to activate for	1	0	0.00	parser/oracle_effect/imperative.rs	L02	0.5	Deepwood Denizen
+Effect:they're::they're black zombies in addition to their other	1	0	0.00	parser/oracle_effect/imperative.rs	L02	0.5	Grimoire of the Dead
+Effect:there::there are N or more other creatures on	1	0	0.00	parser/oracle_effect/	L11	0.5	Deathbringer Regent
+Effect:the::{M}: the next time target creature adapts this	1	0	0.00	parser/oracle_effect/imperative.rs	L02	0.5	Biomancer's Familiar
+Effect:the::{M}: the next N damage that would be	1	0	0.00	parser/oracle_effect/imperative.rs	L02	0.5	Ward of Piety
+Effect:the::the token enters with half that many +N/+N	1	0	0.00	parser/oracle_effect/imperative.rs	L02	0.5	Ochre Jelly
+Effect:the::the tied players repeat this process until the	1	0	0.00	parser/oracle_effect/imperative.rs	L02	0.5	Timesifter
+Effect:the::the next time N or more enchantment creatures	1	0	0.00	parser/oracle_effect/imperative.rs	L02	0.5	Storyweave
+Effect:the::the new targets can't be you or a	1	0	0.00	parser/oracle_effect/imperative.rs	L02	0.5	Chef's Kiss
+Effect:the::the exiled card	1	0	0.00	parser/oracle_effect/imperative.rs	L02	0.5	The Aesir Escape Valhalla
+Effect:that::that shares a creature type with a creature	1	0	0.00	parser/oracle_effect/imperative.rs	L02	0.5	Descendants' Path
+Effect:that::that player guesses whether the card's mana value	1	0	0.00	parser/oracle_effect/imperative.rs	L02	0.5	Master of Predicaments
+Effect:that::that creature enters with an additional +N/+N counter	1	0	0.00	parser/oracle_effect/imperative.rs	L02	0.5	Guildmages' Forum
+Effect:target::target opponent guesses whether a card with that	1	0	0.00	parser/oracle_effect/counter.rs	L12	0.5	Liar's Pendulum
+Effect:static_structure::~'s power and toughness are each equal to	1	0	0.00	parser/oracle_dispatch.rs	L05	0.5	Roiling Horror
+Effect:static_structure::the first activated ability of an artifact you	1	0	0.00	parser/oracle_dispatch.rs	L05	0.5	Tezzeret, Betrayer of Flesh
+Effect:static_structure::loyalty abilities of planeswalkers your opponents control cost	1	0	0.00	parser/oracle_dispatch.rs	L05	0.5	Eidolon of Obstruction
+Effect:static_structure::lands you control are the chosen type in	1	0	0.00	parser/oracle_dispatch.rs	L05	0.5	Realmwright
+Effect:static_structure::if there are exactly N permanents named ~	1	0	0.00	parser/oracle_dispatch.rs	L05	0.5	Brothers Yamazaki
+Effect:static_structure::equipped permanent isn't a planeswalker and is a	1	0	0.00	parser/oracle_dispatch.rs	L05	0.5	Luxior, Giada's Gift
+Effect:static_structure::enchanted player can't activate abilities that aren't mana	1	0	0.00	parser/oracle_dispatch.rs	L05	0.5	Overwhelming Splendor
+Effect:static_structure::enchanted creature is a demon spirit	1	0	0.00	parser/oracle_dispatch.rs	L05	0.5	Oni Possession
+Effect:static_structure::enchanted creature gets an additional +N/+N as long	1	0	0.00	parser/oracle_dispatch.rs	L05	0.5	Taste for Mayhem
+Effect:static_structure::creatures attacking enchanted player have trample	1	0	0.00	parser/oracle_dispatch.rs	L05	0.5	Curse of Hospitality
+Effect:static_structure::all creatures attack enchanted creature's controller each combat	1	0	0.00	parser/oracle_dispatch.rs	L05	0.5	Public Enemy
+Effect:static_structure::activated abilities of artifacts and creatures can't be	1	0	0.00	parser/oracle_dispatch.rs	L05	0.5	Damping Matrix
+Effect:static_structure::abilities your opponents activate that target a merfolk	1	0	0.00	parser/oracle_dispatch.rs	L05	0.5	Kopala, Warden of Waves
+Effect:replacement_structure::nontoken creatures you control enter as a copy	1	0	0.00	parser/oracle_dispatch.rs	L05	0.5	Infinite Reflection
+Effect:replacement_structure::if a card would be put into enchanted	1	0	0.00	parser/oracle_dispatch.rs	L05	0.5	Wheel of Sun and Moon
+Effect:repeat::repeat this process for instant cards with mana	1	0	0.00	parser/oracle_effect/	L11	0.5	Firemind's Foresight
+Effect:repeat::repeat this process for an enchantment and a	1	0	0.00	parser/oracle_effect/	L11	0.5	Invoke Despair
+Effect:redistribute::redistribute any number of players' life totals	1	0	0.00	parser/oracle_effect/	L11	0.5	Reverse the Sands
+Effect:or::or activate planeswalkers' loyalty abilities	1	0	0.00	parser/oracle_effect/mana.rs	L07	0.5	Revel in Silence
+Effect:or::or activate abilities and plays with their hand	1	0	0.00	parser/oracle_effect/mana.rs	L07	0.5	Sen Triplets
+Effect:or::or a creature card with mana value less	1	0	0.00	parser/oracle_effect/mana.rs	L07	0.5	Nissa, Steward of Elements
+Effect:only::only creatures can be enchanted this way	1	0	0.00	parser/oracle_effect/	L11	0.5	Retether
+Effect:nontoken::nontoken permanents with the same name as N	1	0	0.00	parser/oracle_nom/filter.rs	L25	0.5	Chrome Replicator
+Effect:move::{M}: move a counter of each kind not	1	0	0.00	parser/oracle_effect/imperative.rs	L02	0.5	Goldberry, River-Daughter
+Effect:modal-enters-face-up::or is turned face up	1	0	0.00	parser/oracle_replacement.rs	L21	0.5	Aquamorph Entity
+Effect:lands::lands you control enter tapped	1	0	0.00	parser/oracle_effect/mod.rs	L03	0.5	Nahiri's Lithoforming
+Effect:it::it enters tapped	1	0	0.00	parser/oracle_effect/become_copy_except.rs	L14	0.5	Kaldring, the Rimestaff
+Effect:it::if a creature would enter the battlefield under	1	0	0.00	parser/oracle_effect/become_copy_except.rs	L14	0.5	Gather Specimens
+Effect:it's::it's your turn	1	0	0.00	parser/oracle_effect/become_copy_except.rs	L14	0.5	Skyclave Shade
+Effect:isn't::isn't snow	1	0	0.00	parser/oracle_effect/conditions.rs	L09	0.5	Thermal Flux
+Effect:isn't::isn't an equipment	1	0	0.00	parser/oracle_effect/conditions.rs	L09	0.5	Dancing Sword
+Effect:if::if this card is in your graveyard	1	0	0.00	parser/oracle_effect/conditions.rs	L09	0.5	Skyclave Shade
+Effect:he's::he's still a planeswalker	1	0	0.00	parser/oracle_effect/become_copy_except.rs	L14	0.5	Gideon, Champion of Justice
+Effect:graveyards::graveyards	1	0	0.00	parser/oracle_effect/mod.rs	L03	0.5	Worldfire
+Effect:graveyard::graveyard	1	0	0.00	parser/oracle_effect/mana.rs	L07	0.5	Thought Distortion
+Effect:graveyard,::graveyard, and/or outside the game for an instant	1	0	0.00	parser/oracle_effect/	L11	0.5	Invasion of Arcavios
+Effect:give::give that permanent or player another counter of	1	0	0.00	parser/oracle_effect/	L11	0.5	Animation Module
+Effect:four::N cards named ~ from your graveyard	1	0	0.00	parser/oracle_effect/imperative.rs	L02	0.5	Dragon's Approach
+Effect:for::for each nontoken permanent attached to it	1	0	0.00	parser/oracle_effect/search.rs	L08	0.5	Arna Kennerüd, Skycaptain
+Effect:five::N loyalty counters on each other planeswalker you	1	0	0.00	parser/oracle_nom/primitives.rs	L31	0.5	Ajani Unyielding
+Effect:fateseal::fateseal N	1	0	0.00	parser/oracle_effect/	L11	0.5	Mesmeric Sliver
+Effect:empty	1	0	0.00	parser/oracle_effect/lower.rs	L27	0.5	Evolving Adaptive
+Effect:effect_structure::~ isn't legendary if it's a token	1	0	0.00	parser/oracle_dispatch.rs	L05	0.5	Aeve, Progenitor Ooze
+Effect:effect_structure::you may activate the loyalty abilities of ~	1	0	0.00	parser/oracle_dispatch.rs	L05	0.5	Urza, Planeswalker
+Effect:effect_structure::you may activate the loyalty abilities of planeswalkers	1	0	0.00	parser/oracle_dispatch.rs	L05	0.5	Oath of Teferi
+Effect:effect_structure::if a land is tapped for N or	1	0	0.00	parser/oracle_dispatch.rs	L05	0.5	Damping Sphere
+Effect:effect_structure::each opponent can't venture into the dungeon more	1	0	0.00	parser/oracle_dispatch.rs	L05	0.5	Keen-Eared Sentry
+Effect:effect_structure::all instances of color words in the text	1	0	0.00	parser/oracle_dispatch.rs	L05	0.5	Swirl the Mists
+Effect:effect_structure::all damage is dealt as though its source	1	0	0.00	parser/oracle_dispatch.rs	L05	0.5	Everlasting Torment
+Effect:effect_structure::all cards that aren't on the battlefield, spells,	1	0	0.00	parser/oracle_dispatch.rs	L05	0.5	Painter's Servant
+Effect:each::each suspended card	1	0	0.00	parser/oracle_effect/imperative.rs	L02	0.5	Dust of Moments
+Effect:each::each other creature you control that shares a	1	0	0.00	parser/oracle_effect/imperative.rs	L02	0.5	Holy Frazzle-Cannon
+Effect:during::during your next turn	1	0	0.00	parser/oracle_effect/	L11	0.5	Galvanic Relay
+Effect:during::during your main phase, enchanted creature gains lifelink	1	0	0.00	parser/oracle_effect/	L11	0.5	Sentinel's Mark
+Effect:do::if N is N or more, do all	1	0	0.00	parser/oracle_effect/mod.rs	L03	0.5	Multiple Choice
+Effect:creature,::creature, or land card	1	0	0.00	parser/oracle_effect/	L11	0.5	Arbiter of the Ideal
+Effect:change::{M}: you may change arni's base power to	1	0	0.00	parser/oracle_effect/subject.rs	L13	0.5	Arni Brokenbrow
+Effect:change::you may change any targets of target arcane	1	0	0.00	parser/oracle_effect/subject.rs	L13	0.5	Sideswipe
+Effect:change::change the target to enchanted creature if able	1	0	0.00	parser/oracle_effect/subject.rs	L13	0.5	Captured by the Consulate
+Effect:change::change the base power and toughness of target	1	0	0.00	parser/oracle_effect/subject.rs	L13	0.5	Exuberant Wolfbear
+Effect:an::an opponent guesses whether the top card of	1	0	0.00	parser/oracle_effect/search.rs	L08	0.5	Gollum, Scheming Guide
+Effect:all::{M}: all damage that would be dealt to	1	0	0.00	parser/oracle_effect/counter.rs	L12	0.5	Oracle's Attendants
+Effect:all::{M}: all combat damage that would be dealt	1	0	0.00	parser/oracle_effect/counter.rs	L12	0.5	Kjeldoran Royal Guard
+Effect:all::all tokens that player controls with the same	1	0	0.00	parser/oracle_effect/counter.rs	L12	0.5	Legions to Ashes
+Effect:all::all other cards from graveyards with the same	1	0	0.00	parser/oracle_effect/counter.rs	L12	0.5	Moratorium Stone
+Effect:all::all damage that would be dealt to creatures	1	0	0.00	parser/oracle_effect/counter.rs	L12	0.5	Ascent of the Worthy
+Effect:all::all creatures and planeswalkers with mana value less	1	0	0.00	parser/oracle_effect/counter.rs	L12	0.5	Sphere of Annihilation
+Effect:all::all creature cards in graveyards	1	0	0.00	parser/oracle_effect/counter.rs	L12	0.5	Soulquake
+Effect:all::all creature and planeswalker cards with mana value	1	0	0.00	parser/oracle_effect/counter.rs	L12	0.5	Shadows' Verdict
+Effect:add::add mana equal to enchanted permanent's mana cost	1	0	0.00	parser/oracle_effect/imperative.rs	L02	0.5	Elemental Resonance
+Effect:activated::activated abilities of that permanent can't be activated	1	0	0.00	parser/oracle_static/dispatch.rs	L24	0.5	Trickbind
+Effect:activate::activate the loyalty abilities of planeswalkers you control	1	0	0.00	parser/oracle.rs	L19	0.5	Urza Assembles the Titans
+Effect:activate::activate loyalty abilities of ~ twice this turn	1	0	0.00	parser/oracle.rs	L19	0.5	Kaito, Dancing Shadow
+Effect:a::a planeswalker of their choice	1	0	0.00	parser/oracle_effect/mana.rs	L07	0.5	To the Slaughter
+Effect:a::a nonartifact creature of their choice	1	0	0.00	parser/oracle_effect/mana.rs	L07	0.5	Perilous Predicament
+Effect:a::a land of their choice	1	0	0.00	parser/oracle_effect/mana.rs	L07	0.5	Structural Collapse
+Effect:a::a demigod, or a legendary enchantment	1	0	0.00	parser/oracle_effect/mana.rs	L07	0.5	Altar of the Pantheon
+Effect:3/3::N/N elephant with trample	1	0	0.00	parser/oracle_nom/primitives.rs	L31	0.5	Wild Shape
+Effect:3/1::N/N human warrior with trample and haste	1	0	0.00	parser/oracle_effect/	L11	0.5	Outlaws' Merriment
+Effect:2/2::N/N white fox with vigilance	1	0	0.00	parser/oracle_replacement.rs	L21	0.5	Genku, Future Shaper
+Effect:2/1::N/N human cleric with lifelink and haste	1	0	0.00	parser/oracle_effect/	L11	0.5	Outlaws' Merriment
+Effect:1/5::N/N spider with reach	1	0	0.00	parser/oracle_replacement.rs	L21	0.5	Wild Shape
+Effect:1/3::N/N turtle with hexproof	1	0	0.00	parser/oracle_effect/	L11	0.5	Wild Shape
+Effect:1/2::N/N blue moonfolk with flying	1	0	0.00	parser/oracle_effect/	L11	0.5	Genku, Future Shaper
+Effect:1/1::N/N black rat with lifelink	1	0	0.00	parser/oracle_static/grammar.rs	L22	0.5	Genku, Future Shaper
+Cost:rounded up::rounded up	1	0	0.00	parser/oracle_casting.rs	L20	0.5	Murderous Betrayal
+Cost:or planeswalker you control::or planeswalker you control	1	0	0.00	parser/oracle_casting.rs	L20	0.5	Soul Diviner
+Cost:land::land	1	0	0.00	parser/oracle_casting.rs	L20	0.5	Soul Diviner
+Cost:creature::creature	1	0	0.00	parser/oracle_casting.rs	L20	0.5	Soul Diviner
+Cost:Zephyr Mage::zephyr mage	1	0	0.00	parser/oracle_casting.rs	L20	0.5	Linessa, Zephyr Mage
+Cost:Samite Guardian::samite guardian	1	0	0.00	parser/oracle_casting.rs	L20	0.5	Oriss, Samite Guardian
+Cost:Heir to Blackblade::heir to blackblade	1	0	0.00	parser/oracle_casting.rs	L20	0.5	Korlash, Heir to Blackblade
+Cost:Fist of Krosa::fist of krosa	1	0	0.00	parser/oracle_casting.rs	L20	0.5	Baru, Fist of Krosa
+Cost:Embermage::embermage	1	0	0.00	parser/oracle_casting.rs	L20	0.5	Skoa, Embermage
