@@ -1037,6 +1037,31 @@ fn empty_state() -> GameState {
     GameState::new_two_player(9)
 }
 
+/// R4: read the SHARED event object's LIVE power (`EventSource` scope ⇒
+/// `reads_event_live`, CR 608.2h current-information read).
+fn power_event() -> QuantityRef {
+    QuantityRef::Power {
+        scope: ObjectScope::EventSource,
+    }
+}
+/// R4: write the SHARED event object (`TriggeringSource` ⇒ `writes_event_object`):
+/// +1/+1 counters.
+fn put_counter_on_event(count: QuantityExpr) -> Effect {
+    Effect::PutCounter {
+        counter_type: CounterType::Plus1Plus1,
+        count,
+        target: TargetFilter::TriggeringSource,
+    }
+}
+/// R4: a same-event firing event that carries NO object — `extract_source_from_event`
+/// returns `None` (CR: `Phase` has no event object), so `group_is_order_independent`
+/// threads `event_object_present = false`.
+fn shared_phase_event() -> Option<GameEvent> {
+    Some(GameEvent::PhaseChanged {
+        phase: crate::types::phase::Phase::End,
+    })
+}
+
 /// N-A: two Nested Shamblers (Token{count: Power{Source}}) co-departing in one
 /// SBA batch ⇒ their Source-power reads are LKI-frozen ⇒ NO OrderTriggers prompt.
 /// (The frozen 3+1 token counts are a quantity-resolution concern pinned by
@@ -1940,6 +1965,101 @@ fn high1_same_event_member_bound_prompts() {
     assert!(
         group_is_order_independent(&state, &pos_same_source, false),
         "HIGH-1 POS-b: all_same_source member-bound ⇒ shared storage ⇒ auto"
+    );
+}
+
+/// R4 (maintainer #5072 review): the SAME-EVENT event-object read/write discriminator
+/// AT THE CALLER LEVEL. `group_is_order_independent` derives `event_object_present`
+/// from the pending trigger's firing event (`extract_source_from_event`, triggers.rs)
+/// and threads it into the GroupStructure — the predicate-level
+/// `r4_same_event_event_object_feed_conjunct` (ability_rw) pins `profiles_conflict`
+/// but NOT this caller threading. A future caller that mis-threaded
+/// `event_object_present` (or dropped the same-event structure) could auto-order the
+/// R4 shape while the predicate test stays green — the hot-path seam this pins.
+///
+/// The feed: two DISTINCT sources fire on ONE shared ETB event (object 99); each
+/// identical resolution READS that creature's LIVE power (`Power{EventSource}` ⇒
+/// `reads_event_live`, CR 608.2h) and WRITES it (`PutCounter{TriggeringSource}` ⇒
+/// `writes_event_object`), so a sibling's write feeds the other's live read ⇒
+/// order-observable ⇒ PROMPT. The feed is `source_independent`, so it exercises BOTH
+/// edits: without the `:992` fast-path exclusion it would auto-order at the T1
+/// disjunct; without the discriminator it falls through every row to the final
+/// `return false` (`feeds()` is blind to the KindSet-less live read) ⇒ AUTO (RED).
+///
+/// Guards prove the discriminator is not a blanket same-event prompt: read-only ⇒ auto
+/// (needs the write), write-only ⇒ auto (needs the read), no-event-object ⇒ auto (the
+/// `event_object_present` thread — the identical feed prompts WITH an event object and
+/// autos WITHOUT), all_same_source ⇒ auto (identical f over one shared object).
+#[test]
+fn r4_same_event_event_object_prompts_at_caller() {
+    let state = empty_state();
+    let feed = || ra(put_counter_on_event(qref(power_event())));
+    let ev = shared_etb_event();
+
+    // NEG (the fix): distinct sources 10/11, shared event object 99, live read × event-
+    // object write ⇒ PROMPT (caller threads event_object_present = true).
+    let neg = vec![
+        ctx(10, feed(), None, ev.clone(), None),
+        ctx(11, feed(), None, ev.clone(), None),
+    ];
+    assert!(
+        !group_is_order_independent(&state, &neg, false),
+        "R4 NEG: same-event distinct-source event-object read×write feed ⇒ prompt"
+    );
+
+    // Guard read-only — a live power read that WRITES player life, not the event object
+    // (no `writes_event_object`) ⇒ AUTO. Proves the conjunction needs both endpoints.
+    let read_only = || {
+        ra(Effect::GainLife {
+            amount: qref(power_event()),
+            player: TargetFilter::Controller,
+        })
+    };
+    let pos_read = vec![
+        ctx(10, read_only(), None, ev.clone(), None),
+        ctx(11, read_only(), None, ev.clone(), None),
+    ];
+    assert!(
+        group_is_order_independent(&state, &pos_read, false),
+        "R4 guard read-only: event-live read with NO event-object write ⇒ auto"
+    );
+
+    // Guard write-only — a fixed-count event-object write with NO live read ⇒ AUTO
+    // (an unread write is applied identically by every member, order-invariant).
+    let write_only = || ra(put_counter_on_event(qfix(1)));
+    let pos_write = vec![
+        ctx(10, write_only(), None, ev.clone(), None),
+        ctx(11, write_only(), None, ev.clone(), None),
+    ];
+    assert!(
+        group_is_order_independent(&state, &pos_write, false),
+        "R4 guard write-only: event-object write with NO live read ⇒ auto"
+    );
+
+    // Guard no-event-object — the SAME feed on a Phase event (`extract_source_from_
+    // event` → None ⇒ `event_object_present` threads FALSE) ⇒ AUTO. Directly pins the
+    // caller threading: the identical ability prompts WITH an event object (NEG), autos
+    // WITHOUT (here). A caller that always-threaded present=true would wrongly prompt.
+    let ph = shared_phase_event();
+    let pos_no_event = vec![
+        ctx(10, feed(), None, ph.clone(), None),
+        ctx(11, feed(), None, ph, None),
+    ];
+    assert!(
+        group_is_order_independent(&state, &pos_no_event, false),
+        "R4 guard no-event-object: Phase event ⇒ event_object_present false ⇒ auto"
+    );
+
+    // Guard all_same_source — the feed on ONE shared source (10) ⇒ identical f over one
+    // shared event object (deterministic accumulation) ⇒ AUTO. Proves the discriminator
+    // only refuses DISTINCT-source groups.
+    let pos_same_source = vec![
+        ctx(10, feed(), None, ev.clone(), None),
+        ctx(10, feed(), None, ev, None),
+    ];
+    assert!(
+        group_is_order_independent(&state, &pos_same_source, false),
+        "R4 guard all_same_source: shared source ⇒ f_A = f_B ⇒ auto"
     );
 }
 
