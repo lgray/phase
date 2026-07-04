@@ -753,6 +753,17 @@ impl RwProfile {
         self.legacy_batch_prompt
     }
 
+    /// CR 603.10a: true iff the resolution reads per-member-bound storage
+    /// (`member_bound_target_filter` carriers). Test-only read accessor for the
+    /// parity sweep's same-event over-prompt CLASS classifier (mirrors the
+    /// discriminator gate `profiles_conflict`: `if s.same_event && p.reads_member_bound`).
+    /// Production reads the field directly in `profiles_conflict`, so the accessor
+    /// exists only for the cross-module `ordering_parity_tests`.
+    #[cfg(test)]
+    pub(crate) fn reads_member_bound(&self) -> bool {
+        self.reads_member_bound
+    }
+
     /// Drop all writes (deferred-body descent, CR 603.7: writes happen
     /// post-window, so reads descend but writes are not counted).
     fn drop_writes(&mut self) {
@@ -956,9 +967,26 @@ pub(crate) fn profiles_conflict(p: &RwProfile, s: &GroupStructure) -> bool {
         return true;
     }
     // T1 identical-function fast paths (§1.2), sound modulo the source-actor
-    // residual.
-    if s.same_event && (s.all_same_source || p.source_independent()) {
+    // residual. The `source_independent` disjunct additionally requires
+    // `!reads_member_bound`: a same-event group of DISTINCT sources whose identical
+    // resolution reads per-source bound storage (CR 603.10a look-back — TrackedSet /
+    // ExiledBySource / ChosenCard, `member_bound_target_filter`) is NOT one shared
+    // f(state) — member A reads A's storage, member B reads B's — so the identical-
+    // function commutation proof breaks and the group must prompt (discriminator
+    // below). `all_same_source` stays exempt: one shared source ⇒ one shared storage
+    // ⇒ f_A = f_B literally, order-independent.
+    if s.same_event && (s.all_same_source || (p.source_independent() && !p.reads_member_bound)) {
         return false;
+    }
+    // CR 603.3b + CR 603.10a: the same-event member-bound discriminator (the batch
+    // path's `!reads_member_bound` conjunct, mirrored for same-event depth). A
+    // same-event group that reaches here with per-source bound storage has distinct
+    // sources (`all_same_source` was auto-ordered above) and cannot prove
+    // commutation — prompt fail-closed. Guarded by `s.same_event`; the batch path
+    // handles member-bound via its own conjunct plus the freeze/feed rows, so batch
+    // ordering decisions are byte-inert.
+    if s.same_event && p.reads_member_bound {
+        return true;
     }
     if s.all_same_source && !p.reads_event_live {
         return false;

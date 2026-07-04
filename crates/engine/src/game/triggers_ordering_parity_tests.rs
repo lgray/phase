@@ -215,6 +215,38 @@ const BATCH_GENUINE_ROWS: &[&str] = &[
     "day of the dragons",
 ];
 
+/// R3 HIGH-1 (PR #5072 review): SAME-EVENT GENUINE member-bound order-dependence —
+/// the REAL under-prompts the maintainer review caught. The base engine auto-ordered
+/// ALL same-event groups unconditionally (CR 603.3b DEFERRED); the same-event member-
+/// bound discriminator (`profiles_conflict`: `if s.same_event && p.reads_member_bound`)
+/// now correctly PROMPTS them. Kept SEPARATE from the conservative class-count below
+/// (rider-3 §7 honesty), analogous to `BATCH_GENUINE_ROWS`. Every member reads
+/// per-source bound storage AND routes a SHARED object into it, so the identical-
+/// function commutation proof genuinely fails (not merely conservatively).
+const SAME_EVENT_MEMBER_BOUND_GENUINE: &[&str] = &[
+    // Imprint-contention (CR 603.10a look-back): two copies race to imprint the ONE
+    // shared triggering creature; only the first exiles it (CR 701.13), and which
+    // source's per-source pile holds it is observable via each source's later
+    // "return each other card exiled with this".
+    "mimic vat",
+    "mirror of life trapping",
+    // Hand-swap re-capture (CR 603.3b): each copy exiles the shared hand into its own
+    // per-source pile then returns its prior pile — copy A feeds copy B, so the
+    // hand/pile partition is order-dependent.
+    "moonring mirror",
+    "duplicity",
+    // Shared-pool consumption under per-copy-divergent chosen card types (CR 701.21):
+    // an overlap permanent one copy sacrifices denies the other a target. Genuine on
+    // rules grounds; its `reads_member_bound` bit comes from a non-obvious AST carrier
+    // (the obvious `IsChosenCreatureType` is classified non-member-bound). See §7.
+    "world queller",
+    // blood tyrant: genuine via a DIFFERENT axis — a `PutCounter{SelfRef}` self-write
+    // whose per-copy counter split is order-observable when a player hits 0 life
+    // between resolutions (CR 704.5a / CR 800.4a). NON-source-independent; caught
+    // incidentally by the member-bound discriminator (its `TrackedSetSize` read).
+    "blood tyrant",
+];
+
 /// The census of a printed card's source (core types + subtypes + non-token).
 fn face_census(face: &CardFace) -> SourceCensus {
     let mut tags: Vec<String> = Vec::new();
@@ -436,6 +468,12 @@ fn ordering_parity_sweep() {
     let mut cat1_hit: BTreeSet<String> = BTreeSet::new();
     let mut over_prompt_hit: BTreeSet<String> = BTreeSet::new();
     let mut batch_genuine_hit: BTreeSet<String> = BTreeSet::new();
+    // R3 HIGH-1: same-event member-bound genuine hits (completeness-asserted like
+    // BATCH_GENUINE_ROWS) + the conservative class-count's derived membership
+    // (BTreeSet ⇒ the eprintln evidence emits sorted, so it's a stable artifact the
+    // rebased head can regenerate — rider-1).
+    let mut se_mb_genuine_hit: BTreeSet<String> = BTreeSet::new();
+    let mut se_member_bound_class: BTreeSet<String> = BTreeSet::new();
 
     // Non-vacuity floors (full-DB; the committed fixture is a subset).
     let mut floor_batch_obs = 0usize;
@@ -514,12 +552,35 @@ fn ordering_parity_sweep() {
                 compared += 1;
                 if !decision_new {
                     // A same-event diff (auto -> prompt): a proven category-(1)
-                    // genuine flip, or a documented-conservative over-prompt (this
-                    // arm is inherently over-prompt-direction — decision_old == auto).
+                    // genuine flip, a same-event member-bound flip (genuine sub-set,
+                    // or the conservative member-bound over-prompt CLASS), or a
+                    // documented-conservative over-prompt. This arm is inherently
+                    // over-prompt-direction — decision_old == auto (base engine
+                    // auto-ordered ALL same-event unconditionally), so it can NEVER
+                    // flag an under-prompt (rider-2 safety).
                     if CATEGORY_1_ROWS.contains(&name.as_str()) {
                         cat1_hit.insert(name.clone());
+                    } else if SAME_EVENT_MEMBER_BOUND_GENUINE.contains(&name.as_str()) {
+                        // Checked BEFORE the class-count so a genuine flip is never
+                        // mislabeled conservative (rider-3 honesty).
+                        se_mb_genuine_hit.insert(name.clone());
                     } else if DOCUMENTED_OVER_PROMPT.contains(&name.as_str()) {
                         over_prompt_hit.insert(name.clone());
+                    } else if profile.reads_member_bound() {
+                        // R3 HIGH-1: the same-event member-bound over-prompt CLASS.
+                        // Predicate-keyed (mirrors the discriminator's own gate
+                        // `s.same_event && p.reads_member_bound` exactly — one
+                        // predicate, two consumers), membership DERIVED not enumerated
+                        // (rider-1: corpus-churn-robust — a 48-name allowlist would
+                        // break on every regen). CONSERVATIVE by construction: an
+                        // identical-member group whose resolution reads per-source
+                        // bound storage cannot be PROVEN to commute, so it prompts
+                        // fail-closed. Most members are order-immaterial (disjoint
+                        // per-source referents, same controller optimizes both); the
+                        // genuinely order-dependent members are carved out above. The
+                        // sorted membership is emitted below as the §7 evidence
+                        // artifact.
+                        se_member_bound_class.insert(name.clone());
                     } else {
                         unexplained.push(format!(
                             "SAME-EVENT auto->prompt on '{name}' (not a category-(1) row)"
@@ -600,16 +661,28 @@ fn ordering_parity_sweep() {
 
     eprintln!(
         "ordering_parity_sweep: full_db={full_db} swept={swept} compared={compared} \
-         unexplained={} cat1_hit={:?} over_prompt_hit={} batch_genuine_hit={}",
+         unexplained={} cat1_hit={:?} over_prompt_hit={} batch_genuine_hit={} \
+         se_mb_genuine={:?} se_member_bound_class={}",
         unexplained.len(),
         cat1_hit,
         over_prompt_hit.len(),
-        batch_genuine_hit.len()
+        batch_genuine_hit.len(),
+        se_mb_genuine_hit,
+        se_member_bound_class.len()
     );
     eprintln!(
         "floors: batch_obs={floor_batch_obs} \
          hadcounters_batch_self={floor_hadcounters_batch_self} \
          retained_prompt={floor_retained_prompt} t1_source_indep={floor_t1_source_indep}"
+    );
+    // R3 HIGH-1 (rider-1): mechanically-emitted DERIVED membership of the same-event
+    // member-bound over-prompt CLASS — the §7 / handoff evidence artifact. Sorted
+    // (BTreeSet), so it is a stable diff the rebased head regenerates. Enumeration
+    // lives HERE (evidence), never in the code allowlist.
+    eprintln!(
+        "se_member_bound_class members ({}): {:?}",
+        se_member_bound_class.len(),
+        se_member_bound_class
     );
 
     assert!(
@@ -655,6 +728,12 @@ fn ordering_parity_sweep() {
         );
         // t1_source_indep: measured 2871 @ b1b3c873e; floor = ⌊2871·0.95⌋.
         // Deterministic tripwire for the `source_independent` predicate (M1 → 0).
+        // R3 HIGH-1: measured drops to 2830 (−40) — the 40 source-INDEPENDENT members
+        // of the same-event member-bound over-prompt CLASS now correctly PROMPT
+        // (discriminator) instead of auto-ordering, so they no longer increment this
+        // auto counter. The floor is UNCHANGED (2830 > 2727, still passes) — this is
+        // an accounted movement, NOT a blanket bump (rider-4); the moved population is
+        // exactly the source-independent slice of `se_member_bound_class`.
         assert!(
             floor_t1_source_indep >= 2727,
             "T1 source-independent auto floor: {floor_t1_source_indep} < 2727"
@@ -676,6 +755,30 @@ fn ordering_parity_sweep() {
         assert_eq!(
             batch_genuine_hit, expected_batch_genuine,
             "BATCH_GENUINE_ROWS stale/unhit entries"
+        );
+        // R3 HIGH-1: the 6 same-event member-bound GENUINE flips (5 member-bound +
+        // blood tyrant). Exact-set like BATCH_GENUINE_ROWS — a genuine card dropping
+        // out (parse/corpus drift) OR a new genuine flip appearing forces the §7
+        // honesty bookkeeping to update rather than silently landing in the
+        // conservative class-count.
+        let expected_se_mb_genuine: BTreeSet<String> = SAME_EVENT_MEMBER_BOUND_GENUINE
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        assert_eq!(
+            se_mb_genuine_hit, expected_se_mb_genuine,
+            "SAME_EVENT_MEMBER_BOUND_GENUINE stale/unhit entries"
+        );
+        // se_member_bound_class: measured 42 @ corpus bce9695e5; floor = measured −
+        // ~15% churn tolerance (`>=`, corpus-churn-robust per rider-1 — the class is
+        // predicate-keyed so its membership churns with the corpus). NON-vacuity /
+        // mutation tripwire: deleting the discriminator row (`s.same_event &&
+        // p.reads_member_bound`) makes every member auto-order ⇒ this count collapses
+        // to 0 ⇒ floor trips. Guards the HIGH-1 fix itself against silent regression.
+        assert!(
+            se_member_bound_class.len() >= 35,
+            "same-event member-bound over-prompt class floor: {} < 35",
+            se_member_bound_class.len()
         );
         // cat-1 exact-hit: the 6 measured same-event flips. Your Inescapable Doom is
         // expected-UNHIT (its counter feed parses to Any so the sweep never forms its
@@ -1680,6 +1783,68 @@ fn b2_dotd_member_bound_pin() {
     assert!(
         !group_is_order_independent(&state, &neg, false),
         "B-2 NEG: DotD TrackedSet return ⇒ member-bound ⇒ T1 refused ⇒ prompt"
+    );
+}
+
+/// R3 HIGH-1 (maintainer #5072 review): the SAME-EVENT member-bound discriminator.
+/// The batch path refuses `reads_member_bound` (b2 above); this pins the mirrored
+/// refusal at same-event depth. A same-event group of DISTINCT sources whose
+/// identical `source_independent` resolution reads per-source bound storage
+/// (`ChangeZone{TrackedSet → Battlefield}`, CR 603.10a look-back) is NOT one shared
+/// f(state) — source 10 reads set(10), source 11 reads set(11) — so CR 603.3b
+/// ordering is observable ⇒ PROMPT.
+///
+/// Revert-fail (both edits independently load-bearing): (1) restoring the bare
+/// `p.source_independent()` disjunct at `profiles_conflict`'s same-event fast path
+/// takes the member-bound group down the fast path ⇒ AUTO (RED); (2) deleting the
+/// `if s.same_event && p.reads_member_bound { return true }` discriminator lets it
+/// fall through to the feed rows, which check read/write KIND overlap not per-source
+/// storage (the TrackedSet return writes membership with no matching read) ⇒ AUTO
+/// (RED). Before this PR's same-event predicate the base engine auto-ordered ALL
+/// same-event groups unconditionally, so this closes a hole in THIS PR's gate.
+#[test]
+fn high1_same_event_member_bound_prompts() {
+    let state = empty_state();
+    let member_bound = || {
+        ra(change_zone_return(TargetFilter::TrackedSet {
+            id: crate::types::identifiers::TrackedSetId(0),
+        }))
+    };
+    let ev = shared_etb_event();
+
+    // NEG (the fix): same event (object 99), DISTINCT sources 10/11, member-bound
+    // source-independent return ⇒ must PROMPT.
+    let neg = vec![
+        ctx(10, member_bound(), None, ev.clone(), None),
+        ctx(11, member_bound(), None, ev.clone(), None),
+    ];
+    assert!(
+        !group_is_order_independent(&state, &neg, false),
+        "HIGH-1 NEG: same-event distinct-source member-bound ⇒ f_A≠f_B ⇒ prompt"
+    );
+
+    // POS-a (scope guard): a same-event source-independent NON-member-bound pair
+    // (gain 1 life) stays AUTO — the discriminator is scoped to member-bound, not a
+    // blanket same-event prompt.
+    let pos_unbound = vec![
+        ctx(10, ra(gain_life_fixed()), None, ev.clone(), None),
+        ctx(11, ra(gain_life_fixed()), None, ev.clone(), None),
+    ];
+    assert!(
+        group_is_order_independent(&state, &pos_unbound, false),
+        "HIGH-1 POS-a: same-event source-independent non-member-bound ⇒ auto"
+    );
+
+    // POS-b (all_same_source guard): the SAME member-bound ability on ONE shared
+    // source (10) is one shared storage ⇒ f_A = f_B literally ⇒ AUTO. Proves the
+    // discriminator only refuses distinct-source member-bound groups.
+    let pos_same_source = vec![
+        ctx(10, member_bound(), None, ev.clone(), None),
+        ctx(10, member_bound(), None, ev, None),
+    ];
+    assert!(
+        group_is_order_independent(&state, &pos_same_source, false),
+        "HIGH-1 POS-b: all_same_source member-bound ⇒ shared storage ⇒ auto"
     );
 }
 
