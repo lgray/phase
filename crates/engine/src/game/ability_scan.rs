@@ -82,10 +82,12 @@
 //! `profiles_conflict`), which answers "which kinds of state does the ability READ
 //! and WRITE, at what scope" — the precise read/write predicate those paths require
 //! (PR-6.25 §3 C0(ii)). The event-context and sibling-mutable read classifiers here
-//! are now consumed ONLY by the gated growing-cascade C2 distinct-event term
-//! (`group_is_order_independent`, gated on `loop_detection.is_on()`), where a
-//! conservative verdict means a prompt — fail-safe when the detector is OFF and a
-//! safe over-reject when ON. The projected-resource classifier (question 3) and the
+//! are now consumed ONLY by the C2 distinct-event term (`group_is_order_independent`
+//! / `trigger_events_match_for_ordering`), ungated from loop detection (adopted from
+//! #5084) and conjoined with `!batch_conflict` — so a coarse C2-clean verdict may
+//! auto-order a distinct-event group only when the precise `ability_rw` profiler also
+//! agrees it is conflict-clean; a conservative verdict here means a prompt (safe
+//! over-reject). The projected-resource classifier (question 3) and the
 //! resolution-time choice classifier (question 4) are unchanged. See `ability_rw.rs`
 //! for the conflict model and its CR 603.3b commutation argument.
 

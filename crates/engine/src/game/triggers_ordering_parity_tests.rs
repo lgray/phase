@@ -1086,7 +1086,7 @@ fn n_a_shambler_co_departure_auto_orders() {
         ),
     ];
     assert!(
-        group_is_order_independent(&state, &group, false),
+        group_is_order_independent(&state, &group),
         "co-departing Shamblers read frozen LKI power ⇒ must auto-order (no prompt)"
     );
 }
@@ -1107,7 +1107,7 @@ fn n_b_frozen_vs_live_discriminator() {
         ctx(11, ability(), None, self_departure(11, &[10]), None),
     ];
     assert!(
-        group_is_order_independent(&state, &batch, false),
+        group_is_order_independent(&state, &batch),
         "co-departure: frozen Source read ⇒ auto"
     );
 
@@ -1117,7 +1117,7 @@ fn n_b_frozen_vs_live_discriminator() {
         ctx(11, ability(), None, ev, None),
     ];
     assert!(
-        !group_is_order_independent(&state, &same_event, false),
+        !group_is_order_independent(&state, &same_event),
         "same-event alive: live Source read fed by sibling counter write ⇒ prompt"
     );
 }
@@ -1136,7 +1136,7 @@ fn n_b2_freeze_invalidation_hostile() {
         ctx(11, hazard(), None, self_departure(11, &[10]), None),
     ];
     assert!(
-        !group_is_order_independent(&state, &hazard_group, false),
+        !group_is_order_independent(&state, &hazard_group),
         "battlefield-return hazard invalidates the LKI freeze ⇒ prompt"
     );
 
@@ -1157,7 +1157,7 @@ fn n_b2_freeze_invalidation_hostile() {
         ),
     ];
     assert!(
-        group_is_order_independent(&state, &plain, false),
+        group_is_order_independent(&state, &plain),
         "plain Shambler shape (no hazard write) ⇒ auto — the row is hazard-scoped"
     );
 }
@@ -1175,7 +1175,7 @@ fn n_c_case_a_same_event_prompts() {
         ctx(11, ability(), None, ev, None),
     ];
     assert!(
-        !group_is_order_independent(&state, &group, false),
+        !group_is_order_independent(&state, &group),
         "Case A: counter write feeds live power threshold ⇒ prompt (CR 603.3b fix)"
     );
 }
@@ -1210,7 +1210,7 @@ fn n_d_intervening_if_case_a_prompts() {
         ),
     ];
     assert!(
-        !group_is_order_independent(&state, &group, false),
+        !group_is_order_independent(&state, &group),
         "intervening-if Source read fed by sibling counter write ⇒ prompt"
     );
 }
@@ -1229,7 +1229,7 @@ fn n_f_die_result_conjunct() {
         ctx(11, ra(gain_life_fixed()), None, ev.clone(), Some(5)),
     ];
     assert!(
-        !group_is_order_independent(&state, &differing, false),
+        !group_is_order_independent(&state, &differing),
         "differing die_result ⇒ not order-independent"
     );
 
@@ -1238,7 +1238,7 @@ fn n_f_die_result_conjunct() {
         ctx(11, ra(gain_life_fixed()), None, ev, Some(3)),
     ];
     assert!(
-        group_is_order_independent(&state, &equal, false),
+        group_is_order_independent(&state, &equal),
         "equal die_result + source-independent same-event pair ⇒ admitted (auto)"
     );
 }
@@ -1313,7 +1313,7 @@ fn n_g_dropped_target_legacy_ref_retains_batch_prompt() {
         ),
     ];
     assert!(
-        !group_is_order_independent(&state, &legacy_group, false),
+        !group_is_order_independent(&state, &legacy_group),
         "Discard{{TriggeringPlayer}} on a departure batch carries a frozen tag ⇒ retain prompt"
     );
 
@@ -1334,7 +1334,7 @@ fn n_g_dropped_target_legacy_ref_retains_batch_prompt() {
         ),
     ];
     assert!(
-        group_is_order_independent(&state, &control_group, false),
+        group_is_order_independent(&state, &control_group),
         "identical Discard with no frozen tag (Controller) ⇒ auto-order"
     );
 }
@@ -1501,7 +1501,7 @@ fn s1_defense_membership_ctrl_span() {
         ctx_c(11, 0, defense_ability(), Some(pos_cond()), ev.clone()),
     ];
     assert!(
-        group_is_order_independent(&state, &pos, false),
+        group_is_order_independent(&state, &pos),
         "S1 POS: opponents'-board read × your-library entry are ctrl-disjoint ⇒ auto"
     );
 
@@ -1511,7 +1511,7 @@ fn s1_defense_membership_ctrl_span() {
         ctx_c(11, 0, defense_ability(), Some(neg_cond()), ev),
     ];
     assert!(
-        !group_is_order_independent(&state, &neg, false),
+        !group_is_order_independent(&state, &neg),
         "S1 NEG: your-board read × your-library entry ctrl spans overlap ⇒ prompt"
     );
 }
@@ -1541,7 +1541,7 @@ fn s2_rekindled_player_hand_span() {
         ctx_c(11, 0, ra(bounce_self()), Some(pos_cond()), ev.clone()),
     ];
     assert!(
-        group_is_order_independent(&state, &pos, false),
+        group_is_order_independent(&state, &pos),
         "S2 POS: opp-hand read × your-hand self-bounce are player-disjoint ⇒ auto"
     );
 
@@ -1551,7 +1551,7 @@ fn s2_rekindled_player_hand_span() {
         ctx_c(11, 0, ra(bounce_self()), Some(neg_cond()), ev),
     ];
     assert!(
-        !group_is_order_independent(&state, &neg, false),
+        !group_is_order_independent(&state, &neg),
         "S2 NEG: your-hand read × your-hand write overlap ⇒ prompt"
     );
 }
@@ -1593,7 +1593,7 @@ fn s3_brink_fused_discard_span() {
         ctx_c(11, 0, brink_ability(fused), Some(cond()), ev.clone()),
     ];
     assert!(
-        group_is_order_independent(&state, &pos, false),
+        group_is_order_independent(&state, &pos),
         "S3 POS: fused HandSize{{ScopedPlayer}} count dropped ⇒ You-cond × Opp-write disjoint ⇒ auto"
     );
 
@@ -1613,7 +1613,7 @@ fn s3_brink_fused_discard_span() {
         ctx_c(11, 0, brink_ability(unfused), Some(cond()), ev),
     ];
     assert!(
-        !group_is_order_independent(&state, &neg, false),
+        !group_is_order_independent(&state, &neg),
         "S3 NEG: non-fused opp-hand count read is a live player read ⇒ prompt"
     );
 }
@@ -1646,7 +1646,7 @@ fn s4_gate_is_load_bearing() {
         ctx_c(11, 1, ra(bounce_self()), Some(cond()), ev.clone()),
     ];
     assert!(
-        !group_is_order_independent(&state, &mixed, false),
+        !group_is_order_independent(&state, &mixed),
         "S4 NEG: mixed controllers ⇒ Mixed ⇒ spans unconsulted ⇒ prompt"
     );
 
@@ -1658,7 +1658,7 @@ fn s4_gate_is_load_bearing() {
         ctx_c(11, 0, ra(bounce_self()), Some(cond()), ev),
     ];
     assert!(
-        group_is_order_independent(&state, &uniform, false),
+        group_is_order_independent(&state, &uniform),
         "S4 foil: both P0 ⇒ UniformAligned ⇒ span disjointness clears ⇒ auto"
     );
 }
@@ -1690,7 +1690,7 @@ fn s5_multiplayer_three_players() {
         ctx_c(11, 1, ra(bounce_self()), Some(cond()), ev.clone()),
     ];
     assert!(
-        !group_is_order_independent(&state, &mixed, false),
+        !group_is_order_independent(&state, &mixed),
         "S5a: 3p mixed controllers ⇒ Mixed ⇒ prompt"
     );
 
@@ -1699,7 +1699,7 @@ fn s5_multiplayer_three_players() {
         ctx_c(12, 0, ra(bounce_self()), Some(cond()), ev),
     ];
     assert!(
-        group_is_order_independent(&state, &both_p0, false),
+        group_is_order_independent(&state, &both_p0),
         "S5b: 3p both P0 ⇒ You={{P0}} vs Opponents={{P1,P2}} disjoint ⇒ auto (not a 2p artifact)"
     );
 }
@@ -1732,7 +1732,7 @@ fn s6_owner_alignment() {
         ctx_c(11, 0, ra(bounce_self()), Some(cond()), ev.clone()),
     ];
     assert!(
-        !group_is_order_independent(&state, &donated, false),
+        !group_is_order_independent(&state, &donated),
         "S6 NEG: source owned by an opponent ⇒ owner-misaligned ⇒ prompt (real under-prompt guard)"
     );
 
@@ -1742,7 +1742,7 @@ fn s6_owner_alignment() {
         ctx_c(11, 0, ra(bounce_self()), Some(cond()), ev),
     ];
     assert!(
-        group_is_order_independent(&state, &aligned, false),
+        group_is_order_independent(&state, &aligned),
         "S6 foil: owner == controller == P0 ⇒ UniformAligned ⇒ auto"
     );
 }
@@ -1843,7 +1843,7 @@ fn b1_mindslicer_uniformity_gate() {
         ),
     ];
     assert!(
-        group_is_order_independent(&state, &pos, false),
+        group_is_order_independent(&state, &pos),
         "B-1 POS: uniform fused-discard co-departure batch ⇒ batch-T1 auto"
     );
 
@@ -1853,7 +1853,7 @@ fn b1_mindslicer_uniformity_gate() {
         ctx_c(11, 1, fused_discard_each(), None, self_departure(11, &[10])),
     ];
     assert!(
-        !group_is_order_independent(&state, &neg, false),
+        !group_is_order_independent(&state, &neg),
         "B-1 NEG: mixed-controller (team-pool) batch ⇒ Mixed ⇒ fused read × hand write ⇒ prompt"
     );
 }
@@ -1885,7 +1885,7 @@ fn b2_dotd_member_bound_pin() {
         ),
     ];
     assert!(
-        group_is_order_independent(&state, &pos, false),
+        group_is_order_independent(&state, &pos),
         "B-2 POS: uniform removes-all ⇒ batch-T1 auto"
     );
 
@@ -1901,7 +1901,7 @@ fn b2_dotd_member_bound_pin() {
         ctx(11, dotd(), None, self_departure(11, &[10]), None),
     ];
     assert!(
-        !group_is_order_independent(&state, &neg, false),
+        !group_is_order_independent(&state, &neg),
         "B-2 NEG: DotD TrackedSet return ⇒ member-bound ⇒ T1 refused ⇒ prompt"
     );
 }
@@ -1939,7 +1939,7 @@ fn high1_same_event_member_bound_prompts() {
         ctx(11, member_bound(), None, ev.clone(), None),
     ];
     assert!(
-        !group_is_order_independent(&state, &neg, false),
+        !group_is_order_independent(&state, &neg),
         "HIGH-1 NEG: same-event distinct-source member-bound ⇒ f_A≠f_B ⇒ prompt"
     );
 
@@ -1951,7 +1951,7 @@ fn high1_same_event_member_bound_prompts() {
         ctx(11, ra(gain_life_fixed()), None, ev.clone(), None),
     ];
     assert!(
-        group_is_order_independent(&state, &pos_unbound, false),
+        group_is_order_independent(&state, &pos_unbound),
         "HIGH-1 POS-a: same-event source-independent non-member-bound ⇒ auto"
     );
 
@@ -1963,7 +1963,7 @@ fn high1_same_event_member_bound_prompts() {
         ctx(10, member_bound(), None, ev, None),
     ];
     assert!(
-        group_is_order_independent(&state, &pos_same_source, false),
+        group_is_order_independent(&state, &pos_same_source),
         "HIGH-1 POS-b: all_same_source member-bound ⇒ shared storage ⇒ auto"
     );
 }
@@ -2003,7 +2003,7 @@ fn r4_same_event_event_object_prompts_at_caller() {
         ctx(11, feed(), None, ev.clone(), None),
     ];
     assert!(
-        !group_is_order_independent(&state, &neg, false),
+        !group_is_order_independent(&state, &neg),
         "R4 NEG: same-event distinct-source event-object read×write feed ⇒ prompt"
     );
 
@@ -2020,7 +2020,7 @@ fn r4_same_event_event_object_prompts_at_caller() {
         ctx(11, read_only(), None, ev.clone(), None),
     ];
     assert!(
-        group_is_order_independent(&state, &pos_read, false),
+        group_is_order_independent(&state, &pos_read),
         "R4 guard read-only: event-live read with NO event-object write ⇒ auto"
     );
 
@@ -2032,7 +2032,7 @@ fn r4_same_event_event_object_prompts_at_caller() {
         ctx(11, write_only(), None, ev.clone(), None),
     ];
     assert!(
-        group_is_order_independent(&state, &pos_write, false),
+        group_is_order_independent(&state, &pos_write),
         "R4 guard write-only: event-object write with NO live read ⇒ auto"
     );
 
@@ -2046,7 +2046,7 @@ fn r4_same_event_event_object_prompts_at_caller() {
         ctx(11, feed(), None, ph, None),
     ];
     assert!(
-        group_is_order_independent(&state, &pos_no_event, false),
+        group_is_order_independent(&state, &pos_no_event),
         "R4 guard no-event-object: Phase event ⇒ event_object_present false ⇒ auto"
     );
 
@@ -2058,7 +2058,7 @@ fn r4_same_event_event_object_prompts_at_caller() {
         ctx(10, feed(), None, ev, None),
     ];
     assert!(
-        group_is_order_independent(&state, &pos_same_source, false),
+        group_is_order_independent(&state, &pos_same_source),
         "R4 guard all_same_source: shared source ⇒ f_A = f_B ⇒ auto"
     );
 }
@@ -2092,7 +2092,7 @@ fn b3_source_independent_and_persist_false() {
         ),
     ];
     assert!(
-        group_is_order_independent(&state, &pos_slithermuse, false),
+        group_is_order_independent(&state, &pos_slithermuse),
         "B-3 POS-a: slithermuse persist:false choice is T1-clean ⇒ auto"
     );
 
@@ -2118,7 +2118,7 @@ fn b3_source_independent_and_persist_false() {
         ctx(11, self_sac(), None, self_departure(11, &[10]), None),
     ];
     assert!(
-        !group_is_order_independent(&state, &neg, false),
+        !group_is_order_independent(&state, &neg),
         "B-3 NEG: SelfRef self-move ⇒ writes_self ⇒ source_independent false ⇒ prompt"
     );
 }
@@ -2158,7 +2158,7 @@ fn b5_event_live_read_freeze_placement() {
         ),
     ];
     assert!(
-        group_is_order_independent(&state, &pos, false),
+        group_is_order_independent(&state, &pos),
         "B-5 POS: T1-clean uniform batch with a reentry hazard ⇒ auto (reach-guard)"
     );
 
@@ -2172,7 +2172,7 @@ fn b5_event_live_read_freeze_placement() {
         ctx(11, ev_read(), None, self_departure(11, &[10]), None),
     ];
     assert!(
-        !group_is_order_independent(&state, &neg, false),
+        !group_is_order_independent(&state, &neg),
         "B-5 NEG: Power{{EventSource}} read × reentry hazard ⇒ freeze row ⇒ prompt"
     );
 }
@@ -2200,7 +2200,7 @@ fn b6_multiplayer_uniform_vs_mixed() {
         ),
     ];
     assert!(
-        group_is_order_independent(&state, &pos, false),
+        group_is_order_independent(&state, &pos),
         "B-6 POS: 3p uniform P0 removes-all batch ⇒ auto"
     );
 
@@ -2221,7 +2221,7 @@ fn b6_multiplayer_uniform_vs_mixed() {
         ),
     ];
     assert!(
-        !group_is_order_independent(&state, &neg, false),
+        !group_is_order_independent(&state, &neg),
         "B-6 NEG: 3p mixed P0/P1 batch ⇒ Mixed ⇒ prompt"
     );
 }
@@ -2251,7 +2251,7 @@ fn condition1_dodecapod_mixed_controller_still_prompts() {
         ctx_c(11, 1, fused_discard_each(), None, self_departure(11, &[10])),
     ];
     assert!(
-        !group_is_order_independent(&state, &dodecapod, false),
+        !group_is_order_independent(&state, &dodecapod),
         "Condition-1: mixed-controller Dodecapod discard batch ⇒ Mixed ⇒ STILL PROMPTS \
          (auto would be an unsound under-prompt on the cause-source controller channel)"
     );

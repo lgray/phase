@@ -3442,7 +3442,6 @@ fn trigger_events_match_for_ordering(
     same_event_conflict: bool,
     batch_conflict: bool,
     c2_order_independent: bool,
-    loop_detection_on: bool,
 ) -> bool {
     // C1 (CR 603.3b): same firing event auto-orders only when the identical
     // siblings' resolution functions provably COMMUTE — the `ability_rw` kind/
@@ -3487,13 +3486,19 @@ fn trigger_events_match_for_ordering(
         }
     }
 
-    // C2 (GATED on `loop_detection.is_on()`, UNCHANGED): when the growing-cascade
-    // detector is ON, a distinct-event group the fail-closed C0 walker deems order
-    // independent (reads neither event context nor sibling-mutable state) also
-    // auto-resolves so the loop-detect ring can accumulate the super-critical
-    // fan-out. When OFF this term is false, so distinct-event non-ZoneChanged
-    // groups PROMPT exactly as pre-feature (default gameplay byte-preserved).
-    loop_detection_on && c2_order_independent
+    // C2 (adopted from #5084 + a series soundness conjunct, CR 603.3b): distinct
+    // firing events whose ability reads neither event context nor sibling-mutable
+    // state are indistinguishable for ordering. Independent of loop detection (which
+    // only controls optional infinite-combo shortcutting) — #5084's ungating. The
+    // `&& !batch_conflict` conjunct is series-specific and was NOT in #5084 (upstream
+    // had no batch profiler): the coarse `ability_scan` C2 walker is BLIND to the
+    // source-actor residual (CR 805.7 cause-source-controller, lifelink/deathtouch
+    // CR 702.15/702.2) that the precise `ability_rw` profiler catches via the
+    // controller-uniformity gate. Without it, C2 would override that gate and
+    // re-open the Dodecapod Mixed-controller under-prompt (condition1_dodecapod).
+    // Precision dominates coarseness: C2 may auto-order only when the batch profiler
+    // ALSO agrees the group is conflict-clean.
+    c2_order_independent && !batch_conflict
 }
 
 /// CR 603.3c/603.3d + CR 601.2c/601.2d: A trigger requires ordering-relevant
@@ -3575,14 +3580,11 @@ fn group_source_census(
 // (`ability_rw_profile(reference)` OR-merged with the trigger-level condition's
 // `trigger_condition_rw_profile`, CR 603.4) against the group's structure
 // (`all_same_source`, `all_sources_self_departed`, `event_object_present`/
-// `event_object_excludes_sources`, `source_census`). `is_on` threads
-// `loop_detection.is_on()` to the gated C2 term; `state` supplies the live source
-// census (CR 205).
-fn group_is_order_independent(
-    state: &GameState,
-    group: &[PendingTriggerContext],
-    is_on: bool,
-) -> bool {
+// `event_object_excludes_sources`, `source_census`). `state` supplies the live
+// source census (CR 205). The C2 distinct-event term is ungated (adopted from
+// #5084) — loop detection governs infinite-combo shortcutting, not this finite
+// CR 603.3b ordering UX.
+fn group_is_order_independent(state: &GameState, group: &[PendingTriggerContext]) -> bool {
     let Some((first, rest)) = group.split_first() else {
         return false;
     };
@@ -3706,7 +3708,6 @@ fn group_is_order_independent(
                 same_event_conflict,
                 batch_conflict,
                 c2_order_independent,
-                is_on,
             )
             && t.subject_match_count == first.pending.subject_match_count
             && t.may_trigger_origin == first.pending.may_trigger_origin
@@ -3762,11 +3763,8 @@ fn begin_trigger_ordering(
     // no-input triggers, commute under any permutation — auto-order them so the
     // player isn't prompted for an immaterial choice (matching MTG Arena). Any
     // field divergence is a safe false-negative: the group still prompts.
-    let loop_detection_on = state.loop_detection.is_on();
     for g in groups.iter_mut() {
-        if g.triggers.len() <= 1
-            || group_is_order_independent(state, &g.triggers, loop_detection_on)
-        {
+        if g.triggers.len() <= 1 || group_is_order_independent(state, &g.triggers) {
             g.ordered = true;
         }
     }
@@ -21430,10 +21428,11 @@ pub mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // PR-6.25 (folded into PR-6.5 inc2a): C0 classifier wiring + C1 + gated-C2.
+    // PR-6.25 (folded into PR-6.5 inc2a): C0 classifier wiring + C1 + C2.
     // C0 = the fail-closed `ability_scan` walker replacing the fail-open string
     // allowlist; C1 = same-event auto-order gated on soundness (ungated CR 603.3b
-    // fix); C2 = distinct-event auto-resolve gated on `loop_detection.is_on()`.
+    // fix); C2 = distinct-event auto-resolve (ungated, adopted from #5084 — loop
+    // detection governs infinite-combo shortcutting, not this finite ordering UX).
     // -----------------------------------------------------------------------
 
     /// Build a no-ordering-input pending trigger (empty targets/constraints, no
@@ -21550,7 +21549,7 @@ pub mod tests {
                     ),
                 ];
                 assert!(
-                    group_is_order_independent(&state, &group, mode.is_on()),
+                    group_is_order_independent(&state, &group),
                     "pre-feature: same-event identical group auto-orders ({mode:?})"
                 );
                 match begin_trigger_ordering(&mut state, group) {
@@ -21563,13 +21562,12 @@ pub mod tests {
         }
     }
 
-    /// C2 (GATED on `loop_detection.is_on()`): two byte-identical no-input SOUND
-    /// triggers off DISTINCT life-loss events (the ≥3p all-opponent-drain fan-out).
-    /// OFF ⇒ still PROMPT (pre-feature preserved); ON ⇒ auto-resolve so the ring
-    /// can accumulate. Revert-fail: dropping the `is_on()` conjunct makes the OFF
-    /// arm auto-resolve, flipping its assertion.
+    /// C2 (adopted from #5084): two byte-identical no-input SOUND triggers off
+    /// DISTINCT life-loss events (the ≥3p all-opponent-drain fan-out) auto-order
+    /// even when loop detection is OFF. Loop detection controls infinite-combo
+    /// shortcutting; it does not gate finite CR 603.3b ordering UX.
     #[test]
-    fn pr625_c2_distinct_event_gate_off_prompts_on_auto_resolves() {
+    fn pr625_c2_distinct_event_auto_orders_even_when_loop_detection_off() {
         let ev_a = Some(GameEvent::LifeChanged {
             player_id: PlayerId(0),
             amount: -1,
@@ -21599,13 +21597,13 @@ pub mod tests {
             ),
         ];
         assert!(
-            !group_is_order_independent(&off, &off_group, false),
-            "C2 OFF: distinct-event sound group must PROMPT (pre-feature preserved)"
+            group_is_order_independent(&off, &off_group),
+            "C2 OFF: distinct-event sound group must auto-order"
         );
         match begin_trigger_ordering(&mut off, off_group) {
-            TriggerOrderingDisposition::PromptForChoice(_) => {}
-            TriggerOrderingDisposition::NoChoiceNeeded(_) => {
-                panic!("C2 OFF: distinct-event group must prompt when loop_detection Off")
+            TriggerOrderingDisposition::NoChoiceNeeded(_) => {}
+            TriggerOrderingDisposition::PromptForChoice(_) => {
+                panic!("C2 OFF: distinct-event group must auto-order when loop_detection Off")
             }
         }
 
@@ -21629,7 +21627,7 @@ pub mod tests {
             ),
         ];
         assert!(
-            group_is_order_independent(&on, &on_group, true),
+            group_is_order_independent(&on, &on_group),
             "C2 ON: distinct-event sound group must auto-resolve"
         );
         match begin_trigger_ordering(&mut on, on_group) {
@@ -21674,7 +21672,7 @@ pub mod tests {
             ),
         ];
         assert!(
-            !group_is_order_independent(&on, &group, true),
+            !group_is_order_independent(&on, &group),
             "C0: sibling-mutable distinct-event group must NOT auto-resolve even ON"
         );
         match begin_trigger_ordering(&mut on, group) {
