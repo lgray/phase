@@ -17912,6 +17912,7 @@ fn cast_trigger_lowers_to_control_next_turn_effect() {
         Effect::ControlNextTurn {
             target,
             grant_extra_turn_after,
+            window: _,
         } => {
             assert!(*grant_extra_turn_after);
             assert_eq!(

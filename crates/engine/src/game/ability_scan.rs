@@ -561,6 +561,7 @@ fn scan_effect(x: &Effect) -> Axes {
         Effect::ControlNextTurn {
             target,
             grant_extra_turn_after: _,
+            window: _,
         } => {
             let mut acc = Axes::NONE;
             acc = acc.or(scan_target_filter(target));

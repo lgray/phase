@@ -31,12 +31,13 @@ use crate::parser::oracle_static::{
 };
 use crate::types::ability::{
     AbilityCost, AbilityDefinition, AbilityKind, BounceSelection, CardSelectionMode,
-    CategoryChooserScope, ChoiceType, Chooser, ContinuousModification, ControllerRef,
-    CopyRetargetPermission, DigSource, DoorLockOp, Duration, Effect, EffectScope, FaceDownProfile,
-    FilterProp, GrantedAbilityScope, LibraryPosition, MultiTargetSpec, OutsideGameSourcePool,
-    PlayerScope, PreventionAmount, PreventionScope, PtStat, PtValue, QuantityExpr, QuantityRef,
-    ReassembleControlMode, SearchSelectionConstraint, StaticDefinition, StickerTicketCostPayment,
-    TapStateChange, TargetFilter, TargetSelectionMode, TypeFilter, TypedFilter, ZoneOwner,
+    CategoryChooserScope, ChoiceType, Chooser, ContinuousModification, ControlWindow,
+    ControllerRef, CopyRetargetPermission, DigSource, DoorLockOp, Duration, Effect, EffectScope,
+    FaceDownProfile, FilterProp, GrantedAbilityScope, LibraryPosition, MultiTargetSpec,
+    OutsideGameSourcePool, PlayerScope, PreventionAmount, PreventionScope, PtStat, PtValue,
+    QuantityExpr, QuantityRef, ReassembleControlMode, SearchSelectionConstraint, StaticDefinition,
+    StickerTicketCostPayment, TapStateChange, TargetFilter, TargetSelectionMode, TypeFilter,
+    TypedFilter, ZoneOwner,
 };
 use crate::types::card_type::CoreType;
 use crate::types::phase::Phase;
@@ -45,8 +46,9 @@ use crate::types::statics::StaticMode;
 use crate::types::zones::Zone;
 
 use super::super::oracle_target::{
-    parse_fight_target, parse_mass_type_union, parse_target, parse_target_with_ctx,
-    parse_target_with_syntax, parse_type_phrase, resolve_pronoun_target, TargetSyntax,
+    parse_event_context_ref, parse_fight_target, parse_mass_type_union, parse_target,
+    parse_target_with_ctx, parse_target_with_syntax, parse_type_phrase, resolve_pronoun_target,
+    TargetSyntax,
 };
 use super::super::oracle_util::{
     contains_possessive, contains_self_or_object_pronoun, parse_count_expr, parse_mana_symbols,
@@ -293,19 +295,33 @@ fn parse_put_sticker_target_tail(
 ///
 /// Returns `None` when the suffix doesn't apply, allowing the caller to treat
 /// the match as a different effect (e.g., plain `GainControl`).
-fn try_parse_control_next_turn_suffix(_text: &str, rest: &str) -> Option<(TargetFilter, bool)> {
+fn try_parse_control_next_turn_suffix(
+    _text: &str,
+    rest: &str,
+) -> Option<(TargetFilter, bool, ControlWindow)> {
     let (target_text, _) = super::strip_optional_target_prefix(rest);
-    let (target, rem) = parse_target(target_text);
+    // CR 608.2k: "that player" is an anaphoric reference to the already-chosen
+    // parent target (Secret of Bloodbending's paid override), not a fresh target
+    // phrase — resolve it via the shared event-context building block first, then
+    // fall back to standard target parsing ("target opponent", "target player").
+    let (target, rem) =
+        parse_event_context_ref(target_text).unwrap_or_else(|| parse_target(target_text));
     let rem_lower = rem.to_ascii_lowercase();
-    let (consumed, _) = preceded(
+    // CR 723.1 / CR 723.2: the duration is one grammatical axis — possessive ×
+    // window. Compose the window as a single `alt()` (next turn vs next combat
+    // phase), never enumerate full-string permutations.
+    let (consumed, window) = preceded(
         tag::<_, _, OracleError<'_>>(" during "),
-        terminated(
+        preceded(
             alt((tag("that player's"), tag("their"), tag("its"))),
-            tag(" next turn"),
+            alt((
+                value(ControlWindow::NextTurn, tag(" next turn")),
+                value(ControlWindow::NextCombatPhase, tag(" next combat phase")),
+            )),
         ),
     )
     .parse(rem_lower.as_str())
-    .map(|(remainder, _)| (rem_lower.len() - remainder.len(), remainder))
+    .map(|(remainder, window)| (rem_lower.len() - remainder.len(), window))
     .ok()?;
     let rem_after_during = &rem[consumed..];
     let rem_after_during_lower = rem_after_during.to_ascii_lowercase();
@@ -325,7 +341,7 @@ fn try_parse_control_next_turn_suffix(_text: &str, rest: &str) -> Option<(Target
     };
     #[cfg(debug_assertions)]
     assert_no_compound_remainder(_tail, _text);
-    Some((target, grant_extra_turn_after))
+    Some((target, grant_extra_turn_after, window))
 }
 
 /// Parse "earthbend [N] [target <type>]" from the text after "earthbend ".
@@ -1861,12 +1877,13 @@ pub(super) fn parse_targeted_action_ast(
     if let Some((_, rest)) = nom_on_lower(text, lower, |input| {
         value((), tag("you control ")).parse(input)
     }) {
-        if let Some((target, grant_extra_turn_after)) =
+        if let Some((target, grant_extra_turn_after, window)) =
             try_parse_control_next_turn_suffix(text, rest)
         {
             return Some(TargetedImperativeAst::ControlNextTurn {
                 target,
                 grant_extra_turn_after,
+                window,
             });
         }
     }
@@ -1875,12 +1892,13 @@ pub(super) fn parse_targeted_action_ast(
     }) {
         // Check for ControlNextTurn suffix first (rare phrasing combining both
         // forms) before falling back to the standard GainControl effect.
-        if let Some((target, grant_extra_turn_after)) =
+        if let Some((target, grant_extra_turn_after, window)) =
             try_parse_control_next_turn_suffix(text, rest)
         {
             return Some(TargetedImperativeAst::ControlNextTurn {
                 target,
                 grant_extra_turn_after,
+                window,
             });
         }
         // CR 613.1b: "gain control of all/each <filter>" is the untargeted mass
@@ -2116,9 +2134,11 @@ pub(super) fn lower_targeted_action_ast(ast: TargetedImperativeAst) -> Effect {
         TargetedImperativeAst::ControlNextTurn {
             target,
             grant_extra_turn_after,
+            window,
         } => Effect::ControlNextTurn {
             target,
             grant_extra_turn_after,
+            window,
         },
         TargetedImperativeAst::Earthbend {
             target,
@@ -13231,9 +13251,12 @@ mod tests {
             Effect::ControlNextTurn {
                 target,
                 grant_extra_turn_after,
+                window,
             } => {
                 assert!(matches!(target, TargetFilter::Player));
                 assert!(!grant_extra_turn_after);
+                // CR 723.1: "next turn" → full-turn window (default).
+                assert_eq!(window, ControlWindow::NextTurn);
             }
             other => panic!("Expected Effect::ControlNextTurn, got {other:?}"),
         }
@@ -13259,6 +13282,7 @@ mod tests {
             Effect::ControlNextTurn {
                 target,
                 grant_extra_turn_after,
+                window,
             } => {
                 assert_eq!(
                     target,
@@ -13266,6 +13290,58 @@ mod tests {
                     "target opponent → ControllerRef::Opponent filter"
                 );
                 assert!(!grant_extra_turn_after);
+                assert_eq!(window, ControlWindow::NextTurn);
+            }
+            other => panic!("Expected Effect::ControlNextTurn, got {other:?}"),
+        }
+    }
+
+    // CR 723.2: Secret of Bloodbending's base leaf — "you control target opponent
+    // during their next combat phase" — selects the NextCombatPhase window via the
+    // same possessive × window combinator axis. This is the discriminating shape
+    // guard for the new window arm (reverting the `alt(( .. NextCombatPhase ..))`
+    // arm drops this to `Effect::Unimplemented`).
+    #[test]
+    fn parse_control_next_combat_phase_window() {
+        let text = "You control target opponent during their next combat phase.";
+        let lower = text.to_lowercase();
+        let result = parse_targeted_action_ast(text, &lower, &mut ParseContext::default());
+        assert!(
+            result.is_some(),
+            "should parse the next-combat-phase window"
+        );
+        let effect = lower_targeted_action_ast(result.unwrap());
+        match effect {
+            Effect::ControlNextTurn {
+                target,
+                grant_extra_turn_after,
+                window,
+            } => {
+                assert_eq!(
+                    target,
+                    TargetFilter::Typed(TypedFilter::default().controller(ControllerRef::Opponent)),
+                );
+                assert!(!grant_extra_turn_after);
+                assert_eq!(window, ControlWindow::NextCombatPhase);
+            }
+            other => panic!("Expected Effect::ControlNextTurn, got {other:?}"),
+        }
+    }
+
+    // CR 608.2k + CR 723.1: the paid-override anaphora "you control that player
+    // during their next turn" (Secret of Bloodbending's `AdditionalCostPaidInstead`
+    // sub) must parse to ControlNextTurn — the "that player" reference resolves via
+    // the shared event-context building block rather than failing target parsing.
+    #[test]
+    fn parse_control_that_player_anaphora() {
+        let text = "You control that player during their next turn.";
+        let lower = text.to_lowercase();
+        let result = parse_targeted_action_ast(text, &lower, &mut ParseContext::default());
+        assert!(result.is_some(), "'that player' anaphora should parse");
+        let effect = lower_targeted_action_ast(result.unwrap());
+        match effect {
+            Effect::ControlNextTurn { window, .. } => {
+                assert_eq!(window, ControlWindow::NextTurn);
             }
             other => panic!("Expected Effect::ControlNextTurn, got {other:?}"),
         }

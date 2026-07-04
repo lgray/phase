@@ -9,7 +9,7 @@ use super::ability::{
     default_target_filter_permanent, AbilityCost, AbilityDefinition, AdditionalCost,
     AdditionalCostInstance, AdditionalCostInstancePayment, AttackSubject, BeholdCostAction,
     CastVariantPaid, CategoryChooserScope, ChoiceType, ChoiceValue, ChooseFromZoneConstraint,
-    ChosenAttribute, Comparator, ContinuousModification, CostPaidObjectSnapshot,
+    ChosenAttribute, Comparator, ContinuousModification, ControlWindow, CostPaidObjectSnapshot,
     CounterCostSelection, DelayedTriggerCondition, Duration, EffectKind, GameRestriction,
     KeywordAction, KickerVariant, LibraryPosition, ModalChoice, QuantityExpr, ResolvedAbility,
     SearchDestinationSplit, SearchSelectionConstraint, StaticCondition, TapCreaturesAggregate,
@@ -7898,6 +7898,12 @@ pub struct ScheduledTurnControl {
     pub controller: PlayerId,
     #[serde(default)]
     pub grant_extra_turn_after: bool,
+    /// CR 723.1 / CR 723.2: which window this control binds to. `NextTurn` is
+    /// activated/released at turn boundaries; `NextCombatPhase` at the target's
+    /// next combat-phase boundaries. `#[serde(default)]` = `NextTurn` so saved
+    /// games predating this field load unchanged.
+    #[serde(default)]
+    pub window: ControlWindow,
 }
 
 /// CR 500.8: An extra phase added to a turn by an effect, anchored to the

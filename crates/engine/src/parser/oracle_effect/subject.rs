@@ -52,6 +52,22 @@ pub(super) fn try_parse_subject_predicate_ast(
         return None;
     }
 
+    // CR 723.1 / CR 723.2: "you control [target] during [possessive] next turn /
+    // next combat phase" (Mindslaver / Secret of Bloodbending) is a
+    // `ControlNextTurn` imperative, not a subject-predicate grant. The imperative
+    // path owns the window axis; without this deferral the subject grammar
+    // mis-parses the trailing "combat phase" into an `Unimplemented` remnant.
+    if matches!(
+        imperative::parse_targeted_action_ast(
+            text,
+            &text.to_lowercase(),
+            &mut ParseContext::default()
+        ),
+        Some(crate::parser::oracle_ir::ast::TargetedImperativeAst::ControlNextTurn { .. })
+    ) {
+        return None;
+    }
+
     // CR 120.1 + CR 115.1d: defer the "up to two target creatures you control each
     // deal damage equal to their power to target creature" shape to the imperative
     // path, which preserves both the targeted source set and the recipient as

@@ -3,11 +3,11 @@ use serde::Serialize;
 use crate::types::ability::MultiTargetSpec;
 use crate::types::ability::{
     AbilityCondition, AbilityCost, AbilityDefinition, ActivationRestriction, BounceSelection,
-    CastingPermission, ControllerRef, CopyRetargetPermission, CounterSourceRider, DoorLockOp,
-    Duration, Effect, FaceDownProfile, LibraryPosition, ManaProduction, ManaSpendRestriction,
-    ModalSelectionConstraint, OutsideGameSourcePool, PlayerFilter, PtStat, PtValue, QuantityExpr,
-    SearchDestinationSplit, SearchSelectionConstraint, SpellStackToGraveyardReplacement,
-    StaticCondition, StaticDefinition, TargetFilter,
+    CastingPermission, ControlWindow, ControllerRef, CopyRetargetPermission, CounterSourceRider,
+    DoorLockOp, Duration, Effect, FaceDownProfile, LibraryPosition, ManaProduction,
+    ManaSpendRestriction, ModalSelectionConstraint, OutsideGameSourcePool, PlayerFilter, PtStat,
+    PtValue, QuantityExpr, SearchDestinationSplit, SearchSelectionConstraint,
+    SpellStackToGraveyardReplacement, StaticCondition, StaticDefinition, TargetFilter,
 };
 use crate::types::card_type::Supertype;
 use crate::types::counter::CounterType;
@@ -975,6 +975,8 @@ pub(crate) enum TargetedImperativeAst {
     ControlNextTurn {
         target: TargetFilter,
         grant_extra_turn_after: bool,
+        /// CR 723.1 / CR 723.2: full-turn vs next-combat-phase control window.
+        window: ControlWindow,
     },
     /// Earthbend: animate target land into a creature with haste (emits Earthbend event).
     Earthbend {

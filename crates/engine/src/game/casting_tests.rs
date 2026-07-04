@@ -26093,6 +26093,7 @@ fn is_mana_ability_classifier_authoritative() {
         crate::types::ability::Effect::ControlNextTurn {
             target: TargetFilter::Player,
             grant_extra_turn_after: false,
+            window: crate::types::ability::ControlWindow::NextTurn,
         },
     )
     .cost(crate::types::ability::AbilityCost::Tap);
