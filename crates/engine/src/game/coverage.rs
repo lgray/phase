@@ -3152,6 +3152,10 @@ fn effect_details(effect: &Effect) -> Vec<(String, String)> {
         Effect::ExploreAll { filter } => {
             d.push(("filter".into(), fmt_target(filter)));
         }
+        // CR 701.4a: behold's only parameter is the beheld quality (subtype filter).
+        Effect::Behold { filter } => {
+            d.push(("filter".into(), fmt_target(filter)));
+        }
         Effect::GiftDelivery { kind } => {
             d.push(("gift".into(), format!("{kind:?}")));
         }

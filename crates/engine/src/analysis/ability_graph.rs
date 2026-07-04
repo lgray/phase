@@ -867,6 +867,7 @@ fn effect_projection(effect: &Effect) -> Projection {
         | Effect::NoOp
         | Effect::Populate
         | Effect::Clash
+        | Effect::Behold { .. }
         | Effect::EndTheTurn
         | Effect::EndCombatPhase
         | Effect::Vote { .. }

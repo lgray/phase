@@ -1060,6 +1060,7 @@ fn walk_effect(effect: &Effect, out: &mut Vec<String>) {
         | Effect::EndCombatPhase
         | Effect::Populate
         | Effect::Clash
+        | Effect::Behold { .. }
         | Effect::SwitchPT { .. }
         | Effect::CopySpell { .. }
         | Effect::EpicCopy { .. }

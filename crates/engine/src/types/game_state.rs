@@ -3413,6 +3413,19 @@ pub enum WaitingFor {
         constraint: Option<ChooseFromZoneConstraint>,
         source_id: ObjectId,
     },
+    /// CR 701.4a: Behold a [quality] — the resolving player chooses which
+    /// beholdable object to reveal-or-choose from a MIXED-ZONE candidate set
+    /// (permanents they control on the battlefield ∪ matching cards in their
+    /// hand). Only raised when two or more candidates exist (one candidate
+    /// auto-collapses; none whiffs). `choices` are the controller's own private
+    /// objects, so `visibility.rs::filter_state_for_viewer` redacts them to
+    /// `ObjectId(0)` for other viewers — the pre-choice hand-Dragon list must not
+    /// leak. On submit, a chosen HAND card emits `CardsRevealed` (CR 701.4a, card
+    /// stays in hand); a chosen battlefield permanent reveals nothing.
+    BeholdChoice {
+        player: PlayerId,
+        choices: Vec<ObjectId>,
+    },
     /// CR 701.55a: Player chooses one branch while facing a villainous choice,
     /// or another inline resolution-time "choose A or B" effect.
     ChooseOneOfBranch {
@@ -4724,6 +4737,7 @@ impl WaitingFor {
             WaitingFor::SearchPartitionChoice { .. } => "SearchPartitionChoice",
             WaitingFor::OutsideGameChoice { .. } => "OutsideGameChoice",
             WaitingFor::ChooseFromZoneChoice { .. } => "ChooseFromZoneChoice",
+            WaitingFor::BeholdChoice { .. } => "BeholdChoice",
             WaitingFor::ChooseOneOfBranch { .. } => "ChooseOneOfBranch",
             WaitingFor::ConniveDiscard { .. } => "ConniveDiscard",
             WaitingFor::DiscardChoice { .. } => "DiscardChoice",
@@ -4863,6 +4877,7 @@ impl WaitingFor {
             | WaitingFor::SearchPartitionChoice { player, .. }
             | WaitingFor::OutsideGameChoice { player, .. }
             | WaitingFor::ChooseFromZoneChoice { player, .. }
+            | WaitingFor::BeholdChoice { player, .. }
             | WaitingFor::ChooseOneOfBranch { player, .. }
             | WaitingFor::LearnChoice { player, .. }
             | WaitingFor::ManifestDreadChoice { player, .. }

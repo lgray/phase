@@ -1,6 +1,6 @@
 use crate::parser::oracle_nom::error::{OracleError, OracleResult};
 use nom::branch::alt;
-use nom::bytes::complete::{tag, take_until};
+use nom::bytes::complete::{tag, take_till, take_until};
 use nom::character::complete::{one_of, space0, space1};
 use nom::combinator::{all_consuming, eof, map, not, opt, peek, rest, value};
 use nom::error::ParseError;
@@ -7983,6 +7983,38 @@ fn parse_additional_phase_count(lower: &str) -> QuantityExpr {
     QuantityExpr::Fixed { value: 1 }
 }
 
+/// CR 701.4a: Recognize a "behold a [quality]" effect leaf. "Behold a [quality]"
+/// means "Reveal a [quality] card from your hand or choose a [quality] permanent
+/// you control on the battlefield" — the beheld quality is a subtype/type filter
+/// shared by both legs. Rejects a leftover tail or a non-type quality
+/// (`TargetFilter::Any`), identical to the cost-side `parse_behold_cost` guard,
+/// so unrelated clauses cannot masquerade as behold.
+fn parse_behold_effect_ast(text: &str, lower: &str) -> Option<ImperativeFamilyAst> {
+    type E<'a> = OracleError<'a>;
+    let (rest_lower, _) = alt((
+        tag::<_, _, E<'_>>("beholds "),
+        tag::<_, _, E<'_>>("behold "),
+    ))
+    .parse(lower)
+    .ok()?;
+    let (rest_lower, _) = opt(alt((tag::<_, _, E<'_>>("a "), tag::<_, _, E<'_>>("an "))))
+        .parse(rest_lower)
+        .ok()?;
+    // Map the consumed lowercase byte span back onto the original-case text so
+    // `parse_type_phrase` sees the properly-cased subtype (e.g. "Dragon").
+    let consumed = lower.len() - rest_lower.len();
+    let rest_orig = text.get(consumed..)?;
+    // CR 701.4a: bound the quality at sentence/reminder-text punctuation.
+    let (_, filter_text) = take_till::<_, _, E<'_>>(|c| c == '.' || c == '(')
+        .parse(rest_orig)
+        .ok()?;
+    let (filter, remainder) = parse_type_phrase(filter_text.trim());
+    if !remainder.trim().is_empty() || matches!(filter, TargetFilter::Any) {
+        return None;
+    }
+    Some(ImperativeFamilyAst::Behold(filter))
+}
+
 pub(super) fn parse_imperative_family_ast(
     text: &str,
     lower: &str,
@@ -8589,6 +8621,11 @@ pub(super) fn parse_imperative_family_ast(
         // CR 701.16: "investigate" / third-person "investigates" (e.g. Blink's
         // "Its owner shuffles it into their library, then investigates.").
         "investigate" | "investigates" => Some(ImperativeFamilyAst::Investigate),
+        // CR 701.4a: "behold a [quality]" as an EFFECT (Sarkhan, Dragon Ascendant).
+        // The "you may" wrapper is peeled by clause_shell into the optional flag and
+        // the reminder text is stripped upstream, so the recognizer sees the bare
+        // "behold a Dragon". Mirrors `parse_behold_cost`'s quality guard.
+        "behold" | "beholds" => parse_behold_effect_ast(text, lower),
         // CR 701.48a: "learn"
         "learn" => Some(ImperativeFamilyAst::Learn),
         // CR 701.62a: "manifest dread" / CR 701.40a: "manifest the top card of your library"
@@ -10588,6 +10625,8 @@ fn lower_imperative_family_effect(ast: ImperativeFamilyAst) -> Effect {
         ImperativeFamilyAst::Populate => Effect::Populate,
         // CR 701.30: Clash with an opponent.
         ImperativeFamilyAst::Clash => Effect::Clash,
+        // CR 701.4a: Behold a [quality] — reveal-or-choose keyword action.
+        ImperativeFamilyAst::Behold(filter) => Effect::Behold { filter },
         ImperativeFamilyAst::GainKeyword(effect) => effect,
         ImperativeFamilyAst::LoseKeyword(effect) => effect,
         ImperativeFamilyAst::LoseTheGame => Effect::LoseTheGame { target: None },

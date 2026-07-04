@@ -41,6 +41,7 @@ pub mod awaken;
 pub mod become_blocked;
 pub mod become_copy;
 pub mod become_monarch;
+pub mod behold;
 pub mod blight;
 pub mod bolster;
 pub mod bounce;
@@ -1933,6 +1934,7 @@ fn waits_for_resolution_choice(waiting_for: &WaitingFor) -> bool {
             // the printed tail until SubmitSpellbookDraft resumes the chain.
             | WaitingFor::SpellbookDraft { .. }
             | WaitingFor::PopulateChoice { .. }
+            | WaitingFor::BeholdChoice { .. }
     )
 }
 
@@ -2172,6 +2174,10 @@ fn effect_manages_own_outcome_flag(effect: &Effect) -> bool {
             | Effect::Clash
             | Effect::RollDie { .. }
             | Effect::Dig { .. }
+            // CR 701.4a + CR 608.2c: behold computes its own performed outcome
+            // (whiff → `cost_payment_failed_flag`; beheld → the rider fires), so
+            // the mandatory-rider seed must not race it.
+            | Effect::Behold { .. }
     )
 }
 
@@ -3076,6 +3082,7 @@ pub fn resolve_effect(
         Effect::EndCombatPhase => end_combat_phase::resolve(state, ability, events),
         Effect::Populate => populate::resolve(state, ability, events),
         Effect::Clash => clash::resolve(state, ability, events),
+        Effect::Behold { .. } => behold::resolve(state, ability, events),
         // CR 701.38: Council's-dilemma voting — see effects/vote.rs.
         Effect::Vote { .. } => vote::resolve(state, ability, events),
         // CR 700.3 + CR 608: Pile-separation primitive — see effects/separate_piles.rs.

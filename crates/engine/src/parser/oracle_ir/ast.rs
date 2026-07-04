@@ -546,6 +546,9 @@ pub(crate) enum ImperativeFamilyAst {
     Populate,
     /// CR 701.30: Clash with an opponent.
     Clash,
+    /// CR 701.4a: Behold a [quality] — reveal-or-choose keyword action. Carries
+    /// the beheld quality as a subtype/type filter.
+    Behold(TargetFilter),
     /// CR 701.48a: Learn.
     Learn,
     /// CR 701.40a: Manifest the top card(s) of library.

@@ -631,6 +631,9 @@ fn scan_effect(x: &Effect) -> Axes {
         }
         Effect::Populate => Axes::NONE,
         Effect::Clash => Axes::NONE,
+        // CR 701.4a: behold projects no growing resource — it is a boolean
+        // reveal-or-choose keyword action.
+        Effect::Behold { .. } => Axes::NONE,
         Effect::EndTheTurn => Axes::NONE,
         Effect::EndCombatPhase => Axes::NONE,
         Effect::Vote { .. } => Axes::CONSERVATIVE,
@@ -3416,6 +3419,9 @@ fn effect_resolution_choice_freedom(e: &Effect) -> ResolutionChoiceFreedom {
         | Effect::ProliferateTarget { .. }
         | Effect::Populate
         | Effect::Clash
+        // CR 701.4a + CR 608.2d: behold may prompt (`WaitingFor::BeholdChoice`
+        // when 2+ candidates) — fail-closed MayPrompt.
+        | Effect::Behold { .. }
         | Effect::EndTheTurn
         | Effect::EndCombatPhase
         | Effect::Vote { .. }
@@ -3976,6 +3982,9 @@ mod tests {
             Effect::Proliferate, // WaitingFor::ProliferateChoice — proliferate.rs:109
             Effect::Populate,    // WaitingFor::PopulateChoice — populate.rs:50
             Effect::Clash,       // WaitingFor::ClashChooseOpponent — clash.rs:47
+            Effect::Behold {
+                filter: TargetFilter::Any,
+            }, // WaitingFor::BeholdChoice — behold.rs (2+ candidates)
             Effect::Explore,     // WaitingFor::ExploreChoice — explore.rs:191
             Effect::Scry {
                 count: QuantityExpr::Fixed { value: 1 },

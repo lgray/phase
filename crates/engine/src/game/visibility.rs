@@ -550,6 +550,26 @@ pub fn filter_state_for_viewer(state: &GameState, viewer: PlayerId) -> GameState
         }
     }
 
+    // CR 400.2 + CR 701.4a: A pending `BeholdChoice` carries the choosing player's
+    // mixed-zone candidate set (battlefield-you-control ∪ HAND). The hand leg is a
+    // hidden zone — exposing the raw candidate ids to an opponent would leak which
+    // of the controller's hand cards are matching (e.g. which Dragons) BEFORE they
+    // choose. Redact the candidate list to opaque placeholders for viewers who
+    // cannot see the controller's private zones. The post-choice reveal of the
+    // single chosen card flows through the separate `CardsRevealed` pipeline.
+    if let WaitingFor::BeholdChoice {
+        player,
+        ref choices,
+    } = state.waiting_for
+    {
+        if !can_view_private_for_player(player) {
+            filtered.waiting_for = WaitingFor::BeholdChoice {
+                player,
+                choices: choices.iter().map(|_| ObjectId(0)).collect(),
+            };
+        }
+    }
+
     // CR 400.2: Hand is a hidden zone. `FreeCastWindow` (Invoke Calamity) is the
     // first `CastOffer` kind whose `candidates` reference cards in the
     // controller's HAND (as well as the public graveyard). Exposing the raw

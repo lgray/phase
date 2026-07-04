@@ -116,6 +116,7 @@ pub(super) fn handles(waiting_for: &WaitingFor) -> bool {
             | WaitingFor::SearchPartitionChoice { .. }
             | WaitingFor::OutsideGameChoice { .. }
             | WaitingFor::ChooseFromZoneChoice { .. }
+            | WaitingFor::BeholdChoice { .. }
             | WaitingFor::ChooseOneOfBranch { .. }
             | WaitingFor::DiscardToHandSize { .. }
             | WaitingFor::ConniveDiscard { .. }
@@ -1381,6 +1382,37 @@ pub(super) fn handle_resolution_choice(
                 player,
             );
             let _ = effects::populate::create_token_copy(state, token_id, &dummy_ability, events);
+            ResolutionChoiceOutcome::WaitingFor(finish_with_continuation(state, player, events))
+        }
+        (
+            WaitingFor::BeholdChoice { player, choices },
+            GameAction::SelectCards { cards: chosen },
+        ) => {
+            // CR 701.4a + CR 608.2d: behold selects exactly ONE object from the
+            // mixed-zone candidate set (battlefield-you-control ∪ hand).
+            if chosen.len() != 1 {
+                return Err(EngineError::InvalidAction(format!(
+                    "Behold requires exactly one object, got {}",
+                    chosen.len()
+                )));
+            }
+            let chosen_id = chosen[0];
+            if !choices.contains(&chosen_id) {
+                return Err(EngineError::InvalidAction(
+                    "Selected object is not a beholdable candidate".to_string(),
+                ));
+            }
+            // CR 701.4a: reveal the beheld card only if it is a hand card (a
+            // controlled battlefield permanent is already public). The non-chosen
+            // candidates are never revealed — they stay hidden.
+            effects::behold::reveal_if_from_hand(state, player, chosen_id, events);
+            // CR 608.2c: the behold was performed → the "if you do, [rider]" gate
+            // fires. On the optional Sarkhan path this re-affirms the accept-time
+            // clobber (`resolve_optional_effect_decision`); for a mandatory
+            // behold-class card it is the sole hook that fires the rider.
+            if let Some(cont) = state.pending_continuation.as_mut() {
+                cont.chain.set_optional_effect_performed_recursive(true);
+            }
             ResolutionChoiceOutcome::WaitingFor(finish_with_continuation(state, player, events))
         }
         (
