@@ -5234,94 +5234,39 @@ pub fn check_delayed_triggers(state: &mut GameState, events: &[GameEvent]) -> Ve
 
     let mut new_events = Vec::new();
 
-    // CR 603.3b + CR 101.4 + CR 805.6/805.7: Full APNAP stack-placement order
-    // by player, or by team in shared-team-turn formats.
-    // The old `state.turn_number` tiebreaker was constant across this batch, so
-    // dropping it changes nothing; `sort_by_key` is stable, preserving the
-    // prior same-controller ordering before stack placement.
-    to_fire.sort_by_key(|(trigger, _)| trigger_apnap_rank(state, trigger.controller));
+    // CR 603.3b + CR 101.4: APNAP stack-placement order for the firing batch.
+    // Stable sort; the per-batch timestamp (state.turn_number) is constant, so it
+    // preserves the prior same-controller order the ordering pass then consumes.
+    let mut pending: Vec<PendingTriggerContext> = to_fire
+        .into_iter()
+        .map(|(trigger, trigger_event)| {
+            delayed_trigger_to_context(
+                state,
+                trigger,
+                trigger_event.expect("every to_fire entry carries its trigger event"),
+            )
+        })
+        .collect();
+    pending.sort_by_key(|ctx| {
+        (
+            trigger_apnap_rank(state, ctx.pending.controller),
+            ctx.pending.timestamp,
+        )
+    });
 
-    // CR 603.3 + CR 603.3d + CR 601.2c: Dispatch each firing delayed trigger
-    // through the shared trigger dispatcher rather than a bare stack push. The
-    // dispatcher sets up `pending_trigger` / `pending_trigger_entry` and begins
-    // target selection (`WaitingFor::TriggerTargetSelection`) for a delayed
-    // trigger whose ability needs a player-chosen target — e.g. Breeches, the
-    // Blastmaker's reflexive "When you lose the flip, ~ deals damage … to any
-    // target" (CR 603.12). Context-ref-only delayed triggers (Flickerwisp's
-    // `ParentTarget` return, dies/leaves triggers using `TriggeringSource`)
-    // report `Pushed` and reach the stack with no input, identical to the prior
-    // bare push. When a trigger pauses for input, the remaining triggers are
-    // stashed into `deferred_triggers` and reach the stack once the active one
-    // resolves, mirroring `dispatch_collected_triggers` (issue #416).
-    let mut iter = to_fire.into_iter();
-    for (trigger, trigger_event) in iter.by_ref() {
-        let pending = PendingTrigger {
-            source_id: trigger.source_id,
-            controller: trigger.controller,
-            condition: None,
-            ability: trigger.ability,
-            timestamp: state.turn_number,
-            target_constraints: Vec::new(),
-            distribute: None,
-            trigger_event,
-            modal: None,
-            mode_abilities: vec![],
-            description: None,
-            may_trigger_origin: None,
-            subject_match_count: None,
-            die_result: None,
-        };
-        let context = PendingTriggerContext::delayed(pending);
-        match dispatch_pending_trigger_context_with_origin(state, context, &mut new_events) {
-            TriggerDispatchDisposition::Paused => {
-                // The active delayed trigger paused on player input (target /
-                // mode / distribution). Stash the remaining firing triggers so
-                // they reach the stack once the active one is finalized.
-                state
-                    .deferred_triggers
-                    .extend(iter.map(|(trigger, trigger_event)| {
-                        PendingTriggerContext::delayed(PendingTrigger {
-                            source_id: trigger.source_id,
-                            controller: trigger.controller,
-                            condition: None,
-                            ability: trigger.ability,
-                            timestamp: state.turn_number,
-                            target_constraints: Vec::new(),
-                            distribute: None,
-                            trigger_event,
-                            modal: None,
-                            mode_abilities: vec![],
-                            description: None,
-                            may_trigger_origin: None,
-                            subject_match_count: None,
-                            die_result: None,
-                        })
-                    }));
-                break;
-            }
-            // CR 603.3: A delayed triggered ability goes on the stack the next
-            // time a player would receive priority. The dispatcher already
-            // placed it there (`Pushed`) or it pauses for input (`Paused`
-            // above) — nothing more to do.
-            TriggerDispatchDisposition::Pushed => {}
-            // CR 603.3d: The dispatcher dropped the trigger because a slot could
-            // not be auto-resolved. For a delayed trigger this is the Good King
-            // Mog case — the unresolved slot is a *resolution-time filter* ("a
-            // token that's a copy of a non-Saga token you control"), NOT a
-            // CR 115.1d target (it uses no "target" keyword), so CR 603.3d does
-            // not remove it; place it on the stack directly per CR 603.3.
-            // Resolution-time selection then handles the empty filter set (e.g.
-            // copies no token). This restores the pre-dispatch unconditional-push
-            // contract for the non-targeted resolution-filter case. Breeches'
-            // lose branch ("deals damage … to any target") always has a legal
-            // target, so it pauses through the dispatcher and never reaches here.
-            TriggerDispatchDisposition::DroppedTargetUnresolved => {}
-            // CR 603.3c: no legal mode — the modal ability is removed from the
-            // stack and is a terminal no-stack outcome; do NOT resurrect it.
-            // CR 605.1b: a triggered mana ability resolved inline without using
-            // the stack; re-pushing it would duplicate the produced mana.
-            TriggerDispatchDisposition::DroppedNoLegalMode
-            | TriggerDispatchDisposition::ResolvedInline => {}
+    // CR 603.3b + CR 603.7: Route the firing batch through the ordering authority
+    // (mirrors the phase-delayed path process_collected_triggers_with_delayed_phase_events)
+    // so simultaneous same-controller order-dependent delayed triggers get the mandatory
+    // ordering choice instead of a fixed dispatch order. Contexts carry the Delayed
+    // dispatch origin, so the shared dispatcher applies every delayed-specific
+    // disposition (Good King Mog DroppedTargetUnresolved→Pushed, Breeches pause,
+    // no-legal-mode/inline-mana) unchanged.
+    match begin_trigger_ordering(state, pending) {
+        TriggerOrderingDisposition::PromptForChoice(wf) => {
+            state.waiting_for = *wf;
+        }
+        TriggerOrderingDisposition::NoChoiceNeeded(pending) => {
+            dispatch_deferred_triggers_in_order(state, pending, &mut new_events);
         }
     }
 
@@ -11629,6 +11574,149 @@ pub mod tests {
             ability.scoped_player,
             Some(PlayerId(1)),
             "Phase trigger must bind scoped_player to the active player so 'that player draws' resolves correctly on opponent's turn"
+        );
+    }
+
+    // CR 603.3b: Two same-controller, non-phase (`WhenDies`) one-shot delayed
+    // triggers with DISTINCT effects (Draw vs GainLife) firing off ONE death event
+    // must route through `begin_trigger_ordering` and produce the mandatory
+    // ordering prompt — not a fixed direct-dispatch order. Discriminating: the
+    // effects differ, so `group_is_order_independent` is false (candidate !=
+    // reference in the ability-equality check), forcing a genuine prompt. Reverting
+    // `check_delayed_triggers` to the pre-fix direct-dispatch tail makes both
+    // triggers hit the stack immediately (stack.len()==2, waiting_for != OrderTriggers,
+    // returned Vec non-empty), failing every REVERT-TO-RED assert below.
+    #[test]
+    fn non_phase_delayed_same_controller_batch_prompts_and_resolves_ordered() {
+        let mut state = setup();
+        let controller = PlayerId(0);
+        state.active_player = controller;
+        state.priority_player = controller;
+        state.players[0].life = 20;
+        // Stock P0's library so the Draw is observable (hand+1, library->0).
+        create_object(
+            &mut state,
+            CardId(0x0603_3B10),
+            controller,
+            "Drawn Card".to_string(),
+            Zone::Library,
+        );
+
+        let source_draw = create_object(
+            &mut state,
+            CardId(0x0603_3B11),
+            controller,
+            "Draw Delayed Source".to_string(),
+            Zone::Battlefield,
+        );
+        let source_gain = create_object(
+            &mut state,
+            CardId(0x0603_3B12),
+            controller,
+            "GainLife Delayed Source".to_string(),
+            Zone::Battlefield,
+        );
+        // Victim whose death fires both delayed triggers (WhenDies filter Any).
+        let victim = make_creature(&mut state, controller, "Victim", 1, 1);
+
+        // DT1: "when [a creature] dies, draw a card" (Draw).
+        state.delayed_triggers.push(DelayedTrigger {
+            condition: DelayedTriggerCondition::WhenDies {
+                filter: TargetFilter::Any,
+            },
+            ability: ResolvedAbility::new(
+                Effect::Draw {
+                    count: QuantityExpr::Fixed { value: 1 },
+                    target: TargetFilter::Controller,
+                },
+                vec![],
+                source_draw,
+                controller,
+            ),
+            controller,
+            source_id: source_draw,
+            one_shot: true,
+        });
+        // DT2: "when [a creature] dies, gain 1 life" (GainLife) — distinct effect.
+        state.delayed_triggers.push(DelayedTrigger {
+            condition: DelayedTriggerCondition::WhenDies {
+                filter: TargetFilter::Any,
+            },
+            ability: ResolvedAbility::new(
+                Effect::GainLife {
+                    amount: QuantityExpr::Fixed { value: 1 },
+                    player: TargetFilter::Controller,
+                },
+                vec![],
+                source_gain,
+                controller,
+            ),
+            controller,
+            source_id: source_gain,
+            one_shot: true,
+        });
+
+        let death = zone_changed_event(
+            victim,
+            Zone::Battlefield,
+            Zone::Graveyard,
+            vec![CoreType::Creature],
+            Vec::new(),
+        );
+        let returned = check_delayed_triggers(&mut state, &[death]);
+
+        // REVERT-TO-RED (all fail on the pre-fix direct-dispatch tail):
+        assert!(
+            returned.is_empty(),
+            "paused-for-ordering batch must not have dispatched any events yet"
+        );
+        assert!(
+            matches!(state.waiting_for, WaitingFor::OrderTriggers { player, .. } if player == controller),
+            "distinct same-controller non-phase delayed triggers must prompt P0 to order, got {:?}",
+            state.waiting_for
+        );
+        assert_eq!(
+            state.stack.len(),
+            0,
+            "nothing may reach the stack before the ordering choice is submitted"
+        );
+        let order = state
+            .pending_trigger_order
+            .as_ref()
+            .expect("OrderTriggers prompt must populate pending_trigger_order");
+        assert_eq!(order.groups.len(), 1, "one same-controller group");
+        assert_eq!(order.groups[0].controller, controller);
+        assert_eq!(order.groups[0].triggers.len(), 2, "two triggers to order");
+
+        // POST-PROMPT: submit an explicit order; both triggers reach the stack.
+        crate::game::engine::apply_as_current(
+            &mut state,
+            crate::types::actions::GameAction::OrderTriggers { order: vec![1, 0] },
+        )
+        .expect("OrderTriggers must apply");
+        assert_eq!(
+            state.stack.len(),
+            2,
+            "both ordered delayed triggers must be on the stack after the choice"
+        );
+
+        // Resolve both; the two distinct effects both take hold.
+        let mut events = Vec::new();
+        crate::game::stack::resolve_top(&mut state, &mut events);
+        crate::game::stack::resolve_top(&mut state, &mut events);
+        assert_eq!(
+            state.players[0].hand.len(),
+            1,
+            "Draw delayed trigger resolved"
+        );
+        assert_eq!(
+            state.players[0].library.len(),
+            0,
+            "the stocked card was drawn"
+        );
+        assert_eq!(
+            state.players[0].life, 21,
+            "GainLife delayed trigger resolved"
         );
     }
 
