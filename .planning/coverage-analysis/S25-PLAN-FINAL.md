@@ -12,6 +12,62 @@
 
 ---
 
+## 0b. DISPATCH-TIME RECLASSIFICATION (2026-07-01, driver s25-impl — measured, supersedes group labels below)
+
+> The "Group A = parser-only" premise was falsified at dispatch by resolver-level measurement (memory: *Effect existence ≠ semantic coverage*). Card *descriptions* in this plan are one-clause simplifications; several cards are compound and mis-grouped. **This is a re-sequencing, NOT a deferral — all 40 cards still ship.** A/B/C below now means implementation-cost tier, re-derived at the resolver.
+>
+> **A1 Cloak — RECLASSIFIED A → B+C (grep-verified):** `Effect::Cloak {target,count}` (types/ability.rs:10668) has NO source axis; resolver `game/effects/cloak.rs:46` → `morph::cloak` → `top_library_object()` (morph.rs:438) is hard-wired to library top; parser+resolver both carry explicit "cloaking from hand / face-down pile is deferred (needs player-selected source)". A parser-only arm would resolve WRONG. **Design (kept for its batch):** parameterize `Effect::Cloak` with `#[serde(default)] source: CloakSource {TopOfLibrary | ChosenFromZone | Objects}`.
+> - **Vannifar, Evolved Enigma** mode 1 (cloak a card from hand) → **B**: interactive hand-source, reuse `morph::manifest_card` + a `ManifestDreadChoice`-style `WaitingFor` (`/add-interactive-effect` + `/add-engine-variant`). (Mode 2 PutCounterAll already parses.)
+> - **Expose the Culprit** mode 2 (exile→face-down-pile→shuffle→cloak-them) → **C**: `CloakSource::Objects` + NEW primitive `Effect::Shuffle` extended to a face-down exile pile (CR 701.24a, grep-confirmed docs:3490) + provenance `ExiledBySource`; `/review-engine-plan`-gated. (Mode 1 TurnFaceUp already parses.)
+> - A1 runs in the ENGINE-WORK phase alongside its siblings, NOT as batch 1. Full design in planner artifact (agentId a52e7bb82217ec770).
+>
+> **Resolver-level classification audit COMPLETE** (Explore aab825c146edb453b). Corrected honest tiers (driver-adjusted where the audit was shallow on compound cards):
+>
+> **TIER 1 — dispatch first, high-confidence parser-only (no new variant; each still gets runtime test + /review-impl):**
+> - A4 Stargaze — `Effect::Dig{keep_count}` (8675) + `Effect::LoseLife` (8426), dynamic X. GREEN.
+> - A6 Quick Draw — two `RemoveKeyword` (17260) opponent-scoped; parser already loops multi-keyword via `split_keyword_list` (oracle_static/keyword_grant.rs:1433). GREEN.
+> - A10 Another Round — `RepeatContinuation` (14309) exists. GREEN (verify "exile any number of your creatures + return" interactive selection at dispatch).
+> - A11 Rhino's Rampage — `DealtExcessDamage` trigger (oracle_trigger.rs:8392) + `Effect::Destroy` (8321); parser + reflexive-trigger wiring, no new variant. GREEN-ish.
+>
+> **TIER 2 — small engine wiring (trigger/replacement, no new variant):**
+> - A8 Crowd-Control Warden — `PutCounter`+`ObjectCount` exist (9219, 4288); needs "as enters OR is turned face up" dynamic-X counter wiring (replacement/trigger).
+> - A8 Prishe's Wanderings — reflexive search-trigger + counter (/add-trigger).
+>
+> **TIER 3 — ENGINE-WORK PHASE (RED / compound; /review-engine-plan / /add-engine-variant / /add-interactive-effect gated; fold in with Group B/C):**
+> - A3 Foraging Wickermaw — **RED**: `SetColor{colors: Vec<ManaColor>}` (17411) hardwired to fixed colors, no event-context/dynamic axis; needs `SetColorDynamic`/event-color binding. → B/C.
+> - A7 Outrageous Robbery — **RED**: exile-face-down + PlayFromExile exist, but visibility filter (game/visibility.rs:240-276) redacts all non-Foretell/Hideaway face-down exiles; "you may look at and play those cards" needs a new look-permission (`ExileLinkKind`) mechanism. → B/C.
+> - A8 Rhys the Evermore — **RED**: `RemoveCounter` resolver (counters.rs:1943-1979) handles fixed/all only, no interactive "remove any number" (`WaitingFor` counter choice). → B/C.
+> - A2 Brilliance Unleashed — audit GREEN was shallow: mode 2 uses an **"Otherwise" else-branch** gy-return-as-Robot (same else-branch as C12 Bre) + conditional Animate. → planner-gated, likely B.
+> - A2 The Tomb of Aclazotz — transform-DFC: cast-a-creature-from-graveyard-this-turn + finality counter + type-add. → planner-gated, likely B/C.
+> - A8 Esper Terra — transforming Saga (copy-tokens + lore counters + delayed sac + chapter-IV mana/transform). → planner-gated, likely C.
+> - A1 Vannifar (B interactive) + Expose the Culprit (C shuffle-pile) — resequenced above.
+>
+> **Honest Group A tally:** ~4 cards truly batch-1 parser-only (Stargaze, Quick Draw, Another Round, Rhino's Rampage); ~2 small-wiring (Warden, Prishe); ~8 need engine work / planner gates (A1×2, A3, A7, Rhys, Brilliance, Tomb, Esper Terra). The "14 parser-only" premise is materially wrong; ALL still ship, re-tiered by true cost.
+
+## 0c. GROUND-TRUTH PARSE-PROBE — honest gap map (2026-07-01, driver s25-impl; supersedes ALL group labels)
+
+> Method: ran the real whole-card parser (`parse_oracle_text` / `parse_oracle_with_cleave_brackets`) over all 40 cards' exact Oracle text; classified from the MEASURED `Effect::Unimplemented` nodes. (Probe artifact reverted; tracked tree clean.) **Result: 0/40 parse-CLEAN — every card has ≥1 clause lowering to Unimplemented / dropped / mis-scoped.** ~31 distinct missing primitives. The "14 parser-only" premise is comprehensively false. FULL COMPLETION AUTHORIZED (user) — all 40 ship at true engine cost; build shared plumbing FIRST, sequenced by fan-out.
+>
+> **Probe corrections to FINAL card classifications (measured):** Vanille = **MELD** subsystem (own+control two named → meld into Ragnarok), NOT the C10 alt-cost keyword. Dominion Bracelet = **control-another-player + {X}-less activation cost** (pairs with C1's control subsystem), not C9 cost-only. Vincent's Limit Break = **Tiered** (choose-one-additional-cost) casting mechanic + tier P/T, not "three token faces." Control-another-player CR is **723 — LOCKED** (team-lead grep-verified: 720=Omen Cards, 721=Station, 722=Preparation, 723=Controlling Another Player; the probe MIS-READ 720 — do NOT use 720, no re-litigation). Both DFC front faces (Terra Magical Adept, Tarrian's Journal) parse clean; both back faces gap. MELD (Vanille) and Tiered (Vincent) are real subsystems — plan-gate each like a Group-C card; all ship.
+>
+> ### Fan-out-ordered primitive dispatch (build-most-unlocking-first; each primitive → /engine-planner → /review-engine-plan → executor → /review-impl → commit)
+>
+> **P1 — fan-out 3 (lead):**
+> - **P1a Reflexive "when you [did X] this way / this turn" trigger** — Prishe's Wanderings (search event), Rhino's Rampage (excess-damage event), Stolen Uniform (lose-control event). Shared = reflexive/delayed-trigger attachment parser; per-card = the event condition (DealtExcessDamage exists; search-completed / lose-control conditions verify at plan). **← STARTING HERE.**
+> - **P1b Play-from-exile / impulse permission** — Outrageous Robbery, Memory Vessel, Bre of Clan Stoutarm. Shared core = play-from-exile permission + VISIBILITY look-grant (visibility.rs redaction — the A7 deliverable per team-lead) + spend-as-any / can't-play-from-hand / exile-until-cast variants.
+>
+> **P2 — fan-out 2:**
+> - **P2a Name-matched multi-zone search-and-exile** (gy+hand+library, "cards with that name", shuffle, draw-per-hand-exile) — Deadly Cover-Up, The End.
+> - **P2b Control another player** (CR 723 — LOCKED, not 720) — Secret of Bloodbending, The Dominion Bracelet (+ Bumi combat-restriction adjacent; Dominion also needs {X}-less cost).
+> - **P2c Cloak from non-library source** (+ face-down-pile shuffle for Expose, CR 701.24a) — Vannifar (interactive hand), Expose the Culprit. **A1 design already produced** (CloakSource{TopOfLibrary|ChosenFromZone|Objects}); reuse it.
+> - **P2d Restricted-mana spend condition** (runtime liveness; `ManaSpendRestriction` enum + parser already exist per FINAL B8; `[spend]` Unimplemented is honest-red pending payment-site wiring via `pay_special_action_mana_cost`) — Tin Street Gossip, Overgrown Zealot.
+> - **P2e Become a typed token** ("it's a [P/T] [types] with '[ability]', loses all other card types"; reuse Shelob `parse_its_a_type_with_ability` become_copy_except.rs:712) — Brilliance Unleashed (mode 2; ALSO needs Bre's else-branch), Vraska.
+> - **P2f Grant abilities/keywords to an object** (copy or creature) — Symbiote Spider-Man ("gains this card's other abilities" incl. triggered → parameterize GainActivatedAbilitiesOfTarget), Choreographed Sparks (grant to copy + haste + delayed sac).
+>
+> **P3 — singletons (~22 cards; group cheap ones; each still plan+review gated):**
+> Small params/effects: Stargaze (dig-split + DYNAMIC KEEP `QuantityExpr`), Rhys (variable-count RemoveCounter), Another Round (repeat-N wrapper), Quick Draw (OPPONENT-CONSTRAINED mass keyword loss), Foraging Wickermaw (becomes-added-mana-color), Crowd-Control Warden (as-enters/turn-face-up replacement + dynamic counters), Skullspore Nexus (dynamic-base-P/T token from aggregate), Alania (first-{spelltype}-this-turn condition), Kav Landseeker (delayed end-step token sac), Parker Luck (cross-ref reveal → MV life loss), Sandman (return self + target land from gy). Heavier singletons/subsystems: Esper Terra back (multi-symbol mana list + lore counters + Saga transform), Tomb back (cast-from-gy enters-with-counter + type-add), No Witnesses (most-creatures player selection + investigate + wrath), Glen Elendra (counter ALL opponent stack abilities), Graceful Takedown (multi-source each-deal-power damage — Tier-3), Niko (named-subset become copies, duration-bound), Moonlit Meditation (token-creation replacement latch), Bumi (attack restriction + extra combat), Vincent (Tiered mechanic), Vanille (Meld subsystem).
+> Shared building blocks to exploit: DYNAMIC KEEP/put-count (Stargaze; reused by any "look N put X"); OPPONENT-CONSTRAINED target-player slot (Quick Draw; reused by every "target opponent controls"); else-branch (Brilliance ∩ Bre). Build these params once.
+
 ## 0. What changed vs the seed plan (measured corrections)
 
 Every claim below was grep-confirmed against `crates/engine/src/**` and `docs/MagicCompRules.txt` this pass. The seed plan's round-1 review left four open items "to resolve at dispatch, do not guess now." They are now resolved by measurement, and the resolution moved four families:
@@ -38,7 +94,7 @@ Net accounting after corrections: **Group A = 14, Group B = 12, Group C = 14 = 4
 
 Every Group A family follows this exact shape: **extend the parser dispatch/lowering only**; the `Effect` variant, resolver, and coverage registration already exist. The Cloak parser today handles `"cloak the top N"` but **not** the article/pronoun phrasings Vannifar (`"Cloak a card from your hand"`) and Expose the Culprit (`"shuffle that pile, then cloak them"`) use — that gap generalizes to the whole group.
 
-**Second trace (for the type-set-with-ability composition used by Vraska/C):** `parse_its_a_type_with_ability` at `parser/oracle_effect/become_copy_except.rs:712` → `ContinuousModification::{AddType, AddSubtype}` (`types/ability.rs:17317`) + `SetCardTypes` replacement + quoted-ability grant (shares `parse_it_has_quoted_ability`). CR 205.1a (set card type) + CR 707.9d (copy-CDA interaction) + CR 205.1b ("in addition to its other types").
+**Second trace (for the type-set-with-ability composition used by Vraska/C):** `parse_its_a_type_with_ability` at `parser/oracle_effect/become_copy_except.rs:712` → `ContinuousModification::{AddType, AddSubtype}` (`types/ability.rs:17317`) + `SetCardTypes` replacement + quoted-ability grant (shares `parse_it_has_quoted_ability`). CR 205.1a (set card type) + CR 205.1b ("in addition to its other types"). **CR 707.9d (copy-CDA interaction) applies ONLY to the copy-path callers** (Shelob / Espers to Magicite / Myrkul); Vraska's non-copy reanimate is governed by CR 613.1d (Layer 4 type-change) + CR 611.2b (indefinite continuous effect) instead — corrected per P2e plan (team-lead grep-confirmed 707.9d is copy-effect-scoped).
 
 ---
 
@@ -98,7 +154,7 @@ Skill: **`/oracle-parser`** for every family. No new `Effect` variant, no resolv
 | **C10** | Vanille, Cheerful l'Cie | "Fearless l'Cie — you may pay {3}{B}{G}" alt-cost keyword — route through the alt-cost parser once the S23/S26 alt-cost cluster lands. CR 118 / CR 601.2b. |
 | **C11** | Sandman, Shifting Scoundrel | "target land card from your graveyard" — target-in-graveyard `parse_target` zone extension (S17-adjacent). Small but a targeting-layer change → reviewed. |
 | **C12** | Bre of Clan Stoutarm | "Otherwise …" else-branch (conditional-else parse) — S12-adjacent; small but structural (modal/else). |
-| **C (Vraska)** | Vraska, the Silencer | **Moved from A2 (see §0).** `"return that card to the battlefield tapped under your control. It's a Treasure artifact with '{T}, Sacrifice this artifact: Add one mana of any color,' and it loses all other card types."` Reuse the Shelob type-set-with-ability helper (`become_copy_except.rs:712`, `SetCardTypes` + quoted-ability grant + lose-all-types) but apply it to a **reanimated non-copy** permanent (`ChangeZone`→battlefield, tapped, under controller), gated by the optional `pay {1}` trigger cost. New composition, not new subsystem. CR 205.1a + CR 707.9d + CR 603.6. |
+| **C (Vraska)** | Vraska, the Silencer | **Moved from A2 (see §0).** `"return that card to the battlefield tapped under your control. It's a Treasure artifact with '{T}, Sacrifice this artifact: Add one mana of any color,' and it loses all other card types."` Reuse the Shelob type-set-with-ability helper (`become_copy_except.rs:712`, `SetCardTypes` + quoted-ability grant + lose-all-types) but apply it to a **reanimated non-copy** permanent (`ChangeZone`→battlefield, tapped, under controller), gated by the optional `pay {1}` trigger cost. New composition, not new subsystem. CR 205.1a + CR 205.1b + CR 613.1d + CR 611.2b + CR 603.6 (**NOT 707.9d** — copy-effect-scoped, does not govern a non-copy reanimate; corrected per P2e plan). |
 
 **Group C subtotal: 14 cards.** C1 is the only true new-subsystem heavyweight (CR 723). Several (C9, C10, C11, C12) are small once their adjacent cluster (S23/S26 alt-cost, S17 target-in-gy, S12 else) lands — sequence them *after* those clusters so they inherit the block. Every one is implemented, none dropped.
 
