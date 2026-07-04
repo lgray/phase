@@ -569,6 +569,7 @@ mod tests {
                 condition: DelayedTriggerCondition::AtNextPhaseForPlayer {
                     phase: Phase::End,
                     player: PlayerId(0),
+                    gate: crate::types::ability::TurnGate::None,
                 },
                 effect: Box::new(recall_inner),
                 uses_tracked_set: true,

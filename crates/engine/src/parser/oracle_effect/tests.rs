@@ -14299,6 +14299,7 @@ fn strip_temporal_suffix_your_next_main_phase() {
         Some(DelayedTriggerCondition::AtNextPhaseForPlayer {
             phase: Phase::PreCombatMain,
             player: crate::types::player::PlayerId(0),
+            gate: crate::types::ability::TurnGate::None,
         })
     );
 }
@@ -14343,7 +14344,151 @@ fn strip_temporal_prefix_your_next_main_phase() {
         Some(DelayedTriggerCondition::AtNextPhaseForPlayer {
             phase: Phase::PreCombatMain,
             player: crate::types::player::PlayerId(0),
+            gate: crate::types::ability::TurnGate::None,
         })
+    );
+}
+
+/// CR 513.2 + CR 603.7a: Kav Landseeker's "at the beginning of the end step on
+/// your next turn" must recognize as an `AtNextPhaseForPlayer{End}` delayed
+/// trigger carrying `TurnGate::AfterCreationTurn` (the skip-current-turn gate),
+/// in BOTH prefix and suffix position. Revert-to-red: delete the new temporal
+/// arm and `cond` becomes `None` (the sentence never wraps into a delayed
+/// trigger, so the effect lowers to `Unimplemented{name:"at"}`).
+#[test]
+fn temporal_end_step_on_your_next_turn_carries_after_creation_gate() {
+    use crate::types::ability::TurnGate;
+    let expected = DelayedTriggerCondition::AtNextPhaseForPlayer {
+        phase: Phase::End,
+        player: crate::types::player::PlayerId(0),
+        gate: TurnGate::AfterCreationTurn,
+    };
+
+    let (rest, cond) = strip_temporal_prefix(
+        "at the beginning of the end step on your next turn, sacrifice that token",
+    );
+    assert_eq!(rest, "sacrifice that token");
+    assert_eq!(cond, Some(expected.clone()));
+
+    let (rest, cond) = strip_temporal_suffix(
+        "sacrifice that token at the beginning of the end step on your next turn",
+    );
+    assert_eq!(rest, "sacrifice that token");
+    assert_eq!(cond, Some(expected));
+}
+
+/// Non-perturbation / no-shadowing guard for the Kav arm: Greasefang's "at the
+/// beginning of your next end step" must STILL lower to
+/// `AtNextPhaseForPlayer{End, gate: TurnGate::None}` (fires the current end
+/// step, CR 513.2 does not back it up). Revert-to-red: if the Kav arm ever
+/// shadowed this one, `gate` would come back `AfterCreationTurn` and the
+/// existing card would skip its current end step.
+#[test]
+fn your_next_end_step_keeps_none_gate_not_shadowed_by_kav_arm() {
+    use crate::types::ability::TurnGate;
+    let expected = DelayedTriggerCondition::AtNextPhaseForPlayer {
+        phase: Phase::End,
+        player: crate::types::player::PlayerId(0),
+        gate: TurnGate::None,
+    };
+
+    let (rest, cond) = strip_temporal_prefix(
+        "at the beginning of your next end step, return it to its owner's hand",
+    );
+    assert_eq!(rest, "return it to its owner's hand");
+    assert_eq!(cond, Some(expected.clone()));
+
+    let (rest, cond) = strip_temporal_suffix(
+        "return it to its owner's hand at the beginning of your next end step",
+    );
+    assert_eq!(rest, "return it to its owner's hand");
+    assert_eq!(cond, Some(expected));
+}
+
+/// SHAPE (CR 603.7a): Kav Landseeker's full ETB must lower to
+/// `Token{Lander}` whose `sub_ability` is
+/// `CreateDelayedTrigger{ AtNextPhaseForPlayer{End, gate: AfterCreationTurn},
+/// Sacrifice(LastCreated) }`, with ZERO residual `Unimplemented` and the Lander
+/// token creation preserved. Revert-to-red: remove the temporal arm → the
+/// second sentence lowers to `Unimplemented{name:"at"}` (sub_ability fails the
+/// no-Unimplemented assertion).
+#[test]
+fn kav_landseeker_etb_lowers_to_token_plus_delayed_sacrifice() {
+    use crate::types::ability::TurnGate;
+    let parsed = parse_oracle_text(
+        "Menace (This creature can't be blocked except by two or more creatures.)\n\
+         When this creature enters, create a Lander token. At the beginning of the end step on your next turn, sacrifice that token. (It's an artifact with \"{2}, {T}, Sacrifice this token: Search your library for a basic land card, put it onto the battlefield tapped, then shuffle.\")",
+        "Kav Landseeker",
+        &["Menace".to_string()],
+        &["Creature".to_string()],
+        &["Kavu".to_string(), "Soldier".to_string()],
+    );
+
+    fn ability_has_unimplemented(ability: &AbilityDefinition) -> bool {
+        matches!(*ability.effect, Effect::Unimplemented { .. })
+            || ability
+                .sub_ability
+                .as_deref()
+                .is_some_and(ability_has_unimplemented)
+            || ability
+                .else_ability
+                .as_deref()
+                .is_some_and(ability_has_unimplemented)
+    }
+
+    assert_eq!(parsed.triggers.len(), 1, "expected the ETB trigger");
+    let execute = parsed.triggers[0]
+        .execute
+        .as_deref()
+        .expect("ETB trigger must carry an execute body");
+    assert!(
+        !ability_has_unimplemented(execute),
+        "Kav ETB lowered to an Unimplemented node: {execute:#?}"
+    );
+
+    // Head: create a Lander token (preserved).
+    let Effect::Token { name, types, .. } = execute.effect.as_ref() else {
+        panic!("expected head Token effect, got {:?}", execute.effect);
+    };
+    assert_eq!(name, "Lander");
+    assert!(
+        types.iter().any(|t| t == "Lander"),
+        "Lander token must retain its Lander subtype, got {types:?}"
+    );
+
+    // Sub-ability: the delayed sacrifice, gated to the next turn.
+    let sub = execute
+        .sub_ability
+        .as_deref()
+        .expect("Token head must chain into the delayed sacrifice");
+    let Effect::CreateDelayedTrigger {
+        condition, effect, ..
+    } = sub.effect.as_ref()
+    else {
+        panic!(
+            "expected CreateDelayedTrigger sub_ability, got {:?}",
+            sub.effect
+        );
+    };
+    assert_eq!(
+        *condition,
+        DelayedTriggerCondition::AtNextPhaseForPlayer {
+            phase: Phase::End,
+            player: crate::types::player::PlayerId(0),
+            gate: TurnGate::AfterCreationTurn,
+        },
+        "delayed condition must be End-step gated to the creating player's next turn"
+    );
+    assert!(
+        matches!(
+            effect.effect.as_ref(),
+            Effect::Sacrifice {
+                target: TargetFilter::LastCreated,
+                ..
+            }
+        ),
+        "delayed effect must sacrifice the just-created token (LastCreated), got {:?}",
+        effect.effect
     );
 }
 

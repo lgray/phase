@@ -2590,6 +2590,34 @@ impl DelayedTriggerLifetime {
     }
 }
 
+/// CR 513.2 + CR 603.7a: turn-floor gate for an `AtNextPhaseForPlayer` delayed
+/// trigger. The concrete floor only exists at delayed-trigger CREATION (CR
+/// 603.7a — created on resolution), so the parser emits the symbolic
+/// `AfterCreationTurn`; `effects::delayed_trigger::resolve` rewrites it to
+/// `After(creation_turn)`, mirroring the existing `PlayerId(0) -> controller`
+/// rewrite in the same block.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum TurnGate {
+    /// No floor — fire at the nearest matching phase (Greasefang "your next end
+    /// step" may be the current turn). DEFAULT; existing users keep this.
+    #[default]
+    None,
+    /// Parse-time symbolic "no earlier than the creating player's next turn"
+    /// (Kav Landseeker "the end step on your next turn"). Rewritten to `After`
+    /// at resolution.
+    AfterCreationTurn,
+    /// Resolve-stamped concrete floor: fire only on a turn strictly greater.
+    After(u32),
+}
+
+impl TurnGate {
+    /// Serde skip-helper: `None` is the default and is omitted from JSON, so all
+    /// existing serialized card-data stays byte-identical.
+    pub fn is_none(&self) -> bool {
+        matches!(self, TurnGate::None)
+    }
+}
+
 /// When a delayed triggered ability fires (CR 603.7).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type")]
@@ -2599,7 +2627,14 @@ pub enum DelayedTriggerCondition {
     AtNextPhase { phase: Phase },
     /// "at the beginning of your next [phase]"
     /// Fires only when the specified player is active.
-    AtNextPhaseForPlayer { phase: Phase, player: PlayerId },
+    AtNextPhaseForPlayer {
+        phase: Phase,
+        player: PlayerId,
+        /// CR 513.2: turn-floor gate for "on your next turn" skip-current
+        /// semantics. `None` (default) = fire at the nearest matching phase.
+        #[serde(default, skip_serializing_if = "TurnGate::is_none")]
+        gate: TurnGate,
+    },
     /// "when [object] leaves the battlefield"
     WhenLeavesPlay {
         object_id: super::identifiers::ObjectId,

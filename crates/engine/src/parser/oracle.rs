@@ -425,6 +425,7 @@ fn try_parse_opening_hand_reveal_delayed_trigger(
                 DelayedTriggerCondition::AtNextPhaseForPlayer {
                     phase: Phase::Upkeep,
                     player: PlayerId(0),
+                    gate: crate::types::ability::TurnGate::None,
                 },
                 tag("at the beginning of your first upkeep, "),
             ),

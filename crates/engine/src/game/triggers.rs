@@ -5691,9 +5691,34 @@ fn delayed_trigger_event_with_index(
             .enumerate()
             .find(|(_, e)| matches!(e, GameEvent::PhaseChanged { phase: p } if p == phase))
             .map(|(idx, event)| (idx, event.clone())),
-        DelayedTriggerCondition::AtNextPhaseForPlayer { phase, player } => {
+        DelayedTriggerCondition::AtNextPhaseForPlayer {
+            phase,
+            player,
+            gate,
+        } => {
             if state.active_player != *player {
                 return None;
+            }
+            // CR 513.2: honor the "on your next turn" turn-floor. The parser's
+            // symbolic `AfterCreationTurn` is always rewritten to `After(turn)`
+            // at creation (effects::delayed_trigger::resolve, single-path).
+            use crate::types::ability::TurnGate;
+            match gate {
+                TurnGate::None => {}
+                // Skip every matching phase up to and including the floor turn;
+                // fire on the first strictly-later turn (the controller's next
+                // turn per the active_player guard above, incl. extra turns —
+                // CR 500.7).
+                TurnGate::After(floor) => {
+                    if state.turn_number <= *floor {
+                        return None;
+                    }
+                }
+                TurnGate::AfterCreationTurn => {
+                    debug_assert!(false, "unstamped AfterCreationTurn reached the matcher");
+                    // Fall through to fire THIS turn — the LOUD wrong-timing
+                    // signal (caught by the paired test), never silent-never-fire.
+                }
             }
             events
                 .iter()

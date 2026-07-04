@@ -218,7 +218,7 @@ fn rebound_offers_recast_at_upkeep_and_resolves() {
     );
     let trig = &state.delayed_triggers[0];
     match &trig.condition {
-        DelayedTriggerCondition::AtNextPhaseForPlayer { phase, player } => {
+        DelayedTriggerCondition::AtNextPhaseForPlayer { phase, player, .. } => {
             assert_eq!(
                 *phase,
                 Phase::Upkeep,

@@ -5016,6 +5016,7 @@ pub(super) fn strip_temporal_suffix(text: &str) -> (&str, Option<DelayedTriggerC
             DelayedTriggerCondition::AtNextPhaseForPlayer {
                 phase: Phase::PreCombatMain,
                 player: crate::types::player::PlayerId(0),
+                gate: crate::types::ability::TurnGate::None,
             },
         ),
         // CR 505.1 + CR 603.7a: Symmetric to the prefix form at
@@ -5028,6 +5029,21 @@ pub(super) fn strip_temporal_suffix(text: &str) -> (&str, Option<DelayedTriggerC
             DelayedTriggerCondition::AtNextPhaseForPlayer {
                 phase: Phase::End,
                 player: crate::types::player::PlayerId(0),
+                gate: crate::types::ability::TurnGate::None,
+            },
+        ),
+        // CR 513.2 + CR 603.7a: reordered "…, sacrifice that token at the
+        // beginning of the end step on your next turn" (Kav Landseeker). Suffix
+        // companion of the prefix arm. Skip-current via `AfterCreationTurn`
+        // (rewritten to `After(creation_turn)` at resolve). Diverges from the
+        // Greasefang "your next end step" suffix above ("the end step on" vs
+        // "your next end step"); neither suffix is a tail of the other.
+        (
+            " at the beginning of the end step on your next turn",
+            DelayedTriggerCondition::AtNextPhaseForPlayer {
+                phase: Phase::End,
+                player: crate::types::player::PlayerId(0),
+                gate: crate::types::ability::TurnGate::AfterCreationTurn,
             },
         ),
         // CR 603.7a + CR 104.3e: anaphoric "that turn's end step" — the extra
@@ -5040,6 +5056,7 @@ pub(super) fn strip_temporal_suffix(text: &str) -> (&str, Option<DelayedTriggerC
             DelayedTriggerCondition::AtNextPhaseForPlayer {
                 phase: Phase::End,
                 player: crate::types::player::PlayerId(0),
+                gate: crate::types::ability::TurnGate::None,
             },
         ),
         (
@@ -5047,6 +5064,7 @@ pub(super) fn strip_temporal_suffix(text: &str) -> (&str, Option<DelayedTriggerC
             DelayedTriggerCondition::AtNextPhaseForPlayer {
                 phase: Phase::Upkeep,
                 player: crate::types::player::PlayerId(0),
+                gate: crate::types::ability::TurnGate::None,
             },
         ),
         // CR 514.3a + CR 603.7a: "at the beginning of the next cleanup step"
@@ -5090,6 +5108,7 @@ pub(crate) fn strip_temporal_prefix(text: &str) -> (&str, Option<DelayedTriggerC
                 DelayedTriggerCondition::AtNextPhaseForPlayer {
                     phase: Phase::Upkeep,
                     player: crate::types::player::PlayerId(0),
+                    gate: crate::types::ability::TurnGate::None,
                 },
                 tag("at the beginning of your next upkeep, "),
             ),
@@ -5097,8 +5116,25 @@ pub(crate) fn strip_temporal_prefix(text: &str) -> (&str, Option<DelayedTriggerC
                 DelayedTriggerCondition::AtNextPhaseForPlayer {
                     phase: Phase::End,
                     player: crate::types::player::PlayerId(0),
+                    gate: crate::types::ability::TurnGate::None,
                 },
                 tag("at the beginning of your next end step, "),
+            ),
+            // CR 513.2 + CR 603.7a: "at the beginning of the end step on your
+            // next turn" — the WotC "skip the current turn's end step" wording
+            // (Kav Landseeker). Distinct from "your next end step" above (which
+            // fires the current end step, CR 513.2 does not back it up): this
+            // arm diverges at "the end step on" vs "your next end step" and must
+            // NOT be shadowed by it. `AfterCreationTurn` is rewritten to
+            // `After(creation_turn)` in effects::delayed_trigger::resolve so the
+            // current turn's end step is skipped.
+            value(
+                DelayedTriggerCondition::AtNextPhaseForPlayer {
+                    phase: Phase::End,
+                    player: crate::types::player::PlayerId(0),
+                    gate: crate::types::ability::TurnGate::AfterCreationTurn,
+                },
+                tag("at the beginning of the end step on your next turn, "),
             ),
             // CR 603.7a + CR 104.3e: "at the beginning of that turn's end step"
             // is the anaphoric form used by the extra-turn-with-a-cost cards
@@ -5113,6 +5149,7 @@ pub(crate) fn strip_temporal_prefix(text: &str) -> (&str, Option<DelayedTriggerC
                 DelayedTriggerCondition::AtNextPhaseForPlayer {
                     phase: Phase::End,
                     player: crate::types::player::PlayerId(0),
+                    gate: crate::types::ability::TurnGate::None,
                 },
                 tag("at the beginning of that turn's end step, "),
             ),
@@ -5123,6 +5160,7 @@ pub(crate) fn strip_temporal_prefix(text: &str) -> (&str, Option<DelayedTriggerC
                 DelayedTriggerCondition::AtNextPhaseForPlayer {
                     phase: Phase::PreCombatMain,
                     player: crate::types::player::PlayerId(0),
+                    gate: crate::types::ability::TurnGate::None,
                 },
                 tag("at the beginning of your next main phase, "),
             ),
@@ -9591,6 +9629,7 @@ mod tests {
         let expected = DelayedTriggerCondition::AtNextPhaseForPlayer {
             phase: Phase::End,
             player: crate::types::player::PlayerId(0),
+            gate: crate::types::ability::TurnGate::None,
         };
 
         let (rest, cond) =

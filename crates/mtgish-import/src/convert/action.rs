@@ -4584,17 +4584,20 @@ fn future_trigger_to_condition(t: &FutureTrigger) -> ConvResult<DelayedTriggerCo
         F::AtTheBeginningOfPlayersNextUpkeep(p) => DelayedTriggerCondition::AtNextPhaseForPlayer {
             phase: Phase::Upkeep,
             player: future_trigger_player_id(p)?,
+            gate: engine::types::ability::TurnGate::None,
         },
         // CR 513.1: Player-scoped end step.
         F::AtTheBeginningOfPlayersNextEndStep(p) => DelayedTriggerCondition::AtNextPhaseForPlayer {
             phase: Phase::End,
             player: future_trigger_player_id(p)?,
+            gate: engine::types::ability::TurnGate::None,
         },
         // CR 504.1: Player-scoped draw step.
         F::AtTheBeginningOfPlayersNextDrawStep(p) => {
             DelayedTriggerCondition::AtNextPhaseForPlayer {
                 phase: Phase::Draw,
                 player: future_trigger_player_id(p)?,
+                gate: engine::types::ability::TurnGate::None,
             }
         }
         // CR 505.1: Player-scoped main phase. Both "next main phase" and
@@ -4606,6 +4609,7 @@ fn future_trigger_to_condition(t: &FutureTrigger) -> ConvResult<DelayedTriggerCo
             DelayedTriggerCondition::AtNextPhaseForPlayer {
                 phase: Phase::PreCombatMain,
                 player: future_trigger_player_id(p)?,
+                gate: engine::types::ability::TurnGate::None,
             }
         }
         // CR 508.1: Player-scoped declare attackers step.
@@ -4613,6 +4617,7 @@ fn future_trigger_to_condition(t: &FutureTrigger) -> ConvResult<DelayedTriggerCo
             DelayedTriggerCondition::AtNextPhaseForPlayer {
                 phase: Phase::DeclareAttackers,
                 player: future_trigger_player_id(p)?,
+                gate: engine::types::ability::TurnGate::None,
             }
         }
 
