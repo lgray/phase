@@ -74,8 +74,8 @@ use super::oracle_modal::{
     strip_flavor_word_with_name, FLAVOR_WORD_COST_LABEL_MAX_WORDS,
 };
 use super::oracle_replacement::{
-    find_copy_verb_present, lower_as_enters_becomes_choice_modal, lower_replacement_ir,
-    parse_replacement_line,
+    find_copy_verb_present, lower_as_enters_becomes_choice_modal,
+    lower_as_enters_or_face_up_counters, lower_replacement_ir, parse_replacement_line,
 };
 use super::oracle_saga::{is_saga_chapter, parse_saga_chapters};
 use super::oracle_spacecraft::parse_spacecraft_threshold_lines;
@@ -3867,6 +3867,19 @@ pub(crate) fn parse_oracle_ir(
             if is_as_enters_becomes_choice_pattern(&lower)
                 && lower_as_enters_becomes_choice_modal(&line, &mut result)
             {
+                i += 1;
+                continue;
+            }
+            // CR 614.1c + CR 708.11: dual "As ~ enters[ or is turned face up],
+            // put X +1/+1 counters on it, where X is …" (Crowd-Control Warden).
+            // A single sentence that never splits on `.`, so it needs a
+            // multi-emit-into-`result` path (one `Moved`/Battlefield + one
+            // `TurnFaceUp` replacement sharing the PutCounter execute). Runs BEFORE
+            // the generic sequence/line parsers, whose per-arm parsers each return
+            // one definition and cannot emit the dual pair. The tight
+            // PutCounter-SelfRef guard makes it fall through on any non-counter
+            // as-enters line, so the choose/becomes/enters-with siblings are safe.
+            if lower_as_enters_or_face_up_counters(&line, &mut result) {
                 i += 1;
                 continue;
             }

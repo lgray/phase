@@ -666,6 +666,70 @@ mod tests {
         );
     }
 
+    /// §10.1 NO-OVER-SUPPRESSION guard (NOT a revert-tripwire): the CR 708.3/708.2a
+    /// entry guard suppresses only the ENTERING object's OWN self-replacement
+    /// (`is_entering`, i.e. `rid.source == entering object`). An EXTERNAL source's
+    /// enters-tapped replacement has `is_entering == false` and must STILL apply to
+    /// a face-down 2/2 (a face-down permanent is still a creature entering the
+    /// battlefield). Install ONE type-agnostic external "enters tapped" `Moved`
+    /// replacement (Frozen Aether class, `valid_card == None`) on a DIFFERENT
+    /// permanent — single direction, so no CR 616.1 collision/prompt — then play a
+    /// morph creature face down and assert it enters TAPPED.
+    ///
+    /// This passes WITH and WITHOUT the guard: it guards against a naive
+    /// "skip all replacements on face-down entry" broadening, not against guard
+    /// absence. The discriminator for the fix is
+    /// `warden_played_face_down_gains_zero_counters` (0 → 2 on revert).
+    #[test]
+    fn external_enters_tapped_still_applies_to_face_down_entry() {
+        use crate::game::game_object::GameObject;
+        use crate::types::ability::{ReplacementDefinition, TargetFilter};
+        use crate::types::replacements::ReplacementEvent;
+
+        let mut state = GameState::new_two_player(42);
+        let player = PlayerId(0);
+
+        let oid = ObjectId(9000);
+        let mut src = GameObject::new(
+            oid,
+            CardId(900),
+            PlayerId(1),
+            "Frozen Aether".to_string(),
+            Zone::Battlefield,
+        );
+        src.replacement_definitions = vec![ReplacementDefinition::new(ReplacementEvent::Moved)
+            .execute(AbilityDefinition::new(
+                crate::types::ability::AbilityKind::Spell,
+                crate::types::ability::Effect::SetTapState {
+                    target: TargetFilter::SelfRef,
+                    scope: crate::types::ability::EffectScope::Single,
+                    state: crate::types::ability::TapStateChange::Tap,
+                },
+            ))
+            .destination_zone(Zone::Battlefield)
+            .description("Frozen Aether".to_string())]
+        .into();
+        state.objects.insert(oid, src);
+        state.battlefield.push_back(oid);
+
+        let id = setup_morph_creature(&mut state, player);
+        let mut events = Vec::new();
+        play_face_down(&mut state, player, id, &mut events).unwrap();
+
+        let obj = &state.objects[&id];
+        assert_eq!(
+            obj.zone,
+            Zone::Battlefield,
+            "reach-guard: the face-down entry was delivered (single-direction write, no prompt)"
+        );
+        assert!(obj.face_down, "reach-guard: entered FACE DOWN (CR 708.3)");
+        assert!(
+            obj.tapped,
+            "external (is_entering == false) enters-tapped replacement still applies to the \
+             face-down 2/2 — the guard suppresses only the entrant's OWN self-replacement"
+        );
+    }
+
     #[test]
     fn turn_face_up_restores_original_characteristics() {
         let mut state = GameState::new_two_player(42);
