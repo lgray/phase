@@ -2171,6 +2171,10 @@ fn legacy_filter_prop(p: &FilterProp) -> bool {
         }
         FilterProp::AnyOf { props } => props.iter().any(legacy_filter_prop),
         FilterProp::Not { prop } => legacy_filter_prop(prop),
+        // Resolution-chain tracked-set membership (leaf; only a `TrackedSetId`) —
+        // not one of the frozen-12 event-context refs. Member-boundness is handled
+        // in `member_bound_filter_prop`.
+        FilterProp::InTrackedSet { .. } => false,
         FilterProp::Token
         | FilterProp::NonToken
         | FilterProp::WasPlayed
@@ -2389,6 +2393,11 @@ fn member_bound_filter_prop(p: &FilterProp) -> bool {
         }
         FilterProp::AnyOf { props } => props.iter().any(member_bound_filter_prop),
         FilterProp::Not { prop } => member_bound_filter_prop(prop),
+        // CR 603.10a (PR-6.75 c5): membership in the active resolution-chain tracked
+        // set — the property form of the member-bound `TargetFilter::TrackedSet`
+        // selector (chain-first via `chain_tracked_set_id`). Per-source published
+        // storage ⇒ member-bound.
+        FilterProp::InTrackedSet { .. } => true,
         FilterProp::Token
         | FilterProp::NonToken
         | FilterProp::WasPlayed
@@ -2704,6 +2713,31 @@ fn legacy_effect(x: &Effect) -> bool {
         Effect::EachDealsDamageEqualToPower { sources, recipient } => {
             legacy_target_filter(sources) || legacy_target_filter(recipient)
         }
+        // CR 120: each source deals damage; `recipient` (`Shared`) can be a context
+        // anaphor (ParentTarget/TriggeringSource) ⇒ descend all tag-bearing fields.
+        Effect::EachSourceDealsDamage {
+            sources,
+            amount,
+            recipient,
+        } => {
+            legacy_target_filter(sources)
+                || legacy_quantity_expr(amount)
+                || match recipient {
+                    crate::types::ability::EachDamageRecipient::Shared(f) => {
+                        legacy_target_filter(f)
+                    }
+                    crate::types::ability::EachDamageRecipient::EachController => false,
+                }
+        }
+        Effect::ChooseCounterKind { target } => legacy_target_filter(target),
+        Effect::PutChosenCounter { target, count } => {
+            legacy_quantity_expr(count) || legacy_target_filter(target)
+        }
+        Effect::CreatePlaneswalkReplacement { replacement_effect } => {
+            legacy_effect(replacement_effect)
+        }
+        // Payload-less keyword action (planar chaos, CR 311.7) — no tag-bearing field.
+        Effect::ChaosEnsues => false,
         Effect::Attach { attachment, target } | Effect::UnattachAll { attachment, target } => {
             legacy_target_filter(attachment) || legacy_target_filter(target)
         }
@@ -3671,6 +3705,54 @@ fn rw_effect(
             p.merge(damage_writes(subject));
             (p, None)
         }
+        // CR 120.1 + CR 608.2c: each object matching `sources` (enumerated on the
+        // battlefield at resolution ⇒ a board membership read) deals `amount` damage.
+        // `Shared` ⇒ target damage_writes; `EachController` ⇒ each source's controller
+        // takes life loss (CR 120.3a).
+        Effect::EachSourceDealsDamage {
+            sources,
+            amount,
+            recipient,
+        } => {
+            let mut p = board_membership_read(sources);
+            p.merge(match recipient {
+                crate::types::ability::EachDamageRecipient::Shared(filter) => damage_writes(filter),
+                crate::types::ability::EachDamageRecipient::EachController => life_writes(),
+            });
+            p.merge(rw_quantity_expr(amount));
+            (p, None)
+        }
+        // CR 122 + CR 603.10a (PR-6.75 c5): inspects the distinct counter kinds on
+        // `target` (an ObjectCounters board read) and persists the pick as
+        // ChosenAttribute::Counter on the SOURCE — a per-source binding a later
+        // PutChosenCounter consumes (member-bound; mirrors Effect::Choose{persist}).
+        // No board WRITE: the placement is the separate PutChosenCounter.
+        Effect::ChooseCounterKind { target: _ } => {
+            let mut p = reads_board_of(StateKind::ObjectCounters);
+            p.reads_member_bound = true;
+            (p, None)
+        }
+        // CR 122.1 + CR 122.6 + CR 603.10a (PR-6.75 c5): adds `count` counters of the
+        // source's persisted ChosenAttribute::Counter kind to `target`. An
+        // ObjectCounters write (like PutCounter) that CONSUMES the per-source
+        // chosen-kind binding ⇒ member-bound read.
+        Effect::PutChosenCounter { target, count } => {
+            let (mut p, sc) = obj(StateKind::ObjectCounters, target);
+            p.reads_member_bound = true;
+            p.merge(rw_quantity_expr(count));
+            (p, sc)
+        }
+        // CR 614.1a + CR 611.2c + CR 603.7 (PR-6.75): a floating planeswalk
+        // replacement is a deferred body — descend reads, drop writes (resolves in a
+        // future scope). Mirrors CreateDrawReplacement.
+        Effect::CreatePlaneswalkReplacement { replacement_effect } => {
+            let (mut b, _) = rw_effect(replacement_effect, None, pscope, chain_move_owner);
+            b.drop_writes();
+            (b, None)
+        }
+        // CR 311.7 + CR 901.9b: fire the active plane's chaos trigger (mirrors
+        // Planeswalk / VentureIntoDungeon).
+        Effect::ChaosEnsues => (ext_write(StateKind::Other), None),
 
         // ---- Hand / library ----
         Effect::Draw { count, target: _ } => {
