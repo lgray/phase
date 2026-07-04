@@ -20913,12 +20913,18 @@ fn try_parse_repeat_until_stop_conditions(
 /// CONSUME the directive (it never produces an independent effect) and apply the
 /// right chain-level `repeat_until`:
 /// - `Continuation(c)` — a loop predicate was recognized; set `pending_repeat_until`.
+/// - `FixedCount(q)` — a pure "<q> more time[s]" count was recognized (Another
+///   Round: "repeat this process X more times"). `q` is the TOTAL iteration count
+///   (`Offset(inner, +1)` = "once + q more"), stamped onto the root clause's
+///   `repeat_for` so the ungated whole-chain driver loops the exile→return process
+///   q+1 times (CR 608.2c). No stop predicate — it is a plain count.
 /// - `ConsumeOnly` — the bare / "if you do" form (Primal Surge) is recognized so
 ///   the directive is consumed rather than producing an `Unimplemented` gap, but
 ///   it sets no predicate (its game-state-predicate semantics stay deferred).
 #[derive(Debug)]
 enum RepeatProcessOutcome {
     Continuation(crate::types::ability::RepeatContinuation),
+    FixedCount(QuantityExpr),
     ConsumeOnly,
 }
 
@@ -20955,7 +20961,7 @@ fn try_parse_repeat_process_directive(
     };
 
     let body_lower = body.to_lowercase();
-    let (max_iterations, _) = nom_on_lower(body.as_str(), &body_lower, |i| {
+    let (parsed_directive, _) = nom_on_lower(body.as_str(), &body_lower, |i| {
         let (i, you_may) = opt(tag::<_, _, OracleError<'_>>("you may ")).parse(i)?;
         // The bare/"if you do" forms have no condition and no "you may" — keep
         // them recognized (consume-only) so they don't leak Unimplemented gaps.
@@ -20965,6 +20971,19 @@ fn try_parse_repeat_process_directive(
         )))
         .parse(i)?;
         let (i, _) = tag("repeat this process").parse(i)?;
+        // CR 608.2c: pure "<q> more time[s]" count (Another Round's "repeat this
+        // process X more times", or a fixed "… two more times"). `q` is the
+        // ADDITIONAL count; the +1 offset below makes it the TOTAL run count
+        // ("once + q more"). `parse_quantity_expr_number` yields Variable{X} for
+        // "x" (resolved via chosen_x) or Fixed for a literal.
+        let (i, more_times) = opt(|i| {
+            let (i, _) = tag(" ").parse(i)?;
+            let (i, q) = nom_quantity::parse_quantity_expr_number(i)?;
+            let (i, _) = tag(" more time").parse(i)?;
+            let (i, _) = opt(tag("s")).parse(i)?;
+            Ok((i, q))
+        })
+        .parse(i)?;
         // Trailing iteration cap: "once" → 1, "twice" → 2, "three times" → 3,
         // bare / "any number of times" → unbounded (the latter only meaningful
         // for the controller-choice form).
@@ -20978,10 +20997,10 @@ fn try_parse_repeat_process_directive(
         let cap = cap.flatten();
         let (i, _) = opt(tag(".")).parse(i)?;
         eof(i)?;
-        Ok((i, (cap, you_may.is_some())))
+        Ok((i, (cap, you_may.is_some(), more_times)))
     })?;
 
-    let (cap, you_may) = max_iterations;
+    let (cap, you_may, more_times) = parsed_directive;
     if let Some(condition) = condition {
         return Some(RepeatProcessOutcome::Continuation(
             RepeatContinuation::WhileCondition {
@@ -20989,6 +21008,13 @@ fn try_parse_repeat_process_directive(
                 max_iterations: cap,
             },
         ));
+    }
+    // CR 608.2c: an unconditional pure count repeats the whole process q+1 times.
+    if let Some(additional) = more_times {
+        return Some(RepeatProcessOutcome::FixedCount(QuantityExpr::Offset {
+            inner: Box::new(additional),
+            offset: 1,
+        }));
     }
     if you_may {
         return Some(RepeatProcessOutcome::Continuation(
@@ -22504,8 +22530,22 @@ pub(crate) fn parse_effect_chain_ir(
         //     so the directive doesn't leak an `Unimplemented` gap, but it sets
         //     no predicate (its game-state-predicate form stays deferred).
         if let Some(outcome) = try_parse_repeat_process_directive(normalized_text, ctx) {
-            if let RepeatProcessOutcome::Continuation(continuation) = outcome {
-                pending_repeat_until = Some(continuation);
+            match outcome {
+                RepeatProcessOutcome::Continuation(continuation) => {
+                    pending_repeat_until = Some(continuation);
+                }
+                // CR 608.2c: "repeat this process <q> more times" is a
+                // back-reference to the whole process built so far. Its root is
+                // the first clause, so stamp the total-count `repeat_for` there;
+                // lower.rs lifts a first-clause `repeat_for` onto the root
+                // ability, and the ungated whole-chain driver (effects/mod.rs
+                // `repeated_full_chain`) then loops the exile→return process.
+                RepeatProcessOutcome::FixedCount(qty) => {
+                    if let Some(first) = clauses.first_mut() {
+                        first.repeat_for = Some(qty);
+                    }
+                }
+                RepeatProcessOutcome::ConsumeOnly => {}
             }
             continue;
         }
