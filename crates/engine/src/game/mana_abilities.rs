@@ -6844,6 +6844,7 @@ mod tests {
         PendingManaAbility {
             player: PlayerId(0),
             source_id: source,
+            ability_snapshot: None,
             ability_index: 0,
             color_override: None,
             resume: ManaAbilityResume::Priority,

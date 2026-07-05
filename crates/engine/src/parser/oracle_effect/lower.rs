@@ -2346,6 +2346,7 @@ fn fold_copy_spell_gains_haste_and_quoted_grant(def: &mut AbilityDefinition) {
         if let Some(mut sub) = def.sub_ability.take() {
             let folded = (sub.sub_link == SubAbilityLink::SequentialSibling)
                 .then(|| match sub.effect.as_ref() {
+                    // allow-noncombinator: destructuring an existing Unimplemented to read its description; not a construction.
                     Effect::Unimplemented {
                         description: Some(desc),
                         ..
@@ -2388,6 +2389,7 @@ fn parse_copy_gains_haste_and_quoted_grant(desc: &str) -> Option<Vec<ContinuousM
     let tp = TextPair::new(desc, &lower);
     // Strip the "the copy " subject (case-insensitive), leaving "gains <...>" so
     // the shared keyword-clause extractor still sees the "gains" verb.
+    // allow-noncombinator: TextPair dual-string prefix strip preserving original case; fixed known subject on a pre-classified clause, not parse-branch dispatch.
     let rest = tp.strip_prefix("the copy ")?.original;
     let mut mods = crate::parser::oracle_static::parse_continuous_modifications(rest);
     let quoted = crate::parser::oracle_static::parse_quoted_ability_modifications(rest);
