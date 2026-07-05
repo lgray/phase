@@ -5100,6 +5100,7 @@ pub(super) fn clause_is_dig_lookback_transparent(effect: &Effect) -> bool {
         | Effect::ReduceNextSpellCost { .. }
         | Effect::GrantNextSpellAbility { .. }
         | Effect::AddPendingETBCounters { .. }
+        | Effect::AddPendingEntersModifications { .. }
         | Effect::CreateEmblem { .. }
         | Effect::CastFromZone { .. }
         | Effect::FreeCastFromZones { .. }

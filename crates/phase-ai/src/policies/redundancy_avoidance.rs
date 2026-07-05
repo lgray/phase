@@ -475,6 +475,7 @@ fn redundancy_delta(
         | Effect::ReduceNextSpellCost { .. }
         | Effect::GrantNextSpellAbility { .. }
         | Effect::AddPendingETBCounters { .. }
+        | Effect::AddPendingEntersModifications { .. }
         | Effect::CreateEmblem { .. }
         | Effect::PayCost { .. }
         | Effect::CastFromZone { .. }

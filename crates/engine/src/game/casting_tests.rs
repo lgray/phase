@@ -930,6 +930,7 @@ fn exile_with_alt_cost_zero_uses_no_cost_path() {
             graveyard_replacement: None,
             mana_spend_permission: None,
             enters_with_counter: None,
+            enters_with_modifications: Vec::new(),
         });
     let prepared = prepare_spell_cast(&state, PlayerId(0), exiled).unwrap();
     assert!(matches!(prepared.mana_cost, ManaCost::NoCost));
@@ -14513,6 +14514,7 @@ fn graveyard_in_place_alt_cost_grant_is_consumed_after_one_cast() {
                 graveyard_replacement: None,
                 mana_spend_permission: None,
                 enters_with_counter: None,
+                enters_with_modifications: Vec::new(),
             });
     }
 
@@ -14754,6 +14756,229 @@ fn graveyard_cast_without_rider_has_no_finality_counter() {
     );
 }
 
+/// CR 205.1b + CR 611.2c + CR 613.1d — The Tomb of Aclazotz: a creature cast
+/// from the graveyard under a `CastFromZone` grant carrying the compound rider
+/// ("enters with a finality counter on it AND is a Vampire in addition to its
+/// other types") must, after resolving onto the battlefield:
+///   1. carry BOTH riders on the granted permission (counter + modifications),
+///   2. enter with the finality counter (regression guard on the existing half),
+///   3. be a Vampire ADDITIVELY — the layer-evaluated subtype set retains its
+///      printed subtype (Zombie) and gains Vampire (CR 205.1b additive grant,
+///      applied as a Permanent `TransientContinuousEffect` at cast finalization).
+///
+/// Reverting the finalize TCE block drops the Vampire subtype (assertion 3).
+#[test]
+fn graveyard_cast_this_way_enters_with_type_grant_rider() {
+    use crate::game::effects::cast_from_zone;
+
+    let mut state = setup_game_at_main_phase();
+    let creature = create_object(
+        &mut state,
+        CardId(8210),
+        PlayerId(0),
+        "Graveyard Zombie".to_string(),
+        Zone::Graveyard,
+    );
+    {
+        let obj = state.objects.get_mut(&creature).unwrap();
+        obj.card_types.core_types.push(CoreType::Creature);
+        // Printed subtype the additive grant must PRESERVE (CR 205.1b).
+        obj.card_types.subtypes.push("Zombie".to_string());
+        obj.base_card_types = obj.card_types.clone();
+        obj.base_power = Some(2);
+        obj.base_toughness = Some(2);
+        obj.power = Some(2);
+        obj.toughness = Some(2);
+        obj.mana_cost = ManaCost::zero();
+    }
+
+    // The compound rider as the parser produces it: the counter clause's
+    // sub-ability is the `AddPendingEntersModifications` type grant.
+    let mut counter_rider = ResolvedAbility::new(
+        Effect::AddPendingETBCounters {
+            counter_type: CounterType::Generic("finality".to_string()),
+            count: QuantityExpr::Fixed { value: 1 },
+        },
+        vec![],
+        ObjectId(9110),
+        PlayerId(0),
+    );
+    counter_rider.sub_ability = Some(Box::new(ResolvedAbility::new(
+        Effect::AddPendingEntersModifications {
+            modifications: vec![ContinuousModification::AddSubtype {
+                subtype: "Vampire".to_string(),
+            }],
+        },
+        vec![],
+        ObjectId(9110),
+        PlayerId(0),
+    )));
+    let mut grant = ResolvedAbility::new(
+        Effect::CastFromZone {
+            target: TargetFilter::ParentTarget,
+            without_paying_mana_cost: true,
+            mode: CardPlayMode::Cast,
+            cast_transformed: false,
+            alt_ability_cost: None,
+            constraint: None,
+            duration: Some(Duration::UntilEndOfTurn),
+            mana_spend_permission: None,
+            driver: crate::types::ability::CastFromZoneDriver::LingeringPermission,
+        },
+        vec![TargetRef::Object(creature)],
+        ObjectId(9110),
+        PlayerId(0),
+    );
+    grant.sub_ability = Some(Box::new(counter_rider));
+
+    cast_from_zone::resolve(&mut state, &grant, &mut Vec::new()).unwrap();
+
+    // Assertion 1: BOTH riders survived onto the granted permission.
+    assert!(
+        state.objects[&creature]
+            .casting_permissions
+            .iter()
+            .any(|p| matches!(
+                p,
+                CastingPermission::ExileWithAltCost {
+                    enters_with_counter: Some(CounterType::Generic(ref s)),
+                    enters_with_modifications,
+                    ..
+                } if s == "finality"
+                    && enters_with_modifications
+                        == &[ContinuousModification::AddSubtype {
+                            subtype: "Vampire".to_string(),
+                        }]
+            )),
+        "the granted permission must carry BOTH the finality counter and the \
+         Vampire type-grant riders; got {:?}",
+        state.objects[&creature].casting_permissions
+    );
+
+    apply_as_current(
+        &mut state,
+        GameAction::CastSpell {
+            object_id: creature,
+            card_id: CardId(8210),
+            targets: vec![],
+            payment_mode: CastPaymentMode::Auto,
+        },
+    )
+    .expect("free graveyard cast should be accepted");
+    for _ in 0..6 {
+        if state.objects[&creature].zone == Zone::Battlefield {
+            break;
+        }
+        apply_as_current(&mut state, GameAction::PassPriority).unwrap();
+    }
+    assert_eq!(
+        state.objects[&creature].zone,
+        Zone::Battlefield,
+        "the creature cast this way should resolve onto the battlefield"
+    );
+
+    // Assertion 2: finality counter present (existing half, regression guard).
+    assert_eq!(
+        state.objects[&creature]
+            .counters
+            .get(&CounterType::Generic("finality".to_string())),
+        Some(&1),
+        "the creature must enter with a finality counter"
+    );
+
+    // Assertion 3: layer-evaluated subtypes are ADDITIVE — printed Zombie
+    // retained AND Vampire granted (CR 205.1b). Reverting the finalize TCE
+    // block drops Vampire and fails this assertion.
+    crate::game::layers::evaluate_layers(&mut state);
+    let subtypes = &state.objects[&creature].card_types.subtypes;
+    assert!(
+        subtypes.contains(&"Vampire".to_string()),
+        "the entered creature must be a Vampire (type grant); got {subtypes:?}"
+    );
+    assert!(
+        subtypes.contains(&"Zombie".to_string()),
+        "the printed Zombie subtype must be retained (CR 205.1b additive); got {subtypes:?}"
+    );
+}
+
+/// Negative control for `graveyard_cast_this_way_enters_with_type_grant_rider`:
+/// an identical Zombie cast under a `CastFromZone` grant with NO type-grant
+/// rider retains its printed Zombie subtype and does NOT become a Vampire —
+/// proving the Vampire type comes from THIS rider and does not leak from the
+/// graveyard-cast path itself. Reaches the same finalize read-back (which
+/// returns an empty modification set), so the assertion is non-vacuous.
+#[test]
+fn graveyard_cast_without_type_rider_is_not_a_vampire() {
+    use crate::game::effects::cast_from_zone;
+
+    let mut state = setup_game_at_main_phase();
+    let creature = create_object(
+        &mut state,
+        CardId(8211),
+        PlayerId(0),
+        "Plain Graveyard Zombie".to_string(),
+        Zone::Graveyard,
+    );
+    {
+        let obj = state.objects.get_mut(&creature).unwrap();
+        obj.card_types.core_types.push(CoreType::Creature);
+        obj.card_types.subtypes.push("Zombie".to_string());
+        obj.base_card_types = obj.card_types.clone();
+        obj.base_power = Some(2);
+        obj.base_toughness = Some(2);
+        obj.power = Some(2);
+        obj.toughness = Some(2);
+        obj.mana_cost = ManaCost::zero();
+    }
+
+    let grant = ResolvedAbility::new(
+        Effect::CastFromZone {
+            target: TargetFilter::ParentTarget,
+            without_paying_mana_cost: true,
+            mode: CardPlayMode::Cast,
+            cast_transformed: false,
+            alt_ability_cost: None,
+            constraint: None,
+            duration: Some(Duration::UntilEndOfTurn),
+            mana_spend_permission: None,
+            driver: crate::types::ability::CastFromZoneDriver::LingeringPermission,
+        },
+        vec![TargetRef::Object(creature)],
+        ObjectId(9111),
+        PlayerId(0),
+    );
+    cast_from_zone::resolve(&mut state, &grant, &mut Vec::new()).unwrap();
+
+    apply_as_current(
+        &mut state,
+        GameAction::CastSpell {
+            object_id: creature,
+            card_id: CardId(8211),
+            targets: vec![],
+            payment_mode: CastPaymentMode::Auto,
+        },
+    )
+    .expect("free graveyard cast should be accepted");
+    for _ in 0..6 {
+        if state.objects[&creature].zone == Zone::Battlefield {
+            break;
+        }
+        apply_as_current(&mut state, GameAction::PassPriority).unwrap();
+    }
+    assert_eq!(state.objects[&creature].zone, Zone::Battlefield);
+
+    crate::game::layers::evaluate_layers(&mut state);
+    let subtypes = &state.objects[&creature].card_types.subtypes;
+    assert!(
+        subtypes.contains(&"Zombie".to_string()),
+        "printed Zombie subtype retained; got {subtypes:?}"
+    );
+    assert!(
+        !subtypes.contains(&"Vampire".to_string()),
+        "a graveyard cast without the type rider must NOT become a Vampire; got {subtypes:?}"
+    );
+}
+
 /// CR 608.2c — the enters-with-counter rider must bind to the *consumed*
 /// cast-this-way permission, not "any permission carrying a counter". A
 /// graveyard creature with TWO `ExileWithAltCost` permissions:
@@ -14802,6 +15027,7 @@ fn enters_with_counter_does_not_leak_from_non_consumed_permission() {
                     graveyard_replacement: None,
                     mana_spend_permission: None,
                     enters_with_counter: rider_on_consumed.clone(),
+                    enters_with_modifications: Vec::new(),
                 });
             // P2: foreign-granted (to the opponent) so it never supports
             // PlayerId(0)'s cast — it is the non-consumed sibling carrying the
@@ -14817,6 +15043,7 @@ fn enters_with_counter_does_not_leak_from_non_consumed_permission() {
                     graveyard_replacement: None,
                     mana_spend_permission: None,
                     enters_with_counter: Some(CounterType::Generic("finality".to_string())),
+                    enters_with_modifications: Vec::new(),
                 });
         }
 
@@ -14894,6 +15121,7 @@ fn hand_alt_cost_permission_overrides_printed_mana_cost() {
                 graveyard_replacement: None,
                 mana_spend_permission: None,
                 enters_with_counter: None,
+                enters_with_modifications: Vec::new(),
             });
     }
 
@@ -14942,6 +15170,7 @@ fn beseech_style_permission() -> CastingPermission {
         graveyard_replacement: None,
         mana_spend_permission: None,
         enters_with_counter: None,
+        enters_with_modifications: Vec::new(),
     }
 }
 
@@ -14981,6 +15210,7 @@ fn failing_mana_value_permission_does_not_override_unconstrained_permission() {
                 graveyard_replacement: None,
                 mana_spend_permission: None,
                 enters_with_counter: None,
+                enters_with_modifications: Vec::new(),
             });
     }
 
@@ -22833,6 +23063,7 @@ fn cast_only_from_zones_blocks_affected_opponent_from_exile() {
             graveyard_replacement: None,
             mana_spend_permission: None,
             enters_with_counter: None,
+            enters_with_modifications: Vec::new(),
         });
 
     assert!(is_blocked_by_cast_only_from_zones(
@@ -25554,6 +25785,7 @@ fn cast_with_keyword_convoke_uses_caster_not_stored_controller() {
                 graveyard_replacement: None,
                 mana_spend_permission: None,
                 enters_with_counter: None,
+                enters_with_modifications: Vec::new(),
             });
     }
 

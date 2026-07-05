@@ -2823,6 +2823,11 @@ fn legacy_effect(x: &Effect) -> bool {
         | Effect::Adapt { count }
         | Effect::AssembleContraptions { count }
         | Effect::AddPendingETBCounters { count, .. } => legacy_quantity_expr(count),
+        // Deferred continuous-modification carrier — no `count`; descend the mods
+        // for a nested frozen tag (AddType/AddSubtype return `false`).
+        Effect::AddPendingEntersModifications { modifications } => {
+            modifications.iter().any(legacy_continuous_modification)
+        }
         Effect::GainEnergy { amount } | Effect::Intensify { amount, .. } => {
             legacy_quantity_expr(amount)
         }
@@ -4081,6 +4086,24 @@ fn rw_effect(
             let mut p = self_write(StateKind::ObjectCounters);
             p.merge(rw_quantity_expr(count));
             (p, Some(WriteScope::SelfSource))
+        }
+        // CR 205.1b + CR 613.1d: the rider grants a Layer-4 type-line change to
+        // the FUTURE cast object; profiled as a StateKind::SetMembership write —
+        // the SAME kind Animate uses for its type change (Endure:4064). Self-
+        // channeled DEFERRED ETB metadata keyed to a future self-cast (mirrors
+        // AddPendingETBCounters above, WriteScope::SelfSource): it reads no
+        // event-live state (reads_event_live = false), no member-bound state
+        // (reads_member_bound = false), and writes no event object
+        // (writes_event_object = EMPTY) — all inherited from self_write →
+        // RwProfile::empty. CR 400.1: SetMembership is the membership state kind.
+        // SOUNDNESS (CR 603.3b fail-open axis): AddSubtype/AddType carry NO
+        // QuantityExpr, and no sibling descends modification QuantityExprs, so the
+        // arm collapses to a pure SetMembership self-write. If a QuantityExpr-
+        // bearing ContinuousModification is ever admitted into this rider, the
+        // parser extension MUST merge each mod's QuantityExpr here via
+        // rw_quantity_expr.
+        Effect::AddPendingEntersModifications { modifications: _ } => {
+            (self_write(StateKind::SetMembership), Some(WriteScope::SelfSource))
         }
         Effect::Proliferate => {
             let mut p = ext_write(StateKind::ObjectCounters);

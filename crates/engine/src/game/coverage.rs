@@ -3228,6 +3228,7 @@ fn effect_details(effect: &Effect) -> Vec<(String, String)> {
         | Effect::ApplySticker { .. }
         | Effect::DraftFromSpellbook { .. }
         | Effect::AddPendingETBCounters { .. }
+        | Effect::AddPendingEntersModifications { .. }
         | Effect::ChooseAndSacrificeRest { .. }
         | Effect::ChooseOneOf { .. }
         | Effect::ReturnAsAura { .. }

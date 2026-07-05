@@ -1941,6 +1941,34 @@ pub(super) fn selected_exile_alt_cost_permission_enters_with_counter(
         })
 }
 
+// CR 205.1b + CR 613.1d: read the enters-with type-grant rider ("… is a [type]
+// in addition to its other types") from the *consumed* cast-this-way permission
+// only (the one supporting THIS cast), not any permission carrying modifications,
+// so a non-consumed sibling permission's rider cannot leak onto this cast
+// (CR 608.2c). Mirrors `selected_exile_alt_cost_permission_enters_with_counter`.
+pub(super) fn selected_exile_alt_cost_permission_enters_with_modifications(
+    state: &GameState,
+    object_id: ObjectId,
+    player: PlayerId,
+) -> Vec<crate::types::ability::ContinuousModification> {
+    let Some(obj) = state.objects.get(&object_id) else {
+        return Vec::new();
+    };
+    obj.casting_permissions
+        .iter()
+        .find(|permission| {
+            exile_alt_cost_permission_supports_cast(state, obj, player, permission, None)
+        })
+        .map(|permission| match permission {
+            crate::types::ability::CastingPermission::ExileWithAltCost {
+                enters_with_modifications,
+                ..
+            } => enters_with_modifications.clone(),
+            _ => Vec::new(),
+        })
+        .unwrap_or_default()
+}
+
 // CR 614.1a + CR 608.2n: read the graveyard-redirect rider ("if that spell would
 // be put into a graveyard, exile it / put it on the bottom of its owner's library
 // / return it to its owner's hand instead") from the *consumed* cast permission
@@ -8468,6 +8496,7 @@ pub(super) fn initiate_cast_during_resolution(
                 duration: None,
                 graveyard_replacement: graveyard_replacement.clone(),
                 enters_with_counter: None,
+                enters_with_modifications: Vec::new(),
                 mana_spend_permission,
             });
         // CR 614.1a + CR 608.2n: apply the graveyard-redirect rider HERE — this is

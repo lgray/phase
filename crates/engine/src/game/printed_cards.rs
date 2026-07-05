@@ -1117,6 +1117,7 @@ fn walk_effect(effect: &Effect, out: &mut Vec<String>) {
         | Effect::ReduceNextSpellCost { .. }
         | Effect::GrantNextSpellAbility { .. }
         | Effect::AddPendingETBCounters { .. }
+        | Effect::AddPendingEntersModifications { .. }
         | Effect::PayCost { .. }
         | Effect::CastFromZone { .. }
         | Effect::FreeCastFromZones { .. }

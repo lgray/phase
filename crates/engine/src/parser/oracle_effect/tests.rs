@@ -36115,40 +36115,72 @@ fn put_zone_change_lifts_transformed_and_finality_counter_suffix() {
 /// must parse to `AddPendingETBCounters` (consumed by `CastFromZone` as
 /// permission metadata), across both anaphoric subjects ("that creature",
 /// "it") and both optional gate prefixes ("if you cast a spell this way,",
-/// "if you do,").
+/// "if you do,") — with NO type-grant sub-ability (bare-counter is additive-
+/// preserved, not regressed).
 ///
-/// CR 205.1b deferral: when a trailing "and is a [subtype] in addition to its
-/// other types" clause follows (The Tomb of Aclazotz's Vampire grant), the
-/// *combined* sentence must NOT parse to a bare counter — the unmodeled type
-/// grant would be silently dropped. It returns `None` so the whole sentence
-/// falls through to `Effect::Unimplemented` (Tomb stays honestly unsupported).
+/// CR 205.1b — The Tomb of Aclazotz: when a trailing "and is a [type] in
+/// addition to its other types" clause follows, the combined sentence parses to
+/// the counter effect WITH an `AddPendingEntersModifications` sub-ability
+/// carrying the additive type grant (Vampire → `AddSubtype`). The building
+/// block generalizes to core types ("artifact" → `AddType`), proving it is not
+/// a Vampire/subtype special case.
 #[test]
 fn cast_this_way_enters_with_finality_counter_rider_parses() {
     let finality = || Effect::AddPendingETBCounters {
         counter_type: CounterType::Generic("finality".to_string()),
         count: QuantityExpr::Fixed { value: 1 },
     };
+    // Bare-counter riders: parse to the counter effect with NO sub-ability.
     for text in [
         "that creature enters with a finality counter on it",
         "it enters with a finality counter on it",
         "if you cast a spell this way, that creature enters with a finality counter on it",
         "if you do, it enters with a finality counter on it",
     ] {
-        assert_eq!(
-            try_parse_cast_this_way_enters_with_counter(text),
-            Some(finality()),
-            "bare rider should parse for {text:?}"
+        let clause = try_parse_cast_this_way_enters_rider(text)
+            .unwrap_or_else(|| panic!("bare rider should parse for {text:?}"));
+        assert_eq!(clause.effect, finality(), "bare rider effect for {text:?}");
+        assert!(
+            clause.sub_ability.is_none(),
+            "bare-counter rider must carry NO type-grant sub-ability for {text:?}"
         );
     }
-    // CR 205.1b deferral: the combined Tomb sentence (counter + type grant)
-    // must NOT be partially accepted as a bare counter — it returns `None`.
+    // CR 205.1b — the combined Tomb sentence parses to the finality counter WITH
+    // the additive Vampire type grant as an `AddPendingEntersModifications`
+    // sub-ability (never a silent drop, never a bare-counter regression).
+    let tomb = try_parse_cast_this_way_enters_rider(
+        "it enters with a finality counter on it and is a Vampire in addition to its other types",
+    )
+    .expect("Tomb counter+type sentence must parse");
+    assert_eq!(tomb.effect, finality(), "Tomb rider's counter effect");
+    let sub = tomb
+        .sub_ability
+        .as_ref()
+        .expect("Tomb rider must carry an AddPendingEntersModifications sub-ability");
     assert_eq!(
-            try_parse_cast_this_way_enters_with_counter(
-                "it enters with a finality counter on it and is a Vampire in addition to its other types"
-            ),
-            None,
-            "combined counter+type-grant sentence must not parse to a bare counter"
-        );
+        &*sub.effect,
+        &Effect::AddPendingEntersModifications {
+            modifications: vec![ContinuousModification::AddSubtype {
+                subtype: "Vampire".to_string(),
+            }],
+        },
+        "the type tail must lower to AddSubtype(Vampire)"
+    );
+    // Reach-guard: no branch of the combined sentence produces Unimplemented.
+    assert!(
+        !matches!(&*sub.effect, Effect::Unimplemented { .. })
+            && !matches!(tomb.effect, Effect::Unimplemented { .. }),
+        "the Tomb sentence must be fully modeled, not Unimplemented"
+    );
+    // Generalization: the shared building block lowers a CORE type tail to
+    // `AddType`, proving the rider covers CR 205.2 core types, not just subtypes.
+    assert_eq!(
+        animation::parse_becomes_type_modifications("artifact in addition to its other types"),
+        vec![ContinuousModification::AddType {
+            core_type: CoreType::Artifact,
+        }],
+        "core-type tail must lower to AddType(Artifact)"
+    );
 }
 
 /// The rider generalizes beyond finality (typed `Option<CounterType>`): a
@@ -36156,14 +36188,19 @@ fn cast_this_way_enters_with_finality_counter_rider_parses() {
 /// P/T counter — proving the building block is not a finality special case.
 #[test]
 fn cast_this_way_enters_with_counter_rider_is_counter_generic() {
+    let clause =
+        try_parse_cast_this_way_enters_rider("that creature enters with a +1/+1 counter on it")
+            .expect("+1/+1 counter rider should parse");
     assert_eq!(
-        try_parse_cast_this_way_enters_with_counter(
-            "that creature enters with a +1/+1 counter on it"
-        ),
-        Some(Effect::AddPendingETBCounters {
+        clause.effect,
+        Effect::AddPendingETBCounters {
             counter_type: CounterType::Plus1Plus1,
             count: QuantityExpr::Fixed { value: 1 },
-        }),
+        },
+    );
+    assert!(
+        clause.sub_ability.is_none(),
+        "bare counter rider has no sub-ability"
     );
 }
 
@@ -36204,17 +36241,17 @@ fn osteomancer_adept_finality_rider_parses_through_card() {
     );
 }
 
-/// CR 205.1b deferral — The Tomb of Aclazotz: the combined residual sentence
+/// CR 205.1b + CR 613.1d — The Tomb of Aclazotz: the combined residual sentence
 /// "...it enters with a finality counter on it and is a Vampire in addition to
-/// its other types" carries an unmodeled continuous type grant. The parser
-/// must NOT partially accept it as a bare `AddPendingETBCounters`; the whole
-/// sentence must surface as `Effect::Unimplemented` so the cast-this-way
-/// permission carries NO `enters_with_counter` rider (Tomb honestly
-/// unsupported). A negative twin proves the bare-counter clause (no type tail)
-/// still parses to the rider — discriminating the type-tail rejection from a
-/// blanket "never parse a counter rider" regression.
+/// its other types" is fully modeled through the whole-card parse. It must
+/// surface BOTH a reachable `AddPendingETBCounters { finality }` rider AND a
+/// reachable `AddPendingEntersModifications { [AddSubtype Vampire] }` sub-rider,
+/// with ZERO `Effect::Unimplemented` — the type grant is carried, never dropped
+/// and never left honestly-unsupported. A negative twin proves the bare-counter
+/// clause (no type tail) still parses to just the counter rider, discriminating
+/// the type-grant handling from a blanket regression.
 #[test]
-fn tomb_aclazotz_counter_plus_type_tail_is_unimplemented() {
+fn tomb_aclazotz_counter_plus_type_tail_parses() {
     // Collect every effect reachable from a parsed ability (top-level + the
     // sub_ability chain) so the assertion does not depend on whether the
     // residual sentence attaches as a sub-ability or a sibling ability.
@@ -36242,17 +36279,32 @@ fn tomb_aclazotz_counter_plus_type_tail_is_unimplemented() {
         collect_effects(ability, &mut tomb_effects);
     }
     assert!(
-        !tomb_effects
-            .iter()
-            .any(|e| matches!(e, Effect::AddPendingETBCounters { .. })),
-        "the combined counter+type-grant sentence must NOT yield a bare \
-             AddPendingETBCounters rider; got {tomb_effects:?}"
+        tomb_effects.iter().any(|e| matches!(
+            e,
+            Effect::AddPendingETBCounters {
+                counter_type: CounterType::Generic(s),
+                ..
+            } if s == "finality"
+        )),
+        "the combined sentence must still yield the finality counter rider; \
+             got {tomb_effects:?}"
     );
     assert!(
-        tomb_effects
+        tomb_effects.iter().any(|e| matches!(
+            e,
+            Effect::AddPendingEntersModifications { modifications }
+                if modifications == &[ContinuousModification::AddSubtype {
+                    subtype: "Vampire".to_string(),
+                }]
+        )),
+        "the type tail must be carried as AddPendingEntersModifications(AddSubtype Vampire); \
+             got {tomb_effects:?}"
+    );
+    assert!(
+        !tomb_effects
             .iter()
             .any(|e| matches!(e, Effect::Unimplemented { .. })),
-        "the unmodeled Tomb sentence must surface as Effect::Unimplemented; \
+        "the Tomb sentence must be fully modeled, never Effect::Unimplemented; \
              got {tomb_effects:?}"
     );
 

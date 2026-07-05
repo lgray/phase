@@ -6159,6 +6159,30 @@ pub(super) fn finalize_cast_with_phyrexian_choices(
             .push((object_id, counter_type, 1));
     }
 
+    // CR 205.1b + CR 613.1d: A `CastFromZone` grant whose rider was "… is a
+    // [type] in addition to its other types" (The Tomb of Aclazotz) records the
+    // additive type-changing modifications on the granted `ExileWithAltCost`.
+    // Apply them as a `Duration::Permanent` continuous effect (CR 611.2a: no
+    // stated duration → until end of game) scoped to the one cast object
+    // (CR 611.2c: the affected set is fixed at SpecificObject when the effect
+    // begins). `source_id = object_id` (self-contained; attribution snapshot is
+    // the creature's own name). CR 608.2c: read from the *selected* permission
+    // supporting THIS cast so a sibling permission's rider cannot leak.
+    let cast_this_way_enters_mods =
+        super::casting::selected_exile_alt_cost_permission_enters_with_modifications(
+            state, object_id, player,
+        );
+    if !cast_this_way_enters_mods.is_empty() {
+        state.add_transient_continuous_effect(
+            object_id,
+            player,
+            crate::types::ability::Duration::Permanent,
+            crate::types::ability::TargetFilter::SpecificObject { id: object_id },
+            cast_this_way_enters_mods,
+            None,
+        );
+    }
+
     if casting_variant == CastingVariant::Foretell {
         if let Some(obj) = state.objects.get_mut(&object_id) {
             obj.cast_variant_paid = Some((
@@ -6512,6 +6536,7 @@ fn evaluate_cascade_constraint_with_resulting_mv(
                         duration: None,
                         graveyard_replacement: None,
                         enters_with_counter: None,
+                        enters_with_modifications: Vec::new(),
                         mana_spend_permission: Some(msp),
                     });
             }
@@ -13436,6 +13461,7 @@ mod tests {
 
                     graveyard_replacement: None,
                     enters_with_counter: None,
+                    enters_with_modifications: Vec::new(),
                     mana_spend_permission: None,
                 });
 
@@ -13539,6 +13565,7 @@ mod tests {
 
                     graveyard_replacement: None,
                     enters_with_counter: None,
+                    enters_with_modifications: Vec::new(),
                     mana_spend_permission: None,
                 });
 
@@ -13606,6 +13633,7 @@ mod tests {
 
                     graveyard_replacement: None,
                     enters_with_counter: None,
+                    enters_with_modifications: Vec::new(),
                     mana_spend_permission: None,
                 });
 
@@ -13651,6 +13679,7 @@ mod tests {
 
                     graveyard_replacement: None,
                     enters_with_counter: None,
+                    enters_with_modifications: Vec::new(),
                     mana_spend_permission: None,
                 });
             push_announcement_stack_entry(&mut state, hit);
@@ -13707,6 +13736,7 @@ mod tests {
 
                     graveyard_replacement: None,
                     enters_with_counter: None,
+                    enters_with_modifications: Vec::new(),
                     mana_spend_permission: None,
                 });
             hit_obj
@@ -13721,6 +13751,7 @@ mod tests {
 
                     graveyard_replacement: None,
                     enters_with_counter: None,
+                    enters_with_modifications: Vec::new(),
                     mana_spend_permission: None,
                 });
             push_announcement_stack_entry(&mut state, hit);
@@ -13769,6 +13800,7 @@ mod tests {
 
                     graveyard_replacement: None,
                     enters_with_counter: None,
+                    enters_with_modifications: Vec::new(),
                     mana_spend_permission: None,
                 });
             state.players[0].mana_pool.add(ManaUnit {
@@ -13837,6 +13869,7 @@ mod tests {
 
                     graveyard_replacement: None,
                     enters_with_counter: None,
+                    enters_with_modifications: Vec::new(),
                     mana_spend_permission: None,
                 });
             hit_obj
@@ -13858,6 +13891,7 @@ mod tests {
 
                     graveyard_replacement: None,
                     enters_with_counter: None,
+                    enters_with_modifications: Vec::new(),
                     mana_spend_permission: None,
                 });
             push_announcement_stack_entry(&mut state, hit);
@@ -13914,6 +13948,7 @@ mod tests {
 
                     graveyard_replacement: None,
                     enters_with_counter: None,
+                    enters_with_modifications: Vec::new(),
                     mana_spend_permission: None,
                 });
             hit_obj
@@ -13928,6 +13963,7 @@ mod tests {
 
                     graveyard_replacement: None,
                     enters_with_counter: None,
+                    enters_with_modifications: Vec::new(),
                     mana_spend_permission: None,
                 });
             push_announcement_stack_entry(&mut state, hit);

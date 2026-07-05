@@ -2176,28 +2176,26 @@ fn try_parse_enters_with_additional_counters(lower: &str) -> Option<AbilityDefin
     ))
 }
 
-/// CR 614.1c + CR 122.1: Parse the "the creature cast this way enters with a
-/// [counter] counter on it" rider that follows a graveyard cast-permission grant
+/// CR 614.1c + CR 122.1 + CR 205.1b: Parse the "the creature cast this way
+/// enters with a [counter] counter on it [and is a [type] in addition to its
+/// other types]" rider that follows a graveyard cast-permission grant
 /// (Osteomancer Adept "that creature enters with a finality counter on it"; The
-/// Tomb of Aclazotz "it enters with a finality counter on it"). Produces an
-/// `Effect::AddPendingETBCounters`; the runtime `CastFromZone` resolver consumes
-/// it as permission metadata (see `cast_from_zone::is_enters_with_counter_rider_subability`)
-/// rather than against the current trigger event, so the counter rides the
+/// Tomb of Aclazotz "it enters with a finality counter on it and is a Vampire in
+/// addition to its other types"). The counter clause lowers to
+/// `Effect::AddPendingETBCounters`; an optional additive type-grant tail lowers
+/// to `Effect::AddPendingEntersModifications` carried as the counter clause's
+/// `sub_ability`. The runtime `CastFromZone` resolver consumes both as
+/// permission metadata (see `cast_from_zone::grant_lingering_permissions`)
+/// rather than against the current trigger event, so the riders ride the
 /// *future* graveyard cast.
 ///
-/// The subject is anaphoric ("that creature" or "it" — the spell just authorized
-/// to be cast), and the count is always one ("a [counter] counter").
-///
-/// CR 205.1b deferral: a trailing "and is a [subtype] in addition to its other
-/// types" clause (The Tomb of Aclazotz's "is a Vampire in addition to its other
-/// types") is an unmodeled continuous type grant. This function does NOT model
-/// it, so the *combined* sentence is rejected here (returns `None`) and falls
-/// through to `Effect::Unimplemented` — Tomb is left honestly unsupported rather
-/// than partially accepted as a bare counter that silently drops the type grant.
-/// Only the bare counter rider (no trailing clause) is accepted. Osteomancer
-/// Adept ("that creature enters with a finality counter on it", no tail) still
-/// parses to the counter effect.
-fn try_parse_cast_this_way_enters_with_counter(lower: &str) -> Option<Effect> {
+/// The subject is anaphoric ("that creature"/"that permanent"/"it"), the count
+/// is always one ("a [counter] counter"), and the type tail delegates to the
+/// shared `parse_becomes_type_modifications` building block (which consumes the
+/// "in addition to its other types" suffix and covers subtypes CR 205.3, core
+/// types CR 205.2, and supertypes CR 205.4). A tail present but unclassifiable
+/// returns `None` — honestly `Effect::Unimplemented`, never a silent type drop.
+fn try_parse_cast_this_way_enters_rider(lower: &str) -> Option<ParsedEffectClause> {
     // CR 608.2c: optional "if you cast a spell this way," / "if you do," gate.
     // The rider only fires for a spell cast via the granted permission; the
     // runtime gates on the actual cast, so the condition prefix carries no
@@ -2228,21 +2226,38 @@ fn try_parse_cast_this_way_enters_with_counter(lower: &str) -> Option<Effect> {
     let (rest, _) = tag::<_, _, OracleError<'_>>(" counter on it")
         .parse(rest)
         .ok()?;
-    // CR 205.1b deferral: accept the counter rider ONLY when nothing meaningful
-    // follows. A trailing "and is a [subtype] in addition to its other types"
-    // (The Tomb of Aclazotz's Vampire grant) is an unmodeled continuous type
-    // grant; accepting the sentence here would silently drop it. So a non-empty
-    // remainder (after trimming a trailing '.' and whitespace) makes this a
-    // different, not-yet-modeled sentence — return `None` and let it fall
-    // through to `Effect::Unimplemented` instead of partially accepting a bare
-    // counter.
-    if !rest.trim_end_matches('.').trim().is_empty() {
-        return None;
-    }
-    Some(Effect::AddPendingETBCounters {
+    let counter_effect = Effect::AddPendingETBCounters {
         counter_type,
         count: QuantityExpr::Fixed { value: 1 },
-    })
+    };
+    // Counter-only rider (Osteomancer Adept, no tail) — unchanged behavior.
+    if rest.trim_end_matches('.').trim().is_empty() {
+        return Some(parsed_clause(counter_effect));
+    }
+    // CR 205.1b: optional " and is a <descriptor>" additive type grant, where
+    // <descriptor> carries the "in addition to its other types" suffix (consumed
+    // by the shared building block). The trailing space distinguishes "a " from
+    // "an " so the article is matched exactly.
+    let (descriptor, _) = alt((
+        tag::<_, _, OracleError<'_>>(" and is a "),
+        tag(" and is an "),
+    ))
+    .parse(rest)
+    .ok()?;
+    let mods = animation::parse_becomes_type_modifications(descriptor);
+    if mods.is_empty() {
+        // Tail present but the descriptor didn't classify — stay honestly
+        // Unimplemented rather than silently dropping the type grant.
+        return None;
+    }
+    let mut clause = parsed_clause(counter_effect);
+    clause.sub_ability = Some(Box::new(AbilityDefinition::new(
+        AbilityKind::Spell,
+        Effect::AddPendingEntersModifications {
+            modifications: mods,
+        },
+    )));
+    Some(clause)
 }
 
 /// CR 603.6 + CR 702.26a: One self-referential event verb of a delayed-trigger
@@ -3649,6 +3664,7 @@ fn try_parse_airbend_clause(tp: TextPair<'_>) -> Option<ParsedEffectClause> {
                         duration: None,
                         graveyard_replacement: None,
                         enters_with_counter: None,
+                        enters_with_modifications: Vec::new(),
                         mana_spend_permission: None,
                     },
                     target: TargetFilter::TrackedSet {
@@ -6370,8 +6386,8 @@ fn parse_effect_clause_inner(text: &str, ctx: &mut ParseContext) -> ParsedEffect
     // the generic effect dispatch so the anaphoric "that creature/it enters
     // with …" is recognized as a `CastFromZone` permission rider rather than
     // falling through to `Effect::Unimplemented`.
-    if let Some(effect) = try_parse_cast_this_way_enters_with_counter(&lower) {
-        return parsed_clause(effect);
+    if let Some(clause) = try_parse_cast_this_way_enters_rider(&lower) {
+        return clause;
     }
     if let Some(effect) = try_parse_enters_this_way_additional_counter(&lower) {
         return parsed_clause(effect);

@@ -2256,6 +2256,17 @@ pub enum CastingPermission {
         /// the rider covers any counter the cast-this-way creature enters with.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         enters_with_counter: Option<CounterType>,
+        /// CR 205.1b + CR 611.2c: The Tomb of Aclazotz class — a `CastFromZone`
+        /// grant whose sub-ability is "the creature cast this way … is a
+        /// [type] in addition to its other types." Continuous modifications
+        /// (Layer 4, CR 613.1d) recorded on the grant so the cast finalization
+        /// applies them as a `Duration::Permanent` `TransientContinuousEffect`
+        /// on the cast object (CR 611.2c: the affected set is fixed to the one
+        /// cast object). Empty for every grant without a type-grant rider.
+        /// Parallel to `enters_with_counter` because the counter (CR 122) and
+        /// the type grant (CR 613) are categorically distinct rule sections.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        enters_with_modifications: Vec<ContinuousModification>,
         /// CR 609.4b: Optional payment permission scoped to this specific grant.
         /// When `Some(AnyTypeOrColor)`, mana of any type/color may be spent to
         /// pay this card's cast cost (Quistis Trepe, Tinybones the Pickpocket:
@@ -10280,6 +10291,22 @@ pub enum Effect {
         counter_type: CounterType,
         count: QuantityExpr,
     },
+    /// CR 611.2a + CR 205.1b + CR 613.1d: The creature cast under a
+    /// graveyard/exile cast-permission grant gains these continuous
+    /// modifications when it enters ("… is a Vampire in addition to its other
+    /// types"). Categorically distinct from `AddPendingETBCounters` (CR 122
+    /// counters) — this is a CR 613 Layer-4 type-changing effect. Consumed as
+    /// `CastFromZone` permission metadata (never resolved in place, mirroring
+    /// `AddPendingETBCounters`) and applied as a `Duration::Permanent`
+    /// `TransientContinuousEffect` on the cast object at cast finalization
+    /// (CR 611.2a untimed → until end of game). The general `Vec` makes this the
+    /// building block for any enters-with continuous modification (add
+    /// type/subtype/supertype/keyword) for the reflexive-cast-rider class.
+    // RUNTIME: consumed only as `CastFromZone` permission metadata; a standalone
+    // resolve is a fail-loud no-op (see `resolve_add_pending_enters_modifications`).
+    AddPendingEntersModifications {
+        modifications: Vec<ContinuousModification>,
+    },
     /// CR 114.1 + CR 114.4: Create an emblem with the specified abilities in
     /// the command zone. Emblems persist for the rest of the game and cannot
     /// be removed. Per CR 114.4 their abilities (statics AND triggers)
@@ -12824,6 +12851,7 @@ impl Effect {
             | Effect::ReduceNextSpellCost { .. }
             | Effect::GrantNextSpellAbility { .. }
             | Effect::AddPendingETBCounters { .. }
+            | Effect::AddPendingEntersModifications { .. }
             | Effect::CreateEmblem { .. }
             | Effect::PayCost { .. }
             | Effect::GrantCastingPermission { .. }
@@ -13051,6 +13079,9 @@ impl Effect {
 
             // --- Effects with no QuantityExpr count/amount ---
             Effect::ApplyPerpetual { .. }
+            // Deferred continuous-modification carrier — the mods Vec carries no
+            // QuantityExpr count/amount (CR 613 type grant).
+            | Effect::AddPendingEntersModifications { .. }
             | Effect::StartYourEngines { .. }
             // CR 608.2d: the counter-kind CHOICE carries no magnitude.
             | Effect::ChooseCounterKind { .. }
@@ -13291,6 +13322,9 @@ impl Effect {
 
             // --- Effects with no QuantityExpr count/amount ---
             Effect::ApplyPerpetual { .. }
+            // Deferred continuous-modification carrier — the mods Vec carries no
+            // QuantityExpr count/amount (CR 613 type grant).
+            | Effect::AddPendingEntersModifications { .. }
             | Effect::StartYourEngines { .. }
             // CR 608.2d: the counter-kind CHOICE carries no magnitude.
             | Effect::ChooseCounterKind { .. }
@@ -13591,6 +13625,7 @@ pub fn effect_variant_name(effect: &Effect) -> &str {
         Effect::ReduceNextSpellCost { .. } => "ReduceNextSpellCost",
         Effect::GrantNextSpellAbility { .. } => "GrantNextSpellAbility",
         Effect::AddPendingETBCounters { .. } => "AddPendingETBCounters",
+        Effect::AddPendingEntersModifications { .. } => "AddPendingEntersModifications",
         Effect::CreateEmblem { .. } => "CreateEmblem",
         Effect::PayCost { .. } => "PayCost",
         Effect::CastFromZone { .. } => "CastFromZone",
@@ -13824,6 +13859,7 @@ pub enum EffectKind {
     ReduceNextSpellCost,
     GrantNextSpellAbility,
     AddPendingETBCounters,
+    AddPendingEntersModifications,
     CreateEmblem,
     PayCost,
     CastFromZone,
@@ -14073,6 +14109,9 @@ impl From<&Effect> for EffectKind {
             Effect::ReduceNextSpellCost { .. } => EffectKind::ReduceNextSpellCost,
             Effect::GrantNextSpellAbility { .. } => EffectKind::GrantNextSpellAbility,
             Effect::AddPendingETBCounters { .. } => EffectKind::AddPendingETBCounters,
+            Effect::AddPendingEntersModifications { .. } => {
+                EffectKind::AddPendingEntersModifications
+            }
             Effect::CreateEmblem { .. } => EffectKind::CreateEmblem,
             Effect::PayCost { .. } => EffectKind::PayCost,
             Effect::CastFromZone { .. } => EffectKind::CastFromZone,
@@ -20717,6 +20756,7 @@ mod tests {
             duration: None,
             graveyard_replacement: None,
             enters_with_counter: None,
+            enters_with_modifications: Vec::new(),
             mana_spend_permission: None,
         };
         let mut v: serde_json::Value =

@@ -3180,6 +3180,9 @@ pub fn resolve_effect(
         Effect::AddPendingETBCounters { .. } => {
             resolve_add_pending_etb_counters(state, ability, events)
         }
+        Effect::AddPendingEntersModifications { .. } => {
+            resolve_add_pending_enters_modifications(state, ability, events)
+        }
         Effect::CreateEmblem { .. } => create_emblem::resolve(state, ability, events),
         Effect::PayCost { .. } => pay::resolve(state, ability, events),
         Effect::CastFromZone { .. } => cast_from_zone::resolve(state, ability, events),
@@ -8725,6 +8728,28 @@ fn resolve_add_pending_etb_counters(
     Ok(())
 }
 
+/// CR 611.2a + CR 205.1b: `AddPendingEntersModifications` is consumed only as
+/// `CastFromZone` permission metadata (lifted in `cast_from_zone::grant_lingering_permissions`,
+/// applied as a `TransientContinuousEffect` at cast finalization). It never
+/// resolves standalone — a standalone resolve means the rider was mis-lowered
+/// outside a `CastFromZone` chain, so fail loudly (warn) and no-op rather than
+/// silently dropping the type grant, mirroring `resolve_add_pending_etb_counters`.
+fn resolve_add_pending_enters_modifications(
+    _state: &mut GameState,
+    ability: &crate::types::ability::ResolvedAbility,
+    events: &mut Vec<GameEvent>,
+) -> Result<(), crate::types::ability::EffectError> {
+    tracing::warn!(
+        "AddPendingEntersModifications resolved standalone — only valid as \
+         CastFromZone permission metadata; no-op"
+    );
+    events.push(GameEvent::EffectResolved {
+        kind: crate::types::ability::EffectKind::AddPendingEntersModifications,
+        source_id: ability.source_id,
+    });
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -13530,6 +13555,7 @@ mod tests {
 
                         graveyard_replacement: None,
                         enters_with_counter: None,
+                        enters_with_modifications: Vec::new(),
                         mana_spend_permission: None,
                     },
                     target: TargetFilter::TrackedSet {
@@ -13628,6 +13654,7 @@ mod tests {
 
                         graveyard_replacement: None,
                         enters_with_counter: None,
+                        enters_with_modifications: Vec::new(),
                         mana_spend_permission: None,
                     },
                     target: TargetFilter::TrackedSet {
@@ -13700,6 +13727,7 @@ mod tests {
 
                     graveyard_replacement: None,
                     enters_with_counter: None,
+                    enters_with_modifications: Vec::new(),
                     mana_spend_permission: None,
                 },
                 target: TargetFilter::TrackedSet {

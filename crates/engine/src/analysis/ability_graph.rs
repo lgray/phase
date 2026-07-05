@@ -920,6 +920,7 @@ fn effect_projection(effect: &Effect) -> Projection {
         | Effect::ReduceNextSpellCost { .. }
         | Effect::GrantNextSpellAbility { .. }
         | Effect::AddPendingETBCounters { .. }
+        | Effect::AddPendingEntersModifications { .. }
         | Effect::CreateEmblem { .. }
         | Effect::PayCost { .. }
         | Effect::ExileResolvingSpellInsteadOfGraveyard
