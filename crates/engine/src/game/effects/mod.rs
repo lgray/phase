@@ -2503,7 +2503,14 @@ fn quantity_ref_references_demonstrative(qty: &QuantityRef) -> bool {
         | QuantityRef::ManaSymbolsInManaCost { scope, .. } => scope,
         _ => return false,
     };
-    matches!(scope, ObjectScope::Demonstrative | ObjectScope::Anaphoric)
+    // CR 608.2c: `OtherRevealedCard` is a per-player object referent too — the
+    // cross-reader reads it by exclusion FROM `effect_context_object` (the
+    // iteration's own revealed card), so the lose clause is a per-player-referent
+    // consumer that must run inside the same fan-out iteration as the reveal.
+    matches!(
+        scope,
+        ObjectScope::Demonstrative | ObjectScope::Anaphoric | ObjectScope::OtherRevealedCard
+    )
 }
 
 fn filter_is_parent_object_anaphor(filter: &TargetFilter) -> bool {
@@ -5517,6 +5524,110 @@ fn resolve_chain_body(
     // value catches the replace case correctly (issue #491).
     let pending_continuation_before = state.pending_continuation.clone();
 
+    // CR 608.2c + CR 701.20b + CR 603.3d: A multi-target reveal-all producer whose
+    // per-target referent (the revealed card) is consumed by later co-instructions
+    // ("each lose … the card revealed by the other player", "each put the card they
+    // revealed"). Instruction order (CR 608.2c) requires ALL reveals to complete
+    // before ANY consumer runs — the reveal is therefore NOT interleaved with the
+    // per-player consumer fan-out (unlike the whole-chain §5472 path below). Keys
+    // on `effect_introduces_per_player_object_referent` (RevealTop only) +
+    // `multi_target` + a >=2 Player-target guard, so it fires only for "target
+    // players each reveal" cards (Parker Luck). `RevealTop.target_filter()` is now
+    // `Some(Player)` (so the two players ARE selected), which the §5472 fan-out
+    // below also keys on — the safety here is ORDERING, not filter disjointness:
+    // this branch is placed BEFORE §5472 and returns early, so a multi_target
+    // RevealTop never double-dispatches through the whole-chain §5472 path.
+    if ability.multi_target.is_some()
+        && effect_introduces_per_player_object_referent(&ability.effect)
+        && ability
+            .targets
+            .iter()
+            .filter(|t| matches!(t, TargetRef::Player(_)))
+            .count()
+            >= 2
+    {
+        // 1. Reveal-all: resolve ONLY the producer effect once with targets left
+        //    wide. `reveal_top::resolve` reveals every targeted player's top card
+        //    (§2.4a) and fills `state.last_revealed_ids` with the full set.
+        resolve_effect(state, ability, events)?;
+
+        // A bare "two target players each reveal" with no consumer is fully
+        // resolved by the reveal-all above.
+        let Some(sub_template) = ability.sub_ability.as_ref() else {
+            return Ok(());
+        };
+
+        // 2. Fan out the sub-chain per chosen player in APNAP order (CR 101.4).
+        let chosen_players: Vec<PlayerId> = ability
+            .targets
+            .iter()
+            .filter_map(|t| match t {
+                TargetRef::Player(pid) => Some(*pid),
+                TargetRef::Object(_) => None,
+            })
+            .collect();
+        let fanout_players: Vec<PlayerId> = crate::game::players::apnap_order(state)
+            .into_iter()
+            .filter(|pid| chosen_players.contains(pid))
+            .collect();
+
+        // Pre-build every player's narrowed sub-chain, binding each iteration's OWN
+        // revealed card OWNER-KEYED (CR 108.3: a top-of-library reveal is in its
+        // owner's library, so owner == revealer). `effect_context_object` drives
+        // the "put the card they revealed" (`ChangeZone { ParentTarget }`, via the
+        // inherited Object target) and is the by-exclusion anchor for the
+        // OtherRevealedCard cross-loss. Snapshotting up front freezes each own card
+        // before any lose/put mutates state (MV is zone-independent, CR 202.3).
+        let mut narrowed_subs: Vec<ResolvedAbility> = Vec::with_capacity(fanout_players.len());
+        for pid in &fanout_players {
+            let own_id: Option<ObjectId> = state
+                .last_revealed_ids
+                .iter()
+                .copied()
+                .find(|id| state.objects.get(id).map(|obj| obj.owner) == Some(*pid));
+            let own_snapshot = own_id.and_then(|id| {
+                state.objects.get(&id).map(|obj| CostPaidObjectSnapshot {
+                    object_id: id,
+                    lki: obj.snapshot_for_mana_spent(),
+                })
+            });
+            let mut sub = sub_template.as_ref().clone();
+            // The directed life loss reads the `Player` target; the put reads the
+            // inherited `Object` target. Absent an own card (empty library /
+            // illegal target, CR 608.2b) only the `Player` target is present — the
+            // put no-ops and the cross-loss fails closed to 0.
+            let mut targets = vec![TargetRef::Player(*pid)];
+            if let Some(id) = own_id {
+                targets.push(TargetRef::Object(id));
+            }
+            sub.targets = targets;
+            sub.multi_target = None;
+            apply_parent_chain_context(&mut sub, ability, own_snapshot.as_ref(), state);
+            narrowed_subs.push(sub);
+        }
+
+        // Resolve in APNAP order. On an interactive pause (defensive — the lose/put
+        // pair does not itself pause), stash the untouched remainder as a
+        // continuation, mirroring the §5472 pending-continuation stash pattern.
+        let initial_waiting_for = state.waiting_for.clone();
+        for (i, sub) in narrowed_subs.iter().enumerate() {
+            resolve_ability_chain(state, sub, events, depth + 1)?;
+            if state.waiting_for != initial_waiting_for {
+                let mut tail: Option<Box<ResolvedAbility>> = None;
+                for remaining in narrowed_subs[i + 1..].iter().rev() {
+                    let mut remaining = remaining.clone();
+                    if let Some(prev) = tail {
+                        super::ability_utils::append_to_sub_chain(&mut remaining, *prev);
+                    }
+                    tail = Some(Box::new(remaining));
+                }
+                append_to_pending_continuation(state, tail);
+                break;
+            }
+        }
+        return Ok(());
+    }
+
     // CR 603.3d + CR 601.2c: Multi-target-over-`Player` resolution fan-out.
     // An "any number of target players each <verb>" trigger/spell announces a
     // variable number of player targets when it goes on the stack (CR 601.2c,
@@ -7736,6 +7847,7 @@ pub(crate) fn evaluate_condition(
             crate::types::ability::ObjectScope::Recipient
             | crate::types::ability::ObjectScope::EventSource
             | crate::types::ability::ObjectScope::CostPaidObject
+            | crate::types::ability::ObjectScope::OtherRevealedCard
             | crate::types::ability::ObjectScope::EventTarget => false,
         },
         AbilityCondition::AlternativeManaCostPaid => ability.context.alternative_mana_cost_paid,
@@ -7929,6 +8041,7 @@ pub(crate) fn evaluate_condition(
                 crate::types::ability::ObjectScope::Recipient
                 | crate::types::ability::ObjectScope::EventSource
                 | crate::types::ability::ObjectScope::CostPaidObject
+                | crate::types::ability::ObjectScope::OtherRevealedCard
                 | crate::types::ability::ObjectScope::EventTarget => None,
             };
             object_id

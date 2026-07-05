@@ -1200,6 +1200,8 @@ fn evaluate_condition_with_context(
             | crate::types::ability::ObjectScope::EventTarget
             | crate::types::ability::ObjectScope::CostPaidObject
             | crate::types::ability::ObjectScope::Anaphoric
+            // Never produced for a duration tap condition; fails safely.
+            | crate::types::ability::ObjectScope::OtherRevealedCard
             | crate::types::ability::ObjectScope::Demonstrative => false,
         },
         // CR 702.171b + CR 110.5d: off-battlefield permanents have no saddled designation.

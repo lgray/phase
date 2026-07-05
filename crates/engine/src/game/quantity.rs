@@ -236,6 +236,9 @@ pub(crate) fn quantity_expr_uses_resolution_only_object_scope(expr: &QuantityExp
             | ObjectScope::EventTarget
             | ObjectScope::CostPaidObject
             | ObjectScope::Anaphoric
+            // CR 608.2c: the other revealer's card is a per-resolution referent,
+            // resolved only at resolution time (never a static CDA read).
+            | ObjectScope::OtherRevealedCard
             | ObjectScope::Demonstrative => true,
         }
     }
@@ -3465,7 +3468,13 @@ fn object_for_scope<'a>(
         // `CostPaidObject` (cost referent) nor `Anaphoric` (instruction-order
         // referent) resolves to a live `GameObject` here — both are snapshot
         // referents read through `ability` slots, not `state.objects`.
-        ObjectScope::CostPaidObject | ObjectScope::Anaphoric | ObjectScope::Demonstrative => None,
+        // `OtherRevealedCard` is likewise resolved specially in
+        // `resolve_object_mana_value` (by-exclusion over `last_revealed_ids`),
+        // not via this generic single-id path.
+        ObjectScope::CostPaidObject
+        | ObjectScope::Anaphoric
+        | ObjectScope::OtherRevealedCard
+        | ObjectScope::Demonstrative => None,
     }
 }
 
@@ -3513,7 +3522,12 @@ fn object_id_for_scope(
         // `CostPaidObject` (cost referent) nor `Anaphoric` (instruction-order
         // referent) resolves to an `ObjectId` here — both are snapshot
         // referents read through `ability` slots, not `state.objects`.
-        ObjectScope::CostPaidObject | ObjectScope::Anaphoric | ObjectScope::Demonstrative => None,
+        // `OtherRevealedCard` is resolved specially in `resolve_object_mana_value`
+        // (by-exclusion over `last_revealed_ids`), not via this generic path.
+        ObjectScope::CostPaidObject
+        | ObjectScope::Anaphoric
+        | ObjectScope::OtherRevealedCard
+        | ObjectScope::Demonstrative => None,
     }
 }
 
@@ -4012,6 +4026,11 @@ where
                 })
             })
             .unwrap_or(0),
+        // CR 608.2c: MV-only class today ({Parker Luck, Keen Duelist} reference
+        // only the OTHER revealed card's mana value). No card reads its power or
+        // toughness, so this is a fail-closed placeholder. Extend by mirroring the
+        // `last_revealed_ids` by-exclusion read in `resolve_object_mana_value`.
+        ObjectScope::OtherRevealedCard => 0,
     }
 }
 
@@ -4182,6 +4201,31 @@ fn resolve_object_mana_value(
                     .map(|s| u32_to_i32_saturating(s.lki.mana_value))
             })
             .unwrap_or(0),
+        // CR 608.2c + CR 701.20b + CR 108.3 + CR 202.3: "the mana value of the
+        // card revealed by the OTHER player" in an exactly-two-target symmetric
+        // reveal. This fan-out iteration's OWN revealed card is bound as
+        // `effect_context_object` (owner-keyed, §2.4b of the plan). The other
+        // revealer's card is the single `last_revealed_ids` entry that is NOT the
+        // own card (by-exclusion). MV is printed/zone-independent (CR 202.3), so
+        // the read is stable whether or not the other card has already been put
+        // to hand. Fail-closed to 0 when no "other" entry exists — empty library
+        // or a target that became illegal on resolution (CR 608.2b).
+        ObjectScope::OtherRevealedCard => {
+            let own = ability
+                .and_then(|a| a.effect_context_object.as_ref())
+                .map(|s| s.object_id);
+            state
+                .last_revealed_ids
+                .iter()
+                .find(|id| Some(**id) != own)
+                .and_then(|id| state.objects.get(id))
+                .map(|obj| {
+                    u32_to_i32_saturating(
+                        obj.mana_cost.mana_value_with_x(obj.zone, obj.cost_x_paid),
+                    )
+                })
+                .unwrap_or(0)
+        }
     }
 }
 

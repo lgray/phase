@@ -2195,6 +2195,15 @@ pub(crate) fn lower_effect_chain_ir(ir: &EffectChainIr) -> AbilityDefinition {
         result.optional_for = None;
     }
 
+    // CR 608.2c PRECONDITION (not a card-name suppression): "the card revealed by
+    // the OTHER player" DENOTES a card only when the same assembled chain carries a
+    // multi-player reveal fan-out. `ObjectScope::OtherRevealedCard` is well-formed
+    // only when a sibling `RevealTop` distributes to >=2 players (`multi_target`
+    // present). Applied on the FINAL tree (this chokepoint sees the complete
+    // structure regardless of when `multi_target` was attached), so the presence
+    // check is robustly correct.
+    gate_other_revealed_card_on_multiplayer_reveal(&mut result);
+
     // CR 608.2c + CR 107.1c: A trailing "repeat this process" directive sets a
     // chain-level loop predicate; apply it to the assembled root ability so the
     // resolver re-follows the whole chain.
@@ -2203,6 +2212,113 @@ pub(crate) fn lower_effect_chain_ir(ir: &EffectChainIr) -> AbilityDefinition {
     }
 
     result
+}
+
+/// CR 608.2c: The anaphor `ObjectScope::OtherRevealedCard` ("the card revealed by
+/// the other player") is only well-formed when its host chain contains a
+/// multi-player reveal fan-out — a `RevealTop` whose ability carries a
+/// `multi_target` spec (a >=2-player reveal shape). A single-subject reveal
+/// provides no "other" anchor, so any OtherRevealedCard-bearing effect is rewritten
+/// back to an honest `Effect::Unimplemented` gap. Predicate is `multi_target`
+/// PRESENCE (not `min >= 2`) so a future "any number of target players each …"
+/// host (`Some { max: None }`, `min: 0`) is not false-negatived; the runtime
+/// resolved-to-<2-players case is handled separately by the by-exclusion
+/// fail-closed read (→ 0). Parker Luck (`multi_target` present) keeps its parsed
+/// `LoseLife`; Keen Duelist ("you and target opponent each", lowered to
+/// `RevealTop { player: Any }`, no `multi_target`) stays honest-red until its
+/// compound-subject distribution is built.
+fn gate_other_revealed_card_on_multiplayer_reveal(def: &mut AbilityDefinition) {
+    if chain_has_multiplayer_reveal(def) {
+        return;
+    }
+    rewrite_other_revealed_card_to_unimplemented(def);
+}
+
+/// True when any def in the chain is a `RevealTop` carrying a `multi_target` spec.
+fn chain_has_multiplayer_reveal(def: &AbilityDefinition) -> bool {
+    if matches!(&*def.effect, Effect::RevealTop { .. }) && def.multi_target.is_some() {
+        return true;
+    }
+    def.sub_ability
+        .as_deref()
+        .is_some_and(chain_has_multiplayer_reveal)
+        || def
+            .else_ability
+            .as_deref()
+            .is_some_and(chain_has_multiplayer_reveal)
+        || def.mode_abilities.iter().any(chain_has_multiplayer_reveal)
+}
+
+/// Rewrite every OtherRevealedCard-bearing effect in the chain back to an honest
+/// `Effect::Unimplemented` gap. Coverage keys only on the `Unimplemented`
+/// variant, so the reconstructed fragment is cosmetic; the def carries no source
+/// text on a lowered `LoseLife`, so fall back to the canonical class fragment.
+fn rewrite_other_revealed_card_to_unimplemented(def: &mut AbilityDefinition) {
+    if effect_reads_other_revealed_card(&def.effect) {
+        let fragment = def.description.clone().unwrap_or_else(|| {
+            "lose life equal to the mana value of the card revealed by the other player".to_string()
+        });
+        *def.effect = Effect::unimplemented("lose", fragment);
+    }
+    if let Some(sub) = def.sub_ability.as_mut() {
+        rewrite_other_revealed_card_to_unimplemented(sub);
+    }
+    if let Some(els) = def.else_ability.as_mut() {
+        rewrite_other_revealed_card_to_unimplemented(els);
+    }
+    for mode in def.mode_abilities.iter_mut() {
+        rewrite_other_revealed_card_to_unimplemented(mode);
+    }
+}
+
+/// CR 608.2c: True when an effect's amount quantity reads
+/// `ObjectScope::OtherRevealedCard`. The whole class today is `LoseLife`/`GainLife`
+/// "… equal to the mana value of the card revealed by the other player"; extend
+/// by adding the hosting effect's amount field here.
+fn effect_reads_other_revealed_card(effect: &Effect) -> bool {
+    match effect {
+        Effect::LoseLife { amount, .. } | Effect::GainLife { amount, .. } => {
+            quantity_expr_reads_other_revealed_card(amount)
+        }
+        _ => false,
+    }
+}
+
+fn quantity_expr_reads_other_revealed_card(expr: &QuantityExpr) -> bool {
+    match expr {
+        QuantityExpr::Ref { qty } => quantity_ref_reads_other_revealed_card(qty),
+        QuantityExpr::DivideRounded { inner, .. }
+        | QuantityExpr::Multiply { inner, .. }
+        | QuantityExpr::ClampMin { inner, .. }
+        | QuantityExpr::Offset { inner, .. }
+        | QuantityExpr::UpTo { max: inner }
+        | QuantityExpr::Power {
+            exponent: inner, ..
+        } => quantity_expr_reads_other_revealed_card(inner),
+        QuantityExpr::Sum { exprs } | QuantityExpr::Max { exprs } => {
+            exprs.iter().any(quantity_expr_reads_other_revealed_card)
+        }
+        QuantityExpr::Difference { left, right } => {
+            quantity_expr_reads_other_revealed_card(left)
+                || quantity_expr_reads_other_revealed_card(right)
+        }
+        QuantityExpr::Fixed { .. } => false,
+    }
+}
+
+fn quantity_ref_reads_other_revealed_card(qty: &QuantityRef) -> bool {
+    let scope = match qty {
+        QuantityRef::ObjectManaValue { scope }
+        | QuantityRef::Power { scope }
+        | QuantityRef::Toughness { scope }
+        | QuantityRef::ObjectColorCount { scope }
+        | QuantityRef::ObjectNameWordCount { scope }
+        | QuantityRef::ObjectTypelineComponentCount { scope }
+        | QuantityRef::CountersOn { scope, .. }
+        | QuantityRef::ManaSymbolsInManaCost { scope, .. } => scope,
+        _ => return false,
+    };
+    matches!(scope, ObjectScope::OtherRevealedCard)
 }
 
 /// CR 707.10f + CR 608.3f: Fold a spell-copy rider "The copy gains haste and

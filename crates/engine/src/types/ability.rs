@@ -4458,6 +4458,20 @@ pub enum ObjectScope {
     /// and resolution (CR 603.4 intervening-if) via
     /// `extract_target_object_from_event`.
     EventTarget,
+    /// CR 608.2c + CR 701.20b + CR 108.3 + CR 202.3: In an exactly-two-target
+    /// symmetric reveal ("two target players each reveal the top card of their
+    /// library"), the revealed card belonging to the OTHER of the two revealers —
+    /// the referent of "the card revealed by the other player" (Parker Luck).
+    /// Distinct from [`ObjectScope::Demonstrative`]/[`ObjectScope::Anaphoric`],
+    /// which resolve to `effect_context_object` = the reader's OWN revealed card.
+    /// Resolved by exclusion: it is the single `state.last_revealed_ids` entry
+    /// whose id is NOT the per-iteration `effect_context_object` (the reader's own
+    /// card, bound owner-keyed per CR 108.3). CR 701.20b keeps both cards live in
+    /// their libraries when the cross-loss reads them; CR 202.3 makes the mana
+    /// value zone-independent, so the read is stable even after a card is put to
+    /// hand. Fail-closed to a null read (→ 0) when no "other" entry exists (empty
+    /// library or an illegal target on resolution, CR 608.2b).
+    OtherRevealedCard,
 }
 
 /// Source set for counting distinct card types.
@@ -12872,7 +12886,6 @@ impl Effect {
             | Effect::EndCombatPhase
             | Effect::Vote { .. }
             | Effect::Cleanup { .. }
-            | Effect::RevealTop { .. }
             | Effect::SearchOutsideGame { .. }
             | Effect::Choose { .. }
             | Effect::ChooseDamageSource { .. }
@@ -12995,6 +13008,27 @@ impl Effect {
             // CR 614.1a: CreatePlaneswalkReplacement is non-targeted — "a player
             // would planeswalk" scopes via the shield's player scope, no slot.
             | Effect::CreatePlaneswalkReplacement { .. } => None,
+            // CR 115.1 + CR 601.2c: "two target players each reveal the top card of
+            // their library" (Parker Luck) needs a stack-time player target slot so
+            // the multi_target spec expands to one slot per revealer. Scoped to the
+            // bare `Player` filter (NOT the general `!is_context_ref()` that
+            // RevealUntil uses): a `Typed(opponent)` "target opponent reveals … deals
+            // damage to that player" reveal (Cerebral Eruption) additionally depends
+            // on the ParentTarget-after-reveal player binding, which currently
+            // mis-binds to the revealed card via `last_revealed_ids` injection
+            // (measured: damage lands on the revealed library card, not the player).
+            // Surfacing those slots would expose that separate pre-existing runtime
+            // bug, so the `Typed`-opponent reveal-targeting is a documented
+            // follow-up (S25 deferral D8) — do NOT re-broaden this arm to
+            // `!is_context_ref()` without first fixing the ParentTarget binding,
+            // or Cerebral Eruption re-ships damage to the revealed card.
+            Effect::RevealTop {
+                player: player @ TargetFilter::Player,
+                ..
+            } => Some(player),
+            // CR 115.1: every other RevealTop (context-ref `Controller`/`ScopedPlayer`
+            // "your library", `Typed(opponent)`, or `Any`) surfaces no target slot.
+            Effect::RevealTop { .. } => None,
             // CR 115.1: RevealUntil with a non-context player filter ("target
             // opponent reveals...") requires a stack-time player target slot.
             Effect::RevealUntil { player, .. } => {

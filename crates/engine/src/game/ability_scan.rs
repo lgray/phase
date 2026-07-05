@@ -2488,6 +2488,10 @@ fn scan_object_scope(x: &ObjectScope) -> Axes {
         },
         ObjectScope::Anaphoric => Axes::NONE,
         ObjectScope::Demonstrative => Axes::NONE,
+        // CR 608.2c: per-resolution local (the other revealer's card), resolved
+        // by exclusion within this ability's own resolution — no event/sibling
+        // axis, like the demonstrative/anaphoric referents.
+        ObjectScope::OtherRevealedCard => Axes::NONE,
         ObjectScope::EventTarget => Axes {
             event: true,
             sibling: false,

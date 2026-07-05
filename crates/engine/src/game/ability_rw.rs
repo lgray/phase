@@ -2107,6 +2107,9 @@ fn legacy_object_scope(s: &ObjectScope) -> bool {
         | ObjectScope::Anaphoric
         | ObjectScope::Demonstrative
         | ObjectScope::EventSource
+        // Per-resolution local surfaced by THIS ability's own reveal — not one of
+        // the 12 retained legacy refs (mirrors the LastRevealed precedent).
+        | ObjectScope::OtherRevealedCard
         | ObjectScope::EventTarget => false,
     }
 }
@@ -3361,6 +3364,13 @@ fn read_object_scope(scope: &ObjectScope, kind: StateKind) -> RwProfile {
             reads_board_of(kind)
         }
         ObjectScope::EventSource | ObjectScope::EventTarget => reads_event_live(),
+        // §L7 precedent (CR 608.2c): a per-resolution local surfaced by THIS
+        // ability's own reveal within the same resolution — observed by no
+        // sibling write, and its read is the card's intrinsic printed MV (not a
+        // mutable board characteristic a sibling reorders). Mirrors
+        // `ObjectScope::Recipient` and the `LastRevealed => empty` classification;
+        // contributes no observable `reads_board`/`reads_src`.
+        ObjectScope::OtherRevealedCard => RwProfile::empty(),
         // D5 carrier: `CostPaidObject` is one of the 12 retained refs.
         ObjectScope::CostPaidObject => legacy_ref(),
     }
@@ -6902,6 +6912,45 @@ mod tests {
         assert!(
             !tlegacy(&TriggerCondition::SourceIsTapped),
             "SourceIsTapped carries no frozen tag"
+        );
+    }
+
+    /// #5072 dual-walk (§6.3): `ObjectScope::OtherRevealedCard` is DELIBERATELY
+    /// classified as a per-resolution local — `legacy_object_scope == false` (not
+    /// one of the 12 retained refs) and `read_object_scope == RwProfile::empty()`
+    /// (the other revealer's card is surfaced by THIS ability's own reveal and its
+    /// read is the card's intrinsic printed MV, observed by no sibling write). The
+    /// classification mirrors `ObjectScope::Recipient`, proving the new variant was
+    /// classified on purpose rather than silently defaulted.
+    #[test]
+    fn other_revealed_card_scope_is_per_resolution_local() {
+        // `RwProfile` has no `PartialEq`; compare via its `Debug` form, which
+        // fully renders every read/write field.
+        let dbg = |p: RwProfile| format!("{p:?}");
+        let empty = dbg(RwProfile::empty());
+        assert!(
+            !legacy_object_scope(&ObjectScope::OtherRevealedCard),
+            "OtherRevealedCard is not a retained legacy ref"
+        );
+        for kind in [StateKind::ObjectPt, StateKind::ObjectCounters] {
+            assert_eq!(
+                dbg(read_object_scope(&ObjectScope::OtherRevealedCard, kind)),
+                empty,
+                "OtherRevealedCard reads nothing observable ({kind:?})"
+            );
+            // Deliberately identical to the Recipient per-resolution-local precedent.
+            assert_eq!(
+                dbg(read_object_scope(&ObjectScope::OtherRevealedCard, kind)),
+                dbg(read_object_scope(&ObjectScope::Recipient, kind)),
+                "OtherRevealedCard mirrors the Recipient per-resolution-local profile"
+            );
+        }
+        // Discrimination: a genuine board ref (Target) is NOT empty, so the empty
+        // assertions above cannot pass vacuously.
+        assert_ne!(
+            dbg(read_object_scope(&ObjectScope::Target, StateKind::ObjectPt)),
+            empty,
+            "Target is a live-board ref — proves the empty checks discriminate"
         );
     }
 
