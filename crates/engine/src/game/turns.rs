@@ -1660,7 +1660,11 @@ pub fn execute_cleanup(state: &mut GameState, events: &mut Vec<GameEvent>) -> Op
     // loss event for every object whose controller actually reverted.
     if !control_reverting.is_empty() {
         super::layers::flush_layers(state);
+        let mut seen_reverting = HashSet::new();
         for (object_id, old_controller) in control_reverting {
+            if !seen_reverting.insert(object_id) {
+                continue;
+            }
             if let Some(new_controller) = state.objects.get(&object_id).map(|o| o.controller) {
                 if new_controller != old_controller {
                     events.push(GameEvent::ControllerChanged {

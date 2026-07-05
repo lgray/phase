@@ -227,6 +227,50 @@ fn selfref_lose_control_this_turn_fires_at_cleanup() {
     );
 }
 
+/// CR 514.2 + CR 613.1b: multiple expiring control effects on the same
+/// permanent create one controller reversion, so cleanup must emit one
+/// `ControllerChanged` event for that object. REVERT-PROBE: remove the cleanup
+/// dedupe and the self-ref trigger fires twice, drawing two cards.
+#[test]
+fn duplicate_control_reversions_emit_one_loss_event() {
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(Phase::PreCombatMain);
+    scenario.with_library_top(P0, &["P0 Card A", "P0 Card B"]);
+    scenario.with_library_top(P1, &["P1 Card A", "P1 Card B"]);
+    let permanent = scenario.add_creature(P1, "Self Ref Artifact", 0, 0).id();
+    let extra_source = scenario
+        .add_creature(P0, "Second Control Effect", 0, 0)
+        .id();
+    let mut runner = scenario.build();
+
+    make_artifact(&mut runner, permanent);
+    make_artifact(&mut runner, extra_source);
+    install_selfref_lose_control_draw(&mut runner, permanent);
+
+    gain_until_eot(&mut runner, permanent, P0, permanent);
+    gain_until_eot(&mut runner, extra_source, P0, permanent);
+    assert_eq!(
+        runner.state().objects[&permanent].controller,
+        P0,
+        "P0 temporarily controls the permanent"
+    );
+
+    let before = hand_size(&runner, P0) + hand_size(&runner, P1);
+    runner.advance_to_phase(Phase::Upkeep);
+    runner.advance_until_stack_empty();
+
+    assert_eq!(
+        runner.state().objects[&permanent].controller,
+        P1,
+        "control reverts to owner P1 at cleanup"
+    );
+    assert_eq!(
+        hand_size(&runner, P0) + hand_size(&runner, P1),
+        before + 1,
+        "duplicate expiring control effects must publish exactly one loss event"
+    );
+}
+
 /// Portent trap: a scoped trigger must NOT fire on an UNRELATED object's control
 /// change. The trigger is bound to `decoy` (never changes control); only the
 /// Sword's control reverts at cleanup. REVERT-PROBE: drop `valid_card` scoping in

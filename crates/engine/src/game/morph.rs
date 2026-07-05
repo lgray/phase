@@ -275,11 +275,16 @@ pub(crate) fn turn_face_up_prepare(
             _ => None,
         })
         .or_else(|| {
-            back_face
+            if back_face
                 .card_types
                 .core_types
                 .contains(&CoreType::Creature)
-                .then(|| back_face.mana_cost.clone())
+                && !matches!(back_face.mana_cost, ManaCost::NoCost)
+            {
+                Some(back_face.mana_cost.clone())
+            } else {
+                None
+            }
         })
         .ok_or_else(|| {
             EngineError::InvalidAction("Card cannot be turned face up (no morph cost)".to_string())
@@ -1126,6 +1131,39 @@ mod tests {
         assert!(!obj.face_down);
         assert_eq!(obj.name, "Manifest Target");
         assert_eq!(obj.power, Some(5));
+    }
+
+    #[test]
+    fn manifested_creature_with_no_mana_cost_cannot_be_turned_face_up() {
+        let mut state = GameState::new_two_player(42);
+        let player = PlayerId(0);
+
+        let id = create_object(
+            &mut state,
+            CardId(10),
+            player,
+            "No Cost Creature".to_string(),
+            Zone::Library,
+        );
+        let obj = state.objects.get_mut(&id).unwrap();
+        obj.power = Some(5);
+        obj.toughness = Some(5);
+        obj.card_types = CardType {
+            supertypes: vec![],
+            core_types: vec![CoreType::Creature],
+            subtypes: vec![],
+        };
+        obj.mana_cost = ManaCost::NoCost;
+        obj.base_mana_cost = ManaCost::NoCost;
+
+        let mut events = Vec::new();
+        manifest(&mut state, player, &mut events).unwrap();
+
+        let result = turn_face_up(&mut state, player, id, &mut events);
+        assert!(
+            result.is_err(),
+            "a manifested creature with no mana cost cannot be turned face up"
+        );
     }
 
     /// Regression test for GitHub issue #2024: Controller can look at their
