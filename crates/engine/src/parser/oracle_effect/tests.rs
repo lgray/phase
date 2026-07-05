@@ -38721,10 +38721,11 @@ fn ensnared_by_the_mara_damage_amount_is_tracked_set_aggregate() {
                 qty: QuantityRef::TrackedSetAggregate {
                     function: AggregateFunction::Sum,
                     property: ObjectProperty::ManaValue,
+                    source: crate::types::ability::TrackedAnaphorSource::ChainSet,
                 }
             }
         ),
-        "branch 1 damage amount must be TrackedSetAggregate(Sum, ManaValue), got {amount:?}"
+        "branch 1 damage amount must be TrackedSetAggregate(Sum, ManaValue, ChainSet), got {amount:?}"
     );
 
     // The verbatim Oracle aggregate phrase must never be stored as a

@@ -1007,7 +1007,11 @@ fn parse_object_property_aggregate_ref(input: &str) -> OracleResult<'_, Quantity
     {
         return Ok((
             anaphor_rest,
-            QuantityRef::TrackedSetAggregate { function, property },
+            QuantityRef::TrackedSetAggregate {
+                function,
+                property,
+                source: crate::types::ability::TrackedAnaphorSource::ChainSet,
+            },
         ));
     }
     let (filter, remainder) = parse_type_phrase(rest);

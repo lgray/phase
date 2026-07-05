@@ -4792,6 +4792,11 @@ pub enum QuantityRef {
     TrackedSetAggregate {
         function: AggregateFunction,
         property: ObjectProperty,
+        /// CR 608.2c: which object-id set to reduce. Defaults to `ChainSet`
+        /// (the chain-published tracked set) so existing serialized card-data
+        /// stays byte-identical — no `source` key is emitted for the default.
+        #[serde(default, skip_serializing_if = "TrackedAnaphorSource::is_chain_set")]
+        source: TrackedAnaphorSource,
     },
     /// CR 400.7 + CR 608.2c: Number of cards exiled from a hand by the immediately
     /// preceding `Effect::ChangeZoneAll` resolution. Read by Deadly Cover-Up's
@@ -5192,6 +5197,34 @@ pub enum AggregateFunction {
     Max,
     Min,
     Sum,
+}
+
+/// CR 608.2c: selects which object-id set a [`QuantityRef::TrackedSetAggregate`]
+/// reduces. The anaphor's referent ("those exiled cards" vs. "those creatures")
+/// is fixed by earlier text on the card, so the reduction needs to know which
+/// set that earlier text established. A leaf config enum (peer of
+/// [`AggregateFunction`]), not itself a walked top-level type.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum TrackedAnaphorSource {
+    /// CR 608.2c: the chain-published tracked set (e.g. "those exiled cards" —
+    /// the set the immediately preceding chain effect published, keyed by
+    /// highest id). Existing behavior; the default so pre-existing serialized
+    /// data is unchanged.
+    #[default]
+    ChainSet,
+    /// CR 603.2c + CR 603.10a: the objects in the current triggering event
+    /// batch (e.g. "those creatures" on a batched "one or more … die" trigger).
+    /// Read from `state.current_trigger_events` via `extract_source_from_event`;
+    /// died creatures contribute their death-time last-known power (CR 603.10a).
+    TriggeringBatch,
+}
+
+impl TrackedAnaphorSource {
+    /// The default source. Used by `skip_serializing_if` so existing
+    /// `TrackedSetAggregate` card-data stays byte-identical (no `source` key).
+    fn is_chain_set(&self) -> bool {
+        matches!(self, Self::ChainSet)
+    }
 }
 
 /// CR 120.9: Grouping key for damage-history aggregation. CR 120.9 distinguishes

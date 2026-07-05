@@ -1406,7 +1406,11 @@ fn fmt_quantity_ref(qty: &QuantityRef) -> String {
         QuantityRef::FilteredTrackedSetSize { filter, .. } => {
             format!("filtered tracked set ({})", fmt_target(filter))
         }
-        QuantityRef::TrackedSetAggregate { function, property } => {
+        QuantityRef::TrackedSetAggregate {
+            function,
+            property,
+            source: _,
+        } => {
             let func = match function {
                 AggregateFunction::Max => "max",
                 AggregateFunction::Min => "min",

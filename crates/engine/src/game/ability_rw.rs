@@ -5350,6 +5350,31 @@ fn rw_quantity_ref(x: &QuantityRef) -> RwProfile {
         | QuantityRef::DistinctCardTypes { .. }
         | QuantityRef::BasicLandTypeCount { .. }
         | QuantityRef::PartySize { .. } => reads_zone_membership(),
+        // CR 603.10a (PR-6.75 c5): promoted out of the fail-closed group below to
+        // its own arm so the next field addition is compiler-visible (a read-bearing
+        // field must force a re-audit). `reads_member_bound = true` is the HONEST
+        // classification for BOTH sources, not conservative-by-reflex:
+        //   - `ChainSet` is per-instance chain-published storage (same as the group
+        //     below), so it is member-bound.
+        //   - `TriggeringBatch` reads `state.current_trigger_events`, which
+        //     `matching_batched_trigger_events` (triggers.rs) scopes by THIS
+        //     trigger's own filter — so distinct-filter same-event sibling triggers
+        //     read DISTINCT batches ⇒ "NOT one shared `f`" = member-bound by the
+        //     definition at `reads_member_bound`'s doc. The `EventContextAmount`
+        //     frozen-context mirror (`legacy_batch_prompt`) is UNREACHABLE here:
+        //     `contains_legacy_event_ref` overwrites `legacy_batch_prompt` to false
+        //     for any non-legacy-12 ref (ability_rw.rs `ability_rw_profile`),
+        //     collapsing that mirror to a fail-open read-live path. So fail-closed
+        //     member-bound is the correct, not merely safe, verdict.
+        QuantityRef::TrackedSetAggregate {
+            function: _,
+            property: _,
+            source: _,
+        } => {
+            let mut p = RwProfile::empty();
+            p.reads_member_bound = true;
+            p
+        }
         // CR 603.10a (PR-6.75 c5): per-source tracked/exiled/chosen storage and
         // per-instance cast-context memory (X paid, kicker/convoke/vote/additional-
         // cost counts) are bound per member instance — each trigger stack object
@@ -5358,7 +5383,6 @@ fn rw_quantity_ref(x: &QuantityRef) -> RwProfile {
         | QuantityRef::ExiledCardPower { .. }
         | QuantityRef::TrackedSetSize
         | QuantityRef::FilteredTrackedSetSize { .. }
-        | QuantityRef::TrackedSetAggregate { .. }
         | QuantityRef::ChosenNumber
         | QuantityRef::CostXPaid
         | QuantityRef::KickerCount

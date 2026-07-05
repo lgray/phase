@@ -95,7 +95,7 @@ use crate::types::ability::{
     AbilityCondition, ControllerRef, CountScope, Duration, EachDamageRecipient, Effect,
     ModalChoice, MultiTargetSpec, ObjectScope, PlayerFilter, PlayerScope, QuantityExpr,
     QuantityRef, RepeatContinuation, ReplacementCondition, ResolvedAbility, StaticCondition,
-    TargetChoiceTiming, TargetFilter, TriggerCondition,
+    TargetChoiceTiming, TargetFilter, TrackedAnaphorSource, TriggerCondition,
 };
 use crate::types::game_state::TargetSelectionConstraint;
 
@@ -1772,7 +1772,18 @@ fn scan_quantity_ref(x: &QuantityRef) -> Axes {
         QuantityRef::TrackedSetAggregate {
             function: _,
             property: _,
-        } => Axes::NONE,
+            source,
+        } => match source {
+            // Chain-published set: reads no trigger/sibling context (unchanged).
+            TrackedAnaphorSource::ChainSet => Axes::NONE,
+            // Reads `state.current_trigger_events` (the triggering event) →
+            // event axis true, mirroring `QuantityRef::EventContextAmount` below.
+            TrackedAnaphorSource::TriggeringBatch => Axes {
+                event: true,
+                sibling: false,
+                projected: false,
+            },
+        },
         QuantityRef::ExiledFromHandThisResolution => Axes::NONE,
         QuantityRef::PreviousEffectAmount => Axes::NONE,
         QuantityRef::LifeLostThisTurn { player } => {

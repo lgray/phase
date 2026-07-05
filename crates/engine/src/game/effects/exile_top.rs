@@ -691,6 +691,7 @@ mod tests {
                     qty: QuantityRef::TrackedSetAggregate {
                         function: AggregateFunction::Sum,
                         property: ObjectProperty::ManaValue,
+                        source: crate::types::ability::TrackedAnaphorSource::ChainSet,
                     },
                 },
                 target: TargetFilter::Controller,

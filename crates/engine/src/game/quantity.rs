@@ -18,8 +18,8 @@ use crate::types::ability::{
     AggregateFunction, AttackScope, BasicLandType, CardTypeSetSource, CastManaObjectScope,
     CastManaSpentMetric, ContinuousModification, ControllerRef, CountScope, DamageChannel,
     FilterProp, ObjectProperty, ObjectScope, PlayerFilter, PlayerScope, QuantityExpr, QuantityRef,
-    ResolvedAbility, RoundingMode, StaticCondition, TargetFilter, TargetRef, TypeFilter,
-    TypedFilter, ZoneRef,
+    ResolvedAbility, RoundingMode, StaticCondition, TargetFilter, TargetRef, TrackedAnaphorSource,
+    TypeFilter, TypedFilter, ZoneRef,
 };
 use crate::types::card_type::CoreType;
 use crate::types::counter::{positive_counter_types, CounterType};
@@ -2247,13 +2247,35 @@ fn resolve_ref(
         // place (mirrors the `Aggregate` extract: live object first, LKI cache
         // fallback). Drives "deals damage equal to the total mana value of those
         // exiled cards" (Ensnared by the Mara).
-        QuantityRef::TrackedSetAggregate { function, property } => {
-            let Some((_, ids)) = state.tracked_object_sets.iter().max_by_key(|(id, _)| id.0) else {
-                return 0;
+        QuantityRef::TrackedSetAggregate {
+            function,
+            property,
+            source,
+        } => {
+            // The id-set to reduce depends on which anaphor the parser matched.
+            let ids: Vec<ObjectId> = match source {
+                // Chain-published tracked set ("those exiled cards"): the set the
+                // immediately-preceding chain effect published (highest id).
+                TrackedAnaphorSource::ChainSet => state
+                    .tracked_object_sets
+                    .iter()
+                    .max_by_key(|(id, _)| id.0)
+                    .map(|(_, ids)| ids.clone())
+                    .unwrap_or_default(),
+                // CR 603.2c + CR 603.10a: the current triggering event batch
+                // ("those creatures" on a batched dies trigger). The subjects are
+                // read from `state.current_trigger_events`; each died creature's
+                // power comes from its last-known info (LKI), i.e. death-time
+                // power, via `aggregate_property_over`'s live-then-LKI extract.
+                TrackedAnaphorSource::TriggeringBatch => state
+                    .current_trigger_events
+                    .iter()
+                    .filter_map(crate::game::targeting::extract_source_from_event)
+                    .collect(),
             };
             // Per-object aggregation delegated to the shared
             // `aggregate_property_over` summation authority (live-then-LKI).
-            aggregate_property_over(state, ids, *function, *property)
+            aggregate_property_over(state, &ids, *function, *property)
         }
         // CR 400.7 + CR 608.2c: Read the per-resolution counter populated by
         // ChangeZoneAll when it exiles cards from a hand. Used by "draws a card
