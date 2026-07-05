@@ -14832,9 +14832,19 @@ fn replace_target_with_parent(effect: &mut Effect) {
         // "put a +1/+1 counter on target creature …, then … double the number of
         // +1/+1 counters on it"). `MultiplyCounter` shares the same anaphor as its
         // `PutCounter`/`RemoveCounter` siblings.
+        //
+        // CR 608.2c token-anaphor exception (§B2): when the clause follows a
+        // token creator, the counter parser already bound "it" to the just-created
+        // token (`LastCreated`, via `token_created_in_chain`). That is the correct
+        // recipient — do NOT collapse it to the copy SOURCE's `ParentTarget` (Esper
+        // Terra: "Create a token that's a copy of target enchantment … put up to
+        // three lore counters on it"). Mirrors the identical `LastCreated` guard on
+        // the `Attach`/`UnattachAll` arms above.
         Effect::PutCounter { target, .. }
         | Effect::RemoveCounter { target, .. }
-        | Effect::MultiplyCounter { target, .. } => {
+        | Effect::MultiplyCounter { target, .. }
+            if !matches!(target, TargetFilter::LastCreated) =>
+        {
             *target = TargetFilter::ParentTarget;
         }
         // CR 608.2c: a self-referential zone change ("Exile Venture Forth with
@@ -15599,6 +15609,38 @@ fn chain_prior_referent_is_chosen_target(clauses: &[ClauseIr]) -> bool {
             continue;
         }
         return false;
+    }
+    false
+}
+
+/// CR 608.2c: Is the chain's MOST-RECENT object referent a just-created token
+/// (`Token`/`CopyTokenOf`/`Populate`)? A bare "it" anaphor in a following clause
+/// then binds to that token — Esper Terra: "Create a token that's a copy of
+/// target nonlegendary enchantment ... It gains haste. If it's a Saga, put up to
+/// three lore counters on it."
+///
+/// Walks back like `chain_has_prior_typed_referent`: a token creator answers
+/// `true`; an explicit typed-target introducer re-anchors "it" and answers
+/// `false` (CR 608.2c — later text can redirect the referent); a conditional
+/// clause bails; and any pronoun-carrier / non-referent clause (the "It gains
+/// haste" grant, whose target is `SelfRef`/`ParentTarget`, not a `Typed` filter)
+/// is skipped so the scan reaches the originating token creator. Skipping in the
+/// SAFE direction only over-binds toward `LastCreated`, which the typed-target
+/// re-anchor bail prevents; a chain with no token creator falls through to
+/// `false`, leaving non-token self-triggers at `SelfRef`.
+fn chain_prior_referent_is_created_token(clauses: &[ClauseIr]) -> bool {
+    for prev in clauses.iter().rev() {
+        if prev.condition.is_some() {
+            return false;
+        }
+        if is_token_creating_effect(&prev.parsed.effect) {
+            return true;
+        }
+        if has_typed_target_widened(&prev.parsed.effect) {
+            // A later explicit typed target re-anchors "it" to itself.
+            return false;
+        }
+        // Carrier / non-referent clause (e.g. "It gains haste") — keep scanning.
     }
     false
 }
@@ -23831,6 +23873,11 @@ pub(crate) fn parse_effect_chain_ir(
             // disambiguates to `CostPaidObject` (Jhoira of the Ghitu).
             current_ability_exile_cost_zone: ctx.current_ability_exile_cost_zone,
             parent_target_available,
+            // CR 608.2c: bind a bare "it" in this chunk's counter/anaphor to the
+            // token created by an earlier clause when that token is the chain's
+            // most-recent object referent (Esper Terra's "put up to three lore
+            // counters on it"). Cleared by an intervening explicit typed target.
+            token_created_in_chain: chain_prior_referent_is_created_token(&clauses),
             effect_chain_full_lower: ctx.effect_chain_full_lower.clone(),
             parent_target_is_chosen,
             // CR 608.2c + CR 400.7: seed the zone published by an earlier

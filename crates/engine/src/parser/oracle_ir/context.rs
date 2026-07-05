@@ -102,6 +102,16 @@ pub(crate) struct ParseContext {
     /// parsing leaves this false so bare "it" defaults to SelfRef instead of
     /// inventing a parent target.
     pub parent_target_available: bool,
+    /// CR 608.2c: The current effect-chain chunk's MOST-RECENT prior object
+    /// referent is a just-created token (Token/CopyTokenOf/Populate), so a bare
+    /// "it" anaphor in this chunk binds to that token (`TargetFilter::LastCreated`)
+    /// rather than the ability source. Seeded only in the chunk loop via
+    /// `chain_prior_referent_is_created_token`; a later explicit typed-target
+    /// clause re-anchors "it" and clears it. Standalone and all other construction
+    /// sites default `false` (`..Default::default()`), keeping bare "it" at
+    /// `SelfRef` so non-token self-triggers ("Whenever ~ attacks, put a counter on
+    /// it") are unaffected.
+    pub token_created_in_chain: bool,
     /// CR 608.2c: Full lowercased effect-chain text for cross-clause features
     /// like cultivate/Final-Parting split-destination detection on a search
     /// clause that does not include the put-destination phrase in its chunk.
