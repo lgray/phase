@@ -1630,6 +1630,7 @@ impl GameRunner {
             WaitingFor::AssignBlockerDamage { .. } => "AssignBlockerDamage",
             WaitingFor::DistributeAmong { .. } => "DistributeAmong",
             WaitingFor::MoveCountersDistribution { .. } => "MoveCountersDistribution",
+            WaitingFor::RemoveCountersChoice { .. } => "RemoveCountersChoice",
             WaitingFor::PayAmountChoice { .. } => "PayAmountChoice",
             WaitingFor::RetargetChoice { .. } => "RetargetChoice",
             WaitingFor::WardDiscardChoice { .. } => "WardDiscardChoice",

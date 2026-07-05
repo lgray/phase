@@ -758,6 +758,22 @@ pub(super) fn try_parse_remove_counter(lower: &str, ctx: &mut ParseContext) -> O
     }) {
         (QuantityExpr::Fixed { value: -1 }, rest.trim_start())
     } else if let Some(((), rest)) = nom_on_lower(after_remove, after_remove, |i| {
+        value((), tag("any number of ")).parse(i)
+    }) {
+        // CR 107.1c + CR 608.2d: "remove any number of counters" is a
+        // resolution-time player choice (any per-type subset, 0..=available,
+        // incl. zero). Encode it as `UpTo` over the "remove all" sentinel so the
+        // runtime resolver discriminates on the peel FLAG (`count.is_up_to()`),
+        // not the scalar: the interactive path derives the legal domain from the
+        // board rather than resolving the inner `Fixed{-1}` numerically. If the
+        // resolver ever fails to peel, the safe-degrade is the existing
+        // "remove all" branch (`Fixed{-1}` clamps to the board — legal, just
+        // non-interactive). Rhys, the Evermore / Tetravus.
+        (
+            QuantityExpr::up_to(QuantityExpr::Fixed { value: -1 }),
+            rest.trim_start(),
+        )
+    } else if let Some(((), rest)) = nom_on_lower(after_remove, after_remove, |i| {
         value((), tag("up to ")).parse(i)
     }) {
         let (n, r) = parse_number(rest.trim())?;
@@ -790,6 +806,23 @@ pub(super) fn try_parse_remove_counter(lower: &str, ctx: &mut ParseContext) -> O
         value((), tag("from ")).parse(i)
     })?;
     let target_text = target_text.trim();
+
+    // CR 608.2d: "remove any number of counters from among <objects>" distributes
+    // the removal, at resolution, among any number of UNTARGETED permanents — a
+    // MULTI-SOURCE choice. The single-source interactive path (Rhys, Tetravus)
+    // cannot model "from among", so leave such cards Unimplemented (out of scope)
+    // rather than silently collapsing them to a single-source removal (Galloping
+    // Lizrog, Eventide's Shadow). Scoped to the `UpTo` ("any number") branch so
+    // non-interactive removals are untouched.
+    if count.is_up_to()
+        && nom_on_lower(target_text, target_text, |i| {
+            value((), tag("among ")).parse(i)
+        })
+        .is_some()
+    {
+        return None;
+    }
+
     let target = resolve_remove_counter_from_target(target_text, ctx);
 
     Some(Effect::RemoveCounter {

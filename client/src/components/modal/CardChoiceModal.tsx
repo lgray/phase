@@ -298,7 +298,12 @@ export function CardChoiceModal() {
       return <DistributeAmongModal data={waitingFor.data} />;
     case "MoveCountersDistribution":
       if (!canActForWaitingState) return null;
-      return <MoveCountersDistributionModal data={waitingFor.data} />;
+      return <MoveCountersDistributionModal waitingFor={waitingFor} />;
+    // CR 107.1c: "remove any number of counters" (Rhys, Tetravus) reuses the
+    // counter-distribution modal in no-destination removal mode.
+    case "RemoveCountersChoice":
+      if (!canActForWaitingState) return null;
+      return <MoveCountersDistributionModal waitingFor={waitingFor} />;
     case "RetargetChoice":
       if (!canActForWaitingState) return null;
       // CR 115.7: Single-target retargets are picked directly on the board via

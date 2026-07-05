@@ -126,6 +126,9 @@ export const HANDLED_WAITING_FOR_TYPES: ReadonlySet<WaitingFor["type"]> =
     "KeepWithinTotalPowerChoice",
     "DistributeAmong",
     "MoveCountersDistribution",
+    // CR 107.1c: "remove any number of counters" (Rhys, Tetravus) — rendered by
+    // MoveCountersDistributionModal in no-destination removal mode.
+    "RemoveCountersChoice",
     "RetargetChoice",
     "CopyRetarget",
     "DamageSourceChoice",

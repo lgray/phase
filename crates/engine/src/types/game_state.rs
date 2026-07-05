@@ -1335,6 +1335,17 @@ pub struct CounterCostChoice {
     pub count: u32,
 }
 
+/// CR 107.1c + CR 608.2d: One per-type entry of a resolution-time
+/// "remove any number of counters" selection (Rhys, the Evermore / Tetravus).
+/// Unlike [`CounterCostChoice`], there is no `object_id`: the removal source is
+/// the single object fixed by the effect (the ability's target or `SelfRef`),
+/// so the client only chooses which counter types and how many of each to shed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CounterRemoveChoice {
+    pub counter_type: CounterType,
+    pub count: u32,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PendingCounterMove {
     pub actor: PlayerId,
@@ -1350,6 +1361,33 @@ pub struct PendingCounterMoveQueue {
     pub remaining: Vec<PendingCounterMove>,
     pub effect_kind: EffectKind,
     pub source_id: ObjectId,
+}
+
+/// CR 107.1c + CR 608.2d + CR 608.2h: The not-yet-applied tail of a resolved
+/// "remove any number of counters" selection. Mirrors [`PendingCounterMoveQueue`]:
+/// drained one `(counter_type, count)` at a time by
+/// `effects::counters::drain_pending_counter_removals`, which re-parks the queue
+/// when a per-removal replacement surfaces a `ReplacementChoice` mid-batch. When
+/// the queue empties, `total` is stamped into `last_effect_count` so a downstream
+/// "create that many" / "add that much" rider (Tetravus, storage lands) reading
+/// `QuantityRef::EventContextAmount` picks up the count removed.
+///
+/// Serialized (like `pending_counter_moves`) so a mid-batch re-park survives the
+/// server→client→server state round-trip a `ReplacementChoice` requires; the
+/// `skip_serializing_if` on the field keeps it off the wire when `None`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PendingCounterRemovalQueue {
+    /// Remaining per-type removals to apply to `source_id`.
+    pub remaining: Vec<(CounterType, u32)>,
+    /// The object counters are removed from (the effect's single source).
+    pub source_id: ObjectId,
+    /// Effect kind for the terminating `EffectResolved` event.
+    pub effect_kind: EffectKind,
+    /// Ability source object for the terminating `EffectResolved` event.
+    pub source_ability_id: ObjectId,
+    /// Total counters requested across all entries; stamped into
+    /// `last_effect_count` when the queue empties.
+    pub total: u32,
 }
 
 /// CR 603.10a + CR 616.1: The not-yet-delivered tail of a simultaneous
@@ -4545,6 +4583,21 @@ pub enum WaitingFor {
         destinations: Vec<ObjectId>,
         pending_effect: Box<ResolvedAbility>,
     },
+    /// CR 107.1c + CR 608.2d: "Remove any number of counters from [source]"
+    /// chooses which counter types and how many of each to remove as the ability
+    /// resolves (Rhys, the Evermore; Tetravus). CR 107.1c: the empty selection
+    /// (remove zero) is always legal. `available` exposes only the public per-type
+    /// counter counts on `source_id` (CR 122.1 — counters are public markers), so
+    /// no multiplayer redaction is needed. Sibling of `MoveCountersDistribution`
+    /// with no destination axis (counters are shed, not relocated).
+    RemoveCountersChoice {
+        player: PlayerId,
+        source_id: ObjectId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        counter_type: Option<CounterType>,
+        available: Vec<(CounterType, u32)>,
+        pending_effect: Box<ResolvedAbility>,
+    },
     /// CR 107.1c + CR 107.14: "Pay any amount of {E}" — mid-resolution prompt.
     /// Player picks any integer between `min` and `max` inclusive; the chosen
     /// amount is deducted from the relevant resource pool and stamped into
@@ -4813,6 +4866,7 @@ impl WaitingFor {
             WaitingFor::AssignBlockerDamage { .. } => "AssignBlockerDamage",
             WaitingFor::DistributeAmong { .. } => "DistributeAmong",
             WaitingFor::MoveCountersDistribution { .. } => "MoveCountersDistribution",
+            WaitingFor::RemoveCountersChoice { .. } => "RemoveCountersChoice",
             WaitingFor::PayAmountChoice { .. } => "PayAmountChoice",
             WaitingFor::RetargetChoice { .. } => "RetargetChoice",
             WaitingFor::CombatTaxPayment { .. } => "CombatTaxPayment",
@@ -4942,6 +4996,7 @@ impl WaitingFor {
             | WaitingFor::AssignBlockerDamage { player, .. }
             | WaitingFor::DistributeAmong { player, .. }
             | WaitingFor::MoveCountersDistribution { player, .. }
+            | WaitingFor::RemoveCountersChoice { player, .. }
             | WaitingFor::PayAmountChoice { player, .. }
             | WaitingFor::RetargetChoice { player, .. }
             | WaitingFor::WardDiscardChoice { player, .. }
@@ -5116,6 +5171,18 @@ impl WaitingFor {
 
     pub fn accepts_freeform_counter_move_distribution(&self) -> bool {
         matches!(self, WaitingFor::MoveCountersDistribution { .. })
+    }
+
+    /// CR 107.1c: "Remove any number of counters" has a combinatorial legal
+    /// space (any per-type subset 0..=available, including the empty set) that
+    /// the coarse AI candidate enumerator (`counter_removal_candidates`, which
+    /// offers only "remove all" and "remove none") cannot fully cover. The
+    /// server bypasses its enumeration gate for this state so a human's
+    /// intermediate submission (e.g. "remove 2 of 3") is not wrongly rejected;
+    /// `apply()` (the `RemoveCountersChoice` handler) is the real validation
+    /// boundary via `validate_counter_selection`.
+    pub fn accepts_freeform_counter_removal(&self) -> bool {
+        matches!(self, WaitingFor::RemoveCountersChoice { .. })
     }
 
     /// Combat-damage assignment whose legal divisions cannot be captured by the
@@ -7174,6 +7241,14 @@ pub struct GameState {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pending_counter_moves: Option<PendingCounterMoveQueue>,
 
+    /// CR 107.1c + CR 608.2h: Pending per-type counter removals selected during a
+    /// "remove any number of counters" resolution-time prompt. Drained before
+    /// normal pending continuations (so a "create that many" rider sees the
+    /// stamped `last_effect_count`), and re-parked when a per-removal replacement
+    /// surfaces a `ReplacementChoice`. See [`PendingCounterRemovalQueue`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending_counter_removals: Option<PendingCounterRemovalQueue>,
+
     /// CR 603.10a + CR 616.1: Pending simultaneous zone-move batch tail paused
     /// by a per-object replacement choice (see [`PendingBatchDeliveries`]).
     /// Drained by the replacement-choice resume path after the chosen event
@@ -8363,6 +8438,7 @@ impl GameState {
             pending_per_player_zone_choice: None,
             pending_per_category_zone_choice: None,
             pending_counter_moves: None,
+            pending_counter_removals: None,
             pending_batch_deliveries: None,
             pending_counter_additions: None,
             pending_proliferate_actions: None,
@@ -9016,6 +9092,7 @@ impl PartialEq for GameState {
             && self.pending_vote_ballot_iteration == other.pending_vote_ballot_iteration
             && self.pending_per_player_zone_choice == other.pending_per_player_zone_choice
             && self.pending_counter_moves == other.pending_counter_moves
+            && self.pending_counter_removals == other.pending_counter_removals
             && self.pending_batch_deliveries == other.pending_batch_deliveries
             && self.pending_counter_additions == other.pending_counter_additions
             && self.pending_proliferate_actions == other.pending_proliferate_actions

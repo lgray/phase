@@ -537,6 +537,7 @@ mod proliferate_zero_counter;
 mod quirion_ranger_activation;
 mod rage_reflection_double_strike_grant;
 mod refurbished_familiar;
+mod rhys_evermore_remove_counters;
 mod riot_control_regression;
 mod ripples_of_undeath_regression;
 mod rite_of_consumption_damage;

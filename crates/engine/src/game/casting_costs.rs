@@ -13,7 +13,7 @@ use crate::types::ability::{
 use crate::types::events::{GameEvent, ManaTapState};
 use crate::types::game_state::{
     ActivationResidual, AssistState, CastPaymentMode, CastingVariant, ConvokeMode, CostResume,
-    CounterCostChoice, DistributionUnit, GameState, PayCostKind, PendingCast,
+    CounterCostChoice, CounterRemoveChoice, DistributionUnit, GameState, PayCostKind, PendingCast,
     PendingDiscardForCostResume, SpellCostSource, StackEntry, StackEntryKind, StackPaidSnapshot,
     WaitingFor,
 };
@@ -1814,6 +1814,48 @@ pub(crate) fn handle_remove_counter_distribution_for_cost(
             "Counter distribution must total {count}, got {total}",
         )));
     }
+
+    // CR 107.1c: shared single-authority per-type budget invariant. Project the
+    // per-object distribution to per-type totals and validate against the per-type
+    // available budget summed across the eligible permanents, using the same
+    // `validate_counter_selection` the effect-path `RemoveCountersChoice` handler
+    // uses. This keeps one authority for "count <= available per type" across both
+    // counter-removal surfaces. It is a strictly non-regressing guard: the
+    // per-object `removable` checks above are tighter (each choice.count is bounded
+    // by a single object's counters, and choice objects are distinct legal
+    // permanents), so any distribution they accept also satisfies this aggregate.
+    let mut per_type: Vec<CounterRemoveChoice> = Vec::new();
+    for choice in distribution {
+        if let Some(entry) = per_type
+            .iter_mut()
+            .find(|e| e.counter_type == choice.counter_type)
+        {
+            entry.count = entry.count.saturating_add(choice.count);
+        } else {
+            per_type.push(CounterRemoveChoice {
+                counter_type: choice.counter_type.clone(),
+                count: choice.count,
+            });
+        }
+    }
+    let mut available_by_type: Vec<(crate::types::counter::CounterType, u32)> = Vec::new();
+    for &obj_id in legal_permanents {
+        let Some(obj) = state.objects.get(&obj_id) else {
+            continue;
+        };
+        for (ct, &n) in &obj.counters {
+            if n == 0 {
+                continue;
+            }
+            if let Some(entry) = available_by_type.iter_mut().find(|(t, _)| t == ct) {
+                entry.1 = entry.1.saturating_add(n);
+            } else {
+                available_by_type.push((ct.clone(), n));
+            }
+        }
+    }
+    super::effects::counters::validate_counter_selection(&available_by_type, &per_type)
+        .map_err(|err| EngineError::InvalidAction(err.to_string()))?;
 
     if pending.activation_ability_index.is_some() {
         if let Some(cost) = pending.activation_cost.take() {

@@ -1461,6 +1461,9 @@ fn fallback_action(state: &GameState) -> Option<GameAction> {
         WaitingFor::MoveCountersDistribution { .. } => engine::ai_support::legal_actions(state)
             .into_iter()
             .find(|action| matches!(action, GameAction::ChooseCounterMoveDistribution { .. })),
+        WaitingFor::RemoveCountersChoice { .. } => engine::ai_support::legal_actions(state)
+            .into_iter()
+            .find(|action| matches!(action, GameAction::ChooseCountersToRemove { .. })),
 
         // Remaining pending-cast states are caught by the has_pending_cast
         // guard above. This arm is structurally unreachable but required

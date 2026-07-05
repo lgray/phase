@@ -650,6 +650,7 @@ pub(crate) fn mark_pending_continuation_parent(state: &mut GameState, kind: Effe
 /// event is never silently dropped.
 pub(crate) fn drain_pending_continuation(state: &mut GameState, events: &mut Vec<GameEvent>) {
     counters::drain_pending_counter_moves(state, events);
+    counters::drain_pending_counter_removals(state, events);
     counters::drain_pending_counter_additions(state, events);
     if waits_for_resolution_choice(&state.waiting_for) {
         return;
@@ -1917,6 +1918,12 @@ fn waits_for_resolution_choice(waiting_for: &WaitingFor) -> bool {
             | WaitingFor::CopyRetarget { .. }
             | WaitingFor::DistributeAmong { .. }
             | WaitingFor::MoveCountersDistribution { .. }
+            // CR 608.2c + CR 608.2h: a "remove any number of counters" prompt
+            // pauses resolution; Tetravus's chained "create that many ... tokens"
+            // sub-ability must run only after the removal count is known, so
+            // stash it as a continuation here (drained after the removal stamps
+            // `last_effect_count`).
+            | WaitingFor::RemoveCountersChoice { .. }
             | WaitingFor::PayAmountChoice { .. }
             | WaitingFor::RetargetChoice { .. }
             | WaitingFor::ChooseFromZoneChoice { .. }
