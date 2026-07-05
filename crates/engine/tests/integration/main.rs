@@ -439,6 +439,7 @@ mod issue_735_cost_paid_object_non_regression;
 mod issue_735_lily_bowen_power_double;
 mod issue_787_once_upon_a_time;
 mod issue_788_unexpectedly_absent;
+mod issue_822_erode_path_to_exile_search_controller;
 mod issue_828_full_throttle;
 mod issue_841_selvala_explorer_returned;
 mod issue_847_braids_cabal_minion;
