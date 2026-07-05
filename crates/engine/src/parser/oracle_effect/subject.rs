@@ -3877,11 +3877,17 @@ fn try_parse_set_day_night(become_text: &str) -> Option<ParsedEffectClause> {
 /// - "all colors" / "every color" → `SetColor(WUBRG)` (CR 105.2: a multicolored
 ///   object can be each of the five colors). The new color set replaces all
 ///   previous colors (CR 105.3).
-/// - "the chosen color" → `AddChosenColor`, reading the source's
-///   `ChosenAttribute::Color` bound by a preceding `Effect::Choose` in the same
-///   ability (Puca's Eye: "draw a card, then choose a color. This artifact
-///   becomes the chosen color"). Despite the additive-sounding `Add` prefix,
-///   `AddChosenColor` SETS the color at Layer 5 (CR 105.3) — see its definition.
+/// - "the chosen color" / "that color" → `AddChosenColor`, reading the source's
+///   `ChosenAttribute::Color`. For "the chosen color" the color is bound by a
+///   preceding `Effect::Choose` in the same ability (Puca's Eye: "draw a card,
+///   then choose a color. This artifact becomes the chosen color"). For "that
+///   color" (CR 106.1a + CR 202.2) the color is bound by the mana produced
+///   earlier in the SAME activated mana ability ("Add one mana of any color.
+///   This creature becomes that color", Foraging Wickermaw) — the mana producer
+///   records it as `ChosenAttribute::Color` on the source
+///   (`produce_mana_from_ability`), and this `AddChosenColor` reads it live at
+///   Layer 5. Despite the additive-sounding `Add` prefix, `AddChosenColor` SETS
+///   the color at Layer 5 (CR 105.3 / CR 613.1e) — see its definition.
 ///
 /// Returns `None` for any other predicate so the caller falls through to the
 /// fixed-color animation path (which already handles single named colors) and to
@@ -3902,6 +3908,7 @@ fn try_parse_become_color_modification(become_text: &str) -> Option<ContinuousMo
     if all_consuming(alt((
         tag::<_, _, OracleError<'_>>("the chosen color"),
         tag("the color chosen this way"),
+        tag("that color"),
     )))
     .parse(lower.as_str())
     .is_ok()
@@ -5409,6 +5416,28 @@ mod tests {
     };
     use crate::types::card_type::Supertype;
     use crate::types::statics::BlockExceptionKind;
+
+    /// CR 105.3 + CR 106.1a: "becomes that color" (Foraging Wickermaw) maps to the
+    /// same `AddChosenColor` reader as "the chosen color" (Puca's Eye) — only the
+    /// upstream writer differs (mana production vs `Effect::Choose`). Regression-
+    /// guards the sibling arms so a future edit can't drop them.
+    #[test]
+    fn become_that_color_maps_to_add_chosen_color() {
+        assert!(matches!(
+            try_parse_become_color_modification("that color"),
+            Some(ContinuousModification::AddChosenColor)
+        ));
+        assert!(matches!(
+            try_parse_become_color_modification("the chosen color"),
+            Some(ContinuousModification::AddChosenColor)
+        ));
+        assert!(matches!(
+            try_parse_become_color_modification("all colors"),
+            Some(ContinuousModification::SetColor { .. })
+        ));
+        // Unrelated predicates still fall through (the animation path handles them).
+        assert!(try_parse_become_color_modification("a giant lizard").is_none());
+    }
 
     // CR 702.62a + CR 702.62b + CR 611.2a: "Cards exiled this way gain suspend"
     // (unconditional form — no "that don't have" clause) must produce the
