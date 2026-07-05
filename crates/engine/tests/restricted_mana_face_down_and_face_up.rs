@@ -290,3 +290,74 @@ fn overgrown_zealot_turn_face_up_mana_rejects_every_live_context() {
             .allows(&PaymentContext::SpecialAction(SpecialAction::TurnFaceUp))
     );
 }
+
+/// Tin Street Gossip: "spend this mana only to cast face-down spells or to turn
+/// creatures face up" — the card's EXACT lowered restriction,
+/// `OnlyForAny([OnlyForFaceDownSpell, OnlyForSpecialAction(TurnFaceUp)])`: a DEAD
+/// face-down-cast leaf sitting beside a LIVE turn-face-up leaf. The leaf-level
+/// tests above pin each half in isolation; this drives `spend_for` at TSG's
+/// whole disjunction to prove the dead leaf cannot make the card *over-claimed*:
+///
+///   - the {R} is CONSUMED for the turn-face-up special action — the live leaf
+///     makes TSG's mana genuinely usable, so the card is not a dead-mana
+///     over-claim (its `has_payable_branch` support is real, CR 116.2b), and
+///   - the {R} is WITHHELD for a normal face-up creature cast — the dead
+///     `FaceDownSpell` leaf does not widen the disjunction into permitting
+///     arbitrary casts (no over-permit).
+///
+/// Combined with `face_down_spell_mana_rejects_every_production_context` (the
+/// `FaceDownSpell` leaf is fail-CLOSED at every production context — it can only
+/// under-permit, never over-permit), this is the measured proof that Tin Street
+/// Gossip is honestly supported through its live turn-face-up branch, not
+/// over-claimed through its dead face-down-cast branch. CR 106.6 + CR 708.4 +
+/// CR 116.2b + CR 702.37e.
+///
+/// Revert-proof: drop the `TurnFaceUp` leaf and the disjunction is all-dead — the
+/// turn-face-up spend (A) no longer consumes, so its assert flips; make the
+/// disjunction wrongly accept a normal cast and the withhold (B) flips.
+#[test]
+fn tin_street_gossip_disjunction_consumes_for_turn_face_up_not_cast() {
+    let source = ObjectId(5);
+    let restriction = ManaRestriction::OnlyForAny(vec![
+        ManaRestriction::OnlyForFaceDownSpell,
+        ManaRestriction::OnlyForSpecialAction(SpecialAction::TurnFaceUp),
+    ]);
+    // Tin Street Gossip adds {R}{G}; the restriction rides each produced unit.
+    // Drive the {R} unit — the {G} carries the identical restriction.
+    let make_pool = || {
+        let mut pool = ManaPool::default();
+        pool.add(ManaUnit::new(
+            ManaType::Red,
+            source,
+            false,
+            vec![restriction.clone()],
+        ));
+        pool
+    };
+
+    // LEGAL (A, CR 116.2b): the live turn-face-up special action — the {R} is
+    // consumed. TSG's mana is genuinely usable, so the dead `FaceDownSpell` leaf
+    // does not leave it as unusable dead mana (no over-claim).
+    let mut pool = make_pool();
+    let spent = pool.spend_for(
+        ManaType::Red,
+        &PaymentContext::SpecialAction(SpecialAction::TurnFaceUp),
+    );
+    assert!(
+        spent.is_some(),
+        "Tin Street Gossip's {{R}} must pay a turn-face-up special action (live branch)"
+    );
+    assert_eq!(pool.total(), 0, "the {{R}} must be consumed");
+
+    // ILLEGAL (B): a normal face-up creature cast — the disjunction withholds the
+    // {R}. The dead `FaceDownSpell` leaf does not widen the restriction into
+    // permitting arbitrary casts (no over-permit).
+    let face_up = spell(&["Creature"], false);
+    let mut pool = make_pool();
+    assert!(
+        pool.spend_for(ManaType::Red, &PaymentContext::Spell(&face_up))
+            .is_none(),
+        "Tin Street Gossip's {{R}} must not pay a normal face-up cast"
+    );
+    assert_eq!(pool.total(), 1, "the {{R}} must remain unspent");
+}
