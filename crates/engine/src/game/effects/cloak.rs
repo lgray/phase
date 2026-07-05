@@ -311,6 +311,7 @@ mod tests {
             assert_eq!(obj.toughness, Some(2), "creature {id:?} must be a 2/2");
             assert_eq!(obj.zone, Zone::Battlefield);
             assert!(
+                // allow-raw-authority: test — asserts the cloaked creature's OWN ward keyword, already checked on-battlefield above; not an off-zone effective query.
                 obj.keywords.iter().any(|k| matches!(
                     k,
                     Keyword::Ward(WardCost::Mana(c)) if *c == ManaCost::generic(2)

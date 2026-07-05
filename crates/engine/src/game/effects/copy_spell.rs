@@ -245,9 +245,11 @@ fn apply_spell_copy_modifications(
             // (mirroring RemoveSupertype), so it survives the layer reset when
             // the copy resolves into a token permanent.
             ContinuousModification::AddKeyword { keyword } => {
+                // allow-raw-authority: copy-construction — dedupe the detached stack-copy's OWN keyword store (characteristic snapshot, CR 707.10f), not an effective-keyword query.
                 if !copy_obj.keywords.contains(keyword) {
                     copy_obj.keywords.push(keyword.clone());
                 }
+                // allow-raw-authority: same copy-construction snapshot — the base-store twin of the live stamp above.
                 if !copy_obj.base_keywords.contains(keyword) {
                     copy_obj.base_keywords.push(keyword.clone());
                 }
@@ -948,10 +950,12 @@ mod tests {
         // Haste stamped into both live and base keyword stores (base survives the
         // battlefield-entry layer reset).
         assert!(
+            // allow-raw-authority: test — asserts the copy object's OWN live keyword store.
             copy_obj.keywords.contains(&Keyword::Haste),
             "the copy must gain haste (live store)"
         );
         assert!(
+            // allow-raw-authority: test — asserts the copy object's OWN base keyword store.
             copy_obj.base_keywords.contains(&Keyword::Haste),
             "the copy must gain haste in its BASE store so it survives copy→token"
         );
