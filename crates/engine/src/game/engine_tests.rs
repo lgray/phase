@@ -8900,3 +8900,180 @@ fn face_down_spell_on_stack_is_redacted_to_opponents() {
         "the real identity must be stripped from the opponent's wire view"
     );
 }
+
+/// Grant `player` a "you may cast creature cards from your graveyard" static
+/// (the GraveyardCastPermission class — Karador, Muldrotha, Lurrus) via a
+/// battlefield permanent, then move `morph` (already owned by `player`) into the
+/// graveyard. Returns after the card is castable from the graveyard by the
+/// general cast-permission machinery.
+fn grant_graveyard_creature_cast_and_bury(
+    state: &mut GameState,
+    player: PlayerId,
+    morph: ObjectId,
+) {
+    let source = create_object(
+        state,
+        CardId(4400),
+        player,
+        "Graveyard Enabler".to_string(),
+        Zone::Battlefield,
+    );
+    state
+        .objects
+        .get_mut(&source)
+        .unwrap()
+        .static_definitions
+        .push(
+            StaticDefinition::new(StaticMode::GraveyardCastPermission {
+                frequency: CastFrequency::Unlimited,
+                play_mode: crate::types::ability::CardPlayMode::Cast,
+                graveyard_destination_replacement: None,
+                extra_cost: None,
+            })
+            .affected(TargetFilter::Typed(
+                TypedFilter::creature().controller(ControllerRef::You),
+            )),
+        );
+    let mut events = Vec::new();
+    crate::game::zones::move_to_zone(state, morph, Zone::Graveyard, &mut events);
+}
+
+/// CR 702.37c / CR 702.168b: "You can use a morph/disguise ability to cast a card
+/// FROM ANY ZONE FROM WHICH YOU COULD NORMALLY CAST IT." A morph creature that is
+/// castable from the graveyard via a GraveyardCastPermission static (Karador /
+/// Muldrotha class) must still be offered the {3} face-down cast — the offer is no
+/// longer a hand-only special case; it routes through the general castable-zone
+/// authority (`prepare_spell_cast`).
+///
+/// Revert direction (discriminating): with the pre-fix `obj.zone == Zone::Hand`
+/// gate this graveyard morph card skips the face-down offer block entirely and
+/// falls through to the normal graveyard cast — no `AlternativeCastChoice` is
+/// surfaced, so the match below panics.
+#[test]
+fn morph_creature_in_graveyard_offers_and_casts_face_down() {
+    let mut state = setup_game_at_main_phase();
+    let morph = add_face_down_castable_to_hand(
+        &mut state,
+        PlayerId(0),
+        crate::types::keywords::Keyword::Morph(ManaCost::generic(4)),
+        ManaCost::generic(5),
+    );
+    grant_graveyard_creature_cast_and_bury(&mut state, PlayerId(0), morph);
+    assert_eq!(
+        state.objects[&morph].zone,
+        Zone::Graveyard,
+        "precondition: the morph creature must be in the graveyard, not the hand"
+    );
+    // Enough to pay EITHER the {5} normal graveyard cast or the {3} face-down cast,
+    // so both are affordable and the engine must present the choice.
+    add_mana(&mut state, PlayerId(0), ManaType::Colorless, 5);
+    let card_id = state.objects[&morph].card_id;
+
+    apply_as_current(
+        &mut state,
+        GameAction::CastSpell {
+            object_id: morph,
+            card_id,
+            targets: vec![],
+            payment_mode: crate::types::game_state::CastPaymentMode::Auto,
+        },
+    )
+    .expect("casting a graveyard-castable morph creature must be accepted");
+
+    match &state.waiting_for {
+        WaitingFor::AlternativeCastChoice { keyword, .. } => assert_eq!(
+            *keyword,
+            crate::types::game_state::AlternativeCastKeyword::FaceDown,
+            "a graveyard-castable morph creature must offer the FaceDown alternative cast"
+        ),
+        other => {
+            panic!("expected AlternativeCastChoice(FaceDown) from the graveyard, got {other:?}")
+        }
+    }
+
+    // End-to-end: choosing face down casts the GRAVEYARD card as a blank 2/2
+    // face-down creature spell (CR 708.2 / CR 708.4), proving the non-hand cast
+    // path executes, not just the offer.
+    apply_as_current(
+        &mut state,
+        GameAction::ChooseAlternativeCast {
+            choice: crate::types::actions::AlternativeCastDecision::Alternative,
+        },
+    )
+    .expect("choosing face down from the graveyard must succeed");
+    let obj = &state.objects[&morph];
+    assert!(
+        obj.face_down && obj.zone == Zone::Stack,
+        "the graveyard morph must be on the stack as a face-down spell, got zone={:?} face_down={}",
+        obj.zone,
+        obj.face_down
+    );
+    assert_eq!(obj.power, Some(2), "CR 708.2: a face-down spell is a 2/2");
+    assert!(
+        obj.name.is_empty(),
+        "CR 708.2: a face-down spell has no name"
+    );
+}
+
+/// Non-vacuous reach-guard for the zone-generalized gate: being castable from the
+/// graveyard is NOT by itself sufficient — a creature with NO morph/megamorph/
+/// disguise keyword under the SAME GraveyardCastPermission must offer no face-down
+/// cast. Proves the offer still requires the keyword and isn't vacuously surfaced
+/// for every graveyard-castable creature.
+#[test]
+fn non_morph_creature_in_graveyard_offers_no_face_down_cast() {
+    let mut state = setup_game_at_main_phase();
+    let plain = create_object(
+        &mut state,
+        CardId(4401),
+        PlayerId(0),
+        "Plain Beast".to_string(),
+        Zone::Hand,
+    );
+    {
+        let obj = state.objects.get_mut(&plain).unwrap();
+        let card_types = CardType {
+            supertypes: vec![],
+            core_types: vec![CoreType::Creature],
+            subtypes: vec!["Beast".to_string()],
+        };
+        obj.card_types = card_types.clone();
+        obj.base_card_types = card_types;
+        obj.power = Some(2);
+        obj.toughness = Some(2);
+        obj.base_power = Some(2);
+        obj.base_toughness = Some(2);
+        obj.mana_cost = ManaCost::generic(3);
+        obj.base_mana_cost = ManaCost::generic(3);
+    }
+    grant_graveyard_creature_cast_and_bury(&mut state, PlayerId(0), plain);
+    assert_eq!(
+        state.objects[&plain].zone,
+        Zone::Graveyard,
+        "precondition: the plain creature must be in the graveyard"
+    );
+    add_mana(&mut state, PlayerId(0), ManaType::Colorless, 3);
+    let card_id = state.objects[&plain].card_id;
+
+    apply_as_current(
+        &mut state,
+        GameAction::CastSpell {
+            object_id: plain,
+            card_id,
+            targets: vec![],
+            payment_mode: crate::types::game_state::CastPaymentMode::Auto,
+        },
+    )
+    .expect("casting a graveyard-castable vanilla creature must be accepted");
+
+    assert!(
+        !matches!(state.waiting_for, WaitingFor::AlternativeCastChoice { .. }),
+        "a non-morph creature must not surface a face-down cast even when \
+         graveyard-castable, got {:?}",
+        state.waiting_for
+    );
+    assert!(
+        !state.objects[&plain].face_down,
+        "a normally-cast graveyard creature must not be face down"
+    );
+}

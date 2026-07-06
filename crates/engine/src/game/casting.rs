@@ -9795,20 +9795,38 @@ pub fn handle_cast_spell_with_payment_mode(
     }
 
     // CR 702.37c / CR 702.168b + CR 601.2b: Morph / Megamorph / Disguise face-down
-    // cast from hand. Any card carrying one of these keywords may be cast face down
-    // as a 2/2 for a fixed {3} rather than its printed mana cost. Offer the choice
-    // when both the normal cost and the {3} are affordable; auto-route to the
-    // face-down cast when only the {3} is affordable. Eligibility reads the
-    // *effective* keyword kind so a granted morph/disguise (CR 604.1) is honored.
+    // cast. Any card carrying one of these keywords may be cast face down as a 2/2
+    // for a fixed {3} rather than its printed mana cost. Offer the choice when both
+    // the normal cost and the {3} are affordable; auto-route to the face-down cast
+    // when only the {3} is affordable. Eligibility reads the *effective* keyword
+    // kind so a granted morph/disguise (CR 604.1) is honored.
     if let Some(obj) = state.objects.get(&object_id) {
-        if obj.zone == Zone::Hand
-            && [
-                KeywordKind::Morph,
-                KeywordKind::Megamorph,
-                KeywordKind::Disguise,
-            ]
-            .iter()
-            .any(|kind| super::keywords::object_has_effective_keyword_kind(state, object_id, *kind))
+        if [
+            KeywordKind::Morph,
+            KeywordKind::Megamorph,
+            KeywordKind::Disguise,
+        ]
+        .iter()
+        .any(|kind| super::keywords::object_has_effective_keyword_kind(state, object_id, *kind))
+            // CR 702.37c / CR 702.168b: face down may be cast "from any zone from
+            // which you could normally cast it" — gate on the general castable-zone
+            // authority, not a hand-only special case. `prepare_spell_cast(..).is_ok()`
+            // is the single authority that computes castability across hand / command
+            // / graveyard / exile / top-of-library permissions plus timing and
+            // prohibitions (affordability excluded — the offer's own
+            // normal/face-down affordability checks below still decide the choice).
+            //
+            // strict-failure: `.is_ok()` evaluates cast prohibitions against the
+            // UN-blanked (face-up) object, but CR 708.2 gives a face-down spell no
+            // name / subtypes / mana cost. A name- or mana-value-conditional
+            // prohibition (Meddling Mage naming this card) would legally permit the
+            // face-down cast yet make `prepare_spell_cast()` return `Err` here,
+            // over-suppressing the offer. This is a pre-existing
+            // blanked-characteristics-vs-prohibition axis (same family as the
+            // castable_zone-on-blanked-2/2 note in `continue_cast_face_down`),
+            // separate from the hand→all-zones generalization and not currently
+            // reachable by any printed prohibition+morph interaction.
+            && prepare_spell_cast(state, player, object_id).is_ok()
         {
             let (normal_cost, normal_affordable) =
                 normal_cast_choice_cost_and_affordability(state, player, object_id, obj);
