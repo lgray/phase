@@ -17,14 +17,12 @@
 //! `PaymentContext` — proving the produced unit is CONSUMED for a legal spend
 //! and WITHHELD for an illegal one.
 //!
-//! Three of the four restriction halves are LIVE on a production payment path
-//! and one is HONEST-DEFERRED — be precise about which is which:
+//! All four restriction halves are now LIVE on a production payment path:
 //!
-//! - LIVE: the spell-type half (`OnlyForSpellType`, Creeping Peeper's
-//!   enchantment branch), the door-unlock half
-//!   (`OnlyForSpecialAction(UnlockDoor)`), and the turn-face-up half
-//!   (`OnlyForSpecialAction(TurnFaceUp)`, Overgrown Zealot). All three reach
-//!   `spend_for` through real production sites — `can_pay_for_spell` /
+//! - The spell-type half (`OnlyForSpellType`, Creeping Peeper's enchantment
+//!   branch), the door-unlock half (`OnlyForSpecialAction(UnlockDoor)`), and the
+//!   turn-face-up half (`OnlyForSpecialAction(TurnFaceUp)`, Overgrown Zealot) all
+//!   reach `spend_for` through real production sites — `can_pay_for_spell` /
 //!   `pay_cost_*` for casts, and `pay_special_action_mana_cost` for both door
 //!   unlock (CR 116.2m) and turn-face-up (CR 116.2b, emitted by the
 //!   `GameAction::TurnFaceUp` handler after `game::morph::turn_face_up_prepare`
@@ -32,20 +30,17 @@
 //!   exercises the same `ManaRestriction::allows` decision a full `apply()`
 //!   cast / unlock / turn-up makes.
 //!
-//! - HONEST-DEFERRED: the face-down-cast half (`OnlyForFaceDownSpell`, Tin
-//!   Street Gossip). It is not reachable on a production payment path: CR 708.4
-//!   face-down play (`GameAction::PlayFaceDown` → `game::morph::play_face_down`)
-//!   moves the permanent via the zone pipeline and charges NO mana, so no site
-//!   ever CASTS A SPELL FACE DOWN. The `OnlyForFaceDownSpell` gate is therefore
-//!   fail-closed (under-permitting, not over-permitting): `SpellMeta.is_face_down`
-//!   is sourced from the cast's face-down intent (`build_spell_meta`, hardcoded
-//!   `false` today), not from `obj.face_down`, so the gate ALSO correctly REJECTS
-//!   exile-concealment casts (foretell/hideaway) whose `obj.face_down = true` but
-//!   which are cast face up (CR 702.143c). The tests below assert that contract
-//!   directly: the gate REJECTS every production payment context, and the genuine
-//!   face-down-cast positive is checked only at the restriction level (not via a
-//!   production payment, which never sets `is_face_down = true`), matching the
-//!   honest-deferred treatment.
+//! - The face-down-cast half (`OnlyForFaceDownSpell`, Tin Street Gossip) went
+//!   live with morph/disguise face-down spell casting (CR 708.4 / CR 702.37c):
+//!   `GameAction::CastSpell` on a Morph/Megamorph/Disguise card offers a face-down
+//!   cast (`AlternativeCastKeyword::FaceDown`), and `build_spell_meta` derives
+//!   `SpellMeta.is_face_down = obj.face_down && obj.back_face.is_some()` — true
+//!   only for the blank 2/2 that `continue_cast_face_down` produced. The gate now
+//!   CONSUMES the produced unit for a real face-down cast (end-to-end coverage:
+//!   `engine_tests::tin_street_gossip_restricted_mana_funds_face_down_cast`) while
+//!   still correctly REJECTING a normal face-up cast and an exile-concealment cast
+//!   (foretell/hideaway, whose `obj.face_down = true` but which are cast face up,
+//!   CR 702.143c, so they carry no `back_face` and report `is_face_down = false`).
 //!
 //! Revert-proof: each assertion flips if the corresponding gate is reverted —
 //! see the per-test notes.
@@ -64,16 +59,17 @@ fn spell(types: &[&str], is_face_down: bool) -> SpellMeta {
 }
 
 /// Tin Street Gossip: "spend this mana only to cast face-down spells" — the
-/// `OnlyForFaceDownSpell` half. This gate is fail-closed on every production
-/// payment path: no site CASTS A SPELL FACE DOWN (CR 708.4 morph cast cost,
-/// CR 702.37c, is unimplemented), and `SpellMeta.is_face_down` is sourced from
-/// the cast's face-down intent (`build_spell_meta`, hardcoded `false` today),
-/// never from `obj.face_down` — so a normal face-up cast AND an exile-concealment
-/// cast (foretell/hideaway, whose `obj.face_down = true` but which is cast face
-/// up, CR 702.143c) both report `is_face_down = false` and are correctly
-/// rejected. This test asserts the gate REJECTS every production payment context
-/// and confirms the genuine face-down-cast positive only at the restriction
-/// level (it is unreachable on any production payment path today).
+/// `OnlyForFaceDownSpell` half. `SpellMeta.is_face_down` is derived by
+/// `build_spell_meta` as `obj.face_down && obj.back_face.is_some()` — true only
+/// for the blank 2/2 that a morph/disguise face-down cast produced (CR 708.4 /
+/// CR 702.37c), false for a normal face-up cast and for an exile-concealment cast
+/// (foretell/hideaway, whose `obj.face_down = true` but which is cast face up,
+/// CR 702.143c, so it carries no `back_face`). This is the restriction-level unit
+/// check: the gate REJECTS every non-face-down production payment context
+/// (face-up cast, door unlock, ability activation) and ACCEPTS a face-down cast.
+/// The full production payment path (`GameAction::CastSpell` → face-down offer →
+/// funded by Tin Street's restricted mana) is covered end-to-end by
+/// `engine_tests::tin_street_gossip_restricted_mana_funds_face_down_cast`.
 ///
 /// Revert-proof: if `allows_spell` for `OnlyForFaceDownSpell` were changed to
 /// ignore `meta.is_face_down` (e.g. return `true`), the face-up `Spell`
@@ -92,8 +88,8 @@ fn face_down_spell_mana_rejects_every_production_context() {
         pool
     };
 
-    // ILLEGAL (A1): a normal face-up creature cast — the production `Spell`
-    // context never carries `is_face_down = true`, so the unit is withheld.
+    // ILLEGAL (A1): a normal face-up creature cast — its `Spell` context carries
+    // `is_face_down = false`, so the unit is withheld.
     let face_up = spell(&["Creature"], false);
     let mut pool = make_pool();
     assert!(
@@ -131,10 +127,12 @@ fn face_down_spell_mana_rejects_every_production_context() {
     );
     assert_eq!(pool.total(), 1);
 
-    // The genuine face-down CAST (CR 708.4 / CR 702.37c) would be the only legal
-    // context; confirm the gate accepts it at the restriction level. This is the
-    // future face-down-cast path and is unreachable on any production payment
-    // path today (no site sets `is_face_down = true`).
+    // The genuine face-down CAST (CR 708.4 / CR 702.37c) is the only legal
+    // context; confirm the gate accepts it at the restriction level. The
+    // production path that reaches this with `is_face_down = true` is a
+    // morph/disguise face-down cast (`build_spell_meta` sets it for the blank
+    // 2/2), exercised end-to-end in
+    // `engine_tests::tin_street_gossip_restricted_mana_funds_face_down_cast`.
     assert!(ManaRestriction::OnlyForFaceDownSpell
         .allows(&PaymentContext::Spell(&spell(&["Creature"], true))));
 }
