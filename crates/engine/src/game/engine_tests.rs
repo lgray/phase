@@ -9419,3 +9419,339 @@ fn nocost_morph_offered_as_legal_action() {
         "a NoCost morph with {{3}} available must be surfaced as a legal cast (face down)"
     );
 }
+
+// ===========================================================================
+// Blocker B — CR 708.4 + CR 601.3a: a characteristics-dependent cast prohibition
+// (`CantBeCast` naming the card, or matching its printed mana value) that blocks
+// the FACE-UP cast must NOT suppress the legal {3} FACE-DOWN cast. A face-down
+// spell is a nameless, mana-cost-less 2/2 (CR 708.2a), so a prohibition evaluated
+// against those blanked characteristics no longer applies.
+// ===========================================================================
+
+/// Which printed characteristic the `CantBeCast` prohibition keys on. Both axes
+/// match the FACE-UP card but not the blanked 2/2, so the fix must let the
+/// face-down cast through for either.
+#[derive(Clone, Copy)]
+enum ProhibitionAxis {
+    /// CR 201.2: `HasChosenName` naming "Secret Beast" (Meddling Mage / Nevermore).
+    ChosenName,
+    /// CR 202.3: mana value >= 5 — matches the printed {5} but not the face-down mv 0.
+    ManaValue,
+}
+
+/// Attach an `AllPlayers` `CantBeCast` prohibition (CR 101.2) to an enchantment on
+/// `controller`'s battlefield, keyed on `filter`. When `chosen_name` is set the
+/// source also carries that chosen card name so a `HasChosenName` filter (CR 201.2)
+/// resolves against it.
+fn add_cant_be_cast_source(
+    state: &mut GameState,
+    controller: PlayerId,
+    card_id: CardId,
+    filter: TargetFilter,
+    chosen_name: Option<&str>,
+) -> ObjectId {
+    let id = create_object(
+        state,
+        card_id,
+        controller,
+        "Meddler".to_string(),
+        Zone::Battlefield,
+    );
+    let obj = state.objects.get_mut(&id).unwrap();
+    // A concrete permanent type (no P/T, so no CR 704.5 SBA) — mirrors Nevermore.
+    obj.card_types.core_types.push(CoreType::Enchantment);
+    if let Some(name) = chosen_name {
+        obj.chosen_attributes
+            .push(crate::types::ability::ChosenAttribute::CardName(
+                name.to_string(),
+            ));
+    }
+    obj.static_definitions.push(
+        StaticDefinition::new(StaticMode::CantBeCast {
+            who: crate::types::statics::ProhibitionScope::AllPlayers,
+        })
+        .affected(filter),
+    );
+    id
+}
+
+/// Build the Blocker B fixture: a Morph creature (printed {5}, name "Secret Beast")
+/// in P0's hand under an OPPONENT's `CantBeCast` prohibition keyed on `axis`, with
+/// `mana` colorless mana in P0's pool. `AllPlayers` scope still reaches P0.
+fn prohibited_morph_fixture(axis: ProhibitionAxis, mana: usize) -> (GameState, ObjectId, CardId) {
+    let mut state = setup_game_at_main_phase();
+    let morph = add_face_down_castable_to_hand(
+        &mut state,
+        PlayerId(0),
+        crate::types::keywords::Keyword::Morph(ManaCost::generic(4)),
+        ManaCost::generic(5),
+    );
+    add_mana(&mut state, PlayerId(0), ManaType::Colorless, mana);
+    let (filter, chosen) = match axis {
+        ProhibitionAxis::ChosenName => (TargetFilter::HasChosenName, Some("Secret Beast")),
+        ProhibitionAxis::ManaValue => (
+            TargetFilter::Typed(TypedFilter::new(TypeFilter::Creature).properties(vec![
+                crate::types::ability::FilterProp::Cmc {
+                    comparator: crate::types::ability::Comparator::GE,
+                    value: QuantityExpr::Fixed { value: 5 },
+                },
+            ])),
+            None,
+        ),
+    };
+    add_cant_be_cast_source(&mut state, PlayerId(1), CardId(0x2C57), filter, chosen);
+    let card_id = state.objects[&morph].card_id;
+    (state, morph, card_id)
+}
+
+/// Shared body for both positive axes. Proves (a) the FACE-UP cast is genuinely
+/// prohibited (non-vacuity) and (b) the {3} FACE-DOWN cast still succeeds as a
+/// blank 2/2 (the discriminating claim).
+fn assert_prohibited_morph_still_casts_face_down(axis: ProhibitionAxis) {
+    // (a) NON-VACUITY — the FACE-UP (Normal) cast is genuinely prohibited (CR 101.2).
+    // Dispatch still OFFERS the face-down alternative (the fix under test); choosing the
+    // NORMAL cast then hits the prohibition at prepare time and is rejected.
+    let (mut up, morph, card_id) = prohibited_morph_fixture(axis, 5);
+    apply_as_current(
+        &mut up,
+        GameAction::CastSpell {
+            object_id: morph,
+            card_id,
+            targets: vec![],
+            payment_mode: crate::types::game_state::CastPaymentMode::Auto,
+        },
+    )
+    .expect("dispatch must offer the face-down alt even though the face-up cast is prohibited");
+    assert!(
+        matches!(
+            up.waiting_for,
+            WaitingFor::AlternativeCastChoice {
+                keyword: crate::types::game_state::AlternativeCastKeyword::FaceDown,
+                ..
+            }
+        ),
+        "the {{3}} face-down alternative must be offered, got {:?}",
+        up.waiting_for
+    );
+    let face_up = apply_as_current(
+        &mut up,
+        GameAction::ChooseAlternativeCast {
+            choice: crate::types::actions::AlternativeCastDecision::Normal,
+        },
+    );
+    assert!(
+        face_up.is_err(),
+        "CR 101.2: the FACE-UP cast must be prohibited (proves the prohibition truly bites)"
+    );
+
+    // (b) DISCRIMINATING — the {3} FACE-DOWN cast is permitted (CR 708.4 + CR 601.3a):
+    // the blanked 2/2 has no name and mana value 0, so neither axis prohibits it.
+    let (mut down, morph, card_id) = prohibited_morph_fixture(axis, 5);
+    apply_as_current(
+        &mut down,
+        GameAction::CastSpell {
+            object_id: morph,
+            card_id,
+            targets: vec![],
+            payment_mode: crate::types::game_state::CastPaymentMode::Auto,
+        },
+    )
+    .expect("cast accepted");
+    apply_as_current(
+        &mut down,
+        GameAction::ChooseAlternativeCast {
+            choice: crate::types::actions::AlternativeCastDecision::Alternative,
+        },
+    )
+    .expect("the {3} face-down cast must succeed despite the face-up prohibition");
+    let obj = &down.objects[&morph];
+    assert_eq!(
+        obj.zone,
+        Zone::Stack,
+        "the face-down spell must be on the stack"
+    );
+    assert!(
+        obj.face_down,
+        "CR 708.4: the spell is on the stack face down"
+    );
+    assert_eq!(obj.power, Some(2), "CR 708.2a: a face-down spell is a 2/2");
+    assert!(
+        obj.name.is_empty(),
+        "CR 708.2a: a face-down spell has no name"
+    );
+}
+
+/// Positive — NAME axis (dispatch): a `CantBeCast` + `HasChosenName` prohibition
+/// naming the morph blocks the face-up cast but not the {3} face-down cast.
+#[test]
+fn morph_name_prohibition_does_not_suppress_face_down_cast() {
+    assert_prohibited_morph_still_casts_face_down(ProhibitionAxis::ChosenName);
+}
+
+/// Positive — MANA-VALUE axis (dispatch): the same claim with a mana-value-
+/// conditional prohibition (`Cmc >= 5`), proving the class covers name AND mana
+/// value, not just `HasChosenName`.
+#[test]
+fn morph_mana_value_prohibition_does_not_suppress_face_down_cast() {
+    assert_prohibited_morph_still_casts_face_down(ProhibitionAxis::ManaValue);
+}
+
+/// Feasibility twin (CR 601.3a): the legal-actions / AI surface must also see the
+/// {3} face-down cast when the face-up cast is name-prohibited.
+///
+/// Revert direction (discriminating): with the feasibility block removed,
+/// `prepare_spell_cast` fails on the printed object and `casting_variant_choice_set`
+/// contains only `Normal` (never `FaceDown`), which is likewise prohibited — so
+/// `can_cast_object_now` returns false.
+#[test]
+fn morph_under_name_prohibition_is_castable_now() {
+    let (state, morph, _card_id) = prohibited_morph_fixture(ProhibitionAxis::ChosenName, 3);
+    assert!(
+        casting::can_cast_object_now(&state, PlayerId(0), morph),
+        "the {{3}} face-down cast must be surfaced as a legal action despite the face-up name prohibition"
+    );
+}
+
+/// Negative — keyword scope (conjunct 1 of the feasibility twin is load-bearing).
+/// A plain NON-morph creature named by the prohibition has no face-down escape, so
+/// it is NOT castable. Reach-guard: a differently-named creature with the same mana
+/// IS castable, proving the prohibition — not affordability — is the blocker.
+#[test]
+fn non_morph_under_name_prohibition_not_castable() {
+    let mut state = setup_game_at_main_phase();
+    add_cant_be_cast_source(
+        &mut state,
+        PlayerId(1),
+        CardId(0x2C57),
+        TargetFilter::HasChosenName,
+        Some("Secret Beast"),
+    );
+    add_mana(&mut state, PlayerId(0), ManaType::Colorless, 5);
+    let make_plain = |state: &mut GameState, card_id: CardId, name: &str| -> ObjectId {
+        let id = create_object(state, card_id, PlayerId(0), name.to_string(), Zone::Hand);
+        let obj = state.objects.get_mut(&id).unwrap();
+        obj.card_types = CardType {
+            supertypes: vec![],
+            core_types: vec![CoreType::Creature],
+            subtypes: vec!["Beast".to_string()],
+        };
+        obj.power = Some(2);
+        obj.toughness = Some(2);
+        obj.mana_cost = ManaCost::generic(2);
+        id
+    };
+    let named = make_plain(&mut state, CardId(4310), "Secret Beast");
+    let free = make_plain(&mut state, CardId(4311), "Free Beast");
+    assert!(
+        !casting::can_cast_object_now(&state, PlayerId(0), named),
+        "a NON-morph spell named by the prohibition can't be cast — no {{3}} face-down escape (conjunct 1)"
+    );
+    assert!(
+        casting::can_cast_object_now(&state, PlayerId(0), free),
+        "reach-guard: an un-named creature with the same {{2}} mana IS castable — proves the prohibition (not affordability) blocks the named one"
+    );
+}
+
+/// Negative — affordability (conjunct 2 of the feasibility twin is load-bearing).
+/// The named morph with only {2} available cannot pay the {3} face-down cost, so
+/// the twin must not fire. Reach-guard: with {3} the same morph IS castable.
+#[test]
+fn morph_without_three_mana_not_castable_under_prohibition() {
+    let (two, morph_two, _) = prohibited_morph_fixture(ProhibitionAxis::ChosenName, 2);
+    assert!(
+        !casting::can_cast_object_now(&two, PlayerId(0), morph_two),
+        "only {{2}} available: the {{3}} face-down cast is unaffordable, so the twin must not fire (conjunct 2)"
+    );
+    let (three, morph_three, _) = prohibited_morph_fixture(ProhibitionAxis::ChosenName, 3);
+    assert!(
+        casting::can_cast_object_now(&three, PlayerId(0), morph_three),
+        "reach-guard: with {{3}} the same morph IS castable — proves affordability gates conjunct 2"
+    );
+}
+
+/// Hostile multi-authority (no over-fire / no stale binding). Two `CantBeCast` +
+/// `HasChosenName` sources — one naming the morph, one naming an unrelated card —
+/// must not suppress the face-down cast. Reach-guard: the matching authority
+/// genuinely prohibits the face-up cast.
+#[test]
+fn morph_casts_face_down_under_multiple_name_prohibitions() {
+    let build = || {
+        let mut state = setup_game_at_main_phase();
+        let morph = add_face_down_castable_to_hand(
+            &mut state,
+            PlayerId(0),
+            crate::types::keywords::Keyword::Morph(ManaCost::generic(4)),
+            ManaCost::generic(5),
+        );
+        add_mana(&mut state, PlayerId(0), ManaType::Colorless, 5);
+        add_cant_be_cast_source(
+            &mut state,
+            PlayerId(1),
+            CardId(0x2C57),
+            TargetFilter::HasChosenName,
+            Some("Secret Beast"),
+        );
+        add_cant_be_cast_source(
+            &mut state,
+            PlayerId(1),
+            CardId(0x2C58),
+            TargetFilter::HasChosenName,
+            Some("Unrelated Card"),
+        );
+        let card_id = state.objects[&morph].card_id;
+        (state, morph, card_id)
+    };
+
+    // Reach-guard: the matching authority genuinely prohibits the FACE-UP cast.
+    let (mut up, morph, card_id) = build();
+    apply_as_current(
+        &mut up,
+        GameAction::CastSpell {
+            object_id: morph,
+            card_id,
+            targets: vec![],
+            payment_mode: crate::types::game_state::CastPaymentMode::Auto,
+        },
+    )
+    .expect("dispatch must still offer the face-down alt under two prohibitions");
+    let face_up = apply_as_current(
+        &mut up,
+        GameAction::ChooseAlternativeCast {
+            choice: crate::types::actions::AlternativeCastDecision::Normal,
+        },
+    );
+    assert!(
+        face_up.is_err(),
+        "CR 101.2: the matching authority must prohibit the face-up cast"
+    );
+
+    // Discriminating: the face-down cast succeeds, unaffected by either authority.
+    let (mut down, morph, card_id) = build();
+    apply_as_current(
+        &mut down,
+        GameAction::CastSpell {
+            object_id: morph,
+            card_id,
+            targets: vec![],
+            payment_mode: crate::types::game_state::CastPaymentMode::Auto,
+        },
+    )
+    .expect("cast accepted");
+    apply_as_current(
+        &mut down,
+        GameAction::ChooseAlternativeCast {
+            choice: crate::types::actions::AlternativeCastDecision::Alternative,
+        },
+    )
+    .expect("face-down cast must succeed under multiple name prohibitions");
+    let obj = &down.objects[&morph];
+    assert!(
+        obj.face_down,
+        "CR 708.4: the spell is face down on the stack"
+    );
+    assert_eq!(obj.power, Some(2), "CR 708.2a: a face-down spell is a 2/2");
+    assert!(
+        obj.name.is_empty(),
+        "CR 708.2a: a face-down spell has no name"
+    );
+}

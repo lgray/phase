@@ -7969,6 +7969,33 @@ fn can_afford_face_down_cast(
     can_pay_cost_after_auto_tap(&simulated, player, object_id, cost)
 }
 
+/// CR 708.4 + CR 708.2a: True when the {3} face-down cast is PERMITTED — castable
+/// zone, timing, and cast prohibitions all evaluated against the BLANKED face-down
+/// profile (CR 708.2a: a 2/2 with no name, no subtypes, no mana cost), NOT the
+/// printed face-up object. A name-, color-, or mana-value-conditional prohibition
+/// (Meddling Mage / Nevermore naming this card) applies to the printed face but NOT
+/// to the face-down spell (CR 708.4), so evaluating castability on the un-blanked
+/// object would wrongly suppress the legal face-down cast. Mana affordability is
+/// intentionally EXCLUDED (`prepare_spell_cast` doesn't check it) — callers pair
+/// this with `can_afford_face_down_cast`.
+///
+/// Blanks a throwaway clone exactly as `continue_cast_face_down` blanks the real
+/// object (same `face_down_cast_profile` + `apply_face_down_entry_profile` +
+/// `Some(CastingVariant::FaceDown)` prepare), so `.is_ok()` here predicts the real
+/// face-down cast's prepare step precisely.
+fn face_down_cast_is_permitted(state: &GameState, player: PlayerId, object_id: ObjectId) -> bool {
+    let mut simulated = state.clone();
+    let profile = face_down_cast_profile(state, object_id);
+    super::zone_pipeline::apply_face_down_entry_profile(&mut simulated, object_id, &profile);
+    prepare_spell_cast_with_variant_override(
+        &simulated,
+        player,
+        object_id,
+        Some(CastingVariant::FaceDown),
+    )
+    .is_ok()
+}
+
 fn continue_cast_face_down(
     state: &mut GameState,
     player: PlayerId,
@@ -9855,23 +9882,16 @@ pub fn handle_cast_spell_with_payment_mode(
         if object_has_effective_face_down_keyword(state, object_id)
             // CR 702.37c / CR 702.168b: face down may be cast "from any zone from
             // which you could normally cast it" — gate on the general castable-zone
-            // authority, not a hand-only special case. `prepare_spell_cast(..).is_ok()`
-            // is the single authority that computes castability across hand / command
-            // / graveyard / exile / top-of-library permissions plus timing and
-            // prohibitions (affordability excluded — the offer's own
-            // normal/face-down affordability checks below still decide the choice).
+            // authority, not a hand-only special case.
             //
-            // strict-failure: `.is_ok()` evaluates cast prohibitions against the
-            // UN-blanked (face-up) object, but CR 708.2 gives a face-down spell no
-            // name / subtypes / mana cost. A name- or mana-value-conditional
-            // prohibition (Meddling Mage naming this card) would legally permit the
-            // face-down cast yet make `prepare_spell_cast()` return `Err` here,
-            // over-suppressing the offer. This is a pre-existing
-            // blanked-characteristics-vs-prohibition axis (same family as the
-            // castable_zone-on-blanked-2/2 note in `continue_cast_face_down`),
-            // separate from the hand→all-zones generalization and not currently
-            // reachable by any printed prohibition+morph interaction.
-            && prepare_spell_cast(state, player, object_id).is_ok()
+            // CR 708.4 + CR 708.2a: castability is evaluated against the BLANKED
+            // face-down profile (2/2, no name, no subtypes, no mana cost), not the
+            // printed face-up object. A name- or mana-value-conditional prohibition
+            // (Meddling Mage / Nevermore naming this card) applies to the face-down
+            // characteristics, so it must not suppress the legal {3} face-down offer.
+            // `face_down_cast_is_permitted` blanks a throwaway clone exactly as
+            // `continue_cast_face_down` will, then prepares the FaceDown variant.
+            && face_down_cast_is_permitted(state, player, object_id)
         {
             let (normal_cost, normal_affordable) =
                 normal_cast_choice_cost_and_affordability(state, player, object_id, obj);
@@ -11036,6 +11056,26 @@ pub fn can_cast_object_now_with_probe(
                 }
                 return can_cast_object_now_with_probe(&sim, player, object_id, None);
             }
+        }
+        // CR 708.4 + CR 702.37c / CR 702.168b: a morph/megamorph/disguise card whose
+        // FACE-UP cast is prohibited (Meddling Mage / Nevermore naming it) fails
+        // `prepare_spell_cast` above on the printed object, yet the {3} FACE-DOWN cast
+        // may still be legal — CR 708.4 applies prohibitions to the face-down
+        // characteristics (no name / no mana value); CR 601.3a lets a player ignore a
+        // qualities-conditional prohibition when a proposal choice (here, casting face
+        // down) changes the qualities it reads. Feasibility twin of the dispatch offer
+        // gate: same keyword scope + {3} affordability + castability against the blanked
+        // profile (which also enforces creature-spell sorcery-speed timing, CR 302.1).
+        if object_has_effective_face_down_keyword(state, object_id)
+            && can_afford_face_down_cast(
+                state,
+                player,
+                object_id,
+                &crate::types::mana::ManaCost::generic(3),
+            )
+            && face_down_cast_is_permitted(state, player, object_id)
+        {
+            return true;
         }
         let choices = casting_variant_choice_set(state, player, object_id);
         return !choices.options.is_empty();
