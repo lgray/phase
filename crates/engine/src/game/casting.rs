@@ -8770,6 +8770,21 @@ fn normal_cast_choice_cost_and_affordability(
         return (ManaCost::NoCost, true);
     }
 
+    // CR 601.2f + CR 118.9a: a pending "cast the next spell without paying its mana
+    // cost" modifier (Omniscience-style one-shot) zeroes the normal-path cost. The
+    // real prep path already treats this as `ManaCost::NoCost`
+    // (prepare_spell_cast_with_variant_override_inner via `next_spell_without_paying`);
+    // mirror it here with the SAME authority so an affordable {3} face-down cost
+    // can't hide the legal FREE face-up normal cast. `CastingVariant::Normal` is not
+    // `uses_alternative_cost()`, so the prep guard reduces to exactly this predicate.
+    if pending_next_spell_modifier_index(state, player, object_id, |modifier| {
+        matches!(modifier, NextSpellModifier::WithoutPayingManaCost)
+    })
+    .is_some()
+    {
+        return (ManaCost::NoCost, true);
+    }
+
     // CR 601.2f + CR 118.9d: normal-path affordability and displayed cost
     // reflect active cost modifiers before comparing against alternative costs.
     let normal_cost = apply_cost_modifiers_to_base(state, player, object_id, obj.mana_cost.clone())

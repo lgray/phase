@@ -9163,3 +9163,100 @@ fn face_down_cast_cancel_at_mana_payment_restores_real_card() {
         "CR 601.2i: the object returns to its origin zone (hand), not stranded on the stack"
     );
 }
+
+/// Blocker C — CR 601.2f + CR 118.9a: a pending "cast the next spell without paying
+/// its mana cost" modifier (Omniscience-style one-shot) makes the FREE face-up
+/// normal cast legal even when the printed cost ({5}) is unpayable. That free
+/// normal cast must NOT be robbed by an auto-route to the {3} face-down cast: with
+/// both the (free) normal and the {3} face-down affordable, the engine must OFFER
+/// the choice rather than silently proceed face down.
+///
+/// Revert direction (discriminating): with the `WithoutPayingManaCost` short-circuit
+/// removed from `normal_cast_choice_cost_and_affordability`, the normal cost reverts
+/// to the unpayable printed {5} → `normal_affordable = false` → only the {3}
+/// face-down is affordable → the offer auto-routes face down, so `state.waiting_for`
+/// is NOT `AlternativeCastChoice` and the `other => panic!` below fires.
+#[test]
+fn morph_free_normal_cast_not_robbed_by_face_down_autoroute() {
+    let mut state = setup_game_at_main_phase();
+    // Printed {5} is strictly unpayable by 3 generic mana, so the ONLY legal
+    // face-up cast is the free one granted by the modifier below.
+    let morph = add_face_down_castable_to_hand(
+        &mut state,
+        PlayerId(0),
+        crate::types::keywords::Keyword::Morph(ManaCost::generic(4)),
+        ManaCost::generic(5),
+    );
+    add_mana(&mut state, PlayerId(0), ManaType::Colorless, 3);
+    // "The next spell you cast this turn can be cast without paying its mana cost."
+    state
+        .pending_next_spell_modifiers
+        .push(crate::types::game_state::PendingNextSpellModifier {
+            player: PlayerId(0),
+            modifier: crate::types::game_state::NextSpellModifier::WithoutPayingManaCost,
+            spell_filter: None,
+            source_id: None,
+        });
+    let card_id = state.objects[&morph].card_id;
+
+    apply_as_current(
+        &mut state,
+        GameAction::CastSpell {
+            object_id: morph,
+            card_id,
+            targets: vec![],
+            payment_mode: crate::types::game_state::CastPaymentMode::Auto,
+        },
+    )
+    .expect("casting a morph creature must be accepted");
+
+    // The engine must OFFER the choice (free normal vs {3} face down), NOT auto-route.
+    match &state.waiting_for {
+        WaitingFor::AlternativeCastChoice {
+            keyword,
+            normal_cost,
+            ..
+        } => {
+            assert_eq!(
+                *keyword,
+                crate::types::game_state::AlternativeCastKeyword::FaceDown,
+                "must offer the FaceDown alternative cast"
+            );
+            assert_eq!(
+                *normal_cost,
+                ManaCost::NoCost,
+                "the free normal cast must display NoCost (WithoutPayingManaCost), not printed {{5}}"
+            );
+        }
+        other => panic!("expected AlternativeCastChoice(FaceDown), got {other:?}"),
+    }
+    assert!(
+        !state.objects[&morph].face_down,
+        "the object must NOT have been blanked face down before the choice is made"
+    );
+
+    // Choose the free FACE-UP normal cast.
+    apply_as_current(
+        &mut state,
+        GameAction::ChooseAlternativeCast {
+            choice: crate::types::actions::AlternativeCastDecision::Normal,
+        },
+    )
+    .expect("choosing the free normal cast must succeed");
+
+    let obj = &state.objects[&morph];
+    assert_eq!(obj.zone, Zone::Stack, "the spell must be on the stack");
+    assert!(
+        !obj.face_down,
+        "the normal cast must put the real card face UP, not a blank 2/2"
+    );
+    assert_eq!(
+        obj.name, "Secret Beast",
+        "the face-up spell must keep the real card's characteristics"
+    );
+    assert_eq!(
+        state.players[0].mana_pool.total(),
+        3,
+        "the free normal cast must leave the {{3}} pool unspent (no {{3}} face-down cost paid)"
+    );
+}
