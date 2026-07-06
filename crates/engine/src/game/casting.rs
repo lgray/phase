@@ -7936,6 +7936,19 @@ fn face_down_cast_profile(
     }
 }
 
+/// CR 702.37c / CR 702.37b (megamorph) / CR 702.168b: true when `object_id` carries
+/// an effective morph, megamorph, or disguise keyword (printed or granted, CR 604.1) —
+/// the class of cards castable face down for the {3} alternative cost.
+fn object_has_effective_face_down_keyword(state: &GameState, object_id: ObjectId) -> bool {
+    [
+        KeywordKind::Morph,
+        KeywordKind::Megamorph,
+        KeywordKind::Disguise,
+    ]
+    .iter()
+    .any(|kind| super::keywords::object_has_effective_keyword_kind(state, object_id, *kind))
+}
+
 /// CR 702.37c / CR 702.168b + CR 708.4: Affordability of the fixed {3} face-down
 /// cast cost, evaluated AS A FACE-DOWN spell. The real object is not blanked at
 /// offer time, so this checks payability against a throwaway clone in which the
@@ -8789,7 +8802,16 @@ fn normal_cast_choice_cost_and_affordability(
     // reflect active cost modifiers before comparing against alternative costs.
     let normal_cost = apply_cost_modifiers_to_base(state, player, object_id, obj.mana_cost.clone())
         .unwrap_or_else(|| obj.mana_cost.clone());
-    let normal_affordable = can_pay_cost_after_auto_tap(state, player, object_id, &normal_cost);
+    // CR 118.6: a printed `NoCost` (no mana cost) is an UNPAYABLE cost; the normal
+    // (face-up) cast is not a legal play absent a free-cast permission (handled by
+    // the two short-circuits above). `can_pay_cost_after_auto_tap` returns true for
+    // `NoCost` unconditionally, so guard against reporting an unpayable normal cast
+    // as affordable — that would offer a free face-up cast instead of the {3}
+    // face-down alternative. A cost reduced to nothing is `{0}` (CR 601.2f), a
+    // distinct value from `ManaCost::NoCost`, so this never misfires on a
+    // cost-reduced-to-zero card.
+    let normal_affordable = !matches!(normal_cost, ManaCost::NoCost)
+        && can_pay_cost_after_auto_tap(state, player, object_id, &normal_cost);
     (normal_cost, normal_affordable)
 }
 
@@ -8833,8 +8855,22 @@ pub fn handle_cast_spell_with_payment_mode(
             // permission (Omniscience) takes this normal path, so don't block it.
             // Defense-in-depth — the candidate generator already excludes the
             // no-permission case via `can_cast_object_now`.
+            //
+            // CR 118.6a + CR 702.37c / CR 702.168b: an unpayable ({NoCost}) card
+            // carrying an effective morph/megamorph/disguise keyword may still be
+            // cast face down for the {3} alternative cost. Let it through to the
+            // face-down offer block below ONLY when that {3} is affordable — the
+            // offer auto-routes and returns there; otherwise the unpayable-cost
+            // rejection stands (nothing downstream re-guards NoCost).
             if matches!(obj.mana_cost, ManaCost::NoCost)
                 && !unlimited_hand_cast_free_applies(state, player, obj, CastingVariant::Normal)
+                && !(object_has_effective_face_down_keyword(state, object_id)
+                    && can_afford_face_down_cast(
+                        state,
+                        player,
+                        object_id,
+                        &crate::types::mana::ManaCost::generic(3),
+                    ))
             {
                 return Err(EngineError::InvalidAction(format!(
                     "Cannot cast {object_id:?} from hand — it has no mana cost (CR 118.6)",
@@ -9816,13 +9852,7 @@ pub fn handle_cast_spell_with_payment_mode(
     // when only the {3} is affordable. Eligibility reads the *effective* keyword
     // kind so a granted morph/disguise (CR 604.1) is honored.
     if let Some(obj) = state.objects.get(&object_id) {
-        if [
-            KeywordKind::Morph,
-            KeywordKind::Megamorph,
-            KeywordKind::Disguise,
-        ]
-        .iter()
-        .any(|kind| super::keywords::object_has_effective_keyword_kind(state, object_id, *kind))
+        if object_has_effective_face_down_keyword(state, object_id)
             // CR 702.37c / CR 702.168b: face down may be cast "from any zone from
             // which you could normally cast it" — gate on the general castable-zone
             // authority, not a hand-only special case. `prepare_spell_cast(..).is_ok()`
@@ -11122,9 +11152,22 @@ fn can_cast_prepared_now_with_probe(
     // `CastSpellForFree` action instead. Block the normal hand cast otherwise.
     // Exile-zone copies (Prepare, Suspend, Discover, etc.) carry their own
     // `ExileWithAltCost` permission and must not hit this hand/command guard.
+    //
+    // CR 118.6a + CR 702.37c / CR 702.168b: candidate/legal-action twin of the
+    // dispatch-path exception at the `Zone::Hand` NoCost gate — a NoCost card with
+    // an effective morph/megamorph/disguise keyword IS castable (face down for {3}),
+    // so it must be OFFERED whenever that {3} is affordable. Without this, dispatch
+    // accepts the cast but candidate generation never surfaces it.
     if matches!(obj.zone, Zone::Hand | Zone::Command)
         && matches!(obj.mana_cost, ManaCost::NoCost)
         && !unlimited_hand_cast_free_applies(state, player, obj, prepared.casting_variant)
+        && !(object_has_effective_face_down_keyword(state, prepared.object_id)
+            && can_afford_face_down_cast(
+                state,
+                player,
+                prepared.object_id,
+                &crate::types::mana::ManaCost::generic(3),
+            ))
     {
         return false;
     }

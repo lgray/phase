@@ -9260,3 +9260,162 @@ fn morph_free_normal_cast_not_robbed_by_face_down_autoroute() {
         "the free normal cast must leave the {{3}} pool unspent (no {{3}} face-down cost paid)"
     );
 }
+
+/// Blocker A — CR 118.6a + CR 702.37c / CR 702.168b: a card with NO mana cost
+/// (`ManaCost::NoCost`, e.g. an Aftermath//suspend-only or reverse-side morph)
+/// carrying an effective morph keyword is UNPAYABLE face up, but IS legally
+/// castable FACE DOWN for the fixed {3} alternative cost. The `Zone::Hand` NoCost
+/// rejection must let it through, and the offer must auto-route to the face-down
+/// {3} (the normal face-up path is unpayable, not free).
+///
+/// Revert direction (discriminating): remove the `Zone::Hand` morph exception (E2)
+/// and the cast is rejected at the NoCost gate — the `.expect` below panics.
+/// Remove the `normal_affordable` soundness guard (E3) and `can_pay_cost_after_
+/// auto_tap` reports the unpayable `NoCost` normal cast as affordable → the engine
+/// OFFERS a (bogus free) face-up cast instead of auto-routing → the object stays in
+/// hand, so `assert_eq!(obj.zone, Zone::Stack)` fails.
+#[test]
+fn nocost_morph_auto_casts_face_down_for_three() {
+    let mut state = setup_game_at_main_phase();
+    let morph = add_face_down_castable_to_hand(
+        &mut state,
+        PlayerId(0),
+        crate::types::keywords::Keyword::Morph(ManaCost::generic(4)),
+        ManaCost::NoCost,
+    );
+    add_mana(&mut state, PlayerId(0), ManaType::Colorless, 3);
+    let card_id = state.objects[&morph].card_id;
+
+    apply_as_current(
+        &mut state,
+        GameAction::CastSpell {
+            object_id: morph,
+            card_id,
+            targets: vec![],
+            payment_mode: crate::types::game_state::CastPaymentMode::Auto,
+        },
+    )
+    .expect("a NoCost morph with {3} available must be castable face down (CR 118.6a / 702.37c)");
+
+    let obj = &state.objects[&morph];
+    assert_eq!(
+        obj.zone,
+        Zone::Stack,
+        "the NoCost morph must auto-route onto the stack face down (no free face-up offer)"
+    );
+    assert!(obj.face_down, "CR 708.4: the spell must be face down");
+    assert_eq!(obj.power, Some(2), "CR 708.2: a face-down spell is a 2/2");
+    assert_eq!(
+        obj.toughness,
+        Some(2),
+        "CR 708.2: a face-down spell is a 2/2"
+    );
+    assert_eq!(
+        state.players[0].mana_pool.total(),
+        0,
+        "the {{3}} face-down cost must actually have been paid"
+    );
+}
+
+/// Blocker A non-vacuity guard: a NoCost creature with NO morph/megamorph/disguise
+/// keyword has an unpayable cost and NO face-down permission, so it must be
+/// REJECTED from hand (CR 118.6). Proves the E2 exception is gated on the keyword,
+/// not on NoCost alone.
+#[test]
+fn nocost_non_morph_creature_rejected_from_hand() {
+    let mut state = setup_game_at_main_phase();
+    let vanilla = create_object(
+        &mut state,
+        CardId(4302),
+        PlayerId(0),
+        "Costless Beast".to_string(),
+        Zone::Hand,
+    );
+    {
+        let card_types = CardType {
+            supertypes: vec![],
+            core_types: vec![CoreType::Creature],
+            subtypes: vec!["Beast".to_string()],
+        };
+        let obj = state.objects.get_mut(&vanilla).unwrap();
+        obj.card_types = card_types.clone();
+        obj.base_card_types = card_types;
+        obj.power = Some(2);
+        obj.toughness = Some(2);
+        obj.mana_cost = ManaCost::NoCost;
+        obj.base_mana_cost = ManaCost::NoCost;
+    }
+    add_mana(&mut state, PlayerId(0), ManaType::Colorless, 3);
+    let card_id = state.objects[&vanilla].card_id;
+
+    let result = apply_as_current(
+        &mut state,
+        GameAction::CastSpell {
+            object_id: vanilla,
+            card_id,
+            targets: vec![],
+            payment_mode: crate::types::game_state::CastPaymentMode::Auto,
+        },
+    );
+    assert!(
+        result.is_err(),
+        "a NoCost non-morph creature has an unpayable cost and no face-down permission — CR 118.6"
+    );
+}
+
+/// Blocker A non-vacuity guard: a NoCost morph creature with only {2} available
+/// cannot afford the {3} face-down cost, so the exception does NOT fire and the
+/// unpayable-cost rejection stands (CR 118.6). Proves the E2 exception is gated on
+/// {3} affordability — it must not silently grant a free face-up cast.
+#[test]
+fn nocost_morph_without_three_mana_rejected() {
+    let mut state = setup_game_at_main_phase();
+    let morph = add_face_down_castable_to_hand(
+        &mut state,
+        PlayerId(0),
+        crate::types::keywords::Keyword::Morph(ManaCost::generic(4)),
+        ManaCost::NoCost,
+    );
+    add_mana(&mut state, PlayerId(0), ManaType::Colorless, 2);
+    let card_id = state.objects[&morph].card_id;
+
+    let result = apply_as_current(
+        &mut state,
+        GameAction::CastSpell {
+            object_id: morph,
+            card_id,
+            targets: vec![],
+            payment_mode: crate::types::game_state::CastPaymentMode::Auto,
+        },
+    );
+    assert!(
+        result.is_err(),
+        "a NoCost morph with only {{2}} cannot pay the {{3}} face-down cost — the cast must be rejected, not made free face up"
+    );
+}
+
+/// Blocker A (E4) — CR 118.6a + CR 702.37c: the candidate/legal-action path must
+/// OFFER a NoCost morph whenever the {3} face-down cost is affordable. `can_cast_
+/// object_now` routes through `can_cast_prepared_now_with_probe`, whose `Zone::Hand`
+/// NoCost gate would otherwise report the card uncastable even though dispatch
+/// accepts it.
+///
+/// Revert direction (discriminating): remove the E4 morph exception and the NoCost
+/// gate returns false → `can_cast_prepared_now_with_probe` is false → (no other
+/// casting variant surfaces face down) `can_cast_object_now` returns false.
+#[test]
+fn nocost_morph_offered_as_legal_action() {
+    let mut state = setup_game_at_main_phase();
+    let morph = add_face_down_castable_to_hand(
+        &mut state,
+        PlayerId(0),
+        crate::types::keywords::Keyword::Morph(ManaCost::generic(4)),
+        ManaCost::NoCost,
+    );
+    add_mana(&mut state, PlayerId(0), ManaType::Colorless, 3);
+
+    assert!(
+        casting::can_cast_object_now(&state, PlayerId(0), morph),
+        "a NoCost morph with {{3}} available must be surfaced as a legal cast (face down)"
+    );
+}
