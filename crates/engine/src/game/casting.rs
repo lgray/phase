@@ -14905,6 +14905,23 @@ pub fn handle_cancel_cast(
         }
     }
 
+    if pending.casting_variant == CastingVariant::FaceDown {
+        // CR 601.2i + CR 708.4 + CR 702.37c / CR 702.168b: backing out of a
+        // face-down cast before it completes reveals the stashed real card and
+        // clears the face-down blank, so the object rolls back to its real face in
+        // its origin zone instead of stranding blanked / nameless / no-cost.
+        // `continue_cast_face_down` blanks the object (via
+        // `apply_face_down_entry_profile`) BEFORE payment, and cancelling at any
+        // point after that (e.g. from `WaitingFor::ManaPayment`) must undo it.
+        // Single authority: the same `restore_face_down_cast_object` used on the
+        // prep-failure error path. FaceDown is absent from
+        // `restores_front_face_after_stack_exit()` and
+        // `apply_face_down_entry_profile` never sets `modal_back_face`, so the
+        // alternative-spell-face restore above does not also fire — this branch is
+        // the sole rollback for a canceled face-down cast.
+        restore_face_down_cast_object(state, pending.object_id);
+    }
+
     if let Some(source_id) = pending.cancel_restore_prepared_source {
         // CR 601.2i + CR 722.3c: Prepare-copy cast cancellation must restore
         // the source's prepared marker and clear the synthetic copy object.

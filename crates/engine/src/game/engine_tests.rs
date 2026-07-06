@@ -9077,3 +9077,89 @@ fn non_morph_creature_in_graveyard_offers_no_face_down_cast() {
         "a normally-cast graveyard creature must not be face down"
     );
 }
+
+/// CR 601.2i + CR 708.4: canceling a face-down cast during mana payment must roll
+/// the object back to its REAL face in its origin zone — not leave it blanked /
+/// nameless / no-cost. `continue_cast_face_down` blanks the object before payment,
+/// so a `CancelCast` from `WaitingFor::ManaPayment` has to reveal the stashed real
+/// card. Manual payment is used so the {3} face-down cost (mana value 3 > 0) pauses
+/// at `WaitingFor::ManaPayment` instead of auto-completing onto the stack.
+///
+/// Revert direction (discriminating): without the `CastingVariant::FaceDown`
+/// rollback branch in `handle_cancel_cast`, the object keeps `face_down = true`
+/// and its blank 2/2 characteristics (empty name, `NoCost` mana cost) — every
+/// restore assertion below flips.
+#[test]
+fn face_down_cast_cancel_at_mana_payment_restores_real_card() {
+    let mut state = setup_game_at_main_phase();
+    let morph = add_face_down_castable_to_hand(
+        &mut state,
+        PlayerId(0),
+        crate::types::keywords::Keyword::Morph(ManaCost::generic(4)),
+        ManaCost::generic(5),
+    );
+    add_mana(&mut state, PlayerId(0), ManaType::Colorless, 5);
+    let card_id = state.objects[&morph].card_id;
+
+    apply_as_current(
+        &mut state,
+        GameAction::CastSpell {
+            object_id: morph,
+            card_id,
+            targets: vec![],
+            payment_mode: crate::types::game_state::CastPaymentMode::Manual,
+        },
+    )
+    .expect("casting a morph creature must be accepted");
+    apply_as_current(
+        &mut state,
+        GameAction::ChooseAlternativeCast {
+            choice: crate::types::actions::AlternativeCastDecision::Alternative,
+        },
+    )
+    .expect("choosing face down must succeed");
+
+    // Precondition: the cast is paused at mana payment with the object already
+    // blanked face down (so the cancel below has something real to restore).
+    assert!(
+        matches!(state.waiting_for, WaitingFor::ManaPayment { .. }),
+        "precondition: the {{3}} face-down cost must pause at mana payment, got {:?}",
+        state.waiting_for
+    );
+    assert!(
+        state.objects[&morph].face_down && state.objects[&morph].back_face.is_some(),
+        "precondition: the object must be blanked face down with the real card stashed"
+    );
+
+    // Back out of the cast during mana payment (CR 601.2i).
+    apply_as_current(&mut state, GameAction::CancelCast).expect("cancel must be accepted");
+
+    let obj = &state.objects[&morph];
+    assert!(
+        !obj.face_down,
+        "CR 601.2i: canceling the face-down cast must clear the face-down blank"
+    );
+    assert_eq!(
+        obj.name, "Secret Beast",
+        "the real card name must be restored on cancel, not left blank"
+    );
+    assert_eq!(
+        obj.mana_cost,
+        ManaCost::generic(5),
+        "the real printed mana cost must be restored on cancel, not NoCost"
+    );
+    assert_eq!(
+        obj.card_types.core_types,
+        vec![CoreType::Creature],
+        "the real card types must be restored on cancel"
+    );
+    assert!(
+        obj.back_face.is_none(),
+        "the face-down stash must be consumed once the real face is restored"
+    );
+    assert_eq!(
+        obj.zone,
+        Zone::Hand,
+        "CR 601.2i: the object returns to its origin zone (hand), not stranded on the stack"
+    );
+}
