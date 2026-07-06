@@ -2851,6 +2851,13 @@ pub enum AlternativeCastKeyword {
     /// — the spell resolves normally; the prowl provenance is recorded so "if
     /// its prowl cost was paid" intervening-ifs (Latchkey Faerie) can read it.
     Prowl,
+    /// CR 702.37c (Morph) / CR 702.168b (Disguise): Cast the card face down as a
+    /// 2/2 face-down creature spell for a fixed {3} (CR 601.2b alternative cost)
+    /// rather than its mana cost. Offered from hand for any card with Morph,
+    /// Megamorph, or Disguise; the resulting spell is blanked before it is put on
+    /// the stack (CR 708.4) and resolves to a face-down permanent. Maps to
+    /// `CastingVariant::FaceDown`.
+    FaceDown,
 }
 
 /// CR 601.2b: Engine-authored cast-variant option for spells with more than
@@ -5836,6 +5843,24 @@ pub enum CastingVariant {
     /// the caster has cast another spell this turn. Resolution is normal (no
     /// exile/restore), so it appears only in `uses_alternative_cost`.
     Surge,
+    /// CR 708.4 + CR 702.37c (Morph) / CR 702.168b (Disguise): Cast a card face
+    /// down as a 2/2 face-down creature spell by paying a fixed {3} (an
+    /// alternative cost, CR 601.2b) rather than its mana cost. Morph, Megamorph,
+    /// and Disguise all cast identically this way — the only differences (ward {2}
+    /// for Disguise per CR 702.168a; the turn-face-up cost) are read downstream
+    /// from the hidden real card's keyword, so this variant is parameterless.
+    ///
+    /// Runtime: `casting::continue_cast_face_down` blanks the object to its
+    /// face-down 2/2 (stashing the real card in `back_face`) BEFORE it is put on
+    /// the stack (CR 708.4), so the whole downstream face-down machinery is
+    /// inherited: `visibility` redacts the stack spell to opponents, the object
+    /// resolves onto the battlefield still face down (CR 702.37c), and
+    /// `GameAction::TurnFaceUp` (CR 702.37e) flips it. The face-down spell is an
+    /// alternative cast (appears in `uses_alternative_cost`); it neither exiles
+    /// on resolution nor restores a front face (the object simply stays face down),
+    /// but CR 708.9 reveal-on-leave-stack is handled by the shared
+    /// `apply_zone_exit_cleanup`, so it needs no `restores_front_face_after_stack_exit`.
+    FaceDown,
 }
 
 impl CastingVariant {
@@ -5892,6 +5917,10 @@ impl CastingVariant {
             | CastingVariant::Prowl
             // CR 702.117a: Surge substitutes the surge cost for the printed cost.
             | CastingVariant::Surge
+            // CR 601.2b + CR 702.37c / CR 702.168b: casting face down pays a fixed
+            // {3} rather than the printed mana cost — an alternative cost, so only
+            // one alternative casting method may apply (CR 118.9a).
+            | CastingVariant::FaceDown
             | CastingVariant::Freerunning => true,
             CastingVariant::Normal
             | CastingVariant::Adventure

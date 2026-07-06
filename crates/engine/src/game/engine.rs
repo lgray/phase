@@ -1816,6 +1816,19 @@ fn apply_action(
                         &mut events,
                     )?
                 }
+                AlternativeCastKeyword::FaceDown => {
+                    // CR 702.37c / CR 702.168b: Handle the "cast normally vs cast
+                    // face down for {3}" choice for a Morph/Megamorph/Disguise card.
+                    casting::handle_face_down_cost_choice_with_payment_mode(
+                        state,
+                        *player,
+                        *object_id,
+                        *card_id,
+                        choice,
+                        *payment_mode,
+                        &mut events,
+                    )?
+                }
             }
         }
         (
