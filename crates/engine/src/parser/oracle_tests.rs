@@ -6950,19 +6950,23 @@ fn overgrown_zealot_turn_face_up_only_supported() {
 
 /// CR 106.6 + CR 708.4 + CR 116.2b + CR 702.37e: Tin Street Gossip's mana
 /// ability — "Add {R}{G}. Spend this mana only to cast face-down spells or to
-/// turn creatures face up" — parses the mana head but must remain coverage-red.
-/// The spend restriction is a disjunction `Any([FaceDownSpell,
-/// TurnPermanentFaceUp])`; `FaceDownSpell` is not production-live (gate
-/// `meta.is_face_down`, never true at a payment site, CR 708.4), so
-/// `is_coverage_supported` for the whole disjunction is `false`. The seam leaves
-/// the restriction unabsorbed, producing an explicit `Effect::Unimplemented`
-/// residual instead of partially absorbing the live turn-face-up branch.
+/// turn creatures face up" — is now coverage-SUPPORTED. The spend restriction is
+/// a disjunction `Any([FaceDownSpell, TurnPermanentFaceUp])`; both leaves are
+/// production-live (FaceDownSpell via this PR's face-down spell casting, gate
+/// `meta.is_face_down` at a `PaymentContext::Spell` site, CR 708.4;
+/// TurnPermanentFaceUp via the paid `GameAction::TurnFaceUp`, CR 116.2b), so
+/// `is_coverage_supported` for the whole disjunction is `true` and the seam
+/// ABSORBS the restriction into the `Effect::Mana` line — no residual
+/// `Effect::Unimplemented`.
 ///
-/// Revert direction: if `Any` returns supported when any branch is live, this test
-/// fails because the restriction folds into `Effect::Mana` and the residual
-/// `Unimplemented` disappears.
+/// This is the parser half of the #5155 D10 closure: #5165 deferred Tin Street's
+/// coverage "until face-down spell casting exists" — it exists now.
+///
+/// Revert direction: if `FaceDownSpell` were reclassified unsupported, `Any` would
+/// return `false`, the seam would leave the restriction unabsorbed, and the
+/// `!parsed_has_unimplemented` + non-empty `restrictions` assertions below flip.
 #[test]
-fn tin_street_gossip_face_down_or_turn_face_up_stays_coverage_red() {
+fn tin_street_gossip_face_down_or_turn_face_up_is_coverage_supported() {
     let r = parse(
             "Vigilance\n{T}: Add {R}{G}. Spend this mana only to cast face-down spells or to turn creatures face up.",
             "Tin Street Gossip",
@@ -6972,8 +6976,8 @@ fn tin_street_gossip_face_down_or_turn_face_up_stays_coverage_red() {
         );
     assert_eq!(r.abilities.len(), 1, "abilities: {:?}", r.abilities);
     assert!(
-        parsed_has_unimplemented(&r),
-        "Tin Street Gossip must remain coverage-red until face-down spell casting exists: abilities={:?} triggers={:?}",
+        !parsed_has_unimplemented(&r),
+        "Tin Street Gossip's face-down/turn-up disjunction is now production-live, so the line must be supported (no Effect::Unimplemented): abilities={:?} triggers={:?}",
         r.abilities,
         r.triggers,
     );
@@ -6991,25 +6995,15 @@ fn tin_street_gossip_face_down_or_turn_face_up_stays_coverage_red() {
     );
     assert_eq!(
         restrictions,
-        &Vec::<ManaSpendRestriction>::new(),
-        "unsupported face-down/turn-up disjunction must remain unabsorbed"
+        &vec![ManaSpendRestriction::Any(vec![
+            ManaSpendRestriction::FaceDownSpell,
+            ManaSpendRestriction::TurnPermanentFaceUp,
+        ])],
+        "the face-down/turn-up disjunction must fold into the mana effect"
     );
-    let residual = r.abilities[0]
-        .sub_ability
-        .as_deref()
-        .expect("unsupported spend restriction must remain as a residual gap");
-    let Effect::Unimplemented { name, description } = &*residual.effect else {
-        panic!(
-            "expected residual Effect::Unimplemented, got {:?}",
-            residual.effect
-        );
-    };
-    assert_eq!(name, "spend");
     assert!(
-        description
-            .as_deref()
-            .is_some_and(|text| text.contains("face-down spells or to turn creatures face up")),
-        "residual gap must be the unsupported spend restriction, got {description:?}"
+        r.abilities[0].sub_ability.is_none(),
+        "the restriction sentence must be folded into the mana effect, leaving no residual gap"
     );
     assert!(
         crate::game::mana_abilities::is_mana_ability(&r.abilities[0]),

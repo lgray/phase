@@ -294,20 +294,21 @@ fn overgrown_zealot_turn_face_up_mana_rejects_every_live_context() {
 /// `OnlyForAny([OnlyForFaceDownSpell, OnlyForSpecialAction(TurnFaceUp)])`: a DEAD
 /// face-down-cast leaf sitting beside a LIVE turn-face-up leaf. The leaf-level
 /// tests above pin each half in isolation; this drives `spend_for` at TSG's
-/// whole disjunction to prove the dead leaf cannot make runtime spending
-/// over-permissive:
+/// whole disjunction to prove it cannot over-permit an unrelated face-up cast:
 ///
-///   - the {R} is CONSUMED for the turn-face-up special action — the live leaf
+///   - the {R} is CONSUMED for the turn-face-up special action — the turn-up leaf
 ///     makes TSG's mana genuinely usable at runtime for that special action, and
-///   - the {R} is WITHHELD for a normal face-up creature cast — the dead
-///     `FaceDownSpell` leaf does not widen the disjunction into permitting
-///     arbitrary casts (no over-permit).
+///   - the {R} is WITHHELD for a normal face-up creature cast — neither leaf
+///     accepts it: the `FaceDownSpell` leaf takes only a face-down cast
+///     (`is_face_down = true`), so the disjunction is not widened into permitting
+///     an arbitrary face-up cast (no over-permit).
 ///
 /// Combined with `face_down_spell_mana_rejects_every_production_context` (the
-/// `FaceDownSpell` leaf is fail-CLOSED at every production context — it can only
-/// under-permit, never over-permit), this is the runtime proof for the lowered OR
-/// gate. Parser coverage remains red until the face-down-cast branch is
-/// production-live. CR 106.6 + CR 708.4 + CR 116.2b + CR 702.37e.
+/// `FaceDownSpell` leaf accepts a face-down cast but rejects every other payment
+/// context), this is the runtime proof for the lowered OR gate. Both leaves are
+/// now production-live, so parser coverage for TSG is green (see
+/// `oracle_tests::tin_street_gossip_face_down_or_turn_face_up_is_coverage_supported`).
+/// CR 106.6 + CR 708.4 + CR 116.2b + CR 702.37e.
 ///
 /// Revert-proof: drop the `TurnFaceUp` leaf and the disjunction is all-dead — the
 /// turn-face-up spend (A) no longer consumes, so its assert flips; make the

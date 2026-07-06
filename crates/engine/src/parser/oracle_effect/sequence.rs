@@ -5640,11 +5640,12 @@ pub(super) fn parse_followup_continuation_ast(
             // restrictions are deliberately left unabsorbed so the residual clause
             // remains an `Effect::Unimplemented` (honest coverage red) instead of
             // marking a card supported while dropping an unsupported branch from
-            // coverage accounting. Do not partially absorb mixed disjunctions:
-            // Tin Street Gossip must stay red until face-down spell casting exists.
-            // A dropped unsupported restriction also drops any paired `grants`; that
-            // is intentional (no real card pairs a grant with an unsupported
-            // restriction).
+            // coverage accounting. Do not partially absorb mixed disjunctions. As of
+            // CR 708.4 face-down spell casting every spend-restriction leaf is
+            // production-live, so Tin Street Gossip's mixed disjunction now absorbs
+            // (coverage green). A dropped unsupported restriction also drops any
+            // paired `grants`; that is intentional (no real card pairs a grant with
+            // an unsupported restriction).
             if let Some((restriction, grants)) = super::mana::parse_mana_spend_restriction(&lower) {
                 if restriction.is_coverage_supported() {
                     return Some(ContinuationAst::ManaRestriction {
