@@ -15121,6 +15121,137 @@ fn imprisoned_in_the_moon_becomes_colorless_land_with_granted_mana_ability() {
     }
 }
 
+// CR 205.1a + CR 702.6: Bram, Baguette Brawler / Bludgeon Brawl — "Each
+// <subject> is an Equipment with equip {N} and "Equipped creature gets +N/+M.""
+// Each matching permanent gains the Equipment subtype (replacing its artifact
+// subtypes), the Equip keyword with the printed cost, and the quoted anthem as a
+// granted static ability.
+#[test]
+fn becomes_equipment_with_equip_cost_and_granted_ability() {
+    use crate::types::keywords::Keyword;
+
+    let def = parse_static_line(
+        "Each noncreature Food you control is an Equipment with equip {1} and \"Equipped creature gets +1/+1.\"",
+    )
+    .unwrap();
+    assert_eq!(def.mode, StaticMode::Continuous);
+
+    // Affected: noncreature Food you control.
+    match &def.affected {
+        Some(TargetFilter::Typed(tf)) => {
+            assert_eq!(tf.controller, Some(ControllerRef::You));
+            assert!(
+                tf.type_filters
+                    .iter()
+                    .any(|t| matches!(t, TypeFilter::Subtype(s) if s == "Food")),
+                "affected must be Food: {tf:?}"
+            );
+        }
+        other => panic!("expected Typed Food filter, got {other:?}"),
+    }
+
+    let mods = &def.modifications;
+    // Set the Equipment subtype (CR 205.1a: replace artifact subtypes first).
+    assert!(
+        mods.iter()
+            .any(|m| matches!(m, ContinuousModification::AddSubtype { subtype } if subtype == "Equipment")),
+        "must grant the Equipment subtype: {mods:?}"
+    );
+    // Grant the Equip keyword carrying the printed {1} cost.
+    assert!(
+        mods.iter().any(|m| matches!(
+            m,
+            ContinuousModification::AddKeyword {
+                keyword: Keyword::Equip(_)
+            }
+        )),
+        "must grant the Equip keyword: {mods:?}"
+    );
+    // Grant the quoted "Equipped creature gets +1/+1" anthem as a static ability.
+    assert!(
+        mods.iter()
+            .any(|m| matches!(m, ContinuousModification::GrantStaticAbility { .. })),
+        "must grant the quoted equipped-creature anthem: {mods:?}"
+    );
+}
+
+// CR 202.3: Bludgeon Brawl — the dynamic-mana-value member of the become-Equipment
+// class. "equip {X} … where X is that artifact's mana value" binds X to the
+// Equipment's own mana value for BOTH the equip cost and the granted anthem, so
+// the cost lowers to Equip(SelfManaValue) and the anthem's "+X/+0" is rebound
+// from the default cost-X reference to SelfManaValue.
+#[test]
+fn bludgeon_brawl_dynamic_equip_cost_and_anthem_bind_source_mana_value() {
+    use crate::types::keywords::Keyword;
+    use crate::types::mana::ManaCost;
+
+    let def = parse_static_line(
+        "Each noncreature, non-Equipment artifact is an Equipment with equip {X} and \"Equipped creature gets +X/+0,\" where X is that artifact's mana value.",
+    )
+    .unwrap();
+    let mods = &def.modifications;
+
+    // Equip cost bound to the Equipment's own mana value.
+    assert!(
+        mods.iter().any(|m| matches!(
+            m,
+            ContinuousModification::AddKeyword {
+                keyword: Keyword::Equip(ManaCost::SelfManaValue)
+            }
+        )),
+        "equip {{X}} must lower to Equip(SelfManaValue): {mods:?}"
+    );
+    // The granted anthem's dynamic power reads the source's mana value (rebound
+    // from the default cost-X reference).
+    let anthem_ok = mods.iter().any(|m| {
+        matches!(m, ContinuousModification::GrantStaticAbility { definition }
+        if definition.modifications.iter().any(|inner| matches!(
+            inner,
+            ContinuousModification::AddDynamicPower {
+                value: QuantityExpr::Ref { qty: QuantityRef::SelfManaValue }
+            }
+        )))
+    });
+    assert!(
+        anthem_ok,
+        "granted anthem must add dynamic power = SelfManaValue: {mods:?}"
+    );
+}
+
+// The become-Equipment handler models exactly one trailing rider after the quoted
+// ability: the CR 202.3 "where X is that artifact's mana value" binding. Any other
+// rules-bearing tail must fail closed (return no static) rather than silently drop
+// the rider and export a permanent with missing behavior.
+#[test]
+fn becomes_equipment_rejects_unrecognized_trailing_rider() {
+    // Empty tail (Bram) and the recognized where-X binding (Bludgeon) still parse.
+    assert_eq!(
+        parse_static_line_multi(
+            "Each noncreature Food you control is an Equipment with equip {1} and \"Equipped creature gets +1/+1.\""
+        )
+        .len(),
+        1,
+        "fixed-cost form (empty tail) must still parse"
+    );
+    // An unrecognized rider after the closing quote must be declined.
+    assert!(
+        parse_static_line_multi(
+            "Each artifact you control is an Equipment with equip {1} and \"Equipped creature gets +1/+1,\" and it gains flying."
+        )
+        .is_empty(),
+        "an unrecognized trailing rider must fail closed, not be silently dropped"
+    );
+    // A rider AFTER the recognized mana-value binding must also fail closed — the
+    // binding is matched exactly (full consumption), not by substring.
+    assert!(
+        parse_static_line_multi(
+            "Each noncreature artifact is an Equipment with equip {X} and \"Equipped creature gets +X/+0,\" where X is that artifact's mana value, and it gains flying."
+        )
+        .is_empty(),
+        "extra rules text after the mana-value binding must fail closed"
+    );
+}
+
 // Issue #4770 sibling — Sugar Coat: "Enchanted permanent is a colorless Food
 // artifact with "..." and loses all other card types and abilities." Same class
 // as Imprisoned in the Moon but with a SUBTYPE (Food) before the core type. Must
