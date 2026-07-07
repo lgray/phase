@@ -12,7 +12,7 @@ use crate::types::ability::{
     AbilityCondition, AbilityCost, AbilityKind, CardTypeSetSource, ChosenAttribute, ControllerRef,
     CopyRetargetPermission, CostPaidObjectSnapshot, EachDamageRecipient, Effect, EffectError,
     EffectKind, EffectOutcomeSignal, EffectScope, FilterProp, OpponentMayScope, PlayerFilter,
-    PlayerScope, QuantityExpr, QuantityRef, RepeatContinuation, ResolvedAbility,
+    PlayerScope, PtValue, QuantityExpr, QuantityRef, RepeatContinuation, ResolvedAbility,
     RevealUntilDisposition, SacrificeCost, SacrificeRequirement, SharedQuality,
     SharedQualityRelation, SubAbilityLink, TapStateChange, TargetFilter, TargetRef, ThisWayCause,
 };
@@ -1470,6 +1470,7 @@ fn revealed_object_context_from_events(
 fn lki_snapshot_from_zone_change_record(record: &ZoneChangeRecord) -> LKISnapshot {
     LKISnapshot {
         name: record.name.clone(),
+        token_image_ref: None,
         power: record.power,
         toughness: record.toughness,
         // CR 208.4b + CR 613.4b: Carry the layer-7b base values from the
@@ -3504,7 +3505,16 @@ fn effect_references_tracked_set(effect: &Effect) -> bool {
         Effect::ChangeSpeed { amount, .. } => quantity_hits_tracked(amount),
         Effect::PutCounter { count, .. } => quantity_hits_tracked(count),
         Effect::PutCounterAll { count, .. } => quantity_hits_tracked(count),
-        Effect::Token { count, .. } => quantity_hits_tracked(count),
+        Effect::Token {
+            count,
+            power,
+            toughness,
+            ..
+        } => {
+            quantity_hits_tracked(count)
+                || pt_value_references_tracked_set(power)
+                || pt_value_references_tracked_set(toughness)
+        }
         _ => false,
     };
     if has_quantity_hit {
@@ -3581,6 +3591,13 @@ fn effect_references_tracked_set(effect: &Effect) -> bool {
         }
     }
     false
+}
+
+fn pt_value_references_tracked_set(value: &PtValue) -> bool {
+    match value {
+        PtValue::Fixed(_) | PtValue::Variable(_) => false,
+        PtValue::Quantity(expr) => quantity_expr_references_tracked_set(expr),
+    }
 }
 
 fn quantity_expr_references_tracked_set(qty: &QuantityExpr) -> bool {
@@ -9316,6 +9333,7 @@ mod tests {
             source,
             LKISnapshot {
                 name: "Choice Source".to_string(),
+                token_image_ref: None,
                 power: None,
                 toughness: None,
                 base_power: None,
@@ -9529,6 +9547,43 @@ mod tests {
         assert!(
             ability_or_branch_references_tracked_set(&ability),
             "repeat_for: TrackedSetSize must mark the ability as referencing the tracked set"
+        );
+    }
+
+    #[test]
+    fn token_power_toughness_tracked_set_marks_ability_as_referencing_tracked_set() {
+        let tracked_pt = PtValue::Quantity(QuantityExpr::Ref {
+            qty: QuantityRef::TrackedSetAggregate {
+                function: crate::types::ability::AggregateFunction::Sum,
+                property: crate::types::ability::ObjectProperty::Power,
+                source: crate::types::ability::TrackedAnaphorSource::ChainSet,
+            },
+        });
+        let ability = ResolvedAbility::new(
+            Effect::Token {
+                name: "Zombie".to_string(),
+                power: tracked_pt.clone(),
+                toughness: tracked_pt,
+                types: vec!["Creature".to_string(), "Zombie".to_string()],
+                colors: vec![ManaColor::Blue],
+                keywords: vec![],
+                tapped: false,
+                count: QuantityExpr::Fixed { value: 1 },
+                owner: TargetFilter::Controller,
+                attach_to: None,
+                enters_attacking: false,
+                supertypes: vec![],
+                static_abilities: vec![],
+                enter_with_counters: vec![],
+            },
+            vec![],
+            ObjectId(1),
+            PlayerId(0),
+        );
+
+        assert!(
+            ability_or_branch_references_tracked_set(&ability),
+            "token P/T TrackedSetAggregate must publish the chain tracked set"
         );
     }
 
@@ -11548,6 +11603,7 @@ mod tests {
             sacrificed,
             crate::types::game_state::LKISnapshot {
                 name: "Sacrificed".to_string(),
+                token_image_ref: None,
                 power: Some(1),
                 toughness: Some(1),
                 base_power: Some(1),
