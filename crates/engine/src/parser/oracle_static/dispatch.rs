@@ -511,20 +511,26 @@ fn filter_prop_has_power_comparison(prop: &FilterProp) -> bool {
     }
 }
 
-/// CR 508.1b + CR 303.4b: Parse the `"[all ]creatures attacking <scope> "` prefix
-/// of an attacker-scoped continuous static, returning the remaining predicate
-/// text (original case) and the defending-player [`ControllerRef`]. The defender
-/// scope is the sole varying axis, so it is a single `alt` rather than one
-/// dispatch arm per scope: controller (`you`), any opponent (`your opponents`,
-/// whose `and/or planeswalkers they control` long form collapses to the same
-/// `Opponent` scope), or the enchanted player (`enchanted player`). The trailing
-/// space in each phrase enforces a word boundary — `"you "` never swallows the
-/// `"your"` of `"your opponents"`.
+/// CR 508.1b + CR 303.4b + CR 613.1: Parse the `"[all ]creatures attacking
+/// <scope> "` prefix of an attacker-scoped continuous static, returning the
+/// remaining predicate text (original case) and the defending-player
+/// [`ControllerRef`]. The defender scope is the sole varying axis, so it is a
+/// single `alt` rather than one dispatch arm per scope: controller (`you`), any
+/// opponent (`your opponents`, whose `and/or planeswalkers they control` long
+/// form collapses to the same `Opponent` scope), the enchanted player
+/// (`enchanted player`), or the source's persisted chosen player (`the last
+/// chosen player` / `the chosen player`; Triarch Stalker, Beckoning
+/// Will-o'-Wisp — a combat trigger `choose an opponent` persists a
+/// `ChosenAttribute::Player` that this static reads via
+/// `ControllerRef::SourceChosenPlayer`). The trailing space in each phrase
+/// enforces a word boundary — `"you "` never swallows the `"your"` of
+/// `"your opponents"`.
 fn parse_attacking_defender_scope<'a>(tp: &TextPair<'a>) -> Option<(&'a str, ControllerRef)> {
     let rest = nom_tag_tp(tp, "all creatures attacking ")
         .or_else(|| nom_tag_tp(tp, "creatures attacking "))?;
     // Longest-first so the "your opponents and/or …" long form wins before the
-    // bare "your opponents ".
+    // bare "your opponents ", and "the last chosen player " before the shorter
+    // "the chosen player ".
     for (phrase, defender) in [
         ("you ", ControllerRef::You),
         (
@@ -533,6 +539,8 @@ fn parse_attacking_defender_scope<'a>(tp: &TextPair<'a>) -> Option<(&'a str, Con
         ),
         ("your opponents ", ControllerRef::Opponent),
         ("enchanted player ", ControllerRef::EnchantedPlayer),
+        ("the last chosen player ", ControllerRef::SourceChosenPlayer),
+        ("the chosen player ", ControllerRef::SourceChosenPlayer),
     ] {
         if let Some(after) = nom_tag_tp(&rest, phrase) {
             return Some((after.original, defender));
