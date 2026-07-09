@@ -13069,6 +13069,83 @@ fn granted_blitz_offers_blitz_variant() {
     );
 }
 
+/// CR 702.152a + CR 604.1 + CR 118.9: Henzie "Toolbox" Torre — "Each creature
+/// spell you cast with mana value 4 or greater has blitz. The blitz cost is
+/// equal to its mana cost." The grant carries `Blitz(ManaCost::SelfManaCost)`, so
+/// the offered Blitz option must surface the self-referential cost (resolved to
+/// the spell's own mana cost at payment time by the shared `SelfManaCost` path,
+/// the same one the granted-flashback cost uses). This pins that a granted
+/// alternative cost equal to the card's mana cost flows intact through the
+/// casting-variant choice set rather than being dropped or fixed to a constant.
+#[test]
+fn granted_blitz_self_mana_cost_surfaces_self_referential_cost() {
+    use crate::types::ability::{FilterProp, TargetFilter, TypeFilter, TypedFilter};
+    use crate::types::keywords::Keyword;
+    use crate::types::statics::StaticMode;
+
+    let mut state = setup_game_at_main_phase();
+    add_mana(&mut state, PlayerId(0), ManaType::Colorless, 6);
+
+    // Henzie's grant, modeled as the CastWithKeyword static the parser emits:
+    // creature spells you cast with mana value >= 4 gain Blitz whose cost equals
+    // the spell's own mana cost.
+    let grantor = create_object(
+        &mut state,
+        CardId(9110),
+        PlayerId(0),
+        "Henzie".to_string(),
+        Zone::Battlefield,
+    );
+    {
+        let obj = state.objects.get_mut(&grantor).unwrap();
+        obj.card_types.core_types.push(CoreType::Creature);
+        obj.base_card_types.core_types.push(CoreType::Creature);
+        let def = StaticDefinition::new(StaticMode::CastWithKeyword {
+            keyword: Keyword::Blitz(ManaCost::SelfManaCost),
+        })
+        .affected(TargetFilter::Typed(
+            TypedFilter::new(TypeFilter::Creature).properties(vec![FilterProp::Cmc {
+                comparator: crate::types::ability::Comparator::GE,
+                value: crate::types::ability::QuantityExpr::Fixed { value: 4 },
+            }]),
+        ));
+        obj.static_definitions = vec![def].into();
+    }
+
+    // Recipient: a {5} creature (mana value 5 >= 4) in hand with no printed Blitz.
+    let spell_cost = ManaCost::generic(5);
+    let spell = create_object(
+        &mut state,
+        CardId(9111),
+        PlayerId(0),
+        "Big Creature".to_string(),
+        Zone::Hand,
+    );
+    {
+        let obj = state.objects.get_mut(&spell).unwrap();
+        obj.card_types.core_types.push(CoreType::Creature);
+        obj.base_card_types.core_types.push(CoreType::Creature);
+        obj.mana_cost = spell_cost.clone();
+        obj.base_mana_cost = spell_cost.clone();
+    }
+
+    let choices = casting_variant_choice_set(&state, PlayerId(0), spell);
+    let blitz = choices
+        .options
+        .iter()
+        .find(|o| o.variant == CastingVariant::Blitz)
+        .expect("granted Blitz must surface the Blitz option");
+    assert_eq!(
+        blitz.mana_cost,
+        ManaCost::SelfManaCost,
+        "granted Blitz must carry the self-referential cost (resolved to the \
+         spell's own mana cost at payment time), got {:?}",
+        blitz.mana_cost
+    );
+    // The recipient really is MV >= 4, so the grant's filter admits it.
+    assert_eq!(state.objects.get(&spell).unwrap().mana_cost, spell_cost);
+}
+
 /// CR 702.141a + CR 604.1 (seam 4: activated-ability-on-grant): Encore
 /// granted to a graveyard card by an `AddKeyword` effect must surface its
 /// graveyard activated ability. The `AddKeyword` layer seam installs only the

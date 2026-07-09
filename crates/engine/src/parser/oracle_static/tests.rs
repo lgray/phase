@@ -10439,6 +10439,65 @@ fn static_cast_as_though_flash() {
 }
 
 #[test]
+fn static_grant_blitz_self_mana_cost() {
+    // CR 702.152a + CR 604.1 + CR 118.9: Henzie "Toolbox" Torre — "Each creature
+    // spell you cast with mana value 4 or greater has blitz. The blitz cost is
+    // equal to its mana cost." lowers to a single `CastWithKeyword` granting
+    // `Blitz(SelfManaCost)` to the controller's MV>=4 creature spells; the
+    // self-referential cost resolves to each spell's own mana cost at cast time
+    // (mirrors the granted-flashback path). The two-sentence cost continuation is
+    // consumed into the same static, not dropped as a separate unimplemented line.
+    use crate::types::mana::ManaCost;
+    let def = parse_static_line(
+        "Each creature spell you cast with mana value 4 or greater has blitz. The blitz cost is equal to its mana cost.",
+    )
+    .unwrap();
+    assert_eq!(
+        def.mode,
+        StaticMode::CastWithKeyword {
+            keyword: Keyword::Blitz(ManaCost::SelfManaCost),
+        }
+    );
+    let Some(TargetFilter::Typed(tf)) = &def.affected else {
+        panic!(
+            "affected must be a Typed creature filter, got {:?}",
+            def.affected
+        );
+    };
+    assert!(tf.type_filters.contains(&TypeFilter::Creature));
+    assert_eq!(tf.controller, Some(ControllerRef::You));
+    assert!(
+        tf.properties.iter().any(|p| matches!(
+            p,
+            FilterProp::Cmc {
+                comparator: Comparator::GE,
+                value: QuantityExpr::Fixed { value: 4 },
+            }
+        )),
+        "must constrain to mana value 4 or greater, got {:?}",
+        tf.properties
+    );
+}
+
+#[test]
+fn static_grant_blitz_simple_form() {
+    // The bare "Creature spells you cast have blitz. The blitz cost is equal to
+    // its mana cost." form (no mana-value qualifier) grants blitz to every
+    // creature spell the controller casts.
+    use crate::types::mana::ManaCost;
+    let def = parse_static_line(
+        "Creature spells you cast have blitz. The blitz cost is equal to its mana cost.",
+    )
+    .unwrap();
+    assert_eq!(
+        def.mode,
+        StaticMode::CastWithKeyword {
+            keyword: Keyword::Blitz(ManaCost::SelfManaCost),
+        }
+    );
+}
+
+#[test]
 fn static_cast_as_though_flash_all_spells() {
     // CR 601.3b: the bare "spells" form (Leyline of Anticipation, Vedalken
     // Orrery) grants flash to every spell the controller casts.
