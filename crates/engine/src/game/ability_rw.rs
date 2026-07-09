@@ -3186,8 +3186,15 @@ fn legacy_effect(x: &Effect) -> bool {
         Effect::SeparateIntoPiles {
             object_filter,
             chosen_pile_effect,
+            unchosen_pile_effect,
             ..
-        } => legacy_target_filter(object_filter) || legacy_definition(chosen_pile_effect),
+        } => {
+            legacy_target_filter(object_filter)
+                || legacy_definition(chosen_pile_effect)
+                || unchosen_pile_effect
+                    .as_ref()
+                    .is_some_and(|d| legacy_definition(d))
+        }
         Effect::EpicCopy { spell } => contains_legacy_event_ref(spell),
         Effect::CreateDelayedTrigger { effect, .. } => legacy_definition(effect),
         Effect::CreateDrawReplacement { replacement_effect } => legacy_effect(replacement_effect),
