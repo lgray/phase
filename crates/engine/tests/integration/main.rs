@@ -95,6 +95,7 @@ mod engine_invariants;
 mod enlightened_tutor_regression;
 mod equipment_etb_attach_parent_target;
 mod ertai_trickery_counter_kicked;
+mod etali_primal_sickness_poison;
 mod evelyn_regression;
 mod exchange_life_totals_cards;
 mod exhibition_tidecaller_target_player_mill;
