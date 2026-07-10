@@ -755,7 +755,10 @@ fn filterprop_reads_only_candidate_fp(p: &FilterProp) -> bool {
 
         // POISON — read another object / side-table / combat / history / identity.
         // ControllerChoseLabel reads the controller's per-player anchor state.
+        // ControllerMatches reads live per-turn history (damage ledger, life
+        // tallies) via the controller's inner PlayerFilter predicate.
         FilterProp::ControllerChoseLabel { .. }
+        | FilterProp::ControllerMatches { .. }
         | FilterProp::Attacking { .. }
         | FilterProp::Blocking
         | FilterProp::BlockingSource

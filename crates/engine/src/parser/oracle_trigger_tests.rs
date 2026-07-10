@@ -16270,6 +16270,8 @@ fn trigger_tymna_the_weaver_pays_and_draws_bound_x() {
             filter: PlayerFilter::OpponentDealtDamage {
                 kind: DamageKindFilter::CombatOnly,
                 source: None,
+
+                min_sources: 1,
             },
         },
     };

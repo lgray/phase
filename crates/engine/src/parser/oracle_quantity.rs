@@ -474,6 +474,9 @@ pub(crate) fn parse_quantity_ref_with_context(
                 filter: PlayerFilter::OpponentDealtDamage {
                     kind,
                     source: source.map(Box::new),
+                    // Count context ("for each opponent dealt …") has no
+                    // "N or more distinct sources" restriction — default 1.
+                    min_sources: 1,
                 },
             });
         }
@@ -2846,6 +2849,8 @@ fn parse_for_each_clause_with_they_controller(
             filter: PlayerFilter::OpponentDealtDamage {
                 kind,
                 source: source.map(Box::new),
+                // Count context has no "N or more distinct sources" restriction — default 1.
+                min_sources: 1,
             },
         });
     }
@@ -3675,7 +3680,8 @@ mod tests {
                 Some(QuantityRef::PlayerCount {
                     filter: PlayerFilter::OpponentDealtDamage {
                         kind: DamageKindFilter::CombatOnly,
-                        source: None
+                        source: None,
+                        min_sources: 1,
                     },
                 }),
                 "phrase {phrase:?} must consume as OpponentDealtDamage{{CombatOnly}}"
@@ -3699,7 +3705,8 @@ mod tests {
                 Some(QuantityRef::PlayerCount {
                     filter: PlayerFilter::OpponentDealtDamage {
                         kind: DamageKindFilter::Any,
-                        source: None
+                        source: None,
+                        min_sources: 1,
                     },
                 }),
                 "phrase {phrase:?} must consume as OpponentDealtDamage{{Any}}"
@@ -3719,7 +3726,8 @@ mod tests {
                 Some(QuantityRef::PlayerCount {
                     filter: PlayerFilter::OpponentDealtDamage {
                         kind: DamageKindFilter::NoncombatOnly,
-                        source: None
+                        source: None,
+                        min_sources: 1,
                     },
                 }),
                 "phrase {phrase:?} must consume as OpponentDealtDamage{{NoncombatOnly}}"
@@ -4524,7 +4532,8 @@ mod tests {
                 qty: QuantityRef::PlayerCount {
                     filter: PlayerFilter::OpponentDealtDamage {
                         kind: DamageKindFilter::CombatOnly,
-                        source: None
+                        source: None,
+                        min_sources: 1,
                     },
                 }
             }
@@ -4544,7 +4553,8 @@ mod tests {
                 qty: QuantityRef::PlayerCount {
                     filter: PlayerFilter::OpponentDealtDamage {
                         kind: DamageKindFilter::CombatOnly,
-                        source: None
+                        source: None,
+                        min_sources: 1,
                     },
                 }
             }
@@ -4576,7 +4586,8 @@ mod tests {
                     qty: QuantityRef::PlayerCount {
                         filter: PlayerFilter::OpponentDealtDamage {
                             kind: DamageKindFilter::CombatOnly,
-                            source: None
+                            source: None,
+                            min_sources: 1,
                         },
                     }
                 },
@@ -4611,6 +4622,8 @@ mod tests {
                             ),
                         ],
                     })),
+
+                    min_sources: 1,
                 },
             }
         );
@@ -4630,6 +4643,8 @@ mod tests {
                 filter: PlayerFilter::OpponentDealtDamage {
                     kind: DamageKindFilter::CombatOnly,
                     source: Some(Box::new(TargetFilter::SelfRef)),
+
+                    min_sources: 1,
                 },
             }
         );
@@ -4650,7 +4665,8 @@ mod tests {
                 Some(QuantityRef::PlayerCount {
                     filter: PlayerFilter::OpponentDealtDamage {
                         kind: DamageKindFilter::CombatOnly,
-                        source: None
+                        source: None,
+                        min_sources: 1,
                     },
                 }),
                 "phrase {phrase:?} must parse to unfiltered OpponentDealtDamage"

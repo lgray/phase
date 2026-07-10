@@ -4803,13 +4803,14 @@ pub(crate) fn opponent_dealt_damage_matches(
     controller: PlayerId,
     kind: crate::types::ability::DamageKindFilter,
     source: &Option<Box<TargetFilter>>,
+    min_sources: u32,
     ability_source_id: ObjectId,
 ) -> bool {
     if player == controller {
         return false;
     }
     let ctx = FilterContext::from_source_with_controller(ability_source_id, controller);
-    state.damage_dealt_this_turn.iter().any(|r| {
+    let record_matches = |r: &crate::types::game_state::DamageRecord| {
         damage_record_matches_kind(r, kind)
             && matches!(r.target, TargetRef::Player(pid) if pid == player)
             && match source {
@@ -4819,7 +4820,28 @@ pub(crate) fn opponent_dealt_damage_matches(
                 // no separate short-circuit is needed here.
                 Some(f) => matches_target_filter_on_damage_record_source(state, r, f, &ctx),
             }
-    })
+    };
+    // CR 120.9: the fast, allocation-free `≥1` path for the common `min_sources
+    // == 1` case (every existing card). Only "N or more <source>" clauses
+    // (min_sources > 1, Admiral Beckett Brass) need to count DISTINCT sources.
+    if min_sources <= 1 {
+        return state.damage_dealt_this_turn.iter().any(record_matches);
+    }
+    // CR 120.9 + CR 608.2i: count DISTINCT damaging sources by `source_id` (a
+    // single Pirate dealing combat damage across two combat steps is ONE source,
+    // not two), then require at least `min_sources` of them.
+    let mut distinct: std::collections::HashSet<ObjectId> = std::collections::HashSet::new();
+    for r in state
+        .damage_dealt_this_turn
+        .iter()
+        .filter(|r| record_matches(r))
+    {
+        distinct.insert(r.source_id);
+        if distinct.len() as u32 >= min_sources {
+            return true;
+        }
+    }
+    false
 }
 
 /// Count players matching a PlayerFilter relative to the controller.
@@ -4880,11 +4902,19 @@ pub(crate) fn resolve_player_count(
                         // CR 120.2a/120.2b: Each opponent who was dealt damage of
                         // the given kind this turn, optionally restricted to a
                         // matching source.
-                        PlayerFilter::OpponentDealtDamage { kind, source } => {
-                            opponent_dealt_damage_matches(
-                                state, p.id, controller, *kind, source, source_id,
-                            )
-                        }
+                        PlayerFilter::OpponentDealtDamage {
+                            kind,
+                            source,
+                            min_sources,
+                        } => opponent_dealt_damage_matches(
+                            state,
+                            p.id,
+                            controller,
+                            *kind,
+                            source,
+                            *min_sources,
+                            source_id,
+                        ),
                         // CR 508.6: opponent the subject attacked within scope.
                         PlayerFilter::OpponentAttacked { subject, scope } => {
                             p.id != controller
@@ -8680,6 +8710,8 @@ mod tests {
                 filter: PlayerFilter::OpponentDealtDamage {
                     kind: DamageKindFilter::CombatOnly,
                     source: None,
+
+                    min_sources: 1,
                 },
             },
         };
@@ -8726,7 +8758,11 @@ mod tests {
                 &state,
                 &QuantityExpr::Ref {
                     qty: QuantityRef::PlayerCount {
-                        filter: PlayerFilter::OpponentDealtDamage { kind, source: None },
+                        filter: PlayerFilter::OpponentDealtDamage {
+                            kind,
+                            source: None,
+                            min_sources: 1,
+                        },
                     },
                 },
                 PlayerId(0),
@@ -8764,7 +8800,8 @@ mod tests {
             legacy,
             PlayerFilter::OpponentDealtDamage {
                 kind: DamageKindFilter::CombatOnly,
-                source: None
+                source: None,
+                min_sources: 1,
             }
         );
 
@@ -8775,7 +8812,8 @@ mod tests {
             any,
             PlayerFilter::OpponentDealtDamage {
                 kind: DamageKindFilter::Any,
-                source: None
+                source: None,
+                min_sources: 1,
             }
         );
         let reser = serde_json::to_string(&any).unwrap();
@@ -8794,6 +8832,8 @@ mod tests {
                 filter: PlayerFilter::OpponentDealtDamage {
                     kind: DamageKindFilter::CombatOnly,
                     source: None,
+
+                    min_sources: 1,
                 },
             },
         };
@@ -8840,6 +8880,8 @@ mod tests {
                 filter: PlayerFilter::OpponentDealtDamage {
                     kind: DamageKindFilter::CombatOnly,
                     source: Some(Box::new(dragon_filter)),
+
+                    min_sources: 1,
                 },
             },
         };
@@ -8881,6 +8923,8 @@ mod tests {
                         filter: PlayerFilter::OpponentDealtDamage {
                             kind: DamageKindFilter::CombatOnly,
                             source: Some(Box::new(source)),
+
+                            min_sources: 1,
                         },
                     },
                 },
