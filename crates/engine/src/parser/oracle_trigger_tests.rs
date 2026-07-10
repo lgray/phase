@@ -7,12 +7,12 @@ use crate::parser::oracle_ir::doc::PrintedTriggerIndex;
 use crate::types::ability::{
     AbilityCondition, AbilityCost, AbilityDefinition, AbilityKind, AggregateFunction, AttackScope,
     AttackSubject, BounceSelection, CardSelectionMode, CastingPermission, ChosenAttribute,
-    Comparator, ContinuousModification, ControllerRef, CountScope, DamageChannel,
-    DamageModification, DamageSource, DelayedTriggerCondition, DiscardSelfScope, Duration, Effect,
-    EffectScope, FilterProp, ManaContribution, ManaProduction, ManaSpendPermission, ObjectScope,
-    PerpetualModification, PlayerFilter, PlayerScope, PtStat, PtValue, PtValueScope, QuantityExpr,
-    QuantityRef, SharedQuality, TapStateChange, TargetFilter, TriggerCondition, TypeFilter,
-    TypedFilter, ZoneRef,
+    Comparator, ContinuousModification, ControllerRef, CopyRetargetPermission, CountScope,
+    DamageChannel, DamageModification, DamageSource, DelayedTriggerCondition, DiscardSelfScope,
+    Duration, Effect, EffectScope, FilterProp, ManaContribution, ManaProduction,
+    ManaSpendPermission, ObjectScope, PerpetualModification, PlayerFilter, PlayerScope, PtStat,
+    PtValue, PtValueScope, QuantityExpr, QuantityRef, SharedQuality, TapStateChange, TargetFilter,
+    TriggerCondition, TypeFilter, TypedFilter, ZoneRef,
 };
 use crate::types::card_type::Supertype;
 use crate::types::counter::{CounterMatch, CounterType};
@@ -15598,6 +15598,48 @@ fn trigger_zada_targets_only_self() {
         }
     } else {
         panic!("expected Or filter, got {valid_card:?}");
+    }
+}
+
+#[test]
+fn trigger_zada_full_oracle_copies_for_each_legal_creature_target() {
+    let def = parse_trigger_line(
+        "Whenever you cast an instant or sorcery spell that targets only Zada, copy that spell for each other creature you control that the spell could target. Each copy targets a different one of those creatures.",
+        "Zada, Hedron Grinder",
+    );
+    let execute = def.execute.expect("execute");
+    assert!(
+        execute.sub_ability.is_none(),
+        "for-each copy must not spill into a sub_ability, got {:?}",
+        execute.sub_ability
+    );
+    assert!(matches!(
+        *execute.effect,
+        Effect::CopySpell {
+            target: TargetFilter::TriggeringSource,
+            retarget: CopyRetargetPermission::RetargetEachCopyToIterationMember,
+            ..
+        }
+    ));
+    assert!(matches!(
+        execute.repeat_for,
+        Some(QuantityExpr::Ref {
+            qty: QuantityRef::ObjectCount { .. }
+        })
+    ));
+    if let Some(QuantityExpr::Ref {
+        qty: QuantityRef::ObjectCount { filter },
+    }) = execute.repeat_for
+    {
+        if let TargetFilter::Typed(tf) = filter {
+            assert_eq!(tf.controller, Some(ControllerRef::You));
+            assert!(tf.properties.contains(&FilterProp::Another));
+            assert!(tf
+                .properties
+                .contains(&FilterProp::CouldBeTargetedByTriggeringSpell));
+        } else {
+            panic!("expected Typed ObjectCount filter, got {filter:?}");
+        }
     }
 }
 

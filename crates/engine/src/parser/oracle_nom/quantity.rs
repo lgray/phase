@@ -3325,6 +3325,7 @@ fn parse_for_each_clause_ref_with_they_controller(
         // an unconsumed remainder, dropping the quantity (Skycat Sovereign, Aven
         // Gagglemaster, Aerial Assault, Alert Heedbonder, Overgrown Battlement).
         parse_for_each_controlled_type_with_keyword,
+        parse_for_each_object_spell_could_target,
         parse_for_each_controlled_type,
         // CR 201.2: "for each [other] <type> named <CardName> you control"
         // (Seven Dwarves). The `named X` qualifier sits between the type word
@@ -4485,6 +4486,46 @@ fn parse_for_each_controlled_type_with_keyword(input: &str) -> OracleResult<'_, 
     ))
 }
 
+/// CR 115.1 + CR 707.10: "[other] <type> [you control] [on the battlefield] that
+/// [the] spell could target" — Zada ("other creature you control that the spell
+/// could target"), Ink-Treader Nephilim ("other creature that spell could target"),
+/// Precursor Golem ("other Golem on the battlefield that the spell could target").
+/// Optional "other"/"another" excludes the trigger source;
+/// `CouldBeTargetedByTriggeringSpell` gates on spell legality at runtime.
+fn parse_for_each_object_spell_could_target(input: &str) -> OracleResult<'_, QuantityRef> {
+    let (rest, has_other) = opt(alt((
+        value((), tag::<_, _, OracleError<'_>>("other ")),
+        value((), tag("another ")),
+    )))
+    .parse(input)?;
+    let (rest, tf) = parse_type_filter_word(rest)?;
+    let (rest, controller) = opt(map(
+        alt((tag(" you already control"), tag(" you control"))),
+        |_| ControllerRef::You,
+    ))
+    .parse(rest)?;
+    let (rest, _) = opt(tag(" on the battlefield")).parse(rest)?;
+    let (rest, _) = alt((
+        tag(" that the spell could target"),
+        tag(" that spell could target"),
+    ))
+    .parse(rest)?;
+    let mut properties = vec![FilterProp::CouldBeTargetedByTriggeringSpell];
+    if has_other.is_some() {
+        properties.push(FilterProp::Another);
+    }
+    Ok((
+        rest,
+        QuantityRef::ObjectCount {
+            filter: TargetFilter::Typed(TypedFilter {
+                type_filters: vec![tf],
+                controller,
+                properties,
+            }),
+        },
+    ))
+}
+
 fn parse_for_each_controlled_type(input: &str) -> OracleResult<'_, QuantityRef> {
     // CR 109.4: Only objects on the stack or on the battlefield have a
     // controller, so a "you control" count is over battlefield permanents
@@ -4629,10 +4670,46 @@ fn parse_player_counter_possessor(input: &str) -> OracleResult<'_, CountScope> {
 mod tests {
     use super::*;
     use crate::types::ability::{
-        AggregateFunction, FilterProp, ObjectProperty, SharedQuality, SharedQualityRelation,
-        TargetFilter, TypeFilter, TypedFilter,
+        AggregateFunction, ControllerRef, FilterProp, ObjectProperty, QuantityRef, SharedQuality,
+        SharedQualityRelation, TargetFilter, TypeFilter, TypedFilter,
     };
     use crate::types::mana::ManaColor;
+
+    #[test]
+    fn parse_for_each_object_spell_could_target_covers_zada_and_ink_treader() {
+        let zada = parse_for_each_object_spell_could_target(
+            "other creature you control that the spell could target",
+        )
+        .expect("zada for-each count");
+        assert!(matches!(
+            zada.1,
+            QuantityRef::ObjectCount {
+                filter: TargetFilter::Typed(TypedFilter {
+                    type_filters,
+                    controller: Some(ControllerRef::You),
+                    properties,
+                }),
+            } if type_filters == vec![TypeFilter::Creature]
+                && properties.contains(&FilterProp::Another)
+                && properties.contains(&FilterProp::CouldBeTargetedByTriggeringSpell)
+        ));
+
+        let ink_treader =
+            parse_for_each_object_spell_could_target("other creature that spell could target")
+                .expect("ink-treader for-each count");
+        assert!(matches!(
+            ink_treader.1,
+            QuantityRef::ObjectCount {
+                filter: TargetFilter::Typed(TypedFilter {
+                    type_filters,
+                    controller: None,
+                    properties,
+                }),
+            } if type_filters == vec![TypeFilter::Creature]
+                && properties.contains(&FilterProp::Another)
+                && properties.contains(&FilterProp::CouldBeTargetedByTriggeringSpell)
+        ));
+    }
 
     /// CR 400.7 + CR 700.4 + CR 109.5: the shared death-suffix combinator returns
     /// the controller scope for all four "that died" tag forms and rejects

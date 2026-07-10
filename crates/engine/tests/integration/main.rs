@@ -756,6 +756,7 @@ mod incredible_hulk_enrage_attacking;
 mod indestructible_survives_destroy;
 mod issue_4365_msh_legality;
 mod issue_4937_iona_chosen_color;
+mod issue_4945_zada_hedron_grinder;
 mod karplusan_yeti_fight_back;
 mod kav_landseeker_delayed_sacrifice;
 mod kellan_daring_traveler_mana_value_gate;

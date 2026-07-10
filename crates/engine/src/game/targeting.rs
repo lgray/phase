@@ -509,6 +509,70 @@ pub fn check_fizzle(original_targets: &[TargetRef], legal_targets: &[TargetRef])
     legal_targets.is_empty()
 }
 
+/// CR 115.1 + CR 707.10: True when `candidate_id` could be chosen as a target of
+/// the spell that triggered the current `SpellCast` event (Zada copy-count filter).
+pub(crate) fn object_could_be_targeted_by_triggering_spell(
+    state: &GameState,
+    candidate_id: ObjectId,
+) -> bool {
+    let Some(event) = state.current_trigger_event.as_ref() else {
+        return false;
+    };
+    let Some(spell_id) = extract_source_from_event(event) else {
+        return false;
+    };
+    let spell_controller = match event {
+        GameEvent::SpellCast { controller, .. } => *controller,
+        _ => return false,
+    };
+    let Some(spell_ability) = triggering_spell_resolved_ability(state, spell_id, spell_controller)
+    else {
+        return false;
+    };
+    let Ok(slots) = crate::game::ability_utils::build_target_slots(state, &spell_ability) else {
+        return false;
+    };
+    slots.iter().any(|slot| {
+        slot.legal_targets
+            .contains(&TargetRef::Object(candidate_id))
+    })
+}
+
+/// CR 707.10a: Resolve the triggering spell's `ResolvedAbility` for legality
+/// checks. Prefer the live stack entry; fall back to `resolving_stack_entry`
+/// (spell mid-resolution) or reconstruct from the spell object when the stack
+/// entry is gone (e.g. countered before a `SpellCast` trigger resolves).
+fn triggering_spell_resolved_ability(
+    state: &GameState,
+    spell_id: ObjectId,
+    controller: PlayerId,
+) -> Option<ResolvedAbility> {
+    if let Some(ability) = state
+        .stack
+        .iter()
+        .rev()
+        .find(|entry| entry.id == spell_id)
+        .and_then(|entry| entry.ability())
+    {
+        return Some(ability.clone());
+    }
+    if let Some(entry) = state.resolving_stack_entry.as_ref() {
+        if entry.id == spell_id {
+            if let Some(ability) = entry.ability() {
+                return Some(ability.clone());
+            }
+        }
+    }
+    let obj = state.objects.get(&spell_id)?;
+    let def = crate::game::casting::combined_spell_ability_def(obj)?;
+    let mut resolved =
+        crate::game::ability_utils::build_resolved_from_def(&def, spell_id, controller);
+    if let Some(targets) = super::restrictions::triggering_spell_targets(state, spell_id) {
+        resolved.targets = targets;
+    }
+    Some(resolved)
+}
+
 /// Resolve event-context TargetFilter variants using the current trigger event.
 /// These variants auto-resolve at effect resolution time from `state.current_trigger_event`
 /// without requiring player selection (CR 603.2).

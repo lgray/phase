@@ -157,6 +157,7 @@ fn filter_prop_uses_object_population(prop: &FilterProp) -> bool {
         // `ColorCount` carries a `u8` constant, not a QuantityExpr.
         // `ManaSymbolCount` reads only the candidate's own printed mana cost.
         FilterProp::CanEnchant { .. }
+        | FilterProp::CouldBeTargetedByTriggeringSpell
         | FilterProp::HasAttachment { .. }
         | FilterProp::HasAnyAttachmentOf { .. }
         | FilterProp::TargetsOnly { .. }
@@ -390,6 +391,7 @@ fn entered_object_perturbs_filter_prop(
         // `filter_prop_uses_object_population` — candidate-local, stack-relative,
         // single-object, or threshold-free, so a board entry cannot perturb them.
         FilterProp::CanEnchant { .. }
+        | FilterProp::CouldBeTargetedByTriggeringSpell
         | FilterProp::HasAttachment { .. }
         | FilterProp::HasAnyAttachmentOf { .. }
         | FilterProp::TargetsOnly { .. }
@@ -3078,6 +3080,7 @@ fn spell_record_matches_property(record: &SpellCastRecord, prop: &FilterProp) ->
         // CR 303.4: "could enchant [target]" needs live target context and
         // Aura attachment legality; stack snapshots only record keyword values.
         FilterProp::CanEnchant { .. } => false,
+        FilterProp::CouldBeTargetedByTriggeringSpell => false,
         FilterProp::HasColor { color } => record.colors.contains(color),
         FilterProp::NotColor { color } => !record.colors.contains(color),
         FilterProp::HasSupertype { value } => record.supertypes.contains(value),
@@ -3600,6 +3603,10 @@ fn matches_filter_prop(
                 && !combat::has_summoning_sickness(obj)
         }
         FilterProp::WithKeyword { value } => obj.has_keyword(value),
+        // CR 115.1 + CR 707.10: Zada — "creature you control that the spell could target".
+        FilterProp::CouldBeTargetedByTriggeringSpell => {
+            crate::game::targeting::object_could_be_targeted_by_triggering_spell(state, object_id)
+        }
         FilterProp::CanEnchant { target } => obj.keywords.iter().any(|keyword| {
             let Keyword::Enchant(enchant_filter) = keyword else {
                 return false;
@@ -4410,6 +4417,7 @@ fn zone_change_record_matches_property(
         // CR 303.4: Requires live target context; zone-change snapshots cannot
         // prove attachment legality against a referenced target.
         FilterProp::CanEnchant { .. } => false,
+        FilterProp::CouldBeTargetedByTriggeringSpell => false,
         // CR 205.4a: Supertype membership as of the zone change.
         FilterProp::HasSupertype { value } => record.supertypes.contains(value),
         FilterProp::NotSupertype { value } => !record.supertypes.contains(value),

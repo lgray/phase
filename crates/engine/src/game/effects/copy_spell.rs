@@ -150,6 +150,25 @@ pub fn resolve(
     state.stack.push_back(copy_entry);
     events.push(GameEvent::StackPushed { object_id: copy_id });
 
+    // CR 707.10d: Zada — each copy is put on the stack targeting the current
+    // iteration member; no controller choice to change targets.
+    if matches!(
+        ability.effect,
+        Effect::CopySpell {
+            retarget: CopyRetargetPermission::RetargetEachCopyToIterationMember,
+            ..
+        }
+    ) {
+        if let Some(member) = ability.targets.iter().find_map(|target| match target {
+            TargetRef::Object(id) => Some(*id),
+            TargetRef::Player(_) => None,
+        }) {
+            if let Some(copy_ability) = state.stack.back_mut().and_then(|e| e.ability_mut()) {
+                rewrite_copy_spell_object_targets(copy_ability, member);
+            }
+        }
+    }
+
     // CR 707.10: A copy of a spell is itself a spell on the stack, but it
     // isn't cast. Emit a distinct `SpellCopied` event so copy-sensitive
     // triggers (Magecraft) fire without wrongly firing cast-only triggers.
@@ -498,6 +517,21 @@ pub(crate) fn copy_count_with_replacements(
 }
 
 fn copy_source_entry(state: &GameState, ability: &ResolvedAbility) -> Option<StackEntry> {
+    if let Effect::CopySpell {
+        target, retarget, ..
+    } = &ability.effect
+    {
+        if matches!(target, TargetFilter::TriggeringSource)
+            || matches!(
+                retarget,
+                CopyRetargetPermission::RetargetEachCopyToIterationMember
+            )
+        {
+            if let Some(entry) = triggering_spell_stack_entry(state) {
+                return Some(entry);
+            }
+        }
+    }
     let target_id = ability.targets.iter().find_map(|target| match target {
         TargetRef::Object(id) => Some(*id),
         TargetRef::Player(_) => None,
@@ -740,6 +774,21 @@ pub(crate) fn set_resolved_source_recursive(ability: &mut ResolvedAbility, sourc
 fn preserve_ability_copy_source_recursive(ability: &mut ResolvedAbility) {
     let source_id = ability.source_id;
     set_resolved_source_recursive(ability, source_id);
+}
+
+/// CR 707.10d: Replace every object target on a copied spell with `new_target`.
+fn rewrite_copy_spell_object_targets(ability: &mut ResolvedAbility, new_target: ObjectId) {
+    for target in &mut ability.targets {
+        if matches!(target, TargetRef::Object(_)) {
+            *target = TargetRef::Object(new_target);
+        }
+    }
+    if let Some(sub) = ability.sub_ability.as_mut() {
+        rewrite_copy_spell_object_targets(sub, new_target);
+    }
+    if let Some(else_ab) = ability.else_ability.as_mut() {
+        rewrite_copy_spell_object_targets(else_ab, new_target);
+    }
 }
 
 fn stack_entry_source_id_for_copy(kind: &StackEntryKind, copy_id: ObjectId) -> ObjectId {

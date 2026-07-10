@@ -2360,6 +2360,7 @@ fn legacy_filter_prop(p: &FilterProp) -> bool {
         | FilterProp::Modified
         | FilterProp::Historic
         | FilterProp::NotHistoric
+        | FilterProp::CouldBeTargetedByTriggeringSpell
         | FilterProp::Other { .. } => false,
     }
 }
@@ -2610,6 +2611,7 @@ fn member_bound_filter_prop(p: &FilterProp) -> bool {
         | FilterProp::Modified
         | FilterProp::Historic
         | FilterProp::NotHistoric
+        | FilterProp::CouldBeTargetedByTriggeringSpell
         | FilterProp::Other { .. } => false,
     }
 }

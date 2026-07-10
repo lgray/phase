@@ -1003,6 +1003,9 @@ fn fmt_typed_filter(tf: &TypedFilter) -> String {
             FilterProp::HasXInActivationCost => parts.push("with {X} in activation cost".into()),
             FilterProp::HasManaAbility => parts.push("with a mana ability".into()),
             FilterProp::HasNoAbilities => parts.push("with no abilities".into()),
+            FilterProp::CouldBeTargetedByTriggeringSpell => {
+                parts.push("that the spell could target".into())
+            }
         }
     }
     if let Some(ctrl) = &tf.controller {

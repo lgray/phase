@@ -23958,6 +23958,9 @@ pub(crate) fn parse_effect_chain_ir(
             };
         }
     }
+    let (chain_zada_distinct_copy_targets, text) =
+        lower::strip_each_copy_targets_distinct_member_suffix(text);
+    let text = text.as_str();
     let chunks = split_clause_sequence(text);
     // CR 107.3i: "Normally, all instances of X on an object have the same value."
     // Build a per-chunk sentence-scoped `where X is <expr>` binding so that when
@@ -24054,6 +24057,9 @@ pub(crate) fn parse_effect_chain_ir(
     for (chunk_idx, chunk) in chunks.iter().enumerate() {
         let normalized_text = strip_leading_sequence_connector(&chunk.text).trim();
         if normalized_text.is_empty() {
+            continue;
+        }
+        if lower::recognize_zada_copy_distinct_target_rider(&normalized_text.to_ascii_lowercase()) {
             continue;
         }
 
@@ -26277,10 +26283,25 @@ pub(crate) fn parse_effect_chain_ir(
         } else {
             let (suffix_repeat_for, stripped_text_no_qty) =
                 strip_for_each_repeat_suffix(&text_no_qty);
-            let stripped_clause = parse_effect_clause(&stripped_text_no_qty, ctx);
+            let mut stripped_clause = parse_effect_clause(&stripped_text_no_qty, ctx);
             if suffix_repeat_for.is_some()
                 && matches!(stripped_clause.effect, Effect::CopySpell { .. })
             {
+                let zada_distinct_copy_targets = chain_zada_distinct_copy_targets
+                    || suffix_repeat_for
+                        .as_ref()
+                        .is_some_and(lower::zada_repeat_for_implies_distinct_copy_targets);
+                if let Effect::CopySpell {
+                    target, retarget, ..
+                } = &mut stripped_clause.effect
+                {
+                    if zada_distinct_copy_targets {
+                        *retarget = CopyRetargetPermission::RetargetEachCopyToIterationMember;
+                    }
+                    if matches!(target, TargetFilter::ParentTarget | TargetFilter::Any) {
+                        *target = TargetFilter::TriggeringSource;
+                    }
+                }
                 (stripped_clause, repeat_for.or(suffix_repeat_for))
             } else if let Some((fanout_clause, fanout_spec, fanout_ctx)) =
                 parse_for_each_opponent_target_fanout_clause(

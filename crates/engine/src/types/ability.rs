@@ -3791,6 +3791,10 @@ pub enum FilterProp {
     Targets {
         filter: Box<TargetFilter>,
     },
+    /// CR 115.1 + CR 707.10: Matches objects that could be chosen as a target of
+    /// the triggering spell on the stack. Used for Zada, Hedron Grinder's "for
+    /// each other creature you control that the spell could target" copy count.
+    CouldBeTargetedByTriggeringSpell,
     /// CR 107.3 + CR 202.1: Matches spells/objects whose printed mana cost contains
     /// an `{X}` shard. Used for "spell with {X} in its mana cost" qualifier on
     /// spell-cast triggers (Lattice Library, Nev the Practical Dean, Owlin
@@ -12425,6 +12429,11 @@ pub enum CopyRetargetPermission {
     KeepOriginalTargets,
     /// Oracle text grants "you may choose new targets for the copy."
     MayChooseNewTargets,
+    /// CR 707.10d: Each copy is automatically targeted to a distinct iteration
+    /// member (Zada, Hedron Grinder — "each copy targets a different one of those
+    /// creatures"). No player choice — the member-driven `repeat_for` loop binds
+    /// the target before the copy is created.
+    RetargetEachCopyToIterationMember,
 }
 
 /// CR 611.2c: Which of a donor object's abilities a resolution-time

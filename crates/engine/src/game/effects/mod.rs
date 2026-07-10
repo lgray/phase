@@ -4394,6 +4394,15 @@ fn filter_refs_same_name_as_parent_target(filter: &TargetFilter) -> bool {
 }
 
 fn effect_iterates_over_parent_target(effect: &Effect) -> bool {
+    if matches!(
+        effect,
+        Effect::CopySpell {
+            retarget: CopyRetargetPermission::RetargetEachCopyToIterationMember,
+            ..
+        }
+    ) {
+        return true;
+    }
     if effect_parent_ref_slots(effect)
         .iter()
         .any(|f| filter_refs_parent_target(f))
