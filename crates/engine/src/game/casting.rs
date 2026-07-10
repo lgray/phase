@@ -13391,11 +13391,12 @@ fn apply_mana_spell_grants(
         return;
     };
     let spell_meta = build_spell_meta(state, caster, spell_id);
-    let mut keyword_grants = Vec::new();
+    let mut keyword_grants: Vec<(crate::types::keywords::Keyword, Duration)> = Vec::new();
     for grant in spent_units.iter().flat_map(|unit| unit.grants.iter()) {
         let ManaSpellGrant::AddKeywordUntilEndOfTurn {
             keyword,
             restriction,
+            duration,
         } = grant
         else {
             continue;
@@ -13407,16 +13408,19 @@ fn apply_mana_spell_grants(
         }) {
             continue;
         }
-        if !keyword_grants.contains(keyword) {
-            keyword_grants.push(keyword.clone());
+        if !keyword_grants
+            .iter()
+            .any(|(k, d)| k == keyword && d == duration.as_ref())
+        {
+            keyword_grants.push((keyword.clone(), duration.as_ref().clone()));
         }
     }
 
-    for keyword in keyword_grants {
+    for (keyword, duration) in keyword_grants {
         state.add_transient_continuous_effect(
             spell_id,
             caster,
-            Duration::UntilEndOfTurn,
+            duration,
             TargetFilter::SpecificObject { id: spell_id },
             vec![ContinuousModification::AddKeyword { keyword }],
             None,

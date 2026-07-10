@@ -2425,6 +2425,7 @@ fn conditional_mana_keyword_grant_applies_to_matching_spell() {
         grants: vec![ManaSpellGrant::AddKeywordUntilEndOfTurn {
             keyword: Keyword::Haste,
             restriction: Some(ManaRestriction::OnlyForCreatureType("Dragon".to_string())),
+            duration: Box::new(crate::types::ability::Duration::UntilEndOfTurn),
         }],
         expiry: None,
     };
@@ -2443,6 +2444,78 @@ fn conditional_mana_keyword_grant_applies_to_matching_spell() {
         vec![ContinuousModification::AddKeyword {
             keyword: Keyword::Haste
         }]
+    );
+}
+
+/// CR 106.6 + CR 702.10: Temporary and permanent keyword grants from different
+/// mana sources must both apply — dedup by `(keyword, duration)`, not keyword alone.
+#[test]
+fn mana_keyword_grants_apply_both_temporary_and_permanent_durations() {
+    let mut state = setup_game_at_main_phase();
+    let dragon_id = create_object(
+        &mut state,
+        CardId(103),
+        PlayerId(0),
+        "Dragon Whelp".to_string(),
+        Zone::Stack,
+    );
+    let dragon = state.objects.get_mut(&dragon_id).unwrap();
+    dragon.card_types.core_types.push(CoreType::Creature);
+    dragon.card_types.subtypes.push("Dragon".to_string());
+
+    let creature_restriction = ManaRestriction::OnlyForSpellType("Creature".to_string());
+    let eot_unit = ManaUnit {
+        color: ManaType::Red,
+        source_id: ObjectId(1),
+        pip_id: crate::types::mana::ManaPipId(0),
+        supertype: None,
+        source_could_produce_two_or_more_colors: false,
+        restrictions: vec![],
+        grants: vec![ManaSpellGrant::AddKeywordUntilEndOfTurn {
+            keyword: Keyword::Haste,
+            restriction: Some(creature_restriction.clone()),
+            duration: Box::new(crate::types::ability::Duration::UntilEndOfTurn),
+        }],
+        expiry: None,
+    };
+    let permanent_unit = ManaUnit {
+        color: ManaType::Colorless,
+        source_id: ObjectId(2),
+        pip_id: crate::types::mana::ManaPipId(0),
+        supertype: None,
+        source_could_produce_two_or_more_colors: false,
+        restrictions: vec![],
+        grants: vec![ManaSpellGrant::AddKeywordUntilEndOfTurn {
+            keyword: Keyword::Haste,
+            restriction: Some(creature_restriction),
+            duration: Box::new(crate::types::ability::Duration::Permanent),
+        }],
+        expiry: None,
+    };
+
+    apply_mana_spell_grants(&mut state, dragon_id, &[eot_unit, permanent_unit]);
+
+    assert_eq!(
+        state.transient_continuous_effects.len(),
+        2,
+        "both UntilEndOfTurn and Permanent haste grants must apply"
+    );
+    let durations: Vec<_> = state
+        .transient_continuous_effects
+        .iter()
+        .map(|effect| effect.duration.clone())
+        .collect();
+    assert!(
+        durations
+            .iter()
+            .any(|d| matches!(d, crate::types::ability::Duration::UntilEndOfTurn)),
+        "expected UntilEndOfTurn haste layer"
+    );
+    assert!(
+        durations
+            .iter()
+            .any(|d| matches!(d, crate::types::ability::Duration::Permanent)),
+        "expected Permanent haste layer"
     );
 }
 
