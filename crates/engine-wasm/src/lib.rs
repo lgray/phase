@@ -1257,7 +1257,12 @@ pub fn list_token_presets_js() -> JsValue {
 /// Used by the engine worker to transfer state to AI workers for root parallelism.
 #[wasm_bindgen]
 pub fn export_game_state_json() -> Result<String, JsValue> {
-    with_state(|state| {
+    with_state_mut(|state| {
+        // Capture the live ChaCha20 stream position so `restore_game_state` can
+        // fast-forward to it (issue #5466); `rng` is `#[serde(skip)]`. The
+        // randomness logic lives in the engine (`GameState::capture_rng_word_pos`),
+        // keeping this WASM boundary a thin serialization step.
+        state.capture_rng_word_pos();
         serde_json::to_string(state)
             .map_err(|e| JsValue::from_str(&format!("Failed to serialize GameState: {e}")))
     })?
@@ -1279,7 +1284,12 @@ pub fn restore_game_state(json_str: &str) -> Result<(), JsValue> {
     }
     let mut state: GameState = serde_json::from_str(json_str)
         .map_err(|e| JsValue::from_str(&format!("Failed to deserialize GameState: {}", e)))?;
-    state.rng = ChaCha20Rng::seed_from_u64(state.rng_seed);
+    // Reseed the skipped `rng` and fast-forward it to the offset captured at
+    // export (issue #5466) so the restored game draws the values that would have
+    // come NEXT rather than replaying from origin. The engine owns this logic
+    // (`GameState::rehydrate_rng`); pre-#5466 snapshots carry `rng_word_pos == 0`
+    // and reproduce the previous rewind-to-origin behavior.
+    state.rehydrate_rng();
     state.debug_mode = true;
     CARD_DB.with(|cell| {
         if let Some(db) = cell.borrow().as_ref() {
@@ -1339,11 +1349,16 @@ pub fn resume_multiplayer_host_state(json_str: &str) -> Result<(), JsValue> {
     let mut state: GameState = serde_json::from_str(json_str)
         .map_err(|e| JsValue::from_str(&format!("Failed to deserialize GameState: {}", e)))?;
 
-    // Stale `rng_seed` replays the pre-save ChaCha20 sequence because
-    // stream position is `#[serde(skip)]`. Mirrors server-core.
+    // Deliberately re-roll a fresh seed on multiplayer host resume so continued
+    // play diverges from any pre-save sequence (mirrors server-core). This is a
+    // multiplayer-resume policy choice, independent of the #5466 undo fix: even
+    // though the stream position now round-trips via `rng_word_pos`, a resumed
+    // host should NOT replay the exact saved randomness. Reset the offset to 0
+    // to match the freshly seeded stream.
     let fresh_seed: u64 = rand::rng().random();
     state.rng_seed = fresh_seed;
     state.rng = ChaCha20Rng::seed_from_u64(fresh_seed);
+    state.rng_word_pos = 0;
 
     CARD_DB.with(|cell| {
         if let Some(db) = cell.borrow().as_ref() {
@@ -2368,6 +2383,68 @@ mod replay_bridge_tests {
             "a non-CreateCard debug action must invalidate any in-progress \
              recording too — replay reconstruction never enables debug_mode, \
              so recording it would produce a replay that desyncs on playback"
+        );
+
+        clear_game_state();
+    }
+}
+
+/// Native coverage for the RNG-restore bridge wiring (issue #5466). The
+/// `export`/`restore` entry points are plain Rust functions, so these run in
+/// the standard `cargo test`/`nextest` shards — unlike the `wasm32`-gated
+/// `mod tests`, whose assertions never execute in the native suite.
+#[cfg(test)]
+mod rng_restore_bridge_tests {
+    use super::*;
+    use rand::RngCore;
+
+    #[test]
+    fn export_then_restore_resumes_live_rng_stream_through_wasm_bridge() {
+        // Issue #5466, end-to-end through the WASM boundary: `export_game_state_json`
+        // must capture the live ChaCha20 offset and `restore_game_state` must
+        // fast-forward the reseeded stream to it, so a restored game draws the
+        // values that would have come NEXT — not a replay from origin. This test
+        // drives the real bridge entry points (nothing calls the engine seam
+        // directly): deleting `state.capture_rng_word_pos()` in export or
+        // `state.rehydrate_rng()` in restore turns it red. Asserts on consumed
+        // randomness, not the stored `rng_word_pos` integer.
+        clear_game_state();
+
+        // Seed a live game and consume randomness as gameplay would.
+        let mut state = GameState::new_two_player(0x51A7_C0DE);
+        for _ in 0..9 {
+            state.rng.next_u32();
+        }
+        GAME_STATE.with(|cell| cell.set(Some(state)));
+
+        // The four values the live stream will produce next, captured from a
+        // clone taken at the pre-export offset.
+        let mut expected = with_state(|s| s.rng.clone()).unwrap();
+        let expected_draws: Vec<u32> = (0..4).map(|_| expected.next_u32()).collect();
+
+        // Serialize through the real bridge entry point (captures rng_word_pos).
+        let json = export_game_state_json().unwrap();
+
+        // Advance the LIVE rng further so a rewind-to-origin restore would be
+        // observable: without the offset, restore would replay from the seed's
+        // origin (nine draws back), never matching `expected_draws`.
+        with_state_mut(|s| {
+            for _ in 0..3 {
+                s.rng.next_u32();
+            }
+        })
+        .unwrap();
+
+        // Restore through the real bridge entry point (reseeds + fast-forwards).
+        restore_game_state(&json).unwrap();
+
+        // The restored stream must resume at the exported offset and produce the
+        // continuation captured before export.
+        let restored_draws: Vec<u32> =
+            with_state_mut(|s| (0..4).map(|_| s.rng.next_u32()).collect()).unwrap();
+        assert_eq!(
+            restored_draws, expected_draws,
+            "restored stream must resume where export left off, not rewind to origin"
         );
 
         clear_game_state();
