@@ -4274,6 +4274,16 @@ fn effect_refs_parent_target(effect: &Effect) -> bool {
         .any(|filter| filter_refs_parent_target(filter))
 }
 
+/// CR 115.6: True when the resolving ability head permits zero targets and the
+/// controller chose none (no `TargetRef::Object` in `ability.targets`).
+fn optional_head_declined_all_object_targets(ability: &ResolvedAbility) -> bool {
+    ability.targeting_is_optional()
+        && !ability
+            .targets
+            .iter()
+            .any(|t| matches!(t, TargetRef::Object(_)))
+}
+
 /// Every object-target filter slot of an effect that may carry a parent-ref,
 /// INCLUDING slots `target_filter()` hides. Single source of truth for which
 /// slots a member-driven loop inspects for rebinding.
@@ -7900,6 +7910,26 @@ fn resolve_chain_body(
                 state,
             );
             resolve_ability_chain(state, &sub_with_referent, events, depth + 1)?;
+        } else if sub.targets.is_empty()
+            && ability.targets.is_empty()
+            && effect_refs_parent_target(&sub.effect)
+            && optional_head_declined_all_object_targets(ability)
+        {
+            // CR 115.6 + CR 608.2c (issue #5287): Optional multi-target / up-to-one
+            // head legally chose zero object targets — a ParentTarget consumer
+            // ("Return it", "that creature", …) has no antecedent. Skip the
+            // consumer but keep resolving trailing sequential siblings (Samwise
+            // the Stouthearted → Ring tempts you).
+            if let Some(trailing) = sub.sub_ability.as_ref() {
+                let mut trailing_resolved = trailing.as_ref().clone();
+                apply_parent_chain_context(
+                    &mut trailing_resolved,
+                    ability,
+                    effect_context_object.as_ref(),
+                    state,
+                );
+                resolve_ability_chain(state, &trailing_resolved, events, depth + 1)?;
+            }
         } else {
             // Propagate SpellContext so additional_cost_paid and other flags
             // survive through the chain (e.g., Gift delivery → spell effects
