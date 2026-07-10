@@ -10252,37 +10252,353 @@ pub(crate) fn loop_states_equal(a: &GameState, b: &GameState) -> bool {
 /// (`base_*`, abilities, definitions) are immutable for a given object id within
 /// a game and so cannot differ between two states; only the fields a mandatory
 /// action could change are compared.
-fn objects_content_eq(
+pub(crate) fn objects_content_eq(
     a: &im::HashMap<ObjectId, GameObject, rustc_hash::FxBuildHasher>,
     b: &im::HashMap<ObjectId, GameObject, rustc_hash::FxBuildHasher>,
 ) -> bool {
     a.len() == b.len()
-        && a.iter().all(|(id, x)| {
-            b.get(id).is_some_and(|y| {
-                x.controller == y.controller
-                    && x.zone == y.zone
-                    && x.tapped == y.tapped
-                    && x.face_down == y.face_down
-                    && x.flipped == y.flipped
-                    && x.transformed == y.transformed
-                    // CR 702.26: phasing is mutable per-object status that leaves
-                    // zone and objects.len() unchanged, so two states differing only
-                    // in phased-in/out must not compare equal — else a loop that
-                    // phases a permanent in and out is a wrongful CR 104.4b draw.
-                    && x.phase_status == y.phase_status
-                    && x.damage_marked == y.damage_marked
-                    && x.dealt_deathtouch_damage == y.dealt_deathtouch_damage
-                    && x.attached_to == y.attached_to
-                    && x.attachments == y.attachments
-                    && x.paired_with == y.paired_with
-                    && x.counters == y.counters
-                    && x.power == y.power
-                    && x.toughness == y.toughness
-                    && x.loyalty == y.loyalty
-                    && x.defense == y.defense
-                    && x.name == y.name
-            })
-        })
+        && a.iter()
+            .all(|(id, x)| b.get(id).is_some_and(|y| object_content_eq(x, y)))
+}
+
+/// CR 104.4b: per-object mutable-content equality — the single-authority row
+/// comparator for [`objects_content_eq`] and the PR-7 Phase 4a object-growth
+/// cover gate (`analysis::resource::board_covers`, the non-grown complement).
+///
+/// The compared set is the bucket-(i) partition of §5.2c (see
+/// `_gameobject_partition_is_total`): every per-object field a MANDATORY action can
+/// change on a stable (same-zone) object between two loop frames. Fields omitted
+/// here are justified by write site, not doc-string — volatile layer identity
+/// (`timestamp`/`incarnation`), projected P/T, cast-fact latches co-variate of a
+/// compared field, monotone-saturating latches (`foretold`/`monstrous`/…), and
+/// layer-derived characteristics (firewall-scanned statics) — see §5.2c.
+///
+/// Strictness here is FAIL-SAFE for the shared 2p CR 104.4b path: a stricter
+/// equality can only SUPPRESS a wrongful draw, and every compared field represents
+/// REAL accumulated progress, so two states differing in it are correctly NOT a
+/// repeat.
+pub(crate) fn object_content_eq(x: &GameObject, y: &GameObject) -> bool {
+    x.controller == y.controller
+        && x.zone == y.zone
+        && x.tapped == y.tapped
+        && x.face_down == y.face_down
+        && x.flipped == y.flipped
+        && x.transformed == y.transformed
+        // CR 712.8a: MDFC back-face toggle — oscillates without changing zone or
+        // objects.len().
+        && x.modal_back_face == y.modal_back_face
+        // CR 702.26: phasing is mutable per-object status that leaves zone and
+        // objects.len() unchanged, so two states differing only in phased-in/out
+        // must not compare equal — else a loop that phases a permanent in and out
+        // is a wrongful CR 104.4b draw.
+        && x.phase_status == y.phase_status
+        && x.damage_marked == y.damage_marked
+        && x.dealt_deathtouch_damage == y.dealt_deathtouch_damage
+        && x.attached_to == y.attached_to
+        && x.attachments == y.attachments
+        && x.paired_with == y.paired_with
+        && x.counters == y.counters
+        && x.power == y.power
+        && x.toughness == y.toughness
+        && x.loyalty == y.loyalty
+        && x.defense == y.defense
+        && x.name == y.name
+        // §5.2c ADD set (v4): firewall-blind numeric/growable accumulators and
+        // oscillating designations that a loop body can drift on a stable object.
+        && x.intensity == y.intensity // Alchemy Intensify accumulator
+        && x.perpetual_mods == y.perpetual_mods // perpetual-edit accumulator
+        && x.stickers == y.stickers // CR 123.1 sticker accumulator
+        && x.class_level == y.class_level // CR 716.3 level-up accumulator
+        && x.contraption_sprocket == y.contraption_sprocket
+        && x.is_suspected == y.is_suspected // CR 701.60a designation
+        && x.prepared == y.prepared // SOS prepare/unprepare toggle
+        && x.room_unlocks == y.room_unlocks // CR 709.5c door lock/unlock
+        // §5.2c ADD set (v5, S6): firewall-blind per-iteration accumulators on
+        // live battlefield/exile objects.
+        && x.chosen_attributes == y.chosen_attributes // CR 205.2 remember/choose accumulator
+        && x.goaded_by == y.goaded_by // CR 701.15c goad set
+        && x.detained_by == y.detained_by // CR 701.35a detain set
+        && x.casting_permissions == y.casting_permissions // CR 715.3d exile-grant Vec
+        && x.saddled_by == y.saddled_by // CR 702.171c saddle set
+}
+
+/// CR 104.4b compile-time totality guard for the object-growth cover gate's
+/// GameState axis (`analysis::resource::eq_except_growable`, which reuses
+/// `impl PartialEq for GameState` wholesale after stripping grown objects). This
+/// no-`..` destructure breaks the build the instant a GameState field is added,
+/// forcing a reviewer to decide whether `PartialEq` compares it — so no future
+/// field can become a hidden per-cycle accumulator that rides a covering pair to a
+/// false CR 732.2a win. Mirror of `_gameobject_partition_is_total` (§5.2b).
+#[cfg(test)]
+fn _gamestate_partition_is_total(s: &GameState) {
+    let GameState {
+        turn_number: _,
+        active_player: _,
+        phase: _,
+        players: _,
+        priority_player: _,
+        turn_decision_controller: _,
+        objects: _,
+        next_object_id: _,
+        next_pip_id: _,
+        active_payment_pins: _,
+        battlefield: _,
+        stack: _,
+        stack_paid_facts: _,
+        exile: _,
+        command_zone: _,
+        rng_seed: _,
+        rng_word_pos: _,
+        rng: _,
+        combat: _,
+        waiting_for: _,
+        has_pending_cast: _,
+        lands_played_this_turn: _,
+        max_lands_per_turn: _,
+        priority_pass_count: _,
+        pending_replacement: _,
+        replacement_may_cost_paused: _,
+        post_replacement_continuation: _,
+        legacy_post_replacement_effect: _,
+        legacy_post_replacement_resolved_effect: _,
+        post_replacement_source: _,
+        post_replacement_applied: _,
+        post_replacement_event_source: _,
+        post_replacement_event_target: _,
+        post_replacement_token_choice_applied: _,
+        pending_connive_reentry: _,
+        pending_multi_draw: _,
+        pending_life_total_assignment: _,
+        pending_spell_resolution: _,
+        pending_mutate_merge: _,
+        deferred_entry_events: _,
+        layers_dirty: _,
+        static_gate_truth: _,
+        trigger_index: _,
+        replacement_index: _,
+        static_source_index: _,
+        static_mode_presence: _,
+        loop_detect_ring: _,
+        next_timestamp: _,
+        public_state_dirty: _,
+        state_revision: _,
+        transient_continuous_effects: _,
+        next_continuous_effect_id: _,
+        attribution: _,
+        day_night: _,
+        spells_cast_this_turn: _,
+        spells_cast_last_turn: _,
+        cancelled_casts: _,
+        pending_activations: _,
+        pending_trigger: _,
+        pending_trigger_event_batch: _,
+        pending_trigger_entry: _,
+        deferred_triggers: _,
+        pending_trigger_order: _,
+        consumed_before_priority_trigger_events: _,
+        exile_links: _,
+        paradigm_primed: _,
+        delayed_triggers: _,
+        tracked_object_sets: _,
+        next_tracked_set_id: _,
+        chain_tracked_set_id: _,
+        tracked_set_member_causes: _,
+        commander_cast_count: _,
+        commander_cast_owners: _,
+        commander_declined_zone_return: _,
+        objects_that_dealt_damage: _,
+        extra_turns: _,
+        turns_to_skip: _,
+        steps_to_skip: _,
+        combat_phase_skip_next_turn: _,
+        scheduled_turn_controls: _,
+        extra_phases: _,
+        extra_phase_resume: _,
+        turn_direction: _,
+        current_combat_attacker_restriction: _,
+        current_combat_attacker_restriction_source: _,
+        seat_order: _,
+        format_config: _,
+        eliminated_players: _,
+        commander_damage: _,
+        priority_passes: _,
+        auto_pass: _,
+        phase_stops: _,
+        lands_tapped_for_mana: _,
+        prepaid_mulligan_bottoms: _,
+        debug_mode: _,
+        debug_permitted: _,
+        unbounded_resources: _,
+        unimplemented_oracle_ids: _,
+        pending_trigger_abandons: _,
+        loop_detection: _,
+        match_config: _,
+        match_phase: _,
+        match_score: _,
+        game_number: _,
+        current_starting_player: _,
+        next_game_chooser: _,
+        deck_pools: _,
+        outside_game_cards_brought_in: _,
+        sideboard_submitted: _,
+        triggers_fired_this_turn: _,
+        trigger_fire_counts_this_turn: _,
+        triggers_fired_this_turn_per_opponent: _,
+        triggers_fired_this_game: _,
+        activated_abilities_this_turn: _,
+        activated_abilities_this_game: _,
+        crew_activated_this_turn: _,
+        loyalty_abilities_activated_this_turn: _,
+        extra_loyalty_activations_this_turn: _,
+        exerted_this_turn: _,
+        object_tap_count_this_turn: _,
+        pending_attack_trigger_events: _,
+        ability_resolutions_this_turn: _,
+        graveyard_cast_permissions_used: _,
+        graveyard_cast_permissions_used_per_type: _,
+        pending_permanent_type_slot: _,
+        hand_cast_free_permissions_used: _,
+        exile_play_permissions_used: _,
+        exile_play_single_use_consumed: _,
+        exile_cast_permissions_used: _,
+        top_of_library_cast_permissions_used: _,
+        cards_exiled_with_source_this_turn: _,
+        first_card_drawn_this_turn: _,
+        cards_drawn_this_turn: _,
+        pending_miracle_offers: _,
+        pending_paradigm_remaining_offers: _,
+        spells_cast_this_game: _,
+        spells_cast_this_game_by_player: _,
+        spells_cast_this_turn_by_player: _,
+        lands_played_this_turn_by_player: _,
+        players_who_searched_library_this_turn: _,
+        player_actions_this_turn: _,
+        players_attacked_this_step: _,
+        players_attacked_this_turn: _,
+        attacking_creatures_this_turn: _,
+        attacked_defenders_this_turn: _,
+        creature_attacked_defenders_this_turn: _,
+        combat_phases_started_this_turn: _,
+        end_steps_started_this_turn: _,
+        creatures_attacked_this_turn: _,
+        attacker_declarations_this_turn: _,
+        creatures_blocked_this_turn: _,
+        players_who_created_token_this_turn: _,
+        created_tokens_this_turn: _,
+        counter_added_this_turn: _,
+        players_who_discarded_card_this_turn: _,
+        cards_discarded_this_turn_by_player: _,
+        players_who_sacrificed_artifact_this_turn: _,
+        sacrificed_permanents_this_turn: _,
+        zone_changes_this_turn: _,
+        batched_zone_change_trigger_fired: _,
+        battlefield_entries_this_turn: _,
+        damage_dealt_this_turn: _,
+        assassin_or_commander_dealt_combat_damage_this_turn: _,
+        creature_types_dealt_combat_damage_this_turn: _,
+        mana_spent_on_spells_this_turn: _,
+        pending_spell_cost_reductions: _,
+        pending_next_spell_modifiers: _,
+        pending_etb_counters: _,
+        modal_modes_chosen_this_turn: _,
+        modal_modes_chosen_this_game: _,
+        revealed_cards: _,
+        public_revealed_cards: _,
+        pending_continuation: _,
+        search_continuation_attach_host: _,
+        pending_repeat_iteration: _,
+        pending_repeated_optional_payment: _,
+        pending_change_zone_iteration: _,
+        pending_change_zone_in_flight: _,
+        devour_eligible_snapshot: _,
+        merged_card_component_route: _,
+        pending_copy_token_resolution: _,
+        pending_each_player_copy_chosen: _,
+        pending_coin_flip: _,
+        pending_repeat_until: _,
+        pending_choose_one_of: _,
+        pending_vote_ballot_iteration: _,
+        pending_per_player_zone_choice: _,
+        pending_per_category_zone_choice: _,
+        pending_counter_moves: _,
+        pending_counter_removals: _,
+        pending_batch_deliveries: _,
+        pending_counter_additions: _,
+        pending_proliferate_actions: _,
+        pending_optional_effect: _,
+        pending_optional_trigger_event: _,
+        pending_optional_trigger_match_count: _,
+        pending_choose_zone_trigger_context: _,
+        may_trigger_auto_choices: _,
+        decision_templates: _,
+        priority_yields: _,
+        pending_begin_game_abilities: _,
+        resolving_begin_game_abilities: _,
+        last_named_choice: _,
+        last_chosen_damage_source: _,
+        all_creature_types: _,
+        all_card_names: _,
+        card_face_registry: _,
+        momir_pool: _,
+        momir_pool_faces: _,
+        log_player_names: _,
+        last_created_token_ids: _,
+        last_revealed_ids: _,
+        last_dig_found_nothing: _,
+        last_choose_from_zone_found_nothing: _,
+        private_look_ids: _,
+        private_look_player: _,
+        last_zone_changed_ids: _,
+        last_vote_ballots: _,
+        player_actions_this_way: _,
+        last_effect_amount: _,
+        last_effect_excess_amount: _,
+        die_result_this_resolution: _,
+        last_effect_count: _,
+        last_effect_counts_by_player: _,
+        clause_minimum_snapshot: _,
+        exiled_from_hand_this_resolution: _,
+        optional_cost_payments_this_resolution: _,
+        monarch: _,
+        city_blessing: _,
+        epic_effects: _,
+        restrictions: _,
+        pending_damage_replacements: _,
+        pending_step_end_mana_handlers: _,
+        pending_phase_transition_progress: _,
+        deferred_step_trigger_resume: _,
+        pending_team_draw_step: _,
+        pending_untap_declines: _,
+        current_trigger_event: _,
+        current_trigger_match_count: _,
+        resolving_stack_entry: _,
+        current_trigger_events: _,
+        stack_trigger_event_batches: _,
+        lki_cache: _,
+        linked_exile_lki: _,
+        cost_payment_failed_flag: _,
+        pending_taps_for_mana_overrides: _,
+        current_triggered_mana_override: _,
+        pending_discard_for_cost: _,
+        pending_cast: _,
+        ring_level: _,
+        ring_bearer: _,
+        dungeon_progress: _,
+        planar_deck: _,
+        planar_controller: _,
+        planar_die_actions_this_turn: _,
+        scheme_deck: _,
+        archenemy: _,
+        initiative: _,
+        combat_prevention_tally: _,
+        // Post-rebase upstream additions (v0.21.x: #5515 discover + liminal mechanic).
+        // Strict-compared by eq_except_growable's GameState PartialEq reuse (fail-safe:
+        // a differing value is correctly not a fixed-point repeat); object-growth loops
+        // never involve these, so no certification-death.
+        liminal_entries: _,
+        pending_liminal_entry_resume: _,
+        last_discover_value: _,
+    } = s;
 }
 
 impl Default for GameState {

@@ -203,8 +203,17 @@ pub fn detect_loop(
     mandatory: bool,
 ) -> Option<LoopCertificate> {
     // CR 732.2a: the board must have returned to an identical configuration
-    // modulo the monotone resources — otherwise this is not a repeatable cycle.
-    if !loop_states_equal_modulo_resources(cycle_start, cycle_end) {
+    // modulo the monotone resources — OR covered it by pure inert object growth
+    // (PR-7 Phase 4a offline object-growth cover; the residual `board_delta` below
+    // lights up with the grown permanents when this arm fires). Constant-depth
+    // short-circuits, so behavior for every existing (non-growth) cycle is
+    // byte-unchanged. This is the OFFLINE classifier only — no live/reducer path.
+    if !(loop_states_equal_modulo_resources(cycle_start, cycle_end)
+        || crate::analysis::resource::loop_states_cover_modulo_object_growth(
+            cycle_start,
+            cycle_end,
+        ))
+    {
         return None;
     }
     // CR 732.2a: and a resource must have strictly advanced without an
@@ -675,22 +684,63 @@ mod tests {
     // weakening either gate would wrongly emit a certificate.
     // ------------------------------------------------------------------
 
-    /// SOUNDNESS: a genuine board change (an extra permanent at cycle end) must
-    /// yield NO certificate even with a positive resource delta. Reverting the
-    /// `loop_states_equal_modulo_resources` gate would wrongly confirm this.
+    /// SOUNDNESS: a genuine board change that is NOT a valid inert object-growth
+    /// cover must yield NO certificate even with a positive resource delta.
+    /// Reverting BOTH the `loop_states_equal_modulo_resources` gate AND the PR-7
+    /// Phase 4a `loop_states_cover_modulo_object_growth` gate would wrongly confirm
+    /// this. The extra permanent carries a `+1/+1` counter, so it is SBA-relevant
+    /// (CR 704.5f) and therefore not churn-inert — the object-growth cover's
+    /// inertness gate (CR 732.2a MAJOR-1) refuses to certify it, exactly as the
+    /// constant-depth equality gate always did.
     #[test]
     fn soundness_board_change_yields_no_certificate() {
         let mut start = GameState::new_two_player(7);
         battlefield_creature(&mut start, 500, 0);
         let mut end = start.clone();
-        battlefield_creature(&mut end, 501, 0); // board grew — not a repeating cycle
+        let grown = battlefield_creature(&mut end, 501, 0); // board grew...
+        end.objects
+            .get_mut(&grown)
+            .unwrap()
+            .counters
+            .insert(crate::types::counter::CounterType::Plus1Plus1, 1); // ...non-inert
 
         let mut delta = ResourceVector::default();
         delta.damage_dealt.insert(pid(1), 1);
 
         assert!(
             detect_loop(&start, &end, &delta, pid(0), true).is_none(),
-            "a growing board is not a repeatable loop, even with +damage"
+            "a non-inert growing board is not a repeatable loop, even with +damage"
+        );
+    }
+
+    /// PR-7 Phase 4a (detect_loop wiring, scope item 5): a valid INERT object-growth
+    /// loop — the battlefield grows by one unobserved vanilla permanent per cycle
+    /// while damage accrues monotonically — is now certified by the OFFLINE
+    /// classifier, and the certificate's `residual_board_delta` lights up with the
+    /// grown permanent (the fail-loud residual seam). Revert-failing: removing the
+    /// `loop_states_cover_modulo_object_growth` arm from `detect_loop` flips this to
+    /// `None` (the pre-4a behavior the soundness test above still pins for non-inert
+    /// growth).
+    #[test]
+    fn object_growth_inert_loop_yields_certificate_with_residual() {
+        let mut start = GameState::new_two_player(7);
+        battlefield_creature(&mut start, 500, 0);
+        let mut end = start.clone();
+        battlefield_creature(&mut end, 501, 0); // +1 inert vanilla permanent, same class
+
+        let mut delta = ResourceVector::default();
+        delta.damage_dealt.insert(pid(1), 1); // monotone opponent-damage progress
+
+        let cert = detect_loop(&start, &end, &delta, pid(0), true)
+            .expect("inert object-growth + monotone damage must certify (4a offline cover)");
+        assert_eq!(
+            cert.residual_board_delta.added.len(),
+            1,
+            "the grown inert permanent must populate the residual board delta"
+        );
+        assert!(
+            cert.residual_board_delta.removed.is_empty(),
+            "pure growth removes nothing from the battlefield"
         );
     }
 

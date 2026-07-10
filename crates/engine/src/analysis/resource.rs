@@ -25,8 +25,9 @@ use std::collections::{BTreeMap, HashSet};
 
 use serde::{Deserialize, Serialize};
 
+use crate::game::game_object::GameObject;
 use crate::types::ability::{ActivationRestriction, DamageModification};
-use crate::types::card_type::CoreType;
+use crate::types::card_type::{CoreType, Supertype};
 use crate::types::counter::CounterType;
 use crate::types::game_state::{loop_states_equal, GameState, StackEntry, StackEntryKind};
 use crate::types::identifiers::ObjectId;
@@ -34,6 +35,7 @@ use crate::types::mana::ManaType;
 use crate::types::phase::Phase;
 use crate::types::player::PlayerId;
 use crate::types::replacements::ReplacementEvent;
+use crate::types::zones::Zone;
 
 /// WUBRG + colorless, the canonical index order used by [`ResourceVector::mana`].
 ///
@@ -858,6 +860,639 @@ pub(crate) fn loop_states_cover_modulo_growth(prior: &GameState, current: &GameS
     }
 
     true
+}
+
+// ===========================================================================
+// PR-7 Phase 4a — offline object-growth loop detection (soundness core).
+//
+// The object-axis analogue of `loop_states_cover_modulo_growth`: `current`'s
+// battlefield = `prior`'s + a set of INERT grown permanents G (Karp–Miller
+// ω-cover on the object axis, CR 732.2a), else equal modulo the projected
+// monotone resources. Certifies a cover ONLY IF no observer's per-iteration
+// behavior can depend on |G| or G's members. OFFLINE: this predicate certifies
+// and rejects NOTHING at runtime — it is wired only into the offline classifier
+// `analysis::loop_check::detect_loop`. False-negative acceptable; false-positive
+// (a wrongful CR 104.2a win) is NOT — every gate fails closed.
+// ===========================================================================
+
+/// CR 110.1: absolute-ObjectId battlefield membership. Module-level twin of
+/// `board_delta`'s nested helper (the exact set the residual diff computes),
+/// shared by the object-growth cover gate. PURE.
+fn battlefield_ids(state: &GameState) -> HashSet<ObjectId> {
+    state
+        .objects
+        .values()
+        .filter(|o| o.zone == Zone::Battlefield)
+        .map(|o| o.id)
+        .collect()
+}
+
+/// Clone through `flush_layers` so every derived characteristic (live abilities,
+/// P/T, keywords, static grants) reflects the current continuous environment
+/// before any content compare or firewall scan (§5.3b MAJOR-A: flush ONCE, up
+/// front, on both frames — a stale layer state could hide a |G|-scaling grant).
+fn flush_clone(state: &GameState) -> GameState {
+    let mut clone = state.clone();
+    crate::game::layers::flush_layers(&mut clone);
+    clone
+}
+
+/// CR 732.2a object-axis cover: does `current` cover `prior` by pure inert
+/// battlefield growth, with no observer able to read the growth set |G|?
+///
+/// Mirrors `loop_states_cover_modulo_growth`'s scaffold, relaxing ONLY the board
+/// axis (permits strict battlefield growth) and confining that growth to an inert,
+/// unobserved class. Returns `true` iff ALL of:
+/// 1″. every NON-grown object is content-equal on the §5.2c 136-field partition
+///     ([`board_covers`]), each grown id confines to an inert class member already
+///     in `prior`, object resource axes strict-match, and every non-object
+///     GameState field is strict-equal ([`eq_except_growable`], S3);
+/// 2″. every grown object is churn-inert (MAJOR-1, [`grown_objects_are_inert`]);
+/// 3″. no live fire-time observer reads the growing class (§5.3a firewall, S5);
+/// 4″. no cost surface references the growing class (§5.4 EXHAUSTIVE + the
+///     cost-keyword keystone rejectors, CR 732.2a / §6).
+pub(crate) fn loop_states_cover_modulo_object_growth(
+    prior: &GameState,
+    current: &GameState,
+) -> bool {
+    // §5.3b: flush BOTH clones once, up front, then project out the monotone
+    // resources for the board/GameState equality axes.
+    let pf = flush_clone(prior);
+    let cf = flush_clone(current);
+    let mut pa = project_out_resources(&pf);
+    let mut pb = project_out_resources(&cf);
+    pa.stack.clear();
+    pb.stack.clear();
+
+    // P-19: absolute-ObjectId battlefield set-difference. Growth must be PURE —
+    // no battlefield object may leave (a shrink is a real board change, not ω-cover).
+    let bf_prior = battlefield_ids(&pa);
+    let bf_current = battlefield_ids(&pb);
+    let grown_ids: HashSet<ObjectId> = bf_current.difference(&bf_prior).copied().collect();
+    let shrunk: HashSet<ObjectId> = bf_prior.difference(&bf_current).copied().collect();
+    if !shrunk.is_empty() {
+        return false;
+    }
+    // Constant-depth (no growth) is the shipped `loop_states_cover_modulo_growth`
+    // / `loop_states_equal_modulo_resources` job; this predicate is STRICT growth only.
+    if grown_ids.is_empty() {
+        return false;
+    }
+
+    // (1″) Board equal modulo the inert growth set + all non-object GameState fields.
+    if !(board_covers(&pa, &pb, &grown_ids)
+        && object_resource_axes_match(prior, current)
+        && loyalty_activation_counts_match(&pa, &pb)
+        && eq_except_growable(&pa, &pb, &grown_ids))
+    {
+        return false;
+    }
+
+    // (2″) Every grown object is churn-inert (scanned on the FLUSHED current so
+    // layer-derived P/T / abilities / keywords are realized).
+    if !grown_objects_are_inert(&cf, &grown_ids) {
+        return false;
+    }
+
+    // (3″) No live fire-time observer reads the growing class (§5.3a, S5).
+    if fire_time_conditions_read_growing_class(&cf) {
+        return false;
+    }
+
+    // No current-stack entry reads the growing class. Both compared frames sit at a
+    // clean priority window (empty projected stacks), so this is normally vacuous,
+    // but stays closed under future sampling changes.
+    if cf.stack.iter().any(stack_entry_reads_growing_class) {
+        return false;
+    }
+
+    // (4″) No cost surface references the growing class (§5.4 + §6 keystone).
+    if cost_surface_references_growing_class(&cf) {
+        return false;
+    }
+
+    true
+}
+
+/// CR 110.1 + CR 613.1b: the object-axis board cover. Every NON-grown object (the
+/// shared-id complement over ALL zones) is content-equal via `object_content_eq`
+/// (the §5.2c 136-field partition); every grown battlefield object confines to an
+/// inert class member already present in `prior`'s battlefield — the Karp–Miller
+/// repetition guarantee (growth of an EXISTING inert class, not a never-observed
+/// 0→1 introduction). Absolute ObjectId: `normalize_for_loop` zeroes
+/// `next_object_id` but does not renumber existing ids.
+fn board_covers(prior: &GameState, current: &GameState, grown: &HashSet<ObjectId>) -> bool {
+    // Non-grown content equality: strip grown ids from `current`, then require
+    // id-keyed content equality with `prior`. A stray extra object in ANY zone (or
+    // a content drift on a shared object) fails the `objects_content_eq` len/all
+    // check — fail-safe.
+    let current_nongrown: im::HashMap<ObjectId, GameObject, rustc_hash::FxBuildHasher> = current
+        .objects
+        .iter()
+        .filter(|(id, _)| !grown.contains(id))
+        .map(|(id, o)| (*id, o.clone()))
+        .collect();
+    if !crate::types::game_state::objects_content_eq(&prior.objects, &current_nongrown) {
+        return false;
+    }
+    // Inert-class confine: every grown object matches (by content) an inert object
+    // already on `prior`'s battlefield.
+    grown.iter().all(|gid| {
+        let Some(gobj) = current.objects.get(gid) else {
+            return false;
+        };
+        prior.battlefield.iter().any(|pid| {
+            prior.objects.get(pid).is_some_and(|pobj| {
+                object_is_inert(pobj) && crate::types::game_state::object_content_eq(gobj, pobj)
+            })
+        })
+    })
+}
+
+/// CR 732.2a MAJOR-1: is `o` a churn-inert permanent — one whose presence cannot
+/// change any observer's per-iteration behavior no matter how many copies exist?
+/// Requires: NO functioning triggered / static / replacement definitions (so no
+/// CDA P/T either — CDAs are characteristic-defining STATICS, CR 604.3), NO
+/// activated ability (an activatable lever the extrapolation cannot bound), NO
+/// keywords (a keyword can be an SBA-relevant characteristic or a cost lever), NO
+/// counters (CR 704.5: every +1/+1 / -1/-1 / loyalty / stun counter feeds an SBA
+/// or P/T), and non-legendary + non-`world` (CR 704.5j/k uniqueness SBAs read
+/// them). Fail-safe: any doubt ⇒ not inert ⇒ reject.
+fn object_is_inert(o: &GameObject) -> bool {
+    o.trigger_definitions.iter_all().next().is_none()
+        && o.static_definitions.iter_all().next().is_none()
+        && o.replacement_definitions.iter_all().next().is_none()
+        && !o
+            .abilities
+            .iter()
+            .any(|a| a.kind == crate::types::ability::AbilityKind::Activated)
+        && o.keywords.is_empty()
+        && o.counters.is_empty()
+        && !o.card_types.supertypes.contains(&Supertype::Legendary)
+        && !o.card_types.supertypes.contains(&Supertype::World)
+}
+
+/// CR 732.2a MAJOR-1: every grown object is churn-inert.
+fn grown_objects_are_inert(current: &GameState, grown: &HashSet<ObjectId>) -> bool {
+    grown
+        .iter()
+        .all(|id| current.objects.get(id).is_some_and(object_is_inert))
+}
+
+/// BLOCKER-S3: every NON-object GameState field is strict-equal across the two
+/// projected frames. Reuses `impl PartialEq for GameState` wholesale (the
+/// `_gamestate_partition_is_total` guard keeps that reuse honest as fields are
+/// added): strip the grown ids from both object maps and clear the battlefield
+/// ordering + stack (the grown ids live there; those axes are covered by
+/// `board_covers` / the stack gate), so PartialEq's `objects.len()` + every other
+/// non-object field (delayed-trigger stores, journals, monarch, …) compares the
+/// growth-invariant remainder. A hidden per-cycle accumulator here fails the compare.
+fn eq_except_growable(pa: &GameState, pb: &GameState, grown: &HashSet<ObjectId>) -> bool {
+    let mut a = pa.clone();
+    let mut b = pb.clone();
+    for id in grown {
+        a.objects.remove(id);
+        b.objects.remove(id);
+    }
+    a.battlefield.clear();
+    b.battlefield.clear();
+    a.stack.clear();
+    b.stack.clear();
+    a == b
+}
+
+/// §5.3a firewall (BLOCKER-S1 + S5 + MAJOR-A): does ANY live off-stack fire-time
+/// observer read the growing class (the axis-2 `sibling` read)? Scans, on the
+/// FLUSHED current: (1) trigger conditions AND `execute` bodies; (2) [S5] EVERY
+/// ability def on a functioning battlefield permanent regardless of `kind`; (3)
+/// replacement conditions AND bodies; (4) condition-gated statics — condition plus
+/// any live continuous modification (default-CONSERVATIVE: no
+/// scan_continuous_modification walker exists, and an anthem/P-T grant applies to
+/// and scales with the growing class); (5) transient continuous effects; (5b)
+/// granted-keyword synthesized triggers; (6) the S3 belt over pending/delayed
+/// ability-body stores. Fail-closed on every surface it cannot classify.
+fn fire_time_conditions_read_growing_class(state: &GameState) -> bool {
+    use crate::game::ability_scan as scan;
+    // (1) Trigger fire-time conditions (CR 603.4) AND effect bodies.
+    for obj in state.objects.values() {
+        for (_, def) in crate::game::functioning_abilities::active_trigger_definitions(state, obj) {
+            if def
+                .condition
+                .as_ref()
+                .is_some_and(scan::trigger_condition_reads_sibling_mutable)
+            {
+                return true;
+            }
+            if def
+                .execute
+                .as_ref()
+                .is_some_and(|a| scan::ability_definition_reads_sibling_mutable(a))
+            {
+                return true;
+            }
+        }
+    }
+    // (2) S5: EVERY ability def on a functioning battlefield permanent, any kind.
+    // ponytail: this ability-BODY scan is scoped to the battlefield (an activated
+    // ability functions only there, CR 602.5a), so an OFF-battlefield source's
+    // |G|-reading activated-ability effect body is unscanned. Reachability is very
+    // low and the dominant failure mode — a |G|-scaled monotone pump — keeps the loop
+    // unbounded (not a false COVER on unboundedness). Upgrade path: 4a-live / B3 must
+    // widen this scan (or gate on activation zone) if a non-battlefield |G|-exact-win
+    // source ever becomes reachable. The off-battlefield COST surface is already
+    // all-zones (`cost_surface_references_growing_class`); only effect bodies are
+    // battlefield-scoped here.
+    for obj in state.objects.values() {
+        if obj.zone != Zone::Battlefield || obj.is_phased_out() {
+            continue;
+        }
+        if obj
+            .abilities
+            .iter()
+            .any(scan::ability_definition_reads_sibling_mutable)
+        {
+            return true;
+        }
+    }
+    // (3) Replacement conditions AND bodies (CR 614.1).
+    for (_, _, def) in crate::game::functioning_abilities::active_replacements(state) {
+        if def
+            .condition
+            .as_ref()
+            .is_some_and(scan::replacement_condition_reads_sibling_mutable)
+        {
+            return true;
+        }
+        if def
+            .runtime_execute
+            .as_ref()
+            .is_some_and(|a| scan::ability_reads_sibling_mutable(a))
+        {
+            return true;
+        }
+        if def
+            .execute
+            .as_ref()
+            .is_some_and(|a| scan::ability_definition_reads_sibling_mutable(a))
+        {
+            return true;
+        }
+    }
+    // (4) Condition-gated statics (CR 604.1 / CR 613.1) via `iter_all()` (the
+    // condition-filtered iterator would hide exactly the dormant defs this exists
+    // to catch): condition + any live continuous modification (default-CONSERVATIVE).
+    for obj in state.objects.values() {
+        if obj.is_phased_out() {
+            continue;
+        }
+        for def in obj.static_definitions.iter_all() {
+            if def
+                .condition
+                .as_ref()
+                .is_some_and(scan::static_condition_reads_sibling_mutable)
+            {
+                return true;
+            }
+            if !def.modifications.is_empty() {
+                return true;
+            }
+        }
+    }
+    // (5) Transient continuous effects (duration + gating condition, CR 604.1).
+    for tce in &state.transient_continuous_effects {
+        if scan::duration_reads_sibling_mutable(&tce.duration) {
+            return true;
+        }
+        if tce
+            .condition
+            .as_ref()
+            .is_some_and(scan::static_condition_reads_sibling_mutable)
+        {
+            return true;
+        }
+    }
+    // (5b) Runtime-granted keyword synthesized triggers (CR 603.4).
+    for obj in state.objects.values() {
+        if obj.is_phased_out() {
+            continue;
+        }
+        for def in crate::game::triggers::granted_keyword_triggers_in_zone(state, obj) {
+            if def
+                .condition
+                .as_ref()
+                .is_some_and(scan::trigger_condition_reads_sibling_mutable)
+            {
+                return true;
+            }
+            if def
+                .execute
+                .as_ref()
+                .is_some_and(|a| scan::ability_definition_reads_sibling_mutable(a))
+            {
+                return true;
+            }
+        }
+    }
+    // (6) S3 belt — pending/delayed ability-body stores. Both compared frames sit at
+    // a clean priority window where these are normally empty; a non-empty store
+    // carries a deferred ability body that could read |G|, so reject conservatively.
+    if !state.delayed_triggers.is_empty()
+        || !state.deferred_triggers.is_empty()
+        || state.pending_trigger.is_some()
+        || state.pending_trigger_order.is_some()
+        || !state.epic_effects.is_empty()
+    {
+        return true;
+    }
+    false
+}
+
+/// §5.3a: does a stack entry's AST read the growing class (axis-2 `sibling`)?
+/// Delegates to the axis-2 accessors over the embedded ability plus the
+/// trigger-level intervening-if (CR 603.4). `KeywordAction` has no AST ⇒ fail
+/// closed; a permanent `Spell { ability: None }` reads nothing (its resolution
+/// changes the board and breaks `board_covers` anyway).
+fn stack_entry_reads_growing_class(entry: &StackEntry) -> bool {
+    use crate::game::ability_scan as scan;
+    if let StackEntryKind::TriggeredAbility {
+        condition: Some(condition),
+        ..
+    } = &entry.kind
+    {
+        if scan::trigger_condition_reads_sibling_mutable(condition) {
+            return true;
+        }
+    }
+    match entry.ability() {
+        Some(ability) => scan::ability_reads_sibling_mutable(ability),
+        None => matches!(entry.kind, StackEntryKind::KeywordAction { .. }),
+    }
+}
+
+/// §5.4 (BLOCKER-S2 + FINDING-2 + §6 keystone): does ANY cost surface reference the
+/// growing class? ONE predicate over EVERY cost surface on the FLUSHED current:
+/// (1) the cost-KEYWORD family — a board/graveyard-referencing cost reducer or
+/// tap/sacrifice aggregate (Affinity/Convoke/Crew/Delve/Emerge/…) on ANY object (a
+/// recast loop's keyword rides an off-battlefield card), printed or granted;
+/// (2) the STATIC cost surface (`StaticDefinition::mode`) via the EXHAUSTIVE
+/// `StaticMode` scan (CR 601.2f) — the cost-modification statics carry a
+/// `dynamic_count: Option<QuantityRef>` ("for each X you control", NOT a fixed
+/// `ManaCost`), plus the `AbilityCost`-bearing and keyword-granting cost variants;
+/// (3) the object-level `additional_cost`; (4) the full ability TREE's activation
+/// costs — the top-level `cost` plus every nested `sub_ability`/`else_ability`/
+/// `mode_abilities` cost — each via the EXHAUSTIVE `AbilityCost` scan (Finding-2, NO
+/// `_`). CR 732.2a keystone: the cost-affordability that the `ResourceVector` cannot
+/// model. Each surface is fail-closed on anything it cannot classify.
+fn cost_surface_references_growing_class(state: &GameState) -> bool {
+    use crate::game::ability_scan as scan;
+    for obj in state.objects.values() {
+        // (1) printed cost-keyword family.
+        if obj
+            .keywords
+            .iter()
+            .any(scan::keyword_cost_reads_growing_class)
+        {
+            return true;
+        }
+        // (1b) granted cost-keyword family (AddKeyword / AddKeywordWithDerivedCost)
+        // + (2) the STATIC cost surface (`StaticDefinition::mode`, CR 601.2f).
+        for def in obj.static_definitions.iter_all() {
+            if def
+                .modifications
+                .iter()
+                .any(scan::modification_grants_growing_cost_keyword)
+            {
+                return true;
+            }
+            if static_mode_references_growing_class(&def.mode) {
+                return true;
+            }
+        }
+        // (3) object-level additional cost surface (EXHAUSTIVE AbilityCost).
+        if let Some(additional) = &obj.additional_cost {
+            if additional_cost_references_growing_class(additional) {
+                return true;
+            }
+        }
+        // (4) the full ability TREE's activation costs — top-level plus nested
+        // sub/else/mode abilities (each `AbilityDefinition` carries its own `cost`).
+        if obj
+            .abilities
+            .iter()
+            .any(ability_tree_cost_references_growing_class)
+        {
+            return true;
+        }
+    }
+    false
+}
+
+/// §5.4 + CR 601.2f: EXHAUSTIVE no-`_` scan of a `StaticDefinition::mode`'s cost
+/// surface. Every cost-carrying variant routes its dynamic component fail-closed;
+/// every non-cost variant (or fixed-cost variant) binds read-free. A new
+/// `StaticMode` variant fails to compile here until it is classified.
+fn static_mode_references_growing_class(mode: &crate::types::statics::StaticMode) -> bool {
+    use crate::game::ability_scan::{
+        ability_cost_references_sibling_mutable as cost_reads,
+        keyword_cost_reads_growing_class as kw_reads,
+        quantity_ref_references_sibling_mutable as qty_reads,
+    };
+    use crate::types::statics::StaticMode;
+    match mode {
+        // CR 601.2f: cast/ability cost adjustments carry a dynamic multiplier
+        // `dynamic_count: Option<QuantityRef>` ("for each X you control"). An
+        // `ObjectCount` of the grown class reads |G|, so route it fail-closed — for
+        // BOTH directions: `Raise`+`ObjectCount` is the false-positive-∞ case, and
+        // `Reduce` is the §6 keystone-REJECT case. `amount` (a fixed `ManaCost`) and
+        // every other field are read-free.
+        StaticMode::ModifyCost { dynamic_count, .. }
+        | StaticMode::ReduceAbilityCost { dynamic_count, .. } => {
+            dynamic_count.as_ref().is_some_and(qty_reads)
+        }
+        // CR 118.8 / CR 118.9 / CR 601.2f: variants carrying an `AbilityCost` payment
+        // — the additional/alternative cast cost — route it through the exhaustive
+        // `AbilityCost` scanner (a `PayLife`/`ManaDynamic`/… reading `ObjectCount`
+        // reads |G|).
+        StaticMode::ImposeAdditionalCost { cost, .. }
+        | StaticMode::AlternativeKeywordCost { cost, .. }
+        | StaticMode::CastWithAlternativeCost { cost, .. } => cost_reads(cost),
+        // CR 118.9 + CR 601.2f: cast-permission riders carrying an optional
+        // `AbilityCost` payment (Bolas's Citadel's `alt_cost`, the graveyard/exile
+        // permissions' `extra_cost`). Same fail-closed AbilityCost routing so a
+        // board-scaling rider cannot hide behind a permission grant.
+        StaticMode::TopOfLibraryCastPermission { alt_cost, .. } => {
+            alt_cost.as_ref().is_some_and(cost_reads)
+        }
+        StaticMode::GraveyardCastPermission { extra_cost, .. }
+        | StaticMode::ExileCastPermission { extra_cost, .. } => {
+            extra_cost.as_ref().is_some_and(|c| cost_reads(&c.cost))
+        }
+        // CR 702.51a etc.: grants a keyword to the controller's cast spells. If that
+        // keyword is a board-reading cost keyword (convoke, …) the grant is itself a
+        // |G| cost surface — route it through the keyword classifier (the StaticMode
+        // analogue of `modification_grants_growing_cost_keyword`).
+        StaticMode::CastWithKeyword { keyword } => kw_reads(keyword),
+
+        // Non-cost (or fixed-cost) variants — read-free, listed exhaustively (NO `_`).
+        // `ReduceActionCost`/`DefilerCostReduction` carry only a fixed generic
+        // reduction; `CantPayCost` is a payment PROHIBITION, not a payable cost; the
+        // cast-permission `frequency`/`play_mode`/`cost`(mode-only) fields are not
+        // board reads.
+        StaticMode::Continuous
+        | StaticMode::DamageNotRemovedDuringCleanup
+        | StaticMode::CantAttack
+        | StaticMode::CantBlock
+        | StaticMode::CantAttackOrBlock
+        | StaticMode::CantBecomeSuspected
+        | StaticMode::MaxAttackersEachCombat { .. }
+        | StaticMode::MaxBlockersEachCombat { .. }
+        | StaticMode::CantBeTargeted
+        | StaticMode::CantBeCast { .. }
+        | StaticMode::CantBeActivated { .. }
+        | StaticMode::CantSearchLibrary { .. }
+        | StaticMode::RestrictLibrarySearchToTop { .. }
+        | StaticMode::CantCauseSacrificeOrExile { .. }
+        | StaticMode::CastWithFlash
+        | StaticMode::GrantsExtraVote
+        | StaticMode::GrantsExtraVillainousChoice
+        | StaticMode::ReduceActionCost { .. }
+        | StaticMode::ModifyActivationLimit { .. }
+        | StaticMode::ActivateAsInstant { .. }
+        | StaticMode::CantPayCost { .. }
+        | StaticMode::CantGainLife
+        | StaticMode::CantLoseLife
+        | StaticMode::PlayerProtection(..)
+        | StaticMode::MustAttack
+        | StaticMode::MustAttackPlayer { .. }
+        | StaticMode::MustBlock
+        | StaticMode::MustBlockAttacker { .. }
+        | StaticMode::CantDraw { .. }
+        | StaticMode::DrawFromBottom { .. }
+        | StaticMode::DoubleTriggers { .. }
+        | StaticMode::IgnoreHexproof
+        | StaticMode::ExtraBlockers { .. }
+        | StaticMode::RevealTopOfLibrary { .. }
+        | StaticMode::RevealHand { .. }
+        | StaticMode::TopOfLibraryHasPlot
+        | StaticMode::TopOfLibraryPlotPermission
+        | StaticMode::CastFromHandFree { .. }
+        | StaticMode::LinkedCollectionCounterPlayPermission
+        | StaticMode::CountersPersistAcrossZones { .. }
+        | StaticMode::CantBeCountered
+        | StaticMode::CantBeCopied
+        | StaticMode::CantEnterBattlefieldFrom
+        | StaticMode::CantCastFrom { .. }
+        | StaticMode::CantCastDuring { .. }
+        | StaticMode::CantActivateDuring { .. }
+        | StaticMode::PerTurnCastLimit { .. }
+        | StaticMode::PerTurnDrawLimit { .. }
+        | StaticMode::SuppressTriggers { .. }
+        | StaticMode::CantBeBlocked
+        | StaticMode::CantBeBlockedExceptBy { .. }
+        | StaticMode::CantBeBlockedBy { .. }
+        | StaticMode::CantBeBlockedByMoreThan { .. }
+        | StaticMode::AttachmentRestriction { .. }
+        | StaticMode::Protection
+        | StaticMode::Indestructible
+        | StaticMode::CantBeDestroyed
+        | StaticMode::CantBeRegenerated
+        | StaticMode::FlashBack
+        | StaticMode::Shroud
+        | StaticMode::Hexproof
+        | StaticMode::Vigilance
+        | StaticMode::Menace
+        | StaticMode::Reach
+        | StaticMode::Flying
+        | StaticMode::Trample
+        | StaticMode::Deathtouch
+        | StaticMode::Lifelink
+        | StaticMode::CantTap
+        | StaticMode::CantUntap
+        | StaticMode::MustBeBlocked { .. }
+        | StaticMode::MustBeBlockedByAll { .. }
+        | StaticMode::Goaded
+        | StaticMode::CombatAlone { .. }
+        | StaticMode::CantCrew
+        | StaticMode::CantPhaseIn
+        | StaticMode::CrewContribution { .. }
+        | StaticMode::MayLookAtTopOfLibrary
+        | StaticMode::MayLookAtFaceDown
+        | StaticMode::CantBeTurnedFaceUp
+        | StaticMode::MayChooseNotToUntap
+        | StaticMode::AdditionalLandDrop { .. }
+        | StaticMode::EmblemStatic
+        | StaticMode::BlockRestriction { .. }
+        | StaticMode::NoMaximumHandSize
+        | StaticMode::MaximumHandSize { .. }
+        | StaticMode::MayPlayAdditionalLand
+        | StaticMode::CantHaveKeyword { .. }
+        | StaticMode::CantWinTheGame
+        | StaticMode::CantLoseTheGame
+        | StaticMode::LegendRuleDoesntApply
+        | StaticMode::SpeedCanIncreaseBeyondFour
+        | StaticMode::DefilerCostReduction { .. }
+        | StaticMode::SkipStep { .. }
+        | StaticMode::SpendManaAsAnyColor { .. }
+        | StaticMode::PayLifeAsColoredMana { .. }
+        | StaticMode::StepEndUnspentMana { .. }
+        | StaticMode::CanAttackWithDefender
+        | StaticMode::AttackOnlyNeighbor
+        | StaticMode::IgnoreLandwalkForBlocking { .. }
+        | StaticMode::CanActivateAbilitiesAsThoughHaste
+        | StaticMode::CanBlockShadow
+        | StaticMode::AssignNoCombatDamage
+        | StaticMode::UntapsDuringEachOtherPlayersUntapStep
+        | StaticMode::MaxUntapPerType { .. }
+        | StaticMode::EntersWithAdditionalCounters { .. }
+        | StaticMode::CountsAsNamed { .. }
+        | StaticMode::Other(..) => false,
+    }
+}
+
+/// §5.4 (review LOW): the object's full ability TREE cost surface — the top-level
+/// `cost` plus every nested `sub_ability` / `else_ability` / `mode_abilities` cost
+/// (each `AbilityDefinition` carries its own `cost`). `ability_definition_axes`
+/// binds `cost` read-free (deferred here), so a board-scaling cost on a NESTED
+/// sub-ability would otherwise be scanned by neither the §5.3a effect firewall nor a
+/// top-level-only cost scan. Each cost routes through the EXHAUSTIVE `AbilityCost`
+/// scanner (Finding-2, NO `_`).
+fn ability_tree_cost_references_growing_class(
+    def: &crate::types::ability::AbilityDefinition,
+) -> bool {
+    use crate::game::ability_scan::ability_cost_references_sibling_mutable as reads;
+    if def.cost.as_ref().is_some_and(reads) {
+        return true;
+    }
+    if def
+        .sub_ability
+        .as_deref()
+        .is_some_and(ability_tree_cost_references_growing_class)
+    {
+        return true;
+    }
+    if def
+        .else_ability
+        .as_deref()
+        .is_some_and(ability_tree_cost_references_growing_class)
+    {
+        return true;
+    }
+    def.mode_abilities
+        .iter()
+        .any(ability_tree_cost_references_growing_class)
+}
+
+/// §5.4 item (3): unwrap an `AdditionalCost` to its embedded `AbilityCost`(s) and
+/// scan each through the EXHAUSTIVE cost scanner. Exhaustive no-`_` over
+/// `AdditionalCost` so a new cost shape forces a decision.
+fn additional_cost_references_growing_class(a: &crate::types::ability::AdditionalCost) -> bool {
+    use crate::game::ability_scan::ability_cost_references_sibling_mutable as reads;
+    use crate::types::ability::AdditionalCost;
+    match a {
+        AdditionalCost::Optional { cost, .. } | AdditionalCost::Required(cost) => reads(cost),
+        AdditionalCost::Kicker { costs, .. } => costs.iter().any(reads),
+        AdditionalCost::Choice(a, b) => reads(a) || reads(b),
+    }
 }
 
 /// CR 704.5f / CR 704.5g / CR 704.5i: strict-compare the PRE-projection object
@@ -3027,5 +3662,531 @@ mod tests {
         current2.stack.push_back(stk(21));
         current2.stack.push_back(stk(22));
         assert!(loop_states_cover_modulo_growth(&prior2, &current2));
+    }
+
+    // =======================================================================
+    // PR-7 Phase 4a — offline OBJECT-GROWTH cover predicate
+    // (`loop_states_cover_modulo_object_growth`). Synthetic frame-pairs assert
+    // the bool. Non-vacuous: each REJECT fails (returns COVER) if its named gate
+    // is reverted; each COVER fails if a gate over-rejects.
+    // =======================================================================
+
+    /// An inert battlefield token: `GameObject::new` defaults (no defs, no
+    /// abilities, no keywords, no counters, non-legendary), inserted into BOTH the
+    /// object map AND `state.battlefield` (the inert-class confine iterates the
+    /// battlefield vector). Same `name` ⇒ same inert class.
+    fn inert_token(state: &mut GameState, id: u64, controller: u8, name: &str) -> ObjectId {
+        let oid = ObjectId(id);
+        let object = GameObject::new(
+            oid,
+            CardId(id),
+            PlayerId(controller),
+            name.into(),
+            Zone::Battlefield,
+        );
+        state.objects.insert(oid, object);
+        state.battlefield.push_back(oid);
+        oid
+    }
+
+    /// A card in hand carrying `keywords`, identical in both frames (a recast
+    /// engine's off-battlefield source). Scanned by the all-zones cost firewall.
+    fn hand_card_with_keywords(
+        state: &mut GameState,
+        id: u64,
+        keywords: Vec<crate::types::keywords::Keyword>,
+    ) {
+        let oid = ObjectId(id);
+        let mut object = GameObject::new(oid, CardId(id), PlayerId(0), "Engine".into(), Zone::Hand);
+        object.keywords = keywords;
+        state.objects.insert(oid, object);
+    }
+
+    /// C1 base: a steady-state inert-token engine grown by exactly one token of the
+    /// SAME inert class. Prior = 2 tokens, current = 3.
+    fn og_cover_base() -> (GameState, GameState) {
+        let mut prior = GameState::new_two_player(7);
+        inert_token(&mut prior, 700, 0, "Saproling");
+        inert_token(&mut prior, 701, 0, "Saproling");
+        let mut current = prior.clone();
+        inert_token(&mut current, 702, 0, "Saproling");
+        (prior, current)
+    }
+
+    fn cover(prior: &GameState, current: &GameState) -> bool {
+        loop_states_cover_modulo_object_growth(prior, current)
+    }
+
+    /// A CONSERVATIVE (sibling-reading) effect: `Effect::Pump` classifies
+    /// `Axes::CONSERVATIVE` regardless of its fields (ability_scan.rs).
+    fn sibling_reading_effect() -> crate::types::ability::Effect {
+        use crate::types::ability::{Effect, PtValue, TargetFilter};
+        Effect::Pump {
+            power: PtValue::Fixed(0),
+            toughness: PtValue::Fixed(0),
+            target: TargetFilter::SelfRef,
+        }
+    }
+
+    /// C1 (COVER): a mana-neutral inert-token engine, grown by one same-class token.
+    #[test]
+    fn object_growth_c1_inert_token_engine_covers() {
+        let (prior, current) = og_cover_base();
+        assert!(
+            cover(&prior, &current),
+            "pure inert single-token growth of an existing class must COVER"
+        );
+    }
+
+    /// C2 (COVER): growth by MORE than one same-class token still covers.
+    #[test]
+    fn object_growth_c2_multi_token_growth_covers() {
+        let mut prior = GameState::new_two_player(7);
+        inert_token(&mut prior, 700, 0, "Saproling");
+        let mut current = prior.clone();
+        inert_token(&mut current, 701, 0, "Saproling");
+        inert_token(&mut current, 702, 0, "Saproling");
+        assert!(
+            cover(&prior, &current),
+            "multi-token inert growth must COVER"
+        );
+    }
+
+    /// K-offline (HARD GATE, REJECT): the Witherbloom + Sprout Swarm shape — inert
+    /// Saproling growth driven by a Convoke recast. §6 keystone: the detector models
+    /// NO cast-time cost, so a board-scaling cost keyword is REJECTED. Revert-failing:
+    /// removing Convoke from `keyword_cost_reads_growing_class` flips this to COVER —
+    /// the paired control proves Convoke is the sole rejector.
+    #[test]
+    fn object_growth_k_offline_convoke_rejects() {
+        use crate::types::keywords::Keyword;
+        let (mut prior, mut current) = og_cover_base();
+        hand_card_with_keywords(&mut prior, 900, vec![Keyword::Convoke]);
+        hand_card_with_keywords(&mut current, 900, vec![Keyword::Convoke]);
+        assert!(
+            !cover(&prior, &current),
+            "K-offline: a Convoke recast over growing Saprolings must REJECT (§6 keystone)"
+        );
+        // Control: the SAME frame-pair with a non-cost keyword COVERS — proving the
+        // reject is the cost-keyword classifier, not any other gate.
+        let (mut p2, mut c2) = og_cover_base();
+        hand_card_with_keywords(&mut p2, 900, vec![Keyword::Flying]);
+        hand_card_with_keywords(&mut c2, 900, vec![Keyword::Flying]);
+        assert!(
+            cover(&p2, &c2),
+            "control: an inert (non-cost) keyword must NOT reject the same growth"
+        );
+    }
+
+    /// R-a (REJECT): a battlefield object LEAVES while another is added — a shrink is
+    /// a real board change, not ω-cover.
+    #[test]
+    fn object_growth_r_a_shrink_rejects() {
+        let mut prior = GameState::new_two_player(7);
+        inert_token(&mut prior, 700, 0, "Saproling");
+        inert_token(&mut prior, 701, 0, "Saproling");
+        let mut current = prior.clone();
+        // Remove 701 (shrink) and add 702 (growth).
+        current.objects.remove(&ObjectId(701));
+        current.battlefield.retain(|id| *id != ObjectId(701));
+        inert_token(&mut current, 702, 0, "Saproling");
+        assert!(
+            !cover(&prior, &current),
+            "a concurrent battlefield shrink must REJECT"
+        );
+    }
+
+    /// R-a2 (REJECT): a NON-grown battlefield object drifts (tapped) while the board
+    /// grows — `board_covers` non-grown content equality fails.
+    #[test]
+    fn object_growth_r_a2_nongrown_drift_rejects() {
+        let (prior, mut current) = og_cover_base();
+        current.objects.get_mut(&ObjectId(700)).unwrap().tapped = true;
+        assert!(
+            !cover(&prior, &current),
+            "a non-grown object drifting (tapped) must REJECT"
+        );
+    }
+
+    /// R-a3 (REJECT): an extra OFF-battlefield object exists only in current — the
+    /// all-zones `objects_content_eq` len check fails.
+    #[test]
+    fn object_growth_r_a3_extra_offbattlefield_object_rejects() {
+        let (prior, mut current) = og_cover_base();
+        let oid = ObjectId(950);
+        current.objects.insert(
+            oid,
+            GameObject::new(oid, CardId(950), PlayerId(0), "Extra".into(), Zone::Hand),
+        );
+        assert!(
+            !cover(&prior, &current),
+            "an extra non-battlefield object in current must REJECT"
+        );
+    }
+
+    /// R-b (REJECT): a grown token is NOT churn-inert (carries a keyword). Passes
+    /// `board_covers` (keywords are bucket-(ii), uncompared) then fails gate (2″).
+    #[test]
+    fn object_growth_r_b_grown_not_inert_keyword_rejects() {
+        use crate::types::keywords::Keyword;
+        let (prior, mut current) = og_cover_base();
+        current.objects.get_mut(&ObjectId(702)).unwrap().keywords = vec![Keyword::Flying];
+        assert!(
+            !cover(&prior, &current),
+            "a grown token with a keyword is not churn-inert ⇒ REJECT"
+        );
+    }
+
+    /// R-c (REJECT): a strict-compared GameState field (turn_number) drifts —
+    /// `eq_except_growable` (reused `PartialEq`) fails.
+    #[test]
+    fn object_growth_r_c_gamestate_field_drift_rejects() {
+        let (prior, mut current) = og_cover_base();
+        current.turn_number += 1;
+        assert!(
+            !cover(&prior, &current),
+            "a drifting non-object GameState field must REJECT"
+        );
+    }
+
+    /// R-d (REJECT): the grown token is a NEW class with no inert member already in
+    /// prior — a never-observed 0→1 introduction, not ω-growth of an existing class.
+    #[test]
+    fn object_growth_r_d_new_class_growth_rejects() {
+        let (prior, mut current) = og_cover_base();
+        // Grow a DIFFERENT class (no inert member of this class in prior). `name` is
+        // layer-derived from `base_name`, so set BOTH so the rename survives flush.
+        {
+            let o = current.objects.get_mut(&ObjectId(702)).unwrap();
+            o.name = "Beast".into();
+            o.base_name = "Beast".into();
+        }
+        assert!(
+            !cover(&prior, &current),
+            "growth of a class not already present in prior must REJECT"
+        );
+    }
+
+    /// R-e / R-e2 / R-e3 / R-e5 (REJECT) + R-e4 (COVER, Undaunted-safe): the
+    /// cost-keyword family. Each board-scaling cost reducer rejects; Undaunted (reads
+    /// the opponent count, CR 119, not a board object) covers. Revert-failing: each
+    /// rejector flips to COVER if dropped from `keyword_cost_reads_growing_class`.
+    #[test]
+    fn object_growth_r_e_cost_keyword_family() {
+        use crate::types::keywords::Keyword;
+        let reject_cases = [
+            ("Affinity", Keyword::Affinity(Default::default())),
+            ("Improvise", Keyword::Improvise),
+            ("Delve", Keyword::Delve),
+            ("Emerge", Keyword::Emerge(Default::default())),
+            // GAP-2: previously fail-OPEN under the old `matches!` classifier —
+            // reverting FIX 2 (exhaustive match) flips each of these to COVER, so
+            // each is a revert-failing discriminator for the exhaustive classifier.
+            ("Offering", Keyword::Offering("Goblin".into())),
+            ("Bargain", Keyword::Bargain),
+            ("Assist", Keyword::Assist),
+            // Tap-a-board-aggregate keywords (structurally identical to Convoke)
+            // that the old 5-entry `matches!` also missed.
+            (
+                "Crew",
+                Keyword::Crew {
+                    power: 3,
+                    once_per_turn: None,
+                },
+            ),
+            ("Conspire", Keyword::Conspire),
+        ];
+        for (label, kw) in reject_cases {
+            let (mut prior, mut current) = og_cover_base();
+            hand_card_with_keywords(&mut prior, 900, vec![kw.clone()]);
+            hand_card_with_keywords(&mut current, 900, vec![kw]);
+            assert!(
+                !cover(&prior, &current),
+                "{label}: a board-scaling cost keyword must REJECT"
+            );
+        }
+        // R-e4 Undaunted-safe COVER.
+        let (mut prior, mut current) = og_cover_base();
+        hand_card_with_keywords(&mut prior, 900, vec![Keyword::Undaunted]);
+        hand_card_with_keywords(&mut current, 900, vec![Keyword::Undaunted]);
+        assert!(
+            cover(&prior, &current),
+            "R-e4: Undaunted reads the opponent count, not |G| ⇒ COVER"
+        );
+    }
+
+    /// Attach a bare `StaticDefinition` (empty `modifications`, `condition: None`) to
+    /// a STABLE battlefield object in BOTH frames, then grow the board by one same-
+    /// class token. The static object is non-grown, so gate (2″) inertness never sees
+    /// it, and the empty modifications keep the §5.3a firewall gate (4) silent — the
+    /// `StaticMode` cost scan (§5.4) is the SOLE differentiator between the REJECT
+    /// mode and the COVER mode. Returns `cover(...)`.
+    fn cover_with_static_on_stable(mode: StaticMode) -> bool {
+        let mut prior = GameState::new_two_player(7);
+        let sid = inert_token(&mut prior, 600, 0, "StaticSource");
+        inert_token(&mut prior, 700, 0, "Saproling");
+        inert_token(&mut prior, 701, 0, "Saproling");
+        prior
+            .objects
+            .get_mut(&sid)
+            .unwrap()
+            .static_definitions
+            .push(StaticDefinition::new(mode));
+        let mut current = prior.clone();
+        inert_token(&mut current, 702, 0, "Saproling");
+        cover(&prior, &current)
+    }
+
+    /// A `QuantityRef::ObjectCount` (reads the sibling/board axis ⇒ |G|).
+    fn object_count_ref() -> QuantityRef {
+        QuantityRef::ObjectCount {
+            filter: TargetFilter::Any,
+        }
+    }
+
+    /// R-e2 (GAP-1, REJECT + paired COVER): a `ModifyCost { mode: Raise,
+    /// dynamic_count: Some(ObjectCount) }` static on a STABLE object over a growing
+    /// board REJECTs (the false-positive-∞ direction — a per-cast tax that climbs as
+    /// |G| grows). Non-vacuous: the SAME static with `dynamic_count: None` (a fixed
+    /// `ManaCost` raise) COVERS, proving the `dynamic_count` scan — not the mere
+    /// presence of a cost static — is the differentiator. Revert-failing: deleting
+    /// the `def.mode` scan (or restoring the false "ModifyCost is fixed" comment's
+    /// no-op) flips the REJECT case to a false-COVER.
+    #[test]
+    fn object_growth_r_e2_modifycost_dynamic_rejects() {
+        use crate::types::mana::ManaCost;
+        use crate::types::statics::CostModifyMode;
+        let modify = |dynamic_count| StaticMode::ModifyCost {
+            mode: CostModifyMode::Raise,
+            amount: ManaCost::default(),
+            spell_filter: None,
+            dynamic_count,
+        };
+        assert!(
+            !cover_with_static_on_stable(modify(Some(object_count_ref()))),
+            "R-e2: ModifyCost.dynamic_count = ObjectCount(|G|) must REJECT"
+        );
+        assert!(
+            cover_with_static_on_stable(modify(None)),
+            "R-e2 control: a fixed (dynamic_count = None) ModifyCost must COVER"
+        );
+    }
+
+    /// R-e2-impose (REJECT + paired COVER): an `ImposeAdditionalCost` whose
+    /// `AbilityCost` reads `ObjectCount(|G|)` (a `PayLife` scaling with the board)
+    /// REJECTs; the same static with a FIXED `PayLife` COVERS.
+    #[test]
+    fn object_growth_r_e2_impose_additional_cost_rejects() {
+        use crate::types::ability::AbilityCost;
+        use crate::types::statics::AdditionalCostTaxAction;
+        let impose = |amount| StaticMode::ImposeAdditionalCost {
+            cost: AbilityCost::PayLife { amount },
+            spell_filter: None,
+            action: AdditionalCostTaxAction::Cast,
+        };
+        assert!(
+            !cover_with_static_on_stable(impose(QuantityExpr::Ref {
+                qty: object_count_ref()
+            })),
+            "R-e2-impose: ImposeAdditionalCost reading ObjectCount(|G|) must REJECT"
+        );
+        assert!(
+            cover_with_static_on_stable(impose(QuantityExpr::Fixed { value: 3 })),
+            "R-e2-impose control: a fixed additional cost must COVER"
+        );
+    }
+
+    /// R-e2-reduceability (REJECT + paired COVER): a `ReduceAbilityCost` whose
+    /// `dynamic_count` reads `ObjectCount(|G|)` ("for each X you control") REJECTs;
+    /// the same static with `dynamic_count: None` COVERS.
+    #[test]
+    fn object_growth_r_e2_reduce_ability_cost_rejects() {
+        use crate::types::statics::CostModifyMode;
+        let reduce = |dynamic_count| StaticMode::ReduceAbilityCost {
+            mode: CostModifyMode::Reduce,
+            keyword: "activated".to_string(),
+            amount: 1,
+            minimum_mana: None,
+            dynamic_count,
+            exemption: Default::default(),
+            activator: None,
+        };
+        assert!(
+            !cover_with_static_on_stable(reduce(Some(object_count_ref()))),
+            "R-e2-reduceability: ReduceAbilityCost.dynamic_count = ObjectCount(|G|) must REJECT"
+        );
+        assert!(
+            cover_with_static_on_stable(reduce(None)),
+            "R-e2-reduceability control: a fixed ReduceAbilityCost must COVER"
+        );
+    }
+
+    /// R-f (REJECT): a NON-grown battlefield permanent carries an ability whose
+    /// effect reads the sibling (board-aggregate) axis — the §5.3a firewall (item 2)
+    /// rejects even though the permanent is content-equal (abilities uncompared).
+    #[test]
+    fn object_growth_r_f_sibling_reading_ability_rejects() {
+        use crate::types::ability::{AbilityDefinition, AbilityKind};
+        use std::sync::Arc;
+        let mut prior = GameState::new_two_player(7);
+        let observer = inert_token(&mut prior, 600, 0, "Observer");
+        let def = AbilityDefinition::new(AbilityKind::Activated, sibling_reading_effect());
+        prior.objects.get_mut(&observer).unwrap().abilities = Arc::new(vec![def]);
+        inert_token(&mut prior, 700, 0, "Saproling");
+        let mut current = prior.clone();
+        inert_token(&mut current, 702, 0, "Saproling");
+        assert!(
+            !cover(&prior, &current),
+            "a live ability reading the growing class must REJECT (firewall item 2)"
+        );
+    }
+
+    /// R-g (REJECT): a grown token carries an ACTIVATED ability (a churn lever the
+    /// extrapolation cannot bound). Firewall-blind body (`Unimplemented` ⇒ NONE) so
+    /// gate (2″) inertness — not the firewall — is the sole rejector.
+    #[test]
+    fn object_growth_r_g_grown_activated_ability_rejects() {
+        use crate::types::ability::{AbilityDefinition, AbilityKind, Effect};
+        use std::sync::Arc;
+        let (prior, mut current) = og_cover_base();
+        let def = AbilityDefinition::new(
+            AbilityKind::Activated,
+            Effect::unimplemented("r-g", "activated"),
+        );
+        current.objects.get_mut(&ObjectId(702)).unwrap().abilities = Arc::new(vec![def]);
+        assert!(
+            !cover(&prior, &current),
+            "a grown token with an activated ability is not churn-inert ⇒ REJECT"
+        );
+    }
+
+    /// R-s5-abilitykind (REJECT): a NON-`Activated` ability (kind `Spell`) whose body
+    /// reads the sibling axis, on a non-grown permanent. Firewall item (2) scans
+    /// EVERY kind (S5) — revert to a `kind == Activated` narrowing and this is missed
+    /// (false COVER).
+    #[test]
+    fn object_growth_r_s5_non_activated_ability_kind_rejects() {
+        use crate::types::ability::{AbilityDefinition, AbilityKind};
+        use std::sync::Arc;
+        let mut prior = GameState::new_two_player(7);
+        let observer = inert_token(&mut prior, 600, 0, "Observer");
+        let def = AbilityDefinition::new(AbilityKind::Spell, sibling_reading_effect());
+        prior.objects.get_mut(&observer).unwrap().abilities = Arc::new(vec![def]);
+        inert_token(&mut prior, 700, 0, "Saproling");
+        let mut current = prior.clone();
+        inert_token(&mut current, 702, 0, "Saproling");
+        assert!(
+            !cover(&prior, &current),
+            "S5: a non-Activated sibling-reading ability must REJECT (scanned regardless of kind)"
+        );
+    }
+
+    /// R-s4-objfield (two-sided): a non-grown object's §5.2c ADD field (`intensity`)
+    /// accumulates while the board grows ⇒ REJECT; held constant ⇒ COVER.
+    /// Revert-failing: dropping `intensity` from `object_content_eq` flips the REJECT
+    /// arm to COVER.
+    #[test]
+    fn object_growth_r_s4_objfield_intensity_two_sided() {
+        // 700 = plain inert token (the grown 702's confine class); 701 = the stable
+        // carrier whose `intensity` is the accumulator under test.
+        let (mut prior, mut current) = og_cover_base();
+        let carrier = ObjectId(701);
+        prior.objects.get_mut(&carrier).unwrap().intensity = 1;
+        current.objects.get_mut(&carrier).unwrap().intensity = 1;
+
+        // Control (COVER): intensity equal on both frames.
+        assert!(
+            cover(&prior, &current),
+            "control: constant intensity ⇒ growth COVERS"
+        );
+        // Reject: intensity accumulates on the stable carrier.
+        current.objects.get_mut(&carrier).unwrap().intensity = 2;
+        assert!(
+            !cover(&prior, &current),
+            "a per-iteration intensity delta on a stable object must REJECT"
+        );
+    }
+
+    /// R-s4-chosen (two-sided, S6, firewall-blind reach-guard): a non-grown object's
+    /// `chosen_attributes` accumulates ⇒ REJECT; held constant ⇒ COVER. The carrier
+    /// ALSO holds a `RememberCard{SelfRef}` ability — `resolved_ability_axes` = NONE
+    /// (firewall-blind), so the COVER control proves the firewall does NOT catch it
+    /// and ONLY `object_content_eq` (the §5.2c `chosen_attributes` ADD) does.
+    /// Revert-failing: dropping `chosen_attributes` from `object_content_eq` flips
+    /// the REJECT arm to COVER.
+    #[test]
+    fn object_growth_r_s4_chosen_attributes_two_sided() {
+        use crate::types::ability::{
+            AbilityDefinition, AbilityKind, ChosenAttribute, Effect, TargetFilter,
+        };
+        use std::sync::Arc;
+
+        // 700 = plain inert token (the grown 702's confine class); 701 = the stable
+        // carrier bearing the firewall-blind writer + the `chosen_attributes` accumulator.
+        let (mut prior, _c) = og_cover_base();
+        let carrier = ObjectId(701);
+        // Firewall-blind writer: RememberCard{SelfRef} ⇒ sibling axis NONE. Set in
+        // BOTH `abilities` and `base_abilities` so it survives the layer flush and is
+        // actually scanned (and passed over) by the firewall.
+        let remember = AbilityDefinition::new(
+            AbilityKind::Activated,
+            Effect::RememberCard {
+                target: TargetFilter::SelfRef,
+            },
+        );
+        {
+            let o = prior.objects.get_mut(&carrier).unwrap();
+            o.abilities = Arc::new(vec![remember.clone()]);
+            o.base_abilities = Arc::new(vec![remember]);
+            o.chosen_attributes = vec![ChosenAttribute::Number(1)];
+        }
+        // Clone AFTER carrier setup so current's 701 matches prior's; then grow.
+        let mut current = prior.clone();
+        inert_token(&mut current, 702, 0, "Saproling");
+
+        // Control (COVER): the firewall-blind RememberCard ability does NOT reject,
+        // and chosen_attributes is constant ⇒ growth covers.
+        assert!(
+            cover(&prior, &current),
+            "control: firewall-blind RememberCard + constant chosen_attributes ⇒ COVER"
+        );
+        // Reject: chosen_attributes accumulates on the stable carrier — caught ONLY by
+        // object_content_eq (the firewall is provably blind, per the control).
+        current.objects.get_mut(&carrier).unwrap().chosen_attributes =
+            vec![ChosenAttribute::Number(1), ChosenAttribute::Number(2)];
+        assert!(
+            !cover(&prior, &current),
+            "a per-iteration chosen_attributes delta must REJECT (object_content_eq, not the firewall)"
+        );
+    }
+
+    /// R-s3-accum + R-s3-sync (the mutate-each-field sync test): each strict-compared
+    /// GameState field that survives projection, mutated one at a time on a covering
+    /// base, must REJECT via `eq_except_growable`. Proves the reused `PartialEq`
+    /// (guarded total by `_gamestate_partition_is_total`) catches every one.
+    #[test]
+    fn object_growth_r_s3_gamestate_accumulator_sync() {
+        // R-s3-accum: a per-turn accumulator PartialEq compares.
+        let (prior, mut current) = og_cover_base();
+        current.lands_played_this_turn += 1;
+        assert!(
+            !cover(&prior, &current),
+            "R-s3-accum: a hidden per-turn accumulator delta must REJECT"
+        );
+
+        // R-s3-sync: sweep several strict-compared fields, each independently. Each
+        // mutation on the covering base must independently flip the verdict to REJECT.
+        let sync = |mutate: &dyn Fn(&mut GameState), label: &str| {
+            let (prior, mut current) = og_cover_base();
+            mutate(&mut current);
+            assert!(
+                !cover(&prior, &current),
+                "R-s3-sync: a delta in `{label}` must REJECT (eq_except_growable)"
+            );
+        };
+        sync(&|s| s.turn_number += 1, "turn_number");
+        sync(&|s| s.active_player = PlayerId(1), "active_player");
+        sync(&|s| s.priority_player = PlayerId(1), "priority_player");
+        sync(&|s| s.lands_played_this_turn += 1, "lands_played_this_turn");
     }
 }
