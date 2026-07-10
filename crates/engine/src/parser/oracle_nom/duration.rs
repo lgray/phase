@@ -60,6 +60,16 @@ fn parse_until_body(input: &str) -> OracleResult<'_, Duration> {
             },
             tag("your next end step"),
         ),
+        // CR 513.1 + CR 603.7b: definite-article "the next end step" (Niko) is
+        // turn-AGNOSTIC — co-fires with the return's AtNextPhase{End}. Distinct
+        // from possessive "your next end step" (disjoint prefix).
+        value(
+            Duration::UntilNextStepOf {
+                step: Phase::End,
+                player: PlayerScope::AnyTurn,
+            },
+            tag("the next end step"),
+        ),
         // Host-lifetime expiry: "until ~ leaves the battlefield" /
         // "until this creature leaves the battlefield".
         value(

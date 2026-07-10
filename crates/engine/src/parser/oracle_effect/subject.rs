@@ -3906,6 +3906,43 @@ fn build_become_clause(
         return Some(ParsedEffectClause {
             effect: Effect::BecomeCopy {
                 target,
+                recipient: TargetFilter::SelfRef,
+                duration: duration.clone(),
+                mana_value_limit: None,
+                additional_modifications,
+            },
+            duration,
+            sub_ability: None,
+            distribute: None,
+            multi_target: None,
+            condition: None,
+            optional: false,
+            unless_pay: None,
+        });
+    }
+
+    // CR 707.2 + CR 611.2c: "become copies of [donor]" — a MASS become-copy
+    // (Niko, Light of Hope: "Shards you control become copies of it"). Every
+    // member of the subject's recipient set becomes a copy of the single donor,
+    // locked to the members present at resolution. Mirrors the singular "a copy
+    // of" arm; the recipient set is the subject filter
+    // (`static_affected_for_application`) and the donor is the single "of" object.
+    // Additive: "copies of it" fell through to Unimplemented before this arm.
+    if let Ok((after_copies, _)) =
+        tag::<_, _, OracleError<'_>>("copies of ").parse(become_lower.as_str())
+    {
+        let (after_copies_owned, mid_sentence_duration) = strip_pre_except_duration(after_copies);
+        let duration = mid_sentence_duration.map(Some).unwrap_or(duration);
+        let (target, remainder) = parse_target(&after_copies_owned);
+        let card_name = ctx.card_name.as_deref().unwrap_or("");
+        let additional_modifications =
+            super::become_copy_except::parse_except_clause(remainder, card_name, ctx)
+                .map(|(_, mods)| mods)
+                .unwrap_or_default();
+        return Some(ParsedEffectClause {
+            effect: Effect::BecomeCopy {
+                target,
+                recipient: static_affected_for_application(&application),
                 duration: duration.clone(),
                 mana_value_limit: None,
                 additional_modifications,

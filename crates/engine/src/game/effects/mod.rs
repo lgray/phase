@@ -9440,11 +9440,14 @@ fn resolve_grant_next_spell_ability(
     // future variant forces a maintainer to re-confirm its next-spell semantics.
     let player = match player_scope {
         PlayerScope::Target => ability.target_player(),
+        // CR 513.1: `AnyTurn` is a duration-timing referent that never reaches a
+        // next-spell player-selection position; default to the controller.
         PlayerScope::Controller
         | PlayerScope::ScopedPlayer
         | PlayerScope::Opponent { .. }
         | PlayerScope::AllPlayers { .. }
         | PlayerScope::RecipientController
+        | PlayerScope::AnyTurn
         | PlayerScope::DefendingPlayer
         | PlayerScope::ParentObjectTargetController
         | PlayerScope::SourceChosenPlayer => ability.controller,
@@ -13069,6 +13072,7 @@ mod tests {
         // A non-cost, non-optional parent: a `BecomeCopy` reflexive parent.
         let become_copy_parent = ResolvedAbility::new(
             Effect::BecomeCopy {
+                recipient: TargetFilter::SelfRef,
                 target: TargetFilter::SelfRef,
                 duration: None,
                 mana_value_limit: None,

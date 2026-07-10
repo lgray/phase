@@ -4708,6 +4708,15 @@ pub enum PlayerScope {
     /// `chosen_attributes` so a CDA P/T can track e.g. the chosen player's hand
     /// or graveyard size (Entropic Specter, Sewer Nemesis).
     SourceChosenPlayer,
+    /// CR 513.1 + CR 611.2a + CR 603.7b: turn-AGNOSTIC deadline — the referenced
+    /// step's NEXT occurrence regardless of whose turn ("the next end step", e.g.
+    /// Niko, Light of Hope), as opposed to `Controller` ("your next end step",
+    /// Rocco/Street Chef). Mirrors the delayed-trigger split `AtNextPhase`
+    /// (agnostic) vs `AtNextPhaseForPlayer` (scoped). DURATION-TIMING-ONLY:
+    /// constructed solely in the "the next end step" parser arm inside
+    /// `Duration::UntilNextStepOf` — never from a value/quantity/player-selection
+    /// position.
+    AnyTurn,
 }
 
 /// Scope selector for object-axis quantities (Round Π-5). Picks WHICH object
@@ -10128,6 +10137,17 @@ pub enum Effect {
     BecomeCopy {
         #[serde(default = "default_target_filter_any")]
         target: TargetFilter,
+        /// CR 707.2 + CR 611.2c: the object(s) that BECOME the copy. `SelfRef`
+        /// (default) = the source `~` (all existing single-subject cards,
+        /// byte-identical). A typed group filter ("Shards you control", Niko) or
+        /// `ParentTarget` selects a mass recipient set, snapshotted to concrete
+        /// ids at resolution (locked per 611.2c). Mirrors
+        /// `GainActivatedAbilitiesOfTarget.recipient`.
+        #[serde(
+            default = "default_target_filter_self_ref",
+            skip_serializing_if = "target_filter_is_self_ref"
+        )]
+        recipient: TargetFilter,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         duration: Option<Duration>,
         #[serde(default, skip_serializing_if = "Option::is_none")]

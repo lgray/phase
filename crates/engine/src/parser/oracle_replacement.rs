@@ -1039,6 +1039,7 @@ fn parse_as_enters_exile_from_graveyards(
         crate::types::ability::AbilityKind::Spell,
         crate::types::ability::Effect::BecomeCopy {
             target: crate::types::ability::TargetFilter::ExiledCardByIndex { index: 0 },
+            recipient: crate::types::ability::TargetFilter::SelfRef,
             duration: None,
             mana_value_limit: None,
             additional_modifications: vec![],
@@ -2644,6 +2645,7 @@ fn parse_clone_replacement(
         AbilityKind::Spell,
         Effect::BecomeCopy {
             target: filter,
+            recipient: TargetFilter::SelfRef,
             duration,
             mana_value_limit,
             additional_modifications,
@@ -14712,6 +14714,7 @@ mod tests {
         match &*execute.effect {
             Effect::BecomeCopy {
                 target,
+                recipient: _,
                 duration,
                 mana_value_limit,
                 additional_modifications,
@@ -15233,6 +15236,7 @@ mod tests {
         match &*execute.effect {
             Effect::BecomeCopy {
                 target,
+                recipient: _,
                 duration,
                 mana_value_limit,
                 additional_modifications,

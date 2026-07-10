@@ -4485,6 +4485,11 @@ fn resolve_single_player_scope(
         }
         // Aggregate scopes have no single-player reading.
         PlayerScope::Opponent { .. } | PlayerScope::AllPlayers { .. } => None,
+        PlayerScope::AnyTurn => {
+            unreachable!(
+                "PlayerScope::AnyTurn is duration-timing-only; never reached via QuantityRef"
+            )
+        }
     }
 }
 
@@ -4579,6 +4584,11 @@ where
                 state.players.iter().filter(|p| Some(p.id) != excluded_id),
                 *aggregate,
                 &mut extract,
+            )
+        }
+        PlayerScope::AnyTurn => {
+            unreachable!(
+                "PlayerScope::AnyTurn is duration-timing-only; never reached via QuantityRef"
             )
         }
     }
