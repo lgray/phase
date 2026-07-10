@@ -6926,6 +6926,25 @@ fn parse_effect_clause_inner(text: &str, ctx: &mut ParseContext) -> ParsedEffect
             description: None,
         });
     }
+    // CR 701.42a: A reflexive "you may pay {C}. If you do, exile them, then meld
+    // them into R" body (Vanille) chunks its "If you do, …" sub-clause down to a
+    // SINGLE clause — "meld" is not a sequence verb, so `split_clause_sequence`
+    // returns one chunk and the pre-chunk meld dispatch in `parse_effect_chain_ir`
+    // is bypassed. Recognize the bare meld clause here (gated on a staged partner,
+    // so only the ~6 meld cards pay for the check) and lower it to `Effect::Meld`
+    // instead of `Unimplemented`. The direct triggered forms (Gisela, Titania)
+    // never reach here — their residual returns early at the pre-chunk dispatch
+    // before clause parsing, so there is no double-dispatch.
+    if ctx.pending_meld_partner.is_some()
+        // allow-noncombinator: perf fast-reject on the meld signature; a positive
+        // hit still routes through the nom-combinator `parse_meld_effect_clause`,
+        // which stays the sole authority on whether the text is a meld clause.
+        && text.to_ascii_lowercase().contains(meld::MELD_EFFECT_MARKER)
+    {
+        if let Some(effect) = meld::parse_meld_effect_clause(text.trim(), ctx) {
+            return parsed_clause(effect);
+        }
+    }
     // CR 601.2c + CR 115.1: A heterogeneous compound source set ("<group A> and
     // up to one other target <group B> each deal damage equal to their power …",
     // Graceful Takedown) cannot be represented by the single-filter `TargetOnly`
@@ -26034,6 +26053,13 @@ pub(crate) fn parse_effect_chain_ir(
             // player" on Ghyrson) bind to the triggering event instead of being
             // reparsed as ordinary target phrases.
             in_trigger: ctx.in_trigger,
+            // CR 701.42a: propagate the staged meld partner so a reflexive
+            // "exile them, then meld them into R" sub-clause parsed inside this
+            // chunk (Vanille's "If you do, …" body, which chunks to a single
+            // clause because "meld" is not a sequence verb) can stamp the
+            // `Effect::Meld { partner, .. }`. Without this the sub-clause loses
+            // the partner and lowers to `Unimplemented`.
+            pending_meld_partner: ctx.pending_meld_partner.clone(),
             ..Default::default()
         };
         let ctx = &mut chunk_ctx;
