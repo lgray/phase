@@ -3987,6 +3987,31 @@ fn affected_objects_from_events(
             })
             .flat_map(|ids| ids.iter().copied())
             .collect(),
+        // CR 701.6a + CR 113.9 + CR 608.2c: a countered object leaves the stack
+        // via `SpellCountered` — counter.rs emits it for spells AND abilities,
+        // unconditionally, before any consequent zone move. Abilities carry no
+        // card and emit no `ZoneChanged` (CR 405.1), so the generic `_ =>`
+        // ZoneChanged path below silently omits every countered ability. The
+        // "for each spell AND ability countered this way" tracked set must
+        // therefore read `SpellCountered`, not `ZoneChanged`. This is a
+        // class-level fix for the whole counter-for-each family (Glen Elendra's
+        // Answer counts abilities now; Swift Silence's spell count is unchanged).
+        // Dedicated + exclusive: a countered spell emits BOTH `SpellCountered`
+        // and a stack->graveyard `ZoneChanged`, but this arm reads only
+        // `SpellCountered`, so each countered object contributes exactly one id
+        // (no double-count vs a `tracked_object_sets` Vec). Cause stays `None`
+        // (`this_way_cause_for_effect(Counter) => None`), so Test of Talents'
+        // `FilteredTrackedSetSize { caused_by: Exiled }` never matches these.
+        // (A countered spell COPY still emits its own `ZoneChanged{Graveyard}`
+        // before the CR 704.5e cease-to-exist SBA, so both the old and new count
+        // already include copies — copies are not the delta here; abilities are.)
+        Effect::Counter { .. } | Effect::CounterAll { .. } => events
+            .iter()
+            .filter_map(|event| match event {
+                GameEvent::SpellCountered { object_id, .. } => Some(*object_id),
+                _ => None,
+            })
+            .collect(),
         _ => {
             let dest_zone = match effect {
                 Effect::ChangeZone { destination, .. }

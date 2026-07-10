@@ -127,6 +127,7 @@ mod giada_angel_counters;
 mod giant_ox_crew_toughness;
 mod giggling_skitterspike_issue_890;
 mod gimbal_gremlin_prodigy;
+mod glen_elendras_answer_counter_all_conjunction;
 mod gluntch_choose_player_chain;
 mod goaded_creature_under_pacifism_visible;
 mod gollum_scheming_guide_card_predicate_guess;

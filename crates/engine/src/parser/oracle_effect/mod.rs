@@ -13306,6 +13306,15 @@ fn lower_imperative_clause(text: &str, ctx: &mut ParseContext) -> ParsedEffectCl
     if let Some(clause) = try_parse_reanimate_self_and_target(text, ctx) {
         return clause;
     }
+    // CR 701.6a + CR 113.9 + CR 608.2c: "Counter all/each A and all/each B" is
+    // ONE mass-counter instruction spanning multiple stack-object populations
+    // (Glen Elendra's Answer). Must win before `try_split_targeted_compound`,
+    // which bisects the compound and drops the second conjunct to
+    // `Effect::Unimplemented` (the "all/each" carry-forward is lost because
+    // `extract_effect_verb(CounterAll)` is None).
+    if let Some(clause) = try_parse_counter_all_conjunction(text, ctx) {
+        return clause;
+    }
     if let Some(clause) = try_split_targeted_compound(text, ctx) {
         return clause;
     }
@@ -15064,6 +15073,122 @@ fn try_parse_multi_target_counter_chain(
         optional: false,
         unless_pay: None,
     })
+}
+
+/// CR 701.6a + CR 113.9 + CR 608.2c: "Counter all/each A and all/each B ..." —
+/// a single mass-counter instruction over multiple stack-object populations
+/// (Glen Elendra's Answer: "Counter all spells your opponents control and all
+/// abilities your opponents control"). Each conjunct is an independent
+/// `counter all/each <population>` phrase; they compose into ONE `CounterAll`
+/// whose target is the `Or` of the per-conjunct filters.
+///
+/// Single-`Or` rather than a chain of `CounterAll` sub-abilities because (1) it
+/// reuses the proven `Or[And[StackSpell, ctrl], StackAbility{ctrl}]` stack-source
+/// shape (`becomes_target_source_filter`, oracle_trigger.rs) that the runtime
+/// stack matchers already route — spell entries take the And leg, ability entries
+/// the StackAbility leg — and (2) CR 701.6a treats "counter all A and all B" as
+/// ONE counter instruction: a single resolution feeding a single "countered this
+/// way" tracked set (CR 608.2c). (Two chained CounterAlls would BOTH publish and
+/// union their sets — `next_sub_needs_tracked_set` recurses the whole chain — so
+/// the choice is about matching the rules' single-instruction shape, not about
+/// avoiding an unpublished set.)
+fn try_parse_counter_all_conjunction(
+    text: &str,
+    _ctx: &mut ParseContext,
+) -> Option<ParsedEffectClause> {
+    let lower = text.to_lowercase();
+
+    // Gate: leading "counter all " / "counter each " (nom on lowercased text;
+    // the oracle capitalizes the leading "Counter"). Capture the mass keyword.
+    let (rest0, kw0) = counter_mass_head(&lower)?;
+    // Map the lowercase remainder back to the original-case slice (lowercasing
+    // is ASCII-length preserving here — mirrors the sibling counter-chain offset
+    // idiom in `try_parse_multi_target_counter_chain`).
+    let mut cursor = &text[text.len() - rest0.len()..];
+    let mut cur_kw = kw0;
+
+    let mut filters: Vec<TargetFilter> = Vec::new();
+    loop {
+        let cursor_lower = cursor.to_lowercase();
+        // Split the next " and all " / " and each " conjunct boundary with nom
+        // `take_until` (never `str::split`) so this stays combinator dispatch.
+        match split_next_counter_conjunct(&cursor_lower) {
+            Some((before_len, next_kw, consumed)) => {
+                push_counter_conjunct_target(&mut filters, cur_kw, &cursor[..before_len])?;
+                cur_kw = next_kw;
+                cursor = &cursor[consumed..];
+            }
+            None => {
+                // Last conjunct: strip a trailing sentence period.
+                let tail = cursor.trim_end().trim_end_matches('.').trim_end();
+                push_counter_conjunct_target(&mut filters, cur_kw, tail)?;
+                break;
+            }
+        }
+    }
+
+    // Require ≥2 conjuncts — single-conjunct "counter all X" stays on the
+    // existing `parse_counter_ast` path (Kadena's Silencer byte-identical).
+    if filters.len() < 2 {
+        return None;
+    }
+
+    Some(parsed_clause(Effect::CounterAll {
+        target: TargetFilter::Or { filters },
+    }))
+}
+
+/// nom gate consuming a leading "counter all " / "counter each "; returns the
+/// lowercase remainder and the mass keyword ("all" or "each").
+fn counter_mass_head(lower: &str) -> Option<(&str, &'static str)> {
+    alt((
+        value("all", tag::<_, _, OracleError<'_>>("counter all ")),
+        value("each", tag::<_, _, OracleError<'_>>("counter each ")),
+    ))
+    .parse(lower)
+    .ok()
+}
+
+/// Split at the next " and all " / " and each " conjunct boundary using nom
+/// `take_until` (never `str::split`). Returns `(bytes_before_separator,
+/// next_keyword, bytes_consumed_through_separator)` indexed into the passed
+/// lowercase slice. Picks the earliest of the two separators so mixed
+/// "all"/"each" phrasings split at the correct boundary.
+fn split_next_counter_conjunct(lower: &str) -> Option<(usize, &'static str, usize)> {
+    let try_sep = |sep: &'static str, kw: &'static str| -> Option<(usize, &'static str, usize)> {
+        let (_after_sep_start, before) =
+            take_until::<_, _, OracleError<'_>>(sep).parse(lower).ok()?;
+        Some((before.len(), kw, before.len() + sep.len()))
+    };
+    match (try_sep(" and all ", "all"), try_sep(" and each ", "each")) {
+        (Some(a), Some(b)) => Some(if a.0 <= b.0 { a } else { b }),
+        (hit, None) | (None, hit) => hit,
+    }
+}
+
+/// Reparse one conjunct as a standalone "counter {kw} {conjunct}" mass counter
+/// and push its target filter. Any conjunct that does not parse to
+/// `Counter { all: true }` aborts the whole handler (returns `None`) so
+/// non-class compounds fall through untouched. Defensively flattens a nested
+/// `Or` so the composed filter stays one level deep.
+fn push_counter_conjunct_target(
+    filters: &mut Vec<TargetFilter>,
+    kw: &str,
+    conjunct: &str,
+) -> Option<()> {
+    let reparsed = format!("counter {kw} {}", conjunct.trim());
+    let reparsed_lower = reparsed.to_lowercase();
+    let target = match imperative::parse_counter_ast(&reparsed, &reparsed_lower)? {
+        ZoneCounterImperativeAst::Counter {
+            all: true, target, ..
+        } => target,
+        _ => return None,
+    };
+    match target {
+        TargetFilter::Or { filters: inner } => filters.extend(inner),
+        other => filters.push(other),
+    }
+    Some(())
 }
 
 /// True when a bare counter-chain segment qualifies its *target* as distinct

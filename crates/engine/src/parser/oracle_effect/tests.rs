@@ -43074,3 +43074,151 @@ fn optional_sacrifice_if_you_do_return_keeps_graveyard_filter() {
         "return must carry a finality counter, got {enter_with_counters:?}"
     );
 }
+
+// ── Glen Elendra's Answer: "counter all A and all B" compound counter ──────
+
+fn ability_chain_has_token_tracked_set(def: &AbilityDefinition) -> bool {
+    let here = matches!(
+        def.effect.as_ref(),
+        Effect::Token {
+            count: QuantityExpr::Ref {
+                qty: QuantityRef::TrackedSetSize
+            },
+            ..
+        }
+    );
+    here || def
+        .sub_ability
+        .as_deref()
+        .is_some_and(ability_chain_has_token_tracked_set)
+}
+
+/// CR 701.6a + CR 113.9 + CR 608.2c: Glen Elendra's Answer — "Counter all
+/// spells your opponents control and all abilities your opponents control"
+/// must parse as ONE `CounterAll { Or[spell-leg, ability-leg] }`, and the
+/// "for each spell and ability countered this way" Faerie token must survive
+/// as a tracked-set sub-ability. Revert-to-red: without
+/// `try_parse_counter_all_conjunction`, `try_split_targeted_compound` bisects
+/// the compound and the second conjunct lowers to `Effect::Unimplemented`, so
+/// both the `Or`-shape assertion and the no-`Unimplemented` assertion fail.
+#[test]
+fn glen_elendras_answer_counter_all_conjunction_parses_single_or() {
+    let parsed = parse_oracle_text(
+        "This spell can't be countered.\nCounter all spells your opponents control and all abilities your opponents control. Create a 1/1 blue and black Faerie creature token with flying for each spell and ability countered this way.",
+        "Glen Elendra's Answer",
+        &[],
+        &["Instant".to_string()],
+        &[],
+    );
+
+    assert_eq!(parsed.abilities.len(), 1, "one spell ability chain");
+    let root = &parsed.abilities[0];
+
+    let Effect::CounterAll { target } = root.effect.as_ref() else {
+        panic!("expected CounterAll, got {:?}", root.effect);
+    };
+    let TargetFilter::Or { filters } = target else {
+        panic!("expected Or of two stack-object populations, got {target:?}");
+    };
+    assert_eq!(filters.len(), 2, "spell leg + ability leg: {filters:?}");
+
+    // Spell leg: And[StackSpell, Typed{controller:Opponent, InZone:Stack}].
+    let has_spell_leg = filters.iter().any(|f| {
+        matches!(
+            f,
+            TargetFilter::And { filters: inner }
+                if inner.iter().any(|x| matches!(x, TargetFilter::StackSpell))
+                    && inner.iter().any(|x| matches!(
+                        x,
+                        TargetFilter::Typed(tf) if tf.controller == Some(ControllerRef::Opponent)
+                    ))
+        )
+    });
+    assert!(
+        has_spell_leg,
+        "spell leg And[StackSpell, opponent] missing: {filters:?}"
+    );
+
+    // Ability leg: StackAbility{controller:Opponent}.
+    let has_ability_leg = filters.iter().any(|f| {
+        matches!(
+            f,
+            TargetFilter::StackAbility {
+                controller: Some(ControllerRef::Opponent),
+                ..
+            }
+        )
+    });
+    assert!(
+        has_ability_leg,
+        "ability leg StackAbility{{opponent}} missing: {filters:?}"
+    );
+
+    assert!(
+        ability_chain_has_token_tracked_set(root),
+        "Faerie Token{{count: TrackedSetSize}} sub-ability must survive"
+    );
+    assert!(
+        !ability_chain_has_unimplemented(root),
+        "no conjunct may lower to Effect::Unimplemented: {root:?}"
+    );
+
+    // Keep-green: the can't-be-countered static is untouched.
+    assert!(
+        parsed
+            .statics
+            .iter()
+            .any(|s| s.mode == StaticMode::CantBeCountered),
+        "CantBeCountered static must remain"
+    );
+}
+
+/// Reach-guard: single-conjunct "Counter all abilities your opponents control"
+/// (Kadena's Silencer trigger effect) must stay a bare
+/// `CounterAll{StackAbility}` — the ≥2-conjunct gate returns None for one
+/// conjunct, so the new `Or` composition never fires.
+#[test]
+fn kadena_silencer_single_counter_all_abilities_unchanged() {
+    let effect = parse_effect("Counter all abilities your opponents control.");
+    let Effect::CounterAll { target } = effect else {
+        panic!("expected CounterAll, got {effect:?}");
+    };
+    assert!(
+        matches!(
+            target,
+            TargetFilter::StackAbility {
+                controller: Some(ControllerRef::Opponent),
+                ..
+            }
+        ),
+        "single conjunct must stay a bare StackAbility, not Or: {target:?}"
+    );
+}
+
+/// Reach-guard: "Exile all other spells and counter all abilities" (Summary
+/// Dismissal) — the leading verb is "exile", so the `counter all `/`counter
+/// each ` gate fails at position 0 and the handler returns None; the primary
+/// stays `ChangeZoneAll`.
+#[test]
+fn summary_dismissal_exile_all_then_counter_unchanged() {
+    let effect = parse_effect("Exile all other spells and counter all abilities.");
+    assert!(
+        matches!(effect, Effect::ChangeZoneAll { .. }),
+        "primary must stay ChangeZoneAll (exile all), got {effect:?}"
+    );
+}
+
+/// Reach-guard: "Counter all spells with those names" (Grimoire Thief) — single
+/// conjunct, no " and all "/" and each " separator, so the handler returns None
+/// and it stays a bare `CounterAll`, never the two-leg `Or`.
+#[test]
+fn grimoire_thief_counter_all_named_spells_unchanged() {
+    let effect = parse_effect("Counter all spells with those names.");
+    let Effect::CounterAll { target } = effect else {
+        panic!("expected CounterAll, got {effect:?}");
+    };
+    assert!(
+        !matches!(target, TargetFilter::Or { .. }),
+        "single conjunct must NOT become an Or: {target:?}"
+    );
+}
