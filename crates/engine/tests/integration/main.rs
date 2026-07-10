@@ -552,6 +552,7 @@ mod nettling_imp_continuity_target;
 mod niko_light_of_hope;
 mod ninjutsu_cluster;
 mod nix_counter_no_mana_spent;
+mod no_witnesses_most_creatures_investigate;
 mod ob_nixilis_captive_kingpin_life_loss;
 mod obeka_splitter_additional_phases;
 mod obliterate_regression;
