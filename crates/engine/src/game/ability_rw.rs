@@ -2262,6 +2262,7 @@ fn legacy_filter_prop(p: &FilterProp) -> bool {
         FilterProp::DifferentNameFrom { filter }
         | FilterProp::TargetsOnly { filter }
         | FilterProp::Targets { filter } => legacy_target_filter(filter),
+        FilterProp::DistinctFrom { reference } => legacy_target_filter(reference),
         FilterProp::SharesQuality { reference, .. } => {
             reference.as_deref().is_some_and(legacy_target_filter)
         }
@@ -2510,6 +2511,7 @@ fn member_bound_filter_prop(p: &FilterProp) -> bool {
         FilterProp::DifferentNameFrom { filter }
         | FilterProp::TargetsOnly { filter }
         | FilterProp::Targets { filter } => member_bound_target_filter(filter),
+        FilterProp::DistinctFrom { reference } => member_bound_target_filter(reference),
         FilterProp::SharesQuality { reference, .. } => {
             reference.as_deref().is_some_and(member_bound_target_filter)
         }

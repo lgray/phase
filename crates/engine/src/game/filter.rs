@@ -125,6 +125,10 @@ fn filter_prop_uses_object_population(prop: &FilterProp) -> bool {
         // so any entry/exit of a matching permanent can flip membership for a
         // pre-existing object. Unconditionally population dependent.
         FilterProp::DifferentNameFrom { .. } => true,
+        // CR 109.1: identity-exclusion against a resolved reference (e.g. the
+        // ability's chosen target) — the reference set can change, so treat as
+        // population dependent, mirroring `DifferentNameFrom`.
+        FilterProp::DistinctFrom { .. } => true,
         // CR 603.4: "shares a quality with" a reference set is population
         // dependent ONLY when a reference filter is present — the reference set
         // is battlefield-derived. The multi-target group-share form
@@ -352,6 +356,11 @@ fn entered_object_perturbs_filter_prop(
         // perturb.
         FilterProp::DifferentNameFrom { filter } => {
             matches_target_filter(state, entered_id, filter, ctx)
+        }
+        // CR 109.1: an entering object perturbs the identity-exclusion iff it
+        // matches the reference filter (it could become a new reference object).
+        FilterProp::DistinctFrom { reference } => {
+            matches_target_filter(state, entered_id, reference, ctx)
         }
         // CR 603.4: the reference set is battlefield-derived only when a
         // reference filter is present (classifier returns false for `None`). The
@@ -3148,6 +3157,10 @@ fn spell_record_matches_property(record: &SpellCastRecord, prop: &FilterProp) ->
         | FilterProp::ToughnessGTPower
         | FilterProp::PowerExceedsBase
         | FilterProp::DifferentNameFrom { .. }
+        // CR 109.1: a spell on the stack is not the ability's chosen target
+        // permanent; identity-exclusion is a live-battlefield predicate the
+        // spell-cast snapshot cannot represent. Fail closed.
+        | FilterProp::DistinctFrom { .. }
         | FilterProp::SharesQuality { .. }
         | FilterProp::WasDealtDamageThisTurn
         | FilterProp::EnteredThisTurn
@@ -4115,6 +4128,39 @@ fn matches_filter_prop(
                 .collect();
             !controlled_names.contains(&obj.name.as_str())
         }
+        // CR 109.1 + CR 120.3: Match objects that are NOT the same object as any
+        // object the `reference` filter resolves to. `ParentTarget` resolves to
+        // the ability's chosen object target(s); other context refs resolve via
+        // the shared event-context machinery (mirrors the `SharesQuality`
+        // reference resolution below). Used by Radiance's "each OTHER creature
+        // that shares a color with it" — excludes the already-damaged target.
+        FilterProp::DistinctFrom { reference } => {
+            // `matches_filter_prop` runs once per candidate object, so short-circuit
+            // via `.any()` rather than collecting the reference ids into a `Vec`.
+            //
+            // NOTE (fail-open asymmetry): the `ParentTarget` arm reads ONLY
+            // `ability.targets` — it lacks the LKI / `recipient_id` /
+            // effect-context fallback ladder that `SharesQuality`'s `ParentTarget`
+            // path carries (see `parent_target_shared_quality_values` below). When
+            // `ability` is `None` or its targets are empty this excludes nothing
+            // (fails open). That is safe for the current Radiance class — the
+            // resolving `DamageAll` sub-ability always carries the chosen target —
+            // but a future reuse in a layer-eval or recipient context would need
+            // the same fallback ladder to avoid a silent double-hit.
+            let is_referenced = if matches!(**reference, TargetFilter::ParentTarget) {
+                source.ability.is_some_and(|ability| {
+                    ability
+                        .targets
+                        .iter()
+                        .any(|t| matches!(t, TargetRef::Object(id) if *id == object_id))
+                })
+            } else {
+                crate::game::targeting::resolve_event_context_targets(state, reference, source.id)
+                    .into_iter()
+                    .any(|t| matches!(t, TargetRef::Object(id) if id == object_id))
+            };
+            !is_referenced
+        }
         // CR 604.3: Match objects in any of the listed zones (OR semantics).
         FilterProp::InAnyZone { zones } => zones.contains(&obj.zone),
         FilterProp::SharesQuality {
@@ -4665,6 +4711,9 @@ fn zone_change_record_matches_property(
         // attachments) — a zone-change snapshot cannot represent it.
         | FilterProp::Modified
         | FilterProp::DifferentNameFrom { .. }
+        // CR 109.1: identity-exclusion is a live-battlefield predicate; a
+        // zone-change snapshot cannot represent it. Fail closed.
+        | FilterProp::DistinctFrom { .. }
         | FilterProp::InAnyZone { .. }
         | FilterProp::SharesQuality { .. }
         | FilterProp::EnteredThisTurn

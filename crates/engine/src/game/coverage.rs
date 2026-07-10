@@ -893,6 +893,7 @@ fn fmt_typed_filter(tf: &TypedFilter) -> String {
             FilterProp::ToughnessGTPower => parts.push("toughness > power".into()),
             FilterProp::PowerExceedsBase => parts.push("power > base power".into()),
             FilterProp::DifferentNameFrom { .. } => parts.push("different name".into()),
+            FilterProp::DistinctFrom { .. } => parts.push("other than target".into()),
             FilterProp::Other { value } => parts.push(value.clone()),
             FilterProp::InAnyZone { zones } => {
                 let zone_strs: Vec<_> = zones.iter().map(fmt_zone).collect();
