@@ -745,6 +745,10 @@ pub(crate) fn drain_pending_continuation(state: &mut GameState, events: &mut Vec
         && state.pending_repeat_until.is_none()
     {
         state.post_replacement_token_choice_applied = None;
+        // CR 614.1a: the Moonlit-scoped "that many" copy count rides the same
+        // full-drain lifetime — clear it alongside the applied seed so it never
+        // leaks into a later, unrelated `EventContextAmount` read.
+        state.post_replacement_token_substitution_count = None;
     }
 }
 

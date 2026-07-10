@@ -3237,6 +3237,7 @@ fn scan_replacement_condition(x: &ReplacementCondition) -> Axes {
         ReplacementCondition::OnlyExtraTurn => Axes::NONE,
         ReplacementCondition::TokenSubtypeMatches { subtypes: _ } => Axes::NONE,
         ReplacementCondition::TokenCoreTypeMatches { core_types: _ } => Axes::NONE,
+        ReplacementCondition::FirstTokenCreationEachTurn { player: _ } => Axes::NONE,
         ReplacementCondition::ExceptFirstDrawInDrawStep => Axes::NONE,
         ReplacementCondition::IfControlsMatching { filter, minimum: _ } => {
             let mut acc = Axes::NONE;

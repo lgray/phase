@@ -17487,6 +17487,19 @@ pub enum ReplacementCondition {
     /// two are NOT a sibling-cluster smell. Matched case-exactly against the
     /// proposed `TokenSpec.characteristics.core_types`.
     TokenCoreTypeMatches { core_types: Vec<CoreType> },
+    /// CR 614.1a + CR 614.4: "the first time you would create one or more tokens
+    /// each turn" — a per-source, from-existence once-per-turn gate on a
+    /// your-owned `CreateToken` event (Moonlit Meditation). `player` carries the
+    /// reusable you/opponent axis (`ControllerRef`), mirroring the other
+    /// controller-relative conditions; the eval arm ignores it because ownership
+    /// is enforced by the replacement's `token_owner_scope`, but keeping the
+    /// field lets an opponent-scoped "first time an opponent would create…"
+    /// variant reuse this condition without a new sibling. The once-per-turn
+    /// allowance is tracked per source object in
+    /// `GameState::first_token_replacement_used_this_turn` (from-existence, NOT
+    /// global — CR 614.4: a source that entered mid-turn after an earlier
+    /// creation still fires).
+    FirstTokenCreationEachTurn { player: ControllerRef },
     /// CR 121.1 + CR 504.1 + CR 614.6: "except the first one you draw in each
     /// of your draw steps" — the replacement applies to every card-draw EXCEPT
     /// the draw step's mandatory first draw (the active player's CR 504.1

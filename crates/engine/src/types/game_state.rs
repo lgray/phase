@@ -6620,6 +6620,17 @@ pub struct GameState {
     pub post_replacement_token_choice_applied:
         Option<std::collections::HashSet<crate::types::proposed_event::AppliedReplacementKey>>,
 
+    /// CR 614.1a: "that many" copy count for a `CopyTokenOf` substitution
+    /// replacement (Moonlit Meditation). Seeded from the replaced
+    /// `CreateToken` event's `count` when the substitution is accepted, read by
+    /// `QuantityRef::EventContextAmount` (highest priority) while the
+    /// substitution continuation resolves, and cleared at true full-drain — same
+    /// transient, mid-resolution lifetime as `post_replacement_token_choice_applied`
+    /// above (and, like it, excluded from `PartialEq`). `None` outside a
+    /// copy-token substitution.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub post_replacement_token_substitution_count: Option<i32>,
+
     /// CR 701.50a + CR 614.5 + CR 616.1f: deferred connive link of a connive
     /// replacement whose leading draw parked a replacement-ordering choice. See
     /// `PendingConniveReentry`. Drained only by
@@ -7214,6 +7225,16 @@ pub struct GameState {
     /// (keyed by `(source_id, ability_index)`). Cleared at turn start.
     #[serde(default)]
     pub crew_activated_this_turn: HashSet<ObjectId>,
+    /// CR 614.4 + CR 614.1: replacement sources (by `ObjectId`) whose "first time
+    /// you would create one or more tokens each turn" replacement
+    /// (`ReplacementCondition::FirstTokenCreationEachTurn`, Moonlit Meditation)
+    /// already applied to a your-owned `CreateToken` this turn. From-existence,
+    /// NOT global — a Moonlit entering mid-turn after an earlier creation is
+    /// absent here and therefore still fires. Cleared at turn start (like
+    /// `crew_activated_this_turn`; preserved by `analysis/resource.rs` for loop
+    /// detection).
+    #[serde(default)]
+    pub first_token_replacement_used_this_turn: HashSet<ObjectId>,
     /// CR 606.1 + CR 606.3 + CR 603.4: Per-player count of loyalty-ability
     /// activations this turn. Incremented in
     /// `planeswalker::finalize_loyalty_activation` whenever any loyalty ability
@@ -8814,6 +8835,7 @@ impl GameState {
             post_replacement_event_source: None,
             post_replacement_event_target: None,
             post_replacement_token_choice_applied: None,
+            post_replacement_token_substitution_count: None,
             pending_connive_reentry: None,
             pending_multi_draw: None,
             pending_life_total_assignment: None,
@@ -8889,6 +8911,7 @@ impl GameState {
             activated_abilities_this_turn: HashMap::new(),
             activated_abilities_this_game: HashMap::new(),
             crew_activated_this_turn: HashSet::new(),
+            first_token_replacement_used_this_turn: HashSet::new(),
             loyalty_abilities_activated_this_turn: HashMap::new(),
             extra_loyalty_activations_this_turn: HashMap::new(),
             exerted_this_turn: std::collections::HashSet::new(),
@@ -9574,6 +9597,8 @@ impl PartialEq for GameState {
             && self.activated_abilities_this_turn == other.activated_abilities_this_turn
             && self.activated_abilities_this_game == other.activated_abilities_this_game
             && self.crew_activated_this_turn == other.crew_activated_this_turn
+            && self.first_token_replacement_used_this_turn
+                == other.first_token_replacement_used_this_turn
             && self.loyalty_abilities_activated_this_turn
                 == other.loyalty_abilities_activated_this_turn
             && self.extra_loyalty_activations_this_turn == other.extra_loyalty_activations_this_turn

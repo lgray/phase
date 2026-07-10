@@ -632,6 +632,13 @@ fn parse_replacement_line_inner(text: &str, card_name: &str) -> Option<Replaceme
         || nom_primitives::scan_contains(&lower, "would create one or more tokens")
         || nom_primitives::scan_contains(&lower, "would create a token")
     {
+        // CR 614.1a + CR 614.4: Moonlit Meditation's "the first time … each turn"
+        // copy-of-host substitution must be tried first — its specific antecedent
+        // tag cannot steal Jinnie ("if you would create…") or Doubling Season
+        // ("if an effect would…").
+        if let Some(def) = parse_first_time_token_copy_of_host_replacement(&lower, &text) {
+            return Some(def);
+        }
         if let Some(def) = parse_optional_token_substitution_choice(&lower, &text) {
             return Some(def);
         }
@@ -7097,6 +7104,69 @@ fn parse_optional_token_substitution_choice(
                     branches,
                 },
             ))
+            .description(original_text.to_string()),
+    )
+}
+
+/// CR 614.1a + CR 614.4: "The first time you would create one or more tokens each
+/// turn, you may instead create that many tokens that are copies of enchanted
+/// permanent." (Moonlit Meditation). A once-per-turn, per-source, optional
+/// `CreateToken` substitution whose copies are of the Aura's host
+/// (`TargetFilter::AttachedTo`). The specific "the first time … each turn"
+/// antecedent tag is why this must dispatch BEFORE
+/// `parse_optional_token_substitution_choice` (Jinnie "if you would create…") and
+/// the Doubling Season family ("if an effect would…") — it cannot steal either.
+fn parse_first_time_token_copy_of_host_replacement(
+    lower: &str,
+    original_text: &str,
+) -> Option<ReplacementDefinition> {
+    let (host, remainder) = nom_on_lower(original_text, lower, |input| {
+        let (input, _) =
+            tag("the first time you would create one or more tokens each turn, ").parse(input)?;
+        let (input, _) =
+            tag("you may instead create that many tokens that are copies of ").parse(input)?;
+        let (input, host) = alt((
+            value(TargetFilter::AttachedTo, tag("enchanted permanent")),
+            value(TargetFilter::AttachedTo, tag("enchanted creature")),
+            value(TargetFilter::AttachedTo, tag("enchanted artifact")),
+        ))
+        .parse(input)?;
+        let (input, _) = opt(char('.')).parse(input)?;
+        Ok((input, host))
+    })?;
+
+    if !remainder.trim().is_empty() {
+        return None;
+    }
+
+    // CR 614.1a: replacement on token creation. CR 111.2 + CR 109.5: "you would
+    // create" scopes to the controller via the token's owner
+    // (`token_owner_scope`), NOT `valid_card` — a `CreateToken` event has no
+    // affected object id, so a `valid_card` gate would be unsatisfiable. The
+    // per-turn window is enforced by `FirstTokenCreationEachTurn`; "that many"
+    // is `EventContextAmount` (the replaced event's `count`).
+    Some(
+        ReplacementDefinition::new(ReplacementEvent::CreateToken)
+            .token_owner_scope(ControllerRef::You)
+            .condition(ReplacementCondition::FirstTokenCreationEachTurn {
+                player: ControllerRef::You,
+            })
+            .execute(AbilityDefinition::new(
+                AbilityKind::Spell,
+                Effect::CopyTokenOf {
+                    target: host,
+                    owner: TargetFilter::Controller,
+                    source_filter: None,
+                    enters_attacking: false,
+                    tapped: false,
+                    count: QuantityExpr::Ref {
+                        qty: QuantityRef::EventContextAmount,
+                    },
+                    extra_keywords: vec![],
+                    additional_modifications: vec![],
+                },
+            ))
+            .mode(ReplacementMode::Optional { decline: None })
             .description(original_text.to_string()),
     )
 }

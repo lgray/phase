@@ -21,7 +21,6 @@ use crate::types::proposed_event::{
     CopyTokenSpec, EtbTapState, ProposedEvent, TokenCharacteristics,
 };
 use crate::types::zones::Zone;
-use std::collections::HashSet;
 use std::collections::VecDeque;
 use std::sync::Arc;
 
@@ -293,7 +292,17 @@ fn drain_copy_token_resolution(
             copy: Some(batch.copy),
             enter_tapped,
             count: batch.count,
-            applied: HashSet::new(),
+            // CR 614.6 + CR 616.1: a copy-token-substitution continuation
+            // (Moonlit Meditation) inherits the originating event's applied set
+            // so the substitution replacement cannot re-prompt on its own copy
+            // tokens. `None` for normal copy effects (Springheart, Twinflame,
+            // populate) → empty set → byte-identical to the prior
+            // `HashSet::new()`. A *different* source's replacement (Doubling
+            // Season's rid) is absent from the seed and still applies (#1511).
+            applied: state
+                .post_replacement_token_choice_applied
+                .clone()
+                .unwrap_or_default(),
         };
 
         match crate::game::replacement::replace_event(state, proposed, events) {
