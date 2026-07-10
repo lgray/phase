@@ -2154,7 +2154,12 @@ fn collect_target_slots(
                 optional: ability.optional_targeting,
             });
         }
-    } else if let Effect::EachDealsDamageEqualToPower { sources, recipient } = &ability.effect {
+    } else if let Effect::EachDealsDamageEqualToPower {
+        sources,
+        recipient,
+        extra_source,
+    } = &ability.effect
+    {
         // CR 115.1d + CR 115.1: "Up to two target creatures you control each deal
         // damage equal to their power to target creature." `target_filter()`
         // returns None for this effect, so surface both axes here.
@@ -2188,6 +2193,21 @@ fn collect_target_slots(
                 acc.push(TargetSelectionSlot {
                     legal_targets: source_legal,
                     optional: false,
+                });
+            }
+
+            // CR 115.4 + CR 601.2c: group B — one optional slot, AFTER the
+            // group-A sources and BEFORE the recipient. Its `FilterProp::Another`
+            // enforces distinctness from every group-A pick at selection time
+            // (see `legal_targets_for_selected_slot`). Kept before the recipient
+            // push so the resolver's `[source.., recipient]` split treats a
+            // chosen group-B creature as a source, not the recipient.
+            if let Some(extra) = extra_source {
+                let extra_legal =
+                    legal_targets_for_ability_filter(state, ability, extra, &acc.slots);
+                acc.push(TargetSelectionSlot {
+                    legal_targets: extra_legal,
+                    optional: true,
                 });
             }
 
@@ -3864,7 +3884,12 @@ fn collect_target_slot_specs(
                 instance: id,
             });
         }
-    } else if let Effect::EachDealsDamageEqualToPower { sources, recipient } = &ability.effect {
+    } else if let Effect::EachDealsDamageEqualToPower {
+        sources,
+        recipient,
+        extra_source,
+    } = &ability.effect
+    {
         // CR 115.1d + CR 115.1: Mirror the `collect_target_slots` branch
         // one-for-one — the variable-count SOURCE slots first (sharing one
         // instance per CR 115.3 so the same creature can't fill two source
@@ -3891,6 +3916,19 @@ fn collect_target_slot_specs(
                 specs.push(TargetSlotSpec {
                     filter: sources.clone(),
                     optional: false,
+                    instance: id,
+                });
+            }
+            // CR 115.4 + CR 601.2c: group-B spec — its OWN instance, between the
+            // group-A specs and the recipient spec. Mirrors the `collect_target_slots`
+            // group-B slot so specs line up one-for-one (the slot-count
+            // debug_assert in `build_target_slots_labelled` stays balanced).
+            if let Some(extra) = extra_source {
+                let id = TargetInstanceId(*next_instance);
+                *next_instance += 1;
+                specs.push(TargetSlotSpec {
+                    filter: extra.clone(),
+                    optional: true,
                     instance: id,
                 });
             }

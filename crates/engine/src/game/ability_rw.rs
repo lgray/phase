@@ -2879,8 +2879,14 @@ fn legacy_effect(x: &Effect) -> bool {
         Effect::Fight { target, subject } => {
             legacy_target_filter(target) || legacy_target_filter(subject)
         }
-        Effect::EachDealsDamageEqualToPower { sources, recipient } => {
-            legacy_target_filter(sources) || legacy_target_filter(recipient)
+        Effect::EachDealsDamageEqualToPower {
+            sources,
+            recipient,
+            extra_source,
+        } => {
+            legacy_target_filter(sources)
+                || legacy_target_filter(recipient)
+                || extra_source.as_ref().is_some_and(legacy_target_filter)
         }
         // CR 120: each source deals damage; `recipient` (`Shared`) can be a context
         // anaphor (ParentTarget/TriggeringSource) ⇒ descend all tag-bearing fields.

@@ -7371,8 +7371,8 @@ pub(super) fn try_parse_damage_with_remainder<'a>(
         // `wrap_target_subject_damage` for the direct subject form, or by the
         // one-sided-fight prepend for the "They each ..." back-reference) and the
         // source is `EachTarget`. Allies at Last, Coordinated Clobbering, Terrific
-        // Team-Up. (Graceful Takedown's compound source set is deferred — see
-        // `is_compound_source_each_power_damage`.)
+        // Team-Up. (Graceful Takedown's compound source set is now supported via
+        // `EachDealsDamageEqualToPower`'s `extra_source` group.)
         if let Some(clause) =
             try_parse_each_source_power_damage(qty_text, amount_text, before_to, ctx)
         {

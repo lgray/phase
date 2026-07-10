@@ -389,29 +389,157 @@ fn bill_the_pony_sacrifice_ability_is_until_end_of_turn_shape() {
     }
 }
 
-/// CR 601.2c + CR 115.1: HONEST DEFERRAL — Graceful Takedown's heterogeneous
-/// compound source set ("any number of target enchanted creatures you control
-/// AND up to one other target creature you control each deal damage equal to
-/// their power …") cannot be represented by the single-filter `TargetOnly`
-/// source picker, so the whole clause must lower to `Effect::Unimplemented`
-/// rather than a partial (wrong-but-green) parse that drops the second group.
-/// Guards the coverage-honesty fix: if the compound were silently folded to
-/// the enchanted-creature group, this asserts the gap node is still present.
+/// CR 115.4 + CR 601.2c: Graceful Takedown's heterogeneous compound source set
+/// ("any number of target enchanted creatures you control AND up to one other
+/// target creature you control each deal damage equal to their power to target
+/// creature you don't control") parses to `EachDealsDamageEqualToPower` with the
+/// unbounded group-A source set, the optional group-B `extra_source`, and the
+/// opponent recipient. Runtime damage semantics (Σ powers, group-B distinctness)
+/// are covered by `tests/multi_source_each_power_damage.rs`.
 #[test]
-fn graceful_takedown_compound_source_is_honest_unimplemented() {
+fn graceful_takedown_compound_source_parses_each_deals() {
+    use crate::types::ability::{ControllerRef, FilterProp, MultiTargetSpec, TypeFilter};
     let parsed = parse_oracle_text(
             "Any number of target enchanted creatures you control and up to one other target creature you control each deal damage equal to their power to target creature you don't control.",
             "Graceful Takedown",
             &[],
-            &["Instant".to_string()],
+            &["Sorcery".to_string()],
             &[],
         );
     assert_eq!(parsed.abilities.len(), 1, "expected one ability");
+    let ability = &parsed.abilities[0];
+    let Effect::EachDealsDamageEqualToPower {
+        sources,
+        recipient,
+        extra_source,
+    } = &*ability.effect
+    else {
+        panic!(
+            "expected EachDealsDamageEqualToPower, got {:?}",
+            ability.effect
+        );
+    };
+
+    // CR 303.4 + CR 109.5: group A — enchanted creatures YOU control.
+    let TargetFilter::Typed(a) = sources else {
+        panic!("expected Typed group-A source filter, got {sources:?}");
+    };
+    assert!(a.type_filters.contains(&TypeFilter::Creature));
+    assert_eq!(a.controller, Some(ControllerRef::You));
     assert!(
-        matches!(*parsed.abilities[0].effect, Effect::Unimplemented { .. }),
-        "compound source group must defer to Unimplemented, got {:?}",
-        parsed.abilities[0].effect
+        a.properties.contains(&FilterProp::EnchantedBy),
+        "group A must be enchanted-creature scoped, got {a:?}"
     );
+
+    // CR 115.4 + CR 109.5: group B — one OTHER creature you control.
+    let Some(TargetFilter::Typed(b)) = extra_source.as_ref() else {
+        panic!("expected Some(Typed) group-B extra_source, got {extra_source:?}");
+    };
+    assert!(b.type_filters.contains(&TypeFilter::Creature));
+    assert_eq!(b.controller, Some(ControllerRef::You));
+    assert!(
+        b.properties.contains(&FilterProp::Another),
+        "group B must carry the Another (\"other\") distinctness marker, got {b:?}"
+    );
+
+    // CR 115.1 + CR 109.4: recipient — a creature you DON'T control.
+    assert!(matches!(recipient, TargetFilter::Typed(r)
+            if r.type_filters.contains(&TypeFilter::Creature)
+            && r.controller == Some(ControllerRef::Opponent)));
+
+    // CR 115.1d: "any number of" → 0..unbounded group-A count.
+    assert_eq!(ability.multi_target, Some(MultiTargetSpec::unlimited(0)));
+}
+
+/// CR 115.4: the group-B parser REQUIRES the "other" marker. Without it — "and
+/// up to one target creature you control" (no "other") — `parse_extra_other_source`
+/// returns None, the verb tag then misses, and the whole compound line falls
+/// through rather than forming an `EachDealsDamageEqualToPower` with a group-B
+/// `extra_source`. Reach-guard: the WITH-"other" variant DOES form the compound,
+/// proving the negative isn't vacuous (the only delta is the "other" token).
+#[test]
+fn compound_each_deals_group_b_requires_other_marker() {
+    let no_other = parse_effect(
+            "any number of target enchanted creatures you control and up to one target creature you control each deal damage equal to their power to target creature you don't control",
+        );
+    assert!(
+        !matches!(
+            no_other,
+            Effect::EachDealsDamageEqualToPower {
+                extra_source: Some(_),
+                ..
+            }
+        ),
+        "without the \"other\" marker the group-B compound must NOT form, got {no_other:?}"
+    );
+
+    // Reach-guard (positive): adding only the "other" token forms the compound.
+    let with_other = parse_effect(
+            "any number of target enchanted creatures you control and up to one other target creature you control each deal damage equal to their power to target creature you don't control",
+        );
+    assert!(
+        matches!(
+            with_other,
+            Effect::EachDealsDamageEqualToPower {
+                extra_source: Some(_),
+                ..
+            }
+        ),
+        "with the \"other\" marker the group-B compound must form, got {with_other:?}"
+    );
+}
+
+/// CR 115.1 + CR 115.4: the SINGULAR-group-A compound (Friendly Rivalry: "Target
+/// creature you control and up to one other target legendary creature you control
+/// each deal damage equal to their power to target creature you don't control").
+/// The bare (no-quantifier) "target " group A is exactly-one; the "other" group B
+/// is the `extra_source`. This is the SAME compound class the deleted honest-
+/// deferral gate covered — without the singular count arm this card regresses to
+/// a wrong-but-green single-group parse that silently drops group B, so the
+/// `extra_source: Some(_)` assertion flips if the count-1 arm is reverted.
+#[test]
+fn friendly_rivalry_singular_group_a_compound_parses_each_deals() {
+    use crate::types::ability::{ControllerRef, FilterProp, MultiTargetSpec, TypeFilter};
+    use crate::types::card_type::Supertype;
+    let def = parse_effect_chain(
+            "Target creature you control and up to one other target legendary creature you control each deal damage equal to their power to target creature you don't control.",
+            AbilityKind::Spell,
+        );
+    let Effect::EachDealsDamageEqualToPower {
+        sources,
+        recipient,
+        extra_source,
+    } = &*def.effect
+    else {
+        panic!("expected EachDealsDamageEqualToPower, got {:?}", def.effect);
+    };
+    // Group A: exactly one creature you control.
+    assert!(matches!(sources, TargetFilter::Typed(a)
+            if a.type_filters.contains(&TypeFilter::Creature)
+            && a.controller == Some(ControllerRef::You)));
+    assert_eq!(def.multi_target, Some(MultiTargetSpec::fixed(1, 1)));
+    // Group B: the "other" legendary creature you control (the dropped group).
+    let Some(TargetFilter::Typed(b)) = extra_source.as_ref() else {
+        panic!("expected Some(Typed) group-B extra_source, got {extra_source:?}");
+    };
+    assert!(b.type_filters.contains(&TypeFilter::Creature));
+    assert!(
+        b.properties.contains(&FilterProp::Another),
+        "group B must carry the Another marker, got {b:?}"
+    );
+    // CR 205.4a: group B is LEGENDARY-restricted (distinct from Graceful's plain
+    // creature group B) — the count-1 arm must compose with the supertype filter.
+    assert!(
+        b.properties.contains(&FilterProp::HasSupertype {
+            value: Supertype::Legendary
+        }),
+        "group B must carry the Legendary supertype filter, got {b:?}"
+    );
+    assert_eq!(b.controller, Some(ControllerRef::You));
+    // Recipient: a creature you don't control.
+    assert!(matches!(recipient, TargetFilter::Typed(r)
+            if r.type_filters.contains(&TypeFilter::Creature)
+            && r.controller == Some(ControllerRef::Opponent)));
 }
 
 /// CR 205.2a + CR 608.2c: the card-type form of the for-each-category exile
@@ -478,10 +606,9 @@ fn for_each_category_exile_does_not_shadow_put_to_hand() {
     );
 }
 
-/// CR 601.2c: the honest-deferral guard must NOT trip the single-group forms.
-/// Allies at Last ("up to two target creatures you control each deal damage
-/// equal to their power …") has no "and … other target" second group, so it
-/// must still lower to the `EachTarget` source picker, not `Unimplemented`.
+/// CR 601.2c: the single-group form ("up to two target creatures you control
+/// each deal damage equal to their power …") has no "and … other target" second
+/// group, so it must lower to the `EachTarget` source picker, not `Unimplemented`.
 #[test]
 fn single_group_each_power_damage_not_deferred() {
     let clause = parse_effect_clause(
@@ -493,12 +620,6 @@ fn single_group_each_power_damage_not_deferred() {
         "single-group form must not be deferred, got {:?}",
         clause.effect
     );
-    assert!(
-            !is_compound_source_each_power_damage(
-                "up to two target creatures you control each deal damage equal to their power to target creature an opponent controls"
-            ),
-            "single-group form must not match the compound-source detector"
-        );
 }
 
 /// CR 120.1 + CR 601.2c: SHAPE — the direct-subject multi-source damage
@@ -514,7 +635,10 @@ fn multi_source_each_power_damage_direct_subject_shape() {
             "up to two target creatures you control each deal damage equal to their power to target creature an opponent controls",
             &mut ParseContext::default(),
         );
-    let Effect::EachDealsDamageEqualToPower { sources, recipient } = &clause.effect else {
+    let Effect::EachDealsDamageEqualToPower {
+        sources, recipient, ..
+    } = &clause.effect
+    else {
         panic!(
             "expected EachDealsDamageEqualToPower, got {:?}",
             clause.effect
@@ -563,7 +687,10 @@ fn each_deals_damage_equal_to_power_up_to_two() {
             "Up to two target creatures you control each deal damage equal to their power to another target creature.",
             AbilityKind::Spell,
         );
-    let Effect::EachDealsDamageEqualToPower { sources, recipient } = &*def.effect else {
+    let Effect::EachDealsDamageEqualToPower {
+        sources, recipient, ..
+    } = &*def.effect
+    else {
         panic!("expected EachDealsDamageEqualToPower, got {:?}", def.effect);
     };
     // CR 115.1: the source set is a creature controlled by the caster.
@@ -591,7 +718,7 @@ fn each_deals_damage_equal_to_power_all_in_scope_cards() {
             "Up to two target creatures you control each deal damage equal to their power to target creature an opponent controls.",
             // Band Together
             "Up to two target creatures you control each deal damage equal to their power to another target creature.",
-            // Friendly Rivalry / Graceful Takedown
+            // Friendly Rivalry
             "Up to two target creatures you control each deal damage equal to their power to target creature you don't control.",
         ];
     for line in lines {

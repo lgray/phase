@@ -2,7 +2,7 @@ use crate::parser::oracle_nom::error::OracleError;
 use nom::branch::alt;
 use nom::bytes::complete::{tag, take_till, take_until};
 use nom::character::complete::multispace0;
-use nom::combinator::{all_consuming, map, opt, rest, value, verify};
+use nom::combinator::{all_consuming, map, opt, peek, rest, value, verify};
 use nom::multi::separated_list1;
 use nom::sequence::{delimited, preceded, terminated};
 use nom::Parser;
@@ -5317,11 +5317,20 @@ pub(super) fn try_parse_each_deals_damage_equal_to_power(text: &str) -> Option<P
         return None;
     }
 
+    // CR 115.4 + CR 601.2c: optional group B — "and up to one other target
+    // creature you control" (Graceful Takedown). Parsed BEFORE the verb tag; a
+    // single-group card's remainder starts "each …", so `tag("and ")` fails and
+    // `extra_source` stays None (byte-identical to the pre-group-B behavior).
+    let after_sources_trimmed = after_sources.trim_start();
+    let (extra_source, after_group_b) = match parse_extra_other_source(after_sources_trimmed) {
+        Some((f, rest)) => (Some(f), rest.trim_start()),
+        None => (None, after_sources_trimmed),
+    };
+
     // CR 120.1: the verb phrase. Each chosen source deals damage equal to its own
     // power. `parse()` returns `(remaining, output)` — bind the remaining text.
-    let after_sources_trimmed = after_sources.trim_start();
     let after_verb = match tag::<_, _, OracleError<'_>>("each deal damage equal to their power to ")
-        .parse(after_sources_trimmed)
+        .parse(after_group_b)
     {
         Ok((rest, _)) => rest,
         // CR 810: the team-up shape carrying an unmodelable "your team controls"
@@ -5351,10 +5360,43 @@ pub(super) fn try_parse_each_deals_damage_equal_to_power(text: &str) -> Option<P
         return None;
     }
 
+    // SINGLE-CONSTRUCTION-SITE INVARIANT: this is the sole place
+    // `EachDealsDamageEqualToPower` is built. `extra_source` is a parse-time
+    // filter carried by `#[derive(Clone)]`, never a resolved target, so no
+    // copy/retarget/control-change arm can drop it (retarget's `target_filter()`
+    // returns None for this effect → no-op) and the resolver reads only the flat
+    // `ability.targets` vector, never `extra_source`.
     Some(ParsedEffectClause {
         multi_target: Some(multi_target),
-        ..super::parsed_clause(Effect::EachDealsDamageEqualToPower { sources, recipient })
+        ..super::parsed_clause(Effect::EachDealsDamageEqualToPower {
+            sources,
+            recipient,
+            extra_source,
+        })
     })
+}
+
+/// CR 115.4 + CR 601.2c: optional second source group of a compound each-deals
+/// line — "and up to one OTHER target creature you control". The "other" marker
+/// (`FilterProp::Another`) is REQUIRED: "and up to one target ..." (no "other")
+/// returns None → the caller's verb tag then misses → the whole line falls
+/// through (no false green). Returns the group-B `TargetFilter` and the
+/// remaining text after it.
+///
+// ponytail: "up to one" is the only attested cardinality; a future "up to N
+// other" extends here via `parse_number`, not proliferation.
+fn parse_extra_other_source(input: &str) -> Option<(TargetFilter, &str)> {
+    let (after_and, _) = tag::<_, _, OracleError<'_>>("and ").parse(input).ok()?;
+    let (after_qty, _) = tag::<_, _, OracleError<'_>>("up to one ")
+        .parse(after_and)
+        .ok()?;
+    let (filter, rest) = parse_target(after_qty);
+    let has_other = matches!(&filter, TargetFilter::Typed(tf)
+        if tf.properties.iter().any(|p| matches!(p, FilterProp::Another)));
+    if !target_filter_is_targeted_creature(&filter) || !has_other {
+        return None;
+    }
+    Some((filter, rest))
 }
 
 /// CR 120.1 + CR 608.2c: "each <object-class filter> [you control] deals N damage
@@ -5516,7 +5558,8 @@ fn is_object_class_source(filter: &TargetFilter) -> bool {
 
 /// CR 115.1d: Parse the leading source-count quantifier of the team-up damage
 /// line and return the remaining text plus the `MultiTargetSpec` it encodes.
-/// "up to two" → 0..=2, "one or two" → 1..=2, "two" → exactly 2.
+/// "up to two" → 0..=2, "one or two" → 1..=2, "two" → exactly 2, "any number
+/// of" → 0..unbounded. A bare singular "target …" (no quantifier) → exactly 1.
 fn parse_each_deals_source_count(lower: &str) -> Option<(&str, MultiTargetSpec)> {
     alt((
         map(tag::<_, _, OracleError<'_>>("up to two "), |_| {
@@ -5524,6 +5567,17 @@ fn parse_each_deals_source_count(lower: &str) -> Option<(&str, MultiTargetSpec)>
         }),
         map(tag("one or two "), |_| MultiTargetSpec::fixed(1, 2)),
         map(tag("two "), |_| MultiTargetSpec::fixed(2, 2)),
+        // CR 115.1d: unbounded group-A quantifier ("any number of target
+        // enchanted creatures you control", Graceful Takedown) → 0..unbounded.
+        map(tag("any number of "), |_| MultiTargetSpec::unlimited(0)),
+        // CR 115.1: singular group A with NO quantifier ("Target creature you
+        // control and up to one other target legendary creature …", Friendly
+        // Rivalry) → exactly one. `peek` leaves "target " unconsumed so
+        // `parse_target` reads the keyword exactly as the quantified arms do.
+        // Must be LAST — the quantified prefixes above never start with "target".
+        map(peek(tag::<_, _, OracleError<'_>>("target ")), |_| {
+            MultiTargetSpec::fixed(1, 1)
+        }),
     ))
     .parse(lower)
     .ok()

@@ -2185,9 +2185,16 @@ fn effect_details(effect: &Effect) -> Vec<(String, String)> {
             d.push(("target".into(), fmt_target(target)));
         }
         Effect::ApplyPostReplacementDamage { .. } => {}
-        Effect::EachDealsDamageEqualToPower { sources, recipient } => {
+        Effect::EachDealsDamageEqualToPower {
+            sources,
+            recipient,
+            extra_source,
+        } => {
             d.push(("sources".into(), fmt_target(sources)));
             d.push(("recipient".into(), fmt_target(recipient)));
+            if let Some(extra) = extra_source {
+                d.push(("extra_source".into(), fmt_target(extra)));
+            }
         }
         Effect::EachSourceDealsDamage {
             sources,

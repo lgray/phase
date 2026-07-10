@@ -360,10 +360,17 @@ fn scan_effect(x: &Effect) -> Axes {
             amount: _,
             is_combat: _,
         } => Axes::NONE,
-        Effect::EachDealsDamageEqualToPower { sources, recipient } => {
+        Effect::EachDealsDamageEqualToPower {
+            sources,
+            recipient,
+            extra_source,
+        } => {
             let mut acc = Axes::NONE;
             acc = acc.or(scan_target_filter(sources));
             acc = acc.or(scan_target_filter(recipient));
+            if let Some(extra) = extra_source {
+                acc = acc.or(scan_target_filter(extra));
+            }
             acc
         }
         Effect::OpponentGuess { guesser, subject } => {

@@ -6945,17 +6945,6 @@ fn parse_effect_clause_inner(text: &str, ctx: &mut ParseContext) -> ParsedEffect
             return parsed_clause(effect);
         }
     }
-    // CR 601.2c + CR 115.1: A heterogeneous compound source set ("<group A> and
-    // up to one other target <group B> each deal damage equal to their power …",
-    // Graceful Takedown) cannot be represented by the single-filter `TargetOnly`
-    // source picker — the second group would be silently dropped. Defer the whole
-    // clause honestly so coverage stays red rather than claiming partial support.
-    if is_compound_source_each_power_damage(text) {
-        return parsed_clause(Effect::unimplemented(
-            "multi_source_compound_each_power_damage",
-            text,
-        ));
-    }
     // CR 311.7 + CR 607.2d / CR 607.2m (by analogy): "each player who last chose
     // <A> chooses <B>, and vice versa" (Two Streams Facility's chaos swap). The
     // effect fans internally, so it lands with no `player_scope`. Matched here,
@@ -17853,58 +17842,6 @@ fn damage_clause_is_each_target(effect: &Effect) -> bool {
             ..
         }
     )
-}
-
-/// CR 601.2c + CR 115.1: True when the subject of a multi-source per-power
-/// damage clause is a HETEROGENEOUS compound source set — two distinct targeted
-/// groups joined by "and", where the second is introduced by an "other target"
-/// quantifier (Graceful Takedown: "any number of target enchanted creatures you
-/// control **and up to one other target creature you control** each deal damage
-/// equal to their power …"). The single-`target` `TargetOnly` source picker can
-/// represent only ONE filter + ONE `MultiTargetSpec`, so the second group's
-/// targets would be silently dropped (unreachable as damage sources). This is a
-/// distinct targeting shape (two cardinality-constrained heterogeneous target
-/// slots), not a leaf parameterization of the single-group picker, so the clause
-/// is deferred to an honest `Unimplemented` rather than parsed wrong-but-green.
-///
-/// `text` is the full (original-case) clause text. Matches only when BOTH the
-/// multi-source per-power tail ("each deal damage equal to their power") AND a
-/// preceding "and <up-to-N / another / any number of> other target …" group are
-/// present, so single-group forms (Allies at Last, Coordinated Clobbering,
-/// Terrific Team-Up) are untouched.
-fn is_compound_source_each_power_damage(text: &str) -> bool {
-    let lower = text.to_ascii_lowercase();
-    // The multi-source per-power tail must be present (this is the `EachTarget`
-    // class). Without it, a stray "and up to one other target …" belongs to some
-    // other effect and is not our concern.
-    if nom_primitives::scan_split_at_phrase(&lower, |i| {
-        tag::<_, _, OracleError<'_>>("each deal damage equal to their power").parse(i)
-    })
-    .is_none()
-    {
-        return false;
-    }
-    // A second targeted source group joined to the first by "and", introduced by
-    // an explicit cardinality quantifier and the "other target" marker. The
-    // quantifier alt covers the attested forms ("up to one/two …", "another",
-    // "any number of"); the trailing "other target" is the distinguishing token
-    // that separates a second source GROUP from an intra-filter "and" (e.g.
-    // "creature and planeswalker").
-    nom_primitives::scan_split_at_phrase(&lower, |i| {
-        preceded(
-            tag::<_, _, OracleError<'_>>("and "),
-            preceded(
-                alt((
-                    recognize(pair(tag("up to "), take_until(" other target"))),
-                    tag("another"),
-                    tag("any number of"),
-                )),
-                preceded(opt(tag(" ")), tag("other target ")),
-            ),
-        )
-        .parse(i)
-    })
-    .is_some()
 }
 
 /// CR 208.1 + CR 608.2: Rebind a multi-source damage clause's anaphoric
