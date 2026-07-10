@@ -1809,7 +1809,8 @@ pub fn convert_available_action(action: &GameAction, id: String) -> AvailableAct
         | GameAction::CancelAutoPass
         | GameAction::SetPhaseStops { .. }
         | GameAction::SetPriorityYield { .. }
-        | GameAction::SetMayTriggerAutoChoice { .. } => {
+        | GameAction::SetMayTriggerAutoChoice { .. }
+        | GameAction::SetTriggerOrderTemplate { .. } => {
             AvailableActionConversion::Unsupported("local.autopass-settings-unsupported")
         }
         GameAction::AssignCombatDamage { .. } => AvailableActionConversion::Skip,

@@ -3885,6 +3885,185 @@ fn group_is_order_independent(state: &GameState, group: &[PendingTriggerContext]
     })
 }
 
+/// CR 603.3b: the ephemeral-tier (`ThisObject`) source multiset of a trigger group,
+/// keyed on each trigger's concrete `(source_id, incarnation)` identity — a
+/// trigger-context identity, NOT battlefield presence, so a dies/LTB batch (sources in
+/// the graveyard) still matches.
+fn group_thisobject_sources(
+    group: &[PendingTriggerContext],
+) -> Vec<crate::types::game_state::YieldTarget> {
+    use crate::types::game_state::YieldTarget;
+    group
+        .iter()
+        .map(|ctx| YieldTarget::ThisObject {
+            source_id: ctx.pending.source_id,
+            incarnation: ctx.pending.ability.source_incarnation,
+            trigger_description: None,
+        })
+        .collect()
+}
+
+/// CR 603.3b + CR 704.5d: the persistent-tier (`AllCopies`) source multiset, keyed on
+/// each trigger's canonical `source_card_id` (the identity latched at trigger-build
+/// time). `None` if any trigger never latched a card id — such a batch can't match a
+/// persistent template and falls through to the prompt.
+fn group_allcopies_sources(
+    group: &[PendingTriggerContext],
+) -> Option<Vec<crate::types::game_state::YieldTarget>> {
+    use crate::types::game_state::YieldTarget;
+    group
+        .iter()
+        .map(|ctx| {
+            ctx.pending
+                .ability
+                .source_card_id
+                .map(|card_id| YieldTarget::AllCopies {
+                    card_id,
+                    trigger_description: None,
+                })
+        })
+        .collect()
+}
+
+/// CR 603.3b: reorder `group.triggers` ascending by the `pos` of the matching
+/// persistent pin. Each trigger's `AllCopies` card identity claims one pin greedy-stable
+/// (two identical-card triggers keep input order among themselves — the documented R3
+/// UX ceiling for identical-card ambiguity). Triggers with no matching pin sort last in
+/// input order (defensive; `covers` guarantees a pin for every trigger).
+fn permute_group_by_pins(
+    group: &mut crate::types::game_state::TriggerOrderGroup,
+    pins: &[(crate::types::game_state::YieldTarget, u8)],
+) {
+    use crate::types::game_state::YieldTarget;
+    let mut used = vec![false; pins.len()];
+    let mut keyed: Vec<(u8, usize, PendingTriggerContext)> =
+        Vec::with_capacity(group.triggers.len());
+    for (input_idx, ctx) in group.triggers.drain(..).enumerate() {
+        let card = ctx.pending.ability.source_card_id;
+        let mut pos = u8::MAX;
+        for (pi, (src, pin_pos)) in pins.iter().enumerate() {
+            if !used[pi]
+                && matches!(src, YieldTarget::AllCopies { card_id, .. } if Some(*card_id) == card)
+            {
+                used[pi] = true;
+                pos = *pin_pos;
+                break;
+            }
+        }
+        keyed.push((pos, input_idx, ctx));
+    }
+    keyed.sort_by_key(|(pos, input_idx, _)| (*pos, *input_idx));
+    group.triggers = keyed.into_iter().map(|(_, _, ctx)| ctx).collect();
+}
+
+/// CR 603.3b: build a `ThisObject`-keyed ephemeral coverage marker for an
+/// already-ordered group. `decisions` pins each trigger at its current position (struct
+/// uniformity with the persistent tier; the ephemeral apply branch reads only
+/// `key.sources`). Registered on the prompt path (`handle_order_triggers`) and by the
+/// persistent branch after its one-shot permute (Gap-B), so every parked-tail re-drain
+/// matches the coverage-only ephemeral arm first.
+fn build_ephemeral_order_template(
+    controller: PlayerId,
+    triggers: &[PendingTriggerContext],
+) -> crate::analysis::decision_template::DecisionTemplate {
+    use crate::analysis::decision_template::{
+        DecisionGroupKey, DecisionKind, DecisionTemplate, PinnedDecision, ReplayMode,
+    };
+    use crate::types::game_state::YieldTarget;
+    let sources = group_thisobject_sources(triggers);
+    let decisions = triggers
+        .iter()
+        .enumerate()
+        .map(|(pos, ctx)| PinnedDecision::Order {
+            source: YieldTarget::ThisObject {
+                source_id: ctx.pending.source_id,
+                incarnation: ctx.pending.ability.source_incarnation,
+                trigger_description: None,
+            },
+            pos: pos as u8,
+        })
+        .collect();
+    DecisionTemplate {
+        owner: controller,
+        decisions,
+        replay: ReplayMode::Static,
+        key: DecisionGroupKey::from_sources(&sources, DecisionKind::TriggerOrdering),
+    }
+}
+
+/// CR 603.3b gate 3rd arm: try to auto-order `group` from a saved template instead of
+/// re-prompting. Returns `true` iff a template covered the group (caller marks it
+/// `ordered`); `false` ⇒ fall through to the normal prompt. Two tiers, consulted
+/// **ephemeral-first** so a parked tail is coverage-only even when a persistent template
+/// also matches (Gap-B one-shot-permute invariant — a batch is permuted exactly once):
+///
+/// - EPHEMERAL (`ThisObject` template): COVERAGE-ONLY — verify covered, leave
+///   `group.triggers` in its current (already-chosen) order, return `true`. Never
+///   permutes: the parked tail arrives already in the player's chosen order (a
+///   contiguous suffix that `begin_trigger_ordering` re-partitions preserving placement
+///   order), and a same-source duplicate pin can't be mapped back to a specific trigger,
+///   so any reorder can only corrupt it.
+/// - PERSISTENT (`AllCopies` template): PERMUTE-ONCE — reorder `group.triggers` by
+///   matched pin `pos`, then register a `ThisObject` ephemeral marker capturing that
+///   order so every later parked-tail re-drain hits the coverage-only ephemeral arm.
+///
+/// Matches on trigger-context identity, not battlefield presence (a dies batch's sources
+/// are in the graveyard). `&mut state` is needed for the persistent registration:
+/// `groups` in the gate loop is a local owned `Vec` disjoint from `state`, so the write
+/// and the `&mut group` permute do not alias.
+fn apply_trigger_order_template(
+    state: &mut GameState,
+    group: &mut crate::types::game_state::TriggerOrderGroup,
+) -> bool {
+    use crate::analysis::decision_template::{DecisionKind, PinnedDecision};
+    use crate::types::game_state::YieldTarget;
+
+    let controller = group.controller;
+
+    // Ephemeral consult FIRST (Gap-B): a parked tail of a persistent-ordered batch
+    // matches the ephemeral marker registered at permute time and stays coverage-only.
+    let ephemeral_sources = group_thisobject_sources(&group.triggers);
+    if state
+        .find_trigger_order_template_for(
+            controller,
+            DecisionKind::TriggerOrdering,
+            &ephemeral_sources,
+        )
+        .is_some_and(|t| t.key.is_ephemeral())
+    {
+        // COVERAGE-ONLY: the order is already correct — do not permute.
+        return true;
+    }
+
+    // Persistent consult: an `AllCopies` template may auto-order a fresh batch.
+    let Some(persistent_sources) = group_allcopies_sources(&group.triggers) else {
+        return false;
+    };
+    let pins: Vec<(YieldTarget, u8)> = match state.find_trigger_order_template_for(
+        controller,
+        DecisionKind::TriggerOrdering,
+        &persistent_sources,
+    ) {
+        Some(t) if t.key.is_persistent() => t
+            .decisions
+            .iter()
+            .filter_map(|d| match d {
+                PinnedDecision::Order { source, pos } => Some((source.clone(), *pos)),
+                _ => None,
+            })
+            .collect(),
+        // A covering template exists but isn't persistent, or none at all ⇒ prompt.
+        _ => return false,
+    };
+
+    // PERMUTE-ONCE, then register the ephemeral marker (borrow of `state` released once
+    // `pins` is materialized above).
+    permute_group_by_pins(group, &pins);
+    let marker = build_ephemeral_order_template(controller, &group.triggers);
+    state.set_trigger_order_template(marker);
+    true
+}
+
 /// CR 603.3b: Partition `pending` by ordering controller (preserving the APNAP
 /// placement order produced by `collect_pending_triggers`), populate
 /// `state.pending_trigger_order` with one `TriggerOrderGroup` per controller/team,
@@ -3928,6 +4107,11 @@ fn begin_trigger_ordering(
     // field divergence is a safe false-negative: the group still prompts.
     for g in groups.iter_mut() {
         if g.triggers.len() <= 1 || group_is_order_independent(state, &g.triggers) {
+            // Order-independent / singleton first ⇒ byte-identical for those groups.
+            g.ordered = true;
+        } else if apply_trigger_order_template(state, g) {
+            // CR 603.3b: an ephemeral (coverage-only) or persistent (permute-once)
+            // template covered this order-dependent group ⇒ no re-prompt.
             g.ordered = true;
         }
     }
@@ -4121,6 +4305,18 @@ pub(crate) fn handle_order_triggers(
     state.waiting_for = WaitingFor::Priority {
         player: state.active_player,
     };
+    // CR 603.3b: register an ephemeral coverage marker for each genuinely-prompted
+    // (order-DEPENDENT) group, so a parked-tail re-drain auto-applies the chosen order
+    // instead of re-prompting after every targeted trigger. An order-INDEPENDENT len>1
+    // group was auto-ordered by the gate and never prompted — skip it (registering a
+    // never-prompted key would pollute `decision_templates`). Uses owned `order_state`
+    // so there is no `pending_trigger_order` borrow conflict.
+    for group in &order_state.groups {
+        if group.triggers.len() > 1 && !group_is_order_independent(state, &group.triggers) {
+            let marker = build_ephemeral_order_template(group.controller, &group.triggers);
+            state.set_trigger_order_template(marker);
+        }
+    }
     let pending: Vec<PendingTriggerContext> = order_state
         .groups
         .into_iter()
@@ -4150,6 +4346,12 @@ pub(crate) fn handle_order_triggers(
     // No trigger-specific pause remains. Restore an interrupted casting/payment
     // state if this ordering pass preempted one; otherwise fall through to
     // Priority for the active player.
+    // CR 603.3b: the batch dispatched fully (the paused paths returned earlier at the
+    // two `return Ok` above); drop the per-batch ephemeral coverage markers before the
+    // next Priority frame. Guarded so a mid-batch pause (non-empty) never clears them.
+    if state.deferred_triggers.is_empty() {
+        state.clear_ephemeral_trigger_order_templates();
+    }
     Ok(resume_after_ordering.unwrap_or(WaitingFor::Priority {
         player: state.active_player,
     }))
@@ -5077,12 +5279,22 @@ fn drain_deferred_trigger_queue_unchecked(
     let pending = std::mem::take(&mut state.deferred_triggers);
     match begin_trigger_ordering(state, pending) {
         TriggerOrderingDisposition::PromptForChoice(wf) => {
+            // Mid-batch re-order (the `mem::take` above emptied `deferred_triggers`, so
+            // this arm must NOT clear — the covering ephemeral marker must survive the
+            // re-prompt). A blanket clear after the match would wipe it here.
             let wf = *wf;
             state.waiting_for = wf.clone();
             Some(wf)
         }
         TriggerOrderingDisposition::NoChoiceNeeded(pending) => {
-            dispatch_deferred_triggers_in_order(state, pending, events_out)
+            let wf = dispatch_deferred_triggers_in_order(state, pending, events_out);
+            // CR 603.3b batch-completion clear: a full drain leaves `deferred_triggers`
+            // empty; a pause re-parks the tail (non-empty) → skip so the covering marker
+            // survives to the tail's next re-drain.
+            if state.deferred_triggers.is_empty() {
+                state.clear_ephemeral_trigger_order_templates();
+            }
+            wf
         }
     }
 }
@@ -5591,6 +5803,13 @@ pub fn check_delayed_triggers(state: &mut GameState, events: &[GameEvent]) -> Ve
         }
         TriggerOrderingDisposition::NoChoiceNeeded(pending) => {
             dispatch_deferred_triggers_in_order(state, pending, &mut new_events);
+            // CR 603.3b (Gap-B hardening): a persistent template auto-orders a fresh
+            // batch with no prompt and registers an ephemeral marker; if the batch
+            // dispatched fully (no parked tail) clear it now, mirroring the re-drain and
+            // prompt-path completion clears. A pause re-parks (non-empty) → skip.
+            if state.deferred_triggers.is_empty() {
+                state.clear_ephemeral_trigger_order_templates();
+            }
         }
     }
 
@@ -5831,6 +6050,12 @@ pub(crate) fn process_collected_triggers_with_delayed_phase_events(
         }
         TriggerOrderingDisposition::NoChoiceNeeded(pending) => {
             dispatch_deferred_triggers_in_order(state, pending, events_out);
+            // CR 603.3b (Gap-B hardening): as in the delayed path — a persistent
+            // template's ephemeral marker registered while auto-ordering this fresh
+            // batch is dropped once the batch dispatches fully (empty ⇒ no parked tail).
+            if state.deferred_triggers.is_empty() {
+                state.clear_ephemeral_trigger_order_templates();
+            }
         }
     }
 
@@ -26985,3 +27210,9 @@ mod devour_runtime_tests;
 #[cfg(test)]
 #[path = "triggers_push_first_contract_tests.rs"]
 mod push_first_contract_tests;
+
+// CR 603.3b: PR-7 B2 trigger-ordering resolver — two-tier `apply_trigger_order_template`
+// building-block tests + the `SetTriggerOrderTemplate{Save}` route through `apply()`.
+#[cfg(test)]
+#[path = "triggers_pr7_order_template_tests.rs"]
+mod pr7_order_template_tests;

@@ -9,6 +9,7 @@ use crate::types::game_state::{GameState, YieldTarget};
 use crate::types::identifiers::ObjectId;
 use crate::types::player::PlayerId;
 use crate::types::zones::Zone;
+use serde::{Deserialize, Serialize};
 // NOTE: `matches_target_filter`/`FilterContext`/`TargetFilter` are NOT imported — their
 // only consumer, `TargetSchedule::IndexedClass`, is deferred to Phase 4/B3 (RULED
 // Deferral 2). `ResourceAxis` is likewise not imported — its only consumer,
@@ -28,16 +29,102 @@ pub type DecisionSource = YieldTarget;
 /// pure function of THIS value (never of a prior iteration's outcome).
 pub type IterationIndex = u32;
 
+/// CR 603.3b (TriggerOrdering) / CR 732.2a (LoopChoice): which decision family a
+/// template captures. The `key` discriminant that lets one `decision_templates` Vec
+/// hold both the trigger-order templates B2 consults and the loop-choice templates
+/// B3/B5 will add, so the gate can filter to `TriggerOrdering` only. `LoopChoice` has
+/// no Phase-2 consumer (reserved), but the FILTER it enables is load-bearing now (the
+/// gate must ignore non-ordering templates).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub enum DecisionKind {
+    TriggerOrdering,
+    LoopChoice,
+}
+
+/// Order-insensitive identity of a recurring decision group. `sources` is stored
+/// **sorted + coalesced** (canonical `(identity, multiplicity)` multiset) so equality
+/// and dedup are order-independent — requires `Ord` on [`DecisionSource`]. A group
+/// "recurs" (and a shrinking deferred tail still matches) when its source multiset is a
+/// **sub-multiset** of a template's `sources` — see [`DecisionGroupKey::covers`].
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct DecisionGroupKey {
+    /// Canonical `(identity, multiplicity)` pairs, sorted ascending by identity.
+    pub sources: Vec<(DecisionSource, u8)>,
+    pub kind: DecisionKind,
+}
+
+impl DecisionGroupKey {
+    /// Coalesce a raw per-trigger source list into canonical sorted
+    /// `(identity, multiplicity)` form. One source firing N triggers becomes one
+    /// `(source, N)` pair, so both ordering and duplicate-fire are order-independent.
+    pub fn from_sources(sources: &[DecisionSource], kind: DecisionKind) -> Self {
+        Self {
+            sources: coalesce_sources(sources),
+            kind,
+        }
+    }
+
+    /// Sub-multiset test: every `(source, mult)` in `group` has multiplicity ≤ this
+    /// key's multiplicity for the same source. A shrinking deferred suffix (⊆ the full
+    /// batch) therefore stays covered. Exact-identity match — registration and matching
+    /// build each [`DecisionSource`] from the same `(source_id, incarnation)` / `card_id`,
+    /// so no incarnation wildcard is needed (a batch never changes a source's
+    /// incarnation mid-flight).
+    pub fn covers(&self, group: &[DecisionSource]) -> bool {
+        coalesce_sources(group).iter().all(|(src, need)| {
+            self.sources
+                .iter()
+                .find(|(s, _)| s == src)
+                .is_some_and(|(_, have)| have >= need)
+        })
+    }
+
+    /// EPHEMERAL (the per-batch CR 603.3b coverage marker) iff every source is a
+    /// `ThisObject` incarnation. Mid-batch only; cleared before the next Priority frame.
+    pub fn is_ephemeral(&self) -> bool {
+        !self.sources.is_empty()
+            && self
+                .sources
+                .iter()
+                .all(|(s, _)| matches!(s, YieldTarget::ThisObject { .. }))
+    }
+
+    /// PERSISTENT (a saved player-ordering preference, CR 704.5d) iff every source is
+    /// an `AllCopies` card identity. Survives across batches and loop iterations.
+    pub fn is_persistent(&self) -> bool {
+        !self.sources.is_empty()
+            && self
+                .sources
+                .iter()
+                .all(|(s, _)| matches!(s, YieldTarget::AllCopies { .. }))
+    }
+}
+
+/// Sort + coalesce duplicate identities into `(identity, multiplicity)` pairs.
+fn coalesce_sources(sources: &[DecisionSource]) -> Vec<(DecisionSource, u8)> {
+    let mut sorted: Vec<DecisionSource> = sources.to_vec();
+    sorted.sort();
+    let mut out: Vec<(DecisionSource, u8)> = Vec::new();
+    for s in sorted {
+        match out.last_mut() {
+            Some((prev, count)) if *prev == s => *count += 1,
+            _ => out.push((s, 1)),
+        }
+    }
+    out
+}
+
 /// CR 732.2a: the captured player decisions for one recurring decision group.
-/// Phase-1 shape is exactly `{owner, decisions, replay}` — the order-insensitive
-/// `key: DecisionGroupKey` that lets B2 look a template up is deferred to Phase 2
-/// (RULED Deferral 1); nothing in Phase 1 consults it.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// `key` is the order-insensitive identity B2 looks the template up by (its
+/// `kind` selects trigger-ordering vs loop-choice; its `sources` multiset is the
+/// coverage marker the gate matches a recurring group against).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DecisionTemplate {
     pub owner: PlayerId,
     /// Pins in the group's canonical decision order.
     pub decisions: Vec<PinnedDecision>,
     pub replay: ReplayMode,
+    pub key: DecisionGroupKey,
 }
 
 /// Identifies one free choice within a group: which source raised it (CR 400.7-stable
@@ -45,7 +132,7 @@ pub struct DecisionTemplate {
 /// (e.g. two target slots on one ability). `PartialEq`/`Eq` only — the
 /// [`predictability_gate`] matches slots by equality, and `DecisionSource = YieldTarget`
 /// carries no `Ord` derive in Phase 1 (RULED Deferral 1).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DecisionSlot {
     pub source: DecisionSource,
     pub index: u8,
@@ -53,7 +140,7 @@ pub struct DecisionSlot {
 
 /// One pinned decision. Variants are distinct CR choice KINDS (ordering / targeting /
 /// modal / optional-"may" / "[A] unless [B]" break), not a parameterization axis.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PinnedDecision {
     /// CR 603.3b: place this source's trigger at ordering position `pos`.
     Order { source: DecisionSource, pos: u8 },
@@ -76,7 +163,7 @@ pub enum PinnedDecision {
 
 /// A pinned target. `ByIdentity` re-resolves to a live legal ObjectId each iteration
 /// (CR 608.2b); `Scheduled` is an iteration-indexed pure function (CR 732.2a).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TargetPin {
     ByIdentity(DecisionSource),
     Player(PlayerId),
@@ -85,7 +172,7 @@ pub enum TargetPin {
 
 /// CR 732.2a: how the pins are replayed. `Static` (ordering) ignores the iteration
 /// index; `Scheduled` (loop shortcut) makes every choice a pure function of it.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ReplayMode {
     Static,
     Scheduled { count: IterationCount },
@@ -99,7 +186,7 @@ pub enum ReplayMode {
 /// adds their driver, so the shipped surface stays minimal and fully tested. The enum is
 /// kept (rather than a bare `u32` field on `Scheduled`) so Phase 3 adds those variants
 /// without a field-type change at any `Scheduled` construction site.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum IterationCount {
     Fixed(u32),
 }
@@ -110,7 +197,7 @@ pub enum IterationCount {
 /// enforced BY CONSTRUCTION: no variant carries any prior-outcome/event input, so a
 /// "react to what happened" target is unrepresentable (this is what collapses the
 /// predictability gate's "no conditional" clause into "total coverage").
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TargetSchedule {
     Constant(DecisionSource),
     RoundRobin(Vec<DecisionSource>),
@@ -401,6 +488,15 @@ mod tests {
         }
     }
 
+    /// Phase-1 `resolve`/gate tests don't consult `key`; give every template an empty
+    /// `TriggerOrdering` key so the shape compiles.
+    fn tri_key() -> DecisionGroupKey {
+        DecisionGroupKey {
+            sources: vec![],
+            kind: DecisionKind::TriggerOrdering,
+        }
+    }
+
     /// Insert a battlefield object with the given storage id / card id / incarnation.
     fn bf_object(state: &mut GameState, id: u64, card_id: u64, incarnation: u64) {
         let oid = ObjectId(id);
@@ -460,6 +556,7 @@ mod tests {
                 },
             ],
             replay: ReplayMode::Static,
+            key: tri_key(),
         };
         let out = resolve(&template, 0, &state).expect("all sources live");
         let ids: Vec<ObjectId> = out.iter().map(order_source).collect();
@@ -496,6 +593,7 @@ mod tests {
                 },
             ],
             replay: ReplayMode::Static,
+            key: tri_key(),
         };
         let ids2: Vec<ObjectId> = resolve(&reordered, 0, &state)
             .unwrap()
@@ -533,6 +631,7 @@ mod tests {
             replay: ReplayMode::Scheduled {
                 count: IterationCount::Fixed(4),
             },
+            key: tri_key(),
         };
         let at = |it: u32| targeted_object(&resolve(&template, it, &state).unwrap()[0]);
         assert_eq!(at(0), ObjectId(20));
@@ -569,6 +668,7 @@ mod tests {
             replay: ReplayMode::Scheduled {
                 count: IterationCount::Fixed(4),
             },
+            key: tri_key(),
         };
         let at = |it: u32| targeted_object(&resolve(&template, it, &state).unwrap()[0]);
         assert_eq!(at(0), ObjectId(20));
@@ -589,6 +689,7 @@ mod tests {
             replay: ReplayMode::Scheduled {
                 count: IterationCount::Fixed(1),
             },
+            key: tri_key(),
         };
         assert!(matches!(
             resolve(&uncovered, 0, &state).unwrap_err(),
@@ -613,6 +714,7 @@ mod tests {
                 targets: vec![TargetPin::ByIdentity(src)],
             }],
             replay: ReplayMode::Static,
+            key: tri_key(),
         };
         // Target absent.
         let absent = GameState::new_two_player(7);
@@ -641,6 +743,7 @@ mod tests {
                 pos: 0,
             }],
             replay: ReplayMode::Static,
+            key: tri_key(),
         };
         let absent = GameState::new_two_player(7);
         let err = resolve(&template, 0, &absent).unwrap_err();
@@ -721,6 +824,7 @@ mod tests {
                 take: true,
             }],
             replay: ReplayMode::Static,
+            key: tri_key(),
         };
         assert_eq!(
             predictability_gate(&partial, &required).unwrap_err(),
@@ -744,6 +848,7 @@ mod tests {
                 },
             ],
             replay: ReplayMode::Static,
+            key: tri_key(),
         };
         assert!(
             predictability_gate(&full, &required).is_ok(),

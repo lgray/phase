@@ -634,6 +634,13 @@ pub enum GameAction {
     SetMayTriggerAutoChoice {
         op: MayTriggerAutoChoiceOp,
     },
+    /// CR 603.3b: Update the acting player's saved trigger-ordering templates.
+    /// Legal in any WaitingFor state and routed to the acting player (who may only
+    /// mutate their own templates), mirroring `SetMayTriggerAutoChoice`. Pure
+    /// preference propagation — no events, no `WaitingFor` transition.
+    SetTriggerOrderTemplate {
+        op: TriggerOrderTemplateOp,
+    },
     /// CR 510.1c/d: Assign damage from an attacker to its blockers (and optionally
     /// the defending player/PW with trample, plus PW controller with trample-over-PW).
     AssignCombatDamage {
@@ -816,6 +823,25 @@ pub enum PriorityYieldOp {
 #[serde(tag = "type", content = "data")]
 pub enum MayTriggerAutoChoiceOp {
     Remove { key: MayTriggerAutoChoiceKey },
+    ClearAll,
+}
+
+/// CR 603.3b: The mutation a `GameAction::SetTriggerOrderTemplate` performs on the
+/// acting player's saved trigger-ordering templates. `Save` echoes the just-prompted
+/// group's source object ids plus the submitted permutation (the engine resolves each
+/// id to its card identity, mirroring `PriorityYieldOp::Add` — no frontend game-state
+/// computation); `Remove` echoes a stored key verbatim; `ClearAll` drops every saved
+/// (persistent) ordering template belonging to the acting player.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", content = "data")]
+pub enum TriggerOrderTemplateOp {
+    Save {
+        sources: Vec<ObjectId>,
+        order: Vec<usize>,
+    },
+    Remove {
+        key: crate::analysis::decision_template::DecisionGroupKey,
+    },
     ClearAll,
 }
 
@@ -1445,6 +1471,7 @@ impl GameAction {
             | GameAction::SetPhaseStops { .. }
             | GameAction::SetPriorityYield { .. }
             | GameAction::SetMayTriggerAutoChoice { .. }
+            | GameAction::SetTriggerOrderTemplate { .. }
             | GameAction::AssignCombatDamage { .. }
             | GameAction::AssignBlockerDamage { .. }
             | GameAction::DistributeAmong { .. }

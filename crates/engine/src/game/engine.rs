@@ -5,7 +5,9 @@ use thiserror::Error;
 use crate::types::ability::{EffectKind, KeywordAction, TargetRef};
 #[cfg(test)]
 use crate::types::ability::{EffectScope, TapStateChange};
-use crate::types::actions::{GameAction, MayTriggerAutoChoiceOp, PriorityYieldOp};
+use crate::types::actions::{
+    GameAction, MayTriggerAutoChoiceOp, PriorityYieldOp, TriggerOrderTemplateOp,
+};
 use crate::types::events::{BendingType, ContestRound, GameEvent, ManaTapState, PlayerActionKind};
 use crate::types::game_state::{
     ActionResult, AssistState, AutoPassMode, AutoPassRequest, CastOfferKind, ConvokeMode,
@@ -454,6 +456,7 @@ fn check_actor_authorization(
         GameAction::SetPhaseStops { .. }
             | GameAction::SetPriorityYield { .. }
             | GameAction::SetMayTriggerAutoChoice { .. }
+            | GameAction::SetTriggerOrderTemplate { .. }
             | GameAction::CancelAutoPass
             | GameAction::Debug(_)
             | GameAction::GrantDebugPermission { .. }
@@ -1200,6 +1203,69 @@ fn apply_action(
             }
             MayTriggerAutoChoiceOp::ClearAll => {
                 state.clear_may_trigger_auto_choices(actor);
+            }
+        }
+        return Ok(ActionResult {
+            events: vec![],
+            waiting_for: state.waiting_for.clone(),
+            log_entries: vec![],
+        });
+    }
+
+    // CR 603.3b: SetTriggerOrderTemplate propagates the actor's saved trigger-ordering
+    // templates (persistent, `AllCopies`-keyed). Mirrors SetMayTriggerAutoChoice: pure
+    // preference state, routed by `actor`, handled before the loop-ring / auto-pass
+    // teardown so it is a legal any-state mutation. Actor scoping is enforced by forcing
+    // `owner`/key player to `actor`, so a player can only mutate their own templates.
+    if let GameAction::SetTriggerOrderTemplate { op } = &action {
+        use crate::analysis::decision_template::{
+            DecisionGroupKey, DecisionKind, DecisionTemplate, PinnedDecision, ReplayMode,
+        };
+        use crate::types::game_state::YieldTarget;
+        match op {
+            TriggerOrderTemplateOp::Save { sources, order } => {
+                // `order[pos]` = index into `sources` of the trigger the player placed
+                // at ordering position `pos` (same convention as `OrderTriggers`).
+                // Resolve each source id → its `AllCopies` card identity (CR 704.5d, so
+                // the template survives token death / re-entry) and pin it at `pos`. A
+                // source that no longer resolves is skipped defensively — a divergent
+                // template simply won't cover a future batch (re-prompt), never a wrong
+                // order.
+                let mut decisions = Vec::with_capacity(order.len());
+                let mut key_sources = Vec::with_capacity(order.len());
+                for (pos, &src_idx) in order.iter().enumerate() {
+                    let Some(&source_id) = sources.get(src_idx) else {
+                        continue;
+                    };
+                    let Some(card_id) = state.objects.get(&source_id).map(|o| o.card_id) else {
+                        continue;
+                    };
+                    let src = YieldTarget::AllCopies {
+                        card_id,
+                        trigger_description: None,
+                    };
+                    decisions.push(PinnedDecision::Order {
+                        source: src.clone(),
+                        pos: pos as u8,
+                    });
+                    key_sources.push(src);
+                }
+                let tmpl = DecisionTemplate {
+                    owner: actor,
+                    decisions,
+                    replay: ReplayMode::Static,
+                    key: DecisionGroupKey::from_sources(
+                        &key_sources,
+                        DecisionKind::TriggerOrdering,
+                    ),
+                };
+                state.set_trigger_order_template(tmpl);
+            }
+            TriggerOrderTemplateOp::Remove { key } => {
+                state.remove_trigger_order_template(actor, key);
+            }
+            TriggerOrderTemplateOp::ClearAll => {
+                state.clear_trigger_order_templates(actor);
             }
         }
         return Ok(ActionResult {

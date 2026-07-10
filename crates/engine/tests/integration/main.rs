@@ -595,6 +595,7 @@ mod plaguecrafter_etb_class;
 mod ponder_decline_shuffle_regression;
 mod power_fist_combat_damage_regression;
 mod power_up_keyword;
+mod pr7_trigger_ordering;
 mod primo_unbounded_fractal_counters;
 mod printed_ability_order;
 mod proliferate_zero_counter;

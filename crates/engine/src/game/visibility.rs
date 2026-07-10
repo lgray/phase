@@ -837,6 +837,7 @@ pub fn filter_state_for_viewer(state: &GameState, viewer: PlayerId) -> GameState
     filtered
         .may_trigger_auto_choices
         .retain(|record| record.key.player == viewer);
+    filtered.decision_templates.retain(|t| t.owner == viewer);
     filtered.priority_yields.retain(|y| y.player == viewer);
     filtered
         .lands_tapped_for_mana
@@ -1599,6 +1600,45 @@ mod tests {
 
         assert_eq!(filtered.may_trigger_auto_choices.len(), 1);
         assert_eq!(filtered.may_trigger_auto_choices[0].key.player, PlayerId(0));
+    }
+
+    /// CR 603.3b: saved trigger-ordering templates are per-player private preference
+    /// state — a viewer sees only their own, never an opponent's saved orderings.
+    #[test]
+    fn filters_other_players_decision_templates() {
+        use crate::analysis::decision_template::{
+            DecisionGroupKey, DecisionKind, DecisionTemplate, PinnedDecision, ReplayMode,
+        };
+        use crate::types::game_state::YieldTarget;
+
+        let template = |owner: PlayerId, card_id: u64| {
+            let src = YieldTarget::AllCopies {
+                card_id: CardId(card_id),
+                trigger_description: None,
+            };
+            DecisionTemplate {
+                owner,
+                decisions: vec![PinnedDecision::Order {
+                    source: src.clone(),
+                    pos: 0,
+                }],
+                replay: ReplayMode::Static,
+                key: DecisionGroupKey::from_sources(&[src], DecisionKind::TriggerOrdering),
+            }
+        };
+
+        let mut state = GameState::new_two_player(42);
+        // Distinct keys (different card ids) so both templates coexist.
+        state.set_trigger_order_template(template(PlayerId(0), 100));
+        state.set_trigger_order_template(template(PlayerId(1), 200));
+        assert_eq!(state.decision_templates.len(), 2);
+
+        let filtered = filter_state_for_viewer(&state, PlayerId(0));
+
+        // Own-kept AND other-removed: without the retain, P1's template leaks into P0's
+        // view (len 2) or an inverted retain drops P0's own (len 0) — both fail here.
+        assert_eq!(filtered.decision_templates.len(), 1);
+        assert_eq!(filtered.decision_templates[0].owner, PlayerId(0));
     }
 
     /// CR 117.3d: priority yields are private preference state — a viewer sees
