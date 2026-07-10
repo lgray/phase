@@ -658,6 +658,7 @@ mod urzas_saga_chapter_two;
 mod urzas_tower_conditional_mana;
 mod veteran_armorsmith_soldier_anthem;
 mod vigor_regression;
+mod vincents_limit_break_tiered;
 mod virulent_emissary_trigger;
 mod vivien_invocation_reflexive_power;
 mod volatile_fault_that_player_search;
