@@ -1186,10 +1186,7 @@ fn moonlit_turn_start_scrubs_transient_substitution_seeds() {
     runner.state_mut().post_replacement_token_substitution_count = Some(4);
     runner.state_mut().post_replacement_token_choice_applied =
         Some(std::collections::HashSet::from([
-            engine::types::proposed_event::ReplacementId {
-                source: moonlit,
-                index: 0,
-            },
+            engine::types::proposed_event::AppliedReplacementKey::object(moonlit, 0),
         ]));
 
     // Reach-guard (non-vacuity): the seeds are actually set when the boundary

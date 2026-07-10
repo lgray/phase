@@ -1144,6 +1144,7 @@ pub(super) fn handle_copy_target_choice(
                 ResolvedAbility::new(
                     Effect::BecomeCopy {
                         target: TargetFilter::Any,
+                        recipient: TargetFilter::SelfRef,
                         duration: None,
                         mana_value_limit: None,
                         additional_modifications: Vec::new(),

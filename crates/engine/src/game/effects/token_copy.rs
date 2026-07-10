@@ -557,7 +557,7 @@ pub(crate) fn apply_copy_token_after_replacement_with_created_ids(
                 entry_ref: token_id,
                 enter_tapped,
                 enter_with_counters: Vec::new(),
-                applied: HashSet::new(),
+                applied: std::collections::HashSet::new(),
             };
             match crate::game::replacement::replace_event(state, proposed, events) {
                 crate::game::replacement::ReplacementResult::Execute(event) => {
@@ -3670,6 +3670,7 @@ mod tests {
                     AbilityKind::Spell,
                     Effect::BecomeCopy {
                         target: TargetFilter::Typed(TypedFilter::creature()),
+                        recipient: TargetFilter::SelfRef,
                         duration: None,
                         mana_value_limit: None,
                         additional_modifications: Vec::new(),
