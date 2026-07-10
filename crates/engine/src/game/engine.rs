@@ -628,8 +628,9 @@ fn living_priority_seat(state: &GameState) -> PlayerId {
 /// sampled ring frames. The Shorten path — where a real board action CAN break the loop —
 /// deliberately hands priority instead of reaching here, and re-detection re-fires the bridge
 /// LIVE on a later beat.) `UntilLethal` ⇒ mark the unbounded axes + declare the terminal win;
-/// `Fixed(N)` short of lethal is Phase-4 finite materialization, so Phase 3 hands priority
-/// back (manual fallback).
+/// `Fixed(N)` ⇒ Phase-4b finite materialization (`materialize_fixed_shortcut`), which drives
+/// N whole cycles atomically, commits + stops early on a cross-lethal `GameOver` mid-drive, and
+/// falls back to manual play (priority to `living_priority_seat`) on any abort.
 ///
 /// The consumption-time controller-liveness guard below catches a `Concede` (CR 104.3a) or a
 /// `Debug` that ELIMINATES the proposer inside the still-open APNAP window. A `Debug` action
@@ -676,15 +677,160 @@ fn apply_confirmed_shortcut(
             result.waiting_for = state.waiting_for.clone();
             match_flow::handle_game_over_transition(state);
         }
-        // Phase-4 finite materialization; the priority fallback shares living_priority_seat with the UntilLethal path (CR 800.4a).
-        crate::analysis::decision_template::IterationCount::Fixed(_) => {
-            priority::reset_priority(state);
-            state.waiting_for = WaitingFor::Priority {
-                player: living_priority_seat(state),
-            };
-            result.waiting_for = state.waiting_for.clone();
+        crate::analysis::decision_template::IterationCount::Fixed(n) => {
+            materialize_fixed_shortcut(state, result, proposal, n)
         }
     }
+}
+
+/// PR-7 Phase 4b: CR 732.2a finite materialization of a confirmed `Fixed(N)` loop
+/// shortcut. Drives `n` whole cycles of the constant-depth (or ω-covering) loop,
+/// committing atomically per cycle. If a cycle crosses lethal, the win arrives
+/// mid-drive already applied to `work` (CR 704.5a via `run_post_action_pipeline`'s
+/// SBA pass) ⇒ COMMIT + STOP, un-clamped — `n` may be ≥ the true cycles-to-lethal
+/// (CR 732.2a "a specified number of times" places no upper bound relative to the
+/// board). Any unexpected prompt / stale-incarnation replay failure (CR 400.7) /
+/// runaway beat count ⇒ abort to manual play: roll back to the last fully-committed
+/// cycle and hand priority to the living seat (CR 800.4a) — exactly the pre-4b
+/// decline-stub behavior, never a wrong crown.
+fn materialize_fixed_shortcut(
+    state: &mut GameState,
+    result: &mut ActionResult,
+    proposal: &crate::analysis::loop_check::ShortcutProposal,
+    n: u32,
+) {
+    let template = proposal.template.clone();
+
+    // Last fully-completed cycle (clean owned O(1) rollback); starts at the offer state —
+    // `apply_confirmed_shortcut`'s doc comment establishes the board is unchanged since the
+    // offer (Declare/Accept touch only the protocol, never the board).
+    let mut committed = state.clone();
+
+    // The recurrence boundary is the loop's canonical per-cycle SETTLE beat —
+    // `Priority{active_player}` — the same beat-kind the detector ring samples
+    // (`resolved_this_beat` gate above). `committed.waiting_for` is still
+    // `RespondToShortcut`/`LoopShortcut` at entry (never `Priority`), so seed a settled
+    // priority beat before capturing the boundary. `reset_priority` zeroes
+    // `priority_pass_count` and sets `priority_player`; `waiting_for` is set explicitly
+    // here (reset_priority does not touch it). `loop_states_equal_modulo_resources` /
+    // `loop_states_cover_modulo_growth` both normalize internally (`project_out_resources`
+    // → `normalize_for_loop`), so the extra `.normalize_for_loop()` here is redundant with
+    // that internal call but harmless (idempotent) — kept for a self-contained boundary
+    // value whose `waiting_for`/ring fields are already canonical at the call sites below.
+    let boundary = {
+        let mut seed = committed.clone();
+        priority::reset_priority(&mut seed);
+        seed.waiting_for = WaitingFor::Priority {
+            player: seed.active_player,
+        };
+        seed.normalize_for_loop()
+    };
+
+    let cycle_beat_cap = auto_pass_loop_max_iterations(&committed);
+
+    'cycles: for i in 0..n {
+        // CR 732.2a predictability firewall: `predictability_gate(t, &[])` is a WIRED
+        // FORMAL no-op this phase — empty `required_slots` ⇒ always `Ok`
+        // (decision_template.rs). The loop-body slot enumerator that would populate
+        // `required_slots` ships with the deferred mid-drive injector; a choice-free
+        // drain has no slots to pin. The REAL load-bearing firewall is `resolve` below.
+        if let Some(t) = &template {
+            if crate::analysis::decision_template::predictability_gate(t, &[]).is_err() {
+                break 'cycles; // unreachable with &[]; wired for the injector phase
+            }
+            // CR 608.2b (target-legality re-check) + CR 400.7 (object incarnation
+            // re-bind): re-resolve every pinned decision against the last COMMITTED
+            // board before driving this cycle. Stale/absent source ⇒ IllegalTarget /
+            // MissingSource ⇒ abort to manual play.
+            if crate::analysis::decision_template::resolve(t, i, &committed).is_err() {
+                break 'cycles;
+            }
+        }
+
+        // Drive one cycle on a fresh clone seeded to the canonical settle beat, so the
+        // FIRST beat starts where the ring samples (cycle 0 overrides RespondToShortcut;
+        // cycles ≥ 1: `committed` is already a settle beat ⇒ the reset is idempotent).
+        let mut work = committed.clone();
+        priority::reset_priority(&mut work);
+        work.waiting_for = WaitingFor::Priority {
+            player: work.active_player,
+        };
+        let mut ev: Vec<GameEvent> = Vec::new();
+        let mut beat = 0usize;
+
+        loop {
+            beat += 1;
+            if beat > cycle_beat_cap {
+                break 'cycles; // runaway backstop: drop ev, keep committed
+            }
+            // A FRESH per-beat buffer, mirroring `run_auto_pass_loop`'s `let mut events =
+            // Vec::new()` per iteration (:1376). `run_post_action_pipeline`'s trigger scan
+            // reads `events[event_start..]` with `event_start == 0` always (the plain
+            // `run_post_action_pipeline` wrapper never varies it) — reusing one
+            // ever-growing buffer across beats would re-scan every prior beat's events on
+            // each call and spuriously re-fire already-consumed triggers.
+            let mut beat_events: Vec<GameEvent> = Vec::new();
+            match pass_priority_once_with_pipeline(&mut work, &mut beat_events, None) {
+                // Cross-lethal: COMMIT + STOP. CR 704.5a: the win is already applied to
+                // `work` — SBA → `eliminate_players_simultaneously` (elimination.rs) both
+                // pushed `GameEvent::GameOver` into `beat_events` and set
+                // `waiting_for = GameOver`, and `run_post_action_pipeline` already ran the
+                // game-over transition. Do NOT roll back, NOT hand priority back, NOT
+                // clear-then-Priority, NOT `mark_unbounded_loop` (finite ≠ unbounded —
+                // contrast the `UntilLethal` arm above), NOT re-push the `GameOver` event
+                // (already in `beat_events`).
+                Ok(WaitingFor::GameOver { winner }) => {
+                    *state = work;
+                    ev.append(&mut beat_events);
+                    result.events.append(&mut ev);
+                    result.waiting_for = WaitingFor::GameOver { winner };
+                    return;
+                }
+                // Active-player settle beat: cycle complete iff the board recurred
+                // (constant-depth equal-modulo-resources; ω-covering arm shared with the
+                // detection bridge — coded, dormant until an object-growth Fixed(N)
+                // fixture exists).
+                Ok(WaitingFor::Priority { player }) if player == work.active_player => {
+                    ev.append(&mut beat_events);
+                    let norm = work.normalize_for_loop();
+                    if crate::analysis::resource::loop_states_equal_modulo_resources(
+                        &boundary, &norm,
+                    ) || crate::analysis::resource::loop_states_cover_modulo_growth(
+                        &boundary, &norm,
+                    ) {
+                        committed = work; // ATOMIC: commit state ...
+                        result.events.append(&mut ev); // ... with its events together
+                        continue 'cycles;
+                    }
+                    // Active beat but not yet recurred ⇒ keep driving within the cap.
+                    continue;
+                }
+                // Opponent's mid-cycle priority window ⇒ keep driving.
+                Ok(WaitingFor::Priority { .. }) => {
+                    ev.append(&mut beat_events);
+                    continue;
+                }
+                // Any OTHER non-Priority `waiting_for` (a mode/target/may prompt): no
+                // mid-drive injector this phase ⇒ abort to manual. `ev` (and this beat's
+                // events) are dropped.
+                Ok(_) => break 'cycles,
+                Err(_) => break 'cycles, // engine error ⇒ abort to manual
+            }
+        }
+    }
+
+    // Reached by: n cycles done with no cross-lethal, OR any abort (`break 'cycles`).
+    // Commit the last WHOLE cycle; the aborting iteration's `ev` was already dropped (no
+    // partial-cycle event leak). Ring-clear BEFORE handback so this same `apply()` does
+    // not instantly re-emit a fresh offer for the same (now-interrupted) loop; a later
+    // beat re-detects genuinely.
+    *state = committed;
+    state.loop_detect_ring.clear();
+    priority::reset_priority(state);
+    state.waiting_for = WaitingFor::Priority {
+        player: living_priority_seat(state),
+    };
+    result.waiting_for = state.waiting_for.clone();
 }
 
 /// CR 732.2a: the proposer declared the loop shortcut. Build the public proposal and open
@@ -695,7 +841,7 @@ fn handle_declare_shortcut(
     controller: PlayerId,
     certificate: &crate::analysis::loop_check::LoopCertificate,
     count: crate::analysis::decision_template::IterationCount,
-    _template: Option<crate::analysis::decision_template::DecisionTemplate>,
+    template: Option<crate::analysis::decision_template::DecisionTemplate>,
     events: &mut Vec<GameEvent>,
 ) -> Result<ActionResult, EngineError> {
     let proposal = crate::analysis::loop_check::ShortcutProposal {
@@ -703,6 +849,7 @@ fn handle_declare_shortcut(
         count,
         unbounded: certificate.unbounded.clone(),
         win_kind: certificate.win_kind,
+        template,
     };
     // CR 732.2b: living opponents in APNAP turn order, starting after the controller.
     let opps: Vec<PlayerId> = crate::game::players::apnap_order_from(

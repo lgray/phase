@@ -13,14 +13,17 @@
 //! the wrapped `On` arm and asserts equality — it fails if wrapping the body in the mode
 //! `match` perturbed even one event. Because the golden is pre-edit, this is not circular.
 
-use engine::analysis::decision_template::IterationCount;
+use engine::analysis::decision_template::{
+    DecisionGroupKey, DecisionKind, DecisionSlot, DecisionTemplate, IterationCount, PinnedDecision,
+    ReplayMode, TargetPin, TargetSchedule,
+};
 use engine::analysis::loop_check::{LoopCertificate, ShortcutProposal, ShortcutResponse, WinKind};
 use engine::analysis::resource::BoardDelta;
 use engine::game::engine::{apply, EngineError};
 use engine::game::scenario::{GameRunner, GameScenario};
 use engine::types::actions::GameAction;
 use engine::types::events::GameEvent;
-use engine::types::game_state::{LoopDetectionMode, WaitingFor};
+use engine::types::game_state::{LoopDetectionMode, WaitingFor, YieldTarget};
 use engine::types::identifiers::ObjectId;
 use engine::types::mana::ManaColor;
 use engine::types::phase::Phase;
@@ -570,6 +573,7 @@ fn loop_shortcut_acting_player_reads_controller() {
         count: IterationCount::UntilLethal,
         unbounded: vec![],
         win_kind: WinKind::LethalDamage,
+        template: None,
     };
     let wf_r = WaitingFor::RespondToShortcut {
         player: P2,
@@ -811,4 +815,362 @@ fn interactive_3p_subset_lethal_does_not_crown() {
         !matches!(wf, WaitingFor::LoopShortcut { .. }),
         "subset-lethal loop must NOT raise a LoopShortcut offer, got {wf:?}"
     );
+}
+
+// ─────────────────── T-B3-materialize (Phase 4b) ───────────────────────
+
+/// Reach `LoopShortcut{P0}` on a fresh `setup_2p_optional_drain(Interactive)` fixture.
+/// Returns the runner parked at the offer, `life(P1)` at that instant, and the
+/// DRAIN_CLERIC object id (for template pins).
+fn reach_2p_optional_drain_offer() -> (GameRunner, i32, ObjectId) {
+    let (mut runner, kickoff, _bolt, cleric) =
+        setup_2p_optional_drain(LoopDetectionMode::Interactive);
+    let _ = runner.cast(kickoff).resolve();
+    let (_events, wf) = drive_collect(&mut runner, 500);
+    let WaitingFor::LoopShortcut { controller, .. } = wf else {
+        panic!("optional drain must OFFER a LoopShortcut, got {wf:?}");
+    };
+    assert_eq!(controller, P0, "the proposer is the determinate winner P0");
+    let l0 = life(&runner, P1);
+    (runner, l0, cleric)
+}
+
+/// Probe the per-cycle P1 drain constant via an independent `Fixed(1)` materialization
+/// of the DRAIN_CLERIC/BLOOD_SIPPER pairing (one recurrence = one full cycle).
+fn probe_drain_delta() -> i32 {
+    let (mut runner, l0, _cleric) = reach_2p_optional_drain_offer();
+    runner
+        .act(GameAction::DeclareShortcut {
+            count: IterationCount::Fixed(1),
+            template: None,
+        })
+        .expect("declare Fixed(1)");
+    runner
+        .act(GameAction::RespondToShortcut {
+            response: ShortcutResponse::Accept,
+        })
+        .expect("accept");
+    let delta = l0 - life(&runner, P1);
+    assert!(
+        delta > 0,
+        "Fixed(1) must materialize a nonzero drain cycle, got delta={delta}"
+    );
+    delta
+}
+
+/// A `Fixed(count)` template pinning `object` by `ThisObject{incarnation}` — CR 400.7's
+/// per-iteration incarnation re-bind (BLOCKER #4 real teeth).
+fn incarnation_pin_template(
+    owner: PlayerId,
+    object: ObjectId,
+    incarnation: u64,
+    count: IterationCount,
+) -> DecisionTemplate {
+    let source = YieldTarget::ThisObject {
+        source_id: object,
+        incarnation: Some(incarnation),
+        trigger_description: None,
+    };
+    let slot = DecisionSlot {
+        source: source.clone(),
+        index: 0,
+    };
+    DecisionTemplate {
+        owner,
+        decisions: vec![PinnedDecision::Targets {
+            slot,
+            targets: vec![TargetPin::ByIdentity(source.clone())],
+        }],
+        replay: ReplayMode::Scheduled { count },
+        key: DecisionGroupKey::from_sources(&[source], DecisionKind::LoopChoice),
+    }
+}
+
+/// A `Fixed(count)` template pinning `cleric` via a PRE-DECLARED (CR 732.2a-predictable)
+/// `Piecewise` schedule: iterations `[0, switch)` resolve to `cleric` itself (stable
+/// across the drive); at `switch` (if `Some`) the schedule switches to a bogus,
+/// never-resolvable `ObjectId` — simulating "the pinned object left the game" at exactly
+/// that iteration, entirely from the schedule (no mid-drive test backdoor).
+fn piecewise_cleric_template(
+    owner: PlayerId,
+    cleric: ObjectId,
+    switch_to_bogus_at: Option<u32>,
+    count: IterationCount,
+) -> DecisionTemplate {
+    let valid = YieldTarget::ThisObject {
+        source_id: cleric,
+        incarnation: None,
+        trigger_description: None,
+    };
+    let bogus = YieldTarget::ThisObject {
+        source_id: ObjectId(u64::MAX),
+        incarnation: None,
+        trigger_description: None,
+    };
+    let slot = DecisionSlot {
+        source: valid.clone(),
+        index: 0,
+    };
+    let mut schedule = vec![(0u32, valid.clone())];
+    if let Some(at) = switch_to_bogus_at {
+        schedule.push((at, bogus));
+    }
+    DecisionTemplate {
+        owner,
+        decisions: vec![PinnedDecision::Targets {
+            slot,
+            targets: vec![TargetPin::Scheduled(TargetSchedule::Piecewise(schedule))],
+        }],
+        replay: ReplayMode::Scheduled { count },
+        key: DecisionGroupKey::from_sources(&[valid], DecisionKind::LoopChoice),
+    }
+}
+
+/// B3-materialize-stop-short ⭐ (N < cycles-to-lethal): P1's life must drop EXACTLY
+/// `N*delta` — a NON-ZERO multiple. This is the empirical BLOCKER #2 gate: if the
+/// per-cycle recurrence boundary is unseeded (`waiting_for` never re-matches
+/// `Priority{active}`), the drive spins to `cycle_beat_cap` every iteration and aborts at
+/// 0 complete cycles, so drop==0 and this assertion FAILS; under the pre-4b decline-stub,
+/// drop==0 too — both revert targets are caught by the same assertion.
+#[test]
+fn b3_materialize_stop_short() {
+    let delta = probe_drain_delta();
+    let (mut runner, l0, _cleric) = reach_2p_optional_drain_offer();
+    let n: u32 = 3;
+    assert!(
+        (n as i32) * delta < l0,
+        "test precondition: N*delta must stay short of lethal (l0={l0}, delta={delta})"
+    );
+
+    runner
+        .act(GameAction::DeclareShortcut {
+            count: IterationCount::Fixed(n),
+            template: None,
+        })
+        .expect("declare Fixed(N)");
+    runner
+        .act(GameAction::RespondToShortcut {
+            response: ShortcutResponse::Accept,
+        })
+        .expect("accept");
+
+    assert_eq!(
+        life(&runner, P1),
+        l0 - (n as i32) * delta,
+        "P1 life must drop EXACTLY N*delta"
+    );
+    assert!(
+        !is_eliminated(&runner, P1),
+        "P1 must remain alive (N below cycles-to-lethal)"
+    );
+    assert!(
+        !matches!(runner.state().waiting_for, WaitingFor::GameOver { .. }),
+        "must not reach GameOver, got {:?}",
+        runner.state().waiting_for
+    );
+    assert_eq!(
+        runner.state().waiting_for,
+        WaitingFor::Priority { player: P0 },
+        "materialization stops at Priority{{living_priority_seat}} (P0) — manual fallback, \
+         not a wrong-crown or a stuck handback"
+    );
+    assert!(
+        runner.state().loop_detect_ring.is_empty(),
+        "the ring must be cleared on stop-short (Q3) so the same apply() does not instantly \
+         re-offer"
+    );
+}
+
+/// B3-materialize-cross-lethal ⭐ (N ≥ cycles-to-lethal, un-clamped per Q2): commits and
+/// stops at a determinate GameOver mid-drive instead of rolling back to manual play.
+/// Revert-failing / discriminating vs stop-short: under a flat "non-Priority ⇒ rollback"
+/// reducer (the pre-4b decline-stub, or a naive unconditional-abort materializer), this
+/// reverts to manual play — P1 SURVIVES at positive life and `waiting_for == Priority` —
+/// flipping every assertion below. The stop-short/cross-lethal PAIR (same fixture, N
+/// below vs comfortably above cycles-to-lethal) is the discriminator.
+#[test]
+fn b3_materialize_cross_lethal() {
+    let (mut runner, l0, _cleric) = reach_2p_optional_drain_offer();
+    // Un-clamped (Q2): N is comfortably past any plausible per-cycle delta >= 1, so this
+    // exercises N far beyond cycles-to-lethal without needing the exact probed delta.
+    let n: u32 = (l0 as u32) * 2 + 10;
+    let unbounded_before = runner.state().unbounded_resources.clone();
+
+    runner
+        .act(GameAction::DeclareShortcut {
+            count: IterationCount::Fixed(n),
+            template: None,
+        })
+        .expect("declare Fixed(N)");
+    runner
+        .act(GameAction::RespondToShortcut {
+            response: ShortcutResponse::Accept,
+        })
+        .expect("accept");
+
+    assert_eq!(
+        runner.state().waiting_for,
+        WaitingFor::GameOver { winner: Some(P0) },
+        "N >= cycles-to-lethal must COMMIT + STOP at a determinate GameOver mid-drive"
+    );
+    assert!(
+        life(&runner, P1) <= 0 && is_eliminated(&runner, P1),
+        "P1 must be dead (drained to <=0), NOT rolled back to positive life"
+    );
+    assert_eq!(
+        runner.state().unbounded_resources,
+        unbounded_before,
+        "a finite Fixed(N) drain must NOT mark_unbounded_loop (finite != unbounded, contrast \
+         the UntilLethal arm)"
+    );
+}
+
+/// B3-firewall-abort (BLOCKER #4 real teeth, hostile): `resolve()`'s CR 400.7 incarnation
+/// re-bind is the load-bearing per-iteration firewall — `predictability_gate(t, &[])` is a
+/// wired FORMAL no-op this phase (empty `required_slots`; its own discriminating coverage
+/// is the pre-existing `decision_template.rs` unit tests, not re-claimed here).
+/// Positive/negative pair on the SAME template pinning DRAIN_CLERIC by
+/// `ThisObject{incarnation}`: incarnation stable ⇒ N cycles materialize; incarnation
+/// bumped (simulating a leave+re-entry) BEFORE the drive starts ⇒ `resolve` fails on
+/// iteration 0 ⇒ abort at 0 complete cycles, priority handback, loop broken.
+#[test]
+fn b3_firewall_abort_incarnation_guard() {
+    let delta = probe_drain_delta();
+    let n: u32 = 3;
+
+    // Positive: incarnation stable across the whole drive.
+    let (mut runner, l0, cleric) = reach_2p_optional_drain_offer();
+    let inc = runner
+        .state()
+        .objects
+        .get(&cleric)
+        .expect("cleric on battlefield")
+        .incarnation;
+    let template = incarnation_pin_template(P0, cleric, inc, IterationCount::Fixed(n));
+    runner
+        .act(GameAction::DeclareShortcut {
+            count: IterationCount::Fixed(n),
+            template: Some(template),
+        })
+        .expect("declare");
+    runner
+        .act(GameAction::RespondToShortcut {
+            response: ShortcutResponse::Accept,
+        })
+        .expect("accept");
+    assert_eq!(
+        life(&runner, P1),
+        l0 - (n as i32) * delta,
+        "stable incarnation ⇒ resolve() succeeds every iteration ⇒ all N cycles materialize"
+    );
+    assert!(!is_eliminated(&runner, P1));
+
+    // Negative (hostile): bump the pinned object's incarnation AFTER Declare but BEFORE
+    // Accept — simulating a leave+re-entry inside the still-open window — while the
+    // template still carries the STALE incarnation it was pinned with.
+    let (mut runner2, l0b, cleric2) = reach_2p_optional_drain_offer();
+    let inc2 = runner2
+        .state()
+        .objects
+        .get(&cleric2)
+        .expect("cleric on battlefield")
+        .incarnation;
+    let template2 = incarnation_pin_template(P0, cleric2, inc2, IterationCount::Fixed(n));
+    runner2
+        .act(GameAction::DeclareShortcut {
+            count: IterationCount::Fixed(n),
+            template: Some(template2),
+        })
+        .expect("declare");
+    runner2
+        .state_mut()
+        .objects
+        .get_mut(&cleric2)
+        .expect("cleric on battlefield")
+        .incarnation += 1;
+    runner2
+        .act(GameAction::RespondToShortcut {
+            response: ShortcutResponse::Accept,
+        })
+        .expect("accept");
+
+    assert_eq!(
+        life(&runner2, P1),
+        l0b,
+        "stale-incarnation resolve() failure must abort at 0 complete cycles (no drain leaked)"
+    );
+    assert!(!is_eliminated(&runner2, P1));
+    assert_eq!(
+        runner2.state().waiting_for,
+        WaitingFor::Priority { player: P0 },
+        "abort hands priority back to living_priority_seat (P0), not a wrong-crown"
+    );
+    assert!(runner2.state().loop_detect_ring.is_empty());
+}
+
+/// B3-abort-rollback-live (CR 608.2b + atomicity): a PRE-DECLARED `Piecewise` schedule
+/// pins DRAIN_CLERIC for cycles `[0, k)` then switches to a never-resolvable object at
+/// cycle `k` — simulating "the enabler leaves the game" exactly at the k-th iteration,
+/// entirely from the schedule (no mid-drive test backdoor). Asserts the drained life is
+/// an EXACT multiple `k*delta` — no partial-cycle leak: the aborting iteration k's `ev`
+/// must have been dropped, not merged. Negative pair: the SAME schedule shape with the
+/// switch point placed past N materializes all N cycles untouched.
+#[test]
+fn b3_abort_rollback_live_atomicity() {
+    let delta = probe_drain_delta();
+    let n: u32 = 8;
+    let k: u32 = 3;
+    assert!(
+        k < n,
+        "test setup: abort must land strictly before N completes"
+    );
+
+    // Negative pair: switch point past N ⇒ no removal ⇒ all N cycles commit.
+    let (mut clean_runner, l0_clean, cleric_clean) = reach_2p_optional_drain_offer();
+    let clean_template =
+        piecewise_cleric_template(P0, cleric_clean, Some(n + 100), IterationCount::Fixed(n));
+    clean_runner
+        .act(GameAction::DeclareShortcut {
+            count: IterationCount::Fixed(n),
+            template: Some(clean_template),
+        })
+        .expect("declare");
+    clean_runner
+        .act(GameAction::RespondToShortcut {
+            response: ShortcutResponse::Accept,
+        })
+        .expect("accept");
+    assert_eq!(
+        life(&clean_runner, P1),
+        l0_clean - (n as i32) * delta,
+        "no removal ⇒ all N cycles commit"
+    );
+
+    // Positive (hostile): switch point AT k ⇒ cycles [0,k) commit, cycle k aborts.
+    let (mut runner, l0, cleric) = reach_2p_optional_drain_offer();
+    let template = piecewise_cleric_template(P0, cleric, Some(k), IterationCount::Fixed(n));
+    runner
+        .act(GameAction::DeclareShortcut {
+            count: IterationCount::Fixed(n),
+            template: Some(template),
+        })
+        .expect("declare");
+    runner
+        .act(GameAction::RespondToShortcut {
+            response: ShortcutResponse::Accept,
+        })
+        .expect("accept");
+
+    assert_eq!(
+        life(&runner, P1),
+        l0 - (k as i32) * delta,
+        "rollback must land at EXACTLY k complete cycles — no partial (aborting) cycle leaked"
+    );
+    assert!(!is_eliminated(&runner, P1));
+    assert_eq!(
+        runner.state().waiting_for,
+        WaitingFor::Priority { player: P0 },
+        "abort hands priority back to living_priority_seat (P0)"
+    );
+    assert!(runner.state().loop_detect_ring.is_empty());
 }

@@ -54,7 +54,7 @@
 //! and the derived [`WinKind`]. When either fails, it returns `None` — the
 //! soundness guarantee: no certificate for a non-loop or a non-progressing cycle.
 
-use crate::analysis::decision_template::IterationCount;
+use crate::analysis::decision_template::{DecisionTemplate, IterationCount};
 use crate::analysis::resource::{
     loop_states_cover_modulo_growth, loop_states_equal_modulo_resources, BoardDelta, CounterClass,
     ObjectClass, ResourceAxis, ResourceVector,
@@ -162,6 +162,13 @@ pub struct ShortcutProposal {
     pub unbounded: Vec<ResourceAxis>,
     /// How the loop wins (from the certificate) — display only.
     pub win_kind: WinKind,
+    /// PR-7 Phase 4b: an optional CR 732.2a decision template pinning the loop's
+    /// free choices for `IterationCount::Fixed(N)` finite materialization. `None`
+    /// for a choice-free drain (every existing offer/test) or an `UntilLethal`
+    /// proposal, which never reads this field. Absent from `On`/`Off` serialized
+    /// streams (skip-if-none), so this is a byte-preserving addition.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub template: Option<DecisionTemplate>,
 }
 
 /// CR 732.2b/c: an opponent's answer to a proposed loop shortcut. `Accept` lets the
