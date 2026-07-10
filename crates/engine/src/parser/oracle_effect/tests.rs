@@ -2077,6 +2077,60 @@ fn nalia_de_arnise_counters_then_deathtouch_lowers_correctly() {
     }
 }
 
+/// CR 608.2c + CR 122.1: Lulu, Loyal Hollyphant — mass counter then "untap them"
+/// must bind the untap to the countered set via `TrackedSet(0)`, not `SelfRef`.
+#[test]
+fn lulu_loyal_hollyphant_counters_then_untap_them_lowers_correctly() {
+    let def = parse_effect_chain(
+        "put a +1/+1 counter on each tapped creature you control, then untap them",
+        AbilityKind::Spell,
+    );
+
+    match &*def.effect {
+        Effect::PutCounterAll {
+            counter_type,
+            target,
+            ..
+        } => {
+            assert_eq!(*counter_type, CounterType::Plus1Plus1);
+            match target {
+                TargetFilter::Typed(tf) => {
+                    assert!(tf.type_filters.contains(&TypeFilter::Creature));
+                    assert_eq!(tf.controller, Some(ControllerRef::You));
+                    assert!(
+                        tf.properties
+                            .iter()
+                            .any(|p| matches!(p, FilterProp::Tapped)),
+                        "must target tapped creatures only"
+                    );
+                }
+                other => panic!("expected Typed tapped creatures you control, got {other:?}"),
+            }
+        }
+        other => panic!("expected primary PutCounterAll, got {other:?}"),
+    }
+
+    let sub = def
+        .sub_ability
+        .as_ref()
+        .expect("'then untap them' must attach as sub_ability");
+    assert!(
+        matches!(
+            &*sub.effect,
+            Effect::SetTapState {
+                target: TargetFilter::TrackedSet {
+                    id: TrackedSetId(0)
+                },
+                scope: EffectScope::Single,
+                state: TapStateChange::Untap,
+                ..
+            }
+        ),
+        "untap them must bind TrackedSet(0), got {:?}",
+        sub.effect
+    );
+}
+
 /// Scoping regression for issue #445: a TARGETED primary counter clause must
 /// NOT be promoted to `PutCounterAll` just because a TRAILING conjunct is a
 /// mass placement. Mass detection must run against the primary clause only.

@@ -237,6 +237,59 @@ fn patch_self_ref_head_tap_anaphor(def: &mut AbilityDefinition) {
     walk(def, false);
 }
 
+/// CR 608.2c + CR 122.1: After a mass counter placement (`PutCounterAll`), a
+/// chained "then untap them" continuation refers to the set of objects that
+/// received counters (Lulu, Loyal Hollyphant). Phase-trigger bodies carry
+/// `ctx.subject = Any`, so `resolve_it_pronoun` wrongly binds "them" to
+/// `SelfRef` (the trigger source). Rewrite to `TrackedSet(0)` so the runtime
+/// binds the published counter set via `affected_objects_from_events`. Sibling
+/// of [`patch_self_ref_head_tap_anaphor`] for the population-head / plural-
+/// anaphor polarity.
+fn patch_population_head_tap_anaphor(def: &mut AbilityDefinition) {
+    fn is_population_counter_publisher(effect: &Effect) -> bool {
+        matches!(
+            effect,
+            Effect::PutCounterAll { target, .. }
+                if !matches!(
+                    target,
+                    TargetFilter::SelfRef
+                        | TargetFilter::ParentTarget
+                        | TargetFilter::TriggeringSource
+                        | TargetFilter::CostPaidObject
+                )
+        )
+    }
+
+    fn walk(def: &mut AbilityDefinition, carried_population: bool) {
+        let active_population = if is_population_counter_publisher(&def.effect) {
+            true
+        } else {
+            match def.effect.target_filter() {
+                Some(filter) if !target_filter_is_player_scoped(filter) => false,
+                _ => carried_population,
+            }
+        };
+        if let Some(sub) = def.sub_ability.as_deref_mut() {
+            if active_population {
+                if let Effect::SetTapState {
+                    target,
+                    scope: EffectScope::Single,
+                    ..
+                } = sub.effect.as_mut()
+                {
+                    if matches!(target, TargetFilter::SelfRef | TargetFilter::ParentTarget) {
+                        *target = TargetFilter::TrackedSet {
+                            id: crate::types::identifiers::TrackedSetId(0),
+                        };
+                    }
+                }
+            }
+            walk(sub, active_population);
+        }
+    }
+    walk(def, false);
+}
+
 /// CR 608.2c: After a "choose a card …" interactive selection, the chained
 /// "… {remove|put} that many counters {from|on} it" continuation's "it" refers to
 /// the chosen card. The standalone continuation clause lowers its "it" anaphor to
@@ -576,6 +629,26 @@ mod self_ref_tap_anaphor_tests {
     /// Builds a `PutCounter{head_target}` head with a chained
     /// `SetTapState{ParentTarget, scope}` untap sub — the shape every chained
     /// tap/untap anaphor lowers to.
+    fn put_counter_all_then_untap_chain(head_target: TargetFilter) -> AbilityDefinition {
+        let mut def = AbilityDefinition::new(
+            AbilityKind::Spell,
+            Effect::PutCounterAll {
+                counter_type: CounterType::Plus1Plus1,
+                count: QuantityExpr::Fixed { value: 1 },
+                target: head_target,
+            },
+        );
+        def.sub_ability = Some(Box::new(AbilityDefinition::new(
+            AbilityKind::Spell,
+            Effect::SetTapState {
+                target: TargetFilter::SelfRef,
+                scope: EffectScope::Single,
+                state: TapStateChange::Untap,
+            },
+        )));
+        def
+    }
+
     fn put_counter_then_untap_chain(
         head_target: TargetFilter,
         sub_scope: EffectScope,
@@ -643,6 +716,32 @@ mod self_ref_tap_anaphor_tests {
                 }
             ),
             "Typed-head anaphor must stay ParentTarget (CR 608.2b), got {:?}",
+            sub.effect
+        );
+    }
+
+    // CR 608.2c + CR 122.1: a chained "untap them" after `PutCounterAll` binds
+    // to the countered set, not the trigger source (Lulu, Loyal Hollyphant).
+    #[test]
+    fn put_counter_all_head_plural_untap_rewrites_to_tracked_set() {
+        let mut def = put_counter_all_then_untap_chain(TargetFilter::Typed(
+            TypedFilter::creature()
+                .controller(ControllerRef::You)
+                .properties(vec![FilterProp::Tapped]),
+        ));
+        patch_population_head_tap_anaphor(&mut def);
+        let sub = def.sub_ability.expect("sub-ability");
+        assert!(
+            matches!(
+                &*sub.effect,
+                Effect::SetTapState {
+                    target: TargetFilter::TrackedSet {
+                        id: crate::types::identifiers::TrackedSetId(0)
+                    },
+                    ..
+                }
+            ),
+            "PutCounterAll-head plural untap must bind TrackedSet(0), got {:?}",
             sub.effect
         );
     }
@@ -2224,6 +2323,9 @@ pub(crate) fn lower_effect_chain_ir(ir: &EffectChainIr) -> AbilityDefinition {
     // ParentTarget to SelfRef so it binds the source, while a real/optional
     // target head (Tyvar Kell) keeps ParentTarget and no-ops when declined.
     patch_self_ref_head_tap_anaphor(&mut result);
+    // CR 608.2c + CR 122.1: bind a mass `PutCounterAll` head's chained "untap
+    // them" to the countered set (Lulu, Loyal Hollyphant).
+    patch_population_head_tap_anaphor(&mut result);
     // CR 608.2c: bind a "choose a card …, then {put|remove} counters {on|from} it"
     // continuation's "it" anaphor to the chosen card (Amy Pond). The standalone
     // counter clause lowers "it" to SelfRef; under an `Effect::ChooseFromZone`
