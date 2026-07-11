@@ -93,10 +93,11 @@
 
 use crate::types::ability::{
     AbilityCondition, AbilityCost, AbilityDefinition, ContinuousModification, ControllerRef,
-    CountScope, Duration, EachDamageRecipient, Effect, ForEachCategoryAction, GuessSubject,
-    ModalChoice, MultiTargetSpec, ObjectScope, PlayerFilter, PlayerScope, QuantityExpr,
-    QuantityRef, RepeatContinuation, ReplacementCondition, ResolvedAbility, StaticCondition,
-    TargetChoiceTiming, TargetFilter, TrackedAnaphorSource, TriggerCondition,
+    CountScope, Duration, EachDamageRecipient, Effect, FilterProp, ForEachCategoryAction,
+    GuessSubject, ModalChoice, MultiTargetSpec, ObjectScope, PlayerFilter, PlayerScope,
+    QuantityExpr, QuantityRef, RepeatContinuation, ReplacementCondition, ResolvedAbility,
+    StaticCondition, TargetChoiceTiming, TargetFilter, TrackedAnaphorSource, TriggerCondition,
+    TypedFilter,
 };
 use crate::types::game_state::TargetSelectionConstraint;
 use crate::types::keywords::Keyword;
@@ -2396,7 +2397,16 @@ fn scan_target_filter(x: &TargetFilter) -> Axes {
         // like SelfRef — no event/sibling/projected resource axis.
         TargetFilter::OriginalSource => Axes::NONE,
         TargetFilter::SourceOrPaired => Axes::NONE,
-        TargetFilter::Typed(..) => Axes::CONSERVATIVE,
+        // CR 106.1 / CR 119 / CR 122.1: a Typed target filter reads a PROJECTED
+        // player resource ONLY via a property/controller that references one
+        // (authority: `project_out_resources`, analysis/resource.rs). Pure
+        // type/controller predicates read none. `event`/`sibling` stay CONSERVATIVE
+        // (byte-preserved) — only the projected axis is refined.
+        TargetFilter::Typed(tf) => Axes {
+            event: true,
+            sibling: true,
+            projected: typed_filter_reads_projected(tf),
+        },
         TargetFilter::Not { filter } => {
             let mut acc = Axes::NONE;
             acc = acc.or(scan_target_filter(filter));
@@ -3028,6 +3038,180 @@ fn scan_static_condition(x: &StaticCondition) -> Axes {
         StaticCondition::AdditionalCostPaid => Axes::NONE,
         StaticCondition::CastingAsVariant { variant: _ } => Axes::NONE,
         StaticCondition::None => Axes::NONE,
+    }
+}
+
+/// Projected-axis probe for a `TargetFilter::Typed` filter (CR 106.1 / CR 119 /
+/// CR 122.1). `type_filters` are pure card-type predicates (CR 205) and read no
+/// player resource, so only the optional `controller` ref and the `properties`
+/// vector are scanned. Returns just the `.projected` axis — `event`/`sibling` on
+/// the `Typed` arm remain unconditionally CONSERVATIVE.
+fn typed_filter_reads_projected(tf: &TypedFilter) -> bool {
+    let mut acc = tf
+        .controller
+        .as_ref()
+        .map_or(Axes::NONE, scan_controller_ref);
+    for p in &tf.properties {
+        acc = acc.or(scan_filter_prop(p));
+    }
+    acc.projected
+}
+
+/// Classify a single `FilterProp` on the three read axes. **Exhaustive with NO
+/// `_` wildcard** — a NEW `FilterProp` variant fails to compile here until it is
+/// classified (fail-closed to CONSERVATIVE when its read surface is unproven).
+/// Every nested-bearing prop recurses the matching sub-scanner so a projected
+/// read reached through a property (`PtComparison { value: Ref(LifeTotal) }`,
+/// `ControllerMatches { OpponentLostLife }`, `Targets { Typed{..} }`, …) is not
+/// lost. The projected-axis authority is `project_out_resources`
+/// (analysis/resource.rs): a field is projected iff that fn clears it.
+fn scan_filter_prop(x: &FilterProp) -> Axes {
+    match x {
+        // --- board / object / printed-characteristic leaves: no player resource.
+        // Their drift breaks the board-equality gate (item 1), not the item-4 scan.
+        FilterProp::Token
+        | FilterProp::NonToken
+        | FilterProp::WasPlayed
+        | FilterProp::Blocking
+        | FilterProp::BlockingSource
+        | FilterProp::CombatRelation { .. }
+        | FilterProp::Unblocked
+        | FilterProp::AttackingAlone
+        | FilterProp::BlockingAlone
+        | FilterProp::Tapped
+        | FilterProp::Untapped
+        | FilterProp::IsSaddled
+        | FilterProp::SaddledSource
+        | FilterProp::ConvokedSource
+        | FilterProp::HasHasteOrControlledSinceTurnBegan
+        | FilterProp::WithKeyword { .. }
+        | FilterProp::HasKeywordKind { .. }
+        | FilterProp::WithoutKeyword { .. }
+        | FilterProp::WithoutKeywordKind { .. }
+        | FilterProp::ManaValueParity { .. }
+        | FilterProp::ManaCostIn { .. }
+        | FilterProp::InZone { .. }
+        | FilterProp::Foretold
+        | FilterProp::EnchantedBy
+        | FilterProp::EquippedBy
+        | FilterProp::AttachedToSource
+        | FilterProp::AttachedToRecipient
+        | FilterProp::Another
+        | FilterProp::Unpaired
+        | FilterProp::OtherThanTriggerObject
+        | FilterProp::HasColor { .. }
+        | FilterProp::PowerGTSource
+        | FilterProp::ColorCount { .. }
+        | FilterProp::ManaSymbolCount { .. }
+        | FilterProp::HasSupertype { .. }
+        | FilterProp::IsChosenCreatureType
+        | FilterProp::IsChosenColor
+        | FilterProp::IsChosenCardType
+        | FilterProp::MatchesLastChosenCardPredicate
+        | FilterProp::HasSingleTarget
+        | FilterProp::Modal
+        | FilterProp::NotColor { .. }
+        | FilterProp::NotSupertype { .. }
+        | FilterProp::Suspected
+        | FilterProp::Renowned
+        | FilterProp::ToughnessGTPower
+        | FilterProp::PowerExceedsBase
+        | FilterProp::InTrackedSet { .. }
+        | FilterProp::Modified
+        | FilterProp::Historic
+        | FilterProp::NotHistoric
+        | FilterProp::InAnyZone { .. }
+        | FilterProp::EnteredThisTurn
+        | FilterProp::ControlledContinuouslySinceTurnBegan
+        | FilterProp::BlockedThisTurn
+        | FilterProp::AttackedOrBlockedThisTurn
+        | FilterProp::FaceDown
+        | FilterProp::Transformed
+        | FilterProp::CouldBeTargetedByTriggeringSpell
+        | FilterProp::HasXInManaCost
+        | FilterProp::HasXInActivationCost
+        | FilterProp::WasKicked
+        | FilterProp::HasManaAbility
+        | FilterProp::HasNoAbilities
+        | FilterProp::Named { .. }
+        | FilterProp::SameName
+        | FilterProp::SameNameAsParentTarget
+        | FilterProp::IsCommander
+        | FilterProp::Other { .. } => Axes::NONE,
+
+        // --- QuantityExpr-bearing: recurse so `Ref(LifeTotal)` / `PlayerCounter`
+        // thresholds surface the projected axis (CR 119 / CR 122.1). Finding A:
+        // `PtComparison` MUST recurse — "power ≤ your life total" is projected.
+        FilterProp::Counters { count, .. } => scan_quantity_expr(count),
+        FilterProp::Cmc { value, .. } => scan_quantity_expr(value),
+        FilterProp::PtComparison { value, .. } => scan_quantity_expr(value),
+
+        // --- Box<TargetFilter>-bearing: recurse (a nested Typed could be projected).
+        FilterProp::CanEnchant { target } => scan_target_filter(target),
+        FilterProp::DifferentNameFrom { filter } => scan_target_filter(filter),
+        FilterProp::DistinctFrom { reference } => scan_target_filter(reference),
+        FilterProp::SharesQuality { reference, .. } => {
+            reference.as_deref().map_or(Axes::NONE, scan_target_filter)
+        }
+        FilterProp::TargetsOnly { filter } => scan_target_filter(filter),
+        FilterProp::Targets { filter } => scan_target_filter(filter),
+
+        // --- Box<PlayerFilter>-bearing: recurse (OpponentLostLife/… is projected).
+        FilterProp::ControllerMatches { player } => scan_player_filter(player),
+
+        // --- FilterProp-nesting: recurse.
+        FilterProp::AnyOf { props } => {
+            let mut acc = Axes::NONE;
+            for p in props {
+                acc = acc.or(scan_filter_prop(p));
+            }
+            acc
+        }
+        FilterProp::Not { prop } => scan_filter_prop(prop),
+
+        // --- ControllerRef-bearing: recurse for self-documentation. Every
+        // `scan_controller_ref` outcome is projected:false, so these never lift the
+        // projected axis; recursing keeps the classifier honest under future
+        // ControllerRef changes.
+        FilterProp::Attacking { defender } => {
+            defender.as_ref().map_or(Axes::NONE, scan_controller_ref)
+        }
+        FilterProp::ProtectorMatches { controller } => scan_controller_ref(controller),
+        FilterProp::Owned { controller } => scan_controller_ref(controller),
+        FilterProp::HasAttachment { controller, .. } => {
+            controller.as_ref().map_or(Axes::NONE, scan_controller_ref)
+        }
+        FilterProp::HasAnyAttachmentOf { controller, .. } => {
+            controller.as_ref().map_or(Axes::NONE, scan_controller_ref)
+        }
+        FilterProp::MostPrevalentCreatureTypeIn { scope, .. } => scan_controller_ref(scope),
+        FilterProp::AttackedThisTurn { defender } => {
+            defender.as_ref().map_or(Axes::NONE, scan_controller_ref)
+        }
+        FilterProp::NameMatchesAnyPermanent { controller } => {
+            controller.as_ref().map_or(Axes::NONE, scan_controller_ref)
+        }
+
+        // --- fail-closed CONSERVATIVE (projected:true):
+        // CR 122.1: reads `counter_added_this_turn`, cleared by
+        // `project_out_resources` — PROVEN projected.
+        FilterProp::CountersPutOnThisTurn { .. } => Axes::CONSERVATIVE,
+        // CR 120: runtime eval reads `state.damage_dealt_this_turn` (NOT the object's
+        // `damage_marked` — the variant doc is stale), which `project_out_resources`
+        // clears and `object_resource_axes_match` does NOT strict-compare (it compares
+        // only `damage_marked` + `counters`). A creature dealt damage then regenerated
+        // has `damage_marked == 0` yet a persistent journal record, so gate (1) cannot
+        // backstop this read — PROVEN projected, fail closed.
+        FilterProp::WasDealtDamageThisTurn => Axes::CONSERVATIVE,
+        // CR 400 / CR 603.6a: runtime eval reads `state.zone_changes_this_turn`, an
+        // append-only event journal a loop pumps, cleared by `project_out_resources`
+        // and strict-compared by nothing in gate (1). A flicker/blink loop keeps the
+        // net board equal each cycle while the journal grows — PROVEN projected, fail
+        // closed.
+        FilterProp::ZoneChangedThisTurn { .. } => Axes::CONSERVATIVE,
+        // reads `player_last_chose_label`; the backing field is NOT proven to be
+        // outside `project_out_resources`'s cleared set, so fail closed.
+        FilterProp::ControllerChoseLabel { .. } => Axes::CONSERVATIVE,
     }
 }
 

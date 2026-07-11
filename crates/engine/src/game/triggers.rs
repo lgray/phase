@@ -25206,8 +25206,10 @@ pub mod tests {
     /// `Axes` walk fails CLOSED — see `Axes::CONSERVATIVE`) flags as reading a
     /// projected resource, so that set cannot grow unnoticed.
     ///
-    /// Measured today the flagged set is `{ Dethrone, Increment, Soulbond,
-    /// Training }`, but only ONE is a GENUINE projected-player-resource read:
+    /// Measured today the flagged set is `{ Dethrone, Increment }` (SHRUNK from the
+    /// former `{ Dethrone, Increment, Soulbond, Training }` by the PR-7 item-4
+    /// `TargetFilter::Typed`-arm projected refinement — see below), of which only
+    /// ONE is a GENUINE projected-player-resource read:
     /// - **Dethrone** (CR 702.105a): `QuantityComparison` of the defending
     ///   player's `LifeTotal` vs the max `LifeTotal` among all players. Life
     ///   (CR 119) is a projected axis `project_out_resources` zeroes, so a dormant
@@ -25218,14 +25220,24 @@ pub mod tests {
     ///   severity depends on whether granted Dethrone is reachable inside a
     ///   growing-cascade loop. NOTE: this contradicts the inc2b review's premise
     ///   that "no granted-keyword condition reads a projected resource".
-    /// - **Increment / Soulbond / Training** are FALSE POSITIVES of the fail-closed
-    ///   walk: Increment reads `ManaSpentToCast` (→ `Axes::CONSERVATIVE`), Soulbond
-    ///   reads control/`Unpaired`/zone-change filters, Training reads a co-attacker
-    ///   `MinCoAttackers` power filter. All are cast/combat/object state that gate
-    ///   (1) strict-compares; the classifier only marks them projected because it
-    ///   does not descend those subtrees. Missing them in item-5 is harmless.
+    /// - **Increment** is a FALSE POSITIVE of the fail-closed walk: it reads
+    ///   `ManaSpentToCast` (→ `Axes::CONSERVATIVE`), a cast fact gate (1)
+    ///   strict-compares; the classifier only marks it projected because it does
+    ///   not descend that subtree. Missing it in item-5 is harmless.
     ///
-    /// If this set changes, DO NOT just edit the expected list — investigate:
+    /// **Why Soulbond and Training DISAPPEARED (intended, not a regression):** both
+    /// were fail-closed FALSE POSITIVES of the OLD blanket `TargetFilter::Typed =>
+    /// Axes::CONSERVATIVE` arm. The PR-7 item-4 refinement now computes the real
+    /// projected axis of a `Typed` filter from its controller + properties
+    /// (`typed_filter_reads_projected`, ability_scan.rs). Soulbond's synthesized
+    /// condition reads only control / `Unpaired` / zone-change props (all
+    /// non-projected leaves); Training's reads a `MinCoAttackers` power filter whose
+    /// `PtComparison { value: Power{Source} }` recurses to `QuantityRef::Power =>
+    /// projected:false`. Neither touches a `project_out_resources`-cleared field, so
+    /// both correctly drop off the projected axis. This is the intended direction —
+    /// two fail-closed false positives cleared — not a lost genuine read.
+    ///
+    /// If this set changes AGAIN, DO NOT just edit the expected list — investigate:
     /// a NEW genuine projected reader means item-5 must be extended to scan
     /// granted-keyword defs before it can be trusted; a removed entry means the
     /// classifier or a builder changed.
@@ -25265,7 +25277,7 @@ pub mod tests {
             checked_conditions > 0,
             "expected at least one synthesized fire-time condition to scan"
         );
-        let expected: BTreeSet<String> = ["Dethrone", "Increment", "Soulbond", "Training"]
+        let expected: BTreeSet<String> = ["Dethrone", "Increment"]
             .into_iter()
             .map(str::to_string)
             .collect();

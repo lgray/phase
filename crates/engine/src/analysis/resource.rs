@@ -3387,10 +3387,12 @@ mod tests {
     // ===================================================================
 
     use crate::types::ability::{
-        AbilityCondition, CountScope, Effect, QuantityExpr, QuantityRef, ReplacementCondition,
+        AbilityCondition, Comparator, ControllerRef, CountScope, Effect, FilterProp, PlayerScope,
+        PtStat, PtValueScope, QuantityExpr, QuantityRef, ReplacementCondition,
         ReplacementDefinition, ResolvedAbility, StaticCondition, StaticDefinition, TargetFilter,
-        TargetRef, TriggerCondition, TriggerDefinition,
+        TargetRef, TriggerCondition, TriggerDefinition, TypedFilter,
     };
+    use crate::types::counter::CounterMatch;
     use crate::types::player::PlayerCounterKind;
     use crate::types::replacements::ReplacementEvent;
     use crate::types::statics::StaticMode;
@@ -3438,6 +3440,148 @@ mod tests {
             ObjectId(CHURN_SRC),
             PlayerId(0),
         )
+    }
+
+    /// The opponent `Typed` player-target filter Vito/Sanguine Bond announce
+    /// ("target opponent") — verbatim the card-data parse
+    /// (`Typed{type_filters:[], controller:Opponent, properties:[]}`) plus optional
+    /// extra `properties` for the projected-axis discriminators.
+    fn opp_typed(properties: Vec<FilterProp>) -> TargetFilter {
+        TargetFilter::Typed(TypedFilter {
+            type_filters: vec![],
+            controller: Some(ControllerRef::Opponent),
+            properties,
+        })
+    }
+
+    /// A `LoseLife` ability whose `amount` is supplied and whose player target is
+    /// `target` — the Vito/Sanguine drain shape. With `amount` non-projected
+    /// (EventContextAmount / Fixed), the projected axis comes ENTIRELY from the
+    /// target (item-4's subject).
+    fn lose_life_targeting(amount: QuantityExpr, target: TargetFilter) -> ResolvedAbility {
+        ResolvedAbility::new(
+            Effect::LoseLife {
+                amount,
+                target: Some(target),
+            },
+            vec![],
+            ObjectId(CHURN_SRC),
+            PlayerId(0),
+        )
+    }
+
+    fn event_amount() -> QuantityExpr {
+        QuantityExpr::Ref {
+            qty: QuantityRef::EventContextAmount,
+        }
+    }
+
+    fn your_life_total() -> QuantityExpr {
+        QuantityExpr::Ref {
+            qty: QuantityRef::LifeTotal {
+                player: PlayerScope::Controller,
+            },
+        }
+    }
+
+    // ===================================================================
+    // COMMIT 1 (item-4) — `TargetFilter::Typed` projected-axis discriminators.
+    // Non-vacuous at the classifier level independent of item-3.
+    // ===================================================================
+
+    /// Vito's `target opponent` (pure-controller `Typed`, empty properties) reads
+    /// NO projected resource. Revert-probe: restoring the arm to
+    /// `TargetFilter::Typed(..) => Axes::CONSERVATIVE` flips this to `true`.
+    #[test]
+    fn typed_filter_pure_controller_not_projected() {
+        let ability = lose_life_targeting(event_amount(), opp_typed(vec![]));
+        assert!(
+            !crate::game::ability_scan::ability_reads_projected_resource(&ability),
+            "pure-controller opponent Typed reads no projected resource"
+        );
+    }
+
+    /// A `Cmc` threshold reading your life total is still projected (CR 119).
+    /// Revert-probe: narrowing the `Cmc` value to `Fixed(1)` flips this `false`.
+    #[test]
+    fn typed_filter_cmc_lifetotal_still_reads() {
+        let ability = lose_life_targeting(
+            event_amount(),
+            opp_typed(vec![FilterProp::Cmc {
+                comparator: Comparator::GE,
+                value: your_life_total(),
+            }]),
+        );
+        assert!(
+            crate::game::ability_scan::ability_reads_projected_resource(&ability),
+            "Cmc reading your life total is projected"
+        );
+    }
+
+    /// Finding A (the NON-`Cmc` path): `PtComparison` reading your life total
+    /// ("power ≤ your life total", CR 208 + CR 119) is projected. Revert-probe:
+    /// classifying `PtComparison` as a NONE leaf (forgetting to recurse it) flips
+    /// this `false` — the UNSOUND cover this test guards.
+    #[test]
+    fn typed_filter_ptcomparison_lifetotal_still_reads() {
+        let ability = lose_life_targeting(
+            event_amount(),
+            opp_typed(vec![FilterProp::PtComparison {
+                stat: PtStat::Power,
+                scope: PtValueScope::Current,
+                comparator: Comparator::LE,
+                value: your_life_total(),
+            }]),
+        );
+        assert!(
+            crate::game::ability_scan::ability_reads_projected_resource(&ability),
+            "PtComparison reading your life total is projected (recurse guard)"
+        );
+    }
+
+    /// `CountersPutOnThisTurn` reads `counter_added_this_turn` (cleared by
+    /// `project_out_resources`, CR 122.1) ⇒ projected (fail-closed leaf, no revert).
+    #[test]
+    fn typed_filter_counters_put_this_turn_conservative() {
+        let ability = lose_life_targeting(
+            event_amount(),
+            opp_typed(vec![FilterProp::CountersPutOnThisTurn {
+                actor: CountScope::Controller,
+                counters: CounterMatch::Any,
+                comparator: Comparator::GE,
+                count: 1,
+            }]),
+        );
+        assert!(
+            crate::game::ability_scan::ability_reads_projected_resource(&ability),
+            "CountersPutOnThisTurn is a proven-projected fail-closed leaf"
+        );
+    }
+
+    /// Over-edit guard: the `Typed` arm keeps `event`/`sibling` CONSERVATIVE for
+    /// both a pure-controller and a projected-property filter. A `Fixed` amount
+    /// contributes NO axis, so both axes come SOLELY from the Typed arm here.
+    /// Revert-probe: setting the arm's `event`/`sibling` to `false` flips these.
+    #[test]
+    fn event_and_sibling_axes_unchanged_for_typed() {
+        for properties in [
+            vec![],
+            vec![FilterProp::Cmc {
+                comparator: Comparator::GE,
+                value: your_life_total(),
+            }],
+        ] {
+            let ability =
+                lose_life_targeting(QuantityExpr::Fixed { value: 1 }, opp_typed(properties));
+            assert!(
+                crate::game::ability_scan::ability_uses_event_context(&ability),
+                "the Typed arm keeps event:true"
+            );
+            assert!(
+                crate::game::ability_scan::ability_reads_sibling_mutable(&ability),
+                "the Typed arm keeps sibling:true"
+            );
+        }
     }
 
     /// A plain fixed-drain churn entry (the target-class shape): controller 0,
