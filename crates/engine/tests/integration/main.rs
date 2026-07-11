@@ -442,6 +442,7 @@ mod issue_5283_hall_of_bandit_lord;
 mod issue_5285_senu_keen_eyed_protector;
 mod issue_5286_lulu_loyal_hollyphant;
 mod issue_5287_samwise_stouthearted;
+mod issue_5290_curse_misfortunes_upkeep;
 mod issue_5322_sigarda_hexproof;
 mod issue_5326_avatar_aang_transform;
 mod issue_5327_doctor_doom_land_discard;

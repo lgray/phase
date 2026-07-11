@@ -59,10 +59,26 @@ fn resolve_forward_result_search_attach_host(
     let targets = forward_result_attach_host_targets(ability);
     match target {
         TargetFilter::SelfRef => Some(AttachTarget::Object(ability.source_id)),
-        TargetFilter::ParentTarget => targets.first().map(|target| match target {
-            TargetRef::Object(id) => AttachTarget::Object(*id),
-            TargetRef::Player(id) => AttachTarget::Player(*id),
-        }),
+        TargetFilter::ParentTarget => targets
+            .first()
+            .map(|target| match target {
+                TargetRef::Object(id) => AttachTarget::Object(*id),
+                TargetRef::Player(id) => AttachTarget::Player(*id),
+            })
+            .or_else(|| {
+                // CR 303.4b + CR 608.2c: Aura search-put "attached to that/enchanted
+                // player" binds ParentTarget to the source's enchanted host when no
+                // player target was chosen at trigger placement (Curse of Misfortunes).
+                crate::game::targeting::resolve_event_context_target(
+                    state,
+                    &TargetFilter::AttachedTo,
+                    ability.source_id,
+                )
+                .map(|target| match target {
+                    TargetRef::Object(id) => AttachTarget::Object(id),
+                    TargetRef::Player(id) => AttachTarget::Player(id),
+                })
+            }),
         TargetFilter::Any => {
             let source = state.objects.get(&ability.source_id)?;
             if source
