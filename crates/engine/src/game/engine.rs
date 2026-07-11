@@ -1719,9 +1719,14 @@ fn pass_priority_once_with_pipeline(
             && matches!(wf, WaitingFor::Priority { player } if player == state.active_player)
         {
             state.record_loop_detect_sample();
-        } else {
+        } else if !matches!(wf, WaitingFor::OrderTriggers { .. }) {
             state.loop_detect_ring.clear();
         }
+        // CR 603.3b + CR 732.2a: leave the ring intact on the mandatory trigger-ordering
+        // window — ordering simultaneous triggers is a forced step of putting them on the
+        // stack (staged in pending_trigger_order, so the stack is momentarily shrunk/empty
+        // here), not a settle or deliberate break. Preserving the Priority{active} samples
+        // across the beat lets a self-refilling multi-trigger loop reach CR 732.2a detection.
     }
     // No else-branch: a bare handoff or an empty-stack pass-to-advance-phase does NOT
     // touch the ring (leave-intact), so accumulation survives the inter-resolution beats.
@@ -2454,12 +2459,20 @@ fn apply_action(
     // cascade, so the accumulated detection window is stale and must be dropped.
     // Placed AFTER every preference early-return (CancelAutoPass / SetPhaseStops /
     // ReorderHand / Debug / Grant- & RevokeDebugPermission) so a no-op preference
-    // toggle never reaches here; PassPriority is the only action that CONTINUES a
-    // cascade and so must NOT clear. `run_auto_pass_loop` and `resolve_all_fast_forward`
+    // toggle never reaches here; PassPriority and OrderTriggers are the only actions
+    // that CONTINUE a cascade and so must NOT clear (see the CR 603.3b note below).
+    // `run_auto_pass_loop` and `resolve_all_fast_forward`
     // call the resolution seam directly (not via `apply_action`), so this clear does
     // not fire during their internal iterations — the ring accumulates correctly there.
     //
-    if !matches!(action, GameAction::PassPriority) {
+    // CR 603.3b + CR 732.2a: PassPriority AND OrderTriggers both CONTINUE a mandatory
+    // cascade (OrderTriggers is the forced CR 603.3b placement of simultaneous triggers,
+    // not a deliberate action). Every other action (cast/activate/play-land) is a
+    // deliberate break and still invalidates the ring.
+    if !matches!(
+        action,
+        GameAction::PassPriority | GameAction::OrderTriggers { .. }
+    ) {
         state.loop_detect_ring.clear();
     }
 

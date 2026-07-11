@@ -1760,6 +1760,56 @@ pub(crate) fn drive_pass_priority(board: &mut ComboBoard, max_beats: usize) -> V
     trace
 }
 
+/// Like [`drive_pass_priority`], but responds to a mandatory `WaitingFor::OrderTriggers`
+/// window with the identity `OrderTriggers` order instead of erroring (CR 603.3b — a
+/// mandatory simultaneous-trigger group never declines a trigger, so any legal
+/// permutation is sound); every other window still gets `PassPriority`. Records the same
+/// post-action [`BeatTrace`] per beat — the `OrderTriggers` window surfaces as the
+/// post-state of the beat that produced it (so `trace` reveals it) and terminal
+/// `GameOver` is recorded like `drive_pass_priority`, so [`first_gameover_beat`] works.
+/// `drive_pass_priority` errors out at an `OrderTriggers` window, so a self-refilling
+/// MULTI-trigger loop needs this driver instead.
+pub(crate) fn drive_with_trigger_ordering(
+    board: &mut ComboBoard,
+    max_beats: usize,
+) -> Vec<BeatTrace> {
+    let mut trace = Vec::new();
+    for beat in 1..=max_beats {
+        if matches!(
+            board.runner.state().waiting_for,
+            WaitingFor::GameOver { .. }
+        ) {
+            break;
+        }
+        // Respond to the CURRENT window: identity ordering at an OrderTriggers prompt,
+        // else pass. The owned `order` vec ends the state borrow before `act`.
+        let action = match &board.runner.state().waiting_for {
+            WaitingFor::OrderTriggers { triggers, .. } => GameAction::OrderTriggers {
+                order: (0..triggers.len()).collect(),
+            },
+            _ => GameAction::PassPriority,
+        };
+        if board.runner.act(action).is_err() {
+            break;
+        }
+        let s = board.runner.state();
+        trace.push(BeatTrace {
+            beat,
+            wf: s.waiting_for.clone(),
+            stack_len: s.stack.len(),
+            ring_len: s.loop_detect_ring.len(),
+            lives: s.players.iter().map(|p| p.life).collect(),
+        });
+        if matches!(
+            board.runner.state().waiting_for,
+            WaitingFor::GameOver { .. }
+        ) {
+            break;
+        }
+    }
+    trace
+}
+
 /// Index of the first beat whose `waiting_for` is `GameOver { winner: Some(w) }`,
 /// or `None` if no early win occurred within the driven window.
 pub(crate) fn first_gameover_beat(trace: &[BeatTrace]) -> Option<(usize, PlayerId)> {

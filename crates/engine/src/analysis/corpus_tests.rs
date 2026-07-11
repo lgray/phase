@@ -924,6 +924,116 @@ fn drive_drain_idx18_victim_with_out_is_not_eliminated() {
     );
 }
 
+/// G2 (multi-trigger ring-survival MECHANISM). Two DISTINGUISHABLE "whenever you gain
+/// life" drainers — Marauding Blight-Priest (fixed: each opponent loses 1) and Vito,
+/// Thorn of the Dusk Rose (dynamic: target opponent loses that much) — plus Bloodthirsty
+/// Conqueror (the refiller: whenever an opponent loses life, you gain that much). Each
+/// life-gain fires BOTH drainers simultaneously, so CR 603.3b forces a real
+/// `OrderTriggers` window every cycle (the two abilities are order-dependent, so no
+/// auto-ordering short-circuit). This drives the loop through that window and asserts
+/// the `loop_detect_ring` SURVIVES it and accrues >= 2 samples.
+///
+/// SCOPE: the committed assertions are the ring-survival MECHANISM — the loop-detect
+/// ring survives a multi-trigger `OrderTriggers` beat (CR 603.3b) so CR 732.2a detection
+/// can accrue samples. NOTE (measured, both seam edits present): this mixed
+/// untargeted+targeted fixture ALSO reaches end-to-end `GameOver { winner: Some(P0) }` at
+/// beat 10 (Vito's targeted trigger auto-resolves forced-unique in 2p, so the untargeted
+/// Blight-Priest -> Conqueror drain carries the loop and the CR 732.2a shortcut fires;
+/// detection is via the COVER path — the cascade is super-critical, so the ring tops out at
+/// exactly `max_ring == 2`). That win is deliberately NOT asserted here: `max_ring == 2`
+/// sits at the current 2-sample detection edge, so a min-samples tightening would flip the
+/// `GameOver` for a reason unrelated to ring-survival — the wrong granularity for a
+/// ring-survival test. Ring survival is the robust invariant; the robust E2E multi-trigger
+/// detection witness = the 52nd/G1 (non-edge).
+///
+/// REVERT-FAIL (measured, both seams load-bearing): reverting EDIT A (the SEAM1
+/// `!matches!(wf, OrderTriggers)` clear guard) alone, or EDIT B (the SEAM2
+/// `GameAction::OrderTriggers` clear exemption) alone, drops `max_ring` from 2 to 1 (and
+/// the end-to-end `GameOver` from `Some(P0)` to `None`) — the ring is wiped on the
+/// OrderTriggers beat and never accrues 2 samples.
+#[test]
+fn drive_multi_trigger_ring_survives_order_triggers_beat() {
+    const FIXTURE: &[&str] = &[
+        "Marauding Blight-Priest",
+        "Vito, Thorn of the Dusk Rose",
+        "Bloodthirsty Conqueror",
+    ];
+    let Some(mut board) = corpus::build_drain_board(card_db(), FIXTURE, 200) else {
+        return; // export absent (CI / fresh checkout): skip, never fail spuriously
+    };
+    corpus::seed_lifegain_cascade(&mut board);
+    let trace = corpus::drive_with_trigger_ordering(&mut board, 60);
+    // NON-VACUITY: the two distinguishable drainers must actually force a real
+    // OrderTriggers window — otherwise the ring-survival assertion is meaningless.
+    assert!(
+        trace
+            .iter()
+            .any(|t| matches!(t.wf, WaitingFor::OrderTriggers { .. })),
+        "the two distinguishable 'whenever you gain life' drainers must force a real \
+         OrderTriggers beat (CR 603.3b)"
+    );
+    // RING SURVIVAL (the discriminating signal): the ring survives the OrderTriggers
+    // beat and accrues >= 2 Priority{active} samples across the cascade.
+    let max_ring = trace.iter().map(|t| t.ring_len).max().unwrap_or(0);
+    assert!(
+        max_ring >= 2,
+        "the loop-detect ring must survive the OrderTriggers beat and reach >= 2 samples \
+         (got {max_ring})"
+    );
+}
+
+/// G2 non-regression + driver-equivalence: idx18 (Marauding Blight-Priest + Bloodthirsty
+/// Conqueror) is the SINGLE-trigger drain path — only Blight-Priest triggers on life
+/// gain, so no simultaneous-trigger group and no `OrderTriggers` window ever forms.
+/// Driving it through the new trigger-ordering driver must therefore behave exactly like
+/// `drive_pass_priority`: ZERO OrderTriggers beats, and it still wins LIVE via the ring.
+#[test]
+fn drive_drain_idx18_single_trigger_has_no_order_beat() {
+    let Some(mut board) = corpus::build_drain_board(card_db(), corpus::row(18).cards, 200) else {
+        return; // export absent: skip
+    };
+    corpus::seed_lifegain_cascade(&mut board);
+    let trace = corpus::drive_with_trigger_ordering(&mut board, 40);
+    assert!(
+        trace
+            .iter()
+            .all(|t| !matches!(t.wf, WaitingFor::OrderTriggers { .. })),
+        "idx18 is single-trigger — no OrderTriggers window must ever form"
+    );
+    let (_, winner) = corpus::first_gameover_beat(&trace)
+        .expect("idx18 still wins LIVE under the trigger-ordering driver (single-trigger path)");
+    assert_eq!(winner, P0);
+}
+
+/// G2 false-positive control: the SAME two distinguishable drainers WITHOUT the refiller
+/// (drop Bloodthirsty Conqueror). The seed life-gain still fires both drainers → a real
+/// OrderTriggers beat occurs — but with no refill the cascade is FINITE (P1 loses a
+/// couple of life from 200 and stops). The surviving ring must NOT manufacture a false
+/// loop: no `GameOver` fires within the window.
+#[test]
+fn drive_multi_trigger_no_refiller_is_finite() {
+    const FIXTURE_NO_REFILL: &[&str] = &["Marauding Blight-Priest", "Vito, Thorn of the Dusk Rose"];
+    let Some(mut board) = corpus::build_drain_board(card_db(), FIXTURE_NO_REFILL, 200) else {
+        return; // export absent: skip
+    };
+    corpus::seed_lifegain_cascade(&mut board);
+    let trace = corpus::drive_with_trigger_ordering(&mut board, 60);
+    // Reach-guard: the OrderTriggers window still forms (both drainers fire off the seed
+    // gain) — so the finite-ness assertion below is exercised past the OrderTriggers beat,
+    // not vacuous on a board that never triggered.
+    assert!(
+        trace
+            .iter()
+            .any(|t| matches!(t.wf, WaitingFor::OrderTriggers { .. })),
+        "both drainers must fire off the seed gain, forcing an OrderTriggers beat"
+    );
+    assert!(
+        corpus::first_gameover_beat(&trace).is_none(),
+        "with no refiller the cascade is finite — the surviving ring must not manufacture \
+         a false loop/GameOver"
+    );
+}
+
 // ===========================================================================
 // Combo-detector OPT-IN gate (PR #4603): `GameState::loop_detection`.
 // The live detector (ring sampler + reconcile-seam shortcut + `∞` producer) is
