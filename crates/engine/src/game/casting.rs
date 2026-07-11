@@ -9356,6 +9356,38 @@ pub fn handle_cast_spell_with_payment_mode(
             );
         }
     }
+    // CR 601.2a + CR 113.6b: A static `ExileCastPermission` where the exiled card
+    // is the only cast option yields exactly ONE candidate, so
+    // `had_multiple_candidates` is false and the block above is skipped. That
+    // single ExilePermission variant must still be elected — otherwise the cast
+    // falls through to a `Normal` cast that drops the permission's context
+    // (once-per-turn slot tracking, `WithoutPayingManaCost` zeroing, and the
+    // `enters_with_counter` rider). Maralen, Fae Ascendant; Intrepid
+    // Paleontologist; The Matrix of Time.
+    //
+    // ponytail: scoped to `ExilePermission` — the one variant class whose
+    // single-candidate cast currently mis-elects to Normal. The GENERAL rule is
+    // "don't skip single-candidate election when the elected option carries
+    // context a Normal cast would drop" (would also cover a hypothetical single
+    // Flashback/Escape/etc.). Not generalized here because the fall-through below
+    // routes single-candidate Warp/Evoke/Dash hand casts through their own
+    // cost-choice `WaitingFor` handlers; electing them via `continue_cast_with_
+    // variant` would preempt those prompts. Widen to the general predicate only
+    // after auditing those keyword handlers tolerate pre-election.
+    if let Some(option) = variant_choices
+        .options
+        .first()
+        .filter(|option| matches!(option.variant, CastingVariant::ExilePermission { .. }))
+    {
+        return continue_cast_with_variant(
+            state,
+            player,
+            object_id,
+            option.variant,
+            payment_mode,
+            events,
+        );
+    }
 
     // Warp: when a hand card has Keyword::Warp and both costs are affordable,
     // present a choice. Auto-skip when only one cost is viable.

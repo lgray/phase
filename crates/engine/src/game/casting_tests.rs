@@ -37646,6 +37646,99 @@ fn exile_cast_permission_rejects_card_outside_per_turn_pool() {
     );
 }
 
+/// CR 601.2a + CR 118.9a: A static `ExileCastPermission` (Maralen, Fae
+/// Ascendant) where the exiled card is the ONLY cast option yields exactly one
+/// casting-variant candidate, so `casting_variant_choice_set.had_multiple_
+/// candidates` is false. `handle_cast_spell_with_payment_mode` must STILL elect
+/// that single `ExilePermission` variant — otherwise the cast falls through to a
+/// `Normal` cast that drops the permission context: the `WithoutPayingManaCost`
+/// mana zeroing (CR 118.9a) and the `OncePerTurn` per-source slot (CR 601.2a).
+///
+/// DISCRIMINATING: with P0 holding NO mana and the exiled card costing {2}, the
+/// cast can only resolve if the mana cost was zeroed (proving ExilePermission was
+/// elected); the consumed slot is the second, independent proof. Reverting the
+/// single-candidate `ExilePermission` election block in
+/// `handle_cast_spell_with_payment_mode` re-elects `Normal`: the {2} becomes
+/// payable-only (no mana) so the card never reaches the battlefield AND the slot
+/// is never stamped — both assertions flip to fail.
+#[test]
+fn single_candidate_exile_permission_elects_permission_and_zeros_mana() {
+    let mut state = setup_game_at_main_phase();
+    let player = PlayerId(0);
+    let maralen =
+        add_exile_cast_permission_source(&mut state, player, "Maralen", TargetFilter::Any);
+    let exiled = add_exiled_card(&mut state, player, "Exiled Bear");
+    {
+        let obj = state.objects.get_mut(&exiled).unwrap();
+        // {2} with P0 holding no mana — only the WithoutPayingManaCost election
+        // (CR 118.9a) lets this resolve. Positive toughness survives SBA.
+        obj.mana_cost = ManaCost::Cost {
+            shards: vec![],
+            generic: 2,
+        };
+        obj.power = Some(2);
+        obj.toughness = Some(2);
+        obj.base_card_types = obj.card_types.clone();
+    }
+    state
+        .cards_exiled_with_source_this_turn
+        .insert(maralen, vec![exiled]);
+
+    let mut runner = crate::game::scenario::GameRunner::from_state(state);
+    let outcome = runner.cast(exiled).resolve();
+
+    // WithoutPayingManaCost applied → the {2} spell resolves with no mana.
+    outcome.assert_zone(&[exiled], Zone::Battlefield);
+    // OncePerTurn slot consumed → ExilePermission was elected, not Normal.
+    assert!(
+        outcome
+            .state()
+            .exile_cast_permissions_used
+            .contains(&maralen),
+        "the OncePerTurn slot must be consumed — proving ExilePermission was elected, not Normal"
+    );
+}
+
+/// ELEVATION guard (whole-engine regression axis): the single-candidate
+/// `ExilePermission` election added to `handle_cast_spell_with_payment_mode` is
+/// SCOPED to `ExilePermission` and must NOT perturb the ordinary single-candidate
+/// `Normal` cast path taken by every vanilla hand spell. A hand creature's only
+/// candidate is `Normal`; it must still cast via the default flow with no
+/// exile-permission election leaking (no per-source slot stamped).
+#[test]
+fn single_candidate_normal_hand_cast_unchanged_by_exile_election() {
+    let mut state = setup_game_at_main_phase();
+    let player = PlayerId(0);
+    let card_id = crate::types::identifiers::CardId(state.next_object_id);
+    let creature = create_object(
+        &mut state,
+        card_id,
+        player,
+        "Vanilla Bear".to_string(),
+        Zone::Hand,
+    );
+    {
+        let obj = state.objects.get_mut(&creature).unwrap();
+        obj.card_types.core_types = vec![CoreType::Creature];
+        obj.power = Some(2);
+        obj.toughness = Some(2);
+        obj.mana_cost = ManaCost::Cost {
+            shards: vec![],
+            generic: 0,
+        };
+        obj.base_card_types = obj.card_types.clone();
+    }
+
+    let mut runner = crate::game::scenario::GameRunner::from_state(state);
+    let outcome = runner.cast(creature).resolve();
+
+    outcome.assert_zone(&[creature], Zone::Battlefield);
+    assert!(
+        outcome.state().exile_cast_permissions_used.is_empty(),
+        "a Normal hand cast must not stamp any exile-permission slot"
+    );
+}
+
 /// Build a battlefield `ExileCastPermission` source carrying a specific
 /// `extra_cost` rider (Valgavoth alternative pay-life; `None` for a
 /// plain Maralen-style permission). `Unlimited` frequency keeps the source
