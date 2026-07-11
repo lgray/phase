@@ -2632,6 +2632,35 @@ fn self_keyword_grant_unless_source_combat_state_gate() {
     );
 }
 
+/// CR 509.1b (Tromokratis): "~ can't be blocked unless all creatures defending
+/// player controls block it." must parse to a dedicated
+/// `CantBeBlockedUnlessAllBlock` static with no condition.
+#[test]
+fn cant_be_blocked_unless_all_block_tromokratis() {
+    let parsed = crate::parser::oracle::parse_oracle_text(
+        "~ can't be blocked unless all creatures defending player controls block it.",
+        "Tromokratis",
+        &[],
+        &["Creature".to_string()],
+        &[],
+    );
+    let block_static = parsed
+        .statics
+        .iter()
+        .find(|d| d.mode == StaticMode::CantBeBlockedUnlessAllBlock)
+        .expect("expected CantBeBlockedUnlessAllBlock static");
+    assert!(
+        block_static.condition.is_none(),
+        "CantBeBlockedUnlessAllBlock should have no condition"
+    );
+    assert!(
+        !serde_json::to_string(&parsed)
+            .unwrap()
+            .contains("Unrecognized"),
+        "must not leave an Unrecognized residue"
+    );
+}
+
 /// CR 509.1b + CR 506.2 + CR 108.3: The compound "+N/+N and can't be blocked
 /// unless it's attacking its owner or a permanent its owner controls" must
 /// decompose into BOTH the P/T grant AND a `CantBeBlocked` static whose

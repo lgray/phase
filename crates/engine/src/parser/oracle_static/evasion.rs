@@ -1764,6 +1764,11 @@ pub(crate) fn cant_be_blocked_mode(clause: &str) -> Option<(StaticMode, Option<S
     // "as long as …" condition fallthrough so the "unless" form is classified
     // explicitly rather than mis-handled by the generic condition parser.
     if let Some(after) = nom_tag_lower(rest, rest, " unless ") {
+        // CR 509.1b (Tromokratis): "can't be blocked unless all creatures defending
+        // player controls block it" — aggregate blocking restriction.
+        if parse_block_unless_all_block_nom(after) {
+            return Some((StaticMode::CantBeBlockedUnlessAllBlock, None));
+        }
         if let Some(target) = parse_block_unless_attacking_owner_nom(after) {
             return Some((
                 StaticMode::CantBeBlocked,
@@ -1811,6 +1816,18 @@ fn parse_block_unless_attacking_owner_nom(
     .parse(input)
     .ok()?;
     rest.trim().is_empty().then_some(target)
+}
+
+/// CR 509.1b (Tromokratis): recognize "all creatures defending player controls
+/// block it" (or "block ~") as the aggregate blocking restriction tail. Uses
+/// nom `tag_no_case` combinators to avoid verbatim string equality.
+fn parse_block_unless_all_block_nom(input: &str) -> bool {
+    let result: Result<(&str, &str), nom::Err<OracleError<'_>>> = alt((
+        tag_no_case("all creatures defending player controls block it"),
+        tag_no_case("all creatures defending player controls block ~"),
+    ))
+    .parse(input);
+    result.is_ok_and(|(rest, _)| rest.trim().is_empty())
 }
 
 /// CR 509.1b: Attach a trailing "as long as …" condition to the evasion

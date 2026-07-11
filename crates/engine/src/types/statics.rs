@@ -1539,6 +1539,13 @@ pub enum StaticMode {
     CantBeBlockedByMoreThan {
         max: u32,
     },
+    /// CR 509.1b: This creature can't be blocked unless all creatures the
+    /// defending player controls block it (Tromokratis). A structural blocking
+    /// restriction enforced in `validate_blockers_for_player`: if any creature
+    /// is declared as a blocker of this attacker, then EVERY creature the
+    /// defending player controls that is able to block it must also be declared
+    /// as a blocker. Partial blocks are illegal.
+    CantBeBlockedUnlessAllBlock,
     /// CR 301.5 + CR 303.4 + CR 701.3a: Positive attachment restriction — this
     /// Aura/Equipment "can be attached only to" a permanent matching `filter`.
     /// The complement of the negative `Other("CantBeEquipped" | "CantBeEnchanted"
@@ -2000,6 +2007,7 @@ pub enum StaticModeKind {
     CantBeBlockedExceptBy,
     CantBeBlockedBy,
     CantBeBlockedByMoreThan,
+    CantBeBlockedUnlessAllBlock,
     AttachmentRestriction,
     Protection,
     Indestructible,
@@ -2137,6 +2145,7 @@ impl StaticMode {
             StaticMode::CantBeBlockedExceptBy { .. } => StaticModeKind::CantBeBlockedExceptBy,
             StaticMode::CantBeBlockedBy { .. } => StaticModeKind::CantBeBlockedBy,
             StaticMode::CantBeBlockedByMoreThan { .. } => StaticModeKind::CantBeBlockedByMoreThan,
+            StaticMode::CantBeBlockedUnlessAllBlock => StaticModeKind::CantBeBlockedUnlessAllBlock,
             StaticMode::AttachmentRestriction { .. } => StaticModeKind::AttachmentRestriction,
             StaticMode::Protection => StaticModeKind::Protection,
             StaticMode::Indestructible => StaticModeKind::Indestructible,
@@ -2487,6 +2496,7 @@ impl StaticMode {
             | StaticMode::CantBeBlockedExceptBy { .. }
             | StaticMode::CantBeBlockedBy { .. }
             | StaticMode::CantBeBlockedByMoreThan { .. }
+            | StaticMode::CantBeBlockedUnlessAllBlock
             | StaticMode::AttachmentRestriction { .. }
             | StaticMode::Protection
             | StaticMode::CantBeDestroyed
@@ -2810,6 +2820,9 @@ impl fmt::Display for StaticMode {
             StaticMode::CantBeBlockedByMoreThan { max } => {
                 write!(f, "CantBeBlockedByMoreThan({max})")
             }
+            StaticMode::CantBeBlockedUnlessAllBlock => {
+                write!(f, "CantBeBlockedUnlessAllBlock")
+            }
             StaticMode::Protection => write!(f, "Protection"),
             StaticMode::Indestructible => write!(f, "Indestructible"),
             StaticMode::CantBeDestroyed => write!(f, "CantBeDestroyed"),
@@ -2973,6 +2986,7 @@ impl FromStr for StaticMode {
                     max: parse_static_mode_u32_arg(s, "CantBeBlockedByMoreThan").unwrap(),
                 }
             }
+            "CantBeBlockedUnlessAllBlock" => StaticMode::CantBeBlockedUnlessAllBlock,
             "CantBeTargeted" => StaticMode::CantBeTargeted,
             "CantBeCast" => StaticMode::CantBeCast {
                 who: ProhibitionScope::Controller,
