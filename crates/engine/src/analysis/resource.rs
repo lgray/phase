@@ -1822,10 +1822,47 @@ fn stack_entry_has_no_ordering_input(state: &GameState, entry: &StackEntry) -> b
     if state.pending_trigger_entry == Some(entry.id) {
         return false;
     }
-    ability.targets.is_empty()
-        && ability.multi_target.is_none()
-        && ability.distribution.is_none()
-        && ability.target_constraints.is_empty()
+    // Variable-count / divide-distribute / cross-target constraints are always
+    // ordering input (the player picks how many / how to split / which combo).
+    if ability.multi_target.is_some()
+        || ability.distribution.is_some()
+        || !ability.target_constraints.is_empty()
+    {
+        return false;
+    }
+    // A no-target trigger takes no announcement-time input.
+    if ability.targets.is_empty() {
+        return true;
+    }
+    // CR 603.3d + CR 608.2b + CR 732.2a: a non-empty target list is NOT player
+    // ordering input when exactly one legal assignment exists — the choice is
+    // FORCED, so the shortcut stays deterministic. Re-derived per-iteration against
+    // the live state (the SOLE caller iterates the grown current-stack entries).
+    forced_unique_targeting(state, ability)
+}
+
+/// CR 603.3d / CR 608.2b / CR 732.2a: exactly one legal target assignment ⇒ the
+/// target choice is FORCED, not player ordering input. Reuses the engine's own
+/// auto-target oracle (`auto_select_targets_for_ability => Ok(Some(_))` iff a
+/// single legal assignment exists, limit=2) — the same authority the trigger
+/// dispatcher uses. Fail-closed on any build error, empty slots, or ≥2 legal
+/// assignments (`Ok(None)` / `Err`).
+fn forced_unique_targeting(
+    state: &GameState,
+    ability: &crate::types::ability::ResolvedAbility,
+) -> bool {
+    match crate::game::ability_utils::build_target_slots(state, ability) {
+        Ok(slots) if !slots.is_empty() => matches!(
+            crate::game::ability_utils::auto_select_targets_for_ability(
+                state,
+                ability,
+                &slots,
+                &ability.target_constraints,
+            ),
+            Ok(Some(_))
+        ),
+        _ => false,
+    }
 }
 
 /// §2.2 item 4: does this stack entry's AST read ANY still-projected axis (the
@@ -3670,6 +3707,141 @@ mod tests {
         current.stack.push_back(targeted(21));
         current.stack.push_back(targeted(22));
         assert!(!loop_states_cover_modulo_growth(&prior, &current));
+    }
+
+    // ===================================================================
+    // COMMIT 2 (item-3) — forced-unique targeted-cover discriminators.
+    // Grown entries pass item-4 (pure-controller Typed) so item-3 is the sole
+    // decider (the R1-vacuity remedy). Verbatim Vito/Sanguine drain shape.
+    // ===================================================================
+
+    /// A P0-controlled drain stack entry:
+    /// `LoseLife{amount:EventContextAmount, target:Typed{controller:Opponent}}`
+    /// with optional extra target `properties`. Verbatim the card-data parse.
+    fn drain_entry(id: u64, properties: Vec<FilterProp>) -> StackEntry {
+        let mut ability = lose_life_targeting(event_amount(), opp_typed(properties));
+        // A real on-stack targeted trigger has its (chosen) target announced. A
+        // non-empty `targets` is what routes item-3 through `forced_unique_targeting`
+        // instead of the no-target trivial pass — the R1-vacuity remedy. The value is
+        // a placeholder; `forced_unique_targeting` rebuilds slots from the effect.
+        ability.targets = vec![TargetRef::Player(PlayerId(1))];
+        churn_entry(id, 0, ability, None)
+    }
+
+    /// An `n`-player state carrying a P0 source creature (`CHURN_SRC`) so the
+    /// drain's opponent target slot resolves against a real source context.
+    fn drain_state(players: u8) -> GameState {
+        let mut state = GameState::new(crate::types::format::FormatConfig::standard(), players, 7);
+        let src = ObjectId(CHURN_SRC);
+        let mut obj = GameObject::new(
+            src,
+            CardId(9),
+            PlayerId(0),
+            "Test Vito".to_string(),
+            Zone::Battlefield,
+        );
+        obj.card_types.core_types.push(CoreType::Creature);
+        state.objects.insert(src, obj);
+        state.battlefield.push_back(src);
+        state
+    }
+
+    /// POSITIVE: 2p growing targeted drain `[D,D]→[D,D,D]`. Both fixes ⇒ cover TRUE
+    /// (item-4: pure-controller Typed not projected; item-3: the single opponent is
+    /// forced-unique). Revert-probes (measured in the impl report): undo item-3
+    /// (`targets.is_empty()`) → FALSE; undo item-4 (`Typed=>CONSERVATIVE`) → FALSE.
+    #[test]
+    fn n1_forced_unique_targeted_cover_true() {
+        let mut prior = drain_state(2);
+        prior.stack.push_back(drain_entry(10, vec![]));
+        prior.stack.push_back(drain_entry(11, vec![]));
+        let mut current = prior.clone();
+        current.stack.clear();
+        current.stack.push_back(drain_entry(20, vec![]));
+        current.stack.push_back(drain_entry(21, vec![]));
+        current.stack.push_back(drain_entry(22, vec![]));
+        assert!(
+            loop_states_cover_modulo_growth(&prior, &current),
+            "2p forced-unique targeted drain must cover (both item-3 and item-4 pass)"
+        );
+    }
+
+    /// NEGATIVE (over-relax guard): 3p (2 opponents) targeted growth ⇒ cover FALSE.
+    /// The drain still passes item-4, so the rejection is item-3: two legal opponent
+    /// targets ⇒ `auto_select => Ok(None)` ⇒ NOT forced-unique. Revert-probe:
+    /// mis-relaxing item-3 to accept any non-empty target flips this TRUE.
+    #[test]
+    fn n1_open_target_growing_still_rejected() {
+        let mut prior = drain_state(3);
+        prior.stack.push_back(drain_entry(10, vec![]));
+        prior.stack.push_back(drain_entry(11, vec![]));
+        let mut current = prior.clone();
+        current.stack.clear();
+        current.stack.push_back(drain_entry(20, vec![]));
+        current.stack.push_back(drain_entry(21, vec![]));
+        current.stack.push_back(drain_entry(22, vec![]));
+
+        // Reach-guard (mandate 4 anti-vacuity): item-4 PASSES so the FALSE below is
+        // attributable to item-3's ≥2-legal rejection, not an upstream projected read.
+        let ability = current.stack[2].ability().unwrap();
+        assert!(
+            !crate::game::ability_scan::ability_reads_projected_resource(ability),
+            "item-4 passes (pure-controller Typed) — the rejector is item-3"
+        );
+        assert!(
+            !forced_unique_targeting(&current, ability),
+            "two opponents ⇒ auto_select Ok(None) ⇒ not forced-unique"
+        );
+
+        assert!(
+            !loop_states_cover_modulo_growth(&prior, &current),
+            "open (≥2-legal) targeted growth must be rejected"
+        );
+    }
+
+    /// CONSTRAINT-3 ORTHOGONALITY: an item-3-passing, item-4-clean forced-unique
+    /// drain that ALSO carries a `Proliferate` sub_ability (CR 701.34a resolution
+    /// choice ⇒ `MayPrompt`) is vetoed by item-6. Revert-probe: dropping the
+    /// Proliferate sub (choice-free) flips this TRUE (= the positive fixture).
+    #[test]
+    fn item6_still_vetoes_under_forced_unique_targets() {
+        let drain_prolif = |id| {
+            let mut ability = lose_life_targeting(event_amount(), opp_typed(vec![]));
+            ability.targets = vec![TargetRef::Player(PlayerId(1))];
+            ability.sub_ability = Some(Box::new(ResolvedAbility::new(
+                Effect::Proliferate,
+                vec![],
+                ObjectId(CHURN_SRC),
+                PlayerId(0),
+            )));
+            churn_entry(id, 0, ability, None)
+        };
+        let mut prior = drain_state(2);
+        prior.stack.push_back(drain_prolif(10));
+        prior.stack.push_back(drain_prolif(11));
+        let mut current = prior.clone();
+        current.stack.clear();
+        current.stack.push_back(drain_prolif(20));
+        current.stack.push_back(drain_prolif(21));
+        current.stack.push_back(drain_prolif(22));
+
+        // Reach-guard (mandate 4 anti-vacuity): item-3 AND item-4 PASS for this entry,
+        // so the FALSE below is ATTRIBUTABLE to item-6's Proliferate veto — not an
+        // upstream conjunct short-circuiting first.
+        let ability = current.stack[2].ability().unwrap();
+        assert!(
+            forced_unique_targeting(&current, ability),
+            "item-3 passes (single forced-unique opponent) even with the Proliferate sub"
+        );
+        assert!(
+            !crate::game::ability_scan::ability_reads_projected_resource(ability),
+            "item-4 passes (Proliferate sub scans NONE; pure-controller Typed target)"
+        );
+
+        assert!(
+            !loop_states_cover_modulo_growth(&prior, &current),
+            "item-6 vetoes the resolution-choice-bearing drain even when item-3/4 pass"
+        );
     }
 
     /// (c) the grown entry is a SPELL ⇒ false (not a mandatory trigger). Isolates

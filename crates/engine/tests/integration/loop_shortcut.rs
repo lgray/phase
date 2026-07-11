@@ -40,6 +40,14 @@ const KICKOFF: &str = "You gain 1 life.";
 const SELF_LIFE_ENGINE: &str = "Whenever you gain life, you gain 1 life.";
 const LIFE_LOSS_IMMUNE: &str = "Your life total can't change.";
 
+// Verbatim Oracle text (data/card-data.json) for the PR-7 gate-relax witness — the
+// REAL escalating TARGETED drain that only detects once item-3 (forced-unique) and
+// item-4 (Typed-target projected refinement) both land.
+const VITO: &str = "Whenever you gain life, target opponent loses that much life.\n{3}{B}{B}: Creatures you control gain lifelink until end of turn.";
+const SANGUINE_BOND: &str = "Whenever you gain life, target opponent loses that much life.";
+const BLOODTHIRSTY_CONQUEROR: &str =
+    "Flying, deathtouch\nWhenever an opponent loses life, you gain that much life. (Damage causes loss of life.)";
+
 /// The exact accumulated event Debug string of the 2p drain under `On`, captured from
 /// HEAD `dc67bd130` on the UNMODIFIED reconcile body. See the module docs.
 const GOLDEN_ON: &str = r#"[StackPushed { object_id: ObjectId(3) }, ZoneChanged { object_id: ObjectId(3), from: Some(Hand), to: Stack, record: ZoneChangeRecord { object_id: ObjectId(3), name: "Test Lifegain Kickoff", core_types: [Sorcery], subtypes: [], supertypes: [], keywords: [], trigger_definitions: [], power: None, toughness: None, base_power: None, base_toughness: None, colors: [], mana_value: 0, controller: PlayerId(0), owner: PlayerId(0), from_zone: Some(Hand), cast_from_zone: None, played_from_zone: None, to_zone: Stack, attachments: [], linked_exile_snapshot: [], is_token: false, combat_status: ZoneChangeCombatStatus { attacking: false, blocking: false, blocked: false, attacking_alone: false, blocking_alone: false, defending_player: None }, co_departed: [], entered_incarnation: None, attached_to: None, turn_zone_change_index: 0, is_suspected: false } }, SpellCast { card_id: CardId(3), controller: PlayerId(0), object_id: ObjectId(3) }, PriorityPassed { player_id: PlayerId(1) }, LifeChanged { player_id: PlayerId(0), amount: 1 }, EffectResolved { kind: GainLife, source_id: ObjectId(3) }, ZoneChanged { object_id: ObjectId(3), from: Some(Stack), to: Graveyard, record: ZoneChangeRecord { object_id: ObjectId(3), name: "Test Lifegain Kickoff", core_types: [Sorcery], subtypes: [], supertypes: [], keywords: [], trigger_definitions: [], power: None, toughness: None, base_power: None, base_toughness: None, colors: [], mana_value: 0, controller: PlayerId(0), owner: PlayerId(0), from_zone: Some(Stack), cast_from_zone: None, played_from_zone: None, to_zone: Graveyard, attachments: [], linked_exile_snapshot: [], is_token: false, combat_status: ZoneChangeCombatStatus { attacking: false, blocking: false, blocked: false, attacking_alone: false, blocking_alone: false, defending_player: None }, co_departed: [], entered_incarnation: None, attached_to: None, turn_zone_change_index: 1, is_suspected: false } }, StackResolved { object_id: ObjectId(3) }, PriorityPassed { player_id: PlayerId(1) }, LifeChanged { player_id: PlayerId(1), amount: -1 }, EffectResolved { kind: LoseLife, source_id: ObjectId(1) }, StackResolved { object_id: ObjectId(4) }, PriorityPassed { player_id: PlayerId(1) }, LifeChanged { player_id: PlayerId(0), amount: 1 }, EffectResolved { kind: GainLife, source_id: ObjectId(2) }, StackResolved { object_id: ObjectId(5) }, GameOver { winner: Some(PlayerId(0)) }]"#;
@@ -73,6 +81,29 @@ fn setup_2p_drain(mode: LoopDetectionMode) -> (GameRunner, ObjectId) {
     scenario.with_life(P1, 6);
     scenario.add_creature_from_oracle(P0, "Test Drain Cleric", 2, 2, DRAIN_CLERIC);
     scenario.add_creature_from_oracle(P0, "Test Blood Sipper", 2, 2, BLOOD_SIPPER);
+    let kickoff = scenario
+        .add_spell_to_hand_from_oracle(P0, "Test Lifegain Kickoff", false, KICKOFF)
+        .id();
+    let mut runner = scenario.build();
+    runner.state_mut().loop_detection = mode;
+    (runner, kickoff)
+}
+
+/// 2p ESCALATING TARGETED drain (PR-7 gate-relax witness): Vito + Sanguine Bond (two
+/// identical `Whenever you gain life, target opponent loses that much life` triggers) +
+/// Bloodthirsty Conqueror (`Whenever an opponent loses life, you gain that much life`).
+/// A seed lifegain fans out a GROWING cascade of TARGETED drains — the ω-cover path that
+/// reaches item-3 (forced-unique in 2p) + item-4 (opponent `Typed` target). The two
+/// identical drainers make each gain fire two simultaneous triggers ⇒ the CR 603.3b
+/// OrderTriggers beat the loop-detect ring must survive.
+fn setup_2p_vito(mode: LoopDetectionMode) -> (GameRunner, ObjectId) {
+    let mut scenario = GameScenario::new_n_player(2, 7);
+    scenario.at_phase(Phase::PreCombatMain);
+    scenario.with_life(P0, 20);
+    scenario.with_life(P1, 6);
+    scenario.add_creature_from_oracle(P0, "Vito, Thorn of the Dusk Rose", 1, 4, VITO);
+    scenario.add_creature_from_oracle(P0, "Sanguine Bond", 2, 2, SANGUINE_BOND);
+    scenario.add_creature_from_oracle(P0, "Bloodthirsty Conqueror", 3, 4, BLOODTHIRSTY_CONQUEROR);
     let kickoff = scenario
         .add_spell_to_hand_from_oracle(P0, "Test Lifegain Kickoff", false, KICKOFF)
         .id();
@@ -276,6 +307,38 @@ fn on_shortcut_byte_identical_to_pre_pr7_golden() {
         GOLDEN_ON,
         "ON: the accumulated event stream must be byte-identical to the pre-PR-7 golden — \
          wrapping the reconcile body in the mode `match` must not perturb any event"
+    );
+}
+
+// ─────────────────────────────── T-Vito ───────────────────────────────
+
+/// T-Vito ⭐ (PR-7 gate-relax witness): the REAL escalating TARGETED drain
+/// (Vito, Thorn of the Dusk Rose + Sanguine Bond + Bloodthirsty Conqueror, verbatim
+/// Oracle text) detects under `Interactive` and auto-wins for P0 with the victim still
+/// at POSITIVE life — the shortcut fired EARLY (ω-cover), not a natural CR 704.5a death.
+/// Detection requires BOTH item-3 (forced-unique targeted cover) AND item-4 (the
+/// `Typed`-target projected refinement). The two per-conjunct revert-probes are measured
+/// in the impl report: reverting EITHER conjunct loses detection ⇒ P1 grinds to natural
+/// death (life <= 0) rather than an early crown. The two identical drainers exercise the
+/// CR 603.3b OrderTriggers cascade beat the loop-detect ring must survive (G2).
+#[test]
+fn vito_bond_conqueror_2p_determinate_win() {
+    let (mut runner, kickoff) = setup_2p_vito(LoopDetectionMode::Interactive);
+    let _ = runner.cast(kickoff).resolve();
+    let (_events, wf) = drive_collect(&mut runner, 2000);
+
+    assert_eq!(
+        wf,
+        WaitingFor::GameOver { winner: Some(P0) },
+        "escalating targeted drain auto-wins for P0"
+    );
+    // DISCRIMINATOR (flips when either conjunct is reverted): early detection leaves the
+    // victim positive; losing detection grinds P1 to <= 0 via natural resolution.
+    assert!(
+        life(&runner, P1) > 0,
+        "the shortcut fired EARLY — P1 still positive ({}); reverting item-3 or item-4 \
+         loses detection and P1 reaches natural death (<=0)",
+        life(&runner, P1)
     );
 }
 
