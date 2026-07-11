@@ -8,7 +8,7 @@ use super::support::*;
 use crate::types::ability::PlayerFilter;
 use nom::character::complete::{alphanumeric1, char, digit1, one_of};
 use nom::combinator::{all_consuming, map_res, not, opt, peek, recognize};
-use nom::sequence::{delimited, pair};
+use nom::sequence::{delimited, pair, terminated};
 
 /// Lower a parsed rule-static predicate into the runtime static mode.
 pub(crate) fn lower_rule_static(
@@ -285,6 +285,19 @@ pub(crate) fn try_parse_core_type_descriptor(descriptor_lower: &str) -> Option<T
 /// to their parent type instead of defaulting everything to Creature.
 pub(crate) fn typed_filter_for_subtype(subtype: &str) -> TypedFilter {
     use crate::types::ability::TypeFilter;
+    // CR 205.4a + CR 205.3m: a compound "<supertype> <subtype>" descriptor
+    // ("Legendary Human", "Snow Elf") peels its leading supertype word into a
+    // `HasSupertype` property so the remainder resolves to the REAL subtype —
+    // rather than fabricating a zero-match `Subtype("Legendary Human")` (General's
+    // Enforcer "Legendary Humans you control", Kashi-Tribe Elite "Legendary
+    // Snakes you control").
+    if let Some((supertype, rest)) = split_leading_supertype(subtype) {
+        let mut filter = typed_filter_for_subtype(rest);
+        filter
+            .properties
+            .push(FilterProp::HasSupertype { value: supertype });
+        return filter;
+    }
     if let Some(core_type) = infer_core_type_for_subtype(subtype) {
         let type_filter = match core_type {
             crate::types::card_type::CoreType::Artifact => TypeFilter::Artifact,
@@ -296,6 +309,26 @@ pub(crate) fn typed_filter_for_subtype(subtype: &str) -> TypedFilter {
     } else {
         TypedFilter::creature().subtype(subtype.to_string())
     }
+}
+
+/// CR 205.4a: Peel a leading supertype word off a compound "<supertype>
+/// <subtype>" subject descriptor ("Legendary Human", "Snow Elf"), returning the
+/// supertype and the original-case remainder. Returns `None` for a bare
+/// supertype (no following subtype) or a descriptor with no leading supertype,
+/// so a plain subtype falls through to the subtype path unchanged.
+fn split_leading_supertype(descriptor: &str) -> Option<(Supertype, &str)> {
+    let lower = descriptor.to_lowercase();
+    // Consume the supertype word AND its separating space atomically: a bare
+    // supertype (no following subtype) fails the trailing ` ` and declines here,
+    // so a plain subtype falls through to the subtype path unchanged.
+    let (rest_lower, supertype) = terminated(
+        nom_target::parse_supertype_word,
+        tag::<_, _, OracleError<'_>>(" "),
+    )
+    .parse(&lower)
+    .ok()?;
+    let rest = descriptor[descriptor.len() - rest_lower.len()..].trim();
+    (!rest.is_empty()).then_some((supertype, rest))
 }
 
 pub(crate) fn is_capitalized_words(s: &str) -> bool {
