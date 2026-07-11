@@ -2171,17 +2171,41 @@ pub(super) fn selected_static_permission_enters_with_counter(
         _ => return None,
     };
     let source_obj = state.objects.get(&source)?;
-    active_static_definitions(state, source_obj).find_map(|def| match &def.mode {
-        StaticMode::GraveyardCastPermission {
-            enters_with_counter,
-            ..
+    fn permission_counter(def: &StaticDefinition) -> Option<crate::types::counter::CounterType> {
+        match &def.mode {
+            StaticMode::GraveyardCastPermission {
+                enters_with_counter,
+                ..
+            }
+            | StaticMode::ExileCastPermission {
+                enters_with_counter,
+                ..
+            } => enters_with_counter.clone(),
+            _ => None,
         }
-        | StaticMode::ExileCastPermission {
-            enters_with_counter,
-            ..
-        } => enters_with_counter.clone(),
-        _ => None,
-    })
+    }
+    // Existing path (unchanged for BB3 separate-battlefield-source cards): the
+    // permission still functions in zone on a source that never left the
+    // battlefield during the cast.
+    active_static_definitions(state, source_obj)
+        .find_map(permission_counter)
+        // CR 601.3 + CR 607.1 + CR 113.6b: self-granting-permission fallback.
+        // A self-granting source (Undead Sprinter — Gravecrawler shape) IS the
+        // cast object, now on the Stack, so its Graveyard-scoped permission no
+        // longer "functions in zone" (CR 113.6b) and the primary functioning-
+        // abilities scan yields None. The permission that AUTHORIZED this cast
+        // (CR 601.3, embedded in `casting_variant`) is a committed fact, and its
+        // enters-with rider is CR 607.1-linked to it, so read the rider directly
+        // from the printed definition — bypassing the now-zone-blocked gate.
+        // Additive: fires only when the primary path is None, so BB3 cards
+        // (Noctis / Leonardo / Intrepid) stay byte-identical. (CR 614.1c: the
+        // rider is a replacement effect applied as the object enters.)
+        .or_else(|| {
+            source_obj
+                .static_definitions
+                .iter_all()
+                .find_map(permission_counter)
+        })
 }
 
 // CR 205.1b + CR 613.1d: read the enters-with type-grant rider ("… is a [type]

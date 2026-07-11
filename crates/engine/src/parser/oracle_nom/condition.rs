@@ -83,11 +83,50 @@ fn parse_condition_disjunction(input: &str) -> OracleResult<'_, StaticCondition>
 
 fn parse_single_inner_condition(input: &str) -> OracleResult<'_, StaticCondition> {
     alt((
+        // CR 601.2h + CR 608.2c: whole-phrase "it wasn't cast or no mana was spent
+        // to cast <self>" gate. MUST precede the event-history arm's
+        // `parse_was_cast_condition`, which would otherwise claim the bare "it
+        // wasn't cast" left disjunct and strand " or no mana …" — collapsing the
+        // single-leaf `ManaSpentToCast == 0` gate the enters-with-only-if pipeline
+        // (`replacement_condition_from_static`) needs into an unmappable `Or`.
+        parse_it_wasnt_cast_or_no_mana_spent,
         parse_state_presence_conditions,
         parse_event_history_conditions,
         parse_resolution_context_conditions,
     ))
     .parse(input)
+}
+
+/// CR 601.2h + CR 608.2c: "it wasn't cast or no mana was spent to cast <self>" —
+/// the disjunctive enters-with gate on Freestrider Commando. Both disjuncts hold
+/// exactly when zero mana was spent to cast this object (a never-cast object and
+/// a free/alternative cast both spend 0 mana at CR 601.2h), so the whole phrase
+/// collapses to a single `ManaSpentToCast == 0` leaf. Kept as ONE leaf so the
+/// enters-with-only-if pipeline can map it to `ReplacementCondition::OnlyIfQuantity`
+/// — an `Or[Not(WasCast), …]` shape has no replacement mapping. The subject axis
+/// delegates to `parse_mana_spent_self_subject`; the `== 0` vs `Fixed{0}` choice
+/// matches the incumbent `parse_no_mana_spent_to_cast_target_condition`
+/// (`oracle_effect/conditions.rs`) for cross-parser consistency.
+fn parse_it_wasnt_cast_or_no_mana_spent(input: &str) -> OracleResult<'_, StaticCondition> {
+    let (rest, _) = alt((
+        tag::<_, _, OracleError<'_>>("it wasn't cast or no mana was spent to cast "),
+        tag("it wasn\u{2019}t cast or no mana was spent to cast "),
+    ))
+    .parse(input)?;
+    let (rest, scope) = nom_quantity::parse_mana_spent_self_subject(rest)?;
+    Ok((
+        rest,
+        StaticCondition::QuantityComparison {
+            lhs: QuantityExpr::Ref {
+                qty: QuantityRef::ManaSpentToCast {
+                    scope,
+                    metric: crate::types::ability::CastManaSpentMetric::Total,
+                },
+            },
+            comparator: Comparator::EQ,
+            rhs: QuantityExpr::Fixed { value: 0 },
+        },
+    ))
 }
 
 fn parse_state_presence_conditions(input: &str) -> OracleResult<'_, StaticCondition> {
@@ -5722,8 +5761,44 @@ fn parse_creature_died_this_turn_conditions(input: &str) -> OracleResult<'_, Sta
                 tag("a creature died under your control this turn"),
             )),
         ),
+        // "a <type-phrase> died this turn" (Undead Sprinter: "a non-Zombie
+        // creature died this turn") → filtered zone-change count >= 1. Placed
+        // AFTER the bare literal so "a creature died this turn" keeps the
+        // unfiltered `creatures_died_this_turn_ref()` (no Morbid regression).
+        parse_filtered_creature_died_this_turn,
     ))
     .parse(input)
+}
+
+/// "a <type-phrase> died this turn" — the filtered Morbid gate without a
+/// controller scope (Undead Sprinter's "a non-Zombie creature died this turn").
+/// Mirrors `parse_died_under_your_control_this_turn` but terminates on the bare
+/// " died this turn" and injects NO controller constraint. Rejects a non-empty
+/// type-phrase leftover / `TargetFilter::Any` so only a fully-typed subject claims
+/// the arm — a name-negation ("a creature not named X died this turn", Ebondeath)
+/// leaves "not named …" as leftover and falls through to a clean gap.
+fn parse_filtered_creature_died_this_turn(input: &str) -> OracleResult<'_, StaticCondition> {
+    let (rest, _) = parse_article(input)?;
+    let (rest, type_text) = take_until(" died this turn").parse(rest)?;
+    let (rest, _) = tag(" died this turn").parse(rest)?;
+    let (filter, leftover) = parse_type_phrase(type_text);
+    if !leftover.trim().is_empty() || filter == TargetFilter::Any {
+        return Err(nom::Err::Error(nom::error::Error::new(
+            input,
+            nom::error::ErrorKind::Fail,
+        )));
+    }
+    Ok((
+        rest,
+        make_quantity_ge(
+            QuantityRef::ZoneChangeCountThisTurn {
+                from: Some(Zone::Battlefield),
+                to: Some(Zone::Graveyard),
+                filter,
+            },
+            1,
+        ),
+    ))
 }
 
 /// CR 106.3 + CR 601.2h + CR 603.4: Parse

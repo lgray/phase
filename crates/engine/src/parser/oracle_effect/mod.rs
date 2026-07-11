@@ -2401,6 +2401,11 @@ pub(crate) fn parse_cast_this_way_enters_with_counter(lower: &str) -> Option<(Co
         tag::<_, _, OracleError<'_>>("that creature enters with "),
         tag("that permanent enters with "),
         tag("that artifact enters with "),
+        // Self-granting permission (Undead Sprinter) refers to itself as "this
+        // creature", normalized to the `~` self-reference token upstream before
+        // this parser runs — distinct from the anaphoric "that creature" a
+        // separate-source grant uses.
+        tag("~ enters with "),
         tag("it enters with "),
     ))
     .parse(lower)

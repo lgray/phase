@@ -1718,9 +1718,13 @@ pub(crate) fn try_parse_graveyard_cast_permission(
             cost,
             mode: CastCostMode::Additional,
         });
+    // `.trim()` (not `.is_empty()`): after the enters-with rider is split off, a
+    // two-sentence "if X. If you do, Y." permission leaves a whitespace-only
+    // residual (Undead Sprinter) that must still be treated as fully consumed so
+    // the gate condition is not re-dropped. Matches the other trim checks here.
     let condition = parse_graveyard_permission_condition(trailing)
         .ok()
-        .and_then(|(rest, condition)| rest.is_empty().then_some(condition));
+        .and_then(|(rest, condition)| rest.trim().is_empty().then_some(condition));
 
     let affected = if let Some(kind) = rider_kind {
         inject_keyword_kind_filter_prop(filter, kind)
@@ -1808,7 +1812,16 @@ fn parse_cast_permission_additional_cost_rider(
 fn split_cast_this_way_enters_rider(
     trailing: &str,
 ) -> (&str, Option<crate::types::counter::CounterType>) {
-    for marker in ["if you cast a spell this way", "if you cast it this way"] {
+    // "if you do" covers the self-granting shape (Undead Sprinter's "If you do,
+    // this creature enters with a +1/+1 counter on it"). The slice is
+    // recognizer-guarded below (only commits when the shared enters-with-counter
+    // recognizer succeeds), so "if you do" cannot over-split an unrelated rider —
+    // "if you don't …" fails the recognizer and returns the trailing unchanged.
+    for marker in [
+        "if you cast a spell this way",
+        "if you cast it this way",
+        "if you do",
+    ] {
         if let Ok((_, (before, _after))) = nom_primitives::split_once_on(trailing, marker) {
             // allow-noncombinator: structural offset back to the rider start (the
             // `text.len() - rest.len()` idiom) so the shared recognizer sees the

@@ -527,6 +527,7 @@ mod l02_bb2_cast_origin;
 mod l02_bb3_cast_permission_finality;
 mod l02_bb4_intervening_if;
 mod l02_bb5_as_long_as;
+mod l02_bb6_conditional_enters_with_counter;
 mod lathiel_end_step_counters_repro;
 mod leeching_sliver;
 mod leyline_taps_for_mana_repro;
