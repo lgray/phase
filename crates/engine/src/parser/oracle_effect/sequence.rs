@@ -3469,9 +3469,11 @@ pub(super) fn apply_clause_continuation(
                 ..
             } = &mut *previous.effect
             {
-                // CR 611.2: "that permanent loses all abilities ..." rider.
+                // CR 611.2 + CR 611.2a: "that permanent loses all abilities for
+                // as long as this creature remains on the battlefield" rider.
                 *existing = Some(CounterSourceRider::LosesAbilities {
                     static_def: source_static,
+                    duration: Box::new(Duration::UntilHostLeavesPlay),
                 });
             }
         }

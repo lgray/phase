@@ -525,6 +525,7 @@ mod l02_bb1_activation_conditions;
 mod land_equilibrium_forced_sacrifice;
 mod l02_bb2_cast_origin;
 mod l02_bb4_intervening_if;
+mod l02_bb5_as_long_as;
 mod lathiel_end_step_counters_repro;
 mod leeching_sliver;
 mod leyline_taps_for_mana_repro;

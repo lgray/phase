@@ -4197,6 +4197,7 @@ pub(crate) fn strip_trailing_duration(text: &str) -> (&str, Option<Duration>) {
     let lower = duration_text.to_lowercase();
     if target_relative_clause_owns_suffix(lower.as_str())
         || player_lookback_relative_clause_owns_suffix(lower.as_str())
+        || cant_be_activated_clause_owns_tapped_suffix(lower.as_str())
     {
         return (text, None);
     }
@@ -4412,6 +4413,35 @@ pub(crate) fn player_lookback_relative_clause_owns_suffix(input: &str) -> bool {
     )
         .parse(rest)
         .is_ok()
+}
+
+/// CR 611.2b + CR 110.5 + CR 602.5: A "[subject] activated abilities can't be
+/// activated for as long as &lt;it|that …&gt; remains tapped" restriction owns its
+/// tapped-bound duration — the CantBeActivated arm
+/// (`subject::tapped_bound_prohibition_duration`) binds it to the grant's TARGET
+/// (`IsTapped { scope: Target }`), not the source. `strip_trailing_duration`
+/// must therefore NOT peel the suffix (the generic duration grammar maps the
+/// anaphoric "it remains tapped" to the SOURCE, the wrong object for this
+/// clause). Scoped to the CantBeActivated class so ordinary control/copy "for as
+/// long as it remains tapped" durations still strip normally (Braided Net).
+fn cant_be_activated_clause_owns_tapped_suffix(input: &str) -> bool {
+    let mentions_cant_be_activated = nom_primitives::scan_contains(input, "can't be activated")
+        || nom_primitives::scan_contains(input, "can\u{2019}t be activated");
+    mentions_cant_be_activated
+        && nom_primitives::scan_at_word_boundaries(input, |i: &str| {
+            let (i, _) = tag::<_, _, OracleError<'_>>("for as long as ").parse(i)?;
+            let (i, _) = alt((
+                tag("it"),
+                tag("that creature"),
+                tag("that permanent"),
+                tag("that artifact"),
+                tag("~"),
+            ))
+            .parse(i)?;
+            let (i, _) = tag(" remains tapped").parse(i)?;
+            Ok((i, ()))
+        })
+        .is_some()
 }
 
 fn target_relative_clause_owns_suffix(input: &str) -> bool {
