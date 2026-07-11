@@ -440,6 +440,7 @@ mod issue_5283_hall_of_bandit_lord;
 mod issue_5285_senu_keen_eyed_protector;
 mod issue_5286_lulu_loyal_hollyphant;
 mod issue_5287_samwise_stouthearted;
+mod issue_5327_doctor_doom_land_discard;
 mod issue_5328_attacks_alone_observer;
 mod issue_5329_mana_echoes;
 mod issue_5330_scavengers_talent_graveyard_return;
