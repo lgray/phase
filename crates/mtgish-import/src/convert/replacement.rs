@@ -1759,18 +1759,21 @@ fn build_replacement_exec(
         // to the same ContinuousModification list used by the native parser.
         A::EnterAsACopyOfAPermanent(perms, copy_effects) => Effect::BecomeCopy {
             target: convert_permanents(perms)?,
+            recipient: TargetFilter::SelfRef,
             duration: None,
             mana_value_limit: None,
             additional_modifications: convert_copy_effects(copy_effects)?,
         },
         A::EnterAsACopyOfPermanent(perm, copy_effects) => Effect::BecomeCopy {
             target: convert_permanent(perm)?,
+            recipient: TargetFilter::SelfRef,
             duration: None,
             mana_value_limit: None,
             additional_modifications: convert_copy_effects(copy_effects)?,
         },
         A::EnterAsACopyOfAPermanentUntil(perms, copy_effects, expiration) => Effect::BecomeCopy {
             target: convert_permanents(perms)?,
+            recipient: TargetFilter::SelfRef,
             duration: Some(static_effect::expiration_to_duration(expiration)?),
             mana_value_limit: None,
             additional_modifications: convert_copy_effects(copy_effects)?,
@@ -2057,6 +2060,7 @@ fn build_replacement_exec(
             let additional_modifications = convert_copy_effects(copy_effects)?;
             Effect::BecomeCopy {
                 target,
+                recipient: TargetFilter::SelfRef,
                 duration: None,
                 mana_value_limit: None,
                 additional_modifications,

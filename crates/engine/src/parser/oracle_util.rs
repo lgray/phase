@@ -1673,6 +1673,19 @@ fn unmask_card_name_keyword_action(text: String, originals: &[String]) -> String
 
 fn parse_card_named_literal_prefix(input: &str) -> OracleResult<'_, usize> {
     alt((
+        // CR 201.2a + CR 201.5c: a meld RESULT name ("meld them into Titania,
+        // Gaea Incarnate") is a distinct object's literal name, not a self-ref to
+        // the instigator. Mask it during `~` normalization so a legend whose
+        // result shares its pre-comma short name (Titania, Voice of Gaea →
+        // "Titania, Gaea Incarnate"; Urza, Lord Protector → "Urza, Planeswalker")
+        // is not folded to "~, …" — a corrupted result string that later misses
+        // the runtime meld-result registry lookup (green-but-dead). The name span
+        // terminates at "." (`parse_card_named_clause_boundary`), so the whole
+        // comma-bearing result masks as one unit. Results that share no token with
+        // the instigator (Gisela → Brisela) are already clean; the mask is a no-op
+        // for them. Improvement-only for the activated melds' result string
+        // (Urza, Lord Protector) — their activated-meld runtime path is unchanged.
+        value("meld them into ".len(), tag("meld them into ")),
         value("permanents named ".len(), tag("permanents named ")),
         value("permanent named ".len(), tag("permanent named ")),
         value("creatures named ".len(), tag("creatures named ")),
@@ -2417,6 +2430,41 @@ mod tests {
         assert_eq!(
             normalize_card_name_refs("When Sharuum enters", "Sharuum the Hegemon"),
             "When ~ enters"
+        );
+    }
+
+    #[test]
+    fn normalize_masks_shared_token_meld_result_name() {
+        // CR 201.2a + CR 201.5c: a meld RESULT whose name shares its instigator's
+        // pre-comma short token must not be folded to `~`. Titania, Voice of Gaea →
+        // "Titania, Gaea Incarnate" and Urza, Lord Protector → "Urza, Planeswalker"
+        // both share the leading legendary token; the "meld them into " mask arm
+        // protects the whole comma-bearing result span so the result string stays
+        // verbatim (a corrupted "~, …" would later miss the runtime meld registry).
+        assert_eq!(
+            normalize_card_name_refs(
+                "you both own and control Titania, Voice of Gaea and a land named Argoth, \
+                 Sanctum of Nature, exile them, then meld them into Titania, Gaea Incarnate.",
+                "Titania, Voice of Gaea"
+            ),
+            "you both own and control ~ and a land named Argoth, Sanctum of Nature, exile \
+             them, then meld them into Titania, Gaea Incarnate."
+        );
+        assert_eq!(
+            normalize_card_name_refs(
+                "exile them, then meld them into Urza, Planeswalker.",
+                "Urza, Lord Protector"
+            ),
+            "exile them, then meld them into Urza, Planeswalker."
+        );
+        // Control: a result sharing no token with its instigator was already clean
+        // and stays clean (the mask is a no-op).
+        assert_eq!(
+            normalize_card_name_refs(
+                "exile them, then meld them into Brisela, Voice of Nightmares.",
+                "Gisela, the Broken Blade"
+            ),
+            "exile them, then meld them into Brisela, Voice of Nightmares."
         );
     }
 

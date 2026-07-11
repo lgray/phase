@@ -311,6 +311,15 @@ fn is_token_replacement_choice(def: &AbilityDefinition) -> bool {
     matches!(&*def.effect, Effect::ChooseOneOf { .. }) && ability_tree_creates_tokens(def)
 }
 
+/// A `CopyTokenOf`-substitution replacement post-effect (Moonlit Meditation:
+/// "create that many tokens that are copies of enchanted permanent"). Sibling of
+/// `is_token_replacement_choice` (the Jinnie Fay `ChooseOneOf` shape) — both name
+/// the token-creation substitution families whose continuation must inherit the
+/// originating event's applied set to self-suppress.
+fn is_copy_token_substitution(def: &AbilityDefinition) -> bool {
+    matches!(&*def.effect, Effect::CopyTokenOf { .. })
+}
+
 /// CR 614.12a: Single authority for ABANDONING a live post-replacement
 /// continuation (as opposed to draining it normally via
 /// `apply_pending_post_replacement_effect`, which only clears
@@ -327,6 +336,9 @@ pub(crate) fn abandon_post_replacement_continuation(state: &mut GameState) {
     state.post_replacement_event_source = None;
     state.post_replacement_event_target = None;
     state.post_replacement_token_choice_applied = None;
+    // CR 614.1a: the Moonlit-scoped "that many" copy count is single-authority
+    // abandoned alongside the applied seed it rides with.
+    state.post_replacement_token_substitution_count = None;
     state.pending_connive_reentry = None;
     // CR 121.6b + CR 800.4a: `PendingMultiDraw` is single-player-scoped (it
     // tracks only the departing player's own in-flight multi-card draw), so
@@ -4438,6 +4450,23 @@ fn evaluate_replacement_condition(
             source,
             controller: installer,
         } => controller_controls_source_gate(state, *source, *installer),
+        // CR 614.1a: "you may instead create …" is a replacement effect (the word
+        // "instead"). The "first time you would create one or more tokens each turn"
+        // window is per-PLAYER (the Oracle's "you"), NOT per-source: it is consumed
+        // by the first token the controller creates this turn, tracked via the
+        // shared `players_who_created_token_this_turn` primitive (populated by
+        // `record_token_created` on every creation). So a token created BEFORE this
+        // source entered mid-turn already closes the window — official ruling: "If
+        // you create one or more tokens, and then Moonlit Meditation comes under your
+        // control that same turn, the replacement effect won't apply to any tokens
+        // you create for the rest of the turn." CR 614.5: the substitute copies don't
+        // reopen the window — replacement re-entry is already suppressed by the
+        // applied-set check before this condition is reached, so counting the copies
+        // in the per-player set is harmless. `token_owner_scope(You)` constrains the
+        // event's creator to `controller`, so `player` need not be re-resolved here.
+        ReplacementCondition::FirstTokenCreationEachTurn { player: _ } => !state
+            .players_who_created_token_this_turn
+            .contains(&controller),
         // Unrecognized condition — always applies (enters tapped) as a safe default.
         // The engine recognizes the replacement but cannot evaluate the condition,
         // so it conservatively taps the land.
@@ -7043,6 +7072,10 @@ fn continue_replacement_impl(
         let reparked_library_placement = pending.library_placement.clone();
         let mut proposed = pending.proposed;
         proposed.mark_applied(rid);
+        // CR 614.1a: the "first time you would create … each turn" window is
+        // per-player; it is consumed by `record_token_created` when the resulting
+        // tokens (copies on accept, originals on decline) are created — no separate
+        // per-source bookkeeping is needed here.
 
         // Extract the accept/decline effects before applying
         let (accept_effect, decline_effect, may_cost) = replacement_definition_for_id(state, rid)
@@ -7169,11 +7202,23 @@ fn continue_replacement_impl(
         // drains while an outer token-choice is still resolving — must NOT touch
         // the field: clobbering it would let the same token-choice replacement
         // re-prompt on a later token sub-ability (issue #4886 loop).
-        if let (ProposedEvent::CreateToken { applied, .. }, Some(def)) =
+        // Keep this gate: FIX B's per-source flag also suppresses the copy
+        // re-entry, but this gate is the sole stamp site for
+        // `post_replacement_token_substitution_count` (B2's "that many" count) —
+        // removing it as "redundant" would silently zero the copy count.
+        if let (ProposedEvent::CreateToken { applied, count, .. }, Some(def)) =
             (&proposed, post_effect.as_deref())
         {
             if is_token_replacement_choice(def) {
                 state.post_replacement_token_choice_applied = Some(applied.clone());
+            } else if is_copy_token_substitution(def) {
+                // CR 614.1a + CR 616.1: Moonlit-class copy substitution. The
+                // continuation inherits this event's applied set (already carries
+                // Moonlit's rid — marked at accept above) so it self-suppresses;
+                // and the replaced event's `count` is latched as the "that many"
+                // copy count read by `QuantityRef::EventContextAmount`.
+                state.post_replacement_token_choice_applied = Some(applied.clone());
+                state.post_replacement_token_substitution_count = Some(*count as i32);
             }
         }
         state.post_replacement_continuation =
@@ -7195,6 +7240,8 @@ fn continue_replacement_impl(
     let rid = pending.candidates[chosen_index];
     let mut proposed = pending.proposed;
     proposed.mark_applied(rid);
+    // CR 614.1a: per-player "first time each turn" window is consumed by
+    // `record_token_created` on the created tokens; no per-source bookkeeping here.
 
     match apply_single_replacement_and_dirty(
         state,

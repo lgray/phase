@@ -6927,16 +6927,24 @@ fn parse_effect_clause_inner(text: &str, ctx: &mut ParseContext) -> ParsedEffect
             description: None,
         });
     }
-    // CR 601.2c + CR 115.1: A heterogeneous compound source set ("<group A> and
-    // up to one other target <group B> each deal damage equal to their power …",
-    // Graceful Takedown) cannot be represented by the single-filter `TargetOnly`
-    // source picker — the second group would be silently dropped. Defer the whole
-    // clause honestly so coverage stays red rather than claiming partial support.
-    if is_compound_source_each_power_damage(text) {
-        return parsed_clause(Effect::unimplemented(
-            "multi_source_compound_each_power_damage",
-            text,
-        ));
+    // CR 701.42a: A reflexive "you may pay {C}. If you do, exile them, then meld
+    // them into R" body (Vanille) chunks its "If you do, …" sub-clause down to a
+    // SINGLE clause — "meld" is not a sequence verb, so `split_clause_sequence`
+    // returns one chunk and the pre-chunk meld dispatch in `parse_effect_chain_ir`
+    // is bypassed. Recognize the bare meld clause here (gated on a staged partner,
+    // so only the ~6 meld cards pay for the check) and lower it to `Effect::Meld`
+    // instead of `Unimplemented`. The direct triggered forms (Gisela, Titania)
+    // never reach here — their residual returns early at the pre-chunk dispatch
+    // before clause parsing, so there is no double-dispatch.
+    if ctx.pending_meld_partner.is_some()
+        // allow-noncombinator: perf fast-reject on the meld signature; a positive
+        // hit still routes through the nom-combinator `parse_meld_effect_clause`,
+        // which stays the sole authority on whether the text is a meld clause.
+        && text.to_ascii_lowercase().contains(meld::MELD_EFFECT_MARKER)
+    {
+        if let Some(effect) = meld::parse_meld_effect_clause(text.trim(), ctx) {
+            return parsed_clause(effect);
+        }
     }
     // CR 311.7 + CR 607.2d / CR 607.2m (by analogy): "each player who last chose
     // <A> chooses <B>, and vice versa" (Two Streams Facility's chaos swap). The
@@ -13302,6 +13310,15 @@ fn lower_imperative_clause(text: &str, ctx: &mut ParseContext) -> ParsedEffectCl
     if let Some(clause) = try_parse_reanimate_self_and_target(text, ctx) {
         return clause;
     }
+    // CR 701.6a + CR 113.9 + CR 608.2c: "Counter all/each A and all/each B" is
+    // ONE mass-counter instruction spanning multiple stack-object populations
+    // (Glen Elendra's Answer). Must win before `try_split_targeted_compound`,
+    // which bisects the compound and drops the second conjunct to
+    // `Effect::Unimplemented` (the "all/each" carry-forward is lost because
+    // `extract_effect_verb(CounterAll)` is None).
+    if let Some(clause) = try_parse_counter_all_conjunction(text, ctx) {
+        return clause;
+    }
     if let Some(clause) = try_split_targeted_compound(text, ctx) {
         return clause;
     }
@@ -15060,6 +15077,122 @@ fn try_parse_multi_target_counter_chain(
         optional: false,
         unless_pay: None,
     })
+}
+
+/// CR 701.6a + CR 113.9 + CR 608.2c: "Counter all/each A and all/each B ..." —
+/// a single mass-counter instruction over multiple stack-object populations
+/// (Glen Elendra's Answer: "Counter all spells your opponents control and all
+/// abilities your opponents control"). Each conjunct is an independent
+/// `counter all/each <population>` phrase; they compose into ONE `CounterAll`
+/// whose target is the `Or` of the per-conjunct filters.
+///
+/// Single-`Or` rather than a chain of `CounterAll` sub-abilities because (1) it
+/// reuses the proven `Or[And[StackSpell, ctrl], StackAbility{ctrl}]` stack-source
+/// shape (`becomes_target_source_filter`, oracle_trigger.rs) that the runtime
+/// stack matchers already route — spell entries take the And leg, ability entries
+/// the StackAbility leg — and (2) CR 701.6a treats "counter all A and all B" as
+/// ONE counter instruction: a single resolution feeding a single "countered this
+/// way" tracked set (CR 608.2c). (Two chained CounterAlls would BOTH publish and
+/// union their sets — `next_sub_needs_tracked_set` recurses the whole chain — so
+/// the choice is about matching the rules' single-instruction shape, not about
+/// avoiding an unpublished set.)
+fn try_parse_counter_all_conjunction(
+    text: &str,
+    _ctx: &mut ParseContext,
+) -> Option<ParsedEffectClause> {
+    let lower = text.to_lowercase();
+
+    // Gate: leading "counter all " / "counter each " (nom on lowercased text;
+    // the oracle capitalizes the leading "Counter"). Capture the mass keyword.
+    let (rest0, kw0) = counter_mass_head(&lower)?;
+    // Map the lowercase remainder back to the original-case slice (lowercasing
+    // is ASCII-length preserving here — mirrors the sibling counter-chain offset
+    // idiom in `try_parse_multi_target_counter_chain`).
+    let mut cursor = &text[text.len() - rest0.len()..];
+    let mut cur_kw = kw0;
+
+    let mut filters: Vec<TargetFilter> = Vec::new();
+    loop {
+        let cursor_lower = cursor.to_lowercase();
+        // Split the next " and all " / " and each " conjunct boundary with nom
+        // `take_until` (never `str::split`) so this stays combinator dispatch.
+        match split_next_counter_conjunct(&cursor_lower) {
+            Some((before_len, next_kw, consumed)) => {
+                push_counter_conjunct_target(&mut filters, cur_kw, &cursor[..before_len])?;
+                cur_kw = next_kw;
+                cursor = &cursor[consumed..];
+            }
+            None => {
+                // Last conjunct: strip a trailing sentence period.
+                let tail = cursor.trim_end().trim_end_matches('.').trim_end();
+                push_counter_conjunct_target(&mut filters, cur_kw, tail)?;
+                break;
+            }
+        }
+    }
+
+    // Require ≥2 conjuncts — single-conjunct "counter all X" stays on the
+    // existing `parse_counter_ast` path (Kadena's Silencer byte-identical).
+    if filters.len() < 2 {
+        return None;
+    }
+
+    Some(parsed_clause(Effect::CounterAll {
+        target: TargetFilter::Or { filters },
+    }))
+}
+
+/// nom gate consuming a leading "counter all " / "counter each "; returns the
+/// lowercase remainder and the mass keyword ("all" or "each").
+fn counter_mass_head(lower: &str) -> Option<(&str, &'static str)> {
+    alt((
+        value("all", tag::<_, _, OracleError<'_>>("counter all ")),
+        value("each", tag::<_, _, OracleError<'_>>("counter each ")),
+    ))
+    .parse(lower)
+    .ok()
+}
+
+/// Split at the next " and all " / " and each " conjunct boundary using nom
+/// `take_until` (never `str::split`). Returns `(bytes_before_separator,
+/// next_keyword, bytes_consumed_through_separator)` indexed into the passed
+/// lowercase slice. Picks the earliest of the two separators so mixed
+/// "all"/"each" phrasings split at the correct boundary.
+fn split_next_counter_conjunct(lower: &str) -> Option<(usize, &'static str, usize)> {
+    let try_sep = |sep: &'static str, kw: &'static str| -> Option<(usize, &'static str, usize)> {
+        let (_after_sep_start, before) =
+            take_until::<_, _, OracleError<'_>>(sep).parse(lower).ok()?;
+        Some((before.len(), kw, before.len() + sep.len()))
+    };
+    match (try_sep(" and all ", "all"), try_sep(" and each ", "each")) {
+        (Some(a), Some(b)) => Some(if a.0 <= b.0 { a } else { b }),
+        (hit, None) | (None, hit) => hit,
+    }
+}
+
+/// Reparse one conjunct as a standalone "counter {kw} {conjunct}" mass counter
+/// and push its target filter. Any conjunct that does not parse to
+/// `Counter { all: true }` aborts the whole handler (returns `None`) so
+/// non-class compounds fall through untouched. Defensively flattens a nested
+/// `Or` so the composed filter stays one level deep.
+fn push_counter_conjunct_target(
+    filters: &mut Vec<TargetFilter>,
+    kw: &str,
+    conjunct: &str,
+) -> Option<()> {
+    let reparsed = format!("counter {kw} {}", conjunct.trim());
+    let reparsed_lower = reparsed.to_lowercase();
+    let target = match imperative::parse_counter_ast(&reparsed, &reparsed_lower)? {
+        ZoneCounterImperativeAst::Counter {
+            all: true, target, ..
+        } => target,
+        _ => return None,
+    };
+    match target {
+        TargetFilter::Or { filters: inner } => filters.extend(inner),
+        other => filters.push(other),
+    }
+    Some(())
 }
 
 /// True when a bare counter-chain segment qualifies its *target* as distinct
@@ -17838,58 +17971,6 @@ fn damage_clause_is_each_target(effect: &Effect) -> bool {
             ..
         }
     )
-}
-
-/// CR 601.2c + CR 115.1: True when the subject of a multi-source per-power
-/// damage clause is a HETEROGENEOUS compound source set — two distinct targeted
-/// groups joined by "and", where the second is introduced by an "other target"
-/// quantifier (Graceful Takedown: "any number of target enchanted creatures you
-/// control **and up to one other target creature you control** each deal damage
-/// equal to their power …"). The single-`target` `TargetOnly` source picker can
-/// represent only ONE filter + ONE `MultiTargetSpec`, so the second group's
-/// targets would be silently dropped (unreachable as damage sources). This is a
-/// distinct targeting shape (two cardinality-constrained heterogeneous target
-/// slots), not a leaf parameterization of the single-group picker, so the clause
-/// is deferred to an honest `Unimplemented` rather than parsed wrong-but-green.
-///
-/// `text` is the full (original-case) clause text. Matches only when BOTH the
-/// multi-source per-power tail ("each deal damage equal to their power") AND a
-/// preceding "and <up-to-N / another / any number of> other target …" group are
-/// present, so single-group forms (Allies at Last, Coordinated Clobbering,
-/// Terrific Team-Up) are untouched.
-fn is_compound_source_each_power_damage(text: &str) -> bool {
-    let lower = text.to_ascii_lowercase();
-    // The multi-source per-power tail must be present (this is the `EachTarget`
-    // class). Without it, a stray "and up to one other target …" belongs to some
-    // other effect and is not our concern.
-    if nom_primitives::scan_split_at_phrase(&lower, |i| {
-        tag::<_, _, OracleError<'_>>("each deal damage equal to their power").parse(i)
-    })
-    .is_none()
-    {
-        return false;
-    }
-    // A second targeted source group joined to the first by "and", introduced by
-    // an explicit cardinality quantifier and the "other target" marker. The
-    // quantifier alt covers the attested forms ("up to one/two …", "another",
-    // "any number of"); the trailing "other target" is the distinguishing token
-    // that separates a second source GROUP from an intra-filter "and" (e.g.
-    // "creature and planeswalker").
-    nom_primitives::scan_split_at_phrase(&lower, |i| {
-        preceded(
-            tag::<_, _, OracleError<'_>>("and "),
-            preceded(
-                alt((
-                    recognize(pair(tag("up to "), take_until(" other target"))),
-                    tag("another"),
-                    tag("any number of"),
-                )),
-                preceded(opt(tag(" ")), tag("other target ")),
-            ),
-        )
-        .parse(i)
-    })
-    .is_some()
 }
 
 /// CR 208.1 + CR 608.2: Rebind a multi-source damage clause's anaphoric
@@ -26038,6 +26119,13 @@ pub(crate) fn parse_effect_chain_ir(
             // player" on Ghyrson) bind to the triggering event instead of being
             // reparsed as ordinary target phrases.
             in_trigger: ctx.in_trigger,
+            // CR 701.42a: propagate the staged meld partner so a reflexive
+            // "exile them, then meld them into R" sub-clause parsed inside this
+            // chunk (Vanille's "If you do, …" body, which chunks to a single
+            // clause because "meld" is not a sequence verb) can stamp the
+            // `Effect::Meld { partner, .. }`. Without this the sub-clause loses
+            // the partner and lowers to `Unimplemented`.
+            pending_meld_partner: ctx.pending_meld_partner.clone(),
             ..Default::default()
         };
         let ctx = &mut chunk_ctx;

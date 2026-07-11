@@ -6620,6 +6620,17 @@ pub struct GameState {
     pub post_replacement_token_choice_applied:
         Option<std::collections::HashSet<crate::types::proposed_event::AppliedReplacementKey>>,
 
+    /// CR 614.1a: "that many" copy count for a `CopyTokenOf` substitution
+    /// replacement (Moonlit Meditation). Seeded from the replaced
+    /// `CreateToken` event's `count` when the substitution is accepted, read by
+    /// `QuantityRef::EventContextAmount` (highest priority) while the
+    /// substitution continuation resolves, and cleared at true full-drain — same
+    /// transient, mid-resolution lifetime as `post_replacement_token_choice_applied`
+    /// above (and, like it, excluded from `PartialEq`). `None` outside a
+    /// copy-token substitution.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub post_replacement_token_substitution_count: Option<i32>,
+
     /// CR 701.50a + CR 614.5 + CR 616.1f: deferred connive link of a connive
     /// replacement whose leading draw parked a replacement-ordering choice. See
     /// `PendingConniveReentry`. Drained only by
@@ -8814,6 +8825,7 @@ impl GameState {
             post_replacement_event_source: None,
             post_replacement_event_target: None,
             post_replacement_token_choice_applied: None,
+            post_replacement_token_substitution_count: None,
             pending_connive_reentry: None,
             pending_multi_draw: None,
             pending_life_total_assignment: None,

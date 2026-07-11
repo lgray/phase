@@ -2485,8 +2485,12 @@ fn resolve_ref(
         //      many"; "dealt excess damage this way, add that much {R}").
         //   6. `0` — undefined.
         QuantityRef::EventContextAmount => state
-            .current_trigger_match_count
-            .map(u32_to_i32_saturating)
+            // CR 614.1a: Moonlit-scoped "that many" copy count — highest priority,
+            // un-shadowable. `Some` only while a `CopyTokenOf` substitution
+            // continuation resolves (Moonlit Meditation); `None` otherwise, so it
+            // falls straight through to the existing trigger/effect cascade.
+            .post_replacement_token_substitution_count
+            .or(state.current_trigger_match_count.map(u32_to_i32_saturating))
             // CR 706.4: Die results recorded earlier in THIS resolution
             // outrank the triggering event's own amount, so "roll one or more
             // dice. <effect> equal to the result(s)" consumes the roll total,
@@ -4481,6 +4485,11 @@ fn resolve_single_player_scope(
         }
         // Aggregate scopes have no single-player reading.
         PlayerScope::Opponent { .. } | PlayerScope::AllPlayers { .. } => None,
+        PlayerScope::AnyTurn => {
+            unreachable!(
+                "PlayerScope::AnyTurn is duration-timing-only; never reached via QuantityRef"
+            )
+        }
     }
 }
 
@@ -4575,6 +4584,11 @@ where
                 state.players.iter().filter(|p| Some(p.id) != excluded_id),
                 *aggregate,
                 &mut extract,
+            )
+        }
+        PlayerScope::AnyTurn => {
+            unreachable!(
+                "PlayerScope::AnyTurn is duration-timing-only; never reached via QuantityRef"
             )
         }
     }

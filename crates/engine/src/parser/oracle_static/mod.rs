@@ -146,6 +146,7 @@ pub(crate) use evasion::{
     parse_forced_block_blocker_slot,
 };
 pub(crate) use grammar::map_keyword;
+pub(crate) use grammar::parse_pt_mod;
 pub(crate) use keyword_grant::{
     classify_quoted_inner, parse_chosen_qualifier_subject, parse_continuous_modifications,
     parse_graveyard_granted_keyword_kind, parse_quoted_ability_modifications, split_keyword_list,

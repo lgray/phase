@@ -4722,6 +4722,15 @@ pub enum PlayerScope {
     /// `chosen_attributes` so a CDA P/T can track e.g. the chosen player's hand
     /// or graveyard size (Entropic Specter, Sewer Nemesis).
     SourceChosenPlayer,
+    /// CR 513.1 + CR 611.2a + CR 603.7b: turn-AGNOSTIC deadline — the referenced
+    /// step's NEXT occurrence regardless of whose turn ("the next end step", e.g.
+    /// Niko, Light of Hope), as opposed to `Controller` ("your next end step",
+    /// Rocco/Street Chef). Mirrors the delayed-trigger split `AtNextPhase`
+    /// (agnostic) vs `AtNextPhaseForPlayer` (scoped). DURATION-TIMING-ONLY:
+    /// constructed solely in the "the next end step" parser arm inside
+    /// `Duration::UntilNextStepOf` — never from a value/quantity/player-selection
+    /// position.
+    AnyTurn,
 }
 
 /// Scope selector for object-axis quantities (Round Π-5). Picks WHICH object
@@ -8658,8 +8667,8 @@ pub enum DamageSource {
     /// "up to N / any number of target creatures you control each deal damage
     /// equal to their power to <recipient>" class (Allies at Last, Coordinated
     /// Clobbering, Terrific Team-Up — Graceful Takedown's heterogeneous compound
-    /// source set "<group A> and up to one other target <group B>" is NOT covered
-    /// and is deferred at the parser; see `is_compound_source_each_power_damage`).
+    /// source set "<group A> and up to one other target <group B>" is now
+    /// supported via `EachDealsDamageEqualToPower`'s `extra_source` group).
     /// Unlike `Target`, the recipient is `targets.last()`, not `targets[1..]`.
     ///
     /// SCOPE — SIMULTANEOUS multi-source batch (CR 120.4a + CR 120.6 + CR 120.10).
@@ -9190,13 +9199,22 @@ pub enum Effect {
     /// 810) has no model, so it fails closed to `Unimplemented` rather than
     /// mis-targeting a single player's creatures.
     EachDealsDamageEqualToPower {
-        /// CR 115.1d: The targeted source creatures ("up to two target creatures
-        /// you control"). The count bound (0..=2 or exactly 2) lives in the
-        /// ability's `multi_target` spec; this filter pins the per-object
+        /// CR 115.1d: The targeted source creatures — group A ("up to two /
+        /// any number of target creatures you control"). The count bound lives
+        /// in the ability's `multi_target` spec; this filter pins the per-object
         /// legality (creature you control).
         sources: TargetFilter,
         /// CR 115.1: The single targeted recipient that each source damages.
         recipient: TargetFilter,
+        /// CR 115.4 + CR 601.2c: optional SECOND source group — "up to one OTHER
+        /// target creature you control" (Graceful Takedown). Its
+        /// `FilterProp::Another` forces a pick distinct from every group-A source
+        /// (CR 115.4). Announced as one optional (0..=1) target slot inserted
+        /// AFTER the group-A source slots and BEFORE the recipient, so the
+        /// resolver's `[source.., recipient]` split keeps the recipient last and
+        /// treats a chosen group-B creature as a source.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        extra_source: Option<TargetFilter>,
     },
     /// CR 120.1 + CR 120.3 + CR 608.2: Each object matching `sources` (evaluated
     /// at resolution time, CR 608.2) deals `amount` damage as its OWN source
@@ -10154,6 +10172,17 @@ pub enum Effect {
     BecomeCopy {
         #[serde(default = "default_target_filter_any")]
         target: TargetFilter,
+        /// CR 707.2 + CR 611.2c: the object(s) that BECOME the copy. `SelfRef`
+        /// (default) = the source `~` (all existing single-subject cards,
+        /// byte-identical). A typed group filter ("Shards you control", Niko) or
+        /// `ParentTarget` selects a mass recipient set, snapshotted to concrete
+        /// ids at resolution (locked per 611.2c). Mirrors
+        /// `GainActivatedAbilitiesOfTarget.recipient`.
+        #[serde(
+            default = "default_target_filter_self_ref",
+            skip_serializing_if = "target_filter_is_self_ref"
+        )]
+        recipient: TargetFilter,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         duration: Option<Duration>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -17520,6 +17549,20 @@ pub enum ReplacementCondition {
     /// two are NOT a sibling-cluster smell. Matched case-exactly against the
     /// proposed `TokenSpec.characteristics.core_types`.
     TokenCoreTypeMatches { core_types: Vec<CoreType> },
+    /// CR 614.1a + CR 614.5: "the first time you would create one or more tokens
+    /// each turn, you may instead …" — a replacement effect (the word "instead")
+    /// with a per-PLAYER once-per-turn window (the Oracle's "you") on a your-owned
+    /// `CreateToken` event (Moonlit Meditation). The window is tracked via the
+    /// shared `GameState::players_who_created_token_this_turn` primitive: it is
+    /// consumed by the first token the controller creates this turn, so a source
+    /// that enters mid-turn AFTER an earlier creation does NOT fire (official
+    /// ruling). `player` carries the reusable you/opponent axis (`ControllerRef`),
+    /// mirroring the other controller-relative conditions; the eval arm ignores it
+    /// because ownership is enforced by the replacement's `token_owner_scope`, but
+    /// keeping the field preserves the you/opponent axis for a future
+    /// opponent-scoped "first time an opponent would create…" variant (which would
+    /// also parameterize the eval's player resolution) rather than adding a sibling.
+    FirstTokenCreationEachTurn { player: ControllerRef },
     /// CR 121.1 + CR 504.1 + CR 614.6: "except the first one you draw in each
     /// of your draw steps" — the replacement applies to every card-draw EXCEPT
     /// the draw step's mandatory first draw (the active player's CR 504.1

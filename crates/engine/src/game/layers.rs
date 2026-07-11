@@ -179,13 +179,25 @@ pub fn prune_controller_end_combat_step_effects(state: &mut GameState, active_pl
 pub fn prune_until_next_end_step_effects(state: &mut GameState, active_player: PlayerId) {
     let before = state.transient_continuous_effects.len();
     state.transient_continuous_effects.retain(|e| {
-        !(matches!(
+        // CR 513.1: "your next end step" (Rocco/Street Chef) — CONTROLLER-scoped.
+        let controller_scoped = matches!(
             e.duration,
             Duration::UntilNextStepOf {
                 step: Phase::End,
                 player: PlayerScope::Controller
             }
-        ) && e.controller == active_player)
+        ) && e.controller == active_player;
+        // CR 513.1 + CR 603.7b: "the next end step" (Niko) — turn-AGNOSTIC;
+        // expires at the FIRST end step to occur, ungated by active_player,
+        // co-firing with the return's AtNextPhase{End}.
+        let turn_agnostic = matches!(
+            e.duration,
+            Duration::UntilNextStepOf {
+                step: Phase::End,
+                player: PlayerScope::AnyTurn
+            }
+        );
+        !(controller_scoped || turn_agnostic)
     });
     if state.transient_continuous_effects.len() != before {
         state.layers_dirty.mark_full();
@@ -16488,6 +16500,7 @@ mod tests {
     ) -> ResolvedAbility {
         ResolvedAbility::new(
             Effect::BecomeCopy {
+                recipient: TargetFilter::SelfRef,
                 target: TargetFilter::Any,
                 duration: None,
                 mana_value_limit: None,

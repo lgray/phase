@@ -360,10 +360,17 @@ fn scan_effect(x: &Effect) -> Axes {
             amount: _,
             is_combat: _,
         } => Axes::NONE,
-        Effect::EachDealsDamageEqualToPower { sources, recipient } => {
+        Effect::EachDealsDamageEqualToPower {
+            sources,
+            recipient,
+            extra_source,
+        } => {
             let mut acc = Axes::NONE;
             acc = acc.or(scan_target_filter(sources));
             acc = acc.or(scan_target_filter(recipient));
+            if let Some(extra) = extra_source {
+                acc = acc.or(scan_target_filter(extra));
+            }
             acc
         }
         Effect::OpponentGuess { guesser, subject } => {
@@ -3243,6 +3250,7 @@ fn scan_replacement_condition(x: &ReplacementCondition) -> Axes {
         ReplacementCondition::OnlyExtraTurn => Axes::NONE,
         ReplacementCondition::TokenSubtypeMatches { subtypes: _ } => Axes::NONE,
         ReplacementCondition::TokenCoreTypeMatches { core_types: _ } => Axes::NONE,
+        ReplacementCondition::FirstTokenCreationEachTurn { player: _ } => Axes::NONE,
         ReplacementCondition::ExceptFirstDrawInDrawStep => Axes::NONE,
         ReplacementCondition::IfControlsMatching { filter, minimum: _ } => {
             let mut acc = Axes::NONE;
@@ -3280,6 +3288,9 @@ fn scan_player_scope(x: &PlayerScope) -> Axes {
             projected: false,
         },
         PlayerScope::SourceChosenPlayer => Axes::NONE,
+        // CR 513.1: turn-agnostic end-step deadline reached via the
+        // `UntilNextStepOf` duration walk — a pure timing referent, no axes.
+        PlayerScope::AnyTurn => Axes::NONE,
     }
 }
 

@@ -2886,8 +2886,14 @@ fn legacy_effect(x: &Effect) -> bool {
         Effect::Fight { target, subject } => {
             legacy_target_filter(target) || legacy_target_filter(subject)
         }
-        Effect::EachDealsDamageEqualToPower { sources, recipient } => {
-            legacy_target_filter(sources) || legacy_target_filter(recipient)
+        Effect::EachDealsDamageEqualToPower {
+            sources,
+            recipient,
+            extra_source,
+        } => {
+            legacy_target_filter(sources)
+                || legacy_target_filter(recipient)
+                || extra_source.as_ref().is_some_and(legacy_target_filter)
         }
         // CR 120: each source deals damage; `recipient` (`Shared`) can be a context
         // anaphor (ParentTarget/TriggeringSource) ⇒ descend all tag-bearing fields.
@@ -4787,16 +4793,33 @@ fn rw_effect(
         Effect::Transform { target } => obj(StateKind::ObjectPt, target),
         Effect::BecomeCopy {
             target,
+            recipient,
             duration: _,
             mana_value_limit: _,
             additional_modifications: _,
         } => {
-            let (mut p, sc) = obj(StateKind::ObjectPt, target);
+            // CR 707.2 + CR 611.2c: the RECIPIENT (copier) is mutated (ObjectPt +
+            // SetMembership); the donor `target` is only read for its copiable
+            // values. The single-subject case (`recipient == SelfRef`, every
+            // existing copy card) keeps its EXACT prior profile — the write scoped
+            // by the announced `target` slot — so the ordering-parity classification
+            // of the existing copy corpus is byte-identical (no scope re-derivation
+            // is smuggled into this Niko-only change). Only the NEW mass-recipient
+            // path (Niko: "Shards you control") writes the recipient set and reads
+            // the donor, since there the copier and the copied donor are distinct.
+            let write_scope_filter = match recipient {
+                TargetFilter::SelfRef => target,
+                _ => recipient,
+            };
+            let (mut p, sc) = obj(StateKind::ObjectPt, write_scope_filter);
             place_object_write(
                 &mut p,
                 StateKind::SetMembership,
-                scope_of(target, chain_root),
+                scope_of(write_scope_filter, chain_root),
             );
+            if !matches!(recipient, TargetFilter::SelfRef) {
+                p.merge(board_value_aggregate_read(target, StateKind::ObjectPt));
+            }
             (p, sc)
         }
         Effect::Animate {
@@ -6225,11 +6248,15 @@ fn rw_player_scope(x: &PlayerScope) -> RwProfile {
         },
         // CR 603.10a: per-source look-back referent ⇒ member-bound.
         PlayerScope::SourceChosenPlayer => member_bound_read(),
+        // CR 513.1: `AnyTurn` is a turn-agnostic duration deadline reached via
+        // `rw_duration`'s `UntilNextStepOf` walk — a pure timing referent that
+        // reads no game state, exactly like the controller/scoped scopes.
         PlayerScope::Controller
         | PlayerScope::ScopedPlayer
         | PlayerScope::Target
         | PlayerScope::Opponent { .. }
         | PlayerScope::RecipientController
+        | PlayerScope::AnyTurn
         | PlayerScope::DefendingPlayer => RwProfile::empty(),
     }
 }
@@ -7732,6 +7759,32 @@ mod tests {
         assert!(
             !feeds(ts, pt, &nc, &nc, &nz, &nz, sg),
             "ObjectPt write does not feed TurnStructure"
+        );
+    }
+
+    // CR 513.1 + CR 603.7b (Gate-1): `PlayerScope::AnyTurn` reached via a
+    // duration walk (`rw_duration` → `rw_player_scope`) is a pure timing
+    // referent — it must return a byte-identical profile to the `Controller`
+    // scope and must NOT hit a stranded `unreachable!()`. A future card with
+    // "until the next end step" on a duration-walked effect (GenericEffect,
+    // pump, …) would otherwise panic the ordering-parity profiler.
+    #[test]
+    fn any_turn_duration_scope_profiles_like_controller_no_panic() {
+        let any_turn = rw_duration(&Duration::UntilNextStepOf {
+            step: crate::types::phase::Phase::End,
+            player: PlayerScope::AnyTurn,
+        });
+        let controller = rw_duration(&Duration::UntilNextStepOf {
+            step: crate::types::phase::Phase::End,
+            player: PlayerScope::Controller,
+        });
+        assert!(
+            !any_turn.reads_member_bound && !any_turn.reads_event_live,
+            "AnyTurn is a pure timing referent — no state read"
+        );
+        assert_eq!(
+            any_turn.reads_member_bound, controller.reads_member_bound,
+            "AnyTurn and Controller durations profile identically"
         );
     }
 

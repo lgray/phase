@@ -27,12 +27,12 @@ use crate::parser::oracle_ir::context::ParseContext;
 use crate::parser::oracle_ir::diagnostic::OracleDiagnostic;
 use crate::parser::oracle_ir::effect_chain::{ClauseIr, EffectChainIr, SpecialClause};
 use crate::types::ability::{
-    AbilityCondition, AbilityCost, AbilityDefinition, AbilityKind, AttackScope, AttackSubject,
-    CastFromZoneDriver, CastingPermission, Comparator, ConjureSource, ContinuousModification,
-    ControllerRef, DamageSource, DelayedTriggerCondition, Duration, Effect, EffectScope,
-    FilterProp, GameRestriction, LibraryPosition, ManaSpendPermission, MultiTargetSpec,
-    ObjectScope, PlayPermissionInvalidation, PlayerFilter, PreventionAmount, PreventionScope,
-    PtValue, QuantityExpr, QuantityRef, RestrictionPlayerScope, RoundingMode,
+    AbilityCondition, AbilityCost, AbilityDefinition, AbilityKind, AggregateFunction, AttackScope,
+    AttackSubject, CastFromZoneDriver, CastingPermission, Comparator, ConjureSource,
+    ContinuousModification, ControllerRef, DamageSource, DelayedTriggerCondition, Duration, Effect,
+    EffectScope, FilterProp, GameRestriction, LibraryPosition, ManaSpendPermission,
+    MultiTargetSpec, ObjectScope, PlayPermissionInvalidation, PlayerFilter, PreventionAmount,
+    PreventionScope, PtValue, QuantityExpr, QuantityRef, RestrictionPlayerScope, RoundingMode,
     SpellStackToGraveyardReplacement, StaticCondition, StaticDefinition, SubAbilityLink,
     TapStateChange, TargetChoiceTiming, TargetFilter, TypeFilter, TypedFilter,
 };
@@ -4910,6 +4910,43 @@ pub(crate) fn parse_controls_permanent_object<'a>(
         }
     }
 
+    // CR 109.4 + CR 109.5: superlative "who controls the most <type>" — each
+    // player tied for the GREATEST count of <type> permanents they control. The
+    // cross-player extremum reuses `QuantityRef::ControlledByEachPlayer { Max }`
+    // (the same building block the quantity path
+    // `parse_controlled_by_extremum_player` uses). Placed BEFORE the bare-presence
+    // "controls " arm so "controls the most creatures" is not mis-parsed as
+    // presence (GE, 1) leaving "the most creatures" unconsumed. GE vs the Max is
+    // equivalent to EQ here (CR 107.1 integers: no player's count exceeds the max)
+    // and selects exactly the tied-for-most set; all-equal (incl. all-at-0) means
+    // everyone, per the Tectonic Hellion "if everyone controls the same number,
+    // everyone …" ruling.
+    if let Some(((), after_verb)) = nom_on_lower(rest, &lower, |i| {
+        let (i, _) = tag("who ").parse(i)?;
+        let (i, _) = alt((tag("controls the most "), tag("control the most "))).parse(i)?;
+        Ok((i, ()))
+    }) {
+        let (filter, remainder) = parse_type_phrase_with_ctx(after_verb, ctx);
+        // Honest-red guard: reject Any / content-empty filters so a type phrase
+        // that fails to parse stays Unimplemented rather than building a bogus
+        // extremum. Both `filter` sides stay BARE (controller-less): the resolvers
+        // (`player_control_count_compares` and `ControlledByEachPlayer`) apply the
+        // per-player controller gate themselves — a `.controller(You)` here would
+        // double-gate and mis-count.
+        let has_content = matches!(&filter, TargetFilter::Typed(tf)
+            if !tf.type_filters.is_empty() || !tf.properties.is_empty());
+        if !has_content {
+            return None;
+        }
+        let count = QuantityExpr::Ref {
+            qty: QuantityRef::ControlledByEachPlayer {
+                filter: filter.clone(),
+                aggregate: AggregateFunction::Max,
+            },
+        };
+        return Some((Comparator::GE, count, filter, remainder));
+    }
+
     // "who controls " / "who doesn't control " — one alt() arm per presence axis.
     // Both singular ("each opponent who controls") and plural ("opponents who
     // control") subject-verb agreement forms are accepted: the present/absent
@@ -7399,8 +7436,8 @@ pub(super) fn try_parse_damage_with_remainder<'a>(
         // `wrap_target_subject_damage` for the direct subject form, or by the
         // one-sided-fight prepend for the "They each ..." back-reference) and the
         // source is `EachTarget`. Allies at Last, Coordinated Clobbering, Terrific
-        // Team-Up. (Graceful Takedown's compound source set is deferred — see
-        // `is_compound_source_each_power_damage`.)
+        // Team-Up. (Graceful Takedown's compound source set is now supported via
+        // `EachDealsDamageEqualToPower`'s `extra_source` group.)
         if let Some(clause) =
             try_parse_each_source_power_damage(qty_text, amount_text, before_to, ctx)
         {
