@@ -7262,6 +7262,12 @@ pub enum CastVariantPaid {
     /// Full Bore. The warp permanent is exiled at the next end step (same turn),
     /// so the per-object marker only ever needs to be read on its cast turn.
     Warp,
+    /// CR 702.187b + CR 608.2c: Mayhem alternative cast cost was paid (the card
+    /// was cast from a graveyard for its mayhem cost after being discarded this
+    /// turn). Read by the "if this spell's mayhem cost was paid, … instead"
+    /// modal (Sandman's Quicksand); the on-stack marker is stamped at cast
+    /// finalize because a resolving sorcery never enters the battlefield.
+    Mayhem,
 }
 
 /// CR 601.3b + CR 702.8a: A timing permission actually used to cast a spell.

@@ -2763,11 +2763,19 @@ fn detect_condition_if(
     {
         return;
     }
-    // CR 117.6 / 702.8: A `SpellCastingOption` with `cost: Some(_)` encodes
-    // the "if you pay [cost]" surcharge gate inline (Ghitu Fire, Rout-class
-    // "as though it had flash if you pay X" cycle). The "if" is a cost
-    // payment trigger, not a conditional check on game state.
-    let has_pay_phrase = stripped.contains("if you pay "); // allow-noncombinator: swallow detector marker scan on classified text
+    // CR 702.8 / CR 601.2f: A `SpellCastingOption` with `cost: Some(_)`
+    // encodes the cost-gated casting permission inline — the "if you pay [cost]"
+    // surcharge (Ghitu Fire, Rout-class "as though it had flash if you pay X"
+    // cycle) OR an "as an additional cost to cast it" behold/reveal surface
+    // (Molten Exhale: "as though it had flash if you behold a Dragon as an
+    // additional cost to cast it", where the Behold is the represented additional
+    // cost). The "if" is a cost-payment trigger, not a conditional game-state
+    // check. The structural AND-half (`casting_options[].cost.is_some()`) keeps a
+    // card whose "if" gates a genuinely unrepresented condition unexempt: a plain
+    // additional cost lives on the ability's own `cost` field, not
+    // `casting_options`.
+    let has_pay_phrase = stripped.contains("if you pay ") // allow-noncombinator: swallow detector marker scan on classified text
+        || stripped.contains("as an additional cost"); // allow-noncombinator: swallow detector marker scan on classified text
     if parsed.casting_options.iter().any(|o| o.cost.is_some()) && has_pay_phrase {
         return;
     }

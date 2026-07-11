@@ -6955,6 +6955,19 @@ fn finalize_cast_with_phyrexian_choices_inner(
             ));
         }
     }
+    // CR 702.187b + CR 608.2c: tag the on-stack spell with the mayhem alt-cost
+    // marker so a resolving sorcery's own "if this spell's mayhem cost was paid,
+    // … instead" modal reads it via `ability.source_id`. Sorceries never enter
+    // the battlefield, so the `stack.rs` ETB re-stamp path does not apply — this
+    // finalize-time stamp is authoritative.
+    if casting_variant == CastingVariant::Mayhem {
+        if let Some(obj) = state.objects.get_mut(&object_id) {
+            obj.cast_variant_paid = Some((
+                crate::types::ability::CastVariantPaid::Mayhem,
+                state.turn_number,
+            ));
+        }
+    }
     // CR 702.102b + CR 709.4d: A fused split spell on the stack has the combined
     // characteristics of its two halves. The front face supplies the left half;
     // union in the right (Split back face) half's card types (CR 709.4c) and

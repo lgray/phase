@@ -6133,10 +6133,10 @@ fn parse_cast_using_variant_intervening_if(input: &str) -> OracleResult<'_, Trig
 /// instead phrases. Consumed by both the trigger-condition extractor below and
 /// the instead-clause recognizer (`parse_cast_variant_cost_paid_condition` in
 /// `oracle_effect/conditions.rs`); each call site filters to the membership it
-/// needs (the instead route accepts only `Emerge`). Sharing the pairs keeps the
-/// recognized strings from drifting between the two consumers. Per-variant CR
-/// cites: Surge CR 702.117a, Spectacle CR 702.137a, Prowl CR 702.76a, Emerge
-/// CR 702.119a.
+/// needs (the generic-instead route accepts `Emerge` and `Mayhem`). Sharing the
+/// pairs keeps the recognized strings from drifting between the two consumers.
+/// Per-variant CR cites: Surge CR 702.117a, Spectacle CR 702.137a, Prowl
+/// CR 702.76a, Emerge CR 702.119a, Mayhem CR 702.187b.
 pub(crate) const CAST_VARIANT_COST_PAID_PHRASES: &[(&str, CastVariantPaid)] = &[
     ("sneak cost was paid", CastVariantPaid::Sneak),
     ("ninjutsu cost was paid", CastVariantPaid::Ninjutsu),
@@ -6144,6 +6144,7 @@ pub(crate) const CAST_VARIANT_COST_PAID_PHRASES: &[(&str, CastVariantPaid)] = &[
     ("spectacle cost was paid", CastVariantPaid::Spectacle),
     ("prowl cost was paid", CastVariantPaid::Prowl),
     ("emerge cost was paid", CastVariantPaid::Emerge),
+    ("mayhem cost was paid", CastVariantPaid::Mayhem),
 ];
 
 fn try_extract_cast_variant_paid_condition(

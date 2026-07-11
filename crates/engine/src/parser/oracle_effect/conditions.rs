@@ -4755,11 +4755,12 @@ fn parse_anaphoric_status_predicate(
     Ok((rest, (subject, negated, prop)))
 }
 
-/// CR 702.119a-c: Recognize "[possessive subject] emerge cost was paid" as an
-/// `AbilityCondition::CastVariantPaid { Emerge }`. Only Emerge routes through the
-/// generic instead path (`ConditionInstead`, token-reproduction body); the
-/// pre-existing sneak / ninjutsu / surge / spectacle / prowl "instead" cards keep
-/// their established `strip_additional_cost_conditional` (Route-2 →
+/// CR 702.119a-c + CR 702.187b: Recognize "[possessive subject] <emerge|mayhem>
+/// cost was paid" as an `AbilityCondition::CastVariantPaid { variant }`. Only
+/// Emerge (Adipose Offspring) and Mayhem (Sandman's Quicksand) route through the
+/// generic trailing-"instead" path (`ConditionInstead`, via `build_instead_def`);
+/// the pre-existing sneak / ninjutsu / surge / spectacle / prowl "instead" cards
+/// keep their established `strip_additional_cost_conditional` (Route-2 →
 /// `CastVariantPaidInstead`) path, so the membership filter prevents any
 /// regression. Dispatch is nom `tag()`, never contains/find. `lower` is the
 /// already-lowercased condition fragment with any leading "if " stripped.
@@ -4779,7 +4780,9 @@ fn parse_cast_variant_cost_paid_condition(lower: &str) -> Option<AbilityConditio
     .ok()?;
     CAST_VARIANT_COST_PAID_PHRASES
         .iter()
-        .filter(|&&(_, variant)| variant == CastVariantPaid::Emerge)
+        .filter(|&&(_, variant)| {
+            matches!(variant, CastVariantPaid::Emerge | CastVariantPaid::Mayhem)
+        })
         .find_map(|&(phrase, variant)| {
             let (rest, _) = tag::<_, _, OracleError<'_>>(phrase).parse(input).ok()?;
             // CR 603.4: allow an optional "this turn" tail, then require the
@@ -7018,30 +7021,46 @@ mod tests {
         .is_none());
     }
 
-    /// CR 702.119a-c: "[possessive] emerge cost was paid" lowers to
-    /// `CastVariantPaid { Emerge }` across the possessive-subject variants, and
-    /// the membership filter rejects the other cast-variant phrases so their
-    /// established Route-2 (`CastVariantPaidInstead`) handling is untouched.
+    /// CR 702.119a-c + CR 702.187b: "[possessive] <emerge|mayhem> cost was paid"
+    /// lowers to `CastVariantPaid { variant }` across the possessive-subject
+    /// variants, and the membership filter rejects the other cast-variant phrases
+    /// so their established Route-2 (`CastVariantPaidInstead`) handling is
+    /// untouched.
     #[test]
-    fn parse_cast_variant_cost_paid_condition_recognizes_emerge_only() {
-        for subject in [
-            "emerge cost was paid",
-            "this creature's emerge cost was paid",
-            "its emerge cost was paid",
-            "this spell's emerge cost was paid",
-            "this creature's emerge cost was paid this turn",
+    fn parse_cast_variant_cost_paid_condition_recognizes_emerge_and_mayhem() {
+        for (subject, expected) in [
+            ("emerge cost was paid", CastVariantPaid::Emerge),
+            (
+                "this creature's emerge cost was paid",
+                CastVariantPaid::Emerge,
+            ),
+            ("its emerge cost was paid", CastVariantPaid::Emerge),
+            ("this spell's emerge cost was paid", CastVariantPaid::Emerge),
+            (
+                "this creature's emerge cost was paid this turn",
+                CastVariantPaid::Emerge,
+            ),
+            // Mayhem joins the generic-instead route (Sandman's Quicksand).
+            ("mayhem cost was paid", CastVariantPaid::Mayhem),
+            ("this spell's mayhem cost was paid", CastVariantPaid::Mayhem),
+            ("its mayhem cost was paid", CastVariantPaid::Mayhem),
+            (
+                "this spell's mayhem cost was paid this turn",
+                CastVariantPaid::Mayhem,
+            ),
         ] {
             assert_eq!(
                 parse_cast_variant_cost_paid_condition(subject),
                 Some(AbilityCondition::CastVariantPaid {
-                    variant: CastVariantPaid::Emerge,
+                    variant: expected,
                     subject: ObjectScope::Source,
                 }),
-                "{subject:?} must lower to CastVariantPaid {{ Emerge }}"
+                "{subject:?} must lower to CastVariantPaid {{ {expected:?} }}"
             );
         }
-        // Membership filter: non-emerge cast-variant phrases keep their Route-2
-        // (`strip_additional_cost_conditional` → `CastVariantPaidInstead`) path.
+        // Membership filter: the other cast-variant phrases keep their Route-2
+        // (`strip_additional_cost_conditional` → `CastVariantPaidInstead`) path,
+        // and "reduced" (not "paid") stays a clean gap.
         for other in [
             "this creature's spectacle cost was paid",
             "its surge cost was paid",
@@ -7051,7 +7070,7 @@ mod tests {
             assert_eq!(
                 parse_cast_variant_cost_paid_condition(other),
                 None,
-                "{other:?} must not be claimed by the emerge instead recognizer"
+                "{other:?} must not be claimed by the emerge/mayhem instead recognizer"
             );
         }
     }
