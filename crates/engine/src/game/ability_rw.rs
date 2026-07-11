@@ -2288,6 +2288,10 @@ fn legacy_filter_prop(p: &FilterProp) -> bool {
         // CR 607.2d / CR 607.2m (by analogy): player-anchor labels are live
         // per-player state, not one of the frozen-12 event-context refs.
         FilterProp::ControllerChoseLabel { .. } => false,
+        // CR 608.2i: the controller look-back predicate reads live turn-history
+        // (damage ledger, life-lost tallies) via its inner PlayerFilter — not one
+        // of the frozen-12 event-context refs. Mirrors ControllerChoseLabel.
+        FilterProp::ControllerMatches { .. } => false,
         // Resolution-chain tracked-set membership (leaf; only a `TrackedSetId`) —
         // not one of the frozen-12 event-context refs. Member-boundness is handled
         // in `member_bound_filter_prop`.
@@ -2538,6 +2542,9 @@ fn member_bound_filter_prop(p: &FilterProp) -> bool {
         // CR 607.2d / CR 607.2m (by analogy): this reads durable per-player anchor
         // state keyed by controller, not per-source member-bound storage.
         FilterProp::ControllerChoseLabel { .. } => false,
+        // CR 608.2i: reads live per-turn history keyed by the object's controller,
+        // not per-source member-bound storage. Mirrors ControllerChoseLabel.
+        FilterProp::ControllerMatches { .. } => false,
         // CR 603.10a (PR-6.75 c5): membership in the active resolution-chain tracked
         // set — the property form of the member-bound `TargetFilter::TrackedSet`
         // selector (chain-first via `chain_tracked_set_id`). Per-source published
@@ -6177,9 +6184,11 @@ fn rw_player_filter(x: &PlayerFilter) -> RwProfile {
         PlayerFilter::OpponentLostLife | PlayerFilter::OpponentGainedLife => {
             reads_player_of(StateKind::JournalLife)
         }
-        PlayerFilter::OpponentDealtDamage { source: _, kind: _ } => {
-            reads_player_of(StateKind::JournalLife)
-        }
+        PlayerFilter::OpponentDealtDamage {
+            source: _,
+            kind: _,
+            min_sources: _,
+        } => reads_player_of(StateKind::JournalLife),
         // D5 carrier.
         PlayerFilter::TriggeringPlayer => legacy_ref(),
         PlayerFilter::OpponentOtherThanTriggering

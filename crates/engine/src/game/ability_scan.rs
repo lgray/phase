@@ -3049,7 +3049,13 @@ fn scan_player_filter(x: &PlayerFilter) -> Axes {
         // `kind` is a static damage-kind selector (combat/noncombat/any) — not an
         // event-context, sibling, or projected-growth resource — so it carries no
         // axis; only the optional `source` sub-filter contributes.
-        PlayerFilter::OpponentDealtDamage { kind: _, source } => {
+        PlayerFilter::OpponentDealtDamage {
+            kind: _,
+            source,
+            // A distinct-source-count threshold; carries no scan axis of its own
+            // (the source read is already classified via `source` below).
+            min_sources: _,
+        } => {
             let mut acc = Axes {
                 event: false,
                 sibling: false,

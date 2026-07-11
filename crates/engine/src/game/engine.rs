@@ -3339,13 +3339,21 @@ fn apply_action(
                 player,
                 convoke_mode: Some(ConvokeMode::Delve),
             },
-            GameAction::TapForConvoke { object_id, .. },
+            GameAction::TapForConvoke {
+                object_id,
+                mana_type,
+            },
         ) => {
             let player = *player;
+            if mana_type != crate::types::mana::ManaType::Colorless {
+                return Err(EngineError::ActionNotAllowed(
+                    "Delve can only pay generic mana".to_string(),
+                ));
+            }
             let eligible = state
                 .objects
                 .get(&object_id)
-                .is_some_and(|o| o.zone == Zone::Graveyard && o.owner == player);
+                .is_some_and(|o| o.is_delve_eligible(player));
             if !eligible {
                 return Err(EngineError::ActionNotAllowed(
                     "Can only delve a card from your own graveyard".to_string(),

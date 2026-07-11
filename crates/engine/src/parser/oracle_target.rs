@@ -10,9 +10,10 @@ use nom::Parser;
 
 use crate::types::ability::{
     AggregateFunction, AttachmentKind, CombatRelation, CombatRelationSubject, Comparator,
-    ControllerRef, CountScope, FilterProp, ObjectProperty, ObjectScope, ParitySource, PtStat,
-    PtValueScope, QuantityExpr, QuantityRef, SeatDirection, SharedQuality, SharedQualityRelation,
-    TargetFilter, TargetSelectionMode, TypeFilter, TypedFilter,
+    ControllerRef, CountScope, DamageKindFilter, FilterProp, ObjectProperty, ObjectScope,
+    ParitySource, PlayerFilter, PtStat, PtValueScope, QuantityExpr, QuantityRef, SeatDirection,
+    SharedQuality, SharedQualityRelation, TargetFilter, TargetSelectionMode, TypeFilter,
+    TypedFilter,
 };
 use crate::types::card_type::Supertype;
 use crate::types::counter::{CounterMatch, CounterType};
@@ -5640,12 +5641,111 @@ fn parse_ownership_or_controller_suffix(
         return own_ctrl_offset + (own_ctrl.len() - rest.len());
     }
 
+    // CR 109.4 + CR 608.2i: "controlled by a player who <look-back> this turn" —
+    // a CONTROLLER PREDICATE on the target (not a single-player controller scope),
+    // so it pushes FilterProp::ControllerMatches wrapping the recognized
+    // PlayerFilter rather than setting *controller. Object-side bridge into the
+    // PlayerFilter enum. Longest-match-first in the verb alt (mirrors the
+    // duration guard in oracle_effect/lower.rs).
+    // NOTE: the numeric "three or more" is a DEFERRED coverage gap — the bridge
+    // carries the combat-damage-by-a-Pirate semantics (≥1); the count threshold
+    // is intentionally not enforced yet. Do NOT silently over-narrow.
+    if let Ok((rest, pf)) = parse_controller_predicate_clause(own_ctrl) {
+        properties.push(FilterProp::ControllerMatches {
+            player: Box::new(pf),
+        });
+        return own_ctrl_offset + (own_ctrl.len() - rest.len());
+    }
+
     let (ctrl, ctrl_len) =
         parse_controller_suffix(text, ctx).map_or((None, 0), |(ctrl, len)| (Some(ctrl), len));
     if ctrl.is_some() {
         *controller = ctrl;
     }
     ctrl_len
+}
+
+/// CR 109.4 + CR 608.2i: object-side bridge parsing "controlled by a player who
+/// <look-back> this turn" into a `PlayerFilter`. This is the object-axis analogue
+/// of the whole `PlayerFilter` enum: it recognizes a controller predicate and
+/// hands it to `FilterProp::ControllerMatches`, so ANY player look-back can scope
+/// a target's controller. Longest-match-first in the verb `alt`. The trailing
+/// " this turn" is required so the whole relative clause is consumed.
+///
+/// Supported predicates (each a leaf of the `alt`, composed — not enumerated):
+///   - "was dealt combat damage by [<N> or more ]<subtype>" →
+///     `OpponentDealtDamage { CombatOnly, Some(Typed(subtype)), min_sources: N }`
+///     (Admiral Beckett Brass: "by three or more Pirates" → `min_sources = 3`).
+///     The "<N> or more" threshold IS enforced (distinct-source count at runtime).
+///   - "was dealt combat damage" (no source) → `OpponentDealtDamage {
+///     CombatOnly, None, min_sources: 1 }`.
+///   - "lost life" → `OpponentLostLife` (sibling unlocked by the bridge).
+fn parse_controller_predicate_clause(input: &str) -> OracleResult<'_, PlayerFilter> {
+    let (input, _) = tag("controlled by a player who ").parse(input)?;
+    // Each leaf leaves the remainder positioned just before the trailing
+    // " this turn" (leading space intact), which the outer combinator consumes
+    // uniformly so the whole relative clause is required.
+    let (input, pf) = alt((
+        parse_controller_dealt_combat_damage_by,
+        // "was dealt combat damage" with no "by <source>" restriction.
+        value(
+            PlayerFilter::OpponentDealtDamage {
+                kind: DamageKindFilter::CombatOnly,
+                source: None,
+                min_sources: 1,
+            },
+            terminated(tag("was dealt combat damage"), peek(tag(" this turn"))),
+        ),
+        // CR 119.3: "lost life this turn" — sibling unlocked by the same bridge.
+        value(
+            PlayerFilter::OpponentLostLife,
+            terminated(tag("lost life"), peek(tag(" this turn"))),
+        ),
+    ))
+    .parse(input)?;
+    let (input, _) = tag(" this turn").parse(input)?;
+    Ok((input, pf))
+}
+
+/// CR 120.2a + CR 120.9 + CR 608.2i: "was dealt combat damage by [<count> or more ]<subtype>".
+/// The optional leading "<N> or more " quantifier is parsed into `min_sources` so
+/// the threshold is ENFORCED at runtime (Admiral Beckett Brass: "by three or more
+/// Pirates" → `min_sources = 3`, requiring 3 distinct combat-damaging Pirate
+/// sources); absence means the historical `min_sources = 1` (any matching source).
+/// The subtype phrase (which handles plural head nouns like "Pirates" →
+/// `Typed(Pirate)`) is parsed by the shared `parse_target` building block, then
+/// isolated from the trailing " this turn".
+fn parse_controller_dealt_combat_damage_by(input: &str) -> OracleResult<'_, PlayerFilter> {
+    let (input, _) = tag("was dealt combat damage by ").parse(input)?;
+    // Optional "<N> or more " count threshold → `min_sources`. `parse_number`
+    // handles both digit and English number words ("three" → 3). Absent → 1.
+    let (input, min_sources) = opt(terminated(nom_primitives::parse_number, tag(" or more ")))
+        .map(|n| n.unwrap_or(1).max(1))
+        .parse(input)?;
+    // Reuse the shared target-phrase building block for the source subtype; it
+    // maps "Pirates" → `Typed(Pirate)` (plural head noun handled) and stops before
+    // the trailing " this turn".
+    let (source, rest) = parse_target(input);
+    // Require the trailing duration so a bare type phrase does not misfire. The
+    // remainder is left at " this turn" (leading space intact) so the outer
+    // combinator's `tag(" this turn")` consumes it uniformly with the other leaves.
+    if peek(tag::<_, _, OracleError<'_>>(" this turn"))
+        .parse(rest)
+        .is_err()
+    {
+        return Err(nom::Err::Error(nom::error::Error::new(
+            input,
+            nom::error::ErrorKind::Tag,
+        )));
+    }
+    Ok((
+        rest,
+        PlayerFilter::OpponentDealtDamage {
+            kind: DamageKindFilter::CombatOnly,
+            source: Some(Box::new(source)),
+            min_sources,
+        },
+    ))
 }
 
 enum KeywordMatch {

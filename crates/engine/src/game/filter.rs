@@ -168,6 +168,7 @@ fn filter_prop_uses_object_population(prop: &FilterProp) -> bool {
         | FilterProp::Token
         | FilterProp::NonToken
         | FilterProp::ControllerChoseLabel { .. }
+        | FilterProp::ControllerMatches { .. }
         | FilterProp::WasPlayed
         | FilterProp::Attacking { .. }
         | FilterProp::Blocking
@@ -402,6 +403,7 @@ fn entered_object_perturbs_filter_prop(
         | FilterProp::Token
         | FilterProp::NonToken
         | FilterProp::ControllerChoseLabel { .. }
+        | FilterProp::ControllerMatches { .. }
         | FilterProp::WasPlayed
         | FilterProp::Attacking { .. }
         | FilterProp::Blocking
@@ -3159,6 +3161,7 @@ fn spell_record_matches_property(record: &SpellCastRecord, prop: &FilterProp) ->
         // CR 607 (by analogy): the controller's per-player anchor label is a
         // live-game read, not a cast-time snapshot property — fail closed.
         FilterProp::ControllerChoseLabel { .. }
+        | FilterProp::ControllerMatches { .. }
         | FilterProp::Attacking { .. }
         | FilterProp::Blocking
         | FilterProp::BlockingSource
@@ -3523,6 +3526,17 @@ fn matches_filter_prop(
         FilterProp::ControllerChoseLabel { label } => {
             crate::game::players::player_last_chose_label(state, obj.controller, label)
         }
+        // CR 109.4 + CR 608.2c: the matched object's CONTROLLER satisfies the inner
+        // player predicate. Delegates to the single-authority player-scope matcher
+        // (obj.controller as the candidate; source controller/id for opponent-relative
+        // inner filters like OpponentDealtDamage).
+        FilterProp::ControllerMatches { player } => crate::game::effects::matches_player_scope(
+            state,
+            obj.controller,
+            player,
+            source.controller.unwrap_or(obj.controller),
+            source.id,
+        ),
         // CR 305.1 + CR 601.2a: "played by" entry replacements (Uphill Battle).
         FilterProp::WasPlayed => obj.played_from_zone.is_some() || obj.cast_from_zone.is_some(),
         // CR 508.1b: Attacking creatures may be scoped by defending player
@@ -4794,6 +4808,9 @@ fn zone_change_record_matches_property(
         // CR 607 (by analogy): the controller's per-player anchor label is a
         // live-game read; a zone-change snapshot does not carry it. Fail closed.
         | FilterProp::ControllerChoseLabel { .. }
+        // CR 608.2c + CR 608.2i: the controller's look-back player predicate is a
+        // live turn-history read; a zone-change snapshot does not carry it. Fail closed.
+        | FilterProp::ControllerMatches { .. }
         // CR 608.2c: Tracked-set membership is a live resolution-chain selection
         // over battlefield objects; a zone-change snapshot is not consulted for
         // "chosen this way" / "the rest" filters. Fail closed.
@@ -7594,6 +7611,290 @@ mod tests {
             instant,
             &SharedQuality::CardType,
         ));
+    }
+
+    #[test]
+    fn game_scenario_mana_echoes_shares_type_count_with_triggering_source() {
+        use crate::game::quantity::object_count_matching_ids;
+        use crate::game::scenario::{GameScenario, P0};
+        use crate::types::ability::{ManaProduction, QuantityExpr, QuantityRef};
+        use crate::types::events::GameEvent;
+        use crate::types::game_state::ZoneChangeRecord;
+        use crate::types::zones::Zone;
+
+        const ORACLE: &str = "Whenever a creature enters, you may add an amount of {C} equal to the number of creatures you control that share a creature type with it.";
+
+        let mut scenario = GameScenario::new();
+        let mana_echoes = scenario
+            .add_creature_from_oracle(P0, "Mana Echoes", 0, 0, ORACLE)
+            .id();
+        scenario
+            .add_creature(P0, "Goblin A", 1, 1)
+            .with_subtypes(vec!["Goblin"]);
+        scenario
+            .add_creature(P0, "Goblin B", 1, 1)
+            .with_subtypes(vec!["Goblin"]);
+        let mut runner = scenario.build();
+        runner.state_mut().all_creature_types = vec!["Goblin".to_string()];
+
+        let entering = {
+            let state = runner.state_mut();
+            let card_id = crate::types::identifiers::CardId(state.next_object_id);
+            let id = crate::game::zones::create_object(
+                state,
+                card_id,
+                P0,
+                "Goblin C".to_string(),
+                Zone::Battlefield,
+            );
+            let obj = state.objects.get_mut(&id).unwrap();
+            obj.card_types
+                .core_types
+                .push(crate::types::card_type::CoreType::Creature);
+            obj.card_types.subtypes.push("Goblin".to_string());
+            id
+        };
+
+        let trigger = &runner.state().objects[&mana_echoes].trigger_definitions[0];
+        let execute = trigger.execute.as_ref().expect("execute");
+        let ability = crate::game::triggers::build_triggered_ability(
+            runner.state(),
+            trigger,
+            mana_echoes,
+            P0,
+        );
+
+        let filter = match execute.effect.as_ref() {
+            crate::types::ability::Effect::Mana {
+                produced: ManaProduction::Colorless { count },
+                ..
+            } => {
+                let QuantityExpr::Ref {
+                    qty: QuantityRef::ObjectCount { filter },
+                } = count
+                else {
+                    panic!("expected ObjectCount quantity");
+                };
+                filter
+            }
+            other => panic!("expected colorless mana, got {other:?}"),
+        };
+
+        let mut state = runner.state().clone();
+        state.current_trigger_event = Some(GameEvent::ZoneChanged {
+            object_id: entering,
+            from: Some(Zone::Hand),
+            to: Zone::Battlefield,
+            record: Box::new(ZoneChangeRecord::test_minimal(
+                entering,
+                Some(Zone::Hand),
+                Zone::Battlefield,
+            )),
+        });
+        let ctx = super::FilterContext::from_ability_with_controller(&ability, P0);
+        assert_eq!(
+            object_count_matching_ids(&state, filter, &ctx, mana_echoes).len(),
+            3,
+            "GameScenario-built Mana Echoes must count three sharing Goblins"
+        );
+    }
+
+    #[test]
+    fn mana_echoes_optional_stack_pause_preserves_shares_type_count() {
+        use crate::game::quantity::{object_count_matching_ids, resolve_quantity_with_targets};
+        use crate::game::scenario::{GameScenario, P0};
+        use crate::game::triggers::{drain_order_triggers_with_identity, process_triggers};
+        use crate::game::zones::move_to_zone;
+        use crate::types::ability::{ManaProduction, QuantityExpr, QuantityRef};
+        use crate::types::actions::GameAction;
+        use crate::types::card_type::CoreType;
+        use crate::types::game_state::WaitingFor;
+        use crate::types::identifiers::CardId;
+        use crate::types::zones::Zone;
+
+        const ORACLE: &str = "Whenever a creature enters, you may add an amount of {C} equal to the number of creatures you control that share a creature type with it.";
+
+        let mut scenario = GameScenario::new();
+        scenario.at_phase(crate::types::phase::Phase::PreCombatMain);
+        let mana_echoes = scenario
+            .add_creature_from_oracle(P0, "Mana Echoes", 0, 0, ORACLE)
+            .id();
+        scenario
+            .add_creature(P0, "Goblin A", 1, 1)
+            .with_subtypes(vec!["Goblin"]);
+        scenario
+            .add_creature(P0, "Goblin B", 1, 1)
+            .with_subtypes(vec!["Goblin"]);
+        let mut runner = scenario.build();
+        runner.state_mut().all_creature_types = vec!["Goblin".to_string()];
+        runner.advance_until_stack_empty();
+
+        let entering = {
+            let state = runner.state_mut();
+            let card_id = CardId(state.next_object_id);
+            let id = crate::game::zones::create_object(
+                state,
+                card_id,
+                P0,
+                "Goblin C".to_string(),
+                Zone::Hand,
+            );
+            let obj = state.objects.get_mut(&id).unwrap();
+            obj.card_types.core_types.push(CoreType::Creature);
+            obj.card_types.subtypes.push("Goblin".to_string());
+            id
+        };
+
+        let mut events = Vec::new();
+        move_to_zone(runner.state_mut(), entering, Zone::Battlefield, &mut events);
+        process_triggers(runner.state_mut(), &events);
+        drain_order_triggers_with_identity(runner.state_mut());
+
+        for _ in 0..48 {
+            if matches!(
+                runner.state().waiting_for,
+                WaitingFor::OptionalEffectChoice { .. }
+            ) {
+                break;
+            }
+            if runner.state().stack.is_empty() {
+                break;
+            }
+            runner
+                .act(GameAction::PassPriority)
+                .expect("pass priority to optional mana");
+        }
+
+        let pending = runner
+            .state()
+            .pending_optional_effect
+            .as_ref()
+            .expect("optional mana must stash pending ability");
+        let pending_event = runner
+            .state()
+            .pending_optional_trigger_event
+            .clone()
+            .expect("optional mana must stash trigger event");
+
+        let filter = match &pending.effect {
+            crate::types::ability::Effect::Mana {
+                produced: ManaProduction::Colorless { count },
+                ..
+            } => {
+                let QuantityExpr::Ref {
+                    qty: QuantityRef::ObjectCount { filter },
+                } = count
+                else {
+                    panic!("expected ObjectCount");
+                };
+                filter.clone()
+            }
+            other => panic!("expected Mana effect, got {other:?}"),
+        };
+
+        let mut probe = runner.state().clone();
+        probe.current_trigger_event = Some(pending_event);
+        let ctx = super::FilterContext::from_ability_with_controller(pending, P0);
+        assert_eq!(
+            object_count_matching_ids(&probe, &filter, &ctx, mana_echoes).len(),
+            3,
+            "paused optional ability must count three sharing Goblins"
+        );
+        assert_eq!(
+            resolve_quantity_with_targets(
+                &probe,
+                &QuantityExpr::Ref {
+                    qty: QuantityRef::ObjectCount {
+                        filter: filter.clone()
+                    },
+                },
+                pending,
+            ),
+            3
+        );
+
+        runner
+            .act(GameAction::DecideOptionalEffect { accept: true })
+            .expect("accept optional mana");
+        assert_eq!(
+            runner.state().players[P0.0 as usize]
+                .mana_pool
+                .count_color(crate::types::mana::ManaType::Colorless),
+            3,
+            "accepting optional Mana Echoes must add three colorless"
+        );
+    }
+
+    #[test]
+    fn object_count_shares_creature_type_with_triggering_source_for_mana_echoes() {
+        use crate::game::quantity::object_count_matching_ids;
+        use crate::types::ability::{
+            ControllerRef, Effect, ManaProduction, QuantityExpr, QuantityRef, ResolvedAbility,
+            SharedQualityRelation, TypedFilter,
+        };
+        use crate::types::events::GameEvent;
+
+        let mut state = setup();
+        state.all_creature_types = vec!["Goblin".to_string()];
+        let mana_echoes = add_creature(&mut state, PlayerId(0), "Mana Echoes");
+        let goblin_a = add_creature(&mut state, PlayerId(0), "Goblin A");
+        let goblin_b = add_creature(&mut state, PlayerId(0), "Goblin B");
+        let entering = add_creature(&mut state, PlayerId(0), "Goblin C");
+        for id in [goblin_a, goblin_b, entering] {
+            state
+                .objects
+                .get_mut(&id)
+                .unwrap()
+                .card_types
+                .subtypes
+                .push("Goblin".to_string());
+        }
+
+        state.current_trigger_event = Some(GameEvent::ZoneChanged {
+            object_id: entering,
+            from: Some(Zone::Hand),
+            to: Zone::Battlefield,
+            record: Box::new(ZoneChangeRecord::test_minimal(
+                entering,
+                Some(Zone::Hand),
+                Zone::Battlefield,
+            )),
+        });
+
+        let filter = TargetFilter::Typed(
+            TypedFilter::creature()
+                .controller(ControllerRef::You)
+                .properties(vec![FilterProp::SharesQuality {
+                    quality: SharedQuality::CreatureType,
+                    reference: Some(Box::new(TargetFilter::TriggeringSource)),
+                    relation: SharedQualityRelation::Shares,
+                }]),
+        );
+        let ability = ResolvedAbility::new(
+            Effect::Mana {
+                produced: ManaProduction::Colorless {
+                    count: QuantityExpr::Ref {
+                        qty: QuantityRef::ObjectCount {
+                            filter: filter.clone(),
+                        },
+                    },
+                },
+                restrictions: vec![],
+                grants: vec![],
+                expiry: None,
+                target: None,
+            },
+            vec![],
+            mana_echoes,
+            PlayerId(0),
+        );
+        let ctx = FilterContext::from_ability(&ability);
+
+        assert_eq!(
+            object_count_matching_ids(&state, &filter, &ctx, mana_echoes).len(),
+            3,
+            "all three Goblins share a creature type with the entering creature"
+        );
     }
 
     #[test]
@@ -11069,6 +11370,189 @@ mod tests {
         assert!(
             !spell_record_matches_filter(&from_hand, &filter, controller, &[]),
             "a spell cast from hand must NOT satisfy InAnyZone[everything except hand]"
+        );
+    }
+
+    /// CR 109.4 + CR 608.2i (Admiral Beckett Brass #4735): the object-side
+    /// controller-predicate bridge `FilterProp::ControllerMatches`. Builds the
+    /// exact filter the parser emits for Beckett's steal target and drives it
+    /// through the real filter-eval pipeline (`matches_target_filter`) — the
+    /// candidate matches iff its CONTROLLER was dealt combat damage by THREE OR
+    /// MORE distinct Pirates this turn (Beckett's real `min_sources = 3`). Uses
+    /// the explicit-controller wrapper so the source ability (Beckett, controlled
+    /// by P0) is an opponent of the damaged controller (P1), as
+    /// `opponent_dealt_damage_matches` requires.
+    fn beckett_controller_matches_filter() -> TargetFilter {
+        TargetFilter::Typed(TypedFilter::default().properties(vec![
+            FilterProp::ControllerMatches {
+                player: Box::new(crate::types::ability::PlayerFilter::OpponentDealtDamage {
+                    kind: crate::types::ability::DamageKindFilter::CombatOnly,
+                    source: Some(Box::new(TargetFilter::Typed(
+                        TypedFilter::creature().with_type(
+                            crate::types::ability::TypeFilter::Subtype("Pirate".to_string()),
+                        ),
+                    ))),
+                    min_sources: 3,
+                }),
+            },
+        ]))
+    }
+
+    /// Stage one combat-damage-by-a-Pirate record with a DISTINCT `source_id` so
+    /// the distinct-source count can be exercised (Beckett needs ≥3 distinct
+    /// Pirate sources).
+    fn push_combat_damage_by_distinct_pirate(
+        state: &mut GameState,
+        victim: PlayerId,
+        pirate_source: ObjectId,
+    ) {
+        state
+            .damage_dealt_this_turn
+            .push_back(crate::types::game_state::DamageRecord {
+                source_id: pirate_source,
+                source_controller: victim, // irrelevant to the match
+                target: crate::types::ability::TargetRef::Player(victim),
+                target_controller: victim,
+                amount: 2,
+                is_combat: true,
+                source_core_types: vec![CoreType::Creature],
+                source_subtypes: vec!["Pirate".to_string()],
+                ..Default::default()
+            });
+    }
+
+    #[test]
+    fn controller_matches_pirate_combat_damage_positive() {
+        let mut state = setup();
+        // Beckett (source) controlled by P0; the steal candidate controlled by P1.
+        let beckett = add_creature(&mut state, PlayerId(0), "Admiral Beckett Brass");
+        let candidate = add_creature(&mut state, PlayerId(1), "Stolen Goblin");
+        // Three DISTINCT Pirate sources dealt P1 combat damage this turn.
+        push_combat_damage_by_distinct_pirate(&mut state, PlayerId(1), ObjectId(901));
+        push_combat_damage_by_distinct_pirate(&mut state, PlayerId(1), ObjectId(902));
+        push_combat_damage_by_distinct_pirate(&mut state, PlayerId(1), ObjectId(903));
+
+        let filter = beckett_controller_matches_filter();
+        assert!(
+            matches_target_filter_controlled(&state, candidate, &filter, beckett, PlayerId(0)),
+            "candidate's controller (P1) was dealt combat damage by 3 distinct Pirates this turn — must match"
+        );
+    }
+
+    #[test]
+    fn controller_matches_two_distinct_pirates_below_threshold_negative() {
+        let mut state = setup();
+        let beckett = add_creature(&mut state, PlayerId(0), "Admiral Beckett Brass");
+        let candidate = add_creature(&mut state, PlayerId(1), "Stolen Goblin");
+        // Only TWO distinct Pirates — below Beckett's "three or more" threshold.
+        // This is the defining restriction of the card: 1–2 Pirates must NOT
+        // qualify even though the source/kind predicate matches.
+        push_combat_damage_by_distinct_pirate(&mut state, PlayerId(1), ObjectId(901));
+        push_combat_damage_by_distinct_pirate(&mut state, PlayerId(1), ObjectId(902));
+
+        let filter = beckett_controller_matches_filter();
+        assert!(
+            !matches_target_filter_controlled(&state, candidate, &filter, beckett, PlayerId(0)),
+            "combat damage by only 2 distinct Pirates is below min_sources=3 — must NOT match"
+        );
+    }
+
+    #[test]
+    fn controller_matches_same_pirate_twice_is_one_source_negative() {
+        let mut state = setup();
+        let beckett = add_creature(&mut state, PlayerId(0), "Admiral Beckett Brass");
+        let candidate = add_creature(&mut state, PlayerId(1), "Stolen Goblin");
+        // The SAME Pirate dealing combat damage across two combat steps is ONE
+        // distinct source (CR 120.9 counts distinct sources, not damage events),
+        // so three records from two objects (901 twice, 902 once) = 2 distinct.
+        push_combat_damage_by_distinct_pirate(&mut state, PlayerId(1), ObjectId(901));
+        push_combat_damage_by_distinct_pirate(&mut state, PlayerId(1), ObjectId(901));
+        push_combat_damage_by_distinct_pirate(&mut state, PlayerId(1), ObjectId(902));
+
+        let filter = beckett_controller_matches_filter();
+        assert!(
+            !matches_target_filter_controlled(&state, candidate, &filter, beckett, PlayerId(0)),
+            "the same Pirate counted once — 2 distinct sources is below min_sources=3, must NOT match"
+        );
+    }
+
+    #[test]
+    fn controller_matches_non_pirate_source_negative() {
+        let mut state = setup();
+        let beckett = add_creature(&mut state, PlayerId(0), "Admiral Beckett Brass");
+        let candidate = add_creature(&mut state, PlayerId(1), "Stolen Goblin");
+        // Combat damage, but the source is a Goblin, not a Pirate.
+        state
+            .damage_dealt_this_turn
+            .push_back(crate::types::game_state::DamageRecord {
+                source_id: ObjectId(999),
+                target: crate::types::ability::TargetRef::Player(PlayerId(1)),
+                target_controller: PlayerId(1),
+                amount: 2,
+                is_combat: true,
+                source_core_types: vec![CoreType::Creature],
+                source_subtypes: vec!["Goblin".to_string()],
+                ..Default::default()
+            });
+
+        let filter = beckett_controller_matches_filter();
+        assert!(
+            !matches_target_filter_controlled(&state, candidate, &filter, beckett, PlayerId(0)),
+            "combat damage by a non-Pirate must NOT satisfy the Pirate-source predicate"
+        );
+    }
+
+    #[test]
+    fn controller_matches_noncombat_pirate_damage_negative() {
+        let mut state = setup();
+        let beckett = add_creature(&mut state, PlayerId(0), "Admiral Beckett Brass");
+        let candidate = add_creature(&mut state, PlayerId(1), "Stolen Goblin");
+        // A Pirate source, but NONCOMBAT damage (e.g. a Pirate's activated ability).
+        state
+            .damage_dealt_this_turn
+            .push_back(crate::types::game_state::DamageRecord {
+                source_id: ObjectId(999),
+                target: crate::types::ability::TargetRef::Player(PlayerId(1)),
+                target_controller: PlayerId(1),
+                amount: 2,
+                is_combat: false,
+                source_core_types: vec![CoreType::Creature],
+                source_subtypes: vec!["Pirate".to_string()],
+                ..Default::default()
+            });
+
+        let filter = beckett_controller_matches_filter();
+        assert!(
+            !matches_target_filter_controlled(&state, candidate, &filter, beckett, PlayerId(0)),
+            "noncombat damage by a Pirate must NOT satisfy the combat-only predicate"
+        );
+    }
+
+    #[test]
+    fn controller_matches_undamaged_controller_negative() {
+        let mut state = setup();
+        let beckett = add_creature(&mut state, PlayerId(0), "Admiral Beckett Brass");
+        let candidate = add_creature(&mut state, PlayerId(1), "Stolen Goblin");
+        // No damage record at all — controller was not dealt any damage this turn.
+        let filter = beckett_controller_matches_filter();
+        assert!(
+            !matches_target_filter_controlled(&state, candidate, &filter, beckett, PlayerId(0)),
+            "an undamaged controller must NOT match the look-back predicate"
+        );
+    }
+
+    #[test]
+    fn controller_matches_serde_round_trips() {
+        let filter = beckett_controller_matches_filter();
+        let TargetFilter::Typed(typed) = &filter else {
+            panic!("expected Typed filter");
+        };
+        let prop = &typed.properties[0];
+        let json = serde_json::to_string(prop).expect("serialize ControllerMatches");
+        let back: FilterProp = serde_json::from_str(&json).expect("deserialize ControllerMatches");
+        assert_eq!(
+            *prop, back,
+            "ControllerMatches must round-trip through serde"
         );
     }
 }

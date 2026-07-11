@@ -5214,7 +5214,9 @@ pub(crate) fn strip_trailing_duration(text: &str) -> (&str, Option<Duration>) {
     let text = text.trim();
     let duration_text = text.trim_end_matches('.').trim();
     let lower = duration_text.to_lowercase();
-    if target_relative_clause_owns_suffix(lower.as_str()) {
+    if target_relative_clause_owns_suffix(lower.as_str())
+        || player_lookback_relative_clause_owns_suffix(lower.as_str())
+    {
         return (text, None);
     }
     // CR 611.2 + CR 611.2b: trailing duration clause. The phrase→`Duration`
@@ -5366,6 +5368,69 @@ fn for_each_quantity_clause_owns_this_turn_suffix(lower: &str) -> bool {
     };
     let expression_end = quantity_before_this_turn.len() + " this turn".len();
     parse_for_each_clause(&normalized[..expression_end]).is_some()
+}
+
+/// CR 608.2i + CR 611.2a: True when the trailing " this turn" belongs to a
+/// controller-scoped *player look-back* relative clause on the target — e.g.
+/// Admiral Beckett Brass's "target nonland permanent controlled by a player who
+/// was dealt combat damage by three or more Pirates this turn" — rather than
+/// being the effect's own duration. Without this guard `strip_trailing_duration`
+/// amputates the "this turn" and (wrongly) stamps `Duration::UntilEndOfTurn` on
+/// a control-change that is in fact permanent (CR 611.2a: a continuous
+/// effect with no stated duration lasts until end of the game).
+///
+/// This is the "who"-introduced sibling of `target_relative_clause_owns_suffix`
+/// (which recognizes "that"-introduced object-property clauses). It is
+/// deliberately SELF-STANDING — it does NOT delegate to `parse_that_clause_suffix`
+/// (whose vocabulary is object-property clauses like "that's enchanted", not the
+/// "controlled by a player who <look-back verb>" player shape). It recognizes the
+/// clause STRUCTURE (which owns the suffix), not its full semantics — the target
+/// scope itself remains an over-broad coverage gap, but the duration is correct.
+///
+/// The positional discipline mirrors the quantity-ownership guards: the guard
+/// fires only when the relative clause consumes *through* the trailing " this
+/// turn" to end-of-input. A genuine OUTER duration after the relative clause
+/// ("… who lost life this turn until end of turn") leaves a non-empty remainder,
+/// so the guard declines and the real duration still strips.
+pub(crate) fn player_lookback_relative_clause_owns_suffix(input: &str) -> bool {
+    // Anchor on the LAST " who " so an earlier "who" (in an unrelated preceding
+    // clause) cannot mask the outer duration on a later clause.
+    // allow-noncombinator: rfind anchors the word-boundary slice for the nom scan below (Pattern 5), not parsing dispatch.
+    let Some(who_idx) = input.rfind(" who ") else {
+        return false;
+    };
+    let after_who = &input[who_idx + " who ".len()..];
+    // A player look-back relative clause: a look-back verb phrase, then a tail
+    // that ends exactly at " this turn" (the suffix the stripper is testing).
+    // `alt` returns the first success, so longer matches must precede their own
+    // prefixes ("was dealt combat damage " before "was dealt "), else the prefix
+    // shadows the longer branch into dead code.
+    let lookback_verb = alt((
+        tag::<_, _, OracleError<'_>>("was dealt combat damage "),
+        tag("was dealt "),
+        tag("were dealt "),
+        tag("lost life "),
+        tag("gained life "),
+        tag("has lost life "),
+        tag("has gained life "),
+        tag("controls "),
+    ));
+    let Ok((rest, _)) = preceded(lookback_verb, take_until(" this turn"))
+        .and(tag::<_, _, OracleError<'_>>(" this turn"))
+        .parse(after_who)
+    else {
+        return false;
+    };
+    // The relative clause must own the suffix: nothing but optional punctuation
+    // may follow, so an outer duration ("… until end of turn") is not suppressed.
+    (
+        multispace0,
+        opt(alt((tag::<_, _, OracleError<'_>>("."), tag(",")))),
+        multispace0,
+        eof,
+    )
+        .parse(rest)
+        .is_ok()
 }
 
 fn target_relative_clause_owns_suffix(input: &str) -> bool {
@@ -10533,6 +10598,108 @@ mod where_x_tests {
         );
     }
 
+    /// Issue #4735 — Admiral Beckett Brass end-to-end: the end-step steal trigger
+    /// must lower to `Effect::GainControl` with NO duration (a control-change with
+    /// no stated duration is permanent, CR 611.2a) — the "this turn" from the
+    /// look-back target clause must not leak onto the effect as `UntilEndOfTurn`.
+    #[test]
+    fn beckett_brass_gain_control_has_no_duration() {
+        use crate::types::ability::Effect;
+        let parsed = crate::parser::oracle::parse_oracle_text(
+            "Other Pirates you control get +1/+1.\nAt the beginning of your end step, gain control of target nonland permanent controlled by a player who was dealt combat damage by three or more Pirates this turn.",
+            "Admiral Beckett Brass",
+            &[],
+            &["Creature".to_string()],
+            &["Human".to_string(), "Pirate".to_string()],
+        );
+        let steal = parsed
+            .triggers
+            .iter()
+            .find(|t| {
+                matches!(
+                    &*t.execute.as_ref().unwrap().effect,
+                    Effect::GainControl { .. }
+                )
+            })
+            .expect("Beckett's end-step trigger must lower to GainControl");
+        let execute = steal.execute.as_ref().unwrap();
+        assert_eq!(
+            execute.duration, None,
+            "the steal is permanent (CR 611.2a) — no phantom UntilEndOfTurn from the look-back clause, got {:?}",
+            execute.duration
+        );
+    }
+
+    /// Issue #4735 — Admiral Beckett Brass: the end-step steal target must now
+    /// carry the CONTROLLER PREDICATE `FilterProp::ControllerMatches` wrapping
+    /// `OpponentDealtDamage { CombatOnly, Some(Typed(Pirate)) }` (the object-side
+    /// bridge into the PlayerFilter enum), and the whole card must lower with ZERO
+    /// `Effect::Unimplemented` (positive reach-guard: the target now parses
+    /// semantically, not just structurally for duration purposes). The numeric
+    /// "three or more" is a documented DEFERRED gap — consumed, not enforced.
+    #[test]
+    fn beckett_brass_gain_control_target_carries_controller_matches() {
+        use crate::types::ability::{
+            DamageKindFilter, Effect, FilterProp, PlayerFilter, TargetFilter, TypeFilter,
+        };
+        let parsed = crate::parser::oracle::parse_oracle_text(
+            "Other Pirates you control get +1/+1.\nAt the beginning of your end step, gain control of target nonland permanent controlled by a player who was dealt combat damage by three or more Pirates this turn.",
+            "Admiral Beckett Brass",
+            &[],
+            &["Creature".to_string()],
+            &["Human".to_string(), "Pirate".to_string()],
+        );
+
+        // Positive reach-guard: nothing on this card lowered to Unimplemented.
+        assert!(
+            !parsed.triggers.iter().any(|t| {
+                t.execute
+                    .as_ref()
+                    .is_some_and(|e| matches!(&*e.effect, Effect::Unimplemented { .. }))
+            }),
+            "Beckett must not produce any Unimplemented effect once the look-back target parses"
+        );
+
+        let steal = parsed
+            .triggers
+            .iter()
+            .find_map(|t| match &*t.execute.as_ref()?.effect {
+                Effect::GainControl { target } => Some(target.clone()),
+                _ => None,
+            })
+            .expect("Beckett's end-step trigger must lower to GainControl");
+
+        let TargetFilter::Typed(typed) = &steal else {
+            panic!("expected a Typed GainControl target, got {steal:?}");
+        };
+        let has_predicate = typed.properties.iter().any(|p| {
+            matches!(
+                p,
+                FilterProp::ControllerMatches { player }
+                    if matches!(
+                        &**player,
+                        PlayerFilter::OpponentDealtDamage {
+                            kind: DamageKindFilter::CombatOnly,
+                            source: Some(src),
+                            // "three or more Pirates" → the count threshold is
+                            // enforced (not dropped), so min_sources must be 3.
+                            min_sources: 3,
+                        } if matches!(
+                            &**src,
+                            TargetFilter::Typed(t)
+                                if t.type_filters
+                                    .contains(&TypeFilter::Subtype("Pirate".to_string()))
+                        )
+                    )
+            )
+        });
+        assert!(
+            has_predicate,
+            "GainControl target must carry ControllerMatches{{OpponentDealtDamage{{CombatOnly, Some(Pirate), min_sources: 3}}}}, got {:?}",
+            typed.properties
+        );
+    }
+
     #[test]
     fn strip_trailing_duration_still_strips_genuine_this_turn_duration() {
         use super::strip_trailing_duration;
@@ -10540,6 +10707,46 @@ mod where_x_tests {
         let (stripped, duration) = strip_trailing_duration("that creature gains haste this turn.");
         assert_eq!(duration, Some(Duration::UntilEndOfTurn));
         assert_eq!(stripped, "that creature gains haste");
+    }
+
+    /// Issue #4735 — Admiral Beckett Brass: the "this turn" belongs to the
+    /// "controlled by a player who was dealt combat damage … this turn" look-back
+    /// relative clause on the target, NOT to the control-change's duration (which
+    /// is permanent, CR 611.2a). The `who`-introduced player look-back guard must
+    /// preserve the whole clause and yield no duration.
+    #[test]
+    fn strip_trailing_duration_preserves_who_dealt_combat_damage_lookback() {
+        use super::strip_trailing_duration;
+
+        let text = "gain control of target nonland permanent controlled by a player who was dealt combat damage by three or more pirates this turn.";
+        let (stripped, duration) = strip_trailing_duration(text);
+        assert!(
+            duration.is_none(),
+            "the player look-back 'this turn' must not become an effect duration, got {duration:?}"
+        );
+        // The guard preserves the full clause (trailing period retained, as for
+        // the other `preserves_*` guard tests).
+        assert_eq!(stripped, text.trim());
+    }
+
+    /// Hostile fixture (review requirement): a `who`-introduced look-back
+    /// relative clause followed by a GENUINE outer "until end of turn" duration —
+    /// the outer duration must still strip, the guard must NOT over-suppress it.
+    #[test]
+    fn strip_trailing_duration_who_lookback_plus_genuine_outer_duration() {
+        use super::strip_trailing_duration;
+
+        let text = "target creature controlled by a player who lost life this turn gains haste until end of turn.";
+        let (stripped, duration) = strip_trailing_duration(text);
+        assert_eq!(
+            duration,
+            Some(Duration::UntilEndOfTurn),
+            "the genuine outer 'until end of turn' must still be recognized"
+        );
+        assert_eq!(
+            stripped,
+            "target creature controlled by a player who lost life this turn gains haste"
+        );
     }
 
     /// The new delegation must NOT shadow `parse_cda_quantity`: "the number of

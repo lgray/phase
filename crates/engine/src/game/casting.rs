@@ -12303,7 +12303,7 @@ fn can_pay_with_tap_payment_mode(
             // like Improvise, so a spell castable only with delve is offered.
             let mut pool = player_data.mana_pool.clone();
             for (&object_id, obj) in &state.objects {
-                if obj.zone == Zone::Graveyard && obj.owner == player {
+                if obj.is_delve_eligible(player) {
                     pool.add(crate::types::mana::ManaUnit::convoke_payment(
                         crate::types::mana::ManaType::Colorless,
                         object_id,

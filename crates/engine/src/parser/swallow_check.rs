@@ -22,6 +22,7 @@
 //!      representation.
 
 use super::oracle::ParsedAbilities;
+use super::oracle_effect::player_lookback_relative_clause_owns_suffix;
 use super::oracle_ir::diagnostic::{CascadeSlot, OracleDiagnostic};
 use crate::types::ability::{
     AbilityCondition, AbilityDefinition, ActivationRestriction, Comparator, ContinuousModification,
@@ -3098,6 +3099,21 @@ fn detect_duration_this_turn(
     if total_this_turn > 0 && total_this_turn == quantity_this_turn {
         return;
     }
+    // CR 608.2i (look-back) + CR 611.2a: a "controlled by a player who <look-back
+    // verb> this turn" relative clause owns its trailing "this turn" — it scopes a
+    // turn-history predicate on the target's controller, NOT a forward-looking
+    // duration on the effect. The parser's `strip_trailing_duration` recognizes
+    // this same clause structure via `player_lookback_relative_clause_owns_suffix`
+    // and declines to amputate the suffix (so the control-change stays permanent,
+    // CR 611.2a). This detector must mirror that recognition, else it would flag a
+    // correctly-deferred look-back clause as a swallowed duration (Admiral Beckett
+    // Brass). Occurrence-balanced like the quantity/case-solve exemptions above:
+    // only exempt when the SOLE "this turn" is the one the look-back clause owns,
+    // so a card with a genuine earlier duration AND a trailing look-back clause
+    // still fires.
+    if total_this_turn == 1 && player_lookback_relative_clause_owns_suffix(cleaned) {
+        return;
+    }
     let markers: &[&str] = &[
         "\"duration\":\"",
         "UntilEndOfTurn",
@@ -3705,6 +3721,27 @@ mod tests {
              Solved — Whenever you cast an instant or sorcery spell, draw a card.",
             "Case of the Ransacked Lab",
             &["Enchantment"],
+        );
+
+        assert!(!has_swallowed_detector(&parsed, "Duration_ThisTurn"));
+    }
+
+    /// CR 608.2i (look-back) + CR 611.2a: a "controlled by a player who <look-back
+    /// verb> this turn" relative clause owns its trailing "this turn" — a
+    /// turn-history predicate on the target's controller, not an effect duration.
+    /// The parser's `strip_trailing_duration` correctly leaves the control-change
+    /// permanent (no phantom `UntilEndOfTurn`), so the Duration_ThisTurn detector
+    /// must not flag the deferred look-back clause as a swallowed duration.
+    /// Admiral Beckett Brass (#4735 / PR #5517).
+    #[test]
+    fn duration_this_turn_accepts_player_lookback_relative_clause() {
+        let parsed = parse_named(
+            "Other Pirates you control get +1/+1.\n\
+             At the beginning of your end step, gain control of target nonland \
+             permanent controlled by a player who was dealt combat damage by \
+             three or more Pirates this turn.",
+            "Admiral Beckett Brass",
+            &["Legendary", "Creature"],
         );
 
         assert!(!has_swallowed_detector(&parsed, "Duration_ThisTurn"));

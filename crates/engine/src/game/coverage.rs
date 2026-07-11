@@ -655,6 +655,9 @@ fn fmt_typed_filter(tf: &TypedFilter) -> String {
             FilterProp::ControllerChoseLabel { label } => {
                 parts.push(format!("controlled by a player who last chose {label}"))
             }
+            FilterProp::ControllerMatches { player } => {
+                parts.push(format!("controlled by {}", fmt_player_filter(player)))
+            }
             FilterProp::WasPlayed => parts.push("was played".into()),
             FilterProp::Attacking { defender } => match defender {
                 None => parts.push("attacking".into()),

@@ -16,7 +16,8 @@ pub(crate) use search::parse_search_name_reference_suffix;
 pub(crate) use lower::{
     capitalize, lower_effect_chain_ir, parse_controls_permanent_object,
     parse_counter_suffix_body_combinator, parse_with_counters_suffix,
-    parse_with_counters_suffix_spanned, strip_trailing_duration, strip_trailing_where_x,
+    parse_with_counters_suffix_spanned, player_lookback_relative_clause_owns_suffix,
+    strip_trailing_duration, strip_trailing_where_x,
 };
 // pub(super) re-exports used by sibling submodules via `super::fn_name()`.
 pub(super) use lower::{
@@ -9035,6 +9036,9 @@ fn parse_conjure_zone(lower: &str) -> Option<(Zone, &str)> {
         value(Zone::Hand, tag(" into their hand")),
         value(Zone::Graveyard, tag(" into their graveyard")),
         value(Zone::Library, tag(" into their library")),
+        // Digital-only Alchemy conjures can also land in exile (e.g. a random card
+        // conjured from a spellbook into exile with a play-permission rider).
+        value(Zone::Exile, tag(" into exile")),
     ))
     .parse(lower)
     .ok()

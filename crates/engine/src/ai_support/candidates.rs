@@ -4415,11 +4415,11 @@ fn mana_payment_actions(
                 _ => None,
             });
         if mode == ConvokeMode::Delve {
-            if let Some(p) = state.players.iter().find(|p| p.id == player) {
-                for obj_id in &p.graveyard {
+            for (&obj_id, obj) in &state.objects {
+                if obj.is_delve_eligible(player) {
                     actions.push(candidate(
                         GameAction::TapForConvoke {
-                            object_id: *obj_id,
+                            object_id: obj_id,
                             mana_type: crate::types::mana::ManaType::Colorless,
                         },
                         TacticalClass::Mana,
