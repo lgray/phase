@@ -7225,16 +7225,6 @@ pub struct GameState {
     /// (keyed by `(source_id, ability_index)`). Cleared at turn start.
     #[serde(default)]
     pub crew_activated_this_turn: HashSet<ObjectId>,
-    /// CR 614.4 + CR 614.1: replacement sources (by `ObjectId`) whose "first time
-    /// you would create one or more tokens each turn" replacement
-    /// (`ReplacementCondition::FirstTokenCreationEachTurn`, Moonlit Meditation)
-    /// already applied to a your-owned `CreateToken` this turn. From-existence,
-    /// NOT global — a Moonlit entering mid-turn after an earlier creation is
-    /// absent here and therefore still fires. Cleared at turn start (like
-    /// `crew_activated_this_turn`; preserved by `analysis/resource.rs` for loop
-    /// detection).
-    #[serde(default)]
-    pub first_token_replacement_used_this_turn: HashSet<ObjectId>,
     /// CR 606.1 + CR 606.3 + CR 603.4: Per-player count of loyalty-ability
     /// activations this turn. Incremented in
     /// `planeswalker::finalize_loyalty_activation` whenever any loyalty ability
@@ -8911,7 +8901,6 @@ impl GameState {
             activated_abilities_this_turn: HashMap::new(),
             activated_abilities_this_game: HashMap::new(),
             crew_activated_this_turn: HashSet::new(),
-            first_token_replacement_used_this_turn: HashSet::new(),
             loyalty_abilities_activated_this_turn: HashMap::new(),
             extra_loyalty_activations_this_turn: HashMap::new(),
             exerted_this_turn: std::collections::HashSet::new(),
@@ -9597,8 +9586,6 @@ impl PartialEq for GameState {
             && self.activated_abilities_this_turn == other.activated_abilities_this_turn
             && self.activated_abilities_this_game == other.activated_abilities_this_game
             && self.crew_activated_this_turn == other.crew_activated_this_turn
-            && self.first_token_replacement_used_this_turn
-                == other.first_token_replacement_used_this_turn
             && self.loyalty_abilities_activated_this_turn
                 == other.loyalty_abilities_activated_this_turn
             && self.extra_loyalty_activations_this_turn == other.extra_loyalty_activations_this_turn

@@ -320,31 +320,6 @@ fn is_copy_token_substitution(def: &AbilityDefinition) -> bool {
     matches!(&*def.effect, Effect::CopyTokenOf { .. })
 }
 
-/// CR 614.6 + CR 614.4: `mark_applied` records that `rid` applied to this event;
-/// for the "first time you would create one or more tokens each turn" class
-/// (`FirstTokenCreationEachTurn`) also consume the per-source turn allowance — on
-/// accept AND decline (declining still consumes "the first time"; the
-/// token-creation event still occurred and the replacement still had its one
-/// window). Mirrors the `state.objects.get(&rid.source) …
-/// replacement_definitions.get(rid.index)` lookup used throughout this module.
-fn note_first_token_replacement_applied(state: &mut GameState, rid: ReplacementId) {
-    let is_first_token = state
-        .objects
-        .get(&rid.source)
-        .and_then(|o| o.replacement_definitions.get(rid.index))
-        .is_some_and(|r| {
-            matches!(
-                r.condition,
-                Some(ReplacementCondition::FirstTokenCreationEachTurn { .. })
-            )
-        });
-    if is_first_token {
-        state
-            .first_token_replacement_used_this_turn
-            .insert(rid.source);
-    }
-}
-
 /// CR 614.12a: Single authority for ABANDONING a live post-replacement
 /// continuation (as opposed to draining it normally via
 /// `apply_pending_post_replacement_effect`, which only clears
@@ -4461,13 +4436,23 @@ fn evaluate_replacement_condition(
             source,
             controller: installer,
         } => controller_controls_source_gate(state, *source, *installer),
-        // CR 614.4: only token creations this source could see (since it existed)
-        // count toward "the first time … each turn"; owner-scope is enforced
-        // separately by the replacement's `token_owner_scope(You)`, so `player`
-        // is intentionally ignored here.
+        // CR 614.1a: "you may instead create …" is a replacement effect (the word
+        // "instead"). The "first time you would create one or more tokens each turn"
+        // window is per-PLAYER (the Oracle's "you"), NOT per-source: it is consumed
+        // by the first token the controller creates this turn, tracked via the
+        // shared `players_who_created_token_this_turn` primitive (populated by
+        // `record_token_created` on every creation). So a token created BEFORE this
+        // source entered mid-turn already closes the window — official ruling: "If
+        // you create one or more tokens, and then Moonlit Meditation comes under your
+        // control that same turn, the replacement effect won't apply to any tokens
+        // you create for the rest of the turn." CR 614.5: the substitute copies don't
+        // reopen the window — replacement re-entry is already suppressed by the
+        // applied-set check before this condition is reached, so counting the copies
+        // in the per-player set is harmless. `token_owner_scope(You)` constrains the
+        // event's creator to `controller`, so `player` need not be re-resolved here.
         ReplacementCondition::FirstTokenCreationEachTurn { player: _ } => !state
-            .first_token_replacement_used_this_turn
-            .contains(&source_id),
+            .players_who_created_token_this_turn
+            .contains(&controller),
         // Unrecognized condition — always applies (enters tapped) as a safe default.
         // The engine recognizes the replacement but cannot evaluate the condition,
         // so it conservatively taps the land.
@@ -7062,9 +7047,10 @@ fn continue_replacement_impl(
         let reparked_library_placement = pending.library_placement.clone();
         let mut proposed = pending.proposed;
         proposed.mark_applied(rid);
-        // CR 614.4: consume the per-source "first time each turn" allowance now,
-        // BEFORE the accept/decline branch — declining still spends the window.
-        note_first_token_replacement_applied(state, rid);
+        // CR 614.1a: the "first time you would create … each turn" window is
+        // per-player; it is consumed by `record_token_created` when the resulting
+        // tokens (copies on accept, originals on decline) are created — no separate
+        // per-source bookkeeping is needed here.
 
         // Extract the accept/decline effects before applying
         let (accept_effect, decline_effect, may_cost) = replacement_definition_for_id(state, rid)
@@ -7229,9 +7215,8 @@ fn continue_replacement_impl(
     let rid = pending.candidates[chosen_index];
     let mut proposed = pending.proposed;
     proposed.mark_applied(rid);
-    // CR 614.4: consume the per-source "first time each turn" allowance for the
-    // non-optional / already-chosen path too.
-    note_first_token_replacement_applied(state, rid);
+    // CR 614.1a: per-player "first time each turn" window is consumed by
+    // `record_token_created` on the created tokens; no per-source bookkeeping here.
 
     match apply_single_replacement_and_dirty(
         state,

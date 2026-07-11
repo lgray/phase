@@ -843,9 +843,6 @@ pub fn start_next_turn(state: &mut GameState, events: &mut Vec<GameEvent>) {
     state.activated_abilities_this_turn.clear();
     // CR 602.5b: "Activate only once each turn" crew restriction resets each turn.
     state.crew_activated_this_turn.clear();
-    // CR 614.4: "the first time you would create one or more tokens each turn"
-    // per-source allowance resets each turn (Moonlit Meditation).
-    state.first_token_replacement_used_this_turn.clear();
     // Belt-and-suspenders: these transient replacement-continuation seeds are
     // normally nulled by the full-drain clear (effects/mod.rs) on the next
     // action, but EventContextAmount reads

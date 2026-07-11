@@ -28,10 +28,12 @@
 //! copies of enchanted permanent." lowers to an Optional `CreateToken` replacement
 //! gated by `ReplacementCondition::FirstTokenCreationEachTurn`, whose
 //! `CopyTokenOf { target: AttachedTo, count: EventContextAmount }` execute makes
-//! host-copies. Per-source once-per-turn latch
-//! (`GameState::first_token_replacement_used_this_turn`), "that many" count,
-//! decline-consumes, turn-reset, per-ObjectId independence, and Doubling-Season
-//! non-recursion tests below.
+//! host-copies. Per-PLAYER once-per-turn window (the Oracle's "you"), tracked via
+//! the shared `GameState::players_who_created_token_this_turn` primitive (consumed
+//! by the first token the controller creates this turn — so a source entering
+//! mid-turn after an earlier creation does NOT fire, per the official ruling),
+//! "that many" count, decline-consumes, turn-reset, per-player (not per-source)
+//! window, and Doubling-Season non-recursion tests below.
 //!
 //! Deferred (honest `Effect::unimplemented` / SwallowedClause retained, NOT
 //! asserted 0-unimpl): Zimone (prime-number intervening-if
@@ -838,7 +840,7 @@ fn moonlit_accept_creates_copies_of_enchanted_host() {
     let host = scenario.add_creature(P0, "Host Ox", 5, 4).id();
     let mut runner = scenario.build();
     set_copiable_subtype(runner.state_mut(), host, "Ox");
-    let moonlit = install_moonlit(runner.state_mut(), host, P0);
+    install_moonlit(runner.state_mut(), host, P0);
 
     resolve_token_source(
         &mut runner,
@@ -883,9 +885,9 @@ fn moonlit_accept_creates_copies_of_enchanted_host() {
     assert!(
         runner
             .state()
-            .first_token_replacement_used_this_turn
-            .contains(&moonlit),
-        "Moonlit's per-source allowance is consumed on accept"
+            .players_who_created_token_this_turn
+            .contains(&P0),
+        "accept records the copy token → the per-player window is consumed"
     );
 }
 
@@ -939,19 +941,24 @@ fn moonlit_ignores_opponent_owned_token_creation() {
     );
 }
 
-/// B1 — from-existence, per-source: a your-owned token is created BEFORE Moonlit
-/// exists, then Moonlit enters, then a second creation the SAME turn still
-/// prompts. A global "the player already created a token this turn" gate would
-/// suppress it; the per-source `first_token_replacement_used_this_turn` (empty
-/// for a source that never applied) does not. Revert the eval to a global
-/// player set → the second creation would not prompt.
+/// B1 (official ruling) — per-player window, pre-consumed by an earlier token: a
+/// P0-owned token is created BEFORE Moonlit exists (recording P0 in
+/// `players_who_created_token_this_turn`), then Moonlit enters, then a second
+/// creation the SAME turn does NOT prompt — P0's per-player window is already
+/// spent. This is the exact official ruling: "If you create one or more tokens,
+/// and then Moonlit Meditation comes under your control that same turn, the
+/// replacement effect won't apply to any tokens you create for the rest of the
+/// turn." SWITCH DISCRIMINATOR: revert the eval to the per-source latch (empty for
+/// a source that just entered and never applied) → Moonlit would wrongly prompt
+/// and the `!at_replacement_choice` assertion below fails.
 #[test]
-fn moonlit_fires_from_existence_not_globally() {
+fn moonlit_source_entering_after_earlier_token_does_not_fire() {
     let mut scenario = GameScenario::new();
     scenario.at_phase(Phase::PreCombatMain);
     let host = scenario.add_creature(P0, "Host Ox", 5, 4).id();
     let mut runner = scenario.build();
 
+    // First creation, BEFORE Moonlit exists → records P0 in the per-player set.
     resolve_token_source(
         &mut runner,
         P0,
@@ -961,27 +968,31 @@ fn moonlit_fires_from_existence_not_globally() {
         !at_replacement_choice(&runner),
         "no replacement before Moonlit exists"
     );
+    assert!(
+        runner
+            .state()
+            .players_who_created_token_this_turn
+            .contains(&P0),
+        "the pre-Moonlit creation consumed P0's per-player window"
+    );
 
     install_moonlit(runner.state_mut(), host, P0);
 
+    // Second creation, same turn, AFTER Moonlit enters → window already spent.
     resolve_token_source(
         &mut runner,
         P0,
         "Create a 1/1 white Soldier creature token.",
     );
     assert!(
-        at_replacement_choice(&runner),
-        "Moonlit that entered after an earlier creation still fires (CR 614.4), got {:?}",
+        !at_replacement_choice(&runner),
+        "Moonlit entering after an earlier same-turn creation does NOT fire \
+         (per-player window pre-consumed; official ruling), got {:?}",
         runner.state().waiting_for
     );
-    runner
-        .act(GameAction::ChooseReplacement { index: 0 })
-        .expect("accept");
-    runner.advance_until_stack_empty();
-    assert_eq!(
-        host_copy_tokens(&runner, "Host Ox", P0).len(),
-        1,
-        "the second creation is replaced by a host-copy"
+    assert!(
+        host_copy_tokens(&runner, "Host Ox", P0).is_empty(),
+        "no host-copy — Moonlit did not fire"
     );
 }
 
@@ -1021,18 +1032,19 @@ fn moonlit_copies_that_many_for_multi_token_events() {
     );
 }
 
-/// B3 — decline consumes the window: declining still spends "the first time"
-/// (the write is pre-branch, at `mark_applied`), so a second creation the same
-/// turn does not prompt. Decline falls through to the original event → a plain
-/// Soldier, no host-copy. If the write were accept-branch-only, the flag would
-/// be unset and the second creation would prompt.
+/// B3 — decline consumes the window: declining still creates the original token,
+/// which `record_token_created` records in the per-player
+/// `players_who_created_token_this_turn` set, so a second creation the same turn
+/// does not prompt. Decline falls through to the original event → a plain Soldier,
+/// no host-copy. If the original creation did not record the player, the window
+/// would stay open and the second creation would prompt.
 #[test]
 fn moonlit_decline_consumes_the_turn_allowance() {
     let mut scenario = GameScenario::new();
     scenario.at_phase(Phase::PreCombatMain);
     let host = scenario.add_creature(P0, "Host Ox", 5, 4).id();
     let mut runner = scenario.build();
-    let moonlit = install_moonlit(runner.state_mut(), host, P0);
+    install_moonlit(runner.state_mut(), host, P0);
 
     resolve_token_source(
         &mut runner,
@@ -1074,9 +1086,9 @@ fn moonlit_decline_consumes_the_turn_allowance() {
     assert!(
         runner
             .state()
-            .first_token_replacement_used_this_turn
-            .contains(&moonlit),
-        "decline still consumes 'the first time' (pre-branch write)"
+            .players_who_created_token_this_turn
+            .contains(&P0),
+        "decline creates the original token → the per-player window is consumed"
     );
 
     resolve_token_source(
@@ -1091,18 +1103,19 @@ fn moonlit_decline_consumes_the_turn_allowance() {
 }
 
 /// B4 — turn reset: consuming the window on turn N (here by DECLINING — which
-/// still spends "the first time", proven in B3, and — unlike accept — leaves no
-/// mid-resolution copy-continuation seed to interfere with this off-stack
-/// harness) and then crossing a turn boundary (`start_next_turn`) clears the
-/// per-source latch, so Moonlit fires again. Without the turn-start clear
-/// (`turns.rs`), the second turn's creation would not prompt.
+/// still creates the original token and records the player, proven in B3, and —
+/// unlike accept — leaves no mid-resolution copy-continuation seed to interfere
+/// with this off-stack harness) and then crossing a turn boundary
+/// (`start_next_turn`) clears `players_who_created_token_this_turn`, so Moonlit
+/// fires again. Without the turn-start clear (`turns.rs`), the second turn's
+/// creation would not prompt.
 #[test]
 fn moonlit_resets_at_turn_start() {
     let mut scenario = GameScenario::new();
     scenario.at_phase(Phase::PreCombatMain);
     let host = scenario.add_creature(P0, "Host Ox", 5, 4).id();
     let mut runner = scenario.build();
-    let moonlit = install_moonlit(runner.state_mut(), host, P0);
+    install_moonlit(runner.state_mut(), host, P0);
 
     // Turn N: fire, then DECLINE to consume the window without seeding a copy
     // continuation.
@@ -1122,8 +1135,8 @@ fn moonlit_resets_at_turn_start() {
     assert!(
         runner
             .state()
-            .first_token_replacement_used_this_turn
-            .contains(&moonlit),
+            .players_who_created_token_this_turn
+            .contains(&P0),
         "turn N: the window is consumed"
     );
     resolve_token_source(
@@ -1140,11 +1153,11 @@ fn moonlit_resets_at_turn_start() {
     let mut events = Vec::<GameEvent>::new();
     engine::game::turns::start_next_turn(runner.state_mut(), &mut events);
     assert!(
-        runner
+        !runner
             .state()
-            .first_token_replacement_used_this_turn
-            .is_empty(),
-        "turn start clears the per-source latch"
+            .players_who_created_token_this_turn
+            .contains(&P0),
+        "turn start clears the per-player token-creation record"
     );
 
     resolve_token_source(
@@ -1154,7 +1167,7 @@ fn moonlit_resets_at_turn_start() {
     );
     assert!(
         at_replacement_choice(&runner),
-        "next turn: the latch reset → Moonlit fires again, got {:?}",
+        "next turn: the per-player record reset → Moonlit fires again, got {:?}",
         runner.state().waiting_for
     );
 }
@@ -1171,8 +1184,9 @@ fn moonlit_resets_at_turn_start() {
 /// would leave them if a priority pass had NOT intervened) and prove the turn
 /// boundary alone scrubs them. Revert either `= None` line in `start_next_turn`
 /// → the matching post-boundary assertion below stays `Some`/non-empty and
-/// fails. The decline-based B4 keeps covering the `first_token_replacement`
-/// latch turn-reset; this closes the copy-count/applied-seed clean-state gap.
+/// fails. The decline-based B4 keeps covering the
+/// `players_who_created_token_this_turn` turn-reset; this closes the
+/// copy-count/applied-seed clean-state gap.
 #[test]
 fn moonlit_turn_start_scrubs_transient_substitution_seeds() {
     let mut scenario = GameScenario::new();
@@ -1227,20 +1241,24 @@ fn moonlit_turn_start_scrubs_transient_substitution_seeds() {
     );
 }
 
-/// B5 — per-ObjectId independence: latching Moonlit A does not suppress a
-/// distinct Moonlit B installed afterward the same turn. B fires and produces a
-/// copy of ITS host (Elk), proving the latch is keyed by source `ObjectId`, not
-/// globally.
+/// B5 — per-PLAYER window (not per-source): Moonlit A firing (and creating a copy,
+/// which records P0 in `players_who_created_token_this_turn`) consumes P0's window
+/// for the whole turn. A distinct Moonlit B installed afterward the SAME turn does
+/// NOT fire — "the first time you would create … each turn" is per-player, not
+/// keyed by source `ObjectId`. SWITCH DISCRIMINATOR: revert the eval to the
+/// per-source latch → B (a different, unlatched `ObjectId`) would wrongly prompt
+/// and produce an Elk copy, failing both assertions below.
 #[test]
-fn moonlit_latch_is_per_object_id() {
+fn moonlit_window_is_per_player_not_per_source() {
     let mut scenario = GameScenario::new();
     scenario.at_phase(Phase::PreCombatMain);
     let host_a = scenario.add_creature(P0, "Host Ox", 5, 4).id();
     let host_b = scenario.add_creature(P0, "Host Elk", 3, 3).id();
     let mut runner = scenario.build();
     set_copiable_subtype(runner.state_mut(), host_b, "Elk");
-    let moonlit_a = install_moonlit(runner.state_mut(), host_a, P0);
+    install_moonlit(runner.state_mut(), host_a, P0);
 
+    // Moonlit A fires on the first creation and makes a copy → records P0.
     resolve_token_source(
         &mut runner,
         P0,
@@ -1254,36 +1272,86 @@ fn moonlit_latch_is_per_object_id() {
     assert!(
         runner
             .state()
-            .first_token_replacement_used_this_turn
-            .contains(&moonlit_a),
-        "A is latched"
+            .players_who_created_token_this_turn
+            .contains(&P0),
+        "A's copy consumed P0's per-player window"
     );
 
-    let moonlit_b = install_moonlit(runner.state_mut(), host_b, P0);
+    // Moonlit B enters the same turn AFTER the window was spent → does NOT fire.
+    install_moonlit(runner.state_mut(), host_b, P0);
     resolve_token_source(
         &mut runner,
         P0,
         "Create a 1/1 white Soldier creature token.",
     );
     assert!(
-        at_replacement_choice(&runner),
-        "Moonlit B fires independently — A's latch does not suppress a different ObjectId"
+        !at_replacement_choice(&runner),
+        "Moonlit B does NOT fire — P0's per-player window is already spent, got {:?}",
+        runner.state().waiting_for
     );
+    assert!(
+        host_copy_tokens(&runner, "Host Elk", P0).is_empty(),
+        "no Elk copy — B did not fire (per-player window, not per-source)"
+    );
+}
+
+/// Accept-path window recording (guards the removal of the per-source note fn): a
+/// single Moonlit present from the start, the first creation is accepted → a copy
+/// is created, which `record_token_created` records in the per-player set. A second
+/// creation the SAME turn then does NOT prompt. This is NOT a per-source→per-player
+/// switch discriminator (with one ever-present source both models agree); its job
+/// is to prove the ACCEPT path still closes the window through
+/// `record_token_created` now that `note_first_token_replacement_applied` is gone —
+/// were the copy path to stop recording the player, the second creation would
+/// wrongly prompt.
+#[test]
+fn moonlit_second_creation_same_turn_after_accept_does_not_fire() {
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(Phase::PreCombatMain);
+    let host = scenario.add_creature(P0, "Host Ox", 5, 4).id();
+    let mut runner = scenario.build();
+    set_copiable_subtype(runner.state_mut(), host, "Ox");
+    install_moonlit(runner.state_mut(), host, P0);
+
+    // First creation: accept → a host-copy is created and records P0.
+    resolve_token_source(
+        &mut runner,
+        P0,
+        "Create a 1/1 white Soldier creature token.",
+    );
+    assert!(at_replacement_choice(&runner), "first creation prompts");
     runner
         .act(GameAction::ChooseReplacement { index: 0 })
-        .expect("accept B");
+        .expect("accept");
     runner.advance_until_stack_empty();
     assert_eq!(
-        host_copy_tokens(&runner, "Host Elk", P0).len(),
+        host_copy_tokens(&runner, "Host Ox", P0).len(),
         1,
-        "B produced a copy of ITS host (Elk) — per-ObjectId independence"
+        "accept produced one host-copy"
     );
     assert!(
         runner
             .state()
-            .first_token_replacement_used_this_turn
-            .contains(&moonlit_b),
-        "B is now latched too"
+            .players_who_created_token_this_turn
+            .contains(&P0),
+        "the copy recorded P0 in the per-player set"
+    );
+
+    // Second creation, same turn: window already spent → no prompt, no new copy.
+    resolve_token_source(
+        &mut runner,
+        P0,
+        "Create a 1/1 white Soldier creature token.",
+    );
+    assert!(
+        !at_replacement_choice(&runner),
+        "second same-turn creation does NOT prompt — accept consumed the window, got {:?}",
+        runner.state().waiting_for
+    );
+    assert_eq!(
+        host_copy_tokens(&runner, "Host Ox", P0).len(),
+        1,
+        "still exactly one host-copy — the second creation was not replaced"
     );
 }
 
@@ -1291,7 +1359,7 @@ fn moonlit_latch_is_per_object_id() {
 /// accept → exactly 2 host-copies with no re-prompt/recursion. Doubling Season
 /// (a different source's rid, absent from the inherited applied set) still
 /// doubles the substitute copies; Moonlit does NOT re-fire on its own copies
-/// (per-source latch + inherited applied set). Revert Step 5 (`HashSet::new()`)
+/// (inherited applied set, CR 614.5). Revert Step 5 (`HashSet::new()`)
 /// → the copies inherit no applied set → Doubling Season re-applies to the
 /// count-2 copy batch → >2 copies (and/or a re-prompt).
 #[test]
