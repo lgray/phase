@@ -687,6 +687,13 @@ pub fn parse_quantity_ref(input: &str) -> OracleResult<'_, QuantityRef> {
         parse_chroma_devotion_ref,
         parse_graveyard_chroma_ref,
         parse_counters_among_ref,
+        // CR 105.1 + CR 105.2: bare "colors among <filter>" — reached after a
+        // parent has consumed "there are N " (Puca's Eye: "there are five colors
+        // among permanents you control"). The tail combinator (`tag("colors
+        // among ") + parse_type_phrase`) is shared with the "the number of
+        // colors among ..." path; registering it here makes it reachable in the
+        // bare-suffix context too.
+        parse_number_of_distinct_colors_among_permanents_tail,
         // CR 402.1: "the player with the {most|fewest} cards in hand" — the
         // cross-player hand-size extremum, the hand-zone peer of the life
         // extremum. Distinctive "the player with the " prefix; no ordering

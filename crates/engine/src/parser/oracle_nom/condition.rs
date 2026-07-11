@@ -62,9 +62,16 @@ pub fn parse_inner_condition(input: &str) -> OracleResult<'_, StaticCondition> {
 /// condition`) to avoid left-recursion, and the result is wrapped in the
 /// existing `StaticCondition::Or` combinator. Tried before the single-condition
 /// dispatcher so the longer `A or B` phrase wins.
+///
+/// CR 602.5: The connector accepts both the bare `" or "` and the
+/// activate-only-if `" or if "` surface ("Activate only if X or if Y" —
+/// Bonecache Overseer), where the second disjunct repeats the restriction's
+/// `if`. `" or if "` is tried first because `" or "` is its prefix; matching
+/// `" or "` first would strand the leading `if` on the right-hand side and fail
+/// the whole disjunction.
 fn parse_condition_disjunction(input: &str) -> OracleResult<'_, StaticCondition> {
     let (rest, lhs) = parse_single_inner_condition(input)?;
-    let (rest, _) = tag(" or ").parse(rest)?;
+    let (rest, _) = alt((tag(" or if "), tag(" or "))).parse(rest)?;
     let (rest, rhs) = parse_single_inner_condition(rest)?;
     Ok((
         rest,
@@ -108,8 +115,13 @@ fn parse_state_presence_conditions(input: &str) -> OracleResult<'_, StaticCondit
         parse_recipient_is_filter_condition,
         parse_source_state_conditions,
         parse_player_state_conditions,
+        // CR 402.1 + CR 602.5: existential "a player has <hand-size predicate>".
+        parse_a_player_has_hand_predicate,
         parse_you_have_conditions,
         parse_that_player_has_conditions,
+        // CR 205.3i + CR 404.1: additive two-term count threshold
+        // ("the number of A plus the number of B is N or greater").
+        parse_additive_two_term_count_threshold,
         parse_there_are_conditions,
         // CR 201.2: Named-control clauses MUST precede the generic compound
         // control combinator so " and " between named cards binds to the
@@ -2442,6 +2454,46 @@ fn parse_hand_size_predicate(rest: &str, player: PlayerScope) -> Option<(&str, S
         ));
     }
     None
+}
+
+/// CR 402.1 + CR 602.5: "a player has <hand-size predicate>" — an existential
+/// over ALL players (`PlayerRelation::All`) whose per-player hand size satisfies
+/// the predicate. Powers "Activate only if a player has one or fewer cards in
+/// hand" (Temple of the Dead / Aclazotz). The predicate's comparator and
+/// threshold are delegated to the shared `parse_hand_size_predicate`; its
+/// per-player `QuantityComparison` (lhs `HandSize`, rhs the threshold) is lifted
+/// into a `PlayerAttribute` counted existentially (`PlayerCount(..) >= 1`), so
+/// ANY player — including an opponent — satisfying the predicate gates the
+/// ability. The embedded `PlayerScope::Controller` on `HandSize` carries no
+/// game-state meaning under `PlayerAttribute`: the runtime reads the scalar off
+/// each candidate player (see `resolve_player_count`).
+fn parse_a_player_has_hand_predicate(input: &str) -> OracleResult<'_, StaticCondition> {
+    let (rest, _) = tag("a player has ").parse(input)?;
+    let Some((rest, predicate)) = parse_hand_size_predicate(rest, PlayerScope::Controller) else {
+        return Err(oracle_err(input));
+    };
+    let StaticCondition::QuantityComparison {
+        lhs: QuantityExpr::Ref { qty: attr },
+        comparator,
+        rhs: value,
+    } = predicate
+    else {
+        return Err(oracle_err(input));
+    };
+    Ok((
+        rest,
+        make_quantity_ge(
+            QuantityRef::PlayerCount {
+                filter: PlayerFilter::PlayerAttribute {
+                    relation: PlayerRelation::All,
+                    attr: Box::new(attr),
+                    comparator,
+                    value: Box::new(value),
+                },
+            },
+            1,
+        ),
+    ))
 }
 
 /// CR 208.1 + CR 603.4 + CR 109.3:
@@ -4954,8 +5006,22 @@ fn parse_zone_history_condition(input: &str) -> OracleResult<'_, StaticCondition
     .parse(input)
 }
 
+/// CR 404.1: "[a | N or more] card(s) left your graveyard this turn" — the
+/// whole graveyard-departure this-turn threshold class. The count axis is a
+/// single `alt`: the article `"a "` preserves the singular (n=1) surface, while
+/// `"N or more "` generalizes to any threshold (Bonecache Overseer's "three or
+/// more cards left your graveyard this turn"). A bare `alt(("cards","card"))`
+/// alone would not match the leading article, so the article branch is explicit.
 fn parse_card_left_your_graveyard_this_turn(input: &str) -> OracleResult<'_, StaticCondition> {
-    value(
+    let (rest, n) = alt((
+        map((parse_number, tag(" or more ")), |(n, _)| n),
+        value(1u32, tag("a ")),
+    ))
+    .parse(input)?;
+    let (rest, _) = alt((tag("cards"), tag("card"))).parse(rest)?;
+    let (rest, _) = tag(" left your graveyard this turn").parse(rest)?;
+    Ok((
+        rest,
         make_quantity_ge(
             QuantityRef::ZoneChangeCountThisTurn {
                 from: Some(Zone::Graveyard),
@@ -4966,11 +5032,72 @@ fn parse_card_left_your_graveyard_this_turn(input: &str) -> OracleResult<'_, Sta
                     &[FilterProp::NonToken],
                 ),
             },
-            1,
+            n,
         ),
-        tag("a card left your graveyard this turn"),
-    )
-    .parse(input)
+    ))
+}
+
+/// CR 205.3i + CR 404.1 + CR 602.5: "the number of A plus the number of B is N
+/// or greater/more" — an additive two-term count threshold. Cavernous Maw:
+/// "the number of other Caves you control plus the number of Cave cards in your
+/// graveyard is three or greater". Term A is a live battlefield object count
+/// ("other Caves you control" → `parse_type_phrase` yields `Typed(Cave, You,
+/// [Another])` outright); term B is a subtype-filtered graveyard card count. The
+/// zone-/controlled-count combinators key on core card types, not land subtypes
+/// (CR 205.3i: Cave is a land type), so both terms are built explicitly. The two
+/// `Ref`s sum into one `QuantityExpr::Sum` compared `GE` the threshold.
+fn parse_additive_two_term_count_threshold(input: &str) -> OracleResult<'_, StaticCondition> {
+    let (rest, _) = tag("the number of ").parse(input)?;
+    // Term A: the controlled-object subject up to the " plus the number of "
+    // joiner. `parse_type_phrase` owns the whole subject including the "other"
+    // (→ Another) qualifier and the "you control" controller suffix.
+    let (rest, term_a_text) = take_until(" plus the number of ").parse(rest)?;
+    let (rest, _) = tag(" plus the number of ").parse(rest)?;
+    let (a_filter, a_leftover) = parse_type_phrase(term_a_text.trim());
+    if !a_leftover.trim().is_empty() || matches!(a_filter, TargetFilter::Any) {
+        return Err(oracle_err(input));
+    }
+    let term_a = QuantityRef::ObjectCount { filter: a_filter };
+    let (rest, term_b) = parse_subtype_cards_in_your_graveyard(rest)?;
+    let (rest, _) = tag(" is ").parse(rest)?;
+    let (rest, n) = parse_number(rest)?;
+    let (rest, _) = alt((tag(" or greater"), tag(" or more"))).parse(rest)?;
+    Ok((
+        rest,
+        StaticCondition::QuantityComparison {
+            lhs: QuantityExpr::Sum {
+                exprs: vec![
+                    QuantityExpr::Ref { qty: term_a },
+                    QuantityExpr::Ref { qty: term_b },
+                ],
+            },
+            comparator: Comparator::GE,
+            rhs: QuantityExpr::Fixed { value: n as i32 },
+        },
+    ))
+}
+
+/// CR 205.3i + CR 404.1: "<subtype> cards in your graveyard" → a subtype-filtered
+/// controller-graveyard card count. `parse_zone_card_count` keys on core card
+/// types, so the subtype filter (e.g. Cave) is built explicitly via
+/// `parse_type_phrase`; the count stays a `ZoneCardCount` with the filter set
+/// and scope `Controller` (your graveyard only).
+fn parse_subtype_cards_in_your_graveyard(input: &str) -> OracleResult<'_, QuantityRef> {
+    let (rest, subtype_text) = take_until(" cards in your graveyard").parse(input)?;
+    let (rest, _) = tag(" cards in your graveyard").parse(rest)?;
+    let (filter, leftover) = parse_type_phrase(subtype_text.trim());
+    if !leftover.trim().is_empty() || matches!(filter, TargetFilter::Any) {
+        return Err(oracle_err(input));
+    }
+    Ok((
+        rest,
+        QuantityRef::ZoneCardCount {
+            zone: ZoneRef::Graveyard,
+            card_types: Vec::new(),
+            filter: Some(filter),
+            scope: CountScope::Controller,
+        },
+    ))
 }
 
 fn parse_permanent_put_into_your_hand_from_battlefield_this_turn(
@@ -5276,33 +5403,71 @@ fn parse_life_history_condition(input: &str) -> OracleResult<'_, StaticCondition
     .parse(input)
 }
 
+/// CR 120.9 + CR 608.2i + CR 120.2b: "[<color>] source(s) [you / an opponent]
+/// controlled dealt N or more [noncombat|combat] damage this turn" — a filtered
+/// damage-history threshold.
+///
+/// Four independent nom axes compose the whole class:
+/// - optional leading color word → `FilterProp::HasColor` on the source filter
+///   (Temple of Power: "red sources you controlled ..."),
+/// - `"source"` vs `"sources"`: singular takes the max per single source
+///   (CR 120.9 "any one source"); plural sums matching damage across every
+///   source (no grouping),
+/// - controller (`you` / `an opponent`) matched against the CR 608.2i look-back
+///   source snapshot at damage time, not the live object,
+/// - optional `"noncombat"` / `"combat"` qualifier → `DamageKindFilter`.
+///
+/// The untyped singular form "a source you controlled dealt N or more damage
+/// this turn" (article, no color, no qualifier) is preserved unchanged
+/// (`Max` + group-by `SourceId`, `Any` kind).
 fn parse_source_damage_threshold_this_turn(input: &str) -> OracleResult<'_, StaticCondition> {
-    let (rest, _) = parse_article(input)?;
-    let (rest, _) = tag("source ").parse(rest)?;
+    // Axis 1: optional article ("a ") — the untyped singular surface. Absent on
+    // the color-filtered/plural form ("red sources ...").
+    let (rest, _) = opt(parse_article).parse(input)?;
+    // Axis 2: optional color source filter (CR 105.2 + CR 120.9).
+    let (rest, color) = opt(terminated(parse_color, tag(" "))).parse(rest)?;
+    // Axis 3: "source" vs "sources".
+    let (rest, plural) =
+        alt((value(true, tag("sources")), value(false, tag("source")))).parse(rest)?;
     let (rest, controller) = alt((
-        value(ControllerRef::You, tag("you controlled")),
-        value(ControllerRef::Opponent, tag("an opponent controlled")),
+        value(ControllerRef::You, tag(" you controlled")),
+        value(ControllerRef::Opponent, tag(" an opponent controlled")),
     ))
     .parse(rest)?;
     let (rest, _) = tag(" dealt ").parse(rest)?;
     let (rest, amount) = parse_number(rest)?;
-    let (rest, _) = tag(" or more damage this turn").parse(rest)?;
+    let (rest, _) = tag(" or more ").parse(rest)?;
+    // Axis 4: optional combat/noncombat qualifier (CR 120.2a / CR 120.2b).
+    let (rest, damage_kind) = alt((
+        value(DamageKindFilter::NoncombatOnly, tag("noncombat ")),
+        value(DamageKindFilter::CombatOnly, tag("combat ")),
+        value(DamageKindFilter::Any, tag("")),
+    ))
+    .parse(rest)?;
+    let (rest, _) = tag("damage this turn").parse(rest)?;
 
-    // CR 120.9: "by a specific source controlled by X" — group damage records
-    // by source id then take the max per-source sum (matches "any one source"
-    // wording; damage from multiple sources is not combined).
+    let mut source = TypedFilter::default().controller(controller);
+    if let Some(color) = color {
+        source = source.properties(vec![FilterProp::HasColor { color }]);
+    }
+
+    // CR 120.9: singular "source" groups by source id then takes the max
+    // per-source sum ("any one source"); plural "sources" sums matching damage
+    // across every source (no grouping).
+    let (aggregate, group_by) = if plural {
+        (AggregateFunction::Sum, None)
+    } else {
+        (AggregateFunction::Max, Some(DamageGroupKey::SourceId))
+    };
     Ok((
         rest,
         make_quantity_ge(
             QuantityRef::DamageDealtThisTurn {
-                source: Box::new(TargetFilter::Typed(
-                    TypedFilter::default().controller(controller),
-                )),
+                source: Box::new(TargetFilter::Typed(source)),
                 target: Box::new(TargetFilter::Any),
-                aggregate: AggregateFunction::Max,
-                group_by: Some(DamageGroupKey::SourceId),
-                damage_kind: DamageKindFilter::Any,
-
+                aggregate,
+                group_by,
+                damage_kind,
                 channel: DamageChannel::Total,
             },
             amount,
@@ -6839,6 +7004,46 @@ fn parse_entered_this_turn(input: &str) -> OracleResult<'_, StaticCondition> {
             return Ok(result);
         }
         return parse_entered_this_turn_subject(rest, had_enter_suffix, 1);
+    }
+
+    // CR 403.3 + CR 608.2h: self-inclusive disjunct "~ or another/a <type>
+    // entered the battlefield under your control this turn" (Master's
+    // Manufactory: "this artifact or another artifact entered ..."). The
+    // source's own entry counts, so the disjunct reduces to a bare `<type>`
+    // filter carrying NO `FilterProp::Another` — a `~`-only entry (the source
+    // entered, no other object) must still gate TRUE. Tried before the counted
+    // and subject branches, whose article/`another` gates reject this surface.
+    //
+    // Uses the `BattlefieldEntriesThisTurn` snapshot authority (not the live-
+    // board `EnteredThisTurn`): "entered ... this turn" is a CR 608.2h historical
+    // event, so an artifact that entered under your control this turn and then
+    // left (died, was bounced, or sacrificed) must still gate TRUE. The
+    // `battlefield_entries_this_turn` snapshot survives the object leaving.
+    // `PlayerScope::Controller` supplies the "under your control" scope (the
+    // runtime keys on `record.controller`), so the type filter carries no
+    // controller of its own — mirroring `parse_or_more_entered_count`, the
+    // count-shape sibling, which likewise omits `inject_controller_you`.
+    if let Ok((rest, _)) = alt((
+        tag::<_, _, OracleError<'_>>("~ or another "),
+        tag("~ or a "),
+        tag("this artifact or another "),
+        tag("this artifact or a "),
+    ))
+    .parse(input)
+    {
+        let (rest, type_text) = take_until(entered_suffix).parse(rest)?;
+        let (rest, _) = tag(entered_suffix).parse(rest)?;
+        let (filter, _) = parse_type_phrase(type_text.trim());
+        return Ok((
+            rest,
+            make_quantity_ge(
+                QuantityRef::BattlefieldEntriesThisTurn {
+                    player: PlayerScope::Controller,
+                    filter,
+                },
+                1,
+            ),
+        ));
     }
 
     // Branch 1: "N or more [type] entered..."
