@@ -21,7 +21,7 @@
 //! [`ResourceVector`] is the typed catalogue of those monotone axes;
 //! [`loop_states_equal_modulo_resources`] is the projected comparison.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use serde::{Deserialize, Serialize};
 
@@ -33,7 +33,7 @@ use crate::types::game_state::{loop_states_equal, GameState, StackEntry, StackEn
 use crate::types::identifiers::ObjectId;
 use crate::types::mana::ManaType;
 use crate::types::phase::Phase;
-use crate::types::player::PlayerId;
+use crate::types::player::{Player, PlayerId};
 use crate::types::replacements::ReplacementEvent;
 use crate::types::zones::Zone;
 
@@ -968,6 +968,174 @@ pub(crate) fn loop_states_cover_modulo_object_growth(
 
     // (4″) No cost surface references the growing class (§5.4 + §6 keystone).
     if cost_surface_references_growing_class(&cf) {
+        return false;
+    }
+
+    true
+}
+
+/// CR 110.1: two permanents are the same fodder class iff their full content is
+/// equal MODULO `tapped` (a convoke/affinity loop taps one fodder member and
+/// reproduces another untapped — same class, different tap state). Routes through
+/// [`object_content_eq`] so the `_gameobject_partition_is_total` guard
+/// (game_object.rs) governs the fodder field set — no hand-rolled field list. This
+/// single point keeps the fodder compare honest as `GameObject` grows.
+#[cfg_attr(not(test), allow(dead_code))] // 4d-ii wires the live/offline caller; 4d-i exercises via unit tests.
+fn fodder_content_eq(a: &GameObject, b: &GameObject) -> bool {
+    let mut probe = a.clone();
+    probe.tapped = b.tapped;
+    crate::types::game_state::object_content_eq(&probe, b)
+}
+
+/// Does `id` name a member of the fodder class in `state`? Content-derived (via
+/// [`fodder_content_eq`]), NOT ObjectId — fodder tokens are not id-stable (a
+/// reproduced token gets a fresh id; a tapped one keeps its id but flips `tapped`).
+#[cfg_attr(not(test), allow(dead_code))] // 4d-ii wires the live/offline caller; 4d-i exercises via unit tests.
+fn is_fodder(state: &GameState, id: &ObjectId, class: &GameObject) -> bool {
+    state
+        .objects
+        .get(id)
+        .is_some_and(|o| fodder_content_eq(o, class))
+}
+
+/// CR 110.1 / CR 732.2a: the fodder-axis board cover. Partitions the battlefield by
+/// [`fodder_content_eq`] into a STABLE-ENGINE and a FODDER part:
+///  * STABLE-ENGINE (non-fodder objects, ALL zones): id-keyed content equality via
+///    [`objects_content_eq`]. This is REQUIRED, not redundant: `impl PartialEq for
+///    GameState` compares only `objects.len()` (game_state.rs), so the caller's
+///    `eq_except_growable` (which reuses that PartialEq) is BLIND to a stable-engine
+///    content drift (tap / counter / attachment / move). This `object_content_eq`
+///    compare is the SOLE authority for it — exactly as the object-growth
+///    `board_covers` is the sole authority for its non-grown partition.
+///  * FODDER (content == class modulo tapped): a tapped-split multiset cover (the
+///    convoke/affinity loop taps one fodder member and reproduces another):
+///      - `untapped_fodder(current) >= untapped_fodder(prior)` (B1 — untapped
+///        reproduction preserved; a draining loop is not a sustainable ω-cover), and
+///      - `total_fodder(current) > total_fodder(prior)` (STRICT object growth — this
+///        predicate, like [`loop_states_cover_modulo_object_growth`], certifies
+///        growth only, never a constant-depth loop).
+///
+/// Fodder INERTNESS is deliberately NOT checked here — it is the single
+/// responsibility of the caller's `grown_objects_are_inert` (mirroring how the
+/// object-growth `board_covers` leaves inertness to that same helper), so the
+/// F-B7 discriminator stays non-vacuous.
+#[cfg_attr(not(test), allow(dead_code))] // 4d-ii wires the live/offline caller; 4d-i exercises via unit tests.
+fn board_covers_modulo_fodder(
+    prior: &GameState,
+    current: &GameState,
+    fodder_class: &GameObject,
+) -> bool {
+    // STABLE-ENGINE partition: strip fodder from BOTH frames, require id-keyed content
+    // equality on the remainder (all zones). Sole authority for stable content drift.
+    let stable =
+        |state: &GameState| -> im::HashMap<ObjectId, GameObject, rustc_hash::FxBuildHasher> {
+            state
+                .objects
+                .iter()
+                .filter(|(_, o)| !fodder_content_eq(o, fodder_class))
+                .map(|(id, o)| (*id, o.clone()))
+                .collect()
+        };
+    if !crate::types::game_state::objects_content_eq(&stable(prior), &stable(current)) {
+        return false;
+    }
+
+    // FODDER partition: tapped-split multiset cover.
+    let fodder_split = |state: &GameState| -> (usize, usize) {
+        let mut untapped = 0usize;
+        let mut total = 0usize;
+        for id in &state.battlefield {
+            if let Some(o) = state.objects.get(id) {
+                if fodder_content_eq(o, fodder_class) {
+                    total += 1;
+                    if !o.tapped {
+                        untapped += 1;
+                    }
+                }
+            }
+        }
+        (untapped, total)
+    };
+    let (prior_untapped, prior_total) = fodder_split(prior);
+    let (current_untapped, current_total) = fodder_split(current);
+    // B1: untapped reproduction preserved.
+    if current_untapped < prior_untapped {
+        return false;
+    }
+    // STRICT growth only (mirror of the object-growth `grown_ids.is_empty()` reject).
+    current_total > prior_total
+}
+
+/// CR 732.2a fodder-axis cover: does `current` cover `prior` by pure inert,
+/// unobserved tapped-fodder growth (the convoke/affinity Sprout-Swarm shape)? A
+/// near-clone of [`loop_states_cover_modulo_object_growth`], swapping the board
+/// sub-predicate for the tapped-split multiset ([`board_covers_modulo_fodder`]) and
+/// DROPPING the `cost_surface_references_growing_class` firewall (§6 keystone): the
+/// fodder path is for the 4d-ii DRIVEN classifier that pays the real convoke+affinity
+/// cost on a clone and measures sustainability empirically, so the offline "models no
+/// cost ⇒ reject any board-scaling cost keyword" rejector does NOT apply here.
+/// `detect_loop` keeps the firewall (it stays on the object-growth predicate — T-B1i
+/// pins this). NO live/offline caller in 4d-i — exercised only by unit tests + T-B1i.
+///
+/// `fodder_class` is a CONTENT authority (a representative `&GameObject`), compared
+/// LIVE each call via [`fodder_content_eq`] (modulo tapped) — not latched by
+/// ObjectId, because fodder tokens are not id-stable. Covers any inert fungible token
+/// class (Saproling, Elf Warrior, Thopter, …), so it builds for the class not a card.
+#[cfg_attr(not(test), allow(dead_code))] // 4d-ii wires the live/offline caller; 4d-i exercises via unit tests + T-B1i.
+pub(crate) fn loop_states_cover_modulo_fodder_growth(
+    prior: &GameState,
+    current: &GameState,
+    fodder_class: &GameObject,
+) -> bool {
+    let pf = flush_clone(prior);
+    let cf = flush_clone(current);
+    let mut pa = project_out_resources(&pf);
+    let mut pb = project_out_resources(&cf);
+    pa.stack.clear();
+    pb.stack.clear();
+
+    // Excluded set = ALL fodder ids in BOTH projected frames (the drifting/growing
+    // pile). Unlike the object-growth `bf_current − bf_prior` add-set, an existing
+    // untapped fodder member keeps its id but flips `tapped`, so it must be excluded
+    // from strict eq and handled by the multiset compare.
+    let all_fodder: HashSet<ObjectId> = pa
+        .battlefield
+        .iter()
+        .chain(pb.battlefield.iter())
+        .copied()
+        .filter(|id| is_fodder(&pa, id, fodder_class) || is_fodder(&pb, id, fodder_class))
+        .collect();
+
+    // Tapped-split multiset cover on the fodder partition (B1 + strict growth).
+    if !board_covers_modulo_fodder(&pa, &pb, fodder_class) {
+        return false;
+    }
+
+    // Every fodder member is churn-inert (single inertness authority; scanned on the
+    // FLUSHED current so layer-derived P/T / abilities / keywords are realized).
+    if !grown_objects_are_inert(&cf, &all_fodder) {
+        return false;
+    }
+
+    // No live off-stack / on-stack observer reads the growing class.
+    if fire_time_conditions_read_growing_class(&cf) {
+        return false;
+    }
+    if cf.stack.iter().any(stack_entry_reads_growing_class) {
+        return false;
+    }
+
+    // Non-object GameState fields (journals, monarch, delayed triggers, …) + the
+    // object COUNT, grown pile stripped. NOTE: `GameState::PartialEq` compares only
+    // `objects.len()`, so stable-engine object CONTENT is covered by
+    // `board_covers_modulo_fodder`'s `objects_content_eq` above, not here.
+    if !eq_except_growable(&pa, &pb, &all_fodder) {
+        return false;
+    }
+
+    // CR 606.3 fail-safe legality gate (§5): a fodder loop that ALSO re-activates a
+    // loyalty ability must not certify. Transparent (all-zero) for the target class.
+    if !loyalty_activation_counts_match(&pa, &pb) {
         return false;
     }
 
@@ -1994,6 +2162,66 @@ fn replacement_body_may_read_projected(def: &crate::types::ability::ReplacementD
     )
 }
 
+/// CR 119 / CR 106.1 / CR 122.1: zero every PLAYER axis removed from strict loop
+/// equality. The no-`..` destructure is compiler-total (mirror of
+/// `_gamestate_partition_is_total`, game_state.rs): a new `Player` field BREAKS THE
+/// BUILD until the author classifies it — zero it here (project out) or bind `_`
+/// (keep in strict equality). Paired with [`projected_player_axes`] (the BLOCKER-2
+/// sign-check reads the SAME projected field set, also no-`..`), so a newly-projected
+/// consumable cannot be silently missed by the sign veto.
+fn project_out_player_consumables(p: &mut Player) {
+    let Player {
+        life,
+        mana_pool,
+        poison_counters,
+        energy,
+        player_counters,
+        life_gained_this_turn,
+        life_lost_this_turn,
+        cards_drawn_this_turn,
+        cards_drawn_this_step,
+        // Strict-equality fields (NOT projected) — bound `_`, NO `..`:
+        id: _,
+        library: _,
+        hand: _,
+        graveyard: _,
+        attraction_deck: _,
+        contraption_deck: _,
+        contraption_crank_sprocket: _,
+        sticker_sheets: _,
+        has_drawn_this_turn: _,
+        lands_played_this_turn: _,
+        life_lost_last_turn: _,
+        descended_this_turn: _,
+        speed: _,
+        speed_trigger_used_this_turn: _,
+        crimes_committed_this_turn: _,
+        drew_from_empty_library: _,
+        turns_taken: _,
+        is_eliminated: _,
+        bending_types_this_turn: _,
+        status: _,
+        companion: _,
+        chosen_attributes: _,
+        can_look_at_top_of_library: _,
+        commander_color_identity: _,
+    } = p;
+    // CR 119: life is monotone in a drain/lifegain loop.
+    *life = 0;
+    // CR 106.1: floating mana is consumed/produced within the loop.
+    mana_pool.clear();
+    // CR 122.1: consumable counters a loop pumps (poison/energy/…).
+    *poison_counters = 0;
+    *energy = 0;
+    player_counters.clear();
+    // Per-turn resource trackers the strict PartialEq compares — these grow with the
+    // loop but do not change the board configuration.
+    *life_gained_this_turn = 0;
+    *life_lost_this_turn = 0;
+    *cards_drawn_this_turn = 0;
+    *cards_drawn_this_step = 0;
+}
+
 /// Clone a state through `normalize_for_loop` and additionally zero every
 /// monotone resource the modulo comparison must ignore. The result is only ever
 /// fed to `loop_states_equal`; it is never used as a live game state.
@@ -2001,20 +2229,9 @@ fn project_out_resources(state: &GameState) -> GameState {
     let mut s = state.normalize_for_loop();
 
     for player in &mut s.players {
-        // CR 119: life is monotone in a drain/lifegain loop.
-        player.life = 0;
-        // CR 106.1: floating mana is consumed/produced within the loop.
-        player.mana_pool.clear();
-        // CR 122.1: player counters that a loop pumps (poison/energy/…).
-        player.poison_counters = 0;
-        player.energy = 0;
-        player.player_counters.clear();
-        // Per-turn resource trackers the strict PartialEq compares — these grow
-        // with the loop but do not change the board configuration.
-        player.life_gained_this_turn = 0;
-        player.life_lost_this_turn = 0;
-        player.cards_drawn_this_turn = 0;
-        player.cards_drawn_this_step = 0;
+        // BLOCKER-2: single authority for the projected player-consumable set,
+        // shared with the `projected_player_axes` sign-check (compiler-total, no-`..`).
+        project_out_player_consumables(player);
     }
 
     for (_, object) in s.objects.iter_mut() {
@@ -2164,6 +2381,133 @@ fn project_out_resources(state: &GameState) -> GameState {
     }
 
     s
+}
+
+/// The controller-side raw values of the PROJECTED scalar player consumables, in a
+/// fixed order matching [`project_out_player_consumables`]' zeroing. The no-`..`
+/// destructure means the sign-check cannot silently miss a newly-projected scalar.
+/// `life`/`mana_pool` are bound `_` (their sign is the sole authority of
+/// `ResourceVector::net_progress_for` — not re-vetoed here, to avoid dual authority);
+/// `player_counters` is a HashMap compared per-kind by the caller (cross-frame key
+/// union), so it is bound `_` here and handled in [`driving_resources_non_decreasing`].
+#[cfg_attr(not(test), allow(dead_code))] // 4d-ii wires the live/offline caller; 4d-i exercises via unit tests.
+fn projected_player_axes(p: &Player) -> Vec<i64> {
+    let Player {
+        poison_counters,
+        energy,
+        life_gained_this_turn,
+        life_lost_this_turn,
+        cards_drawn_this_turn,
+        cards_drawn_this_step,
+        life: _,
+        mana_pool: _,
+        player_counters: _,
+        // Strict-equality fields, no-`..`:
+        id: _,
+        library: _,
+        hand: _,
+        graveyard: _,
+        attraction_deck: _,
+        contraption_deck: _,
+        contraption_crank_sprocket: _,
+        sticker_sheets: _,
+        has_drawn_this_turn: _,
+        lands_played_this_turn: _,
+        life_lost_last_turn: _,
+        descended_this_turn: _,
+        speed: _,
+        speed_trigger_used_this_turn: _,
+        crimes_committed_this_turn: _,
+        drew_from_empty_library: _,
+        turns_taken: _,
+        is_eliminated: _,
+        bending_types_this_turn: _,
+        status: _,
+        companion: _,
+        chosen_attributes: _,
+        can_look_at_top_of_library: _,
+        commander_color_identity: _,
+    } = p;
+    vec![
+        *poison_counters as i64,
+        *energy as i64,
+        *life_gained_this_turn as i64,
+        *life_lost_this_turn as i64,
+        *cards_drawn_this_turn as i64,
+        *cards_drawn_this_step as i64,
+    ]
+}
+
+/// CR 122.1 / CR 119 / CR 106.1: BLOCKER-2 structural sign-check — every projected
+/// controller consumable is non-decreasing across the driven pair. This closes the
+/// hole where `project_out_resources` erases `energy` / `player_counters` (and
+/// monotone OBJECT counters) from strict loop equality with no summed-vector gate
+/// recovering their sign. Blanket fail-closed veto over the compiler-total projected
+/// set (§6.2): any enumerated axis with `current < prior` ⇒ `false`. Same-turn
+/// `MonotoneHistory` axes (life_gained/…) never decrease, so the blanket veto never
+/// false-rejects the fodder class; true consumables (energy / poison / per-kind
+/// player_counters / monotone object counters) reject on any decrease.
+///
+/// MUST read RAW (un-projected) frames — `project_out_resources` zeroed these, so the
+/// caller passes the raw settle frames (4d-ii) / raw synthetic states (4d-i tests).
+#[cfg_attr(not(test), allow(dead_code))] // 4d-ii wires the live/offline caller; 4d-i exercises via unit tests.
+fn driving_resources_non_decreasing(
+    prior: &GameState,
+    current: &GameState,
+    controller: PlayerId,
+) -> bool {
+    // CR 119: no `GameState::player` accessor exists — find by id (per §6.3 fallback).
+    let (Some(pp), Some(cp)) = (
+        prior.players.iter().find(|p| p.id == controller),
+        current.players.iter().find(|p| p.id == controller),
+    ) else {
+        return false;
+    };
+    // (a) scalar projected axes — positional zip (fixed order).
+    if projected_player_axes(cp)
+        .into_iter()
+        .zip(projected_player_axes(pp))
+        .any(|(cur, pri)| cur < pri)
+    {
+        return false;
+    }
+    // (b) CR 122.1 per-kind player_counters (HashMap): union keys, veto any decrease.
+    for kind in pp.player_counters.keys().chain(cp.player_counters.keys()) {
+        if cp.player_counters.get(kind).copied().unwrap_or(0)
+            < pp.player_counters.get(kind).copied().unwrap_or(0)
+        {
+            return false;
+        }
+    }
+    // (c) monotone OBJECT-counter per-kind totals on the CONTROLLER's permanents
+    //     (project_out_resources erases these — the object-side analogue of the
+    //     player-consumable hole). CR 122.1a / CR 613.4c +1/+1, CR 306.5c loyalty,
+    //     CR 310.4c defense. Per-KIND totals (not one summed total) so kind-A↓ /
+    //     kind-B↑ cannot mask a real per-kind depletion. `damage_marked` is NOT vetoed
+    //     (a decrease is a beneficial heal).
+    let totals = |s: &GameState| -> HashMap<CounterType, u64> {
+        let mut m: HashMap<CounterType, u64> = HashMap::default();
+        for id in &s.battlefield {
+            if let Some(o) = s.objects.get(id) {
+                if o.controller != controller {
+                    continue;
+                }
+                for (ct, n) in &o.counters {
+                    if ct.is_monotone_loop_resource() {
+                        *m.entry(ct.clone()).or_insert(0) += *n as u64;
+                    }
+                }
+            }
+        }
+        m
+    };
+    let (pt, ct) = (totals(prior), totals(current));
+    for kind in pt.keys().chain(ct.keys()) {
+        if ct.get(kind).copied().unwrap_or(0) < pt.get(kind).copied().unwrap_or(0) {
+            return false;
+        }
+    }
+    true
 }
 
 /// CR 602.5b: does the ability at `key=(source,index)` carry a PER-TURN activation
@@ -4202,5 +4546,304 @@ mod tests {
         sync(&|s| s.active_player = PlayerId(1), "active_player");
         sync(&|s| s.priority_player = PlayerId(1), "priority_player");
         sync(&|s| s.lands_played_this_turn += 1, "lands_played_this_turn");
+    }
+
+    // =======================================================================
+    // PR-7 Phase 4d-i — offline FODDER-GROWTH cover predicate
+    // (`loop_states_cover_modulo_fodder_growth`) + the tapped-split multiset.
+    // Synthetic frame-pairs assert the bool. Non-vacuous: each REJECT names a
+    // paired positive reach-guard and fails (returns COVER) if its named
+    // authority is reverted.
+    // =======================================================================
+
+    /// A TAPPED inert battlefield token of class `name` (fodder that has already been
+    /// tapped to a convoke/affinity cost). Otherwise identical to `inert_token`.
+    fn tapped_inert_token(state: &mut GameState, id: u64, controller: u8, name: &str) -> ObjectId {
+        let oid = inert_token(state, id, controller, name);
+        state.objects.get_mut(&oid).unwrap().tapped = true;
+        oid
+    }
+
+    /// F2: the fodder-class representative, constructed IDENTICALLY to the fodder
+    /// tokens (bare `GameObject::new` ⇒ `power = None`, no counters, untapped). If it
+    /// carried a synthetic P/T it would mis-partition as stable-engine and the
+    /// positive cover would wrongly reject. `object_content_eq` ignores `id`, so the
+    /// id here is irrelevant.
+    fn saproling_class() -> GameObject {
+        GameObject::new(
+            ObjectId(999),
+            CardId(999),
+            PlayerId(0),
+            "Saproling".into(),
+            Zone::Battlefield,
+        )
+    }
+
+    fn fodder_cover(prior: &GameState, current: &GameState) -> bool {
+        loop_states_cover_modulo_fodder_growth(prior, current, &saproling_class())
+    }
+
+    /// F+ base: an inert engine (800) + 4 untapped + 1 tapped Saproling (prior);
+    /// current taps one untapped (700) and reproduces one untapped (705). Fodder
+    /// split moves untapped 4→4, tapped 1→2, total 5→6 — a valid tapped-split cover.
+    fn fodder_cover_base() -> (GameState, GameState) {
+        let mut prior = GameState::new_two_player(7);
+        inert_token(&mut prior, 800, 0, "Engine");
+        inert_token(&mut prior, 700, 0, "Saproling");
+        inert_token(&mut prior, 701, 0, "Saproling");
+        inert_token(&mut prior, 702, 0, "Saproling");
+        inert_token(&mut prior, 703, 0, "Saproling");
+        tapped_inert_token(&mut prior, 704, 0, "Saproling");
+        let mut current = prior.clone();
+        current.objects.get_mut(&ObjectId(700)).unwrap().tapped = true;
+        inert_token(&mut current, 705, 0, "Saproling");
+        (prior, current)
+    }
+
+    /// F+ COVER (tapped-split, NO cost keyword). Revert-failing: swapping
+    /// `fodder_cover` to `loop_states_cover_modulo_object_growth` (absolute-ObjectId)
+    /// rejects — 700's untapped→tapped drift fails `board_covers`' non-grown eq.
+    #[test]
+    fn fodder_cover_tapped_split_covers() {
+        let (prior, current) = fodder_cover_base();
+        assert!(
+            fodder_cover(&prior, &current),
+            "tapped-split fodder growth (untapped 4→4, total 5→6) must COVER"
+        );
+        // Control: the object-growth predicate REJECTS the same frames (proves the
+        // tapped-tolerant multiset is the load-bearing difference, not some other gate).
+        assert!(
+            !loop_states_cover_modulo_object_growth(&prior, &current),
+            "the absolute-ObjectId object-growth predicate must reject the tap drift"
+        );
+    }
+
+    /// F-B1 (untapped ↓): total STILL grows (5→6) but untapped DROPS (4→3) — a
+    /// draining loop. First branch: `board_covers_modulo_fodder` B1. Revert-failing:
+    /// dropping the `current_untapped >= prior_untapped` guard (leaving only strict
+    /// total growth) covers this draining loop.
+    #[test]
+    fn fodder_reject_untapped_decrease() {
+        let mut prior = GameState::new_two_player(7);
+        inert_token(&mut prior, 800, 0, "Engine");
+        inert_token(&mut prior, 700, 0, "Saproling");
+        inert_token(&mut prior, 701, 0, "Saproling");
+        inert_token(&mut prior, 702, 0, "Saproling");
+        inert_token(&mut prior, 703, 0, "Saproling");
+        tapped_inert_token(&mut prior, 704, 0, "Saproling"); // untapped 4, tapped 1, total 5
+        let mut current = prior.clone();
+        current.objects.get_mut(&ObjectId(700)).unwrap().tapped = true; // tap one untapped
+        tapped_inert_token(&mut current, 705, 0, "Saproling"); // reproduce TAPPED only
+                                                               // untapped 3, tapped 3, total 6: total grows, untapped drains.
+        assert!(
+            !fodder_cover(&prior, &current),
+            "a draining loop (untapped 4→3) must REJECT even though total grows (B1)"
+        );
+        // Reach-guard: untapped-preserving growth on an equivalent base COVERS.
+        let (p, c) = fodder_cover_base();
+        assert!(
+            fodder_cover(&p, &c),
+            "reach-guard: untapped-preserving fodder growth COVERS"
+        );
+    }
+
+    /// F-stable (engine drift): tap the stable ENGINE object (800, non-fodder) in
+    /// current. First branch: `board_covers_modulo_fodder`'s stable-partition
+    /// `objects_content_eq`. Revert-failing: dropping that stable check flips this to
+    /// COVER — nothing else sees the engine's tap state (`eq_except_growable` reuses
+    /// `GameState::PartialEq`, which compares only `objects.len()`, unchanged here).
+    #[test]
+    fn fodder_reject_stable_engine_drift() {
+        let (prior, mut current) = fodder_cover_base();
+        current.objects.get_mut(&ObjectId(800)).unwrap().tapped = true;
+        assert!(
+            !fodder_cover(&prior, &current),
+            "a stable-engine (non-fodder) drift must REJECT (stable objects_content_eq)"
+        );
+        // Reach-guard: without the engine drift, the same growth COVERS.
+        let (p, c) = fodder_cover_base();
+        assert!(fodder_cover(&p, &c), "reach-guard: no engine drift ⇒ COVER");
+    }
+
+    /// F-B7 (grown carries ability): the reproduced token (705) has a keyword, so it
+    /// is fodder-by-content (keywords are not compared by `object_content_eq`) but not
+    /// churn-inert. First branch: `grown_objects_are_inert`. Revert-failing: dropping
+    /// that conjunct covers non-inert growth.
+    #[test]
+    fn fodder_reject_grown_not_inert() {
+        use crate::types::keywords::Keyword;
+        let (prior, mut current) = fodder_cover_base();
+        current.objects.get_mut(&ObjectId(705)).unwrap().keywords = vec![Keyword::Flying];
+        assert!(
+            !fodder_cover(&prior, &current),
+            "a non-inert grown fodder member must REJECT (grown_objects_are_inert)"
+        );
+        // Reach-guard: an inert reproduced token COVERS.
+        let (p, c) = fodder_cover_base();
+        assert!(
+            fodder_cover(&p, &c),
+            "reach-guard: inert fodder growth ⇒ COVER"
+        );
+    }
+
+    // =======================================================================
+    // PR-7 Phase 4d-i — BLOCKER-2 structural driving-resource sign-check
+    // (`driving_resources_non_decreasing`). Two RAW (un-projected) synthetic
+    // GameStates; controller = P0. Each REJECT names its branch; each sibling
+    // pass proves the veto is not over-broad.
+    // =======================================================================
+
+    fn sign_check(prior: &GameState, current: &GameState) -> bool {
+        driving_resources_non_decreasing(prior, current, PlayerId(0))
+    }
+
+    /// S+ (positive reach-guard for every S- below): no consumable decreases.
+    #[test]
+    fn sign_check_all_non_decreasing_passes() {
+        let mut prior = GameState::new_two_player(7);
+        prior.players[0].energy = 3;
+        let current = prior.clone();
+        assert!(
+            sign_check(&prior, &current),
+            "no consumable decrease (energy 3→3, all else equal) ⇒ pass"
+        );
+    }
+
+    /// S-energy ↓. First branch: (a) scalar zip. Revert-failing: deleting the scalar
+    /// veto covers an energy-consuming recast loop.
+    #[test]
+    fn sign_check_energy_decrease_rejects() {
+        let mut prior = GameState::new_two_player(7);
+        prior.players[0].energy = 3;
+        let mut current = prior.clone();
+        current.players[0].energy = 2;
+        assert!(
+            !sign_check(&prior, &current),
+            "energy 3→2 must REJECT (branch a scalar zip)"
+        );
+    }
+
+    /// S-poison ↓. First branch: (a) scalar zip.
+    #[test]
+    fn sign_check_poison_decrease_rejects() {
+        let mut prior = GameState::new_two_player(7);
+        prior.players[0].poison_counters = 2;
+        let mut current = prior.clone();
+        current.players[0].poison_counters = 1;
+        assert!(
+            !sign_check(&prior, &current),
+            "poison 2→1 must REJECT (branch a scalar zip)"
+        );
+    }
+
+    /// S-playercounter ↓ (per-kind) — the structural-vs-hand-list discriminator.
+    /// First branch: (b) per-kind player_counters union. Revert-failing: an
+    /// energy-only / scalar-only fix leaves `player_counters` unchecked ⇒ covers.
+    #[test]
+    fn sign_check_player_counter_decrease_rejects() {
+        use crate::types::player::PlayerCounterKind;
+        let mut prior = GameState::new_two_player(7);
+        prior.players[0]
+            .player_counters
+            .insert(PlayerCounterKind::Experience, 2);
+        let mut current = prior.clone();
+        current.players[0]
+            .player_counters
+            .insert(PlayerCounterKind::Experience, 1);
+        assert!(
+            !sign_check(&prior, &current),
+            "experience counter 2→1 must REJECT (branch b per-kind)"
+        );
+    }
+
+    /// S-objectcounter ↓ (per-kind, controller). First branch: (c) per-kind object
+    /// totals. Revert-failing: deleting branch (c) covers a +1/+1-consuming loop.
+    #[test]
+    fn sign_check_object_counter_decrease_rejects() {
+        let mut prior = GameState::new_two_player(7);
+        let oid = inert_token(&mut prior, 500, 0, "Bear");
+        prior
+            .objects
+            .get_mut(&oid)
+            .unwrap()
+            .counters
+            .insert(CounterType::Plus1Plus1, 2);
+        let mut current = prior.clone();
+        current
+            .objects
+            .get_mut(&oid)
+            .unwrap()
+            .counters
+            .insert(CounterType::Plus1Plus1, 1);
+        assert!(
+            !sign_check(&prior, &current),
+            "a controller +1/+1 counter 2→1 must REJECT (branch c per-kind object total)"
+        );
+    }
+
+    /// S monotone-history OK (sibling): `life_gained_this_turn` 0→2 must PASS. Proves
+    /// the blanket veto DIRECTION (`cur < pri`, not `cur > pri`) — a mis-signed veto
+    /// would false-reject the fodder class.
+    #[test]
+    fn sign_check_monotone_history_increase_passes() {
+        let mut prior = GameState::new_two_player(7);
+        prior.players[0].life_gained_this_turn = 0;
+        let mut current = prior.clone();
+        current.players[0].life_gained_this_turn = 2;
+        assert!(
+            sign_check(&prior, &current),
+            "life_gained_this_turn 0→2 (monotone up) must PASS (blanket ≥ veto direction)"
+        );
+    }
+
+    /// S damage_marked NOT vetoed (sibling): a controller permanent heals 2→0. Proves
+    /// `damage_marked` is excluded from the monotone object-counter veto (a decrease
+    /// is a beneficial heal, not a resource depletion).
+    #[test]
+    fn sign_check_damage_marked_heal_not_vetoed() {
+        let mut prior = GameState::new_two_player(7);
+        let oid = inert_token(&mut prior, 500, 0, "Bear");
+        prior.objects.get_mut(&oid).unwrap().damage_marked = 2;
+        let mut current = prior.clone();
+        current.objects.get_mut(&oid).unwrap().damage_marked = 0;
+        assert!(
+            sign_check(&prior, &current),
+            "damage_marked 2→0 (heal) must NOT be vetoed (not a monotone counter)"
+        );
+    }
+
+    /// S object-counter on OPPONENT ↓ (sibling): P1 permanent loses a +1/+1 while
+    /// controller is P0. Proves branch (c)'s `o.controller != controller` scoping —
+    /// an opponent's depletion is not the controller's resource.
+    #[test]
+    fn sign_check_opponent_object_counter_decrease_not_vetoed() {
+        let mut prior = GameState::new_two_player(7);
+        let oid = inert_token(&mut prior, 500, 1, "Bear"); // controller 1 = opponent
+        prior
+            .objects
+            .get_mut(&oid)
+            .unwrap()
+            .counters
+            .insert(CounterType::Plus1Plus1, 2);
+        let mut current = prior.clone();
+        current
+            .objects
+            .get_mut(&oid)
+            .unwrap()
+            .counters
+            .insert(CounterType::Plus1Plus1, 1);
+        assert!(
+            sign_check(&prior, &current),
+            "an OPPONENT's +1/+1 2→1 must NOT be vetoed (controller-scoped)"
+        );
+    }
+
+    /// `_projected_player_axes_is_total` (compiler-total guard): `Player::default()`
+    /// has empty `player_counters` ⇒ 6 scalar axes. Breaks if a projected scalar is
+    /// added to `project_out_player_consumables` without a matching `vec![]` entry.
+    /// Mirror of `_gamestate_partition_is_total`'s convention.
+    #[test]
+    fn _projected_player_axes_is_total() {
+        assert_eq!(projected_player_axes(&Player::default()).len(), 6);
     }
 }

@@ -1484,4 +1484,102 @@ mod tests {
             "P1@10 / P2@20 staggered lives must be rejected"
         );
     }
+
+    /// T-B1i (PR-7 Phase 4d-i discriminator): `detect_loop` MUST reject a
+    /// convoke-fodder pair — the offline classifier stays on the object-growth cover
+    /// and does NOT adopt the fodder predicate. Non-vacuity pair:
+    ///   (1) `detect_loop(...) == None`, AND
+    ///   (2) `loop_states_cover_modulo_fodder_growth(...) == true`
+    /// so the `None` in (1) is because `detect_loop` does not USE the fodder cover —
+    /// not because the frames are un-coverable. Revert-failing: wiring the fodder
+    /// predicate into `detect_loop`'s gate-1 (`… || loop_states_cover_modulo_fodder_
+    /// growth(...)`) flips (1) to `Some` — gate 2 `net_progress_for` passes on
+    /// `tokens_created = 1` and gate 3 `unbounded` is non-empty, so gate 1 is the sole
+    /// determinant.
+    #[test]
+    fn t_b1i_detect_loop_rejects_convoke_fodder_pair() {
+        use crate::types::keywords::Keyword;
+
+        fn inert_saproling(state: &mut GameState, id: u64, tapped: bool) -> ObjectId {
+            let oid = ObjectId(id);
+            let mut o = GameObject::new(
+                oid,
+                CardId(id),
+                PlayerId(0),
+                "Saproling".into(),
+                Zone::Battlefield,
+            );
+            o.tapped = tapped;
+            state.objects.insert(oid, o);
+            state.battlefield.push_back(oid);
+            oid
+        }
+
+        let mut prior = GameState::new_two_player(7);
+        // Inert recast engine (distinct name ⇒ not fodder), constant across frames.
+        {
+            let eid = ObjectId(800);
+            let engine = GameObject::new(
+                eid,
+                CardId(800),
+                PlayerId(0),
+                "Engine".into(),
+                Zone::Battlefield,
+            );
+            prior.objects.insert(eid, engine);
+            prior.battlefield.push_back(eid);
+        }
+        inert_saproling(&mut prior, 700, false);
+        inert_saproling(&mut prior, 701, false);
+        inert_saproling(&mut prior, 702, false);
+        inert_saproling(&mut prior, 703, false);
+        inert_saproling(&mut prior, 704, true);
+        // Convoke recast card in hand — trips the object-growth cost firewall; present
+        // in BOTH frames.
+        {
+            let cid = ObjectId(900);
+            let mut card = GameObject::new(
+                cid,
+                CardId(900),
+                PlayerId(0),
+                "Sprout Swarm".into(),
+                Zone::Hand,
+            );
+            card.keywords = vec![Keyword::Convoke];
+            prior.objects.insert(cid, card);
+        }
+
+        let mut current = prior.clone();
+        current.objects.get_mut(&ObjectId(700)).unwrap().tapped = true; // tap one untapped
+        inert_saproling(&mut current, 705, false); // reproduce one untapped
+                                                   // untapped 4→4, tapped 1→2, total 5→6.
+
+        // gates 2+3 pass on tokens_created ⇒ gate 1 is the sole determinant.
+        let delta = ResourceVector {
+            tokens_created: 1,
+            ..Default::default()
+        };
+
+        // (1) The offline classifier rejects the convoke-fodder pair.
+        assert!(
+            detect_loop(&prior, &current, &delta, pid(0), false).is_none(),
+            "detect_loop must REJECT a convoke-fodder pair (it stays on the object-growth cover)"
+        );
+        // (2) The frames ARE a valid fodder cover — proves (1) is not vacuous.
+        let saproling_class = GameObject::new(
+            ObjectId(999),
+            CardId(999),
+            PlayerId(0),
+            "Saproling".into(),
+            Zone::Battlefield,
+        );
+        assert!(
+            crate::analysis::resource::loop_states_cover_modulo_fodder_growth(
+                &prior,
+                &current,
+                &saproling_class,
+            ),
+            "the frames must be a valid fodder cover (so the None in (1) is non-vacuous)"
+        );
+    }
 }
