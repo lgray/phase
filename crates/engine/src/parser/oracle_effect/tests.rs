@@ -39017,6 +39017,58 @@ fn attach_just_moved_iron_man_put_from_hand_attach_equipment_to_source() {
     }
 }
 
+/// The Invincible Iron Man (issues #4796 / #5268): full-card trigger parse must
+/// match the effect-chain shape — not the pre-fix self-attach bug.
+#[test]
+fn invincible_iron_man_trigger_parses_equipment_attach_via_parse_oracle_text() {
+    use crate::types::ability::TypeFilter;
+    use crate::types::phase::Phase;
+
+    let parsed = parse_oracle_text(
+        "Flying, haste\nAt the beginning of combat on your turn, you may put an artifact card from your hand onto the battlefield. If it's an Equipment, attach it to The Invincible Iron Man.",
+        "The Invincible Iron Man",
+        &[],
+        &["Enchantment".to_string()],
+        &[],
+    );
+    let trigger = parsed
+        .triggers
+        .iter()
+        .find(|t| t.phase == Some(Phase::BeginCombat))
+        .expect("expected begin-combat trigger");
+    let execute = trigger.execute.as_ref().expect("trigger has execute");
+    match execute.effect.as_ref() {
+        Effect::ChangeZone { destination, .. } => {
+            assert_eq!(*destination, Zone::Battlefield);
+        }
+        other => panic!("expected hand->battlefield ChangeZone, got {other:?}"),
+    }
+    assert!(
+        execute.forward_result,
+        "put must forward moved card to attach sub"
+    );
+    let attach = execute
+        .sub_ability
+        .as_ref()
+        .expect("expected Attach sub_ability");
+    match &*attach.effect {
+        Effect::Attach { attachment, target } => {
+            assert!(matches!(attachment, TargetFilter::SelfRef));
+            assert!(matches!(target, TargetFilter::ParentTarget));
+        }
+        other => panic!("expected Attach sub_ability, got {other:?}"),
+    }
+    match &attach.condition {
+        Some(AbilityCondition::ZoneChangedThisWay { filter }) => match filter {
+            TargetFilter::Typed(t) => assert!(t.type_filters.iter().any(
+                |f| matches!(f, TypeFilter::Subtype(s) if s.eq_ignore_ascii_case("Equipment"))
+            )),
+            other => panic!("expected Typed Equipment filter, got {other:?}"),
+        },
+        other => panic!("expected ZoneChangedThisWay on Attach, got {other:?}"),
+    }
+}
+
 /// Gilgamesh, Master-at-Arms (issue #3286): any-number Equipment dig-from-among
 /// plus CR 603.12 active-voice reflexive attach to Samurai.
 #[test]
