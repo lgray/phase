@@ -2367,26 +2367,21 @@ fn try_parse_enters_with_additional_counters(lower: &str) -> Option<AbilityDefin
     ))
 }
 
-/// CR 614.1c + CR 122.1 + CR 205.1b: Parse the "the creature cast this way
-/// enters with a [counter] counter on it [and is a [type] in addition to its
-/// other types]" rider that follows a graveyard cast-permission grant
-/// (Osteomancer Adept "that creature enters with a finality counter on it"; The
-/// Tomb of Aclazotz "it enters with a finality counter on it and is a Vampire in
-/// addition to its other types"). The counter clause lowers to
-/// `Effect::AddPendingETBCounters`; an optional additive type-grant tail lowers
-/// to `Effect::AddPendingEntersModifications` carried as the counter clause's
-/// `sub_ability`. The runtime `CastFromZone` resolver consumes both as
-/// permission metadata (see `cast_from_zone::grant_lingering_permissions`)
-/// rather than against the current trigger event, so the riders ride the
-/// *future* graveyard cast.
+/// CR 614.1c + CR 122.1 + CR 607.1: Shared recognizer for the linked "if you
+/// cast a spell this way, that <permanent> enters with a [counter] counter on
+/// it" rider. Returns the parsed `CounterType` plus the unconsumed remainder
+/// (an optional " and is a <type>" additive type-grant tail). The subject is
+/// anaphoric ("that creature"/"that permanent"/"that artifact"/"it"), the count
+/// is always one ("a [counter]").
 ///
-/// The subject is anaphoric ("that creature"/"that permanent"/"it"), the count
-/// is always one ("a [counter] counter"), and the type tail delegates to the
-/// shared `parse_becomes_type_modifications` building block (which consumes the
-/// "in addition to its other types" suffix and covers subtypes CR 205.3, core
-/// types CR 205.2, and supertypes CR 205.4). A tail present but unclassifiable
-/// returns `None` — honestly `Effect::Unimplemented`, never a silent type drop.
-fn try_parse_cast_this_way_enters_rider(lower: &str) -> Option<ParsedEffectClause> {
+/// Single authority for the counter-subject grammar, shared by the one-shot
+/// effect path (graveyard `CastFromZone` grant — Osteomancer Adept, The Tomb of
+/// Aclazotz) and the static cast-permission builders (Noctis, Prince of Lucis;
+/// Intrepid Paleontologist; Leonardo, Sewer Samurai). The effect path wraps the
+/// result into `Effect::AddPendingETBCounters` (+ optional type-grant tail); the
+/// static builders take only the `CounterType` to set
+/// `StaticMode::{Graveyard,Exile}CastPermission.enters_with_counter`.
+pub(crate) fn parse_cast_this_way_enters_with_counter(lower: &str) -> Option<(CounterType, &str)> {
     // CR 608.2c: optional "if you cast a spell this way," / "if you do," gate.
     // The rider only fires for a spell cast via the granted permission; the
     // runtime gates on the actual cast, so the condition prefix carries no
@@ -2405,6 +2400,7 @@ fn try_parse_cast_this_way_enters_rider(lower: &str) -> Option<ParsedEffectClaus
     let (rest, _) = alt((
         tag::<_, _, OracleError<'_>>("that creature enters with "),
         tag("that permanent enters with "),
+        tag("that artifact enters with "),
         tag("it enters with "),
     ))
     .parse(lower)
@@ -2417,6 +2413,30 @@ fn try_parse_cast_this_way_enters_rider(lower: &str) -> Option<ParsedEffectClaus
     let (rest, _) = tag::<_, _, OracleError<'_>>(" counter on it")
         .parse(rest)
         .ok()?;
+    Some((counter_type, rest))
+}
+
+/// CR 614.1c + CR 122.1 + CR 205.1b: Parse the "the creature cast this way
+/// enters with a [counter] counter on it [and is a [type] in addition to its
+/// other types]" rider that follows a graveyard cast-permission grant
+/// (Osteomancer Adept "that creature enters with a finality counter on it"; The
+/// Tomb of Aclazotz "it enters with a finality counter on it and is a Vampire in
+/// addition to its other types"). The counter-subject grammar delegates to the
+/// shared `parse_cast_this_way_enters_with_counter`; the counter clause lowers to
+/// `Effect::AddPendingETBCounters`; an optional additive type-grant tail lowers
+/// to `Effect::AddPendingEntersModifications` carried as the counter clause's
+/// `sub_ability`. The runtime `CastFromZone` resolver consumes both as
+/// permission metadata (see `cast_from_zone::grant_lingering_permissions`)
+/// rather than against the current trigger event, so the riders ride the
+/// *future* graveyard cast.
+///
+/// The type tail delegates to the shared `parse_becomes_type_modifications`
+/// building block (which consumes the "in addition to its other types" suffix
+/// and covers subtypes CR 205.3, core types CR 205.2, and supertypes CR 205.4).
+/// A tail present but unclassifiable returns `None` — honestly
+/// `Effect::Unimplemented`, never a silent type drop.
+fn try_parse_cast_this_way_enters_rider(lower: &str) -> Option<ParsedEffectClause> {
+    let (counter_type, rest) = parse_cast_this_way_enters_with_counter(lower)?;
     let counter_effect = Effect::AddPendingETBCounters {
         counter_type,
         count: QuantityExpr::Fixed { value: 1 },

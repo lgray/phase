@@ -524,6 +524,7 @@ mod kutzils_flanker_mode_one_counter;
 mod l02_bb1_activation_conditions;
 mod land_equilibrium_forced_sacrifice;
 mod l02_bb2_cast_origin;
+mod l02_bb3_cast_permission_finality;
 mod l02_bb4_intervening_if;
 mod l02_bb5_as_long_as;
 mod lathiel_end_step_counters_repro;

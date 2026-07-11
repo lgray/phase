@@ -37539,6 +37539,7 @@ fn add_exile_cast_permission_source_with(
         mana_spend_permission: None,
         grants_flash: false,
         extra_cost: None,
+        enters_with_counter: None,
     })
     .affected(affected);
     let obj = state.objects.get_mut(&source).unwrap();
@@ -37762,6 +37763,7 @@ fn add_exile_cast_permission_source_with_extra_cost(
         mana_spend_permission: None,
         grants_flash: false,
         extra_cost,
+        enters_with_counter: None,
     })
     .affected(TargetFilter::Any);
     state
@@ -38467,6 +38469,7 @@ fn add_azula_exile_cast_source(state: &mut GameState, player: PlayerId) -> Objec
         mana_spend_permission: Some(ManaSpendPermission::AnyTypeOrColor),
         grants_flash: true,
         extra_cost: None,
+        enters_with_counter: None,
     })
     .affected(TargetFilter::Any);
     state
@@ -38507,6 +38510,7 @@ fn add_valgavoth_exile_cast_source(state: &mut GameState, player: PlayerId) -> O
             },
             mode: crate::types::statics::CastCostMode::Alternative,
         }),
+        enters_with_counter: None,
     })
     .affected(TargetFilter::Any);
     state

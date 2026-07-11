@@ -2554,6 +2554,53 @@ fn conditional_enter_counters_if_is_only_if_marker(stripped: &str, ast_json: &st
     !has_other_if
 }
 
+/// CR 607.1 + CR 614.1c + CR 122.1: True when the card carries a cast-permission
+/// static (`GraveyardCastPermission`/`ExileCastPermission`) with an enters-with
+/// counter rider AND the only bare " if " remaining after stripping the
+/// represented "if you cast a spell this way, that <permanent> enters with a
+/// [counter] counter on it" sentence(s) is that rider itself. Mirrors
+/// `conditional_enter_counters_if_is_only_if_marker`: the linked "this way"
+/// anaphor (CR 607.1) is represented by the static's `enters_with_counter`
+/// field, so the leading "if" is a representation marker, not a swallowed
+/// game-state condition. Card-scoped-narrow: a finality-permission card that ALSO
+/// carries a genuine separate condition still reports the separate condition.
+fn enters_with_finality_this_way_is_only_if_marker(
+    stripped: &str,
+    parsed: &ParsedAbilities,
+) -> bool {
+    let has_finality_permission = parsed.statics.iter().any(|s| {
+        matches!(
+            &s.mode,
+            StaticMode::GraveyardCastPermission {
+                enters_with_counter: Some(_),
+                ..
+            } | StaticMode::ExileCastPermission {
+                enters_with_counter: Some(_),
+                ..
+            }
+        )
+    });
+    if !has_finality_permission {
+        return false;
+    }
+    // Strip the represented enters-with rider sentence(s) via the shared
+    // recognizer authority, then check whether any OTHER bare " if " survives.
+    let residual: String = stripped
+        .split('.')
+        .filter(|sentence| {
+            crate::parser::oracle_effect::parse_cast_this_way_enters_with_counter(
+                sentence.trim_start(),
+            )
+            .is_none()
+        })
+        .collect::<Vec<_>>()
+        .join(".");
+    let has_other_if = residual.contains(" if ") // allow-noncombinator: swallow detector marker scan on classified text
+        && !residual.contains(" as if ") // allow-noncombinator: swallow detector marker scan on classified text
+        && !residual.contains(" even if "); // allow-noncombinator: swallow detector marker scan on classified text
+    !has_other_if
+}
+
 // ── Detector G: Condition_If ────────────────────────────────────────────
 
 /// CR 608.2c: "if [condition], [effect]" — conditional gate. Must be
@@ -2658,6 +2705,15 @@ fn detect_condition_if(
     // battlefield this way, put [N] +1/+1 counters on it" (Oviya) is represented
     // by `Effect::ChangeZone.conditional_enter_with_counters`.
     if conditional_enter_counters_if_is_only_if_marker(&stripped, ast_json) {
+        return;
+    }
+    // CR 607.1 + CR 614.1c + CR 122.1: "If you cast a spell this way, that
+    // <permanent> enters with a [counter] counter on it" is the linked
+    // cast-permission enters-with rider, represented by the
+    // `GraveyardCastPermission`/`ExileCastPermission` static's
+    // `enters_with_counter` field (Noctis, Intrepid, Leonardo) — not a swallowed
+    // game-state condition. The "this way" anaphor is a CR 607.1 back-reference.
+    if enters_with_finality_this_way_is_only_if_marker(&stripped, parsed) {
         return;
     }
     // CR 615.5: "If damage is prevented this way, [effect]" is not an

@@ -6898,6 +6898,21 @@ fn finalize_cast_with_phyrexian_choices_inner(
             .push((object_id, counter_type, 1));
     }
 
+    // CR 122.1 + CR 614.1c + CR 607.1: the sibling STATIC-permission path — a
+    // `GraveyardCastPermission` / `ExileCastPermission` whose "If you cast a
+    // spell this way, that <permanent> enters with a [counter] counter on it"
+    // rider (Noctis, Prince of Lucis; Intrepid Paleontologist; Leonardo, Sewer
+    // Samurai) is carried on the static's `enters_with_counter` field. The
+    // authorizing source is embedded in `casting_variant`; register the pending
+    // ETB counter on the same object so it enters carrying the counter.
+    let static_perm_etb_counter =
+        super::casting::selected_static_permission_enters_with_counter(state, &casting_variant);
+    if let Some(counter_type) = static_perm_etb_counter {
+        state
+            .pending_etb_counters
+            .push((object_id, counter_type, 1));
+    }
+
     // CR 205.1b + CR 613.1d: A `CastFromZone` grant whose rider was "… is a
     // [type] in addition to its other types" (The Tomb of Aclazotz) records the
     // additive type-changing modifications on the granted `ExileWithAltCost`.

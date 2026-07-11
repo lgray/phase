@@ -2146,6 +2146,44 @@ pub(super) fn selected_exile_alt_cost_permission_enters_with_counter(
         })
 }
 
+// CR 122.1 + CR 614.1c + CR 607.1: read the enters-with counter rider carried by
+// the STATIC cast permission (`GraveyardCastPermission` / `ExileCastPermission`)
+// that authorized this cast. The authorizing source is embedded in
+// `casting_variant` (`GraveyardPermission`/`ExilePermission { source }`) rather
+// than re-derivable from zone — by the `finalize_cast` seam the cast object is
+// already on the stack, so the zone-scan resolvers can no longer be called for
+// it. The source permanent never changes zone during the cast, so reading its
+// `active_static_definitions` is safe (CR 607.1: the enters-with rider is linked
+// to the "cast a spell this way" permission on that same object).
+//
+// Assumes at most one counter-bearing cast permission per source — true for every
+// printed card today (Noctis / Intrepid / Leonardo each carry exactly one); if a
+// future card stacks two, `find_map` takes the first. See the field docs on
+// `StaticMode::{Graveyard,Exile}CastPermission.enters_with_counter`.
+pub(super) fn selected_static_permission_enters_with_counter(
+    state: &GameState,
+    casting_variant: &crate::types::game_state::CastingVariant,
+) -> Option<crate::types::counter::CounterType> {
+    use crate::types::game_state::CastingVariant;
+    let source = match casting_variant {
+        CastingVariant::GraveyardPermission { source, .. }
+        | CastingVariant::ExilePermission { source, .. } => *source,
+        _ => return None,
+    };
+    let source_obj = state.objects.get(&source)?;
+    active_static_definitions(state, source_obj).find_map(|def| match &def.mode {
+        StaticMode::GraveyardCastPermission {
+            enters_with_counter,
+            ..
+        }
+        | StaticMode::ExileCastPermission {
+            enters_with_counter,
+            ..
+        } => enters_with_counter.clone(),
+        _ => None,
+    })
+}
+
 // CR 205.1b + CR 613.1d: read the enters-with type-grant rider ("… is a [type]
 // in addition to its other types") from the *consumed* cast-this-way permission
 // only (the one supporting THIS cast), not any permission carrying modifications,
@@ -2725,6 +2763,9 @@ fn exile_permission_sources(state: &GameState, player: PlayerId) -> Vec<ExilePer
                     mana_spend_permission,
                     grants_flash,
                     ref extra_cost,
+                    // enters-with counter is read at the finalize_cast seam via
+                    // `selected_static_permission_enters_with_counter`, not here.
+                    ..
                 } => definition
                     .affected
                     .as_ref()
@@ -3038,6 +3079,9 @@ fn graveyard_permission_sources(
                     play_mode,
                     graveyard_destination_replacement,
                     ref extra_cost,
+                    // enters-with counter is read at the finalize_cast seam via
+                    // `selected_static_permission_enters_with_counter`, not here.
+                    ..
                 } if graveyard_permission_play_mode_matches(play_mode, play_mode_filter) => {
                     definition
                         .affected
