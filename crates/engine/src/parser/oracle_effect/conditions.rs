@@ -1061,6 +1061,44 @@ pub(super) fn strip_cast_from_zone_conditional(text: &str) -> (Option<AbilityCon
             rest.to_string(),
         );
     }
+    // CR 603.4 + CR 601.2a + CR 400.7: Passive-voice resolve-time cast-origin
+    // rider — "[then ]if this spell was cast from [anywhere other than] {your
+    // hand|your graveyard|exile}" (Antiquities on the Loose, Otterball Antics
+    // flashback tokens). Subject is the RESOLVING SPELL (SELF_REF_PARSE_ONLY, not
+    // ~-normalized). The leading "if " is retained in the text reaching this
+    // stripper (existing arms embed it, :1029/:1051), so it is consumed here.
+    // opt("then ") guards the SequentialSibling splitter leaving "Then" behind.
+    // The negated "anywhere other than <zone>" branch MUST precede the bare
+    // <zone> branch (prefix nesting).
+    if let Some((condition, rest)) = nom_on_lower(text, &lower, |input| {
+        let (input, _) = opt(tag("then ")).parse(input)?;
+        let (input, _) = tag("if this spell was cast from ").parse(input)?;
+        let zone = || {
+            alt((
+                value(Zone::Hand, tag("your hand")),
+                value(Zone::Graveyard, tag("your graveyard")),
+                value(Zone::Exile, tag("exile")),
+            ))
+        };
+        alt((
+            // ponytail: Not(CastFromZone{Hand}) over-grants on a spell COPY — copy_spell.rs:804
+            // clears cast_from_zone=None (CR 707.10: a copy of a spell isn't cast), so
+            // Not(false)=true wrongly grants. Latent-not-live (no card copies these token-makers).
+            // SCHEDULED FIX = BB-FU4 (task #12): add AbilityCondition::WasCast and wrap the whole
+            // negated-cast-zone class as And[WasCast, Not(CastFromZone{..})]. Tracked in-branch
+            // before the L02 PR.
+            map(preceded(tag("anywhere other than "), zone()), |z| {
+                AbilityCondition::Not {
+                    condition: Box::new(AbilityCondition::CastFromZone { zone: z }),
+                }
+            }),
+            map(zone(), |z| AbilityCondition::CastFromZone { zone: z }),
+        ))
+        .parse(input)
+    }) {
+        let rest = remainder_after_optional_comma(rest);
+        return (Some(condition), rest.to_string());
+    }
     (None, text.to_string())
 }
 

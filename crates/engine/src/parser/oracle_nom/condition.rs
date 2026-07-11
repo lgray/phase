@@ -187,10 +187,19 @@ fn parse_event_history_conditions(input: &str) -> OracleResult<'_, StaticConditi
 /// must be tried before the zoneless form.
 fn parse_was_cast_condition(input: &str) -> OracleResult<'_, StaticCondition> {
     alt((
+        // CR 601.2a + CR 400.7: negated cast-origin gate. Gendered/neutral
+        // pronoun subjects (he/she/they) join "it" for ETB "if {he|she|they}
+        // {wasn't|weren't} cast" cards; "they" takes the plural verb.
         map(
             alt((
                 tag::<_, _, OracleError<'_>>("it wasn't cast"),
                 tag("it wasn\u{2019}t cast"),
+                tag("he wasn't cast"),
+                tag("he wasn\u{2019}t cast"),
+                tag("she wasn't cast"),
+                tag("she wasn\u{2019}t cast"),
+                tag("they weren't cast"),
+                tag("they weren\u{2019}t cast"),
             )),
             |_| StaticCondition::Not {
                 condition: Box::new(StaticCondition::WasCast { zone: None }),
@@ -203,11 +212,16 @@ fn parse_was_cast_condition(input: &str) -> OracleResult<'_, StaticCondition> {
                     tag("~ was cast from "),
                     tag("this creature was cast from "),
                     tag("this permanent was cast from "),
+                    tag("he was cast from "),
+                    tag("she was cast from "),
+                    tag("they were cast from "),
                 )),
                 parse_zone_word,
             ),
             |(_, zone)| StaticCondition::WasCast { zone: Some(zone) },
         ),
+        // CR 601.2a + CR 400.7: zoneless "was cast" gate (Anti-Venom "if he was
+        // cast"). "they" takes the plural verb "were cast".
         value(
             StaticCondition::WasCast { zone: None },
             alt((
@@ -215,6 +229,9 @@ fn parse_was_cast_condition(input: &str) -> OracleResult<'_, StaticCondition> {
                 tag("~ was cast"),
                 tag("this creature was cast"),
                 tag("this permanent was cast"),
+                tag("he was cast"),
+                tag("she was cast"),
+                tag("they were cast"),
             )),
         ),
     ))

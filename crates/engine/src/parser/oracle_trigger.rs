@@ -4177,6 +4177,41 @@ fn parse_cast_from_zone_intervening_if(input: &str) -> OracleResult<'_, TriggerC
     Ok((rest, scoped_you_cast_from_zone(zone)))
 }
 
+/// CR 603.4 + CR 404.1 + CR 205.3: "if you cast it/them and <game-state condition>"
+/// — cast-provenance AND a second conjunct (Ran and Shaw: "if you cast them and
+/// there are three or more Dragon and/or Lesson cards in your graveyard"). The
+/// "you cast it/them" conjunct binds the unscoped `WasCast` (matching the sibling
+/// "if you cast it" convention at the bare handler below — the meaningful ETB
+/// discriminator is cast vs put-into-play, and the caster controls their own
+/// creature). The second conjunct is delegated to `parse_inner_condition` (the
+/// shared game-state authority) and bridged via `static_condition_to_trigger_condition`,
+/// so the graveyard multi-subtype "and/or" threshold (CR 404.1 owner-specific
+/// graveyard, CR 205.3 subtypes) rides the existing `ZoneCardCount` path with no
+/// new combinator. Both conjuncts fold into `TriggerCondition::And`, mirroring the
+/// BB4 Fearless conjunction `parse_typed_attacked_this_combat_conjunction`. MUST be
+/// registered before the bare "if you cast it" handler, which strips only the cast
+/// conjunct and would drop the second clause.
+fn parse_cast_them_and_graveyard_count_intervening_if(
+    input: &str,
+) -> OracleResult<'_, TriggerCondition> {
+    let (rest, _) = tag("if ").parse(input)?;
+    let (rest, _) = alt((tag("you cast them"), tag("you cast it"))).parse(rest)?;
+    let (rest, _) = tag(" and ").parse(rest)?;
+    let (rest, sc) = parse_inner_condition(rest)?;
+    let cond_b = static_condition_to_trigger_condition(&sc).ok_or_else(|| oracle_err(input))?;
+    let cond_a = TriggerCondition::WasCast {
+        zone: None,
+        controller: None,
+        owner: None,
+    };
+    Ok((
+        rest,
+        TriggerCondition::And {
+            conditions: vec![cond_a, cond_b],
+        },
+    ))
+}
+
 /// Extract an intervening-if condition from effect text.
 /// Returns (cleaned effect text, optional condition).
 ///
@@ -4275,6 +4310,22 @@ fn extract_if_condition_with_card_name(
     // from the named zone. MUST precede the zoneless "if you cast it" arm.
     if let Some((before, condition, rest)) =
         scan_preceded(&lower, parse_cast_from_zone_intervening_if)
+    {
+        let pos = before.len();
+        let clause_len = lower.len() - before.len() - rest.len();
+        return (
+            strip_condition_clause(text, pos, clause_len),
+            Some(condition),
+        );
+    }
+
+    // CR 603.4 + CR 404.1 + CR 205.3: "if you cast it/them and <game-state
+    // condition>" — cast-provenance AND a second conjunct (Ran and Shaw's
+    // graveyard-count gate). MUST precede the bare "if you cast it" handler
+    // below: that handler strips only the cast conjunct and would silently drop
+    // the trailing And clause, truncating the condition.
+    if let Some((before, condition, rest)) =
+        scan_preceded(&lower, parse_cast_them_and_graveyard_count_intervening_if)
     {
         let pos = before.len();
         let clause_len = lower.len() - before.len() - rest.len();
