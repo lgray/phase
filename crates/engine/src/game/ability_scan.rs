@@ -2732,6 +2732,15 @@ fn scan_trigger_condition(x: &TriggerCondition) -> Axes {
             sibling: false,
             projected: true,
         },
+        // CR 603.3b: Mirrors `CounterAddedThisTurn` (same `counter_added_this_turn`
+        // board ledger) — `projected: true`. NOT the tapped sibling's `Axes::NONE`;
+        // this condition reads the counter journal, so the coverability/ordering
+        // detector must see the projected read (fail-open otherwise).
+        TriggerCondition::FirstTimeObjectCountersAddedThisTurn => Axes {
+            event: false,
+            sibling: false,
+            projected: true,
+        },
         TriggerCondition::LostLifeLastTurn => Axes {
             event: false,
             sibling: false,

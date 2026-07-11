@@ -3394,6 +3394,12 @@ fn detect_duration_this_turn(
         "DamageDealtThisTurn",
         "AttackedThisTurn",
         "CounterAddedThisTurn",
+        // CR 122.1 + CR 603.4: Stalwart Successor's intervening-if "if it's the
+        // first time counters have been put on that creature this turn" consumes
+        // the "first time ... this turn" scope — the serialized `TriggerCondition`
+        // variant name means the clause was captured as a condition, not swallowed
+        // as an effect duration. Mirrors the `CounterAddedThisTurn` marker above.
+        "FirstTimeObjectCountersAddedThisTurn",
         "NthSpellThisTurn",
         "NthDrawThisTurn",
         "CardsDrawnThisTurn",

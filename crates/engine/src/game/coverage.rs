@@ -3818,6 +3818,9 @@ fn fmt_trigger_condition(cond: &crate::types::ability::TriggerCondition) -> Stri
             format!("dealt damage this turn by {}", fmt_target(source))
         }
         TC::FirstTimeObjectTappedThisTurn => "first time tapped this turn".into(),
+        TC::FirstTimeObjectCountersAddedThisTurn => {
+            "first time counters put on it this turn".into()
+        }
         TC::WasType { card_type } => format!("was a {}", fmt_core_type(card_type)),
         TC::LifeTotalGE { minimum } => format!("life ≥ {minimum}"),
         TC::ControlCount { minimum, filter } => {

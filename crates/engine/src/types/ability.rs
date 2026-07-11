@@ -17125,6 +17125,19 @@ pub enum TriggerCondition {
     /// resolution; the count model lets the resolution-time re-check stay correct.
     FirstTimeObjectTappedThisTurn,
 
+    /// CR 122.1 + CR 603.4: True iff the triggering object (the permanent that
+    /// received one or more counters) has had counters put on it exactly once so
+    /// far this turn — i.e. this is the first time. Read from
+    /// `GameState.counter_added_this_turn` by counting records whose `object_id`
+    /// matches the object carried by the `CounterAdded` event (per-OBJECT, NOT the
+    /// per-controller predicate of the sibling `CounterAddedThisTurn`). Per CR
+    /// 603.4 it is checked at both trigger time and resolution; the count model
+    /// keeps the resolution-time re-check correct and blocks self-retrigger (a
+    /// payload +1/+1 raises the count past 1). Shape-sibling of
+    /// `FirstTimeObjectTappedThisTurn`, but it reads the counter board ledger, so
+    /// its fail-open walker classifications mirror `CounterAddedThisTurn`.
+    FirstTimeObjectCountersAddedThisTurn,
+
     /// CR 400.7 + CR 603.10: "if it was a [type]" — true when the trigger source's
     /// last known information includes the specified core type. Used by the Glimmer cycle
     /// ("when this dies, if it was a creature, return it").

@@ -4015,6 +4015,106 @@ fn parse_first_time_tapped_intervening_if(input: &str) -> OracleResult<'_, Trigg
     Ok((rest, TriggerCondition::FirstTimeObjectTappedThisTurn))
 }
 
+/// CR 122.1 + CR 603.4: "if it's the first time counters have been put on that
+/// creature/permanent this turn" — intervening-if gating a counter trigger on the
+/// triggering object's first counter placement of the turn (Stalwart Successor).
+/// "it's" is the expletive subject; the real object is "that creature" / "that
+/// permanent" / "it", which binds to the object carried by the `CounterAdded`
+/// event. Sibling in SHAPE of `parse_first_time_tapped_intervening_if`, but the
+/// runtime arm and fail-open walker classifications mirror `CounterAddedThisTurn`
+/// (same `counter_added_this_turn` board ledger), NOT the tapped sibling — see
+/// `game/triggers.rs` (per-object count) and the B1 walker classification.
+fn parse_first_time_counters_intervening_if(input: &str) -> OracleResult<'_, TriggerCondition> {
+    let (rest, _) = alt((
+        tag("if it's the first time "),
+        tag("if it is the first time "),
+    ))
+    .parse(input)?;
+    let (rest, _) = tag("counters have been put on ").parse(rest)?;
+    let (rest, _) = alt((tag("that creature"), tag("that permanent"), tag("it"))).parse(rest)?;
+    let (rest, _) = tag(" this turn").parse(rest)?;
+    Ok((rest, TriggerCondition::FirstTimeObjectCountersAddedThisTurn))
+}
+
+/// CR 508.1 + CR 603.4: "if a <type> and a <type> [and ...] attacked this combat"
+/// — typed attack-declaration conjunction (Fearless Swashbuckler: "if a Pirate
+/// and a Vehicle attacked this combat"). Each typed noun becomes one
+/// `AttackersDeclaredCount{Controller{You, filter}, GE, 1}` over the current
+/// combat's declared attackers; ≥2 nouns fold into `TriggerCondition::And`. Nom-
+/// native on lowercase text — `parse_type_phrase_nom` canonicalizes subtypes
+/// case-insensitively (Pirate/Vehicle), so no original-case round-trip is needed.
+fn parse_typed_attacked_this_combat_conjunction(input: &str) -> OracleResult<'_, TriggerCondition> {
+    let (rest, _) = tag("if ").parse(input)?;
+    let (mut rest, first) = parse_typed_attacker_noun(rest)?;
+    let mut filters = vec![first];
+    while let Ok((next, filter)) = preceded(
+        alt((tag(", and "), tag(" and "), tag(", "))),
+        parse_typed_attacker_noun,
+    )
+    .parse(rest)
+    {
+        filters.push(filter);
+        rest = next;
+    }
+    let (rest, _) = tag(" attacked this combat").parse(rest)?;
+    let conditions: Vec<TriggerCondition> = filters
+        .into_iter()
+        .map(|filter| TriggerCondition::AttackersDeclaredCount {
+            subject: AttackersDeclaredCountSubject::Controller {
+                scope: ControllerRef::You,
+                filter: Some(filter),
+            },
+            comparator: Comparator::GE,
+            count: 1,
+        })
+        .collect();
+    let condition = if conditions.len() == 1 {
+        conditions.into_iter().next().unwrap()
+    } else {
+        TriggerCondition::And { conditions }
+    };
+    Ok((rest, condition))
+}
+
+/// CR 508.1: One typed attacker noun ("a Pirate", "an artifact creature") for the
+/// attacked-this-combat conjunction. Consumes an optional leading article then a
+/// narrowing type phrase; a non-narrowing `TargetFilter::Any` is rejected so the
+/// conjunction does not mis-consume an untyped word.
+fn parse_typed_attacker_noun(input: &str) -> OracleResult<'_, TargetFilter> {
+    let (rest, _) = opt(alt((tag("a "), tag("an ")))).parse(input)?;
+    let (rest, filter) = parse_type_phrase_nom(rest)?;
+    if matches!(filter, TargetFilter::Any) {
+        return Err(oracle_err(input));
+    }
+    Ok((rest, filter))
+}
+
+/// CR 603.4 + CR 701.60a + CR 701.60d: "if it's [not] suspected" — source-
+/// designation intervening-if (Rubblebelt Braggart: "if it's not suspected, you
+/// may suspect it"). "it" is the trigger source (the attacking creature; the
+/// trigger's `valid_card` is `SelfRef`), so this binds `SourceMatchesFilter`,
+/// consistent with the combat-context "if it's attacking" → `SourceIsAttacking`
+/// arm. The negated form (CR 701.60d — a suspected permanent can't become
+/// suspected again) wraps it in `Not`. Built over the existing
+/// `FilterProp::Suspected` designation so future source designations compose on
+/// the same axis.
+fn parse_source_suspected_intervening_if(input: &str) -> OracleResult<'_, TriggerCondition> {
+    let (rest, _) = tag("if it").parse(input)?;
+    let (rest, _) = alt((tag("'s "), tag(" is "))).parse(rest)?;
+    let (rest, negated) = opt(tag("not ")).parse(rest)?;
+    let (rest, prop) = value(FilterProp::Suspected, tag("suspected")).parse(rest)?;
+    let filter = TargetFilter::Typed(TypedFilter::creature().properties(vec![prop]));
+    let condition = TriggerCondition::SourceMatchesFilter { filter };
+    let condition = if negated.is_some() {
+        TriggerCondition::Not {
+            condition: Box::new(condition),
+        }
+    } else {
+        condition
+    };
+    Ok((rest, condition))
+}
+
 /// CR 603.4 + CR 601.2: Parse "if you didn't cast it from your hand/exile" or
 /// "if you didn't cast it from your graveyard" — negated zone-specific cast
 /// provenance intervening-if (Chainer, Nightmare Adept; Phage the Untouchable;
@@ -4276,6 +4376,21 @@ fn extract_if_condition_with_card_name(
     // triggering-object-referential, so it cannot lower through a StaticCondition.
     if let Some((before, condition, rest)) =
         scan_preceded(&lower, parse_first_time_tapped_intervening_if)
+    {
+        let pos = before.len();
+        let clause_len = lower.len() - before.len() - rest.len();
+        return (
+            strip_condition_clause(text, pos, clause_len),
+            Some(condition),
+        );
+    }
+
+    // CR 122.1 + CR 603.4: "if it's the first time counters have been put on that
+    // creature this turn" — first-counter-placement intervening-if (Stalwart
+    // Successor). Event-object-referential (the triggering object carried by the
+    // CounterAdded event), so it cannot lower through a StaticCondition.
+    if let Some((before, condition, rest)) =
+        scan_preceded(&lower, parse_first_time_counters_intervening_if)
     {
         let pos = before.len();
         let clause_len = lower.len() - before.len() - rest.len();
@@ -4721,6 +4836,37 @@ fn extract_if_condition_with_card_name(
     if let Some(result) = try_extract_spell_targets_intervening_if(&tp, &lower, text) {
         return result;
     }
+
+    // CR 508.1 + CR 603.4: "if a Pirate and a Vehicle attacked this combat" —
+    // typed attack-declaration conjunction (Fearless Swashbuckler). Placed before
+    // the generic bridge so the conjunction is captured as one typed
+    // `AttackersDeclaredCount` And, not left in the effect text.
+    if let Some((before, condition, rest)) =
+        scan_preceded(&lower, parse_typed_attacked_this_combat_conjunction)
+    {
+        let pos = before.len();
+        let clause_len = lower.len() - before.len() - rest.len();
+        return (
+            strip_condition_clause(text, pos, clause_len),
+            Some(condition),
+        );
+    }
+
+    // CR 603.4 + CR 701.60a/d: "if it's not suspected" — source-designation
+    // intervening-if (Rubblebelt Braggart). Source-referential ("it" = the
+    // attacking source), so it is handled here rather than through the generic
+    // `parse_inner_condition` bridge, whose "it's" subject is recipient-scoped.
+    if let Some((before, condition, rest)) =
+        scan_preceded(&lower, parse_source_suspected_intervening_if)
+    {
+        let pos = before.len();
+        let clause_len = lower.len() - before.len() - rest.len();
+        return (
+            strip_condition_clause(text, pos, clause_len),
+            Some(condition),
+        );
+    }
+
     if let Some(result) = try_extract_intervening(
         &tp,
         &lower,
@@ -4886,12 +5032,40 @@ fn parse_entering_pt_vs_source_condition(input: &str) -> OracleResult<'_, Trigge
     .parse(rest)?;
     let (rest, _) = tag(" than ~").parse(rest)?;
 
+    let prop = entering_pt_vs_source_prop(stats);
+
+    Ok((
+        rest,
+        TriggerCondition::ZoneChangeObjectMatchesFilter {
+            origin: None,
+            destination: Zone::Battlefield,
+            filter: TargetFilter::Typed(TypedFilter::creature().properties(vec![prop])),
+        },
+    ))
+}
+
+/// CR 208.1: Parse a bare power/toughness stat word into `PtStat`. Shared by the
+/// entering-object P/T-vs-source recognizers and the dying-object P/T-vs-fixed
+/// recognizer.
+fn parse_pt_stat_word(input: &str) -> OracleResult<'_, PtStat> {
+    alt((
+        value(PtStat::Power, tag("power")),
+        value(PtStat::Toughness, tag("toughness")),
+    ))
+    .parse(input)
+}
+
+/// CR 603.6a + CR 208.1: Build the entering-object P/T-vs-source filter prop. One
+/// `PtComparison{stat, Current, GT, Ref(stat{Source})}` per stat; multiple stats
+/// disjoin via `FilterProp::AnyOf`. Single authority shared by the "has greater
+/// <stat> than ~" front-end and the possessive "its <stat> is greater than ~'s
+/// <stat>" front-end so the two surfaces never drift.
+fn entering_pt_vs_source_prop(stats: &[PtStat]) -> FilterProp {
     let props: Vec<FilterProp> = stats
         .iter()
         .map(|&stat| {
-            // The selector above only ever emits Power/Toughness, so the
-            // `TotalPowerToughness` arm is dead-by-construction. Mapping it to
-            // `Power { Source }` (rather than `unreachable!()`) keeps the match
+            // Callers only ever emit Power/Toughness; map the unused
+            // `TotalPowerToughness` arm to `Power { Source }` to keep the match
             // exhaustive without a panic-bearing arm.
             let qty = match stat {
                 PtStat::Power => QuantityRef::Power {
@@ -4912,12 +5086,43 @@ fn parse_entering_pt_vs_source_condition(input: &str) -> OracleResult<'_, Trigge
             }
         })
         .collect();
-    let prop = if props.len() == 1 {
+    if props.len() == 1 {
         props.into_iter().next().unwrap()
     } else {
         FilterProp::AnyOf { props }
-    };
+    }
+}
 
+/// CR 603.4 + CR 603.6a + CR 208.1: Possessive-surface entering-object
+/// intervening-if comparing the newcomer's power and/or toughness to the source
+/// permanent's SAME stat — "if its power is greater than ~'s power [or its
+/// toughness is greater than ~'s toughness]" (Sharp-Eyed Rookie). Subject "it(s)"
+/// is the zone-change event object (the entering creature, CR 603.6a), evaluated
+/// live in its battlefield destination; "~" is the ability source (CR 113.7),
+/// resolved via `ObjectScope::Source`. An enters-the-battlefield trigger is NOT a
+/// CR 603.10a look-back trigger, so `PtValueScope::Current` reads the post-layer
+/// P/T of both objects. Disjunction composes via `entering_pt_vs_source_prop`'s
+/// `FilterProp::AnyOf`; the single-stat form emits one `PtComparison`.
+fn parse_entering_pt_vs_source_possessive_condition(
+    input: &str,
+) -> OracleResult<'_, TriggerCondition> {
+    // Consume the leading "if " so the whole intervening-if clause (including the
+    // keyword) is stripped from the effect text — the disjunct combinator below
+    // starts at "its ".
+    let (input, _) = tag("if ").parse(input)?;
+    let (mut rest, first) = parse_entering_pt_vs_source_possessive_disjunct(input)?;
+    let mut stats = vec![first];
+    // Additional " or "/" and "-joined disjuncts, each re-verifying same-stat.
+    while let Ok((next, stat)) = preceded(
+        alt((tag(" or "), tag(" and "))),
+        parse_entering_pt_vs_source_possessive_disjunct,
+    )
+    .parse(rest)
+    {
+        stats.push(stat);
+        rest = next;
+    }
+    let prop = entering_pt_vs_source_prop(&stats);
     Ok((
         rest,
         TriggerCondition::ZoneChangeObjectMatchesFilter {
@@ -4928,7 +5133,133 @@ fn parse_entering_pt_vs_source_condition(input: &str) -> OracleResult<'_, Trigge
     ))
 }
 
+/// CR 208.1: One possessive disjunct "its <stat> is greater than ~'s <stat>".
+/// Both apostrophe forms (`'s`, `\u{2019}s`) are accepted; the source-side stat
+/// word must equal the subject-side stat, rejecting cross-stat comparisons (which
+/// no card prints and which would otherwise read the wrong source stat).
+fn parse_entering_pt_vs_source_possessive_disjunct(input: &str) -> OracleResult<'_, PtStat> {
+    let (rest, _) = tag("its ").parse(input)?;
+    let (rest, stat) = parse_pt_stat_word(rest)?;
+    let (rest, _) = tag(" is greater than ~").parse(rest)?;
+    let (rest, _) = alt((tag("'s "), tag("\u{2019}s "))).parse(rest)?;
+    let (rest, source_stat) = parse_pt_stat_word(rest)?;
+    if source_stat != stat {
+        return Err(oracle_err(input));
+    }
+    Ok((rest, stat))
+}
+
+/// CR 603.4 + CR 603.10a + CR 208.1: Death/LTB P/T-vs-fixed intervening-if —
+/// "if its <power|toughness> was <comparator> <N>" (Massacre Girl, Known Killer:
+/// "if its toughness was less than 1"). Subject "it" is the dying creature carried
+/// by the zone-change event; the past-tense "was" keys the CR 603.10a look-back
+/// snapshot, so origin=battlefield, destination=graveyard (the "was"-keyed
+/// predicate convention in this module). The threshold is a LITERAL integer, so a
+/// dedicated tail emits the natural comparator directly rather than reusing
+/// `parse_pt_comparison_tail`, whose infix form only resolves dynamic
+/// `QuantityRef` thresholds (a literal "1" falls through to an EQ match there).
+fn parse_dying_object_pt_comparison_condition(input: &str) -> OracleResult<'_, TriggerCondition> {
+    let (fragment, _) = tag("if ").parse(input)?;
+    // CR 603.6a + CR 603.4: When the dying subject is the SOURCE (self-death:
+    // "When this creature dies, if its power was 3 or greater" — Deathknell
+    // Berserker), "its" binds to the trigger's self subject (the possessive
+    // pronoun tracks the event subject the trigger names, not a by-name
+    // reference), and the established
+    // `parse_inner_condition` path already hoists a
+    // `QuantityComparison{<stat>(Source)}`. Defer to it so this event-object
+    // snapshot does not override the source binding. Only the OTHER-death clause
+    // that path swallows (Massacre Girl: "a creature an opponent controls dies,
+    // if its toughness was less than 1", where "its" is the non-source dying
+    // creature) falls through to the event-object filter below.
+    // ponytail: this uses "the established path already hoists it" as the
+    // self-death proxy. The principled discriminator is the trigger's dying
+    // subject (`valid_card == SelfRef`); thread that through the condition
+    // dispatch if an other-death "<stat> was N or greater/less" card appears and
+    // the established path would mis-bind it to Source.
+    if parse_inner_condition(fragment)
+        .ok()
+        .and_then(|(_rest, sc)| static_condition_to_trigger_condition(&sc))
+        .is_some()
+    {
+        return Err(oracle_err(input));
+    }
+    let (rest, _) = tag("its ").parse(fragment)?;
+    let (rest, stat) = parse_pt_stat_word(rest)?;
+    let (rest, _) = tag(" was ").parse(rest)?;
+    let (rest, (comparator, threshold)) = parse_dying_pt_comparison_tail(rest)?;
+    Ok((
+        rest,
+        TriggerCondition::ZoneChangeObjectMatchesFilter {
+            origin: Some(Zone::Battlefield),
+            destination: Zone::Graveyard,
+            filter: TargetFilter::Typed(TypedFilter::creature().properties(vec![
+                FilterProp::PtComparison {
+                    stat,
+                    scope: PtValueScope::Current,
+                    comparator,
+                    value: QuantityExpr::Fixed { value: threshold },
+                },
+            ])),
+        },
+    ))
+}
+
+/// CR 208.1 + CR 107.1: Comparison tail against a LITERAL integer threshold, for
+/// the death/LTB P/T-vs-fixed snapshot gates. Covers the infix forms ("less than
+/// [or equal to] N", "greater than [or equal to] N"), the postfix forms ("N or
+/// less", "N or greater/more"), and the bare exact form ("N"). Distinct from
+/// `oracle_nom::filter::parse_pt_comparison_tail`, whose infix branch resolves the
+/// threshold through `parse_quantity_ref` (dynamic references only).
+fn parse_dying_pt_comparison_tail(input: &str) -> OracleResult<'_, (Comparator, i32)> {
+    fn infix(input: &str) -> OracleResult<'_, (Comparator, i32)> {
+        let (rest, base) = alt((
+            value(Comparator::LT, tag("less than")),
+            value(Comparator::GT, tag("greater than")),
+        ))
+        .parse(input)?;
+        let (rest, _) = space1.parse(rest)?;
+        let (rest, or_equal) = opt(terminated(tag("or equal to"), space1)).parse(rest)?;
+        let (rest, n) = nom_primitives::parse_number(rest)?;
+        let comparator = match (base, or_equal.is_some()) {
+            (Comparator::LT, true) => Comparator::LE,
+            (Comparator::GT, true) => Comparator::GE,
+            (c, false) => c,
+            _ => unreachable!("base is only LT or GT"),
+        };
+        Ok((rest, (comparator, n as i32)))
+    }
+    fn postfix(input: &str) -> OracleResult<'_, (Comparator, i32)> {
+        let (rest, n) = nom_primitives::parse_number(input)?;
+        let (rest, _) = space1.parse(rest)?;
+        let (rest, comparator) = alt((
+            value(Comparator::LE, tag("or less")),
+            value(Comparator::GE, alt((tag("or greater"), tag("or more")))),
+        ))
+        .parse(rest)?;
+        Ok((rest, (comparator, n as i32)))
+    }
+    alt((
+        infix,
+        postfix,
+        map(nom_primitives::parse_number, |n| (Comparator::EQ, n as i32)),
+    ))
+    .parse(input)
+}
+
 fn parse_zone_change_object_filter_condition(input: &str) -> OracleResult<'_, TriggerCondition> {
+    // CR 603.6a: possessive entering-object P/T-vs-source ("if its power is
+    // greater than ~'s power ...", Sharp-Eyed Rookie). Both new "if its ..."
+    // surfaces are disjoint from the existing "if it has greater"/"if it '..."
+    // arms (the trailing "s" of "its" excludes the "if it " predicate arm).
+    if let Ok((rest, condition)) = parse_entering_pt_vs_source_possessive_condition(input) {
+        return Ok((rest, condition));
+    }
+    // CR 603.10a: dying-object P/T-vs-fixed ("if its toughness was less than 1",
+    // Massacre Girl). Shares the "if its <stat> " prefix with the possessive arm
+    // but diverges at " was " vs " is greater than ", so ordering is safe.
+    if let Ok((rest, condition)) = parse_dying_object_pt_comparison_condition(input) {
+        return Ok((rest, condition));
+    }
     if let Ok((rest, condition)) = parse_entering_pt_vs_source_condition(input) {
         return Ok((rest, condition));
     }

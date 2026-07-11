@@ -6597,6 +6597,36 @@ pub(crate) fn check_trigger_condition(
                 _ => None,
             })
             .is_some_and(|id| state.object_tap_count_this_turn.get(&id).copied() == Some(1)),
+        // CR 122.1 + CR 603.4: "if it's the first time counters have been put on
+        // that creature this turn" — the intervening-if subject is the object
+        // carried by the `CounterAdded` event (the creature that just received
+        // counters), NOT the trigger source. One record is pushed per counter
+        // placement (effects/counters.rs apply_counter_addition) BEFORE the
+        // `CounterAdded` event is emitted, so exactly-one prior placement on that
+        // object reads count == 1. Per-OBJECT (`record.object_id == id`), NOT the
+        // per-controller `record.actor` predicate of the sibling
+        // `CounterAddedThisTurn`. Checked at both trigger time and resolution
+        // (CR 603.4); a later placement on the same object this turn advances the
+        // count past 1 and the re-check fizzles — this also blocks the payload
+        // +1/+1 from self-retriggering (loop-safe).
+        // ponytail: CounterAddedRecord carries no per-placement instruction id, so
+        // a single instruction placing 2+ distinct counter TYPES at once pushes
+        // 2+ records and this under-fires (count > 1 ⇒ false). Fail-safe (never
+        // over-grants). Upgrade path: stamp a monotonic placement-instruction id
+        // on CounterAddedRecord and count distinct ids (task BB-FU2/R7).
+        TriggerCondition::FirstTimeObjectCountersAddedThisTurn => trigger_event
+            .and_then(|e| match e {
+                GameEvent::CounterAdded { object_id, .. } => Some(*object_id),
+                _ => None,
+            })
+            .is_some_and(|id| {
+                state
+                    .counter_added_this_turn
+                    .iter()
+                    .filter(|r| r.object_id == id)
+                    .count()
+                    == 1
+            }),
         // CR 400.7 + CR 603.10: "if it was a [type]" — check LKI for the source's
         // core types at the time it left the battlefield.
         TriggerCondition::WasType { card_type } => source_id

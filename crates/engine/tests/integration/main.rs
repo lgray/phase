@@ -523,6 +523,7 @@ mod krark_thumb_coin_flip;
 mod kutzils_flanker_mode_one_counter;
 mod l02_bb1_activation_conditions;
 mod land_equilibrium_forced_sacrifice;
+mod l02_bb4_intervening_if;
 mod lathiel_end_step_counters_repro;
 mod leeching_sliver;
 mod leyline_taps_for_mana_repro;
