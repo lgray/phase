@@ -422,8 +422,11 @@ fn resolve_choice(
             count: engine::analysis::decision_template::IterationCount::UntilLethal,
             template: None,
         },
-        WaitingFor::RespondToShortcut { .. } => GameAction::RespondToShortcut {
-            response: engine::analysis::loop_check::ShortcutResponse::Accept,
+        // PR-7 Phase 4c (LOW-2): self-preservation via the single-authority
+        // `smart_shortcut_response` — Shorten when the polled player has a meaningful
+        // way to break the loop, else Accept.
+        WaitingFor::RespondToShortcut { player, .. } => GameAction::RespondToShortcut {
+            response: engine::ai_support::smart_shortcut_response(state, *player),
         },
 
         _ => {

@@ -18,12 +18,12 @@ use engine::analysis::decision_template::{
     ReplayMode, TargetPin, TargetSchedule,
 };
 use engine::analysis::loop_check::{LoopCertificate, ShortcutProposal, ShortcutResponse, WinKind};
-use engine::analysis::resource::BoardDelta;
+use engine::analysis::resource::{BoardDelta, ResourceAxis};
 use engine::game::engine::{apply, EngineError};
 use engine::game::scenario::{GameRunner, GameScenario};
 use engine::types::actions::GameAction;
 use engine::types::events::GameEvent;
-use engine::types::game_state::{LoopDetectionMode, WaitingFor, YieldTarget};
+use engine::types::game_state::{GameState, LoopDetectionMode, WaitingFor, YieldTarget};
 use engine::types::identifiers::ObjectId;
 use engine::types::mana::ManaColor;
 use engine::types::phase::Phase;
@@ -1173,4 +1173,449 @@ fn b3_abort_rollback_live_atomicity() {
         "abort hands priority back to living_priority_seat (P0)"
     );
     assert!(runner.state().loop_detect_ring.is_empty());
+}
+
+// ═══════════════════ PR-7 Phase 4c — B5 revocable-∞ + LOW-2 ═══════════════════
+
+/// Poison rider for the DRAW-gate behavioral test: fires on the SAME "whenever you gain
+/// life" event the SELF_LIFE_ENGINE cascade pumps, dripping a poison counter onto each
+/// opponent every cycle. Non-targeted (no mid-drive target prompt ⇒ mandatory-preserving).
+const POISON_RIDER: &str = "Whenever you gain life, each opponent gets a poison counter.";
+
+/// 3-player MANDATORY self-sustaining lifegain cascade (SELF_LIFE_ENGINE) that ALSO drips
+/// poison onto each opponent every cycle (POISON_RIDER, a SEPARATE second trigger). Nobody
+/// loses LIFE (so Path A's `live_mandatory_loop_winner` finds no faller ⇒ nonfallers≠1 ⇒
+/// None); opponents accrue POISON.
+///
+/// MEASURED reachability (this 2-trigger fixture does NOT reach the Path-B bridge): the two
+/// simultaneous triggers per lifegain event open OrderTriggers beats, and every non-
+/// `Priority{active_player}` beat CLEARS `loop_detect_ring` (engine.rs:1307). So the ring
+/// never accumulates, the `!ring.is_empty()` bridge gate (engine.rs:338) never passes, and
+/// `interactive_loop_bridge` is never entered (measured: 0 bridge invocations). The loop
+/// instead resolves via the CR 704.5c 10-poison SBA to GameOver{Some(P0)} (both opponents
+/// reach 10 poison and are eliminated). It therefore does NOT exercise the Path-B
+/// `has_no_loss_axis` veto — see the test doc below.
+fn setup_3p_poison_draw(mode: LoopDetectionMode) -> (GameRunner, ObjectId) {
+    let mut scenario = GameScenario::new_n_player(3, 7);
+    scenario.at_phase(Phase::PreCombatMain);
+    scenario.with_life(P0, 20);
+    scenario.with_life(P1, 20);
+    scenario.with_life(P2, 20);
+    scenario.add_creature_from_oracle(P0, "Test Life Engine", 2, 2, SELF_LIFE_ENGINE);
+    scenario.add_creature_from_oracle(P0, "Test Poison Dripper", 2, 2, POISON_RIDER);
+    let kickoff = scenario
+        .add_spell_to_hand_from_oracle(P0, "Test Lifegain Kickoff", false, KICKOFF)
+        .id();
+    let mut runner = scenario.build();
+    runner.state_mut().loop_detection = mode;
+    (runner, kickoff)
+}
+
+/// Path-B DRAW-GATE behavioral test (two halves):
+///   - CONTROL (`setup_3p_draw`, pure lifegain, no poison) is a POSITIVE test that the Path-B
+///     draw gate CERTIFIES a benign no-loss loop: it draws `GameOver{None}` via engine.rs:517
+///     (measured P0 life 22, cycle ~2; and neutering :517 makes this control STOP drawing —
+///     confirmed the draw originates AT that gate, not the strict :1507 detector).
+///   - VARIANT (`setup_3p_poison_draw`, IDENTICAL + a poison-rider creature) locks that a
+///     poison-accruing loop is NOT wrongly drawn: it resolves via the CR 704.5c 10-poison SBA
+///     to `GameOver{Some(P0)}` (measured P0 life 30, poisons [0,10,10], both opponents
+///     eliminated).
+///
+/// SCOPE (measured — do NOT overclaim): this does NOT isolate `has_no_loss_axis`'s Path-B
+/// conjunct. That conjunct IS load-bearing BY CONSTRUCTION (it is the SOLE loss-axis veto at
+/// :512-516, which has NO `== Advantage` backstop — a poison loop that reached the gate would
+/// be wrongly drawn without it), but it is currently NOT runtime-discriminable, so there is NO
+/// claim here that deleting it flips the variant. MEASURED: deleting `has_no_loss_axis` from
+/// Path B leaves the variant terminal `GameOver{Some(P0)}` UNCHANGED — because the variant
+/// never REACHES the gate with poison>0. A single-compound-trigger poison loop DOES reach the
+/// Path-B bridge, but the "you gain N life and [each opponent gets a poison counter]" parser
+/// drop removes the poison conjunct (card-build keeps only `GainLife`), so poison is 0 in the
+/// loop delta at the gate → it draws as a benign lifegain loop and never exercises
+/// has_no_loss_axis's poison veto. No constructible fixture carries poison>0 to the Path-B gate
+/// (the 2-trigger form clears `loop_detect_ring` on its OrderTriggers beats at engine.rs:1307;
+/// the single-compound-trigger form drops the poison at parse). So the Path-B veto is proven
+/// load-bearing IN CODE and its runtime discriminator is WAIVED pending the poison-drop parser
+/// fix.
+#[test]
+fn interactive_recurring_poison_is_not_drawn() {
+    // CONTROL (differential anchor): the SHARED pure-lifegain structure reaches the CR 732.4
+    // gate and DRAWS — establishes that this fixture shape is one that CAN be certified a draw,
+    // so the variant's not-drawing is attributable to the one added line (the poison rider).
+    let (mut control, ckickoff) = setup_3p_draw(LoopDetectionMode::Interactive);
+    let _ = control.cast(ckickoff).resolve();
+    let (_ce, cwf) = drive_collect(&mut control, 500);
+    assert_eq!(
+        cwf,
+        WaitingFor::GameOver { winner: None },
+        "control anchor: the pure-lifegain structure IS certified a CR 732.4 draw — so the ONLY \
+         fixture change (the poison rider) is what makes the variant below not-draw"
+    );
+
+    // VARIANT: identical structure + exactly one poison-rider creature (the single-line delta).
+    let (mut runner, kickoff) = setup_3p_poison_draw(LoopDetectionMode::Interactive);
+    let _ = runner.cast(kickoff).resolve();
+    let (events, wf) = drive_collect(&mut runner, 500);
+
+    // Positive reach-guard (non-vacuity): the poison LOSS axis was genuinely driven to its
+    // CR 704.5c terminal — BOTH opponents reached ≥10 poison and were eliminated. Without this,
+    // "not drawn" could hold trivially (the loop never ran / poison never applied).
+    let poisons: Vec<u32> = runner
+        .state()
+        .players
+        .iter()
+        .map(|p| p.poison_counters)
+        .collect();
+    assert_eq!(
+        runner
+            .state()
+            .players
+            .iter()
+            .filter(|p| p.is_eliminated && p.poison_counters >= 10)
+            .count(),
+        2,
+        "reach-guard: both opponents must be poisoned out (CR 704.5c, ≥10 poison + eliminated), \
+         proving the loss axis genuinely drove a determinate loss; got poisons {poisons:?}"
+    );
+
+    // The guard: the poison loop must NOT be a CR 732.4 draw, and must resolve to the correct
+    // determinate CR 704.5c poison loss (P0 the sole survivor).
+    assert_ne!(
+        wf,
+        WaitingFor::GameOver { winner: None },
+        "recurring poison loop must NOT be certified a CR 732.4 draw; got {wf:?}"
+    );
+    assert_eq!(
+        wf,
+        WaitingFor::GameOver { winner: Some(P0) },
+        "the poison loop resolves to P0's determinate win (both opponents poisoned out), not a draw"
+    );
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, GameEvent::GameOver { winner: None })),
+        "no CR 732.4 draw event may be emitted for a poison-dripping loop"
+    );
+}
+
+/// Drive PassPriority/OrderTriggers beats like `drive_collect`, but stop as soon as
+/// `stop` is satisfied rather than waiting for a non-Priority/OrderTriggers terminal
+/// state. Path C (B5) is a SILENT mark — it never changes `waiting_for` — so
+/// `drive_collect`'s stop condition never fires for it; callers that need to observe a
+/// mid-grind fact (the mark landing, a specific player's priority window) poll state
+/// directly each beat instead.
+fn drive_until(
+    runner: &mut GameRunner,
+    cap: usize,
+    mut stop: impl FnMut(&GameState) -> bool,
+) -> bool {
+    for _ in 0..cap {
+        if stop(runner.state()) {
+            return true;
+        }
+        match runner.state().waiting_for.clone() {
+            WaitingFor::Priority { .. } => {
+                if runner.act(GameAction::PassPriority).is_err() {
+                    return false;
+                }
+            }
+            WaitingFor::OrderTriggers { triggers, .. } => {
+                let order: Vec<usize> = (0..triggers.len()).collect();
+                if runner.act(GameAction::OrderTriggers { order }).is_err()
+                    && runner
+                        .act(GameAction::OrderTriggers { order: vec![] })
+                        .is_err()
+                {
+                    return false;
+                }
+            }
+            _ => return false,
+        }
+    }
+    stop(runner.state())
+}
+
+/// Stop as soon as `controller`'s revocable-∞ capability is marked.
+fn drive_until_marked(runner: &mut GameRunner, controller: PlayerId, cap: usize) -> bool {
+    drive_until(runner, cap, |s| {
+        s.unbounded_resources.contains_key(&controller)
+    })
+}
+
+/// Stop as soon as `player` holds a live priority window (used to reach a specific
+/// player's priority inside a self-sustaining loop, where a plain drive just alternates
+/// between players indefinitely).
+fn advance_to_player_priority(runner: &mut GameRunner, player: PlayerId, cap: usize) -> bool {
+    drive_until(
+        runner,
+        cap,
+        |s| matches!(s.waiting_for, WaitingFor::Priority { player: p } if p == player),
+    )
+}
+
+/// 2-player OPTIONAL beneficial (self-lifegain) loop controlled by P0 — the live B5
+/// producer class (R4: triggered-ability beneficial cascades). No faller (Path A finds no
+/// winner: `find_live_loop_winner` requires an opponent life-faller). P1 holds a castable
+/// Bolt off an untapped Mountain (a meaningful priority action) so the loop is OPTIONAL
+/// (`mandatory == false`); the Bolt targets the life-engine creature for B5-2's defuse.
+/// Returns runner + (kickoff, bolt, life-engine creature id).
+fn setup_2p_optional_beneficial(
+    mode: LoopDetectionMode,
+) -> (GameRunner, ObjectId, ObjectId, ObjectId) {
+    let mut scenario = GameScenario::new_n_player(2, 7);
+    scenario.at_phase(Phase::PreCombatMain);
+    scenario.with_life(P0, 20);
+    scenario.with_life(P1, 20);
+    let engine_creature = scenario
+        .add_creature_from_oracle(P0, "Test Life Engine", 2, 2, SELF_LIFE_ENGINE)
+        .id();
+    scenario.add_basic_land(P1, ManaColor::Red);
+    let bolt = scenario.add_bolt_to_hand(P1);
+    let kickoff = scenario
+        .add_spell_to_hand_from_oracle(P0, "Test Lifegain Kickoff", false, KICKOFF)
+        .id();
+    let mut runner = scenario.build();
+    runner.state_mut().loop_detection = mode;
+    (runner, kickoff, bolt, engine_creature)
+}
+
+/// B5-1 (positive): an OPTIONAL beneficial loop under `Interactive` is neither crowned
+/// (Path A: no faller) nor drawn (Path B: `!mandatory`) — it is marked as a revocable-∞
+/// capability (Path C) and the game continues at live priority.
+#[test]
+fn b5_optional_beneficial_marks_revocable_unbounded() {
+    let (mut runner, kickoff, _bolt, creature) =
+        setup_2p_optional_beneficial(LoopDetectionMode::Interactive);
+    let _ = runner.cast(kickoff).resolve();
+
+    assert!(
+        drive_until_marked(&mut runner, P0, 500),
+        "B5-1: the optional self-lifegain cascade must reach the revocable-∞ mark"
+    );
+
+    // Path C is a silent mark: neither drawn nor crowned. The game continues at Priority.
+    assert!(
+        matches!(runner.state().waiting_for, WaitingFor::Priority { .. }),
+        "B5-1: an optional beneficial loop must fall through to a live priority window, \
+         not GameOver; got {:?}",
+        runner.state().waiting_for
+    );
+    let axes = runner
+        .state()
+        .unbounded_resources
+        .get(&P0)
+        .cloned()
+        .unwrap_or_default();
+    assert!(
+        axes.contains(&ResourceAxis::Life(P0)),
+        "B5-1: P0's revocable-∞ capability must be marked on the Life axis; got {axes:?}"
+    );
+    let enablers = runner
+        .state()
+        .unbounded_loop_enablers
+        .get(&P0)
+        .cloned()
+        .unwrap_or_default();
+    assert!(
+        enablers.contains(&creature),
+        "B5-1: the enabler set must include the life-engine creature; got {enablers:?}"
+    );
+
+    // Control (a): Off never marks — the sampler never records under Off (Interactive-only).
+    let (mut orunner, okickoff, _ob, _oc) = setup_2p_optional_beneficial(LoopDetectionMode::Off);
+    let _ = orunner.cast(okickoff).resolve();
+    let _ = drive_collect(&mut orunner, 500);
+    assert!(
+        !orunner.state().unbounded_resources.contains_key(&P0),
+        "Off must never populate unbounded_resources (Interactive-only)"
+    );
+
+    // Control (b): the mandatory sibling (same SELF_LIFE_ENGINE pattern, no opponent
+    // action — `setup_3p_draw`) reaches Path B's draw, NOT a Path C mark — proves the
+    // `!mandatory` gate discriminates, not merely "any beneficial loop marks."
+    let (mut drunner, dkickoff) = setup_3p_draw(LoopDetectionMode::Interactive);
+    let _ = drunner.cast(dkickoff).resolve();
+    let (_de, dwf) = drive_collect(&mut drunner, 500);
+    assert_eq!(
+        dwf,
+        WaitingFor::GameOver { winner: None },
+        "control: the mandatory sibling must still draw via Path B"
+    );
+    assert!(
+        !drunner.state().unbounded_resources.contains_key(&P0),
+        "control: a mandatory draw (Path B) must not ALSO mark via Path C"
+    );
+}
+
+/// B5-2: an enabler leaving the battlefield (a real zone change through the shared
+/// `apply_zone_exit_cleanup` chokepoint) revokes the whole revocable-∞ capability.
+#[test]
+fn b5_2_enabler_departure_clears_the_mark() {
+    let (mut runner, kickoff, bolt, creature) =
+        setup_2p_optional_beneficial(LoopDetectionMode::Interactive);
+    let _ = runner.cast(kickoff).resolve();
+
+    assert!(
+        drive_until_marked(&mut runner, P0, 500),
+        "reach-guard: must be marked before testing the defuse"
+    );
+    assert!(
+        runner
+            .state()
+            .unbounded_loop_enablers
+            .get(&P0)
+            .is_some_and(|e| e.contains(&creature)),
+        "reach-guard: the creature must actually be a registered enabler"
+    );
+
+    // The driver may have stopped mid-cycle with P0 holding priority; advance to P1's
+    // window so P1 (the Bolt's controller) can cast it.
+    assert!(
+        advance_to_player_priority(&mut runner, P1, 50),
+        "must be able to reach P1's priority window to cast the Bolt"
+    );
+
+    let _ = runner.cast(bolt).target_object(creature).resolve();
+    assert_ne!(
+        runner.state().objects.get(&creature).map(|o| o.zone),
+        Some(engine::types::zones::Zone::Battlefield),
+        "the enabler creature must have left the battlefield (a real zone change)"
+    );
+
+    assert!(
+        !runner.state().unbounded_resources.contains_key(&P0),
+        "B5-2: the enabler's departure must clear unbounded_resources"
+    );
+    assert!(
+        !runner.state().unbounded_loop_enablers.contains_key(&P0),
+        "B5-2: the enabler's departure must clear unbounded_loop_enablers"
+    );
+}
+
+/// Defuse-inert (Team-lead-B hard gate): under `Off`, the SAME real zone-change path
+/// through `apply_zone_exit_cleanup` never populates or mutates either B5 map — the
+/// empty-map guard makes the shared `zones.rs` hook a structural no-op.
+#[test]
+fn defuse_hook_inert_under_off() {
+    let (mut runner, kickoff, bolt, creature) =
+        setup_2p_optional_beneficial(LoopDetectionMode::Off);
+    let _ = runner.cast(kickoff).resolve();
+    let _ = drive_until(&mut runner, 50, |_| false);
+    assert!(
+        runner.state().unbounded_loop_enablers.is_empty(),
+        "reach-guard: Off must never populate unbounded_loop_enablers (only the Interactive \
+         B5 arm does) — this is what makes the defuse hook's guard a no-op below"
+    );
+
+    assert!(
+        advance_to_player_priority(&mut runner, P1, 50),
+        "must be able to reach P1's priority window to cast the Bolt"
+    );
+    let _ = runner.cast(bolt).target_object(creature).resolve();
+    assert_ne!(
+        runner.state().objects.get(&creature).map(|o| o.zone),
+        Some(engine::types::zones::Zone::Battlefield),
+        "positive reach-guard: the creature really did leave the battlefield under Off too"
+    );
+
+    assert!(
+        runner.state().unbounded_resources.is_empty()
+            && runner.state().unbounded_loop_enablers.is_empty(),
+        "Off: both maps must stay empty across a real battlefield departure — the shared \
+         zones.rs hook body never executes when the enabler map starts empty"
+    );
+}
+
+/// LOW-2: the AI's `RespondToShortcut` decision self-preserves. Positive: the polled
+/// opponent with a meaningful action (a castable Bolt) Shortens rather than Accepting its
+/// own loss, and applying that response actually hands it a real priority window.
+/// Control: the SAME fixture/flow's second APNAP responder — who holds no meaningful
+/// action — gets Accept from the identical `smart_shortcut_response` call.
+#[test]
+fn low2_smart_shortcut_self_preservation() {
+    // Positive: P1 (has the Bolt) self-preserves via Shorten.
+    let (mut runner, kickoff) = setup_3p_optional_cascade(LoopDetectionMode::Interactive);
+    let _ = runner.cast(kickoff).resolve();
+    let (_events, wf) = drive_collect(&mut runner, 500);
+    let WaitingFor::LoopShortcut { controller, .. } = wf else {
+        panic!("optional cascade must OFFER a LoopShortcut, got {wf:?}");
+    };
+    assert_eq!(controller, P0);
+    runner
+        .act(GameAction::DeclareShortcut {
+            count: IterationCount::UntilLethal,
+            template: None,
+        })
+        .expect("P0 declares");
+    assert!(
+        matches!(
+            runner.state().waiting_for,
+            WaitingFor::RespondToShortcut { player, .. } if player == P1
+        ),
+        "positive reach-guard: P1 must be prompted before the AI decision is tested"
+    );
+
+    let p1_response = engine::ai_support::smart_shortcut_response(runner.state(), P1);
+    assert_eq!(
+        p1_response,
+        ShortcutResponse::Shorten { at_iteration: 0 },
+        "P1 holds a meaningful action (Bolt) ⇒ smart_shortcut_response must self-preserve \
+         via Shorten, not Accept its own loss"
+    );
+    runner
+        .act(GameAction::RespondToShortcut {
+            response: p1_response,
+        })
+        .expect("apply P1's AI decision");
+    assert_eq!(
+        runner.state().waiting_for,
+        WaitingFor::Priority { player: P1 },
+        "Shorten hands P1 a real priority window — it survives"
+    );
+    assert!(
+        life(&runner, P1) > 0,
+        "P1 is alive — the loop was not auto-taken"
+    );
+
+    // Control: the identical fixture/flow, but P1 Accepts (submitted manually, not via the
+    // AI, so the APNAP queue advances instead of stopping) so the SECOND responder (P2,
+    // who holds no meaningful action) is reached. `smart_shortcut_response` must Accept.
+    let (mut crunner, ckickoff) = setup_3p_optional_cascade(LoopDetectionMode::Interactive);
+    let _ = crunner.cast(ckickoff).resolve();
+    let (_ce, cwf) = drive_collect(&mut crunner, 500);
+    assert!(matches!(cwf, WaitingFor::LoopShortcut { .. }));
+    crunner
+        .act(GameAction::DeclareShortcut {
+            count: IterationCount::UntilLethal,
+            template: None,
+        })
+        .expect("declare");
+    assert!(
+        matches!(
+            crunner.state().waiting_for,
+            WaitingFor::RespondToShortcut { player, .. } if player == P1
+        ),
+        "positive reach-guard: P1 is first in APNAP order"
+    );
+    crunner
+        .act(GameAction::RespondToShortcut {
+            response: ShortcutResponse::Accept,
+        })
+        .expect("P1 accepts (manually, to advance the APNAP queue to P2)");
+    assert!(
+        matches!(
+            crunner.state().waiting_for,
+            WaitingFor::RespondToShortcut { player, .. } if player == P2
+        ),
+        "positive reach-guard: P2 is prompted second"
+    );
+
+    let p2_response = engine::ai_support::smart_shortcut_response(crunner.state(), P2);
+    assert_eq!(
+        p2_response,
+        ShortcutResponse::Accept,
+        "control: P2 holds no meaningful action ⇒ smart_shortcut_response must Accept \
+         (revert-failing: an unconditional-Accept revert makes P1's response above Accept \
+         too, which crowns P0's win with P1 still a faller — the Shorten assertion above \
+         would fail first)"
+    );
 }

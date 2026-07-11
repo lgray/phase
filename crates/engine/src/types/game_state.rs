@@ -7196,6 +7196,20 @@ pub struct GameState {
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub unbounded_resources: BTreeMap<PlayerId, BTreeSet<ResourceAxis>>,
 
+    /// CR 104.4b / CR 732.2a: for each controller with a marked revocable-∞ capability
+    /// (`unbounded_resources`), the set of battlefield permanents whose presence enables the
+    /// loop (the stable recurring board: `battlefield_ids(prior) ∩ battlefield_ids(state)`).
+    /// Populated ONLY by the Interactive B5 bridge arm (`interactive_loop_bridge` Path C);
+    /// the `apply_zone_exit_cleanup` defuse hook clears the whole capability when ANY member
+    /// leaves the battlefield (CR 110.1 / CR 700.4).
+    ///
+    /// INTENTIONALLY EXCLUDED from `PartialEq`, `normalize_for_loop`, and `loop_fingerprint`
+    /// (same family as `unbounded_resources`): revocation annotation, not rules state for
+    /// equality — a populated live state must still compare equal to the empty-enabler ring
+    /// snapshots, or loop detection yields false negatives.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub unbounded_loop_enablers: BTreeMap<PlayerId, BTreeSet<ObjectId>>,
+
     /// Oracle ids (fallback: object names) of cards whose abilities hit
     /// `Effect::Unimplemented` at resolution this game. Diagnostics only —
     /// records *runtime resolution hits*, is game-scoped, and survives zone
@@ -9622,6 +9636,7 @@ impl GameState {
             debug_mode: false,
             debug_permitted: BTreeSet::new(),
             unbounded_resources: BTreeMap::new(),
+            unbounded_loop_enablers: BTreeMap::new(),
             unimplemented_oracle_ids: BTreeSet::new(),
             pending_trigger_abandons: Vec::new(),
             loop_detection: LoopDetectionMode::Off,
@@ -10222,12 +10237,28 @@ impl GameState {
         entry.extend(axes.iter().copied());
     }
 
+    /// CR 104.4b / CR 110.1: single write authority for `unbounded_loop_enablers` —
+    /// only the Interactive B5 bridge arm (`interactive_loop_bridge` Path C) calls
+    /// this. Overwrites (idempotent re-registration each re-detection beat with the
+    /// same stable board). A no-op for an empty set (nothing to defuse on later).
+    pub fn register_unbounded_loop_enablers(
+        &mut self,
+        controller: PlayerId,
+        enablers: BTreeSet<ObjectId>,
+    ) {
+        if enablers.is_empty() {
+            return;
+        }
+        self.unbounded_loop_enablers.insert(controller, enablers);
+    }
+
     /// CR 732.2a: clear every unbounded-resource axis recorded for `controller`.
     /// Whole-player clear: with the infinite-mana toggle as the only PR-6 producer
     /// this matches today's all-or-nothing disable; an axis-scoped clear can be
     /// added when multiple producers coexist on one controller.
     pub fn clear_unbounded_loop(&mut self, controller: PlayerId) {
         self.unbounded_resources.remove(&controller);
+        self.unbounded_loop_enablers.remove(&controller); // keep the two maps in lockstep
     }
 }
 
@@ -10429,6 +10460,7 @@ fn _gamestate_partition_is_total(s: &GameState) {
         debug_mode: _,
         debug_permitted: _,
         unbounded_resources: _,
+        unbounded_loop_enablers: _,
         unimplemented_oracle_ids: _,
         pending_trigger_abandons: _,
         loop_detection: _,
@@ -11240,6 +11272,78 @@ mod tests {
         assert!(
             loop_states_equal_modulo_resources(&a, &b),
             "the PR-0/PR-2 modulo path must exclude unbounded_resources"
+        );
+    }
+
+    /// PR-7 Phase 4c (B5, R3): sibling of `unbounded_resources_excluded_from_loop_equality`
+    /// — the new `unbounded_loop_enablers` field follows the identical exclusion-by-omission
+    /// discipline (never appears in the `impl PartialEq` `&&` chain).
+    ///
+    /// REVERT-PROBE: add `&& self.unbounded_loop_enablers == other.unbounded_loop_enablers`
+    /// to the manual `impl PartialEq for GameState` → all three assertions below fail.
+    #[test]
+    fn unbounded_loop_enablers_excluded_from_loop_equality() {
+        use crate::analysis::resource::loop_states_equal_modulo_resources;
+
+        let a = GameState::new_two_player(7);
+        let mut b = a.clone();
+        b.register_unbounded_loop_enablers(PlayerId(0), BTreeSet::from([ObjectId(1)]));
+        // Sanity: the populated field really does differ between the two states.
+        assert_ne!(
+            a.unbounded_loop_enablers, b.unbounded_loop_enablers,
+            "fixture must actually differ in unbounded_loop_enablers"
+        );
+
+        assert!(
+            a == b,
+            "manual PartialEq must exclude unbounded_loop_enablers (revocation annotation)"
+        );
+        assert!(
+            loop_states_equal(&a, &b),
+            "loop_states_equal (CR 104.4b/732.2a) must exclude unbounded_loop_enablers"
+        );
+        assert!(
+            loop_states_equal_modulo_resources(&a, &b),
+            "the PR-0/PR-2 modulo path must exclude unbounded_loop_enablers"
+        );
+    }
+
+    /// PR-7 Phase 4c (B5 defuse): `clear_unbounded_loop` must remove BOTH
+    /// `unbounded_resources` and `unbounded_loop_enablers` for the controller in
+    /// lockstep — the `zones.rs` defuse hook relies on a single call revoking the
+    /// whole capability.
+    #[test]
+    fn clear_unbounded_loop_removes_both_maps_in_lockstep() {
+        let mut state = GameState::new_two_player(7);
+        state.mark_unbounded_loop(
+            PlayerId(0),
+            &[crate::analysis::resource::ResourceAxis::Life(PlayerId(0))],
+        );
+        state.register_unbounded_loop_enablers(PlayerId(0), BTreeSet::from([ObjectId(1)]));
+        assert!(state.unbounded_resources.contains_key(&PlayerId(0)));
+        assert!(state.unbounded_loop_enablers.contains_key(&PlayerId(0)));
+
+        state.clear_unbounded_loop(PlayerId(0));
+
+        assert!(
+            !state.unbounded_resources.contains_key(&PlayerId(0)),
+            "clear_unbounded_loop must remove the unbounded_resources entry"
+        );
+        assert!(
+            !state.unbounded_loop_enablers.contains_key(&PlayerId(0)),
+            "clear_unbounded_loop must remove the unbounded_loop_enablers entry"
+        );
+    }
+
+    /// `register_unbounded_loop_enablers` is a no-op for an empty set — no entry to
+    /// defuse on later (mirrors `mark_unbounded_loop`'s idempotent set-union contract).
+    #[test]
+    fn register_unbounded_loop_enablers_empty_set_is_noop() {
+        let mut state = GameState::new_two_player(7);
+        state.register_unbounded_loop_enablers(PlayerId(0), BTreeSet::new());
+        assert!(
+            !state.unbounded_loop_enablers.contains_key(&PlayerId(0)),
+            "an empty enabler set must not create an entry"
         );
     }
 

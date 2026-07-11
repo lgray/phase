@@ -3016,12 +3016,13 @@ pub fn candidate_actions_broad_with_probe(
                 Some(*controller),
             )]
         }
-        // CR 732.2b/c: an opponent answers a loop-shortcut offer. Phase 3 always accepts
-        // (smart `Shorten` heuristics are Phase 4).
+        // CR 732.2b/c: an opponent answers a loop-shortcut offer. PR-7 Phase 4c (LOW-2):
+        // self-preservation via the single-authority `smart_shortcut_response` — Shorten
+        // when the polled player has a meaningful way to break the loop, else Accept.
         WaitingFor::RespondToShortcut { player, .. } => {
             vec![candidate(
                 GameAction::RespondToShortcut {
-                    response: crate::analysis::loop_check::ShortcutResponse::Accept,
+                    response: crate::ai_support::smart_shortcut_response(state, *player),
                 },
                 TacticalClass::Utility,
                 Some(*player),
