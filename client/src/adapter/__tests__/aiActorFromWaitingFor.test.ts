@@ -8,8 +8,8 @@ import {
 import { aiActorFromWaitingFor } from "../p2p-adapter";
 
 // CR 732.2a: the host/P2P AI driver's actor gate must admit LoopShortcut (whose
-// data field is `controller`, not `player`) into the engine-derived authorized-
-// submitter path, so an AI-owned controller seat produces DeclareShortcut instead
+// data field is `proposer`, not `player`) into the engine-derived authorized-
+// submitter path, so an AI-owned proposer seat produces DeclareShortcut instead
 // of hanging the game on an unhandled offer.
 
 const seats: SeatKind[] = [

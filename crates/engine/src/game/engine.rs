@@ -4313,8 +4313,8 @@ fn apply_action(
             );
         }
         // CR 732.2a: the proposer DECLINES the offered shortcut (suggesting is optional).
-        // Controller-only authorization is enforced upstream by `check_actor_authorization`, so
-        // `controller`/`certificate`/`schema` are unused here (`..`).
+        // Proposer-only authorization is enforced upstream by `check_actor_authorization`, so
+        // `proposer`/`certificate`/`schema` are unused here (`..`).
         (WaitingFor::LoopShortcut { .. }, GameAction::DeclineShortcut) => {
             return handle_decline_shortcut(state, &mut events);
         }

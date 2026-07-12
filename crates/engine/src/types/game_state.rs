@@ -4326,7 +4326,7 @@ pub enum WaitingFor {
         certificate: crate::analysis::loop_check::LoopCertificate,
         /// CR 732.2a: the READ-side decision schema the frontend renders to declare the
         /// shortcut (open per-iteration choices + their legal option sets). Built against the
-        /// controller's full view at offer construction; hidden-info legal targets are redacted
+        /// proposer's full view at offer construction; hidden-info legal targets are redacted
         /// per-viewer in `game::visibility::filter_state_for_viewer`. `#[serde(default)]` for
         /// forward-compatible deserialization of pre-schema snapshots.
         #[serde(default)]
