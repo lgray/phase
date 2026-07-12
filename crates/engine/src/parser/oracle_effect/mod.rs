@@ -12456,33 +12456,49 @@ fn try_parse_for_each_effect(text: &str, ctx: &mut ParseContext) -> Option<Parse
         } else {
             after_counter_on
         };
-        // CR 608.2c: "put a counter on that <type> for each X" — when the
-        // counter target is an anaphoric back-reference (`that creature`,
-        // `that permanent`, etc.), `parse_subject_application` signals it
-        // with `inherits_parent: true` and returns the type filter as a
-        // suggestion. The contract documented inside `parse_subject_application`
-        // is that the call site must lower this to `TargetFilter::ParentTarget`
-        // so the counter lands on the inherited parent target (or, in passive
-        // contexts where there is no parent, on the post-replacement event
-        // recipient via the caller's post-parse rewrite). Without this, the
-        // typed `Creature` filter leaks through and the counter is placed on
-        // an unrelated creature.
-        let target = parse_subject_application(counter_target_text, &mut ParseContext::default())
-            .map(|app| {
-                if app.inherits_parent {
-                    TargetFilter::ParentTarget
-                } else {
-                    app.affected
-                }
-            })
-            .unwrap_or_else(|| {
-                ctx.push_diagnostic(OracleDiagnostic::TargetFallback {
-                    context: "unrecognized counter target".into(),
-                    text: after_counter_on.trim().into(),
-                    line_index: 0,
-                });
-                TargetFilter::Any
-            });
+        // CR 608.2c + CR 111.10: a same-chain counter anaphor ("it"/"that token"/
+        // "the token"/…) placed after a token-creating clause binds to the
+        // just-created token (`LastCreated`). The for-each counter dispatch
+        // intercepts these clauses before the shared put-counter path, so it must
+        // consult the SAME binding helper as `resolve_counter_placement_target`,
+        // using the REAL seeded `ctx` (not a fresh default) so
+        // `token_created_in_chain` reaches it. Match the Odds ("... on it for each
+        // creature your opponents control") and the "that token" for-each cluster
+        // flip from SelfRef/ParentTarget to the created token. `None` ⇒ keep the
+        // `parse_subject_application` path, which correctly yields explicit typed
+        // targets (Immaculate Magistrate's "target creature" stays `Typed`).
+        let counter_target_text_lower = counter_target_text.to_lowercase();
+        let created_token_binding =
+            counter::counter_anaphor_created_token_binding(&counter_target_text_lower, ctx);
+        let target = created_token_binding.unwrap_or_else(|| {
+            // CR 608.2c: "put a counter on that <type> for each X" — when the
+            // counter target is an anaphoric back-reference (`that creature`,
+            // `that permanent`, etc.), `parse_subject_application` signals it
+            // with `inherits_parent: true` and returns the type filter as a
+            // suggestion. The contract documented inside `parse_subject_application`
+            // is that the call site must lower this to `TargetFilter::ParentTarget`
+            // so the counter lands on the inherited parent target (or, in passive
+            // contexts where there is no parent, on the post-replacement event
+            // recipient via the caller's post-parse rewrite). Without this, the
+            // typed `Creature` filter leaks through and the counter is placed on
+            // an unrelated creature.
+            parse_subject_application(counter_target_text, &mut ParseContext::default())
+                .map(|app| {
+                    if app.inherits_parent {
+                        TargetFilter::ParentTarget
+                    } else {
+                        app.affected
+                    }
+                })
+                .unwrap_or_else(|| {
+                    ctx.push_diagnostic(OracleDiagnostic::TargetFallback {
+                        context: "unrecognized counter target".into(),
+                        text: after_counter_on.trim().into(),
+                        line_index: 0,
+                    });
+                    TargetFilter::Any
+                })
+        });
         return Some(parsed_clause(Effect::PutCounter {
             counter_type,
             count: quantity,

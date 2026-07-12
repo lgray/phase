@@ -55,6 +55,7 @@ mod consuming_vapors_rebound;
 mod copy_retarget_past_rider;
 mod copy_token_except_keyword_and_quoted_ability;
 mod council_of_four_nth_per_turn;
+mod counter_anaphor_created_token_binding;
 mod counter_double_redirect_choice;
 mod counter_spell_zone_redirect;
 mod court_of_cunning_multi_target_mill;
