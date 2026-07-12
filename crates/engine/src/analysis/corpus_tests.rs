@@ -31,7 +31,7 @@
 //! revert-probe pin that dispatch.
 
 use crate::analysis::corpus;
-use crate::analysis::resource::ResourceAxis;
+use crate::analysis::resource::{CounterClass, ObjectClass, ResourceAxis};
 use crate::analysis::{detect_loop, BoardDelta, LoopCertificate, LoopProbe, WinKind};
 use crate::database::CardDatabase;
 use crate::game::derived_views::derive_views;
@@ -473,6 +473,63 @@ fn drive_combo_d2_kilo_freed_relic() {
     let cert = corpus::drive_offline_kilo_freed_relic(card_db())
         .expect("Kilo + Freed + Relic must confirm infinite proliferate triggers");
     assert_combo(1, &cert);
+}
+
+/// PR-7 #8 (offline acceptance): a REAL Pentad Prism seeded with ≥1 charge counter,
+/// under the Kilo/Freed/Relic proliferate engine, is certified as an infinite
+/// preserved-`Generic` charge-counter growth loop — `WinKind::Advantage` (CR 104.4b:
+/// an optional loop is never a draw) naming the counter axis
+/// `Counter(Other, Other)` (Pentad is a non-creature artifact ⇒ `ObjectClass::Other`;
+/// charge is a `Generic` counter ⇒ `CounterClass::Other`, CR 122.1).
+///
+/// A2 (measured, not assumed): the cert being `Some` proves `detect_loop`'s
+/// recurrence gate matched — the constant-depth `loop_states_equal_modulo_resources`
+/// FAILS on the growing charge (Generic is preserved), so this certification depends
+/// on the new `loop_states_cover_modulo_counter_growth` disjunct. Reverting that
+/// disjunct flips this `expect` to a panic (no cert).
+#[test]
+fn drive_pentad_prism_charge_growth_certificate() {
+    let cert = corpus::drive_offline_pentad_prism(card_db()).expect(
+        "Pentad Prism (seeded ≥1 charge) under the proliferate engine must confirm an \
+         infinite charge-counter growth loop",
+    );
+    assert_eq!(
+        cert.win_kind,
+        WinKind::Advantage,
+        "a charge-counter growth loop is a CR 104.4b optional advantage engine, not a win"
+    );
+    assert!(
+        cert.covers(&[ResourceAxis::Counter(
+            CounterClass::Other,
+            ObjectClass::Other
+        )]),
+        "certificate must name the unbounded charge counter axis (got {:?})",
+        cert.unbounded
+    );
+}
+
+/// PR-7 #5 (Sunburst 0-charge dead-loop CONTROL, paired with #8): a Pentad Prism
+/// seeded with ZERO charge counters (a generic-mana Sunburst cast ⇒ 0 charge) has no
+/// counter for proliferate to grow, so the cycle degrades to the pure Kilo proliferate
+/// loop — the cert is still `Some` (certified via the constant-depth equality path on
+/// the identical board) but carries NO counter axis. The seed is thus load-bearing:
+/// #8's `Counter(Other, Other)` axis appears ONLY because a charge counter was present
+/// to grow.
+#[test]
+fn drive_pentad_prism_zero_charge_has_no_counter_axis() {
+    let cert = corpus::drive_offline_pentad_prism_seeded(card_db(), 0).expect(
+        "a 0-charge Pentad still rides the pure Kilo proliferate loop (board identical) \
+         and must confirm via the equality path",
+    );
+    assert!(
+        !cert
+            .unbounded
+            .iter()
+            .any(|a| matches!(a, ResourceAxis::Counter(..))),
+        "a 0-charge Pentad has no counter to grow ⇒ the cert must NOT name a counter axis \
+         (got {:?})",
+        cert.unbounded
+    );
 }
 
 /// #10 PRIEST OF TITANIA + UMBRAL MANTLE — infinite green mana.

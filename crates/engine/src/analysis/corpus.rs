@@ -1154,6 +1154,16 @@ pub(crate) fn resolve_to_priority(probe: &mut LoopProbe, prefer_target: Option<T
                     break;
                 }
             }
+            // CR 701.34a: proliferate — choose EVERY eligible counter-bearer
+            // (maximal proliferate). A preserved-`Generic` growth loop (Pentad
+            // Prism charge / The One Ring burden) grows all its markers each cycle;
+            // selecting the full eligible set is the general, card-agnostic answer.
+            WaitingFor::ProliferateChoice { eligible, .. } => {
+                let targets = eligible.clone();
+                if probe.act(GameAction::SelectTargets { targets }).is_err() {
+                    break;
+                }
+            }
             _ => break,
         }
     }
@@ -1546,6 +1556,69 @@ pub(crate) fn drive_offline_kilo_freed_relic(db: &CardDatabase) -> Option<LoopCe
     run_combo(board, |probe| {
         // Tap Kilo via Relic's tap-a-creature cost (fires Kilo's trigger), resolve,
         // then untap Kilo via Freed.
+        activate_and_resolve(
+            probe,
+            relic,
+            relic_tap_creature,
+            Some(TargetRef::Object(kilo)),
+        );
+        activate_and_resolve(probe, freed, freed_untap, Some(TargetRef::Object(kilo)));
+    })
+}
+
+/// PR-7 acceptance — PENTAD PRISM under the KILO + FREED + RELIC proliferate engine.
+/// The same mana-neutral proliferate loop as [`drive_offline_kilo_freed_relic`], but
+/// with a real Pentad Prism seeded with one charge counter on the board. Each cycle's
+/// proliferate (CR 701.34a) drives the preserved-`Generic` charge counter (CR 122.1)
+/// strictly upward by one; the board is otherwise identical, so the cycle is certified
+/// via `loop_states_cover_modulo_counter_growth` (the constant-depth equality path
+/// fails on the growing charge). Certificate classifies `WinKind::Advantage`
+/// (CR 104.4b optional loop), naming the counter axis `Counter(Other, Other)`.
+pub(crate) fn drive_offline_pentad_prism(db: &CardDatabase) -> Option<LoopCertificate> {
+    drive_offline_pentad_prism_seeded(db, 1)
+}
+
+/// Seeded core of [`drive_offline_pentad_prism`]. `seed_charge` is the number of charge
+/// counters directly placed on the installed Pentad Prism (Sunburst, CR 702.44a, only
+/// runs as an enters replacement for a CAST spell, so a directly-installed Pentad enters
+/// with zero). `seed_charge == 0` is the dead-loop CONTROL: proliferate finds no eligible
+/// counter to grow, so the cycle degrades to the pure Kilo proliferate loop (board
+/// identical, cert carries the proliferate trigger axis but NO counter axis).
+pub(crate) fn drive_offline_pentad_prism_seeded(
+    db: &CardDatabase,
+    seed_charge: u32,
+) -> Option<LoopCertificate> {
+    let mut board = build_board(db, CORPUS[1].cards)?;
+    let kilo = board.ids[0];
+    let freed = board.ids[1];
+    let relic = board.ids[2];
+    attach_aura(board.runner.state_mut(), freed, kilo);
+    let pentad = install_on_battlefield(board.runner.state_mut(), db, "Pentad Prism", P0)?;
+    {
+        let state = board.runner.state_mut();
+        if seed_charge > 0 {
+            if let Some(o) = state.objects.get_mut(&pentad) {
+                o.counters.insert(
+                    crate::types::counter::CounterType::Generic("charge".to_string()),
+                    seed_charge,
+                );
+            }
+        }
+        settle_layers(state);
+    }
+    let relic_tap_creature = board.runner.state().objects[&relic]
+        .abilities
+        .iter()
+        .position(|a| {
+            matches!(
+                a.cost,
+                Some(crate::types::ability::AbilityCost::TapCreatures { .. })
+            )
+        })?;
+    let freed_untap = ability_index_where(board.runner.state(), freed, is_untap_effect)?;
+    run_combo(board, |probe| {
+        // Tap Kilo via Relic's tap-a-creature cost (fires Kilo's proliferate trigger,
+        // which grows Pentad's charge), resolve, then untap Kilo via Freed.
         activate_and_resolve(
             probe,
             relic,

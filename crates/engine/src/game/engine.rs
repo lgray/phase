@@ -613,7 +613,15 @@ fn interactive_loop_bridge(state: &mut GameState, result: &mut ActionResult) {
             // this in-code load-bearing-by-construction proof is the substitute. See the
             // `interactive_recurring_poison_is_not_drawn` Path-B behavioral test.
             if (crate::analysis::resource::loop_states_equal_modulo_resources(prior, state)
-                || crate::analysis::resource::loop_states_cover_modulo_growth(prior, state))
+                || crate::analysis::resource::loop_states_cover_modulo_growth(prior, state)
+                // CR 122.1 + CR 104.4b: OR a pure preserved-`Generic` counter-growth
+                // cover (proliferate/charge Pentad Prism, burden The One Ring). Live
+                // revocable-∞ mark ONLY — this Path-C arm routes to `mark_unbounded_loop`
+                // + enabler registration below, which NEVER produces a GameOver; an
+                // over-claim is a revocable capability, not a wrongful game-end.
+                || crate::analysis::resource::loop_states_cover_modulo_counter_growth(
+                    prior, state,
+                ))
                 && delta.is_net_progress()
                 && has_no_loss_axis(&delta)
                 && crate::analysis::loop_check::classify_win_kind(controller, &delta)

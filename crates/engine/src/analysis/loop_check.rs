@@ -219,6 +219,13 @@ pub fn detect_loop(
         || crate::analysis::resource::loop_states_cover_modulo_object_growth(
             cycle_start,
             cycle_end,
+        )
+        // CR 122.1 + CR 732.2a: OR covered by pure preserved-`Generic` counter
+        // growth (the proliferate/charge Pentad Prism, burden The One Ring shape).
+        // Offline Advantage certification only — this seam never crowns a GameOver.
+        || crate::analysis::resource::loop_states_cover_modulo_counter_growth(
+            cycle_start,
+            cycle_end,
         ))
     {
         return None;
@@ -357,6 +364,17 @@ pub(crate) fn live_mandatory_loop_winner(
     // CR 732.2a board-recurrence gate: constant-depth exact recurrence OR a
     // growing-cascade covering pair (the ≥3p fan-out grows the stack without bound,
     // so the exact-depth equality never matches — the coverability path is required).
+    //
+    // DELIBERATE NON-WIRING (Residual B): `loop_states_cover_modulo_counter_growth`
+    // is intentionally NOT a disjunct here. This is a GameOver-capable winner path,
+    // and it is unreachable for a pure charge/burden growth loop anyway — such a
+    // loop has no life/poison faller, so the `nonfallers.len() != 1` gate above
+    // early-returns `None` before this recurrence gate is ever consulted. Adding the
+    // disjunct here would be dead code today AND a soundness hazard tomorrow (it
+    // would be the seam a future counter-growth loop that ALSO carries a life-faller
+    // could ride into a GameOver). Left fail-closed by design; the counter-growth
+    // cover only ever routes through the offline `detect_loop` cert and the live
+    // Path-C revocable capability mark, neither of which can end the game.
     if !(loop_states_equal_modulo_resources(cycle_start, cycle_end)
         || loop_states_cover_modulo_growth(cycle_start, cycle_end))
     {

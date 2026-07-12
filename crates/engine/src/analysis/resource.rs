@@ -1152,6 +1152,186 @@ pub(crate) fn loop_states_cover_modulo_fodder_growth(
     true
 }
 
+// ===========================================================================
+// PR-7 — preserved-`Generic`-counter growth cover (the proliferate/charge axis).
+//
+// The counter analogue of `loop_states_cover_modulo_object_growth`: `current`'s
+// board equals `prior`'s except that one or more PRESERVED `Generic` object
+// counters (charge / burden / oil / …) strictly grew across the cycle — the
+// signature of a proliferate loop pumping Pentad Prism's charge counter or The
+// One Ring's burden counter (CR 122.1). `Generic` is the ONLY growable axis: the
+// monotone counters (+1/+1, loyalty, defense) are already projected out by
+// `project_out_resources`, and the remaining preserved counters (stun / shield /
+// keyword / time / fade / age / lore) are SBA- or duration-gating, so a loop that
+// touches one is making a real board change, not a monotone pump.
+// ===========================================================================
+
+/// CR 122.1: direction a candidate loop drives PRESERVED `Generic` object counters
+/// (charge / burden / oil) across one cycle. `Generic` is the only growable axis
+/// here — see `classify_generic_counter_growth` for the per-type partition.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CounterGrowthDisposition {
+    /// ≥1 `Generic` counter strictly rose and none fell — the ω-cover candidate.
+    StrictGrowth,
+    /// No `Generic` counter moved — a constant-depth loop, the equality path's job.
+    Stable,
+    /// Some `Generic` counter fell — an ∞-consume trap; fail-closed reject.
+    Consumed,
+}
+
+/// CR 122.1: classify how a cycle drives PRESERVED `Generic` object counters. This
+/// `match` IS the per-`CounterType` classification table for the counter-growth
+/// cover — it is WILDCARD-FREE by construction, so a new `CounterType` variant
+/// will not compile until it is explicitly classified here (mirrors
+/// `CounterType::is_monotone_loop_resource`, which governs the projection). Kept in
+/// lockstep with that partition: monotone counters are `project_out_resources`'d
+/// away, the non-`Generic` preserved counters gate SBAs/durations and so must
+/// compare strict-equal, and only `Generic` is a pure pumped marker.
+///
+/// `Consumed` takes precedence over `StrictGrowth` (any decrease anywhere ⇒
+/// `Consumed`, even if a different counter grew) — fail-closed against a loop that
+/// both spends and makes a finite `Generic` counter.
+fn classify_generic_counter_growth(
+    prior: &GameState,
+    current: &GameState,
+) -> CounterGrowthDisposition {
+    let mut any_growth = false;
+    for (id, po) in prior.objects.iter() {
+        // A set difference (an object present on only one side) is caught by the
+        // downstream `loop_states_equal_modulo_resources` object-set compare; here
+        // we only classify counter movement on SHARED objects.
+        let Some(co) = current.objects.get(id) else {
+            continue;
+        };
+        for ct in po.counters.keys().chain(co.counters.keys()) {
+            let growable = match ct {
+                // CR 122.1: a `Generic` marker is a pure pumped resource (charge /
+                // burden / oil / quest) — the only growable axis of this cover.
+                CounterType::Generic(_) => true,
+                // CR 122.1a + CR 613.4c / CR 306.5b / CR 310.4c: monotone P/T,
+                // loyalty, and defense counters are projected out of loop-equality
+                // by `project_out_resources`, so their growth is not this axis.
+                CounterType::Plus1Plus1
+                | CounterType::Minus1Minus1
+                | CounterType::PowerToughness { .. }
+                | CounterType::Loyalty
+                | CounterType::Defense => false,
+                // CR 122.1b/c/d, 702.62a/63a, 702.32a, 702.24a, 714.3: preserved
+                // but SBA-/duration-gating (keyword / stun / shield / time / fade /
+                // age / lore) — a loop that moves one is a real board change, so it
+                // must compare strict-equal, never be equalized away as "growth".
+                CounterType::Keyword(_)
+                | CounterType::Stun
+                | CounterType::Lore
+                | CounterType::Time
+                | CounterType::Fade
+                | CounterType::Age
+                | CounterType::Shield => false,
+            };
+            if !growable {
+                continue;
+            }
+            let (b, a) = (
+                po.counters.get(ct).copied().unwrap_or(0),
+                co.counters.get(ct).copied().unwrap_or(0),
+            );
+            if a < b {
+                return CounterGrowthDisposition::Consumed;
+            }
+            if a > b {
+                any_growth = true;
+            }
+        }
+    }
+    if any_growth {
+        CounterGrowthDisposition::StrictGrowth
+    } else {
+        CounterGrowthDisposition::Stable
+    }
+}
+
+/// CR 122.1: return a clone of `current` with every SHARED object's `Generic`
+/// counter counts overwritten by `prior`'s — the projection that lets a strict-
+/// `Generic`-growth cover reuse the constant-depth equality path. ONLY `Generic`
+/// counts are touched: monotone counters are projected out downstream, and the
+/// other preserved counters are left intact so a consumed shield/stun still breaks
+/// equality (the `Consumed`/`Stable` gate already rejected pure-`Generic` motion in
+/// the wrong direction). Objects present on only one side keep their counters and
+/// are caught by the downstream object-set compare.
+fn equalize_generic_counters(prior: &GameState, current: &GameState) -> GameState {
+    let mut eq = current.clone();
+    for (id, co) in eq.objects.iter_mut() {
+        if let Some(po) = prior.objects.get(id) {
+            co.counters
+                .retain(|ct, _| !matches!(ct, CounterType::Generic(_)));
+            for (ct, n) in po
+                .counters
+                .iter()
+                .filter(|(ct, _)| matches!(ct, CounterType::Generic(_)))
+            {
+                co.counters.insert(ct.clone(), *n);
+            }
+        }
+    }
+    eq
+}
+
+/// CR 122.1 + CR 732.2a: does `current` cover `prior` by pure PRESERVED-`Generic`
+/// counter growth — the proliferate/charge (Pentad Prism) and burden (The One
+/// Ring) ω-cover shape? Returns `true` iff (i) ≥1 `Generic` object counter strictly
+/// grew and none fell across the cycle, and (ii) equalizing those `Generic` counts
+/// back to `prior`'s makes the two boards equal-modulo-resources.
+///
+/// # Fail-closed direction (strict growth ONLY)
+///
+/// `Stable` (no `Generic` motion) is rejected — a constant-depth loop is the
+/// existing `loop_states_equal_modulo_resources` path's job, not this one.
+/// `Consumed` (any `Generic` counter fell) is rejected — a loop that spends a
+/// finite `Generic` counter is not an unbounded pump but an ∞-consume trap, and
+/// the extrapolation would be unsound. Only `StrictGrowth` proceeds.
+///
+/// # New `Generic`-counter projection axis (bounded by revocability, below)
+///
+/// This predicate rides the FIREWALL-FREE constant-depth
+/// `loop_states_equal_modulo_resources` (which requires normalized-stack EQUALITY),
+/// NOT the object-growth cover's stack-clearing Karp–Miller path. It therefore
+/// inherits that base's documented dormant-condition extrapolation assumption
+/// (a dormant intervening-if / static / replacement reading a projected resource
+/// could arm mid-extrapolation). Beyond that inherited surface, `equalize_generic_counters`
+/// projects out a `Generic` object-counter axis the base itself does NOT project
+/// (the base projects player consumables + monotone object counters only) — so a
+/// dormant condition reading a GROWING `Generic` counter (e.g. "as long as ~ has
+/// three or more charge counters, …") is a genuinely-new projected-axis observer
+/// this predicate introduces. That is sound here not by parity but by the
+/// revocability bound below: the sole consequence is an Advantage-classed offer /
+/// revocable mark, never a `GameOver`, so any such mis-extrapolation is a
+/// declinable / revocable over-claim, not a wrongful game-end.
+///
+/// # Revocability bound (why an over-claim is safe)
+///
+/// Both wirings of this predicate — the offline `detect_loop` Advantage
+/// certification and the live `interactive_loop_bridge` Path-C capability mark —
+/// never crown a `GameOver`. A charge/burden growth loop classifies
+/// `WinKind::Advantage` (CR 104.4b: an optional loop is not a draw), so an
+/// over-claim is a declinable shortcut OFFER / a revocable unbounded-capability
+/// mark, never a wrongful game-end. It is deliberately NOT wired into any
+/// Path-A/Path-B (GameOver-capable) seam.
+///
+/// # General over preserved-`Generic` growth
+///
+/// The axis is the `Generic` counter class, not one card: Pentad Prism (charge)
+/// and The One Ring (burden) are the SAME cover, so One-Ring's growth cover is
+/// discharged by this predicate — no per-card sibling needed.
+pub(crate) fn loop_states_cover_modulo_counter_growth(
+    prior: &GameState,
+    current: &GameState,
+) -> bool {
+    if classify_generic_counter_growth(prior, current) != CounterGrowthDisposition::StrictGrowth {
+        return false;
+    }
+    loop_states_equal_modulo_resources(prior, &equalize_generic_counters(prior, current))
+}
+
 /// CR 110.1 + CR 613.1b: the object-axis board cover. Every NON-grown object (the
 /// shared-id complement over ALL zones) is content-equal via `object_content_eq`
 /// (the §5.2c 136-field partition); every grown battlefield object confines to an
@@ -2899,6 +3079,144 @@ mod tests {
         assert!(
             loop_states_equal_modulo_resources(&c, &d),
             "only a monotone +1/+1 pump (CR 122.1a) plus a resource delta must stay modulo-equal"
+        );
+    }
+
+    /// PR-7 #1: a board differing ONLY by a strictly-grown preserved `Generic`
+    /// charge counter (CR 122.1) is COVERED by the counter-growth predicate — and is
+    /// NOT caught by the plain equality path (Generic is PRESERVED, so the growing
+    /// charge makes `loop_states_equal_modulo_resources` return false). The pairing
+    /// proves the cover does real work rather than shadowing the equality path.
+    #[test]
+    fn counter_growth_covers_strict_generic_charge_growth() {
+        let mut a = GameState::new_two_player(7);
+        let oid = battlefield_creature(&mut a, 500, 0);
+        a.objects
+            .get_mut(&oid)
+            .unwrap()
+            .counters
+            .insert(CounterType::Generic("charge".to_string()), 3);
+        let mut b = a.clone();
+        b.objects
+            .get_mut(&oid)
+            .unwrap()
+            .counters
+            .insert(CounterType::Generic("charge".to_string()), 4); // +1 charge
+
+        assert!(
+            !loop_states_equal_modulo_resources(&a, &b),
+            "a growing preserved Generic charge counter must NOT be plain-equal (else no cover is needed)"
+        );
+        assert!(
+            loop_states_cover_modulo_counter_growth(&a, &b),
+            "strict Generic charge growth (CR 122.1) must be covered (CR 732.2a)"
+        );
+    }
+
+    /// PR-7 #2: a CONSUMED `Generic` charge counter (2 -> 1) is REJECTED — an
+    /// ∞-consume trap, not an unbounded pump (fail-closed).
+    ///
+    /// NON-VACUITY (A1, direction-blind revert): the discriminating revert is making
+    /// `classify_generic_counter_growth` treat ANY nonzero Generic delta as growth
+    /// (dropping the `a < b => Consumed` SIGN discrimination as a whole). Under that
+    /// revert the consume classifies `StrictGrowth`, `equalize_generic_counters`
+    /// restores prior's charge, and the cover returns TRUE — flipping this assertion.
+    /// Deleting ONLY the early-return would classify `Stable`, which STILL rejects, so
+    /// this test discriminates the SIGN, not merely the branch's presence.
+    #[test]
+    fn counter_growth_rejects_consumed_generic_charge() {
+        let mut a = GameState::new_two_player(7);
+        let oid = battlefield_creature(&mut a, 500, 0);
+        a.objects
+            .get_mut(&oid)
+            .unwrap()
+            .counters
+            .insert(CounterType::Generic("charge".to_string()), 2);
+        let mut b = a.clone();
+        b.objects
+            .get_mut(&oid)
+            .unwrap()
+            .counters
+            .insert(CounterType::Generic("charge".to_string()), 1); // consumed one charge
+
+        assert!(
+            !loop_states_cover_modulo_counter_growth(&a, &b),
+            "a consumed Generic charge counter is an ∞-consume trap, not a pump — must reject (fail-closed)"
+        );
+    }
+
+    /// PR-7 #3: a STABLE board (charge unchanged) is REJECTED by the counter-growth
+    /// cover — a constant-depth loop is the equality path's job, not this one. Paired:
+    /// the same two states ARE plain-equal, proving the reject is the strict-growth-
+    /// only gate (no Generic motion), not a board difference.
+    #[test]
+    fn counter_growth_rejects_stable_charge() {
+        let mut a = GameState::new_two_player(7);
+        let oid = battlefield_creature(&mut a, 500, 0);
+        a.objects
+            .get_mut(&oid)
+            .unwrap()
+            .counters
+            .insert(CounterType::Generic("charge".to_string()), 3);
+        let b = a.clone(); // charge unchanged
+
+        assert!(
+            loop_states_equal_modulo_resources(&a, &b),
+            "an unchanged charge board is plain-equal (the equality path's domain)"
+        );
+        assert!(
+            !loop_states_cover_modulo_counter_growth(&a, &b),
+            "no Generic growth => strict-growth-only gate rejects (Stable is the equality path's job)"
+        );
+    }
+
+    /// PR-7 #4: a grown non-`Generic` PRESERVED counter (`Stun`, CR 122.1d) is
+    /// REJECTED — only `Generic` is a growable pump axis; a stun counter gates the
+    /// untap SBA, so its growth is a real board change, not an unbounded resource.
+    ///
+    /// NON-VACUITY: a POSITIVE control with the SAME shape but a `Generic` counter
+    /// growing by the same amount IS covered — proving the per-`CounterType` table
+    /// discriminates `Generic` from the preserved-non-`Generic` class, not merely
+    /// that "some counter changed".
+    #[test]
+    fn counter_growth_rejects_non_generic_preserved_counter_growth() {
+        // Negative: stun growth is not a pump axis.
+        let mut a = GameState::new_two_player(7);
+        let oid = battlefield_creature(&mut a, 500, 0);
+        a.objects
+            .get_mut(&oid)
+            .unwrap()
+            .counters
+            .insert(CounterType::Stun, 1);
+        let mut b = a.clone();
+        b.objects
+            .get_mut(&oid)
+            .unwrap()
+            .counters
+            .insert(CounterType::Stun, 2); // stun grew
+
+        assert!(
+            !loop_states_cover_modulo_counter_growth(&a, &b),
+            "a grown Stun counter (CR 122.1d) is a real board change, not a Generic pump — must reject"
+        );
+
+        // Positive control: same shape, a Generic counter grows => covered.
+        let mut c = GameState::new_two_player(7);
+        let oid2 = battlefield_creature(&mut c, 600, 0);
+        c.objects
+            .get_mut(&oid2)
+            .unwrap()
+            .counters
+            .insert(CounterType::Generic("oil".to_string()), 1);
+        let mut d = c.clone();
+        d.objects
+            .get_mut(&oid2)
+            .unwrap()
+            .counters
+            .insert(CounterType::Generic("oil".to_string()), 2);
+        assert!(
+            loop_states_cover_modulo_counter_growth(&c, &d),
+            "same shape with a Generic oil counter growing IS covered (per-type table discriminates)"
         );
     }
 
