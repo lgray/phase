@@ -1760,6 +1760,10 @@ fn static_mode_references_growing_class(mode: &crate::types::statics::StaticMode
         | StaticMode::CastFromHandFree { .. }
         | StaticMode::LinkedCollectionCounterPlayPermission
         | StaticMode::CountersPersistAcrossZones { .. }
+        // CountersCantBeRemoved (Fear of Sleep Paralysis) is a counter-removal
+        // prohibition — no payment cost; its `counter_type` field is a filter, not
+        // a board read — so its cost surface is read-free.
+        | StaticMode::CountersCantBeRemoved { .. }
         | StaticMode::CantBeCountered
         | StaticMode::CantBeCopied
         | StaticMode::CantEnterBattlefieldFrom
