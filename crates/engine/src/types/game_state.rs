@@ -7315,6 +7315,19 @@ pub struct GameState {
     /// re-check of `FirstTimeObjectTappedThisTurn` correct.
     #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
     pub object_tap_count_this_turn: std::collections::HashMap<ObjectId, u32>,
+    /// CR 122.1 + CR 603.4: Count of distinct counter-placement *occurrences*
+    /// (put-events, not records) on each object this turn, keyed by object id.
+    /// Bumped once per object per batch in `observe_object_counter_placements`
+    /// (the same `collect_pending_triggers` chokepoint as the tap sibling), so a
+    /// multi-KIND placement — which pushes multiple `CounterAdded` records/events
+    /// for one object — counts as ONE occurrence. Cleared at turn start. A value
+    /// of 1 means "first time this turn"; the count model (vs. a set) keeps the
+    /// CR 603.4 resolution-time re-check of
+    /// `FirstTimeObjectCountersAddedThisTurn` correct. Deliberately EXCLUDED from
+    /// `impl PartialEq` (mirrors `object_tap_count_this_turn`): a per-turn
+    /// observational counter must not perturb board-equality.
+    #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
+    pub object_counter_placement_count_this_turn: std::collections::HashMap<ObjectId, u32>,
     /// CR 508.1g + CR 508.2: Declaration events (e.g. `AttackersDeclared`) held
     /// while the active player resolves the optional "exert as it attacks"
     /// sub-step. Because triggers are matched against the per-action event slice
@@ -8971,6 +8984,7 @@ impl GameState {
             extra_loyalty_activations_this_turn: HashMap::new(),
             exerted_this_turn: std::collections::HashSet::new(),
             object_tap_count_this_turn: std::collections::HashMap::new(),
+            object_counter_placement_count_this_turn: std::collections::HashMap::new(),
             pending_attack_trigger_events: Vec::new(),
             ability_resolutions_this_turn: HashMap::new(),
             graveyard_cast_permissions_used: HashSet::new(),

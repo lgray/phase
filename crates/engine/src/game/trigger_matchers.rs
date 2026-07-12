@@ -895,6 +895,27 @@ fn count_matching_trigger_event_subjects(
                 TargetRef::Player(_) => 0,
             }
         }
+        // CR 603.2c + CR 608.2: For a batched "one or more counters are put on
+        // <FILTER>" trigger whose effect reads "that much"/`EventContextAmount`
+        // (All Will Be One), the batch amount is the NUMBER OF COUNTERS placed by
+        // the triggering event(s) on matching objects — not a subject headcount.
+        // This helper otherwise returns a matching-*subject* count; for
+        // `CounterAdded` it deliberately DIVERGES and returns the counter
+        // MAGNITUDE on matching objects, so the folded batch total in
+        // `count_trigger_subjects_in_batch` equals total counters placed, read at
+        // CR 608.2 resolution as the card's "that much". Non-batched `CounterAdded`
+        // triggers never reach this arm — they resolve their amount via
+        // `extract_amount_from_event` (subject_match_count is `None` off the
+        // batched path).
+        GameEvent::CounterAdded {
+            object_id, count, ..
+        } => {
+            if matches(*object_id) {
+                *count
+            } else {
+                0
+            }
+        }
         GameEvent::GameStarted
         | GameEvent::TurnStarted { .. }
         | GameEvent::PhaseChanged { .. }
@@ -924,7 +945,6 @@ fn count_matching_trigger_event_subjects(
         | GameEvent::ResolutionHalted { .. }
         | GameEvent::DamagePrevented { .. }
         | GameEvent::SpellCountered { .. }
-        | GameEvent::CounterAdded { .. }
         | GameEvent::ObjectIntensified { .. }
         | GameEvent::CounterRemoved { .. }
         | GameEvent::ObjectConjured { .. }

@@ -1378,6 +1378,26 @@ pub(crate) fn lower_trigger_ir(ir: &TriggerIr) -> TriggerDefinition {
         );
     }
 
+    // CR 603.2c: `try_parse_counter_trigger` marks the kind-agnostic "one or
+    // more counters" phrasing as batched-by-phrasing (`def.batched = true`) but
+    // cannot see the lowered effect. Re-gate here now that `execute` is known:
+    // batch only when the reproduction is NOT an unimplemented per-kind effect.
+    // The Tier-3 "same number and kind"/"those kinds" reproduction cards (Bold
+    // Plagiarist / Aragorn, Company Leader / Captain Marvel, Apex Avenger)
+    // currently lower to `Effect::Unimplemented`; batching them would route
+    // their read into the scalar counter-magnitude arm of
+    // `count_matching_trigger_event_subjects` and mis-resolve. Gate on the
+    // `Effect::Unimplemented` VARIANT, never its name/description string (a
+    // verbatim-text match is prohibited).
+    // ponytail: BB-FU11 (task #23) — when Tier-3 per-kind counter reproduction
+    // becomes a typed effect, re-gate this predicate on THAT effect; otherwise
+    // those cards auto-batch into the magnitude arm and mis-resolve.
+    if def.mode == TriggerMode::CounterAdded && def.batched {
+        def.batched = execute.as_deref().is_some_and(|ability| {
+            !matches!(ability.effect.as_ref(), Effect::Unimplemented { .. })
+        });
+    }
+
     def.execute = execute;
     def.optional = modifiers.optional;
     // CR 603.3d + CR 608.2c: "you may cast target … from [public zone]"
@@ -14435,6 +14455,18 @@ fn try_parse_counter_trigger(lower: &str) -> Option<(TriggerMode, TriggerDefinit
         .or_else(|| parse_counter_type_prefix(counter_prefix))
     {
         def = def.counter_filter(filter);
+    }
+
+    // CR 603.2c: The kind-agnostic "one or more counters" form is a batched
+    // trigger — it fires once per counter-placement EVENT regardless of how many
+    // counter kinds (and thus records/`CounterAdded` events) that event produced.
+    // Mark the phrasing here as batched-by-phrasing; the effect is not yet
+    // lowered, so `lower_trigger_ir` re-gates this flag on the lowered effect
+    // (Tier-3 per-kind reproduction stays non-batched). A kind-filtered form
+    // ("one or more -1/-1 counters", Hapatra) selects a single type and never
+    // sees a multi-kind batch, so it is deliberately left non-batched.
+    if def.counter_filter.is_none() && scan_contains(lower, "one or more counter") {
+        def.batched = true;
     }
 
     // Parse the subject after "on "
