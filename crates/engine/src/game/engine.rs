@@ -1807,17 +1807,22 @@ fn materialize_object_growth_shortcut(
     result.waiting_for = state.waiting_for.clone();
 }
 
+/// Immutable data from a `WaitingFor::LoopShortcut` offer, grouped for declaration handling.
+struct LoopShortcutOffer<'a> {
+    proposer: PlayerId,
+    predicted_winner: Option<PlayerId>,
+    certificate: &'a crate::analysis::loop_check::LoopCertificate,
+    schema: &'a crate::analysis::decision_template::ShortcutDecisionSchema,
+}
+
 /// CR 732.2a: the proposer declared the loop shortcut. Build the public proposal and open
 /// the APNAP accept-or-shorten window over the proposer's living opponents (turn order). No
 /// opponents (solitaire / all eliminated) ⇒ take the shortcut immediately.
 fn handle_declare_shortcut(
     state: &mut GameState,
-    proposer: PlayerId,
-    predicted_winner: Option<PlayerId>,
-    certificate: &crate::analysis::loop_check::LoopCertificate,
+    offer: LoopShortcutOffer<'_>,
     count: crate::analysis::decision_template::IterationCount,
     template: Option<crate::analysis::decision_template::DecisionTemplate>,
-    schema: &crate::analysis::decision_template::ShortcutDecisionSchema,
     events: &mut Vec<GameEvent>,
 ) -> Result<ActionResult, EngineError> {
     let mut result = ActionResult {
@@ -1840,12 +1845,12 @@ fn handle_declare_shortcut(
     // prompt). This preserves the established `Fixed(N)` drain behavior (the resolve-firewall
     // materialize tests drive a synthetic pin against the empty drain schema).
     if let Some(t) = &template {
-        if !schema.points.is_empty() {
+        if !offer.schema.points.is_empty() {
             let required: Vec<crate::analysis::decision_template::DecisionSlot> =
-                schema.points.iter().map(|p| p.slot.clone()).collect();
+                offer.schema.points.iter().map(|p| p.slot.clone()).collect();
             let period = shortcut_drive_period(Some(t));
             if crate::analysis::decision_template::predictability_gate(t, &required).is_err()
-                || crate::analysis::decision_template::validate_pins(schema, t, period, state)
+                || crate::analysis::decision_template::validate_pins(offer.schema, t, period, state)
                     .is_err()
             {
                 priority::reset_priority(state);
@@ -1859,21 +1864,21 @@ fn handle_declare_shortcut(
         }
     }
     let proposal = crate::analysis::loop_check::ShortcutProposal {
-        proposer,
-        predicted_winner,
+        proposer: offer.proposer,
+        predicted_winner: offer.predicted_winner,
         count,
-        unbounded: certificate.unbounded.clone(),
-        win_kind: certificate.win_kind,
+        unbounded: offer.certificate.unbounded.clone(),
+        win_kind: offer.certificate.win_kind,
         template,
     };
     // CR 732.2b: living opponents in APNAP turn order, starting after the proposer.
     let opps: Vec<PlayerId> = crate::game::players::apnap_order_from(
         state,
         Some(crate::types::ability::ControllerRef::You),
-        proposer,
+        offer.proposer,
     )
     .into_iter()
-    .filter(|&p| p != proposer)
+    .filter(|&p| p != offer.proposer)
     .collect();
     if let Some((&first, rest)) = opps.split_first() {
         state.waiting_for = WaitingFor::RespondToShortcut {
@@ -4296,12 +4301,14 @@ fn apply_action(
         ) => {
             return handle_declare_shortcut(
                 state,
-                *proposer,
-                *predicted_winner,
-                certificate,
+                LoopShortcutOffer {
+                    proposer: *proposer,
+                    predicted_winner: *predicted_winner,
+                    certificate,
+                    schema,
+                },
                 count,
                 template,
-                schema,
                 &mut events,
             );
         }
