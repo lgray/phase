@@ -115,6 +115,7 @@ mod fact_or_fiction_pile_separation;
 mod fateful_handoff_target_mana_value_draw;
 mod festival_of_embers_graveyard_additional_cost;
 mod field_marshal_soldier_anthem_first_strike;
+mod finality_counter_death_to_exile;
 mod fireball_x_cost_surcharge_timing;
 mod flickerwisp_delayed_return;
 mod floodpits_drowner;
