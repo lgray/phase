@@ -3859,7 +3859,7 @@ fn effect_name(effect: &Effect) -> &str {
 mod tests {
     use super::{
         any_ability_has_unimplemented, def_tree_has_optional, def_tree_has_unimplemented,
-        trigger_tree_has_optional,
+        detect_condition_if, strip_parens, trigger_tree_has_optional,
     };
     use crate::parser::oracle::parse_oracle_text;
     use crate::parser::oracle_ir::diagnostic::OracleDiagnostic;
@@ -7554,12 +7554,53 @@ this spell's mana cost.\nAttacking creatures get -3/-0 until end of turn.",
             "reach-guard: Valgavoth must carry a represented Alternative extra_cost to flip"
         );
 
+        // Drive the unchanged private detector directly. #5668's top-level
+        // `check_swallowed_clauses` now consumes lowering-internal `items`/`tracks`
+        // that a mutated `ParsedAbilities` cannot supply, so the marker's
+        // load-bearingness is proven at the detector it lives in. The prep mirrors
+        // `check_swallowed_clauses`'s per-item derivation card-wide: strip parens
+        // from the lowercased text and serialize the parse as the AST haystack.
+        // GUARD-1 (measured against card-data.json): Valgavoth is coverage-supported
+        // (zero `Effect::Unimplemented`), so the per-unit `any_ability_has_unimplemented`
+        // gate `check_swallowed_clauses` applies is a genuine no-op — this detector
+        // call equals production behavior.
+        let cleaned = strip_parens(&VALGAVOTH_ORACLE.to_ascii_lowercase());
+
+        // WITH the mutation: the marker keys on `CastCostMode::Alternative`, so the
+        // demotion to `Additional` disarms it and the Condition_If swallow re-fires
+        // on identical text.
         let mut diagnostics = Vec::new();
-        check_swallowed_clauses(VALGAVOTH_ORACLE, &mutated, &mut diagnostics);
+        let mutated_json = serde_json::to_string(&mutated).unwrap_or_default();
+        detect_condition_if(
+            &cleaned,
+            VALGAVOTH_ORACLE,
+            &mutated_json,
+            &mutated,
+            &mut diagnostics,
+        );
         assert!(
             diagnostics_have_condition_if(&diagnostics),
             "with the alt-cost demoted to Additional the marker must not fire and the \
              Condition_If swallow must re-fire; got {diagnostics:?}"
+        );
+
+        // GUARD-2 baseline (WITHOUT the mutation): the represented Alternative
+        // extra_cost makes the marker suppress the swallow at the detector level.
+        // Reverting the marker logic flips this direction, so the pair is a
+        // non-vacuity proof, not a "detector fires on this card" tautology.
+        let mut baseline = Vec::new();
+        let baseline_json = serde_json::to_string(&parsed).unwrap_or_default();
+        detect_condition_if(
+            &cleaned,
+            VALGAVOTH_ORACLE,
+            &baseline_json,
+            &parsed,
+            &mut baseline,
+        );
+        assert!(
+            !diagnostics_have_condition_if(&baseline),
+            "un-mutated: the represented alt-cost marker must suppress the Condition_If \
+             swallow; got {baseline:?}"
         );
     }
 
@@ -7567,14 +7608,47 @@ this spell's mana cost.\nAttacking creatures get -3/-0 until end of turn.",
     /// unrelated genuine "if" condition on the same card must still swallow-flag.
     #[test]
     fn valgavoth_alt_cost_does_not_hide_unrelated_if() {
-        let parsed = valgavoth();
-        let synthetic = format!("{VALGAVOTH_ORACLE}\nDraw a card if the moon is bright.");
-        let mut diagnostics = Vec::new();
-        check_swallowed_clauses(&synthetic, &parsed, &mut diagnostics);
+        // Mirror #5668's `conditional_enter_counters_does_not_hide_unrelated_if`
+        // template: parse the real card plus an unrelated, genuinely-unrepresented
+        // trailing "if" line through the same `parse_full` path the through-parse
+        // tests use ("the moon is bright" is the template's proven-unrepresentable
+        // condition). The alt-cost marker suppresses only its own represented rider;
+        // the unrelated "if" must still swallow-flag, attributed to its own line.
+        let parsed = parse_full(
+            &format!("{VALGAVOTH_ORACLE}\nDraw a card if the moon is bright."),
+            "Valgavoth, Terror Eater",
+            &["flying", "lifelink", "ward"],
+            &["Legendary", "Creature"],
+            &["Elder", "Demon"],
+        );
+        // The unrelated "if" is appended after every VALGAVOTH_ORACLE line, so its
+        // 0-based line index is the count of the card's own lines. Asserting the
+        // swallow lands there (per #5668's `line_index` template) proves BOTH
+        // directions: the moon line stays visible AND the alt-cost marker suppresses
+        // Valgavoth's own rider (a card-line Condition_If would fail the `all`).
+        let moon_line = VALGAVOTH_ORACLE.lines().count();
+        let condition_if: Vec<_> = parsed
+            .parse_warnings
+            .iter()
+            .filter(|w| {
+                matches!(
+                    w,
+                    OracleDiagnostic::SwallowedClause { detector, .. }
+                        if detector == "Condition_If"
+                )
+            })
+            .collect();
         assert!(
-            diagnostics_have_condition_if(&diagnostics),
-            "a separate unrelated \"if\" condition must remain visible to Condition_If; \
-             got {diagnostics:?}"
+            !condition_if.is_empty(),
+            "a separate unrelated \"if\" condition must remain visible to Condition_If \
+             (not over-suppressed by the alt-cost marker); got {:?}",
+            parsed.parse_warnings,
+        );
+        assert!(
+            condition_if.iter().all(|w| w.line_index() == moon_line),
+            "the unrelated-if swallow must attribute to its own line ({moon_line}, \
+             0-based); a Condition_If on a Valgavoth line would mean the alt-cost \
+             marker failed to suppress its own rider; got {condition_if:?}"
         );
     }
 
@@ -7650,12 +7724,46 @@ this spell's mana cost.\nAttacking creatures get -3/-0 until end of turn.",
             "reach-guard: a GoadAll chapter trigger must exist to drop"
         );
 
+        // Drive the unchanged private detector directly (see the Valgavoth sibling
+        // for why the top-level `check_swallowed_clauses` can't take a mutated
+        // `ParsedAbilities`). GUARD-1 (measured against card-data.json): Maximum
+        // Carnage is coverage-supported (zero `Effect::Unimplemented`), so the
+        // per-unit unimplemented gate is a no-op and this equals production.
+        let cleaned = strip_parens(&MAXIMUM_CARNAGE_ORACLE.to_ascii_lowercase());
+
+        // WITH the mutation (GoadAll chapter trigger dropped): the `"type":"GoadAll"`
+        // marker is gone, so the "if able" text re-fires the Condition_If swallow.
         let mut diagnostics = Vec::new();
-        check_swallowed_clauses(MAXIMUM_CARNAGE_ORACLE, &mutated, &mut diagnostics);
+        let mutated_json = serde_json::to_string(&mutated).unwrap_or_default();
+        detect_condition_if(
+            &cleaned,
+            MAXIMUM_CARNAGE_ORACLE,
+            &mutated_json,
+            &mutated,
+            &mut diagnostics,
+        );
         assert!(
             diagnostics_have_condition_if(&diagnostics),
             "without the GoadAll marker the \"if able\" text must swallow-flag; \
              got {diagnostics:?}"
+        );
+
+        // GUARD-2 baseline (WITHOUT the mutation): the represented GoadAll marker
+        // suppresses the "if able" swallow — reverting the marker logic flips this
+        // direction, keeping the pair a non-vacuity proof.
+        let mut baseline = Vec::new();
+        let baseline_json = serde_json::to_string(&parsed).unwrap_or_default();
+        detect_condition_if(
+            &cleaned,
+            MAXIMUM_CARNAGE_ORACLE,
+            &baseline_json,
+            &parsed,
+            &mut baseline,
+        );
+        assert!(
+            !diagnostics_have_condition_if(&baseline),
+            "un-mutated: the represented GoadAll marker must suppress the \"if able\" \
+             Condition_If swallow; got {baseline:?}"
         );
     }
 
