@@ -56,6 +56,18 @@ pub fn filter_state_for_viewer(state: &GameState, viewer: PlayerId) -> GameState
                 && turn_control::viewer_controls_active_turn(state, viewer))
     };
 
+    // A pending replacement is the authoritative continuation record behind a
+    // ReplacementChoice. It carries real replacement sources, so only the
+    // prompted player (or their turn controller) may receive it. Other viewers
+    // submit no replacement action and must not receive its private source IDs.
+    if !matches!(
+        &state.waiting_for,
+        WaitingFor::ReplacementChoice { player, .. }
+            if can_view_private_for_player(*player)
+    ) {
+        filtered.pending_replacement = None;
+    }
+
     // CR 701.20e: A bare "look at" peek privately reveals card(s) to the looking
     // player only. `dig.rs` and `reveal_hand.rs` record the looker in
     // `private_look_player`; surface the peeked cards to that player without
@@ -3187,7 +3199,32 @@ mod tests {
         state.waiting_for = replacement_choice_waiting_for(controller, &state);
 
         let controller_view = filter_state_for_viewer(&state, controller);
-        let finality_index = match controller_view.waiting_for {
+        assert!(
+            controller_view
+                .pending_replacement
+                .as_ref()
+                .is_some_and(|pending| {
+                    pending
+                        .candidates
+                        .iter()
+                        .any(|candidate| candidate.source == finality_source)
+                }),
+            "the authorized chooser must retain the real replacement continuation"
+        );
+        let controller_snapshot = serde_json::to_value(&controller_view)
+            .expect("authorized viewer snapshot must serialize");
+        assert!(
+            controller_snapshot["pending_replacement"]["candidates"]
+                .as_array()
+                .is_some_and(|candidates| {
+                    candidates.iter().any(|candidate| {
+                        candidate["source"] == serde_json::Value::from(finality_source.0)
+                    })
+                }),
+            "the authorized viewer's serialized snapshot must retain the replacement source"
+        );
+
+        let finality_index = match &controller_view.waiting_for {
             WaitingFor::ReplacementChoice {
                 candidate_count,
                 candidates,
@@ -3215,11 +3252,21 @@ mod tests {
         };
 
         let opponent_view = filter_state_for_viewer(&state, opponent);
+        assert!(
+            opponent_view.pending_replacement.is_none(),
+            "an unauthorized viewer must not receive the replacement continuation"
+        );
+        let opponent_snapshot =
+            serde_json::to_value(&opponent_view).expect("opponent viewer snapshot must serialize");
+        assert!(
+            opponent_snapshot["pending_replacement"].is_null(),
+            "the serialized snapshot must omit the replacement continuation"
+        );
         assert_eq!(
             opponent_view.objects[&finality_source].name, HIDDEN_CARD_NAME,
             "test precondition: the opponent must not see the face-down source"
         );
-        match opponent_view.waiting_for {
+        match &opponent_view.waiting_for {
             WaitingFor::ReplacementChoice {
                 candidate_count,
                 candidates,
@@ -3244,6 +3291,22 @@ mod tests {
             }
             other => panic!("expected ReplacementChoice for opponent, got {other:?}"),
         }
+        assert_eq!(
+            opponent_snapshot["waiting_for"]["ReplacementChoice"]["candidates"][finality_index]
+                ["source_id"],
+            serde_json::Value::from(0),
+            "the serialized waiting summary must not expose the hidden source"
+        );
+        assert!(
+            !opponent_snapshot["waiting_for"]["ReplacementChoice"]["candidates"]
+                .as_array()
+                .expect("replacement candidates must serialize as an array")
+                .iter()
+                .any(|candidate| {
+                    candidate["source_id"] == serde_json::Value::from(finality_source.0)
+                }),
+            "neither serialized replacement surface may expose the hidden source"
+        );
 
         let ReplacementResult::Execute(ProposedEvent::ZoneChange { to, .. }) =
             continue_replacement(&mut state, finality_index, &mut events)
