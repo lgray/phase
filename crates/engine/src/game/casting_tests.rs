@@ -15941,7 +15941,7 @@ fn graveyard_cast_this_way_enters_with_finality_counter() {
     let rider = AbilityDefinition::new(
         AbilityKind::Spell,
         Effect::AddPendingETBCounters {
-            counter_type: CounterType::Generic("finality".to_string()),
+            counter_type: CounterType::Finality,
             count: QuantityExpr::Fixed { value: 1 },
         },
     );
@@ -15978,9 +15978,9 @@ fn graveyard_cast_this_way_enters_with_finality_counter() {
             .any(|p| matches!(
                 p,
                 CastingPermission::ExileWithAltCost {
-                    enters_with_counter: Some(CounterType::Generic(ref s)),
+                    enters_with_counter: Some(CounterType::Finality),
                     ..
-                } if s == "finality"
+                }
             )),
         "the enters-with-finality-counter rider must ride the granted permission"
     );
@@ -16014,7 +16014,7 @@ fn graveyard_cast_this_way_enters_with_finality_counter() {
     assert_eq!(
         state.objects[&creature]
             .counters
-            .get(&CounterType::Generic("finality".to_string())),
+            .get(&CounterType::Finality),
         Some(&1),
         "the creature cast this way must enter with a finality counter"
     );
@@ -16085,7 +16085,7 @@ fn graveyard_cast_without_rider_has_no_finality_counter() {
     assert_eq!(
         state.objects[&creature]
             .counters
-            .get(&CounterType::Generic("finality".to_string())),
+            .get(&CounterType::Finality),
         None,
         "a graveyard cast without the rider must not gain a finality counter"
     );
@@ -16131,7 +16131,7 @@ fn graveyard_cast_this_way_enters_with_type_grant_rider() {
     // sub-ability is the `AddPendingEntersModifications` type grant.
     let mut counter_rider = ResolvedAbility::new(
         Effect::AddPendingETBCounters {
-            counter_type: CounterType::Generic("finality".to_string()),
+            counter_type: CounterType::Finality,
             count: QuantityExpr::Fixed { value: 1 },
         },
         vec![],
@@ -16176,11 +16176,10 @@ fn graveyard_cast_this_way_enters_with_type_grant_rider() {
             .any(|p| matches!(
                 p,
                 CastingPermission::ExileWithAltCost {
-                    enters_with_counter: Some(CounterType::Generic(ref s)),
+                    enters_with_counter: Some(CounterType::Finality),
                     enters_with_modifications,
                     ..
-                } if s == "finality"
-                    && enters_with_modifications
+                } if enters_with_modifications
                         == &[ContinuousModification::AddSubtype {
                             subtype: "Vampire".to_string(),
                         }]
@@ -16216,7 +16215,7 @@ fn graveyard_cast_this_way_enters_with_type_grant_rider() {
     assert_eq!(
         state.objects[&creature]
             .counters
-            .get(&CounterType::Generic("finality".to_string())),
+            .get(&CounterType::Finality),
         Some(&1),
         "the creature must enter with a finality counter"
     );
@@ -16377,7 +16376,7 @@ fn enters_with_counter_does_not_leak_from_non_consumed_permission() {
                     duration: Some(Duration::UntilEndOfTurn),
                     graveyard_replacement: None,
                     mana_spend_permission: None,
-                    enters_with_counter: Some(CounterType::Generic("finality".to_string())),
+                    enters_with_counter: Some(CounterType::Finality),
                     enters_with_modifications: Vec::new(),
                 });
         }
@@ -16405,7 +16404,7 @@ fn enters_with_counter_does_not_leak_from_non_consumed_permission() {
         );
         state.objects[&creature]
             .counters
-            .get(&CounterType::Generic("finality".to_string()))
+            .get(&CounterType::Finality)
             .copied()
     }
 
@@ -16418,7 +16417,7 @@ fn enters_with_counter_does_not_leak_from_non_consumed_permission() {
 
     // Positive twin: move the rider onto the CONSUMED P1 → must apply exactly once.
     assert_eq!(
-        run_two_permission_cast(Some(CounterType::Generic("finality".to_string()))),
+        run_two_permission_cast(Some(CounterType::Finality)),
         Some(1),
         "the rider on the consumed permission must apply exactly one finality counter"
     );

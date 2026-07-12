@@ -581,10 +581,7 @@ fn returned_creatures_can_receive_counters_and_additive_type_followup() {
     };
     assert_eq!(
         enter_with_counters,
-        &vec![(
-            CounterType::Generic("finality".to_string()),
-            QuantityExpr::Fixed { value: 1 },
-        )]
+        &vec![(CounterType::Finality, QuantityExpr::Fixed { value: 1 },)]
     );
 
     let subtype_followup = def.sub_ability.as_ref().expect("expected subtype followup");
@@ -858,10 +855,7 @@ fn leading_cast_from_graveyard_condition_scopes_over_then_put_transformed_chain(
     assert_eq!(*enters_under, None);
     assert_eq!(
         enter_with_counters,
-        &vec![(
-            CounterType::Generic("finality".to_string()),
-            QuantityExpr::Fixed { value: 1 },
-        )]
+        &vec![(CounterType::Finality, QuantityExpr::Fixed { value: 1 },)]
     );
 }
 

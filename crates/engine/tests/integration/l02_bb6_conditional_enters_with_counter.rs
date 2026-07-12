@@ -274,7 +274,7 @@ fn enters_with_counter_subject_covers_this_creature_and_that_artifact() {
     );
     assert_eq!(
         permission_counter(&permission_static(&noctis).expect("Noctis permission").mode),
-        &Some(CounterType::Generic("finality".to_string())),
+        &Some(CounterType::Finality),
         "incumbent \"that artifact\" subject must still resolve the finality rider"
     );
 }
