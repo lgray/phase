@@ -1412,8 +1412,8 @@ fn eq_except_growable(pa: &GameState, pb: &GameState, grown: &HashSet<ObjectId>)
         a.objects.remove(id);
         b.objects.remove(id);
     }
-    a.battlefield.clear();
-    b.battlefield.clear();
+    a.battlefield.clear(); // allow-raw-zone: clears a discarded comparison CLONE for loop-cover equality (fn takes &GameState, mutates a local clone) - not a gameplay zone event
+    b.battlefield.clear(); // allow-raw-zone: clears a discarded comparison CLONE for loop-cover equality (fn takes &GameState, mutates a local clone) - not a gameplay zone event
     a.stack.clear();
     b.stack.clear();
     // Rebase-adaptation (ONE-SIDED-SAFETY): compare the new upstream scalar

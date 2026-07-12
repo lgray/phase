@@ -1578,9 +1578,9 @@ fn normalize_recast_frame(
         s.objects.remove(id);
     }
     if let Some(p) = s.players.iter_mut().find(|p| p.id == ctx.controller) {
-        p.hand.retain(|id| !ids.contains(id));
-        p.graveyard.retain(|id| !ids.contains(id));
-        p.library.retain(|id| !ids.contains(id));
+        p.hand.retain(|id| !ids.contains(id)); // allow-raw-zone: prunes a discarded recast comparison-frame CLONE (fn takes &GameState, returns a normalized clone) - not a gameplay zone event
+        p.graveyard.retain(|id| !ids.contains(id)); // allow-raw-zone: prunes a discarded recast comparison-frame CLONE (fn takes &GameState, returns a normalized clone) - not a gameplay zone event
+        p.library.retain(|id| !ids.contains(id)); // allow-raw-zone: prunes a discarded recast comparison-frame CLONE (fn takes &GameState, returns a normalized clone) - not a gameplay zone event
     }
     // CR 608.2 anaphora / display bookkeeping: the "last created token / revealed /
     // zone-changed" id slots churn a fresh id each cycle. No observer reads them at the
