@@ -10643,6 +10643,7 @@ fn _gamestate_partition_is_total(s: &GameState) {
         pending_copy_token_resolution: _,
         pending_each_player_copy_chosen: _,
         pending_coin_flip: _,
+        resolution_coin_flip: _,
         pending_repeat_until: _,
         pending_choose_one_of: _,
         pending_vote_ballot_iteration: _,
