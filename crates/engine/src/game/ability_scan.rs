@@ -2174,7 +2174,7 @@ fn scan_ability_condition(x: &AbilityCondition) -> Axes {
         AbilityCondition::EffectOutcome { signal: _ } => Axes::NONE,
         AbilityCondition::EventOutcomeWon => Axes::NONE,
         AbilityCondition::WhenYouDo => Axes::NONE,
-        AbilityCondition::CastFromZone { zone: _ } => Axes::NONE,
+        AbilityCondition::WasCast { zone: _ } => Axes::NONE,
         AbilityCondition::CastDuringPhase { phases: _ } => Axes::NONE,
         AbilityCondition::CurrentPhaseIs { phases: _ } => Axes::NONE,
         AbilityCondition::CastTimingPermission { permission: _ } => Axes::NONE,

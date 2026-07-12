@@ -1019,9 +1019,17 @@ fn try_nom_condition_as_unless(
 
 pub(super) fn strip_cast_from_zone_conditional(text: &str) -> (Option<AbilityCondition>, String) {
     let lower = text.to_lowercase();
-    // CR 603.4 + CR 601.2: Negated form — "if you didn't cast it from your
-    // hand/graveyard/exile" (Epochrasite, Phage the Untouchable on effect-level
-    // paths). MUST precede the positive form to avoid partial prefix matching.
+    // CR 603.4 + CR 601.2: Negated effect-level form — "if you didn't cast it
+    // from your hand/graveyard/exile" → ¬(cast ∧ origin=X). This is the OPPOSITE
+    // presupposition from the "anywhere other than X" arm below: a copy or a
+    // reanimated object (`cast_from_zone == None`) correctly evaluates TRUE here,
+    // so this arm stays a BARE `Not` with NO `∃cast` conjunct (do NOT add the
+    // BB-FU4 And-wrap). The canonical "didn't cast it" cards (Phage the
+    // Untouchable, Epochrasite) actually reach the engine via
+    // `TriggerCondition::WasCast` (trigger intervening-if) and
+    // `ReplacementCondition` (enters-with) respectively — not this effect-level
+    // `AbilityCondition` arm, which remains for any genuine effect-level rider of
+    // this shape. MUST precede the positive form to avoid partial prefix matching.
     if let Some((zone, rest)) = nom_on_lower(text, &lower, |input| {
         // Decompose into prefix + zone: the prefix accepts both the ASCII
         // (`didn't`) and curly (`didn’t`, U+2019) apostrophe used by Scryfall
@@ -1041,7 +1049,7 @@ pub(super) fn strip_cast_from_zone_conditional(text: &str) -> (Option<AbilityCon
         let rest = remainder_after_optional_comma(rest);
         return (
             Some(AbilityCondition::Not {
-                condition: Box::new(AbilityCondition::CastFromZone { zone }),
+                condition: Box::new(AbilityCondition::WasCast { zone: Some(zone) }),
             }),
             rest.to_string(),
         );
@@ -1057,7 +1065,7 @@ pub(super) fn strip_cast_from_zone_conditional(text: &str) -> (Option<AbilityCon
     }) {
         let rest = remainder_after_optional_comma(rest);
         return (
-            Some(AbilityCondition::CastFromZone { zone }),
+            Some(AbilityCondition::WasCast { zone: Some(zone) }),
             rest.to_string(),
         );
     }
@@ -1081,18 +1089,27 @@ pub(super) fn strip_cast_from_zone_conditional(text: &str) -> (Option<AbilityCon
             ))
         };
         alt((
-            // ponytail: Not(CastFromZone{Hand}) over-grants on a spell COPY — copy_spell.rs:804
-            // clears cast_from_zone=None (CR 707.10: a copy of a spell isn't cast), so
-            // Not(false)=true wrongly grants. Latent-not-live (no card copies these token-makers).
-            // SCHEDULED FIX = BB-FU4 (task #12): add AbilityCondition::WasCast and wrap the whole
-            // negated-cast-zone class as And[WasCast, Not(CastFromZone{..})]. Tracked in-branch
-            // before the L02 PR.
+            // CR 601.2a + CR 707.10 (resolved in BB-FU4): "was cast from anywhere
+            // other than X" is a positive-cast presupposition — it asserts
+            // (∃cast ∧ origin≠X), NOT merely origin≠X. Encode both conjuncts as
+            // `And[WasCast{None}, Not(WasCast{Some(X)})]` so a spell COPY (which has
+            // `cast_from_zone == None` per CR 707.10 — a copy isn't cast — and per
+            // CR 400.7 has no cast provenance) short-circuits the `WasCast{None}`
+            // conjunct to false instead of over-firing via the old `Not(false)=true`.
+            // The `∃cast` conjunct is applied ONLY to this "anywhere other than"
+            // producer; the "you didn't cast it from X" arm (:1049) is the opposite
+            // presupposition and deliberately stays a bare `Not` (see its comment).
             map(preceded(tag("anywhere other than "), zone()), |z| {
-                AbilityCondition::Not {
-                    condition: Box::new(AbilityCondition::CastFromZone { zone: z }),
+                AbilityCondition::And {
+                    conditions: vec![
+                        AbilityCondition::WasCast { zone: None },
+                        AbilityCondition::Not {
+                            condition: Box::new(AbilityCondition::WasCast { zone: Some(z) }),
+                        },
+                    ],
                 }
             }),
-            map(zone(), |z| AbilityCondition::CastFromZone { zone: z }),
+            map(zone(), |z| AbilityCondition::WasCast { zone: Some(z) }),
         ))
         .parse(input)
     }) {
@@ -4500,7 +4517,7 @@ pub(crate) fn ability_condition_to_static_condition(
         AbilityCondition::AdditionalCostPaid { .. }
         | AbilityCondition::AdditionalCostPaidInstead
         | AbilityCondition::AlternativeManaCostPaid
-        | AbilityCondition::CastFromZone { .. }
+        | AbilityCondition::WasCast { .. }
         | AbilityCondition::CastDuringPhase { .. }
         | AbilityCondition::CastTimingPermission { .. }
         | AbilityCondition::ManaColorSpent { .. }
@@ -5207,7 +5224,7 @@ pub(super) fn try_nom_condition_as_ability_condition(
         if let Ok((after_zone, zone)) = zone_match {
             let trimmed = after_zone.trim_start();
             if trimmed.is_empty() {
-                return Some(AbilityCondition::CastFromZone { zone });
+                return Some(AbilityCondition::WasCast { zone: Some(zone) });
             }
             // CR 117.1 + CR 201.2 + CR 608.2c: "and [second condition]" suffix
             // for compound intervening-ifs like Approach of the Second Sun's
@@ -5222,7 +5239,7 @@ pub(super) fn try_nom_condition_as_ability_condition(
                     parse_youve_cast_another_named_this_game_condition(second_text)
                 {
                     return Some(AbilityCondition::And {
-                        conditions: vec![AbilityCondition::CastFromZone { zone }, second],
+                        conditions: vec![AbilityCondition::WasCast { zone: Some(zone) }, second],
                     });
                 }
             }
@@ -5238,7 +5255,7 @@ pub(super) fn try_nom_condition_as_ability_condition(
             .parse(trimmed)
             .is_ok()
             {
-                return Some(AbilityCondition::CastFromZone { zone });
+                return Some(AbilityCondition::WasCast { zone: Some(zone) });
             }
         }
     }
@@ -6218,7 +6235,7 @@ fn entered_or_cast_from_zone_condition(zone: Zone) -> AbilityCondition {
                 destination: Zone::Battlefield,
                 filter: TargetFilter::Any,
             },
-            AbilityCondition::CastFromZone { zone },
+            AbilityCondition::WasCast { zone: Some(zone) },
         ],
     }
 }
@@ -9159,8 +9176,8 @@ mod tests {
         ));
         assert!(matches!(
             &conditions[1],
-            AbilityCondition::CastFromZone {
-                zone: Zone::Library
+            AbilityCondition::WasCast {
+                zone: Some(Zone::Library)
             }
         ));
     }
@@ -9186,6 +9203,51 @@ mod tests {
             inner.as_ref(),
             AbilityCondition::Or { conditions } if conditions.len() == 2
         ));
+    }
+
+    /// L02 BB-FU4 narrowing fence (CR 601.2a + CR 707.10): the copy-correct
+    /// `∃cast` And-wrap is applied ONLY to the "anywhere other than X"
+    /// producer. The opposite-presupposition "you didn't cast it from X" arm
+    /// stays a BARE `Not(WasCast{Some(X)})` — wrapping it would regress
+    /// reanimate/copy semantics (a reanimated object correctly evaluates true
+    /// there). This directly exercises both arms of the exact edited function:
+    /// removing the wrap from line ~1090 flips the first assertion; adding a
+    /// wrap to line ~1049 flips the second.
+    #[test]
+    fn bbfu4_only_anywhere_other_than_gains_existential_cast_conjunct() {
+        // Positive-cast presupposition → And[WasCast{None}, Not(WasCast{Some(Hand)})].
+        let (anywhere, rest_a) = strip_cast_from_zone_conditional(
+            "if this spell was cast from anywhere other than your hand",
+        );
+        assert_eq!(rest_a, "");
+        assert_eq!(
+            anywhere,
+            Some(AbilityCondition::And {
+                conditions: vec![
+                    AbilityCondition::WasCast { zone: None },
+                    AbilityCondition::Not {
+                        condition: Box::new(AbilityCondition::WasCast {
+                            zone: Some(Zone::Hand)
+                        }),
+                    },
+                ],
+            }),
+            "the 'anywhere other than' arm must gain the ∃cast And-wrap"
+        );
+
+        // Opposite presupposition → BARE Not, NO And-wrap.
+        let (didnt, rest_d) =
+            strip_cast_from_zone_conditional("if you didn't cast it from your hand");
+        assert_eq!(rest_d, "");
+        assert_eq!(
+            didnt,
+            Some(AbilityCondition::Not {
+                condition: Box::new(AbilityCondition::WasCast {
+                    zone: Some(Zone::Hand)
+                }),
+            }),
+            "the 'didn't cast it from X' arm must stay a bare Not (no ∃cast conjunct)"
+        );
     }
 
     /// CR 608.2c: ETB base draw + library-origin instead override chain.

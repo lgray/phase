@@ -1,7 +1,10 @@
 //! L02 BB2 — cast-origin conditions on four Standard cards.
 //!
 //! Two parallel cast-origin channels, ZERO new engine variants:
-//!   - Channel A (resolving-spell self-reference, `AbilityCondition::CastFromZone`):
+//!   - Channel A (resolving-spell self-reference, `AbilityCondition::WasCast`;
+//!     BB-FU4 renamed `CastFromZone{zone}` → `WasCast{zone: Option<Zone>}` and the
+//!     "anywhere other than X" rider now lowers to the copy-correct presupposition
+//!     `And[WasCast{None}, Not(WasCast{Some(X)})]`):
 //!       * Antiquities on the Loose — "Then if this spell was cast from anywhere
 //!         other than your hand, put a +1/+1 counter on each Spirit you control."
 //!       * Otterball Antics          — "If this spell was cast from anywhere other
@@ -89,6 +92,21 @@ fn first_trigger_condition(
     parsed.triggers.iter().find_map(|t| t.condition.clone())
 }
 
+/// The BB-FU4 copy-correct lowering of "was cast from anywhere other than <zone>":
+/// the positive-cast presupposition `And[WasCast{None}, Not(WasCast{Some(zone)})]`
+/// (CR 601.2a + CR 707.10). A copy short-circuits the `WasCast{None}` conjunct to
+/// false; a genuine cast from a different zone is true.
+fn anywhere_other_than(zone: Zone) -> AbilityCondition {
+    AbilityCondition::And {
+        conditions: vec![
+            AbilityCondition::WasCast { zone: None },
+            AbilityCondition::Not {
+                condition: Box::new(AbilityCondition::WasCast { zone: Some(zone) }),
+            },
+        ],
+    }
+}
+
 fn has_condition_if_swallow(parsed: &engine::parser::oracle::ParsedAbilities) -> bool {
     parsed.parse_warnings.iter().any(|w| {
         matches!(
@@ -103,7 +121,8 @@ fn has_condition_if_swallow(parsed: &engine::parser::oracle::ParsedAbilities) ->
 // ===========================================================================
 
 /// Antiquities: the "Then if this spell was cast from anywhere other than your
-/// hand" rider lowers to `Not(CastFromZone{Hand})` on the counter sub-ability.
+/// hand" rider lowers (BB-FU4) to the copy-correct presupposition
+/// `And[WasCast{None}, Not(WasCast{Some(Hand)})]` on the counter sub-ability.
 /// Revert-probe: delete the S1 passive arm in `strip_cast_from_zone_conditional`
 /// → `condition == None` and `Condition_If` reappears (both asserts flip).
 #[test]
@@ -111,10 +130,8 @@ fn antiquities_sub_condition_is_not_cast_from_hand() {
     let parsed = parse(ANTIQUITIES, "Antiquities on the Loose", &["Sorcery"]);
     assert_eq!(
         first_sub_condition(&parsed),
-        Some(AbilityCondition::Not {
-            condition: Box::new(AbilityCondition::CastFromZone { zone: Zone::Hand }),
-        }),
-        "expected Not(CastFromZone{{Hand}}) on the counter sub-ability"
+        Some(anywhere_other_than(Zone::Hand)),
+        "expected And[WasCast{{None}}, Not(WasCast{{Some(Hand)}})] on the counter sub-ability"
     );
     assert!(
         !has_condition_if_swallow(&parsed),
@@ -122,17 +139,16 @@ fn antiquities_sub_condition_is_not_cast_from_hand() {
     );
 }
 
-/// Otterball: same passive rider (no leading "Then"), same `Not(CastFromZone{Hand})`.
-/// Revert-probe: identical to Antiquities.
+/// Otterball: same passive rider (no leading "Then"), same copy-correct
+/// `And[WasCast{None}, Not(WasCast{Some(Hand)})]`. Revert-probe: identical to
+/// Antiquities.
 #[test]
 fn otterball_sub_condition_is_not_cast_from_hand() {
     let parsed = parse(OTTERBALL, "Otterball Antics", &["Sorcery"]);
     assert_eq!(
         first_sub_condition(&parsed),
-        Some(AbilityCondition::Not {
-            condition: Box::new(AbilityCondition::CastFromZone { zone: Zone::Hand }),
-        }),
-        "expected Not(CastFromZone{{Hand}}) on the counter sub-ability"
+        Some(anywhere_other_than(Zone::Hand)),
+        "expected And[WasCast{{None}}, Not(WasCast{{Some(Hand)}})] on the counter sub-ability"
     );
     assert!(
         !has_condition_if_swallow(&parsed),
@@ -237,7 +253,8 @@ fn ran_and_shaw_trigger_condition_is_cast_and_graveyard_count() {
 /// three lose their sub condition.
 #[test]
 fn channel_a_class_covers_positive_and_negated_all_zones() {
-    // Negated: "anywhere other than your graveyard" → Not(CastFromZone{Graveyard}).
+    // Negated: "anywhere other than your graveyard" →
+    // And[WasCast{None}, Not(WasCast{Some(Graveyard)})] (BB-FU4 copy-correct form).
     let neg = parse(
         "Draw a card. If this spell was cast from anywhere other than your graveyard, draw a card.",
         "Synthetic Negated GY",
@@ -245,13 +262,9 @@ fn channel_a_class_covers_positive_and_negated_all_zones() {
     );
     assert_eq!(
         first_sub_condition(&neg),
-        Some(AbilityCondition::Not {
-            condition: Box::new(AbilityCondition::CastFromZone {
-                zone: Zone::Graveyard
-            }),
-        }),
+        Some(anywhere_other_than(Zone::Graveyard)),
     );
-    // Positive: "was cast from exile" → CastFromZone{Exile}.
+    // Positive: "was cast from exile" → WasCast{Some(Exile)}.
     let pos = parse(
         "Draw a card. If this spell was cast from exile, draw a card.",
         "Synthetic Positive Exile",
@@ -259,7 +272,9 @@ fn channel_a_class_covers_positive_and_negated_all_zones() {
     );
     assert_eq!(
         first_sub_condition(&pos),
-        Some(AbilityCondition::CastFromZone { zone: Zone::Exile }),
+        Some(AbilityCondition::WasCast {
+            zone: Some(Zone::Exile)
+        }),
     );
 }
 

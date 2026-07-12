@@ -2929,9 +2929,11 @@ fn approach_of_the_second_sun_parses_compound_condition_and_otherwise_branch() {
     assert!(
         matches!(
             &conditions[0],
-            AbilityCondition::CastFromZone { zone: Zone::Hand }
+            AbilityCondition::WasCast {
+                zone: Some(Zone::Hand)
+            }
         ),
-        "first conjunct must be CastFromZone(Hand), got: {:?}",
+        "first conjunct must be WasCast(Hand), got: {:?}",
         conditions[0]
     );
     match &conditions[1] {

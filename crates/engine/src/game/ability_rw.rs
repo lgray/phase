@@ -1900,7 +1900,7 @@ fn legacy_ability_condition(x: &AbilityCondition) -> bool {
         | AbilityCondition::AlternativeManaCostPaid
         | AbilityCondition::EffectOutcome { .. }
         | AbilityCondition::WhenYouDo
-        | AbilityCondition::CastFromZone { .. }
+        | AbilityCondition::WasCast { .. }
         | AbilityCondition::CastDuringPhase { .. }
         | AbilityCondition::CurrentPhaseIs { .. }
         | AbilityCondition::CastTimingPermission { .. }
@@ -5871,7 +5871,7 @@ fn rw_ability_condition(x: &AbilityCondition) -> RwProfile {
         | AbilityCondition::AlternativeManaCostPaid
         | AbilityCondition::EffectOutcome { .. }
         | AbilityCondition::WhenYouDo
-        | AbilityCondition::CastFromZone { .. }
+        | AbilityCondition::WasCast { .. }
         | AbilityCondition::CastDuringPhase { .. }
         | AbilityCondition::CurrentPhaseIs { .. }
         | AbilityCondition::CastTimingPermission { .. }

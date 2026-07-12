@@ -16298,9 +16298,22 @@ pub enum AbilityCondition {
     /// the reflexive sub-ability is skipped — `evaluate_condition` gates on
     /// `cost_payment_failed_flag` for that case (mirrors `IfYouDo`).
     WhenYouDo,
-    /// CR 603.4: "If you cast it from [zone]" — sub_ability executes only if the spell
-    /// was cast from the specified zone. Evaluated against SpellContext.cast_from_zone.
-    CastFromZone { zone: Zone },
+    /// CR 601.2a + CR 707.10: "if [this spell] was cast from [zone]" — sub_ability
+    /// executes only if the spell was cast. `zone: None` = cast from any origin;
+    /// `Some(z)` = cast specifically from zone `z`. Evaluated against
+    /// `SpellContext.cast_from_zone`. A copy (CR 707.10: a copy of a spell isn't
+    /// cast) or a put-into-play object (CR 400.7: a new object has no cast
+    /// provenance) has `cast_from_zone == None`, so the zoneless `None` form is
+    /// false for it — this is what distinguishes the positive-cast presupposition
+    /// "was cast from anywhere other than X" (`And[WasCast{None}, Not(WasCast{Some(X)})]`)
+    /// from the bare "you didn't cast it from X". Mirrors `StaticCondition::WasCast`
+    /// / `TriggerCondition::WasCast`; `#[serde(alias)]` keeps pre-rename
+    /// `"CastFromZone"` payloads deserializable.
+    #[serde(alias = "CastFromZone")]
+    WasCast {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        zone: Option<Zone>,
+    },
     /// CR 207.2c + CR 601.2: "if you cast this spell during your [phase/step]".
     /// `phases` is parameterized so grouped phrases like "main phase" can map to
     /// both concrete main phases without proliferating condition variants.

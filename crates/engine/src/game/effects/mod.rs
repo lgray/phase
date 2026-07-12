@@ -2388,7 +2388,7 @@ fn should_resolve_subability_on_optional_decline(ability: &ResolvedAbility) -> b
             | AbilityCondition::AlternativeManaCostPaid
             | AbilityCondition::EventOutcomeWon
             | AbilityCondition::WhenYouDo
-            | AbilityCondition::CastFromZone { .. }
+            | AbilityCondition::WasCast { .. }
             | AbilityCondition::CastDuringPhase { .. }
             // CR 608.2c: a live current-phase gate, not a decline-alternative
             // selector — declining the optional effect does not pick a
@@ -8630,8 +8630,15 @@ pub(crate) fn evaluate_condition(
         AbilityCondition::WhenYouDo => {
             !(matches!(ability.effect, Effect::PayCost { .. }) && state.cost_payment_failed_flag)
         }
-        // CR 603.4: "If you cast it from [zone]" — check cast origin.
-        AbilityCondition::CastFromZone { zone } => ability.context.cast_from_zone == Some(*zone),
+        // CR 601.2a + CR 707.10: "was cast (from [zone])" — check cast origin.
+        // `zone: None` = cast from any origin; a copy or put-into-play object has
+        // `cast_from_zone == None` → false (CR 707.10: a copy of a spell isn't
+        // cast; CR 400.7: a new object has no cast provenance). Mirrors the
+        // `StaticCondition::WasCast` evaluator at layers.rs.
+        AbilityCondition::WasCast { zone } => ability
+            .context
+            .cast_from_zone
+            .is_some_and(|cz| zone.is_none_or(|z| cz == z)),
         // CR 608.2c: "If it's a [type] card" — check the revealed card's type.
         // CR 205.3m: Optional additional_filter checks extra properties like
         // "of the chosen type" (IsChosenCreatureType).

@@ -817,8 +817,8 @@ fn leading_cast_from_graveyard_condition_scopes_over_then_put_transformed_chain(
 
     assert_eq!(
         def.condition,
-        Some(AbilityCondition::CastFromZone {
-            zone: Zone::Graveyard
+        Some(AbilityCondition::WasCast {
+            zone: Some(Zone::Graveyard)
         })
     );
     assert!(matches!(
@@ -833,8 +833,8 @@ fn leading_cast_from_graveyard_condition_scopes_over_then_put_transformed_chain(
     let put = def.sub_ability.as_ref().expect("expected then-put clause");
     assert_eq!(
         put.condition,
-        Some(AbilityCondition::CastFromZone {
-            zone: Zone::Graveyard
+        Some(AbilityCondition::WasCast {
+            zone: Some(Zone::Graveyard)
         })
     );
     let Effect::ChangeZone {
