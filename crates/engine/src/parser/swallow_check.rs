@@ -34,7 +34,7 @@ use crate::types::ability::{
 };
 use crate::types::game_state::RetargetScope;
 use crate::types::keywords::Keyword;
-use crate::types::statics::StaticMode;
+use crate::types::statics::{CastCostMode, StaticMode};
 use crate::types::triggers::TriggerMode;
 use crate::types::zones::Zone;
 use nom::{
@@ -2601,6 +2601,68 @@ fn enters_with_finality_this_way_is_only_if_marker(
     !has_other_if
 }
 
+/// CR 118.9 + CR 607.1 + CR 608.2c: True when the card carries a cast-permission
+/// static (`GraveyardCastPermission`/`ExileCastPermission`) with a CR 118.9
+/// *alternative* cost rider AND the only bare " if " remaining after stripping
+/// the represented "if you cast a spell this way, pay [cost] rather than pay its
+/// mana cost" sentence(s) is that rider itself. Sibling of
+/// `enters_with_finality_this_way_is_only_if_marker` (counter rider) — same
+/// "if you cast a spell this way, <rider>" class, different rider. The linked
+/// "this way" anaphor (CR 607.1) is represented structurally by the static's
+/// `extra_cost: Some(CastExtraCost { mode: Alternative, .. })` field, so the
+/// leading "if" is a CR 118.9 alternative-cost representation marker, not a
+/// swallowed game-state condition. Keys on `CastCostMode::Alternative` only, so
+/// `Additional`-mode "in addition to their other costs" riders (Festival of
+/// Embers) are untouched — their mana cost is still due and no cast-this-way
+/// swallow arises. Motivating card: Valgavoth, Terror Eater. Class: every
+/// exile/graveyard cast-this-way permission carrying an alternative-cost rider.
+fn cast_this_way_alt_cost_is_only_if_marker(stripped: &str, parsed: &ParsedAbilities) -> bool {
+    let has_alt_cost = parsed.statics.iter().any(|s| {
+        matches!(
+            &s.mode,
+            StaticMode::GraveyardCastPermission {
+                extra_cost: Some(c),
+                ..
+            } | StaticMode::ExileCastPermission {
+                extra_cost: Some(c),
+                ..
+            } if matches!(c.mode, CastCostMode::Alternative)
+        )
+    });
+    if !has_alt_cost {
+        return false;
+    }
+    // Strip the represented "if you cast a spell this way, pay <cost> rather
+    // than pay [its] mana cost" sentence(s) via the shared CR 118.9 rider
+    // authority (`try_parse_alt_cost_rider` — the same helper that stamped the
+    // `extra_cost`), then check whether any OTHER bare " if " survives. The
+    // "this way" anaphor is required so a bare alt-cost line without the linkage
+    // isn't over-stripped.
+    let residual: String = stripped
+        .split('.') // allow-noncombinator: swallow detector sentence walk on classified text
+        .filter(|sentence| {
+            let s = sentence.trim_start();
+            // `stripped` derives from the lowercased `cleaned`, so the anaphor
+            // scan runs against lowercase text directly.
+            // The "cast it this way" disjunct is currently inert: `try_parse_alt_cost_rider`
+            // returns None for any "cast it " text (its Cruelclaw combined-clause guard), and
+            // such singular-anaphor riders lower to inline `CastFromZone.alt_ability_cost`, a
+            // different representation than the permission `extra_cost` this helper keys on. It
+            // is kept as the semantically-valid second anaphor form, reserved for a future rider
+            // that reaches this permission-static representation.
+            let is_rider = (s.contains("cast a spell this way") // allow-noncombinator: swallow detector marker scan on classified text
+                || s.contains("cast it this way")) // allow-noncombinator: swallow detector marker scan on classified text
+                && crate::parser::oracle_effect::try_parse_alt_cost_rider(s).is_some();
+            !is_rider
+        })
+        .collect::<Vec<_>>()
+        .join(".");
+    let has_other_if = residual.contains(" if ") // allow-noncombinator: swallow detector marker scan on classified text
+        && !residual.contains(" as if ") // allow-noncombinator: swallow detector marker scan on classified text
+        && !residual.contains(" even if "); // allow-noncombinator: swallow detector marker scan on classified text
+    !has_other_if
+}
+
 // ── Detector G: Condition_If ────────────────────────────────────────────
 
 /// CR 608.2c: "if [condition], [effect]" — conditional gate. Must be
@@ -2714,6 +2776,16 @@ fn detect_condition_if(
     // `enters_with_counter` field (Noctis, Intrepid, Leonardo) — not a swallowed
     // game-state condition. The "this way" anaphor is a CR 607.1 back-reference.
     if enters_with_finality_this_way_is_only_if_marker(&stripped, parsed) {
+        return;
+    }
+    // CR 118.9 + CR 607.1 + CR 608.2c: "If you cast a spell this way, pay [cost]
+    // rather than pay its mana cost" is the linked cast-permission alternative-
+    // cost rider, represented by the `GraveyardCastPermission`/`ExileCastPermission`
+    // static's `extra_cost: Some(CastExtraCost { mode: Alternative, .. })` field
+    // (Valgavoth, Terror Eater) — not a swallowed game-state condition. Sibling of
+    // the enters-with-counter rider above; the "this way" anaphor is a CR 607.1
+    // back-reference.
+    if cast_this_way_alt_cost_is_only_if_marker(&stripped, parsed) {
         return;
     }
     // CR 615.5: "If damage is prevented this way, [effect]" is not an
@@ -2836,6 +2908,13 @@ fn detect_condition_if(
         "\"MustBeBlocked\"",
         "\"type\":\"ForceBlock\"",
         "\"type\":\"ForceAttack\"",
+        // CR 508.1d + CR 701.15b: `GoadAll` encodes "each creature attacks each
+        // combat if able and attacks a player other than you if able" (the
+        // printed goad requirement) as a runtime attack requirement — the
+        // resolver marks every affected creature goaded, so its presence
+        // represents both "if able" riders. Maximum Carnage chapter I;
+        // Kardur, Doomscourge (opponent-scoped) rides the same marker.
+        "\"type\":\"GoadAll\"",
         // CR 305.9: "as ~ enters, you may pay X. If you don't, it enters
         // tapped." — encoded as ReplacementMode::Optional with a `decline`
         // branch that performs the alternative, OR (for cards like Ancient
@@ -3788,7 +3867,7 @@ mod tests {
     use crate::types::identifiers::TrackedSetId;
     use crate::types::keywords::Keyword;
     use crate::types::mana::ManaCost;
-    use crate::types::statics::StaticMode;
+    use crate::types::statics::{CastCostMode, StaticMode};
     use crate::types::zones::Zone;
 
     fn parse(text: &str, types: &[&str]) -> crate::parser::oracle::ParsedAbilities {
@@ -7360,6 +7439,247 @@ this spell's mana cost.\nAttacking creatures get -3/-0 until end of turn.",
             has_owned_triggering(target),
             "Tinybones must restrict the cast to the damaged player's graveyard \
              via Owned{{TriggeringPlayer}}; got {target:?}"
+        );
+    }
+
+    // ── L02 BB8 Commit 1: cast-this-way alt-cost + GoadAll swallow false-positives ──
+
+    /// Verbatim Oracle text (Valgavoth, Terror Eater).
+    const VALGAVOTH_ORACLE: &str = "Flying, lifelink\nWard—Sacrifice three nonland \
+         permanents.\nIf a card you didn't control would be put into an opponent's graveyard \
+         from anywhere, exile it instead.\nDuring your turn, you may play cards exiled with \
+         Valgavoth. If you cast a spell this way, pay life equal to its mana value rather than \
+         pay its mana cost.";
+
+    /// Verbatim Oracle text (Maximum Carnage).
+    const MAXIMUM_CARNAGE_ORACLE: &str = "(As this Saga enters and after your draw step, add a \
+         lore counter. Sacrifice after III.)\nI — Until your next turn, each creature attacks \
+         each combat if able and attacks a player other than you if able.\nII — Add \
+         {R}{R}{R}.\nIII — This Saga deals 5 damage to each opponent.";
+
+    fn diagnostics_have_condition_if(diagnostics: &[OracleDiagnostic]) -> bool {
+        diagnostics.iter().any(|w| {
+            matches!(
+                w,
+                OracleDiagnostic::SwallowedClause { detector, .. } if detector == "Condition_If"
+            )
+        })
+    }
+
+    /// Parse with the full card context (lowercase mtgjson keyword names +
+    /// types + subtypes) so keyword lines and Saga chapters are consumed exactly
+    /// as the card-data pipeline does — `parse_named` passes empty keyword names
+    /// and subtypes, which degrades keyword/Saga lines to Unimplemented and
+    /// vacuously suppresses every swallow detector.
+    fn parse_full(
+        text: &str,
+        name: &str,
+        keywords: &[&str],
+        types: &[&str],
+        subtypes: &[&str],
+    ) -> crate::parser::oracle::ParsedAbilities {
+        let to_owned = |xs: &[&str]| xs.iter().map(|s| (*s).to_string()).collect::<Vec<_>>();
+        parse_oracle_text(
+            text,
+            name,
+            &to_owned(keywords),
+            &to_owned(types),
+            &to_owned(subtypes),
+        )
+    }
+
+    fn valgavoth() -> crate::parser::oracle::ParsedAbilities {
+        parse_full(
+            VALGAVOTH_ORACLE,
+            "Valgavoth, Terror Eater",
+            &["flying", "lifelink", "ward"],
+            &["Legendary", "Creature"],
+            &["Elder", "Demon"],
+        )
+    }
+
+    fn maximum_carnage() -> crate::parser::oracle::ParsedAbilities {
+        parse_full(
+            MAXIMUM_CARNAGE_ORACLE,
+            "Maximum Carnage",
+            &[],
+            &["Enchantment"],
+            &["Saga"],
+        )
+    }
+
+    /// CR 118.9 + CR 607.1: the "if you cast a spell this way, pay life equal to
+    /// its mana value rather than pay its mana cost" rider is represented via
+    /// `ExileCastPermission.extra_cost{mode:Alternative}`. Its leading "if" must
+    /// not swallow-flag.
+    #[test]
+    fn valgavoth_alt_cost_rider_clears_condition_if_swallow() {
+        let parsed = valgavoth();
+        assert!(
+            !has_swallowed_detector(&parsed, "Condition_If"),
+            "Valgavoth's CR 118.9 cast-this-way alternative-cost rider is represented; \
+             the leading \"if\" must not swallow-flag; warnings: {:?}",
+            parsed.parse_warnings,
+        );
+    }
+
+    /// DISCRIMINATING revert-probe: the marker keys on `CastCostMode::Alternative`.
+    /// Flipping the represented rider to `Additional` must remove the suppression
+    /// and re-fire the Condition_If swallow on identical text — proving the helper
+    /// is load-bearing, not vacuous.
+    #[test]
+    fn valgavoth_alt_cost_marker_is_load_bearing() {
+        let parsed = valgavoth();
+        // Reach-guard (positive): the swallow is genuinely cleared on the real card.
+        assert!(!has_swallowed_detector(&parsed, "Condition_If"));
+
+        let mut mutated = parsed.clone();
+        let mut flipped = false;
+        for s in &mut mutated.statics {
+            if let StaticMode::ExileCastPermission {
+                extra_cost: Some(c),
+                ..
+            }
+            | StaticMode::GraveyardCastPermission {
+                extra_cost: Some(c),
+                ..
+            } = &mut s.mode
+            {
+                c.mode = CastCostMode::Additional;
+                flipped = true;
+            }
+        }
+        assert!(
+            flipped,
+            "reach-guard: Valgavoth must carry a represented Alternative extra_cost to flip"
+        );
+
+        let mut diagnostics = Vec::new();
+        check_swallowed_clauses(VALGAVOTH_ORACLE, &mutated, &mut diagnostics);
+        assert!(
+            diagnostics_have_condition_if(&diagnostics),
+            "with the alt-cost demoted to Additional the marker must not fire and the \
+             Condition_If swallow must re-fire; got {diagnostics:?}"
+        );
+    }
+
+    /// DISCRIMINATING: the helper strips only the represented rider sentence — an
+    /// unrelated genuine "if" condition on the same card must still swallow-flag.
+    #[test]
+    fn valgavoth_alt_cost_does_not_hide_unrelated_if() {
+        let parsed = valgavoth();
+        let synthetic = format!("{VALGAVOTH_ORACLE}\nDraw a card if the moon is bright.");
+        let mut diagnostics = Vec::new();
+        check_swallowed_clauses(&synthetic, &parsed, &mut diagnostics);
+        assert!(
+            diagnostics_have_condition_if(&diagnostics),
+            "a separate unrelated \"if\" condition must remain visible to Condition_If; \
+             got {diagnostics:?}"
+        );
+    }
+
+    /// Parse-fidelity: the swallow_check change touches no parser output. The
+    /// represented alternative cost and graveyard-exile replacement are intact.
+    #[test]
+    fn valgavoth_alt_cost_parse_fidelity() {
+        use crate::types::ability::{AbilityCost, QuantityExpr, QuantityRef};
+        let parsed = valgavoth();
+        let ec = parsed
+            .statics
+            .iter()
+            .find_map(|s| match &s.mode {
+                StaticMode::ExileCastPermission {
+                    extra_cost: Some(c),
+                    ..
+                } => Some(c),
+                _ => None,
+            })
+            .expect("Valgavoth must carry an ExileCastPermission with an extra_cost");
+        assert_eq!(ec.mode, CastCostMode::Alternative);
+        assert!(
+            matches!(
+                &ec.cost,
+                AbilityCost::PayLife {
+                    amount: QuantityExpr::Ref {
+                        qty: QuantityRef::SelfManaValue
+                    }
+                }
+            ),
+            "expected PayLife(SelfManaValue), got {:?}",
+            ec.cost
+        );
+        assert_eq!(
+            parsed.replacements.len(),
+            1,
+            "graveyard-exile replacement must remain represented"
+        );
+    }
+
+    /// CR 508.1d + CR 701.15b: chapter I lowers to `Effect::GoadAll`, which
+    /// runtime-enforces the "if able" attack requirements. The marker must
+    /// suppress the Condition_If swallow.
+    #[test]
+    fn maximum_carnage_goadall_clears_condition_if_swallow() {
+        let parsed = maximum_carnage();
+        assert!(
+            !has_swallowed_detector(&parsed, "Condition_If"),
+            "Maximum Carnage chapter I's GoadAll represents the \"if able\" riders; \
+             the Condition_If swallow must clear; warnings: {:?}",
+            parsed.parse_warnings,
+        );
+    }
+
+    /// DISCRIMINATING revert-probe: dropping the GoadAll-bearing chapter trigger
+    /// removes the `"type":"GoadAll"` marker; the identical "if able" text must
+    /// then re-fire the Condition_If swallow — proving the marker is load-bearing.
+    #[test]
+    fn maximum_carnage_goadall_marker_is_load_bearing() {
+        use crate::types::ability::Effect;
+        let parsed = maximum_carnage();
+        assert!(!has_swallowed_detector(&parsed, "Condition_If"));
+
+        let mut mutated = parsed.clone();
+        let before = mutated.triggers.len();
+        mutated.triggers.retain(|t| {
+            !t.execute
+                .as_deref()
+                .is_some_and(|d| matches!(&*d.effect, Effect::GoadAll { .. }))
+        });
+        assert!(
+            mutated.triggers.len() < before,
+            "reach-guard: a GoadAll chapter trigger must exist to drop"
+        );
+
+        let mut diagnostics = Vec::new();
+        check_swallowed_clauses(MAXIMUM_CARNAGE_ORACLE, &mutated, &mut diagnostics);
+        assert!(
+            diagnostics_have_condition_if(&diagnostics),
+            "without the GoadAll marker the \"if able\" text must swallow-flag; \
+             got {diagnostics:?}"
+        );
+    }
+
+    /// Parse-fidelity: the marker change touches no parser output — chapters
+    /// I/II/III still lower to GoadAll / Mana / DamageEachPlayer.
+    #[test]
+    fn maximum_carnage_chapter_effects_parse_fidelity() {
+        use crate::types::ability::Effect;
+        let parsed = maximum_carnage();
+        let kinds: Vec<&str> = parsed
+            .triggers
+            .iter()
+            .filter_map(|t| t.execute.as_deref())
+            .map(|d| match &*d.effect {
+                Effect::GoadAll { .. } => "GoadAll",
+                Effect::Mana { .. } => "Mana",
+                Effect::DamageEachPlayer { .. } => "DamageEachPlayer",
+                _ => "OTHER",
+            })
+            .collect();
+        assert_eq!(
+            kinds,
+            vec!["GoadAll", "Mana", "DamageEachPlayer"],
+            "chapters I/II/III must remain GoadAll / Mana / DamageEachPlayer"
         );
     }
 }

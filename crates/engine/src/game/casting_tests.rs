@@ -38848,6 +38848,58 @@ fn valgavoth_exile_static_alternative_cost_gated_on_life() {
     );
 }
 
+/// CR 118.9 vs CR 601.2f: the L02 swallow suppression
+/// (`parser::swallow_check::cast_this_way_alt_cost_is_only_if_marker`) exempts the
+/// "if you cast a spell this way, pay [cost] rather than pay its mana cost" rider
+/// ONLY when `CastCostMode::Alternative`. This test pins the runtime semantics
+/// that make that key sound: an `Alternative` pay-life extra cost ZEROES the
+/// exiled spell's mana cost (pay life = mana value, 0 mana), whereas the SAME
+/// cost in `Additional` mode leaves the printed mana cost DUE (mana still owed on
+/// top of the life). Reverting the marker's `Alternative` keying would wrongly
+/// suppress swallow for `Additional`-mode riders (Festival of Embers), whose mana
+/// cost is not replaced — this asymmetry is exactly why the key is mode-scoped.
+///
+/// DISCRIMINATING: flipping the source's `extra_cost.mode` from `Alternative` to
+/// `Additional` flips `effective_spell_cost` from without-paying-mana (0 mana) to
+/// mana-due — the assertion pair fails if the runtime stopped distinguishing the
+/// modes.
+#[test]
+fn valgavoth_alternative_cost_zeroes_mana_but_additional_keeps_it() {
+    let mut state = setup_game_at_main_phase();
+    let player = PlayerId(0);
+    state.players[0].life = 20;
+    let source = add_valgavoth_exile_cast_source(&mut state, player); // Alternative
+    let spell = add_linked_two_generic_sorcery(&mut state, player, source, "Exiled Big Spell");
+
+    // Alternative: MV-2 sorcery's printed {2} mana cost is zeroed (pay life = MV).
+    let effective = effective_spell_cost(&state, player, spell)
+        .expect("effective cost must resolve under Alternative mode");
+    assert!(
+        effective.is_without_paying_mana(),
+        "Alternative pay-life cost must zero the {{2}} mana cost (0 mana), got {effective:?}"
+    );
+
+    // Revert-probe: flip the elected source's rider to Additional. The printed
+    // {2} mana cost must now remain DUE (the life cost rides on top of the mana).
+    if let StaticMode::ExileCastPermission {
+        extra_cost: Some(extra),
+        ..
+    } = &mut state.objects.get_mut(&source).unwrap().static_definitions[0].mode
+    {
+        extra.mode = crate::types::statics::CastCostMode::Additional;
+    } else {
+        panic!("Valgavoth source must carry an ExileCastPermission extra_cost");
+    }
+
+    let effective_additional = effective_spell_cost(&state, player, spell)
+        .expect("effective cost must resolve under Additional mode");
+    assert!(
+        !effective_additional.is_without_paying_mana(),
+        "Additional mode must leave the {{2}} mana cost due (mana + life), got \
+         {effective_additional:?}"
+    );
+}
+
 /// PR #1441: Teferi, Time Raveler's +1 ("you may cast sorcery spells as
 /// though they had flash") is a player-scoped flash-timing grant. The grant
 /// must be a `SpecificPlayer`-bound transient continuous effect read by
