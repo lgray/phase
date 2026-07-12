@@ -532,6 +532,75 @@ fn drive_pentad_prism_zero_charge_has_no_counter_axis() {
     );
 }
 
+/// PR-7 54th (offline acceptance): a REAL Walking Ballista seeded with ≥1 +1/+1
+/// counter, under the Kilo/Freed/Relic proliferate engine, is certified as an
+/// infinite-DAMAGE loop — `WinKind::LethalDamage` (CR 704.5a / CR 120.3a: each ping is
+/// 1 life loss on the opponent) naming the `DamageDealt(P1)` axis. The +1/+1 counter is
+/// MONOTONE (CR 122.1a), so `project_object_for_loop` strips it and the EXISTING
+/// constant-depth gate-1 (`loop_states_equal_modulo_resources`) covers the growth — no
+/// new predicate (contrast the 53rd Pentad's non-monotone `Generic` charge).
+///
+/// DISCRIMINATION: the paired X=0 control below (same driver, only the seed differs)
+/// loses the damage axis, so this `covers` is not vacuously "any cert". The `expect`
+/// flips to a panic if `detect_loop`'s recurrence gate is reverted; the `win_kind` /
+/// `covers` assertions flip if `classify_win_kind`'s damage branch is dropped
+/// (Advantage) — proving the ping actually reached the opponent (a mis-answered
+/// `TargetSelection` prompt would leave no `DamageDealt(P1)` axis and fail `covers`).
+#[test]
+fn drive_kilo_freed_relic_ballista_certificate() {
+    let cert = corpus::drive_offline_kilo_freed_relic_ballista(card_db(), 2).expect(
+        "Walking Ballista (seeded ≥1 +1/+1) under the proliferate engine must confirm an \
+         infinite damage loop: board identical modulo the monotone +1/+1, +1 damage/cycle",
+    );
+    assert_eq!(
+        cert.win_kind,
+        WinKind::LethalDamage,
+        "a +1 damage/cycle ping on the opponent is an unbounded CR 704.5a lethal-damage loop"
+    );
+    assert!(
+        cert.covers(&[ResourceAxis::DamageDealt(P1)]),
+        "certificate must name unbounded damage to the opponent (got {:?})",
+        cert.unbounded
+    );
+    assert!(
+        !cert.mandatory,
+        "an activated-ability loop is optional (CR 602.1), so mandatory == false"
+    );
+}
+
+/// PR-7 54th (X=0 dead-loop CONTROL, paired with the acceptance above): a Walking
+/// Ballista seeded with ZERO +1/+1 counters is a 0/0 that dies to the SBA (CR 704.5f)
+/// with no counter to remove, so the ping activation is rejected and the cycle degrades
+/// to the pure Kilo/Freed/Relic proliferate loop — the cert is still `Some` (board
+/// identical) but names NO damage axis and classifies `Advantage`. The seed is thus
+/// load-bearing: the acceptance's `LethalDamage` + `DamageDealt(P1)` appear ONLY because
+/// a +1/+1 counter was present to remove (mirrors
+/// `drive_pentad_prism_zero_charge_has_no_counter_axis`). This also pins the corrected
+/// wiring: `drive_ballista_ping` would `.expect()`-panic on the dead activation, whereas
+/// the driver's `activate_and_resolve` degrades gracefully.
+#[test]
+fn drive_kilo_freed_relic_ballista_x0_no_damage_axis() {
+    let cert = corpus::drive_offline_kilo_freed_relic_ballista(card_db(), 0).expect(
+        "a 0-counter Ballista still rides the pure Kilo proliferate loop (board identical) \
+         and must confirm via the equality path",
+    );
+    assert_eq!(
+        cert.win_kind,
+        WinKind::Advantage,
+        "with a dead Ballista the only unbounded axis is the proliferate trigger — an \
+         advantage engine, not a lethal win"
+    );
+    assert!(
+        !cert
+            .unbounded
+            .iter()
+            .any(|a| matches!(a, ResourceAxis::DamageDealt(_))),
+        "a 0-counter Ballista deals no damage ⇒ the cert must NOT name a damage axis \
+         (got {:?})",
+        cert.unbounded
+    );
+}
+
 /// #10 PRIEST OF TITANIA + UMBRAL MANTLE — infinite green mana.
 #[test]
 fn drive_combo_10_priest_umbral() {

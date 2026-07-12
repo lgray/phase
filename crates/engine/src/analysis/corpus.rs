@@ -1629,6 +1629,81 @@ pub(crate) fn drive_offline_pentad_prism_seeded(
     })
 }
 
+/// PR-7 54th — WALKING BALLISTA under the KILO + FREED + RELIC proliferate engine
+/// (mana-neutral). The 52nd/53rd/54th trilogy on one engine: 52nd poison, 53rd mana,
+/// 54th DAMAGE. Each cycle: Relic taps Kilo → Kilo's "becomes tapped: proliferate"
+/// grows Ballista's monotone +1/+1 counter (CR 701.34a / CR 122.1a); Freed untaps
+/// Kilo for {U} (mana net 0); Ballista removes a +1/+1 counter to deal 1 to the
+/// opponent (CR 120.3a). Proliferate runs BEFORE the ping so the count is ≥ seed at
+/// every intra-cycle frame (seed 1 → 2 → 1), keeping Ballista a live ≥1/1 (never a
+/// 0/0 that would die to CR 704.5f). Board identical modulo the monotone +1/+1
+/// (projected out, resource.rs:2481), +1 damage/cycle ⇒ `detect_loop` certifies
+/// `WinKind::LethalDamage`, naming `DamageDealt(P1)`.
+///
+/// `seed_counters == 0` is the X=0 dead-loop CONTROL: Ballista enters a 0/0 with no
+/// counter to remove, dies to the SBA (CR 704.5f) during the first activation, so the
+/// ping activation is rejected (`activate_and_resolve` returns `false`, a graceful
+/// no-op — NOT `drive_ballista_ping`, which `.expect()`s and would panic here) and the
+/// cycle degrades to the pure Kilo/Freed/Relic proliferate loop: a `Some` cert with
+/// `WinKind::Advantage` and NO damage axis. Standalone (not in `DRIVERS`, no `CORPUS`
+/// row) — mirrors `drive_offline_pentad_prism_seeded`; the Damage/`LethalDamage` family
+/// is already the corpus's row 0 (Heliod+Ballista), so no new row is warranted.
+pub(crate) fn drive_offline_kilo_freed_relic_ballista(
+    db: &CardDatabase,
+    seed_counters: u32,
+) -> Option<LoopCertificate> {
+    use crate::types::ability::{AbilityCost, Effect};
+
+    let mut board = build_board(db, CORPUS[1].cards)?;
+    let kilo = board.ids[0];
+    let freed = board.ids[1];
+    let relic = board.ids[2];
+    attach_aura(board.runner.state_mut(), freed, kilo);
+    let ballista = install_on_battlefield(board.runner.state_mut(), db, "Walking Ballista", P0)?;
+    {
+        let state = board.runner.state_mut();
+        if seed_counters > 0 {
+            if let Some(o) = state.objects.get_mut(&ballista) {
+                // CR 122.1a: +1/+1 counters (the X counters a cast Ballista enters with)
+                // set its P/T; seeded directly since a directly-installed permanent runs
+                // no enters replacement.
+                o.counters.insert(
+                    crate::types::counter::CounterType::Plus1Plus1,
+                    seed_counters,
+                );
+            }
+        }
+        settle_layers(state);
+    }
+    // Relic's "tap a creature: add mana" ability (the one that taps Kilo, firing its
+    // proliferate trigger) — found by its `TapCreatures` cost, not a literal index.
+    let relic_tap_creature = board.runner.state().objects[&relic]
+        .abilities
+        .iter()
+        .position(|a| matches!(a.cost, Some(AbilityCost::TapCreatures { .. })))?;
+    let freed_untap = ability_index_where(board.runner.state(), freed, is_untap_effect)?;
+    // Ballista's "Remove a +1/+1 counter: deal 1 to any target" ability, found by its
+    // deal-damage effect (a card-data re-parse that reorders abilities won't break it).
+    let ballista_ping = ability_index_where(board.runner.state(), ballista, |e| {
+        matches!(e, Effect::DealDamage { .. })
+    })?;
+    run_combo(board, |probe| {
+        // Tap Kilo via Relic (fires Kilo's proliferate trigger → grows Ballista +1),
+        // untap Kilo via Freed, then remove a +1/+1 counter to ping the opponent.
+        // The ping uses `activate_and_resolve` (bool-returning, `ChooseTarget`-shape
+        // target answer): at seed 0 the dead Ballista's activation is rejected and this
+        // degrades to the pure proliferate loop instead of panicking.
+        activate_and_resolve(
+            probe,
+            relic,
+            relic_tap_creature,
+            Some(TargetRef::Object(kilo)),
+        );
+        activate_and_resolve(probe, freed, freed_untap, Some(TargetRef::Object(kilo)));
+        activate_and_resolve(probe, ballista, ballista_ping, Some(TargetRef::Player(P1)));
+    })
+}
+
 /// #10 PRIEST OF TITANIA + UMBRAL MANTLE — infinite green mana. Priest taps for
 /// {G} per Elf; Umbral Mantle's "{3}, {Q}" pump untaps Priest. With ≥4 Elves one
 /// cycle is net mana-positive after the {3} untap cost (paid from green).

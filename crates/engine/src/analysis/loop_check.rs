@@ -1555,6 +1555,58 @@ mod tests {
         assert_eq!(live_mandatory_loop_winner(&start, &end, &delta), None);
     }
 
+    /// PR-7 54th (>2p forced-WIN negative control): a Walking Ballista in a 3-player
+    /// pod pinging only ONE opponent (P1 drains, P2 static) must NOT declare a winner —
+    /// CR 104.2a wins only when ALL opponents have left. fallers = {P1}, nonfallers =
+    /// {P0, P2} (len 2), so the `nonfallers.len() != 1` gate returns None. This is the
+    /// multiplayer analog of the self-ping control: it guards the "wrongly declares a
+    /// win" mode when the unbounded pings are not distributed across the whole table.
+    ///
+    /// REVERT-FAIL: dropping the `nonfallers.len() != 1` all-opponents-fall gate
+    /// (loop_check.rs ~:330) makes winner = nonfallers[0] = P0 pass every downstream
+    /// check (the opponent drain IS P0's net-progress axis), flipping this None → a
+    /// premature Some(P0). The paired positive below (both opponents fall) proves the
+    /// machinery CAN name P0, so this None is attributable to the un-distributed ping,
+    /// not a dead pipeline.
+    #[test]
+    fn ballista_mp_single_opponent_ping_no_false_win() {
+        let end = n_player(3);
+        let start = end.clone();
+        let mut delta = ResourceVector::default();
+        delta.life.insert(pid(1), -1); // ONLY P1 is pinged
+                                       // P2 carries no delta ⇒ static (a second non-faller).
+        assert_eq!(
+            live_mandatory_loop_winner(&start, &end, &delta),
+            None,
+            "pinging one of two opponents in 3p is not a win (CR 104.2a): the other lives"
+        );
+    }
+
+    /// PR-7 54th (>2p forced-WIN paired positive): the SAME 3-player pod when the pings
+    /// ARE distributed — both opponents fall by an EQUAL, simultaneous −1 each cycle
+    /// (P0 offsets +2) — names P0 the winner. fallers = {P1, P2}, nonfallers = {P0}
+    /// (len 1), equal per-cycle deltas ⇒ they cross lethal in the same CR 704.3 SBA
+    /// batch ⇒ Some(P0). Board-equal via `start == end.clone()` (constant depth). This
+    /// pairs with the single-faller None above to make it non-vacuous.
+    ///
+    /// REVERT-FAIL: dropping the `fallers.len() >= 2 ⇒ equal per-cycle delta`
+    /// simultaneity conjunct is probed by `n2_unequal_faller_deltas_is_none`; this test
+    /// pins the equal-delta Some(P0) that gate admits.
+    #[test]
+    fn ballista_mp_all_opponents_distributed_ping_wins() {
+        let end = n_player(3);
+        let start = end.clone();
+        let mut delta = ResourceVector::default();
+        delta.life.insert(pid(1), -1);
+        delta.life.insert(pid(2), -1); // equal ⇒ simultaneous crossing
+        delta.life.insert(pid(0), 2); // controller lifegain offset
+        assert_eq!(
+            live_mandatory_loop_winner(&start, &end, &delta),
+            Some(pid(0)),
+            "a distributed ping that drops every opponent equally names the controller (CR 104.2a)"
+        );
+    }
+
     // ===================================================================
     // N5 — m9 monotonicity + R5-B2 per-frame simultaneity (pure fn tests).
     // ===================================================================
