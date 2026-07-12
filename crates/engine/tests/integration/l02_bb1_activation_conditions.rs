@@ -15,9 +15,10 @@ use engine::game::restrictions::{check_activation_restrictions, record_battlefie
 use engine::game::scenario::{GameScenario, P0, P1};
 use engine::parser::parse_oracle_text;
 use engine::types::ability::{
-    ActivationRestriction, AggregateFunction, Comparator, ControllerRef, CountScope, DamageChannel,
-    DamageKindFilter, FilterProp, ObjectScope, ParsedCondition, PlayerFilter, PlayerRelation,
-    PlayerScope, QuantityExpr, QuantityRef, TargetFilter, TargetRef, TypeFilter, ZoneRef,
+    AbilityCondition, AbilityDefinition, ActivationRestriction, AggregateFunction, Comparator,
+    ControllerRef, CountScope, DamageChannel, DamageKindFilter, FilterProp, ObjectScope,
+    ParsedCondition, PlayerFilter, PlayerRelation, PlayerScope, QuantityExpr, QuantityRef,
+    TargetFilter, TargetRef, TriggerCondition, TypeFilter, ZoneRef,
 };
 use engine::types::card_type::CoreType;
 use engine::types::counter::CounterType;
@@ -868,4 +869,276 @@ fn s7_cavernous_maw_runtime_false_opponent_graveyard_cave_excluded() {
         !condition_gate_ok(runner.state(), maw),
         "a Cave in the opponent's graveyard must NOT count (proves Controller scope on term B)"
     );
+}
+
+// ===========================================================================
+// BB-FU1 — bare-subject "a/an/another [type] entered ... this turn" look-back
+//
+// The bare-subject COUNT form (`parse_entered_this_turn_subject`, condition.rs)
+// previously emitted the live-board `QuantityRef::EnteredThisTurn`, which
+// under-counts a permanent that entered this turn then LEFT the battlefield
+// (CR 608.2i look-back violation). BB-FU1 migrates it to the
+// `BattlefieldEntriesThisTurn { PlayerScope::Controller }` ledger snapshot —
+// mirroring the already-migrated siblings (`parse_or_more_entered_count`, the
+// `~ or another` disjunct). This must NOT touch the un-migrated TargetFilter
+// "put a counter on it" form (Malamet), which per CR 608.2h needs a live target.
+//
+// Count vehicle = Gargoyle Flock (routes through the bare-subject branch).
+// Target vehicle = Malamet Battle Glyph (routes through the TargetFilter form).
+// ===========================================================================
+
+const GARGOYLE_FLOCK: &str = "Flying\nSkyswarm — At the beginning of your end step, if a creature \
+entered the battlefield under your control this turn, create a 1/1 blue Tyranid Gargoyle creature \
+token with flying.";
+
+const MALAMET: &str =
+    "Choose target creature you control and target creature you don't control. If \
+the creature you control entered this turn, put a +1/+1 counter on it. Then those creatures fight \
+each other.";
+
+/// Parse Gargoyle Flock and return its intervening-if quantity comparison operands.
+/// The bare-subject count form lowers to a `TriggerCondition::QuantityComparison`.
+fn gargoyle_count_condition() -> (QuantityExpr, Comparator, QuantityExpr) {
+    let parsed = parse_oracle_text(
+        GARGOYLE_FLOCK,
+        "Gargoyle Flock",
+        &[],
+        &["Creature".to_string()],
+        &["Gargoyle".to_string()],
+    );
+    let trig = parsed
+        .triggers
+        .iter()
+        .find(|t| t.condition.is_some())
+        .expect("Gargoyle Flock must parse a trigger carrying an intervening-if condition");
+    match trig.condition.clone().unwrap() {
+        TriggerCondition::QuantityComparison {
+            lhs,
+            comparator,
+            rhs,
+        } => (lhs, comparator, rhs),
+        other => panic!("expected TriggerCondition::QuantityComparison, got {other:?}"),
+    }
+}
+
+/// Walk an ability's `sub_ability` chain and return the first attached condition.
+fn first_ability_condition(def: &AbilityDefinition) -> Option<&AbilityCondition> {
+    let mut cur = def;
+    loop {
+        if let Some(c) = cur.condition.as_ref() {
+            return Some(c);
+        }
+        cur = cur.sub_ability.as_deref()?;
+    }
+}
+
+/// Evaluate a bare quantity-comparison intervening-if through the production
+/// activation-restriction gate — the same public `check_activation_restrictions`
+/// path the S4 sibling runtime tests use. `restrictions::evaluate_condition`'s
+/// `QuantityComparison` arm resolves via `resolve_quantity_scoped`, reaching the
+/// identical `BattlefieldEntriesThisTurn` runtime arm (quantity.rs) that the
+/// trigger intervening-if's `resolve_quantity_for_trigger_check` reaches. The
+/// operands are the parser's own output for the real card (see
+/// `gargoyle_count_condition`), so the fix under test drives this resolution.
+fn count_gate_ok(
+    state: &GameState,
+    source: ObjectId,
+    lhs: QuantityExpr,
+    comparator: Comparator,
+    rhs: QuantityExpr,
+) -> bool {
+    let req = vec![ActivationRestriction::RequiresCondition {
+        condition: Some(ParsedCondition::QuantityComparison {
+            lhs,
+            comparator,
+            rhs,
+        }),
+    }];
+    check_activation_restrictions(state, P0, source, 0, &req).is_ok()
+}
+
+#[test]
+fn bbfu1_gargoyle_flock_parse_count_form_migrated_to_ledger() {
+    // Reach-guard / primary parser-change discriminator: the real card's count
+    // form must now emit the ledger variant. Reverting BB-FU1 (restoring
+    // `EnteredThisTurn` + `inject_controller_you`) makes this arm panic RED.
+    let (lhs, comparator, rhs) = gargoyle_count_condition();
+    assert_eq!(comparator, Comparator::GE);
+    assert!(
+        matches!(rhs, QuantityExpr::Fixed { value: 1 }),
+        "count-form threshold is GE 1: {rhs:?}"
+    );
+    match lhs {
+        QuantityExpr::Ref {
+            qty:
+                QuantityRef::BattlefieldEntriesThisTurn {
+                    player: PlayerScope::Controller,
+                    filter: TargetFilter::Typed(tf),
+                },
+        } => {
+            // Controller scope moved off the filter onto PlayerScope::Controller,
+            // leaving a bare filter that mirrors parse_or_more_entered_count. (The old
+            // live-board battlefield requirement was a runtime zone-check in the
+            // EnteredThisTurn arm, not a filter prop, so nothing else drops here.)
+            assert_eq!(
+                tf.controller, None,
+                "controller belongs to PlayerScope::Controller; filter must be bare: {tf:?}"
+            );
+            assert!(
+                tf.type_filters.contains(&TypeFilter::Creature),
+                "creature type retained: {tf:?}"
+            );
+        }
+        other => panic!(
+            "Gargoyle Flock count form must emit BattlefieldEntriesThisTurn(Controller) after \
+             BB-FU1 (the pre-fix EnteredThisTurn emit flips this RED): {other:?}"
+        ),
+    }
+}
+
+#[test]
+fn bbfu1_gargoyle_flock_runtime_true_when_creature_entered_then_left_lookback() {
+    // (a) POSITIVE FLIP — CR 608.2i look-back: a creature entered under P0's
+    // control this turn and has since LEFT the battlefield (died/bounced/
+    // sacrificed). The intervening-if count gate must still read TRUE.
+    //
+    // Revert-to-red: under the pre-BB-FU1 emit the reach-guard below fails first
+    // (parsed qty is EnteredThisTurn, not BattlefieldEntriesThisTurn). Even
+    // bypassing it, the live-board runtime read (quantity.rs EnteredThisTurn arm)
+    // requires `o.zone == Battlefield`, so the departed creature is excluded ->
+    // count 0 -> gate FALSE. The BattlefieldEntriesThisTurn snapshot survives the
+    // departure -> TRUE. Verified by manual revert (see BB-FU1 report).
+    let (lhs, comparator, rhs) = gargoyle_count_condition();
+    assert!(
+        matches!(
+            &lhs,
+            QuantityExpr::Ref {
+                qty: QuantityRef::BattlefieldEntriesThisTurn {
+                    player: PlayerScope::Controller,
+                    ..
+                },
+            }
+        ),
+        "reach-guard: count form must resolve BattlefieldEntriesThisTurn(Controller): {lhs:?}"
+    );
+
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(Phase::PreCombatMain);
+    // Gargoyle Flock entered a PRIOR turn (add_creature stamps entered_battlefield_turn
+    // = turn-1, with no this-turn ledger record) so it never self-counts -> isolates the
+    // gate to the departed entrant.
+    let flock = scenario
+        .add_creature_from_oracle(P0, "Gargoyle Flock", 3, 4, GARGOYLE_FLOCK)
+        .id();
+    let entrant = scenario.add_creature(P0, "Departed Beast", 2, 2).id();
+    let mut runner = scenario.build();
+    let turn = runner.state().turn_number;
+    // Snapshot the entry while `entrant` is still on the battlefield (production path).
+    record_battlefield_entry(runner.state_mut(), entrant);
+    // Now it leaves: bears the live this-turn marker yet is no longer on the
+    // battlefield, so only the surviving ledger record keeps the gate TRUE.
+    {
+        let obj = runner.state_mut().objects.get_mut(&entrant).unwrap();
+        obj.entered_battlefield_turn = Some(turn);
+        obj.zone = Zone::Graveyard;
+    }
+    assert!(
+        count_gate_ok(runner.state(), flock, lhs, comparator, rhs),
+        "a creature that entered this turn then left must still satisfy the count-form look-back \
+         gate (CR 608.2i)"
+    );
+}
+
+#[test]
+fn bbfu1_gargoyle_flock_runtime_true_when_creature_entered_and_stayed() {
+    // (b) B1 ENTERED-AND-STAYED positive control — the ordinary case: TRUE under
+    // both the new ledger authority and the old live-board read. Proves the fix
+    // didn't regress the normal case. One-line variation of (a), minus departure.
+    let (lhs, comparator, rhs) = gargoyle_count_condition();
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(Phase::PreCombatMain);
+    let flock = scenario
+        .add_creature_from_oracle(P0, "Gargoyle Flock", 3, 4, GARGOYLE_FLOCK)
+        .id();
+    let entrant = scenario.add_creature(P0, "Fresh Beast", 2, 2).id();
+    let mut runner = scenario.build();
+    record_battlefield_entry(runner.state_mut(), entrant);
+    // entrant STAYS on the battlefield.
+    assert!(
+        count_gate_ok(runner.state(), flock, lhs, comparator, rhs),
+        "a creature that entered this turn and stayed must satisfy the count-form gate"
+    );
+}
+
+#[test]
+fn bbfu1_gargoyle_flock_runtime_false_when_opponent_creature_entered() {
+    // Controller-scope control: an OPPONENT's creature entered this turn -> the
+    // gate reads FALSE (proves PlayerScope::Controller, not any-player). Mirrors
+    // s4_masters_runtime_false_when_opponent_artifact_entered.
+    let (lhs, comparator, rhs) = gargoyle_count_condition();
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(Phase::PreCombatMain);
+    let flock = scenario
+        .add_creature_from_oracle(P0, "Gargoyle Flock", 3, 4, GARGOYLE_FLOCK)
+        .id();
+    let opp = scenario.add_creature(P1, "Enemy Beast", 2, 2).id();
+    let mut runner = scenario.build();
+    // Entry snapshot scoped to the OPPONENT (record.controller == P1). The gate
+    // scopes to record.controller == P0, so this entry is excluded -> FALSE.
+    record_battlefield_entry(runner.state_mut(), opp);
+    assert!(
+        !count_gate_ok(runner.state(), flock, lhs, comparator, rhs),
+        "an opponent's creature entering must NOT satisfy 'under your control' (proves \
+         player=Controller)"
+    );
+}
+
+#[test]
+fn bbfu1_malamet_target_form_not_over_migrated() {
+    // (c) B2 boundary-LOCK — the UN-migrated TargetFilter "put a +1/+1 counter on
+    // it" form (conditions.rs) must stay a live-target check
+    // (AbilityCondition::TargetMatchesFilter { use_lki: false } carrying
+    // FilterProp::EnteredThisTurn), NOT the ledger BattlefieldEntriesThisTurn
+    // count. This form ACTS ON the subject (puts a counter on it), so per
+    // CR 608.2h it needs a currently legal target — a departed object can't be
+    // targeted. Contrast the count form (Gargoyle Flock), a pure CR 608.2i
+    // look-back tally that survives departure. Flips RED if the target form is
+    // ever over-migrated to the ledger.
+    let parsed = parse_oracle_text(
+        MALAMET,
+        "Malamet Battle Glyph",
+        &[],
+        &["Sorcery".to_string()],
+        &[],
+    );
+    let root = parsed
+        .abilities
+        .first()
+        .expect("Malamet must parse a spell ability");
+    let cond = first_ability_condition(root)
+        .expect("Malamet's PutCounter rider must carry an if-condition");
+    match cond {
+        AbilityCondition::TargetMatchesFilter {
+            filter, use_lki, ..
+        } => {
+            assert!(
+                !*use_lki,
+                "present-tense 'entered this turn' is a current-target check, not LKI: {cond:?}"
+            );
+            match filter {
+                TargetFilter::Typed(tf) => assert!(
+                    tf.properties
+                        .iter()
+                        .any(|p| matches!(p, FilterProp::EnteredThisTurn)),
+                    "target form must carry FilterProp::EnteredThisTurn (live target), not the \
+                     ledger count: {tf:?}"
+                ),
+                other => panic!("expected a Typed filter: {other:?}"),
+            }
+        }
+        other => panic!(
+            "Malamet's target form must stay AbilityCondition::TargetMatchesFilter — an \
+             over-migration to the ledger count form would break CR 608.2h targeting: {other:?}"
+        ),
+    }
 }

@@ -7195,10 +7195,23 @@ fn parse_entered_this_turn_subject<'a>(
     let type_text = type_text.trim();
     let _ = alt((parse_article, value((), tag("another ")))).parse(type_text)?;
     let (filter, _) = parse_type_phrase(type_text.trim());
-    let filter = inject_controller_you(filter);
     Ok((
         rest,
-        make_quantity_ge(QuantityRef::EnteredThisTurn { filter }, count),
+        make_quantity_ge(
+            // CR 608.2i: "entered ... this turn" is a look-back count — a permanent
+            // that entered under your control this turn still counts after it has
+            // left the battlefield (died, was bounced, or sacrificed). The
+            // BattlefieldEntriesThisTurn snapshot survives departure; the live-board
+            // EnteredThisTurn read did not. PlayerScope::Controller supplies "under
+            // your control" (the runtime keys on record.controller); the filter
+            // carries no controller of its own — mirroring parse_or_more_entered_count,
+            // the count-shape sibling, which likewise omits inject_controller_you.
+            QuantityRef::BattlefieldEntriesThisTurn {
+                player: PlayerScope::Controller,
+                filter,
+            },
+            count,
+        ),
     ))
 }
 
@@ -11501,12 +11514,16 @@ mod tests {
             StaticCondition::QuantityComparison {
                 lhs:
                     QuantityExpr::Ref {
-                        qty: QuantityRef::EnteredThisTurn { .. },
+                        qty:
+                            QuantityRef::BattlefieldEntriesThisTurn {
+                                player: PlayerScope::Controller,
+                                ..
+                            },
                     },
                 comparator: Comparator::GE,
                 rhs: QuantityExpr::Fixed { value: 1 },
             } => {}
-            other => panic!("expected EnteredThisTurn GE 1, got {other:?}"),
+            other => panic!("expected BattlefieldEntriesThisTurn GE 1, got {other:?}"),
         }
     }
 
@@ -11522,20 +11539,25 @@ mod tests {
                 lhs:
                     QuantityExpr::Ref {
                         qty:
-                            QuantityRef::EnteredThisTurn {
+                            QuantityRef::BattlefieldEntriesThisTurn {
+                                player: PlayerScope::Controller,
                                 filter: TargetFilter::Typed(filter),
                             },
                     },
                 comparator: Comparator::GE,
                 rhs: QuantityExpr::Fixed { value: 1 },
             } => {
-                assert_eq!(filter.controller, Some(ControllerRef::You));
+                // Controller moved from the filter to PlayerScope::Controller
+                // (the ledger runtime keys on record.controller).
+                assert_eq!(filter.controller, None);
                 assert!(filter
                     .type_filters
                     .contains(&TypeFilter::Subtype("Knight".to_string())));
                 assert!(filter.properties.contains(&FilterProp::Another));
             }
-            other => panic!("expected another Knight EnteredThisTurn GE 1, got {other:?}"),
+            other => {
+                panic!("expected another Knight BattlefieldEntriesThisTurn GE 1, got {other:?}")
+            }
         }
     }
 
@@ -11551,18 +11573,23 @@ mod tests {
                 lhs:
                     QuantityExpr::Ref {
                         qty:
-                            QuantityRef::EnteredThisTurn {
+                            QuantityRef::BattlefieldEntriesThisTurn {
+                                player: PlayerScope::Controller,
                                 filter: TargetFilter::Typed(filter),
                             },
                     },
                 comparator: Comparator::GE,
                 rhs: QuantityExpr::Fixed { value: 1 },
             } => {
-                assert_eq!(filter.controller, Some(ControllerRef::You));
+                // Controller moved from the filter to PlayerScope::Controller
+                // (the ledger runtime keys on record.controller).
+                assert_eq!(filter.controller, None);
                 assert!(filter.type_filters.contains(&TypeFilter::Creature));
                 assert!(filter.properties.contains(&FilterProp::Another));
             }
-            other => panic!("expected another creature EnteredThisTurn GE 1, got {other:?}"),
+            other => {
+                panic!("expected another creature BattlefieldEntriesThisTurn GE 1, got {other:?}")
+            }
         }
     }
 
