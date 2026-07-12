@@ -64,6 +64,12 @@ cards in your graveyard, create a token that's a copy of Ran and Shaw, except it
 /// This is the Channel-B "put-into-play-not-cast" discriminator.
 const REANIMATE: &str = "Return target creature card from your graveyard to the battlefield.";
 
+/// Phage the Untouchable — verbatim Oracle (data/card-data.json). Only the first
+/// ability (the ETB game-loss intervening-if) is exercised below.
+const PHAGE: &str = "When Phage enters, if you didn't cast it from your hand, you lose the game.\n\
+Whenever Phage deals combat damage to a creature, destroy that creature. It can't be regenerated.\n\
+Whenever Phage deals combat damage to a player, that player loses the game.";
+
 // ---------------------------------------------------------------------------
 // Parse helpers
 // ---------------------------------------------------------------------------
@@ -664,4 +670,97 @@ fn ran_and_shaw_opponent_graveyard_dragon_uncounted() {
         None,
         "opponent's Dragon does not count toward your graveyard → no copy"
     );
+}
+
+// ===========================================================================
+// R — Phage the Untouchable (STANDING regression fence, NOT a BB-FU4 delta)
+// ===========================================================================
+
+fn p0_eliminated(state: &engine::types::game_state::GameState) -> bool {
+    state
+        .players
+        .iter()
+        .find(|p| p.id == P0)
+        .expect("P0 exists")
+        .is_eliminated
+}
+
+/// STANDING regression fence for the UNTOUCHED `TriggerCondition::WasCast`
+/// game-loss path (reanimated Phage ⇒ you lose, CR 104.3e) — NOT a BB-FU4 delta
+/// discriminator; BB-FU4 renamed only `AbilityCondition`, so this ETB trigger
+/// path (`TriggerCondition::Not(WasCast{Hand})` + `Effect::LoseTheGame`) is
+/// unchanged and this test cannot flip on reverting the rename. The
+/// positive+negative pair IS the non-vacuity: same card, opposite cast origin,
+/// opposite outcome — if the "didn't cast it from your hand" condition were
+/// ignored, either both cases would lose or neither would.
+///
+/// CR 104.3e: an effect may state that a player loses the game.
+#[test]
+fn phage_reanimated_not_from_hand_loses_but_hand_cast_does_not() {
+    // Trigger-lowering confirmation: the ETB is an intervening-if that negates a
+    // hand-scoped WasCast (the untouched trigger path).
+    let parsed = parse(PHAGE, "Phage the Untouchable", &["Creature"]);
+    let cond = first_trigger_condition(&parsed).expect("Phage ETB carries a condition");
+    assert!(
+        matches!(
+            &cond,
+            TriggerCondition::Not { condition }
+                if matches!(
+                    condition.as_ref(),
+                    TriggerCondition::WasCast { zone: Some(Zone::Hand), .. }
+                )
+        ),
+        "Phage ETB must lower to Not(WasCast{{Hand}}), got {cond:?}"
+    );
+
+    // (a) POSITIVE: reanimate Phage — put onto the battlefield, cast_from_zone
+    // stays None (CR 400.7) → "didn't cast it from your hand" TRUE → P0 loses.
+    {
+        let mut scenario = GameScenario::new();
+        scenario.at_phase(Phase::PreCombatMain);
+        let mut ph = scenario.add_creature_to_graveyard(P0, "Phage the Untouchable", 4, 4);
+        ph.from_oracle_text(PHAGE);
+        let phage = ph.id();
+        let mut reani = scenario.add_spell_to_hand_from_oracle(P0, "Reanimate", false, REANIMATE);
+        reani.with_mana_cost(engine::types::mana::ManaCost::generic(0));
+        let reani = reani.id();
+        let mut runner = scenario.build();
+
+        let out = runner.cast(reani).target_object(phage).resolve();
+        // Reach-guard: the reanimate resolved (Phage left the graveyard), so the
+        // ETB actually fired. Phage is not on the battlefield afterward because
+        // CR 800.4a exiles P0's objects once P0 leaves the game.
+        assert_ne!(
+            out.zone_of(phage),
+            Zone::Graveyard,
+            "reach-guard: Reanimate resolved and Phage entered the battlefield"
+        );
+        assert!(
+            p0_eliminated(out.state()),
+            "reanimated Phage (not cast from hand) → CR 104.3e game loss → P0 eliminated"
+        );
+    }
+
+    // (b) NEGATIVE discriminator: cast Phage from hand → "didn't cast it from
+    // your hand" FALSE → no loss.
+    {
+        let mut scenario = GameScenario::new();
+        scenario.at_phase(Phase::PreCombatMain);
+        let mut ph =
+            scenario.add_creature_to_hand_from_oracle(P0, "Phage the Untouchable", 4, 4, PHAGE);
+        ph.with_mana_cost(engine::types::mana::ManaCost::generic(0));
+        let phage = ph.id();
+        let mut runner = scenario.build();
+
+        let out = runner.cast(phage).resolve();
+        assert_eq!(
+            out.zone_of(phage),
+            Zone::Battlefield,
+            "reach-guard: hand-cast Phage resolved onto the battlefield (ETB fired)"
+        );
+        assert!(
+            !p0_eliminated(out.state()),
+            "hand-cast Phage → WasCast(Hand) true → Not(true) false → no loss → P0 alive"
+        );
+    }
 }
