@@ -24,13 +24,13 @@
 //! only; covering one representative of each delivery class covers all four.
 //!
 //! Non-consumption (CR 122.1h has no "remove a counter" clause, unlike shield
-//! CR 122.1c): the applier `apply_finality_counter_replacement(event, rid)` takes
-//! no `&mut GameState`, so it structurally CANNOT decrement a counter — the
-//! redirect only rewrites the event's destination. A runtime "counter still
+//! CR 122.1c): the applier receives only an immutable game-state borrow, so it
+//! structurally CANNOT decrement a counter — the redirect only rewrites the
+//! event's destination and records its replacement identity. A runtime "counter still
 //! present" assertion is not meaningful here: once the permanent is exiled its
 //! counters cease to exist (CR 400.7 — a new object with no counters), so an
 //! exiled object shows no finality counter regardless of consumption. The
-//! structural guarantee (no state access in the applier) is the real proof.
+//! structural guarantee (no mutable state access in the applier) is the real proof.
 
 use engine::game::scenario::{GameScenario, P0};
 use engine::types::counter::CounterType;

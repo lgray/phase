@@ -2507,8 +2507,9 @@ pub enum CastingPermission {
         /// enters with a [counter] counter on it." When `Some(ct)`, the granted
         /// cast finalization registers a pending ETB counter of type `ct` on the
         /// cast object so it enters the battlefield carrying that counter
-        /// (CR 122.1h: a finality counter is the keyword counter that exiles the
-        /// permanent instead of letting it die). `None` for every other
+        /// (CR 122.1h: a finality counter intrinsically creates the replacement
+        /// effect that exiles the permanent instead of letting it go to a
+        /// graveyard). `None` for every other
         /// `CastFromZone` grant. Typed `Option<CounterType>` rather than a bool so
         /// the rider covers any counter the cast-this-way creature enters with.
         #[serde(default, skip_serializing_if = "Option::is_none")]

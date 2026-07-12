@@ -31,9 +31,9 @@ use engine::types::player::PlayerId;
 use engine::types::statics::{CastCostMode, CastExtraCost, ExileCardPool, StaticMode};
 use engine::types::zones::Zone;
 
-// ── Verbatim Oracle text (finality reminder included; parser strips it) ──────
+// ── Verbatim current Oracle text ─────────────────────────────────────────────
 
-const NOCTIS_PERMISSION: &str = "You may cast artifact spells from your graveyard by paying 3 life in addition to paying their other costs. If you cast a spell this way, that artifact enters with a finality counter on it. (If a permanent with a finality counter on it would go to a graveyard, exile it instead.)";
+const NOCTIS_PERMISSION: &str = "Lifelink\nYou may cast artifact spells from your graveyard by paying 3 life in addition to paying their other costs. If you cast a spell this way, that artifact enters with a finality counter on it.";
 
 const INTREPID_PERMISSION: &str = "You may cast Dinosaur creature spells from among cards you own exiled with this creature. If you cast a spell this way, that creature enters with a finality counter on it. (If a creature with a finality counter on it would die, exile it instead.)";
 
@@ -362,7 +362,7 @@ fn noctis_runtime_cost_filter_and_finality() {
     let mut scenario = GameScenario::new();
     scenario.at_phase(Phase::PreCombatMain).with_life(P0, 20);
     scenario
-        .add_creature(P0, "Noctis, Prince of Lucis", 0, 0)
+        .add_creature(P0, "Noctis, Prince of Lucis", 4, 3)
         .from_oracle_text(NOCTIS_PERMISSION);
     let artifact = scenario
         .add_creature_to_graveyard(P0, "Test Relic", 0, 0)
@@ -419,7 +419,7 @@ fn noctis_normal_hand_cast_has_no_finality() {
     let mut scenario = GameScenario::new();
     scenario.at_phase(Phase::PreCombatMain).with_life(P0, 20);
     scenario
-        .add_creature(P0, "Noctis, Prince of Lucis", 0, 0)
+        .add_creature(P0, "Noctis, Prince of Lucis", 4, 3)
         .from_oracle_text(NOCTIS_PERMISSION);
     let hand_artifact = scenario
         .add_creature_to_hand(P0, "Hand Relic", 0, 0)
