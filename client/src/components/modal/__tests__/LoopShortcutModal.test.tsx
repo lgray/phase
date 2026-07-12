@@ -4,13 +4,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
   DecisionPoint,
   GameState,
-  IterationCount,
-  ResourceAxis,
   WaitingFor,
-  WinKind,
 } from "../../../adapter/types.ts";
-import { useGameStore } from "../../../stores/gameStore.ts";
-import { buildGameState } from "../../../test/factories/gameStateFactory.ts";
+import {
+  buildGameState,
+  buildLoopShortcutWaitingFor,
+  buildRespondToShortcutWaitingFor,
+} from "../../../test/factories/gameStateFactory.ts";
+import { setGameStoreForTest } from "../../../test/helpers/gameStoreHelpers.ts";
 import { DeclareShortcutModal, RespondToShortcutModal } from "../LoopShortcutModal.tsx";
 
 const dispatchMock = vi.fn();
@@ -22,50 +23,6 @@ const convokePoint: DecisionPoint = {
   kind: { ConvokeTaps: { tappable: [40, 41] } },
 };
 
-function declareWaitingFor(opts: {
-  controller?: number;
-  iterationCount?: IterationCount;
-  points?: DecisionPoint[];
-  winKind?: WinKind;
-  unbounded?: ResourceAxis[];
-} = {}): Extract<WaitingFor, { type: "LoopShortcut" }> {
-  return {
-    type: "LoopShortcut",
-    data: {
-      controller: opts.controller ?? 0,
-      certificate: {
-        unbounded: opts.unbounded ?? [{ DamageDealt: 1 }],
-        win_kind: opts.winKind ?? "LethalDamage",
-        mandatory: false,
-        residual_board_delta: { added: [], removed: [] },
-      },
-      schema: {
-        iteration_count: opts.iterationCount ?? "UntilLethal",
-        points: opts.points ?? [],
-      },
-    },
-  };
-}
-
-function respondWaitingFor(opts: {
-  player?: number;
-  count?: IterationCount;
-  winKind?: WinKind;
-} = {}): Extract<WaitingFor, { type: "RespondToShortcut" }> {
-  return {
-    type: "RespondToShortcut",
-    data: {
-      player: opts.player ?? 0,
-      proposal: {
-        controller: 1,
-        count: opts.count ?? "UntilLethal",
-        unbounded: [{ DamageDealt: 1 }],
-        win_kind: opts.winKind ?? "LethalDamage",
-      },
-    },
-  };
-}
-
 function seed(waitingFor: WaitingFor, overrides: Partial<GameState> = {}) {
   const gameState = buildGameState({
     objects: {},
@@ -73,7 +30,7 @@ function seed(waitingFor: WaitingFor, overrides: Partial<GameState> = {}) {
     waiting_for: waitingFor,
     ...overrides,
   });
-  useGameStore.setState({ gameState, waitingFor, dispatch: dispatchMock });
+  setGameStoreForTest({ gameState, waitingFor, dispatch: dispatchMock });
 }
 
 describe("LoopShortcutModal", () => {
@@ -90,7 +47,7 @@ describe("LoopShortcutModal", () => {
   // win_kind, iteration_count, and the read-only ConvokeTaps count. A wrong field
   // read renders a different/absent string and fails.
   it("renders the offer summary from certificate + schema (T1)", () => {
-    seed(declareWaitingFor({ points: [convokePoint] }));
+    seed(buildLoopShortcutWaitingFor({ schema: { points: [convokePoint] } }));
     render(<DeclareShortcutModal />);
 
     expect(screen.getByText("This loop deals lethal damage.")).toBeInTheDocument();
@@ -103,7 +60,7 @@ describe("LoopShortcutModal", () => {
   // T2: confirm dispatches the exact declare payload, echoing the schema's
   // iteration_count (UntilLethal) with template: null.
   it("dispatches DeclareShortcut echoing UntilLethal with template null (T2)", () => {
-    seed(declareWaitingFor());
+    seed(buildLoopShortcutWaitingFor());
     render(<DeclareShortcutModal />);
 
     fireEvent.click(screen.getByRole("button", { name: "Take the shortcut" }));
@@ -116,7 +73,7 @@ describe("LoopShortcutModal", () => {
   // T2 echo-guard: a Fixed(1) schema must dispatch count:{Fixed:1}, proving the
   // count is echoed from the schema, not a hardcoded "UntilLethal".
   it("echoes a Fixed iteration_count into the dispatch (T2 echo-guard)", () => {
-    seed(declareWaitingFor({ iterationCount: { Fixed: 1 } }));
+    seed(buildLoopShortcutWaitingFor({ schema: { iteration_count: { Fixed: 1 } } }));
     render(<DeclareShortcutModal />);
 
     fireEvent.click(screen.getByRole("button", { name: "Take the shortcut" }));
@@ -130,7 +87,7 @@ describe("LoopShortcutModal", () => {
   // tappable-selection control (the confirm button is the only control), and
   // confirm still dispatches template: null.
   it("shows ConvokeTaps read-only with no selection control (T3)", () => {
-    seed(declareWaitingFor({ points: [convokePoint] }));
+    seed(buildLoopShortcutWaitingFor({ schema: { points: [convokePoint] } }));
     render(<DeclareShortcutModal />);
 
     expect(
@@ -150,7 +107,7 @@ describe("LoopShortcutModal", () => {
 
   // T4: the respond window renders the proposal and Accept dispatches Accept.
   it("renders the proposal and dispatches Accept (T4)", () => {
-    seed(respondWaitingFor());
+    seed(buildRespondToShortcutWaitingFor());
     render(<RespondToShortcutModal />);
 
     expect(screen.getByText("This loop deals lethal damage.")).toBeInTheDocument();
@@ -165,7 +122,7 @@ describe("LoopShortcutModal", () => {
 
   // T5: "Break out" dispatches the Shorten payload shape (placeholder at_iteration).
   it("dispatches Shorten on break out (T5)", () => {
-    seed(respondWaitingFor());
+    seed(buildRespondToShortcutWaitingFor());
     render(<RespondToShortcutModal />);
 
     fireEvent.click(screen.getByRole("button", { name: "Break out" }));
@@ -197,7 +154,7 @@ describe("LoopShortcutModal", () => {
   // (If the usePlayerId site-1 fix were reverted, even a controller:0 offer would
   // null-render → T1/T2 would fail — so those tests non-vacuously cover site-1.)
   it("renders nothing for a non-actor seat (T7)", () => {
-    seed(declareWaitingFor({ controller: 1 }), {
+    seed(buildLoopShortcutWaitingFor({ controller: 1 }), {
       turn_decision_controller: null,
       active_player: 0,
     });

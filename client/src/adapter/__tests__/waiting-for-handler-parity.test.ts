@@ -26,22 +26,6 @@ import { repoRoot, rustEnumVariants } from "./rustEnumVariants";
 const INTERNAL_NEVER_PLAYER_FACING: ReadonlySet<WaitingFor["type"]> =
   new Set<WaitingFor["type"]>([]);
 
-/**
- * Engine `WaitingFor` variants whose real player-facing modal ships in Phase 5 of the
- * PR-7 combo-detector series. `Interactive` loop-detection is opt-in / default-Off, so
- * no human reaches these states in Phase 3 (engine/AI/tests only). Until the Phase-5
- * modal lands, `UnhandledWaitingForModal` is the fail-loud runtime net. When Phase 5
- * wires the modal, MOVE these into `HANDLED_WAITING_FOR_TYPES` (their render sites then
- * satisfy waiting-for-handler-dispatch-coverage.test.ts) and delete this entry.
- *
- * They cannot honestly go in `INTERNAL_NEVER_PLAYER_FACING`: both have
- * `acting_player() == Some(..)` (`LoopShortcut → Some(controller)`,
- * `RespondToShortcut → Some(player)`), whereas that set's contract requires
- * `acting_player() == None`.
- */
-const PENDING_MODAL_PHASE5: ReadonlySet<WaitingFor["type"]> =
-  new Set<WaitingFor["type"]>([]);
-
 describe("WaitingFor handler parity", () => {
   it("every engine WaitingFor variant has a frontend UI handler", () => {
     const rustSource = readFileSync(
@@ -53,8 +37,7 @@ describe("WaitingFor handler parity", () => {
     const unhandled = engineVariants.filter(
       (variant) =>
         !HANDLED_WAITING_FOR_TYPES.has(variant as WaitingFor["type"]) &&
-        !INTERNAL_NEVER_PLAYER_FACING.has(variant as WaitingFor["type"]) &&
-        !PENDING_MODAL_PHASE5.has(variant as WaitingFor["type"]),
+        !INTERNAL_NEVER_PLAYER_FACING.has(variant as WaitingFor["type"]),
     );
 
     expect(
@@ -82,25 +65,6 @@ describe("WaitingFor handler parity", () => {
       stale,
       `INTERNAL_NEVER_PLAYER_FACING contains entries [${stale.join(", ")}] that no longer ` +
         "exist on the engine WaitingFor enum. Remove the stale allowlist entries.",
-    ).toEqual([]);
-  });
-
-  it("has no stale PENDING_MODAL_PHASE5 allowlist entries", () => {
-    const rustSource = readFileSync(
-      resolve(repoRoot(), "crates/engine/src/types/game_state.rs"),
-      "utf8",
-    );
-    const engineVariants = new Set(rustEnumVariants(rustSource, "WaitingFor"));
-
-    const stale = [...PENDING_MODAL_PHASE5].filter(
-      (variant) => !engineVariants.has(variant),
-    );
-
-    expect(
-      stale,
-      `PENDING_MODAL_PHASE5 contains entries [${stale.join(", ")}] that no longer exist on ` +
-        "the engine WaitingFor enum. Either the variant was renamed/removed (update the " +
-        "allowlist) or its Phase-5 modal landed (move it to HANDLED_WAITING_FOR_TYPES).",
     ).toEqual([]);
   });
 });

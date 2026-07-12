@@ -27,6 +27,7 @@ import { RevealOverlay } from "../components/animation/RevealOverlay.tsx";
 import { TurnBanner } from "../components/animation/TurnBanner.tsx";
 import { DiceRollOverlay } from "../components/animation/DiceRollOverlay.tsx";
 import { flashStartingPlayerContest } from "../game/diceContest.ts";
+import { loopDetectionModeFromQuery } from "../game/loopDetectionMode.ts";
 import { BattlefieldBackground } from "../components/board/BattlefieldBackground.tsx";
 import { BoardContextMenu } from "../components/board/BoardContextMenu.tsx";
 import { DebugCardContextMenu } from "../components/chrome/DebugCardContextMenu.tsx";
@@ -271,7 +272,7 @@ export function GamePage() {
       match_type: matchParam?.toLowerCase() === "bo3" ? "Bo3" : "Bo1",
       // CR 732.2a: combo (infinite-loop) detector opt-in carried from the local
       // game-setup screen; immutable once the game starts (engine default Off).
-      loop_detection: loopParam?.toLowerCase() === "on" ? { type: "On" } : { type: "Off" },
+      loop_detection: loopDetectionModeFromQuery(loopParam),
     }),
     [matchParam, loopParam],
   );
