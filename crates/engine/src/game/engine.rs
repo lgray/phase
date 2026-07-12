@@ -863,21 +863,417 @@ fn apply_confirmed_shortcut(
     }
     match proposal.count {
         crate::analysis::decision_template::IterationCount::UntilLethal => {
-            // CR 732.2a: persist the confirmed loop's unbounded axes (the ∞ HUD producer);
-            // CR 704.5a: the drain is lethal ⇒ terminal win for the proposer.
-            state.mark_unbounded_loop(proposal.controller, &proposal.unbounded);
-            result.events.push(GameEvent::GameOver {
-                winner: Some(proposal.controller),
-            });
-            state.waiting_for = WaitingFor::GameOver {
-                winner: Some(proposal.controller),
-            };
-            result.waiting_for = state.waiting_for.clone();
-            match_flow::handle_game_over_transition(state);
+            apply_until_lethal_shortcut(state, result, proposal)
         }
         crate::analysis::decision_template::IterationCount::Fixed(n) => {
             materialize_fixed_shortcut(state, result, proposal, n)
         }
+    }
+}
+
+/// PR-7 Combo-UI Stage 2 (SOUNDNESS #2 — the E1 crown): CR 732.2a / CR 704.5a / CR 104.2a
+/// win-derivation for a confirmed `UntilLethal` loop shortcut. NEVER an unconditional crown.
+/// DRIVES one pin-faithful cycle of the confirmed loop, MEASURES the per-cycle
+/// `ResourceVector::delta`, and re-runs the SAME offer-time authority
+/// (`live_mandatory_loop_winner`) on the driven states. Crowns ONLY when that authority
+/// names the proposer as the sole determinate winner; every other outcome (a subset-lethal
+/// loop with >1 non-faller, an Advantage token-growth loop with no faller, an aborted drive)
+/// falls back to manual play (CR 800.4a) — no wrong crown.
+///
+/// F2 hardening (crown SELF-soundness — a GameOver path must not depend on a future
+/// hard-gated PR): for the ≥2-faller case, RE-VERIFY the offer's own
+/// `fallers_lives_pairwise_equal` (CR 704.3 simultaneity) on the boundary/pre-drive faller
+/// lives — a staggered-death unequal-absolute drain does NOT crown even though
+/// `live_mandatory_loop_winner`'s ≥2-faller floor checks only per-cycle DELTAS.
+///
+/// SOUNDNESS FLAG (#20, belt+suspenders): when the PR-8 targeted-offer trigger reifies >2p
+/// targeted loops, it should ALSO carry `fallers_lives_pairwise_equal` at OFFER time.
+fn apply_until_lethal_shortcut(
+    state: &mut GameState,
+    result: &mut ActionResult,
+    proposal: &crate::analysis::loop_check::ShortcutProposal,
+) {
+    // The board is unchanged since the offer (apply_confirmed_shortcut doc): `committed` is
+    // the fully-committed pre-drive state to roll back to on any non-crown.
+    let committed = state.clone();
+    // The recurrence boundary: the loop's canonical per-cycle SETTLE beat
+    // (`Priority{active_player}`), normalized — the same construction `materialize_fixed_shortcut`
+    // captures (the cover/equal-modulo checks normalize internally, so this is a
+    // self-contained canonical frame). `snapshot`'s life/poison/library axes are unaffected by
+    // `normalize_for_loop`, so `before` is the pre-drive resource baseline.
+    let boundary = {
+        let mut seed = committed.clone();
+        priority::reset_priority(&mut seed);
+        seed.waiting_for = WaitingFor::Priority {
+            player: seed.active_player,
+        };
+        seed.normalize_for_loop()
+    };
+    let before = crate::analysis::resource::ResourceVector::snapshot(&boundary);
+    let period = shortcut_drive_period(proposal.template.as_ref());
+
+    // DRIVE one representative cycle to produce the measured post-drive `work` state.
+    let work: GameState = if let Some(ctx) = committed.last_recast_context.clone() {
+        // Object-growth recast loop (buyback + convoke + affinity) declared `UntilLethal`
+        // by the AI (which hardcodes it for every optional offer). Drive one real recast on a
+        // clone under the re-entrancy guard; an inert Advantage token loop has NO life/poison
+        // faller ⇒ `live_mandatory_loop_winner` returns None below ⇒ manual fallback (this is
+        // the latent AI-mis-crown fix, first-class).
+        let template = build_recast_template(&ctx);
+        let _probe = SimulationProbeGuard::enter();
+        let mut w = committed.clone();
+        priority::reset_priority(&mut w);
+        w.waiting_for = WaitingFor::Priority {
+            player: ctx.controller,
+        };
+        match drive_recast_iteration(&mut w, &template, &ctx, 0) {
+            Ok(()) => w,
+            Err(RecastAbort) => {
+                return until_lethal_fallback(state, result, committed);
+            }
+        }
+    } else {
+        // Drain loop (targeted Vito class, non-targeted Cleric class, ω-covering cascade).
+        // Drive `period` whole cycles, injecting the pinned answers (CR 603.3b ordering / CR
+        // 608.2b targets) at each mid-cycle prompt. A cross-lethal mid-drive already applies
+        // the win to `work` (CR 704.5a SBA).
+        let cap = auto_pass_loop_max_iterations(&committed);
+        let mut running = committed.clone();
+        for i in 0..period {
+            match drive_one_shortcut_cycle(&running, &boundary, proposal.template.as_ref(), i, cap)
+            {
+                CycleOutcome::Recurred { state: s, .. } => running = *s,
+                CycleOutcome::CrossLethal {
+                    state: s,
+                    winner,
+                    mut events,
+                } => {
+                    // Commit + stop ONLY when the mid-drive lethal crowns the proposer;
+                    // any other winner (or a draw) rolls back to manual play. `UntilLethal`
+                    // IS unbounded ⇒ mark the axes on the committed state (contrast the
+                    // finite `Fixed(N)` cross-lethal, which does not).
+                    if winner == Some(proposal.controller) {
+                        let mut w = *s;
+                        w.mark_unbounded_loop(proposal.controller, &proposal.unbounded);
+                        *state = w;
+                        result.events.append(&mut events);
+                        state.waiting_for = WaitingFor::GameOver { winner };
+                        result.waiting_for = state.waiting_for.clone();
+                    } else {
+                        until_lethal_fallback(state, result, committed);
+                    }
+                    return;
+                }
+                CycleOutcome::Abort => {
+                    return until_lethal_fallback(state, result, committed);
+                }
+            }
+        }
+        running
+    };
+
+    // MEASURE + derive the winner via the offer-time authority, VERBATIM.
+    let delta = crate::analysis::resource::ResourceVector::delta(
+        &before,
+        &crate::analysis::resource::ResourceVector::snapshot(&work),
+    );
+    match crate::analysis::loop_check::live_mandatory_loop_winner(&boundary, &work, &delta) {
+        Some(w) if w == proposal.controller => {
+            // F2 (CR 704.3 simultaneity): for ≥2 fallers, re-verify the offer's own pairwise
+            // life-equality on the pre-drive faller lives. `live_mandatory_loop_winner`'s
+            // ≥2-faller floor checks only per-cycle DELTAS, so a staggered-death unequal
+            // ABSOLUTE-life drain would pass it — the offer's `fallers_lives_pairwise_equal`
+            // is the missing absolute-life gate. Single-faller (2p) skips it (no simultaneity
+            // to enforce); a non-targeted symmetric drain was certified pairwise-equal on the
+            // frozen board, so it still passes.
+            let fallers = fallers_of(&work, &delta);
+            if fallers.len() >= 2
+                && !crate::analysis::loop_check::fallers_lives_pairwise_equal(
+                    &[&boundary],
+                    &fallers,
+                )
+            {
+                until_lethal_fallback(state, result, committed);
+            } else {
+                crown_until_lethal(state, result, proposal);
+            }
+        }
+        _ => until_lethal_fallback(state, result, committed),
+    }
+}
+
+/// The faller partition of a measured per-cycle `delta`, over the living players of
+/// `cycle_end` — EXACTLY the partition `live_mandatory_loop_winner` computes internally
+/// (`delta.life<0 || delta.poison>0`). Exposed for the F2 ≥2-faller re-verification; NOT a
+/// re-architecting of the win authority.
+fn fallers_of(
+    cycle_end: &GameState,
+    delta: &crate::analysis::resource::ResourceVector,
+) -> Vec<PlayerId> {
+    cycle_end
+        .players
+        .iter()
+        .filter(|p| !p.is_eliminated)
+        .map(|p| p.id)
+        .filter(|p| {
+            delta.life.get(p).copied().unwrap_or(0) < 0
+                || delta.poison.get(p).copied().unwrap_or(0) > 0
+        })
+        .collect()
+}
+
+/// CR 732.2a + CR 704.5a: crown the proposer as the terminal winner of the confirmed
+/// unbounded drain (the former UntilLethal-arm body). Persists the unbounded axes (the ∞ HUD
+/// producer) and declares the CR 704.5a win.
+fn crown_until_lethal(
+    state: &mut GameState,
+    result: &mut ActionResult,
+    proposal: &crate::analysis::loop_check::ShortcutProposal,
+) {
+    state.mark_unbounded_loop(proposal.controller, &proposal.unbounded);
+    result.events.push(GameEvent::GameOver {
+        winner: Some(proposal.controller),
+    });
+    state.waiting_for = WaitingFor::GameOver {
+        winner: Some(proposal.controller),
+    };
+    result.waiting_for = state.waiting_for.clone();
+    match_flow::handle_game_over_transition(state);
+}
+
+/// CR 800.4a: the E1 crown refused (no determinate winner / aborted drive) ⇒ roll back to the
+/// pre-drive committed board and hand priority to the living seat for manual play. Clears the
+/// loop-detect ring so this same `apply()` does not instantly re-offer the (now-declined)
+/// loop; a later beat re-detects genuinely. Mirrors the `materialize_fixed_shortcut` abort
+/// tail.
+fn until_lethal_fallback(state: &mut GameState, result: &mut ActionResult, committed: GameState) {
+    *state = committed;
+    // CR 732.2c: a declined shortcut must not instantly re-offer the SAME loop in this same
+    // `apply()`. Clear both re-offer signals: the drain offer's `loop_detect_ring` AND the
+    // object-growth offer's `last_recast_context` routing signal (a non-drain object-growth
+    // loop, e.g. an AI-declared UntilLethal on an inert Advantage recast, would otherwise
+    // re-fire `try_offer_object_growth_shortcut` on the next reconcile and livelock). A later
+    // real re-cast re-captures the context and re-detects genuinely.
+    state.loop_detect_ring.clear();
+    state.last_recast_context = None;
+    priority::reset_priority(state);
+    state.waiting_for = WaitingFor::Priority {
+        player: living_priority_seat(state),
+    };
+    result.waiting_for = state.waiting_for.clone();
+}
+
+/// CR 732.2a: how many whole cycles one shortcut drive must aggregate before the measured
+/// delta is complete. A `RoundRobin`/`Piecewise` target schedule rotates its OBJECT sources
+/// over its length, so a full period is that length; every other pin (a `Constant` target, a
+/// `Player` pin, a non-target pin, or no template at all) settles in ONE cycle. Returns the
+/// max schedule length over the template's `Targets` pins, defaulting to 1.
+///
+/// DORMANT for every Stage-2 crownable loop (Ruling B): `TargetSchedule` rotates DecisionSource
+/// objects, not players, and `live_mandatory_loop_winner` crowns on PLAYER fallers — an
+/// object-rotating loop produces no player faller, so it never crowns; the only crownable >2p
+/// player drain pins ALL opponents every cycle (`TargetPin::Player` is constant, period 1). The
+/// seam is built for generality; a multi-cycle aggregation is fail-safe (an object loop reaching
+/// the arm measures 1 cycle, finds no faller, does not crown).
+fn shortcut_drive_period(
+    template: Option<&crate::analysis::decision_template::DecisionTemplate>,
+) -> crate::analysis::decision_template::IterationIndex {
+    use crate::analysis::decision_template::{PinnedDecision, TargetPin, TargetSchedule};
+    let Some(t) = template else { return 1 };
+    t.decisions
+        .iter()
+        .filter_map(|pin| match pin {
+            PinnedDecision::Targets { targets, .. } => targets
+                .iter()
+                .map(|tp| match tp {
+                    TargetPin::Scheduled(TargetSchedule::RoundRobin(v)) => v.len() as u32,
+                    TargetPin::Scheduled(TargetSchedule::Piecewise(v)) => v.len() as u32,
+                    TargetPin::Scheduled(TargetSchedule::Constant(_))
+                    | TargetPin::ByIdentity(_)
+                    | TargetPin::Player(_) => 1,
+                })
+                .max(),
+            _ => None,
+        })
+        .max()
+        .unwrap_or(1)
+        .max(1)
+}
+
+/// PR-7 Combo-UI Stage 2: the typed result of driving ONE whole loop-shortcut cycle on a
+/// clone. Exhaustive at both call sites (`materialize_fixed_shortcut`, `apply_until_lethal_
+/// shortcut`) — no silent `_` that could crown or roll back on an unhandled outcome.
+enum CycleOutcome {
+    /// The cycle recurred (constant-depth equal-modulo-resources or ω-covering) ⇒ `state` is
+    /// the committed post-cycle board; `events` are its accumulated events.
+    Recurred {
+        state: Box<GameState>,
+        events: Vec<GameEvent>,
+    },
+    /// CR 704.5a: the cycle crossed lethal mid-drive ⇒ the win is already applied to `state`
+    /// (`waiting_for = GameOver{winner}`); `events` include the terminal `GameOver`.
+    CrossLethal {
+        state: Box<GameState>,
+        winner: Option<PlayerId>,
+        events: Vec<GameEvent>,
+    },
+    /// Runaway beat cap, an unpinned prompt, or an engine error ⇒ abort to manual play.
+    Abort,
+}
+
+/// PR-7 Combo-UI Stage 2: drive ONE whole cycle of a confirmed loop shortcut on a fresh clone
+/// of `committed`, seeded to the canonical settle beat (`Priority{active_player}`, the same
+/// beat the detector ring samples). Recurrence is detected against `boundary` (normalized).
+/// Behavior-identical to the former inline `materialize_fixed_shortcut` beat loop EXCEPT the
+/// old `Ok(_) => break 'cycles` abort on a mid-cycle prompt now delegates to
+/// [`inject_pinned_answer`] (CR 603.3b ordering / CR 608.2b pinned targets) and continues.
+/// Uses the INTERNAL `apply_action` path throughout (via `pass_priority_once_with_pipeline`
+/// and the injector), never the top-level reconcile boundary, so the detection hook cannot
+/// recurse mid-drive.
+fn drive_one_shortcut_cycle(
+    committed: &GameState,
+    boundary: &GameState,
+    template: Option<&crate::analysis::decision_template::DecisionTemplate>,
+    iteration: crate::analysis::decision_template::IterationIndex,
+    cycle_beat_cap: usize,
+) -> CycleOutcome {
+    let mut work = committed.clone();
+    priority::reset_priority(&mut work);
+    work.waiting_for = WaitingFor::Priority {
+        player: work.active_player,
+    };
+    let mut ev: Vec<GameEvent> = Vec::new();
+    let mut beat = 0usize;
+
+    loop {
+        beat += 1;
+        if beat > cycle_beat_cap {
+            return CycleOutcome::Abort; // runaway backstop
+        }
+        // A FRESH per-beat buffer (see the former inline note): reusing one growing buffer
+        // would make `run_post_action_pipeline` re-scan prior beats' events and re-fire
+        // already-consumed triggers.
+        let mut beat_events: Vec<GameEvent> = Vec::new();
+        match pass_priority_once_with_pipeline(&mut work, &mut beat_events, None) {
+            // Cross-lethal: COMMIT + STOP. The GameOver event + transition are already in
+            // `work`/`beat_events`.
+            Ok(WaitingFor::GameOver { winner }) => {
+                ev.append(&mut beat_events);
+                return CycleOutcome::CrossLethal {
+                    state: Box::new(work),
+                    winner,
+                    events: ev,
+                };
+            }
+            // Active-player settle beat: cycle complete iff the board recurred (constant-depth
+            // equal-modulo-resources OR ω-covering growth).
+            Ok(WaitingFor::Priority { player }) if player == work.active_player => {
+                ev.append(&mut beat_events);
+                let norm = work.normalize_for_loop();
+                if crate::analysis::resource::loop_states_equal_modulo_resources(boundary, &norm)
+                    || crate::analysis::resource::loop_states_cover_modulo_growth(boundary, &norm)
+                {
+                    return CycleOutcome::Recurred {
+                        state: Box::new(work),
+                        events: ev,
+                    };
+                }
+                continue; // active beat, not yet recurred ⇒ keep driving within the cap
+            }
+            // Opponent's mid-cycle priority window ⇒ keep driving.
+            Ok(WaitingFor::Priority { .. }) => {
+                ev.append(&mut beat_events);
+                continue;
+            }
+            // Any OTHER prompt (OrderTriggers / TriggerTargetSelection / …): answer it from the
+            // pins and continue. An unpinned prompt fails closed ⇒ abort to manual.
+            Ok(other) => {
+                ev.append(&mut beat_events);
+                match inject_pinned_answer(&mut work, template, iteration, &other) {
+                    Ok(()) => continue,
+                    Err(RecastAbort) => return CycleOutcome::Abort,
+                }
+            }
+            Err(_) => return CycleOutcome::Abort, // engine error ⇒ abort to manual
+        }
+    }
+}
+
+/// PR-7 Combo-UI Stage 2: answer ONE mid-drive prompt during a loop-shortcut cycle, using the
+/// INTERNAL reconcile-free `apply_action` path (mirrors `drive_recast_iteration`, so the
+/// detection hook cannot recurse mid-drive). Fail-closed: any prompt kind with no Stage-2
+/// producer ⇒ `Err(RecastAbort)`.
+///
+/// There is deliberately NO top-level `template.ok_or(...)` guard: the `OrderTriggers` arm is
+/// TEMPLATE-INDEPENDENT (the real 2p Vito drive raises OrderTriggers with a `template = None`
+/// declaration, and the forced-unique target auto-selects at dispatch), so a top guard would
+/// wrongly abort it. The template guard lives INSIDE the `TriggerTargetSelection` arm, the only
+/// arm that consumes pins.
+fn inject_pinned_answer(
+    work: &mut GameState,
+    template: Option<&crate::analysis::decision_template::DecisionTemplate>,
+    iteration: crate::analysis::decision_template::IterationIndex,
+    prompt: &WaitingFor,
+) -> Result<(), RecastAbort> {
+    use crate::analysis::decision_template::{ConcreteDecision, ConcreteTarget};
+    match prompt {
+        // CR 603.3b / CR 732.2a: auto-order the confirmed shortcut's simultaneous
+        // same-controller triggers by identity order (0..len). Template-INDEPENDENT and
+        // delta-safe: the per-cycle net drain is order-invariant (both opponents drain
+        // regardless of order; pins fix WHICH opponent, not the ordering). Answered via the
+        // INTERNAL `handle_order_triggers` (`apply_action`), NOT `drain_order_triggers_with_
+        // identity` — the latter routes through `reconcile_terminal_result`, which would
+        // re-enter the loop-detection/offer hook mid-drive and could crown via a different
+        // authority, bypassing E1's own measure.
+        WaitingFor::OrderTriggers { player, triggers } => {
+            let order: Vec<usize> = (0..triggers.len()).collect();
+            apply_action(work, *player, GameAction::OrderTriggers { order }, None)
+                .map_err(|_| RecastAbort)?;
+            Ok(())
+        }
+        // CR 608.2b: choose this trigger's targets from the pin whose source matches the
+        // prompt's `source_id` (per-source, so two distinct drainers pinned to distinct
+        // opponents each receive the correct target). The template guard lives HERE.
+        WaitingFor::TriggerTargetSelection {
+            player, source_id, ..
+        } => {
+            let template = template.ok_or(RecastAbort)?;
+            let source_id = source_id.ok_or(RecastAbort)?;
+            let decisions = crate::analysis::decision_template::resolve(template, iteration, work)
+                .map_err(|_| RecastAbort)?;
+            let targets = decisions
+                .into_iter()
+                .find_map(|d| match d {
+                    ConcreteDecision::Targets { slot, targets }
+                        if crate::analysis::decision_template::resolve_source(
+                            &slot.source,
+                            work,
+                        ) == Some(source_id) =>
+                    {
+                        Some(targets)
+                    }
+                    _ => None,
+                })
+                .ok_or(RecastAbort)?;
+            let refs: Vec<TargetRef> = targets
+                .into_iter()
+                .map(|t| match t {
+                    ConcreteTarget::Object(id) => TargetRef::Object(id),
+                    ConcreteTarget::Player(p) => TargetRef::Player(p),
+                })
+                .collect();
+            apply_action(
+                work,
+                *player,
+                GameAction::SelectTargets { targets: refs },
+                None,
+            )
+            .map_err(|_| RecastAbort)?;
+            Ok(())
+        }
+        // CR 732.2a "no conditional actions": any other prompt (mode / may / unless / X) has
+        // no Stage-2 pin producer ⇒ fail-closed.
+        _ => Err(RecastAbort),
     }
 }
 
@@ -957,75 +1353,36 @@ fn materialize_fixed_shortcut(
             }
         }
 
-        // Drive one cycle on a fresh clone seeded to the canonical settle beat, so the
-        // FIRST beat starts where the ring samples (cycle 0 overrides RespondToShortcut;
-        // cycles ≥ 1: `committed` is already a settle beat ⇒ the reset is idempotent).
-        let mut work = committed.clone();
-        priority::reset_priority(&mut work);
-        work.waiting_for = WaitingFor::Priority {
-            player: work.active_player,
-        };
-        let mut ev: Vec<GameEvent> = Vec::new();
-        let mut beat = 0usize;
-
-        loop {
-            beat += 1;
-            if beat > cycle_beat_cap {
-                break 'cycles; // runaway backstop: drop ev, keep committed
+        // Drive one whole cycle via the shared driver. Behavior-identical to the former
+        // inline beat loop for a non-targeted `Fixed(N)` drain (which raises no mid-cycle
+        // prompt, so the injector is inert); a targeted drive additionally answers each
+        // OrderTriggers / target prompt from the pins.
+        match drive_one_shortcut_cycle(&committed, &boundary, template.as_ref(), i, cycle_beat_cap)
+        {
+            CycleOutcome::Recurred {
+                state: s,
+                mut events,
+            } => {
+                committed = *s; // ATOMIC: commit state ...
+                result.events.append(&mut events); // ... with its events together
+                continue 'cycles;
             }
-            // A FRESH per-beat buffer, mirroring `run_auto_pass_loop`'s `let mut events =
-            // Vec::new()` per iteration (:1376). `run_post_action_pipeline`'s trigger scan
-            // reads `events[event_start..]` with `event_start == 0` always (the plain
-            // `run_post_action_pipeline` wrapper never varies it) — reusing one
-            // ever-growing buffer across beats would re-scan every prior beat's events on
-            // each call and spuriously re-fire already-consumed triggers.
-            let mut beat_events: Vec<GameEvent> = Vec::new();
-            match pass_priority_once_with_pipeline(&mut work, &mut beat_events, None) {
-                // Cross-lethal: COMMIT + STOP. CR 704.5a: the win is already applied to
-                // `work` — SBA → `eliminate_players_simultaneously` (elimination.rs) both
-                // pushed `GameEvent::GameOver` into `beat_events` and set
-                // `waiting_for = GameOver`, and `run_post_action_pipeline` already ran the
-                // game-over transition. Do NOT roll back, NOT hand priority back, NOT
-                // clear-then-Priority, NOT `mark_unbounded_loop` (finite ≠ unbounded —
-                // contrast the `UntilLethal` arm above), NOT re-push the `GameOver` event
-                // (already in `beat_events`).
-                Ok(WaitingFor::GameOver { winner }) => {
-                    *state = work;
-                    ev.append(&mut beat_events);
-                    result.events.append(&mut ev);
-                    result.waiting_for = WaitingFor::GameOver { winner };
-                    return;
-                }
-                // Active-player settle beat: cycle complete iff the board recurred
-                // (constant-depth equal-modulo-resources; ω-covering arm shared with the
-                // detection bridge — coded, dormant until an object-growth Fixed(N)
-                // fixture exists).
-                Ok(WaitingFor::Priority { player }) if player == work.active_player => {
-                    ev.append(&mut beat_events);
-                    let norm = work.normalize_for_loop();
-                    if crate::analysis::resource::loop_states_equal_modulo_resources(
-                        &boundary, &norm,
-                    ) || crate::analysis::resource::loop_states_cover_modulo_growth(
-                        &boundary, &norm,
-                    ) {
-                        committed = work; // ATOMIC: commit state ...
-                        result.events.append(&mut ev); // ... with its events together
-                        continue 'cycles;
-                    }
-                    // Active beat but not yet recurred ⇒ keep driving within the cap.
-                    continue;
-                }
-                // Opponent's mid-cycle priority window ⇒ keep driving.
-                Ok(WaitingFor::Priority { .. }) => {
-                    ev.append(&mut beat_events);
-                    continue;
-                }
-                // Any OTHER non-Priority `waiting_for` (a mode/target/may prompt): no
-                // mid-drive injector this phase ⇒ abort to manual. `ev` (and this beat's
-                // events) are dropped.
-                Ok(_) => break 'cycles,
-                Err(_) => break 'cycles, // engine error ⇒ abort to manual
+            // Cross-lethal: COMMIT + STOP. CR 704.5a: the win is already applied to `work`
+            // (SBA → GameOver in `events`, `waiting_for = GameOver`). Do NOT roll back, NOT
+            // `mark_unbounded_loop` (finite ≠ unbounded — contrast the UntilLethal arm).
+            CycleOutcome::CrossLethal {
+                state: s,
+                winner,
+                mut events,
+            } => {
+                *state = *s;
+                result.events.append(&mut events);
+                result.waiting_for = WaitingFor::GameOver { winner };
+                return;
             }
+            // Runaway cap / unpinned prompt / engine error ⇒ abort to manual. The aborting
+            // cycle's events were already dropped (no partial-cycle event leak).
+            CycleOutcome::Abort => break 'cycles,
         }
     }
 
@@ -1046,6 +1403,7 @@ fn materialize_fixed_shortcut(
 /// PR-7 Phase 4d-ii: the injector aborted a driven recast cycle ⇒ fall closed to manual
 /// play. No payload — a marker so the drive loop is exhaustive over `WaitingFor` with an
 /// explicit `Err` on any unpinned prompt (S1, CR 732.2a "no conditional actions").
+#[derive(Debug)]
 struct RecastAbort;
 
 /// CR 601.2b + CR 608.2b + CR 400.7: drive ONE full recast iteration on the clone by
@@ -1438,8 +1796,47 @@ fn handle_declare_shortcut(
     certificate: &crate::analysis::loop_check::LoopCertificate,
     count: crate::analysis::decision_template::IterationCount,
     template: Option<crate::analysis::decision_template::DecisionTemplate>,
+    schema: &crate::analysis::decision_template::ShortcutDecisionSchema,
     events: &mut Vec<GameEvent>,
 ) -> Result<ActionResult, EngineError> {
+    let mut result = ActionResult {
+        events: std::mem::take(events),
+        waiting_for: state.waiting_for.clone(),
+        log_entries: vec![],
+    };
+    // CR 732.2a fail-closed firewall: validate the declared pins against the offered schema
+    // BEFORE `template` is moved into `proposal` and BEFORE APNAP opens. Coverage
+    // (`predictability_gate`) and value-legality (`validate_pins`) both consult the SAME
+    // single authority — the schema's exposed slots — so a rejection lands cleanly at a
+    // manual-play handback (Priority to the living seat, no APNAP, no drive, no crown). The
+    // offer window closes; a later beat re-detects the loop if it still closes. Validating
+    // once at declare suffices: the board is frozen through Accept (apply_confirmed_shortcut
+    // doc), and the drive's per-iteration `resolve` (CR 608.2b) is the runtime backstop.
+    //
+    // A CHOICE-FREE offer (empty schema — a non-targeted drain) exposes no decisions to
+    // validate: its win derivation is pin-independent (the E1 measure is the authority), and
+    // any template the caller supplies is inert for the drive (the loop raises no target
+    // prompt). This preserves the established `Fixed(N)` drain behavior (the resolve-firewall
+    // materialize tests drive a synthetic pin against the empty drain schema).
+    if let Some(t) = &template {
+        if !schema.points.is_empty() {
+            let required: Vec<crate::analysis::decision_template::DecisionSlot> =
+                schema.points.iter().map(|p| p.slot.clone()).collect();
+            let period = shortcut_drive_period(Some(t));
+            if crate::analysis::decision_template::predictability_gate(t, &required).is_err()
+                || crate::analysis::decision_template::validate_pins(schema, t, period, state)
+                    .is_err()
+            {
+                priority::reset_priority(state);
+                // CR 800.4a: hand priority to the next living seat.
+                state.waiting_for = WaitingFor::Priority {
+                    player: living_priority_seat(state),
+                };
+                result.waiting_for = state.waiting_for.clone();
+                return Ok(result);
+            }
+        }
+    }
     let proposal = crate::analysis::loop_check::ShortcutProposal {
         controller,
         count,
@@ -1456,11 +1853,6 @@ fn handle_declare_shortcut(
     .into_iter()
     .filter(|&p| p != controller)
     .collect();
-    let mut result = ActionResult {
-        events: std::mem::take(events),
-        waiting_for: state.waiting_for.clone(),
-        log_entries: vec![],
-    };
     if let Some((&first, rest)) = opps.split_first() {
         state.waiting_for = WaitingFor::RespondToShortcut {
             player: first,
@@ -3823,12 +4215,14 @@ fn apply_action(
                 &mut events,
             );
         }
-        // CR 732.2a: the proposer declares the loop shortcut.
+        // CR 732.2a: the proposer declares the loop shortcut. The offered `schema` (the
+        // declared-choices contract the fail-closed firewall validates the pins against) is
+        // threaded through — no longer dropped by `..`.
         (
             WaitingFor::LoopShortcut {
                 controller,
                 certificate,
-                ..
+                schema,
             },
             GameAction::DeclareShortcut { count, template },
         ) => {
@@ -3838,6 +4232,7 @@ fn apply_action(
                 certificate,
                 count,
                 template,
+                schema,
                 &mut events,
             );
         }
@@ -8703,5 +9098,329 @@ mod shortcut_schema_tests {
             shortcut_iteration_count(WinKind::Advantage),
             IterationCount::Fixed(1)
         );
+    }
+}
+
+/// PR-7 Combo-UI Stage 2: the mid-drive pin injector (item 4) + the drive-period seam (item 6).
+#[cfg(test)]
+mod stage2_injector_tests {
+    use super::*;
+    use crate::analysis::decision_template::{
+        DecisionGroupKey, DecisionKind, DecisionSlot, DecisionTemplate, IterationCount,
+        PinnedDecision, ReplayMode, TargetPin, TargetSchedule,
+    };
+    use crate::game::scenario::GameScenario;
+    use crate::types::game_state::{LoopDetectionMode, YieldTarget};
+
+    const P0: PlayerId = PlayerId(0);
+    const P1: PlayerId = PlayerId(1);
+    const P2: PlayerId = PlayerId(2);
+    const TARGET_DRAIN: &str = "Whenever you gain life, target opponent loses that much life.";
+    const FEEDBACK: &str = "Whenever an opponent loses life, you gain that much life.";
+    const KICKOFF: &str = "You gain 1 life.";
+
+    fn life(state: &GameState, p: PlayerId) -> i32 {
+        state.players.iter().find(|pl| pl.id == p).unwrap().life
+    }
+
+    fn this_object(id: ObjectId) -> YieldTarget {
+        YieldTarget::ThisObject {
+            source_id: id,
+            incarnation: None,
+            trigger_description: None,
+        }
+    }
+
+    /// A template routing two distinct drainers to two distinct opponents by source identity.
+    fn two_drainer_template(
+        d0: ObjectId,
+        opp0: PlayerId,
+        d1: ObjectId,
+        opp1: PlayerId,
+    ) -> DecisionTemplate {
+        let s0 = this_object(d0);
+        let s1 = this_object(d1);
+        DecisionTemplate {
+            owner: P0,
+            decisions: vec![
+                PinnedDecision::Targets {
+                    slot: DecisionSlot {
+                        source: s0.clone(),
+                        index: 0,
+                    },
+                    targets: vec![TargetPin::Player(opp0)],
+                },
+                PinnedDecision::Targets {
+                    slot: DecisionSlot {
+                        source: s1.clone(),
+                        index: 0,
+                    },
+                    targets: vec![TargetPin::Player(opp1)],
+                },
+            ],
+            replay: ReplayMode::Scheduled {
+                count: IterationCount::UntilLethal,
+            },
+            key: DecisionGroupKey::from_sources(&[s0, s1], DecisionKind::LoopChoice),
+        }
+    }
+
+    /// Test F ⭐ (item 4 — per-source target routing, the two-authority claim): a 3p loop with
+    /// TWO targeted drainers raises a `TriggerTargetSelection` per drainer (two legal opponents
+    /// ⇒ not forced-unique) plus `OrderTriggers`. `inject_pinned_answer` matches EACH prompt's
+    /// `source_id` to the pin for THAT drainer (not the first pin), so the two drainers hit
+    /// DISTINCT opponents. Discriminator: P2 dropping proves per-source routing — a first-pin
+    /// injector would drain only P1.
+    #[test]
+    fn injector_routes_pinned_targets_per_source() {
+        let mut scenario = GameScenario::new_n_player(3, 7);
+        scenario.at_phase(crate::types::phase::Phase::PreCombatMain);
+        scenario.with_life(P0, 20);
+        scenario.with_life(P1, 500);
+        scenario.with_life(P2, 500);
+        let drainer_a = scenario
+            .add_creature_from_oracle(P0, "Drainer A", 1, 4, TARGET_DRAIN)
+            .id();
+        let drainer_b = scenario
+            .add_creature_from_oracle(P0, "Drainer B", 2, 2, TARGET_DRAIN)
+            .id();
+        scenario.add_creature_from_oracle(P0, "Feedback", 3, 4, FEEDBACK);
+        let kickoff = scenario
+            .add_spell_to_hand_from_oracle(P0, "Kickoff", false, KICKOFF)
+            .id();
+        let mut runner = scenario.build();
+        // Off: drive the raw cascade directly through the injector (no offer/auto-win path).
+        runner.state_mut().loop_detection = LoopDetectionMode::Off;
+        // Cast the seed lifegain via the INTERNAL path (the CastBuilder's auto-resolver cannot
+        // satisfy the non-forced-unique 2-opponent target prompt — that is exactly the arm the
+        // injector is under test for).
+        let card_id = runner.state().objects.get(&kickoff).unwrap().card_id;
+        apply_action(
+            runner.state_mut(),
+            P0,
+            GameAction::CastSpell {
+                object_id: kickoff,
+                card_id,
+                targets: vec![],
+                payment_mode: crate::types::game_state::CastPaymentMode::Auto,
+            },
+            None,
+        )
+        .expect("cast the seed lifegain");
+
+        let template = two_drainer_template(drainer_a, P1, drainer_b, P2);
+
+        // The target each drainer's trigger actually got, read off the stack right after the
+        // injector answered its prompt (independent of drain-resolution order).
+        let target_on_stack = |state: &GameState, src: ObjectId| -> Option<Vec<TargetRef>> {
+            state
+                .stack
+                .iter()
+                .find(|e| e.source_id == src)
+                .and_then(|e| match &e.kind {
+                    crate::types::game_state::StackEntryKind::TriggeredAbility {
+                        ability, ..
+                    } => Some(ability.targets.clone()),
+                    _ => None,
+                })
+        };
+        let mut a_target: Option<Vec<TargetRef>> = None;
+        let mut b_target: Option<Vec<TargetRef>> = None;
+
+        for _ in 0..40 {
+            let wf = runner.state().waiting_for.clone();
+            match wf {
+                WaitingFor::Priority { player } => {
+                    apply_action(runner.state_mut(), player, GameAction::PassPriority, None)
+                        .expect("pass priority");
+                }
+                WaitingFor::OrderTriggers { .. } => {
+                    inject_pinned_answer(runner.state_mut(), None, 0, &wf)
+                        .expect("OrderTriggers arm is template-INDEPENDENT (None is fine)");
+                }
+                WaitingFor::TriggerTargetSelection { source_id, .. } => {
+                    // Guard: at a target prompt, a None template fails CLOSED (the guard lives
+                    // in THIS arm, not at the top of the injector).
+                    assert!(
+                        inject_pinned_answer(&mut runner.state().clone(), None, 0, &wf).is_err(),
+                        "template=None must abort the TriggerTargetSelection arm"
+                    );
+                    inject_pinned_answer(runner.state_mut(), Some(&template), 0, &wf)
+                        .expect("pinned target injected");
+                    let src = source_id.expect("targeted trigger has a source");
+                    if src == drainer_a {
+                        a_target = target_on_stack(runner.state(), src);
+                    } else if src == drainer_b {
+                        b_target = target_on_stack(runner.state(), src);
+                    }
+                }
+                _ => break,
+            }
+            if a_target.is_some() && b_target.is_some() {
+                break;
+            }
+        }
+
+        // Per-source routing: each drainer's trigger got ITS OWN pinned opponent — a first-pin
+        // injector would route both to P1.
+        assert_eq!(
+            a_target,
+            Some(vec![TargetRef::Player(P1)]),
+            "Drainer A's trigger routed to its pinned P1"
+        );
+        assert_eq!(
+            b_target,
+            Some(vec![TargetRef::Player(P2)]),
+            "Drainer B's trigger routed to its pinned P2 (per-source, not first-pin)"
+        );
+    }
+
+    /// Test F (production-path twin, item 4): drive a primed 3p targeted loop through the REAL
+    /// `drive_one_shortcut_cycle` and confirm its `Ok(other)` arm routes to the injector. Both
+    /// pinned opponents drain to death in the driven cycle ⇒ `CrossLethal{winner: Some(P0)}`,
+    /// which is REACHABLE ONLY if each drainer's trigger hit its OWN pinned opponent (a
+    /// first-pin injector would drain only P1, leaving P2 alive and no single winner).
+    #[test]
+    fn drive_one_cycle_reaches_injector_for_3p_targeted() {
+        let mut scenario = GameScenario::new_n_player(3, 7);
+        scenario.at_phase(crate::types::phase::Phase::PreCombatMain);
+        scenario.with_life(P0, 20);
+        scenario.with_life(P1, 400);
+        scenario.with_life(P2, 400);
+        let drainer_a = scenario
+            .add_creature_from_oracle(P0, "Drainer A", 1, 4, TARGET_DRAIN)
+            .id();
+        let drainer_b = scenario
+            .add_creature_from_oracle(P0, "Drainer B", 2, 2, TARGET_DRAIN)
+            .id();
+        scenario.add_creature_from_oracle(P0, "Feedback", 3, 4, FEEDBACK);
+        let kickoff = scenario
+            .add_spell_to_hand_from_oracle(P0, "Kickoff", false, KICKOFF)
+            .id();
+        let mut runner = scenario.build();
+        runner.state_mut().loop_detection = LoopDetectionMode::Off;
+        let card_id = runner.state().objects.get(&kickoff).unwrap().card_id;
+        apply_action(
+            runner.state_mut(),
+            P0,
+            GameAction::CastSpell {
+                object_id: kickoff,
+                card_id,
+                targets: vec![],
+                payment_mode: crate::types::game_state::CastPaymentMode::Auto,
+            },
+            None,
+        )
+        .expect("cast seed");
+
+        // Prime: drive (targeting P1 for anything) until a Priority{P0} beat with a pending
+        // cascade — the settle beat the drive re-fires from.
+        let prime = two_drainer_template(drainer_a, P1, drainer_b, P1);
+        let mut primed = false;
+        for _ in 0..40 {
+            let wf = runner.state().waiting_for.clone();
+            match wf {
+                WaitingFor::Priority { player }
+                    if player == P0 && !runner.state().stack.is_empty() =>
+                {
+                    primed = true;
+                    break;
+                }
+                WaitingFor::Priority { player } => {
+                    apply_action(runner.state_mut(), player, GameAction::PassPriority, None)
+                        .unwrap();
+                }
+                WaitingFor::OrderTriggers { .. } | WaitingFor::TriggerTargetSelection { .. } => {
+                    inject_pinned_answer(runner.state_mut(), Some(&prime), 0, &wf).unwrap();
+                }
+                _ => break,
+            }
+        }
+        assert!(primed, "must reach a primed Priority{{P0}} settle beat");
+
+        // Reset opponents to equal LOW life so the driven cycle crosses lethal (both die) —
+        // reachable only if each drainer hits its own pinned opponent.
+        for p in [P1, P2] {
+            runner
+                .state_mut()
+                .players
+                .iter_mut()
+                .find(|pl| pl.id == p)
+                .unwrap()
+                .life = 8;
+        }
+        let committed = runner.state().clone();
+        let boundary = {
+            let mut seed = committed.clone();
+            priority::reset_priority(&mut seed);
+            seed.waiting_for = WaitingFor::Priority {
+                player: seed.active_player,
+            };
+            seed.normalize_for_loop()
+        };
+        let template = two_drainer_template(drainer_a, P1, drainer_b, P2);
+        let cap = auto_pass_loop_max_iterations(&committed);
+
+        match drive_one_shortcut_cycle(&committed, &boundary, Some(&template), 0, cap) {
+            CycleOutcome::CrossLethal { winner, state, .. } => {
+                assert_eq!(
+                    winner,
+                    Some(P0),
+                    "both pinned opponents drained to death ⇒ P0 sole winner (per-source \
+                     routing through the production drive)"
+                );
+                assert!(
+                    life(&state, P1) <= 0 && life(&state, P2) <= 0,
+                    "both opponents at 0-or-less"
+                );
+            }
+            CycleOutcome::Recurred { state, .. } => {
+                assert!(
+                    life(&state, P1) < 8 && life(&state, P2) < 8,
+                    "both pinned opponents drained through drive_one_shortcut_cycle"
+                );
+            }
+            CycleOutcome::Abort => panic!("the pinned drive must not abort"),
+        }
+    }
+
+    /// Item 6: `shortcut_drive_period` = the max schedule length over the template's target
+    /// pins (Constant/Player/ByIdentity ⇒ 1), defaulting to 1 (no template / non-target pins).
+    #[test]
+    fn shortcut_drive_period_is_schedule_max() {
+        assert_eq!(shortcut_drive_period(None), 1, "no template ⇒ period 1");
+
+        let a = this_object(ObjectId(1));
+        let b = this_object(ObjectId(2));
+        let c = this_object(ObjectId(3));
+        let slot = DecisionSlot {
+            source: a.clone(),
+            index: 0,
+        };
+        let mk = |targets: Vec<TargetPin>| DecisionTemplate {
+            owner: P0,
+            decisions: vec![PinnedDecision::Targets {
+                slot: slot.clone(),
+                targets,
+            }],
+            replay: ReplayMode::Scheduled {
+                count: IterationCount::UntilLethal,
+            },
+            key: DecisionGroupKey::from_sources(std::slice::from_ref(&a), DecisionKind::LoopChoice),
+        };
+
+        let constant = mk(vec![TargetPin::Player(P1)]);
+        assert_eq!(shortcut_drive_period(Some(&constant)), 1, "Player pin ⇒ 1");
+
+        let rr = mk(vec![TargetPin::Scheduled(TargetSchedule::RoundRobin(
+            vec![a.clone(), b.clone(), c.clone()],
+        ))]);
+        assert_eq!(shortcut_drive_period(Some(&rr)), 3, "RoundRobin(3) ⇒ 3");
+
+        let pw = mk(vec![TargetPin::Scheduled(TargetSchedule::Piecewise(vec![
+            (0, a.clone()),
+            (5, b.clone()),
+        ]))]);
+        assert_eq!(shortcut_drive_period(Some(&pw)), 2, "Piecewise(2) ⇒ 2");
     }
 }

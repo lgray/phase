@@ -463,7 +463,7 @@ fn resolve_target(
 /// `None` on no match, and the CALLER maps that to the pin-kind-appropriate
 /// `ReplayFailure` (`Order` ⇒ `MissingSource`, a target ⇒ `IllegalTarget`) — the single
 /// seam where G2's per-pin-kind failure selection is realized.
-fn resolve_source(src: &DecisionSource, state: &GameState) -> Option<ObjectId> {
+pub(crate) fn resolve_source(src: &DecisionSource, state: &GameState) -> Option<ObjectId> {
     match src {
         // CR 400.7: bind ONE incarnation — a re-entered permanent bumps `incarnation`
         // and stops matching. A `None` incarnation matches an object that latched none
@@ -566,6 +566,103 @@ pub enum PredictabilityViolation {
     /// CR 732.2a: a cycle choice slot has no matching `PinnedDecision` ⇒ not a
     /// describable predictable sequence ⇒ no auto-resolve.
     UnpinnedChoice { slot: DecisionSlot },
+}
+
+/// CR 732.2a + CR 608.2b: why a declared pin is not a LEGAL answer to the offered decision
+/// schema. `validate_pins` is the fail-closed VALUE-legality firewall paired with
+/// [`predictability_gate`]'s COVERAGE check: the gate proves every offered slot is pinned;
+/// this proves every pin's VALUE lies inside the slot's offered legal set. Any violation ⇒
+/// the declare handler rejects the shortcut and hands back to manual play (no APNAP, no
+/// drive, no crown).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PinValidation {
+    /// The pin addresses a slot the offer never exposed (no matching `DecisionPoint`).
+    UnexposedSlot { slot: DecisionSlot },
+    /// CR 608.2b: a `Targets` pin resolves to a value outside the slot's offered
+    /// `legal_targets` (or fails to resolve to a live legal object at all).
+    IllegalPinValue { slot: DecisionSlot },
+    /// CR 700.2: a `Mode` pin names an index outside the slot's `available_modes`.
+    IllegalModeIndex { slot: DecisionSlot },
+}
+
+/// Map a resolved concrete target to its wire-side [`TargetRef`] peer (the read-side
+/// schema's `legal_targets` element type).
+fn concrete_to_target_ref(t: ConcreteTarget) -> crate::types::ability::TargetRef {
+    match t {
+        ConcreteTarget::Object(id) => crate::types::ability::TargetRef::Object(id),
+        ConcreteTarget::Player(p) => crate::types::ability::TargetRef::Player(p),
+    }
+}
+
+/// CR 732.2a + CR 608.2b: the fail-closed VALUE-legality firewall for a declared shortcut.
+/// Verifies every pin in `template` is a LEGAL answer to `schema` — each pin's slot is one
+/// the offer exposed, and each pin's resolved value lies inside that slot's offered legal
+/// set. `period` (the drive count from [`shortcut_drive_period`]) bounds the iteration
+/// indices a scheduled target pin is re-resolved for, so a `RoundRobin`/`Piecewise` schedule
+/// is validated at EVERY index it will drive. EXHAUSTIVE over [`PinnedDecision`] with no
+/// wildcard: `Order` (CR 603.3b trigger-ordering) and `ConvokeTaps` (object-growth-internal,
+/// re-bound live by `select_convoke_taps`) carry no FE-declared target-legality, so they are
+/// SKIPPED explicitly. Runs once at declare (the board is frozen through Accept); the drive's
+/// per-iteration [`resolve`] is the runtime CR 608.2b backstop.
+pub fn validate_pins(
+    schema: &ShortcutDecisionSchema,
+    template: &DecisionTemplate,
+    period: IterationIndex,
+    state: &GameState,
+) -> Result<(), PinValidation> {
+    for pin in &template.decisions {
+        match pin {
+            PinnedDecision::Targets { slot, targets } => {
+                let point = schema
+                    .points
+                    .iter()
+                    .find(|p| p.slot == *slot)
+                    .ok_or_else(|| PinValidation::UnexposedSlot { slot: slot.clone() })?;
+                let DecisionPointKind::Targets { legal_targets } = &point.kind else {
+                    return Err(PinValidation::IllegalPinValue { slot: slot.clone() });
+                };
+                // CR 608.2b: re-resolve every target at every driven iteration index and
+                // require the concrete value to be an offered legal target. A scheduled pin
+                // that cannot resolve to a live legal object is itself an illegal value.
+                for t in targets {
+                    for i in 0..period.max(1) {
+                        let concrete = resolve_target(t, slot, i, state)
+                            .map_err(|_| PinValidation::IllegalPinValue { slot: slot.clone() })?;
+                        if !legal_targets.contains(&concrete_to_target_ref(concrete)) {
+                            return Err(PinValidation::IllegalPinValue { slot: slot.clone() });
+                        }
+                    }
+                }
+            }
+            PinnedDecision::Mode { slot, indices } => {
+                let point = schema
+                    .points
+                    .iter()
+                    .find(|p| p.slot == *slot)
+                    .ok_or_else(|| PinValidation::UnexposedSlot { slot: slot.clone() })?;
+                let DecisionPointKind::Mode { available_modes } = &point.kind else {
+                    return Err(PinValidation::IllegalModeIndex { slot: slot.clone() });
+                };
+                for idx in indices {
+                    if !available_modes.contains(idx) {
+                        return Err(PinValidation::IllegalModeIndex { slot: slot.clone() });
+                    }
+                }
+            }
+            // CR 603.5 / CR 732.6: binary choices — an exposed matching point is the only
+            // legality requirement (the FE renders yes/no; no value set to bound).
+            PinnedDecision::MayChoice { slot, .. } | PinnedDecision::UnlessBreak { slot, .. } => {
+                if !schema.points.iter().any(|p| p.slot == *slot) {
+                    return Err(PinValidation::UnexposedSlot { slot: slot.clone() });
+                }
+            }
+            // CR 603.3b trigger-ordering + CR 702.51a convoke: not FE-declared target
+            // legality — skipped explicitly (no wildcard, so a future pin kind build-breaks
+            // here rather than silently passing unvalidated).
+            PinnedDecision::Order { .. } | PinnedDecision::ConvokeTaps { .. } => {}
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]

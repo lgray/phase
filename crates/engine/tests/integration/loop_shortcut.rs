@@ -884,6 +884,378 @@ fn interactive_3p_subset_lethal_does_not_crown() {
     );
 }
 
+// ───────────── PR-7 Combo-UI Stage 2 — E1 drive-and-measure crown ──────────────
+//
+// The UntilLethal arm no longer crowns unconditionally: it DRIVES one pin-faithful cycle,
+// MEASURES the per-cycle ResourceVector::delta, and re-runs `live_mandatory_loop_winner`
+// (VERBATIM) — crowning ONLY when it names the proposer, else manual fallback. Plus the F2
+// hardening (≥2-faller `fallers_lives_pairwise_equal` re-verification on the boundary).
+
+/// 2p ESCALATING TARGETED drain (Vito+Sanguine+Bloodthirsty) made OPTIONAL by a castable
+/// Lightning Bolt off an untapped Mountain on P1 (CR 732.5 probe FALSE ⇒ OFFER, not auto-win).
+/// The forced-unique (single-opponent) targets auto-select at dispatch, so the only interactive
+/// mid-drive prompt the E1 drive raises is OrderTriggers (the two simultaneous same-controller
+/// drain triggers) — the template-independent injector arm.
+fn setup_2p_vito_optional(mode: LoopDetectionMode) -> (GameRunner, ObjectId) {
+    let mut scenario = GameScenario::new_n_player(2, 7);
+    scenario.at_phase(Phase::PreCombatMain);
+    scenario.with_life(P0, 20);
+    scenario.with_life(P1, 6);
+    scenario.add_creature_from_oracle(P0, "Vito, Thorn of the Dusk Rose", 1, 4, VITO);
+    scenario.add_creature_from_oracle(P0, "Sanguine Bond", 2, 2, SANGUINE_BOND);
+    scenario.add_creature_from_oracle(P0, "Bloodthirsty Conqueror", 3, 4, BLOODTHIRSTY_CONQUEROR);
+    scenario.add_basic_land(P1, ManaColor::Red);
+    scenario.add_bolt_to_hand(P1);
+    let kickoff = scenario
+        .add_spell_to_hand_from_oracle(P0, "Test Lifegain Kickoff", false, KICKOFF)
+        .id();
+    let mut runner = scenario.build();
+    runner.state_mut().loop_detection = mode;
+    (runner, kickoff)
+}
+
+/// 3p DRAIN_CLERIC/BLOOD_SIPPER loop where BOTH opponents drain equally (CR 704.5a "each
+/// opponent loses 1"). Configurable opponent life for the F2 ≥2-faller hardening tests: the
+/// per-cycle delta is EQUAL for both (so `live_mandatory_loop_winner`'s ≥2-faller floor
+/// passes), while the ABSOLUTE lives differ iff `p1_life != p2_life` (so the offer's own
+/// `fallers_lives_pairwise_equal` distinguishes them). Started very high so the drive never
+/// crosses lethal within one measured cycle (measure path, not cross-lethal).
+fn setup_3p_both_fall(
+    mode: LoopDetectionMode,
+    p1_life: i32,
+    p2_life: i32,
+) -> (GameRunner, ObjectId) {
+    let mut scenario = GameScenario::new_n_player(3, 7);
+    scenario.at_phase(Phase::PreCombatMain);
+    scenario.with_life(P0, 20);
+    scenario.with_life(P1, p1_life);
+    scenario.with_life(P2, p2_life);
+    scenario.add_creature_from_oracle(P0, "Test Drain Cleric", 2, 2, DRAIN_CLERIC);
+    scenario.add_creature_from_oracle(P0, "Test Blood Sipper", 2, 2, BLOOD_SIPPER);
+    let kickoff = scenario
+        .add_spell_to_hand_from_oracle(P0, "Test Lifegain Kickoff", false, KICKOFF)
+        .id();
+    let mut runner = scenario.build();
+    runner.state_mut().loop_detection = mode;
+    (runner, kickoff)
+}
+
+/// A synthetic `UntilLethal`/`LethalDamage` offer certificate for injecting a `LoopShortcut`
+/// on a loop that never offers naturally (subset-lethal / >2p targeted).
+fn synthetic_lethal_cert() -> LoopCertificate {
+    LoopCertificate {
+        unbounded: vec![],
+        win_kind: WinKind::LethalDamage,
+        mandatory: false,
+        residual_board_delta: BoardDelta::default(),
+    }
+}
+
+/// Accept the shortcut from every remaining living opponent (drain-one-advance APNAP), for
+/// injected offers with any opponent count.
+fn accept_all_opponents(runner: &mut GameRunner) {
+    while matches!(
+        runner.state().waiting_for,
+        WaitingFor::RespondToShortcut { .. }
+    ) {
+        runner
+            .act(GameAction::RespondToShortcut {
+                response: ShortcutResponse::Accept,
+            })
+            .expect("living opponent accepts the shortcut");
+    }
+}
+
+/// Test A ⭐ (END-TO-END, item 5 + item 4 OrderTriggers arm): the real 2p escalating targeted
+/// drain OFFERS; P0 declares `UntilLethal` with NO template; on Accept the E1 drive re-fires
+/// the loop, the injector answers the OrderTriggers prompt by identity order (the forced-unique
+/// target auto-selects at dispatch), the cycle measures P1 as the sole faller, and
+/// `live_mandatory_loop_winner` crowns P0. This is the end-to-end witness that the drive
+/// traverses the trigger pipeline (OrderTriggers) to a crown — not a helper-level fallback.
+#[test]
+fn vito_2p_optional_offer_declare_crowns() {
+    let (mut runner, kickoff) = setup_2p_vito_optional(LoopDetectionMode::Interactive);
+    let _ = runner.cast(kickoff).resolve();
+    let (_events, wf) = drive_collect(&mut runner, 2000);
+
+    let WaitingFor::LoopShortcut { controller, .. } = wf else {
+        panic!("optional 2p Vito drain must OFFER a LoopShortcut, got {wf:?}");
+    };
+    assert_eq!(controller, P0, "the proposer is the determinate winner P0");
+    // Reach-guard: the offer fired EARLY (P1 alive-positive), not at a natural death.
+    assert!(
+        life(&runner, P1) > 0 && !is_eliminated(&runner, P1),
+        "the offer must fire with P1 alive-positive, life = {}",
+        life(&runner, P1)
+    );
+
+    runner
+        .act(GameAction::DeclareShortcut {
+            count: IterationCount::UntilLethal,
+            template: None,
+        })
+        .expect("P0 declares UntilLethal (no template — forced-unique targets auto-select)");
+    accept_all_opponents(&mut runner);
+
+    assert_eq!(
+        runner.state().waiting_for,
+        WaitingFor::GameOver { winner: Some(P0) },
+        "E1 drive-and-measure crowns P0 for the 2p targeted determinate drain (end-to-end \
+         through the OrderTriggers injector arm)"
+    );
+}
+
+/// Test B ⭐ (SOUNDNESS #1, item 5): a >2p SUBSET-lethal loop confirmed at APPLY does NOT crown
+/// — the E1 drive measures ONE faller (P1) plus a second non-faller (P2, life-loss-immune), so
+/// `live_mandatory_loop_winner` returns None (CR 104.2a) and the shortcut falls back to manual
+/// play. REVERT-PROBE: making the crown unconditional (deleting the `live_mandatory_loop_winner`
+/// gate) wrongly crowns P0 here.
+#[test]
+fn injected_3p_one_faller_no_crown() {
+    let (mut runner, kickoff) = setup_3p_subset_lethal(LoopDetectionMode::Interactive);
+    let _ = runner.cast(kickoff).resolve();
+    let (_events, _wf) = drive_collect(&mut runner, 500);
+
+    // Reach-guard: the drain loop genuinely ran (P1 bled, alive) and P2 is untouched — this
+    // is the subset-lethal regime the E1 measure must refuse.
+    assert!(
+        life(&runner, P1) < 1000 && !is_eliminated(&runner, P1),
+        "P1 must have bled (loop primed), life = {}",
+        life(&runner, P1)
+    );
+    assert_eq!(life(&runner, P2), 20, "P2 untouched (second non-faller)");
+
+    // Inject the offer this subset-lethal loop never raises naturally, then confirm it.
+    runner.state_mut().waiting_for = WaitingFor::LoopShortcut {
+        controller: P0,
+        certificate: synthetic_lethal_cert(),
+        schema: ShortcutDecisionSchema::default(),
+    };
+    runner
+        .act(GameAction::DeclareShortcut {
+            count: IterationCount::UntilLethal,
+            template: None,
+        })
+        .expect("P0 declares UntilLethal on the injected offer");
+    accept_all_opponents(&mut runner);
+
+    assert!(
+        !matches!(
+            runner.state().waiting_for,
+            WaitingFor::GameOver { winner: Some(_) }
+        ),
+        "subset-lethal loop must NOT crown (CR 104.2a), got {:?}",
+        runner.state().waiting_for
+    );
+    assert!(
+        matches!(runner.state().waiting_for, WaitingFor::Priority { .. }),
+        "the E1 measure hands back to manual play, got {:?}",
+        runner.state().waiting_for
+    );
+    assert_eq!(
+        life(&runner, P2),
+        20,
+        "the sim ran on a clone (state rolled back) — P2 still untouched"
+    );
+}
+
+/// Test C ⭐ (LATENT FIX, item 5 object-growth branch): an object-growth ADVANTAGE token loop
+/// declared `UntilLethal` (the AI hardcode shape) does NOT crown — the E1 object-growth branch
+/// drives one recast, measures NO life/poison faller (only tokens grew), so
+/// `live_mandatory_loop_winner` returns None and the shortcut falls back to manual play.
+/// REVERT-PROBE: the pre-E1 unconditional UntilLethal crown wrongly ends the game here.
+#[test]
+fn object_growth_advantage_untillethal_no_crown() {
+    let (mut runner, sprout, fodder) = sprout_swarm_scenario(4);
+    let before = saproling_count(runner.state());
+    let _ = runner
+        .cast(sprout)
+        .accept_optional()
+        .convoke_with(&[fodder[0]])
+        .commit()
+        .resolve();
+
+    assert!(
+        matches!(runner.state().waiting_for, WaitingFor::LoopShortcut { controller, .. } if controller == P0),
+        "the object-growth cast must OFFER a LoopShortcut to P0, got {:?}",
+        runner.state().waiting_for
+    );
+    // Reach-guard: the real cast grew the board by one Saproling (the recast ran) — we are on
+    // the object-growth branch, not an unrelated no-op.
+    assert!(
+        saproling_count(runner.state()) > before,
+        "the real cast must have grown the board (object-growth branch reachable)"
+    );
+
+    runner
+        .act(GameAction::DeclareShortcut {
+            count: IterationCount::UntilLethal,
+            template: None,
+        })
+        .expect("P0 declares UntilLethal on the Advantage offer (AI-hardcode shape)");
+    accept_all_opponents(&mut runner);
+
+    assert!(
+        !matches!(runner.state().waiting_for, WaitingFor::GameOver { .. }),
+        "an inert Advantage token loop must NOT crown under UntilLethal, got {:?}",
+        runner.state().waiting_for
+    );
+    assert!(
+        matches!(runner.state().waiting_for, WaitingFor::Priority { .. }),
+        "the E1 object-growth measure hands back to manual play, got {:?}",
+        runner.state().waiting_for
+    );
+    for p in [P0, P1] {
+        assert!(
+            life(&runner, p) > 0,
+            "no player crossed lethal (no drain axis)"
+        );
+    }
+}
+
+/// Test E ⭐ (SOUNDNESS #1 firewall, item 3): the declare-time `validate_pins` firewall REJECTS
+/// an illegal-value pin (a target outside the slot's offered `legal_targets`) BEFORE APNAP opens
+/// (⇒ manual-play Priority), and INGESTS a legal pin (⇒ RespondToShortcut opens). REVERT-PROBE:
+/// removing the validate hook lets the illegal pin open the response window (a leak).
+#[test]
+fn declare_illegal_pin_falls_back_legal_ingests() {
+    // A schema exposing ONE Targets slot whose only legal target is Player(P1).
+    let source = YieldTarget::ThisObject {
+        source_id: ObjectId(1),
+        incarnation: None,
+        trigger_description: None,
+    };
+    let slot = DecisionSlot {
+        source: source.clone(),
+        index: 0,
+    };
+    let schema = ShortcutDecisionSchema {
+        iteration_count: IterationCount::UntilLethal,
+        points: vec![DecisionPoint {
+            slot: slot.clone(),
+            kind: DecisionPointKind::Targets {
+                legal_targets: vec![TargetRef::Player(P1)],
+            },
+        }],
+    };
+    let template_for = |pinned: PlayerId| DecisionTemplate {
+        owner: P0,
+        decisions: vec![PinnedDecision::Targets {
+            slot: slot.clone(),
+            targets: vec![TargetPin::Player(pinned)],
+        }],
+        replay: ReplayMode::Scheduled {
+            count: IterationCount::UntilLethal,
+        },
+        key: DecisionGroupKey::from_sources(
+            std::slice::from_ref(&source),
+            DecisionKind::LoopChoice,
+        ),
+    };
+
+    // ILLEGAL half: pin Player(P2), not in the offered legal set ⇒ rejected to Priority.
+    let (mut runner, _kickoff) = setup_3p_draw(LoopDetectionMode::Interactive);
+    runner.state_mut().waiting_for = WaitingFor::LoopShortcut {
+        controller: P0,
+        certificate: synthetic_lethal_cert(),
+        schema: schema.clone(),
+    };
+    runner
+        .act(GameAction::DeclareShortcut {
+            count: IterationCount::UntilLethal,
+            template: Some(template_for(P2)),
+        })
+        .expect("declare dispatch succeeds (the rejection is a manual-fallback, not an error)");
+    assert!(
+        matches!(runner.state().waiting_for, WaitingFor::Priority { .. }),
+        "an illegal-value pin is REJECTED before APNAP (manual fallback), got {:?}",
+        runner.state().waiting_for
+    );
+
+    // LEGAL half (reach-guard, not always-reject): pin Player(P1) ⇒ RespondToShortcut opens.
+    let (mut runner2, _kickoff2) = setup_3p_draw(LoopDetectionMode::Interactive);
+    runner2.state_mut().waiting_for = WaitingFor::LoopShortcut {
+        controller: P0,
+        certificate: synthetic_lethal_cert(),
+        schema,
+    };
+    runner2
+        .act(GameAction::DeclareShortcut {
+            count: IterationCount::UntilLethal,
+            template: Some(template_for(P1)),
+        })
+        .expect("declare with a legal pin");
+    assert!(
+        matches!(
+            runner2.state().waiting_for,
+            WaitingFor::RespondToShortcut { .. }
+        ),
+        "a legal pin is INGESTED — the response window opens, got {:?}",
+        runner2.state().waiting_for
+    );
+}
+
+/// Test G ⭐ (F2 HARDENING, item 5 ≥2-faller re-verification): a >2p drain that drops TWO
+/// opponents by EQUAL per-cycle deltas but at UNEQUAL absolute life does NOT crown — the
+/// ≥2-faller `fallers_lives_pairwise_equal` re-check on the pre-drive boundary fails
+/// (staggered CR 704.3 lethal). The EQUAL-life sibling DOES crown (reach-guard proving the
+/// check is not always-reject). REVERT-PROBE: removing the F2 check wrongly crowns the
+/// unequal-life half.
+#[test]
+fn injected_3p_unequal_life_pin_all_no_crown() {
+    // Drive one primed cycle of a confirmed 3p both-fall drain and report the terminal
+    // waiting_for.
+    fn drive_confirmed(p1_life: i32, p2_life: i32) -> WaitingFor {
+        let (mut runner, kickoff) =
+            setup_3p_both_fall(LoopDetectionMode::Interactive, p1_life, p2_life);
+        let _ = runner.cast(kickoff).resolve();
+        let (_events, _wf) = drive_collect(&mut runner, 200);
+        // Reach-guard: both opponents bled equally (loop primed, both are fallers) and stay
+        // pairwise-offset by the initial gap (equal deltas preserve the difference).
+        assert!(
+            life(&runner, P1) < p1_life && life(&runner, P2) < p2_life,
+            "both opponents must have bled (≥2-faller regime primed)"
+        );
+        assert_eq!(
+            p2_life - p1_life,
+            life(&runner, P2) - life(&runner, P1),
+            "equal per-cycle deltas preserve the pairwise life gap"
+        );
+        runner.state_mut().waiting_for = WaitingFor::LoopShortcut {
+            controller: P0,
+            certificate: synthetic_lethal_cert(),
+            schema: ShortcutDecisionSchema::default(),
+        };
+        runner
+            .act(GameAction::DeclareShortcut {
+                count: IterationCount::UntilLethal,
+                template: None,
+            })
+            .expect("P0 declares UntilLethal");
+        accept_all_opponents(&mut runner);
+        runner.state().waiting_for.clone()
+    }
+
+    // UNEQUAL absolute life (gap 50) ⇒ NO crown (F2 staggered-death veto).
+    let unequal = drive_confirmed(1000, 1050);
+    assert!(
+        !matches!(unequal, WaitingFor::GameOver { winner: Some(_) }),
+        "unequal-life ≥2-faller drain must NOT crown (CR 704.3 simultaneity), got {unequal:?}"
+    );
+    assert!(
+        matches!(unequal, WaitingFor::Priority { .. }),
+        "the F2 veto hands back to manual play, got {unequal:?}"
+    );
+
+    // EQUAL absolute life ⇒ CROWN (reach-guard: the F2 check is not always-reject).
+    let equal = drive_confirmed(1000, 1000);
+    assert_eq!(
+        equal,
+        WaitingFor::GameOver { winner: Some(P0) },
+        "equal-life ≥2-faller drain still crowns P0 (F2 pairwise-equal passes)"
+    );
+}
+
 // ─────────────────── T-B3-materialize (Phase 4b) ───────────────────────
 
 /// Reach `LoopShortcut{P0}` on a fresh `setup_2p_optional_drain(Interactive)` fixture.
