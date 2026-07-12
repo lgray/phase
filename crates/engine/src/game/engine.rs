@@ -1454,7 +1454,7 @@ fn drive_recast_iteration(
                     clone,
                     actor,
                     GameAction::DecideOptionalCost {
-                        pay: ctx.uses_buyback,
+                        pay: ctx.uses_buyback.pays(),
                     },
                     None,
                 )

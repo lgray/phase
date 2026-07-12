@@ -5645,11 +5645,16 @@ mod tests {
     }
 
     fn recast_ctx(uses_buyback: bool) -> crate::types::game_state::RecastContext {
+        use crate::types::game_state::BuybackUsage;
         crate::types::game_state::RecastContext {
             card_id: CardId(4242),
             controller: PlayerId(0),
             from_zone: Zone::Hand,
-            uses_buyback,
+            uses_buyback: if uses_buyback {
+                BuybackUsage::Used
+            } else {
+                BuybackUsage::NotUsed
+            },
             convoke: Some(crate::types::game_state::ConvokeMode::Convoke),
         }
     }

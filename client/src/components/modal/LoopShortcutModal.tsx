@@ -76,7 +76,7 @@ export function DeclareShortcutModal() {
   // CR 702.51a: read-only count of untapped creatures the engine will auto-tap
   // for convoke (`select_convoke_taps` re-binds the concrete taps each iteration).
   // `.length` over an engine-provided array is formatting, not game logic.
-  const convokeTappable = (schema.points ?? []).reduce(
+  const convokeTappable = schema.points.reduce(
     (total, point) =>
       typeof point.kind === "object" && "ConvokeTaps" in point.kind
         ? total + point.kind.ConvokeTaps.tappable.length

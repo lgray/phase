@@ -2,8 +2,8 @@
 //! `server_core::game_action_payload_guard`).
 
 use engine::analysis::decision_template::{
-    DecisionGroupKey, DecisionKind, DecisionSlot, DecisionTemplate, IterationCount, PinnedDecision,
-    ReplayMode,
+    DecisionGroupKey, DecisionKind, DecisionSlot, DecisionTemplate, IterationCount,
+    MayChoiceOption, PinnedDecision, ReplayMode,
 };
 use engine::types::actions::{DebugAction, DebugTokenRequest};
 use engine::types::counter::CounterType;
@@ -206,7 +206,13 @@ fn shortcut_template(decision_count: usize) -> DecisionTemplate {
     };
     DecisionTemplate {
         owner: PlayerId(0),
-        decisions: vec![PinnedDecision::MayChoice { slot, take: true }; decision_count],
+        decisions: vec![
+            PinnedDecision::MayChoice {
+                slot,
+                take: MayChoiceOption::Take
+            };
+            decision_count
+        ],
         replay: ReplayMode::Static,
         key: DecisionGroupKey {
             sources: vec![],

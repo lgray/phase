@@ -6766,7 +6766,7 @@ fn finalize_cast_with_phyrexian_choices_inner(
                 card_id,
                 controller: player,
                 from_zone: source_zone,
-                uses_buyback: true,
+                uses_buyback: crate::types::game_state::BuybackUsage::Used,
                 convoke,
             });
     }

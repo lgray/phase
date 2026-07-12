@@ -4376,7 +4376,13 @@ pub(crate) fn effect_is_randomness_bearing(e: &Effect) -> bool {
         | Effect::RollDie { .. }
         | Effect::ChaosEnsues
         | Effect::RollToVisitAttractions
-        | Effect::AssembleContraptionsFromRollDifference => true,
+        | Effect::AssembleContraptionsFromRollDifference
+        // CR 701.30a: a clash reveals the top card of each player's (shuffled) library — hidden
+        // information the recast injector cannot know at pin time. CR 701.30d: the winner is
+        // decided by comparing those revealed mana values, so the outcome (and any action it
+        // gates) is unpredictable. CR 732.2a bars shortcutting a loop across such a random event,
+        // so a recast body containing a clash is randomness-bearing ⇒ fail-closed reject.
+        | Effect::Clash => true,
         // --- field-level "game picks at random" (CR 701.9a/b): random ONLY when the
         //     selection mode is `Random`; a `Chosen` selection is a normal player
         //     choice, not randomness. All four `CardSelectionMode` carriers share one
@@ -4442,7 +4448,6 @@ pub(crate) fn effect_is_randomness_bearing(e: &Effect) -> bool {
         | Effect::Proliferate
         | Effect::ProliferateTarget { .. }
         | Effect::Populate
-        | Effect::Clash
         | Effect::Behold { .. }
         | Effect::EndTheTurn
         | Effect::EndCombatPhase
@@ -4837,6 +4842,11 @@ mod tests {
             amount: QuantityExpr::Fixed { value: 1 },
             player: TargetFilter::Controller,
         }));
+
+        // CR 701.30a/d: a clash reveals the top card of a shuffled library and decides the winner
+        // by comparing revealed mana values — unpredictable at pin time (CR 732.2a) ⇒ true.
+        // Revert-probe: moving `Effect::Clash` back to the non-randomness arm flips this to false.
+        assert!(effect_is_randomness_bearing(&Effect::Clash));
     }
 
     #[test]

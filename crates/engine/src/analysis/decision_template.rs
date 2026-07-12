@@ -139,6 +139,21 @@ pub struct DecisionSlot {
     pub index: u8,
 }
 
+/// CR 603.5: whether a "may" pin takes the optional action or declines it. Typed (not `bool`)
+/// so both outcomes are self-documenting at every construction and match site.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum MayChoiceOption {
+    Take,
+    Decline,
+}
+
+/// CR 732.6: whether an "[A] unless [B]" pin pays [B] to break the loop, or declines and takes [A].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum UnlessPaymentOption {
+    Pay,
+    Decline,
+}
+
 /// One pinned decision. Variants are distinct CR choice KINDS (ordering / targeting /
 /// modal / optional-"may" / "[A] unless [B]" break), not a parameterization axis.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -157,9 +172,15 @@ pub enum PinnedDecision {
         indices: Vec<usize>,
     },
     /// CR 603.5 / a "may" effect: take the optional action or not.
-    MayChoice { slot: DecisionSlot, take: bool },
+    MayChoice {
+        slot: DecisionSlot,
+        take: MayChoiceOption,
+    },
     /// CR 732.6: pay or decline an "[A] unless [B]" break.
-    UnlessBreak { slot: DecisionSlot, pay: bool },
+    UnlessBreak {
+        slot: DecisionSlot,
+        pay: UnlessPaymentOption,
+    },
     /// CR 601.2h + CR 702.51a/b: pay a convoke `ManaPayment` by tapping the minimal
     /// deterministic set of untapped creatures matching the live post-affinity color
     /// requirement. State-independent: the concrete creatures are re-bound LIVE each
@@ -299,11 +320,11 @@ pub enum ConcreteDecision {
     },
     MayChoice {
         slot: DecisionSlot,
-        take: bool,
+        take: MayChoiceOption,
     },
     UnlessBreak {
         slot: DecisionSlot,
-        pay: bool,
+        pay: UnlessPaymentOption,
     },
     /// CR 601.2h + CR 702.51a/b: the live-resolved convoke tap-set for this iteration —
     /// `(creature, mana_type)` pairs to feed as `GameAction::TapForConvoke`. Re-bound each
@@ -1067,7 +1088,7 @@ mod tests {
             owner: PlayerId(0),
             decisions: vec![PinnedDecision::MayChoice {
                 slot: slot_a.clone(),
-                take: true,
+                take: MayChoiceOption::Take,
             }],
             replay: ReplayMode::Static,
             key: tri_key(),
@@ -1086,7 +1107,7 @@ mod tests {
             decisions: vec![
                 PinnedDecision::MayChoice {
                     slot: slot_a,
-                    take: true,
+                    take: MayChoiceOption::Take,
                 },
                 PinnedDecision::Targets {
                     slot: slot_b,

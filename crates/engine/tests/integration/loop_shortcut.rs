@@ -2326,8 +2326,9 @@ fn object_growth_51st_sprout_swarm_covers_and_offers() {
         engine::types::zones::Zone::Hand,
         "CR 601.2a: buyback returns the spell to hand ⇒ from_zone is Hand"
     );
-    assert!(
+    assert_eq!(
         ctx.uses_buyback,
+        engine::types::game_state::BuybackUsage::Used,
         "the captured context records that buyback was paid"
     );
     assert_eq!(

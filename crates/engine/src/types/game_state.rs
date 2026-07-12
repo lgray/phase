@@ -376,10 +376,27 @@ pub struct RecastContext {
     /// CR 601.2a: the zone the recast is cast from (Hand — buyback returns the spell here).
     pub from_zone: Zone,
     /// CR 702.27a: the recast must re-pay buyback each iteration to sustain the loop.
-    pub uses_buyback: bool,
+    pub uses_buyback: BuybackUsage,
     /// CR 702.51a: the convoke mode the injector's pin re-binds live each iteration
     /// (`None` when the recast pays no convoke cost).
     pub convoke: Option<ConvokeMode>,
+}
+
+/// CR 702.27a: whether a homogeneous recast re-pays the buyback additional cost each iteration.
+/// Typed (not `bool`) so the recast frame's cost shape is self-documenting where it is compared
+/// (the object-growth cover gates) and consumed (the replay's `DecideOptionalCost` beat).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum BuybackUsage {
+    Used,
+    NotUsed,
+}
+
+impl BuybackUsage {
+    /// CR 601.2f/702.27a: true when the recast re-pays buyback (drives the `DecideOptionalCost`
+    /// beat during object-growth replay).
+    pub const fn pays(self) -> bool {
+        matches!(self, BuybackUsage::Used)
+    }
 }
 
 /// Backwards-compatible deserializer for `SpellCastRecord.from_zone`. Accepts
