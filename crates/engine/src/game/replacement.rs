@@ -55,6 +55,11 @@ const COMPLEATED_LOYALTY_INDEX: usize = usize::MAX - 3;
 /// `source` `ObjectId`). It is armed by `GameState::combat_phase_skip_next_turn`
 /// being `Active` for the active player on a combat phase.
 const TURN_SCOPED_COMBAT_SKIP_INDEX: usize = usize::MAX - 4;
+/// CR 122.1h: Finality-counter redirect — a virtual `ZoneChange{BF→GY}`
+/// replacement keyed on the dying permanent. Intrinsic to the counter (persists
+/// past cleanup, like shield counters), so a reserved candidate id lets the
+/// CR 616 ordering pipeline own its choice/application.
+const FINALITY_COUNTER_INDEX: usize = usize::MAX - 5;
 
 /// CR 109.4 + CR 108.4a: Cards outside the battlefield/stack have no
 /// controller; if an effect asks for a card's controller, use its owner
@@ -141,6 +146,27 @@ fn object_has_shield_counter(state: &GameState, object_id: ObjectId) -> bool {
         .objects
         .get(&object_id)
         .and_then(|obj| obj.counters.get(&CounterType::Shield))
+        .is_some_and(|count| *count > 0)
+}
+
+fn finality_counter_replacement_id(object_id: ObjectId) -> ReplacementId {
+    ReplacementId {
+        source: object_id,
+        index: FINALITY_COUNTER_INDEX,
+    }
+}
+
+fn is_finality_counter_replacement(rid: ReplacementId) -> bool {
+    rid.index == FINALITY_COUNTER_INDEX
+}
+
+/// CR 122.1h: A permanent has the finality death→exile redirect while it carries
+/// one or more finality counters.
+fn object_has_finality_counter(state: &GameState, object_id: ObjectId) -> bool {
+    state
+        .objects
+        .get(&object_id)
+        .and_then(|obj| obj.counters.get(&CounterType::Finality))
         .is_some_and(|count| *count > 0)
 }
 
@@ -1749,6 +1775,31 @@ fn apply_shield_counter_replacement(
         }
         (_, other) => Ok(other),
     }
+}
+
+/// CR 122.1h + CR 614.6: redirect the battlefield→graveyard move to exile. The
+/// modified event occurs instead (CR 614.6); the counter is NOT consumed
+/// (persistent redirect, unlike shield CR 122.1c which removes a counter). The
+/// redirect rides the `Ok(event)` arm — never `Err(Modified)` — matching the
+/// shield non-consumed path; delivery is handled by the existing zone-pipeline
+/// tail.
+#[allow(clippy::result_large_err)]
+fn apply_finality_counter_replacement(
+    mut event: ProposedEvent,
+    rid: ReplacementId,
+) -> Result<ProposedEvent, ApplyResult> {
+    if let ProposedEvent::ZoneChange {
+        object_id,
+        from,
+        to,
+        ..
+    } = &mut event
+    {
+        if *from == Zone::Battlefield && *to == Zone::Graveyard && *object_id == rid.source {
+            *to = Zone::Exile;
+        }
+    }
+    Ok(event)
 }
 
 /// CR 702.89a: Umbra armor — "If enchanted permanent would be destroyed, instead
@@ -5304,6 +5355,23 @@ pub fn find_applicable_replacements(
                 candidates.push(rid);
             }
         }
+        // CR 122.1h + CR 700.4: a finality counter redirects the "dies" zone
+        // change (battlefield→graveyard) to exile. One virtual candidate on the
+        // shared ZoneChange{BF→GY} event catches every death path (destroy,
+        // sacrifice, SBA lethal damage, SBA 0-toughness). from:Battlefield is
+        // REQUIRED — a milled or discarded finality card (→graveyard from
+        // library/hand) is NOT exiled.
+        ProposedEvent::ZoneChange {
+            object_id,
+            from: Zone::Battlefield,
+            to: Zone::Graveyard,
+            ..
+        } if object_has_finality_counter(state, *object_id) => {
+            let rid = finality_counter_replacement_id(*object_id);
+            if !event.already_applied(&rid) {
+                candidates.push(rid);
+            }
+        }
         _ => {}
     }
 
@@ -6035,6 +6103,10 @@ fn apply_single_replacement(
         return apply_shield_counter_replacement(state, proposed, rid, kind, events);
     }
 
+    if is_finality_counter_replacement(rid) {
+        return apply_finality_counter_replacement(proposed, rid);
+    }
+
     if is_umbra_armor_replacement(rid) {
         return apply_umbra_armor_replacement(state, proposed, rid, events);
     }
@@ -6677,6 +6749,14 @@ fn candidate_materiality(
             }
         }
         None => {}
+    }
+
+    // CR 122.1h + CR 616.1: finality redirects the graveyard move to exile — an
+    // unconditional zone-redirect shape, exactly like the shield-counter destroy,
+    // umbra armor, and stored ChangeZone (Rest in Peace) redirects. Two co-firing
+    // zone redirects on one event force the CR 616.1e player ordering choice.
+    if is_finality_counter_replacement(rid) {
+        return CandidateMateriality::Unconditional;
     }
 
     // CR 702.89a: Umbra armor fully replaces the destruction (prevents it), so it
