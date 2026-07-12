@@ -136,6 +136,68 @@ fn massacre_girl_condition_is_death_toughness_snapshot() {
 }
 
 // ---------------------------------------------------------------------------
+// P (discriminating) — BB-FU3: other-death POSTFIX dying-subject threading.
+//
+// Synthetic card (no real DB card has an other-death "if its power was N or
+// greater" clause): the POSTFIX threshold is what discriminates the fix from the
+// retired `parse_inner_condition` proxy. Massacre Girl's INFIX "toughness was
+// less than 1" never trips the postfix-only proxy, so it could not exercise the
+// discriminator — this fixture can.
+//
+// Revert-probe (measured, proves non-vacuity): under the retired proxy this
+// clause binds a Source-scoped `TriggerCondition::QuantityComparison { lhs:
+// Power(Source), comparator: GE, rhs: Fixed(3) }` — the postfix "3 or greater"
+// makes `parse_source_power_toughness_condition` succeed, the proxy fires, the
+// dying gate declines (`Err`), and the intervening-if path binds to the SOURCE.
+// Threading `dying_subject = Typed{Creature, Opponent}` (non-SelfRef) selects the
+// `Some(_)` arm → the event-object `ZoneChangeObjectMatchesFilter` asserted below.
+// ---------------------------------------------------------------------------
+
+const SYNTHETIC_OTHER_DEATH_POWER: &str =
+    "Whenever a creature an opponent controls dies, if its power was 3 or greater, draw a card.";
+
+#[test]
+fn other_death_power_postfix_binds_event_object_not_source() {
+    let cond = parse_condition(
+        SYNTHETIC_OTHER_DEATH_POWER,
+        "Test Dying Power Snapshot",
+        &[],
+    )
+    .expect("other-death power-snapshot trigger must carry an intervening-if condition");
+
+    // Non-vacuous negative: under the reverted threading this is a Source-scoped
+    // QuantityComparison. The fix makes it the event-object filter below.
+    assert!(
+        !matches!(cond, TriggerCondition::QuantityComparison { .. }),
+        "expected event-object filter, not a Source-scoped QuantityComparison; got {cond:?}"
+    );
+
+    match cond {
+        TriggerCondition::ZoneChangeObjectMatchesFilter {
+            origin,
+            destination,
+            filter,
+        } => {
+            // CR 603.10a: death look-back snapshot — origin battlefield, dest graveyard.
+            assert_eq!(origin, Some(Zone::Battlefield));
+            assert_eq!(destination, Zone::Graveyard);
+            let props = typed_props(&filter);
+            assert_eq!(
+                props,
+                &[FilterProp::PtComparison {
+                    stat: PtStat::Power,
+                    scope: PtValueScope::Current,
+                    comparator: Comparator::GE,
+                    value: QuantityExpr::Fixed { value: 3 },
+                }],
+                "expected power >= 3 (fixed) on the dying event object, got {props:?}"
+            );
+        }
+        other => panic!("expected ZoneChangeObjectMatchesFilter (event object), got {other:?}"),
+    }
+}
+
+// ---------------------------------------------------------------------------
 // P — Sharp-Eyed Rookie
 // ---------------------------------------------------------------------------
 

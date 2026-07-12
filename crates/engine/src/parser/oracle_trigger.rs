@@ -1052,6 +1052,14 @@ pub(crate) fn parse_trigger_line_with_index_ir(
         strip_first_time_each_turn_qualifier(&condition_text_raw);
     let condition_text: &str = &condition_text_stripped;
 
+    // CR 608.2k: Extract trigger subject for pronoun resolution in effect text.
+    // Hoisted above the intervening-if extraction so the dying/leaves-the-battlefield
+    // condition dispatch (CR 603.6c) can discriminate self-death (subject == SelfRef,
+    // "its" → source) from other-death ("its" → the dying event object). The window
+    // from here to the extract call is ctx-inert (nothing in it reads or mutates ctx)
+    // and this call is diagnostics-neutral, so the hoist is behavior-preserving.
+    let trigger_subject = extract_trigger_subject_for_context(condition_text, ctx);
+
     let effect_lower = effect_text.to_lowercase();
     // CR 701.42b: A meld instigator's effect text opens with the own/control
     // gate ("if you both own and control ~ and a [type] named [partner], exile
@@ -1067,8 +1075,11 @@ pub(crate) fn parse_trigger_line_with_index_ir(
                 // Extract intervening-if condition from effect text first — a
                 // leading "if X, " can hide the "you may " optional marker behind
                 // the if-clause.
-                let (without_if, cond) =
-                    extract_if_condition_with_card_name(&effect_text, card_name);
+                let (without_if, cond) = extract_if_condition_with_card_name(
+                    &effect_text,
+                    card_name,
+                    Some(&trigger_subject),
+                );
                 (without_if, cond, None)
             }
         };
@@ -1106,8 +1117,6 @@ pub(crate) fn parse_trigger_line_with_index_ir(
     // CR 118.12: Detect "unless [player] pays {cost}" in effect text.
     let (effect_for_parse, unless_pay) = extract_unless_pay_modifier(&effect_final, &cond_lower);
 
-    // CR 608.2k: Extract trigger subject for pronoun resolution in effect text.
-    let trigger_subject = extract_trigger_subject_for_context(condition_text, ctx);
     // CR 107.4 + CR 202.1 + CR 603.4: Stage the cast-trigger's colored-mana-symbol
     // qualifier color (Namor) so a "create that many tokens" effect clause can
     // back-reference the cast spell's colored-pip count instead of the generic
@@ -4242,7 +4251,7 @@ fn parse_cast_them_and_graveyard_count_intervening_if(
 /// [`extract_if_condition_with_card_name`] with the real card name.
 #[cfg(test)]
 fn extract_if_condition(text: &str) -> (String, Option<TriggerCondition>) {
-    extract_if_condition_with_card_name(text, "")
+    extract_if_condition_with_card_name(text, "", None)
 }
 
 /// Extract an intervening-if condition from effect text.
@@ -4256,6 +4265,7 @@ fn extract_if_condition(text: &str) -> (String, Option<TriggerCondition>) {
 fn extract_if_condition_with_card_name(
     text: &str,
     card_name: &str,
+    dying_subject: Option<&TargetFilter>,
 ) -> (String, Option<TriggerCondition>) {
     let lower = text.to_lowercase();
     let tp = TextPair::new(text, &lower);
@@ -4828,7 +4838,9 @@ fn extract_if_condition_with_card_name(
         }
     }
 
-    if let Some(result) = try_extract_zone_change_object_filter_condition(&lower, text) {
+    if let Some(result) =
+        try_extract_zone_change_object_filter_condition(&lower, text, dying_subject)
+    {
         return result;
     }
 
@@ -4967,9 +4979,11 @@ fn extract_if_condition_with_card_name(
 fn try_extract_zone_change_object_filter_condition(
     lower: &str,
     text: &str,
+    dying_subject: Option<&TargetFilter>,
 ) -> Option<(String, Option<TriggerCondition>)> {
-    let (before, condition, rest) =
-        scan_preceded(lower, parse_zone_change_object_filter_condition)?;
+    let (before, condition, rest) = scan_preceded(lower, |i| {
+        parse_zone_change_object_filter_condition(i, dying_subject)
+    })?;
     let next_char_is_boundary = rest
         .chars()
         .next()
@@ -5229,30 +5243,45 @@ fn parse_entering_pt_vs_source_possessive_disjunct(input: &str) -> OracleResult<
 /// dedicated tail emits the natural comparator directly rather than reusing
 /// `parse_pt_comparison_tail`, whose infix form only resolves dynamic
 /// `QuantityRef` thresholds (a literal "1" falls through to an EQ match there).
-fn parse_dying_object_pt_comparison_condition(input: &str) -> OracleResult<'_, TriggerCondition> {
+fn parse_dying_object_pt_comparison_condition<'a>(
+    input: &'a str,
+    dying_subject: Option<&TargetFilter>,
+) -> OracleResult<'a, TriggerCondition> {
     let (fragment, _) = tag("if ").parse(input)?;
-    // CR 603.6a + CR 603.4: When the dying subject is the SOURCE (self-death:
-    // "When this creature dies, if its power was 3 or greater" — Deathknell
-    // Berserker), "its" binds to the trigger's self subject (the possessive
-    // pronoun tracks the event subject the trigger names, not a by-name
-    // reference), and the established
-    // `parse_inner_condition` path already hoists a
-    // `QuantityComparison{<stat>(Source)}`. Defer to it so this event-object
-    // snapshot does not override the source binding. Only the OTHER-death clause
-    // that path swallows (Massacre Girl: "a creature an opponent controls dies,
-    // if its toughness was less than 1", where "its" is the non-source dying
-    // creature) falls through to the event-object filter below.
-    // ponytail: this uses "the established path already hoists it" as the
-    // self-death proxy. The principled discriminator is the trigger's dying
-    // subject (`valid_card == SelfRef`); thread that through the condition
-    // dispatch if an other-death "<stat> was N or greater/less" card appears and
-    // the established path would mis-bind it to Source.
-    if parse_inner_condition(fragment)
-        .ok()
-        .and_then(|(_rest, sc)| static_condition_to_trigger_condition(&sc))
-        .is_some()
-    {
-        return Err(oracle_err(input));
+    // CR 603.6c + CR 201.5 + CR 603.10a + CR 603.4: dying/leaves-the-battlefield
+    // intervening-if whose possessive "its" names an object whose P/T is snapshot
+    // via the CR 603.10a look-back (the past-tense "was"). CR 201.5: when the
+    // trigger's dying subject is the SOURCE itself (self-death: "When this
+    // creature dies, if its power was 3 or greater" — Deathknell Berserker), "its"
+    // binds to the source, and the established `parse_inner_condition` path binds
+    // `QuantityComparison{<stat>(Source)}`; defer to it. When the dying subject is
+    // some OTHER object (Massacre Girl: "a creature an opponent controls dies, if
+    // its toughness was less than 1"), "its" is the dying event object → build the
+    // event-object `ZoneChangeObjectMatchesFilter` below.
+    match dying_subject {
+        // Self-death: "its" == the source. Defer to the parse_inner_condition path.
+        Some(TargetFilter::SelfRef) => return Err(oracle_err(input)),
+        // Other-death: "its" == the dying event object. Fall through to the builder.
+        // ponytail: this arm is broader than "a dying creature" — a non-SelfRef
+        // PLAYER subject (e.g. Typed{controller:Opponent} from an "an opponent"
+        // actor trigger) carrying an "if its <stat> was N" clause would also land
+        // here and mis-bind to the event object. No such card exists (players have
+        // no P/T; the retired proxy mis-binds it identically, so this is not a
+        // regression). If a non-SelfRef player-subject dying condition ever
+        // appears, discriminate object-vs-player subject before this arm.
+        Some(_) => {}
+        // Test-only (extract_if_condition wrapper passes None): no subject
+        // available — keep the parse_inner_condition proxy so the shielded test
+        // sites stay behavior-identical. Production always supplies Some(_).
+        None => {
+            if parse_inner_condition(fragment)
+                .ok()
+                .and_then(|(_rest, sc)| static_condition_to_trigger_condition(&sc))
+                .is_some()
+            {
+                return Err(oracle_err(input));
+            }
+        }
     }
     let (rest, _) = tag("its ").parse(fragment)?;
     let (rest, stat) = parse_pt_stat_word(rest)?;
@@ -5317,7 +5346,10 @@ fn parse_dying_pt_comparison_tail(input: &str) -> OracleResult<'_, (Comparator, 
     .parse(input)
 }
 
-fn parse_zone_change_object_filter_condition(input: &str) -> OracleResult<'_, TriggerCondition> {
+fn parse_zone_change_object_filter_condition<'a>(
+    input: &'a str,
+    dying_subject: Option<&TargetFilter>,
+) -> OracleResult<'a, TriggerCondition> {
     // CR 603.6a: possessive entering-object P/T-vs-source ("if its power is
     // greater than ~'s power ...", Sharp-Eyed Rookie). Both new "if its ..."
     // surfaces are disjoint from the existing "if it has greater"/"if it '..."
@@ -5328,7 +5360,8 @@ fn parse_zone_change_object_filter_condition(input: &str) -> OracleResult<'_, Tr
     // CR 603.10a: dying-object P/T-vs-fixed ("if its toughness was less than 1",
     // Massacre Girl). Shares the "if its <stat> " prefix with the possessive arm
     // but diverges at " was " vs " is greater than ", so ordering is safe.
-    if let Ok((rest, condition)) = parse_dying_object_pt_comparison_condition(input) {
+    if let Ok((rest, condition)) = parse_dying_object_pt_comparison_condition(input, dying_subject)
+    {
         return Ok((rest, condition));
     }
     if let Ok((rest, condition)) = parse_entering_pt_vs_source_condition(input) {
