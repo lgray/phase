@@ -10,11 +10,23 @@ use crate::types::zones::{ExileCostSourceZone, Zone};
 use super::players;
 use super::turn_control;
 
+const HIDDEN_CARD_NAME: &str = "Hidden Card";
+
 /// Returns a filtered copy of the game state for the given viewer.
 /// Hides all opponents' hand contents and all library contents except where the
 /// viewer is explicitly allowed to see them.
 pub fn filter_state_for_viewer(state: &GameState, viewer: PlayerId) -> GameState {
     let mut filtered = state.clone();
+    let replacement_candidate_source_ids = match &state.waiting_for {
+        WaitingFor::ReplacementChoice { candidates, .. } => Some(
+            candidates
+                .iter()
+                .map(|candidate| candidate.source_id)
+                .collect::<HashSet<_>>(),
+        ),
+        _ => None,
+    };
+    let mut hidden_replacement_candidate_source_ids = HashSet::new();
     filtered.pending_begin_game_abilities.clear();
     filtered.resolving_begin_game_abilities = false;
 
@@ -65,6 +77,11 @@ pub fn filter_state_for_viewer(state: &GameState, viewer: PlayerId) -> GameState
     for obj_id in opp_hand_ids {
         if !is_visible_revealed_card(state, obj_id) && !private_look_visible.contains(&obj_id) {
             hide_card(&mut filtered, obj_id);
+            record_hidden_replacement_candidate_source(
+                replacement_candidate_source_ids.as_ref(),
+                &mut hidden_replacement_candidate_source_ids,
+                obj_id,
+            );
         }
     }
 
@@ -257,6 +274,11 @@ pub fn filter_state_for_viewer(state: &GameState, viewer: PlayerId) -> GameState
             && !drawn_choice_hand_cards.contains(&obj_id)
         {
             hide_card(&mut filtered, obj_id);
+            record_hidden_replacement_candidate_source(
+                replacement_candidate_source_ids.as_ref(),
+                &mut hidden_replacement_candidate_source_ids,
+                obj_id,
+            );
         }
     }
 
@@ -273,6 +295,11 @@ pub fn filter_state_for_viewer(state: &GameState, viewer: PlayerId) -> GameState
     for obj_id in all_attraction_ids {
         if !state.revealed_cards.contains(&obj_id) {
             hide_card(&mut filtered, obj_id);
+            record_hidden_replacement_candidate_source(
+                replacement_candidate_source_ids.as_ref(),
+                &mut hidden_replacement_candidate_source_ids,
+                obj_id,
+            );
         }
     }
 
@@ -284,6 +311,11 @@ pub fn filter_state_for_viewer(state: &GameState, viewer: PlayerId) -> GameState
     for obj_id in all_contraption_ids {
         if !state.revealed_cards.contains(&obj_id) {
             hide_card(&mut filtered, obj_id);
+            record_hidden_replacement_candidate_source(
+                replacement_candidate_source_ids.as_ref(),
+                &mut hidden_replacement_candidate_source_ids,
+                obj_id,
+            );
         }
     }
 
@@ -300,6 +332,11 @@ pub fn filter_state_for_viewer(state: &GameState, viewer: PlayerId) -> GameState
     for obj_id in supplementary_deck_ids {
         if !state.revealed_cards.contains(&obj_id) {
             hide_card(&mut filtered, obj_id);
+            record_hidden_replacement_candidate_source(
+                replacement_candidate_source_ids.as_ref(),
+                &mut hidden_replacement_candidate_source_ids,
+                obj_id,
+            );
         }
     }
 
@@ -355,6 +392,11 @@ pub fn filter_state_for_viewer(state: &GameState, viewer: PlayerId) -> GameState
         .collect();
     for obj_id in hidden_facedown_exile_ids {
         hide_card(&mut filtered, obj_id);
+        record_hidden_replacement_candidate_source(
+            replacement_candidate_source_ids.as_ref(),
+            &mut hidden_replacement_candidate_source_ids,
+            obj_id,
+        );
     }
 
     // CR 708.5: "At any time, you may look at a face-down permanent you control
@@ -396,6 +438,32 @@ pub fn filter_state_for_viewer(state: &GameState, viewer: PlayerId) -> GameState
                     reveal_face_down_identity_to_controller(obj);
                 } else {
                     redact_face_down_identity_from_observer(obj);
+                    record_hidden_replacement_candidate_source(
+                        replacement_candidate_source_ids.as_ref(),
+                        &mut hidden_replacement_candidate_source_ids,
+                        obj_id,
+                    );
+                }
+            }
+        }
+    }
+
+    // Replacement candidates snapshot their source name before this function
+    // redacts the underlying object. Keep that display payload consistent with
+    // the filtered object view, while the player making the choice retains the
+    // real source identity needed by the action round-trip.
+    if let WaitingFor::ReplacementChoice {
+        player, candidates, ..
+    } = &mut filtered.waiting_for
+    {
+        if !can_view_private_for_player(*player) {
+            for candidate in candidates {
+                let source_is_hidden = candidate.source_id != ObjectId(0)
+                    && (hidden_replacement_candidate_source_ids.contains(&candidate.source_id)
+                        || !filtered.objects.contains_key(&candidate.source_id));
+                if source_is_hidden {
+                    candidate.source_id = ObjectId(0);
+                    candidate.source_name = HIDDEN_CARD_NAME.to_string();
                 }
             }
         }
@@ -1241,7 +1309,7 @@ fn is_visible_revealed_card(state: &GameState, obj_id: ObjectId) -> bool {
 fn hide_card(state: &mut GameState, obj_id: ObjectId) {
     if let Some(obj) = state.objects.get_mut(&obj_id) {
         obj.face_down = true;
-        obj.name = "Hidden Card".to_string();
+        obj.name = HIDDEN_CARD_NAME.to_string();
         Arc::make_mut(&mut obj.abilities).clear();
         obj.keywords.clear();
         obj.base_keywords.clear();
@@ -1263,6 +1331,16 @@ fn hide_card(state: &mut GameState, obj_id: ObjectId) {
     }
 }
 
+fn record_hidden_replacement_candidate_source(
+    candidate_source_ids: Option<&HashSet<ObjectId>>,
+    hidden_candidate_source_ids: &mut HashSet<ObjectId>,
+    source_id: ObjectId,
+) {
+    if candidate_source_ids.is_some_and(|source_ids| source_ids.contains(&source_id)) {
+        hidden_candidate_source_ids.insert(source_id);
+    }
+}
+
 fn reveal_face_down_identity_to_controller(obj: &mut crate::game::game_object::GameObject) {
     if let Some(back_face) = &obj.back_face {
         obj.name = back_face.name.clone();
@@ -1273,8 +1351,8 @@ fn reveal_face_down_identity_to_controller(obj: &mut crate::game::game_object::G
 }
 
 fn redact_face_down_identity_from_observer(obj: &mut crate::game::game_object::GameObject) {
-    obj.name = "Hidden Card".to_string();
-    obj.base_name = "Hidden Card".to_string();
+    obj.name = HIDDEN_CARD_NAME.to_string();
+    obj.base_name = HIDDEN_CARD_NAME.to_string();
     obj.printed_ref = None;
     obj.base_printed_ref = None;
     obj.back_face = None;
@@ -1318,9 +1396,16 @@ mod tests {
     use super::*;
     use crate::game::morph::manifest;
     use crate::game::printed_cards::snapshot_object_face;
+    use crate::game::replacement::{
+        continue_replacement, replace_event, replacement_choice_waiting_for, ReplacementResult,
+    };
     use crate::game::zones::create_object;
-    use crate::types::ability::{BeholdCostAction, Effect, ResolvedAbility};
+    use crate::types::ability::{
+        AbilityDefinition, AbilityKind, BeholdCostAction, Effect, ReplacementDefinition,
+        ResolvedAbility, TargetFilter,
+    };
     use crate::types::card_type::{CardType, CoreType};
+    use crate::types::counter::CounterType;
     use crate::types::format::FormatConfig;
     use crate::types::game_state::{
         AutoMayChoice, CastPaymentMode, CastingVariant, CostResume, ManaAbilityResume,
@@ -1329,6 +1414,8 @@ mod tests {
     };
     use crate::types::identifiers::CardId;
     use crate::types::mana::ManaCost;
+    use crate::types::proposed_event::ProposedEvent;
+    use crate::types::replacements::ReplacementEvent;
     use crate::types::zones::{ExileCostSourceZone, Zone};
     use rand::RngCore;
 
@@ -3031,6 +3118,139 @@ mod tests {
         );
         assert_eq!(opponent_obj.power, Some(2));
         assert_eq!(opponent_obj.toughness, Some(2));
+    }
+
+    #[test]
+    fn replacement_choice_redacts_hidden_candidate_source_for_non_actor() {
+        let controller = PlayerId(0);
+        let opponent = PlayerId(1);
+        let mut state = GameState::new_two_player(42);
+        let finality_source = create_object(
+            &mut state,
+            CardId(1),
+            controller,
+            "Secret Finality".to_string(),
+            Zone::Battlefield,
+        );
+        let finality_back_face = snapshot_object_face(&state.objects[&finality_source]);
+        let finality = state
+            .objects
+            .get_mut(&finality_source)
+            .expect("finality permanent exists");
+        finality.face_down = true;
+        finality.back_face = Some(finality_back_face);
+        finality.counters.insert(CounterType::Finality, 1);
+
+        let redirect_source = create_object(
+            &mut state,
+            CardId(2),
+            opponent,
+            "Public Redirect".to_string(),
+            Zone::Battlefield,
+        );
+        state
+            .objects
+            .get_mut(&redirect_source)
+            .expect("competing redirect exists")
+            .replacement_definitions = vec![ReplacementDefinition::new(ReplacementEvent::Moved)
+            .execute(AbilityDefinition::new(
+                AbilityKind::Spell,
+                Effect::ChangeZone {
+                    origin: None,
+                    destination: Zone::Library,
+                    target: TargetFilter::SelfRef,
+                    owner_library: false,
+                    enter_transformed: false,
+                    enters_under: None,
+                    enter_tapped: crate::types::zones::EtbTapState::Unspecified,
+                    enters_attacking: false,
+                    up_to: false,
+                    enter_with_counters: Vec::new(),
+                    conditional_enter_with_counters: Vec::new(),
+                    face_down_profile: None,
+                    enters_modified_if: None,
+                },
+            ))
+            .destination_zone(Zone::Graveyard)]
+        .into();
+
+        let mut events = Vec::new();
+        let result = replace_event(
+            &mut state,
+            ProposedEvent::zone_change(finality_source, Zone::Battlefield, Zone::Graveyard, None),
+            &mut events,
+        );
+        assert!(
+            matches!(result, ReplacementResult::NeedsChoice(player) if player == controller),
+            "the finality redirect and competing redirect must surface a real ordering choice"
+        );
+        state.waiting_for = replacement_choice_waiting_for(controller, &state);
+
+        let controller_view = filter_state_for_viewer(&state, controller);
+        let finality_index = match controller_view.waiting_for {
+            WaitingFor::ReplacementChoice {
+                candidate_count,
+                candidates,
+                ..
+            } => {
+                assert_eq!(candidate_count, 2);
+                let finality_index = candidates
+                    .iter()
+                    .position(|candidate| candidate.source_id == finality_source)
+                    .expect("the controller must retain the finality candidate identity");
+                assert_eq!(
+                    candidates[finality_index].source_name, "Secret Finality",
+                    "the controller must retain the hidden candidate's real identity"
+                );
+                assert!(
+                    candidates.iter().any(|candidate| {
+                        candidate.source_id == redirect_source
+                            && candidate.source_name == "Public Redirect"
+                    }),
+                    "the actor must retain the public competing candidate"
+                );
+                finality_index
+            }
+            other => panic!("expected ReplacementChoice for controller, got {other:?}"),
+        };
+
+        let opponent_view = filter_state_for_viewer(&state, opponent);
+        assert_eq!(
+            opponent_view.objects[&finality_source].name, HIDDEN_CARD_NAME,
+            "test precondition: the opponent must not see the face-down source"
+        );
+        match opponent_view.waiting_for {
+            WaitingFor::ReplacementChoice {
+                candidate_count,
+                candidates,
+                ..
+            } => {
+                assert_eq!(candidate_count, 2);
+                assert_eq!(candidates[finality_index].source_id, ObjectId(0));
+                assert_eq!(candidates[finality_index].source_name, HIDDEN_CARD_NAME);
+                assert!(
+                    !candidates
+                        .iter()
+                        .any(|candidate| candidate.source_id == finality_source),
+                    "opponent must not receive the hidden finality source identifier"
+                );
+                assert!(
+                    candidates.iter().any(|candidate| {
+                        candidate.source_id == redirect_source
+                            && candidate.source_name == "Public Redirect"
+                    }),
+                    "redaction must preserve visible replacement candidates"
+                );
+            }
+            other => panic!("expected ReplacementChoice for opponent, got {other:?}"),
+        }
+
+        let ReplacementResult::Execute(ProposedEvent::ZoneChange { to, .. }) =
+            continue_replacement(&mut state, finality_index, &mut events)
+        else {
+            panic!("the controller must be able to resolve the real finality candidate");
+        };
+        assert_eq!(to, Zone::Exile);
     }
 
     /// CR 708.5 (Found Footage class): "You may look at face-down creatures your
