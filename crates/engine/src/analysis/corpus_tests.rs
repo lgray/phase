@@ -601,6 +601,63 @@ fn drive_kilo_freed_relic_ballista_x0_no_damage_axis() {
     );
 }
 
+/// PR-7 "One-Ring" (offline acceptance): a REAL The One Ring on the OPPONENT (P1),
+/// seeded ≥1 burden, under the Kilo/Freed/Relic proliferate engine, certifies an
+/// infinite preserved-`Generic` burden-growth loop — `WinKind::Advantage`
+/// (CR 104.4b) naming `Counter(Other, Other)`.
+///
+/// A2 (analytic non-vacuity, not asserted directly): the cert being `Some` proves
+/// the recurrence gate matched; the constant-depth `loop_states_equal_modulo_resources`
+/// FAILS on the growing burden (Generic is preserved), so this rides the
+/// `loop_states_cover_modulo_counter_growth` disjunct. The RUNNABLE discriminator is
+/// the seed=0 control below (Counter axis appears ONLY with seeded burden). Do NOT
+/// overclaim "no burden ⇒ no cert": the loop stays `Some` via `Trigger(Proliferate)`.
+#[test]
+fn one_ring_burden_growth_certificate() {
+    let cert = corpus::drive_offline_kilo_freed_relic_one_ring(card_db(), 1).expect(
+        "The One Ring (seeded ≥1 burden) under the proliferate engine must confirm an \
+         infinite burden-counter growth loop",
+    );
+    assert_eq!(
+        cert.win_kind,
+        WinKind::Advantage,
+        "a burden-counter growth loop is a CR 104.4b optional advantage engine, not a win"
+    );
+    assert!(
+        cert.covers(&[ResourceAxis::Counter(
+            CounterClass::Other,
+            ObjectClass::Other
+        )]),
+        "certificate must name the unbounded burden counter axis (got {:?})",
+        cert.unbounded
+    );
+    assert!(
+        !cert.mandatory,
+        "an activated-ability loop is optional (CR 602.1), so mandatory == false"
+    );
+}
+
+/// PR-7 "One-Ring" (seed=0 CONTROL, paired): a 0-burden Ring has no counter for
+/// proliferate to grow, so the cycle degrades to the pure Kilo loop — cert still
+/// `Some` (equality path, board identical) but names NO counter axis. The seed is
+/// thus load-bearing: the `Counter(Other, Other)` axis appears ONLY because burden
+/// was present to grow (mirrors `drive_pentad_prism_zero_charge_has_no_counter_axis`).
+#[test]
+fn one_ring_zero_burden_has_no_counter_axis() {
+    let cert = corpus::drive_offline_kilo_freed_relic_one_ring(card_db(), 0).expect(
+        "a 0-burden Ring still rides the pure Kilo proliferate loop (board identical) \
+         and must confirm via the equality path",
+    );
+    assert!(
+        !cert
+            .unbounded
+            .iter()
+            .any(|a| matches!(a, ResourceAxis::Counter(..))),
+        "a 0-burden Ring has no counter to grow ⇒ cert must NOT name a counter axis (got {:?})",
+        cert.unbounded
+    );
+}
+
 /// #10 PRIEST OF TITANIA + UMBRAL MANTLE — infinite green mana.
 #[test]
 fn drive_combo_10_priest_umbral() {

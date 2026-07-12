@@ -1704,6 +1704,71 @@ pub(crate) fn drive_offline_kilo_freed_relic_ballista(
     })
 }
 
+/// PR-7 "One-Ring" — THE ONE RING under the KILO + FREED + RELIC proliferate
+/// engine (mana-neutral). Structural twin of `drive_offline_pentad_prism_seeded`:
+/// a REAL The One Ring (installed on the OPPONENT P1) is a passive proliferate
+/// target. Each cycle Relic taps Kilo → Kilo's "becomes tapped: proliferate"
+/// (CR 701.34a) grows the preserved `Generic("burden")` counter by one; Freed
+/// untaps Kilo for {U} (mana net 0). The board is otherwise identical, so the
+/// constant-depth `loop_states_equal_modulo_resources` FAILS on the growing
+/// burden and certification rides `loop_states_cover_modulo_counter_growth`.
+/// Certificate: `WinKind::Advantage` (CR 104.4b: an optional loop is not a draw;
+/// the burden is an eventual-payoff engine, not a direct win — loop_check.rs),
+/// naming `Counter(Other, Other)` (colorless artifact ⇒ ObjectClass::Other;
+/// Generic burden ⇒ CounterClass::Other; the axis carries no PlayerId, so P1
+/// ownership does not change it — resource.rs).
+///
+/// `seed_burden == 0` is the dead-loop CONTROL: no burden for proliferate to grow,
+/// so the cycle degrades to the pure Kilo/Freed/Relic proliferate loop — cert still
+/// `Some(Advantage)` (board identical, equality path) but names NO counter axis.
+/// Standalone (NOT in `DRIVERS`, no `CORPUS` row) — the Counter/Advantage family is
+/// already the 53rd Pentad row; no new row is warranted.
+pub(crate) fn drive_offline_kilo_freed_relic_one_ring(
+    db: &CardDatabase,
+    seed_burden: u32,
+) -> Option<LoopCertificate> {
+    use crate::types::ability::AbilityCost;
+
+    let mut board = build_board(db, CORPUS[1].cards)?; // Kilo/Freed/Relic on P0
+    let kilo = board.ids[0];
+    let freed = board.ids[1];
+    let relic = board.ids[2];
+    attach_aura(board.runner.state_mut(), freed, kilo);
+    // The One Ring on the OPPONENT P1's battlefield (passive proliferate target).
+    let ring = install_on_battlefield(board.runner.state_mut(), db, "The One Ring", P1)?;
+    {
+        let state = board.runner.state_mut();
+        if seed_burden > 0 {
+            if let Some(o) = state.objects.get_mut(&ring) {
+                // CR 122.1: burden is a Generic counter; seeded directly (a
+                // directly-installed permanent runs no enters replacement) — the
+                // established Pentad/Ballista driver idiom.
+                o.counters.insert(
+                    crate::types::counter::CounterType::Generic("burden".to_string()),
+                    seed_burden,
+                );
+            }
+        }
+        settle_layers(state);
+    }
+    let relic_tap_creature = board.runner.state().objects[&relic]
+        .abilities
+        .iter()
+        .position(|a| matches!(a.cost, Some(AbilityCost::TapCreatures { .. })))?;
+    let freed_untap = ability_index_where(board.runner.state(), freed, is_untap_effect)?;
+    run_combo(board, |probe| {
+        // Identical 2-step cycle to the Pentad driver; the Ring accrues burden
+        // passively from Kilo's proliferate (no active step on the Ring).
+        activate_and_resolve(
+            probe,
+            relic,
+            relic_tap_creature,
+            Some(TargetRef::Object(kilo)),
+        );
+        activate_and_resolve(probe, freed, freed_untap, Some(TargetRef::Object(kilo)));
+    })
+}
+
 /// #10 PRIEST OF TITANIA + UMBRAL MANTLE — infinite green mana. Priest taps for
 /// {G} per Elf; Umbral Mantle's "{3}, {Q}" pump untaps Priest. With ≥4 Elves one
 /// cycle is net mana-positive after the {3} untap cost (paid from green).

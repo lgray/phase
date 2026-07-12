@@ -831,6 +831,7 @@ mod no_top_level_test_binaries;
 mod oblivions_hunger_conditional_draw;
 mod omenpath_journey_random_exiled_with;
 mod omnath_unspent_green_mana_2887;
+mod one_ring_burden_upkeep_lethal;
 mod otherwise_conditional_effects;
 mod outrageous_robbery_look_and_play;
 mod overlord_impending_offer_2859;
