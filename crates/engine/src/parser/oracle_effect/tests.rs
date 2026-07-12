@@ -27762,7 +27762,7 @@ fn effect_from_the_rubble_chosen_type_graveyard_target() {
             }
             assert!(enter_with_counters
                 .iter()
-                .any(|(ct, _)| { matches!(ct, CounterType::Generic(name) if name == "finality") }));
+                .any(|(ct, _)| { matches!(ct, CounterType::Finality) }));
         }
         other => panic!("expected Effect::ChangeZone, got {other:?}"),
     }
@@ -38640,10 +38640,7 @@ fn put_zone_change_lifts_transformed_and_finality_counter_suffix() {
             assert_eq!(enters_under, None);
             assert_eq!(
                 enter_with_counters,
-                vec![(
-                    CounterType::Generic("finality".to_string()),
-                    QuantityExpr::Fixed { value: 1 },
-                )]
+                vec![(CounterType::Finality, QuantityExpr::Fixed { value: 1 },)]
             );
         }
         other => panic!("expected ChangeZone, got {other:?}"),
@@ -38667,7 +38664,7 @@ fn put_zone_change_lifts_transformed_and_finality_counter_suffix() {
 #[test]
 fn cast_this_way_enters_with_finality_counter_rider_parses() {
     let finality = || Effect::AddPendingETBCounters {
-        counter_type: CounterType::Generic("finality".to_string()),
+        counter_type: CounterType::Finality,
         count: QuantityExpr::Fixed { value: 1 },
     };
     // Bare-counter riders: parse to the counter effect with NO sub-ability.
@@ -38772,9 +38769,9 @@ fn osteomancer_adept_finality_rider_parses_through_card() {
         matches!(
             &*rider.effect,
             Effect::AddPendingETBCounters {
-                counter_type: CounterType::Generic(s),
+                counter_type: CounterType::Finality,
                 ..
-            } if s == "finality"
+            }
         ),
         "rider should be AddPendingETBCounters(finality), got {:?}",
         rider.effect
@@ -38822,9 +38819,9 @@ fn tomb_aclazotz_counter_plus_type_tail_parses() {
         tomb_effects.iter().any(|e| matches!(
             e,
             Effect::AddPendingETBCounters {
-                counter_type: CounterType::Generic(s),
+                counter_type: CounterType::Finality,
                 ..
-            } if s == "finality"
+            }
         )),
         "the combined sentence must still yield the finality counter rider; \
              got {tomb_effects:?}"
@@ -38865,9 +38862,9 @@ fn tomb_aclazotz_counter_plus_type_tail_parses() {
         no_tail_effects.iter().any(|e| matches!(
             e,
             Effect::AddPendingETBCounters {
-                counter_type: CounterType::Generic(s),
+                counter_type: CounterType::Finality,
                 ..
-            } if s == "finality"
+            }
         )),
         "the bare-counter clause (no type tail) must still parse to the \
              AddPendingETBCounters(finality) rider; got {no_tail_effects:?}"
@@ -43754,7 +43751,7 @@ fn optional_sacrifice_if_you_do_return_keeps_graveyard_filter() {
     );
     assert!(
         enter_with_counters.iter().any(|(counter, count)| {
-            matches!(counter, CounterType::Generic(name) if name == "finality")
+            matches!(counter, CounterType::Finality)
                 && matches!(count, QuantityExpr::Fixed { value: 1 })
         }),
         "return must carry a finality counter, got {enter_with_counters:?}"

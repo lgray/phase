@@ -13,7 +13,8 @@
 //!
 //! Parse tests drive `parse_oracle_text`; runtime tests drive the real cast /
 //! activation pipeline (`GameRunner::cast(..).resolve()` / `activate(..)`).
-//! Finality assertions check counter PLACEMENT only (never death→exile).
+//! Finality assertions here check counter PLACEMENT; CR 122.1h death→exile is
+//! enforced and covered separately.
 
 use engine::game::casting::{can_cast_object_now, spell_objects_available_to_cast};
 use engine::game::scenario::{GameScenario, P0, P1};
@@ -45,7 +46,7 @@ const DAWNHAND_PERMISSION: &str = "During your turn, you may cast creature spell
 const FESTIVAL_PERMISSION: &str = "During your turn, you may cast instant and sorcery spells from your graveyard by paying 1 life in addition to their other costs.";
 
 fn finality() -> CounterType {
-    CounterType::Generic("finality".to_string())
+    CounterType::Finality
 }
 
 fn pool_units(colors: &[ManaType]) -> Vec<ManaUnit> {
@@ -547,8 +548,9 @@ fn intrepid_runtime_real_exile_then_cast_with_finality() {
         .id();
     // Owned Dinosaur creature card in P0's graveyard (the positive). Positive
     // toughness so it survives SBA (CR 704.5f) and we can observe the finality
-    // counter placement — CR 122.1h death→exile is a known orthogonal gap, so a
-    // 0-toughness fixture would die and land in the graveyard.
+    // counter placement — CR 122.1h death→exile is now enforced
+    // (finality_counter_death_to_exile.rs); a positive-toughness fixture keeps
+    // this test focused on placement, not death.
     let dino = scenario
         .add_creature_to_graveyard(P0, "Ranging Raptors", 2, 2)
         .with_subtypes(vec!["Dinosaur"])
