@@ -55,16 +55,17 @@ pub fn filter_state_for_viewer(state: &GameState, viewer: PlayerId) -> GameState
             || (player == state.active_player
                 && turn_control::viewer_controls_active_turn(state, viewer))
     };
+    let replacement_choice_authorized = matches!(
+        &state.waiting_for,
+        WaitingFor::ReplacementChoice { player, .. }
+            if turn_control::authorized_submitter_for_player(state, *player) == viewer
+    );
 
     // A pending replacement is the authoritative continuation record behind a
     // ReplacementChoice. It carries real replacement sources, so only the
     // prompted player (or their turn controller) may receive it. Other viewers
     // submit no replacement action and must not receive its private source IDs.
-    if !matches!(
-        &state.waiting_for,
-        WaitingFor::ReplacementChoice { player, .. }
-            if can_view_private_for_player(*player)
-    ) {
+    if !replacement_choice_authorized {
         filtered.pending_replacement = None;
     }
 
@@ -464,11 +465,8 @@ pub fn filter_state_for_viewer(state: &GameState, viewer: PlayerId) -> GameState
     // redacts the underlying object. Keep that display payload consistent with
     // the filtered object view, while the player making the choice retains the
     // real source identity needed by the action round-trip.
-    if let WaitingFor::ReplacementChoice {
-        player, candidates, ..
-    } = &mut filtered.waiting_for
-    {
-        if !can_view_private_for_player(*player) {
+    if let WaitingFor::ReplacementChoice { candidates, .. } = &mut filtered.waiting_for {
+        if !replacement_choice_authorized {
             for candidate in candidates {
                 let source_is_hidden = candidate.source_id != ObjectId(0)
                     && (hidden_replacement_candidate_source_ids.contains(&candidate.source_id)
@@ -1422,11 +1420,11 @@ mod tests {
     use crate::types::game_state::{
         AutoMayChoice, CastPaymentMode, CastingVariant, CostResume, ManaAbilityResume,
         MayTriggerAutoChoiceKey, MayTriggerOrigin, PendingBeginGameAbility, PendingCast,
-        PendingManaAbility,
+        PendingManaAbility, PendingReplacement, ReplacementCandidateSummary,
     };
     use crate::types::identifiers::CardId;
     use crate::types::mana::ManaCost;
-    use crate::types::proposed_event::ProposedEvent;
+    use crate::types::proposed_event::{ProposedEvent, ReplacementId};
     use crate::types::replacements::ReplacementEvent;
     use crate::types::zones::{ExileCostSourceZone, Zone};
     use rand::RngCore;
@@ -3314,6 +3312,88 @@ mod tests {
             panic!("the controller must be able to resolve the real finality candidate");
         };
         assert_eq!(to, Zone::Exile);
+    }
+
+    #[test]
+    fn replacement_choice_shared_team_turn_controller_receives_private_continuation() {
+        let active_player = PlayerId(0);
+        let affected_teammate = PlayerId(1);
+        let turn_controller = PlayerId(2);
+        let unauthorized_opponent = PlayerId(3);
+        let mut state = GameState::new(FormatConfig::two_headed_giant(), 4, 42);
+        state.active_player = active_player;
+        state.turn_decision_controller = Some(turn_controller);
+
+        let hidden_source = create_object(
+            &mut state,
+            CardId(3),
+            affected_teammate,
+            "Secret Teammate Replacement".to_string(),
+            Zone::Battlefield,
+        );
+        let hidden_back_face = snapshot_object_face(&state.objects[&hidden_source]);
+        let hidden_object = state
+            .objects
+            .get_mut(&hidden_source)
+            .expect("hidden replacement source exists");
+        hidden_object.face_down = true;
+        hidden_object.back_face = Some(hidden_back_face);
+
+        state.pending_replacement = Some(PendingReplacement {
+            proposed: ProposedEvent::Draw {
+                player_id: affected_teammate,
+                count: 1,
+                applied: std::collections::HashSet::new(),
+            },
+            candidates: vec![ReplacementId {
+                source: hidden_source,
+                index: 0,
+            }],
+            depth: 0,
+            is_optional: false,
+            library_placement: None,
+            excess_recipient: None,
+            lifelink_bonus: 0,
+            may_cost_paid: false,
+            may_cost_remaining: None,
+        });
+        state.waiting_for = WaitingFor::ReplacementChoice {
+            player: affected_teammate,
+            candidate_count: 1,
+            candidates: vec![ReplacementCandidateSummary {
+                source_id: hidden_source,
+                source_name: "Secret Teammate Replacement".to_string(),
+                description: "Replacement effect".to_string(),
+            }],
+        };
+
+        assert_eq!(
+            turn_control::authorized_submitter_for_player(&state, affected_teammate),
+            turn_controller,
+            "CR 723.5 + CR 805.8: controlling the active team's turn authorizes the controller for a teammate's choice"
+        );
+
+        let controller_view = filter_state_for_viewer(&state, turn_controller);
+        assert!(
+            controller_view.pending_replacement.is_some(),
+            "the legal team-turn replacement chooser must retain the continuation"
+        );
+        let WaitingFor::ReplacementChoice { candidates, .. } = controller_view.waiting_for else {
+            panic!("expected ReplacementChoice for the authorized turn controller");
+        };
+        assert_eq!(candidates[0].source_id, hidden_source);
+        assert_eq!(candidates[0].source_name, "Secret Teammate Replacement");
+
+        let observer_view = filter_state_for_viewer(&state, unauthorized_opponent);
+        assert!(
+            observer_view.pending_replacement.is_none(),
+            "an unauthorized opposing observer must not receive the continuation"
+        );
+        let WaitingFor::ReplacementChoice { candidates, .. } = observer_view.waiting_for else {
+            panic!("expected ReplacementChoice for the observer");
+        };
+        assert_eq!(candidates[0].source_id, ObjectId(0));
+        assert_eq!(candidates[0].source_name, HIDDEN_CARD_NAME);
     }
 
     /// CR 708.5 (Found Footage class): "You may look at face-down creatures your

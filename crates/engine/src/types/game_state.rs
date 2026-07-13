@@ -10594,6 +10594,7 @@ fn _gamestate_partition_is_total(s: &GameState) {
         extra_loyalty_activations_this_turn: _,
         exerted_this_turn: _,
         object_tap_count_this_turn: _,
+        object_counter_placement_count_this_turn: _,
         pending_attack_trigger_events: _,
         ability_resolutions_this_turn: _,
         graveyard_cast_permissions_used: _,
