@@ -3335,16 +3335,16 @@ mod tests {
             }
             other => panic!("expected ReplacementChoice for opponent, got {other:?}"),
         }
+        let serialized_candidates = opponent_snapshot["waiting_for"]["data"]["candidates"]
+            .as_array()
+            .expect("replacement candidates must serialize as an array");
         assert_eq!(
-            opponent_snapshot["waiting_for"]["ReplacementChoice"]["candidates"][finality_index]
-                ["source_id"],
+            serialized_candidates[finality_index]["source_id"],
             serde_json::Value::from(0),
             "the serialized waiting summary must not expose the hidden source"
         );
         assert!(
-            !opponent_snapshot["waiting_for"]["ReplacementChoice"]["candidates"]
-                .as_array()
-                .expect("replacement candidates must serialize as an array")
+            !serialized_candidates
                 .iter()
                 .any(|candidate| { candidate["source_id"] == finality_source.0 }),
             "neither serialized replacement surface may expose the hidden source"

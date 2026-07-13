@@ -3743,8 +3743,9 @@ mod tests {
         assert_eq!(state.objects[&zero].zone, Zone::Exile);
         assert_eq!(
             state.objects[&lethal].zone,
-            Zone::Graveyard,
-            "after the choice settles, the independent lethal SBA must resolve"
+            Zone::Library,
+            "after the choice settles, the independent lethal SBA must resolve through the \
+             remaining graveyard redirect"
         );
     }
 
