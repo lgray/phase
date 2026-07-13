@@ -3069,11 +3069,12 @@ fn detect_condition_if(
     {
         return;
     }
-    // CR 117.6 / 702.8: A `SpellCastingOption` with `cost: Some(_)` encodes
-    // the "if you pay [cost]" surcharge gate inline (Ghitu Fire, Rout-class
-    // "as though it had flash if you pay X" cycle). The "if" is a cost
-    // payment trigger, not a conditional check on game state.
-    let has_pay_phrase = stripped.contains("if you pay "); // allow-noncombinator: swallow detector marker scan on classified text
+    // CR 117.6 / CR 702.8: A `SpellCastingOption` with `cost: Some(_)`
+    // encodes the cost-gated casting permission inline: either an "if you pay"
+    // surcharge or an "as an additional cost" surface such as Molten Exhale's
+    // behold cost. The "if" is a cost-payment gate, not a game-state condition.
+    let has_pay_phrase = stripped.contains("if you pay ") // allow-noncombinator: swallow detector marker scan on classified text
+        || stripped.contains("as an additional cost"); // allow-noncombinator: swallow detector marker scan on classified text
     if parsed.casting_options.iter().any(|o| o.cost.is_some()) && has_pay_phrase {
         return;
     }
@@ -3864,6 +3865,7 @@ fn detect_duration_this_turn(
                 | TriggerCondition::DealtDamageBySourceThisTurn
                 | TriggerCondition::DealtDamageThisTurnBySource { .. }
                 | TriggerCondition::FirstTimeObjectTappedThisTurn
+                | TriggerCondition::FirstTimeObjectCountersAddedThisTurn
                 | TriggerCondition::AttackedThisTurn
                 | TriggerCondition::CastSpellThisTurn { .. }
                 | TriggerCondition::SpellCastWithVariantThisTurn { .. }
