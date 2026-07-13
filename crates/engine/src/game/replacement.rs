@@ -1821,6 +1821,7 @@ fn apply_finality_counter_replacement(
         from,
         to,
         applied,
+        ..
     } = &mut event
     {
         // Re-confirm the selected virtual source is still a live permanent with

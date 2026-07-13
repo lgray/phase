@@ -3274,7 +3274,7 @@ mod tests {
                 candidates,
                 ..
             } => {
-                assert_eq!(candidate_count, 2);
+                assert_eq!(*candidate_count, 2);
                 let finality_index = candidates
                     .iter()
                     .position(|candidate| candidate.source_id == finality_source)
@@ -3316,7 +3316,7 @@ mod tests {
                 candidates,
                 ..
             } => {
-                assert_eq!(candidate_count, 2);
+                assert_eq!(*candidate_count, 2);
                 assert_eq!(candidates[finality_index].source_id, ObjectId(0));
                 assert_eq!(candidates[finality_index].source_name, HIDDEN_CARD_NAME);
                 assert!(
