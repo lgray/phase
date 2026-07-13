@@ -3174,7 +3174,7 @@ fn try_split_pump_compound(
     let remainder = remainder_tp.original.trim();
 
     // Parse the pump clause first to check whether it carries its own duration.
-    let (power, toughness, duration) =
+    let (power, toughness, mut duration) =
         super::lower::parse_pump_clause_with_context(pump_part, ctx)?;
 
     // Guard: when the pump part has NO duration (e.g., "get +2/+2 and gain flying
@@ -3193,9 +3193,24 @@ fn try_split_pump_compound(
 
     let effect = build_pump_effect(application, power, toughness);
 
-    // Parse the remainder as an independent effect chain (sub_ability).
+    // CR 608.2d: a pump compounded with a modal keyword grant --
+    // "gets +1/+1 and gains your choice of deathtouch or lifelink" (Alchemist's
+    // Gift) -- has a grant half that is a two-branch player choice, so it cannot
+    // collapse into a single `ContinuousModification` the way a fixed "and gains
+    // trample" does (which the guard above routes to `build_continuous_clause`'s
+    // coalescing path). Route the choice through the same
+    // `parse_keyword_choice_grant` / `keyword_choice_branch` builders the
+    // standalone modal grant uses (`build_keyword_choice_clause`), riding the
+    // pump as a `ChooseOneOf` sub_ability keyed to the pumped creature
+    // (`ParentTarget`). Non-modal remainders ("you gain 1 life") fall back to
+    // the general effect-chain parse.
     let sub_ability = if remainder.is_empty() {
         None
+    } else if let Some((choice, choice_duration)) =
+        build_keyword_choice_sub_ability(application, remainder)
+    {
+        duration = duration.or(choice_duration);
+        Some(Box::new(choice))
     } else {
         Some(Box::new(super::parse_effect_chain(
             remainder,
@@ -3212,6 +3227,42 @@ fn try_split_pump_compound(
         optional: false,
         unless_pay: None,
     })
+}
+
+/// CR 608.2d: build the modal keyword-grant half of a pump
+/// compound ("gets +1/+1 AND gains your choice of X or Y") as a `ChooseOneOf`
+/// sub_ability. Reuses the same `parse_keyword_choice_grant` /
+/// `keyword_choice_branch` builders as the standalone `build_keyword_choice_clause`,
+/// keyed to the pumped creature via `static_affected_for_application`
+/// (`ParentTarget` for a targeted application). Returns `None` for a non-modal
+/// remainder so the caller falls back to the general effect-chain parse.
+fn build_keyword_choice_sub_ability(
+    application: &SubjectApplication,
+    remainder: &str,
+) -> Option<(AbilityDefinition, Option<Duration>)> {
+    // The split remainder keeps its conjugated verb ("gains ..."):
+    // `deconjugate_verb` in `build_continuous_clause` only normalizes the
+    // compound's leading verb ("gets"), so the second clause arrives as
+    // "gains your choice of ...". `parse_keyword_choice_grant` anchors on the
+    // bare "gain ..." form, so deconjugate the remainder here first.
+    let normalized = deconjugate_verb(remainder);
+    let (first, second, duration) = parse_keyword_choice_grant(&normalized)?;
+    let affected = static_affected_for_application(application);
+    let choice_duration = duration.clone();
+    let branches = vec![
+        keyword_choice_branch(first, affected.clone(), None, duration.clone()),
+        keyword_choice_branch(second, affected, None, duration),
+    ];
+    Some((
+        AbilityDefinition::new(
+            AbilityKind::Spell,
+            Effect::ChooseOneOf {
+                chooser: PlayerFilter::Controller,
+                branches,
+            },
+        ),
+        choice_duration,
+    ))
 }
 
 fn parse_keyword_choice_grant(predicate: &str) -> Option<(Keyword, Keyword, Option<Duration>)> {
