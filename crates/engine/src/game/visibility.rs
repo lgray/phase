@@ -50,11 +50,8 @@ pub fn filter_state_for_viewer(state: &GameState, viewer: PlayerId) -> GameState
     filtered.liminal_entries.clear();
     filtered.pending_liminal_entry_resume = None;
 
-    let can_view_private_for_player = |player: PlayerId| {
-        player == viewer
-            || (player == state.active_player
-                && turn_control::viewer_controls_active_turn(state, viewer))
-    };
+    let can_view_private_for_player =
+        |player: PlayerId| viewer_has_private_access_to_player(state, viewer, player);
     let replacement_choice_authorized = matches!(
         &state.waiting_for,
         WaitingFor::ReplacementChoice { player, .. }
@@ -1090,15 +1087,16 @@ pub fn filter_state_for_viewer(state: &GameState, viewer: PlayerId) -> GameState
     filtered
 }
 
-/// Whether `viewer` may see another player's library/hand private zones.
-fn viewer_may_see_player_private_zone(
+/// CR 723.4 + CR 805.8: a player controlling another player sees the
+/// information visible to that player; when turns are shared, controlling one
+/// player controls that player's team. Reuse submitter authority so the same
+/// team-turn boundary governs decisions and private information.
+fn viewer_has_private_access_to_player(
     state: &GameState,
     viewer: PlayerId,
     player: PlayerId,
 ) -> bool {
-    player == viewer
-        || (player == state.active_player
-            && turn_control::viewer_controls_active_turn(state, viewer))
+    player == viewer || turn_control::authorized_submitter_for_player(state, player) == viewer
 }
 
 /// Returns a viewer-safe copy of `events` for wire broadcast.
@@ -1124,11 +1122,8 @@ pub fn filter_events_for_viewer(
 }
 
 fn event_visible_to_viewer(event: &GameEvent, state: &GameState, viewer: PlayerId) -> bool {
-    let can_view_private_for_player = |player: PlayerId| {
-        player == viewer
-            || (player == state.active_player
-                && turn_control::viewer_controls_active_turn(state, viewer))
-    };
+    let can_view_private_for_player =
+        |player: PlayerId| viewer_has_private_access_to_player(state, viewer, player);
 
     match event {
         // Individual draws identify the exact library card — only viewers with
@@ -1167,7 +1162,7 @@ fn library_zone_change_visible_to_viewer(
     can_view_private_for_player: &impl Fn(PlayerId) -> bool,
 ) -> bool {
     if matches!(to, Zone::Hand | Zone::Library) {
-        return viewer_may_see_player_private_zone(state, viewer, record.owner);
+        return viewer_has_private_access_to_player(state, viewer, record.owner);
     }
 
     let Some(obj) = state.objects.get(&object_id) else {
@@ -1404,6 +1399,7 @@ fn redact_pending_trigger_context_for_observer(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::game::engine::{apply, EngineError};
     use crate::game::morph::manifest;
     use crate::game::printed_cards::snapshot_object_face;
     use crate::game::replacement::{
@@ -1414,17 +1410,18 @@ mod tests {
         AbilityDefinition, AbilityKind, BeholdCostAction, Effect, ReplacementDefinition,
         ResolvedAbility, TargetFilter,
     };
+    use crate::types::actions::GameAction;
     use crate::types::card_type::{CardType, CoreType};
     use crate::types::counter::CounterType;
     use crate::types::format::FormatConfig;
     use crate::types::game_state::{
         AutoMayChoice, CastPaymentMode, CastingVariant, CostResume, ManaAbilityResume,
         MayTriggerAutoChoiceKey, MayTriggerOrigin, PendingBeginGameAbility, PendingCast,
-        PendingManaAbility, PendingReplacement, ReplacementCandidateSummary,
+        PendingManaAbility,
     };
     use crate::types::identifiers::CardId;
     use crate::types::mana::ManaCost;
-    use crate::types::proposed_event::{ProposedEvent, ReplacementId};
+    use crate::types::proposed_event::ProposedEvent;
     use crate::types::replacements::ReplacementEvent;
     use crate::types::zones::{ExileCostSourceZone, Zone};
     use rand::RngCore;
@@ -3338,34 +3335,52 @@ mod tests {
             .expect("hidden replacement source exists");
         hidden_object.face_down = true;
         hidden_object.back_face = Some(hidden_back_face);
+        hidden_object.counters.insert(CounterType::Finality, 1);
 
-        state.pending_replacement = Some(PendingReplacement {
-            proposed: ProposedEvent::Draw {
-                player_id: affected_teammate,
-                count: 1,
-                applied: std::collections::HashSet::new(),
-            },
-            candidates: vec![ReplacementId {
-                source: hidden_source,
-                index: 0,
-            }],
-            depth: 0,
-            is_optional: false,
-            library_placement: None,
-            excess_recipient: None,
-            lifelink_bonus: 0,
-            may_cost_paid: false,
-            may_cost_remaining: None,
-        });
-        state.waiting_for = WaitingFor::ReplacementChoice {
-            player: affected_teammate,
-            candidate_count: 1,
-            candidates: vec![ReplacementCandidateSummary {
-                source_id: hidden_source,
-                source_name: "Secret Teammate Replacement".to_string(),
-                description: "Replacement effect".to_string(),
-            }],
-        };
+        let redirect_source = create_object(
+            &mut state,
+            CardId(4),
+            unauthorized_opponent,
+            "Public Redirect".to_string(),
+            Zone::Battlefield,
+        );
+        state
+            .objects
+            .get_mut(&redirect_source)
+            .expect("competing redirect exists")
+            .replacement_definitions = vec![ReplacementDefinition::new(ReplacementEvent::Moved)
+            .execute(AbilityDefinition::new(
+                AbilityKind::Spell,
+                Effect::ChangeZone {
+                    origin: None,
+                    destination: Zone::Library,
+                    target: TargetFilter::SelfRef,
+                    owner_library: false,
+                    enter_transformed: false,
+                    enters_under: None,
+                    enter_tapped: crate::types::zones::EtbTapState::Unspecified,
+                    enters_attacking: false,
+                    up_to: false,
+                    enter_with_counters: Vec::new(),
+                    conditional_enter_with_counters: Vec::new(),
+                    face_down_profile: None,
+                    enters_modified_if: None,
+                },
+            ))
+            .destination_zone(Zone::Graveyard)]
+        .into();
+
+        let mut events = Vec::new();
+        let result = replace_event(
+            &mut state,
+            ProposedEvent::zone_change(hidden_source, Zone::Battlefield, Zone::Graveyard, None),
+            &mut events,
+        );
+        assert!(
+            matches!(result, ReplacementResult::NeedsChoice(player) if player == affected_teammate),
+            "the teammate's finality and competing redirect must surface a real ordering choice"
+        );
+        state.waiting_for = replacement_choice_waiting_for(affected_teammate, &state);
 
         assert_eq!(
             turn_control::authorized_submitter_for_player(&state, affected_teammate),
@@ -3378,22 +3393,79 @@ mod tests {
             controller_view.pending_replacement.is_some(),
             "the legal team-turn replacement chooser must retain the continuation"
         );
+        let controller_source = controller_view
+            .objects
+            .get(&hidden_source)
+            .expect("the hidden replacement source must remain visible to the controller");
+        assert_eq!(controller_source.name, "Secret Teammate Replacement");
+        assert_eq!(
+            controller_source
+                .back_face
+                .as_ref()
+                .expect("the controller must receive the face-down source identity")
+                .name,
+            "Secret Teammate Replacement"
+        );
         let WaitingFor::ReplacementChoice { candidates, .. } = controller_view.waiting_for else {
             panic!("expected ReplacementChoice for the authorized turn controller");
         };
-        assert_eq!(candidates[0].source_id, hidden_source);
-        assert_eq!(candidates[0].source_name, "Secret Teammate Replacement");
+        let finality_index = candidates
+            .iter()
+            .position(|candidate| candidate.source_id == hidden_source)
+            .expect("the controller must receive the face-down replacement source");
+        assert_eq!(
+            candidates[finality_index].source_name,
+            "Secret Teammate Replacement"
+        );
+
+        let teammate_view = filter_state_for_viewer(&state, affected_teammate);
+        assert!(
+            teammate_view.pending_replacement.is_none(),
+            "the controlled teammate must not receive the controller's replacement continuation"
+        );
 
         let observer_view = filter_state_for_viewer(&state, unauthorized_opponent);
         assert!(
             observer_view.pending_replacement.is_none(),
             "an unauthorized opposing observer must not receive the continuation"
         );
+        assert_eq!(
+            observer_view.objects[&hidden_source].name, HIDDEN_CARD_NAME,
+            "the observer must not receive the face-down source identity"
+        );
+        assert!(
+            observer_view.objects[&hidden_source].back_face.is_none(),
+            "the observer must not receive the face-down source's back face"
+        );
         let WaitingFor::ReplacementChoice { candidates, .. } = observer_view.waiting_for else {
             panic!("expected ReplacementChoice for the observer");
         };
-        assert_eq!(candidates[0].source_id, ObjectId(0));
-        assert_eq!(candidates[0].source_name, HIDDEN_CARD_NAME);
+        assert_eq!(candidates[finality_index].source_id, ObjectId(0));
+        assert_eq!(candidates[finality_index].source_name, HIDDEN_CARD_NAME);
+
+        assert!(
+            matches!(
+                apply(
+                    &mut state,
+                    affected_teammate,
+                    GameAction::ChooseReplacement {
+                        index: finality_index,
+                    },
+                ),
+                Err(EngineError::WrongPlayer)
+            ),
+            "the controlled teammate must not submit the controller's replacement choice"
+        );
+        apply(
+            &mut state,
+            turn_controller,
+            GameAction::ChooseReplacement {
+                index: finality_index,
+            },
+        )
+        .expect("the controlling player must submit the visible replacement choice");
+        assert_eq!(state.objects[&hidden_source].zone, Zone::Exile);
+        assert!(state.pending_replacement.is_none());
     }
 
     /// CR 708.5 (Found Footage class): "You may look at face-down creatures your
