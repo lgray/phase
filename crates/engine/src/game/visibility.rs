@@ -3261,9 +3261,9 @@ mod tests {
             controller_snapshot["pending_replacement"]["candidates"]
                 .as_array()
                 .is_some_and(|candidates| {
-                    candidates.iter().any(|candidate| {
-                        candidate["source"] == serde_json::Value::from(finality_source.0)
-                    })
+                    candidates
+                        .iter()
+                        .any(|candidate| candidate["source"] == finality_source.0)
                 }),
             "the authorized viewer's serialized snapshot must retain the replacement source"
         );
@@ -3346,9 +3346,7 @@ mod tests {
                 .as_array()
                 .expect("replacement candidates must serialize as an array")
                 .iter()
-                .any(|candidate| {
-                    candidate["source_id"] == serde_json::Value::from(finality_source.0)
-                }),
+                .any(|candidate| { candidate["source_id"] == finality_source.0 }),
             "neither serialized replacement surface may expose the hidden source"
         );
 
