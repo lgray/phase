@@ -2837,23 +2837,17 @@ fn conditional_enter_counters_if_is_only_if_marker(
     !has_other_if
 }
 
-/// CR 607.1 + CR 614.1c + CR 122.1: True when the card carries a cast-permission
-/// static (`GraveyardCastPermission`/`ExileCastPermission`) with an enters-with
-/// counter rider AND the only bare " if " remaining after stripping the
-/// represented "if you cast a spell this way, that <permanent> enters with a
-/// [counter] counter on it" sentence(s) is that rider itself. Mirrors
-/// `conditional_enter_counters_if_is_only_if_marker`: the linked "this way"
-/// anaphor (CR 607.1) is represented by the static's `enters_with_counter`
-/// field, so the leading "if" is a representation marker, not a swallowed
-/// game-state condition. Card-scoped-narrow: a finality-permission card that ALSO
-/// carries a genuine separate condition still reports the separate condition.
+/// CR 607.1 + CR 614.1c + CR 122.1: a cast-permission static with an
+/// `enters_with_counter` rider represents "if you cast a spell this way, that
+/// permanent enters with a counter". Suppress only that represented sentence;
+/// a separate conditional in the same item must remain visible to the audit.
 fn enters_with_finality_this_way_is_only_if_marker(
     stripped: &str,
-    parsed: &ParsedAbilities,
+    evidence: &UnitEvidence,
 ) -> bool {
-    let has_finality_permission = parsed.statics.iter().any(|s| {
+    if !evidence.any_static_mode(|mode| {
         matches!(
-            &s.mode,
+            mode,
             StaticMode::GraveyardCastPermission {
                 enters_with_counter: Some(_),
                 ..
@@ -2862,12 +2856,10 @@ fn enters_with_finality_this_way_is_only_if_marker(
                 ..
             }
         )
-    });
-    if !has_finality_permission {
+    }) {
         return false;
     }
-    // Strip the represented enters-with rider sentence(s) via the shared
-    // recognizer authority, then check whether any OTHER bare " if " survives.
+
     let residual: String = stripped
         .split('.')
         .filter(|sentence| {
@@ -2884,58 +2876,32 @@ fn enters_with_finality_this_way_is_only_if_marker(
     !has_other_if
 }
 
-/// CR 118.9 + CR 607.1 + CR 608.2c: True when the card carries a cast-permission
-/// static (`GraveyardCastPermission`/`ExileCastPermission`) with a CR 118.9
-/// *alternative* cost rider AND the only bare " if " remaining after stripping
-/// the represented "if you cast a spell this way, pay [cost] rather than pay its
-/// mana cost" sentence(s) is that rider itself. Sibling of
-/// `enters_with_finality_this_way_is_only_if_marker` (counter rider) — same
-/// "if you cast a spell this way, <rider>" class, different rider. The linked
-/// "this way" anaphor (CR 607.1) is represented structurally by the static's
-/// `extra_cost: Some(CastExtraCost { mode: Alternative, .. })` field, so the
-/// leading "if" is a CR 118.9 alternative-cost representation marker, not a
-/// swallowed game-state condition. Keys on `CastCostMode::Alternative` only, so
-/// `Additional`-mode "in addition to their other costs" riders (Festival of
-/// Embers) are untouched — their mana cost is still due and no cast-this-way
-/// swallow arises. Motivating card: Valgavoth, Terror Eater. Class: every
-/// exile/graveyard cast-this-way permission carrying an alternative-cost rider.
-fn cast_this_way_alt_cost_is_only_if_marker(stripped: &str, parsed: &ParsedAbilities) -> bool {
-    let has_alt_cost = parsed.statics.iter().any(|s| {
+/// CR 118.9 + CR 607.1 + CR 608.2c: an alternative-cost rider on a cast
+/// permission represents its linked "if you cast a spell this way, pay …"
+/// clause. Additional-cost riders deliberately remain outside this exemption.
+fn cast_this_way_alt_cost_is_only_if_marker(stripped: &str, evidence: &UnitEvidence) -> bool {
+    if !evidence.any_static_mode(|mode| {
         matches!(
-            &s.mode,
+            mode,
             StaticMode::GraveyardCastPermission {
-                extra_cost: Some(c),
+                extra_cost: Some(cost),
                 ..
             } | StaticMode::ExileCastPermission {
-                extra_cost: Some(c),
+                extra_cost: Some(cost),
                 ..
-            } if matches!(c.mode, CastCostMode::Alternative)
+            } if matches!(cost.mode, CastCostMode::Alternative)
         )
-    });
-    if !has_alt_cost {
+    }) {
         return false;
     }
-    // Strip the represented "if you cast a spell this way, pay <cost> rather
-    // than pay [its] mana cost" sentence(s) via the shared CR 118.9 rider
-    // authority (`try_parse_alt_cost_rider` — the same helper that stamped the
-    // `extra_cost`), then check whether any OTHER bare " if " survives. The
-    // "this way" anaphor is required so a bare alt-cost line without the linkage
-    // isn't over-stripped.
+
     let residual: String = stripped
-        .split('.') // allow-noncombinator: swallow detector sentence walk on classified text
+        .split('.')
         .filter(|sentence| {
-            let s = sentence.trim_start();
-            // `stripped` derives from the lowercased `cleaned`, so the anaphor
-            // scan runs against lowercase text directly.
-            // The "cast it this way" disjunct is currently inert: `try_parse_alt_cost_rider`
-            // returns None for any "cast it " text (its Cruelclaw combined-clause guard), and
-            // such singular-anaphor riders lower to inline `CastFromZone.alt_ability_cost`, a
-            // different representation than the permission `extra_cost` this helper keys on. It
-            // is kept as the semantically-valid second anaphor form, reserved for a future rider
-            // that reaches this permission-static representation.
-            let is_rider = (s.contains("cast a spell this way") // allow-noncombinator: swallow detector marker scan on classified text
-                || s.contains("cast it this way")) // allow-noncombinator: swallow detector marker scan on classified text
-                && crate::parser::oracle_effect::try_parse_alt_cost_rider(s).is_some();
+            let sentence = sentence.trim_start();
+            let is_rider = (sentence.contains("cast a spell this way") // allow-noncombinator: swallow detector marker scan on classified text
+                || sentence.contains("cast it this way")) // allow-noncombinator: swallow detector marker scan on classified text
+                && crate::parser::oracle_effect::try_parse_alt_cost_rider(sentence).is_some();
             !is_rider
         })
         .collect::<Vec<_>>()
@@ -3052,23 +3018,10 @@ fn detect_condition_if(
     if conditional_enter_counters_if_is_only_if_marker(&stripped, evidence) {
         return;
     }
-    // CR 607.1 + CR 614.1c + CR 122.1: "If you cast a spell this way, that
-    // <permanent> enters with a [counter] counter on it" is the linked
-    // cast-permission enters-with rider, represented by the
-    // `GraveyardCastPermission`/`ExileCastPermission` static's
-    // `enters_with_counter` field (Noctis, Intrepid, Leonardo) — not a swallowed
-    // game-state condition. The "this way" anaphor is a CR 607.1 back-reference.
-    if enters_with_finality_this_way_is_only_if_marker(&stripped, parsed) {
+    if enters_with_finality_this_way_is_only_if_marker(&stripped, evidence) {
         return;
     }
-    // CR 118.9 + CR 607.1 + CR 608.2c: "If you cast a spell this way, pay [cost]
-    // rather than pay its mana cost" is the linked cast-permission alternative-
-    // cost rider, represented by the `GraveyardCastPermission`/`ExileCastPermission`
-    // static's `extra_cost: Some(CastExtraCost { mode: Alternative, .. })` field
-    // (Valgavoth, Terror Eater) — not a swallowed game-state condition. Sibling of
-    // the enters-with-counter rider above; the "this way" anaphor is a CR 607.1
-    // back-reference.
-    if cast_this_way_alt_cost_is_only_if_marker(&stripped, parsed) {
+    if cast_this_way_alt_cost_is_only_if_marker(&stripped, evidence) {
         return;
     }
     // CR 615.5: "If damage is prevented this way, [effect]" is not an
