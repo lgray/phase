@@ -834,17 +834,41 @@ fn parse_exile_looked_at_card(lower: &str) -> Option<bool> {
 /// selects exactly one of the N looked-at cards. The "face down" suffix is the
 /// CR 406.3 hidden-information marker required by this class; pure-peek Digs
 /// (Delver of Secrets — no exile clause) never reach this recognizer.
-fn parse_exile_one_of_them_face_down(lower: &str) -> bool {
+///
+/// CR 122.1: An optional counter rider ("... face down with a hatching counter
+/// on it", The Dragon-Kami Reborn) may follow "face down". `Some(entries)`
+/// signals a match (empty `entries` = the bare Gonti form; non-empty = the
+/// counters the fusion threads onto the chosen exiled card). Delegates the
+/// rider to the shared `parse_counter_suffix_body_combinator`, so every
+/// `<count> <type> counter(s) on it` shape (a/two/X, +1/+1, keyword, named)
+/// is covered by the one building block — not just "a hatching counter".
+fn parse_exile_one_of_them_face_down(lower: &str) -> Option<Vec<(CounterType, QuantityExpr)>> {
     let trimmed = lower.trim().trim_end_matches('.').trim_end();
-    (
+    let (rest, _) = (
         tag::<_, _, OracleError<'_>>("exile "),
         alt((tag("one of them"), tag("one of those cards"))),
         multispace1,
         tag("face down"),
-        eof,
     )
         .parse(trimmed)
-        .is_ok()
+        .ok()?;
+    // CR 122.1: optional "with <count> <type> counter(s) on it" rider. Either
+    // the bare form (nothing after "face down") or exactly one counter clause.
+    match preceded(
+        tag::<_, _, OracleError<'_>>(" with "),
+        crate::parser::oracle_effect::parse_counter_suffix_body_combinator,
+    )
+    .parse(rest)
+    {
+        Ok((after, entry)) => {
+            eof::<_, OracleError<'_>>(after).ok()?;
+            Some(vec![entry])
+        }
+        Err(_) => {
+            eof::<_, OracleError<'_>>(rest).ok()?;
+            Some(Vec::new())
+        }
+    }
 }
 
 pub(super) fn split_clause_sequence(text: &str) -> Vec<ClauseChunk> {
@@ -4474,7 +4498,9 @@ pub(super) fn apply_clause_continuation(
         // binds to the dug card). Without this fusion the Dig short-circuited as
         // a keep_count:0 pure-peek and a sibling `ChangeZone { ParentTarget }`
         // exiled the trigger source itself (#1146).
-        ContinuationAst::ExileOneOfThemFaceDown => {
+        ContinuationAst::ExileOneOfThemFaceDown {
+            enter_with_counters,
+        } => {
             // Same `DigLook` antecedent as `ExileLookedAtCard` above — the two scans
             // this replaces had byte-identical predicates, so they name ONE role, not
             // two. LIVE, not cached: `append_conceal_sub_ability` nests a `sub_ability`
@@ -4508,6 +4534,12 @@ pub(super) fn apply_clause_continuation(
             // sub-ability's `ParentTarget`; `HideawayConceal` then flips it face
             // down (CR 406.3) and links it to the source (CR 607.2a / CR 702.75a).
             append_conceal_sub_ability(previous);
+            // CR 122.1: a "... face down with a <type> counter on it" rider (The
+            // Dragon-Kami Reborn) places the counters on the CHOSEN dug card.
+            // Append after the conceal so each `PutCounter { ParentTarget }`
+            // inherits the same bound target (the chosen exiled card) — without
+            // this the counters rode a discarded sibling `ChangeZone`.
+            append_counter_riders_sub_abilities(previous, enter_with_counters);
         }
         ContinuationAst::ChooseAndSacrificeRestFilter { sacrifice_filter } => {
             let Some(filter) = sacrifice_filter else {
@@ -4548,6 +4580,44 @@ fn append_conceal_sub_ability(dig: &mut AbilityDefinition) {
             .expect("sub_ability checked above");
     }
     cursor.sub_ability = Some(conceal);
+}
+
+/// CR 122.1 + CR 702.75a: Append the exile-rider's counters onto the fused
+/// Hideaway exile. Each `PutCounter { target: ParentTarget }` link inherits the
+/// continuation chain's bound target (the chosen dug card the `DigChoice` flow
+/// routed to exile), so the whole chain places counters on the ONE card the
+/// player selected — mirroring `lower_put_counter_list`'s `ParentTarget` chain.
+/// Appended at the deepest sub (after the conceal) so it runs once the chosen
+/// card is exiled face down. No-op for the bare Gonti form (empty `entries`).
+fn append_counter_riders_sub_abilities(
+    dig: &mut AbilityDefinition,
+    entries: Vec<(CounterType, QuantityExpr)>,
+) {
+    // Build the counter chain right-to-left so each link owns its successor.
+    let mut chain: Option<Box<AbilityDefinition>> = None;
+    for (counter_type, count) in entries.into_iter().rev() {
+        let mut def = AbilityDefinition::new(
+            AbilityKind::Spell,
+            Effect::PutCounter {
+                counter_type,
+                count,
+                target: TargetFilter::ParentTarget,
+            },
+        );
+        def.sub_ability = chain;
+        chain = Some(Box::new(def));
+    }
+    let Some(chain) = chain else {
+        return;
+    };
+    let mut cursor = dig;
+    while cursor.sub_ability.is_some() {
+        cursor = cursor
+            .sub_ability
+            .as_mut()
+            .expect("sub_ability checked above");
+    }
+    cursor.sub_ability = Some(chain);
 }
 
 fn apply_search_destination_to_ability_chain(
@@ -4662,7 +4732,7 @@ pub(super) fn continuation_absorbs_current(
         // Recognition was already gated on a preceding `Dig`; the "exile one of
         // them face down" clause patches that Dig (keep_count:1 / Exile) and
         // pushes the conceal sub-ability — it emits no sibling def.
-        ContinuationAst::ExileOneOfThemFaceDown => true,
+        ContinuationAst::ExileOneOfThemFaceDown { .. } => true,
         ContinuationAst::ChooseAndSacrificeRestFilter { .. } => true,
     }
 }
@@ -6100,8 +6170,16 @@ pub(super) fn parse_followup_continuation_ast(
         // face down and linked to the source — NOT a sibling
         // `ChangeZone { ParentTarget }`, which exiled the trigger source itself.
         // `reveal: false` scopes this to the private look form.
-        Effect::Dig { reveal: false, .. } if parse_exile_one_of_them_face_down(&lower) => {
-            Some(ContinuationAst::ExileOneOfThemFaceDown)
+        Effect::Dig { reveal: false, .. }
+            if parse_exile_one_of_them_face_down(&lower).is_some() =>
+        {
+            // CR 122.1: carry any "... face down with a <type> counter on it"
+            // rider so the fusion places the counters on the CHOSEN dug card.
+            let enter_with_counters =
+                parse_exile_one_of_them_face_down(&lower).unwrap_or_default();
+            Some(ContinuationAst::ExileOneOfThemFaceDown {
+                enter_with_counters,
+            })
         }
         // CR 201.2 + CR 608.2c: "[You may] put one of those cards onto the
         // battlefield if it has the same name as a permanent" after Dig —
@@ -9326,7 +9404,9 @@ mod tests {
         let env = env_for(&defs);
         apply_clause_continuation(
             &mut defs,
-            ContinuationAst::ExileOneOfThemFaceDown,
+            ContinuationAst::ExileOneOfThemFaceDown {
+                enter_with_counters: Vec::new(),
+            },
             AbilityKind::Spell,
             &env,
         );
@@ -9357,6 +9437,72 @@ mod tests {
             "the intervening def must be left untouched, got {:?}",
             defs[1].effect
         );
+    }
+
+    /// #5631 (The Dragon-Kami Reborn): the "... face down with a hatching
+    /// counter on it" rider threads its counters into the fused exile as a
+    /// `PutCounter { ParentTarget }` chained AFTER the conceal, so the CHOSEN
+    /// dug card (not the trigger source) receives the counter.
+    #[test]
+    fn exile_one_of_them_face_down_counter_rider_appends_put_counter_after_conceal() {
+        let mut defs = vec![AbilityDefinition::new(
+            AbilityKind::Spell,
+            make_dig_effect(),
+        )];
+        let env = env_for(&defs);
+        let hatching = crate::types::counter::parse_counter_type("hatching");
+        apply_clause_continuation(
+            &mut defs,
+            ContinuationAst::ExileOneOfThemFaceDown {
+                enter_with_counters: vec![(hatching.clone(), QuantityExpr::Fixed { value: 1 })],
+            },
+            AbilityKind::Spell,
+            &env,
+        );
+
+        // The Dig is patched into the choose-one exile shape.
+        let Effect::Dig {
+            keep_count,
+            destination,
+            ..
+        } = &*defs[0].effect
+        else {
+            panic!("expected patched Dig, got {:?}", defs[0].effect);
+        };
+        assert_eq!(*keep_count, Some(1));
+        assert_eq!(*destination, Some(Zone::Exile));
+
+        // Chain shape: Dig -> HideawayConceal(ParentTarget) -> PutCounter(ParentTarget).
+        let conceal = defs[0]
+            .sub_ability
+            .as_ref()
+            .expect("conceal sub-ability must be chained onto the Dig");
+        assert!(
+            matches!(&*conceal.effect, Effect::HideawayConceal { .. }),
+            "first sub must be the conceal, got {:?}",
+            conceal.effect
+        );
+        let put_counter = conceal
+            .sub_ability
+            .as_ref()
+            .expect("the counter rider must append a PutCounter after the conceal");
+        match &*put_counter.effect {
+            Effect::PutCounter {
+                counter_type,
+                count,
+                target,
+            } => {
+                assert_eq!(*counter_type, hatching);
+                assert_eq!(*count, QuantityExpr::Fixed { value: 1 });
+                assert_eq!(
+                    *target,
+                    TargetFilter::ParentTarget,
+                    "the counter must land on the chosen dug card (ParentTarget), \
+                     inherited through the continuation chain"
+                );
+            }
+            other => panic!("expected PutCounter after conceal, got {other:?}"),
+        }
     }
 
     /// CR 406.3 + CR 701.20e: the Gonti impulse rewrite binds the same `Dig`.
@@ -11766,7 +11912,9 @@ mod tests {
         );
         assert_eq!(
             result,
-            Some(ContinuationAst::ExileOneOfThemFaceDown),
+            Some(ContinuationAst::ExileOneOfThemFaceDown {
+                enter_with_counters: Vec::new(),
+            }),
             "the Gonti-class exile-the-dug-card clause must be recognized"
         );
     }
@@ -11781,7 +11929,44 @@ mod tests {
             &dig,
             &mut ParseContext::default(),
         );
-        assert_eq!(result, Some(ContinuationAst::ExileOneOfThemFaceDown));
+        assert_eq!(
+            result,
+            Some(ContinuationAst::ExileOneOfThemFaceDown {
+                enter_with_counters: Vec::new(),
+            })
+        );
+    }
+
+    /// #5631 (The Dragon-Kami Reborn): a CR 122.1 counter rider between "face
+    /// down" and the clause end is accepted, and its counter is captured so the
+    /// fusion can place it on the CHOSEN dug card. Before this, the counter
+    /// rider made the recognizer decline and the clause silently exiled the
+    /// trigger source itself (the #1146 shape).
+    #[test]
+    fn exile_one_of_them_face_down_with_counter_rider_captures_counters() {
+        let entries = parse_exile_one_of_them_face_down(
+            "exile one of them face down with a hatching counter on it",
+        )
+        .expect("the counter-rider form must still be recognized");
+        assert_eq!(
+            entries,
+            vec![(
+                crate::types::counter::parse_counter_type("hatching"),
+                QuantityExpr::Fixed { value: 1 }
+            )],
+            "the hatching-counter rider must be captured for the fusion to thread"
+        );
+    }
+
+    /// The bare Gonti form recognizes with NO counters — a match with an empty
+    /// rider list, distinct from a decline.
+    #[test]
+    fn exile_one_of_them_face_down_bare_form_has_no_counters() {
+        assert_eq!(
+            parse_exile_one_of_them_face_down("exile one of them face down"),
+            Some(Vec::new()),
+            "the bare form is a match with no counter rider"
+        );
     }
 
     /// #1146 scope guard: the recognizer requires the "face down" CR 406.3
@@ -11790,7 +11975,7 @@ mod tests {
     #[test]
     fn exile_one_of_them_without_face_down_is_not_gonti_continuation() {
         assert!(
-            !parse_exile_one_of_them_face_down("exile one of them"),
+            parse_exile_one_of_them_face_down("exile one of them").is_none(),
             "without the 'face down' marker this is not the Gonti look-and-exile class"
         );
     }
@@ -11807,9 +11992,8 @@ mod tests {
             &dig,
             &mut ParseContext::default(),
         );
-        assert_ne!(
-            result,
-            Some(ContinuationAst::ExileOneOfThemFaceDown),
+        assert!(
+            !matches!(result, Some(ContinuationAst::ExileOneOfThemFaceDown { .. })),
             "a pure-peek 'you may reveal it' must not be fused into the Gonti exile continuation"
         );
     }

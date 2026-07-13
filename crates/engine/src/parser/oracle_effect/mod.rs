@@ -21614,7 +21614,10 @@ fn chain_clause_is_exile_producer(effect: &Effect) -> bool {
 fn continuation_is_exile_producer(continuation: Option<&ContinuationAst>) -> bool {
     matches!(
         continuation,
-        Some(ContinuationAst::ExileOneOfThemFaceDown | ContinuationAst::ExileLookedAtCard { .. })
+        Some(
+            ContinuationAst::ExileOneOfThemFaceDown { .. }
+                | ContinuationAst::ExileLookedAtCard { .. }
+        )
     )
 }
 
