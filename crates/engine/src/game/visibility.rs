@@ -1638,6 +1638,55 @@ mod tests {
     }
 
     #[test]
+    fn library_draw_events_visible_to_shared_team_turn_controller() {
+        let active_player = PlayerId(0);
+        let drawer = PlayerId(1);
+        let turn_controller = PlayerId(2);
+        let observer = PlayerId(3);
+        let mut state = GameState::new(FormatConfig::two_headed_giant(), 4, 42);
+        state.active_player = active_player;
+        state.turn_decision_controller = Some(turn_controller);
+        assert_eq!(
+            turn_control::authorized_submitter_for_player(&state, drawer),
+            turn_controller,
+            "the shared-team turn controller must authorize decisions for the drawer"
+        );
+
+        let mut record = crate::types::game_state::ZoneChangeRecord::test_minimal(
+            ObjectId(99),
+            Some(Zone::Library),
+            Zone::Hand,
+        );
+        record.name = "Secret Teammate Card".to_string();
+        record.owner = drawer;
+        let events = vec![
+            GameEvent::CardDrawn {
+                player_id: drawer,
+                object_id: ObjectId(99),
+                nth_in_turn: 1,
+                nth_in_step: 1,
+            },
+            GameEvent::ZoneChanged {
+                object_id: ObjectId(99),
+                from: Some(Zone::Library),
+                to: Zone::Hand,
+                record: Box::new(record),
+            },
+        ];
+
+        assert_eq!(filter_events_for_viewer(&events, &state, drawer), events);
+        assert_eq!(
+            filter_events_for_viewer(&events, &state, turn_controller),
+            events,
+            "the controller of the active shared team must receive the teammate's private draw events"
+        );
+        assert!(
+            filter_events_for_viewer(&events, &state, observer).is_empty(),
+            "an observer without turn-control authority must not receive the teammate's private draw events"
+        );
+    }
+
+    #[test]
     fn library_face_down_battlefield_zone_change_hidden_from_opponent() {
         let mut state = GameState::new_two_player(42);
         let controller = PlayerId(0);
