@@ -3328,7 +3328,9 @@ mod tests {
                 assert_eq!(
                     count,
                     QuantityExpr::Ref {
-                        qty: QuantityRef::PreviousEffectAmount
+                        qty: QuantityRef::PreviousEffectAmount {
+                            channel: crate::types::ability::DamageChannel::Total,
+                        }
                     },
                     "for-each tail must dispatch to PreviousEffectAmount"
                 );

@@ -5070,7 +5070,9 @@ fn x_spell_doubled_lose_life_drains_opponents_and_gains_controller() {
                 AbilityKind::Spell,
                 Effect::GainLife {
                     amount: QuantityExpr::Ref {
-                        qty: QuantityRef::PreviousEffectAmount,
+                        qty: QuantityRef::PreviousEffectAmount {
+                            channel: crate::types::ability::DamageChannel::Total,
+                        },
                     },
                     player: TargetFilter::Controller,
                 },
@@ -5205,7 +5207,7 @@ fn exsanguinate_oracle_text_drains_each_opponent_and_gains_controller() {
         Effect::GainLife {
             amount:
                 QuantityExpr::Ref {
-                    qty: QuantityRef::PreviousEffectAmount,
+                    qty: QuantityRef::PreviousEffectAmount { .. },
                 },
             player,
         } => assert_eq!(
