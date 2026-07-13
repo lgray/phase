@@ -3036,6 +3036,11 @@ fn scan_static_condition(x: &StaticCondition) -> Axes {
             acc = acc.or(scan_target_filter(filter));
             acc
         }
+        StaticCondition::TopOfLibraryMatches { filter } => {
+            let mut acc = Axes::NONE;
+            acc = acc.or(scan_target_filter(filter));
+            acc
+        }
         StaticCondition::RecipientMatchesFilter { filter } => {
             let mut acc = Axes::NONE;
             acc = acc.or(scan_target_filter(filter));
