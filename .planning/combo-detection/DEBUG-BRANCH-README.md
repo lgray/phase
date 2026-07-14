@@ -1,3 +1,19 @@
+> # ⛔⛔ STALE — HISTORICAL ONLY. DO NOT ACT ON THIS DOCUMENT.
+> **Superseded 2026-07-14 by [`LOOP-SHORTCUT-SPEC-AND-STATE.md`](./LOOP-SHORTCUT-SPEC-AND-STATE.md).**
+>
+> Every `file:line` below was measured against a tree **768 commits behind `main`** and **no longer resolves
+> there.** Several central claims are **refuted by measurement on `main`** — including *"there is no live
+> object-growth path"* and *"the offer carries no iteration count"*, **both FALSE on `main` today**
+> (`game/engine.rs:1656`, `analysis/decision_template.rs:203`).
+>
+> **The engine described here no longer exists.** PR-7 shipped most of the machinery; the live blocker is
+> REACHABILITY — the fail-closed covers veto on any real board. See the successor doc, §4.
+>
+> ## ⇒ Read this for the **RULES** reasoning (which has held — 40/40 CR citations) and the **SOUNDNESS** rules.
+> ## ⇒ **NEVER for a code fact.**
+
+---
+
 # `debug/combo-generator` — fork-only debug branch
 
 **DO NOT merge, rebase, or cherry-pick this branch toward `main` or an upstream PR.**

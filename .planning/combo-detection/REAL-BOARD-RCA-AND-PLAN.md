@@ -1,3 +1,19 @@
+> # ⛔⛔ STALE — HISTORICAL ONLY. DO NOT ACT ON THIS DOCUMENT.
+> **Superseded 2026-07-14 by [`LOOP-SHORTCUT-SPEC-AND-STATE.md`](./LOOP-SHORTCUT-SPEC-AND-STATE.md).**
+>
+> Every `file:line` below was measured against a tree **768 commits behind `main`** and **no longer resolves
+> there.** Several central claims are **refuted by measurement on `main`** — including *"there is no live
+> object-growth path"* and *"the offer carries no iteration count"*, **both FALSE on `main` today**
+> (`game/engine.rs:1656`, `analysis/decision_template.rs:203`).
+>
+> **The engine described here no longer exists.** PR-7 shipped most of the machinery; the live blocker is
+> REACHABILITY — the fail-closed covers veto on any real board. See the successor doc, §4.
+>
+> ## ⇒ Read this for the **RULES** reasoning (which has held — 40/40 CR citations) and the **SOUNDNESS** rules.
+> ## ⇒ **NEVER for a code fact.**
+
+---
+
 # Combo detector — root-cause analysis + implementation plan
 ### Making CR 732.2a loop shortcuts work on real decks and real board states
 
@@ -9,16 +25,16 @@
 > `data/card-data.json`, or by querying the real board fixture.
 > **Every `file:line` in this document was printed by a tool, not recalled.**
 >
-> ## **This plan has been wrong EIGHTEEN times. Every single failure was a CODE claim asserted from memory. The RULES layer has never once failed — 40/40 CR citations and 32/32 Oracle texts verified across six audits.**
+> ## **This plan has been wrong NINETEEN times. Every single failure was a CODE claim asserted from memory. The RULES layer has never once failed — 40/40 CR citations, 32/32 Oracle texts, and MTR §4.2/§4.4 verbatim, across six audits.**
 >
 > The failures are catalogued in **Appendix B**. Read it: the guard rails only work if you know what they
-> guard. **THREE of the seventeen (#15, #16, #17) were committed *while writing this document*.** #15/#16 are
+> guard. **THREE of the nineteen (#15, #16, #17) were committed *while writing this document*.** #15/#16 are
 > the **same fabrication**, invented independently by two authors an hour apart. **#17 is this plan asserting
 > its own root-cause fix was *"necessary and sufficient"* — refuted by BUILDING IT AND RUNNING IT.** All three
 > were caught only because someone re-measured. **That is not an argument against the discipline. It is the
 > argument for it.**
 >
-> **The rule that would have prevented all eighteen: grep before you assert, and put the `file:line` in the
+> **The rule that would have prevented all nineteen: grep before you assert, and put the `file:line` in the
 > sentence.** If you cannot verify it, write **UNVERIFIED**. An honest *"I did not reach this"* beats a
 > plausible claim that costs a cycle to refute.
 >
@@ -34,152 +50,28 @@
 
 ---
 
-# ⭐ ADDENDUM — 2026-07-14 — THE TOURNAMENT-RULES LAYER, AND WHAT IT SAYS ABOUT P7
-
-*Added **after** the `e677fefb1` freeze. Any reviewer spawned from now on must be pointed at the new hash.*
-*Every citation below was printed by a tool. Every code claim is tagged **measured** or **UNVERIFIED**.*
-
-The real board is **4-player cEDH**, which is played under the **Magic Tournament Rules** — and **CR 732.1c**
-(`docs/MagicCompRules.txt:6368`) says the MTR **takes precedence** over CR 732 during a tournament:
-
-> *"Tournaments use a modified version of the rules governing shortcuts and loops… **Whenever the Tournament
-> Rules contradict these rules during a tournament, the Tournament Rules take precedence.**"*
-
-⇒ **MTR 4.4 — not CR 732.2a — is the governing text for the board this plan is about.**
-
-## A.1 — It is NOT gated on Rules Enforcement Level (measured)
-
-**MTR §4.4 contains ZERO REL qualifiers.** Measured: 0 occurrences of `Competitive|Professional|Regular|Enforcement`
-across its 49 lines (official PDF → `pdftotext -layout`; §4.4 = lines 1122–1170). The only REL gates anywhere in
-MTR §4 are note-taking methods (§4.1), derived-information status (§4.1), and table layout (§4.7).
-
-**The loop regime is identical at Regular, Competitive, and Professional REL** — and its core constraint
-(*no conditional actions*) is **also in the CR itself** (`:6372`), so it holds in casual play too.
-
-⇒ **The engine needs no REL toggle and no "tournament mode." There is nothing to gate.**
-
-## A.2 — ⭐ THE LOAD-BEARING FINDING: THE RULES KEY ON **ACTIONS**; THE ENGINE KEYS ON **STATE**
-
-> **MTR 4.4:** *"A loop is a form of tournament shortcut that involves **detailing a sequence of actions to be
-> repeated** and then performing a number of iterations of that sequence. **The loop actions must be identical
-> in each iteration** and cannot include conditional actions."*
+> # ⚠️ STATUS — THE PLAN WAS RE-OPENED AFTER THE `e677fefb1` FREEZE. Review the **branch tip**, not that hash.
 >
-> **CR 732.1b** (`:6366`): *"a set of **actions** could be repeated indefinitely (thus creating a 'loop')."*
-
-**Both documents define a loop by the repeatability of the ACTION SEQUENCE. Neither one ever requires the GAME
-STATE to recur.** State recurrence appears in the rules in exactly **two** places, and both are strictly narrower
-than the general case:
-
-1. MTR 4.4's stopping rule for **non-deterministic** loops — *"must stop if… a previous game state (or one
-   identical in all relevant ways) is reached again."*
-2. MTR 4.4's **multi-turn** condition — *"Loops may span multiple turns if a game state is not meaningfully changing."*
-
-**This is decisive, because CR 732.2a's own worked example DOES NOT RECUR.** Presence of Gond + Intruder Alarm
-(`:6373`) **adds an Elf Warrior token every iteration** — its state provably never repeats — and the CR calls it a
-loop and shortcuts it **a million times**.
-
-> ## ⇒ **A STATE-RECURRENCE DETECTOR *MUST* REJECT THE RULEBOOK'S OWN WORKED EXAMPLE.**
-> ## **That is not a bug in a predicate. It is the WRONG PREDICATE.**
-
-## A.3 — What that predicts about this codebase
-
-| Fact | Where | Status |
-|---|---|---|
-| `LoopCertificate.unbounded: Vec<ResourceAxis>` — *"A non-empty vector is an invariant of a returned certificate."* ⇒ **the detector is an UNBOUNDEDNESS PROVER** | `analysis/loop_check.rs:119`, `:123` | ✅ **measured** |
-| `LoopCertificate.residual_board_delta` — *"**EMPTY for every certificate this phase produces** (both detection paths require an identical battlefield)"* | `analysis/loop_check.rs:132` | ✅ **measured** |
-| `WaitingFor::LoopShortcut` carries `proposer`, `predicted_winner`, `certificate`, `schema` — **and NO iteration count anywhere** | `types/game_state.rs:4329` | ✅ **measured** |
-| MTR 4.4's intervention right **is** already modelled | `WaitingFor::RespondToShortcut`, `types/game_state.rs:4347` | ✅ **measured** |
-
-**Neither board equality nor a non-empty `unbounded` is a rules requirement for a shortcut.** Unboundedness is
-required only for the **CR 104.4b draw** (`:366`) and for auto-win — **NOT for the OFFER.**
-
-> ## ⛔ FALSIFIABLE PREDICTION — TEST THIS *BEFORE* AUDITING 88 SITES
+> A **tournament-rules layer** was added and now lives in **Appendix C** (MTR §4.4, quoted from the official
+> PDF). It does **not** change the diagnosis in §0. It changes **what to measure first.** Three operative
+> deltas, and nothing else in this document has been re-derived from them yet:
 >
-> **Witherbloom + Sprout Swarm's growth axis is tapped tokens ON THE BATTLEFIELD, and the certificate requires an
-> IDENTICAL BATTLEFIELD** (`loop_check.rs:132`). If that gates certification, then **P7 could be executed PERFECTLY
-> and `real_board_sprout_swarm_offers_loop_shortcut` would STILL BE RED.**
+> 1. **There is nothing to gate on Rules Enforcement Level.** MTR §4.4 carries **zero REL qualifiers**
+>    (measured, §C.1). The loop regime is identical at Regular / Competitive / Professional, and the
+>    *no-conditional-actions* core is in **CR 732.2a** itself ⇒ it holds in casual play too. **No "tournament
+>    mode." No toggle.**
+> 2. ## ⛔ **P7 — the largest phase and the ONLY unsized open question (§8 Q0) — MAY NOT BE ON THE CRITICAL PATH AT ALL.**
+>    The rules define a loop by the repeatability of the **ACTION SEQUENCE** and **never require the game state
+>    to recur** (§C.2). The engine's certificate requires an **identical battlefield**
+>    (`analysis/loop_check.rs:132`, measured) — and **Sprout Swarm's growth axis IS the battlefield.**
+>    ⇒ **P7 could be executed perfectly and the acceptance test would still be RED.**
+>    ### ⇒ **RUN §C.3's EXPERIMENT BEFORE AUDITING 88 SITES. It is ~10 minutes and it decides the question.**
+> 3. **A possible relaxation** (certificate carries a bound **K** instead of a non-empty `unbounded` vector)
+>    is drafted in **§C.4** — **ACCEPT-ward, and its hinge is UNVERIFIED.** **Relax nothing until §C.4's
+>    open question is measured.**
 >
-> **P7 — this plan's largest phase and its ONLY unsized open question (§8 Q0, *"could be 30 arms or 300"*) — may be
-> defending the wrong wall entirely.**
->
-> ### The experiment, and it is cheap:
-> **In a throwaway worktree, stub the fire-time firewall to ALWAYS ACCEPT, then run the ignored acceptance test.**
-> - **GREEN** ⇒ P7 is real. Its size is the question, and §8 Q0's instrumentation is the right next move.
-> - **RED** ⇒ **no number of arms will ever fix it.** The root cause is the certificate's **SHAPE**, and **P7 leaves
->   the critical path.**
->
-> §8 Q0's instrumentation **assumes** the firewall is the blocker. This experiment **tests** that assumption, is
-> strictly cheaper, and is strictly more informative. **It is the correct first measurement.**
-> *(**UNVERIFIED** — it has not been run.)*
-
-## A.4 — The relaxation this implies — and why it does NOT violate §0 rule 2
-
-**Proposal (ACCEPT-ward — flagged loudly, per §0 rule 2):** let the certificate carry a **bound K** — drive the
-fixed sequence on a clone until an action becomes illegal or an outcome diverges from iteration 1; **that iteration
-is K** — instead of requiring a non-empty `unbounded` axis vector.
-
-**This also collapses C2 and C3.** MTR 4.4 fixes the *program*, not the *trace* — so a depleting library (**C2**) or a
-threshold tripping at a future iteration (**C3**) still make iteration *k* ≠ iteration 1. But under a bound they stop
-being **static REJECT gates that must prove nothing bad ever happens** and become **the thing the drive measures**:
-whichever bites first *is* K. That is §7's own argument, carried to its conclusion.
-
-**Why this is not the false-certificate generator §0 rule 2 warns about:** **rule 2 is scoped to the GAME-ENDING
-path.** An **L-OFFER** that says *"repeat this N times"* **ENDS NO GAME** — it is a labor-saving shortcut, and every
-opponent retains MTR 4.4's intervention right (*"announce a lower number after which they intend to intervene"*),
-which the engine **already models** at `RespondToShortcut` (`game_state.rs:4347`). **The game-ending terminals are
-L-AUTOWIN and the CR 104.4b draw — and those KEEP the `unbounded` requirement, unchanged.**
-
-⇒ **The relaxation is ACCEPT-ward ONLY on the terminal that cannot end a game.** That is exactly the 3-terminal
-partition this plan already has (**L-OFFER / L-AUTOWIN / WAIVED**) — and MTR 4.4 says that partition is
-**load-bearing, not cosmetic.**
-
-> ## ⚠️ **UNVERIFIED, AND IT IS THE HINGE OF A.4**
-> **Does accepting a `LoopShortcut` END THE GAME today?** `predicted_winner: Option<PlayerId>`
-> (`game_state.rs:4333`) suggests the **OFFER may already sit on the game-ending path** — in which case **the
-> terminal separation DOES NOT YET EXIST IN CODE and must be built BEFORE any relaxation.**
-> **Measure this first. Relax NOTHING until it is answered.**
-
-## A.5 — MTR corroborations of claims already in this plan (each now double-warranted)
-
-- **§7's "drive the fixed sequence on a clone"** — MTR's *"The loop actions must be identical in each iteration"* is a
-  **stronger warrant** than the CR 732.2a clause §7 cites.
-- **RC-1** — MTR 4.4: *"nor may they make **irrelevant changes** between iterations in an attempt to **make it appear
-  as though there is no loop**."* ⇒ **The engine currently IMPLEMENTS the behavior the MTR forbids a PLAYER from
-  exploiting.** The firewall is not conservatism; it is the **prohibited outcome**.
-- **RC-2** (bounded start-up transient) — **independently corroborated.** MTR 4.4 constrains only the **loop actions**
-  to be identical each iteration and says nothing forbidding a non-repetitive prefix. RC-2 now has **two independent
-  warrants**.
-- **RC-4** (`ObjectId`-keyed equality) — MTR supplies the exact standard: *"identical in **all relevant ways**."*
-  **An `ObjectId` is not a relevant way.** RC-4 is now a **cited** defect, not a design preference.
-- **P10** (coarsens state equality) — flagged as suspiciously ACCEPT-ward with no warrant. **MTR 4.4 IS the warrant**
-  (*"identical in all relevant ways"* + the irrelevant-changes clause). **It IS accept-ward, and the rules say it is
-  supposed to be.** The soundness surface there is **the definition of "relevant"** — not the direction.
-
-## A.6 — ⛔ DO NOT ADD A NON-DETERMINISM GATE. IT ALREADY EXISTS.
-
-MTR 4.4: *"**Non-deterministic loops** (loops that rely on decision trees, probability, or mathematical convergence)
-**may not be shortcut**."* This reads like a free, rules-mandated scope carve-out worth building.
-
-**It is already built.** `effect_is_randomness_bearing` (`game/ability_scan.rs:4437`) — exhaustive match, **no
-wildcard** (a future random-bearing variant **build-breaks** there), fail-closed, and it **already cites CR 732.2a**.
-
-**This was caught by measuring before recommending. It would otherwise have been Appendix B #20** — *a correct
-rules-layer reading producing a false code-layer claim from memory.* **The banner's failure mode does not spare the
-rules layer. It spares only claims that were MEASURED.**
-
-## A.7 — Sources
-
-- **MTR** — [MAGIC: THE GATHERING® TOURNAMENT RULES, effective 2026-02-27](https://media.wizards.com/ContentResources/WPN/MTG_MTR_2026_Feb27_EN.pdf)
-  — **§4.2** (Tournament Shortcuts), **§4.4** (Loops). Official WotC PDF, via
-  [WPN Rules and Documents](https://wpn.wizards.com/en/rules-documents).
-- **MTR annotations** — [MTR 4.4 Loops](https://blogs.magicjudges.org/rules/mtr4-4/) ·
-  [MTR 4.2 Tournament Shortcuts](https://blogs.magicjudges.org/rules/mtr4-2/) (Judge Rules Resources).
-- **CR** — `docs/MagicCompRules.txt`: **104.4b** (`:366`), **732.1b** (`:6366`), **732.1c** (`:6368`),
-  **732.2a + Example** (`:6372`, `:6373`), **732.4** (`:6383`).
-
-**Rules-layer tally after this addendum: CR 40/40, plus MTR §4.2/§4.4 quoted verbatim from the official PDF — still
-0 failures. The code-layer tally is unchanged at 19 wrong.** *(A.6 would have been #20.)*
-
+> **§C.6 is a trap-avoidance note: do NOT build a non-determinism gate. One already exists** and is already
+> CR-annotated (`game/ability_scan.rs:4437`).
 ---
 
 # §0 — READ THIS FIRST
@@ -196,15 +88,42 @@ rules layer. It spares only claims that were MEASURED.**
 
 ## The four rules that will get you killed
 
-1. **GREP BEFORE YOU ASSERT.** Put the `file:line` in the sentence. **Eighteen errors; every one a code claim from memory.**
+1. **GREP BEFORE YOU ASSERT.** Put the `file:line` in the sentence. **Nineteen errors; every one a code claim from memory.**
 2. **A COARSE RELATION MAY *REJECT*, NEVER *ACCEPT*.** (§5b.1.) Too coarse ⇒ **false certificate ⇒ ends a real game wrongly.** Too fine ⇒ a missed offer ⇒ **safe**. The detector sits on the **only game-ending path**.
 3. ## ⛔⛔ **P4 AND P7 ARE THE ONLY TWO PHASES THAT MOVE THE DETECTOR IN THE *ACCEPT* DIRECTION.**
    **Every other phase errs safe. These two do not.**
    - **P7's ~88 sites are not 88 chances to un-reject — they are 88 chances to WRONGLY CERTIFY.**
+     ### ⛔ **AND BEFORE YOU AUDIT ONE OF THEM: RUN §C.3's EXPERIMENT. P7 MAY NOT BE ON THE CRITICAL PATH AT ALL.**
    - **P4 narrows what a REJECT gate scans.** Narrowing a reject gate ⇒ **fewer rejections ⇒ MORE ACCEPTS.**
      **An under-inclusive zone predicate is a FALSE-CERTIFICATE GENERATOR** — and one was written into this
      very document (**#18**). **Review every line of P4 and P7 against rule 2, twice.**
 4. **NEVER RELAX `GameState::PartialEq`'s `delayed_triggers` CONJUNCT** (`types/game_state.rs:10875`). It is the trap-antidote (§4.9). An implementer chasing corpus rows *will* be tempted. **That way lies a false certificate.**
+
+## ⭐ THE SPEC, IN ONE PARAGRAPH — *what the detector is supposed to DO*
+
+*(The user's, 2026-07-14. Everything else in §0 says what is BROKEN; nothing said what RIGHT looks like. This does.
+Each correction below is measured, not editorial.)*
+
+> **Given a set of card actions the player performed, determine whether that exact set, repeated, produces an
+> unbounded resource. Classify the outcome. Present the shortcut to the player. If accepted, pass priority
+> around the table for interaction.**
+
+**That is the whole design, and it is already more rules-correct than the engine.** It says *"repeat the
+actions"* — it **does NOT say the game state must return to where it started.** Neither does the rulebook
+(§C.2). **The engine adds that requirement** (`analysis/loop_check.rs:132` — *"both detection paths require an
+identical battlefield"*), **and that is why it must reject CR 732.2a's own worked example.**
+
+**Three corrections, each measured:**
+
+| # | The spec says | The rules say | Consequence |
+|---|---|---|---|
+| **1** | *"advantage or win"* | **THREE terminals.** **CR 104.4b** (`docs/MagicCompRules.txt:366`): a loop of **mandatory** actions *"with no way to stop"* ⇒ **the game is a DRAW**; *"loops that contain an optional action don't result in a draw."* | The draw is **the only game-ending terminal that is not a win** — and in **4-player cEDH it draws the WHOLE TABLE.** The certificate already carries `mandatory: bool` (`loop_check.rs:131`) for exactly this. ⇒ **P1** (`LoopOutcome`). |
+| **2** | *"…creates an unbounded resource"* ⇒ then offer | **Unboundedness gates the TERMINAL, not the SHORTCUT.** **CR 732.2a** (`:6372`): a shortcut is a sequence of choices *"that may be legally taken based on the current game state and the predictable results"* — explicitly including *"a loop that repeats **a specified number of times**."* **Unbounded is what the DRAW and the AUTO-WIN need.** | The engine requires a non-empty `unbounded` axis vector as **an invariant of every certificate** (`loop_check.rs:123`) ⇒ **it is an unboundedness PROVER, not a shortcut engine.** ⇒ **§C.4.** |
+| **3** | *"present… then pass priority"* | **MTR 4.4:** the proposer **names the iteration count**, and each opponent may *"announce a lower number after which they intend to intervene."* | ⛔ **`WaitingFor::LoopShortcut` carries `proposer` / `predicted_winner` / `certificate` / `schema` — and NO ITERATION COUNT** (`types/game_state.rs:4458-4465`, measured). Irrelevant for an auto-win; **it is the missing field for the ADVANTAGE branch** (*"I'll create a million tokens"*). |
+
+**What the spec correctly leaves implicit** (both already constrain the engine): the actions must be **identical
+each iteration** and **may not be conditional** (MTR 4.4 + CR 732.2a), and **non-deterministic loops may not be
+shortcut at all** — that last one **is already implemented** (`game/ability_scan.rs:4437`, and see **§C.6**).
 
 ## ⭐ The bug, in one sentence
 
@@ -272,7 +191,8 @@ cards, and we decline it.**
 |---|---|
 | **To EXECUTE** | **§6** (phases) · **§7** (verification matrix) · **§8** (open questions) |
 | To understand *why* | §3 (root cause) · §4 (architecture) · §5–§5b (object identity; why `egg` was rejected) |
-| **To not repeat a refuted claim** | ⭐ **Appendix B** — **17 errors, every one a code claim from memory.** **Read it before you assert anything.** |
+| **To not repeat a refuted claim** | ⭐ **Appendix B** — **19 errors, every one a code claim from memory.** **Read it before you assert anything.** |
+| **The tournament-rules layer** (MTR 4.4) — **and the experiment that may retire P7** | ⭐ **Appendix C**, esp. **§C.3** |
 
 ---
 
@@ -800,7 +720,7 @@ infinite**."* Single authority: `ability_has_per_turn_activation_gate` (**`resou
 >
 > > ## **The drive measures what RESOLVES inside the window. It is structurally blind to what the window SCHEDULES.**
 
-### 4.7 The blind-spot taxonomy — **THREE categories**, and the five checks
+### 4.7 The blind-spot taxonomy — **THREE categories**, and the six checks
 
 **So ask the only question that matters: what can the CURRENT BOARD do that the DRIVE CANNOT SEE?**
 
@@ -841,7 +761,7 @@ citations in this codebase)*:
 >
 > **All four checks pass on a loop whose entire growth axis is destroyed at the next end step.**
 
-### 4.8 The five checks
+### 4.8 The six checks
 
 | # | Check | Catches | Status |
 |---|---|---|---|
@@ -1981,7 +1901,7 @@ negative — its PAIRED POSITIVE REACH-GUARD.** Cast-pipeline tests follow the *
 10. **The rules work has held; every failure was a CODE claim from memory.** Eighteen for eighteen.
     **Grep before you assert, and put the `file:line` in the sentence.**
 
-## Appendix B — What we got wrong (eighteen times)
+## Appendix B — What we got wrong (nineteen times)
 
 > **Every single one is a CODE claim asserted from memory. The RULES layer has never once failed** — 40/40 CR
 > citations and 32/32 Oracle texts verified across six audits. **This appendix is the plan's immune system.**
@@ -2006,8 +1926,157 @@ negative — its PAIRED POSITIVE REACH-GUARD.** Cast-pipeline tests follow the *
 | 14 | **(planner)** *"`is_on()` has live production callers at `session.rs:1625,1636`"* | **FALSE.** **Zero production callers** — all six sites are inside `#[test]` fns. *(Caught pre-flight by team-lead; never reached the document. **`is_off()` IS production-load-bearing**, at `match_config.rs:36`.)* |
 | **15** | **(planner)** *"Gate (4)'s `modifications` veto blocks the user's board — **Freed from the Real is an aura, and auras carry modifications**"* | ⛔ **FALSE.** Measured on the fixture's real `GameObject`: **`Freed from the Real \| Battlefield \| static_definitions: []`** — **EMPTY.** An aura granting only *activated* abilities has no modifications. **Battlefield objects with a static modification on that board: ZERO.** Gate (4) fires there **only via the LIBRARY** ⇒ **P4 fully discharges it** ⇒ **arm (a) alone IS sufficient.** ⭐ **The lesson: I read `resource.rs:1539` CORRECTLY and then inferred REACHABILITY from memory. A correct reading of the code is not a correct claim about the board.** *(Worse: my first refutation used a jq path — `.parse_details.*` — that does not exist. The conclusion held, but for a moment the evidence didn't. **Re-measure against the authoritative source.**)* |
 | **16** | **(team-lead)** *"Freed from the Real is an AURA — which is precisely why it appeared in the trip list. **Your inference is confirmed.**"* | ⛔ **FALSE — and it "confirmed" a claim the planner had ALREADY RETRACTED.** Two authors, independently, **within one hour**, invented the *same* aura→modifications link from memory — **while writing the document whose entire purpose is to prevent exactly that.** The **decision** (two-arm P7) is right; the **rationale** is not. **Arm (b) is a latent class defect, not a root cause.** |
-| **18** | ⛔⛔ **(planner)** *"Gate (3)'s runtime authority restricts to `[Battlefield, Command]` (+ entering / discarded). Share that predicate."* | ⛔ **UNSOUND — AND IN THE *ACCEPT* DIRECTION, WHICH IS THE CATASTROPHIC ONE.** That is **three of FIVE clauses**, and it misses the **`liminal`** sub-clause entirely. Measured, `replacement.rs:4891-97`: `!in_scanned_zone && !is_entering && !is_being_discarded && !is_applicable_dredge && !is_stack_self_move`, with `in_scanned_zone = !is_liminal_source && [BF, Command].contains(zone)` (`:4873`). **A DREDGE card in a GRAVEYARD functions at runtime (CR 702.52a/b, and it is not SelfRef-gated) — my predicate made it INVISIBLE to the analysis.** ⭐ **Gate (3) is a REJECT gate ⇒ narrowing what it scans ⇒ FEWER rejections ⇒ MORE ACCEPTS ⇒ a FALSE-CERTIFICATE GENERATOR.** **I spent this entire session writing *"a coarse relation may REJECT, never ACCEPT"* — and then wrote the accept-direction bug into P4 myself.** ⇒ **The fix is to CALL the authority, not mirror it** (P4). ⇒ **And the lesson generalizes: P4 and P7 are the only two phases that move the detector toward ACCEPT. They need double the review of everything else — see §0 rule 3.** |
 | **17** | ⭐⭐ **(planner)** *"RC-1 is one wrong arm. **Arm (a) + P4 is NECESSARY AND SUFFICIENT** for the user's bug — ~10 lines, already probe-measured."* | ⛔⛔ **FALSE, AND IT IS THE MOST IMPORTANT ENTRY IN THIS TABLE.** **I built the fix in an isolated worktree and RAN the failing test.** It still declined. Instrumented: arming is **fine** (⇒ **P3 is not on Combo A's path** — that half was right), the drive is **fine**, and the cover dies in `fire_time_conditions_read_growing_class` at **gate (3)** — on **Pentad Prism**, *a card in the user's own combo* (`QuantityRef::ManaSpentToCast => Axes::CONSERVATIVE`, `ability_scan.rs:2072`). Fixed that arm ⇒ next blocker **Choked Estuary**, *a land* (`Effect::RevealFromHand => Axes::CONSERVATIVE`, `:910`). **Fix an arm, the next card appears.** ⇒ **RC-1 is a CLASS: `sibling` is a fail-closed default over ~88 sites (57 `Axes::CONSERVATIVE` + 31 `sibling: true`) consumed as a precise predicate.** ⭐ **THE ROOT ERROR: the probe that "proved" the 10-line fix was run on a CLEAN TWO-CARD BOARD. It was a VACUOUS DISCRIMINATOR — the exact failure this document spends a whole section quarantining, committed in the document's own root-cause claim.** **A single-fixture probe cannot distinguish a CLASS fix from a CARD fix. Only the corpus dual (P2) can — which is why P2 is in Tier 1.** |
+| **18** | ⛔⛔ **(planner)** *"Gate (3)'s runtime authority restricts to `[Battlefield, Command]` (+ entering / discarded). Share that predicate."* | ⛔ **UNSOUND — AND IN THE *ACCEPT* DIRECTION, WHICH IS THE CATASTROPHIC ONE.** That is **three of FIVE clauses**, and it misses the **`liminal`** sub-clause entirely. Measured, `replacement.rs:4891-97`: `!in_scanned_zone && !is_entering && !is_being_discarded && !is_applicable_dredge && !is_stack_self_move`, with `in_scanned_zone = !is_liminal_source && [BF, Command].contains(zone)` (`:4873`). **A DREDGE card in a GRAVEYARD functions at runtime (CR 702.52a/b, and it is not SelfRef-gated) — my predicate made it INVISIBLE to the analysis.** ⭐ **Gate (3) is a REJECT gate ⇒ narrowing what it scans ⇒ FEWER rejections ⇒ MORE ACCEPTS ⇒ a FALSE-CERTIFICATE GENERATOR.** **I spent this entire session writing *"a coarse relation may REJECT, never ACCEPT"* — and then wrote the accept-direction bug into P4 myself.** ⇒ **The fix is to CALL the authority, not mirror it** (P4). ⇒ **And the lesson generalizes: P4 and P7 are the only two phases that move the detector toward ACCEPT. They need double the review of everything else — see §0 rule 3.** |
+| **19** | **(team-lead)** *"No test anywhere asserts `!sibling`"* | ⛔ **FALSE — and it is a false claim inside the very section arguing for rigour.** `ability_scan.rs:5215` asserts **exactly** that, inside `sibling_mutable_axis_discriminates`. ⭐ **The error was not "a missing test" — it was ASSERTING THE ABSENCE OF A TEST WITHOUT GREPPING FOR IT.** *(The precise claim is **stronger** than the false one: the positive guard that DOES exist — `fixed_drain` = `GainLife{ Fixed(1), Controller }`, `:4879` — **references no object filter at all**, so it is **NON-discriminating**. It gave FALSE COMFORT while the boundary went undefended. That is §0's one-sided ratchet, and it means the gap was worse than "untested": it was **believed tested**.)* |
 | — | *"The untap step is CR 502.2"* | **FALSE.** 502.2 is **day/night** (`:2150`). The untap step is **CR 502.3** (`:2154`). |
 | — | *"An LP / Petri-VAS model would replace the drive"* | **Unsound.** Δ is not derivable (replacements); legality is not a resource. |
 | — | *"Adopt `egg` for the equality core"* | **REJECTED on measurement.** With zero rewrite rules, `Analysis::merge` is **never called** ⇒ egg-minus-rewrites is a memoized catamorphism, **and `ability_scan.rs` already is one.** **The bug is a wrong arm, not drift.** §5b.2. |
+
+---
+
+## Appendix C — The tournament-rules layer (MTR §4.4) — *added after the `e677fefb1` freeze*
+
+*Every citation below was printed by a tool. Every code claim is tagged **measured** or **UNVERIFIED**.*
+
+The real board is **4-player cEDH**, which is played under the **Magic Tournament Rules** — and **CR 732.1c**
+(`docs/MagicCompRules.txt:6368`) says the MTR **takes precedence** over CR 732 during a tournament:
+
+> *"Tournaments use a modified version of the rules governing shortcuts and loops… **Whenever the Tournament
+> Rules contradict these rules during a tournament, the Tournament Rules take precedence.**"*
+
+⇒ **MTR 4.4 — not CR 732.2a — is the governing text for the board this plan is about.**
+
+### C.1 — It is NOT gated on Rules Enforcement Level (measured)
+
+**MTR §4.4 contains ZERO REL qualifiers.** Measured: 0 occurrences of `Competitive|Professional|Regular|Enforcement`
+across its 49 lines (official PDF → `pdftotext -layout`; §4.4 = lines 1122–1170). The only REL gates anywhere in
+MTR §4 are note-taking methods (§4.1), derived-information status (§4.1), and table layout (§4.7).
+
+**The loop regime is identical at Regular, Competitive, and Professional REL** — and its core constraint
+(*no conditional actions*) is **also in the CR itself** (`:6372`), so it holds in casual play too.
+
+⇒ **The engine needs no REL toggle and no "tournament mode." There is nothing to gate.**
+
+### C.2 — ⭐ THE LOAD-BEARING FINDING: THE RULES KEY ON **ACTIONS**; THE ENGINE KEYS ON **STATE**
+
+> **MTR 4.4:** *"A loop is a form of tournament shortcut that involves **detailing a sequence of actions to be
+> repeated** and then performing a number of iterations of that sequence. **The loop actions must be identical
+> in each iteration** and cannot include conditional actions."*
+>
+> **CR 732.1b** (`:6366`): *"a set of **actions** could be repeated indefinitely (thus creating a 'loop')."*
+
+**Both documents define a loop by the repeatability of the ACTION SEQUENCE. Neither one ever requires the GAME
+STATE to recur.** State recurrence appears in the rules in exactly **two** places, and both are strictly narrower
+than the general case:
+
+1. MTR 4.4's stopping rule for **non-deterministic** loops — *"must stop if… a previous game state (or one
+   identical in all relevant ways) is reached again."*
+2. MTR 4.4's **multi-turn** condition — *"Loops may span multiple turns if a game state is not meaningfully changing."*
+
+**This is decisive, because CR 732.2a's own worked example DOES NOT RECUR.** Presence of Gond + Intruder Alarm
+(`:6373`) **adds an Elf Warrior token every iteration** — its state provably never repeats — and the CR calls it a
+loop and shortcuts it **a million times**.
+
+> ## ⇒ **A STATE-RECURRENCE DETECTOR *MUST* REJECT THE RULEBOOK'S OWN WORKED EXAMPLE.**
+> ## **That is not a bug in a predicate. It is the WRONG PREDICATE.**
+
+### C.3 — What that predicts about this codebase
+
+| Fact | Where | Status |
+|---|---|---|
+| `LoopCertificate.unbounded: Vec<ResourceAxis>` — *"A non-empty vector is an invariant of a returned certificate."* ⇒ **the detector is an UNBOUNDEDNESS PROVER** | `analysis/loop_check.rs:119`, `:123` | ✅ **measured** |
+| `LoopCertificate.residual_board_delta` — *"**EMPTY for every certificate this phase produces** (both detection paths require an identical battlefield)"* | `analysis/loop_check.rs:132` | ✅ **measured** |
+| `WaitingFor::LoopShortcut` carries `proposer`, `predicted_winner`, `certificate`, `schema` — **and NO iteration count anywhere** | `types/game_state.rs:4329` | ✅ **measured** |
+| MTR 4.4's intervention right **is** already modelled | `WaitingFor::RespondToShortcut`, `types/game_state.rs:4347` | ✅ **measured** |
+
+**Neither board equality nor a non-empty `unbounded` is a rules requirement for a shortcut.** Unboundedness is
+required only for the **CR 104.4b draw** (`:366`) and for auto-win — **NOT for the OFFER.**
+
+> ## ⛔ FALSIFIABLE PREDICTION — TEST THIS *BEFORE* AUDITING 88 SITES
+>
+> **Witherbloom + Sprout Swarm's growth axis is tapped tokens ON THE BATTLEFIELD, and the certificate requires an
+> IDENTICAL BATTLEFIELD** (`loop_check.rs:132`). If that gates certification, then **P7 could be executed PERFECTLY
+> and `real_board_sprout_swarm_offers_loop_shortcut` would STILL BE RED.**
+>
+> **P7 — this plan's largest phase and its ONLY unsized open question (§8 Q0, *"could be 30 arms or 300"*) — may be
+> defending the wrong wall entirely.**
+>
+> ### The experiment, and it is cheap:
+> **In a throwaway worktree, stub the fire-time firewall to ALWAYS ACCEPT, then run the ignored acceptance test.**
+> - **GREEN** ⇒ P7 is real. Its size is the question, and §8 Q0's instrumentation is the right next move.
+> - **RED** ⇒ **no number of arms will ever fix it.** The root cause is the certificate's **SHAPE**, and **P7 leaves
+>   the critical path.**
+>
+> §8 Q0's instrumentation **assumes** the firewall is the blocker. This experiment **tests** that assumption, is
+> strictly cheaper, and is strictly more informative. **It is the correct first measurement.**
+> *(**UNVERIFIED** — it has not been run.)*
+
+### C.4 — The relaxation this implies — and why it does NOT violate §0 rule 2
+
+**Proposal (ACCEPT-ward — flagged loudly, per §0 rule 2):** let the certificate carry a **bound K** — drive the
+fixed sequence on a clone until an action becomes illegal or an outcome diverges from iteration 1; **that iteration
+is K** — instead of requiring a non-empty `unbounded` axis vector.
+
+**This also collapses C2 and C3.** MTR 4.4 fixes the *program*, not the *trace* — so a depleting library (**C2**) or a
+threshold tripping at a future iteration (**C3**) still make iteration *k* ≠ iteration 1. But under a bound they stop
+being **static REJECT gates that must prove nothing bad ever happens** and become **the thing the drive measures**:
+whichever bites first *is* K. That is §7's own argument, carried to its conclusion.
+
+**Why this is not the false-certificate generator §0 rule 2 warns about:** **rule 2 is scoped to the GAME-ENDING
+path.** An **L-OFFER** that says *"repeat this N times"* **ENDS NO GAME** — it is a labor-saving shortcut, and every
+opponent retains MTR 4.4's intervention right (*"announce a lower number after which they intend to intervene"*),
+which the engine **already models** at `RespondToShortcut` (`game_state.rs:4347`). **The game-ending terminals are
+L-AUTOWIN and the CR 104.4b draw — and those KEEP the `unbounded` requirement, unchanged.**
+
+⇒ **The relaxation is ACCEPT-ward ONLY on the terminal that cannot end a game.** That is exactly the 3-terminal
+partition this plan already has (**L-OFFER / L-AUTOWIN / WAIVED**) — and MTR 4.4 says that partition is
+**load-bearing, not cosmetic.**
+
+> ## ⚠️ **UNVERIFIED, AND IT IS THE HINGE OF C.4**
+> **Does accepting a `LoopShortcut` END THE GAME today?** `predicted_winner: Option<PlayerId>`
+> (`game_state.rs:4333`) suggests the **OFFER may already sit on the game-ending path** — in which case **the
+> terminal separation DOES NOT YET EXIST IN CODE and must be built BEFORE any relaxation.**
+> **Measure this first. Relax NOTHING until it is answered.**
+
+### C.5 — MTR corroborations of claims already in this plan (each now double-warranted)
+
+- **§7's "drive the fixed sequence on a clone"** — MTR's *"The loop actions must be identical in each iteration"* is a
+  **stronger warrant** than the CR 732.2a clause §7 cites.
+- **RC-1** — MTR 4.4: *"nor may they make **irrelevant changes** between iterations in an attempt to **make it appear
+  as though there is no loop**."* ⇒ **The engine currently IMPLEMENTS the behavior the MTR forbids a PLAYER from
+  exploiting.** The firewall is not conservatism; it is the **prohibited outcome**.
+- **RC-2** (bounded start-up transient) — **independently corroborated.** MTR 4.4 constrains only the **loop actions**
+  to be identical each iteration and says nothing forbidding a non-repetitive prefix. RC-2 now has **two independent
+  warrants**.
+- **RC-4** (`ObjectId`-keyed equality) — MTR supplies the exact standard: *"identical in **all relevant ways**."*
+  **An `ObjectId` is not a relevant way.** RC-4 is now a **cited** defect, not a design preference.
+- **P10** (coarsens state equality) — flagged as suspiciously ACCEPT-ward with no warrant. **MTR 4.4 IS the warrant**
+  (*"identical in all relevant ways"* + the irrelevant-changes clause). **It IS accept-ward, and the rules say it is
+  supposed to be.** The soundness surface there is **the definition of "relevant"** — not the direction.
+
+### C.6 — ⛔ DO NOT ADD A NON-DETERMINISM GATE. IT ALREADY EXISTS.
+
+MTR 4.4: *"**Non-deterministic loops** (loops that rely on decision trees, probability, or mathematical convergence)
+**may not be shortcut**."* This reads like a free, rules-mandated scope carve-out worth building.
+
+**It is already built.** `effect_is_randomness_bearing` (`game/ability_scan.rs:4437`) — exhaustive match, **no
+wildcard** (a future random-bearing variant **build-breaks** there), fail-closed, and it **already cites CR 732.2a**.
+
+**This was caught by measuring before recommending. It would otherwise have been Appendix B #20** — *a correct
+rules-layer reading producing a false code-layer claim from memory.* **The banner's failure mode does not spare the
+rules layer. It spares only claims that were MEASURED.**
+
+### C.7 — Sources
+
+- **MTR** — [MAGIC: THE GATHERING® TOURNAMENT RULES, effective 2026-02-27](https://media.wizards.com/ContentResources/WPN/MTG_MTR_2026_Feb27_EN.pdf)
+  — **§4.2** (Tournament Shortcuts), **§4.4** (Loops). Official WotC PDF, via
+  [WPN Rules and Documents](https://wpn.wizards.com/en/rules-documents).
+- **MTR annotations** — [MTR 4.4 Loops](https://blogs.magicjudges.org/rules/mtr4-4/) ·
+  [MTR 4.2 Tournament Shortcuts](https://blogs.magicjudges.org/rules/mtr4-2/) (Judge Rules Resources).
+- **CR** — `docs/MagicCompRules.txt`: **104.4b** (`:366`), **732.1b** (`:6366`), **732.1c** (`:6368`),
+  **732.2a + Example** (`:6372`, `:6373`), **732.4** (`:6383`).
+
+**Rules-layer tally after this addendum: CR 40/40, plus MTR §4.2/§4.4 quoted verbatim from the official PDF — still
+0 failures. The code-layer tally is unchanged at 19 wrong.** *(C.6 would have been #20.)*
+
