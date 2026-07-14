@@ -1,4 +1,30 @@
-# Combo detector — the plan
+# Combo detector — the plan *(Rev 1)*
+
+> # ⛔⛔ SUPERSEDED — DO NOT IMPLEMENT. ITS ROOT CAUSE IS **MEASURED FALSE**.
+> ## ⇒ **The plan of record is [`COMBO-DETECTOR-LIVE-PLAN.rev4.md`](./COMBO-DETECTOR-LIVE-PLAN.rev4.md).**
+> **Lineage:** Rev 1 *(this doc)* → [`COMBO-DETECTOR-PLAN-REVIEW.md`](./COMBO-DETECTOR-PLAN-REVIEW.md) **(REJECT, 8
+> blockers)** → [`COMBO-DETECTOR-PLAN-REVISED.md`](./COMBO-DETECTOR-PLAN-REVISED.md) *(Rev 2)* →
+> [`COMBO-DETECTOR-LIVE-PLAN.rev3.md`](./COMBO-DETECTOR-LIVE-PLAN.rev3.md) →
+> [`COMBO-DETECTOR-LIVE-PLAN.rev3-REVIEW.md`](./COMBO-DETECTOR-LIVE-PLAN.rev3-REVIEW.md) **(REJECT, 5 blockers)** →
+> **Rev 4**.
+>
+> **What this document got WRONG (each refuted by running the engine, not by argument):**
+> 1. ⛔ **§3's root cause — "the covers read HIDDEN ZONES" — is NOT the blocker.** The CR 400.2 hidden-zone leak is
+>    **real** and worth fixing, but the canary's **three vetoes are ALL BATTLEFIELD-RESIDENT.** Scoping the covers to
+>    visible zones unblocks **ZERO**. §4's P2 header — *"(the rules fix — AND the reachability fix)"* — is **false**.
+> 2. ⛔ **The real gap is REACH**, which this document never mentions: the only path that offers object growth arms
+>    **solely on a buyback-paid, token-creating SPELL** (`casting_costs.rs:6795`), and CR 732.2a's own worked example
+>    **casts nothing.**
+> 3. ⛔ **§4's P4 ("DELETE `LoopDetectionMode::On`") is not a refactor** — `On` ships in the `combo-verify` binary and
+>    crosses the WS protocol, the WASM bridge, saved games and localStorage. **User directive: all three modes stay.**
+> 4. ⛔ **§5's Gaea's Cradle acceptance criterion is VACUOUS** — it fails closed via an unrelated `Effect::Mana`
+>    blanket and would still pass with the `sibling` axis deleted entirely.
+>
+> **What it got RIGHT and what the successors kept:** §0 (the detector is **opt-in**; `Off` is the default and IS the
+> CR 732.2a opt-in), §1 (the five-stage spec, and the ⭐ observation that **the rules never require state recurrence** —
+> the rulebook's own example adds a token every iteration), §2's conclusion (**not a capability problem — the detector
+> cannot be REACHED**), §5's doctrine (**the combos are CANARIES, not GOALS**), and §6's soundness rule
+> (***a coarse relation may REJECT, never ACCEPT***). **Its RULES reasoning has never failed a single audit.**
 
 **2026-07-14** · Every code citation measured against **`main` @ `efc76ca1b`**.
 *(The six prior docs are **STALE** — written against a tree 768 commits behind `main`. Read them for rules
