@@ -94,10 +94,10 @@
 use crate::types::ability::{
     AbilityCondition, AbilityCost, AbilityDefinition, ContinuousModification, ControllerRef,
     CountScope, Duration, EachDamageRecipient, Effect, FilterProp, ForEachCategoryAction,
-    GuessSubject, ModalChoice, MultiTargetSpec, ObjectScope, PlayerFilter, PlayerScope,
-    QuantityExpr, QuantityRef, RepeatContinuation, ReplacementCondition, ResolvedAbility,
-    StaticCondition, TargetChoiceTiming, TargetFilter, TrackedAnaphorSource, TriggerCondition,
-    TypedFilter,
+    GuessSubject, ManaProduction, ModalChoice, MultiTargetSpec, ObjectScope, PlayerFilter,
+    PlayerScope, QuantityExpr, QuantityRef, RepeatContinuation, ReplacementCondition,
+    ResolvedAbility, StaticCondition, TargetChoiceTiming, TargetFilter, TrackedAnaphorSource,
+    TriggerCondition, TypedFilter,
 };
 use crate::types::game_state::TargetSelectionConstraint;
 use crate::types::keywords::Keyword;
@@ -849,7 +849,7 @@ fn scan_effect(x: &Effect) -> Axes {
             clear_triggers: _,
             clear_coin_flips: _,
         } => Axes::NONE,
-        Effect::Mana { .. } => Axes::CONSERVATIVE,
+        Effect::Mana { produced, .. } => scan_mana_production(produced),
         Effect::Discard {
             count,
             target,
@@ -2096,6 +2096,52 @@ fn scan_quantity_ref(x: &QuantityRef) -> Axes {
             acc
         }
         QuantityRef::VoteCount { choice_index: _ } => Axes::NONE,
+    }
+}
+
+/// CR 605.1a: does a mana ability's PRODUCTION read a mutable board axis?
+///
+/// Replaces a blanket `Effect::Mana => Axes::CONSERVATIVE`, which classified EVERY mana
+/// source — including a basic `Forest` (`{T}: Add {G}`) — as a live reader of the growing
+/// class. That made the §5.3a firewall reject any board holding a single land, so an
+/// object-growth loop could only ever certify on a board with ZERO mana sources (i.e. only
+/// in a synthetic fixture, never in a real game).
+///
+/// Descends by variant instead. `Fixed`/`Mixed` carry only static color lists and read
+/// nothing. A *dynamic* mana ability ("add {G} for each creature you control", Gaea's
+/// Cradle) expresses its board read through a `count: QuantityExpr` — or through the
+/// ability-level `repeat_for`, which `ability_definition_axes` already scans — so those
+/// still classify CONSERVATIVE via `scan_quantity_expr`. Filter-bearing productions
+/// (Mox Amber / Cactus Preserve class) read permanents directly and route through
+/// `scan_target_filter`. Anything not provably static stays fail-closed.
+fn scan_mana_production(x: &ManaProduction) -> Axes {
+    match x {
+        // Purely static color lists — no game-state read (CR 106.1).
+        ManaProduction::Fixed { .. } | ManaProduction::Mixed { .. } => Axes::NONE,
+
+        // Count-parameterized: the read (if any) lives in the QuantityExpr.
+        ManaProduction::Colorless { count }
+        | ManaProduction::AnyOneColor { count, .. }
+        | ManaProduction::AnyCombination { count, .. }
+        | ManaProduction::ChosenColor { count, .. }
+        | ManaProduction::OpponentLandColors { count, .. }
+        | ManaProduction::AnyCombinationOfObjectColors { count, .. }
+        | ManaProduction::AnyInCommandersColorIdentity { count, .. } => scan_quantity_expr(count),
+
+        // Filter-bearing: reads permanents/lands directly.
+        ManaProduction::AnyTypeProduceableBy {
+            count,
+            land_filter: filter,
+        }
+        | ManaProduction::AnyOneColorAmongPermanents { count, filter, .. } => {
+            scan_quantity_expr(count).or(scan_target_filter(filter))
+        }
+        ManaProduction::DistinctColorsAmongPermanents { filter } => scan_target_filter(filter),
+
+        // Fail-closed on every production this walk cannot prove static.
+        ManaProduction::ChoiceAmongExiledColors { .. }
+        | ManaProduction::ChoiceAmongCombinations { .. }
+        | ManaProduction::TriggerEventManaType => Axes::CONSERVATIVE,
     }
 }
 
