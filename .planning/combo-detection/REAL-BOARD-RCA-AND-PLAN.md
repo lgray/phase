@@ -393,6 +393,82 @@ exact sibling-cluster smell CLAUDE.md prohibits (*"three or more variants that �
 context label … is a parameterization that didn't happen"*). Two shapes today become five tomorrow.
 **Parameterize on the action; do not proliferate contexts.** See Phase 5.
 
+### 4.9 The DUAL — and the abstraction is already in the tree
+
+**Do not write a second suite. Write the dual of the one that exists.** `corpus.rs:1175` already carries
+the exact abstraction:
+
+```rust
+/// `step` drives exactly ONE loop iteration's actions.
+pub(crate) fn run_combo<S: FnMut(&mut LoopProbe)>(board: ComboBoard, mut step: S)
+    -> Option<LoopCertificate>
+{
+    const WARMUP: usize = 2;                    // ← see (2) below
+    const STEADY: usize = 3;
+    for _ in 0..WARMUP { step(&mut probe); … }  // burn the transient
+    for _ in 0..STEADY {
+        let start = …; step(&mut probe); let delta = probe.iteration_delta(); let end = …;
+        if let Some(cert) = detect_loop(&start, &end, &delta, controller, false) { return Some(cert) }
+    }
+    None
+}
+```
+
+**`step` IS the CR 732.2a fixed sequence.** A human writes it per row; `detect_loop` merely *judges* it.
+The live path gets no such gift — it must **discover** the same cycle from arming. That asymmetry is the
+entire bug, and it names the dual exactly:
+
+| | who supplies the cycle | who judges | today |
+|---|---|---|---|
+| **`run_combo`** (offline) | the **test author** (`step`) | `detect_loop` | 12 rows drive |
+| **`run_combo_live`** (**the DUAL — to build**) | **the ENGINE must discover it** | `WaitingFor::LoopShortcut` | **0 rows** |
+
+> ## The duality invariant — this is the pattern
+> **Same `ComboRow`. Same `ComboBoard`. Same `step` closure. Two observers.**
+> For every row whose cycle contains an **optional player action** (CR 732.4 / CR 104.4b — every
+> non-drain row), driving `step` through the **real `apply()` reducer** must OFFER **iff** `detect_loop`
+> certifies:
+>
+> - **certifies-offline ∧ ¬offers-live** ⇒ **RC-3** — a false negative in real play. **Today this is
+>   ALL 12 driven rows**, including **row 1 = Kilo + Freed + Relic** — *the corpus already certifies
+>   Combo B offline and has never once offered it live.*
+> - **offers-live ∧ ¬certifies-offline** ⇒ **UNSOUNDNESS** — the live path certifies something the
+>   analyzer rejects. Catastrophic; this direction is why the dual must be a **bi-implication**, not a
+>   one-way "does it offer" check.
+>
+> **Zero duplication.** `ComboDriver::Offline(f)` becomes a route-agnostic `Cycle(f)` driven by **both**
+> routes; `DRIVERS` (`corpus.rs:673`) stays the single source of truth, and its existing meta/partition
+> tests extend to the dual for free.
+
+**Three things this reveals, all measured:**
+
+**(1) The offline harness already tolerates the transient — the live path does not.** `WARMUP = 2`
+(`corpus.rs:1180`) burns two cycles *before* measuring. That is **independent confirmation of RC-2**
+from the tree's own harness: the offline route was built knowing loops have a bounded start-up
+transient, and the live route's two-pair cover requirement (§3.2) forgot.
+
+**(2) `step` can be MULTI-ACTION — so `LoopProbeContext` must carry a SEQUENCE, not an action.**
+`drive_offline_devoted_vizier` (row 6, Devoted Druid + Vizier of Remedies) drives **two activations per
+cycle**. **CR 732.2a says "a sequence of game choices" — plural.** A `LoopProbeContext { action }` is
+therefore wrong on both the rules and the evidence. It must be `{ actions, controller, decisions }`.
+This corrects Phase 5 and closes Open Question #8.
+
+**(3) The honest ceiling, already measured by the tree itself.** Only **12 of 53** rows drive; **4** are
+card-gated; **37** carry a `DeferralBucket` — *the tree's own accounting of what the detector cannot do*:
+
+| `DeferralBucket` | rows | what it means |
+|---|---|---|
+| `ObjectReentry` | **13** | a permanent that dies/blinks/bounces returns with a **fresh `ObjectId`**, so id-keyed loop equality sees a different board |
+| `Other` | 20 | no bespoke driver on today's in-place loop model |
+| `ExtraTurnOrCombat` | 3 | each cycle advances `turn_number` ⇒ not board-identical |
+| `ColorConverting` | 1 | per-color net-progress rule rejects it |
+
+**`ObjectReentry` (13 rows — the single largest bucket) is almost certainly already solvable.**
+`normalize_recast_frame` (`engine.rs:1724`) exists precisely to *"clear churning token-id bookkeeping
+(CR 400.7)"* on the recast path. **Generalizing that normalization is the highest-leverage coverage win
+in the entire corpus** — and it is a *pattern* fix (object identity across a loop cycle), not a card fix.
+**Measure it in Phase 0; it may be worth more than Phases 1–5 combined.**
+
 ### 4.7 Explicitly OUT of scope — an engineering cut, NOT a rules constraint (see D5)
 
 - **Nested / multiple loops** and **turn-crossing loops** (Time Vault). **CR 732.2a permits all three.**
@@ -477,30 +553,40 @@ two root causes, and **neither alone makes the acceptance test pass** — the im
 red test to stay red after Phase 1 and to turn green after Phase 2. **Say so in the PR, or a green-after-
 Phase-1 report is a false positive.**
 
-### Phase 0 — Drive the CORPUS through the LIVE path (DO THIS FIRST; it is the anti-purpose-built gate)
+### Phase 0 — `run_combo_live`: the DUAL of the corpus harness (DO THIS FIRST — it is the anti-purpose-built gate)
 
-This phase is what stops the rest of the plan from becoming a two-combo patch. **It is the single most
-valuable change in this document**, and it must land *before* any fix, because it is the only thing that
-can tell you whether a fix generalized.
+**This is the single most valuable change in this document.** It must land *before* any fix, because it
+is the only thing that can tell you whether a fix generalized. It is not a new suite — it is the **dual**
+of `run_combo` (§4.9), sharing the row, the board, and the `step` closure.
 
-1. **Partition the 53 corpus rows** into:
-   - **LIVE-OFFERABLE** — the loop contains an **optional** player action (CR 732.4 / CR 104.4b) ⇒ it
-     **must** produce `WaitingFor::LoopShortcut` on the interactive path.
-   - **OFFLINE-ONLY** — a **mandatory** loop with no player action (the two drain cascades) ⇒ correctly
-     `detect_loop`-only. **Exclude, don't force.**
-   The partition itself is the deliverable: it is a rules-derived statement of what the live detector
-   *owes*.
-2. **Replay every LIVE-OFFERABLE row through the interactive offer path** and assert
-   `WaitingFor::LoopShortcut`. Today **zero** rows do this
-   (`grep -c "WaitingFor::LoopShortcut" corpus.rs` == 0), so **most will fail immediately** — that is the
-   RC-3 coverage debt made visible, and it is the non-vacuity proof for Phases 1–5.
-3. **Real cards, real libraries, real mana bases.** Add a `GameScenario` builder loading **real Oracle
+1. **Route-agnostify the driver.** `ComboDriver::Offline(f)` → `ComboDriver::Cycle(f)`. `DRIVERS`
+   (`corpus.rs:673`) stays the single source of truth; `LiveDrain` stays as-is (mandatory ⇒ CR 732.4).
+2. **Build `run_combo_live(board, step) -> Option<LoopShortcutOffer>`** as the mirror of `run_combo`
+   (`corpus.rs:1175`): **same `WARMUP`/`STEADY` shape** (the warm-up is what tolerates the bounded
+   transient — §4.9(1)), but drive `step` through the **real `apply()` reducer** and observe
+   `WaitingFor::LoopShortcut` instead of calling `detect_loop`.
+3. **Assert the duality invariant (§4.9) as a BI-IMPLICATION**, per row, for every non-`LiveDrain` row:
+   ```
+   run_combo(board, step).is_some()  ==  run_combo_live(board, step).is_some()
+   ```
+   - **Today every driven row fails the ⇒ direction** (12 certify offline, **0** offer live) — including
+     **row 1, Kilo + Freed + Relic**, which is *this document's Combo B, already certified offline and
+     never once offered live.* That is the RC-3 debt made visible, and it is the non-vacuity proof for
+     Phases 1–5.
+   - **The ⇐ direction is the soundness guard**: a row that offers live but does not certify offline
+     means the live path is certifying something the analyzer rejects. **This direction must NEVER go
+     red**, and it is why the dual is a bi-implication and not a one-way "does it offer" check.
+4. **Real cards, real libraries, real mana bases.** Add a `GameScenario` builder loading **real Oracle
    text from `card-data.json`** with a real library, and port
    `object_growth_51st_sprout_swarm_covers_and_offers` onto it. **It must FAIL today.**
-4. Add **Presence of Gond + Intruder Alarm** — **CR 732.2a's own worked example** — as a first-class row.
-5. **Review gate:** reject any combo-detector acceptance test with zero lands, an empty library, or a
-   stub oracle; reject any fix that turns exactly the two combos in this document green and leaves the
-   LIVE-OFFERABLE partition red.
+5. Add **Presence of Gond + Intruder Alarm** — **CR 732.2a's own worked example** — as a first-class row
+   with a `step` closure, so it is driven by **both** routes.
+6. **Measure the `ObjectReentry` bucket (13 rows — §4.9(3)).** Determine whether generalizing
+   `normalize_recast_frame`'s CR 400.7 token-id normalization lifts them. **If it does, that is a larger
+   coverage win than Phases 1–5 combined, and it should be re-prioritized ahead of them.**
+7. **Review gates.** Reject any combo-detector test with zero lands, an empty library, or a stub oracle.
+   **Reject any fix that turns exactly the two combos in this document green and leaves the rest of the
+   duality invariant red** — that is a purpose-built patch wearing a plan's clothes.
 
 ### Phase 1 — RC-1: zone-scope the observer scans (a RULES fix — ship standalone)
 
@@ -575,9 +661,13 @@ Per §2.1/§3.3, Combo B's cycle is **one activation** (CR 602.2b + CR 605.3a: R
 activated *inside* Freed's cost payment) — **structurally identical to Combo A's one cast.** Both are
 CR 732.2a's *"one pinned announcement + payment, then passes to the ending priority beat."* So:
 
-- **Replace `RecastContext` with one `LoopProbeContext { action, controller, decisions }`,
-  parameterized on the pinned player action**, armed at any empty-stack priority beat that follows a
-  player action. `RecastContext`'s buyback/convoke fields become *decisions*, not a shape.
+- **Replace `RecastContext` with one `LoopProbeContext { actions, controller, decisions }`,
+  parameterized on the pinned player-action SEQUENCE**, armed at any empty-stack priority beat that
+  follows a player action. `RecastContext`'s buyback/convoke fields become *decisions*, not a shape.
+  **`actions` is a SEQUENCE, not a single action** — **CR 732.2a** says *"a sequence of game choices"*
+  (plural), and the tree agrees: `drive_offline_devoted_vizier` (corpus row 6) drives **two activations
+  per cycle** (§4.9(2)). A single-action context is wrong on both the rules and the evidence, and it is
+  the mirror-image of the sibling-cluster mistake — under-parameterizing instead of over-proliferating.
 - **Generalize `drive_recast_iteration` → `drive_loop_iteration(action)`.** ⚠️ **Cost unknown — this is
   Open Question #6.** `drive_recast_iteration` may be structurally cast-shaped
   (`normalize_recast_frame` strips the self-returning buyback card; `derived_fodder_class` derives the
@@ -619,8 +709,10 @@ satisfy vacuously is not a test.
 | **CR 104.4b** optional-loop gate | `no_living_player_has_meaningful_priority_action` | **unchanged** — regression only | — | — |
 | Gaea's Cradle stays closed | `scan_mana_production` | `for_each_creature_production_still_fails_closed` (**exists, revert-probe verified**) | collapse count-arms to `Axes::NONE` | `fixed_production_reads_nothing` (Forest) still passes |
 | **Multiplayer** | — | ≥1 criterion exercises **>2 players** (the driving fixture is 4-player) | — | — |
-| ⭐ **RC-3 / anti-purpose-built** | `analysis/corpus.rs` | **every LIVE-OFFERABLE corpus row OFFERS on the interactive path** (`WaitingFor::LoopShortcut`) | revert generalized arming to `last_recast_context` ⇒ **all but Combo A must go red** | **this row IS the reach-guard for the whole plan.** If only Combo A + Combo B go green, the fix did **not** generalize and must not ship |
-| Corpus regression | `analysis/corpus.rs` | all **53** offline rows still certify via `detect_loop`; **OFFLINE-ONLY** partition unchanged | — | — |
+| ⭐ **THE DUAL — ⇒ direction (coverage)** | `run_combo_live` vs `run_combo` | for every non-`LiveDrain` row: `certifies_offline ⇒ offers_live`. **Today 12 certify, 0 offer** — incl. **row 1 = Combo B** | revert generalized arming to `last_recast_context` ⇒ **every row but Combo A goes red** | **this row IS the reach-guard for the whole plan.** Only Combo A + Combo B green ⇒ the fix did **not** generalize and **must not ship** |
+| ⭐ **THE DUAL — ⇐ direction (SOUNDNESS)** | `run_combo_live` vs `run_combo` | `offers_live ⇒ certifies_offline`. **Must NEVER go red** | — | a live offer the offline analyzer rejects = the detector is ending real games on a **false certificate** |
+| `ObjectReentry` coverage (13 rows) | `normalize_recast_frame` (CR 400.7) | do the 13 `ObjectReentry` rows certify once token-id normalization is generalized? | — | **exploratory** — if yes, re-prioritize ahead of Phases 1–5 |
+| Corpus regression | `analysis/corpus.rs` | the 12 driven rows still certify via `detect_loop`; the 37 `DeferralBucket` + 4 `gated_on` partitions unchanged | — | — |
 
 ---
 
