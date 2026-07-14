@@ -1,83 +1,59 @@
 # Combo detector — root-cause analysis + implementation plan
 ### Making CR 732.2a loop shortcuts work on real decks and real board states
 
-**Date:** 2026-07-13 · **Status:** Plan. Implementation NOT started.
-**Branch:** `debug/combo-generator` (fork-only; **never** merge toward `main` — `.planning/` is gitignored upstream).
-**Evidence rule:** every claim below is **measured** — by driving the user's exported live board through
-the real engine, by grepping `docs/MagicCompRules.txt`, or by reading `data/card-data.json`. This
-document has been adversarially reviewed three times and **four of its earlier claims were false**;
-they are recorded in **Appendix B**, because the guard rails only work if you know what they guard.
+**Date:** 2026-07-14 · **Status:** Plan. Implementation NOT started. **Adversarially reviewed 4×.**
+**Branch:** `debug/combo-generator` (fork-only; **never** merge toward `main` — `.planning/` is gitignored).
+
+> ### Evidence standard — read this before trusting any line below
+> Every claim is **measured**: by driving the user's exported live board through the real engine, by
+> grepping `docs/MagicCompRules.txt`, or by reading `data/card-data.json` / the engine source.
+> **This document has been wrong TEN times.** Every single failure was a **code claim asserted from
+> memory**; the rules work has held up under four reviews. They are catalogued in **Appendix B** — read
+> it, because the guard rails only work if you know what they guard. **Assume there is an eleventh.**
 
 ---
 
 ## 1. Executive summary
 
 **The combo detector cannot fire in any real game of Magic.** Two live infinite combos on a real
-4-player Commander board were verified undetectable. There are **two independent root causes**, and
-**fixing either one alone leaves the loop undetected.**
+4-player Commander board were verified undetectable. There are **four independent root causes**, and
+**no single one of them is sufficient to fix.**
 
-**RC-1 — the observer firewall reads zones where abilities do not function.**
-`fire_time_conditions_read_growing_class` (`resource.rs:1468`) scans `state.objects.values()` across
-**every zone**. Measured trips, in order, on the real board:
-
-| Trip | Consequence |
-|---|---|
-| `Solemn Simulacrum` **in the LIBRARY** | a card never drawn, uncastable, **permanently disables detection** |
-| a basic **`Forest`** | `Effect::Mana => Axes::CONSERVATIVE` ⇒ a loop can only certify on a board with **zero mana sources** |
-| **`Freed from the Real`** | any aura/utility permanent with a creature-referencing **activated** ability |
-
-**RC-2 — the cover forbids a bounded start-up transient.** The detector demands board recurrence on
-**both** driven pairs, `(s_n, s_n₁)` **and** `(s_n₁, s_n₂)` (`engine.rs:1728`). On any real board the
-**first** driven iteration consumes a *non-fodder engine piece* (it convokes **Witherbloom** itself —
-`select_convoke_taps` sorts by ObjectId and Witherbloom is 402, the Saprolings 413+). That is a
-one-time, bounded consumption, so the first pair **cannot** cover, and the offer dies. **CR 732.2a
-explicitly permits this shape** — see §4.4.
-
-**RC-3 — the live detector arms on exactly ONE bespoke shape, and no test covers the live path at all.**
-Measured:
-- The **live** offer path fires only when `last_recast_context` is armed — *a buyback-paid,
-  token-creating recast* (`casting_costs.rs:6785`). **That is one card shape.** Every other
-  player-driven loop — one cast or one activation per iteration: Kiki-Jiki, Splinter Twin,
-  Devoted Druid + Vizier, Earthcraft + Squirrel Nest, **Presence of Gond + Intruder Alarm (CR 732.2a's
-  own example)** — is **invisible to the live detector**, no matter how correct the covers are.
-- The **53-row corpus** (`analysis/corpus.rs`) is driven **entirely through `detect_loop`** (the
-  *offline* analyzer) plus `live_mandatory_loop_winner` for two drain cascades.
-  `grep -c "WaitingFor::LoopShortcut" crates/engine/src/analysis/corpus.rs` == **0**.
-  **Not one corpus row exercises the interactive offer path.** The corpus is *structurally incapable* of
-  catching the bug this document is about.
-
-**RC-4 — the COVER layer is a sibling cluster, so every new combo family costs a new cover function.**
-Four `loop_states_cover_modulo_*` variants each re-derive the same four invariants around a different
-exemption (`resource.rs:784 / 924 / 1095 / 1326`). That is why **37 of 53 corpus rows are deferred**,
-and the tree's own `DeferralBucket` says so. The largest bucket, **`ObjectReentry` (13 rows)**, is
-**the canonical list of Magic's most famous infinite combos** — Kiki-Jiki, Splinter Twin, Palinchron,
-Mikaeus, Dockside, Food Chain, Karmic Guide, Nim Deathmantle, **Earthcraft + Squirrel Nest** — all
-blocked by one thing: **ObjectId churn**, which is *rules-wrong* under **CR 400.7** (an object that
-changes zones **is a new object**) and which `fodder_content_eq` **already solves** on one path.
-**Fixing it is a parameterization, not a feature.** See §4.10 — **this is the highest-leverage change
-in the document and it outranks Phases 1–5.**
-
-**RC-3 and RC-4 are the reason this must not become a two-combo patch.** The four checks are already
-card-agnostic and `ResourceAxis` already carries ~10 ω-axes; **the narrowness is entirely in the arming
-(RC-3) and the covers (RC-4).** See §4.8 and §4.10.
+| | Root cause | Where |
+|---|---|---|
+| **RC-1** | **The fire-time observer predicate is wrong** — it rejects on *"references any typed object filter"*, which every Commander permanent does. It also scans **hidden zones**. | `resource.rs:1451` |
+| **RC-2** | **The cover forbids a bounded start-up transient** — it demands recurrence from iteration 0. | `engine.rs:1725` |
+| **RC-3** | **The live path arms on ONE bespoke card shape**, and **zero of 53 corpus rows test it.** | `casting_costs.rs:6785` |
+| **RC-4** | **Loop equality is keyed on `ObjectId`**, which **CR 400.7** makes rules-wrong. | `game_state.rs:10456` |
 
 **CI is green because the acceptance fixture cannot exist in a real game.** `sprout_swarm_scenario`
 (`loop_shortcut.rs:2536`) builds a board with no lands, an empty library, no auras, and a stub
-Witherbloom oracle. RC-1 and RC-2 are both invisible to it — and RC-3 means *nothing anywhere* is
-looking.
+Witherbloom oracle. All four root causes are invisible to it — and RC-3 means *nothing anywhere* is
+looking at the live path.
 
-**Two findings beyond the false negatives, both derived from the rules rather than from the bug:**
+**The two findings that outrank the bug:**
 
-1. **The all-zones scan is illegal twice over.** Primarily by **CR 113.6** — *"Abilities of all other
-   objects usually function only while that object is on the battlefield"* — a Solemn Simulacrum in
-   the library **has no functioning ability at all**, so scanning it is not conservatism, it is reading
-   an ability that does not exist. Secondarily by **CR 400.2**: library and hand are **hidden zones**,
-   so the verdict is a function of information no player may act on.
-2. **The detector asks a question the rules do not.** It tries to prove *"no ability anywhere could
-   ever observe this growth."* **CR 732.2a** asks only whether a sequence *"may be legally taken based
-   on the current game state and the predictable results of the sequence of choices"*, and **CR 732.2b**
-   gives every other player the right to **accept or shorten**. Interaction is the response window's
-   job, not the cover's.
+1. **The detector asks a question the rules do not.** It tries to prove *"no ability anywhere could ever
+   observe this growth."* **CR 732.2a** asks only whether a sequence *"may be legally taken based on the
+   current game state and the predictable results of the sequence of choices"*, and **CR 732.2b** gives
+   every other player the right to **accept or shorten**. Interaction is the response window's job, not
+   the cover's.
+2. **The scan reads hidden zones.** A `Solemn Simulacrum` **in the library** vetoes detection. That is
+   illegal twice: by **CR 113.6** (an object's abilities *"usually function only while that object is on
+   the battlefield"* — the ability **does not exist** there) and by **CR 400.2** (library and hand are
+   **hidden zones**).
+
+> ## ⚠️ Size this honestly: "Only C2 is new" was FALSE — but it is TWO new subsystems, not three.
+> Review measured **three**. The **governing constraint** (§4.6) then eliminated one of them:
+>
+> | Subsystem | Verdict |
+> |---|---|
+> | **Generalized action driver** (P1) — `drive_recast_iteration` has **8 cast-shaped elements and 1 parameter** | ⚠️ **REWRITE. And a PREREQUISITE — 6 of 15 test rows never arm without it.** |
+> | **CR 113.6 zone-of-function predicate** (P2) — **does not exist**; `battlefield_active_triggers` IS the battlefield-hard-coding CR 113.6 forbids | ⚠️ **NEW CODE.** |
+> | ~~Fire-time **observer** predicate~~ (P5) | ✅ **NOT a rewrite — mostly a DELETION.** The drive already measures every effect the board produces; the firewall's only job is the **threshold** it is blind to, and **that condition scan already exists** at gate (4). |
+>
+> **C2 + the P1 driver + the P2 predicate.** That is the honest surface. **A plan that under-states its
+> own new surface will be executed as if it were small.**
 
 ---
 
@@ -85,154 +61,168 @@ looking.
 
 - **Fixture:** `crates/engine/tests/fixtures/combo-repro/witherbloom-sprout-swarm-kilo-4p.json`
   (debug-panel export; wrapped `{gameState, waitingFor, legalActions, turnCheckpoints}`).
-- **Harness:** `crates/engine/tests/integration/repro_user_combo.rs` — `serde_json` → `GameState` →
-  `layers::flush_layers` → `GameRunner::from_state`, then drives the same cast the synthetic test drives.
-- A bare snapshot is insufficient: arming (`last_recast_context`) happens **during a cast**, so the
-  repro must drive a real cast.
+- **Harness:** `crates/engine/tests/integration/repro_user_combo.rs`.
+- A bare snapshot is insufficient: arming happens **during a cast**, so the repro must drive a real cast.
 
 ```
 cargo test -p engine --test integration real_board_fixture_is_intact   # PASSES (guards the fixture)
 cargo test -p engine --test integration -- --ignored real_board        # FAILS (the bug)
 ```
 
-**Board:** Witherbloom, the Balancer (Legendary) + 4 untapped green Saproling **tokens** + Kilo,
-Apogee Mind (Legendary, enchanted by Freed from the Real) + Relic of Legends + Pentad Prism
-(1 charge) + Forests/Islands. Sprout Swarm in hand. `Interactive`, `Priority{P0}`, own turn, empty stack.
+**Board:** Witherbloom, the Balancer (Legendary) + 4 untapped green Saproling **tokens** + Kilo, Apogee
+Mind (Legendary, enchanted by Freed from the Real) + Relic of Legends + Pentad Prism (1 charge) +
+Forests/Islands. Sprout Swarm in hand. `Interactive`, `Priority{P0}`, own turn, empty stack.
 
-**Measured after the driven cast:**
-```
-last_recast_context = Some(RecastContext{card_id:415, controller:0, from_zone:Hand,
-                                         uses_buyback:Used, convoke:Some(Convoke)})   ← ARMING CORRECT
-waiting_for         = Priority{0}                                                      ← NO OFFER
-saprolings          = 4 → 5                                                            ← the cast worked
-```
-Every cheap gate at `engine.rs:445` is green. The decline is downstream, in the cover.
+**Measured after the driven cast:** `last_recast_context` is armed **correctly**
+(`card_id:415, controller:0, from_zone:Hand, uses_buyback:Used, convoke:Some`); every cheap gate at
+`engine.rs:445` is green; `waiting_for` stays `Priority{0}`. **The decline is downstream, in the cover.**
 
 ### 2.1 The two combos — Oracle text verified in `data/card-data.json` (engine-planner Step 0)
 
-All text below is **quoted from the shipped card database**, not from memory.
-
-| Card | Oracle text (verbatim) |
+| Card | Oracle text (verbatim from the shipped DB) |
 |---|---|
 | **Sprout Swarm** | Convoke · Buyback {3} · *"Create a 1/1 green Saproling creature token."* |
-| **Witherbloom, the Balancer** | *"Instant and sorcery spells you cast have affinity for creatures."* (+ Affinity for creatures, Flying, deathtouch) |
+| **Witherbloom, the Balancer** | *"Instant and sorcery spells you cast have affinity for creatures."* |
 | **Relic of Legends** | *"{T}: Add one mana of any color."* · *"**Tap an untapped legendary creature you control**: Add one mana of any color."* |
 | **Kilo, Apogee Mind** | *"**Haste.** Whenever Kilo becomes tapped, proliferate."* |
 | **Freed from the Real** | Enchant creature · *"{U}: Tap enchanted creature."* · *"{U}: Untap enchanted creature."* |
 | **Pentad Prism** | Sunburst · *"Remove a charge counter from this artifact: Add one mana of any color."* |
 
-**Combo A — Witherbloom + Sprout Swarm (object growth).** Worked through the casting rules:
-- **CR 601.2b** — announce the optional additional cost (**buyback {3}**) ⇒ base {1}{G} + {3} = {4}{G}.
+**Combo A — Witherbloom + Sprout Swarm (object growth).** Through the casting rules:
+- **CR 601.2b** — announce buyback {3} ⇒ base {1}{G} + {3} = **{4}{G}**.
 - **CR 601.2f** — **CR 702.41a** affinity (*"costs {1} less to cast for each [text] you control"*) is a
-  cost **reduction**; with ≥4 creatures the {4} generic goes to {0}. **The total cost then LOCKS IN**
-  (*"If effects would change the total cost after this time, they have no effect."*). Remaining: **{G}**.
-- **CR 601.2h** — **CR 702.51b**: *"The convoke ability isn't an additional or alternative cost and
-  applies only after the total cost of the spell with convoke is determined."* ⇒ convoke is a **payment
-  substitution**: tap one untapped **green** creature for the {G}.
-- Resolve: create a **green, untapped** Saproling; buyback returns the card to hand.
+  cost **reduction**; ≥4 creatures ⇒ generic to {0}. **Total cost LOCKS IN.** Remaining: **{G}**.
+- **CR 601.2h** — **CR 702.51b**: *"convoke isn't an additional or alternative cost and applies only
+  after the total cost … is determined"* ⇒ convoke is a **payment substitution**: tap one untapped
+  **green** creature for the {G}.
+- Resolve: create a **green, untapped** Saproling; buyback returns the card.
 
-⇒ **Δ(untapped green creatures you control) = −1 (convoked) + 1 (new green untapped token) = 0.**
-⇒ **Δ(creatures you control) = +1**, so affinity only gets *stronger* — the cost stays {G} forever.
-**The loop is legal for all N, and the certifiable unbounded axis is creatures/tokens.**
+⇒ **Δ(untapped green creatures) = −1 (convoked) + 1 (new green untapped token) = 0.**
+⇒ **Δ(creatures) = +1**, so affinity only strengthens. **Legal for all N; the ω-axis is creatures.**
 
-**Combo B — Kilo + Freed from the Real + Relic of Legends → Pentad Prism (counter growth).** The whole
-cycle is **one activation**, which the rules make explicit:
-- Activate **Freed from the Real**'s *"{U}: Untap enchanted creature"* (**CR 602.2b** ⇒ follow 601.2b–i).
-- **CR 601.2g / CR 605.3a** — *"A player may activate an activated mana ability … whenever they are
-  casting a spell or activating an ability that requires a mana payment … even if it's in the middle
-  of … activating … an ability."* **CR 605.1a** makes Relic's second ability a **mana ability** (no
-  target, adds mana, not loyalty). So *inside Freed's cost payment* we activate Relic, **tapping Kilo**.
-- Kilo *"becomes tapped"* ⇒ **proliferate triggers**; **CR 603.3b** holds it until a player would next
-  receive priority. **CR 601.2h** pays the {U}.
-- Priority: the proliferate trigger resolves (+1 charge counter on Pentad Prism), then Freed's ability
-  resolves (**Kilo untaps**). Kilo has **haste**, so **CR 302.6** is moot regardless.
+**Combo B — Kilo + Freed + Relic → Pentad Prism (counter growth). ⚠️ It is TWO actions, not one.**
+**The tree's own certifying driver** (`corpus.rs:1556`, `drive_offline_kilo_freed_relic`) is:
+```rust
+run_combo(board, |probe| {
+    activate_and_resolve(probe, relic, relic_tap_creature, Some(TargetRef::Object(kilo)));
+    activate_and_resolve(probe, freed, freed_untap,        Some(TargetRef::Object(kilo)));
+})
+```
+Two `GameAction::ActivateAbility` at priority. Its own comment pins why: ***"Relic has two mana
+abilities; the tap-self one would not fire Kilo's trigger."*** Relic must be activated **standalone**,
+selecting the `TapCreatures{Legendary}` cost, to tap **Kilo** (`GameEvent::PermanentTapped`,
+`restrictions.rs:756`) and fire the proliferate trigger.
 
-⇒ **Δ(mana) = 0, Δ(Kilo tapped) = 0, Δ(charge counters) = +1.** Unbounded counters ⇒ unbounded mana
-(Pentad Prism's removal ability is itself a **CR 605.1a** mana ability).
+> **Appendix B #6 — my "Combo B is ONE activation" claim was FALSE.** The CR 605.3a nesting story
+> (activate Relic's mana ability *inside* Freed's cost payment) is **rules-legal** but **engine-false**:
+> even in a `WaitingFor::ManaPayment` window a mana ability is dispatched as its own
+> `GameAction::ActivateAbility` (`engine.rs:4867`), and Relic's *tap-self* ability — the one auto-payment
+> would pick — **does not tap Kilo and does not fire the trigger.** **There is no single-action encoding
+> of this cycle anywhere in the action model.** A single-action arming latch cannot capture it. This
+> refutes the previous Phase 5 outright.
 
-> **Why counters and not mana are the certified axis.** **CR 106.4 / CR 500.5**: *"any unspent mana left
-> in a player's mana pool empties"* at the end of each step and phase. **Unbounded mana is not a durable
-> resource** — it cannot be the ω-axis of a shortcut that ends at a later priority beat. The durable
-> axis is the **charge counters**. This is exactly what the shipped
-> `loop_states_cover_modulo_counter_growth` certifies, and it is why adding a "mana growth" axis would
-> be *wrong*.
+⇒ Δ(mana) = 0, Δ(Kilo tapped) = 0, **Δ(charge counters) = +1.** Unbounded counters ⇒ unbounded mana.
+
+> **Counters, not mana, are the ω-axis.** **CR 106.4 / CR 500.5**: *"any unspent mana … empties"* at
+> end of each step and phase. Mana is not durable. This is what the shipped
+> `loop_states_cover_modulo_counter_growth` already certifies — **build nothing there.**
 
 ---
 
 ## 3. Root cause
 
-### 3.1 RC-1 — the observer firewall (`fire_time_conditions_read_growing_class`, `resource.rs:1468`)
+### 3.1 RC-1 — the observer predicate is wrong, and it reads hidden zones
 
-| Defect | Measured | Fatal because |
-|---|---|---|
-| **R1** Gate (1) trigger scan is all-zones (`active_trigger_definitions`, `functioning_abilities.rs:391`) | trip: `Solemn Simulacrum (Library)` | **CR 113.6** — the ability doesn't function there at all; **CR 400.2** — hidden zone |
-| **R2** `Effect::Mana { .. } => Axes::CONSERVATIVE` (`ability_scan.rs:852`) | trip: `Forest` | certification requires a board with **zero mana sources** |
-| **R3** Gate (2) scans **activated** ability bodies (`resource.rs:1510`) | trip: `Freed from the Real` | an activated ability observes nothing unless *activated*; the fixed sequence pins whether it is |
-| **R4** Gate (3) `active_replacements` is all-zones | reached | same CR 113.6 / 400.2 class as R1 |
-| **R5** Gate (4) blanket `if !def.modifications.is_empty() { return true }` (`resource.rs:1539`) | not yet reached | any anthem/aura/equipment |
-| **R6** Gate (6) rejects on ANY non-empty `delayed_triggers` (`resource.rs:1582`) | not yet reached | **every Kiki-Jiki token** carries *"Sacrifice it at the beginning of the next end step"* |
+`fire_time_conditions_read_growing_class` (`resource.rs:1451`).
 
-Gate (2) *is* correctly battlefield-scoped — **the inconsistency between gates is the tell.**
-**R2 is already fixed and committed** (`scan_mana_production`; §6 Phase 1).
-
-**The catch-22.** In **both** combos the ability that *drives* the loop reads the growing axis:
-affinity reads the **creature count** (the growing class **is** creatures); proliferate reads
-*"permanents with counters"* (the growing axis **is** counters). A firewall phrased *"reject if any
-live ability reads the growing class"* is **structurally incompatible with self-referential engines**
-— i.e. with most real combos. **The predicate is wrong, not mistuned.**
-
-### 3.2 RC-2 — the cover forbids a bounded start-up transient (`engine.rs:1728`)
-
-The drive produces **three frames** and requires the cover on **both** pairs:
+**(a) The predicate itself.** Gate (1) rejects if any live ability
+`ability_definition_reads_sibling_mutable` (`ability_scan.rs:3767`). But `ability_scan.rs:2454`:
 ```rust
-loop_states_cover_modulo_fodder_growth(&cs_n,  &cs_n1, &fodder)   // ← FAILS on any real board
+TargetFilter::Typed(tf) => Axes { event: true, sibling: true, … }   // UNCONDITIONALLY
+```
+**`sibling: true` for ANY typed object filter.** Measured consequence — **Intruder Alarm**, whose parsed
+trigger is `SetTapState{target: Typed[Creature], scope: All, state: Untap}`, **trips gate (1)** and is
+rejected. **Intruder Alarm is CR 732.2a's OWN worked example.** The predicate is not *"reads the growing
+class"*; it is *"references any typed object filter"* — which every Commander permanent does.
+
+> **⚠️ Appendix B #8 — my "catch-22" argument was OVER-CLAIMED.** I claimed the *driving* ability
+> (Witherbloom's affinity) trips the firewall. **Measured false:** Witherbloom's static parses to
+> `modifications: []`, `condition: null`, `mode: CastWithKeyword{Affinity{Creature}}`, and gate (4)
+> (`resource.rs:1524`) inspects **only** `condition` and `modifications` — neither trips. The fodder
+> cover also deliberately drops `cost_surface_references_growing_class` (`resource.rs:1078`). **The
+> conclusion stands but the evidence was wrong: use INTRUDER ALARM, not affinity.**
+
+**(b) The zones.** Gates (1) and (4) scan `state.objects.values()` across **every zone**. Measured trips
+on the real board: `Solemn Simulacrum` **(Library)** → a basic **`Forest`** → **`Freed from the Real`**.
+Illegal by **CR 113.6** (the ability *does not function* off the battlefield ⇒ scanning it reads an
+ability that does not exist) and by **CR 400.2** (hidden zone). **CR 113.6 is the primary authority.**
+
+> **⚠️ Appendix B #9 — "measured trips, in order" is the wrong provenance.**
+> `loop_states_cover_modulo_fodder_growth` checks `board_covers_modulo_fodder` **first**
+> (`resource.rs:1119`) and returns false before reaching the firewall (`resource.rs:1132`). Because RC-2
+> fails that first board cover, **the firewall is never reached on `(cs_n, cs_n₁)`.** Both root causes
+> are real and neither alone suffices — but the trips were observed under instrumentation, not on the
+> live path.
+
+**R2 is already fixed and committed** (`scan_mana_production`; the `Forest` trip).
+
+### 3.2 RC-2 — the cover forbids a bounded start-up transient — **CONFIRMED, could not be broken**
+
+`engine.rs:1725` requires the cover on **both** pairs:
+```rust
+loop_states_cover_modulo_fodder_growth(&cs_n,  &cs_n1, &fodder)   // ← FAILS
 && loop_states_cover_modulo_fodder_growth(&cs_n1, &cs_n2, &fodder)
 ```
-`select_convoke_taps` (`mana_payment.rs:394`) does `candidates.sort_by_key(|id| id.0)` and re-runs
-**per iteration**. On the real board the first driven iteration therefore taps **Witherbloom (402)**,
-not a Saproling — flipping a **non-token, non-fodder legendary creature** from untapped to tapped.
-That is not "inert tapped-fodder growth", so `(cs_n, cs_n1)` **cannot cover**.
+Chain, every link measured:
+1. `select_convoke_taps` (`mana_payment.rs:436`) does `candidates.sort_by_key(|id| id.0)` and **re-runs
+   per drive iteration**.
+2. `is_convoke_eligible` (`game_object.rs:2206`) checks **only** controller / battlefield / untapped /
+   Creature — **no color preference, no sickness gate**.
+3. ⇒ **Witherbloom (402, `["Black","Green"]`, untapped)** is picked over the Saprolings (413+).
+4. Witherbloom is still **untapped at `s_n`** because the acceptance test convokes a Saproling
+   (`repro_user_combo.rs:108`).
+5. **Nothing absorbs the flip.** `normalize_recast_frame` (`engine.rs:1599`) strips only the recast card
+   + anaphora; `derived_fodder_class` (`engine.rs:1633`) derives only the Saproling class;
+   `fodder_content_eq` (`resource.rs:994`) is content-equality-modulo-`tapped` **against that class**, so
+   Witherbloom is a **STABLE ENGINE** object, not fodder — and `object_content_eq`
+   (`game_state.rs:10456`) **compares `tapped`.**
+6. ⇒ Witherbloom's untapped→tapped flip breaks the stable partition of `board_covers_modulo_fodder`
+   (`resource.rs:1049`) ⇒ **`(cs_n, cs_n₁)` cannot cover** ⇒ no offer.
 
-**This is a bounded transient, not a leak.** Witherbloom is tapped exactly **once**, and there is no
-untapper — so from iteration 2 onward only Saprolings are convoked and the recurrence is exact:
+**Bounded:** nothing untaps Witherbloom (Freed enchants **Kilo**, not her). ⇒ the transient is a
+**one-time prefix**, and the recurrence from iteration 2 is exact (untapped-green count invariant at 5).
 
-| after | untapped green | tapped fodder | total creatures |
-|---|---|---|---|
-| real cast | 5 | 0 | 6 |
-| drive iter 0 (taps **Witherbloom**) | 5 | 0 (+1 tapped **non-fodder**) | 7 |
-| drive iter 1 (taps S1) | 5 | 1 | 8 |
-| drive iter 2 (taps S2) | 5 | 2 | 9 |
+**⚠️ Scope the claim correctly:** *"on any real board"* is **too strong**. Correct: **"on any board where
+the driven prefix consumes a non-fodder engine piece."**
 
-**The untapped-green count is invariant at 5.** The loop is sound; only the **first** driven pair is
-transient. The engine measures exactly the wrong pair.
+**The airtight supporting evidence is the ASYMMETRY between the two callers of the same machinery** —
+*not* `WARMUP` (a constant in the same crate by the same authors is corroboration, not independence):
 
-> **This vindicates the instinct that the payment choice must not matter** and that *"the untapped
-> token only happens for a number of times equal to the [non-token] green creatures … so that itself
-> is not unbounded."* That is precisely a **bounded transient**. The earlier "bias the convoke selector
-> toward fodder" idea was treating the symptom, and is correctly abandoned — see Appendix B, false
-> claim #4.
+| | transient tolerated | covering pairs required |
+|---|---|---|
+| **Offline** `run_combo` (`corpus.rs:1179`) | **≥4 cycles** (`WARMUP:2` + failed `STEADY` retries) | **1** |
+| **Live** `try_offer_object_growth_shortcut` (`engine.rs:1690`) | **0** | **2, from iteration 0** |
 
-### 3.3 Combo B is additionally blocked by the ring — but the ring is **not** what to fix
+### 3.3 RC-3 — the live path arms on one card shape, and nothing tests it
 
-**`engine.rs:3081`:**
-```rust
-if !matches!(action, GameAction::PassPriority | GameAction::OrderTriggers { .. }) {
-    state.loop_detect_ring.clear();   // "cast/activate/play-land is a deliberate break"
-}
-```
-Combo B is driven by **activating an ability**, so the ring is cleared every iteration and never fills.
+The live offer fires only when `last_recast_context` is armed (`casting_costs.rs:6785`) — *a
+buyback-paid, token-creating recast.* **One card shape.** Every other player-driven loop is invisible.
 
-**But §2.1 showed Combo B's cycle is exactly ONE activation** — structurally identical to Combo A's
-one cast. So the fix is **not** to weaken the ring (that is the **DoS guard**, commit `57b0e537d`,
-*"bound loop-shortcut iteration count (remote DoS in #5672)"*). The fix is to **arm on activation the
-same way we arm on cast**: a `last_activation_context` sibling of `last_recast_context`, feeding the
-same drive. See §6 Phase 5.
+**`grep -c "WaitingFor::LoopShortcut" crates/engine/src/analysis/corpus.rs` == 0.** All 53 rows are
+driven through the **offline** `detect_loop`. **Not one row exercises the live offer path.** The corpus
+is *structurally incapable* of catching this bug.
 
-> **A counter-growth cover ALREADY EXISTS.** `loop_states_cover_modulo_counter_growth`
-> (`resource.rs:1326`) covers strict `Generic`-counter growth; its doc names *"the proliferate/charge
-> (**Pentad Prism**) … ω-cover shape"*; it is wired into `detect_loop` (`loop_check.rs:230`) **and**
-> `interactive_loop_bridge` (`engine.rs:632`) with four discriminating tests. **Build nothing here.**
-> It is simply never *consulted*, because nothing ever arms.
+**And the ring cannot substitute.** `loop_detect_ring` stores `Arc<GameState>` **snapshots**, not actions
+(`game_state.rs:6939`), and `engine.rs:3081` clears it on **everything except `PassPriority |
+OrderTriggers`**. ⇒ **"detect multi-action player loops" and "leave `engine.rs:3081` alone" are mutually
+exclusive.** This plan resolves it by **arming**, not by weakening the ring (§6 P1).
+
+### 3.4 RC-4 — loop equality is keyed on `ObjectId`, which CR 400.7 makes rules-wrong
+
+`object_content_eq` (`game_state.rs:10456`) is id-keyed. **CR 400.7** (`zones.rs:132`): *"An object that
+changes zones becomes a new object."* A permanent that dies / blinks / bounces returns with a **fresh
+`ObjectId`**, so the loop point is never board-identical. This is the `DeferralBucket::ObjectReentry`
+bucket. **See §5 — it is smaller and far more dangerous than I first claimed.**
 
 ---
 
@@ -240,83 +230,67 @@ same drive. See §6 Phase 5.
 
 ### 4.1 CR 732.2a fixes the player's choices. That is the whole design.
 
-> **CR 732.2a** *(verbatim)*: *"the player with priority may suggest a shortcut by **describing a
-> sequence of game choices**, for all players, that **may be legally taken based on the current game
-> state and the predictable results of the sequence of choices**. This sequence may be **a
-> non-repetitive series of choices, a loop that repeats a specified number of times, multiple loops, or
-> nested loops**, and may even cross multiple turns. **It can't include conditional actions**, where
-> the outcome of a game event determines the next action a player takes. **The ending point of this
-> sequence must be a place where a player has priority**…"*
+> **CR 732.2a** *(verbatim, `docs/MagicCompRules.txt:6372`)*: *"the player with priority may suggest a
+> shortcut by **describing a sequence of game choices**, for all players, that **may be legally taken
+> based on the current game state and the predictable results of the sequence of choices**. This sequence
+> may be **a non-repetitive series of choices, a loop that repeats a specified number of times**, multiple
+> loops, or nested loops, **and may even cross multiple turns**. **It can't include conditional actions**…
+> **The ending point of this sequence must be a place where a player has priority**…"*
 
-Five load-bearing deductions, each of which changes the code:
+Five deductions, each of which changes code:
 
-- **D1 — a shortcut IS a straight-line action sequence, by rule.** No conditionals ⇒ the proposer
-  commits to which creature to convoke, which source to tap, which target to pick. The question is not
-  *"is this board a linear program?"* — that is ill-posed (Priest of Titania's `{T}: Add {G} for each
-  Elf` is constant-Δ in its own loop and non-constant beside an Elf-token maker). The question is:
+- **D1 — a shortcut IS a straight-line action sequence, by rule.** No conditionals ⇒ the proposer commits
+  to which creature to convoke, which source to tap, which target to pick. The question is **not** *"is
+  this board a linear program?"* (ill-posed). It is:
 
   > ## **Is this FIXED sequence legally repeatable forever, with constant Δ?**
 
-- **D2 — "a loop that repeats a specified number of times."** The proposer names **N**, and the
-  proposal must be legal *"based on … the predictable results"* — i.e. **legal for every one of the N
-  iterations.** ⇒ **precondition non-depletion (C2) IS CR 732.2a**, not an engineering add-on. A
-  sequence that becomes illegal at iteration 4 is not a legal proposal for N = 10⁶.
-
+- **D2 — "a loop that repeats a specified number of times."** The proposer names **N**, and the proposal
+  must be legal *"based on the predictable results"* — for **every** iteration. ⇒ **precondition
+  non-depletion (C2) IS CR 732.2a**, not an engineering add-on.
 - **D3 — "a non-repetitive series of choices, [or] a loop that repeats…"** ⇒ **a shortcut may be a
-  non-repetitive PREFIX followed by a loop.** The engine's demand that the loop cover from iteration 0
-  is **stricter than the rule**, and it is **RC-2**. Real boards almost always have a finite pool of
-  non-fodder engine pieces that the first few iterations consume once each.
+  non-repetitive PREFIX followed by a loop.** Demanding the loop cover from iteration 0 is **stricter
+  than the rule**. That is **RC-2**.
+- **D4 — "the ending point must be a place where a player has priority."** The iteration boundary is a
+  priority beat **by rule** — the empty-stack settle condition the drive already uses.
+- **D5 — "a sequence of game CHOICES" (plural) and "may even cross multiple turns" are LEGAL.**
+  Multi-action bodies are **confirmed in three drivers** (`drive_offline_devoted_vizier` corpus.rs:1416,
+  `drive_offline_grim_power` :1433, `drive_offline_kilo_freed_relic` :1556). **Excluding turn-crossing
+  loops is an ENGINEERING cut, not a rules one — waive it LOUDLY with the CR quote.**
 
-- **D4 — "the ending point … must be a place where a player has priority."** The iteration boundary is
-  a priority beat **by rule** — which is exactly the empty-stack `Priority` settle condition the drive
-  already uses. It also **forbids** a mid-resolution loop boundary. Nothing to change; now it is
-  *justified* rather than incidental.
+**CR 732.2a's own worked example is an object-growth loop** — Presence of Gond + Intruder Alarm, *"I'll
+create a million tokens."* **The rulebook certifies the exact class we cannot detect**, and **RC-1
+rejects it** (§3.1a). It is the plan's primary acceptance fixture.
 
-- **D5 — "multiple loops, or nested loops, and may even cross multiple turns" are LEGAL.** Excluding
-  them (§4.6) is an **engineering** decision, not a rules one. Say so honestly; do not dress a scope
-  cut as a rules constraint.
+### 4.2 Two rules that prune the design
 
-**And CR 732.2a's own worked example is an object-growth loop** — Presence of Gond (*"Enchanted creature
-has '{T}: Create a 1/1 green Elf Warrior creature token.'"*) + Intruder Alarm (*"Whenever a creature
-enters, untap all creatures."*), *"I'll create a million tokens."* **The rulebook certifies the exact
-class we are failing to detect.** It must be an acceptance fixture (§7).
+- **CR 732.4 + CR 104.4b** — *"Loops that contain an optional action don't result in a draw."* Our loops
+  contain the proposer's **optional** action ⇒ never a draw ⇒ the engine **offers**. **Already
+  implemented**: `no_living_player_has_meaningful_priority_action` (**`engine.rs:2367`**, called at
+  `engine.rs:1766`). **Don't rebuild.** CR 732.5/732.6 govern only *mandatory* loops ⇒ **out of scope.**
+- **CR 732.3 — fragmented loops.** If repetition needs an **opponent's** independent action, the active
+  player must break it ⇒ **reject any sequence requiring an opponent's non-pass action.** Ours need only
+  priority passes, which CR 732.2b already lets them decline.
 
-### 4.2 Two more rules that prune the design
+### 4.3 The choice vector is enumerable — from CR 601.2 / 602.2
 
-- **CR 732.4 + CR 104.4b** — *"If a loop contains only mandatory actions, the game is a draw… Loops that
-  contain an optional action don't result in a draw."* Our loops contain the proposer's **optional**
-  cast/activation ⇒ **never a draw** ⇒ the engine **offers**. **This is already implemented**
-  (`no_living_player_has_meaningful_priority_action`, `engine.rs:1765`). Don't rebuild it. CR 732.5 and
-  CR 732.6 govern only *mandatory* loops and are **out of scope entirely**.
-
-- **CR 732.3 — fragmented loops.** *"each player involved in the loop performs an independent action
-  that results in the same game state being reached multiple times … the active player … must then make
-  a different game choice so the loop does not continue."* ⇒ **a sequence whose repetition requires an
-  OPPONENT to take a non-pass action is broken by rule and must be rejected.** Our sequences require
-  opponents only to *pass priority* — and CR 732.2b already gives them the right to decline that (the
-  "shorten" right), which is the response window, not the cover's problem. **This is a new soundness
-  constraint the detector does not currently express.**
-
-### 4.3 The choice vector is enumerable — straight out of CR 601.2 / 602.2
-
-**CR 601.2** lists *every* choice made while casting, and **CR 602.2b** says activating an ability
-follows **601.2b–i** identically. So the set of things a fixed sequence must pin is **closed and
-checkable**, not invented:
+**CR 602.2b**: activating an ability follows **601.2b–i** identically. So what a fixed sequence must pin
+is **closed and checkable**:
 
 | CR | Choice to pin |
 |---|---|
-| 601.2b | mode · splice · **optional additional/alternative costs (buyback!)** · **X** · hybrid · Phyrexian |
-| 601.2c | **targets** (and, if variable, the *number* of targets) |
+| 601.2b | mode · splice · **optional additional/alternative costs (buyback)** · **X** · hybrid · Phyrexian |
+| 601.2c | **targets** (and the number) |
 | 601.2d | division / distribution |
 | 601.2f | order of applying cost **reductions** |
-| 601.2g | **which mana abilities to activate** (Relic tapping Kilo — CR 605.3a) |
+| 601.2g | **which mana abilities to activate** |
 | 601.2h | **payment choices — including convoke's tap-set** (CR 702.51b) |
 
-**Measured gap:** today `build_recast_template` emits `template.decisions == [ConvokeTaps]` and nothing
-else (`engine.rs:1771` comment: *"`[ConvokeTaps]` when the recast has convoke, else `[]`"*). Against the
-CR 601.2 enumeration that is **incomplete** — modes, X, targets, and mana-ability selection are
-unpinned. Any loop whose body makes one of those choices is either mis-driven or silently
-non-deterministic. **`DecisionTemplate` completeness must be audited against this table** (§6 Phase 5).
+**Measured gap — this is a BLOCKER, not an audit item.** `build_recast_template` emits
+`[ConvokeTaps]` or `[]` (`engine.rs:1558`), and `drive_recast_iteration` **explicitly aborts** on the
+other five `ConcreteDecision` kinds (`engine.rs:1527`, `return Err(RecastAbort)`). Combo B's cycle opens
+`WaitingFor::PayCost{TapCreatures}` (`engine.rs:3947`) — which lands on the `_ => return Err(..)` arm at
+`engine.rs:1548`. **The driver cannot drive Combo B at all.** In P1's scope, not §8.
 
 ### 4.4 Every failure mode collapses into one: *the fixed sequence becomes ILLEGAL*
 
@@ -324,589 +298,395 @@ All card text verified in `data/card-data.json`.
 
 | Case | The place the sequence draws from | Δ(place) | Verdict |
 |---|---|---|---|
-| **Sprout Swarm** — convoke (CR 702.51b, a **payment**, no `{T}` on the creature) | untapped **green** creature you control | −1 + 1 (**token is green & untapped**) = **0** | **ACCEPT** ✅ |
-| **Earthcraft** — *"**Tap an untapped creature you control**: Untap target basic land."* → **the cost is on Earthcraft's own ability; NO tap symbol ⇒ CR 302.6 does not apply ⇒ a summoning-SICK Squirrel is legal fodder** | untapped creature (sick or not) | −1 + 1 = **0** | **ACCEPT** ✅ (Earthcraft + Squirrel Nest) |
-| **Cryptolith Rite** — *"Creatures you control have **'{T}: Add one mana of any color.'**"* → **the creature's OWN `{T}` ability ⇒ CR 302.6 DOES apply** | **unsick** untapped creature | −1 + 0 (**new token is sick**) = **−1** | **REJECT** ✅ |
-| **Presence of Gond + Intruder Alarm** (**CR 732.2a's own example**) — `{T}` on the creature ⇒ CR 302.6 applies; Intruder Alarm untaps it | **unsick** untapped enchanted creature | −1 + 1 (**untapped by the trigger**) = **0** | **ACCEPT** ✅ |
-| **Manaforge Cinder** — *"{1}: Add {B} or {R}. **Activate no more than three times each turn.**"* | activations remaining (`MaxTimesEachTurn{3}`) | −1 + 0 = **−1** | **REJECT** |
-| **Crucible of Worlds + Zuran Orb** | land plays remaining (**CR 305.2**) | −1 | **REJECT** |
-| **Basalt Monolith + Mesmeric Orb** (Four Horsemen **minus Emrakul** — deterministic) | cards in library (**CR 104.3c / 704.5b**) | −n | **REJECT** |
-| **Hum of the Radix** — *"costs {1} more for each artifact its controller controls"* | — | cost RISES at **CR 601.2f** each iteration ⇒ **Δ₁ ≠ Δ₂** | **REJECT** |
-| **Solemnity** + proliferate | — | **measured** Δ = 0 counters ⇒ no progress | **REJECT** |
+| **Sprout Swarm** — convoke (CR 702.51b, a **payment**; no `{T}` on the creature) | untapped **green** creature | −1 + 1 (**token is green & untapped**) = **0** | **ACCEPT** ✅ |
+| **Earthcraft** — *"**Tap an untapped creature you control**: Untap target basic land."* → cost on **Earthcraft's own** ability, **no tap symbol** ⇒ **CR 302.6 does not apply** ⇒ a summoning-**SICK** Squirrel is legal fodder | untapped creature (sick or not) | −1 + 1 = **0** | **ACCEPT** ✅ |
+| **Cryptolith Rite** — *"Creatures you control have **'{T}: Add one mana of any color.'**"* → the **creature's OWN `{T}`** ability ⇒ **CR 302.6 APPLIES** | **unsick** untapped creature | −1 + 0 (**new token is sick**) = **−1** | **REJECT** ✅ |
+| **Presence of Gond + Intruder Alarm** (**CR 732.2a's example**) — `{T}` on the creature ⇒ CR 302.6 applies; Intruder Alarm untaps it | **unsick** untapped enchanted creature | −1 + 1 = **0** | **ACCEPT** ✅ |
+| **Manaforge Cinder** — *"{1}: Add {B} or {R}. **Activate no more than three times each turn.**"* | activations remaining | −1 | **REJECT** |
+| **Crucible + Zuran Orb** | land plays remaining (**CR 305.2**) | −1 | **REJECT** |
+| **Basalt Monolith + Mesmeric Orb** (Four Horsemen **minus Emrakul**) | cards in library (**CR 704.5b**) | −n | **REJECT** |
+| **Damping Sphere** — *"Each spell a player casts costs {1} more for each other spell that player has cast this turn."* | — | cost RISES at **CR 601.2f** ⇒ **Δ₁ ≠ Δ₂** | **REJECT** |
+| **Solemnity** + proliferate | — | **measured** Δ = 0 counters | **REJECT** |
 
-**CR 302.6** *(verbatim)*: *"A creature's activated ability **with the tap symbol or the untap symbol in
-its activation cost** can't be activated unless the creature has been under its controller's control
-continuously since their most recent turn began."*
+**CR 302.6** *(verbatim, `:1630`)*: *"A creature's activated ability **with the tap symbol or the untap
+symbol in its activation cost** can't be activated unless the creature has been under its controller's
+control continuously since their most recent turn began."*
 
-> **Earthcraft vs Cryptolith Rite is the whole design in one pair.** Same board shape, same "tap a
-> creature for value" idiom, **opposite verdicts**, and the discriminator is **the shape of the cost in
-> the Oracle text** — a `{T}` on the creature's own ability (CR 302.6 applies) versus "tap a creature"
-> as a cost on *another* permanent's ability (CR 302.6 does not). It is **not** a resource level and it
-> is **not** card-specific. One predicate, three places, four correct verdicts. **That is "build for the
-> class."**
+**The engine CAN see this split** (verified): `AbilityCost::Tap` (the `{T}` symbol) vs
+`AbilityCost::TapCreatures { requirement, filter }` (`ability.rs:7841`), and CR 302.6 is enforced **only
+on the former, against the ability's own `source`**, via `check_summoning_sickness_for_cost` →
+`cost_contains_tap_or_untap` (`restrictions.rs:618, 675`). **Phase 4's place-split is implementable.**
 
-### 4.5 The unification: legality gates ARE consumables
+> ⚠️ **Appendix B #10 — "Hum of the Radix" was UNSATISFIABLE.** Verified text: *"Each **artifact spell**
+> costs {1} more…"*. Sprout Swarm is a **green instant** ⇒ Hum cannot affect it ⇒ **both arms of that §7
+> row OFFER.** The card the plan wanted is **Damping Sphere**, which it named in §4.6 and then failed to
+> test. Corrected above.
 
-*"3 activations left this turn"*, *"1 land drop left"* (**CR 305.2**), *"unsick creatures"* (**CR 302.6**),
-*"cards in library"* (**CR 704.5b**), *"loyalty activations"* (**CR 606.3**) are **resources the fixed
-sequence spends**. This folds every non-resource legality gate into the *same* sustainability check.
+### 4.5 Legality gates ARE consumables
 
-The engine already knows this. `project_out_resources` (`resource.rs:2500+`) **deliberately preserves**
-`activated_abilities_this_turn` / `_this_game`, `OncePerTurn` / `MaxTimesPerTurn` trigger limits,
-`crew_activated_this_turn`, and loyalty — its own comment:
-
-> *"blanket-clearing them would erase the gate that makes a once-per-turn … ability NON-repeatable,
-> **falsely certifying it as infinite**."*
-
-**Single authority:** `ability_has_per_turn_activation_gate` (`resource.rs:2842`).
+*"3 activations left"*, *"1 land drop left"* (**CR 305.2**), *"unsick creatures"* (**CR 302.6**), *"cards
+in library"* (**CR 704.5b**), *"loyalty activations"* (**CR 606.3**) are **resources the fixed sequence
+spends**. `project_out_resources` (`resource.rs:2500`) already **deliberately preserves** them — its own
+comment: *"blanket-clearing them would erase the gate that makes a once-per-turn … ability
+NON-repeatable, **falsely certifying it as infinite**."* Single authority:
+`ability_has_per_turn_activation_gate` (**`resource.rs:2848`**).
 
 ### 4.6 The four checks
 
+> ## ⭐ THE GOVERNING CONSTRAINT — derive every check from this, or you will over-build
+>
+> **The player proposes a FIXED loop (CR 732.2a: no conditional actions), and it is impactable ONLY by
+> what is CURRENTLY on the board.** And **we DRIVE that fixed sequence on a clone through the real
+> reducer.**
+>
+> ⇒ **Every ability on the battlefield that fires during the loop ALREADY FIRES IN THE DRIVE and ALREADY
+> LANDS IN Δ.** Intruder Alarm untapping, affinity reducing, Solemnity preventing, Damping Sphere
+> scaling — **the drive saw all of it.** A firewall that re-derives them statically is not conservatism;
+> it is **duplicated work that gets the answer wrong** (§3.1a).
+>
+> **So ask the only question that matters: what can the CURRENT BOARD do that the DRIVE CANNOT SEE?**
+> The answer is exhaustive, and it is two things:
+>
+> | # | Blind spot | Why the drive misses it | Check |
+> |---|---|---|---|
+> | **1** | **Monotone depletion outside the drive window** | Δ is *constant* for the driven iterations; the sequence dies at iteration 4 (Manaforge's 3/turn, land drops, library, sickness) | **C2** |
+> | **2** | **A DISCONTINUITY — a threshold that trips at a future iteration count** | Δ is *constant* until it trips ("when you control 10+ creatures, sacrifice…"); the drive only runs 2–3 | **C3** |
+>
+> **Everything else is MEASURED.** An effect that **scales** with the growing axis changes Δ between
+> iterations ⇒ **C1**. An effect that **reads** the growing axis but does **not** scale yields constant Δ
+> ⇒ **HARMLESS** — and rejecting it is precisely how the current predicate rejects the rulebook's own
+> example.
+>
+> ⇒ **C3 is a CONDITION scan, not an OBSERVER scan.** Its job is *thresholds*, nothing more: **a
+> fire-time `Comparator` whose operand is the quotiented (growing) axis**, on an ability that
+> **functions** (CR 113.6) in the zone it is in. Nothing about hands, libraries, or hypothetical boards —
+> **the current board, and only the current board.**
+
 | # | Check | Catches | Status |
 |---|---|---|---|
-| **C1** | **Δ-constancy** across two **post-transient** pairs | scaled costs (Hum of the Radix, Damping Sphere) | drive exists; **must skip the transient prefix** (RC-2) |
-| **C2** | **Place non-depletion** — every place the pinned sequence draws from is non-decreasing under its own Δ | activation limits, land drops, summoning sickness, self-mill | ⚠️ **THE ONLY GENUINELY NEW CODE** |
-| **C3** | **Threshold scan** — a `Comparator` against a growth axis | board thresholds that fire **outside** the fixed choices | **exists**; needs only re-**scoping** |
-| **C4** | **The shipped triple** — `net_progress_for(caster)` + `has_no_loss_axis(delta)` + `driving_resources_non_decreasing(..)` | self-deck, self-damage, adverse opponent scaling | **exists, unchanged** (`engine.rs:1756`) |
+| **C1** | **Δ-constancy** across two **post-transient** pairs | anything that **scales** with the growth (**Damping Sphere**) | drive exists; must skip the transient (RC-2) |
+| **C2** | **Place non-depletion** | monotone depletion outside the window (activation limits, land drops, sickness, self-mill) | **new — the only genuinely new logic** |
+| **C3** | **Threshold scan** — a fire-time `Comparator` against the growing axis | **discontinuities** | ⚠️ **mostly a DELETION — see below** |
+| **C4** | **The shipped triple** — `net_progress_for(caster)` + `has_no_loss_axis` + `driving_resources_non_decreasing` | self-deck, self-damage, adverse scaling | **exists, unchanged** (`engine.rs:1756`) |
 
-**C3 is the one arm three adversarial rounds never broke.** Every hole routed *around* it — into costs,
-activation restrictions, replacements, per-object attributes, and turn-based limits. **Keep its logic;
-fix only its scope.**
+**⇒ C3 collapses from a rewrite into a deletion, and the condition scan ALREADY EXISTS.** Measured:
+gate **(4)** (`resource.rs:1524`) already inspects **`def.condition`** — the right place. The defect is
+gate **(1)**, which scans **EFFECTS** via `ability_definition_reads_sibling_mutable` (`ability_scan.rs:3767`
+→ `sibling: true` for any typed filter, `:2454`). **Effects are the drive's job, not the firewall's.**
 
-**Why measurement, not derivation.** Δ **cannot** be derived from the AST: **replacement effects rewrite
-it at resolution** (Solemnity's two `Prevent` replacements on `AddCounter` turn proliferate's AST-Δ of
-`+1 counter` into a true Δ of **0**). And **CR 704.3 / CR 603.3b** put a full SBA + trigger settle between
-iterations, so a loop that kills its own engine (0 toughness, legend rule, controller at 0 life) simply
-*fails to recur* and is caught for free. Because C1/C2/C4 read Δ from the **clone-drive**, all of this is
-handled without a symbolic model. **The drive is the authority; nothing replaces it.**
+- **DELETE gate (1)'s effect-scan** — the drive measures effects. *(This alone unrejects Intruder Alarm,
+  Suture Priest, and every Commander permanent.)*
+- **KEEP gate (4)'s condition scan, but narrow it**: match a `Comparator` **against the growing axis**,
+  not the current blanket `if !def.modifications.is_empty() { return true }` (R5) or "any condition".
+- **DELETE R3** (activated-ability bodies — an activated ability observes nothing unless *activated*, and
+  the fixed sequence pins whether it is), **R5**, and **R6**.
 
-### 4.8 Where the generality actually lives — and where it does not (RC-3)
+> ⚠️ **§4.6 previously said *"C3 is the one arm three adversarial rounds never broke — keep its logic."*
+> That contradicted §3.1 and is refuted (Appendix B #8). But the round-4 conclusion — *"C3 is a rewrite"* —
+> **over-corrected.** Under the governing constraint, **C3's kept half (the condition scan) is already in
+> the tree; its broken half (the effect scan) should be DELETED, not rebuilt.** *"Only C2 is new"* is
+> **restored for C3** — though it remains false for the **CR 113.6 predicate** (P2) and the **generalized
+> driver** (P1), which are still real new subsystems.
 
-Measured, layer by layer. **This table is the anti-purpose-built audit, and it says the fix belongs in
-exactly one layer.**
-
-| Layer | How general is it today? | Evidence |
-|---|---|---|
-| **ω-axes** (`ResourceAxis`) | **General.** ~10 axes: `TokensCreated`, `CardsDrawn`, `Casts`, `LandfallTriggers`, `CombatPhases`, `ExtraTurns`, `Death/Etb/Ltb/Sac` triggers, poison, … | `analysis/resource.rs` |
-| **The four checks** (C1–C4) | **General — card-agnostic by construction.** They read a *measured* Δ; they never look at a card name. | `engine.rs:1756` |
-| **Covers** | **Semi-general.** Four exist: `loop_states_cover_modulo_{growth, object_growth, fodder_growth, counter_growth}` | `resource.rs:784 / 924 / 1095 / 1326` |
-| **Arming (live path)** | ⛔ **ONE bespoke shape.** `last_recast_context` = a buyback-paid, token-creating recast. | `casting_costs.rs:6785` |
-| **Corpus coverage of the live path** | ⛔ **ZERO of 53 rows.** All go through offline `detect_loop`. | `grep -c "WaitingFor::LoopShortcut" corpus.rs` == 0 |
-
-**Therefore: the general pattern is not "detect combo X." It is —**
-
-> **At any empty-stack priority beat following a player action, ask whether repeating that FIXED
-> action is legal forever with constant Δ.** Which card produced the action is irrelevant, and no
-> layer below arming needs to know.
-
-**The `last_recast_context` / `last_activation_context` sibling pair is the wrong answer** — it is the
-exact sibling-cluster smell CLAUDE.md prohibits (*"three or more variants that … differ only in a
-context label … is a parameterization that didn't happen"*). Two shapes today become five tomorrow.
-**Parameterize on the action; do not proliferate contexts.** See Phase 5.
-
-### 4.9 The DUAL — and the abstraction is already in the tree
-
-**Do not write a second suite. Write the dual of the one that exists.** `corpus.rs:1175` already carries
-the exact abstraction:
-
-```rust
-/// `step` drives exactly ONE loop iteration's actions.
-pub(crate) fn run_combo<S: FnMut(&mut LoopProbe)>(board: ComboBoard, mut step: S)
-    -> Option<LoopCertificate>
-{
-    const WARMUP: usize = 2;                    // ← see (2) below
-    const STEADY: usize = 3;
-    for _ in 0..WARMUP { step(&mut probe); … }  // burn the transient
-    for _ in 0..STEADY {
-        let start = …; step(&mut probe); let delta = probe.iteration_delta(); let end = …;
-        if let Some(cert) = detect_loop(&start, &end, &delta, controller, false) { return Some(cert) }
-    }
-    None
-}
-```
-
-**`step` IS the CR 732.2a fixed sequence.** A human writes it per row; `detect_loop` merely *judges* it.
-The live path gets no such gift — it must **discover** the same cycle from arming. That asymmetry is the
-entire bug, and it names the dual exactly:
-
-| | who supplies the cycle | who judges | today |
-|---|---|---|---|
-| **`run_combo`** (offline) | the **test author** (`step`) | `detect_loop` | 12 rows drive |
-| **`run_combo_live`** (**the DUAL — to build**) | **the ENGINE must discover it** | `WaitingFor::LoopShortcut` | **0 rows** |
-
-> ## The duality invariant — this is the pattern
-> **Same `ComboRow`. Same `ComboBoard`. Same `step` closure. Two observers.**
-> For every row whose cycle contains an **optional player action** (CR 732.4 / CR 104.4b — every
-> non-drain row), driving `step` through the **real `apply()` reducer** must OFFER **iff** `detect_loop`
-> certifies:
->
-> - **certifies-offline ∧ ¬offers-live** ⇒ **RC-3** — a false negative in real play. **Today this is
->   ALL 12 driven rows**, including **row 1 = Kilo + Freed + Relic** — *the corpus already certifies
->   Combo B offline and has never once offered it live.*
-> - **offers-live ∧ ¬certifies-offline** ⇒ **UNSOUNDNESS** — the live path certifies something the
->   analyzer rejects. Catastrophic; this direction is why the dual must be a **bi-implication**, not a
->   one-way "does it offer" check.
->
-> **Zero duplication.** `ComboDriver::Offline(f)` becomes a route-agnostic `Cycle(f)` driven by **both**
-> routes; `DRIVERS` (`corpus.rs:673`) stays the single source of truth, and its existing meta/partition
-> tests extend to the dual for free.
-
-**Three things this reveals, all measured:**
-
-**(1) The offline harness already tolerates the transient — the live path does not.** `WARMUP = 2`
-(`corpus.rs:1180`) burns two cycles *before* measuring. That is **independent confirmation of RC-2**
-from the tree's own harness: the offline route was built knowing loops have a bounded start-up
-transient, and the live route's two-pair cover requirement (§3.2) forgot.
-
-**(2) `step` can be MULTI-ACTION — so `LoopProbeContext` must carry a SEQUENCE, not an action.**
-`drive_offline_devoted_vizier` (row 6, Devoted Druid + Vizier of Remedies) drives **two activations per
-cycle**. **CR 732.2a says "a sequence of game choices" — plural.** A `LoopProbeContext { action }` is
-therefore wrong on both the rules and the evidence. It must be `{ actions, controller, decisions }`.
-This corrects Phase 5 and closes Open Question #8.
-
-**(3) The honest ceiling, already measured by the tree itself.** Only **12 of 53** rows drive; **4** are
-card-gated; **37** carry a `DeferralBucket` — *the tree's own accounting of what the detector cannot do*:
-
-| `DeferralBucket` | rows | what it means |
-|---|---|---|
-| `ObjectReentry` | **13** | a permanent that dies/blinks/bounces returns with a **fresh `ObjectId`**, so id-keyed loop equality sees a different board |
-| `Other` | 20 | no bespoke driver on today's in-place loop model |
-| `ExtraTurnOrCombat` | 3 | each cycle advances `turn_number` ⇒ not board-identical |
-| `ColorConverting` | 1 | per-color net-progress rule rejects it |
-
-**`ObjectReentry` (13 rows — the single largest bucket) is almost certainly already solvable.**
-`normalize_recast_frame` (`engine.rs:1724`) exists precisely to *"clear churning token-id bookkeeping
-(CR 400.7)"* on the recast path. **Generalizing that normalization is the highest-leverage coverage win
-in the entire corpus** — and it is a *pattern* fix (object identity across a loop cycle), not a card fix.
-**Measure it in Phase 0; it may be worth more than Phases 1–5 combined.**
-
-### 4.10 RC-4 — the COVER layer is a sibling cluster, and it is why 37 of 53 rows are deferred
-
-**This is the think-ahead section. Everything above fixes the two combos in front of us; this is what
-stops us being stuck here again.**
-
-There are **four** cover functions, and they are the textbook sibling cluster CLAUDE.md warns about —
-each is *"board equal **modulo** ⟨a different growing thing⟩"*, and each **re-derives the same four
-invariants** (fire-time observer firewall, cost-surface scan, stack embedding, inertness) around a
-different exemption:
-
-| function | quotients out | `resource.rs` |
-|---|---|---|
-| `loop_states_cover_modulo_growth` | a narrowed projection + stack growth | 784 |
-| `loop_states_cover_modulo_object_growth` | an unobserved object class | 924 |
-| `loop_states_cover_modulo_fodder_growth` | an inert **fungible token class** | 1095 |
-| `loop_states_cover_modulo_counter_growth` | the `Generic` **counter** class | 1326 |
-
-**⇒ Every new combo family today costs a new cover function.** That is exactly why **37 of 53 corpus
-rows are deferred**, and the tree says so itself in `DeferralBucket`.
-
-**And the machinery to fix the biggest bucket is already written.** `loop_states_cover_modulo_fodder_growth`'s
-own doc (`resource.rs:1095`):
-
-> *"`fodder_class` is a **CONTENT authority** … compared LIVE each call via `fodder_content_eq` (modulo
-> tapped) — **not latched by ObjectId, because fodder tokens are not id-stable**. Covers any inert
-> fungible token class (Saproling, Elf Warrior, Thopter, …), **so it builds for the class not a card**."*
-
-Meanwhile `DeferralBucket::ObjectReentry` is defined as: *"a permanent that dies/blinks/bounces … gets a
-FRESH `ObjectId` each cycle, so the **id-keyed** per-object loop equality sees a different board."*
-**Content-not-ObjectId comparison already exists — it is simply welded to the fodder path.** This is
-also just **CR 400.7**: an object that changes zones **is a new object**. Id-keyed loop equality is
-therefore *rules-wrong*, not merely limited.
-
-**What that bucket actually contains — the 13 most famous infinite combos in Magic:**
-
-> Kiki-Jiki + Zealous Conscripts · Splinter Twin + Deceiver Exarch · Palinchron + Deadeye Navigator ·
-> Mikaeus + Triskelion · Dockside Extortionist + Temur Sabertooth · Food Chain + Eternal Scourge ·
-> Karmic Guide + Reveillark + Viscera Seer · Reassembling Skeleton + Ashnod's Altar + Nim Deathmantle ·
-> Gravecrawler + Phyrexian Altar + Blood Artist · Felidar Guardian + Saheeli · Scurry Oak + Ivy Lane
-> Denizen · Midnight Guard + Presence of Gond · **Earthcraft + Squirrel Nest**
-
-⚠️ **Note the last two.** *Midnight Guard + Presence of Gond* is a sibling of **CR 732.2a's own worked
-example**, and **Earthcraft + Squirrel Nest is a hostile fixture in this very plan (§4.4)** — I proposed
-it as a *positive* acceptance case without noticing it is **deferred and undetectable**. That is the
-purpose-built failure mode catching me in my own document.
-
-#### The pattern: ONE quotient relation, not N covers
-
-```rust
-/// CR 732.2a: a loop recurs iff the board is equal MODULO a set of quotients, each of
-/// which is a monotone non-decreasing ω-axis. Adding a combo FAMILY = adding a
-/// `Quotient` variant + its monotonicity proof — NOT a new cover function.
-fn loop_states_cover(prior: &GameState, current: &GameState, q: &[Quotient]) -> bool;
-
-enum Quotient {
-    /// CR 400.7: an object that changes zones IS A NEW OBJECT. Compare by CONTENT
-    /// class, not ObjectId. Machinery exists: `fodder_content_eq` (resource.rs:1095).
-    ObjectIdentity,
-    /// Inert fungible object growth (tokens).            → fodder / object growth
-    ObjectCount { class: ObjectClass },
-    /// Counter growth (Generic: charge / burden).        → counter growth
-    CounterCount { kind: CounterKind },
-    /// CR 732.2a: a shortcut "may even cross multiple turns".
-    /// `ResourceAxis::{ExtraTurns, CombatPhases}` ALREADY EXIST as ω-axes.
-    TurnCount,
-    CombatCount,
-    /// CR 106.4 / CR 500.5: the mana pool empties at end of step — never a durable
-    /// residual, so it can always be quotiented out at a step boundary.
-    ManaPool,
-}
-```
-
-**Certification rule.** A loop certifies iff **∃** a quotient set **Q** such that
-**(1)** states are equal modulo **Q**; **(2)** every quotiented axis is **monotone non-decreasing**
-across the cycle (that is what makes it the ω-axis and not a leak); **(3)** no live observer reads a
-quotiented axis (the firewall — now **CR 113.6**-scoped per Phase 1); **(4)** C1–C4 pass. The four
-shared invariants factor out **once** instead of being re-derived per cover.
-
-**Measured payoff against the corpus:**
-
-| `Quotient` | unlocks | rows |
-|---|---|---|
-| `ObjectIdentity` (CR 400.7) | **the entire `ObjectReentry` bucket** | **13** |
-| `TurnCount` / `CombatCount` (CR 732.2a *"may cross multiple turns"*) | `ExtraTurnOrCombat` | **3** |
-| `ManaPool` (CR 106.4) | `ColorConverting` (Pili-Pala + Grand Architect — restricted-mana accounting) | 1 |
-| Phase 5's `{ actions }` **sequence** | the multi-action rows inside `Other` (Basalt Monolith + **Rings of Brighthearth**, Dramatic Reversal + Isochron Scepter, Dualcaster Mage + Twinflame, …) | **≤20, measure** |
-
-**⇒ ~17 of 37 deferrals fall out of ONE parameterization**, before touching the `Other` bucket.
-
-> **This is the "not stuck like this later" contract.** A new combo family costs **one `Quotient`
-> variant + its monotonicity proof** — *not* a new cover function, *not* a new arming context, *not* a
-> new bespoke driver, *not* a new `DeferralBucket`. Run the **`/add-engine-variant`** gate on `Quotient`
-> and it becomes a checklist, not an archaeology expedition.
-
-### 4.7 Explicitly OUT of scope — an engineering cut, NOT a rules constraint (see D5)
-
-- **Nested / multiple loops** and **turn-crossing loops** (Time Vault). **CR 732.2a permits all three.**
-  We exclude them because they are rare in real play and expensive to certify; the untap step
-  (**CR 502.3** — *"the active player determines which permanents they control will untap. Then they
-  untap them all simultaneously"*) has a marking-dependent Δ, and a turn boundary resets the per-turn
-  tallies C2 depends on.
-- **Special actions** (**CR 116.1**) and land plays, unless `lands_played_this_turn` is modelled as a C2
-  precondition (§6 Phase 3).
-- **Venture / dungeon** (CR 309) — no axis exists in `ResourceVector`; **Acererak the Archlich** is a real
-  EDH loop.
-
-**Every one of these must DECLINE LOUDLY with a logged reason.** A silent decline is indistinguishable
-from the bug we are fixing.
+**Why measurement, not derivation.** Δ cannot be derived from the AST — **replacements rewrite it at
+resolution** (Solemnity turns proliferate's AST-Δ of +1 into a true Δ of **0**), and **CR 704.3 / CR
+603.3b** put a full SBA + trigger settle between iterations, so a loop that kills its own engine simply
+fails to recur. **The drive is the authority; the firewall's ONLY remaining job is the discontinuity the
+drive is structurally blind to.**
 
 ---
 
-## 5. Architectural questions (engine-planner Step 4)
+## 5. RC-4 / object identity — the honest picture (⚠️ I was wrong about this too)
 
-**Pattern coverage.** Not one card, not two: the change governs **every** CR 732.2a shortcut. C2 covers
-the whole class of *repetition-blocking legality gates* (activation limits, land drops, summoning
-sickness, loyalty, crew, per-turn trigger caps). The corpus is **55 combos** (`analysis/corpus.rs`), and
-Combo B is already in it (*"Kilo, Apogee Mind + Freed from the Real + Relic of Legends"*, family
-`Proliferate`).
+> **Appendix B #7 — "generalizing `normalize_recast_frame` lifts all 13 `ObjectReentry` rows and is worth
+> more than Phases 1–5 combined" is FALSE.** It lifts **ZERO** of them directly, and the real fix is the
+> **riskiest change in the program**. It is **not a quick win and must not be sequenced as one.**
 
-**Building blocks (compose; do not re-create).**
-- `ability_has_per_turn_activation_gate` (`resource.rs:2842`) — **the single authority** for per-turn gates.
-- `project_out_resources` (`resource.rs:2500`) — already preserves the tallies C2 needs.
-- `net_progress_for` / `has_no_loss_axis` / `driving_resources_non_decreasing` — C4, untouched.
-- `no_living_player_has_meaningful_priority_action` (`engine.rs:1765`) — the **CR 104.4b** optional-loop
-  gate. **Already correct.**
-- `battlefield_active_triggers` (`functioning_abilities.rs:416`) — the correctly-scoped authority R1 must use.
-- `ability_scan::Axes` walk (`sibling`, **`projected`**) — C3's existing engine. **`projected` must be
-  preserved**: it is what catches `ModifyCost{dynamic_count}` (Damping Sphere, Hum of the Radix), guarded
-  by the in-tree test `R-e2` (`resource.rs:5052`).
-- `drive_recast_iteration` (`engine.rs:1469`) + `normalize_recast_frame` + `derived_fodder_class` — the
-  measurement authority for C1.
-- `loop_states_cover_modulo_counter_growth` (`resource.rs:1326`) — **Combo B's cover already exists.**
-- `object_content_eq` / `_gameobject_partition_is_total` / `_gamestate_partition_is_total` — the
-  compiler-enforced totality guards that keep the residual-equality check honest.
+`DeferralBucket::ObjectReentry` is a **coarse bucket over two structurally different failures**:
 
-**Logic placement.** C1/C2/C4 are **analysis** (`crates/engine/src/analysis/`). C3 is an **ability scan**
-(`game/ability_scan.rs`). Zone-of-function is a **rules** predicate (`game/functioning_abilities.rs` — the
-module is literally named for CR 113.6). No frontend change: the offer already renders
-(`LoopShortcutModal.tsx`, mounted at `GamePage.tsx:1710`).
+**Group A — token ACCUMULATION; id churn is NOT the blocker (6 rows).**
+Kiki-Jiki + Zealous Conscripts · Splinter Twin + Deceiver Exarch · Midnight Guard + Presence of Gond ·
+Scurry Oak + Ivy Lane Denizen · Felidar Guardian + Saheeli · **Earthcraft + Squirrel Nest**.
+These are **pure object growth**, and `loop_states_cover_modulo_{object,fodder}_growth` **already exclude
+the add-set from id-keyed equality** (`resource.rs:1040`, `:1095`). What actually blocks them:
+**Kiki/Twin** — each token carries *"sacrifice at the beginning of the next end step"* ⇒
+`state.delayed_triggers` grows ⇒ **gate (6)** rejects on ANY non-empty `delayed_triggers`
+(`resource.rs:1577`). **The rest** — **RC-1** (typed-filter gate) and **RC-3** (nothing arms).
+⇒ **Phases 1/2/5 lift Group A. Object identity is irrelevant to it.**
 
-**Rust idioms.** C2's gate set is a **typed enum**, exhaustively matched, with an explicit `_ => REJECT`
-default and a no-`..` totality guard so a new `ActivationRestriction` / `Cost` / turn-based limit
-**build-breaks** rather than silently failing open (precedent: `_gameobject_partition_is_total`). The
-transient-prefix bound (§6 Phase 2) is an `Option<NonZeroU32>`, never a bare `usize` sentinel.
+**Group B — TRUE re-entry; id churn IS the blocker, and `normalize_recast_frame` is the WRONG fix (7 rows).**
+Palinchron + Deadeye · Dockside + Sabertooth · Mikaeus + Triskelion · Food Chain + Eternal Scourge ·
+Gravecrawler + Altar + Blood Artist · Karmic Guide + Reveillark + Viscera Seer · Reassembling Skeleton +
+Ashnod's + Nim Deathmantle.
 
-**Extension vs creation.** Extension throughout. C3 keeps its predicate and changes scope. C4 is
-untouched. C1 compares deltas the drive already produces. Combo B reuses `drive_recast_iteration` via a
-new arming context. **Only C2 is new.**
+`normalize_recast_frame` handles churn by **deleting the object from both frames** — sound **only**
+because the recast card is `ctx`-identified **and off the battlefield** (a card in hand, carrying no board
+state). **Neither holds for Group B:**
 
-**Variant discoverability.** If C2 or the activation context introduces an enum variant, run the mandatory
-**`/add-engine-variant`** gate and grep `data/engine-inventory.json` first.
+1. **The churning object IS the engine piece.** Deleting Palinchron erases its own board state —
+   including `summoning_sick`, **the exact CR 302.6 field C2's place-split depends on.** You would
+   project out the thing you are checking.
+2. **Id churn contaminates STABLE objects through id-valued fields.** `object_content_eq`
+   (`game_state.rs:10470`) compares **`attached_to`, `attachments`, `paired_with`** — all
+   `ObjectId`-valued. Palinchron is soulbonded to **Deadeye Navigator**: after the blink, **Deadeye's
+   `paired_with` points at a NEW id**, so **Deadeye — a stable, never-moved object — fails content
+   equality.** Stripping Palinchron does not fix Deadeye. Same for Nim Deathmantle's `attached_to`.
 
-**Analogous trace.** Traced the object-growth detector end-to-end: `casting_costs.rs:6785` (arming) →
-`engine.rs:445` (offer gate) → `engine.rs:1648` (`try_offer_object_growth_shortcut`) → `engine.rs:1469`
-(`drive_recast_iteration`) → `engine.rs:1728` (the two-pair cover) → `resource.rs:1095`
-(`loop_states_cover_modulo_fodder_growth`) → `resource.rs:1468` (the firewall) → `engine.rs:1756` (the
-shipped triple) → `engine.rs:1765` (CR 104.4b) → `LoopShortcutModal.tsx`. **Phase 5 mirrors this trace
-for activations.**
+**The real fix is id-canonicalization of the whole frame** (remap `ObjectId`s to a canonical order **and**
+canonicalize every id-valued field) — **a soundness-critical rewrite of the equality core.**
+**Content-multiset equality is EXACTLY where a false certificate enters**: two boards can be content-equal
+per-object yet differ in **which object the stack, a delayed trigger, or an aura POINTS AT.**
 
-**Identity / provenance contract.** **The pinned choice must be a PLACE, not an ObjectId.** CR 732.2a asks
-for *"a sequence of game choices"* describable per-iteration — the human proposal is *"convoke a
-Saproling"*, a **place**. Pinning a raw ObjectId is wrong (iteration 2 needs a *different* Saproling);
-pinning "any legal choice" is also wrong (that is a **conditional action**, which CR 732.2a forbids, and
-it is what lets `select_convoke_taps` silently pick Witherbloom). **The contract: `DecisionTemplate` pins
-`(place, deterministic selector)`; C2 requires the place's population to be non-decreasing; the drive
-re-resolves the selector each iteration.** The hostile fixture that proves the binding is
-**Earthcraft-vs-Cryptolith-Rite** — same selector, different place, opposite verdict.
+> **Verdict: object identity across a loop cycle is a real, general, unsolved problem that deserves its
+> OWN PR with its OWN soundness proof. It is §6 P6 — LAST, not a "Phase 2.5 quick win."**
+> The `Quotient` parameterization (one `loop_states_cover(prior, current, &[Quotient])` replacing the four
+> `loop_states_cover_modulo_*` siblings) is still the right **shape** — the sibling-cluster smell is real —
+> but it must be earned with the canonicalization proof, not asserted as a refactor.
 
 ---
 
-## 6. Implementation plan
+## 6. Implementation plan — **RE-SEQUENCED** (arming is a PREREQUISITE, not the last phase)
 
-Each phase is independently shippable and independently testable.
-**Soundness is monotone throughout: C1–C4 can only turn OFFERs into NO-OFFERs.** Phases 1 and 2 are the
-two root causes, and **neither alone makes the acceptance test pass** — the implementer should expect the
-red test to stay red after Phase 1 and to turn green after Phase 2. **Say so in the PR, or a green-after-
-Phase-1 report is a false positive.**
+**Six of the fifteen §7 test rows never reach the code they claim to test**, because `engine.rs:445`
+gates the entire hook on `last_recast_context.is_some()`. Presence of Gond, Earthcraft, Cryptolith Rite,
+Manaforge Cinder, Crucible+Zuran Orb, and Basalt Monolith are **all activation or land-play loops** ⇒
+**nothing arms** ⇒ they decline **vacuously** and **no revert-probe can flip them**. **Arming must come
+first or the test matrix is theater.**
 
-### Phase 0 — `run_combo_live`: the DUAL of the corpus harness (DO THIS FIRST — it is the anti-purpose-built gate)
+### P0 — `run_combo_live`: the DUAL of the corpus harness (tests only; no fix)
 
-**This is the single most valuable change in this document.** It must land *before* any fix, because it
-is the only thing that can tell you whether a fix generalized. It is not a new suite — it is the **dual**
-of `run_combo` (§4.9), sharing the row, the board, and the `step` closure.
+`corpus.rs:1175` — `run_combo(board, step)`, where **"`step` drives exactly ONE loop iteration's
+actions"** — **`step` IS the CR 732.2a fixed sequence.** A human writes it; `detect_loop` merely *judges*
+it. The live path must **discover** the same cycle. Build the dual, sharing `ComboRow` / `ComboBoard` /
+`step`:
 
-1. **Route-agnostify the driver.** `ComboDriver::Offline(f)` → `ComboDriver::Cycle(f)`. `DRIVERS`
-   (`corpus.rs:673`) stays the single source of truth; `LiveDrain` stays as-is (mandatory ⇒ CR 732.4).
-2. **Build `run_combo_live(board, step) -> Option<LoopShortcutOffer>`** as the mirror of `run_combo`
-   (`corpus.rs:1175`): **same `WARMUP`/`STEADY` shape** (the warm-up is what tolerates the bounded
-   transient — §4.9(1)), but drive `step` through the **real `apply()` reducer** and observe
-   `WaitingFor::LoopShortcut` instead of calling `detect_loop`.
-3. **Assert the duality invariant (§4.9) as a BI-IMPLICATION**, per row, for every non-`LiveDrain` row:
-   ```
-   run_combo(board, step).is_some()  ==  run_combo_live(board, step).is_some()
-   ```
-   - **Today every driven row fails the ⇒ direction** (12 certify offline, **0** offer live) — including
-     **row 1, Kilo + Freed + Relic**, which is *this document's Combo B, already certified offline and
-     never once offered live.* That is the RC-3 debt made visible, and it is the non-vacuity proof for
-     Phases 1–5.
-   - **The ⇐ direction is the soundness guard**: a row that offers live but does not certify offline
-     means the live path is certifying something the analyzer rejects. **This direction must NEVER go
-     red**, and it is why the dual is a bi-implication and not a one-way "does it offer" check.
-4. **Real cards, real libraries, real mana bases.** Add a `GameScenario` builder loading **real Oracle
-   text from `card-data.json`** with a real library, and port
-   `object_growth_51st_sprout_swarm_covers_and_offers` onto it. **It must FAIL today.**
-5. Add **Presence of Gond + Intruder Alarm** — **CR 732.2a's own worked example** — as a first-class row
-   with a `step` closure, so it is driven by **both** routes.
-6. **Measure the `ObjectReentry` bucket (13 rows — §4.9(3)).** Determine whether generalizing
-   `normalize_recast_frame`'s CR 400.7 token-id normalization lifts them. **If it does, that is a larger
-   coverage win than Phases 1–5 combined, and it should be re-prioritized ahead of them.**
-7. **Review gates.** Reject any combo-detector test with zero lands, an empty library, or a stub oracle.
-   **Reject any fix that turns exactly the two combos in this document green and leaves the rest of the
-   duality invariant red** — that is a purpose-built patch wearing a plan's clothes.
+- `ComboDriver::Offline(f)` → route-agnostic `Cycle(f)`; `DRIVERS` (`corpus.rs:673`) stays the single
+  source of truth so its meta/partition tests extend for free.
+- **`run_combo_live(board, step)`** drives `step` through the **real `apply()` reducer**.
+  ⚠️ **First verify `LoopProbe` is not an offline-only abstraction that bypasses `apply()`** — if it is,
+  P0 needs redesign. **UNVERIFIED; check before building.**
 
-### Phase 1 — RC-1: zone-scope the observer scans (a RULES fix — ship standalone)
+**The partition has THREE terminals, not two** (CR 104.4b makes this a rules distinction):
 
-**Primary authority is CR 113.6, not CR 400.2.** A `Solemn Simulacrum` in the library **has no functioning
-ability**; scanning it is not conservatism, it is reading an ability that does not exist.
+| Partition | Rows | Live terminal |
+|---|---|---|
+| **L-OFFER** — cycle contains ≥1 **optional** player action | the 10 `Offline` drivers + the 13 `ObjectReentry` + 20 `Other` + 1 `ColorConverting` | **must** reach `WaitingFor::LoopShortcut` |
+| **L-AUTOWIN** — **mandatory** cascade, no player action | **17** (Sanguine Bond + Exquisite Blood), **18** (Marauding Blight-Priest + Bloodthirsty Conqueror) | **must** reach `WaitingFor::GameOver`; **must NOT offer** (CR 104.4b) |
+| **WAIVED — by ENGINEERING, not by rules** | **32** Aggravated Assault + Sword · **33** Combat Celebrant + Helm · **34** Time Sieve + Thopter Assembly | none today — ⚠️ **CR 732.2a explicitly permits these** (*"may even cross multiple turns"*). **Waive LOUDLY, with the CR quote in the exclusion comment.** Silently bucketing them as "offline-only" is exactly the dressing-a-cut-as-a-rule that D5 forbids. |
 
-- Gate (1): replace `for obj in state.objects.values() { active_trigger_definitions(..) }` with
-  `battlefield_active_triggers(state)`.
-- Gates (3), (4), and `cost_surface_references_growing_class`: route through **one CR 113.6
-  zone-of-function predicate** in `functioning_abilities.rs`.
-- **Do NOT simply hard-code "battlefield-only" — CR 113.6 has eleven exceptions and several are live:**
-  **113.6b/c** (abilities that state their zones), **113.6j** (an activated ability whose cost can't be
-  paid on the battlefield functions where it can be — Reassembling Skeleton), **113.6k** (a trigger
-  condition that can't trigger from the battlefield functions in every zone it can), and **113.6d/e/f**
-  (cost- and play-modifying abilities function **on the stack and in the zone the object would be cast
-  from — including the HAND**). Battlefield-only would drop legitimate observers. **CR 400.2 is about
-  HIDDEN zones; CR 113.6 is about FUNCTION. Do not conflate them.**
-- **Permanent guard test:** *the verdict must not change when an arbitrary card is added to any library or
-  hand.* A verdict that depends on a hidden zone is a rules violation by construction. This alone would
-  have caught Solemn Simulacrum.
-- **Already done:** R2 (`scan_mana_production`), committed with a revert-probe-verified guard
-  (`ability_scan::mana_production_scan_tests`) proving Gaea's Cradle still fails closed.
+**The invariant:**
+```
+certifies_offline  ==  (offers_live XOR auto_wins_live)      // for every non-WAIVED row
+```
+- **⇒ failing = RC-3** (false negative in real play). **Today all 10 `Offline` rows fail it** — including
+  **row 1, Kilo + Freed + Relic**: *the corpus already certifies Combo B offline and has never once
+  offered it live.*
+- **⇐ failing = UNSOUNDNESS** — the live path certifying what the analyzer rejects. **Must never go red.**
 
-### Phase 2 — RC-2: tolerate the bounded start-up transient (**CR 732.2a D3**)
+> ⚠️ **FIX THE ASYMMETRY UPWARD, or this invariant will make things worse.** `run_combo` requires **one**
+> covering pair after `WARMUP`; the live path requires **two, from iteration 0**. The bi-implication
+> therefore applies pressure to **relax the live path to one pair** to go green — degrading the only
+> **game-ending** path, and it will look like progress. **Make `run_combo` ALSO require two consecutive
+> covering pairs with equal Δ.**
 
-CR 732.2a permits *"a non-repetitive series of choices"* **followed by** *"a loop that repeats a specified
-number of times."* The engine must stop requiring the loop to cover from iteration 0.
+Also: real cards, real libraries, real mana bases; port
+`object_growth_51st_sprout_swarm_covers_and_offers` onto them (**it must FAIL today**); add **Presence of
+Gond + Intruder Alarm** as a first-class row.
 
-- Drive until the cover holds on **two consecutive pairs with equal Δ**, rather than on the first two
-  pairs. The transient is **provably finite**: each transient iteration consumes one untapped **non-fodder**
-  member of the place and never replenishes it, so the prefix is bounded by the place's non-fodder
-  population — a **board-derived, present-state-only** bound (no hidden-zone read).
-- Bound the search by `min(non_fodder_population + 2, DOS_CAP)`. **Keep the DoS cap** (commit `57b0e537d`).
-- Report the prefix length in the certificate so the offer says *"N₀ setup iterations, then ×N"*, matching
-  CR 732.2a's own two-part shape.
+### P1 — RC-3: ONE generalized arming context + driver ⚠️ **THIS IS A REWRITE, AND IT IS A PREREQUISITE**
 
-### Phase 3 — C2: place non-depletion ⚠️ **the only new code**
+**Do NOT add `last_activation_context` as a sibling** (sibling-cluster smell). **But do not let the naming
+fix disguise the cost** — measured, `drive_recast_iteration` (`engine.rs:1451`) has **eight structural
+cast-shaped elements and exactly one parameter (controller)**:
+hardcoded `GameAction::CastSpell{payment_mode: Auto}` (:1469) · card re-find by `(card_id, from_zone,
+controller)` (:1460) · `DecideOptionalCost{pay: ctx.uses_buyback.pays()}` — **buyback by name** (:1487) ·
+`ManaPayment` resolves **`ConvokeTaps` pins only**, every other `ConcreteDecision` ⇒ `Err(RecastAbort)`
+(:1527) · `_ => Err(RecastAbort)` (:1548) — **where Combo B's `WaitingFor::PayCost{TapCreatures}` lands** ·
+`build_recast_template` emits `[ConvokeTaps]` (:1558) · `normalize_recast_frame` (:1599) ·
+`derived_fodder_class` fails closed unless **exactly one** new battlefield object (:1633).
+**`RecastContext` has no action field — the action is implied by the type.**
 
-Model every repetition-blocking legality gate the fixed sequence consumes as a **consumable place**, and
-require it non-decreasing under the sequence's own Δ:
+- Build `LoopProbeContext { actions: Vec<GameAction>, controller, decisions }` — **`actions` is a
+  SEQUENCE** (CR 732.2a *"choices"*, plural; three drivers are multi-action; **Combo B is two**).
+- Build `drive_loop_iteration(&[GameAction])`. **New context + new driver + new
+  `PinnedDecision`/`ConcreteDecision` variant ⇒ the `/add-engine-variant` gate is MANDATORY and is a hard
+  prerequisite, not a conditional.** Grep `data/engine-inventory.json` first.
+- ⚠️ **A NEW CHEAP NECESSARY-CONDITION PRE-GATE IS REQUIRED.** Commit `57b0e537d` bounds shortcut
+  **EXECUTION** (`MAX_SHORTCUT_CYCLES` caps the post-acceptance replay) — **not DETECTION.** The pre-offer
+  clone-drive is bounded today by exactly one thing: **it almost never runs**
+  (`last_recast_context.is_some()`, `engine.rs:449`). Remove that and the drive runs on **every player
+  action at every empty-stack priority beat**: 3× full `GameState::clone()` + 2× a cascade whose beat cap
+  is `auto_pass_loop_max_iterations` = **`.clamp(500, 10_000)`** (`engine.rs:2413`), each beat re-running
+  `flush_layers`. **Without a new pre-gate, the #5672 remote DoS is the deliverable.**
+- **Leave `engine.rs:3081` and the ring alone** — arming, not the ring, is the fix (§3.3).
+
+### P2 — RC-1(b): a real CR 113.6 zone-of-function predicate ⚠️ **IT DOES NOT EXIST — NEW CODE**
+
+- `active_trigger_definitions` (`functioning_abilities.rs:391`) implements **NO CR 113.6 logic** — it
+  gates only phased-out (CR 702.26b) and non-emblem command zone. `battlefield_active_triggers` (:416) is
+  literally `state.battlefield × active_trigger_definitions`. **So "use `battlefield_active_triggers`" IS
+  "hard-code battlefield-only"** — the thing CR 113.6 forbids. **The predicate must be written.**
+- **CR 113.6's exceptions are live and verified** (`docs/MagicCompRules.txt:771–793`): **113.6b/c**
+  (abilities stating their zones), **113.6j** (an activated ability whose cost can't be paid on the
+  battlefield — Reassembling Skeleton), **113.6k** (a trigger condition that can't trigger from the
+  battlefield), **113.6d/e/f** (cost/play-modifying abilities function **on the stack and in the zone the
+  object would be cast from — including the HAND**). **CR 400.2 is about HIDDEN zones; CR 113.6 is about
+  FUNCTION. Do not conflate them.**
+- **R4's fix is mis-aimed.** `active_replacements` (`functioning_abilities.rs:446`) is **deliberately**
+  all-zones, and its doc names the real runtime authority: **`find_applicable_replacements`
+  (`game/replacement.rs`)** restricts to `[Battlefield, Command]` + the entering/discarded card. **Share
+  THAT predicate.**
+- **Permanent guard test:** the verdict must not change when an arbitrary card is added to any library or
+  hand.
+
+### P3 — RC-2: tolerate the bounded start-up transient (CR 732.2a D3)
+
+- Drive until the cover holds on **two consecutive pairs with equal Δ**, rather than on the first two.
+  **The SKIP is sound** — two consecutive covering pairs at offset *k* is exactly as strong as at offset 0
+  (`board_covers_modulo_fodder` already demands exact content equality on the whole stable partition,
+  `resource.rs:1040`).
+- ⚠️ **DO NOT SHIP THE POPULATION BOUND.** *"Non-fodder population + 2"* is a **heuristic**, and §8 admits
+  it while P3 previously shipped it as a theorem. **Use the DoS cap:** drive to the cap, take the first
+  *k* with two consecutive equal-Δ covering pairs, **decline loudly on overflow.** The population bound
+  buys nothing (the cap already bounds it) and **is the only place in this phase an unsound argument can
+  hide.**
+
+### P4 — C2: place non-depletion (**the only phase that was correctly sized**)
 
 | Gate / place | Authority | CR |
 |---|---|---|
-| `activation_restrictions` (`OnlyOnceEachTurn`, `MaxTimesEachTurn`) | `ability_has_per_turn_activation_gate` | — |
+| `activation_restrictions` | `ability_has_per_turn_activation_gate` (`resource.rs:2848`) | — |
 | trigger `OncePerTurn` / `MaxTimesPerTurn` | `project_out_resources` (already preserved) | — |
-| loyalty activations | `loyalty_activation_counts_match` | **CR 606.3** |
-| land plays (`lands_played_this_turn`) | *(new axis, or exclude land plays loudly)* | **CR 305.2** |
-| **summoning sickness — a PLACE SPLIT, not a blanket reject** | cost shape: `{T}` on the creature's own ability ⇒ sick creatures excluded; a "tap a creature" cost on **another** permanent ⇒ they are not | **CR 302.6** |
-| library size | `library_delta` (already in `has_no_loss_axis`) | **CR 104.3c / 704.5b** |
-| **opponent's non-pass action required** ⇒ **REJECT** | — | **CR 732.3** (fragmented loops) |
+| loyalty | `loyalty_activation_counts_match` | **CR 606.3** |
+| land plays | *(new axis, or exclude loudly)* | **CR 305.2** |
+| **summoning sickness — a PLACE SPLIT** | `AbilityCost::Tap` vs `AbilityCost::TapCreatures` (`ability.rs:7841`); enforced only on the former via `cost_contains_tap_or_untap` (`restrictions.rs:675`) | **CR 302.6** |
+| library size | `library_delta` (in `has_no_loss_axis`) | **CR 704.5b** |
+| **opponent's non-pass action required ⇒ REJECT** | — | **CR 732.3** |
 
-**The summoning-sickness place split is the crux.** A blanket *"reject any `{T}` cost"* would decline
-**CR 732.2a's own example** (Presence of Gond has `{T}`) and most creature mana engines (Devoted Druid,
-Priest of Titania, Bloom Tender, Pili-Pala). The split is driven by **the shape of the cost**, per §4.4.
+A blanket *"reject any `{T}` cost"* would decline **CR 732.2a's own example** and most creature mana
+engines. Exhaustive typed enum + `_ => REJECT` + no-`..` totality guard.
 
-Exhaustive typed enum + `_ => REJECT` default + no-`..` totality guard.
+### P5 — C3: the firewall becomes a THRESHOLD scan — **mostly a DELETION** (see §4.6's governing constraint)
 
-### Phase 4 — C1 + C3
+**The drive measures every effect the current board produces.** The firewall's only remaining job is the
+**discontinuity** the drive is structurally blind to: **a threshold that trips at a future iteration
+count.** Everything else it currently does is duplicated work that gets the answer wrong.
 
-- **C1:** compare Δ across the two **post-transient** pairs Phase 2 identifies; `Δᵢ != Δᵢ₊₁` ⇒ REJECT.
-- **C3:** keep the `Comparator`-vs-growth-axis predicate (unbroken across three review rounds). Change only
-  its **scope** (the transition set; never a hidden zone) and **retain the `projected` axis** and its
-  firewall — `R-e2` (`resource.rs:5052`) is the precedent to preserve, not delete. Then delete the
-  over-broad remainder (R3, R5, R6).
+- **DELETE gate (1)'s EFFECT scan.** `ability_definition_reads_sibling_mutable` (`ability_scan.rs:3767`)
+  → `TargetFilter::Typed(_) => Axes { sibling: true, .. }` **unconditionally** (`:2454`). This rejects
+  **Intruder Alarm — CR 732.2a's own worked example** — and **Suture Priest**, and every Commander
+  permanent. **Effects are the drive's job.** Re-scoping cannot save it: Intruder Alarm is **on the
+  battlefield.**
+- **KEEP gate (4)'s CONDITION scan — it is already the right place** (`resource.rs:1524` inspects
+  `def.condition`). **Narrow it** to: *a fire-time `Comparator` whose operand is the growing axis*, on an
+  ability that **functions** in its zone (CR 113.6, via P2). Replace the blanket
+  `if !def.modifications.is_empty() { return true }` (**R5**) and any "any condition ⇒ reject".
+- **Retain the `projected` cost axis** and its firewall (`R-e2`, `resource.rs:5052`) — it catches
+  `ModifyCost{dynamic_count}` (**Damping Sphere**). *(A scaling cost also moves Δ, so C1 backstops it —
+  but keep the axis; belt and braces on the only game-ending path.)*
+- **DELETE R3** (activated-ability bodies — an activated ability observes nothing unless *activated*, and
+  the fixed sequence **pins** whether it is), and **R6**. **R6 (`delayed_triggers` non-empty ⇒ reject) is
+  what blocks Kiki-Jiki and Splinter Twin** (§5 Group A) — every Kiki token carries *"sacrifice it at the
+  beginning of the next end step"*. **Deleting R6 is worth 2 corpus rows on its own**, and it is sound
+  because the delayed trigger **fires in the drive** and lands in Δ.
+- **Soundness note:** this phase is the one place the plan makes the detector **less** conservative.
+  Every deletion must be justified by *"the drive measures this"* — and the **⇐ direction of P0's duality
+  invariant is its runtime guard.** If a deletion makes the live path certify something `detect_loop`
+  rejects, **that is the alarm.**
 
-### Phase 2.5 — RC-4: ONE quotient relation, not four covers (**the highest-leverage phase — see §4.10**)
+### P6 — RC-4: object identity across a loop cycle ⚠️ **ITS OWN PR, WITH ITS OWN SOUNDNESS PROOF**
 
-**Sequenced here deliberately: it outranks Phases 3–5 on measured coverage.** It is also the phase that
-makes the detector *extensible* rather than merely *correct on two combos*.
-
-- **Parameterize the four `loop_states_cover_modulo_*` siblings into one
-  `loop_states_cover(prior, current, &[Quotient])`**, factoring the four shared invariants (fire-time
-  firewall, cost surface, stack embedding, inertness) out **once**. Run the mandatory
-  **`/add-engine-variant`** gate on `Quotient` and grep `data/engine-inventory.json` first.
-- **Ship `Quotient::ObjectIdentity` first (CR 400.7).** Generalize `fodder_content_eq`'s
-  content-class comparison (`resource.rs:1095` — *"not latched by ObjectId, because fodder tokens are
-  not id-stable"*) off the fodder path. **Target: the 13 `ObjectReentry` rows.** Id-keyed loop equality
-  is *rules-wrong*, not merely limited — CR 400.7 says a zone change makes a **new object**.
-- Then `Quotient::{TurnCount, CombatCount}` — **CR 732.2a** permits a shortcut that *"may even cross
-  multiple turns"*, and `ResourceAxis::{ExtraTurns, CombatPhases}` **already exist**. Target: the 3
-  `ExtraTurnOrCombat` rows. **This retires §4.7's turn-crossing scope cut** — which was an engineering
-  cut, never a rules one (D5).
-- **Every quotient must carry a monotonicity proof**: a quotiented axis that is *not* monotone
-  non-decreasing across the cycle is a **leak**, not an ω-axis, and would certify a loop that does not
-  recur. **This is the soundness heart of the phase** — the `⇐` direction of the Phase 0 duality
-  invariant is its runtime guard.
-- **Re-bucket the corpus after each quotient lands.** `DeferralBucket` is the scoreboard; a quotient
-  that empties a bucket has earned its keep. Anything still in `Other` (20) is the honest remainder.
-
-### Phase 5 — RC-3: ONE generalized arming context (**the build-to-the-pattern phase**)
-
-**Do NOT add `last_activation_context` as a sibling of `last_recast_context`.** That is the
-sibling-cluster smell (§4.8), and it hard-codes the detector to the two combos in this document.
-
-Per §2.1/§3.3, Combo B's cycle is **one activation** (CR 602.2b + CR 605.3a: Relic's mana ability is
-activated *inside* Freed's cost payment) — **structurally identical to Combo A's one cast.** Both are
-CR 732.2a's *"one pinned announcement + payment, then passes to the ending priority beat."* So:
-
-- **Replace `RecastContext` with one `LoopProbeContext { actions, controller, decisions }`,
-  parameterized on the pinned player-action SEQUENCE**, armed at any empty-stack priority beat that
-  follows a player action. `RecastContext`'s buyback/convoke fields become *decisions*, not a shape.
-  **`actions` is a SEQUENCE, not a single action** — **CR 732.2a** says *"a sequence of game choices"*
-  (plural), and the tree agrees: `drive_offline_devoted_vizier` (corpus row 6) drives **two activations
-  per cycle** (§4.9(2)). A single-action context is wrong on both the rules and the evidence, and it is
-  the mirror-image of the sibling-cluster mistake — under-parameterizing instead of over-proliferating.
-- **Generalize `drive_recast_iteration` → `drive_loop_iteration(action)`.** ⚠️ **Cost unknown — this is
-  Open Question #6.** `drive_recast_iteration` may be structurally cast-shaped
-  (`normalize_recast_frame` strips the self-returning buyback card; `derived_fodder_class` derives the
-  token class *from the cast*). If generalizing it is a rewrite rather than a parameterization, the
-  plan's cost changes by an order of magnitude. **Settle this before committing to Phase 5.**
-- **Reuse the existing four covers** (§4.8). **Build no new cover** — Combo B's
-  `loop_states_cover_modulo_counter_growth` already exists.
-- **Audit `DecisionTemplate` against the CR 601.2b–h table in §4.3.** Today `template.decisions ==
-  [ConvokeTaps]`; an activation loop also needs the **CR 601.2g mana-ability selection** pinned (which
-  legendary creature Relic taps). **An unpinned choice is a conditional action, which CR 732.2a forbids.**
-- **Leave `engine.rs:3081` and the DoS cap (`57b0e537d`) alone.** ⚠️ Broader arming means the analysis
-  runs far more often. **Prove the cheap-gate cascade at `engine.rs:445` still bounds it** — a
-  generalized arm that re-opens the remote DoS of #5672 is not shippable. **Open Question #7.**
+Per §5: **not** a refactor and **not** a quick win. Requires **id-canonicalization of the whole frame**
+(remap `ObjectId`s to a canonical order **and** canonicalize every id-valued field: `attached_to`,
+`attachments`, `paired_with`, stack targets, delayed-trigger references). **This is where a false
+certificate enters** — two boards can be content-equal per-object yet differ in *which object the stack
+points at*. Ship the `Quotient` parameterization (one `loop_states_cover(prior, current, &[Quotient])`
+replacing the four `loop_states_cover_modulo_*` siblings) **here**, earned by the canonicalization proof —
+not asserted as a refactor. **Target: §5 Group B (7 rows).**
 
 ---
 
 ## 7. Verification matrix
 
-Every negative control names its **paired positive reach-guard** — a bare negative an upstream gate can
-satisfy vacuously is not a test.
+⚠️ **Six rows in the previous matrix were VACUOUS** — dominated not by the RNG gate but by the **arming
+gate** (`last_recast_context.is_some()`, `engine.rs:445`). **P1 is a prerequisite for every row below
+marked †.** Every negative names its **paired positive reach-guard**.
 
-| Claim | Seam | Test | Revert-probe (must FLIP to FAIL) | Positive reach-guard |
+| Claim | Seam | Test | Revert-probe (must FLIP) | Reach-guard / hazard |
 |---|---|---|---|---|
-| Combo A certifies on a **real** board | `try_offer_object_growth_shortcut` | `real_board_sprout_swarm_offers_loop_shortcut` (exists, **FAILS today**) | — | — |
-| **Phases 1 and 2 are BOTH required** | RC-1 + RC-2 | the acceptance test **must still fail after Phase 1 alone** | — | a green-after-Phase-1 result is a **false positive** — investigate, don't celebrate |
-| **CR 113.6 / CR 400.2** hidden-zone invariance | firewall scope | `real_board_verdict_is_invariant_under_hidden_zone_contents` (exists) | restore the all-zones scan | **asserts the OFFER in every arm** — `assert_eq!(v₁,v₂)` alone passes vacuously as `false == false` |
-| **CR 113.6 exceptions preserved** | zone predicate | a **113.6j** ability (Reassembling Skeleton, graveyard) and a **113.6k** trigger are still scanned | hard-code battlefield-only | — |
-| **RC-2** bounded transient | two-pair cover | verdict invariant under **which green creature the real cast convokes** (Witherbloom vs a Saproling) | restore the `(cs_n, cs_n1)` cover requirement | **assert the OFFER in every arm** |
-| **CR 732.2a example** | end-to-end | **Presence of Gond + Intruder Alarm** OFFERS | — | this is the **rulebook's own** certified loop |
-| **C2** activation gate | `ability_has_per_turn_activation_gate` | **Manaforge Cinder** DECLINES | remove the gate axis | same board minus Manaforge Cinder must **OFFER** |
-| **C2** summoning sickness (**the crux**) | cost shape (CR 302.6) | **Cryptolith Rite DECLINES** *and* **Earthcraft + Squirrel Nest CERTIFIES** | collapse the sick/unsick place split | **the pair IS the discriminator** — either alone is vacuous |
-| **C2** land drops (CR 305.2) | `lands_played_this_turn` | **Crucible of Worlds + Zuran Orb** DECLINES | remove the axis | board minus Crucible must OFFER |
-| **C2** fragmented loop (CR 732.3) | transition set | a sequence needing an **opponent's** non-pass action DECLINES | drop the opponent-action check | a pass-only sequence on the same board must OFFER |
-| **C1** scaled cost (CR 601.2f) | Δᵢ vs Δᵢ₊₁ | **Hum of the Radix** DECLINES (preserve `R-e2`) | drop the `projected` axis | board minus Hum must OFFER |
-| **C4** self-deck | `has_no_loss_axis` | **Basalt Monolith + Mesmeric Orb** (Four Horsemen **minus Emrakul**) DECLINES | drop `library_delta >= 0` | ⚠️ **full Four Horsemen is NOT discriminating** — it declines on the randomness gate alone (`s_n2.rng.get_word_pos()`) and never reaches this axis |
-| **C4** adverse scaling | `has_no_loss_axis` | opponent's **Suture Priest** ⇒ Combo A DECLINES | drop `life >= 0` | board minus Suture Priest must OFFER |
-| Δ measured, not derived | drive | **Solemnity** + proliferate DECLINES (true Δ = 0 counters) | derive Δ from the AST | board minus Solemnity must OFFER |
-| **Combo B** (Phase 5) | `last_activation_context` | Kilo + Freed + Relic + Pentad Prism OFFERS | — | **the ring and the DoS cap are unchanged** — assert `engine.rs:3081` is untouched |
-| **CR 104.4b** optional-loop gate | `no_living_player_has_meaningful_priority_action` | **unchanged** — regression only | — | — |
-| Gaea's Cradle stays closed | `scan_mana_production` | `for_each_creature_production_still_fails_closed` (**exists, revert-probe verified**) | collapse count-arms to `Axes::NONE` | `fixed_production_reads_nothing` (Forest) still passes |
-| **Multiplayer** | — | ≥1 criterion exercises **>2 players** (the driving fixture is 4-player) | — | — |
-| ⭐ **THE DUAL — ⇒ direction (coverage)** | `run_combo_live` vs `run_combo` | for every non-`LiveDrain` row: `certifies_offline ⇒ offers_live`. **Today 12 certify, 0 offer** — incl. **row 1 = Combo B** | revert generalized arming to `last_recast_context` ⇒ **every row but Combo A goes red** | **this row IS the reach-guard for the whole plan.** Only Combo A + Combo B green ⇒ the fix did **not** generalize and **must not ship** |
-| ⭐ **THE DUAL — ⇐ direction (SOUNDNESS)** | `run_combo_live` vs `run_combo` | `offers_live ⇒ certifies_offline`. **Must NEVER go red** | — | a live offer the offline analyzer rejects = the detector is ending real games on a **false certificate** |
-| ⭐ **RC-4 / `Quotient::ObjectIdentity`** | `loop_states_cover(.., &[Quotient])` | the **13 `ObjectReentry`** rows certify (Kiki-Jiki, Splinter Twin, Palinchron, Mikaeus, Dockside, Food Chain, Karmic Guide, Nim Deathmantle, **Earthcraft + Squirrel Nest**, …) | drop `ObjectIdentity` from the quotient set ⇒ **all 13 go red** | ⚠️ **Earthcraft + Squirrel Nest is a §4.4 hostile fixture that is ITSELF deferred** — it cannot be a positive control until this lands |
-| **RC-4 monotonicity (SOUNDNESS)** | each `Quotient` | a quotiented axis that is **not** monotone non-decreasing must **REJECT** | quotient a non-monotone axis ⇒ a non-recurring loop certifies | this is the soundness heart of Phase 2.5; the Phase-0 `⇐` direction is its runtime guard |
-| **RC-4 / `Quotient::{TurnCount,CombatCount}`** | ″ | the **3 `ExtraTurnOrCombat`** rows certify (CR 732.2a *"may cross multiple turns"*) | drop the quotients ⇒ all 3 go red | retires the §4.7 turn-crossing scope cut |
-| **RC-4 scoreboard** | `DeferralBucket` | re-bucket the corpus after each quotient; **`Other` (20) is the honest remainder** | — | a quotient that empties no bucket has not earned its keep |
-| Corpus regression | `analysis/corpus.rs` | the 12 driven rows still certify via `detect_loop`; the 37 `DeferralBucket` + 4 `gated_on` partitions unchanged | — | — |
+| ⭐ **THE DUAL (⇒ coverage)** | `run_combo_live` vs `run_combo` | `certifies_offline ⇒ (offers_live XOR auto_wins)`. **Today 10 certify, 0 offer** | revert P1 ⇒ **every row but Combo A goes red** | **the reach-guard for the whole plan.** Only Combo A + B green ⇒ **did not generalize; do not ship** |
+| ⭐ **THE DUAL (⇐ SOUNDNESS)** | ″ | `offers_live ⇒ certifies_offline`. **Must NEVER go red** | — | ⚠️ **first make `run_combo` require 2 covering pairs** — else the invariant pressures the live path to *relax* (B7) |
+| **L-AUTOWIN stays autowin** | `interactive_loop_bridge` (`engine.rs:492`) | rows 17/18 reach `GameOver`, **must NOT offer** (CR 104.4b) | — | proves the 3-terminal partition |
+| Combo A certifies on a real board | `try_offer_object_growth_shortcut` | `real_board_sprout_swarm_offers_loop_shortcut` (**FAILS today**) | — | — |
+| **RC-1 + RC-2 are BOTH required** | — | the acceptance test **must still fail after P2 alone** | — | a green-after-P2 result is a **false positive** |
+| **CR 113.6 / 400.2 invariance** | zone predicate | `real_board_verdict_is_invariant_under_hidden_zone_contents` | restore all-zones scan | **asserts the OFFER in every arm** — `assert_eq!` alone passes vacuously as `false==false` |
+| **CR 113.6 exceptions preserved** | zone predicate | a **113.6j** (Reassembling Skeleton, graveyard) and a **113.6k** ability are still scanned | hard-code battlefield-only | catches the P2 trap |
+| **RC-2 bounded transient** | two-pair cover | verdict invariant under **which green creature the real cast convokes** | restore the `(cs_n,cs_n1)` requirement | **assert the OFFER in every arm** |
+| ⭐ **CR 732.2a's own example** † | end-to-end | **Presence of Gond + Intruder Alarm** OFFERS | restore the typed-filter `sibling:true` arm | **this is the C3 discriminator** — it is what proves P5 |
+| **C2 sickness (the crux)** † | cost shape (CR 302.6) | ⚠️ **REDESIGNED.** Hold the LOOP fixed, vary ONLY the cost shape: **Earthcraft + Squirrel Nest CERTIFIES**; the same board with Earthcraft's cost replaced by a creature-`{T}` grant DECLINES | collapse the sick/unsick split | ⚠️ **the old pair was VACUOUS: Cryptolith Rite + Squirrel Nest is NOT A LOOP AT ALL** (nothing untaps the land), so it declined for the wrong reason and the split was never consulted |
+| **C2 activation gate** † | `ability_has_per_turn_activation_gate` | **Manaforge Cinder** DECLINES | remove the axis | ⚠️ the old reach-guard was incoherent (*"remove the mana source ⇒ OFFER"*). **Specify the loop board.** |
+| **C2 land drops** † | `lands_played_this_turn` | **Crucible + Zuran Orb** DECLINES | remove the axis | board minus Crucible must OFFER |
+| **C2 fragmented loop** | transition set | a sequence needing an **opponent's** non-pass action DECLINES | drop the check | CR 732.3 |
+| **C1 scaled cost** | Δᵢ vs Δᵢ₊₁ | ⚠️ **Damping Sphere**, NOT Hum of the Radix (*"each **artifact** spell"* — cannot affect a green instant; **both arms would OFFER**) | drop the `projected` axis (preserve `R-e2`) | board minus Damping Sphere must OFFER |
+| **C4 self-deck** † | `has_no_loss_axis` | **Basalt Monolith + Mesmeric Orb** DECLINES | drop `library_delta >= 0` | ⚠️ **VACUOUS TWICE**: dominated by arming, **and** post-P1 it is a *mill* loop with **no fodder and no counter growth ⇒ no cover applies at all** ⇒ the axis is still never consulted. **Needs a cover before it is a test.** |
+| **C4 adverse scaling** | `has_no_loss_axis` | opponent's **Suture Priest** ⇒ Combo A DECLINES | drop `life >= 0` | ⚠️ **VACUOUS today**: Suture Priest's typed filter trips gate (1) ⇒ the cover fails at `engine.rs:1728` **before** the triple at `:1756` runs. **Only valid after P5.** |
+| Δ measured, not derived † | drive | **Solemnity** + proliferate DECLINES (true Δ = 0) | derive Δ from the AST | board minus Solemnity must OFFER |
+| **Combo B** † | `LoopProbeContext{actions}` | Kilo + Freed + Relic OFFERS — **a TWO-action cycle** | — | assert `engine.rs:3081` + the DoS cap are untouched |
+| **DoS** | new pre-gate | generalized arming does **not** regress #5672 | remove the pre-gate | **the drive must not run on every priority beat** |
+| Gaea's Cradle stays closed | `scan_mana_production` | `for_each_creature_production_still_fails_closed` (**exists, revert-probe verified**) | collapse count-arms to `Axes::NONE` | `fixed_production_reads_nothing` still passes |
+| **Multiplayer** | — | ≥1 criterion exercises **>2 players** (the fixture is 4-player) | — | — |
+| Corpus regression | `analysis/corpus.rs` | the 12 driven rows still certify; the partitions hold | — | corpus is **53** rows, not 55 |
 
 ---
 
-## 8. Open questions — do NOT hand-wave (this document has been wrong four times)
+## 8. Open questions — do NOT hand-wave (this document has been wrong ten times)
 
-1. **Is Δ-constancy + place non-depletion SUFFICIENT?** Manaforge Cinder has Δ₁ = Δ₂ = Δ₃ and is illegal at
-   **4** — caught by C2, not C1. Both are necessary. **Prove no third failure mode exists** (a change at
-   iteration ≥3 that neither alters Δ nor depletes a modelled place). Board thresholds are the known
-   candidate and are C3's job; enumerate the rest **structurally**, not by recall.
-2. **Exhaustiveness of the C2 place set.** It is what three review rounds found — **evidence, not proof**.
-   The `_ => REJECT` default + totality guard is what makes that acceptable.
-3. **The bound on the transient prefix (Phase 2).** *"Non-fodder population + 2"* is an argument, not a
-   theorem. An untapper (Intruder Alarm!) replenishes the non-fodder place — so the prefix can be **0** and
-   the bound is loose but safe. **Prove the bound is an upper bound, or fall back to the DoS cap and decline
-   loudly on overflow.**
-4. **The replacement predicate (R4).** *"Could this replacement apply?"* needs a real event-type × filter
-   match. A blanket *"any replacement exists ⇒ reject"* is useless — Commander boards always have
-   replacements.
-5. **`DecisionTemplate` completeness vs CR 601.2b–h.** §4.3 shows `[ConvokeTaps]` is incomplete. **Which of
-   the six choice classes can actually occur inside a certifiable loop body?** Unpinned ⇒ conditional ⇒
-   CR 732.2a violation.
-6. ⚠️ **Is `drive_recast_iteration` generalizable, or is it a rewrite?** Phase 5 assumes it parameterizes
-   on the action. But `normalize_recast_frame` strips the *self-returning buyback card* and
-   `derived_fodder_class` derives the token class *from the cast* — both may be structurally cast-shaped.
-   **This is the largest cost unknown in the plan. Settle it before committing to Phase 5.**
-7. ⚠️ **Does generalized arming re-open the #5672 remote DoS?** Arming on any player action at an
-   empty-stack priority beat runs the analysis far more often than today. **Prove the cheap-gate cascade
-   at `engine.rs:445` still bounds it.** Commit `57b0e537d` exists for a reason.
-8. **Multi-action loop bodies.** CR 732.2a says *"a sequence of game choices"* — **plural**. Devoted Druid +
-   Vizier of Remedies is **two activations per cycle**; Basalt Monolith + Rings of Brighthearth likewise.
-   The drive today settles **one** action to the next priority beat. **A one-action loop body is a real
-   coverage ceiling that this plan does not lift** — name it, measure how much of the corpus it excludes
-   (Phase 0's partition will tell you), and decide explicitly. **Do not let it pass silently.**
+1. **Is Δ-constancy + place non-depletion SUFFICIENT?** Manaforge Cinder has Δ₁=Δ₂=Δ₃ and is illegal at
+   **4** (C2 catches it, not C1). **Prove no third failure mode exists** — a change at iteration ≥3 that
+   neither alters Δ nor depletes a modelled place. **Not attempted. Still a real proof obligation.**
+2. **Is `LoopProbe` drivable through `apply()`**, or is it an offline-only abstraction? **If the latter,
+   P0's dual is not buildable as specified. UNVERIFIED — check first.**
+3. **What blocks the 20 `Other` deferral rows?** **UNVERIFIED** — only `ObjectReentry`(13),
+   `ExtraTurnOrCombat`(3) and `ColorConverting`(1) were classified.
+4. **What happens AFTER an offer is ACCEPTED?** `materialize_fixed_shortcut` — does the replay correctly
+   re-execute the **transient prefix**? **UNVERIFIED.**
+5. **Does `Effect::Proliferate` trip the firewall?** i.e. does Kilo's own trigger self-reject? **UNVERIFIED.**
+6. **The C3 replacement predicate.** *"Could this replacement apply?"* needs a real event-type × filter
+   match. A blanket *"any replacement exists ⇒ reject"* is useless on a Commander board.
+7. **P6's canonicalization soundness proof.** Content-multiset equality is where a false certificate
+   enters (§5). **This is the proof obligation that gates P6.**
 
 ---
 
 ## Appendix A — Design principles
 
-1. **Scope every conservatism to the present board and the sequence actually being executed** — never to all
-   possible boards reachable from all cards in all decks and hands. Reaching into a library is a **CR 113.6**
-   error (the ability doesn't function) *and* a **CR 400.2** violation (the zone is hidden).
+1. **Scope every conservatism to the present board and the sequence actually executed** — never to all
+   boards reachable from all cards in all decks and hands. Reaching into a library is a **CR 113.6** error
+   *and* a **CR 400.2** violation.
 2. **The loop must be infinite from the PROPOSER's perspective** (CR 732.2a), then **passed around for
-   response** (CR 732.2b: accept or shorten). Interaction is the response window's job, not the cover's.
-3. **Monotone reads are not hazards.** The card that makes a combo infinite is usually the card that reads
-   the growing axis (affinity reads creature count; proliferate reads permanents-with-counters). A firewall
-   rejecting *"reads the growing class"* is incompatible with the entire family.
-4. **Measure, don't derive.** Replacements rewrite Δ at resolution (CR 614); SBAs and triggers settle between
-   iterations (CR 704.3 / CR 603.3b). Only the drive sees the truth.
+   response** (CR 732.2b). Interaction is the response window's job, not the cover's.
+3. **Monotone reads are not hazards.** A firewall rejecting *"references a typed filter"* rejects the
+   rulebook's own example.
+4. **Measure, don't derive.** Replacements rewrite Δ at resolution; SBAs and triggers settle between
+   iterations. Only the drive sees the truth.
 5. **Real cards, real libraries, real mana bases** in every combo-detector test.
-6. **Read the rule, don't cite it.** Every architectural correction in this document — the transient prefix
-   (CR 732.2a), the Earthcraft/Cryptolith split (CR 302.6), the one-activation shape of Combo B (CR 605.3a),
-   the choice-vector enumeration (CR 601.2), counters-not-mana as the ω-axis (CR 106.4) — came from reading
-   the rule *text*, and **none** of them came from citing the rule *number*.
+6. **Read the rule, don't cite it.** Every architectural correction here came from the rule *text*.
+7. **The rules work has held; every failure was a CODE claim from memory.** Ten for ten. **Grep before you
+   assert, and put the file:line in the sentence.**
 
-## Appendix B — What we got wrong (the record; these are why the guard rails exist)
+## Appendix B — What we got wrong (ten times)
 
-| Claim | Reality |
-|---|---|
-| *"No counter-growth cover exists"* | **FALSE.** `loop_states_cover_modulo_counter_growth` (`resource.rs:1326`) exists, names **Pentad Prism** in its doc, is wired into both detection paths, and has 4 tests. Combo B's blocker is **arming** (§3.3), not a missing cover. |
-| *"`ResourceVector` already computes these deltas"* | **FALSE.** No tap-state axis at all; `mana` is summed **across all players**; growth axes are event-fed and **zero under `snapshot`**; `delta` diffs two *snapshots* — a **measurement**, not a symbolic effect vector. |
-| *"The payment choice is inexpressible (net-0 either way)"* | **FALSE on our own board.** Witherbloom is **Legendary** and Relic of Legends filters costs on `HasSupertype: Legendary`. |
-| **#4 — *"Convoking Witherbloom is illegal at iteration 2, so the payment choice is decisive and the proposer must SEARCH for a repeatable sequence."*** | **FALSE, and it inverted the fix.** `select_convoke_taps` **re-runs every iteration**, so iteration 2 simply picks an untapped Saproling; the *place* (untapped green creatures) is non-depleting with **Δ = 0**, and the loop certifies **whichever** creature is convoked. The payment choice was **never** decisive. The real defect is **RC-2**: tapping Witherbloom is a **bounded start-up transient** that the engine's first-pair cover requirement forbids — which **CR 732.2a explicitly permits** (*"a non-repetitive series of choices"* preceding *"a loop that repeats a specified number of times"*). **No proposer search is needed; the transient must be tolerated.** |
-| *"Gaea's Cradle fail-closes via `repeat_for`"* | **FALSE.** It parses as `AnyOneColor{count: Ref(ObjectCount{Creature,You})}`; the read lives **inside `ManaProduction`** and is caught **only** by `scan_mana_production` routing count-bearing variants through `scan_quantity_expr`. **Do not "simplify" that walker** — doing so silently enables false certification of unbounded mana. |
-| *"The untap step is CR 502.2"* | **FALSE.** CR 502.2 is **day/night**. The untap step is **CR 502.3**. |
-| An LP / Petri-VAS model would replace the drive | **Unsound.** Δ is not derivable (replacements), legality is not a resource, and Δ can be marking-dependent. Superseded by §4. |
+| # | Claim | Reality |
+|---|---|---|
+| 1 | *"No counter-growth cover exists"* | **FALSE.** `loop_states_cover_modulo_counter_growth` (`resource.rs:1329`) exists, names **Pentad Prism**, is wired into `detect_loop` + `interactive_loop_bridge`, has 4 tests. |
+| 2 | *"`ResourceVector` already computes these deltas"* | **FALSE.** No tap-state axis; `mana` summed across all players; growth axes zero under `snapshot`. |
+| 3 | *"The payment choice is inexpressible"* | **FALSE.** Witherbloom is **Legendary**; Relic filters on `Legendary`. |
+| 4 | *"Convoking Witherbloom is illegal at iteration 2 ⇒ the proposer must SEARCH"* | **FALSE, and it inverted the fix.** `select_convoke_taps` re-runs each iteration; the *place* is non-depleting (Δ=0). The real defect is **RC-2**: a **bounded transient** the cover forbids — which **CR 732.2a explicitly permits**. |
+| 5 | *"Gaea's Cradle fail-closes via `repeat_for`"* | **FALSE.** It parses as `AnyOneColor{count: Ref(ObjectCount{Creature,You})}` — caught **only** by `scan_mana_production`. **Do not "simplify" that walker.** |
+| 6 | *"Combo B's cycle is ONE activation"* | **FALSE.** `drive_offline_kilo_freed_relic` (`corpus.rs:1556`) takes **TWO** `ActivateAbility` actions. Its comment: *"Relic has two mana abilities; the tap-self one would not fire Kilo's trigger."* The CR 605.3a nesting story is **rules-legal but engine-false** — a mana ability in a `ManaPayment` window is still its own `GameAction` (`engine.rs:4867`). **A single-action arming latch cannot capture it.** |
+| 7 | *"Generalizing `normalize_recast_frame` lifts all 13 `ObjectReentry` rows — worth more than Phases 1–5 combined"* | **FALSE.** It lifts **ZERO** directly. 6 rows are blocked by R6/RC-1/RC-3, not id churn. The other 7 need **id-canonicalization** — and stripping the object **does not fix stable objects whose `paired_with`/`attached_to` point at the churned id** (Deadeye Navigator never moves and still fails). **The riskiest change in the program, not a quick win.** |
+| 8 | *"C3 is the one arm three rounds never broke — keep its logic"* | **FALSE, and it contradicted §3.1.** `ability_scan.rs:2454` sets `sibling: true` for **any** typed filter ⇒ the predicate rejects **Intruder Alarm — CR 732.2a's own worked example.** **C3 is a rewrite.** |
+| 9 | *"Measured trips, in order"* (RC-1) | **Wrong provenance.** `board_covers_modulo_fodder` runs first (`resource.rs:1119`) and returns false before the firewall (`:1132`). Both root causes are real; the trips were seen under instrumentation, not on the live path. |
+| 10 | *"Hum of the Radix DECLINES"* | **UNSATISFIABLE.** *"Each **artifact spell** costs {1} more"* — Sprout Swarm is a green instant. **Both arms OFFER.** The card is **Damping Sphere**. |
+| — | *"The untap step is CR 502.2"* | **FALSE.** 502.2 is day/night. It is **CR 502.3**. |
+| — | An LP / Petri-VAS model would replace the drive | **Unsound.** Δ is not derivable (replacements); legality is not a resource. |
