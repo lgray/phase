@@ -198,6 +198,76 @@ measured FALSE:**
 
 ---
 
+## 4b. ⭐ USER DIRECTIVE — **DELETE `LoopDetectionMode::On`. Collapse to a binary. This is a NEW PHASE.**
+
+> *"`On` is a relatively useless state for the combo detector now — not useful for users, only confusing.
+> Assume everything is 'interactive'. Record players' states and trap them into the detector."*
+
+**The code agrees, in its own words.** `interactive_loop_bridge`'s Path A comment (`engine.rs:~499`):
+> *"FIRM #1 — mandatory winning drain: **identical to the `On` auto-win**."*
+
+⇒ **`Interactive` STRICTLY SUBSUMES `On`**: same auto-win + `mark_unbounded_loop` when the loop is
+mandatory, **plus** the CR 732.2a offer when it is optional. **`On` adds nothing** — and it is precisely
+what makes P0's L-AUTOWIN assertions vacuous (§5). **Deleting it fixes the vacuity at the ROOT instead of
+working around it.**
+
+**Target shape — a true binary:**
+```rust
+pub enum LoopDetectionMode { #[default] Off, On }   // `On` CARRIES TODAY'S `Interactive` SEMANTICS
+```
+*(Name it `On`, not `Interactive` — "interactive" is jargon on a user-facing toggle, and it touches fewer
+frontend strings. Justify whichever you pick.)*
+
+**`Off` STAYS — non-negotiable.** It is the repo's opt-in policy (#4603: game-changing features ship
+behind a user-controllable toggle whose OFF state restores pre-feature behavior).
+
+### ⚠️ CORRECTION — Appendix B **#13**, and it was the TEAM-LEAD's. `combo-plan-author` caught it.
+**An earlier draft of this §4b claimed *"`On` is TODAY'S DEFAULT FOR REAL MATCHES (`match_config.rs:89`,
+`session.rs:1613`)"*. That is FALSE.** Both citations are **`#[cfg(test)]` fixtures**
+(`match_config.rs:60-61` is `#[cfg(test)] mod tests`; `session.rs:1601` is
+`fn loop_detection_config_persists_across_bo3_rebuild()`). The claim came from grepping
+`LoopDetectionMode::On`, reading the line numbers, and **inferring** production-default **without reading
+the surrounding context.** *Textbook Appendix-B: a code claim from an under-verified grep.*
+
+**THE SHIPPED DEFAULT IS `Off`.** `match_config.rs:27`, verbatim: *"Default `Off` = exact pre-detector
+behavior (opt-in invariant, issue #4603)."* Enforced at the wire layer by
+`#[serde(default, skip_serializing_if = "LoopDetectionMode::is_off")]` (`:36`).
+
+**THE DIRECTIVE IS UNAFFECTED — only my rationale was wrong, and the true one is better:**
+`Off` is the shipped default and **must stay** (#4603). But when a user **opts in** today they face a
+confusing **three-way** choice: `Off` / **`On` (auto-win only — NO OFFERS: a crippled half-detector)** /
+`Interactive` (auto-win **+** offers). **`On` is strictly dominated by `Interactive` and adds nothing.**
+⇒ **"Trap them into the detector" = once you opt in, you get the FULL detector, not a half one.** The
+toggle becomes an honest binary: **`Off` (pre-feature) / `On` (the full detector).**
+
+### Blast radius — MEASURED (re-measured after the correction above).
+- **18 `LoopDetectionMode::On` sites** across `crates/` (**not 16** — the earlier count omitted the two in
+  the definition file itself): `engine.rs:357` (**the dispatch arm to delete**) ·
+  `match_flow.rs:669,672,744,747` · `corpus.rs:1871` · `triggers.rs:23170,23251,23434` ·
+  `corpus_tests.rs:1404,1437` · `match_config.rs:89,97` *(tests)* · `server-core/src/session.rs:1613`
+  *(test)* · `tests/integration/loop_shortcut.rs:338` · `tests/integration/pr65_growing_cascade_win.rs:111`
+  · plus the definition file. **VERIFY THE LIST YOURSELF.**
+- **TWO predicates, not one:** `samples()` (`types/game_state.rs:5819`) **and `is_on()` (`:5804`)**.
+  **`is_on()` has ZERO production callers** — all six sites are tests (`corpus_tests.rs:1244,1348,1408`;
+  `server-core/src/session.rs:1625,1636`). **That SIMPLIFIES the collapse.** `samples()` reduces to
+  `!matches!(self, Off)`; consider whether `is_on()` and `is_off()` survive at all.
+- **Frontend:** `client/src/game/loopDetectionMode.ts` (the `?loop=` query parser/serializer) and
+  `client/src/components/lobby/HostSetup.tsx:226` (the lobby toggle). **Collapse the UI to a binary.**
+  The offer surface already exists: `client/src/components/modal/LoopShortcutModal.tsx`.
+- **`WinKind` has SIX variants, not five** (`analysis/loop_check.rs:83-107`): `LethalDamage` ·
+  `PoisonLoss` · `Decking` · **`ImmediateWin` (`:98`, CR 104.2)** · `ExtraTurns` · `Advantage`.
+  **C5 v2's lifetime→claim mapping must classify all six.**
+- **⚠️ SERDE MIGRATION HAZARD.** `LoopDetectionMode` is `Serialize/Deserialize` with
+  `#[serde(tag = "type")]` (`game_state.rs:5783-84`). **Persisted states and debug exports carry
+  `{"type":"On"}` and will FAIL to deserialize** once the variant is gone. **Add
+  `#[serde(alias = "Interactive")]` (or `alias = "On"`, per your naming choice) so BOTH old spellings
+  still load** — and add a round-trip test proving an old export still deserializes. *(The user's own
+  fixture is `Interactive`, so the repro survives either way — but a saved `On` game would not.)*
+- **`samples()`** (`game_state.rs:5818`) collapses to `!matches!(self, Off)`.
+
+**Sequence this EARLY** — P0's dual and the whole corpus-live partition depend on it, and it deletes a
+footgun rather than documenting one.
+
 ## 5. ⛔ P0's LIVE DUAL IS VACUOUS — the default-OFF toggle (never mentioned; 0 grep hits)
 
 - The live hook requires `state.loop_detection.samples()` (`engine.rs:448`).
