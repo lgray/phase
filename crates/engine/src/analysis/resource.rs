@@ -1455,6 +1455,13 @@ fn eq_except_growable(pa: &GameState, pb: &GameState, grown: &HashSet<ObjectId>)
 /// granted-keyword synthesized triggers; (6) the S3 belt over pending/delayed
 /// ability-body stores. Fail-closed on every surface it cannot classify.
 fn fire_time_conditions_read_growing_class(state: &GameState) -> bool {
+    // PROBE (Rev 4, B3): the CR 732.2a firewall — and ONLY it — gets the PRECISE walker.
+    crate::game::ability_scan::with_loop_scan_mode(|| {
+        fire_time_conditions_read_growing_class_inner(state)
+    })
+}
+
+fn fire_time_conditions_read_growing_class_inner(state: &GameState) -> bool {
     use crate::game::ability_scan as scan;
     // (1) Trigger fire-time conditions (CR 603.4) AND effect bodies.
     for obj in state.objects.values() {
@@ -1536,7 +1543,12 @@ fn fire_time_conditions_read_growing_class(state: &GameState) -> bool {
             {
                 return true;
             }
-            if !def.modifications.is_empty() {
+            // PROBE P2-d: descend — a modification vetoes iff it READS a mutable
+            // aggregate (sibling) OR a projected player resource. BOTH AXES.
+            if def.modifications.iter().any(|m| {
+                scan::continuous_modification_reads_sibling_mutable(m)
+                    || scan::continuous_modification_reads_projected_resource(m)
+            }) {
                 return true;
             }
         }
@@ -5042,6 +5054,61 @@ mod tests {
         cover(&prior, &current)
     }
 
+    /// ⭐⭐ U3 (Rev 4) — THE P2-d MERGE GATE, MEASURED, NOT TRACED.
+    ///
+    /// CR 613.1: a battlefield static whose MODIFICATION reads a PROJECTED player resource
+    /// (life total) and reads NOTHING on the sibling axis. `fire_time_conditions_read_
+    /// projected_resource` (:2152) scans a static's `condition` ONLY — it has no
+    /// `modifications` scan — so the P2-d veto is the ONLY thing standing between this
+    /// modification and a false certificate.
+    ///
+    /// REVERT-PROBE: delete the `|| ...reads_projected_resource(m)` term from the scan-(4)
+    /// veto and this test MUST FLIP TO FAIL. The two axis-isolation asserts below are what
+    /// make that probe CONCLUSIVE (sibling is FALSE here, so the surviving `sibling` term
+    /// cannot back-stop the veto).
+    #[test]
+    fn projected_reading_modification_still_vetoes_the_firewall() {
+        use crate::types::ability::ContinuousModification;
+        let mut state = GameState::new_two_player(7);
+        let sid = inert_token(&mut state, 600, 0, "StaticSource");
+
+        let mut def = StaticDefinition::new(StaticMode::Continuous);
+        def.modifications = vec![ContinuousModification::SetDynamicPower {
+            value: QuantityExpr::Ref {
+                qty: QuantityRef::LifeTotal {
+                    player: crate::types::ability::PlayerScope::Controller,
+                },
+            },
+        }];
+        assert!(
+            def.condition.is_none(),
+            "the modification must be the SOLE read surface (no condition)"
+        );
+        let m = def.modifications[0].clone();
+        state
+            .objects
+            .get_mut(&sid)
+            .unwrap()
+            .static_definitions
+            .push(def);
+
+        // ── AXIS ISOLATION: this is what makes the revert-probe conclusive. ──
+        assert!(
+            !crate::game::ability_scan::continuous_modification_reads_sibling_mutable(&m),
+            "U3 PRECONDITION: the SIBLING axis must be FALSE — otherwise the `sibling` term \
+             backstops the veto and the revert-probe proves nothing"
+        );
+        assert!(
+            crate::game::ability_scan::continuous_modification_reads_projected_resource(&m),
+            "U3 PRECONDITION: the PROJECTED axis must be TRUE"
+        );
+
+        assert!(
+            fire_time_conditions_read_growing_class(&state),
+            "U3: a PROJECTED-reading modification MUST veto the firewall"
+        );
+    }
+
     /// A `QuantityRef::ObjectCount` (reads the sibling/board axis ⇒ |G|).
     fn object_count_ref() -> QuantityRef {
         QuantityRef::ObjectCount {
@@ -5648,6 +5715,7 @@ mod tests {
     fn recast_ctx(uses_buyback: bool) -> crate::types::game_state::RecastContext {
         use crate::types::game_state::BuybackUsage;
         crate::types::game_state::RecastContext {
+            action: crate::types::game_state::LoopAction::Recast, // PROBE P1-a
             card_id: CardId(4242),
             controller: PlayerId(0),
             from_zone: Zone::Hand,
@@ -5712,4 +5780,239 @@ mod tests {
             "a mutated last_recast_context (uses_buyback flipped) ⇒ NOT equal (F1 conjunct)"
         );
     }
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// PROBE-ONLY INSTRUMENTATION — NOT FOR MERGE. Rev-3 planning measurements M2/M3/M4.
+// ══════════════════════════════════════════════════════════════════════════════
+#[doc(hidden)]
+pub mod probe {
+    use super::*;
+    use crate::game::ability_scan as scan;
+
+    /// Which limb of `fire_time_conditions_read_growing_class` vetoes? A limb-reporting
+    /// TRANSCRIPTION of resource.rs:1457 — every scan in source order, scan (4) split into
+    /// its two branches. Returns ALL firing limbs (the production fn short-circuits on the
+    /// first; we want the full veto set).
+    pub fn firewall_limbs(state: &GameState) -> Vec<String> {
+        let mut out: Vec<String> = Vec::new();
+        // (1) trigger conditions + execute bodies
+        for obj in state.objects.values() {
+            for (_, def) in
+                crate::game::functioning_abilities::active_trigger_definitions(state, obj)
+            {
+                if def
+                    .condition
+                    .as_ref()
+                    .is_some_and(scan::trigger_condition_reads_sibling_mutable)
+                {
+                    out.push(format!("S1Trigger.condition[{}|{:?}]", obj.name, obj.zone));
+                }
+                if def
+                    .execute
+                    .as_ref()
+                    .is_some_and(|a| scan::ability_definition_reads_sibling_mutable(a))
+                {
+                    out.push(format!("S1Trigger.execute[{}|{:?}]", obj.name, obj.zone));
+                }
+            }
+        }
+        // (2) every ability body on a functioning battlefield permanent
+        for obj in state.objects.values() {
+            if obj.zone != Zone::Battlefield || obj.is_phased_out() {
+                continue;
+            }
+            if obj
+                .abilities
+                .iter()
+                .any(scan::ability_definition_reads_sibling_mutable)
+            {
+                out.push(format!("S2BattlefieldBody[{}]", obj.name));
+            }
+        }
+        // (3) replacements
+        for (_, _, def) in crate::game::functioning_abilities::active_replacements(state) {
+            if def
+                .condition
+                .as_ref()
+                .is_some_and(scan::replacement_condition_reads_sibling_mutable)
+                || def
+                    .runtime_execute
+                    .as_ref()
+                    .is_some_and(|a| scan::ability_reads_sibling_mutable(a))
+                || def
+                    .execute
+                    .as_ref()
+                    .is_some_and(|a| scan::ability_definition_reads_sibling_mutable(a))
+            {
+                out.push("S3Replacement".to_string());
+            }
+        }
+        // (4) condition-gated statics — TWO BRANCHES, REPORTED SEPARATELY
+        for obj in state.objects.values() {
+            if obj.is_phased_out() {
+                continue;
+            }
+            for def in obj.static_definitions.iter_all() {
+                if def
+                    .condition
+                    .as_ref()
+                    .is_some_and(scan::static_condition_reads_sibling_mutable)
+                {
+                    out.push(format!("S4StaticCondition[{}|{:?}]", obj.name, obj.zone));
+                }
+                if def.modifications.iter().any(|m| {
+                    scan::continuous_modification_reads_sibling_mutable(m)
+                        || scan::continuous_modification_reads_projected_resource(m)
+                }) {
+                    out.push(format!(
+                        "S4StaticModifications[{}|{:?}|n={}]",
+                        obj.name,
+                        obj.zone,
+                        def.modifications.len()
+                    ));
+                }
+            }
+        }
+        // (5) transient continuous effects
+        for tce in &state.transient_continuous_effects {
+            if scan::duration_reads_sibling_mutable(&tce.duration)
+                || tce
+                    .condition
+                    .as_ref()
+                    .is_some_and(scan::static_condition_reads_sibling_mutable)
+            {
+                out.push("S5Transient".to_string());
+            }
+        }
+        // (5b) granted-keyword synthesized triggers
+        for obj in state.objects.values() {
+            if obj.is_phased_out() {
+                continue;
+            }
+            for def in crate::game::triggers::granted_keyword_triggers_in_zone(state, obj) {
+                if def
+                    .condition
+                    .as_ref()
+                    .is_some_and(scan::trigger_condition_reads_sibling_mutable)
+                    || def
+                        .execute
+                        .as_ref()
+                        .is_some_and(|a| scan::ability_definition_reads_sibling_mutable(a))
+                {
+                    out.push(format!("S5bGrantedKeyword[{}]", obj.name));
+                }
+            }
+        }
+        // (6) deferred/delayed stores
+        if !state.delayed_triggers.is_empty()
+            || !state.deferred_triggers.is_empty()
+            || state.pending_trigger.is_some()
+            || state.pending_trigger_order.is_some()
+            || !state.epic_effects.is_empty()
+        {
+            out.push("S6DeferredStores".to_string());
+        }
+        out
+    }
+
+    /// The production firewall itself (short-circuiting), for cross-checking the transcription.
+    pub fn firewall(state: &GameState) -> bool {
+        super::fire_time_conditions_read_growing_class(state)
+    }
+
+    pub fn cover_object_growth(prior: &GameState, current: &GameState) -> bool {
+        super::loop_states_cover_modulo_object_growth(prior, current)
+    }
+
+    pub fn cover_fodder_growth(
+        prior: &GameState,
+        current: &GameState,
+        fodder: &crate::game::game_object::GameObject,
+    ) -> bool {
+        super::loop_states_cover_modulo_fodder_growth(prior, current, fodder)
+    }
+
+    pub fn cover_equal_modulo_resources(a: &GameState, b: &GameState) -> bool {
+        super::loop_states_equal_modulo_resources(a, b)
+    }
+
+    pub fn cover_modulo_growth(a: &GameState, b: &GameState) -> bool {
+        super::loop_states_cover_modulo_growth(a, b)
+    }
+
+    pub fn cover_modulo_counter_growth(a: &GameState, b: &GameState) -> bool {
+        super::loop_states_cover_modulo_counter_growth(a, b)
+    }
+
+    /// Sub-limbs of `loop_states_cover_modulo_object_growth` (resource.rs:924), in source order.
+    pub fn object_growth_cover_limbs(prior: &GameState, current: &GameState) -> Vec<String> {
+        let mut out = Vec::new();
+        let pf = flush_clone(prior);
+        let cf = flush_clone(current);
+        let mut pa = project_out_resources(&pf);
+        let mut pb = project_out_resources(&cf);
+        pa.stack.clear();
+        pb.stack.clear();
+        let bf_prior = battlefield_ids(&pa);
+        let bf_current = battlefield_ids(&pb);
+        let grown_ids: HashSet<ObjectId> = bf_current.difference(&bf_prior).copied().collect();
+        let shrunk: HashSet<ObjectId> = bf_prior.difference(&bf_current).copied().collect();
+        if !shrunk.is_empty() {
+            out.push(format!("FAIL: shrunk (n={})", shrunk.len()));
+        }
+        if grown_ids.is_empty() {
+            out.push("FAIL: no growth".to_string());
+        }
+        out.push(format!("grown_ids n={}", grown_ids.len()));
+        if !board_covers(&pa, &pb, &grown_ids) {
+            out.push("FAIL: board_covers".to_string());
+        }
+        if !object_resource_axes_match(prior, current) {
+            out.push("FAIL: object_resource_axes_match".to_string());
+        }
+        if !loyalty_activation_counts_match(&pa, &pb) {
+            out.push("FAIL: loyalty_activation_counts_match".to_string());
+        }
+        if !eq_except_growable(&pa, &pb, &grown_ids) {
+            out.push("FAIL: eq_except_growable".to_string());
+        }
+        if !grown_objects_are_inert(&cf, &grown_ids) {
+            out.push("FAIL: grown_objects_are_inert".to_string());
+        }
+        if fire_time_conditions_read_growing_class(&cf) {
+            out.push("FAIL: FIREWALL fire_time_conditions_read_growing_class".to_string());
+        }
+        if cf.stack.iter().any(stack_entry_reads_growing_class) {
+            out.push("FAIL: stack_entry_reads_growing_class".to_string());
+        }
+        if cost_surface_references_growing_class(&cf) {
+            out.push("FAIL: cost_surface_references_growing_class".to_string());
+        }
+        out
+    }
+
+    /// The `cf` frame the object-growth cover actually feeds to the firewall (flushed current).
+    pub fn flushed(state: &GameState) -> GameState {
+        flush_clone(state)
+    }
+
+    pub fn obj_trigger_count(o: &crate::game::game_object::GameObject) -> usize {
+        o.trigger_definitions.iter_all().count()
+    }
+
+    pub fn obj_static_count(o: &crate::game::game_object::GameObject) -> usize {
+        o.static_definitions.iter_all().count()
+    }
+
+    /// Does `object_is_inert` (resource.rs:1380) accept this object?
+    pub fn obj_is_inert(o: &crate::game::game_object::GameObject) -> bool {
+        object_is_inert(o)
+    }
+}
+
+/// PROBE-ONLY — NOT FOR MERGE.
+#[doc(hidden)]
+pub fn probe_project_object_for_loop(o: &mut crate::game::game_object::GameObject) {
+    project_object_for_loop(o);
 }

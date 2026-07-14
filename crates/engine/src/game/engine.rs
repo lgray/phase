@@ -442,6 +442,17 @@ fn reconcile_terminal_result(state: &mut GameState, result: &mut ActionResult) {
     // a clone. Gated identically (opt-in + top-level-only) plus a cheap `last_recast_context`
     // precondition (set only on a buyback-paid, token-creating cast — so the clone-drive runs
     // ~never). INV-2: this OFFERS the interactive shortcut (never auto-resolves — CR 732.2a).
+    // PROBE-ONLY (M1) — NOT FOR MERGE: report bridge (B) gate conjuncts.
+    if matches!(state.waiting_for, WaitingFor::Priority { .. })
+        && state.stack.is_empty()
+        && state.loop_detection.samples()
+        && !in_simulation_probe()
+    {
+        eprintln!(
+            "PROBE-M1 bridge(B) gate: Priority=Y stack_empty=Y samples=Y !probe=Y last_recast_context={}",
+            state.last_recast_context.is_some()
+        );
+    }
     if !matches!(state.waiting_for, WaitingFor::GameOver { .. })
         && matches!(state.waiting_for, WaitingFor::Priority { .. })
         && state.stack.is_empty()
@@ -493,6 +504,37 @@ fn interactive_loop_bridge(state: &mut GameState, result: &mut ActionResult) {
     // priority action that could break it)? The single mandatory-vs-optional signal the
     // engine already computes — not a new stored flag.
     let mandatory = no_living_player_has_meaningful_priority_action(state);
+    // PROBE-ONLY (M1) — NOT FOR MERGE.
+    eprintln!(
+        "PROBE-M1 ENTER interactive_loop_bridge: ring={} stack={} mandatory={} bf={}",
+        state.loop_detect_ring.len(),
+        state.stack.len(),
+        mandatory,
+        state.battlefield.len()
+    );
+    {
+        let priors: Vec<std::sync::Arc<GameState>> =
+            state.loop_detect_ring.iter().cloned().collect();
+        let cur = crate::analysis::resource::ResourceVector::snapshot(state);
+        for (k, prior) in priors.iter().enumerate() {
+            let delta = crate::analysis::resource::ResourceVector::delta(
+                &crate::analysis::resource::ResourceVector::snapshot(prior),
+                &cur,
+            );
+            eprintln!(
+                "PROBE-M2   prior[{k}] bf_prior={} bf_cur={} | c1_equal_mod_res={} c1_cover_growth={} c1_cover_counter={} c1_cover_OBJECT={} | c2_net_progress={} | c3_no_loss={} | c4_winkind={:?}",
+                prior.battlefield.len(),
+                state.battlefield.len(),
+                crate::analysis::resource::probe::cover_equal_modulo_resources(prior, state),
+                crate::analysis::resource::probe::cover_modulo_growth(prior, state),
+                crate::analysis::resource::probe::cover_modulo_counter_growth(prior, state),
+                crate::analysis::resource::probe::cover_object_growth(prior, state),
+                delta.is_net_progress(),
+                has_no_loss_axis(&delta),
+                crate::analysis::loop_check::classify_win_kind(state.active_player, &delta),
+            );
+        }
+    }
 
     // Path A: determinate lethal single-winner drain.
     if let Some((winner, delta, prior)) = find_live_loop_winner(state) {
@@ -1457,27 +1499,61 @@ fn drive_recast_iteration(
     // CR 400.7: re-find the recast card LIVE in its castable zone (a fresh incarnation on
     // each hand-return). Absent ⇒ abort (B3: a no-buyback recast went to the graveyard, so
     // the card is not here). Lowest ObjectId ⇒ deterministic.
-    let recast_id = clone
-        .objects
-        .values()
-        .filter(|o| {
-            o.card_id == ctx.card_id && o.zone == ctx.from_zone && o.controller == ctx.controller
-        })
-        .map(|o| o.id)
-        .min_by_key(|id| id.0)
-        .ok_or(RecastAbort)?;
-    apply_action(
-        clone,
-        ctx.controller,
-        GameAction::CastSpell {
-            object_id: recast_id,
-            card_id: ctx.card_id,
-            targets: vec![],
-            payment_mode: crate::types::game_state::CastPaymentMode::Auto,
-        },
-        None,
-    )
-    .map_err(|_| RecastAbort)?;
+    // PROBE P1-c (Rev 4): dispatch the OPENER on the captured action.
+    match &ctx.action {
+        crate::types::game_state::LoopAction::Recast => {
+            let recast_id = clone
+                .objects
+                .values()
+                .filter(|o| {
+                    o.card_id == ctx.card_id
+                        && o.zone == ctx.from_zone
+                        && o.controller == ctx.controller
+                })
+                .map(|o| o.id)
+                .min_by_key(|id| id.0)
+                .ok_or(RecastAbort)?;
+            apply_action(
+                clone,
+                ctx.controller,
+                GameAction::CastSpell {
+                    object_id: recast_id,
+                    card_id: ctx.card_id,
+                    targets: vec![],
+                    payment_mode: crate::types::game_state::CastPaymentMode::Auto,
+                },
+                None,
+            )
+            .map_err(|_| RecastAbort)?;
+        }
+        // CR 602.2a: re-activate the SAME ability of the SAME permanent, pinned by ObjectId.
+        // G3 FIX: NOT a `card_id` + `min_by_key` re-find — every plain token carries
+        // `CardId(0)` (effects/token.rs:813), so a token-driven loop's re-find would match
+        // its own fodder. G4 FIX: re-validate the layer-derived ability slot each iteration.
+        crate::types::game_state::LoopAction::Activate {
+            source_id,
+            ability_index,
+        } => {
+            let src = clone.objects.get(source_id).ok_or(RecastAbort)?;
+            if src.zone != Zone::Battlefield
+                || src.controller != ctx.controller
+                || src.card_id != ctx.card_id
+                || *ability_index >= src.abilities.len()
+            {
+                return Err(RecastAbort);
+            }
+            apply_action(
+                clone,
+                ctx.controller,
+                GameAction::ActivateAbility {
+                    source_id: *source_id,
+                    ability_index: *ability_index,
+                },
+                None,
+            )
+            .map_err(|_| RecastAbort)?;
+        }
+    }
 
     let beat_cap = auto_pass_loop_max_iterations(clone);
     for _ in 0..beat_cap {
@@ -1601,14 +1677,24 @@ fn normalize_recast_frame(
     ctx: &crate::types::game_state::RecastContext,
 ) -> GameState {
     let mut s = state.clone();
-    let ids: Vec<ObjectId> = s
-        .objects
-        .values()
-        .filter(|o| {
-            o.card_id == ctx.card_id && o.zone == ctx.from_zone && o.controller == ctx.controller
-        })
-        .map(|o| o.id)
-        .collect();
+    // PROBE P1-d (Rev 4): Rev 3 claimed this strip is "a no-op" under Activate. IT IS NOT —
+    // an Activate ctx has `from_zone == Battlefield`, so the filter would DELETE THE DRIVING
+    // PERMANENT from every comparison frame. Strip ONLY for a recast (whose card genuinely
+    // churns incarnations per CR 400.7); an activation's source is a stable permanent that
+    // compares by id.
+    let ids: Vec<ObjectId> = match &ctx.action {
+        crate::types::game_state::LoopAction::Activate { .. } => Vec::new(),
+        crate::types::game_state::LoopAction::Recast => s
+            .objects
+            .values()
+            .filter(|o| {
+                o.card_id == ctx.card_id
+                    && o.zone == ctx.from_zone
+                    && o.controller == ctx.controller
+            })
+            .map(|o| o.id)
+            .collect(),
+    };
     for id in &ids {
         s.objects.remove(id);
     }
@@ -1668,9 +1754,37 @@ fn try_offer_object_growth_shortcut(
     }
     // The recast card must be in its castable origin zone right now (recastable) —
     // capture it so the recast spell ability can be scanned for randomness below.
-    let recast_obj = state.objects.values().find(|o| {
-        o.card_id == ctx.card_id && o.zone == ctx.from_zone && o.controller == ctx.controller
-    })?;
+    // PROBE P1-d (Rev 4): action-dispatched source re-find + STATIC randomness gate.
+    // CR 705.1/706.1a/701.9a: reject a randomness-bearing repeated action before driving.
+    match &ctx.action {
+        crate::types::game_state::LoopAction::Activate {
+            source_id,
+            ability_index,
+        } => {
+            // G3/G4 FIX: pin by ObjectId (survives token growth; `CardId(0)` collides for
+            // EVERY token), and re-validate the ability slot — the abilities vec is
+            // LAYER-DERIVED, so a positional index can silently address a different ability.
+            let src = state.objects.get(source_id)?;
+            if src.zone != Zone::Battlefield || src.controller != ctx.controller {
+                return None;
+            }
+            let def = src.abilities.get(*ability_index)?;
+            if crate::game::ability_scan::spell_ability_bears_randomness(def) {
+                return None;
+            }
+        }
+        crate::types::game_state::LoopAction::Recast => {
+            let recast_obj = state.objects.values().find(|o| {
+                o.card_id == ctx.card_id
+                    && o.zone == ctx.from_zone
+                    && o.controller == ctx.controller
+            })?;
+            let spell_def = crate::game::casting::combined_spell_ability_def(recast_obj)?;
+            if crate::game::ability_scan::spell_ability_bears_randomness(&spell_def) {
+                return None;
+            }
+        }
+    }
     // CR 732.2a: a shortcut "can't include conditional actions, where the outcome of a
     // game event determines the next action." A recast whose spell body bears an
     // auto-resolved coin flip (CR 705.1) / die roll (CR 706.1a) / random selection
@@ -1680,11 +1794,6 @@ fn try_offer_object_growth_shortcut(
     // also does not offer. (A2 determinism gate — the static half; the post-drive
     // rng-position check below is the complete runtime backstop that additionally
     // catches external triggered/replacement randomness firing in the cycle.)
-    let spell_def = crate::game::casting::combined_spell_ability_def(recast_obj)?;
-    if crate::game::ability_scan::spell_ability_bears_randomness(&spell_def) {
-        return None;
-    }
-
     // Drive two iterations (three settle frames) under the re-entrancy guard.
     let _probe = SimulationProbeGuard::enter();
     let template = build_recast_template(&ctx);
@@ -3284,6 +3393,38 @@ fn apply_action(
             } else {
                 // Non-mana activated ability — clear tracking
                 state.lands_tapped_for_mana.remove(player);
+                // PROBE P1-b (Rev 4, B1 FIX): capture a repeated ACTIVATION as the loop's
+                // driving action. STATIC predicate, mirroring the recast arm's
+                // `is_token_creating` (casting_costs.rs:6789). The battlefield has NOT grown
+                // at this beat (an activated ability only goes on the STACK, CR 602.2a), so
+                // Rev 3's `battlefield.len() > before` gate here was structurally dead (B1).
+                let cap_obj = state.objects.get(&source_id);
+                let creates_token = cap_obj
+                    .filter(|o| o.zone == Zone::Battlefield) // CR 602.5a
+                    .and_then(|o| o.abilities.get(ability_index))
+                    .map(|def| {
+                        let mut effects = Vec::new();
+                        crate::analysis::ability_graph::collect_effects(def, &mut effects);
+                        effects
+                            .iter()
+                            .any(|e| matches!(e, crate::types::ability::Effect::Token { .. }))
+                    })
+                    .unwrap_or(false);
+                let cap_card_id = cap_obj.map(|o| o.card_id);
+                if let Some(card_id) = cap_card_id {
+                    state.last_recast_context = (state.loop_detection.samples() && creates_token)
+                        .then_some(crate::types::game_state::RecastContext {
+                            action: crate::types::game_state::LoopAction::Activate {
+                                source_id,
+                                ability_index,
+                            },
+                            card_id,
+                            controller: *player,
+                            from_zone: Zone::Battlefield,
+                            uses_buyback: crate::types::game_state::BuybackUsage::NotUsed,
+                            convoke: None,
+                        });
+                }
                 casting::handle_activate_ability(
                     state,
                     *player,

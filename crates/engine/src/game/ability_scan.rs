@@ -337,6 +337,32 @@ fn scan_target_selection_constraint(c: &TargetSelectionConstraint) -> Axes {
     }
 }
 
+// ═══ PROBE (Rev 4, B3): THE SHARED-AUTHORITY SPLIT ═══
+// `Axes` is a SHARED AUTHORITY: `game/triggers.rs:3894-3895` uses it for the LIVE CR 603.3b
+// trigger-ordering gate, and `analysis/resource.rs` uses it for the CR 732.2a loop firewall.
+// Those are DIFFERENT QUESTIONS and need OPPOSITE approximations:
+//   * CR 603.3b wants CONSERVATIVE (over-approximate reads ⇒ prompt more ⇒ safe).
+//   * the loop firewall wants PRECISE (fewer spurious reads ⇒ more certifiable loops).
+// Making the shared blanket precise IN PLACE (Rev 3) silently flips live default-config
+// game behavior from PROMPT to AUTO-ORDER. It must NOT be shared.
+//
+// PROBE FORM: a thread-local. SHIPPED FORM: an explicit `mode: ScanMode` parameter threaded
+// through the walk (compiler-enforced, no hidden state). The SEMANTICS measured are identical.
+thread_local! {
+    static LOOP_SCAN_MODE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+fn loop_scan_mode() -> bool {
+    LOOP_SCAN_MODE.with(|c| c.get())
+}
+/// Run `f` with the walker in CR 732.2a loop-firewall mode (precise). Every other caller —
+/// including `triggers.rs`'s CR 603.3b gate — sees the CONSERVATIVE walker, byte-unchanged.
+pub(crate) fn with_loop_scan_mode<R>(f: impl FnOnce() -> R) -> R {
+    LOOP_SCAN_MODE.with(|c| c.set(true));
+    let r = f();
+    LOOP_SCAN_MODE.with(|c| c.set(false));
+    r
+}
+
 fn scan_effect(x: &Effect) -> Axes {
     match x {
         Effect::StartYourEngines { player_scope } => {
@@ -444,7 +470,48 @@ fn scan_effect(x: &Effect) -> Axes {
             acc = acc.or(scan_target_filter(target));
             acc
         }
-        Effect::Token { .. } => Axes::CONSERVATIVE,
+        // PROBE P2-b: descend. Exhaustive destructure, no `..`.
+        Effect::Token {
+            name: _,
+            power,
+            toughness,
+            types: _,
+            colors: _,
+            keywords: _,
+            tapped: _,
+            count,
+            owner,
+            attach_to,
+            enters_attacking: _,
+            supertypes: _,
+            static_abilities,
+            enter_with_counters,
+        } => {
+            // B3: the CR 603.3b gate must keep seeing the CONSERVATIVE blanket.
+            if !loop_scan_mode() {
+                return Axes::CONSERVATIVE;
+            }
+            let mut acc = Axes::NONE;
+            acc = acc.or(scan_pt_value(power));
+            acc = acc.or(scan_pt_value(toughness));
+            acc = acc.or(scan_quantity_expr(count));
+            acc = acc.or(scan_target_filter(owner));
+            if let Some(f) = attach_to {
+                acc = acc.or(scan_target_filter(f));
+            }
+            for sd in static_abilities {
+                if let Some(c) = &sd.condition {
+                    acc = acc.or(scan_static_condition(c));
+                }
+                if !sd.modifications.is_empty() {
+                    acc = Axes::CONSERVATIVE; // probe: modifications on a token static
+                }
+            }
+            for (_, q) in enter_with_counters {
+                acc = acc.or(scan_quantity_expr(q));
+            }
+            acc
+        }
         Effect::GainLife { amount, player } => {
             let mut acc = Axes::NONE;
             acc = acc.or(scan_quantity_expr(amount));
@@ -2417,7 +2484,10 @@ fn scan_target_filter(x: &TargetFilter) -> Axes {
         // (byte-preserved) — only the projected axis is refined.
         TargetFilter::Typed(tf) => Axes {
             event: true,
-            sibling: true,
+            // P3 + B3: a `Typed` filter NAMES a type; it does not COUNT one (counting is
+            // `QuantityRef::ObjectCount`, whose `sibling: true` is its OWN literal at :1606).
+            // Relaxed ONLY for the loop firewall — the CR 603.3b gate keeps `sibling: true`.
+            sibling: !loop_scan_mode(),
             projected: typed_filter_reads_projected(tf),
         },
         TargetFilter::Not { filter } => {
@@ -5253,5 +5323,100 @@ mod tests {
         let mut a = base.clone();
         a.modal = Some(ModalChoice::default());
         assert_eq!(ability_resolution_choice_freedom(&a), MayPrompt);
+    }
+}
+
+/// PROBE: PtValue read surface. Fixed/Variable read nothing; Quantity descends.
+fn scan_pt_value(p: &crate::types::ability::PtValue) -> Axes {
+    use crate::types::ability::PtValue;
+    match p {
+        PtValue::Fixed(_) | PtValue::Variable(_) => Axes::NONE,
+        PtValue::Quantity(q) => scan_quantity_expr(q),
+    }
+}
+
+/// PROBE P2-a (NARROW — the real plan requires an EXHAUSTIVE no-wildcard match over all
+/// ContinuousModification variants; this wildcard version is fail-CLOSED and is enough to
+/// measure the canary).
+fn probe_scan_continuous_modification(m: &ContinuousModification) -> Axes {
+    match m {
+        ContinuousModification::GrantAbility { definition } => ability_definition_axes(definition),
+        ContinuousModification::AddPower { .. }
+        | ContinuousModification::AddToughness { .. }
+        | ContinuousModification::SetPower { .. }
+        | ContinuousModification::SetToughness { .. } => Axes::NONE,
+        // PROBE (Rev 4, U3): the QUANTITY-BEARING arms must DESCEND, not blanket. Without
+        // this, `SetDynamicPower{Ref(LifeTotal)}` classifies CONSERVATIVE (sibling=TRUE too)
+        // and the U3 revert-probe is CONFOUNDED — the `sibling` term alone would still veto.
+        ContinuousModification::SetDynamicPower { value }
+        | ContinuousModification::SetDynamicToughness { value }
+        | ContinuousModification::SetPowerDynamic { value }
+        | ContinuousModification::SetToughnessDynamic { value }
+        | ContinuousModification::AddDynamicPower { value }
+        | ContinuousModification::AddDynamicToughness { value }
+        | ContinuousModification::AddDynamicKeyword { value, .. } => scan_quantity_expr(value),
+        _ => Axes::CONSERVATIVE,
+    }
+}
+
+/// PROBE: does a continuous modification read a mutable sibling aggregate?
+pub(crate) fn continuous_modification_reads_sibling_mutable(m: &ContinuousModification) -> bool {
+    probe_scan_continuous_modification(m).sibling
+}
+
+/// PROBE: does a continuous modification read a projected player resource?
+pub(crate) fn continuous_modification_reads_projected_resource(m: &ContinuousModification) -> bool {
+    probe_scan_continuous_modification(m).projected
+}
+
+/// REVIEW PROBE (R3) — does P2-b's `Effect::Token` descent flip the LIVE CR 603.3b
+/// trigger-ordering gate (`triggers.rs:3894-3895`)?
+///
+/// `c2_order_independent = !ability_uses_event_context(a) && !ability_reads_sibling_mutable(a)`
+/// Today `Effect::Token { .. } => Axes::CONSERVATIVE` (event=true) forces c2 = false.
+#[cfg(test)]
+mod review_probe_r3 {
+    use super::*;
+    use crate::types::ability::{Effect, PtValue, QuantityExpr};
+    use crate::types::identifiers::ObjectId;
+    use crate::types::player::PlayerId;
+
+    fn vanilla_token_ability() -> ResolvedAbility {
+        ResolvedAbility::new(
+            Effect::Token {
+                name: "Soldier".to_string(),
+                power: PtValue::Fixed(1),
+                toughness: PtValue::Fixed(1),
+                types: vec!["Creature".to_string()],
+                colors: vec![],
+                keywords: vec![],
+                tapped: false,
+                count: QuantityExpr::Fixed { value: 1 },
+                owner: TargetFilter::Controller,
+                attach_to: None,
+                enters_attacking: false,
+                supertypes: vec![],
+                static_abilities: vec![],
+                enter_with_counters: vec![],
+            },
+            Vec::new(),
+            ObjectId(1),
+            PlayerId(0),
+        )
+    }
+
+    #[test]
+    fn r3_token_effect_axes_and_the_c2_ordering_gate() {
+        let a = vanilla_token_ability();
+        let event = ability_uses_event_context(&a);
+        let sibling = ability_reads_sibling_mutable(&a);
+        // The exact expression at game/triggers.rs:3894-3895.
+        let c2_order_independent = !event && !sibling;
+
+        println!("\n===== R3: CR 603.3b gate for a vanilla 'create a 1/1 Soldier' ability =====");
+        println!("  ability_uses_event_context   = {event}");
+        println!("  ability_reads_sibling_mutable = {sibling}");
+        println!("  c2_order_independent (triggers.rs:3894) = {c2_order_independent}");
+        println!("  ⇒ TRUE means the engine AUTO-ORDERS the trigger group (no player prompt).");
     }
 }

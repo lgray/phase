@@ -367,8 +367,27 @@ impl Default for SpellCastRecord {
 /// `CardId` is cross-incarnation-stable per CR 400.7), so the whole struct is COMPARED
 /// (never excluded) in the object-growth cover gates — a heterogeneous recast (one whose
 /// iterations alternate `uses_buyback` or `from_zone`) is caught and rejected (fail-closed).
+/// PROBE P1-a (Rev 4): the repeated ACTION that drives a captured loop. Two leaf shapes of
+/// one axis — a re-cast spell (CR 601.2a) and a re-activated ability (CR 602.2a).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum LoopAction {
+    /// CR 601.2a + CR 702.27a: a self-returning (buyback) recast; uses `from_zone`/`uses_buyback`.
+    #[default]
+    Recast,
+    /// CR 602.2a: a re-activated ability of a STABLE battlefield permanent. Pinned by
+    /// `ObjectId` — the source never changes zones, so its id survives both the clone and
+    /// the loop's growth (unlike a recast card, whose incarnation churns per CR 400.7).
+    Activate {
+        source_id: ObjectId,
+        ability_index: usize,
+    },
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RecastContext {
+    /// PROBE P1-a: the parameterization axis (Recast | Activate).
+    #[serde(default)]
+    pub action: LoopAction,
     /// CR 400.7 card identity — re-found live in the castable zone each iteration (a
     /// fresh incarnation on every hand-return), never an `ObjectId` that churns.
     pub card_id: CardId,

@@ -6797,6 +6797,7 @@ fn finalize_cast_with_phyrexian_choices_inner(
             && has_buyback
             && is_token_creating)
             .then_some(crate::types::game_state::RecastContext {
+                action: crate::types::game_state::LoopAction::Recast, // PROBE P1-a
                 card_id,
                 controller: player,
                 from_zone: source_zone,
