@@ -572,3 +572,82 @@ internally-consistent plan**, following `/engine-planner`'s checklist (including
    PR with its own soundness proof. **Repoint to `objects_content_eq`.**
 
 **Every phase must state its verification, its revert-probe, and its paired positive reach-guard.**
+
+---
+
+# ⛔ THE ACCEPT-DIRECTION RULE (team-lead, measured @ adb248677)
+
+**P4 and P7 are the ONLY two phases that move the detector in the ACCEPT direction.
+Every other phase errs safe. Under the soundness asymmetry — *a coarse relation may
+REJECT, never ACCEPT* — these two are the only phases that can emit a FALSE CERTIFICATE.**
+
+⇒ P7's 88 fail-closed sites are not 88 chances to un-reject.
+   **They are 88 chances to WRONGLY CERTIFY.**
+
+## 1. Gate (3)'s zone predicate is FIVE clauses, not `[Battlefield, Command]`
+
+The runtime authority is `object_replacement_candidate_applies` (`replacement.rs:4829`).
+Its functioning gate — **`replacement.rs:4890-4896`**:
+
+```rust
+if !in_scanned_zone && !is_entering && !is_being_discarded
+   && !is_applicable_dredge && !is_stack_self_move { return false; }
+```
+
+`in_scanned_zone` = `[Zone::Battlefield, Zone::Command]` **AND NOT liminal** (`:4871-4873`).
+The other four are **CR-carved exceptions to CR 113.6**:
+
+| Carve-out | Functions from | CR (cited in the code) |
+|---|---|---|
+| `is_entering` | anywhere → BF | CR 614.12 (self-replacement only) |
+| `is_being_discarded` | **hand** | CR 614.12 (self only) |
+| `is_stack_self_move` | **stack** | CR 608.2n + CR 614.1a (self only) |
+| `is_applicable_dredge` | **graveyard** | CR 702.52a/b — **NOT SelfRef-gated** |
+
+Meanwhile the analysis (`resource.rs:1501`) iterates `active_replacements(state)`, which walks
+**`state.objects.values()` — every zone, no filter** (`functioning_abilities.rs:449`; its own
+comment: *"replacements are not battlefield-scoped"*).
+
+**Gate (3) is a REJECT gate. Narrowing what it scans ⇒ fewer rejects ⇒ MORE ACCEPTS.**
+A bare `[Battlefield, Command]` predicate **drops dredge-from-graveyard**: an object that
+FUNCTIONS at runtime becomes INVISIBLE to the analysis. **That is a false-certificate generator.**
+
+**Do not hand-mirror the predicate — CALL THE AUTHORITY.** Factor the functioning clause out of
+`object_replacement_candidate_applies` into one shared predicate taking
+`event: Option<&ProposedEvent>`, where **`None` = analysis time = fail-CLOSED over all four
+event-keyed carve-outs.** One authority, two callers (repo principle: *single authority*).
+A hand-mirror drifts the moment someone adds the next CR carve-out — and **drift in this
+direction is silent and unsound.**
+
+## 2. P7's template ALREADY EXISTS in `ability_scan.rs` — with its own safety net
+
+`:2454` — read the comment that is already there:
+
+```rust
+// type/controller predicates read none. `event`/`sibling` stay CONSERVATIVE
+// (byte-preserved) — only the projected axis is refined.
+TargetFilter::Typed(tf) => Axes {
+    event: true,
+    sibling: true,                                  // fail-closed DEFAULT
+    projected: typed_filter_reads_projected(tf),    // REFINED, computed
+},
+```
+
+**`projected` was already refined exactly the way `sibling` must now be.** The scanner it
+delegates to (`scan_filter_prop`, `:3124`) carries the guarantee:
+
+> *"Classify a single `FilterProp` on the three read axes. **Exhaustive with NO `_` wildcard** —
+> a NEW `FilterProp` variant fails to compile here until it is [classified]."*
+
+**⇒ You do NOT hand-review 88 sites. You make the compiler refuse to let a site go unclassified,**
+and every arm owes the sentence explaining why it *cannot* observe a loop-grown cardinality —
+e.g. `ManaSpentToCast`: *stamped at cast time, immutable, cannot observe a token count.*
+
+**P7 = "extend the `projected` refinement to `sibling`, under the same no-wildcard completeness
+gate."** Extend, don't hack. Measured surface: **57 `Axes::CONSERVATIVE` + 31 `sibling: true` = 88.**
+
+## 3. P3 is RESEQUENCED, not deleted
+
+Measured: P3 is off Combo A's path (arming + drive already work). It stays, because **RC-3 is a
+class defect** — zero of 53 corpus rows exercise the live path — and **Combo B and the P2 dual
+both require it.** *A phase does not leave the plan because the canary doesn't need it.*
