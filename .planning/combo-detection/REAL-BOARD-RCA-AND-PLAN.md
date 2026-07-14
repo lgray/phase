@@ -19,7 +19,14 @@ through the real engine, not inferred. Reproduction harness + method in §2.
 > cover already exists and names Pentad Prism); the `ResourceVector` reuse claim; and — worst —
 > §5.5.2's *"the payment choice is inexpressible"*, which is **false on our own §2 board** because
 > **Witherbloom is Legendary and Relic of Legends filters costs on `Legendary`** (§5.5.8-A).
-> Do not implement §5.5 without reading §5.5.7 **and** §5.5.8.
+> Do not implement §5.5 without reading §5.5.7, §5.5.8 **and §5.5.9**.
+>
+> **§5.5.9 is the most important section in this document.** §5.5's progress rule is *strictly weaker*
+> than what already ships: it has **no player attribution and no loss veto**, so it would certify a
+> loop that **decks and kills its own proposer** (Four Horsemen minus Emrakul — fully deterministic,
+> the non-determinism guard never fires). **The fix is not new code — it is the existing
+> `net_progress_for(caster)` + `has_no_loss_axis(delta)` + `driving_resources_non_decreasing(..)`
+> triple the plan was about to throw away.**
 
 ---
 
@@ -775,6 +782,163 @@ DoS in #5672)."_** §6.7 re-opens that exact class.
 Four Horsemen's **short** cycle (Monolith untap → Mesmeric Orb mill) is **library-NEGATIVE**, so the
 LP rejects it as **unsustainable**, not as non-advancing. The "no advancement" framing only holds over
 the **long** cycle including the Emrakul reshuffle. Right answer, slightly wrong reason.
+
+### 5.5.9 ⛔ ROUND-3 — the ONE fix that matters, and it is code we already have
+
+Third adversarial pass. All re-measured and CONFIRMED. **This section is the most important in the
+document.**
+
+#### A. ❗❗ THE SINGLE HIGHEST-VALUE FIX — §5.5's progress rule is STRICTLY WEAKER than what ships
+
+§5.5.1 says only:
+> *"Sustainability: `≥ 0` on every consumable axis. Progress: `> 0` on at least one growth axis
+> (tokens, counters, damage, …)."*
+
+**No player attribution. No loss veto.** The `…` is doing lethal work. What already ships
+(`engine.rs:1756-1760`) is a **player-attributed, loss-vetoed triple** — measured:
+
+```rust
+// has_no_loss_axis (engine.rs:814)
+delta.life.values().all(|&n| n >= 0)
+    && delta.library_delta.values().all(|&n| n >= 0)   // ← ANY library net-drain is a LOSS AXIS
+    && delta.poison.values().all(|&n| n <= 0)
+
+// net_progress_for(controller) (resource.rs:497) — PLAYER-ATTRIBUTED
+if self.mana.iter().any(|&n| n < 0) { return false; }
+for (pid, &n) in &self.life { if *pid == controller && n < 0 { return false; } }  // ← controller's OWN life
+!self.unbounded_axes_for(controller).is_empty()
+```
+
+> **⇒ REPLACE §5.5.1's two-line constraint with the existing triple:**
+> `net_progress_for(caster)` + `has_no_loss_axis(delta)` + `driving_resources_non_decreasing(...)`.
+> **This is not new code. It is code the plan was about to throw away.**
+
+That one change kills **all** of the following at once:
+
+**B. ❗ D-4 (GAME-ENDING) — "Four Horsemen minus Emrakul" certifies a loop that DECKS AND KILLS the proposer.**
+**Basalt Monolith** (mana-neutral: `{T}` for `{C}{C}{C}`, `{3}` to untap) + **Mesmeric Orb**
+(*"Whenever a permanent becomes untapped, that permanent's controller mills a card"*). **No Emrakul ⇒
+no shuffle ⇒ the non-determinism guard NEVER FIRES.** Fully deterministic. Δ = mana 0, **library −1,
+graveyard +1** per cycle. If "cards-in-zone" is a *growth* axis (§5.5.1 lists it), then sustainability
+✅ + progress ✅ ⇒ **the LP CERTIFIES**, the proposer mills their entire library and **loses on their
+next draw (CR 104.3c)**. The growth axis was **capped at library size** all along.
+*Vetoed today by `library_delta >= 0`. §5.5 deleted that veto.*
+
+**C. ❗ D-6 — Suture Priest.** An **opponent's** Suture Priest (*"Whenever a creature an opponent
+controls enters, you may have that player lose 1 life"*) drains **the proposer** 1 life per Saproling
+⇒ the Sprout Swarm loop **kills its own controller** at 40 iterations. The **2-iteration drive sails
+through.** *Vetoed today by `has_no_loss_axis`'s `life >= 0`.*
+
+**D. ❗ C-2 — §5.5 BREAKS OUR OWN §7 NEGATIVE CONTROL.** §7 #7 requires
+`object_growth_self_damage_recast_does_not_offer` to keep declining. Under an **unattributed**
+"damage" growth axis, **damage dealt to MYSELF counts as progress** ⇒ that control **flips to an
+OFFER**. The plan's own regression list breaks.
+
+#### E. ❗ §5.5.6's flagship Monotone example is WRONG — Breach has NO T-invariant
+
+**Underworld Breach** escape = *"exile **three other cards from your graveyard**"*; **Brain Freeze**
+= *"target player mills three cards"* (refuelling from **your own library**). ⇒ the cycle is
+**`library_delta < 0` for the controller, every iteration.** Under §5.5's **own** sustainability rule
+(`≥ 0` on every consumable axis) **the LP REJECTS it.**
+
+⇒ Breach + Brain Freeze is **a bounded PREFIX into a payoff stage** (Grapeshot / Thassa's Oracle
+before you deck), **not a Monotone cycle.** It proves *nothing* about the Monotone class, which is the
+sole thing §5.5.6 offered it as proof of. The staged shape can express it — *as a prefix* — but the
+Monotone claim must be re-argued or dropped.
+
+#### F. ❗ The fragment table FAILS OPEN — and it is a REGRESSION. **Hum of the Radix.**
+
+*"Each artifact spell costs {1} more to cast **for each artifact its controller controls**."*
+(verified in `data/card-data.json`) — parses as `ModifyCost { mode: Raise, dynamic_count:
+ObjectCount{Artifact} }`. **This is the growing-axis-scaled tax**, and artifacts (Treasures, Clues,
+Thopters, Servos) *are* a growth axis.
+
+Where it lands in §5.5.3's four-arm table: **not** `Constant` (Δ is marking-dependent); **not**
+`Monotone` (the table says *"non-increasing in cost"* — this **increases**); **not** `Non-monotone`
+(there is **no `Comparator`** — it is a linear scale); **not** `Non-deterministic`.
+**It falls through a four-arm table with no default ⇒ FAIL-OPEN.**
+
+And it is a **regression**: the engine catches Hum **today** via `resource.rs:1691` (`ModifyCost {
+dynamic_count, .. }` is scanned) ⇒ `QuantityRef::ObjectCount ⇒ Axes{sibling: true}` ⇒ rejected, guarded
+by the in-tree test **`R-e2`** (`resource.rs:5052`). **§5.5 deletes the axis that catches it and
+supplies no replacement arm.**
+
+⇒ Add a **cost-DIRECTION arm** (monotone *raise* on a growth axis ⇒ **REJECT**) **and an explicit
+`_ => REJECT` default.** (My earlier suspects were wrong: **Thalia** and **Grand Arbiter** are **flat
++1**, not scaled; **Rule of Law / Archon of Emeria** are hard `PerTurnCastLimit{max:1}` gates enforced
+at cast legality, so the drive backstops them.)
+
+#### G. ❗ §5.5.5's definition of "nested" CONTRADICTS §5.5.6 — key on the BRANCH, not the count
+
+§5.5.5 declines *"a nested loop whose **inner iteration count depends on the outer loop's evolving
+state**."* **Underworld Breach + Brain Freeze is exactly that** (storm count → copies → mill), and
+§5.5.6 **admits it**. Same structure, opposite verdicts, two sections apart.
+
+> **The distinction that actually matters:** a **marking-dependent Δ** (a *scaling count*) is
+> **Monotone — ADMIT**. A **branch** (a *comparison* deciding what happens next) is
+> **Threshold/ZeroTest — REJECT**. A counter machine needs the **zero-test**, not merely a Δ that
+> scales.
+> Rewrite: *decline an inner loop whose **termination condition is a comparison against the outer
+> loop's evolving state**; a scaling count is not nesting, it is a Monotone Δ.*
+> **Fixed-count nesting ("inner ×3") is UNROLLABLE and must NOT be declined.**
+
+(This is the same conflation as §5.5.8-E: the guard classifies **card ASTs**, never the certificate's
+own staging predicate.)
+
+#### H. ❗ INFINITE TURNS break the VAS itself — decline loudly (Time Vault)
+
+**Time Vault** + Voltaic Key (real, Vintage) ⇒ infinite turns. CR 732.2a explicitly sanctions
+shortcuts that *"may even cross multiple turns"*, so this is a real class, not a corner. But:
+- the **untap step** (CR 502.2) has Δ = **`+tapped_count`** — a **marking-dependent, non-constant
+  vector**. A VAS transition **must** be a constant additive vector. **This is not a VAS transition.**
+- a turn boundary **RESETS** per-turn tallies (`lands_played_this_turn`,
+  `activated_abilities_this_turn`). **A reset is not an increment** — also non-VAS.
+
+⇒ **Turn-crossing loops are outside the fragment as modelled. Decline them explicitly in §5.5.3**, or
+an implementer will model the untap step as a transition, silently break linearity, and the soundness
+argument evaporates.
+
+#### I. ❗ "Advancement ≡ net > 0" FAILS IN BOTH DIRECTIONS
+
+- **Missed advancement (false negative):** the judge quote §5.5.6 relies on lists *"…accrue energy
+  counters, **venture into the dungeon**"* — **and "venture" is absent from §5.5's axis set AND from
+  `ResourceVector` entirely** (no dungeon axis; CR 309). **Acererak the Archlich** (verified in
+  card-data: *"When Acererak enters, if you haven't completed Tomb of Annihilation, return it to its
+  owner's hand and venture into the dungeon"*) is a real EDH infinite. **I quoted the definition of
+  advancement and then dropped an item off it.** Same class: **experience counters**, **the
+  initiative** (CR 309 Undercity), day/night.
+- **False advancement (false positive):** **self-mill.** "cards-in-zone" is in the axis list, but
+  milling your own library is **anti**-advancement (CR 104.3c) — see B above. And **damage without
+  attribution** makes self-damage "progress" — see D.
+
+#### J. §5.5.6's stated REASON for rejecting Four Horsemen was wrong — and the wrong reason hid B
+
+Four Horsemen's cycle is **library-NEGATIVE** (Mesmeric Orb mills per untap), not "net-zero on every
+observable axis." It is only net-zero *because Emrakul reshuffles* — which is the non-deterministic
+part. So the LP rejects it for **unsustainability**, not non-advancement. **Right answer, wrong
+reason — and the wrong reason is exactly what made D-4 (minus-Emrakul) invisible.**
+
+#### K. New required §7 fixtures
+
+- **Four Horsemen MINUS Emrakul** (deterministic self-mill) must **DECLINE**. ⚠️ The existing
+  Four-Horsemen control is **NOT discriminating**: full Four Horsemen declines even if only the
+  *non-determinism* arm fires, so it never tests the advancement/loss constraint. **This is the
+  discriminating fixture, and it is the one that fails today under §5.5's axis set.**
+- **Hum of the Radix** on an artifact-growth loop must **DECLINE** (preserve `R-e2`).
+- **Acererak the Archlich** (venture) — a **known, logged** coverage gap, not a silent one.
+- **Suture Priest** (opponent's) on the Sprout Swarm loop must **DECLINE** (controller loses life).
+
+#### L. CLEAN BILLS (reviewer could not break these)
+
+- **The empirical no-nesting claim** — searched cEDH/Legacy/Vintage/high-power EDH (Isochron+Dramatic
+  Reversal, Kiki lines, Food Chain, KCI/Scrap Trawler webs, Doomsday, Breach). All are straight lines,
+  single T-invariants, or staged. Artifact-recursion webs *look* nested but are **one order-free
+  multiset** `x`. **§5.5.5's conclusion holds; only its definition was wrong** (see G).
+- **Floor saturation** — `max(cost − k, 0)` is still non-increasing in `k`; affinity reduces
+  **generic only** (colored pips are never reduced), and the colored requirement is what convoke pays.
+  **No hole.**
+- **The Threshold/ZeroTest reject arm** — still unbroken across three rounds. **Every** hole routes
+  *around* the Comparator. **The chosen AST surface is the wrong one.**
 
 ### 5.5.4 Relationship to §6
 
