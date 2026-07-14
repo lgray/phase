@@ -651,3 +651,58 @@ gate."** Extend, don't hack. Measured surface: **57 `Axes::CONSERVATIVE` + 31 `s
 Measured: P3 is off Combo A's path (arming + drive already work). It stays, because **RC-3 is a
 class defect** — zero of 53 corpus rows exercise the live path — and **Combo B and the P2 dual
 both require it.** *A phase does not leave the plan because the canary doesn't need it.*
+
+---
+
+# ⛔ THE ONE-SIDED RATCHET (team-lead, measured @ 8262d2f99)
+
+## The bug, in one line
+
+**`docs/MagicCompRules.txt:6373` — CR 732.2a's own Example:**
+
+> *"…another player controls **Intruder Alarm**, which reads, in part, 'Whenever a creature
+> enters, untap all creatures.' … they may suggest 'I'll create a million tokens,' … and
+> repeating that sequence 999,999 more times."*
+
+## **THE ENGINE'S LOOP DETECTOR REJECTS THE COMPREHENSIVE RULES' OWN WORKED EXAMPLE OF THE RULE IT IMPLEMENTS.**
+
+Not *"a combo doesn't fire."* **The rulebook prints the canonical shortcut, and we decline it.**
+
+## Why 88 fail-closed defaults accumulated — the class gate was never symmetric
+
+| Half of the gate | Status (measured) |
+|---|---|
+| **NEGATIVE** — Gaea's Cradle must STILL fail closed | ✅ **EXISTS**: `for_each_creature_production_still_fails_closed` (`ability_scan.rs:4840`) |
+| **POSITIVE** — Intruder Alarm must NOT fail closed | ❌ **DOES NOT EXIST**. `grep -rn "Intruder Alarm" crates/engine/src/` returns **NOTHING** — no test, no fixture, no comment. **No test anywhere asserts that any ability shape must `!sibling`.** |
+
+> ## **THE REPO CAN STRUCTURALLY DETECT OVER-ACCEPTANCE AND CANNOT DETECT OVER-REJECTION.**
+
+**A `sibling: true` costs a contributor nothing and trips no guard. The conservative arm always
+won — 88 times.** RC-1 is not *"someone wrote a wrong arm."* RC-1 is **"the codebase has a
+one-sided ratchet, and it ratcheted for 88 clicks."**
+
+⇒ **P7 is not a fix. P7 installs the missing half of a gate that was never symmetric.**
+
+## P7's acceptance criterion (concrete)
+
+Add the positive guard **adjacent to its negative twin**, same module, same style:
+
+```rust
+#[test]
+fn untap_all_creatures_does_not_fail_closed() {   // Intruder Alarm — CR 732.2a's own Example
+    // SetTapState { target: Typed[Creature], scope: All, state: Untap } NAMES a type;
+    // it does not COUNT a mutable set, so it cannot observe a loop-grown cardinality.
+    // If it trips `sibling`, the detector declines the Comprehensive Rules' own worked
+    // shortcut (CR 732.2a Example, MagicCompRules.txt:6373).
+    assert!(!scan_effect(&intruder_alarm).sibling, ...);
+}
+```
+
+**REVERT-PROBE IT** (non-negotiable): delete the `sibling` refinement ⇒ **this test must FLIP to
+FAIL.** If it still passes with the refinement reverted, it is vacuous and it is not the gate.
+
+**The PAIR is the class proof, because the two straddle the definition — *naming a type* vs
+*counting a mutable set*:**
+- un-rejects **both** ⇒ not a fix, **a HOLE** — and by the asymmetry, the catastrophic direction
+- un-rejects **neither** ⇒ has done nothing
+- **only the discriminating pair separates those — and until now the suite held only one of them**
