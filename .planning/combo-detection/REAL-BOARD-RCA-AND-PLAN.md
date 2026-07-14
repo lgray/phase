@@ -294,8 +294,13 @@ each activated ability, each mana ability, each castable self-returning spell. E
 has an effect vector `Δₜ` over resource axes — mana by color, untapped permanents by class, counters
 by kind, tokens, life, cards-in-zone. (`ResourceVector` already computes exactly these deltas.)
 
-The certificate is a **pair `(p, x)`** — a finite **prefix** `p ≥ 0` and a repeating **cycle**
-`x ≥ 0` — such that:
+The certificate is an **ordered sequence of STAGED segments** `[(p₁,x₁), (p₂,x₂), …, (pₙ,xₙ)]` —
+each a finite **prefix** `pᵢ ≥ 0` followed by a repeating **cycle** `xᵢ ≥ 0`, where `xᵢ` repeats
+until a (linear) resource threshold is met and the next stage begins. Real wins are **sequential**:
+*loop for infinite mana → stop → cast the payoff*. A single `(p, x)` pair cannot express that; see
+§5.5.5 for why staged (and NOT nested) is the right shape.
+
+Each segment satisfies:
 
 - **Sustainability:** `Σ xₜ·Δₜ ≥ 0` on every *consumable* axis — the cycle net-drains nothing.
 - **Progress:** `Σ xₜ·Δₜ > 0` on at least one *growth* axis (tokens, counters, damage, …).
@@ -377,6 +382,64 @@ ability defs on a small board. Cheap, and it never reads a hidden zone.
 Artificial Evolution / Illusory Gains …). Real boards land in Constant/Monotone essentially always,
 so the guard costs ~no false negatives while making the LP answer **sound and complete for the board
 it certifies**, and declining loudly (not silently) when it cannot.
+
+### 5.5.5 Certificate shape: STAGED, not nested — and why that keeps it decidable (researched)
+
+CR 732.2a admits four shapes: *"a non-repetitive series of choices, a loop that repeats a specified
+number of times, **multiple loops**, or **nested loops**."* We support the first three and
+**deliberately DECLINE nested loops**. Justification is empirical and theoretical, and both point the
+same way.
+
+**Nested = where Turing-completeness lives.** A *nested* loop whose inner iteration count depends on
+the outer loop's evolving state is a counter machine. That is precisely the construct §5.5.3's guard
+rejects (a marking-dependent branch / zero-test). Supporting staged-but-not-nested is therefore not a
+gap — it is the *same* decidability boundary, expressed at the certificate level.
+
+**Empirically, nesting does not occur in real play.** Searched; found no counterexample:
+
+- The Turing-completeness construction (Churchill, Biderman & Herrick, *Magic: The Gathering is
+  Turing Complete*, arXiv:1904.09828 / LIPIcs.FUN.2021.9) requires **deliberately assembled**
+  machinery — Rotlung Reanimator / Xathrid Necromancer, **Artificial Evolution** to rewrite creature
+  types, phasing as a state toggle — and the authors state it is *"a theoretical result about
+  computational possibilities rather than something that would emerge spontaneously during standard
+  gameplay,"* requiring *"intentional construction,"* *"precise sequencing,"* and *"specific board
+  states maintained across multiple turns."* Its conditional branching comes from **responding to
+  game state** — i.e. the zero-test. It is not a board state that arises in play.
+- Real combos are single cycles or straight lines: Thassa's Oracle + Demonic Consultation (no loop),
+  Kiki-Jiki + Corridor Monitor / Felidar Guardian (one cycle), Underworld Breach + Brain Freeze +
+  Lotus Petal (one cycle). (EDHREC / LearnCEDH combo corpora.)
+- Wins are **sequential/staged**: loop to accumulate a resource, stop, spend it. Hence the staged
+  certificate.
+
+**Tractability is the payoff.** Staged is still LP-able — each stage is an LP and the inter-stage
+threshold is a linear constraint. Nested is not. Declining nested is what keeps the whole model
+decidable, and it costs ~nothing in coverage.
+
+### 5.5.6 Independent validation: the official notion of "advancement" IS the progress constraint
+
+**CR 732.1c** defers loop handling to the Magic Tournament Rules. The canonical *unshortcuttable*
+loop — **Four Horsemen** (Basalt Monolith + Mesmeric Orb + Narcomoeba/Dread Return/Blasting Station)
+— is disallowed for reasons that restate this model almost exactly. The judge rationale:
+
+> *"the loop does not add mana to our pool, draw cards, make creature tokens, deal damage, accrue
+> energy counters, venture into the dungeon, or do anything else that would count as **advancement**…
+> the only detail of the gamestate that changes from one post-reshuffle snapshot to the next is the
+> order of those cards in our library… which is unknown information."*
+
+"**Advancement**" is exactly `Σ xₜ·Δₜ > 0` on some growth axis. Four Horsemen is net-zero on every
+observable axis ⇒ **the LP rejects it for the official reason**. It is *also* non-deterministic
+(shuffling ⇒ unknown library order) ⇒ the §5.5.3 fragment guard rejects it a second, independent
+way — and CR 732.2a excludes conditional/random actions by name.
+
+⇒ **Add Four Horsemen as a negative-control acceptance test** (§7): it must be DECLINED, and ideally
+for both reasons. A model that certified it would be wrong by the actual tournament rules.
+
+**Also validated: the Monotone class is real and common.** Underworld Breach + Brain Freeze is a
+*growing cascade* — storm count rises each cast, so each Brain Freeze mills MORE. `Δ` grows with the
+marking, so it is not a constant-`Δ` VAS. It is admissible **only** via the monotonicity lemma
+(production non-decreasing in the growth axis ⇒ evaluate `Δ` at the current marking `m₀` as a
+conservative LOWER bound; feasible at `m₀` ⇒ feasible at every larger marking). This is not an exotic
+corner — it is a top-tier cEDH combo, so the Monotone class must be first-class, not an afterthought.
 
 ### 5.5.4 Relationship to §6
 
