@@ -1,5 +1,41 @@
 # Planner brief — rewrite the combo-detector plan from measured facts
 
+> # ⭐⭐ THE GOVERNING DESIGN RULE — USER DIRECTIVE. It outranks everything else in this brief.
+>
+> > *"**Build to the pattern, not to the use cases presented in the given board state.** Make sure that's
+> > forefront in the design."*
+>
+> ## **Combo A and Combo B are ACCEPTANCE TESTS, not GOALS. Every phase fixes a CLASS. A change that turns a combo green without discharging a class property IS the purpose-built patch this plan exists to prevent.**
+>
+> **The team-lead violated this while framing the tiers** — writing *"Tier 1 = makes the user's Combo A
+> fire."* **That sentence must not enter the document.** An implementer reading it lands exactly enough to
+> turn one test green and stops — **shipping the very disease RC-3 diagnoses** (a detector that arms on ONE
+> bespoke shape, with a corpus that never tests the live path).
+>
+> ### Every phase exists for its CLASS. The combo is merely one board that trips it.
+> | Phase | The CLASS it discharges — **this is why it exists** |
+> |---|---|
+> | **P4** CR 113.6 zone-of-function predicate | **every** hidden-zone read — the whole rules violation, not one Solemn Simulacrum |
+> | **P5** bounded start-up transient | **every** loop with a non-repetitive prefix — a shape **CR 732.2a explicitly permits** |
+> | **P7(a)** the wrong `sibling` arm | **every** typed-filter false rejection — Intruder Alarm (**CR 732.2a's OWN worked example**), Freed, Suture Priest, *every Commander permanent* |
+>
+> ### ⛔ ACCEPTANCE CRITERIA ARE CLASS-LEVEL, NEVER CARD-LEVEL. This is the hard part.
+> ***"`real_board_sprout_swarm_offers_loop_shortcut` goes GREEN" is NOT an acceptance criterion. It is a
+> CANARY.*** A phase that only makes that test pass **has not discharged its class**.
+> - **P4** ⇒ the verdict is invariant under **ANY** hidden-zone content — not *"we deleted Solemn Simulacrum and it worked."*
+> - **P7(a)** ⇒ **Intruder Alarm un-rejects AND Gaea's Cradle still fails closed.** **That pair is the class proof. The combo is not.**
+> - **P5** ⇒ the verdict is invariant under **WHICH** creature the real cast convokes — the transient, not the card.
+>
+> **If you find yourself doing anything to turn a combo green that is not derived from a class property —
+> STOP. That is the purpose-built patch.**
+>
+> ### Tiers are SEQUENCING, not permission to ship less.
+> They order **which classes unblock which others**. **No phase may ever ship with a card-level gate.**
+> And **P2 (the corpus dual) is the ONLY thing that can tell us whether we fixed a CLASS or a CARD** —
+> without it, *"we built to the pattern"* is an **unverified assertion**, which is Appendix B's failure mode
+> one level up.
+
+
 **Date:** 2026-07-14 · **Branch:** `debug/combo-generator` (fork-only, **never toward `main`**).
 **Your job:** produce a NEW plan at `.planning/combo-detection/REAL-BOARD-RCA-AND-PLAN.md`.
 
