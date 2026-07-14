@@ -8,16 +8,24 @@
 ## 0. TL;DR — where we are
 
 Diagnosing why two live infinite combos on the user's real 4-player Commander board are **not detected**
-by the CR 732.2a loop-shortcut detector. **Investigation + planning is essentially COMPLETE.** What
-remains is **one adversarial review pass**, then **one consolidation pass**, then the document goes to the
-user / repo maintainer.
+by the CR 732.2a loop-shortcut detector.
 
-**Nothing is being implemented.** This is a plan-only workstream by explicit user instruction.
+> # ✅ **THE PLAN IS FINAL — `e677fefb1`.** 1,865 lines · phases **P0–P10** · 18-row Appendix B.
+> # ⛔ **THE ADVERSARIAL REVIEW HAS *NOT* HAPPENED.** It is the next action.
+
+**Nothing is being implemented.** Plan-only by explicit user instruction. **Zero files modified under
+`crates/`** by the planning work.
+
+**The bug, in one line:** *the engine's loop detector **rejects the Comprehensive Rules' own worked example
+of the rule it implements*** — CR 732.2a's Example is **Presence of Gond + Intruder Alarm**
+(`docs/MagicCompRules.txt:6373`).
 
 | Artifact | Path | State |
 |---|---|---|
-| **THE PLAN** (the deliverable) | `.planning/combo-detection/REAL-BOARD-RCA-AND-PLAN.md` | committed **`69fe6c3ea`** |
-| **Reviewer mandate** (file relay) | `.planning/combo-detection/REVIEWER-MANDATE.md` | on disk |
+| **THE PLAN** (the deliverable) | `.planning/combo-detection/REAL-BOARD-RCA-AND-PLAN.md` | **FINAL — committed + pushed `e677fefb1`** |
+| **Adversary mandate** (the review that still owes to be run) | `.planning/combo-detection/ADVERSARY-MANDATE.md` | **on disk, UNEXECUTED** |
+| **Planner brief** (the doctrine behind the plan) | `.planning/combo-detection/PLANNER-BRIEF.md` | committed |
+| **Reviewer mandate** (superseded, prior round) | `.planning/combo-detection/REVIEWER-MANDATE.md` | on disk |
 | **This handoff** | `.planning/combo-detection/SESSION-HANDOFF.md` | you are here |
 | Real-board acceptance tests | `crates/engine/tests/integration/repro_user_combo.rs` | 1 passing guard + **2 `#[ignore]`d, FAILING** (the bug) |
 | Real-board fixture (11MB export) | `crates/engine/tests/fixtures/combo-repro/witherbloom-sprout-swarm-kilo-4p.json` | committed |
@@ -30,21 +38,47 @@ cargo test -p engine --test integration -- --ignored real_board        # FAILS  
 
 ---
 
-## 1. IMMEDIATE NEXT ACTION
+## 1. IMMEDIATE NEXT ACTION — THE ADVERSARIAL REVIEW (NOT YET RUN)
 
-1. **Respawn the reviewer in tmux mode.** (Prior reviewers were spawned without a tmux pane; two of them
-   produced full reports that **never reached team-lead**, and one later confirmed its report *had* been
-   "delivered successfully." **The messaging transport is unreliable in this session — do not trust a
-   send receipt.**)
-   - Spawn as a **tmux teammate**: `Agent` with a **name** + `run_in_background: true` and **NO
-     `isolation: "worktree"`** (isolation strips the tmux backend). Use a **fresh name** — a name
-     collision corrupts message routing.
-   - **Point it at `REVIEWER-MANDATE.md` on disk** — that file is authoritative and self-contained.
-   - **Demand a challenge-response ACK** echoing specifics back before it starts, so an empty envelope is
-     detectable immediately.
-   - Require the **entire report in its final response message**, never in a file.
-2. **Apply its findings in ONE consolidation pass.** The user has authorized exactly one iteration.
-3. **Hand the document to the user.**
+**The plan is final. The review that is supposed to gate it has NOT been executed.** One attempt was made
+and **failed for a mechanical reason worth not repeating: the reviewer was handed the 1,865-line plan +
+the `review-engine-plan` skill + CLAUDE.md + eight ranked attack targets AT ONCE, and blew its context.**
+It created no worktree, ran no test, and produced no report. **A second attempt (fanning out four narrow
+reviewers) was stopped by the user on token budget.**
+
+### ⇒ Run it DECOMPOSED and CHEAP. Do not hand one agent the whole document.
+
+`ADVERSARY-MANDATE.md` holds the full framework (the repo's own `.claude/skills/review-engine-plan/`
+gate — 11 required checks) and ranks the targets. **But feed each reviewer ONE target and only the plan
+sections it needs** (`grep -n "^### P" <plan>` to find phase headers; never read all 1,865 lines).
+
+**The three highest-value checks, in order — any one of them alone is worth more than a full read:**
+
+1. **⭐ C1's revert-probe has NO BACKING FIXTURE** *(nominated by the plan's own author, against its own
+   work — start here).* **Both candidate fixtures are dead:** Damping Sphere's deltas **cancel exactly**
+   against affinity (`base + k − (C₀ + k) = base − C₀`, constant in k), and Hum of the Radix reads *"each
+   **artifact** spell"* — **Sprout Swarm is a green instant**, so it is unsatisfiable. **No replacement card
+   has been verified to exist** (§7.1, §8 Q3). **A phase whose revert-probe has no backing fixture can pass
+   for the wrong reason.**
+2. **⭐ Is the "P4 and P7 are the ONLY ACCEPT-ward phases" claim TRUE?** Classify **all eleven** phases by
+   direction independently. **P5 relaxes the cover; P10 coarsens state equality — how are those not
+   ACCEPT-ward?** **If even one other phase removes a rejection, the central risk table is WRONG.**
+3. **⭐ Is P7's class gate DISCRIMINATING?** In a **throwaway worktree**, flip `ability_scan.rs:2456`
+   (`TargetFilter::Typed` `sibling: true → false`) and measure: **Intruder Alarm must un-reject AND Gaea's
+   Cradle must STILL fail closed** (`for_each_creature_production_still_fails_closed`, `:4840`). **If the
+   flip un-rejects BOTH, it is a HOLE in the catastrophic direction, not a fix.** Then **revert-probe**:
+   with the flip reverted the positive guard must **FLIP TO FAIL**, or the gate is vacuous.
+   *(This plan already shipped one vacuous discriminator in its own root-cause claim — Appendix B #17.)*
+
+### Known defect to fix in the consolidation pass (do NOT hot-patch the frozen doc mid-review)
+
+**Appendix B numbering:** the plan says *"eighteen"* and carries **18 rows**, but a **19th** error was
+caught after the freeze — team-lead's claim that *"no test anywhere asserts `!sibling`"*, which is
+**measurably FALSE** (`ability_scan.rs:5215` asserts exactly that, inside `sibling_mutable_axis_discriminates`).
+**It earns row #19** — a false claim inside the very section arguing for rigour. The *precise* version is
+also **stronger**: the positive guard that DOES exist (`fixed_drain` = `GainLife{Fixed(1), Controller}`,
+`:4879`) **references no object filter at all**, so it is **NON-discriminating** — it gave *false comfort*
+while the boundary went undefended.
 
 ---
 
