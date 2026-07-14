@@ -294,21 +294,38 @@ each activated ability, each mana ability, each castable self-returning spell. E
 has an effect vector `Δₜ` over resource axes — mana by color, untapped permanents by class, counters
 by kind, tokens, life, cards-in-zone. (`ResourceVector` already computes exactly these deltas.)
 
-A **closed (infinite) loop** is a firing vector `x ≥ 0` such that:
+The certificate is a **pair `(p, x)`** — a finite **prefix** `p ≥ 0` and a repeating **cycle**
+`x ≥ 0` — such that:
 
 - **Sustainability:** `Σ xₜ·Δₜ ≥ 0` on every *consumable* axis — the cycle net-drains nothing.
 - **Progress:** `Σ xₜ·Δₜ > 0` on at least one *growth* axis (tokens, counters, damage, …).
-- **Feasibility:** the cycle is executable in some order from the current marking without any axis
-  dipping negative mid-cycle (the scheduling half).
+- **Feasibility:** starting from the current marking `m₀`, the prefix `p` reaches a marking `m` from
+  which `x` is executable in some order with no axis dipping negative mid-cycle (the scheduling half).
 
-This is precisely a **Petri-net T-invariant**. Rational solutions scale to integers, so plain **LP**
-settles existence in polynomial time; minimizing `Σ xₜ` yields **the simplest cycle**, which is
-exactly the sequence to propose as the CR 732.2a shortcut.
+This is precisely a **Petri-net T-invariant** (`x`) reached from an initial marking (via `p`).
+Rational solutions scale to integers, so plain **LP** settles existence in polynomial time;
+minimizing `Σ pₜ + Σ xₜ` yields **the simplest combo**, which is exactly the sequence to propose as
+the CR 732.2a shortcut.
+
+> **Why the prefix is first-class, not a wart.** CR 732.2a explicitly sanctions this shape: *"This
+> sequence may be a **non-repetitive series of choices**, a loop that repeats a specified number of
+> times, multiple loops, or nested loops."* A loop that needs a warm-up — or a payment transient
+> before it settles — is a **prefix**, not a defect. This is where the old §6.4 ("tolerate a bounded
+> transient") is absorbed: the transient becomes `p`, computed analytically, instead of being
+> chased by driving extra iterations and hoping the horizon was long enough.
 
 > **LP alone is NOT a proof.** A T-invariant proves resource-sustainability, not executability from
-> the current marking. Resolution: **LP proposes, the existing clone-drive verifies.** Driving the
-> proposed `x` on a clone and observing `m < m'` is a Karp–Miller unboundedness witness, and it
-> already exists in the engine (`drive_recast_iteration`). Sound, and it reuses machinery we have.
+> the current marking. Resolution: **LP proposes, the existing clone-drive verifies.** Driving
+> `p` then `x` on a clone and observing `m < m'` is a Karp–Miller unboundedness witness, and the
+> drive already exists (`drive_recast_iteration`).
+>
+> ⚠️ **IMPLEMENTATION LANDMINE — change what "verified" MEANS.** The drive must verify the **net
+> resource delta**, *not* board-state equality. If the LP is implemented while the existing
+> frame-equality cover (`loop_states_cover_modulo_*`) is left in place as the verifier, **the
+> Witherbloom bug returns verbatim**: the drive still resolves its own convoke payment via
+> `select_convoke_taps`, still taps the engine piece, and the concrete frames still fail to match —
+> even though the loop is provably sustainable. Board-state equality is precisely the model §5.5
+> exists to replace; retaining it as the check would re-import every defect in §4.
 
 ### 5.5.2 Why this dissolves the defects rather than patching them
 
@@ -481,7 +498,7 @@ they are workarounds for a model that §5.5 replaces.
 | **6.1** zone-scoping | **YES, FIRST** | **Rules fix (CR 400.2)**, not an optimization. Ship standalone regardless of architecture. §5.5 makes it structural later, but the hidden-zone read must stop now. |
 | **6.2** walkers replacing blanket fail-closes | **YES** | Directly reusable: §5.5.3's fragment classifier is the *same walker family*. `scan_mana_production` (done) is the template. Not throwaway work. |
 | **6.3** re-found the `sibling` axis | **REPLACE** | Do not merely narrow `sibling: bool`. Go straight to §5.5.3's `FragmentClass` — the narrowing and the fragment certificate are the same walk, so building `sibling` twice is waste. |
-| **6.4** transient tolerance | **DROP** | Dissolves under §5.5.2 — the LP consumes *"an untapped green creature"*, so which permanent convoke taps is not expressible as a difference. Building drive-until-stable would be dead code the day the LP lands. |
+| **6.4** transient tolerance | **DROP the mechanism, KEEP the concern** | The *drive-until-stable heuristic* is dead: under §5.5 the payment choice is **inexpressible** — convoke consumes "an untapped green creature" and the token produces one, so it is net-0 *even when Witherbloom is tapped* (it was itself an untapped green creature; the count goes 5→4→5 either way). There is no transient to tolerate and no sampling horizon to be too short. **But the concern survives as the `prefix` term `p` of the §5.5.1 certificate** — a warm-up is a CR 732.2a "non-repetitive series of choices", computed analytically instead of chased by driving extra iterations. **Do not drop 6.4 without also changing what "verified" means** (see the §5.5.1 landmine): keeping board-state equality as the verifier re-creates this exact bug. |
 | **6.5a** driven detector for activated cycles | **SUBSUMED** | Becomes "enumerate activated abilities as transitions". Not a bespoke second detector. **B1 (ring cleared on deliberate actions) stops mattering** — the LP reads the *board*, not a sampled history, so a player-driven loop needs no ring at all. |
 | **6.5b** counter-growth cover | **SUBSUMED** | Counters are just another axis in `Δ`. Adding a third hand-written cover beside object-growth/fodder-growth is the sibling-cluster smell CLAUDE.md forbids; §5.5 makes the growth axis a **parameter**. |
 
