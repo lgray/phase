@@ -14,9 +14,12 @@ through the real engine, not inferred. Reproduction harness + method in §2.
 > test-backed. An implementer following the original §5.5 + §7 could ship a detector that **ends a
 > game on a false certificate**.
 >
-> §5.5.7 carries the corrections and **overrides** anything earlier that contradicts it. Two claims
-> in this document were measurably **FALSE** and are struck below (B2; the `ResourceVector` reuse
-> claim). Do not implement §5.5 without §5.5.7.
+> §5.5.7 (round 1) and **§5.5.8 (round 2)** carry the corrections and **override** anything earlier
+> that contradicts them. **THREE claims in this document were measurably FALSE**: B2 (a counter-growth
+> cover already exists and names Pentad Prism); the `ResourceVector` reuse claim; and — worst —
+> §5.5.2's *"the payment choice is inexpressible"*, which is **false on our own §2 board** because
+> **Witherbloom is Legendary and Relic of Legends filters costs on `Legendary`** (§5.5.8-A).
+> Do not implement §5.5 without reading §5.5.7 **and** §5.5.8.
 
 ---
 
@@ -609,6 +612,169 @@ tapped — any tap-state axis differs. **Drive-until-stable is still required, o
 - **`cost_surface_references_growing_class`** (all-zones) — §5.5 claims it dissolves. It does not: the
   LP *needs* cost to compute Δ, and cost surfaces are exactly where affinity, convoke, and Damping
   Sphere live. **It moves; it does not vanish.**
+
+### 5.5.8 ⛔ ROUND-2 CORRECTIONS — the fungibility argument was FALSE on our own board
+
+Second adversarial pass. All re-measured and CONFIRMED. **Overrides §5.5.2 and §5.5.5–§5.5.7.**
+
+#### A. ❗❗ THE HEADLINE — "the payment choice is inexpressible" is **FALSE**, and Relic of Legends proves it on the §2 board
+
+§5.5.2 claimed: *"convoke consumes an untapped green creature and the token produces one ⇒ net 0
+even when Witherbloom is tapped."* **Measured, that is wrong.**
+
+`Relic of Legends`' second ability cost (verbatim from `data/card-data.json`):
+```json
+{"type":"TapCreatures","count":1,
+ "filter":{"type_filters":["Creature"],"controller":"You",
+           "properties":[{"type":"HasSupertype","value":"Legendary"}]}}
+```
+**Witherbloom is Legendary. Kilo is Legendary. The Sprout Swarm token is NONlegendary.** Relic is on
+the §2 board (it is Combo B's mana engine). So convoking Witherbloom is:
+- net **0** on *untapped green creatures* ✅
+- net **−1** on *untapped **legendary** creatures* ❌ — and the Saproling **cannot** substitute,
+  because Relic's cost filters on `Legendary`.
+
+**The dilemma (no third horn):**
+
+| | consequence |
+|---|---|
+| `legendary` is NOT an axis | The LP treats Witherbloom/Kilo and a Saproling as fungible ⇒ it **falsely certifies a Relic of Legends mana engine** (tap a legendary for mana; a token "replaces" it; the token can never pay that cost). **GAME-ENDING.** |
+| `legendary` IS an axis | Then the §5.5.2 net-0 claim is false on our own board — convoking Witherbloom net-drains untapped-legendaries every cycle. |
+
+The measured axis granularity that exists today is
+`ObjectClass { Creature, Planeswalker, Battle, Player, Other }` (`resource.rs:52-69`) — **no
+legendary, no color, no subtype.** A naive LP reusing it lands on the top row.
+
+**RESOLUTION (this is the corrected model — adopt it):**
+
+> **Axes are NOT a fixed enumeration. They are the equivalence classes induced by the `TargetFilter`s
+> that appear in COSTS on the present board.** Costs filter on arbitrary predicates: `Legendary`
+> (Relic), *color* (convoke's colored pips, CR 702.51a), *total power* (crew), *type* (improvise),
+> `nontoken`, `another`. Partition objects under the Boolean algebra those filters generate. Filters
+> **overlap** (Witherbloom is green ∧ legendary), so the places are **not disjoint** — emit one
+> transition per *(ability × consumed equivalence-class)* and let the LP choose.
+
+On the §2 board the classes are `{legendary-green: Witherbloom}`, `{legendary-nongreen: Kilo}`,
+`{nonlegendary-green: Saprolings}`. The LP then **correctly rejects** "convoke Witherbloom" (net −1
+on legendary-green) and **certifies** "convoke a Saproling" (net 0) — with *"convoke Witherbloom
+once"* falling out **as the prefix** if it is ever needed.
+
+**The corrected claim is STRONGER than the one it replaces.** The payment choice is *not*
+irrelevant — it is **decisive**, and the LP's job is to **choose the sustainable one**. That is a
+better property than indifference.
+
+**⇒ And it back-propagates to the drive (this VINDICATES §6.4 and kills "DROP" for good).** The
+drive must execute **the cycle the LP certified**. `select_convoke_taps` picks lowest-ObjectId =
+**Witherbloom** = the *unsustainable* cycle. **`DecisionTemplate` MUST carry the LP's chosen
+equivalence class**, or the drive verifies a different cycle than the one certified. (Note: this is
+not "bias the selector to make detection work" — which the maintainer rightly rejected. It is
+"execute the certificate faithfully," which is a different and necessary thing.)
+
+#### B. ❗ CHANGE 2 corrected — net-delta verification is UNSOUND as stated. Relax, don't replace.
+
+Measured: `object_content_eq` (`game_state.rs:10453+`) compares **`tapped` per object** — but does
+**NOT** compare `summoning_sick`.
+
+⇒ **A7 and the Cryptolith Rite false positive (H2) are the same line of code.** The strict per-object
+`tapped` compare is the *only* thing currently blocking H2. Relaxing `tapped` into a fungible
+class-count **without** modelling `summoning_sick` converts a false *negative* into a false
+*positive*.
+
+What board-equality catches that a coarse net-delta drops (all measured, all in-tree):
+`phase_status` (CR 702.26 — *"a loop that phases a permanent in and out is a wrongful CR 104.4b
+draw"*); `attached_to`/`attachments` (Freed from the Real must **stay on Kilo**); **non-monotone
+counter kinds** — `project_object_for_loop` *deliberately preserves* stun/shield/time/fade/age/**lore**
+counters (*"consuming one of these is a real board change, not a monotone pump"*), so a loop burning a
+**Saga's lore counter** (CR 714.4 ⇒ sacrifice) is an ∞-consume trap; and the **§5.2c ADD set — 14
+fields** (`intensity`, `perpetual_mods`, `stickers`, `class_level`, `contraption_sprocket`,
+`is_suspected`, `prepared`, `room_unlocks`, `chosen_attributes`, `goaded_by`, `detained_by`,
+`casting_permissions`, `saddled_by`, `dealt_deathtouch_damage`) added by a **prior review** with the
+comment *"firewall-blind numeric/growable accumulators … a loop body can drift on a stable object."*
+A net-delta verifier drops **all fourteen**. (e.g. a Class-levelling loop grows `class_level`, which
+**caps at 3** ⇒ bounded ⇒ the net-delta check certifies it anyway.)
+
+> **MINIMUM SAFE FORM — do this instead of "replace the cover":**
+> **RELAX equality only on the axes the LP actually models, and KEEP a compiler-enforced
+> residual-equality check on the complement.** The existing no-`..` totality guards
+> (`_gameobject_partition_is_total` `game_object.rs:1038`, `_gamestate_partition_is_total`
+> `game_state.rs:10506`) make this **structurally safe**: a new field cannot be silently dropped.
+> This buys A7 **without** buying H2, Relic-of-Legends, the lore/fade ∞-consume trap, or the 14
+> accumulators. Small diff, compiler-enforced.
+
+#### C. ❗ H6 (NEW, GAME-ENDING) — land drops are a repetition gate, not a resource (CR 305.2)
+
+**CR 305.2** (verified): *"A player can normally play one land during their turn."* All three cards
+verified in `data/card-data.json`: **Crucible of Worlds** (*"You may play lands from your
+graveyard"*), **Zuran Orb** (*"Sacrifice a land: You gain 2 life"*), **Azusa, Lost but Seeking**.
+
+Cycle: play a land from the graveyard → tap for mana → sacrifice to Zuran Orb. Net: **lands 0**,
+**mana +1**, **life +2** ⇒ sustainable + progressing on two axes ⇒ **the LP certifies infinite mana
+and life.** Reality: **bounded at 3 iterations** by the land-drop rule. The **2-iteration drive walks
+straight through it.**
+
+§5.5.1's enumeration (*"each activated ability, each mana ability, each castable self-returning
+spell"*) omits **land plays** and **special actions (CR 116)**. As literally written that is a false
+*negative* — but land plays are canonical shortcut material and any implementer will add them.
+**`lands_played_this_turn` must be an axis, or land plays must be excluded explicitly and loudly.**
+
+#### D. §5.5.5's nesting rationale was WRONG (right conclusion, wrong reason)
+
+**Fixed-count nesting is UNROLLABLE** — "inner ×3 per outer" is just `x` with the inner transitions
+scaled by 3. It is **not** a counter machine and **must not be declined**. As written, an implementer
+reading *"we decline nested loops"* will reject ordinary combos.
+**Only a MARKING-DEPENDENT inner count is TC.** Fix the text: *decline marking-dependent inner
+counts; absorb fixed-count nesting by unrolling.*
+
+Also, "multiple loops" needs no staging at all: `x` is an order-free **multiset** of firings, so two
+mutually-sustaining interleaved cycles are **one** T-invariant. Staging is needed **only** for the
+threshold-gated payoff.
+
+#### E. ❗ Internal inconsistency — the fragment guard would reject our own certificate
+
+The staging predicate (*"repeat `x₁` until mana ≥ N"*) **is a linear comparator against a growth
+axis** — syntactically the exact construct §5.5.3's Non-monotone arm REJECTS, and §5.5.5 explicitly
+equates the two. **State plainly:**
+
+> The fragment guard classifies **CARD ABILITY ASTs** (the transitions). It does **NOT** classify the
+> certificate's own staging predicate. The proposer counting to N is sanctioned by CR 732.2a:
+> *"a loop that repeats a **specified number of times**."*
+
+Without this sentence a literal implementer rejects his own certificate.
+
+#### F. ❗ `min Σp + Σx` can pick an UNEXECUTABLE cycle — §7 #10 is backwards
+
+The LP is a **relaxation**: it enforces net-sustainability, **not schedulability**. Finding a firing
+*sequence* from a marking is VAS reachability, not an LP. So the argmin `x` may be net-≥0 with **no
+valid ordering** (an axis dips negative mid-cycle) while a *larger* cycle is the real combo.
+
+⇒ §7 #10 (*"an LP certificate the drive cannot execute is a BUG"*) is **wrong**: a drive failure on
+the argmin is the **expected** behavior of a relaxation. Required: a **no-good cut + re-solve loop**
+(cut the failed `x`, re-solve, retry, **bounded**). Without it: false negatives on every board with
+>1 candidate cycle.
+
+**Concrete:** **Ashnod's Altar** (*"Sacrifice a creature: Add {C}{C}"*). The monotone lemma linearizes
+affinity's cost at `m₀`, but the cast happens **mid-cycle** at `m₀ − (creatures sacrificed so far)`, so
+the true cost is **higher** than modelled. ⇒ **The monotonicity lemma is stated over cycle boundaries;
+costs are evaluated mid-cycle.** It needs the side condition: *the read axis must be non-decreasing at
+**every prefix** of the cycle's schedule*, not merely over the whole cycle.
+
+#### G. ❗ Unbounded prefix = a DoS vector we ALREADY FIXED ONCE on this branch
+
+Nothing bounds `Σp`, and §6.7 wanted the LP to run **without the ring** — i.e. on **every priority
+beat, for every player**, in a 4-player game: enumerate transitions → measure each Δ (a clone-drive
+each, per §5.5.7-A) → LP → drive `p` → drive `x`.
+
+**Commit `57b0e537d`, on this very branch: _"fix(engine): bound loop-shortcut iteration count (remote
+DoS in #5672)."_** §6.7 re-opens that exact class.
+
+> **KEEP THE RING (or some cheap arming signal) as a gate.** It costs nothing and it is **not** what
+> was broken. **B1 is a false-negative bug, not a reason to delete the gate.** Bound `Σp`.
+
+#### H. §5.5.6 precision (minor)
+
+Four Horsemen's **short** cycle (Monolith untap → Mesmeric Orb mill) is **library-NEGATIVE**, so the
+LP rejects it as **unsustainable**, not as non-advancing. The "no advancement" framing only holds over
+the **long** cycle including the Emrakul reshuffle. Right answer, slightly wrong reason.
 
 ### 5.5.4 Relationship to §6
 
