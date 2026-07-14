@@ -268,6 +268,80 @@ toggle becomes an honest binary: **`Off` (pre-feature) / `On` (the full detector
 **Sequence this EARLY** — P0's dual and the whole corpus-live partition depend on it, and it deletes a
 footgun rather than documenting one.
 
+## 4c. ⭐ USER DIRECTIVE — **SPLIT `WinKind`. It conflates WINS with non-winning ADVANTAGES.** (NEW PHASE)
+
+> *"There's a semantic problem in `WinKind` — `WinKind`s can be non-winning advantages in the current
+> setup. It's probably a very useful distinction to separate these two classes."*
+
+**Correct, and it is not a naming smell — the engine already hand-simulates the missing type, and SAYS SO.**
+
+### The evidence (all measured)
+1. **`Advantage`'s own doc comment states it is NOT a win** (`loop_check.rs:~104`): *"…without, by itself,
+   being a direct loss condition for an opponent… **the payoff that converts the advantage to a win is a
+   separate card.**"* **An enum named `WinKind` contains a variant documented as not-a-win.**
+2. **`ExtraTurns` is ALSO misclassified.** It cites **CR 500.7** — which is **purely mechanical**
+   (*"Some effects can give a player extra turns… added directly after the specified turn"*,
+   `MagicCompRules.txt:2127`) and **says NOTHING about winning.** The real win conditions are **CR 104.2**.
+   **Infinite turns is a CAPABILITY, not a game-end.**
+3. **The engine already partitions it by hand — and admits why.** `engine.rs:637`:
+   `classify_win_kind(controller, &delta) == WinKind::Advantage` — an **equality check against a single
+   variant** to gate the non-terminal path. And the comment immediately above it (`~:630`):
+   > *"…which **NEVER produces a GameOver**; an over-claim is a **revocable capability, not a wrongful
+   > game-end**."*
+
+   **That comment is describing the type distinction that does not exist.** Confirmed:
+   `mark_unbounded_loop` (`game_state.rs:10377`) only **extends a set** — it can never end a game.
+
+### ⇒ The split is a SOUNDNESS BOUNDARY, not a taxonomy
+It is **the §5b.1 asymmetry, in the type system**:
+
+| Outcome | Over-claim consequence |
+|---|---|
+| **`Win`** — terminal; the loop **ENDS THE GAME** | ⛔ **WRONGFUL GAME-END. CATASTROPHIC.** Fail closed. |
+| **`Advantage`** — non-terminal; unbounded resource, **no game-end by itself** | ✅ **A revocable capability mark. SAFE.** |
+
+```rust
+/// What an infinite loop lets its controller ACHIEVE. The split is a SOUNDNESS boundary.
+pub enum LoopOutcome {
+    Win(WinKind),              // TERMINAL — ends the game
+    Advantage(AdvantageKind),  // NON-TERMINAL — no game-end by itself
+}
+pub enum WinKind {        // terminal ONLY
+    LethalDamage,  // CR 704.5a
+    PoisonLoss,    // CR 704.5c
+    Decking,       // CR 104.3c
+    ImmediateWin,  // CR 104.2b — "an effect may state that a player wins the game"
+}
+pub enum AdvantageKind {  // NON-terminal
+    Resource,    // CR 732.2a's canonical beneficial loop (mana/tokens/cards/counters/triggers)
+    ExtraTurns,  // CR 500.7 — mechanical; NOT a CR win condition
+}
+```
+
+### ⭐ Why this is REQUIRED, not merely tidy: **it is the type C5 v2 needs (§2.0.1)**
+Kiki-Jiki's tokens are destroyed at the next end step, so:
+- ✅ they **CAN** certify **`Win(LethalDamage)`** — the tokens have **haste**; swing **before** the end step;
+- ❌ they **CANNOT** certify **`Advantage(Resource)`** — they **evaporate**, so there is no durable resource.
+
+⇒ **A short-lived ω-axis can support a terminal `Win` inside the window but cannot support a durable
+`Advantage`.** Today that is a *comment*. With the split it is a **compiler-enforced invariant.**
+**C5 v2's lifetime→claim mapping is only expressible once this refactor lands. Sequence it BEFORE C5.**
+
+### Scope (verify it yourself)
+- `classify_win_kind` (`analysis/loop_check.rs`) → returns `LoopOutcome`.
+- `engine.rs:637`'s `== WinKind::Advantage` equality gate → `matches!(.., LoopOutcome::Advantage(_))`
+  (or becomes unnecessary — **prefer making the type carry the invariant**).
+- **`shortcut_iteration_count` (`engine.rs:731-741`) is an ORTHOGONAL axis — do NOT conflate it.** It maps
+  `LethalDamage | PoisonLoss => UntilLethal`, everything else ⇒ `Fixed(1)`. That is *"is the win reached
+  asymptotically or in one cycle"*, **not** terminal-vs-non-terminal. Keep both axes; they are independent.
+  `iteration_count_maps_every_win_kind` (`engine.rs:9216`) must stay exhaustive.
+- **Serde/wire:** `WinKind` crosses the serialization boundary into `LoopCertificate` /
+  `ShortcutProposal` (externally tagged, unit variants as bare strings) and reaches the frontend
+  (`LoopShortcutModal.tsx`). **A nested enum changes the wire shape ⇒ update the TS types and add a
+  round-trip test.**
+- Run the **`/add-engine-variant`** checklist; grep `data/engine-inventory.json`.
+- `corpus.rs`'s `ComboRow.win_kind` and `corpus_tests.rs:81` must be re-typed.
+
 ## 5. ⛔ P0's LIVE DUAL IS VACUOUS — the default-OFF toggle (never mentioned; 0 grep hits)
 
 - The live hook requires `state.loop_detection.samples()` (`engine.rs:448`).
