@@ -10,8 +10,17 @@
 Diagnosing why two live infinite combos on the user's real 4-player Commander board are **not detected**
 by the CR 732.2a loop-shortcut detector.
 
-> # ✅ **THE PLAN IS FINAL — `e677fefb1`.** 1,865 lines · phases **P0–P10** · 18-row Appendix B.
+> # ✅ **THE PLAN IS FINAL** — phases **P0–P10** · 18-row Appendix B · **+ the MTR 4.4 ADDENDUM (2026-07-14).**
 > # ⛔ **THE ADVERSARIAL REVIEW HAS *NOT* HAPPENED.** It is the next action.
+
+> ## 🆕 **THE PLAN WAS RE-OPENED AFTER THE `e677fefb1` FREEZE — use the CURRENT tip, not `e677fefb1`.**
+> A **tournament-rules layer** was added as an **ADDENDUM (§A.1–A.7)** in the plan's preface. **The real board is
+> 4-player cEDH ⇒ CR 732.1c makes MTR 4.4, not CR 732.2a, the governing text.** The finding that matters:
+>
+> ### **CR 732.1b and MTR 4.4 both define a loop by the repeatability of the ACTION SEQUENCE. NEITHER EVER REQUIRES THE GAME STATE TO RECUR.** The engine's detector requires **board equality + a provably unbounded axis** — so it **must** reject CR 732.2a's own worked example (Presence of Gond + Intruder Alarm **adds a token every iteration**). **That is not a bad predicate; it is the WRONG predicate.**
+>
+> ⇒ **This may put P7 — the largest phase and the ONLY unsized open question — on the WRONG SIDE OF THE BUG.**
+> **Addendum §A.3 names a cheap experiment that decides it. RUN THAT BEFORE THE REVIEW** (see §1 below).
 
 **Nothing is being implemented.** Plan-only by explicit user instruction. **Zero files modified under
 `crates/`** by the planning work.
@@ -52,7 +61,20 @@ reviewers) was stopped by the user on token budget.**
 gate — 11 required checks) and ranks the targets. **But feed each reviewer ONE target and only the plan
 sections it needs** (`grep -n "^### P" <plan>` to find phase headers; never read all 1,865 lines).
 
-**The three highest-value checks, in order — any one of them alone is worth more than a full read:**
+### ⇒ ⛔ BUT RUN CHECK 0 FIRST. IT IS CHEAPER THAN THE REVIEW AND CAN INVALIDATE ITS BIGGEST TARGET.
+
+0. **⭐⭐ IS P7 EVEN ON THE CRITICAL PATH? (plan Addendum §A.3 — the falsifiable prediction.)**
+   `LoopCertificate.unbounded` carries the invariant *"a non-empty vector is an invariant of a returned
+   certificate"* (`analysis/loop_check.rs:123`) and `residual_board_delta` is *"**EMPTY for every certificate this
+   phase produces** (both detection paths require an identical battlefield)"* (`:132`). **Witherbloom + Sprout
+   Swarm's growth axis IS the battlefield** (tapped tokens). **If board equality gates certification, P7 can be
+   PERFECT and the acceptance test STILL FAILS.**
+   **⇒ In a throwaway worktree, stub the fire-time firewall to ALWAYS ACCEPT and run the ignored acceptance test.**
+   **GREEN** ⇒ P7 is real; proceed to §8 Q0 sizing. **RED** ⇒ **no number of arms fixes it** — the root cause is the
+   **certificate's SHAPE**, and **P7 leaves the critical path.** *(§8 Q0's instrumentation ASSUMES the firewall is
+   the blocker. This TESTS that assumption.)*
+
+**Then the three highest-value review checks, in order — any one alone is worth more than a full read:**
 
 1. **⭐ C1's revert-probe has NO BACKING FIXTURE** *(nominated by the plan's own author, against its own
    work — start here).* **Both candidate fixtures are dead:** Damping Sphere's deltas **cancel exactly**

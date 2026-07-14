@@ -34,6 +34,154 @@
 
 ---
 
+# ⭐ ADDENDUM — 2026-07-14 — THE TOURNAMENT-RULES LAYER, AND WHAT IT SAYS ABOUT P7
+
+*Added **after** the `e677fefb1` freeze. Any reviewer spawned from now on must be pointed at the new hash.*
+*Every citation below was printed by a tool. Every code claim is tagged **measured** or **UNVERIFIED**.*
+
+The real board is **4-player cEDH**, which is played under the **Magic Tournament Rules** — and **CR 732.1c**
+(`docs/MagicCompRules.txt:6368`) says the MTR **takes precedence** over CR 732 during a tournament:
+
+> *"Tournaments use a modified version of the rules governing shortcuts and loops… **Whenever the Tournament
+> Rules contradict these rules during a tournament, the Tournament Rules take precedence.**"*
+
+⇒ **MTR 4.4 — not CR 732.2a — is the governing text for the board this plan is about.**
+
+## A.1 — It is NOT gated on Rules Enforcement Level (measured)
+
+**MTR §4.4 contains ZERO REL qualifiers.** Measured: 0 occurrences of `Competitive|Professional|Regular|Enforcement`
+across its 49 lines (official PDF → `pdftotext -layout`; §4.4 = lines 1122–1170). The only REL gates anywhere in
+MTR §4 are note-taking methods (§4.1), derived-information status (§4.1), and table layout (§4.7).
+
+**The loop regime is identical at Regular, Competitive, and Professional REL** — and its core constraint
+(*no conditional actions*) is **also in the CR itself** (`:6372`), so it holds in casual play too.
+
+⇒ **The engine needs no REL toggle and no "tournament mode." There is nothing to gate.**
+
+## A.2 — ⭐ THE LOAD-BEARING FINDING: THE RULES KEY ON **ACTIONS**; THE ENGINE KEYS ON **STATE**
+
+> **MTR 4.4:** *"A loop is a form of tournament shortcut that involves **detailing a sequence of actions to be
+> repeated** and then performing a number of iterations of that sequence. **The loop actions must be identical
+> in each iteration** and cannot include conditional actions."*
+>
+> **CR 732.1b** (`:6366`): *"a set of **actions** could be repeated indefinitely (thus creating a 'loop')."*
+
+**Both documents define a loop by the repeatability of the ACTION SEQUENCE. Neither one ever requires the GAME
+STATE to recur.** State recurrence appears in the rules in exactly **two** places, and both are strictly narrower
+than the general case:
+
+1. MTR 4.4's stopping rule for **non-deterministic** loops — *"must stop if… a previous game state (or one
+   identical in all relevant ways) is reached again."*
+2. MTR 4.4's **multi-turn** condition — *"Loops may span multiple turns if a game state is not meaningfully changing."*
+
+**This is decisive, because CR 732.2a's own worked example DOES NOT RECUR.** Presence of Gond + Intruder Alarm
+(`:6373`) **adds an Elf Warrior token every iteration** — its state provably never repeats — and the CR calls it a
+loop and shortcuts it **a million times**.
+
+> ## ⇒ **A STATE-RECURRENCE DETECTOR *MUST* REJECT THE RULEBOOK'S OWN WORKED EXAMPLE.**
+> ## **That is not a bug in a predicate. It is the WRONG PREDICATE.**
+
+## A.3 — What that predicts about this codebase
+
+| Fact | Where | Status |
+|---|---|---|
+| `LoopCertificate.unbounded: Vec<ResourceAxis>` — *"A non-empty vector is an invariant of a returned certificate."* ⇒ **the detector is an UNBOUNDEDNESS PROVER** | `analysis/loop_check.rs:119`, `:123` | ✅ **measured** |
+| `LoopCertificate.residual_board_delta` — *"**EMPTY for every certificate this phase produces** (both detection paths require an identical battlefield)"* | `analysis/loop_check.rs:132` | ✅ **measured** |
+| `WaitingFor::LoopShortcut` carries `proposer`, `predicted_winner`, `certificate`, `schema` — **and NO iteration count anywhere** | `types/game_state.rs:4329` | ✅ **measured** |
+| MTR 4.4's intervention right **is** already modelled | `WaitingFor::RespondToShortcut`, `types/game_state.rs:4347` | ✅ **measured** |
+
+**Neither board equality nor a non-empty `unbounded` is a rules requirement for a shortcut.** Unboundedness is
+required only for the **CR 104.4b draw** (`:366`) and for auto-win — **NOT for the OFFER.**
+
+> ## ⛔ FALSIFIABLE PREDICTION — TEST THIS *BEFORE* AUDITING 88 SITES
+>
+> **Witherbloom + Sprout Swarm's growth axis is tapped tokens ON THE BATTLEFIELD, and the certificate requires an
+> IDENTICAL BATTLEFIELD** (`loop_check.rs:132`). If that gates certification, then **P7 could be executed PERFECTLY
+> and `real_board_sprout_swarm_offers_loop_shortcut` would STILL BE RED.**
+>
+> **P7 — this plan's largest phase and its ONLY unsized open question (§8 Q0, *"could be 30 arms or 300"*) — may be
+> defending the wrong wall entirely.**
+>
+> ### The experiment, and it is cheap:
+> **In a throwaway worktree, stub the fire-time firewall to ALWAYS ACCEPT, then run the ignored acceptance test.**
+> - **GREEN** ⇒ P7 is real. Its size is the question, and §8 Q0's instrumentation is the right next move.
+> - **RED** ⇒ **no number of arms will ever fix it.** The root cause is the certificate's **SHAPE**, and **P7 leaves
+>   the critical path.**
+>
+> §8 Q0's instrumentation **assumes** the firewall is the blocker. This experiment **tests** that assumption, is
+> strictly cheaper, and is strictly more informative. **It is the correct first measurement.**
+> *(**UNVERIFIED** — it has not been run.)*
+
+## A.4 — The relaxation this implies — and why it does NOT violate §0 rule 2
+
+**Proposal (ACCEPT-ward — flagged loudly, per §0 rule 2):** let the certificate carry a **bound K** — drive the
+fixed sequence on a clone until an action becomes illegal or an outcome diverges from iteration 1; **that iteration
+is K** — instead of requiring a non-empty `unbounded` axis vector.
+
+**This also collapses C2 and C3.** MTR 4.4 fixes the *program*, not the *trace* — so a depleting library (**C2**) or a
+threshold tripping at a future iteration (**C3**) still make iteration *k* ≠ iteration 1. But under a bound they stop
+being **static REJECT gates that must prove nothing bad ever happens** and become **the thing the drive measures**:
+whichever bites first *is* K. That is §7's own argument, carried to its conclusion.
+
+**Why this is not the false-certificate generator §0 rule 2 warns about:** **rule 2 is scoped to the GAME-ENDING
+path.** An **L-OFFER** that says *"repeat this N times"* **ENDS NO GAME** — it is a labor-saving shortcut, and every
+opponent retains MTR 4.4's intervention right (*"announce a lower number after which they intend to intervene"*),
+which the engine **already models** at `RespondToShortcut` (`game_state.rs:4347`). **The game-ending terminals are
+L-AUTOWIN and the CR 104.4b draw — and those KEEP the `unbounded` requirement, unchanged.**
+
+⇒ **The relaxation is ACCEPT-ward ONLY on the terminal that cannot end a game.** That is exactly the 3-terminal
+partition this plan already has (**L-OFFER / L-AUTOWIN / WAIVED**) — and MTR 4.4 says that partition is
+**load-bearing, not cosmetic.**
+
+> ## ⚠️ **UNVERIFIED, AND IT IS THE HINGE OF A.4**
+> **Does accepting a `LoopShortcut` END THE GAME today?** `predicted_winner: Option<PlayerId>`
+> (`game_state.rs:4333`) suggests the **OFFER may already sit on the game-ending path** — in which case **the
+> terminal separation DOES NOT YET EXIST IN CODE and must be built BEFORE any relaxation.**
+> **Measure this first. Relax NOTHING until it is answered.**
+
+## A.5 — MTR corroborations of claims already in this plan (each now double-warranted)
+
+- **§7's "drive the fixed sequence on a clone"** — MTR's *"The loop actions must be identical in each iteration"* is a
+  **stronger warrant** than the CR 732.2a clause §7 cites.
+- **RC-1** — MTR 4.4: *"nor may they make **irrelevant changes** between iterations in an attempt to **make it appear
+  as though there is no loop**."* ⇒ **The engine currently IMPLEMENTS the behavior the MTR forbids a PLAYER from
+  exploiting.** The firewall is not conservatism; it is the **prohibited outcome**.
+- **RC-2** (bounded start-up transient) — **independently corroborated.** MTR 4.4 constrains only the **loop actions**
+  to be identical each iteration and says nothing forbidding a non-repetitive prefix. RC-2 now has **two independent
+  warrants**.
+- **RC-4** (`ObjectId`-keyed equality) — MTR supplies the exact standard: *"identical in **all relevant ways**."*
+  **An `ObjectId` is not a relevant way.** RC-4 is now a **cited** defect, not a design preference.
+- **P10** (coarsens state equality) — flagged as suspiciously ACCEPT-ward with no warrant. **MTR 4.4 IS the warrant**
+  (*"identical in all relevant ways"* + the irrelevant-changes clause). **It IS accept-ward, and the rules say it is
+  supposed to be.** The soundness surface there is **the definition of "relevant"** — not the direction.
+
+## A.6 — ⛔ DO NOT ADD A NON-DETERMINISM GATE. IT ALREADY EXISTS.
+
+MTR 4.4: *"**Non-deterministic loops** (loops that rely on decision trees, probability, or mathematical convergence)
+**may not be shortcut**."* This reads like a free, rules-mandated scope carve-out worth building.
+
+**It is already built.** `effect_is_randomness_bearing` (`game/ability_scan.rs:4437`) — exhaustive match, **no
+wildcard** (a future random-bearing variant **build-breaks** there), fail-closed, and it **already cites CR 732.2a**.
+
+**This was caught by measuring before recommending. It would otherwise have been Appendix B #20** — *a correct
+rules-layer reading producing a false code-layer claim from memory.* **The banner's failure mode does not spare the
+rules layer. It spares only claims that were MEASURED.**
+
+## A.7 — Sources
+
+- **MTR** — [MAGIC: THE GATHERING® TOURNAMENT RULES, effective 2026-02-27](https://media.wizards.com/ContentResources/WPN/MTG_MTR_2026_Feb27_EN.pdf)
+  — **§4.2** (Tournament Shortcuts), **§4.4** (Loops). Official WotC PDF, via
+  [WPN Rules and Documents](https://wpn.wizards.com/en/rules-documents).
+- **MTR annotations** — [MTR 4.4 Loops](https://blogs.magicjudges.org/rules/mtr4-4/) ·
+  [MTR 4.2 Tournament Shortcuts](https://blogs.magicjudges.org/rules/mtr4-2/) (Judge Rules Resources).
+- **CR** — `docs/MagicCompRules.txt`: **104.4b** (`:366`), **732.1b** (`:6366`), **732.1c** (`:6368`),
+  **732.2a + Example** (`:6372`, `:6373`), **732.4** (`:6383`).
+
+**Rules-layer tally after this addendum: CR 40/40, plus MTR §4.2/§4.4 quoted verbatim from the official PDF — still
+0 failures. The code-layer tally is unchanged at 19 wrong.** *(A.6 would have been #20.)*
+
+---
+
 # §0 — READ THIS FIRST
 
 *One page. If you read nothing else in this document, read this.*
