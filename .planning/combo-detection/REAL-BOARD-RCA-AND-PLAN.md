@@ -445,7 +445,154 @@ per-object yet differ in **which object the stack, a delayed trigger, or an aura
 
 ---
 
+## 5b. SPIKE — can we buy the equality core off the shelf? (`egg` / e-graphs, vs. scalarset symmetry reduction)
+
+**Explore this BEFORE committing to P6.** §5 says object identity across a loop cycle is *"the riskiest
+change in the program"* and needs *"its own soundness proof."* **Both of those are bad things to
+hand-roll.** This section names the two off-the-shelf formalisms and — critically — **the one soundness
+asymmetry that decides between them.**
+
+### 5b.1 The soundness asymmetry — read this before evaluating either option
+
+Our equality relation sits on the **only game-ending path**. So its error direction is not symmetric:
+
+| Relation errs… | Meaning | Consequence |
+|---|---|---|
+| **TOO COARSE** (says *equal* when they are not) | certifies a state recurrence that did not happen | ⛔ **FALSE CERTIFICATE — ends a real game wrongly. CATASTROPHIC.** |
+| **TOO FINE** (says *different* when they are equivalent) | misses a real loop | ✅ **false negative — a missed offer. SAFE / fail-closed.** |
+
+**⇒ A coarse relation is only ever admissible as a REJECT filter, never as an ACCEPT decision.**
+Everything below hangs on that sentence.
+
+### 5b.2 ⭐ Option A — `egg`'s **e-class analysis over the ABILITY AST**. This is the one that reshapes the plan.
+
+[`egg`](https://docs.rs/egg) ([POPL'21](https://dl.acm.org/doi/pdf/10.1145/3434304)) provides congruence
+closure with hashconsing plus **e-class analysis** — a semilattice (`make` / `merge` / `modify`) that is a
+tested **monotone abstract-interpretation** framework, co-designed with congruence so the analysis
+**cannot drift between equal subterms.** Its own abstract says it exists to *"reduce the need for ad hoc
+manipulation."* **Not currently a dependency** (verified: `grep egg Cargo.toml` ⇒ nothing).
+
+**The fit is at the PARSER/AST layer, and it goes at the ROOT of RC-1.**
+
+`ability_scan.rs`'s `Axes { event, sibling, projected }` walk **already IS an abstract interpretation over
+the ability AST.** It is hand-rolled, and it is **measurably wrong**: `TargetFilter::Typed(_) => Axes {
+sibling: true, .. }` **unconditionally** (`ability_scan.rs:2454`) — which is exactly what rejects
+**Intruder Alarm, CR 732.2a's own worked example** (§3.1a). **R1, R3, R5 and R6 are four hand-rolled scans
+over that same AST.** They are ad-hoc manipulation, and they are the root cause.
+
+**⇒ Make `Axes` an e-class analysis, and the plan's shape changes:**
+
+| Today | With an e-class `Axes` |
+|---|---|
+| **P2** — write a new CR 113.6 zone-of-function predicate (**new subsystem**) | a **query** against the analysis |
+| **P5** — narrow gate (4) to a Comparator-vs-growing-axis scan (**bespoke scan**) | a **query** against the analysis |
+| four `loop_states_cover_modulo_*` siblings each re-deriving firewall + cost-surface | **one** analysis, consulted four ways |
+| `sibling: true` drift, undetectable | **congruence forbids** two equal subterms carrying different `Axes` |
+
+**⚠️⚠️ RULES-CORRECTNESS IS PRIMARY — AND THE HAZARD IS THE REWRITE RULES.**
+Equality **saturation** rewrites terms into equivalent forms **according to your rewrite rules, and every
+rewrite rule is a CR claim.** *"Destroy"* ≠ *"sacrifice"* ≠ *"put into a graveyard"* — they differ under
+**regeneration (CR 701.15)**, **indestructible (CR 702.12)**, and **replacement effects (CR 614)**. A
+single non-CR-preserving rule **silently changes what every card in the database does**, everywhere. That
+is a **far higher-stakes place to be wrong than the detector.**
+
+> ## ⛔ SCOPE THE SPIKE: take the ANALYSIS, take ZERO semantic rewrite rules.
+> Build the e-graph from the existing AST with **congruence + `Analysis` only** — **no rewrites**, or only
+> rules **proven CR-neutral one at a time, each carrying its own verified CR citation.**
+> **This buys the ENTIRE win — a principled, monotone, congruence-consistent `Axes` — at ZERO rules risk,
+> because nothing is rewritten.** Equality *saturation* is a **separate, later, opt-in** decision that
+> must not ride in on this one.
+
+**Secondary (sound, minor):** a congruence-closure **REJECT-ONLY** pre-filter for state equality — hashes
+differ ⇒ fast decline; hashes match ⇒ fall through to the exact check. Sound by §5b.1 (coarse relations may
+reject, never accept), and it **could also discharge P1's open DoS pre-gate.** ⚠️ **But see 5b.3: congruence
+is the WRONG relation for state equality, so this is a filter and nothing more.**
+
+**Cost flags (measure, do not assume):** the engine **ships to WASM** (`opt-level='z'` + LTO) and **the
+detector is on the live in-game path — it cannot be feature-gated out.** Measure the bundle delta.
+*(Contrast `analysis/corpus.rs`, which IS `#[cfg(any(test, feature = "combo-verify"))]` and excluded from
+the shipped lib.)* If the delta is unacceptable, a bare semilattice is ~30 lines of Rust — **but you lose
+the congruence guarantee, which is the half that prevents the `sibling: true` class of bug.**
+
+### 5b.3 Option B — scalarset symmetry reduction (the literature match for RC-4) — **and egg is NOT this**
+
+**The two problems are different and must not be conflated:**
+
+| Problem | Right tool |
+|---|---|
+| **Ability SEMANTICS** — "does this AST observe/scale-with the growing axis?" | ⭐ **egg e-class analysis** (5b.2) |
+| **Board-state EQUALITY** — "is this the same board modulo id churn?" | **scalarset symmetry reduction** (below) — **NOT egg** |
+
+**Why egg is unsound for the second.** Congruence/bisimulation is **coarser than isomorphism** and it
+**COLLAPSES MULTIPLICITY**: three identical Saprolings and four identical Saprolings are *the same term*,
+so they hashcons to *the same e-class*. **But multiplicity IS the growth axis we are measuring.** Accepting
+on congruence certifies iteration N ≡ N+1 **precisely when the token count grew** — i.e. **exactly on every
+real loop** — which by §5b.1 is a **false certificate on the game-ending path.** ⛔ **Never accept on
+congruence. Reject-only, or not at all.**
+
+**`ObjectId` is a *scalarset*.** Two boards are the same board **up to a permutation of object
+identities**; permuting them induces automorphisms of the state graph; the fix is a **canonical
+representative per orbit**. This is [Murφ](http://www.cfdvs.iitb.ac.in/download/Docs/verification/tools/murphi/html/murphiinfo.html)'s
+symmetry reduction, and it is **exactly** what §5 prescribes (*"remap `ObjectId`s to a canonical order
+AND canonicalize every id-valued field"*). Decades-old, with published correctness proofs — which is
+precisely what P6's soundness obligation is asking for.
+([survey](https://www.doc.ic.ac.uk/~afd/papers/2006/ACMSurvey.pdf))
+
+**And it hands us the safe engineering split — this is the actionable part:**
+
+| Murφ strategy | Property | For us |
+|---|---|---|
+| **Normalization** (lightweight) | may yield **several** representatives per orbit ⇒ errs **TOO FINE** | ✅ **misses some loops; never certifies a false one. SHIP THIS FIRST.** |
+| **Canonicalization** (heavyweight) | **unique** representative per orbit ⇒ **exact** | graph-iso-hard, but **board sizes are tens of objects ⇒ nauty-class tools are effectively free here**. The upgrade path. |
+
+Rust bindings exist: [`graph-canon`](https://github.com/noamteyssier/graph-canon) (nauty),
+[`nauty-pet`](https://docs.rs/nauty-pet) (petgraph), [`canonical-form`](https://github.com/avangogo/canonical-form).
+
+⚠️ **Do NOT reach for 1-WL / colour refinement as the equality test.** It errs **coarse** (cannot
+distinguish some non-isomorphic graphs) ⇒ **wrong direction** ⇒ false certificate. It is admissible
+**only** as a reject filter, same as 5b.2(1).
+
+### 5b.4 The spike, and how it terminates — **run it FIRST; it re-shapes everything downstream**
+
+**Time-box it. It is a decision, not a project.** `egg` is **not a requirement** — if it does not pay,
+disregard it and the plan reverts to §6 as written. Deliverable is an answer to exactly four questions:
+
+1. ⭐ **Can `Axes` be expressed as an `egg::Analysis` over the existing ability AST — with NO rewrite
+   rules?** Build it, and check it against the two known-wrong verdicts: **Intruder Alarm must NOT be
+   rejected** (it is CR 732.2a's own example), and **Gaea's Cradle must STILL fail closed**
+   (`for_each_creature_production_still_fails_closed`, the revert-probe-verified guard). **If both hold,
+   this option has proven itself on the exact case that broke the hand-rolled walk.**
+2. **Do P2 and P5 collapse into queries against it?** *If yes, the plan's honest new surface drops from
+   two subsystems + C2 to essentially C2 — the single biggest scope reduction available.*
+3. **WASM bundle delta** of adding `egg` to the engine crate. **The detector is on the live in-game path
+   and cannot be feature-gated out.**
+4. **Confirm no semantic rewrite rules crept in.** ⛔ Any rewrite is a CR claim (5b.2). **A spike that
+   ships rewrite rules has failed, regardless of its numbers.**
+
+**Expected outcome (stated so the spike can refute it):**
+- **AST layer** → `egg` e-class analysis, **congruence + `Analysis`, zero rewrites.** Fixes RC-1 at the
+  root; P2 and P5 collapse into it.
+- **State-equality layer** → **NOT egg.** Option B (scalarset) **normalization** as the accept-relation
+  (errs fine ⇒ fail-closed), canonicalization as the proven upgrade. Optionally an `egg` congruence hash
+  as a **reject-only** pre-filter in front of it.
+
+**What kills this section:** (1) failing — i.e. an `Analysis` cannot reproduce `Axes`' *correct* verdicts
+without rewrites — or (3) being unacceptable. **Then disregard `egg` entirely and run §6 as written.**
+
+> **Nothing here changes the DRIVE.** Δ is still measured by executing the fixed sequence on a clone
+> (§4.6). This spike replaces (a) the **ad-hoc AST analysis** that is RC-1's root and (b) the **equality
+> relation between frames** that §5 proved we cannot hand-roll safely. **Both are analysis, not
+> semantics — and the rules stay where they are.**
+
+---
+
 ## 6. Implementation plan — **RE-SEQUENCED** (arming is a PREREQUISITE, not the last phase)
+
+> ### ⭐ RUN §5b's SPIKE BEFORE P2 AND P5.
+> Both are AST analyses, and **RC-1's root is that the AST analysis (`Axes`) is hand-rolled and wrong.**
+> If §5b.4(1) succeeds, **P2 and P5 collapse into queries** against one principled e-class analysis and
+> the plan's new surface drops to essentially **C2 alone.** If it fails, run P2/P5 as written below.
+> **`egg` is not a requirement — it is a scope reduction to be earned.**
 
 **Six of the fifteen §7 test rows never reach the code they claim to test**, because `engine.rs:445`
 gates the entire hook on `last_recast_context.is_some()`. Presence of Gond, Earthcraft, Cryptolith Rite,
@@ -594,15 +741,40 @@ count.** Everything else it currently does is duplicated work that gets the answ
   invariant is its runtime guard.** If a deletion makes the live path certify something `detect_loop`
   rejects, **that is the alarm.**
 
+### P5.5 — SPIKE: buy the equality core, don't hand-roll it (**run this BEFORE P6 — see §5b**)
+
+**Time-boxed decision, not a project.** §5 proved we cannot hand-roll the equality relation safely; §5b
+names two off-the-shelf formalisms and the asymmetry that decides between them.
+
+- Evaluate **`egg`** as (i) a **congruence-closure REJECT-ONLY pre-filter** — which, if it works, **also
+  discharges P1's open DoS pre-gate**, closing two holes at once — and (ii) the **semilattice** for
+  `Quotient` monotonicity.
+- **HARD KILL CRITERION: congruence is COARSER than isomorphism and COLLAPSES MULTIPLICITY** (3 identical
+  Saprolings and 4 identical Saprolings are the same term ⇒ the same e-class). **Multiplicity IS the
+  growth axis.** If the design drifts to *accepting* on congruence, it certifies iteration N ≡ N+1
+  exactly when the tokens grew — **a false certificate on the game-ending path. Stop and take Option B.**
+- **Measure the WASM bundle delta.** The engine ships to WASM (`opt-level='z'` + LTO) and **the detector
+  is on the live in-game path — it cannot be feature-gated out.**
+- **Expected outcome, stated so the spike can refute it:** `egg` as a **reject-only pre-filter** + **Option
+  B (scalarset) normalization** as the accept-relation.
+
 ### P6 — RC-4: object identity across a loop cycle ⚠️ **ITS OWN PR, WITH ITS OWN SOUNDNESS PROOF**
 
 Per §5: **not** a refactor and **not** a quick win. Requires **id-canonicalization of the whole frame**
 (remap `ObjectId`s to a canonical order **and** canonicalize every id-valued field: `attached_to`,
 `attachments`, `paired_with`, stack targets, delayed-trigger references). **This is where a false
 certificate enters** — two boards can be content-equal per-object yet differ in *which object the stack
-points at*. Ship the `Quotient` parameterization (one `loop_states_cover(prior, current, &[Quotient])`
-replacing the four `loop_states_cover_modulo_*` siblings) **here**, earned by the canonicalization proof —
-not asserted as a refactor. **Target: §5 Group B (7 rows).**
+points at*.
+
+**Take the formalism P5.5 selects — do not invent one.** The literature match is **Murφ scalarset
+symmetry reduction** (§5b.3): `ObjectId` **is** a scalarset, and the safe sequencing is **normalization
+first** (errs **too fine** ⇒ misses loops ⇒ **fail-closed**) with **canonicalization** (exact; nauty-class,
+effectively free at our board sizes) as the proven upgrade. **Never 1-WL / colour refinement as the accept
+relation — it errs coarse.**
+
+Ship the `Quotient` parameterization (one `loop_states_cover(prior, current, &[Quotient])` replacing the
+four `loop_states_cover_modulo_*` siblings) **here**, earned by the canonicalization proof — not asserted
+as a refactor. **Target: §5 Group B (7 rows).**
 
 ---
 
