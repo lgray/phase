@@ -33,9 +33,27 @@ they are recorded in **Appendix B**, because the guard rails only work if you kn
 one-time, bounded consumption, so the first pair **cannot** cover, and the offer dies. **CR 732.2a
 explicitly permits this shape** — see §4.4.
 
+**RC-3 — the live detector arms on exactly ONE bespoke shape, and no test covers the live path at all.**
+Measured:
+- The **live** offer path fires only when `last_recast_context` is armed — *a buyback-paid,
+  token-creating recast* (`casting_costs.rs:6785`). **That is one card shape.** Every other
+  player-driven loop — one cast or one activation per iteration: Kiki-Jiki, Splinter Twin,
+  Devoted Druid + Vizier, Earthcraft + Squirrel Nest, **Presence of Gond + Intruder Alarm (CR 732.2a's
+  own example)** — is **invisible to the live detector**, no matter how correct the covers are.
+- The **53-row corpus** (`analysis/corpus.rs`) is driven **entirely through `detect_loop`** (the
+  *offline* analyzer) plus `live_mandatory_loop_winner` for two drain cascades.
+  `grep -c "WaitingFor::LoopShortcut" crates/engine/src/analysis/corpus.rs` == **0**.
+  **Not one corpus row exercises the interactive offer path.** The corpus is *structurally incapable* of
+  catching the bug this document is about.
+
+**RC-3 is the reason this must not become a two-combo patch.** The four checks are already
+card-agnostic and `ResourceAxis` already carries ~10 ω-axes; **the narrowness is entirely in the
+arming.** See §4.8.
+
 **CI is green because the acceptance fixture cannot exist in a real game.** `sprout_swarm_scenario`
 (`loop_shortcut.rs:2536`) builds a board with no lands, an empty library, no auras, and a stub
-Witherbloom oracle. RC-1 and RC-2 are both invisible to it.
+Witherbloom oracle. RC-1 and RC-2 are both invisible to it — and RC-3 means *nothing anywhere* is
+looking.
 
 **Two findings beyond the false negatives, both derived from the rules rather than from the bug:**
 
@@ -351,6 +369,30 @@ iterations, so a loop that kills its own engine (0 toughness, legend rule, contr
 *fails to recur* and is caught for free. Because C1/C2/C4 read Δ from the **clone-drive**, all of this is
 handled without a symbolic model. **The drive is the authority; nothing replaces it.**
 
+### 4.8 Where the generality actually lives — and where it does not (RC-3)
+
+Measured, layer by layer. **This table is the anti-purpose-built audit, and it says the fix belongs in
+exactly one layer.**
+
+| Layer | How general is it today? | Evidence |
+|---|---|---|
+| **ω-axes** (`ResourceAxis`) | **General.** ~10 axes: `TokensCreated`, `CardsDrawn`, `Casts`, `LandfallTriggers`, `CombatPhases`, `ExtraTurns`, `Death/Etb/Ltb/Sac` triggers, poison, … | `analysis/resource.rs` |
+| **The four checks** (C1–C4) | **General — card-agnostic by construction.** They read a *measured* Δ; they never look at a card name. | `engine.rs:1756` |
+| **Covers** | **Semi-general.** Four exist: `loop_states_cover_modulo_{growth, object_growth, fodder_growth, counter_growth}` | `resource.rs:784 / 924 / 1095 / 1326` |
+| **Arming (live path)** | ⛔ **ONE bespoke shape.** `last_recast_context` = a buyback-paid, token-creating recast. | `casting_costs.rs:6785` |
+| **Corpus coverage of the live path** | ⛔ **ZERO of 53 rows.** All go through offline `detect_loop`. | `grep -c "WaitingFor::LoopShortcut" corpus.rs` == 0 |
+
+**Therefore: the general pattern is not "detect combo X." It is —**
+
+> **At any empty-stack priority beat following a player action, ask whether repeating that FIXED
+> action is legal forever with constant Δ.** Which card produced the action is irrelevant, and no
+> layer below arming needs to know.
+
+**The `last_recast_context` / `last_activation_context` sibling pair is the wrong answer** — it is the
+exact sibling-cluster smell CLAUDE.md prohibits (*"three or more variants that … differ only in a
+context label … is a parameterization that didn't happen"*). Two shapes today become five tomorrow.
+**Parameterize on the action; do not proliferate contexts.** See Phase 5.
+
 ### 4.7 Explicitly OUT of scope — an engineering cut, NOT a rules constraint (see D5)
 
 - **Nested / multiple loops** and **turn-crossing loops** (Time Vault). **CR 732.2a permits all three.**
@@ -435,17 +477,30 @@ two root causes, and **neither alone makes the acceptance test pass** — the im
 red test to stay red after Phase 1 and to turn green after Phase 2. **Say so in the PR, or a green-after-
 Phase-1 report is a false positive.**
 
-### Phase 0 — Real-card corpus (DO THIS FIRST; it is why the bug shipped)
+### Phase 0 — Drive the CORPUS through the LIVE path (DO THIS FIRST; it is the anti-purpose-built gate)
 
-Combo-detector acceptance tests **MUST** use real card data, a **real library**, and a **realistic mana
-base**. Today's fixture proves only that the detector works on a board that cannot exist.
+This phase is what stops the rest of the plan from becoming a two-combo patch. **It is the single most
+valuable change in this document**, and it must land *before* any fix, because it is the only thing that
+can tell you whether a fix generalized.
 
-- Add a `GameScenario` builder loading **real Oracle text from `card-data.json`** with a real library.
-- Port `object_growth_51st_sprout_swarm_covers_and_offers` onto it. **It must FAIL today** — that is the
-  non-vacuity proof for every phase below.
-- Add **Presence of Gond + Intruder Alarm** — **CR 732.2a's own worked example**.
-- **Review gate:** reject any combo-detector acceptance test with zero lands, an empty library, or a stub
-  oracle.
+1. **Partition the 53 corpus rows** into:
+   - **LIVE-OFFERABLE** — the loop contains an **optional** player action (CR 732.4 / CR 104.4b) ⇒ it
+     **must** produce `WaitingFor::LoopShortcut` on the interactive path.
+   - **OFFLINE-ONLY** — a **mandatory** loop with no player action (the two drain cascades) ⇒ correctly
+     `detect_loop`-only. **Exclude, don't force.**
+   The partition itself is the deliverable: it is a rules-derived statement of what the live detector
+   *owes*.
+2. **Replay every LIVE-OFFERABLE row through the interactive offer path** and assert
+   `WaitingFor::LoopShortcut`. Today **zero** rows do this
+   (`grep -c "WaitingFor::LoopShortcut" corpus.rs` == 0), so **most will fail immediately** — that is the
+   RC-3 coverage debt made visible, and it is the non-vacuity proof for Phases 1–5.
+3. **Real cards, real libraries, real mana bases.** Add a `GameScenario` builder loading **real Oracle
+   text from `card-data.json`** with a real library, and port
+   `object_growth_51st_sprout_swarm_covers_and_offers` onto it. **It must FAIL today.**
+4. Add **Presence of Gond + Intruder Alarm** — **CR 732.2a's own worked example** — as a first-class row.
+5. **Review gate:** reject any combo-detector acceptance test with zero lands, an empty library, or a
+   stub oracle; reject any fix that turns exactly the two combos in this document green and leaves the
+   LIVE-OFFERABLE partition red.
 
 ### Phase 1 — RC-1: zone-scope the observer scans (a RULES fix — ship standalone)
 
@@ -511,19 +566,31 @@ Exhaustive typed enum + `_ => REJECT` default + no-`..` totality guard.
   firewall — `R-e2` (`resource.rs:5052`) is the precedent to preserve, not delete. Then delete the
   over-broad remainder (R3, R5, R6).
 
-### Phase 5 — Combo B: arm on ACTIVATION, don't touch the ring
+### Phase 5 — RC-3: ONE generalized arming context (**the build-to-the-pattern phase**)
 
-Per §2.1/§3.3 the Kilo cycle is **one activation** (CR 602.2b + CR 605.3a: the Relic mana ability is
-activated *inside* Freed's cost payment). Mirror the cast path exactly:
+**Do NOT add `last_activation_context` as a sibling of `last_recast_context`.** That is the
+sibling-cluster smell (§4.8), and it hard-codes the detector to the two combos in this document.
 
-- Add `last_activation_context` alongside `last_recast_context`, armed in the activation path the way
-  `casting_costs.rs:6785` arms the cast path.
-- Feed the **existing** `drive_recast_iteration` + `loop_states_cover_modulo_counter_growth`. **Build no new
-  cover.**
+Per §2.1/§3.3, Combo B's cycle is **one activation** (CR 602.2b + CR 605.3a: Relic's mana ability is
+activated *inside* Freed's cost payment) — **structurally identical to Combo A's one cast.** Both are
+CR 732.2a's *"one pinned announcement + payment, then passes to the ending priority beat."* So:
+
+- **Replace `RecastContext` with one `LoopProbeContext { action, controller, decisions }`,
+  parameterized on the pinned player action**, armed at any empty-stack priority beat that follows a
+  player action. `RecastContext`'s buyback/convoke fields become *decisions*, not a shape.
+- **Generalize `drive_recast_iteration` → `drive_loop_iteration(action)`.** ⚠️ **Cost unknown — this is
+  Open Question #6.** `drive_recast_iteration` may be structurally cast-shaped
+  (`normalize_recast_frame` strips the self-returning buyback card; `derived_fodder_class` derives the
+  token class *from the cast*). If generalizing it is a rewrite rather than a parameterization, the
+  plan's cost changes by an order of magnitude. **Settle this before committing to Phase 5.**
+- **Reuse the existing four covers** (§4.8). **Build no new cover** — Combo B's
+  `loop_states_cover_modulo_counter_growth` already exists.
 - **Audit `DecisionTemplate` against the CR 601.2b–h table in §4.3.** Today `template.decisions ==
   [ConvokeTaps]`; an activation loop also needs the **CR 601.2g mana-ability selection** pinned (which
-  legendary creature Relic taps). An unpinned choice is a **conditional action**, which CR 732.2a forbids.
-- **Leave `engine.rs:3081` and the DoS cap alone.**
+  legendary creature Relic taps). **An unpinned choice is a conditional action, which CR 732.2a forbids.**
+- **Leave `engine.rs:3081` and the DoS cap (`57b0e537d`) alone.** ⚠️ Broader arming means the analysis
+  runs far more often. **Prove the cheap-gate cascade at `engine.rs:445` still bounds it** — a
+  generalized arm that re-opens the remote DoS of #5672 is not shippable. **Open Question #7.**
 
 ---
 
@@ -552,7 +619,8 @@ satisfy vacuously is not a test.
 | **CR 104.4b** optional-loop gate | `no_living_player_has_meaningful_priority_action` | **unchanged** — regression only | — | — |
 | Gaea's Cradle stays closed | `scan_mana_production` | `for_each_creature_production_still_fails_closed` (**exists, revert-probe verified**) | collapse count-arms to `Axes::NONE` | `fixed_production_reads_nothing` (Forest) still passes |
 | **Multiplayer** | — | ≥1 criterion exercises **>2 players** (the driving fixture is 4-player) | — | — |
-| Corpus | `analysis/corpus.rs` | all **55** combos re-verified; **no regression** | — | — |
+| ⭐ **RC-3 / anti-purpose-built** | `analysis/corpus.rs` | **every LIVE-OFFERABLE corpus row OFFERS on the interactive path** (`WaitingFor::LoopShortcut`) | revert generalized arming to `last_recast_context` ⇒ **all but Combo A must go red** | **this row IS the reach-guard for the whole plan.** If only Combo A + Combo B go green, the fix did **not** generalize and must not ship |
+| Corpus regression | `analysis/corpus.rs` | all **53** offline rows still certify via `detect_loop`; **OFFLINE-ONLY** partition unchanged | — | — |
 
 ---
 
@@ -574,6 +642,18 @@ satisfy vacuously is not a test.
 5. **`DecisionTemplate` completeness vs CR 601.2b–h.** §4.3 shows `[ConvokeTaps]` is incomplete. **Which of
    the six choice classes can actually occur inside a certifiable loop body?** Unpinned ⇒ conditional ⇒
    CR 732.2a violation.
+6. ⚠️ **Is `drive_recast_iteration` generalizable, or is it a rewrite?** Phase 5 assumes it parameterizes
+   on the action. But `normalize_recast_frame` strips the *self-returning buyback card* and
+   `derived_fodder_class` derives the token class *from the cast* — both may be structurally cast-shaped.
+   **This is the largest cost unknown in the plan. Settle it before committing to Phase 5.**
+7. ⚠️ **Does generalized arming re-open the #5672 remote DoS?** Arming on any player action at an
+   empty-stack priority beat runs the analysis far more often than today. **Prove the cheap-gate cascade
+   at `engine.rs:445` still bounds it.** Commit `57b0e537d` exists for a reason.
+8. **Multi-action loop bodies.** CR 732.2a says *"a sequence of game choices"* — **plural**. Devoted Druid +
+   Vizier of Remedies is **two activations per cycle**; Basalt Monolith + Rings of Brighthearth likewise.
+   The drive today settles **one** action to the next priority beat. **A one-action loop body is a real
+   coverage ceiling that this plan does not lift** — name it, measure how much of the corpus it excludes
+   (Phase 0's partition will tell you), and decide explicitly. **Do not let it pass silently.**
 
 ---
 
