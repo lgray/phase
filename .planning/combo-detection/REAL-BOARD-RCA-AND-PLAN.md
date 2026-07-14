@@ -19,7 +19,23 @@ through the real engine, not inferred. Reproduction harness + method in §2.
 > cover already exists and names Pentad Prism); the `ResourceVector` reuse claim; and — worst —
 > §5.5.2's *"the payment choice is inexpressible"*, which is **false on our own §2 board** because
 > **Witherbloom is Legendary and Relic of Legends filters costs on `Legendary`** (§5.5.8-A).
-> ## ⭐ START AT §5.5.10 — THE LINEARITY GATE (the recommended architecture)
+> ## ⭐⭐ START AT §5.5.11 — THE FIXED-SEQUENCE FORMULATION (final architecture)
+>
+> **CR 732.2a fixes the player's choices** (*"a sequence of game choices… it can't include conditional
+> actions"*). A shortcut IS a fixed, straight-line action sequence, BY RULE. So the question is not
+> *"is this board a linear program?"* — that question is ill-posed, and this document answered it wrong
+> **three times**. The question is: **"is this FIXED sequence legally repeatable forever, with constant
+> Δ?"**
+>
+> Every game-ending hole then collapses into ONE failure mode — *the fixed sequence becomes ILLEGAL at
+> some iteration* — and the Witherbloom/convoke problem dissolves entirely (convoking Witherbloom is
+> illegal at iteration 2 because it is already tapped; the engine must simply PROPOSE the repeatable
+> sequence). **No LP solver, no symbolic Δ extractor, no place-granularity dilemma.** Legality gates are
+> just consumables. Only ONE piece of genuinely new code is required (precondition non-depletion).
+>
+> §5.5.10 (the linearity gate) is retained as the reasoning that led here, but §5.5.11 supersedes it.
+>
+> ## ⭐ §5.5.10 — THE LINEARITY GATE (superseded by §5.5.11, kept for the argument)
 >
 > §5.5.10 supersedes the "big LP rewrite". The shipped detector drives 2 iterations and **assumes the
 > delta repeats** — that *is* a linearity assumption, and **nobody checks it**. Every game-ending hole
@@ -1054,6 +1070,112 @@ coverage, never correctness. This is the opposite of §5.5's original fail-open 
    blanket "any replacement exists ⇒ reject" — Commander boards always have replacements.
 4. **Does the LINEAR branch still need >2 iterations?** If Δ is constant, no. Prove that claim before
    relying on it.
+
+### 5.5.11 ⭐⭐ THE FIXED-SEQUENCE FORMULATION — the final architecture. **Start here.**
+
+**Supersedes §5.5.1–§5.5.10.** This is the maintainer's formulation and it is correct. Everything
+above was an attempt to answer a question that turns out to be the WRONG question.
+
+#### A. The insight: CR 732.2a FIXES the choices, and that changes everything
+
+**CR 732.2a** (verified): a shortcut is *"a sequence of game choices, for all players, that may be
+legally taken based on the current game state and the predictable results of the sequence of choices.
+**It can't include conditional actions, where the outcome of a game event determines the next
+action.**"*
+
+⇒ **A shortcut IS a fixed, straight-line action sequence, BY RULE.** The player commits to *which*
+creature to convoke, *which* land to tap, *which* target to pick.
+
+So the question is **NOT** *"is this board a linear program?"* — that question is ill-posed (I answered
+it wrong three times; §5.5.10-E showed linearity is not even a property of the card list — **Priest of
+Titania** is linear in its own loop and non-linear beside an Elf-token maker). The question is:
+
+> ## **Is this FIXED sequence legally repeatable forever, with constant Δ?**
+
+That question is well-posed, cheap, and decidable.
+
+#### B. Every hole collapses into ONE failure mode: *the fixed sequence becomes ILLEGAL*
+
+| Hole | The sequence's precondition | Fate |
+|---|---|---|
+| **Manaforge Cinder** | activations-remaining-this-turn ≥ 1 | consumes 1/cycle, replenishes 0 ⇒ **depletes** ⇒ REJECT |
+| **Cryptolith Rite** | an **UNSICK** creature to tap (`{T}` cost, CR 302.6) | taps 1 unsick, produces a **SICK** token ⇒ **depletes** ⇒ REJECT |
+| **Earthcraft** | an **untapped** creature (`TapCreatures` — **no `{T}`** ⇒ sickness-immune) | taps 1, produces 1 untapped ⇒ **non-depleting** ⇒ **ACCEPT** ✅ |
+| **Crucible + Zuran Orb** | land-drops-remaining ≥ 1 (CR 305.2) | depletes ⇒ REJECT |
+| **Four Horsemen − Emrakul** | library non-empty | depletes ⇒ REJECT (CR 104.3c) |
+| **Hum of the Radix** | mana ≥ cost | cost RISES each cycle ⇒ **Δ₁ ≠ Δ₂** ⇒ REJECT |
+| **Solemnity + proliferate** | — | measured Δ = 0 counters ⇒ **no progress** ⇒ REJECT |
+
+It cleanly separates **Cryptolith Rite from Earthcraft** — the pair that broke every prior design —
+**with no special case.** The discriminator is exactly what the reviewer said it was: *the shape of the
+cost*.
+
+#### C. It solves the Witherbloom problem for free — and retro-kills §5.5.8-A
+
+Fix the sequence as *"convoke **Witherbloom**, cast Sprout Swarm with buyback"*:
+- **Iteration 1:** Witherbloom untapped → tapped. Δ = +1 Saproling.
+- **Iteration 2:** Witherbloom is **already tapped**. **THE SEQUENCE IS ILLEGAL.**
+
+⇒ That proposal is **not legally repeatable** and is correctly rejected. *"Convoke a **Saproling**"*
+**is** repeatable, and certifies. **The engine's job is to PROPOSE the repeatable sequence.**
+
+**The payment choice was never a detection problem. It was a PROPOSAL problem.** This dissolves, in one
+stroke: A7, the token-preference patch, §5.5.2's "inexpressibility" argument, and §5.5.8's
+place-granularity dilemma (fungible-class vs per-object). **None of them need to be built.**
+
+#### D. The unification: **legality gates ARE consumables**
+
+"3 activations left this turn", "1 land drop left", "unsick creatures", "cards in library" are simply
+**resources the fixed sequence spends**. That single reframing folds every non-resource legality gate
+(§5.5.7-C, §5.5.8-C, H1, H2, H6) into the *same* sustainability check — no special cases, no separate
+firewall.
+
+#### E. THE COMPLETE TEST — four cheap checks on the fixed sequence
+
+1. **Δ-CONSTANCY.** Measure Δ₁ and Δ₂ from the **existing 2-iteration drive**; require `Δ₁ == Δ₂`.
+   *(catches scaled costs — Hum of the Radix, Damping Sphere)*
+2. **PRECONDITION NON-DEPLETION.** Every gate/resource the sequence consumes must be **non-decreasing**
+   under its own Δ. *(catches activation limits, land drops, summoning sickness, self-mill)*
+   ⚠️ **This is the ONLY genuinely new code in the entire plan.**
+3. **THRESHOLD SCAN** — a `Comparator` against a growth axis. **Still required, and ONLY here.** A board
+   threshold (*"when you control seven or more…"*) fires **outside** the player's fixed choices, so the
+   sequence cannot see it; everything else, the sequence *does* see.
+   **This is the ONE arm three adversarial rounds never broke.** Keep it; fix only its **scope**
+   (transition set, never a hidden zone — CR 400.2) and drop the rest of the over-broad firewall.
+4. **THE SHIPPED TRIPLE** — `net_progress_for(caster)` + `has_no_loss_axis(delta)` +
+   `driving_resources_non_decreasing(..)`. *(catches self-deck, self-damage, Suture Priest, and it is
+   player-attributed and loss-vetoed — §5.5.9-A)*
+
+**Fixing the choices is precisely what makes (1) and (2) well-posed.** (3) exists. (4) exists. The
+2-iteration drive that yields Δ₁/Δ₂ exists. **Only (2) is new.**
+
+#### F. Why this is right where §5.5.1–§5.5.10 were wrong
+
+- **No LP solver. No symbolic Δ extractor.** Both were large unsized subsystems (§5.5.7-A/E).
+- **No place-granularity dilemma** (§5.5.8-A/E) — the sequence names the object; nothing is fungible.
+- **No Petri/VAS fragment argument** — no constant-Δ-transition requirement, so Freed from the Real's
+  marking-dependent Δ and Dramatic Reversal's untap-all are simply *measured*, not modelled.
+- **Replacements are free** — Solemnity is caught because Δ is **MEASURED on the clone**, not derived
+  from the AST. It was only ever a problem for a *symbolic* model.
+- **Soundness is monotone** — the checks can only turn OFFERs into NO-OFFERs.
+- **It fixes the reported bug** — the Forest and the library Solemn Simulacrum are not in the fixed
+  sequence, so they are never consulted.
+
+#### G. Remaining open questions (do NOT hand-wave — this document has been wrong three times)
+
+1. **Is `Δ₁ == Δ₂` + non-depletion sufficient?** Manaforge Cinder has `Δ₁ == Δ₂ == Δ₃` and is illegal at
+   **4** — caught by (2), not (1). Both are needed. **Prove no third failure mode exists** (a change at
+   iteration ≥ 3 that neither alters Δ nor depletes a modelled precondition). Threshold triggers are the
+   known candidate and are covered by (3) — enumerate the rest **structurally**, with a totality guard.
+2. **Enumerate the precondition/gate set exhaustively** with an `_ => REJECT` default and a compiler-
+   enforced no-`..` guard (cf. `_gameobject_partition_is_total`) so a new `ActivationRestriction` /
+   `Cost` / turn-based limit **build-breaks** rather than silently failing open.
+3. **Who proposes the repeatable sequence (§C)?** The drive currently uses `select_convoke_taps`
+   (lowest-ObjectId ⇒ **Witherbloom** ⇒ illegal at iteration 2). The proposer must search for a
+   *repeatable* fixed sequence. **This is where an LP could earn its keep — as a pure optimization with
+   ZERO soundness responsibility.**
+4. **Keep the cheap arming gate** (ring / `last_recast_context`). Commit `57b0e537d` on this branch is
+   *"bound loop-shortcut iteration count (remote DoS)"*. Do not run this on every priority beat.
 
 ### 5.5.4 Relationship to §6
 
