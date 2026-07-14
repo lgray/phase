@@ -46,9 +46,20 @@ Measured:
   **Not one corpus row exercises the interactive offer path.** The corpus is *structurally incapable* of
   catching the bug this document is about.
 
-**RC-3 is the reason this must not become a two-combo patch.** The four checks are already
-card-agnostic and `ResourceAxis` already carries ~10 ω-axes; **the narrowness is entirely in the
-arming.** See §4.8.
+**RC-4 — the COVER layer is a sibling cluster, so every new combo family costs a new cover function.**
+Four `loop_states_cover_modulo_*` variants each re-derive the same four invariants around a different
+exemption (`resource.rs:784 / 924 / 1095 / 1326`). That is why **37 of 53 corpus rows are deferred**,
+and the tree's own `DeferralBucket` says so. The largest bucket, **`ObjectReentry` (13 rows)**, is
+**the canonical list of Magic's most famous infinite combos** — Kiki-Jiki, Splinter Twin, Palinchron,
+Mikaeus, Dockside, Food Chain, Karmic Guide, Nim Deathmantle, **Earthcraft + Squirrel Nest** — all
+blocked by one thing: **ObjectId churn**, which is *rules-wrong* under **CR 400.7** (an object that
+changes zones **is a new object**) and which `fodder_content_eq` **already solves** on one path.
+**Fixing it is a parameterization, not a feature.** See §4.10 — **this is the highest-leverage change
+in the document and it outranks Phases 1–5.**
+
+**RC-3 and RC-4 are the reason this must not become a two-combo patch.** The four checks are already
+card-agnostic and `ResourceAxis` already carries ~10 ω-axes; **the narrowness is entirely in the arming
+(RC-3) and the covers (RC-4).** See §4.8 and §4.10.
 
 **CI is green because the acceptance fixture cannot exist in a real game.** `sprout_swarm_scenario`
 (`loop_shortcut.rs:2536`) builds a board with no lands, an empty library, no auras, and a stub
@@ -469,6 +480,100 @@ card-gated; **37** carry a `DeferralBucket` — *the tree's own accounting of wh
 in the entire corpus** — and it is a *pattern* fix (object identity across a loop cycle), not a card fix.
 **Measure it in Phase 0; it may be worth more than Phases 1–5 combined.**
 
+### 4.10 RC-4 — the COVER layer is a sibling cluster, and it is why 37 of 53 rows are deferred
+
+**This is the think-ahead section. Everything above fixes the two combos in front of us; this is what
+stops us being stuck here again.**
+
+There are **four** cover functions, and they are the textbook sibling cluster CLAUDE.md warns about —
+each is *"board equal **modulo** ⟨a different growing thing⟩"*, and each **re-derives the same four
+invariants** (fire-time observer firewall, cost-surface scan, stack embedding, inertness) around a
+different exemption:
+
+| function | quotients out | `resource.rs` |
+|---|---|---|
+| `loop_states_cover_modulo_growth` | a narrowed projection + stack growth | 784 |
+| `loop_states_cover_modulo_object_growth` | an unobserved object class | 924 |
+| `loop_states_cover_modulo_fodder_growth` | an inert **fungible token class** | 1095 |
+| `loop_states_cover_modulo_counter_growth` | the `Generic` **counter** class | 1326 |
+
+**⇒ Every new combo family today costs a new cover function.** That is exactly why **37 of 53 corpus
+rows are deferred**, and the tree says so itself in `DeferralBucket`.
+
+**And the machinery to fix the biggest bucket is already written.** `loop_states_cover_modulo_fodder_growth`'s
+own doc (`resource.rs:1095`):
+
+> *"`fodder_class` is a **CONTENT authority** … compared LIVE each call via `fodder_content_eq` (modulo
+> tapped) — **not latched by ObjectId, because fodder tokens are not id-stable**. Covers any inert
+> fungible token class (Saproling, Elf Warrior, Thopter, …), **so it builds for the class not a card**."*
+
+Meanwhile `DeferralBucket::ObjectReentry` is defined as: *"a permanent that dies/blinks/bounces … gets a
+FRESH `ObjectId` each cycle, so the **id-keyed** per-object loop equality sees a different board."*
+**Content-not-ObjectId comparison already exists — it is simply welded to the fodder path.** This is
+also just **CR 400.7**: an object that changes zones **is a new object**. Id-keyed loop equality is
+therefore *rules-wrong*, not merely limited.
+
+**What that bucket actually contains — the 13 most famous infinite combos in Magic:**
+
+> Kiki-Jiki + Zealous Conscripts · Splinter Twin + Deceiver Exarch · Palinchron + Deadeye Navigator ·
+> Mikaeus + Triskelion · Dockside Extortionist + Temur Sabertooth · Food Chain + Eternal Scourge ·
+> Karmic Guide + Reveillark + Viscera Seer · Reassembling Skeleton + Ashnod's Altar + Nim Deathmantle ·
+> Gravecrawler + Phyrexian Altar + Blood Artist · Felidar Guardian + Saheeli · Scurry Oak + Ivy Lane
+> Denizen · Midnight Guard + Presence of Gond · **Earthcraft + Squirrel Nest**
+
+⚠️ **Note the last two.** *Midnight Guard + Presence of Gond* is a sibling of **CR 732.2a's own worked
+example**, and **Earthcraft + Squirrel Nest is a hostile fixture in this very plan (§4.4)** — I proposed
+it as a *positive* acceptance case without noticing it is **deferred and undetectable**. That is the
+purpose-built failure mode catching me in my own document.
+
+#### The pattern: ONE quotient relation, not N covers
+
+```rust
+/// CR 732.2a: a loop recurs iff the board is equal MODULO a set of quotients, each of
+/// which is a monotone non-decreasing ω-axis. Adding a combo FAMILY = adding a
+/// `Quotient` variant + its monotonicity proof — NOT a new cover function.
+fn loop_states_cover(prior: &GameState, current: &GameState, q: &[Quotient]) -> bool;
+
+enum Quotient {
+    /// CR 400.7: an object that changes zones IS A NEW OBJECT. Compare by CONTENT
+    /// class, not ObjectId. Machinery exists: `fodder_content_eq` (resource.rs:1095).
+    ObjectIdentity,
+    /// Inert fungible object growth (tokens).            → fodder / object growth
+    ObjectCount { class: ObjectClass },
+    /// Counter growth (Generic: charge / burden).        → counter growth
+    CounterCount { kind: CounterKind },
+    /// CR 732.2a: a shortcut "may even cross multiple turns".
+    /// `ResourceAxis::{ExtraTurns, CombatPhases}` ALREADY EXIST as ω-axes.
+    TurnCount,
+    CombatCount,
+    /// CR 106.4 / CR 500.5: the mana pool empties at end of step — never a durable
+    /// residual, so it can always be quotiented out at a step boundary.
+    ManaPool,
+}
+```
+
+**Certification rule.** A loop certifies iff **∃** a quotient set **Q** such that
+**(1)** states are equal modulo **Q**; **(2)** every quotiented axis is **monotone non-decreasing**
+across the cycle (that is what makes it the ω-axis and not a leak); **(3)** no live observer reads a
+quotiented axis (the firewall — now **CR 113.6**-scoped per Phase 1); **(4)** C1–C4 pass. The four
+shared invariants factor out **once** instead of being re-derived per cover.
+
+**Measured payoff against the corpus:**
+
+| `Quotient` | unlocks | rows |
+|---|---|---|
+| `ObjectIdentity` (CR 400.7) | **the entire `ObjectReentry` bucket** | **13** |
+| `TurnCount` / `CombatCount` (CR 732.2a *"may cross multiple turns"*) | `ExtraTurnOrCombat` | **3** |
+| `ManaPool` (CR 106.4) | `ColorConverting` (Pili-Pala + Grand Architect — restricted-mana accounting) | 1 |
+| Phase 5's `{ actions }` **sequence** | the multi-action rows inside `Other` (Basalt Monolith + **Rings of Brighthearth**, Dramatic Reversal + Isochron Scepter, Dualcaster Mage + Twinflame, …) | **≤20, measure** |
+
+**⇒ ~17 of 37 deferrals fall out of ONE parameterization**, before touching the `Other` bucket.
+
+> **This is the "not stuck like this later" contract.** A new combo family costs **one `Quotient`
+> variant + its monotonicity proof** — *not* a new cover function, *not* a new arming context, *not* a
+> new bespoke driver, *not* a new `DeferralBucket`. Run the **`/add-engine-variant`** gate on `Quotient`
+> and it becomes a checklist, not an archaeology expedition.
+
 ### 4.7 Explicitly OUT of scope — an engineering cut, NOT a rules constraint (see D5)
 
 - **Nested / multiple loops** and **turn-crossing loops** (Time Vault). **CR 732.2a permits all three.**
@@ -652,6 +757,30 @@ Exhaustive typed enum + `_ => REJECT` default + no-`..` totality guard.
   firewall — `R-e2` (`resource.rs:5052`) is the precedent to preserve, not delete. Then delete the
   over-broad remainder (R3, R5, R6).
 
+### Phase 2.5 — RC-4: ONE quotient relation, not four covers (**the highest-leverage phase — see §4.10**)
+
+**Sequenced here deliberately: it outranks Phases 3–5 on measured coverage.** It is also the phase that
+makes the detector *extensible* rather than merely *correct on two combos*.
+
+- **Parameterize the four `loop_states_cover_modulo_*` siblings into one
+  `loop_states_cover(prior, current, &[Quotient])`**, factoring the four shared invariants (fire-time
+  firewall, cost surface, stack embedding, inertness) out **once**. Run the mandatory
+  **`/add-engine-variant`** gate on `Quotient` and grep `data/engine-inventory.json` first.
+- **Ship `Quotient::ObjectIdentity` first (CR 400.7).** Generalize `fodder_content_eq`'s
+  content-class comparison (`resource.rs:1095` — *"not latched by ObjectId, because fodder tokens are
+  not id-stable"*) off the fodder path. **Target: the 13 `ObjectReentry` rows.** Id-keyed loop equality
+  is *rules-wrong*, not merely limited — CR 400.7 says a zone change makes a **new object**.
+- Then `Quotient::{TurnCount, CombatCount}` — **CR 732.2a** permits a shortcut that *"may even cross
+  multiple turns"*, and `ResourceAxis::{ExtraTurns, CombatPhases}` **already exist**. Target: the 3
+  `ExtraTurnOrCombat` rows. **This retires §4.7's turn-crossing scope cut** — which was an engineering
+  cut, never a rules one (D5).
+- **Every quotient must carry a monotonicity proof**: a quotiented axis that is *not* monotone
+  non-decreasing across the cycle is a **leak**, not an ω-axis, and would certify a loop that does not
+  recur. **This is the soundness heart of the phase** — the `⇐` direction of the Phase 0 duality
+  invariant is its runtime guard.
+- **Re-bucket the corpus after each quotient lands.** `DeferralBucket` is the scoreboard; a quotient
+  that empties a bucket has earned its keep. Anything still in `Other` (20) is the honest remainder.
+
 ### Phase 5 — RC-3: ONE generalized arming context (**the build-to-the-pattern phase**)
 
 **Do NOT add `last_activation_context` as a sibling of `last_recast_context`.** That is the
@@ -711,7 +840,10 @@ satisfy vacuously is not a test.
 | **Multiplayer** | — | ≥1 criterion exercises **>2 players** (the driving fixture is 4-player) | — | — |
 | ⭐ **THE DUAL — ⇒ direction (coverage)** | `run_combo_live` vs `run_combo` | for every non-`LiveDrain` row: `certifies_offline ⇒ offers_live`. **Today 12 certify, 0 offer** — incl. **row 1 = Combo B** | revert generalized arming to `last_recast_context` ⇒ **every row but Combo A goes red** | **this row IS the reach-guard for the whole plan.** Only Combo A + Combo B green ⇒ the fix did **not** generalize and **must not ship** |
 | ⭐ **THE DUAL — ⇐ direction (SOUNDNESS)** | `run_combo_live` vs `run_combo` | `offers_live ⇒ certifies_offline`. **Must NEVER go red** | — | a live offer the offline analyzer rejects = the detector is ending real games on a **false certificate** |
-| `ObjectReentry` coverage (13 rows) | `normalize_recast_frame` (CR 400.7) | do the 13 `ObjectReentry` rows certify once token-id normalization is generalized? | — | **exploratory** — if yes, re-prioritize ahead of Phases 1–5 |
+| ⭐ **RC-4 / `Quotient::ObjectIdentity`** | `loop_states_cover(.., &[Quotient])` | the **13 `ObjectReentry`** rows certify (Kiki-Jiki, Splinter Twin, Palinchron, Mikaeus, Dockside, Food Chain, Karmic Guide, Nim Deathmantle, **Earthcraft + Squirrel Nest**, …) | drop `ObjectIdentity` from the quotient set ⇒ **all 13 go red** | ⚠️ **Earthcraft + Squirrel Nest is a §4.4 hostile fixture that is ITSELF deferred** — it cannot be a positive control until this lands |
+| **RC-4 monotonicity (SOUNDNESS)** | each `Quotient` | a quotiented axis that is **not** monotone non-decreasing must **REJECT** | quotient a non-monotone axis ⇒ a non-recurring loop certifies | this is the soundness heart of Phase 2.5; the Phase-0 `⇐` direction is its runtime guard |
+| **RC-4 / `Quotient::{TurnCount,CombatCount}`** | ″ | the **3 `ExtraTurnOrCombat`** rows certify (CR 732.2a *"may cross multiple turns"*) | drop the quotients ⇒ all 3 go red | retires the §4.7 turn-crossing scope cut |
+| **RC-4 scoreboard** | `DeferralBucket` | re-bucket the corpus after each quotient; **`Other` (20) is the honest remainder** | — | a quotient that empties no bucket has not earned its keep |
 | Corpus regression | `analysis/corpus.rs` | the 12 driven rows still certify via `detect_loop`; the 37 `DeferralBucket` + 4 `gated_on` partitions unchanged | — | — |
 
 ---
