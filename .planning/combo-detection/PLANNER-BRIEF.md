@@ -342,6 +342,72 @@ Kiki-Jiki's tokens are destroyed at the next end step, so:
 - Run the **`/add-engine-variant`** checklist; grep `data/engine-inventory.json`.
 - `corpus.rs`'s `ComboRow.win_kind` and `corpus_tests.rs:81` must be re-typed.
 
+## 4d. ⭐ USER DIRECTIVE — **INFINITES ON TOP OF INFINITES. The ∞ marks are WRITE-ONLY.** (NEW PHASE)
+
+> *"There is the possibility for infinites-on-top-of-infinites, which reduces to linear programming (you
+> just apply infinite statuses to things and resolve the stack) for most cases."*
+
+**The gap is real and MEASURED. The engine certifies an unbounded axis, paints an ∞ badge — and then
+FORGETS IT when evaluating the next loop.**
+
+### Measured: nothing in the detector consumes `unbounded_resources`
+- **Writer:** `mark_unbounded_loop` (`types/game_state.rs:10377`) — only extends a set.
+- **Readers — ALL of them:**
+  - `game/derived_views.rs:498` — **HUD display only** (the `∞` rows).
+  - `game/mana_payment.rs:76` — ***"Debug-only:*** top every player whose `unbounded_resources` contains
+    any `ResourceAxis::Mana(_)` back up to `INFINITE_MANA_PER_TYPE`."
+  - `game/turns.rs:348` — ***"Debug-only:*** CR 500.5 end-of-step empty is suppressed for a player with
+    the **infinite-mana toggle** active." *(the partner of the above)*
+- **`grep -rn unbounded_resources crates/engine/src/analysis/ crates/engine/src/game/engine.rs` ⇒ NOTHING
+  but tests.** ⇒ **The ∞ marks are WRITE-ONLY for detection.** Both functional consumers are wired to the
+  **debug `SetInfiniteMana` toggle**, not to real play.
+
+⇒ **A second loop that SPENDS a resource the engine has ALREADY PROVEN INFINITE is rejected by C2 /
+`net_progress_for` for "depleting" it.** **This is on the user's own board:** Kilo + Freed + Relic +
+Pentad Prism ⇒ unbounded **counters** ⇒ unbounded **mana**; Witherbloom + Sprout Swarm ⇒ unbounded
+**creatures**. **Two loops. Zero composition.**
+
+### The shape: a MONOTONE FIXPOINT — **NOT** linear programming (and that is *better* news)
+With **∞ statuses**, quantities **collapse to booleans**: you never need to solve for *how much* (which is
+what would make it an LP). You need **reachability** — *given the current ∞ set, which further axes become
+unbounded?*
+
+- **Monotone:** adding an ∞ axis can only **enable** more loops, never fewer.
+- **`ResourceAxis` is a FINITE enum** ⇒ the fixpoint **terminates in ≤ |ResourceAxis| rounds.**
+- ⇒ **A least-fixed-point closure (Datalog-shaped). Decidable, terminating, trivially cheap.**
+  **No LP solver. No dependency. ~20 lines.**
+
+```text
+∞ := {}                                    // per player
+repeat until fixpoint (≤ |ResourceAxis| rounds):
+    for each candidate loop L on the present board:
+        if L certifies with the axes in ∞ treated as NON-DEPLETING:
+            ∞ ∪= L.produced_axes
+```
+
+### The code change is ONE DISJUNCT
+- **C2** (place non-depletion) becomes: *"every place the sequence draws from is **non-decreasing OR
+  already marked unbounded for this player**."*
+- **`net_progress_for`**'s *"no net-negative mana"* similarly **exempts axes already in ∞.**
+- **Feed the fixpoint from `state.unbounded_resources`** — the store already exists; it just has no reader.
+
+### ⚠️ Soundness constraints — do NOT get these wrong
+1. **∞ is PER-PLAYER.** `unbounded_resources: HashMap<PlayerId, Set<ResourceAxis>>`. **An opponent's ∞
+   mana does not make YOUR loop sustainable.** Key every exemption on the **proposer**.
+2. **The fixpoint must be seeded ONLY from CERTIFIED loops.** An unsound mark poisons everything
+   downstream — this is a **monotone amplifier for false certificates.** ⇒ **it composes with §4c: only a
+   certified `Advantage(_)` (revocable, safe) may seed ∞; never a speculative one.**
+3. **CR 106.4 / CR 500.5: mana empties at end of step.** "Unbounded mana" is only usable **within the
+   step**. The **debug** consumers above cheat this deliberately (`UnitDisposition::Keep`). **A real
+   composition must either stay inside the step or use a DURABLE axis.** *(This is exactly why counters,
+   not mana, are the durable ω-axis — and it is why Pentad Prism's charge counters, not the mana they
+   make, are what `loop_states_cover_modulo_counter_growth` certifies.)*
+4. **Termination is guaranteed by the finite axis set — state it, and add a round cap as a backstop.**
+
+**Sequence AFTER the four checks exist** (it composes them; it does not replace them). **And note it is
+the third time a Datalog/monotone-fixpoint shape has appeared in this workstream — this time it is the
+right layer, and it still needs no library.**
+
 ## 5. ⛔ P0's LIVE DUAL IS VACUOUS — the default-OFF toggle (never mentioned; 0 grep hits)
 
 - The live hook requires `state.loop_detection.samples()` (`engine.rs:448`).
