@@ -882,6 +882,7 @@ mod planar_birth_owners_control_1126;
 mod pr65_growing_cascade_win;
 mod priest_of_the_crossing_died_under_control;
 mod probe_canary_gond;
+mod probe_on_mode;
 mod probe_rev4;
 mod probe_review_r1;
 mod quick_draw_target_opponent;
