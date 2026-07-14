@@ -149,12 +149,33 @@ Every mana ability — including a basic `Forest` (`{T}: Add {G}`) — is classi
 growing class. The module doc concedes the walk *"does not descend into `ManaProduction`"*.
 ⇒ an object-growth loop could only certify on a board with **zero mana sources**.
 *Measured trip:* `Forest`.
-**Fix drafted and proven** (only change kept in the tree): a `scan_mana_production` walker.
-`Fixed`/`Mixed` carry only static color lists ⇒ `Axes::NONE`. Dynamic productions keep their read
-via `count: QuantityExpr` / `TargetFilter`; *"add {G} for each creature you control"* (Gaea's
-Cradle) routes through the ability-level `repeat_for`, which `ability_definition_axes` **already
-scans** — so it still fail-closes correctly. This is the template for every other blanket
-fail-close in the file.
+**Fix drafted and proven** (committed on `debug/combo-generator`): a `scan_mana_production` walker.
+`Fixed`/`Mixed` carry only static color lists ⇒ `Axes::NONE`.
+
+> ⚠️ **SOUNDNESS-CRITICAL — do not "simplify" this walker.** An earlier draft of this document
+> claimed the dynamic case is caught by the ability-level `repeat_for`. **That claim was WRONG**
+> and is corrected here, because acting on it would reintroduce a game-ending false positive.
+>
+> **Measured** (`data/card-data.json`): *"{T}: Add {G} for each creature you control"* (Gaea's
+> Cradle, Circle of Dreams Druid, Itlimoc) does **not** use `repeat_for` at all. It parses as:
+> ```json
+> {"type":"Mana","produced":{"type":"AnyOneColor",
+>   "count":{"type":"Ref","qty":{"type":"ObjectCount",
+>            "filter":{"type_filters":["Creature"],"controller":"You"}}}}}
+> ```
+> The dynamic board read lives **inside `ManaProduction` as `count: QuantityExpr`**. It is caught
+> **only** because the walker routes `AnyOneColor { count, .. } => scan_quantity_expr(count)`, and
+> `scan_quantity_ref` maps `QuantityRef::ObjectCount { .. } => Axes { sibling: true, .. }`
+> (verified in `ability_scan.rs`).
+>
+> ⇒ **The per-variant `count` / `TargetFilter` scanning is the entire safety property.** Dropping
+> it — e.g. collapsing the count-bearing variants to `Axes::NONE` on the theory that `repeat_for`
+> covers them — would let the engine falsely certify **unbounded mana**. Guard this with the
+> regression test in §6.0.
+
+This walker is the template for every other blanket fail-close in the file, and the lesson
+generalizes: **verify where each variant's dynamic payload actually lives before declaring it
+static.**
 
 **A3 — Gate (2) scans ACTIVATED ability bodies.**
 An activated ability observes nothing unless a player *activates* it, and the driven cycle never
@@ -260,6 +281,95 @@ Fixing §6.1–§6.3 unblocks **A** and removes B3/B4. **B additionally requires
 
 ---
 
+## 5.5 TARGET ARCHITECTURE — resource-flow certificate (monotone VAS + LP), not state-recurrence
+
+**This is the maintainer's design direction and it supersedes large parts of §6.** The current
+detector asks *"did the board recur?"* and then fail-closes on anything that might have observed the
+growth. The right question is a **resource-flow** one, and it is a small linear program.
+
+### 5.5.1 The model
+
+Take the proposer's **present board** and enumerate the repeatable **transitions** available to them:
+each activated ability, each mana ability, each castable self-returning spell. Every transition `t`
+has an effect vector `Δₜ` over resource axes — mana by color, untapped permanents by class, counters
+by kind, tokens, life, cards-in-zone. (`ResourceVector` already computes exactly these deltas.)
+
+A **closed (infinite) loop** is a firing vector `x ≥ 0` such that:
+
+- **Sustainability:** `Σ xₜ·Δₜ ≥ 0` on every *consumable* axis — the cycle net-drains nothing.
+- **Progress:** `Σ xₜ·Δₜ > 0` on at least one *growth* axis (tokens, counters, damage, …).
+- **Feasibility:** the cycle is executable in some order from the current marking without any axis
+  dipping negative mid-cycle (the scheduling half).
+
+This is precisely a **Petri-net T-invariant**. Rational solutions scale to integers, so plain **LP**
+settles existence in polynomial time; minimizing `Σ xₜ` yields **the simplest cycle**, which is
+exactly the sequence to propose as the CR 732.2a shortcut.
+
+> **LP alone is NOT a proof.** A T-invariant proves resource-sustainability, not executability from
+> the current marking. Resolution: **LP proposes, the existing clone-drive verifies.** Driving the
+> proposed `x` on a clone and observing `m < m'` is a Karp–Miller unboundedness witness, and it
+> already exists in the engine (`drive_recast_iteration`). Sound, and it reuses machinery we have.
+
+### 5.5.2 Why this dissolves the defects rather than patching them
+
+- **A7 (transient / which source pays) stops existing.** The LP consumes *"an untapped green
+  creature"*, not `Witherbloom` or `Saproling#413`. Convoke consumes one untapped green creature; the
+  created token produces one ⇒ **net 0**. The loop certifies regardless of which permanent the
+  payment engine taps. *The finite choice genuinely does not matter.*
+- **A2 (mana conservatism) stops existing.** A Forest is a *transition* (`tap ⇒ +{G}`), not an
+  observer. The LP only asks whether the cycle is mana-**non-negative**. Arbitrary mana state cannot
+  veto a closed loop.
+- **A1/A3/A4/A6 (the observer firewall) largely dissolve.** Only abilities that *actually fire in the
+  cycle* contribute transitions. A library card contributes none — so the **CR 400.2 hidden-zone
+  violation disappears structurally** instead of being patched, and an unactivated activated ability
+  is simply an unused transition.
+- **The §3.1 catch-22 dissolves.** Affinity and proliferate reading the growing axis is fine: they
+  are transitions whose `Δ` depends on the marking, and both are **monotone-benign**. See 5.5.3.
+
+### 5.5.3 The decidability certificate (the Turing-completeness guard) — combinator walk
+
+A VAS is decidable. What buys **Turing-completeness is exactly zero-testing** (inhibitor arcs).
+Magic as a whole is TC, so no complete procedure exists in general — but that is the wrong question.
+The right question is: **does THIS board's transition system stay inside the decidable fragment?**
+That is a *syntactic* property of the parsed abilities, and phase.rs's typed combinator AST is built
+to answer it. Classify each transition by an AST walk (the same walker family as
+`scan_mana_production`):
+
+| Class | AST signature | Board examples | Verdict |
+|---|---|---|---|
+| **Constant Δ** | no `QuantityRef` reading a growth axis; no marking-dependent condition | Relic of Legends, Freed from the Real, a Forest | pure VAS ⇒ **LP exact** |
+| **Monotone Δ** | `Δ` depends on a growth axis but is *non-increasing in cost* / *non-decreasing in production* | **Affinity** (cost only FALLS as creatures grow); **proliferate** (only ever ADDS) | **admit** — feasible now ⇒ feasible forever (monotonicity lemma) |
+| **Non-monotone** | a `Comparator` against a growth-axis `QuantityRef`: threshold cliffs, and **zero-tests** | *"if you control **seven or more** creatures…"*, *"if you control **no** creatures…"* | **REJECT** — this is exactly where TC hides |
+| **Non-deterministic** | randomness / conditional actions | coin flip, die roll, random selection | **REJECT** — CR 732.2a excludes these *by name* |
+
+The monotonicity lemma is what makes the two live combos certifiable: **affinity** only ever makes
+the recast *cheaper* as the creature count grows, and **proliferate** only ever *adds* counters — so
+a cycle feasible at the current marking is feasible at every larger marking. That is a one-line
+argument, not a firewall.
+
+**This replaces the `sibling: bool` axis.** `sibling` currently conflates "references a creature"
+with "could break the loop". The correct type is a *fragment classification*, e.g.
+`enum FragmentClass { Constant, Monotone, Threshold, ZeroTest, NonDeterministic }`, carried on the
+existing `Axes` walk. Per CLAUDE.md ("parameterize, don't proliferate") this is one parameterized
+axis, not a new boolean per hazard.
+
+**Cost:** the scan is over battlefield permanents + the proposer's OWN castable spells — a handful of
+ability defs on a small board. Cheap, and it never reads a hidden zone.
+
+**Expected hit rate:** the known TC constructions need very specific card sets (Rotlung Reanimator /
+Artificial Evolution / Illusory Gains …). Real boards land in Constant/Monotone essentially always,
+so the guard costs ~no false negatives while making the LP answer **sound and complete for the board
+it certifies**, and declining loudly (not silently) when it cannot.
+
+### 5.5.4 Relationship to §6
+
+§6.1–§6.3 remain worth doing as a **tactical unblock** (they are small, and they make the CURRENT
+detector work on real boards). But they are not the destination: §6.4 (transient tolerance) and much
+of §6.5 **fall out for free** under 5.5 and should not be built as designed. Sequencing guidance is
+in §6.7.
+
+---
+
 ## 6. Plan
 
 Ordered by dependency. Each phase is independently shippable and independently testable.
@@ -360,6 +470,29 @@ axis taxonomy so a growth axis is a *parameter*, not a new hand-written cover pe
 `ResourceVector`: counters, tokens, mana, energy, life. Counter growth (proliferate, charge
 counters, +1/+1 engines) is a large, common class.
 
+### 6.7 — Sequencing: tactical unblock vs. target architecture (READ BEFORE STARTING)
+
+§5.5 changes what is worth building. Do **not** implement §6.4 and §6.5 as originally written —
+they are workarounds for a model that §5.5 replaces.
+
+| Phase | Do it? | Why |
+|---|---|---|
+| **6.0** real-card corpus | **YES, FIRST** | Independent of architecture. It is the reason all of this shipped, and it is the acceptance gate for everything below. |
+| **6.1** zone-scoping | **YES, FIRST** | **Rules fix (CR 400.2)**, not an optimization. Ship standalone regardless of architecture. §5.5 makes it structural later, but the hidden-zone read must stop now. |
+| **6.2** walkers replacing blanket fail-closes | **YES** | Directly reusable: §5.5.3's fragment classifier is the *same walker family*. `scan_mana_production` (done) is the template. Not throwaway work. |
+| **6.3** re-found the `sibling` axis | **REPLACE** | Do not merely narrow `sibling: bool`. Go straight to §5.5.3's `FragmentClass` — the narrowing and the fragment certificate are the same walk, so building `sibling` twice is waste. |
+| **6.4** transient tolerance | **DROP** | Dissolves under §5.5.2 — the LP consumes *"an untapped green creature"*, so which permanent convoke taps is not expressible as a difference. Building drive-until-stable would be dead code the day the LP lands. |
+| **6.5a** driven detector for activated cycles | **SUBSUMED** | Becomes "enumerate activated abilities as transitions". Not a bespoke second detector. **B1 (ring cleared on deliberate actions) stops mattering** — the LP reads the *board*, not a sampled history, so a player-driven loop needs no ring at all. |
+| **6.5b** counter-growth cover | **SUBSUMED** | Counters are just another axis in `Δ`. Adding a third hand-written cover beside object-growth/fodder-growth is the sibling-cluster smell CLAUDE.md forbids; §5.5 makes the growth axis a **parameter**. |
+
+**Recommended order:** 6.0 → 6.1 (ship: rules fix) → 6.2 (ship: walkers) → §5.5 (LP + fragment
+certificate, absorbing 6.3/6.4/6.5).
+
+Under §5.5, **both live combos certify for the same reason**: each is a firing vector with net ≥ 0 on
+consumables and > 0 on a growth axis (tokens for Sprout Swarm; counters for Pentad Prism), on a board
+whose transitions are all Constant or Monotone. That is what "build for the class" looks like here —
+one model, two combos, no per-combo code.
+
 ### 6.6 — Follow-ups surfaced but out of scope
 
 - **Chrome export is broken:** `exportGameStateDebugZip` (`client/src/services/gameStateExport.ts:63`)
@@ -388,15 +521,33 @@ counters, +1/+1 engines) is a large, common class.
 7. **No false positives:** the existing negative controls still decline
    (`object_growth_no_affinity_does_not_offer`, `object_growth_no_buyback_does_not_offer`,
    `object_growth_random_recast_body_does_not_offer`, `object_growth_self_damage_recast_does_not_offer`,
-   `off_mode_capture_leaves_recast_context_none`), **plus** a new threshold control: a board with a
-   *"if you control seven or more creatures"* trigger must still be rejected (proves §6.3.3 is
-   discriminating and not merely permissive).
+   `off_mode_capture_leaves_recast_context_none`).
+
+8. **Fragment-certificate controls** (§5.5.3) — each must be *discriminating*, i.e. a revert-probe of
+   the guard flips it to FAIL:
+   - **Threshold:** a board carrying *"if you control seven or more creatures…"* must be **rejected**
+     (non-monotone cliff — the drive's 2–3 iteration horizon cannot see it).
+   - **Zero-test:** a board carrying *"if you control no creatures…"* must be **rejected** (an
+     inhibitor arc — this is the construct that buys Turing-completeness).
+   - **Monotone admit (non-vacuity):** affinity and proliferate must be classified **Monotone and
+     ADMITTED**, not rejected. Without this the fragment classifier degenerates into today's
+     firewall and both live combos stay undetected — so this control proves the classifier is not
+     merely permissive *or* merely conservative.
+
+9. **Soundness guard already landed** (`ability_scan::mana_production_scan_tests`): *"add {G} for each
+   creature you control"* (Gaea's Cradle) must stay CONSERVATIVE. Verified discriminating by
+   revert-probe: collapsing the count-bearing arms of `scan_mana_production` to `Axes::NONE` flips
+   `for_each_creature_production_still_fails_closed` to FAIL while the Forest control still passes.
+
+10. **LP/drive agreement:** every loop the LP certifies must also survive the clone-drive
+    (`m < m'` Karp–Miller witness). An LP certificate the drive cannot execute is a BUG, not an
+    offer — LP proposes, the drive verifies (§5.5.1).
 
 ---
 
-## 8. Design principle to carry into the code
+## 8. Design principles to carry into the code
 
-> **Scope every conservatism to the present board state and the loop actually being executed —
+> **(1) Scope every conservatism to the present board state and the loop actually being executed —
 > never to the space of all possible board states reachable from all cards in all decks and hands.**
 >
 > The loop must be infinite **from the perspective of the player executing it**, given the current
@@ -404,6 +555,24 @@ counters, +1/+1 engines) is a large, common class.
 > around the table for response** (CR 732.2b: accept or shorten). Interaction is the response
 > window's job, not the cover's — and reaching into hidden zones to pre-empt it is both a false
 > negative *and* a rules violation (CR 400.2).
+
+> **(2) Ask a resource-flow question, not a state-recurrence question.** "Is there a firing vector
+> with net ≥ 0 on consumables and > 0 on a growth axis?" is a small LP over the present board. It is
+> decidable, it yields the *simplest* cycle to propose, and it makes the finite choices (which land
+> taps, which creature convokes) **inexpressible as a difference** — they cancel in the net vector.
+
+> **(3) Don't fight Turing-completeness — certify the fragment.** Magic is TC, so no complete
+> procedure exists. But a VAS is decidable, and TC is bought by exactly one construct: the
+> **zero-test**. Classify the board's transitions syntactically over the combinator AST
+> (Constant / Monotone / Threshold / ZeroTest / NonDeterministic). Certify the decidable fragment and
+> solve it exactly; decline **loudly and narrowly** outside it. That is a precise, small, principled
+> conservatism — the opposite of "reject if any card anywhere might look at a creature."
+
+> **(4) Monotone reads are not hazards.** The card that makes a combo infinite is usually the card
+> that reads the growing axis (affinity reads creature count; proliferate reads permanents-with-
+> counters). A firewall that rejects "reads the growing class" is structurally incompatible with the
+> entire family of real combos. What matters is whether the read is *monotone-benign* (cost only
+> falls / production only rises ⇒ feasible now implies feasible forever) or a *cliff*.
 
 ---
 

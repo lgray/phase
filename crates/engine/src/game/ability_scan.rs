@@ -4798,6 +4798,64 @@ pub(crate) fn ability_resolution_choice_freedom(a: &ResolvedAbility) -> Resoluti
 }
 
 #[cfg(test)]
+mod mana_production_scan_tests {
+    use super::*;
+    use crate::types::ability::{ManaContribution, TypedFilter};
+    use crate::types::mana::ManaColor;
+
+    /// `{T}: Add {G}` — a basic Forest. Reads NOTHING.
+    ///
+    /// Before `scan_mana_production`, `Effect::Mana => Axes::CONSERVATIVE` classified even a basic
+    /// land as a live reader of the growing class, so the CR 732.2a object-growth / fodder cover
+    /// rejected ANY board holding a single mana source. A loop could therefore only ever certify on
+    /// a board with ZERO lands — i.e. in a synthetic fixture, never in a real game.
+    ///
+    /// DISCRIMINATING: restore the blanket `Axes::CONSERVATIVE` arm and this flips to FAIL.
+    #[test]
+    fn fixed_production_reads_nothing() {
+        let forest = ManaProduction::Fixed {
+            colors: vec![ManaColor::Green],
+            contribution: ManaContribution::Base,
+        };
+        assert!(
+            !scan_mana_production(&forest).sibling,
+            "`{{T}}: Add {{G}}` must not read the growing class"
+        );
+    }
+
+    /// ⚠️ SOUNDNESS GUARD — the false positive that would END A GAME.
+    ///
+    /// `{T}: Add {G} for each creature you control` (Gaea's Cradle / Circle of Dreams Druid /
+    /// Itlimoc) parses (measured, `data/card-data.json`) as
+    /// `AnyOneColor { count: Ref(ObjectCount{Creature, You}) }` — the dynamic board read lives
+    /// INSIDE `ManaProduction` as a `count: QuantityExpr`, NOT in the ability-level `repeat_for`.
+    /// It fails closed ONLY because `scan_mana_production` routes every count-bearing variant
+    /// through `scan_quantity_expr` (and `scan_quantity_ref` maps `ObjectCount` ⇒ `sibling: true`).
+    ///
+    /// DISCRIMINATING / revert-probe: collapse the count-bearing arms to `Axes::NONE` — the
+    /// "`repeat_for` already covers it" mistake — and this flips to FAIL. Ship that mistake and an
+    /// unbounded-mana loop scaling off the growing creature count is falsely CERTIFIED as a stable
+    /// recurrence: strictly worse than the false negatives this walker exists to fix.
+    #[test]
+    fn for_each_creature_production_still_fails_closed() {
+        let cradle = ManaProduction::AnyOneColor {
+            count: QuantityExpr::Ref {
+                qty: QuantityRef::ObjectCount {
+                    filter: TargetFilter::Typed(TypedFilter::creature()),
+                },
+            },
+            color_options: vec![ManaColor::Green],
+            contribution: ManaContribution::Base,
+        };
+        assert!(
+            scan_mana_production(&cradle).sibling,
+            "Gaea's Cradle scales with the creature count — it MUST fail closed, or the detector \
+             can falsely certify unbounded mana"
+        );
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::types::ability::{
