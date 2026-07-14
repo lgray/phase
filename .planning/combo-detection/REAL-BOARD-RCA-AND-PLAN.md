@@ -6,6 +6,18 @@
 **Evidence:** All claims below were *measured* by driving the user's exported live game state
 through the real engine, not inferred. Reproduction harness + method in §2.
 
+> ## ⛔ READ §5.5.7 FIRST — adversarial review found §5.5 UNSAFE AS FIRST WRITTEN
+>
+> §1–§4 (the RCA) survived adversarial review and is sound. **§5.5 (the target architecture) did
+> not.** As first written it was **LESS SOUND than the code it proposes to replace**: it silently
+> discarded three safety properties that exist in the tree today, are documented, and are
+> test-backed. An implementer following the original §5.5 + §7 could ship a detector that **ends a
+> game on a false certificate**.
+>
+> §5.5.7 carries the corrections and **overrides** anything earlier that contradicts it. Two claims
+> in this document were measurably **FALSE** and are struck below (B2; the `ResourceVector` reuse
+> claim). Do not implement §5.5 without §5.5.7.
+
 ---
 
 ## 1. Executive summary
@@ -248,12 +260,21 @@ mana engines, Splinter Twin, Kiki-Jiki, Freed from the Real, Pili-Pala, …).
 There is **no driven detector for activated-ability cycles**: the only driven detector,
 `try_offer_object_growth_shortcut`, is hard-wired to buyback+token recasts via `last_recast_context`.
 
-**B2 — No counter-growth cover.**
-`loop_states_cover_modulo_growth` (`resource.rs:784`) requires `object_resource_axes_match` —
-*strict object damage/counter equality*. This loop **grows counters every cycle**, so the cover
-rejects it even if the ring somehow accumulated. The engine has covers for **constant-depth**,
-**object growth**, and **fodder growth**, but **none for a monotone-increasing counter axis**. The
-growth-axis taxonomy is incomplete.
+**~~B2 — No counter-growth cover.~~ ❌ STRUCK — THIS CLAIM WAS FALSE (adversarial review).**
+
+**The counter-growth cover ALREADY EXISTS and already names this exact combo.**
+`loop_states_cover_modulo_counter_growth` (`resource.rs:1326`) covers strict `Generic`-counter
+growth, and its doc-comment says verbatim: *"the proliferate/charge (**Pentad Prism**) and burden
+(The One Ring) ω-cover shape."* It is wired into **both** `detect_loop` (`loop_check.rs:230`) and
+`interactive_loop_bridge` (`engine.rs:632`), with four discriminating tests
+(`resource.rs:3116-3204`).
+
+⇒ **Combo B's blocker set is B1 + B3 + B4 — NOT B1 + B2.** The cover is never *consulted* because
+B1 clears the ring before it can accumulate. §6.5b is therefore not "subsumed by §5.5"; it is
+**already shipped**, and any plan that proposes to build it is duplicating working, tested code.
+
+*(This was my error. It also deflated part of §5.5's justification: the growth-axis taxonomy is
+less incomplete than claimed.)*
 
 **B3 — Shared with Combo A:** the same `fire_time_conditions_read_growing_class` firewall gates the
 object-growth cover (`resource.rs:963-980`) and the fodder cover (`resource.rs:1126-1131`), and the
@@ -292,7 +313,16 @@ growth. The right question is a **resource-flow** one, and it is a small linear 
 Take the proposer's **present board** and enumerate the repeatable **transitions** available to them:
 each activated ability, each mana ability, each castable self-returning spell. Every transition `t`
 has an effect vector `Δₜ` over resource axes — mana by color, untapped permanents by class, counters
-by kind, tokens, life, cards-in-zone. (`ResourceVector` already computes exactly these deltas.)
+by kind, tokens, life, cards-in-zone.
+
+> ❌ **STRUCK — FALSE:** ~~(`ResourceVector` already computes exactly these deltas.)~~
+> Measured (`resource.rs:138-229`): `ResourceVector` has **no untapped-permanent axis and no tap
+> state at all**; `mana` is a 6-slot array of *floating pool* mana **summed across ALL players**
+> (unusable per-player, and the driving fixture is a 4-player game); and `tokens_created` /
+> `cards_drawn` / `casts_this_step` are **event-fed and left ZERO by `snapshot`**. Worse,
+> `ResourceVector::delta` diffs two *snapshots* — it is a **measurement**, not a symbolic effect
+> vector, and **no symbolic Δ extractor exists in the engine.**
+> ⇒ §5.5 is a **new subsystem**, not a reuse. See §5.5.7-E for what this does to the cost estimate.
 
 The certificate is an **ordered sequence of STAGED segments** `[(p₁,x₁), (p₂,x₂), …, (pₙ,xₙ)]` —
 each a finite **prefix** `pᵢ ≥ 0` followed by a repeating **cycle** `xᵢ ≥ 0`, where `xᵢ` repeats
@@ -441,6 +471,145 @@ marking, so it is not a constant-`Δ` VAS. It is admissible **only** via the mon
 conservative LOWER bound; feasible at `m₀` ⇒ feasible at every larger marking). This is not an exotic
 corner — it is a top-tier cEDH combo, so the Monotone class must be first-class, not an afterthought.
 
+### 5.5.7 ⛔ REVIEW CORRECTIONS — read before implementing anything in §5.5
+
+Adversarial review (all findings independently re-measured and CONFIRMED). §5.5 as first written was
+**less sound than the code it replaces**. These corrections **override** §5.5.1–§5.5.6.
+
+#### A. Is competitive Magic provably an LP? **NO.** LP is a PROPOSER, never the proof.
+
+The honest answer, and the single most important correction in this document. **Δ is not
+symbolically derivable from the AST**, for three independent reasons — each backed by a real card:
+
+1. **Replacement effects rewrite Δ at resolution time.** **Solemnity** (two `Prevent` replacements on
+   `AddCounter`): proliferate's AST-Δ is `+1 counter`; its TRUE Δ is **0**. Replacements are not
+   transitions and cannot be folded into a static Δ.
+2. **Δ can depend on the marking (breaks VAS linearity).** **Freed from the Real** —
+   *"{U}: Untap enchanted creature"* — has `Δ(untapped) = +1` **only if** that creature is tapped,
+   else `0`.
+3. **Legality is not a resource.** Activation limits, summoning sickness, the legend rule, loyalty
+   (CR 606.3), max hand size — none are resource axes, and none appear in an `AbilityCondition`.
+
+⇒ **The sound architecture is: LP PROPOSES, the existing DRIVE VERIFIES.**
+- **LP (proposer):** cheap, fungible, payment-independent. Dissolves A7 and the "which land taps"
+  problem *in the proposal*. Its Δ is a **measured** lower bound, not a symbolic derivation.
+- **Drive + existing per-object cover (verifier):** sound. It is the ONLY thing that sees
+  replacements, sickness, and marking-dependent Δ, because it actually **runs** the cycle.
+- **A cycle is certified only if BOTH agree.** The LP may propose garbage; the verifier kills it.
+  This preserves every safety property below *and* keeps the LP's benefits. **Never certify on the
+  LP alone.**
+
+#### B. MUST-PRESERVE — three in-tree safety properties §5.5 silently discarded
+
+Deleting any of these ships a false certificate. All exist, are documented, and are test-backed.
+
+1. **Repetition-blocking legality gates** — `project_out_resources` (`resource.rs:2500+`)
+   *deliberately PRESERVES* `activated_abilities_this_turn` / `_this_game`, `OncePerTurn` /
+   `MaxTimesPerTurn` trigger limits, `crew_activated_this_turn`, and loyalty. Its own comment:
+   *"blanket-clearing them would erase the gate that makes a once-per-turn … ability NON-repeatable,
+   **falsely certifying it as infinite**."* Single authority: `ability_has_per_turn_activation_gate`
+   (`resource.rs:2842`).
+2. **The `projected` axis and its firewall** (`fire_time_conditions_read_projected_resource`) — §5.5
+   never mentions it. It is what catches **Damping Sphere**
+   (`StaticMode::ModifyCost{ mode: Raise, dynamic_count: SpellsCastThisTurn }`), guarded by the
+   in-tree discriminating test `R-e2` (`resource.rs:5052`). Replacing `sibling: bool` with
+   `FragmentClass` while dropping `projected` is a **straight regression**.
+3. **The strict per-object board cover.** It is the verifier (see A).
+
+#### C. ❗ H1 (GAME-ENDING) — activation gates are not modelled, and a 2-iteration drive cannot see them
+
+**`Manaforge Cinder`** — *"{1}: Add {B} or {R}. **Activate no more than three times each turn.**"*
+Parses TODAY as `activation_restrictions: [MaxTimesEachTurn{count: 3}]`, **`is_mana_ability: true`**
+⇒ it *is* a §5.5.1 transition. The LP sees net ≥ 0 and certifies; the drive is **exactly 2
+iterations** (`engine.rs:1688-1696`) so it passes; **the loop dies on activation 4.**
+
+**Fix (LP-native, and it is the right shape):** model a per-turn allowance as a **consumable axis**.
+A gated ability draws from a finite pool the cycle never refills ⇒ `net < 0` on that axis ⇒ **no
+T-invariant exists** ⇒ correctly rejected, with no special case. Any gate that cannot be encoded as
+an axis ⇒ **REJECT the transition** (default-deny).
+
+#### D. ❗ H2 (GAME-ENDING) — "untapped creature" is NOT a fungible axis (CR 302.6)
+
+Identical LP Δ ("consume 1 untapped creature ⇒ +1 mana"), **opposite truth**:
+- **Earthcraft** — cost `TapCreatures{count:1, filter: Creature/You}`, **no `{T}` on the creature**
+  ⇒ sickness-immune (CR 702.51a-style) ⇒ a fresh token CAN pay ⇒ **Earthcraft + Squirrel Nest is
+  genuinely infinite.**
+- **Cryptolith Rite** — *grants* creatures `{T}: Add one mana` ⇒ **CR 302.6 applies** ⇒ a fresh token
+  **cannot** pay this turn ⇒ bounded by the already-unsick count (a finite buffer a 2-iteration drive
+  walks straight through whenever it is ≥ 3).
+
+**The discriminator is the SHAPE OF THE COST, not any resource level.**
+
+#### E. ❗ H5 (ROOT CAUSE) — pick the place granularity; §5.5's two requirements were contradictory
+
+§5.5.2's A7-dissolution needs **fungible class places** ("an untapped green creature"). Freed from
+the Real and sickness need **per-object places**. §5.5 never chose. **Resolution:**
+
+> **Places are fungible *within an equivalence class defined by every predicate any COST or FILTER on
+> this board can test*.** Sickness, legendary-ness, color, creature type, tapped-ness, token-ness are
+> all class dimensions. On a small board this is a handful of classes — tractable *and* sound.
+
+This simultaneously fixes H2 (sick vs unsick are different places; the cost shape selects which) and
+**Relic of Legends** (*"tap an untapped **legendary** creature"* — a Saproling is **not** a
+substitute for Kilo, because `legendary` is a class dimension).
+
+**Cost estimate correction (see the struck `ResourceVector` claim):** there is **no symbolic Δ
+extractor** in the engine. Building one re-derives the effect resolver across the no-wildcard
+`Effect` match sites; measuring Δ instead costs one clone-drive **per transition, per priority beat**
+(and §6.7 wanted this to run *without* the ring, i.e. on **every** beat). "A handful of ability defs
+— cheap" **badly understates this.** Size it honestly before committing.
+
+#### F. ❗ H3 — the fragment guard scans the WRONG AST SURFACE (the deepest finding)
+
+Every hole found routes **around** `AbilityCondition`/`StaticCondition`. The reviewer could **not**
+break the Comparator-expressed Threshold/ZeroTest arm — *that class is genuinely handled*. The cliffs
+live instead in:
+
+| Surface | Real card | Today caught by |
+|---|---|---|
+| **Costs** (`Cost::Tap` + per-object `summoning_sick`) | Cryptolith Rite | nothing in §5.5 |
+| **Activation restrictions** | Manaforge Cinder | `project_out_resources` (B1 above) |
+| **Static cost modifiers** (`ModifyCost.dynamic_count`) | Damping Sphere | the **`projected`** axis |
+| **Replacements** (rewrite Δ) | Solemnity | only the drive |
+| **Per-object attributes** | summoning sickness | only the drive |
+
+⇒ `FragmentClass` must be **exhaustive with an explicit default-REJECT**, must add a **cost-DIRECTION
+rule** (a cost that *rises* with a growing axis — Damping Sphere, Thalia, Archon of Emeria — stalls
+the loop and must reject), and needs a **COMPOSITION lemma**: the monotonicity argument is stated
+*per-transition*, but feasibility depends on the **composite** cost. Affinity (monotone-DOWN) +
+Damping Sphere (monotone-UP) are each "monotone"; **the composite is not.** The one-line
+"feasible now ⇒ feasible forever" argument holds only for a *single* modifier.
+
+Also: `ZeroTest` is a leaf parameterization of `Threshold` (zero-test = `Comparator::Equal(0)`) ⇒
+**sibling-cluster smell** per CLAUDE.md. Use `Threshold { comparator, bound }`. **Run the mandatory
+`add-engine-variant` gate and grep `data/engine-inventory.json`** — §5.5 skipped both.
+
+#### G. §6.1's gate-(1) prescription contradicted itself — CR 113.6 runs a–**k**, not a–d
+
+**CR 113.6k** (verified): *"A trigger condition that can't trigger from the battlefield functions in
+all zones it can trigger from."* A blanket battlefield-only filter would silently drop legitimate
+**public-zone** observers (graveyard-functioning triggers). Use **one zone-of-function predicate**
+applied uniformly to gates (1), (3), (4) — the CR 400.2 fix is about **hidden** zones, not
+*non-battlefield* zones. Do not conflate them.
+
+#### H. §6.4 must be RE-SCOPED, not dropped — A7 lives in the VERIFIER
+
+The LP dissolving "which permanent paid" in the **proposer** does nothing for the **verifier**, which
+still calls `select_convoke_taps` (lowest ObjectId ⇒ taps Witherbloom) and still compares frames.
+Even a pure marking comparison is not transient-immune: frame₀ has Witherbloom untapped, frame₁
+tapped — any tap-state axis differs. **Drive-until-stable is still required, on the verifier side.**
+
+#### I. Untouched by §5.5 and still live
+
+- **Gates (5), (5b), (6)** (`resource.rs:1544-1589`). Gate **(6)** rejects on ANY non-empty
+  `delayed_triggers` / `deferred_triggers` / `pending_trigger` / `epic_effects` — not a zone scan, and
+  the LP has no answer for it. It fires on any board with a *"sacrifice it at the beginning of the
+  next end step"* delayed trigger — **e.g. every Kiki-Jiki token**. "The observer firewall largely
+  dissolves" does **not** cover this.
+- **`cost_surface_references_growing_class`** (all-zones) — §5.5 claims it dissolves. It does not: the
+  LP *needs* cost to compute Δ, and cost surfaces are exactly where affinity, convoke, and Damping
+  Sphere live. **It moves; it does not vanish.**
+
 ### 5.5.4 Relationship to §6
 
 §6.1–§6.3 remain worth doing as a **tactical unblock** (they are small, and they make the CURRENT
@@ -561,9 +730,9 @@ they are workarounds for a model that §5.5 replaces.
 | **6.1** zone-scoping | **YES, FIRST** | **Rules fix (CR 400.2)**, not an optimization. Ship standalone regardless of architecture. §5.5 makes it structural later, but the hidden-zone read must stop now. |
 | **6.2** walkers replacing blanket fail-closes | **YES** | Directly reusable: §5.5.3's fragment classifier is the *same walker family*. `scan_mana_production` (done) is the template. Not throwaway work. |
 | **6.3** re-found the `sibling` axis | **REPLACE** | Do not merely narrow `sibling: bool`. Go straight to §5.5.3's `FragmentClass` — the narrowing and the fragment certificate are the same walk, so building `sibling` twice is waste. |
-| **6.4** transient tolerance | **DROP the mechanism, KEEP the concern** | The *drive-until-stable heuristic* is dead: under §5.5 the payment choice is **inexpressible** — convoke consumes "an untapped green creature" and the token produces one, so it is net-0 *even when Witherbloom is tapped* (it was itself an untapped green creature; the count goes 5→4→5 either way). There is no transient to tolerate and no sampling horizon to be too short. **But the concern survives as the `prefix` term `p` of the §5.5.1 certificate** — a warm-up is a CR 732.2a "non-repetitive series of choices", computed analytically instead of chased by driving extra iterations. **Do not drop 6.4 without also changing what "verified" means** (see the §5.5.1 landmine): keeping board-state equality as the verifier re-creates this exact bug. |
+| **6.4** transient tolerance | **RE-SCOPE TO THE VERIFIER** (was "DROP" — that was WRONG, see §5.5.7-H) | The *drive-until-stable heuristic* is dead: under §5.5 the payment choice is **inexpressible** — convoke consumes "an untapped green creature" and the token produces one, so it is net-0 *even when Witherbloom is tapped* (it was itself an untapped green creature; the count goes 5→4→5 either way). There is no transient to tolerate and no sampling horizon to be too short. **But the concern survives as the `prefix` term `p` of the §5.5.1 certificate** — a warm-up is a CR 732.2a "non-repetitive series of choices", computed analytically instead of chased by driving extra iterations. **Do not drop 6.4 without also changing what "verified" means** (see the §5.5.1 landmine): keeping board-state equality as the verifier re-creates this exact bug. |
 | **6.5a** driven detector for activated cycles | **SUBSUMED** | Becomes "enumerate activated abilities as transitions". Not a bespoke second detector. **B1 (ring cleared on deliberate actions) stops mattering** — the LP reads the *board*, not a sampled history, so a player-driven loop needs no ring at all. |
-| **6.5b** counter-growth cover | **SUBSUMED** | Counters are just another axis in `Δ`. Adding a third hand-written cover beside object-growth/fodder-growth is the sibling-cluster smell CLAUDE.md forbids; §5.5 makes the growth axis a **parameter**. |
+| **6.5b** counter-growth cover | **ALREADY SHIPPED — BUILD NOTHING** | ❌ My B2 claim was FALSE. `loop_states_cover_modulo_counter_growth` (`resource.rs:1326`) exists, names **Pentad Prism** in its doc, is wired into `detect_loop` + `interactive_loop_bridge`, and has 4 discriminating tests. Building this would duplicate working code. See §5.5.7. |
 
 **Recommended order:** 6.0 → 6.1 (ship: rules fix) → 6.2 (ship: walkers) → §5.5 (LP + fragment
 certificate, absorbing 6.3/6.4/6.5).
@@ -591,11 +760,14 @@ one model, two combos, no per-combo code.
    (`predicted_winner: None`, `WinKind::Advantage`, unbounded axis `TokensCreated`).
 2. Kilo + Freed + Relic + Pentad Prism on the **real** exported board ⇒ offer, unbounded axis
    **counters**.
-3. **Hidden-zone invariance:** for both, the verdict is unchanged when arbitrary cards are added to
-   any library or hand. (CR 400.2 — a detector verdict that depends on a hidden zone is a rules
-   violation.)
-4. **Payment invariance:** for Combo A, the verdict is unchanged under any legal convoke tap-set
-   (Witherbloom, a Saproling, or a Forest paying the `{G}`).
+3. **Hidden-zone invariance (CR 400.2).** ⚠️ **NON-VACUITY:** must assert `WaitingFor::LoopShortcut`
+   in **EVERY arm**, not merely `assert_eq!(v_with, v_without)` — an equality assertion passes
+   trivially as `false == false` when both arms decline. (This trap was hit for real in this effort;
+   see `real_board_verdict_is_invariant_under_hidden_zone_contents`.) Plus a positive reach-guard:
+   the base board must offer independently.
+4. **Payment invariance:** for Combo A the verdict is unchanged under any legal convoke tap-set
+   (Witherbloom, a Saproling, or a Forest paying the `{G}`). **Same non-vacuity rule as #3: assert
+   the OFFER in every arm.**
 5. **Realism:** every acceptance test carries real Oracle text, a real library, and a real mana base.
 6. **Non-vacuity:** each fix has a revert-probe — deleting it flips a named test from pass to fail.
 7. **No false positives:** the existing negative controls still decline
@@ -603,25 +775,46 @@ one model, two combos, no per-combo code.
    `object_growth_random_recast_body_does_not_offer`, `object_growth_self_damage_recast_does_not_offer`,
    `off_mode_capture_leaves_recast_context_none`).
 
-8. **Fragment-certificate controls** (§5.5.3) — each must be *discriminating*, i.e. a revert-probe of
-   the guard flips it to FAIL:
-   - **Threshold:** a board carrying *"if you control seven or more creatures…"* must be **rejected**
-     (non-monotone cliff — the drive's 2–3 iteration horizon cannot see it).
-   - **Zero-test:** a board carrying *"if you control no creatures…"* must be **rejected** (an
-     inhibitor arc — this is the construct that buys Turing-completeness).
-   - **Monotone admit (non-vacuity):** affinity and proliferate must be classified **Monotone and
-     ADMITTED**, not rejected. Without this the fragment classifier degenerates into today's
-     firewall and both live combos stay undetected — so this control proves the classifier is not
-     merely permissive *or* merely conservative.
+8. **Fragment-certificate controls (§5.5.3 + §5.5.7-F) — REAL CARDS ONLY.**
+   ⚠️ The earlier draft quoted **invented oracle text** with no card named, violating CLAUDE.md
+   *"Verify the card, not just the rule."* Verified real substitutes, all present in
+   `data/card-data.json`:
+   - **Activation gate (H1, GAME-ENDING):** **Manaforge Cinder** (`MaxTimesEachTurn{3}`,
+     `is_mana_ability`) must be **REJECTED**. Note it survives a 2-iteration drive — so the drive
+     alone is NOT a sufficient control.
+   - **Summoning sickness (H2, GAME-ENDING):** **Cryptolith Rite** must be **REJECTED** while
+     **Earthcraft + Squirrel Nest** must be **CERTIFIED**. Identical LP Δ, opposite truth — this
+     pair is the discriminator.
+   - **Rising cost / composite monotonicity (H3):** **Damping Sphere** must be **REJECTED**
+     (preserve the in-tree `R-e2` test, `resource.rs:5052`). Also **Rule of Law / Arcane Laboratory /
+     Eidolon of Rhetoric / Archon of Emeria** (`PerTurnCastLimit{max:1}`).
+   - **Replacement rewrites Δ (H4):** **Solemnity** + proliferate must be **REJECTED** (AST-Δ says
+     `+1 counter`; true Δ is `0`).
+   - **Non-determinism / no advancement:** **Four Horsemen** (Basalt Monolith + Mesmeric Orb) must be
+     **DECLINED** — ideally for both reasons (§5.5.6).
+   - **Monotone ADMIT (non-vacuity):** affinity and proliferate must be classified **Monotone and
+     ADMITTED**. Without this the classifier degenerates into today's firewall and both live combos
+     stay undetected — this proves it is neither merely permissive nor merely conservative.
+
+   ⚠️ **A revert-probe is necessary but NOT sufficient.** Each REJECT control needs a **paired
+   positive reach-guard** (the same board minus the hazard card must OFFER), else the REJECT may be
+   produced by an unrelated upstream gate (gate 4's blanket, gate 6's delayed-trigger check) and the
+   control proves nothing.
 
 9. **Soundness guard already landed** (`ability_scan::mana_production_scan_tests`): *"add {G} for each
    creature you control"* (Gaea's Cradle) must stay CONSERVATIVE. Verified discriminating by
    revert-probe: collapsing the count-bearing arms of `scan_mana_production` to `Axes::NONE` flips
    `for_each_creature_production_still_fails_closed` to FAIL while the Forest control still passes.
 
-10. **LP/drive agreement:** every loop the LP certifies must also survive the clone-drive
-    (`m < m'` Karp–Miller witness). An LP certificate the drive cannot execute is a BUG, not an
-    offer — LP proposes, the drive verifies (§5.5.1).
+10. **LP/drive agreement.** Every loop the LP certifies must also survive the clone-drive
+    (`m < m'` Karp–Miller witness). ⚠️ **As written this was a property, not a test, and was
+    vacuously satisfied by a corpus in which the LP certifies nothing** — it also self-contradicted
+    ("a BUG, not an offer": if production silently declines on disagreement, nothing ever fails).
+    Requires: a corpus with **≥1 certifying board**, and a **loud** `debug_assert!`/counter on
+    disagreement. **Never certify on the LP alone** (§5.5.7-A).
+
+11. **Multiplayer.** At least one criterion must exercise **>2 players** — the entire driving fixture
+    is a 4-player Commander board, yet no criterion previously mentioned player count.
 
 ---
 
