@@ -19,6 +19,16 @@ through the real engine, not inferred. Reproduction harness + method in §2.
 > cover already exists and names Pentad Prism); the `ResourceVector` reuse claim; and — worst —
 > §5.5.2's *"the payment choice is inexpressible"*, which is **false on our own §2 board** because
 > **Witherbloom is Legendary and Relic of Legends filters costs on `Legendary`** (§5.5.8-A).
+> ## ⭐ START AT §5.5.10 — THE LINEARITY GATE (the recommended architecture)
+>
+> §5.5.10 supersedes the "big LP rewrite". The shipped detector drives 2 iterations and **assumes the
+> delta repeats** — that *is* a linearity assumption, and **nobody checks it**. Every game-ending hole
+> found is exactly a case where Δ is not constant. A cheap, **transition-scoped** linearity gate is the
+> missing PRECONDITION that turns the existing 2-iteration drive from a guess into a proof — and it
+> fixes the reported false-negative bug at the same time, because it never looks at a library card or a
+> Forest. Smaller diff, no LP solver, no symbolic Δ extractor, and **soundness is monotone** (the gate
+> can only turn OFFERs into NO-OFFERs).
+>
 > Do not implement §5.5 without reading §5.5.7, §5.5.8 **and §5.5.9**.
 >
 > **§5.5.9 is the most important section in this document.** §5.5's progress rule is *strictly weaker*
@@ -939,6 +949,111 @@ reason — and the wrong reason is exactly what made D-4 (minus-Emrakul) invisib
   **No hole.**
 - **The Threshold/ZeroTest reject arm** — still unbroken across three rounds. **Every** hole routes
   *around* the Comparator. **The chosen AST surface is the wrong one.**
+
+### 5.5.10 ⭐ THE LINEARITY GATE — the recommended architecture (supersedes the "big LP rewrite")
+
+**This is the highest-value, smallest-diff conclusion of the whole document. Read it before §6.**
+
+#### A. The key realization: a 2-iteration drive already ASSUMES linearity — and nobody checks it
+
+The shipped detector drives **exactly 2 iterations** (`engine.rs:1688-1696`) and assumes the measured
+delta **repeats forever**. *That assumption **is** the linearity assumption.* It is never verified.
+
+**Every game-ending hole found across three review rounds is precisely a case where Δ is NOT constant
+across iterations:**
+
+| Card | Δ changes at… |
+|---|---|
+| **Manaforge Cinder** | activation 4 (`MaxTimesEachTurn{3}`) |
+| **Crucible of Worlds + Zuran Orb** | land drop 2 (CR 305.2) |
+| **Cryptolith Rite** | when the un-sick creatures run out (CR 302.6) |
+| **Hum of the Radix** | every cycle (cost rises with artifact count) |
+| **Solemnity** | resolution (replacement rewrites Δ to 0) |
+
+⇒ **A linearity gate is not an optimization. It is the missing PRECONDITION that turns the existing
+2-iteration drive from a guess into a proof** — if Δ is provably constant, one cycle's delta **is**
+every cycle's delta, and 2 iterations suffice.
+
+#### B. The existing firewall is a broken attempt at exactly this question
+
+`fire_time_conditions_read_growing_class` **is** asking "is Δ constant?" It fails on two axes:
+
+| | today | must be |
+|---|---|---|
+| **Scope** | every object in **every zone** (incl. libraries ⇒ the Solemn Simulacrum bug; a **CR 400.2 violation**) | **only the transition set**: battlefield permanents + the proposer's own castable spells |
+| **Surface** | `AbilityCondition`/`StaticCondition` **Comparators only** | **costs, activation restrictions, replacements, per-object attributes, cost modifiers** |
+
+Three rounds of review **never broke the Comparator arm** — and **every** hole routed *around* it.
+That is the standing proof that the surface, not the logic, was wrong.
+
+> **KEEP THE QUESTION. FIX THE SCOPE AND THE SURFACE.** That single change fixes the original
+> false-negative bug (§1–§4) *and* supplies the soundness precondition (§5.5.7–§5.5.9) — with a far
+> smaller diff than the LP rewrite.
+
+#### C. The gate (cheap, syntactic, per-board)
+
+Scan **only the transition set** (~20–60 ability defs on a real board — milliseconds, and it never
+touches a hidden zone). Return **NON-LINEAR** if any of:
+
+| Class | Detected via | Live example |
+|---|---|---|
+| **Repetition gate** (not a resource) | `activation_restrictions` non-empty; trigger `OncePerTurn`/`MaxTimesPerTurn`; loyalty (CR 606.3); a **land play** in the set (CR 305.2) | Manaforge Cinder; Crucible+Zuran Orb |
+| **Δ scales with a growth axis** | `StaticMode::ModifyCost{ dynamic_count }`; a `QuantityRef` reading a growth axis in an effect/cost | **Hum of the Radix**; Damping Sphere |
+| **Δ NOT DERIVABLE** | **any ACTIVE replacement** that could apply to an effect in the set | **Solemnity**; Torpor Orb; Rest in Peace |
+| **Branch / non-determinism** | `Comparator` vs a growth axis; coin/die/shuffle/random (CR 732.2a) | *(this arm already works — unbroken)* |
+| **Per-object attribute a COST can see** | `{T}` in a cost ⇒ summoning sickness matters (CR 302.6); cost `TargetFilter` predicates (`Legendary`, color, type) | **Cryptolith Rite** vs Earthcraft; **Relic of Legends** |
+| **Turn-crossing** | untap step (Δ = `+tapped_count`, non-constant); per-turn tally **resets** | Time Vault |
+
+**The one that looks undecidable is not.** Replacements rewriting Δ (Solemnity) are **enumerable**:
+`active_replacements(state)` already exists. You do not *infer* Solemnity — you **see** it on the
+battlefield. If no active replacement can apply to any effect in the transition set, the AST-derived
+Δ **is** the true Δ.
+
+**Most of this scan already exists.** `ability_scan.rs`'s `Axes` walk already computes `sibling` and
+`projected`. This is largely a **re-scoping** of existing code, not new machinery.
+
+#### D. The resulting architecture (fast path + sound fallback)
+
+```
+LINEARITY GATE  (cheap, transition-scoped, syntactic)
+   │
+   ├── LINEAR ──►  Δ is constant ⇒ the 2-iteration drive is a PROOF.
+   │               (Optional: LP proposes the minimal cycle analytically —
+   │                a speed/coverage win, NOT a soundness component.)
+   │               Verify with the SHIPPED player-attributed, loss-vetoed triple:
+   │                 net_progress_for(caster) + has_no_loss_axis + driving_resources_non_decreasing
+   │
+   └── NON-LINEAR ──►  DECLINE, loudly and with a named reason.
+                       (Never certify. Log the reason so gaps are KNOWN, not silent.)
+```
+
+**Soundness is monotone:** the gate can only turn OFFERs into NO-OFFERs. A bug in the gate costs
+coverage, never correctness. This is the opposite of §5.5's original fail-open posture.
+
+**Why this beats the LP rewrite as the FIRST move:**
+- It fixes the reported bug (§1–§4) — the Forest, the library card, the aura — because the scan is
+  **transition-scoped**, so none of them are even looked at.
+- It closes **every** game-ending hole from rounds 1–3 (they are all "Δ isn't constant", which is
+  exactly what the gate tests).
+- It preserves the three in-tree safety properties (§5.5.7-B) instead of discarding them.
+- It requires **no symbolic Δ extractor** and **no LP solver** — both of which §5.5.7-A/E showed are
+  large, unsized subsystems.
+- The LP then becomes a **pure optimization** on the LINEAR branch (find the minimal cycle without
+  guessing), addable later, with **zero soundness responsibility**.
+
+#### E. Honest open questions (do NOT hand-wave these — this doc has been wrong 3× already)
+
+1. **Is the class list in (C) exhaustive?** It is an enumeration of what THREE review rounds found.
+   That is evidence, not proof. It **must** carry an explicit `_ => NON-LINEAR` default and a
+   structural totality guard (cf. the no-`..` `_gameobject_partition_is_total` precedent) so a new
+   `Effect`/`Cost`/`ActivationRestriction` variant **build-breaks** rather than silently failing open.
+2. **Summoning sickness and cost filters are not "reject" — they are PLACE-SPLITS** (§5.5.8-A/D).
+   Decide per class: reject, or partition the axis. Rejecting on every `{T}` cost would decline most
+   creature mana engines (too conservative to be useful).
+3. **"Could apply to" for replacements** needs a real predicate (event-type × filter match), not a
+   blanket "any replacement exists ⇒ reject" — Commander boards always have replacements.
+4. **Does the LINEAR branch still need >2 iterations?** If Δ is constant, no. Prove that claim before
+   relying on it.
 
 ### 5.5.4 Relationship to §6
 
