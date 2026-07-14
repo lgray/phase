@@ -9,20 +9,122 @@
 > `data/card-data.json`, or by querying the real board fixture.
 > **Every `file:line` in this document was printed by a tool, not recalled.**
 >
-> ## **This plan has been wrong SIXTEEN times. Every single failure was a CODE claim asserted from memory. The RULES layer has never once failed — 40/40 CR citations and 32/32 Oracle texts verified across six audits.**
+> ## **This plan has been wrong EIGHTEEN times. Every single failure was a CODE claim asserted from memory. The RULES layer has never once failed — 40/40 CR citations and 32/32 Oracle texts verified across six audits.**
 >
 > The failures are catalogued in **Appendix B**. Read it: the guard rails only work if you know what they
-> guard. **Two of the sixteen (#15, #16) were committed *while writing this document*, by two different
-> authors, who independently invented the same false claim from memory within an hour of each other** — and
-> both were caught only because someone re-measured. **That is not an argument against the discipline. It is
-> the argument for it.**
+> guard. **THREE of the seventeen (#15, #16, #17) were committed *while writing this document*.** #15/#16 are
+> the **same fabrication**, invented independently by two authors an hour apart. **#17 is this plan asserting
+> its own root-cause fix was *"necessary and sufficient"* — refuted by BUILDING IT AND RUNNING IT.** All three
+> were caught only because someone re-measured. **That is not an argument against the discipline. It is the
+> argument for it.**
 >
-> **The rule that would have prevented all sixteen: grep before you assert, and put the `file:line` in the
+> **The rule that would have prevented all eighteen: grep before you assert, and put the `file:line` in the
 > sentence.** If you cannot verify it, write **UNVERIFIED**. An honest *"I did not reach this"* beats a
 > plausible claim that costs a cycle to refute.
 >
+> **And the two corollaries that were each learned the hard way:**
+> - **#15/#17 — A correct reading of the CODE is not a correct claim about the BOARD. Reachability must be
+>   measured too.**
+> - **#17 — A SINGLE-FIXTURE PROBE CANNOT DISTINGUISH A CLASS FIX FROM A CARD FIX.** A probe on a clean
+>   two-card board "proved" a fix that does nothing on the real one. **Only the corpus dual (P2) can tell them
+>   apart — which is why P2 is in Tier 1.**
+>
 > **And the corollary that caught #15:** a correct reading of the *code* is not a correct claim about the
 > *board*. **Reachability must be measured too.**
+
+---
+
+# §0 — READ THIS FIRST
+
+*One page. If you read nothing else in this document, read this.*
+
+## ⭐ THE GOVERNING RULE — it outranks everything below
+
+> ## **Combo A and Combo B are ACCEPTANCE TESTS, not GOALS. Every phase fixes a CLASS. A change that turns a combo green without discharging a class property is the purpose-built patch this plan exists to prevent.**
+
+**The combos are CANARIES.** *"`real_board_sprout_swarm_offers_loop_shortcut` goes green"* is **not** an acceptance criterion — it is a smoke alarm. **Every phase gates on a CLASS property**, and if you find yourself doing anything to make a combo green that is not derived from a class property, **STOP: you are writing the bug.**
+
+**This is not theory. It was measured, on this plan, and it caught a false claim in this document's own root-cause section — see Appendix B #17.**
+
+## The four rules that will get you killed
+
+1. **GREP BEFORE YOU ASSERT.** Put the `file:line` in the sentence. **Eighteen errors; every one a code claim from memory.**
+2. **A COARSE RELATION MAY *REJECT*, NEVER *ACCEPT*.** (§5b.1.) Too coarse ⇒ **false certificate ⇒ ends a real game wrongly.** Too fine ⇒ a missed offer ⇒ **safe**. The detector sits on the **only game-ending path**.
+3. ## ⛔⛔ **P4 AND P7 ARE THE ONLY TWO PHASES THAT MOVE THE DETECTOR IN THE *ACCEPT* DIRECTION.**
+   **Every other phase errs safe. These two do not.**
+   - **P7's ~88 sites are not 88 chances to un-reject — they are 88 chances to WRONGLY CERTIFY.**
+   - **P4 narrows what a REJECT gate scans.** Narrowing a reject gate ⇒ **fewer rejections ⇒ MORE ACCEPTS.**
+     **An under-inclusive zone predicate is a FALSE-CERTIFICATE GENERATOR** — and one was written into this
+     very document (**#18**). **Review every line of P4 and P7 against rule 2, twice.**
+4. **NEVER RELAX `GameState::PartialEq`'s `delayed_triggers` CONJUNCT** (`types/game_state.rs:10875`). It is the trap-antidote (§4.9). An implementer chasing corpus rows *will* be tempted. **That way lies a false certificate.**
+
+## ⭐ The bug, in one sentence
+
+> **CR 732.2a Example** *(verbatim, `docs/MagicCompRules.txt:6373`)*: *"A player controls a creature enchanted
+> by **Presence of Gond**… and another player controls **Intruder Alarm**, which reads, in part, 'Whenever a
+> creature enters, untap all creatures.' … they may suggest **'I'll create a million tokens'** … repeating that
+> sequence 999,999 more times."*
+
+## ⇒ **THE ENGINE'S LOOP DETECTOR REJECTS THE COMPREHENSIVE RULES' OWN WORKED EXAMPLE OF THE RULE IT IMPLEMENTS.**
+
+**That is the bug.** Not *"a combo doesn't fire."* **The rulebook prints the canonical shortcut, names the two
+cards, and we decline it.**
+
+## ⛔⛔ And here is WHY it went unnoticed for 88 sites: **THE TEST GATE IS HALF-BUILT.**
+
+**Measured across the entire engine crate:**
+
+| Guard | Exists? | What it pins |
+|---|---|---|
+| **NEGATIVE — "this MUST trip `sibling`"** | ✅ **YES, and it is discriminating.** `for_each_creature_production_still_fails_closed` (`ability_scan.rs:4840`) — Gaea's Cradle **counts** a mutable creature set ⇒ must fail closed. Its own doc: shipping the mistake *"falsely **CERTIFIES** an unbounded-mana loop — **strictly worse** than the false negatives this walker exists to fix."* |
+| **POSITIVE — "this MUST NOT trip `sibling`"** | ⚠️ **ONLY THE TRIVIAL CASE.** The one *"must not trip"* assertion is `assert!(!ability_reads_sibling_mutable(&fixed_drain()))` (`:5215`) — and **`fixed_drain` is `GainLife{ amount: Fixed{1}, player: Controller }`: it references NO OBJECT FILTER AT ALL.** |
+| **POSITIVE, DISCRIMINATING — "this REFERENCES a typed object filter but does NOT COUNT it, so it must NOT trip"** | ⛔ **DOES NOT EXIST.** And **`grep -rin "intruder" crates/engine/src/` returns ZERO.** Not a test, not a fixture, not a comment. |
+
+> ## **The exact line P7 turns on — *NAMING a type* vs *COUNTING a mutable set* — is defended by NO existing test.**
+> `fixed_drain` cannot defend it: it does **neither**. Gaea's Cradle cannot defend it: it wants `true`.
+>
+> ## ⇒ **THE CODEBASE CAN STRUCTURALLY DETECT OVER-ACCEPTANCE AND CANNOT DETECT OVER-REJECTION. It is a ONE-SIDED RATCHET — and it ratcheted 88 times.**
+>
+> **Every one of those 88 fail-closed defaults was FREE.** `sibling: true` costs a contributor nothing and
+> trips no guard, so **the conservative arm always won.**
+>
+> ## ⇒ **RC-1 is not "someone wrote a wrong arm." RC-1 is "the suite only ever defended one side of the line."** **That is the class**, and it reframes P7 from *a fix* into **installing the missing half of a gate that was never symmetric.**
+
+## The bug, in four lines
+
+| | Root cause | Where |
+|---|---|---|
+| **RC-1** | ⭐ **The `sibling` axis is a FAIL-CLOSED DEFAULT over ~88 sites, consumed as if it were a PRECISE PREDICATE.** Every Commander permanent trips it. | `game/ability_scan.rs` (57 `Axes::CONSERVATIVE` + 31 `sibling: true`); consumed at `analysis/resource.rs:1457` |
+| **RC-2** | The cover **forbids a bounded start-up transient** — CR 732.2a explicitly permits one. | `game/engine.rs:1732-1738` |
+| **RC-3** | The live path **arms on ONE bespoke card shape**, and **zero corpus rows test it.** | `game/casting_costs.rs:6785` |
+| **RC-4** | Loop equality is **id-keyed** — CR 400.7 makes that rules-wrong. | `types/game_state.rs:10428-10435` |
+
+## The six checks
+
+**C1** Δ-constancy · **C2** place non-depletion · **C3** threshold scan · **C4** the shipped triple · **C5** deferred execution (CR 603.7) · **C6** ∞-composition fixpoint.
+
+**The drive measures what RESOLVES in the window. It is structurally blind to what the window SCHEDULES** — that is C5, and it is why Kiki-Jiki defeats C1–C4 simultaneously (§4.6–4.9).
+
+## Landing order — **SEQUENCING, NOT SCOPE-REDUCTION**
+
+> ⛔ **Tiers order DEPENDENCIES. They are NOT permission to ship less.** Every phase discharges a class. **No phase may ever ship on a card-level gate.**
+
+| Tier | Phases | Class gate (**this** is the acceptance criterion) |
+|---|---|---|
+| **1** | **P2** (the dual) · **P4** (CR 113.6, **all four all-zones gates**) · **P5** (bounded transient) · **P7** (the `sibling` class fix) | **P4:** verdict invariant under **ANY** hidden-zone content · **P5:** verdict invariant under **WHICH** creature the cast convokes · **P7:** **Intruder Alarm un-rejects** (CR 732.2a's own example) **AND Gaea's Cradle stays fail-closed** · **P2:** the corpus dual holds **corpus-wide** |
+| **2** | **P0** (mode binary) · **P1** (`LoopOutcome`) · **P3** (generalized arming) | **P3:** an *activation* loop, a *land-play* loop and a *cast* loop **all arm** — not just Combo B |
+| **3** | **P6** (C2) · **P8** (C5) · **P9** (C6) · **P10** (RC-4) | soundness · composition · reach |
+
+> ## ⚠️ **P2 IS IN TIER 1, AND IT IS NOT NEGOTIABLE.**
+> **P2 (the `run_combo_live` corpus dual) is the ONLY instrument that can tell a CLASS fix from a CARD fix.** Ship Tier 1 without it and *"we built to the pattern"* is an **unverified assertion** — which is Appendix B's failure mode, one level up. **This was demonstrated the hard way: a single-fixture probe "proved" P7 and the real board still declined (#17).**
+
+## Where things live
+
+| You want… | Go to |
+|---|---|
+| **To EXECUTE** | **§6** (phases) · **§7** (verification matrix) · **§8** (open questions) |
+| To understand *why* | §3 (root cause) · §4 (architecture) · §5–§5b (object identity; why `egg` was rejected) |
+| **To not repeat a refuted claim** | ⭐ **Appendix B** — **17 errors, every one a code claim from memory.** **Read it before you assert anything.** |
 
 ---
 
@@ -75,9 +177,14 @@ anywhere* is looking at the live path.
 **The honest surface is: P3 (driver) + P4 (CR 113.6 predicate) + C2 + C5 + C6.** A plan that under-states its
 own new surface will be executed as if it were small.
 
-**The minimum that fixes the user's reported bug is P0 + P2 + P3 + P4 + P5 + P7(a).** Everything else is
-soundness (P1, P8), composition (P9), or reach (P6, P10) — all real, none of them optional for a correct
-detector, but **do not let the size of the whole obscure which part is the fix.**
+> ## ⛔ **DO NOT ASK "WHAT IS THE MINIMUM TO MAKE THE USER'S COMBO WORK?" THAT QUESTION BUILDS THE BUG.**
+> A prior revision of this section answered it, and the answer was **measurably false** (Appendix B #17).
+> **Every phase discharges a CLASS. The combos are CANARIES.** See **§0** for the landing order and the
+> **class-level acceptance criteria.**
+>
+> **Tier 1 = P2 + P4 + P5 + P7.** **P2 is in Tier 1 because it is the only instrument that can tell a class
+> fix from a card fix** — a lesson learned by shipping a single-fixture probe that "proved" a fix which does
+> **nothing** on the real board.
 
 ---
 
@@ -148,18 +255,66 @@ selecting the `TapCreatures{Legendary}` cost, to tap **Kilo** and fire the proli
 
 ---
 
+> ### 📕 **THE RECORD (§3–§5b).** Read this to *understand* a decision or to *reopen* a settled one.
+> **To EXECUTE, skip to §6.** Nothing here is optional evidence — but nothing here is an instruction either.
+> **Every warning that guards an instruction is repeated AT that instruction.** Argue once; warn everywhere.
+
 ## 3. Root cause
 
-### 3.1 RC-1 — the observer predicate is wrong, it has a second unconditional veto, and it reads hidden zones
+### 3.1 RC-1 — ⭐ **`sibling` is a FAIL-CLOSED DEFAULT used as a PRECISE PREDICATE**
 
-`fire_time_conditions_read_growing_class` (**`analysis/resource.rs:1457-1591`**). It is a **six-gate** scan.
-**Measured, gate by gate — this table is the map for P4 and P7:**
+> ## ⛔ **THIS SECTION WAS REWRITTEN AFTER A LIVE MEASUREMENT REFUTED IT. See Appendix B #17.**
+> A prior revision called RC-1 *"a wrong arm"* and sized its fix at *"~10 lines, already probe-measured."*
+> **I ran it on the real board. It is false.** The probe that "proved" the 10-line fix was run on a **clean
+> two-card board** — a **vacuous discriminator**, the very thing this plan spends a whole section
+> quarantining. **On the real board the 10-line fix changes nothing.**
+
+**MEASURED, in an isolated worktree, by applying the fixes and running the failing test with every decline
+point instrumented:**
+
+```
+XPROBE: try_offer ENTERED; armed=true          <-- arming is FINE  (⇒ P3 is NOT on Combo A's path)
+XPROBE: drives OK                              <-- the driver drives Combo A 3× cleanly
+XCOVER: FAIL at fire_time_conditions_read_growing_class
+XGATE3: EXECUTE obj="Pentad Prism"    zone=Battlefield     <-- QuantityRef::ManaSpentToCast  (ability_scan.rs:2072)
+        ...fix that arm, re-run...
+XGATE3: EXECUTE obj="Choked Estuary"  zone=Battlefield     <-- Effect::RevealFromHand        (ability_scan.rs:910)
+        ...and there are more behind it.
+```
+
+**Fix one arm, the next card appears.** **Pentad Prism is a card in the user's OWN combo.** **Choked Estuary
+is a LAND.**
+
+### ⇒ The real root cause, stated as a class
+
+> ## **The `sibling` axis is a FAIL-CLOSED DEFAULT over ~88 sites — and the loop detector consumes it as if it were a PRECISE PREDICATE.**
+>
+> **Measured surface in `game/ability_scan.rs`: 57 `Axes::CONSERVATIVE` sites + 31 explicit `sibling: true`
+> sites.** `Axes::CONSERVATIVE` is the walker's *"I have not analyzed this node"* default — and on the
+> `sibling` axis that default **means *"this might read the growing class."*** **On a real Commander board,
+> essentially every permanent trips at least one of the 88.**
+>
+> **The user's board trips it through at least THREE structurally different arms:**
+> | Arm | Site | Why it is WRONG |
+> |---|---|---|
+> | `TargetFilter::Typed` | `ability_scan.rs:2456` | rejects **Intruder Alarm — CR 732.2a's own worked example** |
+> | `QuantityRef::ManaSpentToCast` | `ability_scan.rs:2072` | **mana spent to cast is stamped at CAST TIME and immutable** — it *cannot* observe a token count. **(Pentad Prism)** |
+> | `Effect::RevealFromHand` | `ability_scan.rs:910` | a hand reveal reads **nothing on the battlefield**. **(Choked Estuary — a land)** |
+>
+> ## ⇒ **THE FIX IS A CLASS FIX, NOT AN ARM FIX.** Re-derive `sibling` from a **POSITIVE** definition —
+> ## ***"does this node read a MUTABLE OBJECT SET whose cardinality the loop changes?"*** — instead of
+> ## defaulting to `true` and patching exceptions one card at a time.
+>
+> **Patching arms card-by-card is whack-a-mole, and it is exactly the purpose-built patch §0 forbids.**
+
+**`sibling` is consumed by `fire_time_conditions_read_growing_class` (`analysis/resource.rs:1457-1591`), a
+six-gate scan. Measured, gate by gate — this table is the map for P4 and P7:**
 
 | gate | lines | scans | zone scoping | verdict |
 |---|---|---|---|---|
 | **(1)** | `1459-1477` | `active_trigger_definitions` → `def.condition` + **`def.execute`** | `state.objects.values()` — **NO zone filter** | ⛔ **wrong predicate + hidden zones** |
 | (2) | `1478-1499` | every `obj.abilities` def, any kind | `zone != Battlefield` ⇒ skip | ✅ correctly scoped *(carries a `ponytail:` comment saying so)* |
-| (3) | `1500-1523` | `active_replacements` → condition + `runtime_execute` + `execute` | all-zones **by design** | ⚠️ must share `find_applicable_replacements`' restriction |
+| **(3)** | `1500-1523` | `active_replacements` → condition + `runtime_execute` + **`execute`** | all-zones — **NO zone filter** | ⛔ **HIDDEN ZONES + the arm that actually blocks the user's board.** ⚠️ **A prior revision listed gate (3) as "all-zones *by design*" and left it OUT of P4. That was WRONG** — the runtime authority (`find_applicable_replacements`, `game/replacement.rs`) restricts to `[Battlefield, Command]`, and **the firewall must share it.** **MEASURED: this is the gate that trips on Pentad Prism and Choked Estuary.** |
 | **(4)** | `1524-1543` | `obj.static_definitions.iter_all()` — **statics only** | `state.objects.values()` — **NO zone filter** | ⛔ **UNCONDITIONAL veto + hidden zones** |
 | (5) | `1544-1556` | `transient_continuous_effects` → duration + condition | n/a | ok |
 | (5b) | `1557-1578` | `granted_keyword_triggers_in_zone` → condition + execute | `state.objects.values()` — **NO zone filter** | ⛔ **hidden zones** |
@@ -180,15 +335,22 @@ rejected. Intruder Alarm is CR 732.2a's OWN worked example** (`docs/MagicCompRul
 is not *"reads the growing class"*; it is *"references any typed object filter"* — which every Commander
 permanent does.
 
-> **The root fix is ~10 lines, and it is already revert-probe-measured.** `QuantityRef::ObjectCount`
-> **hard-sets `sibling: true` in its OWN arm** (`ability_scan.rs:1593-1601`, the flag at `:1596`), whereas
-> `SetTapState` takes its bit **solely from the shared `Typed` child** (`:2456`). **The asymmetry is real ⇒
-> separable in a context-free fold.** And **`typed_filter_reads_projected` (`:3113-3122`) ALREADY builds the
-> full `Axes` and throws `event` + `sibling` away** — it returns `acc.projected` at `:3121`. Return `acc`
-> instead. **See §4.6 for the measurement.**
+> ## ⛔ **THE TYPED ARM IS ONE INSTANCE OF THE CLASS — NOT "THE FIX." (Appendix B #17.)**
+> A prior revision called this *"a ~10-line root fix, already revert-probe-measured."* **The probe was run on
+> a clean two-card board. On the REAL board, fixing this arm alone changes NOTHING** — `ManaSpentToCast`
+> (Pentad Prism) takes over, then `RevealFromHand` (Choked Estuary), then the next. **See §3.1's instrumented
+> run and P7 for the class fix.**
+>
+> **What is still TRUE and still useful:** `QuantityRef::ObjectCount` **hard-sets `sibling: true` in its OWN
+> arm** (`ability_scan.rs:1593-1601`, flag at `:1596`) — **it genuinely counts a mutable object set, so it
+> MUST stay `true` (that is Gaea's Cradle)** — whereas `TargetFilter::Typed` takes its bit from the shared
+> child (`:2456`) and **naming a type is not counting one.** **That asymmetry is exactly the positive
+> definition P7 generalizes.** And `typed_filter_reads_projected` (`:3113-3122`) **already builds the full
+> `Axes` and discards `event` + `sibling`** (returns `acc.projected` at `:3121`) — **return `acc`.** The
+> machinery exists; the *classification* is what is wrong.
 
-> **⭐ The `sibling` arm is ONE FIX UNDER FOUR GATES.** Gates (1), (2), (3) and (4) **all bottom out in the
-> same `scan_target_filter` → `TargetFilter::Typed` leaf.** So the single-line fix clears **Intruder Alarm**
+> **⭐ The `sibling` fix reaches FOUR GATES at once.** Gates (1), (2), (3) and (4) **all bottom out in the
+> same `scan_target_filter` / `scan_effect` walk.** So the class fix clears **Intruder Alarm**
 > (a *trigger* ⇒ gate 1) **and Freed from the Real** (an *activated ability* ⇒ gate 2 — **the real board's
 > actual third veto**) at once.
 
@@ -858,6 +1020,10 @@ never congruent). **Its PRESCRIPTION — normalization first — is right.** Kee
 
 ---
 
+> ### 🛠 **THE PLAN (§6–§8).** This is the executable half. **Start here.**
+> Each phase carries its own warnings inline — you should not need to page back into §3–§5b to execute it.
+> **Every phase gates on a CLASS property (§0), never on a canary going green.**
+
 ## 6. Implementation plan
 
 > **Phase renumbering.** Two user directives added prerequisite phases. Mapping to the planner brief's
@@ -1040,7 +1206,20 @@ certifies_offline  ==  (offers_live XOR auto_wins_live)      // for every non-WA
 Also: real cards, real libraries, real mana bases; add **Presence of Gond + Intruder Alarm** as a first-class
 row; port `object_growth_51st_sprout_swarm_covers_and_offers` onto them (**it must FAIL today**).
 
-### P3 — RC-3: ONE generalized arming context + driver ⚠️ **A REWRITE, AND A PREREQUISITE**
+### P3 — RC-3: ONE generalized arming context + driver ⚠️ **A REWRITE**
+
+> ## ✅ **MEASURED: P3 is NOT on Combo A's path — and it STAYS IN THE PLAN ANYWAY.**
+> The instrumented run (§3.1) shows `armed=true` and `drives OK`: **the live path already arms on Combo A**
+> (a buyback-paid, token-creating recast is exactly the one bespoke shape `casting_costs.rs:6785` handles),
+> and `drive_recast_iteration` drives it three times cleanly.
+>
+> **P3 is RESEQUENCED (Tier 2), NOT DELETED.** **RC-3 is a CLASS defect** — *zero of 53 corpus rows exercise
+> the live path at all* — **and it is a class defect whether or not the canary needs it.** **Combo B** (a
+> two-activation cycle) and the **P2 dual** both require it.
+> ## **A phase does not leave the plan because the canary does not need it.** (§0.)
+>
+> **P3's class gate:** an **activation** loop, a **land-play** loop **and** a **cast** loop **all arm** — not
+> just Combo B.
 
 **Do NOT add `last_activation_context` as a sibling** (sibling-cluster smell). **But do not let the naming fix
 disguise the cost.** Measured, `drive_recast_iteration` (**`engine.rs:1451`**) has **eight structural
@@ -1086,8 +1265,51 @@ anything else ⇒ `None` ⇒ no offer.**
   (`:416`) is literally `state.battlefield × active_trigger_definitions`.** ⇒ **"just use
   `battlefield_active_triggers`" IS "hard-code battlefield-only"** — the thing CR 113.6 forbids.
   **The predicate must be written.**
-- **Apply it to gates (1), (4) and (5b)** — the three that iterate `state.objects.values()` with no zone
-  filter. **Gate (2) is ALREADY correctly battlefield-scoped — leave it alone.**
+> ## ⛔ **APPLY IT TO FOUR GATES — (1), (3), (4) AND (5b). A prior revision listed only three and left out gate (3), which is the one that actually blocks the user's board.** *(MEASURED, §3.1.)*
+> **Gate (2) is ALREADY correctly battlefield-scoped — leave it alone.**
+>
+> ## ⛔⛔ **GATE (3): DO NOT HAND-MIRROR THE ZONE PREDICATE. *CALL* THE AUTHORITY. (Appendix B #18.)**
+> **A prior revision of this section said the authority *"restricts to `[Battlefield, Command]`"*. That is the
+> FIRST OF FIVE CLAUSES, and shipping it would have been UNSOUND.**
+>
+> **The real authority — `object_replacement_candidate_applies` (`game/replacement.rs:4829`), measured at
+> `:4891-4897`:**
+> ```rust
+> if !in_scanned_zone && !is_entering && !is_being_discarded
+>    && !is_applicable_dredge && !is_stack_self_move { return false; }
+> ```
+> …and **clause 1 is itself compound** (`:4873`):
+> `in_scanned_zone = !is_liminal_source && [Battlefield, Command].contains(&obj.zone)`.
+>
+> **The four carve-outs are CR-carved exceptions to CR 113.6 — they are REAL RUNTIME FUNCTION:**
+>
+> | Carve-out | Functions from | CR |
+> |---|---|---|
+> | `is_entering` | anywhere → battlefield | **CR 614.12** *(self-replacement only)* |
+> | `is_being_discarded` | **hand** | **CR 614.12** *(self only)* |
+> | `is_stack_self_move` | **stack** | **CR 608.2n + 614.1a** *(self only)* |
+> | ⚠️ `is_applicable_dredge` | **graveyard** | **CR 702.52a/b** — **and it is NOT SelfRef-gated** |
+>
+> ### ⛔ **AND MIND THE DIRECTION — THIS IS WHY IT IS THE MOST DANGEROUS LINE IN THE PLAN:**
+> ## **Gate (3) is a *REJECT* gate. Narrowing what it scans ⇒ FEWER rejections ⇒ MORE ACCEPTS. An under-inclusive zone predicate is a FALSE-CERTIFICATE GENERATOR.**
+> **A dredge card in a graveyard FUNCTIONS at runtime. A naive `[Battlefield, Command]` filter makes it
+> INVISIBLE to the analysis** — and by §5b.1 that is the **catastrophic** direction, not the safe one.
+>
+> ### ✅ **THE FIX — one authority, two callers.**
+> **Factor the functioning clause OUT of `object_replacement_candidate_applies` into a shared predicate**
+> taking `event: Option<&ProposedEvent>`:
+> - **`Some(ev)`** = **runtime** — evaluate all five clauses against the real event.
+> - **`None`** = **ANALYSIS TIME** ⇒ **fail-CLOSED over all four event-keyed carve-outs** (we do not know which
+>   event will occur, so we must assume any of them could).
+>
+> **Hand-mirroring drifts the moment someone adds the next CR carve-out — and drift in THIS direction is
+> silent and unsound.** This is the repo's own **single-authority** principle, and here it is also the **only
+> sound option.**
+
+**Class gate (this is P4's acceptance criterion — NOT "the canary went green"):**
+> **The verdict is invariant under ANY hidden-zone content.** Adding an arbitrary card to any library, hand
+> or graveyard **must not change the answer**. *(`real_board_verdict_is_invariant_under_hidden_zone_contents`
+> — and it must **assert the OFFER in every arm**, or it passes vacuously as `false == false`.)*
 - **CR 113.6's exceptions are live and verified** (`docs/MagicCompRules.txt:771-801`). **The full letter set —
   prior revisions cited `b/c/d/e/f/j/k` and were INCOMPLETE:**
 
@@ -1181,40 +1403,125 @@ that **gets the answer wrong**.
 > replacement thresholds are **gate (3)**. **An implementer who scopes C3 to gate (4) LOSES the trigger- and
 > replacement-condition threshold scans — the exact class C3 exists for.**
 
-**Arm (a) — gate (1)'s WRONG ARM (~10 lines). Already revert-probe-measured.**
-Change `ability_scan.rs:2456` from an unconditional `sibling: true` to `sibling: typed_filter_reads_sibling(tf)`.
-**`typed_filter_reads_projected` (`:3113-3122`) ALREADY builds the full `Axes` and throws `event` + `sibling`
-away** (it returns `acc.projected` at `:3121`) — **return `acc` instead.** Ship with a `FilterProp` audit.
+> ## ⛔⛔ **P7 IS NOT "~10 LINES." A PRIOR REVISION SAID SO AND IT WAS MEASURABLY FALSE (Appendix B #17).**
+> The *"one wrong arm at `ability_scan.rs:2456`, already probe-measured"* claim was based on a probe run on a
+> **clean two-card board**. **Run on the REAL board, the 10-line fix changes nothing** — the next arm takes
+> over, then the next. **See §3.1 for the instrumented run.**
 
-> **MEASURED, on a pristine tree, with a single-line probe** (`ability_scan.rs:2456`, `sibling: true → false`,
-> nothing else changed):
-> - **Intruder Alarm — UN-REJECTED** ✅ *(CR 732.2a's own worked example, `:6373`)*
-> - **Gaea's Cradle — STILL fails closed** ✅
-> - `ability_scan::mana_production_scan_tests::for_each_creature_production_still_fails_closed` — **still
->   green** ✅
+### **ARM (a) — THE CLASS FIX: re-derive the `sibling` axis from a POSITIVE definition.** *(This is the phase.)*
+
+**The defect (§3.1):** `sibling` is a **fail-closed default** over **~88 sites** in `game/ability_scan.rs`
+(**57 `Axes::CONSERVATIVE` + 31 explicit `sibling: true`**), consumed by the detector as if it were a
+**precise predicate**. `Axes::CONSERVATIVE` means *"I did not analyze this node"* — and on the `sibling` axis
+that silently reads as *"this might observe the growing class."*
+
+**The fix — define `sibling` POSITIVELY:**
+> ## **A node reads `sibling` iff it reads a MUTABLE OBJECT SET whose cardinality the loop changes.**
+
+Everything else is `sibling: false`. Worked, from the three arms the real board actually trips:
+
+| Node | Verdict | Why |
+|---|---|---|
+| `QuantityRef::ObjectCount { filter }` (`:1593-1601`) | ✅ **`sibling: true` — KEEP** | it literally **counts a mutable object set**. **This is Gaea's Cradle, and it MUST stay fail-closed.** |
+| `TargetFilter::Typed(tf)` (`:2456`) | ⛔ **`sibling: false`** | naming a *type* is not *counting* one. **Rejects Intruder Alarm — CR 732.2a's own example.** |
+| `QuantityRef::ManaSpentToCast` (`:2072`) | ⛔ **`sibling: false`** | **stamped at CAST TIME, immutable thereafter.** Cannot observe a token count. **(Pentad Prism.)** |
+| `Effect::RevealFromHand` (`:910`) | ⛔ **`sibling: false`** | reads the **hand**, not the battlefield. **(Choked Estuary — a land.)** |
+
+> ## ✅ **P7 IS NOT A NEW PATTERN. THE TEMPLATE IS ALREADY IN THE FILE — AND IT SHIPS ITS OWN SAFETY NET.**
+> **Read the comment above `ability_scan.rs:2454`:**
+> ```rust
+> // type/controller predicates read none. `event`/`sibling` stay CONSERVATIVE
+> // (byte-preserved) — only the projected axis is refined.
+> TargetFilter::Typed(tf) => Axes {
+>     event: true,
+>     sibling: true,                                 // <-- fail-closed default, DELIBERATELY un-refined
+>     projected: typed_filter_reads_projected(tf),   // <-- REFINED, computed
+> },
+> ```
+> **Someone already did to `projected` EXACTLY what P7 must now do to `sibling`, and consciously left
+> `sibling` byte-preserved.** And `scan_filter_prop` (`:3124`) carries the guarantee — **verbatim**:
+> > *"Classify a single `FilterProp` on the three read axes. **Exhaustive with NO `_` wildcard** — a NEW
+> > `FilterProp` variant **fails to compile** here until it is classified (fail-closed to `CONSERVATIVE` when
+> > its read surface is unproven)."*
 >
-> **Why they separate:** `QuantityRef::ObjectCount` **hard-sets `sibling: true` in its OWN arm**
-> (`:1593-1601`, flag at `:1596`), whereas `SetTapState` takes its bit **solely from the shared `Typed` child**
-> (`:2456`). **The asymmetry is real ⇒ separable in a context-free fold.**
+> ## ⇒ **THAT ANSWERS "HOW DO YOU SAFELY FLIP 88 FAIL-CLOSED DEFAULTS": YOU DO NOT HAND-REVIEW 88 SITES.**
+> **You make the COMPILER refuse to let a site go unclassified**, and you make **every arm carry the sentence
+> that says why it cannot observe a loop-grown cardinality.** *(The `ManaSpentToCast` reasoning is the model:
+> **"stamped at cast time, immutable thereafter, cannot observe a token count."** **All ~88 arms owe that
+> sentence.** No wildcard. No default. No *"probably fine."*)*
+>
+> ⇒ **P7 = "extend the `projected` refinement to `sibling`, with the same no-wildcard completeness gate."**
+> **This is `extend-don't-hack` + structural completeness, using a pattern that ALREADY EXISTS IN THIS FILE —
+> and it converts an 88-site audit into a COMPILE-TIME OBLIGATION.** *(Size it honestly. Do not apologize for
+> the size: this **is** the class fix.)*
 
-> **⭐ ARM (a) IS ONE FIX UNDER FOUR GATES.** Gates (1), (2), (3) and (4) **all bottom out in the same
-> `scan_target_filter` → `TargetFilter::Typed` leaf.** So the single line clears **Intruder Alarm** (a
-> *trigger* ⇒ gate 1) **and Freed from the Real** (an *activated ability* ⇒ gate 2 — **the real board's actual
-> third veto**). **Arm (a) + P4 is NECESSARY AND SUFFICIENT for the user's bug.**
+**Method:**
+1. **Refine `sibling` the way `projected` was refined** — a computed classifier per node, **exhaustive, no
+   `_` wildcard**, so an unclassified variant **fails to compile**.
+2. **Keep `CONSERVATIVE` as the default for genuinely unproven nodes** — fail-closed is correct (§5b.1).
+   **The bug is not the default; it is that ~88 nodes were never revisited.**
+3. **`typed_filter_reads_projected` (`:3113-3122`) already builds the full `Axes` and throws `event` +
+   `sibling` away** (returns `acc.projected` at `:3121`) — **return `acc`.** The machinery exists; the
+   **classification** is what is wrong.
 
-**Arm (b) — ⚠️ gate (4)'s UNCONDITIONAL `modifications` VETO (`resource.rs:1539`). A REAL LATENT CLASS
-DEFECT — but NOT a root cause of the user's bug. Scope it honestly.**
-Replace `if !def.modifications.is_empty() { return true }` with the **same** treatment the condition arm gets:
+> ## ⛔ **MIND THE DIRECTION.** Every arm you flip from `sibling: true` to `false` **REMOVES A REJECTION.**
+> **These are not 88 chances to un-reject — they are 88 chances to WRONGLY CERTIFY** (§0 rule 3).
+> **An arm you cannot justify in one sentence stays `CONSERVATIVE`.**
+
+> ### ⭐⭐ **P7's CLASS GATE — and P7 MUST SHIP THE MISSING HALF OF THE TEST GATE (§0).**
+>
+> **The suite has a discriminating NEGATIVE guard and NO discriminating POSITIVE one. That asymmetry IS the
+> root cause's institutional shadow, and P7 must close it.** Ship the positive guard **adjacent to its
+> negative twin, in the same module, in the same style:**
+>
+> ```rust
+> /// CR 732.2a Example (MagicCompRules.txt:6373) — the rulebook's OWN worked shortcut:
+> /// Presence of Gond + INTRUDER ALARM, "I'll create a million tokens."
+> ///
+> /// `SetTapState { target: Typed[Creature], scope: All, state: Untap }` NAMES a type; it does
+> /// not COUNT a mutable set. It cannot observe a loop-grown cardinality => it must NOT trip
+> /// `sibling`, or the detector declines the Comprehensive Rules' own example of the rule it
+> /// implements.
+> ///
+> /// DISCRIMINATING / revert-probe: delete the `sibling` refinement (restore the blanket
+> /// `sibling: true` on TargetFilter::Typed) and this FLIPS TO FAIL.
+> #[test]
+> fn untap_all_creatures_does_not_fail_closed() {
+>     assert!(!scan_effect(&intruder_alarm_untap_all()).sibling, "...");
+> }
+> ```
+>
+> ⚠️ **It MUST be revert-probed.** Delete the `sibling` refinement ⇒ **this test FLIPS TO FAIL.** *If it still
+> passes with the refinement reverted, it is vacuous and it is not the gate.* **(The existing negative guard
+> already carries exactly this discipline — copy it.)**
+>
+> ### **The class gate = the DISCRIMINATING PAIR + the dual:**
+> | | Card | Shape | Must |
+> |---|---|---|---|
+> | **positive** *(NEW — does not exist today)* | **Intruder Alarm** | `Typed[Creature]` — **NAMES a type** | **NOT trip `sibling`** |
+> | **negative** *(exists, `:4840`)* | **Gaea's Cradle** | `ObjectCount{Creature}` — **COUNTS a mutable set** | **STILL trip `sibling`** |
+> | **corpus-wide** | — | — | **the P2 dual holds** |
+>
+> ## **The pair is the proof because the two cards STRADDLE the definition.**
+> **A change that un-rejects BOTH is not a fix — it is the HOLE**, and by §0 rule 3 that is the **catastrophic**
+> direction. **A change that un-rejects NEITHER has done nothing.** **Only the discriminating pair can tell
+> those two apart — and until P7, the suite had only one of them.**
+>
+> **Combo A going green is a CONSEQUENCE, not the criterion.** *(A green canary with a broken Cradle is a
+> false-certificate, not a win.)*
+
+**⚠️ Arm (a) reaches FOUR gates at once:** (1), (2), (3) and (4) **all bottom out in the same
+`scan_target_filter` / `scan_effect` walk.** One principled fix, four consumers.
+
+### **ARM (b) — gate (4)'s UNCONDITIONAL `modifications` VETO (`resource.rs:1539`). A LATENT CLASS DEFECT.**
+Replace `if !def.modifications.is_empty() { return true }` with the same treatment the condition arm gets:
 *a modification whose **operand is the growing axis***, not *"any modification exists"*.
 
-> **Measured (§3.1b): ZERO battlefield objects on the user's board carry a static modification.** Gate (4)
-> fires there **only via the Library/Command zone**, so **P4 fully discharges it on that board.**
-> **Arm (b) is not the fix — it is the thing that breaks the FIRST TIME AN ANTHEM RESOLVES.** And **Empyrean
-> Eagle, Favorable Winds and Door of Destinies are sitting in this very deck's library.** That is its hostile
-> fixture (§7 row 16).
->
-> ⛔ **Do NOT write "arm (a) alone does not unblock the user's board." Measurement says it does.** *(Two
-> authors asserted the opposite from memory — Appendix B #15, #16.)*
+> **Measured: ZERO battlefield objects on the user's board carry a static modification**, so **P4 discharges
+> gate (4) on THAT board.** **Arm (b) is not what blocks the user — it is what breaks the FIRST TIME AN ANTHEM
+> RESOLVES.** **Empyrean Eagle, Favorable Winds and Door of Destinies are sitting in this very deck's
+> library.** That is its hostile fixture (§7 row 16). *(Two authors asserted the opposite from memory —
+> Appendix B #15, #16. Do not re-derive it; measure it.)*
 
 **Also in scope:**
 - **KEEP gate (4)'s CONDITION scan** (`:1532-1538`) — it is already the right place. **Narrow it** to a
@@ -1468,6 +1775,18 @@ negative — its PAIRED POSITIVE REACH-GUARD.** Cast-pipeline tests follow the *
 
 ## 8. Open questions — do NOT hand-wave
 
+0. ⭐ **UNVERIFIED: P7's TRUE SIZE.** This document proves the **shape** of RC-1 (a fail-closed `sibling`
+   default over ~88 sites) and proves the old *"~10 lines"* sizing was **false** (Appendix B #17). **It does
+   NOT measure the new sizing.** *"~88 sites"* is a **surface area, not a cost**: the refinement may touch 30
+   arms or 300 — **most `Axes::CONSERVATIVE` sites may well be correct and stay.** **Do not quote "88" as an
+   effort estimate; it is the audit's INPUT, not its output.**
+   > **How to pin it, cheaply:** in a fresh worktree, keep instrumenting `fire_time_conditions_read_growing_class`
+   > and refining arms **until `real_board_sprout_swarm_offers_loop_shortcut` actually goes GREEN**, then
+   > **count the arms that had to change.** That converts the surface area into a real number — **and it would
+   > be the first green run of that test in this workstream's history.** ⚠️ **Then re-verify the class gate:
+   > Intruder Alarm un-rejects AND Gaea's Cradle STILL fails closed. A green canary with a broken Cradle is
+   > the false-certificate direction (§0 rule 3), not a win.**
+
 1. **Is C1 + C2 + C3 + C4 + C5 SUFFICIENT?** Manaforge Cinder has Δ₁=Δ₂=Δ₃ and is illegal at **4** (C2 catches
    it, not C1). Kiki has constant Δ and dies to a **clock** (C5 catches it, not C1/C2/C3/C4). **Each new check
    so far was found by someone constructing a counterexample to "the checks are complete."** ⇒ **Prove no
@@ -1511,15 +1830,15 @@ negative — its PAIRED POSITIVE REACH-GUARD.** Cast-pipeline tests follow the *
 8. **Read the rule, don't cite it.** Every architectural correction here came from the rule *text*.
 9. **Don't claim rules cover you don't have.** **CR 732.2a does not forbid Kiki** — C5 v1 is honest
    engineering conservatism. Say so, or the first implementer who greps it stops trusting the document.
-10. **The rules work has held; every failure was a CODE claim from memory.** Sixteen for sixteen.
+10. **The rules work has held; every failure was a CODE claim from memory.** Eighteen for eighteen.
     **Grep before you assert, and put the `file:line` in the sentence.**
 
-## Appendix B — What we got wrong (sixteen times)
+## Appendix B — What we got wrong (eighteen times)
 
 > **Every single one is a CODE claim asserted from memory. The RULES layer has never once failed** — 40/40 CR
 > citations and 32/32 Oracle texts verified across six audits. **This appendix is the plan's immune system.**
 >
-> **#15 and #16 were committed WHILE WRITING THIS DOCUMENT, by two different authors, within an hour, and they are THE SAME ERROR.** Both were caught only by re-measuring. **Read them before you assert anything.**
+> **#15, #16 and #17 were all committed WHILE WRITING THIS DOCUMENT.** #15/#16 are the SAME fabrication, by two authors, an hour apart. **#17 is the plan asserting its own root-cause fix was "necessary and sufficient" — refuted by RUNNING IT.** All three were caught only by re-measuring. **Read them before you assert anything.**
 
 | # | Claim | Reality |
 |---|---|---|
@@ -1538,7 +1857,9 @@ negative — its PAIRED POSITIVE REACH-GUARD.** Cast-pipeline tests follow the *
 | 13 | **(team-lead)** *"`On` is TODAY'S DEFAULT FOR REAL MATCHES (`match_config.rs:89`, `session.rs:1613`)"* | **FALSE.** Both are **`#[cfg(test)]` fixtures** (`match_config.rs:60` is `mod tests`; `session.rs:1601` is `fn loop_detection_config_persists_across_bo3_rebuild`). **The shipped default is `Off`** (`match_config.rs:27`). He grepped the symbol, read the line numbers, and **inferred the context without reading it.** *(The P0 directive survived; only its rationale was wrong — and the true one is stronger.)* |
 | 14 | **(planner)** *"`is_on()` has live production callers at `session.rs:1625,1636`"* | **FALSE.** **Zero production callers** — all six sites are inside `#[test]` fns. *(Caught pre-flight by team-lead; never reached the document. **`is_off()` IS production-load-bearing**, at `match_config.rs:36`.)* |
 | **15** | **(planner)** *"Gate (4)'s `modifications` veto blocks the user's board — **Freed from the Real is an aura, and auras carry modifications**"* | ⛔ **FALSE.** Measured on the fixture's real `GameObject`: **`Freed from the Real \| Battlefield \| static_definitions: []`** — **EMPTY.** An aura granting only *activated* abilities has no modifications. **Battlefield objects with a static modification on that board: ZERO.** Gate (4) fires there **only via the LIBRARY** ⇒ **P4 fully discharges it** ⇒ **arm (a) alone IS sufficient.** ⭐ **The lesson: I read `resource.rs:1539` CORRECTLY and then inferred REACHABILITY from memory. A correct reading of the code is not a correct claim about the board.** *(Worse: my first refutation used a jq path — `.parse_details.*` — that does not exist. The conclusion held, but for a moment the evidence didn't. **Re-measure against the authoritative source.**)* |
-| **16** | **(team-lead)** *"Freed from the Real is an AURA — which is precisely why it appeared in the trip list. **Your inference is confirmed.**"* | ⛔ **FALSE — and it "confirmed" a claim the planner had ALREADY RETRACTED.** Two authors, independently, **within one hour**, invented the *same* aura→modifications link from memory — **while writing the document whose entire purpose is to prevent exactly that.** The **decision** (two-arm P7) is right; the **rationale** is not. **Arm (b) is a latent class defect, not a root cause.** ⭐ **This pair is the single strongest evidence in the document that the discipline is necessary — and that it works, because both were caught by re-measuring.** |
+| **16** | **(team-lead)** *"Freed from the Real is an AURA — which is precisely why it appeared in the trip list. **Your inference is confirmed.**"* | ⛔ **FALSE — and it "confirmed" a claim the planner had ALREADY RETRACTED.** Two authors, independently, **within one hour**, invented the *same* aura→modifications link from memory — **while writing the document whose entire purpose is to prevent exactly that.** The **decision** (two-arm P7) is right; the **rationale** is not. **Arm (b) is a latent class defect, not a root cause.** |
+| **18** | ⛔⛔ **(planner)** *"Gate (3)'s runtime authority restricts to `[Battlefield, Command]` (+ entering / discarded). Share that predicate."* | ⛔ **UNSOUND — AND IN THE *ACCEPT* DIRECTION, WHICH IS THE CATASTROPHIC ONE.** That is **three of FIVE clauses**, and it misses the **`liminal`** sub-clause entirely. Measured, `replacement.rs:4891-97`: `!in_scanned_zone && !is_entering && !is_being_discarded && !is_applicable_dredge && !is_stack_self_move`, with `in_scanned_zone = !is_liminal_source && [BF, Command].contains(zone)` (`:4873`). **A DREDGE card in a GRAVEYARD functions at runtime (CR 702.52a/b, and it is not SelfRef-gated) — my predicate made it INVISIBLE to the analysis.** ⭐ **Gate (3) is a REJECT gate ⇒ narrowing what it scans ⇒ FEWER rejections ⇒ MORE ACCEPTS ⇒ a FALSE-CERTIFICATE GENERATOR.** **I spent this entire session writing *"a coarse relation may REJECT, never ACCEPT"* — and then wrote the accept-direction bug into P4 myself.** ⇒ **The fix is to CALL the authority, not mirror it** (P4). ⇒ **And the lesson generalizes: P4 and P7 are the only two phases that move the detector toward ACCEPT. They need double the review of everything else — see §0 rule 3.** |
+| **17** | ⭐⭐ **(planner)** *"RC-1 is one wrong arm. **Arm (a) + P4 is NECESSARY AND SUFFICIENT** for the user's bug — ~10 lines, already probe-measured."* | ⛔⛔ **FALSE, AND IT IS THE MOST IMPORTANT ENTRY IN THIS TABLE.** **I built the fix in an isolated worktree and RAN the failing test.** It still declined. Instrumented: arming is **fine** (⇒ **P3 is not on Combo A's path** — that half was right), the drive is **fine**, and the cover dies in `fire_time_conditions_read_growing_class` at **gate (3)** — on **Pentad Prism**, *a card in the user's own combo* (`QuantityRef::ManaSpentToCast => Axes::CONSERVATIVE`, `ability_scan.rs:2072`). Fixed that arm ⇒ next blocker **Choked Estuary**, *a land* (`Effect::RevealFromHand => Axes::CONSERVATIVE`, `:910`). **Fix an arm, the next card appears.** ⇒ **RC-1 is a CLASS: `sibling` is a fail-closed default over ~88 sites (57 `Axes::CONSERVATIVE` + 31 `sibling: true`) consumed as a precise predicate.** ⭐ **THE ROOT ERROR: the probe that "proved" the 10-line fix was run on a CLEAN TWO-CARD BOARD. It was a VACUOUS DISCRIMINATOR — the exact failure this document spends a whole section quarantining, committed in the document's own root-cause claim.** **A single-fixture probe cannot distinguish a CLASS fix from a CARD fix. Only the corpus dual (P2) can — which is why P2 is in Tier 1.** |
 | — | *"The untap step is CR 502.2"* | **FALSE.** 502.2 is **day/night** (`:2150`). The untap step is **CR 502.3** (`:2154`). |
 | — | *"An LP / Petri-VAS model would replace the drive"* | **Unsound.** Δ is not derivable (replacements); legality is not a resource. |
 | — | *"Adopt `egg` for the equality core"* | **REJECTED on measurement.** With zero rewrite rules, `Analysis::merge` is **never called** ⇒ egg-minus-rewrites is a memoized catamorphism, **and `ability_scan.rs` already is one.** **The bug is a wrong arm, not drift.** §5b.2. |

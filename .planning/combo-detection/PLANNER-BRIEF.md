@@ -673,7 +673,22 @@ Not *"a combo doesn't fire."* **The rulebook prints the canonical shortcut, and 
 | Half of the gate | Status (measured) |
 |---|---|
 | **NEGATIVE** — Gaea's Cradle must STILL fail closed | ✅ **EXISTS**: `for_each_creature_production_still_fails_closed` (`ability_scan.rs:4840`) |
-| **POSITIVE** — Intruder Alarm must NOT fail closed | ❌ **DOES NOT EXIST**. `grep -rn "Intruder Alarm" crates/engine/src/` returns **NOTHING** — no test, no fixture, no comment. **No test anywhere asserts that any ability shape must `!sibling`.** |
+| **POSITIVE, trivial** — `fixed_drain` (references NOTHING) must not trip | ⚠️ **EXISTS** (`ability_scan.rs:5215`) — **but it is NON-DISCRIMINATING.** `fixed_drain()` = `GainLife { Fixed(1), Controller }` (`:4879`): it references **no object filter at all**, so it cannot distinguish *naming a type* from *counting a set* — **it does neither.** |
+| **POSITIVE, DISCRIMINATING** — Intruder Alarm (**references** a typed object filter but does **not count** it) must NOT fail closed | ❌ **DOES NOT EXIST**. `grep -rin "intruder" crates/engine/src/` returns **ZERO** — no test, no fixture, no comment. |
+
+> ### ⛔ **CORRECTION (#19, team-lead's, caught by combo-plan-author).**
+> My first draft of this section said *"no test anywhere asserts that any ability shape must `!sibling`."*
+> **That is FALSE — `ability_scan.rs:5215` is exactly such an assertion, and an implementer would find it in
+> ten seconds and stop trusting this document.** The measured truth is **sharper**, not weaker:
+>
+> ## **The exact line P7 turns on — *NAMING a type* vs *COUNTING a mutable set* — is defended by NO existing test, in EITHER direction.**
+>
+> `fixed_drain` sits far on the safe side and proves nothing about the boundary. Gaea's Cradle sits far on
+> the other side and wants `true`. **Nothing in the suite has ever stood ON the line.** So the ratchet
+> conclusion is not merely intact — **it is worse than I stated**: the positive guard that *does* exist is
+> **vacuous with respect to the boundary**, so it gave **false comfort** while the line went undefended.
+> **A contributor writing `sibling: true` on a typed filter trips `fixed_drain`? No. Trips Gaea's Cradle?
+> No. The conservative arm was free — AND IT LOOKED TESTED.**
 
 > ## **THE REPO CAN STRUCTURALLY DETECT OVER-ACCEPTANCE AND CANNOT DETECT OVER-REJECTION.**
 
