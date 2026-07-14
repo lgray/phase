@@ -64,13 +64,50 @@ game-ending path while looking like progress. **Carry it.**
 
 ## 2. ⛔ THE SPINE WAS FALSE — re-derive from a THREE-category taxonomy
 
-**The old §4.6 "governing constraint" said:**
-> *"Every ability on the battlefield that fires during the loop ALREADY FIRES IN THE DRIVE and ALREADY
-> LANDS IN Δ."*
+### 2.0 The GOVERNING CONSTRAINT, correctly scoped (user directive — this is the design's foundation)
 
-**FALSE. The drive measures what RESOLVES inside the window. It is structurally blind to what the window
-SCHEDULES.** **Every deletion in the old P5 was derived from that sentence**, so they must all be
-re-derived.
+> **The player presents the loop FIXED. It is responded to by other players afterward. Only the ACTIVE
+> PLAYER'S CONTEXT matters.**
+
+**This is true, it is load-bearing, and it simplifies enormously. Honour it. But scope it exactly:**
+
+| ✅ What it GIVES you | ❌ What it does NOT give you |
+|---|---|
+| **No search.** CR 732.2a forbids conditional actions ⇒ the choice vector is **pinned**. No branching, no proposer-search. | ❌ *"Therefore everything the loop does lands in the driven Δ."* **This was the old spine and it is FALSE.** |
+| **No opponent modelling.** CR 732.2b: other players **accept or shorten** in the response window. Their hands, libraries and responses are **not the cover's problem.** | |
+| **Current board only.** No hidden zones (CR 400.2), no hypothetical boards. | |
+
+**The error was TEMPORAL, not informational.** A fixed sequence, driven from the current board, in the
+active player's context, **can still SCHEDULE an effect that executes at a PHASE boundary** — and
+**CR 732.2a says the loop's ending point is a *priority* beat**, so **the loop never advances the phase**
+and never executes what it scheduled.
+
+> ⇒ **The drive measures what RESOLVES inside the window. It is structurally blind to what the window
+> SCHEDULES.** **Every deletion in the old P5 derived from the false spine and must be re-derived.**
+
+### 2.0.1 ⭐ The refinement this unlocks — C5 bounds the ω-axis's LIFETIME; it does NOT blanket-reject
+
+**Kiki-Jiki + Zealous Conscripts IS a legal CR 732.2a shortcut.** You genuinely *can* make a million
+tokens; the shortcut is real and offerable. What is *not* true is that the tokens **persist** — each is
+sacrificed at the next end step. **But Kiki's tokens have haste, so the proposer swings for lethal
+BEFORE that end step.**
+
+⇒ **A scheduled-outside-the-window effect does not invalidate the LOOP. It bounds the LIFETIME of the
+ω-axis, and therefore what the certificate may CLAIM.** The engine **already has the vocabulary**:
+`WinKind` (`loop_check.rs:83`) distinguishes `LethalDamage` / `PoisonLoss` / `Decking` / `Advantage` /
+`ExtraTurns`. **Kiki may certify `LethalDamage` (swing this turn). It must NOT certify `Advantage` (the
+tokens evaporate).**
+
+**Ship C5 in two stages, and SAY SO in the plan:**
+- **C5 v1 (build now) — FAIL CLOSED.** Reject when a scheduled effect destroys the ω-axis outside the
+  window. **This is precisely what R6 does today ⇒ KEEP R6 until C5 subsumes it.**
+- **C5 v2 (NAME it, do not build it) — the ω-axis lifetime refinement.** Classify the axis's lifetime and
+  let a short-lived axis certify `LethalDamage` while forbidding `Advantage`. **Kiki is then reachable.**
+
+> ⚠️ **The v2 note is not optional — it is the trap's antidote.** Without it, an implementer who sees
+> Kiki rejected will "fix" it by relaxing the `delayed_triggers` comparison (§4) and ship a **false
+> certificate**. Tell them the honest route: **it is deferred behind a named refinement, not
+> permanently out of reach.**
 
 ### The corrected taxonomy — what the current board can do that the DRIVE cannot see
 
@@ -176,9 +213,12 @@ declines VACUOUSLY ⇒ and P1 (arming) takes the blame.**
 Second-order: rows 17/18 run under `On`, but the offer path only runs under `Interactive` ⇒ P0's
 *"must NOT offer"* assertion **also passes vacuously.**
 
-**⇒ P0 MUST set `loop_detection = Interactive` on every live board**, add a **GATED** partition cell
-(the 4 `gated_on` rows), and resolve the shared-`step`/hook collision (once arming generalizes, the hook
-flips `waiting_for` **mid-sequence**).
+**⇒ P0 MUST set `loop_detection = Interactive` on every live board** — **`Interactive`, NOT `On`.**
+**Verified:** `engine.rs:431` dispatches `LoopDetectionMode::Interactive => interactive_loop_bridge(..)`,
+so under `On` **the offer path never runs** ⇒ P0's L-AUTOWIN *"must NOT offer"* assertions would pass
+**vacuously — mode-gated off, not rules-gated off.** Also add a **GATED** partition cell (the 4
+`gated_on` rows), and resolve the shared-`step`/hook collision (once arming generalizes, the hook flips
+`waiting_for` **mid-sequence**).
 
 **This is NOT a 5th root cause of the user's bug** — the real fixture is `Interactive`
 (`repro_user_combo.rs:66`), so *"every cheap gate at `engine.rs:450` is green"* still holds.
