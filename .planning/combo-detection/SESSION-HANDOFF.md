@@ -114,76 +114,76 @@ empty library, no auras, stub oracle) — `sprout_swarm_scenario`, `loop_shortcu
 
 ## 4. ⚠️ THE THING THAT KEEPS BITING US — read before asserting anything
 
-**This plan has been wrong TEN times.** All ten are catalogued in the plan's **Appendix B**.
+**This plan has been wrong NINETEEN times.** 18 are catalogued in the plan's **Appendix B**; **#19 is
+recorded in §1 above and still owes a row.**
 
-> ## **Every single failure was a CODE claim asserted from memory. The rules work has held up under four reviews.**
+> ## **Every single failure was a CODE claim asserted from memory. The RULES layer has NEVER failed — 40/40 CR citations, 32/32 Oracle texts, across six audits.**
 
-**Grep before you assert, and put the `file:line` in the sentence.** The worst ones:
+**Three of the nineteen were committed *while writing the document*, by two different agents, and every one
+was caught the same way: SOMEONE RE-MEASURED.** Grep before you assert, and **put the `file:line` in the
+sentence.** The worst ones:
 - *"Combo B is ONE activation"* — **FALSE.** `drive_offline_kilo_freed_relic` (`corpus.rs:1556`) takes
   **TWO** `ActivateAbility` actions. Killed an entire phase.
-- *"Generalizing `normalize_recast_frame` lifts all 13 `ObjectReentry` rows"* — **FALSE.** It lifts **zero**.
-- *"C3 is the arm no review broke"* — **FALSE.** Its predicate rejects **CR 732.2a's own worked example**.
+- *"Freed from the Real is an aura, and auras carry modifications"* — **FALSE.** Measured:
+  `static_definitions: null`. **Two agents independently invented the same false mechanism from memory and
+  a third ratified it.**
 - *"Hum of the Radix DECLINES"* — **UNSATISFIABLE.** *"Each **artifact** spell"*; Sprout Swarm is a green
-  instant. The card is **Damping Sphere**.
+  instant. *(Damping Sphere is dead too: its deltas **cancel exactly** with affinity.)*
+- *"Arm (a) is NECESSARY AND SUFFICIENT"* (#17) — **FALSE.** The probe that "proved" it ran on a **clean
+  two-card board and never on the real one**. ***A vacuous discriminator, inside the plan's own root-cause
+  claim.***
+- *"No test anywhere asserts `!sibling`"* (#19) — **FALSE.** `ability_scan.rs:5215` asserts exactly that.
 
 ---
 
-## 5. ⭐ KNOWN-UNFIXED CONTRADICTION — deliberately left in the plan as reviewer calibration
+## 5. Document state — the palimpsest is GONE (do not go looking for it)
 
-**§4.10 and §5 directly contradict each other, and I left it that way on purpose.**
+**The plan was FULLY REWRITTEN.** Earlier handoffs told the reviewer to hunt a *"deliberately planted
+calibration contradiction at §4.10."* **⛔ THAT INSTRUCTION IS DEAD: §4.10 DOES NOT EXIST.** §§4.7–4.10 were
+deleted at `7469f7904`; the "planted contradiction" was **itself an assertion from memory of a superseded
+revision** — it is **Appendix B #11**. **Ignore any instruction that references it.**
 
-- **§4.10** (written earlier) claims `Quotient::ObjectIdentity` unlocks **all 13** `ObjectReentry` rows and
-  is *"worth more than Phases 1–5 combined"* (payoff table: *"~17 of 37 deferrals from ONE
-  parameterization"*).
-- **§5** (written afterwards, from the round-4 review) says it lifts **ZERO** directly. Appendix B #7
-  records the refutation.
+Likewise **dead**: the old `REVIEWER-MANDATE.md` §3 seam list (turn-crossing §4.7-vs-§4.10, the `Quotient`
+enum, the stale exec-summary surface box). Those targeted the pre-rewrite document. **`REVIEWER-MANDATE.md`
+is SUPERSEDED — use `ADVERSARY-MANDATE.md`.**
 
-**If the reviewer does not find this independently, its coherence audit is not trustworthy on the ones I
-have NOT spotted.** Fix it in the consolidation pass regardless.
-
-**The plan has been revised SIX times in place and nobody has read it whole since. Other seams to
-reconcile** (all listed in `REVIEWER-MANDATE.md` §3): turn-crossing in-or-out (§4.7 vs §4.10 vs P0's WAIVED
-partition); what the actual new surface is (exec-summary box vs §4.6 vs P5 vs §5b); whether `Quotient` or
-scalarset canonicalization is the plan of record for P6; whether §3.1's catch-22 still argues from the
-affinity evidence that Appendix B #8 records as **measured-false**; dangling phase numbers; **drifted line
-numbers** (already caught: `no_living_player_has_meaningful_priority_action` = `engine.rs:2367` not 1765;
-`ability_has_per_turn_activation_gate` = `resource.rs:2848` not 2842;
-`fire_time_conditions_read_growing_class` = `resource.rs:1451` not 1468); corpus is **53** rows, not 55.
+**What IS current:** the plan @ `e677fefb1` — **§0 spine, phases P0–P10, 18-row Appendix B**, one
+architecture, no struck-through claims.
 
 ---
 
-## 6. The three open technical questions the review must answer
+## 6. The technical questions — RESOLVED, and the one that ISN'T
 
-1. **§5b VERDICT — adopt `egg`, or not?** The claim: `ability_scan.rs`'s `Axes` walk **already is** an
-   abstract interpretation over the ability AST, it is hand-rolled and **measurably wrong**, and expressing
-   it as an **`egg::Analysis`** would fix RC-1 **at the root** and collapse P2 + P5 from new subsystems into
-   **queries**.
-   - **Highest-value check: is `Axes` actually a *join*** (assoc/comm/idempotent)? If not, it cannot be an
-     `egg::Analysis` and the option collapses.
-   - **The category-error check:** an `egg::Analysis` is **bottom-up and context-free per e-class**, but the
-     correct predicate depends on **which growth axis** — a property of the **LOOP**, not the AST. If the
-     predicate is context-**sensitive**, e-class analysis is **structurally the wrong tool**.
-   - **RULES HAZARD (primary consideration):** equality **saturation** rewrites terms per your rules, and
-     **every rewrite rule is a CR claim** (destroy ≠ sacrifice ≠ put-into-graveyard under CR 701.15 /
-     702.12 / 614). **Spike is scoped to congruence + `Analysis` with ZERO semantic rewrite rules.**
-   - **`egg` is NOT a requirement — the user has pre-authorized "disregard it."**
-   - **`egg` is NOT unsound for AST analysis, but IS unsound for STATE equality**: congruence **collapses
-     multiplicity** (3 vs 4 identical Saprolings = same term = same e-class), and **multiplicity IS the
-     growth axis** ⇒ accepting on congruence certifies iteration N ≡ N+1 **exactly when the tokens grew**.
-     For RC-4 the literature match is **Murφ scalarset symmetry reduction** (`ObjectId` **is** a scalarset):
-     **normalization first** (errs too fine ⇒ misses loops ⇒ **fail-closed**), **canonicalization** (exact;
-     nauty-class, effectively free at our board sizes) as the upgrade. Rust: `graph-canon`, `nauty-pet`,
-     `canonical-form`.
+**All three of the old open questions were settled by measurement. Do not re-litigate them:**
 
-2. **⚠️ IS DELETING R6 SOUND? — THE MOST DANGEROUS LINE IN THE PLAN.** R6 rejects on any non-empty
-   `state.delayed_triggers`. The plan claims a Kiki-Jiki token's *"sacrifice it at the beginning of the
-   next end step"* delayed trigger **fires in the drive** and lands in Δ. **The drive settles at an
-   empty-stack `Priority` beat — but that trigger fires at the beginning of the next END STEP, plausibly
-   OUTSIDE the drive window entirely. If it never fires in the drive, deleting R6 certifies a loop whose
-   tokens all die — a FALSE CERTIFICATE. MEASURE IT. RUN A TEST.**
+1. **`egg` / e-graphs → REJECTED.** A **~10-line fix meets egg's own acceptance criterion**, `Axes` **IS**
+   already a join, and **with zero rewrite rules `merge` is never called** — so egg-minus-rewrites is a
+   memoized catamorphism that `ability_scan.rs` **already is**. *(And egg is outright **unsound for STATE
+   equality**: congruence **collapses multiplicity**, and multiplicity **IS** the growth axis ⇒ it would
+   certify N ≡ N+1 **exactly when the tokens grew**.)* For RC-4 the literature match is **Murφ scalarset
+   symmetry reduction** — **normalization first** (errs fine ⇒ fail-closed), canonicalization as the exact
+   upgrade.
+2. **Deleting R6 → UNSOUND *AND* WORTHLESS. It is a TRAP.** `PartialEq` (`game_state.rs:10875`) **already
+   compares `delayed_triggers`**, so **Kiki is already rejected and deleting R6 buys ZERO rows.** The trap:
+   an implementer deletes R6, sees Kiki *still* rejected, relaxes the `delayed_triggers` conjunct to chase
+   the promised rows, and **certifies a loop whose entire growth axis dies at the next end step.**
+   ⇒ The real answer is **C5 (deferred execution, CR 603.7)**: **7 of 9 `DelayedTriggerCondition` variants
+   are EVENT-keyed, not phase-keyed** (`ability.rs:2919`) ⇒ C5 has genuine **ADMIT** value.
+3. **`LoopProbe` / the `run_combo_live` dual → RESOLVED, buildable.** It is **P2**, and it is **Tier 1 and
+   non-negotiable** — *the only instrument that can tell a CLASS fix from a CARD fix.*
 
-3. **Is `LoopProbe` drivable through the real `apply()` reducer**, or is it offline-only? **If offline-only,
-   the entire test strategy (P0's `run_combo_live` dual) is not buildable as specified — a BLOCKER.**
+### ⚠️ THE ONE GENUINELY OPEN QUESTION — filed **UNVERIFIED**, not guessed (plan §8 Q0)
+
+> **P7's TRUE SIZE.** *"~88 sites"* (**57 `Axes::CONSERVATIVE` + 31 `sibling: true`** in `ability_scan.rs`)
+> is **the audit's INPUT, not its COST.** **Most `CONSERVATIVE` sites may well be correct and stay.** The old
+> *"~10 lines"* sizing was **measured FALSE** (#17), but **nobody has measured the new one** — it could be 30
+> arms or 300.
+>
+> **To pin it:** instrument in a throwaway worktree **until the canary actually goes green**, then **count
+> the arms that had to change** — **and re-verify the class gate in the same breath** (Intruder Alarm
+> un-rejects **AND** Gaea's Cradle still fails closed). **A green canary with a broken Cradle is a false
+> certificate, not a win.** That run would also produce **the first green
+> `real_board_sprout_swarm_offers_loop_shortcut` in this workstream's history.**
 
 ---
 
