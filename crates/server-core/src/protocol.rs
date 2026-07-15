@@ -607,6 +607,31 @@ mod tests {
     }
 
     #[test]
+    fn meld_actions_roundtrip() {
+        use engine::game::combat::AttackTarget;
+        use engine::types::identifiers::ObjectId;
+
+        for action in [
+            GameAction::ChooseMeldPair {
+                source_id: ObjectId(10),
+                partner_id: ObjectId(11),
+            },
+            GameAction::ChooseEntryAttackTarget {
+                target: AttackTarget::Battle(ObjectId(12)),
+            },
+        ] {
+            let json = serde_json::to_string(&ClientMessage::Action {
+                action: action.clone(),
+            })
+            .unwrap();
+            let parsed: ClientMessage = serde_json::from_str(&json).unwrap();
+            assert!(
+                matches!(parsed, ClientMessage::Action { action: parsed_action } if parsed_action == action)
+            );
+        }
+    }
+
+    #[test]
     fn server_message_game_created_roundtrips() {
         let msg = ServerMessage::GameCreated {
             game_code: "XYZ789".to_string(),
@@ -1859,8 +1884,8 @@ mod tests {
     }
 
     #[test]
-    fn protocol_version_is_15() {
-        assert_eq!(PROTOCOL_VERSION, 15);
+    fn protocol_version_is_16() {
+        assert_eq!(PROTOCOL_VERSION, 16);
     }
 
     #[test]
