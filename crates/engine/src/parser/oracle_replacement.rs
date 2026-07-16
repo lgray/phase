@@ -4052,10 +4052,11 @@ fn parse_enters_base_plus_additional_for_each(
 
     // The additional counter type must match the base type, else the clauses
     // describe different counters and this composition does not apply.
-    let (_, (additional_type_raw, after_additional_counter)) =
-        nom_primitives::split_once_on(rest, "counter").ok()?;
-    let additional_type =
-        crate::parser::oracle_effect::counter::normalize_counter_type(additional_type_raw.trim());
+    let (rest, additional_type) = nom_primitives::parse_counter_type_typed(rest).ok()?;
+    let (after_additional_counter, _) =
+        alt((tag::<_, _, OracleError<'_>>(" counters"), tag(" counter")))
+            .parse(rest)
+            .ok()?;
     if &additional_type != base_counter_type {
         return None;
     }
