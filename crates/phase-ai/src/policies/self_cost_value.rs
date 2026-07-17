@@ -7,6 +7,7 @@
 //! payoff is rejected (scoring `-inf`, so Pass wins); a cheap cost is merely
 //! deprioritized; anything with a genuine payoff is left alone.
 
+use engine::types::ability::AbilityTag;
 use engine::types::actions::GameAction;
 use engine::types::game_state::GameState;
 use engine::types::player::PlayerId;
@@ -57,6 +58,10 @@ impl TacticalPolicy for SelfCostValuePolicy {
         let Some(ability) = ctx.effective_activated_ability() else {
             return PolicyVerdict::neutral(PolicyReason::new("self_cost_value_na"));
         };
+
+        if ability.ability_tag == Some(AbilityTag::Cycling) {
+            return PolicyVerdict::neutral(PolicyReason::new("self_cost_cycling_deferred"));
+        }
 
         let Some(cost) = ability.cost.as_ref() else {
             return PolicyVerdict::neutral(PolicyReason::new("self_cost_value_na"));
