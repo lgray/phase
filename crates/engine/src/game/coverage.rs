@@ -896,6 +896,8 @@ fn fmt_typed_filter(tf: &TypedFilter) -> String {
             }
             FilterProp::Suspected => parts.push("suspected".into()),
             FilterProp::Renowned => parts.push("renowned".into()),
+            // CR 701.15b/c
+            FilterProp::Goaded => parts.push("goaded".into()),
             // CR 700.9
             FilterProp::Modified => parts.push("modified".into()),
             // CR 700.6
@@ -3599,6 +3601,13 @@ fn ability_details(def: &AbilityDefinition) -> Vec<(String, String)> {
     }
     if let Some(dur) = &def.duration {
         d.push(("duration".into(), fmt_duration(dur)));
+    }
+    // CR 608.2c: a lifted "[once] for each ⟨set⟩" repeat multiplier (e.g. the
+    // fieldless-Investigate lift) is an `AbilityDefinition` field — surface it so
+    // the per-card signature reflects the member-count. `None` pushes nothing, so
+    // cards without a `repeat_for` keep a byte-identical signature.
+    if let Some(rf) = &def.repeat_for {
+        d.push(("repeat_for".into(), fmt_quantity(rf)));
     }
     if def.optional_targeting {
         d.push(("targeting".into(), "optional (up to)".into()));
@@ -10671,6 +10680,38 @@ mod tests {
                 .iter()
                 .any(|k| k == "enters_attacking"),
             "a plain (non-attacking) ChangeZone must not add the row",
+        );
+    }
+
+    #[test]
+    fn investigate_signature_exposes_repeat_for() {
+        // ASK 2: a lifted "[once] for each ⟨set⟩" multiplier (e.g. the fieldless
+        // Investigate lift → `def.repeat_for = Some(ObjectCount/PlayerCount)`) must be
+        // visible in the per-card parse-diff signature. `None` adds no row so unrelated
+        // cards keep a byte-identical signature. Reverting the `ability_details`
+        // projection flips the `Some` assertion to fail.
+        use crate::types::ability::{
+            AbilityDefinition, AbilityKind, QuantityExpr, QuantityRef, TargetFilter, TypedFilter,
+        };
+        let detail_keys = |repeat: Option<QuantityExpr>| -> Vec<String> {
+            let mut def = AbilityDefinition::new(AbilityKind::Spell, Effect::Investigate);
+            def.repeat_for = repeat;
+            ability_details(&def).into_iter().map(|(k, _)| k).collect()
+        };
+        let object_count = QuantityExpr::Ref {
+            qty: QuantityRef::ObjectCount {
+                filter: TargetFilter::Typed(TypedFilter::creature()),
+            },
+        };
+        assert!(
+            detail_keys(Some(object_count))
+                .iter()
+                .any(|k| k == "repeat_for"),
+            "a lifted repeat_for must appear in the per-card signature",
+        );
+        assert!(
+            !detail_keys(None).iter().any(|k| k == "repeat_for"),
+            "an ability with no repeat_for must not add the row (byte-identical signature)",
         );
     }
 

@@ -569,6 +569,8 @@ impl EventObjectSnapshot {
             | FilterProp::Transformed
             | FilterProp::Suspected
             | FilterProp::Renowned
+            // CR 701.15b/c: goad is an embedded candidate-local designation.
+            | FilterProp::Goaded
             | FilterProp::IsSaddled => Supported,
 
             // ---- embedded characteristics ----

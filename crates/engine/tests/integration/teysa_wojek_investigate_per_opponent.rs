@@ -18,7 +18,8 @@
 use engine::game::scenario::{GameScenario, P0, P1};
 use engine::parser::oracle::parse_oracle_text;
 use engine::types::ability::{
-    Comparator, Effect, PlayerFilter, PlayerRelation, PlayerScope, QuantityExpr, QuantityRef,
+    Comparator, ControllerRef, Effect, FilterProp, PlayerFilter, PlayerRelation, PlayerScope,
+    QuantityExpr, QuantityRef, TargetFilter, TypeFilter,
 };
 use engine::types::game_state::GameState;
 use engine::types::phase::Phase;
@@ -387,10 +388,11 @@ fn teysa_runtime_no_clue_when_no_opponent_lost_life() {
 // Verbatim (reminder retained). The only two "investigate ... for each" cards in the
 // std corpus whose for-each ranges over OBJECTS (not a player set): Serene Sleuth
 // ("for each goaded creature you control") and Sophina ("for each nontoken attacking
-// creature"). The seam's `PlayerCount` gate must leave these on the unchanged final
-// else — no spurious `repeat_for`. This is the class-wide zero-regression guard: it
-// drives the real seam (not just the helper) and pairs the negative `repeat_for`
-// assertion with a positive `Effect::Investigate` reach-guard so it is not vacuous.
+// creature"). The parameterized gate-widen + Gap A (`FilterProp::Goaded`) now lift
+// Serene Sleuth to an `ObjectCount` repeat_for; Sophina stays a bare Investigate
+// (Gap B deferred — parse_type_phrase leading-adjective order-dependence). Both
+// branches drive the real seam and pair their `repeat_for` assertion with a positive
+// `Effect::Investigate` reach-guard so neither is vacuous.
 const SERENE_SLEUTH: &str = "When this creature enters, investigate. (Create a Clue token. It's \
     an artifact with \"{2}, Sacrifice this token: Draw a card.\")\n\
     At the beginning of combat on your turn, investigate for each goaded creature you control. \
@@ -401,9 +403,107 @@ const SOPHINA: &str = "Menace\n\
     creature. (To investigate, create a Clue token. It's an artifact with \"{2}, Sacrifice this \
     artifact: Draw a card.\")";
 
+// Serene Sleuth's combat-trigger sentence in isolation — the runtime creature carries
+// ONLY the object for-each Investigate (not the ETB Investigate, not the un-goad sibling)
+// so the Clue delta measures the goaded-creature count alone.
+const SERENE_COMBAT_TRIGGER: &str =
+    "At the beginning of combat on your turn, investigate for each goaded creature you control.";
+
+/// Build a 4-player game (P0 controls Serene Sleuth) in P0's precombat main with
+/// `n_goaded` P0 creatures each goaded by P1 and `n_plain` ungoaded P0 creatures, ready
+/// to advance into the beginning-of-combat step. Serene Sleuth itself is an ungoaded P0
+/// creature, so a filter that ignored the goad designation (CR 701.15b/c) would
+/// over-count (it would include Sleuth and the plain creatures).
+fn serene_runner(n_goaded: usize, n_plain: usize) -> engine::game::scenario::GameRunner {
+    let mut scenario = GameScenario::new_n_player(4, 20);
+    scenario.at_phase(Phase::PreCombatMain);
+    scenario
+        .add_creature(P0, "Serene Sleuth", 2, 2)
+        .from_oracle_text(SERENE_COMBAT_TRIGGER);
+    let mut goaded_ids = Vec::new();
+    for i in 0..n_goaded {
+        goaded_ids.push(
+            scenario
+                .add_creature(P0, &format!("Goaded Ox {i}"), 2, 2)
+                .id(),
+        );
+    }
+    for i in 0..n_plain {
+        scenario.add_creature(P0, &format!("Calm Bear {i}"), 2, 2);
+    }
+    let mut runner = scenario.build();
+    runner.state_mut().active_player = P0;
+    runner.state_mut().priority_player = P0;
+    // CR 701.15b/c: designate each Ox as goaded by P1 — a nonempty `goaded_by` set is
+    // exactly what `FilterProp::Goaded` reads.
+    for id in goaded_ids {
+        if let Some(obj) = runner.state_mut().objects.get_mut(&id) {
+            obj.goaded_by.insert(P1);
+        }
+    }
+    runner
+}
+
+/// Matrix #7 (Serene Sleuth) — RUNTIME discriminator, end-to-end binding through
+/// `apply()`. P0 controls Serene Sleuth (ungoaded) + 3 creatures goaded by P1 + 1
+/// ungoaded plain creature. The beginning-of-combat trigger investigates once per goaded
+/// creature P0 controls (CR 701.16a + CR 701.15b/c) → exactly 3 Clues.
+///
+/// Reach-guard (non-vacuous): the parsed combat trigger MUST carry the
+/// `ObjectCount { Typed(.., [Goaded]) }` repeat_for before we drive — with the gate
+/// narrowed (revert-probe a) or Gap A reverted (revert-probe b) the trigger is a bare
+/// Investigate (repeat_for None → 1 Clue) and this precondition also fails first.
+///
+/// Discrimination (three distinct outcomes): the correct goaded filter → 3; a filter
+/// that ignored `FilterProp::Goaded` would count all 5 P0 creatures (Sleuth + 3 Ox + 1
+/// Bear) → 5; a non-lifted bare Investigate → 1. Only the correct wire makes 3.
+/// (The "no longer goaded" sibling sentence is not part of the isolated trigger text, so
+/// nothing un-goads the Oxen mid-resolution.)
 #[test]
-fn object_for_each_investigate_is_not_spuriously_lifted() {
-    // Serene Sleuth's combat trigger: object for-each (goaded creatures).
+fn serene_sleuth_runtime_makes_one_clue_per_goaded_creature() {
+    // Reach-guard: the lift is active (repeat_for is ObjectCount carrying Goaded).
+    let parsed = parse_oracle_text(SERENE_COMBAT_TRIGGER, "Serene Sleuth", &[], &[], &[]);
+    let repeat_for = parsed
+        .triggers
+        .iter()
+        .find(|t| t.phase == Some(Phase::BeginCombat))
+        .and_then(|t| t.execute.as_ref())
+        .and_then(|e| e.repeat_for.clone());
+    match &repeat_for {
+        Some(QuantityExpr::Ref {
+            qty:
+                QuantityRef::ObjectCount {
+                    filter: TargetFilter::Typed(t),
+                },
+        }) => assert!(
+            t.properties.contains(&FilterProp::Goaded),
+            "reach-guard: repeat_for filter must carry FilterProp::Goaded, got {:?}",
+            t.properties
+        ),
+        other => {
+            panic!(
+                "reach-guard: combat trigger must carry an ObjectCount repeat_for, got {other:?}"
+            )
+        }
+    }
+
+    let mut runner = serene_runner(3, 1);
+    let clues_before = count_clues(runner.state(), P0);
+
+    runner.advance_to_phase(Phase::BeginCombat);
+    runner.advance_until_stack_empty();
+
+    assert_eq!(
+        count_clues(runner.state(), P0) - clues_before,
+        3,
+        "Serene Sleuth investigates once per goaded creature P0 controls (3 Ox) → 3 Clues \
+         (a Goaded-blind filter would make 5; a bare Investigate would make 1)"
+    );
+}
+
+#[test]
+fn object_for_each_investigate_is_lifted() {
+    // Serene Sleuth's combat trigger: object for-each (goaded creatures you control).
     let sleuth = parse_oracle_text(SERENE_SLEUTH, "Serene Sleuth", &[], &[], &[]);
     // The combat trigger (a Phase trigger → `phase.is_some()`) is the object
     // for-each; the ETB Investigate is a ChangesZone trigger (`phase.is_none()`).
@@ -414,22 +514,55 @@ fn object_for_each_investigate_is_not_spuriously_lifted() {
         .filter_map(|t| t.execute.as_ref())
         .find(|e| matches!(e.effect.as_ref(), Effect::Investigate))
         .expect("Serene Sleuth has an Investigate combat trigger");
+    // Reach-guard: the effect really is Investigate (not Unimplemented) — the
+    // positive branch the seam gate reads before the lift.
     assert!(
         matches!(combat.effect.as_ref(), Effect::Investigate),
         "reach-guard: Serene Sleuth's clause must parse to Investigate"
     );
-    assert!(
-        !matches!(
-            combat.repeat_for,
-            Some(QuantityExpr::Ref {
-                qty: QuantityRef::PlayerCount { .. }
-            })
+    // The parameterized gate-widen lifts the object for-each to an `ObjectCount`
+    // repeat_for whose filter is `Typed(Creature, You, [Goaded])`.
+    //   Revert-probe (a) — narrow the gate back to `PlayerCount`-only → the
+    //     `ObjectCount` is rejected → repeat_for None → the `ObjectCount` match FAILS.
+    //   Revert-probe (b) — drop Gap A parser sites 14/15 → "goaded creature you
+    //     control" no longer parses to a typed filter → `parse_for_each_clause`
+    //     returns None → the seam finds no count → repeat_for None → FAILS.
+    let filter = match &combat.repeat_for {
+        Some(QuantityExpr::Ref {
+            qty: QuantityRef::ObjectCount { filter },
+        }) => filter,
+        other => panic!(
+            "Serene Sleuth combat trigger must lift to an ObjectCount repeat_for, got {other:?}"
         ),
-        "object for-each (goaded creatures) must NOT be lifted to a PlayerCount repeat_for: {:?}",
-        combat.repeat_for
+    };
+    let typed = match filter {
+        TargetFilter::Typed(t) => t,
+        other => panic!("the lifted ObjectCount filter must be Typed, got {other:?}"),
+    };
+    // Gap A is load-bearing for THIS card: the filter must carry `FilterProp::Goaded`.
+    assert!(
+        typed.properties.contains(&FilterProp::Goaded),
+        "the lifted filter must carry FilterProp::Goaded (Gap A), got {:?}",
+        typed.properties
+    );
+    assert!(
+        typed.type_filters.contains(&TypeFilter::Creature),
+        "the lifted filter must be a creature filter, got {:?}",
+        typed.type_filters
+    );
+    assert_eq!(
+        typed.controller,
+        Some(ControllerRef::You),
+        "the lifted filter must be scoped to 'you control', got {:?}",
+        typed.controller
     );
 
-    // Sophina's attack trigger: object for-each (nontoken attacking creatures).
+    // Sophina's attack trigger: object for-each ("nontoken attacking creature") —
+    // Gap B (DEFERRED). parse_type_phrase's leading-adjective order-dependence means
+    // this for-each does NOT yet parse to a member-count, so the seam leaves it a bare
+    // Investigate. Deferred-gap tripwire: paired with a positive `Effect::Investigate`
+    // reach-guard (non-vacuous), it asserts the CURRENT bare-Investigate state and
+    // FLIPS to fail when Gap B lands — the signal to update this expectation.
     let sophina = parse_oracle_text(SOPHINA, "Sophina, Spearsage Deserter", &[], &[], &[]);
     let attack = sophina
         .triggers
@@ -438,13 +571,13 @@ fn object_for_each_investigate_is_not_spuriously_lifted() {
         .find(|e| matches!(e.effect.as_ref(), Effect::Investigate))
         .expect("Sophina has an Investigate attack trigger");
     assert!(
-        !matches!(
-            attack.repeat_for,
-            Some(QuantityExpr::Ref {
-                qty: QuantityRef::PlayerCount { .. }
-            })
-        ),
-        "object for-each (nontoken attackers) must NOT be lifted to a PlayerCount repeat_for: {:?}",
+        matches!(attack.effect.as_ref(), Effect::Investigate),
+        "reach-guard: Sophina's clause must parse to Investigate"
+    );
+    assert!(
+        attack.repeat_for.is_none(),
+        "Gap B deferred (parse_type_phrase leading-adjective order-dependence): \
+         'nontoken attacking creature' does not yet lift — flip this guard when Gap B lands: {:?}",
         attack.repeat_for
     );
 }
