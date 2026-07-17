@@ -6768,6 +6768,7 @@ mod tests {
         // Baseline: no constraint, pool ≤ cap → all C(5,2) = 10 combinations.
         state.waiting_for = WaitingFor::SearchChoice {
             player: PlayerId(0),
+            library_owner: None,
             cards: ids.clone(),
             count: 2,
             reveal: false,
@@ -6790,6 +6791,7 @@ mod tests {
         // which is name-unique (no combo contains two cards sharing a name).
         state.waiting_for = WaitingFor::SearchChoice {
             player: PlayerId(0),
+            library_owner: None,
             cards: ids,
             count: 2,
             reveal: false,
@@ -6851,6 +6853,7 @@ mod tests {
         }
         state.waiting_for = WaitingFor::SearchChoice {
             player: PlayerId(0),
+            library_owner: None,
             cards: ids,
             count: 4,
             reveal: false,
