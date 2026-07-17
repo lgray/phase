@@ -4772,6 +4772,13 @@ fn optional_effect_is_infeasible(state: &GameState, ability: &ResolvedAbility) -
                     .any(|attr| matches!(attr, ChosenAttribute::Counter(_)))
             })
         }
+        // CR 122.1: "you may remove a <kind> counter from <object>. If you do, X"
+        // with zero matching counters cannot be performed — removing a counter
+        // that isn't there does nothing, so the up-front prompt (and its
+        // `OptionalEffectPerformed` rider) must be suppressed (Sun Droplet #4776).
+        Effect::RemoveCounter { .. } => {
+            counters::remove_counter_optional_is_infeasible(state, ability)
+        }
         _ => false,
     }
 }

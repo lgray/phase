@@ -724,6 +724,7 @@ mod std_s07_damage_doublers;
 mod steadfast_armasaur_lki_toughness;
 mod steelform_sliver_toughness_anthem;
 mod stensian_sanguinist_prepare;
+mod sun_droplet_remove_counter_infeasible_4776;
 mod support;
 mod suppressor_skyguard_prevent_2924;
 mod surveil_rest_pile_redirect_continuation;
