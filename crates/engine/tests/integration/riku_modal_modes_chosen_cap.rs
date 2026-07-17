@@ -294,3 +294,124 @@ fn modes_chosen_ref_reads_event_object_not_source() {
         "absent trigger event must resolve to 0"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Bumi, King of Three Trials — ETB modal cap = ZoneCardCount(Lesson, graveyard)
+// ---------------------------------------------------------------------------
+//
+// END-TO-END (production parse→resolve WIRE, per PR #6108 review): a parser-shape
+// assertion proves only that Bumi's header parses to a dynamic cap; it cannot
+// prove the Lesson-graveyard `ZoneCardCount` reaches `modal_choice_for_player`
+// and sets the live `AbilityModeChoice.max_choices`. These tests cast Bumi,
+// resolve its ETB, and read the cap off the real modal window — including the
+// clamp to `mode_count` (CR 107.3m + CR 700.2d). Bumi's cap source is the
+// graveyard, not the trigger event, so it is independent of the trigger-event
+// window fix that Riku's cap needs.
+
+const BUMI_ORACLE: &str = "When Bumi enters, choose up to X, where X is the number of Lesson cards in your graveyard \u{2014}\n\u{2022} Put three +1/+1 counters on Bumi.\n\u{2022} Target player scries 3.\n\u{2022} Earthbend 3.";
+
+/// Seed `n` Lesson-subtyped sorceries into P0's graveyard so
+/// `ZoneCardCount { zone: Graveyard, card_types: [Lesson], scope: Controller }`
+/// resolves to `n`.
+fn seed_lessons(scenario: &mut GameScenario, n: usize) {
+    for i in 0..n {
+        scenario
+            .add_spell_to_graveyard(P0, &format!("Lesson {i}"), false)
+            .with_subtypes(vec!["Lesson"]);
+    }
+}
+
+/// Cast Bumi from hand and drive the pipeline until its ETB triggered modal
+/// (`AbilityModeChoice`) surfaces; return `(max_choices, mode_count)`. The
+/// `max_choices` is the live value produced by `modal_choice_for_player` from
+/// Bumi's `dynamic_max_choices` (`ZoneCardCount` of Lesson cards), clamped to
+/// `mode_count` (CR 107.3m + CR 700.2d). Panics if the modal window is never
+/// reached (e.g. the ETB never fired).
+fn cast_bumi_and_capture_cap(runner: &mut GameRunner, bumi: ObjectId) -> (usize, usize) {
+    let card_id = runner.state().objects[&bumi].card_id;
+    runner
+        .act(GameAction::CastSpell {
+            object_id: bumi,
+            card_id,
+            targets: vec![],
+            payment_mode: CastPaymentMode::Auto,
+        })
+        .expect("casting Bumi must be accepted");
+
+    for _ in 0..128 {
+        match runner.state().waiting_for.clone() {
+            // Bumi's ETB modal surfaces here (modes chosen as the trigger is put
+            // on the stack, CR 603.3c). Its resolved cap is under test.
+            WaitingFor::AbilityModeChoice { modal, .. } => {
+                return (modal.max_choices, modal.mode_count)
+            }
+            WaitingFor::OrderTriggers { .. } => {
+                engine::game::triggers::drain_order_triggers_with_identity(runner.state_mut());
+            }
+            // Pass priority so Bumi resolves and its ETB reaches the stack.
+            WaitingFor::Priority { .. } => {
+                runner
+                    .act(GameAction::PassPriority)
+                    .expect("passing priority to resolve Bumi must succeed");
+            }
+            other => panic!(
+                "unexpected WaitingFor while driving Bumi's cast: {}",
+                other.variant_name()
+            ),
+        }
+    }
+    panic!("cast pipeline did not reach Bumi's AbilityModeChoice within the step budget");
+}
+
+/// END-TO-END: with 2 Lesson cards in the graveyard, Bumi's ETB modal cap
+/// resolves to 2 (`min(2, mode_count=3)`). This is the parse→resolve WIRE a
+/// parser-shape test cannot prove: the Lesson-graveyard `ZoneCardCount` reaches
+/// `modal_choice_for_player` and sets the live `max_choices`.
+///
+/// Revert probes (measured, see PR): (a) drop the parser where-X arm → Bumi's
+/// header falls to `Fixed{1,1}` → `dynamic_max_choices=None` → cap 1 ≠ 2; (b)
+/// stub the `ZoneCardCount` resolver → 0 ≠ 2.
+#[test]
+fn bumi_etb_cap_resolves_to_lesson_graveyard_count() {
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(Phase::PreCombatMain);
+    seed_lessons(&mut scenario, 2);
+    let bumi = scenario
+        .add_creature_to_hand_from_oracle(P0, "Bumi, King of Three Trials", 4, 4, BUMI_ORACLE)
+        .with_mana_cost(ManaCost::generic(0))
+        .id();
+    let mut runner = scenario.build();
+
+    let (cap, modes) = cast_bumi_and_capture_cap(&mut runner, bumi);
+    assert_eq!(modes, 3, "Bumi's header must parse three modes");
+    assert_eq!(
+        cap, 2,
+        "Bumi's ETB modal cap must equal the 2 Lesson cards in the graveyard (min(2, 3), CR 700.2d)"
+    );
+}
+
+/// END-TO-END CLAMP: with 5 Lesson cards (exceeding Bumi's 3 modes), the cap
+/// clamps to `mode_count = 3` (CR 700.2d: a player can't choose more modes than
+/// exist). The contrast with the 2-Lesson case proves the cap TRACKS the Lesson
+/// count until the clamp bites — neither a constant nor unclamped.
+///
+/// Revert probe (measured, see PR): remove the `.min(modal.mode_count)` clamp in
+/// `modal_choice_for_player` → cap 5 ≠ 3.
+#[test]
+fn bumi_etb_cap_clamps_to_mode_count_when_lessons_exceed() {
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(Phase::PreCombatMain);
+    seed_lessons(&mut scenario, 5);
+    let bumi = scenario
+        .add_creature_to_hand_from_oracle(P0, "Bumi, King of Three Trials", 4, 4, BUMI_ORACLE)
+        .with_mana_cost(ManaCost::generic(0))
+        .id();
+    let mut runner = scenario.build();
+
+    let (cap, modes) = cast_bumi_and_capture_cap(&mut runner, bumi);
+    assert_eq!(modes, 3, "Bumi's header must parse three modes");
+    assert_eq!(
+        cap, 3,
+        "5 Lessons exceed Bumi's 3 modes, so the cap must clamp to mode_count=3 (CR 700.2d)"
+    );
+}
