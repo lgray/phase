@@ -4637,6 +4637,14 @@ pub enum WaitingFor {
         player: PlayerId,
         cards: Vec<ObjectId>,
     },
+    /// CR 901.15 + CR 701.22a analogue: Arrange the top N cards of the planar
+    /// deck — put exactly `keep_on_top` on top in the submitted order and the
+    /// rest on the bottom in any order (Susan Foreman).
+    ArrangePlanarDeckTopChoice {
+        player: PlayerId,
+        cards: Vec<ObjectId>,
+        keep_on_top: usize,
+    },
     /// CR 119.7 + CR 119.8: The controlling player redistributes participating players'
     /// life totals (Reverse the Sands, The Doctor's Tomb). `options` is the
     /// engine-enumerated set of legal assignments (identity always present); the
@@ -6330,6 +6338,7 @@ impl WaitingFor {
             WaitingFor::StationTarget { .. } => "StationTarget",
             WaitingFor::SaddleMount { .. } => "SaddleMount",
             WaitingFor::ScryChoice { .. } => "ScryChoice",
+            WaitingFor::ArrangePlanarDeckTopChoice { .. } => "ArrangePlanarDeckTopChoice",
             WaitingFor::RedistributeLifeTotals { .. } => "RedistributeLifeTotals",
             WaitingFor::CoinFlipKeepChoice { .. } => "CoinFlipKeepChoice",
             WaitingFor::DigChoice { .. } => "DigChoice",
@@ -6476,6 +6485,7 @@ impl WaitingFor {
             | WaitingFor::StationTarget { player, .. }
             | WaitingFor::SaddleMount { player, .. }
             | WaitingFor::ScryChoice { player, .. }
+            | WaitingFor::ArrangePlanarDeckTopChoice { player, .. }
             | WaitingFor::RedistributeLifeTotals { player, .. }
             | WaitingFor::CoinFlipKeepChoice { player, .. }
             | WaitingFor::DigChoice { player, .. }
@@ -6728,6 +6738,7 @@ impl WaitingFor {
         matches!(
             self,
             WaitingFor::ScryChoice { .. }
+                | WaitingFor::ArrangePlanarDeckTopChoice { .. }
                 | WaitingFor::SurveilChoice { .. }
                 | WaitingFor::DigChoice { .. }
         )
@@ -13705,6 +13716,11 @@ mod tests {
             player: PlayerId(0),
             cards: vec![ObjectId(1)],
         }));
+        variants.push(Box::new(WaitingFor::ArrangePlanarDeckTopChoice {
+            player: PlayerId(0),
+            cards: vec![ObjectId(1), ObjectId(2)],
+            keep_on_top: 1,
+        }));
         variants.push(Box::new(WaitingFor::DigChoice {
             player: PlayerId(0),
             library_owner: PlayerId(0),
@@ -13925,7 +13941,7 @@ mod tests {
             mana_reduction: ManaCost::zero(),
             pending_cast: dummy_pending(),
         }));
-        assert_eq!(variants.len(), 34);
+        assert_eq!(variants.len(), 35);
     }
 
     #[test]

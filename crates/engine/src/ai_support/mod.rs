@@ -420,8 +420,16 @@ fn cheap_reject_candidate(state: &GameState, action: &GameAction) -> bool {
         (
             WaitingFor::ScryChoice { player: _, cards },
             GameAction::SelectCards { cards: chosen },
-        )
-        | (
+        ) => selection_mismatch(chosen, cards, None),
+        (
+            WaitingFor::ArrangePlanarDeckTopChoice {
+                player: _,
+                cards,
+                keep_on_top,
+            },
+            GameAction::SelectCards { cards: chosen },
+        ) => selection_mismatch(chosen, cards, Some(*keep_on_top)),
+        (
             WaitingFor::SurveilChoice { player: _, cards },
             GameAction::SelectCards { cards: chosen },
         ) => selection_mismatch(chosen, cards, None),

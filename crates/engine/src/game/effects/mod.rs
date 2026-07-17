@@ -37,6 +37,7 @@ pub mod add_target_replacement;
 pub mod additional_phase;
 pub mod amass;
 pub mod animate;
+pub mod arrange_planar_deck;
 pub mod attach;
 pub mod attractions;
 pub mod awaken;
@@ -1999,6 +2000,7 @@ fn waits_for_resolution_choice(waiting_for: &WaitingFor) -> bool {
         WaitingFor::MeldPairChoice { .. }
             | WaitingFor::MeldAttackTargetChoice { .. }
             | WaitingFor::ScryChoice { .. }
+            | WaitingFor::ArrangePlanarDeckTopChoice { .. }
             | WaitingFor::RedistributeLifeTotals { .. }
             | WaitingFor::CoinFlipKeepChoice { .. }
             | WaitingFor::DigChoice { .. }
@@ -3560,6 +3562,7 @@ pub fn resolve_effect(
             venture::resolve_venture_into(state, ability, *dungeon, events)
         }
         Effect::TakeTheInitiative => venture::resolve_take_initiative(state, ability, events),
+        Effect::ArrangePlanarDeckTop { .. } => arrange_planar_deck::resolve(state, ability, events),
         Effect::Planeswalk => planeswalk::resolve(state, ability, events),
         Effect::ChaosEnsues => chaos_ensues::resolve(state, ability, events),
         Effect::ReverseTurnOrder => reverse_turn_order::resolve(state, ability, events),
@@ -3693,6 +3696,9 @@ fn effect_references_tracked_set(effect: &Effect) -> bool {
         Effect::Draw { count, .. } => quantity_hits_tracked(count),
         Effect::Mill { count, .. } => quantity_hits_tracked(count),
         Effect::Scry { count, .. } => quantity_hits_tracked(count),
+        Effect::ArrangePlanarDeckTop { count, keep_on_top } => {
+            quantity_hits_tracked(count) || quantity_hits_tracked(keep_on_top)
+        }
         Effect::Dig { count, .. } => quantity_hits_tracked(count),
         Effect::Surveil { count, .. } => quantity_hits_tracked(count),
         Effect::GainLife { amount, .. } => quantity_hits_tracked(amount),

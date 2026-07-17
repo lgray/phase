@@ -454,6 +454,7 @@ pub(super) fn handles(waiting_for: &WaitingFor) -> bool {
         WaitingFor::MeldPairChoice { .. }
             | WaitingFor::MeldAttackTargetChoice { .. }
             | WaitingFor::ScryChoice { .. }
+            | WaitingFor::ArrangePlanarDeckTopChoice { .. }
             | WaitingFor::RedistributeLifeTotals { .. }
             | WaitingFor::CoinFlipKeepChoice { .. }
             | WaitingFor::ManifestDreadChoice { .. }
@@ -575,6 +576,20 @@ pub(crate) fn route_rest_partition(
         })
         .collect();
     crate::game::zone_pipeline::move_objects_simultaneously(state, requests, events)
+}
+
+fn validate_exact_keep_on_top_selection(
+    selection: &[ObjectId],
+    looked_at: &[ObjectId],
+    keep_on_top: usize,
+) -> Result<(), EngineError> {
+    validate_keep_on_top_selection(selection, looked_at)?;
+    if selection.len() != keep_on_top {
+        return Err(EngineError::InvalidAction(format!(
+            "keep-on-top selection must contain exactly {keep_on_top} cards"
+        )));
+    }
+    Ok(())
 }
 
 /// CR 701.22a / CR 701.25a: Scry and surveil put the kept cards on top of the
@@ -1005,6 +1020,29 @@ pub(super) fn handle_resolution_choice(
             // through the zone-move seam), so a continuous `TopOfLibraryMatches`
             // static must be re-evaluated — self-gated so it's a no-op otherwise.
             crate::game::layers::mark_layers_full_if_top_of_library_static_live(state);
+            ResolutionChoiceOutcome::WaitingFor(finish_with_continuation(state, player, events))
+        }
+        (
+            WaitingFor::ArrangePlanarDeckTopChoice {
+                player,
+                cards,
+                keep_on_top,
+            },
+            GameAction::SelectCards { cards: top_cards },
+        ) => {
+            validate_exact_keep_on_top_selection(&top_cards, &cards, keep_on_top)?;
+            let bottom_cards: Vec<_> = cards
+                .iter()
+                .filter(|id| !top_cards.contains(id))
+                .copied()
+                .collect();
+            state.planar_deck.retain(|id| !cards.contains(id));
+            for (index, &card_id) in top_cards.iter().enumerate() {
+                state.planar_deck.insert(index, card_id);
+            }
+            for card_id in bottom_cards {
+                state.planar_deck.push_back(card_id);
+            }
             ResolutionChoiceOutcome::WaitingFor(finish_with_continuation(state, player, events))
         }
         (
@@ -7556,5 +7594,125 @@ mod tests {
                 .is_empty(),
             "transient land/nonland kind choices should not render source labels"
         );
+    }
+
+    fn insert_planar_deck_plane(
+        state: &mut GameState,
+        card_id: u32,
+        name: &str,
+        controller: PlayerId,
+    ) -> ObjectId {
+        use crate::game::game_object::GameObject;
+        use crate::types::card_type::{CardType, CoreType};
+
+        let id = ObjectId(state.next_object_id);
+        state.next_object_id += 1;
+        let mut obj = GameObject::new(
+            id,
+            CardId(u64::from(card_id)),
+            controller,
+            name.to_string(),
+            Zone::Command,
+        );
+        let mut card_type = CardType::default();
+        card_type.core_types.push(CoreType::Plane);
+        obj.card_types = card_type;
+        obj.face_down = true;
+        state.objects.insert(id, obj);
+        id
+    }
+
+    fn setup_planechase_two_deep(state: &mut GameState) -> (ObjectId, ObjectId, ObjectId) {
+        use crate::types::format::FormatConfig;
+
+        let controller = PlayerId(0);
+        state.format_config = FormatConfig::planechase();
+        let active = insert_planar_deck_plane(state, 1, "Active Plane", controller);
+        if let Some(obj) = state.objects.get_mut(&active) {
+            obj.face_down = false;
+        }
+        state.command_zone.push_back(active);
+        let deck_top = insert_planar_deck_plane(state, 2, "Deck Top", controller);
+        let deck_second = insert_planar_deck_plane(state, 3, "Deck Second", controller);
+        state.planar_deck.push_back(deck_top);
+        state.planar_deck.push_back(deck_second);
+        state.planar_controller = Some(controller);
+        (active, deck_top, deck_second)
+    }
+
+    #[test]
+    fn arrange_planar_deck_top_choice_reorders_deck() {
+        use crate::game::planechase::active_plane;
+
+        let mut state = GameState::new_two_player(11);
+        let (active, deck_top, deck_second) = setup_planechase_two_deep(&mut state);
+        state.waiting_for = WaitingFor::ArrangePlanarDeckTopChoice {
+            player: PlayerId(0),
+            cards: vec![deck_top, deck_second],
+            keep_on_top: 1,
+        };
+
+        let waiting_for = state.waiting_for.clone();
+        let mut events = Vec::new();
+        handle_resolution_choice(
+            &mut state,
+            waiting_for,
+            GameAction::SelectCards {
+                cards: vec![deck_second],
+            },
+            &mut events,
+        )
+        .expect("arrange choice resolves");
+
+        assert_eq!(state.planar_deck.front(), Some(&deck_second));
+        assert_eq!(active_plane(&state), Some(active));
+    }
+
+    #[test]
+    fn arrange_planar_deck_top_choice_drains_stashed_planeswalk() {
+        use crate::game::ability_utils::build_resolved_from_def;
+        use crate::game::effects::resolve_ability_chain;
+        use crate::game::planechase::active_plane;
+
+        let mut state = GameState::new_two_player(13);
+        let (_active, deck_top, deck_second) = setup_planechase_two_deep(&mut state);
+
+        let execute = AbilityDefinition::new(
+            AbilityKind::Spell,
+            Effect::ArrangePlanarDeckTop {
+                count: QuantityExpr::Fixed { value: 2 },
+                keep_on_top: QuantityExpr::Fixed { value: 1 },
+            },
+        )
+        .sub_ability(AbilityDefinition::new(
+            AbilityKind::Spell,
+            Effect::Planeswalk,
+        ));
+        let resolved = build_resolved_from_def(&execute, ObjectId(100), PlayerId(0));
+        let mut events = Vec::new();
+        resolve_ability_chain(&mut state, &resolved, &mut events, 0).unwrap();
+
+        assert!(matches!(
+            state.waiting_for,
+            WaitingFor::ArrangePlanarDeckTopChoice { .. }
+        ));
+        assert!(matches!(
+            state.pending_continuation.as_ref().unwrap().chain.effect,
+            Effect::Planeswalk
+        ));
+
+        let waiting_for = state.waiting_for.clone();
+        handle_resolution_choice(
+            &mut state,
+            waiting_for,
+            GameAction::SelectCards {
+                cards: vec![deck_second],
+            },
+            &mut events,
+        )
+        .expect("arrange + planeswalk resolves");
+
+        assert_eq!(active_plane(&state), Some(deck_second));
+        assert!(state.planar_deck.contains(&deck_top));
     }
 }

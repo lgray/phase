@@ -963,6 +963,25 @@ fn fallback_action(state: &GameState) -> Option<GameAction> {
             })
         }
 
+        // CR 901.15: Planar deck arrange requires exactly `keep_on_top` cards
+        // on top — pick the highest-valued looked-at planes.
+        WaitingFor::ArrangePlanarDeckTopChoice {
+            cards, keep_on_top, ..
+        } => {
+            let mut scored: Vec<_> = cards
+                .iter()
+                .map(|&id| (id, evaluate_card_value(state, id)))
+                .collect();
+            scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+            Some(GameAction::SelectCards {
+                cards: scored
+                    .iter()
+                    .take(*keep_on_top)
+                    .map(|(id, _)| *id)
+                    .collect(),
+            })
+        }
+
         // Multi-target selection: zero targets is valid when min == 0.
         WaitingFor::MultiTargetSelection { .. } => {
             Some(GameAction::SelectCards { cards: Vec::new() })
@@ -2352,6 +2371,23 @@ pub(crate) fn deterministic_choice(
         scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
         let keep_count = scored.len() / 2;
         let top_cards: Vec<_> = scored.iter().take(keep_count).map(|(id, _)| *id).collect();
+        return Some(GameAction::SelectCards { cards: top_cards });
+    }
+
+    if let WaitingFor::ArrangePlanarDeckTopChoice {
+        cards, keep_on_top, ..
+    } = &state.waiting_for
+    {
+        let mut scored: Vec<_> = cards
+            .iter()
+            .map(|&id| (id, evaluate_card_value(state, id)))
+            .collect();
+        scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        let top_cards: Vec<_> = scored
+            .iter()
+            .take(*keep_on_top)
+            .map(|(id, _)| *id)
+            .collect();
         return Some(GameAction::SelectCards { cards: top_cards });
     }
 

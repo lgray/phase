@@ -3313,6 +3313,7 @@ fn legacy_effect(x: &Effect) -> bool {
         | Effect::VentureIntoDungeon
         | Effect::VentureInto { .. }
         | Effect::TakeTheInitiative
+        | Effect::ArrangePlanarDeckTop { .. }
         | Effect::Planeswalk
         | Effect::OpenAttractions { .. }
         | Effect::RollToVisitAttractions
@@ -4135,6 +4136,12 @@ fn rw_effect(
         Effect::Surveil { count, target: _ } => {
             let mut p = ext_write(StateKind::HandLibrary);
             p.merge(rw_quantity_expr(count));
+            (p, None)
+        }
+        Effect::ArrangePlanarDeckTop { count, keep_on_top } => {
+            let mut p = ext_write(StateKind::Other);
+            p.merge(rw_quantity_expr(count));
+            p.merge(rw_quantity_expr(keep_on_top));
             (p, None)
         }
         Effect::Shuffle { target: _ } => (ext_write(StateKind::HandLibrary), None),
