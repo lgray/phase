@@ -1889,6 +1889,13 @@ fn scan_quantity_ref(x: &QuantityRef) -> Axes {
             sibling: false,
             projected: false,
         },
+        // CR 700.2: reads the triggering-spell object (same event axis as
+        // EventContextSourceCostX and TimesCostPaidThisResolution).
+        QuantityRef::EventContextSourceModesChosen => Axes {
+            event: true,
+            sibling: false,
+            projected: false,
+        },
         QuantityRef::SpellsCastThisTurn { scope, filter } => {
             let mut acc = Axes {
                 event: false,
