@@ -32,11 +32,10 @@ use super::swallow_evidence::UnitEvidence;
 use crate::types::ability::{
     AbilityCondition, AbilityDefinition, ActivationRestriction, CastingPermission, Comparator,
     ContinuousModification, CopyRetargetPermission, DamageModification, DelayedTriggerCondition,
-    DoubleTarget,
-    Duration, Effect, FilterProp, ManaProduction, ModalSelectionConstraint, OpponentMayScope,
-    ParsedCondition, PlayerFilter, QuantityExpr, QuantityRef, ReplacementCondition,
-    ReplacementMode, RestrictionExpiry, StaticCondition, StaticDefinition, TargetFilter,
-    TriggerCondition, TriggerConstraint, TriggerDefinition, UnlessPayScaling,
+    DoubleTarget, Duration, Effect, FilterProp, ManaProduction, ModalSelectionConstraint,
+    OpponentMayScope, ParsedCondition, PlayerFilter, QuantityExpr, QuantityRef,
+    ReplacementCondition, ReplacementMode, RestrictionExpiry, StaticCondition, StaticDefinition,
+    TargetFilter, TriggerCondition, TriggerConstraint, TriggerDefinition, UnlessPayScaling,
 };
 use crate::types::game_state::RetargetScope;
 use crate::types::keywords::Keyword;
