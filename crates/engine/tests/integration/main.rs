@@ -129,6 +129,7 @@ mod evelyn_regression;
 mod excess_damage_quantity_channel;
 mod exchange_life_totals_cards;
 mod exhibition_tidecaller_target_player_mill;
+mod exile_dynamic_from_top;
 mod export_runtime_canaries;
 mod exquisite_blood_routing;
 mod eyetwitch_learn_decline_lesson;
