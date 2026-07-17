@@ -14,8 +14,8 @@ use crate::types::game_state::{
     ActivationResidual, ActivationTargetSelection, CastOfferKind, CastPaymentMode,
     CastingPermissionIndex, CastingVariant, CastingVariantChoiceOption, ConvokeMode, CostResume,
     GameState, ManaAbilityCostParent, ManaAbilityResume, NextSpellModifier, PayCostKind,
-    PendingCast, PendingCostMoveResume, SneakPlacement, SpellCastRecord, SpellCostSource,
-    StackEntry, StackEntryKind, TargetSelectionSlot, WaitingFor,
+    PendingCast, PendingCostMoveResume, SneakPlacement, SpellCostSource, StackEntry,
+    StackEntryKind, TargetSelectionSlot, WaitingFor,
 };
 use crate::types::identifiers::{CardId, ObjectId, TrackedSetId};
 use crate::types::keywords::{FlashbackCost, Keyword, KeywordKind};
@@ -606,26 +606,6 @@ fn restriction_scope_matches_player(
     }
 }
 
-/// CR 601.2a + CR 202.3d: Build the spell-record projection used by prohibition
-/// filters. Routes through the shared `restrictions::spell_cast_record_for`
-/// authority so a fused split spell is projected with the COMBINED mana value /
-/// colors of both halves (CR 702.102b). `fused` requests that combined projection
-/// for a pre-payment fused split spell whose `fused_split_spell` marker is not yet
-/// set (the prohibition seam passes the `variant_override == Some(Fuse)` hint).
-/// `CastingVariant::Normal` is the historical placeholder for these live per-spell
-/// filters (they do not consult the variant).
-fn spell_record_for_restrictions_for(
-    spell_obj: &super::game_object::GameObject,
-    fused: bool,
-) -> SpellCastRecord {
-    super::restrictions::spell_cast_record_for(
-        spell_obj,
-        spell_obj.zone,
-        crate::types::game_state::CastingVariant::Normal,
-        fused,
-    )
-}
-
 fn is_blocked_by_cast_only_from_zones(
     state: &GameState,
     obj: &crate::game::game_object::GameObject,
@@ -713,8 +693,6 @@ fn is_blocked_by_cant_cast_spells_for(
         return true;
     }
 
-    let spell_record = spell_obj.map(|obj| spell_record_for_restrictions_for(obj, fused));
-
     state.restrictions.iter().any(|restriction| {
         let GameRestriction::ProhibitActivity {
             source,
@@ -744,14 +722,64 @@ fn is_blocked_by_cant_cast_spells_for(
         // CR 101.2: Once scope matches, filter-matching spells are prohibited.
         caster_affected
             && match spell_filter {
-                Some(filter) => spell_record.as_ref().is_some_and(|record| {
-                    super::filter::spell_record_matches_filter(
-                        record,
-                        filter,
-                        source_controller.unwrap_or(caster),
-                        &state.all_creature_types,
+                Some(filter) => spell_obj.is_some_and(|spell_obj| {
+                    let Some(source_obj) = state.objects.get(source) else {
+                        return false;
+                    };
+                    cant_cast_filter_matches_for(
+                        state, spell_obj, filter, source_obj, caster, fused,
                     )
                 }),
+                None => true,
+            }
+    })
+}
+
+/// CR 305.1 + CR 116.2a: Check if any `PlayLands` restriction prevents `player`
+/// from playing `land_obj` as a land. Filter-scoped sibling of
+/// `is_blocked_by_cant_cast_spells_for` — a land play is not a cast, so this
+/// reads the land's own `GameObject` directly through the generic per-object
+/// filter evaluator (`filter::matches_target_filter`) rather than a spell-record
+/// projection.
+pub(crate) fn is_blocked_by_cant_play_lands(
+    state: &GameState,
+    player: PlayerId,
+    land_obj: &GameObject,
+) -> bool {
+    state.restrictions.iter().any(|restriction| {
+        let GameRestriction::ProhibitActivity {
+            source,
+            affected_players,
+            expiry,
+            activity: ProhibitedActivity::PlayLands { land_filter },
+        } = restriction
+        else {
+            return false;
+        };
+        // CR 514.2 + CR 500.7: mirror the pre-armed-turn gate shared by
+        // CastSpells/ActivateAbilities — a still-pre-armed `UntilEndOfNextTurnOf`
+        // ban is not yet in force.
+        if matches!(expiry, RestrictionExpiry::UntilEndOfNextTurnOf { .. }) {
+            return false;
+        }
+        let source_controller = state.objects.get(source).map(|obj| obj.controller);
+        let player_affected =
+            restriction_scope_matches_player(source_controller, affected_players, player);
+
+        player_affected
+            && match land_filter {
+                Some(filter) => super::filter::matches_target_filter(
+                    state,
+                    land_obj.id,
+                    filter,
+                    &super::filter::FilterContext {
+                        source_id: *source,
+                        source_controller,
+                        ability: None,
+                        recipient_id: None,
+                        scoped_iteration_player: None,
+                    },
+                ),
                 None => true,
             }
     })
