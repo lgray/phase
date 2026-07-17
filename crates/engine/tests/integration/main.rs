@@ -947,6 +947,7 @@ mod restricted_mana_face_down_and_face_up;
 mod restricted_mana_mv_or_x;
 mod restricted_mana_not_from_zone;
 mod restricted_mana_x_cost_only;
+mod riku_modal_modes_chosen_cap;
 mod riku_modal_spell_trigger;
 mod roiling_vortex_upkeep_damage_2891;
 mod room_door_lock_unlock;

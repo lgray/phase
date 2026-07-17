@@ -8013,6 +8013,7 @@ fn finalize_cast_with_phyrexian_choices_inner(
     // replacements on X-cost cards like Astral Cornucopia, Walking Ballista, etc.
     let cost_x_paid = ability.chosen_x;
     let kickers_paid = ability.context.kickers_paid.clone();
+    let chosen_modes = ability.context.chosen_modes.clone();
     let additional_cost_paid = ability.context.additional_cost_paid;
     let additional_cost_payment_count = ability.context.additional_cost_payment_count;
     let additional_cost_payments = ability.context.additional_cost_payments.clone();
@@ -8115,6 +8116,17 @@ fn finalize_cast_with_phyrexian_choices_inner(
     if !kickers_paid.is_empty() {
         if let Some(obj) = state.objects.get_mut(&object_id) {
             obj.kickers_paid.clone_from(&kickers_paid);
+        }
+    }
+    // CR 700.2a + CR 700.2d + CR 601.2b: Stamp chosen modal-mode indices onto the
+    // spell-on-stack object so cast-triggers (Riku: "the number of times you chose
+    // a mode for that spell") read the mode count. Cast-triggers resolve before the
+    // spell — see the kickers_paid stamp directly above for the CR-603 ordering
+    // rationale, which is why a permanent-entry stamp would be too late. Empty for
+    // non-modal spells.
+    if !chosen_modes.is_empty() {
+        if let Some(obj) = state.objects.get_mut(&object_id) {
+            obj.chosen_modes.clone_from(&chosen_modes);
         }
     }
     if additional_cost_payment_count > 0 {

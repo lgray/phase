@@ -5488,6 +5488,15 @@ pub enum QuantityRef {
     /// {X} in its mana cost each turn, [do something with X]" (e.g. Nev the
     /// Practical Dean's "put X +1/+1 counters on Nev").
     EventContextSourceCostX,
+    /// CR 700.2 + CR 700.2a + CR 700.2d + CR 601.2b: The number of modes chosen
+    /// for the triggering modal spell (CR 601.2b announces the mode choice as
+    /// part of casting; CR 700.2d counts a repeated mode "that many times in
+    /// sequence"). Reads `GameObject::chosen_modes.len()` on the spell object
+    /// referenced by `current_trigger_event` (the `SpellCast` event), mirroring
+    /// `EventContextSourceCostX`. Used by "whenever you cast a modal spell,
+    /// choose up to X, where X is the number of times you chose a mode for that
+    /// spell" (Riku of Many Paths).
+    EventContextSourceModesChosen,
     /// CR 117.1: Number of spells cast this turn by players in `scope`,
     /// optionally filtered by spell characteristics. `None` = all spells.
     SpellsCastThisTurn {
@@ -17295,6 +17304,16 @@ pub struct SpellContext {
     ///   - `len() >= n`                ⇔ kicker was paid at least N times
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub kickers_paid: Vec<KickerVariant>,
+    /// CR 700.2a + CR 700.2d + CR 601.2b: The modal-mode indices chosen for this
+    /// spell as it was cast (ascending, with repeats per CR 700.2d). Populated in
+    /// `handle_select_modes` (the modal-SPELL channel) from the same
+    /// `sorted_indices` written to `PendingCast.chosen_modes`, and stamped onto
+    /// the spell-on-stack `GameObject.chosen_modes` at cast finalize so
+    /// cast-triggers (Riku: `QuantityRef::EventContextSourceModesChosen`) read the
+    /// mode count. Empty for non-modal spells. Mirrors the `kickers_paid`
+    /// cast-latch channel.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub chosen_modes: Vec<usize>,
     /// Whether an optional "you may" effect was performed during resolution.
     /// Used by AbilityCondition::effect_performed() to gate dependent sub_abilities.
     #[serde(default)]

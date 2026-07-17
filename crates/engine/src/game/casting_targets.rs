@@ -115,6 +115,14 @@ pub(crate) fn handle_select_modes(
     let mut resolved = build_chained_resolved(&abilities, &indices, pending.object_id, controller)?;
     resolved.set_context_recursive(pending.ability.context.clone());
     resolved.selected_mode_labels = selected_mode_labels(&modal.mode_descriptions, &indices);
+    // CR 700.2a + CR 700.2d + CR 601.2b: latch the chosen modal-mode indices onto
+    // the spell's context so finalize can stamp them on the stack object (read by
+    // QuantityRef::EventContextSourceModesChosen). `sorted_indices` is the same
+    // ground-truth vector stored on every derived PendingCast.chosen_modes below;
+    // `resolved` becomes the finalize `ability` on all three sub-paths (direct via
+    // finish_pending_cast_cost_or_pay, deferred-X and deferred-target-selection via
+    // PendingCast::new), so the top-level context carries the count to finalize.
+    resolved.context.chosen_modes = sorted_indices.clone();
 
     if pending.activation_ability_index.is_none()
         && pending.additional_cost_flow.is_none()
