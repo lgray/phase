@@ -17,14 +17,136 @@
 //! `riku_modal_spell_trigger.rs` / `atarkas_command_*`).
 
 use engine::game::quantity::resolve_quantity;
-use engine::game::scenario::{GameScenario, P0};
-use engine::types::ability::{QuantityExpr, QuantityRef};
+use engine::game::scenario::{GameRunner, GameScenario, P0, P1};
+use engine::types::ability::{QuantityExpr, QuantityRef, TargetRef};
+use engine::types::actions::GameAction;
 use engine::types::events::GameEvent;
-use engine::types::game_state::{GameState, WaitingFor};
+use engine::types::game_state::{CastPaymentMode, GameState, WaitingFor};
+use engine::types::identifiers::ObjectId;
 use engine::types::mana::ManaCost;
 use engine::types::phase::Phase;
 
+const RIKU_ORACLE: &str = "Whenever you cast a modal spell, choose up to X, where X is the number of times you chose a mode for that spell —\n\u{2022} Exile the top card of your library. Until the end of your next turn, you may play it.\n\u{2022} Put a +1/+1 counter on Riku. It gains trample until end of turn.\n\u{2022} Create a 1/1 blue Bird creature token with flying.";
+
+const ABRADE_ORACLE: &str =
+    "Choose one \u{2014}\n\u{2022} Abrade deals 3 damage to target creature.\n\u{2022} Destroy target artifact.";
+
 const ATARKAS_COMMAND_ORACLE: &str = "Choose two \u{2014}\n\u{2022} Your opponents can't gain life this turn.\n\u{2022} Atarka's Command deals 3 damage to each opponent.\n\u{2022} You may put a land card from your hand onto the battlefield.\n\u{2022} Creatures you control get +1/+1 and gain reach until end of turn.";
+
+/// Drive a cast through the pipeline: answer the spell's own `ModeChoice`
+/// (`modes`) and `TargetSelection` (`targets`), then stop at Riku's triggered
+/// `AbilityModeChoice` and return that modal's resolved `max_choices` — the live
+/// value produced by `modal_choice_for_player` from Riku's
+/// `dynamic_max_choices` (`EventContextSourceModesChosen`). Panics if the
+/// pipeline halts at `Priority` (Riku's trigger never fired) or any other window.
+fn cast_and_capture_riku_cap(
+    runner: &mut GameRunner,
+    spell: ObjectId,
+    modes: &[usize],
+    targets: &[ObjectId],
+) -> usize {
+    let card_id = runner.state().objects[&spell].card_id;
+    runner
+        .act(GameAction::CastSpell {
+            object_id: spell,
+            card_id,
+            targets: vec![],
+            payment_mode: CastPaymentMode::Auto,
+        })
+        .expect("CastSpell must be accepted");
+
+    let mut remaining_targets = targets.to_vec();
+    for _ in 0..64 {
+        match &runner.state().waiting_for {
+            WaitingFor::ModeChoice { .. } => {
+                runner
+                    .act(GameAction::SelectModes {
+                        indices: modes.to_vec(),
+                    })
+                    .expect("SelectModes must be accepted");
+            }
+            WaitingFor::TargetSelection { .. } => {
+                let target = remaining_targets.remove(0);
+                runner
+                    .act(GameAction::ChooseTarget {
+                        target: Some(TargetRef::Object(target)),
+                    })
+                    .expect("ChooseTarget must be accepted");
+            }
+            // Riku's triggered modal surfaces here (before the Priority window).
+            // Its `max_choices` is the resolved dynamic cap under test.
+            WaitingFor::AbilityModeChoice { modal, .. } => {
+                return modal.max_choices;
+            }
+            WaitingFor::Priority { .. } => {
+                panic!("Riku's modal trigger did not fire (halted at Priority)")
+            }
+            other => panic!(
+                "unexpected WaitingFor while driving the cast: {}",
+                other.variant_name()
+            ),
+        }
+    }
+    panic!("cast pipeline did not reach Riku's AbilityModeChoice within the step budget");
+}
+
+/// END-TO-END: casting a modal spell that chose ONE mode (Abrade "Choose one")
+/// resolves Riku's dynamic cap to 1 (`min(1, mode_count=3)`, CR 700.2d).
+///
+/// Revert probes: (a) resolver arm `=> 0` → cap 0; (b) drop the finalize stamp /
+/// population line → `chosen_modes` empty → resolver 0 → cap 0; (c) drop the
+/// parser where-X arm → Riku's header falls to `Fixed{1,1}` → cap 1 (NOT
+/// discriminated by this single-mode case — the two-mode case below discriminates
+/// the parser revert).
+#[test]
+fn riku_cap_resolves_to_one_mode_chosen() {
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(Phase::PreCombatMain);
+    let _riku = scenario
+        .add_creature_from_oracle(P0, "Riku, of Many Paths", 2, 4, RIKU_ORACLE)
+        .id();
+    let dummy = scenario.add_creature(P1, "Target Dummy", 3, 3).id();
+    let abrade = scenario
+        .add_spell_to_hand_from_oracle(P0, "Abrade", true, ABRADE_ORACLE)
+        .with_mana_cost(ManaCost::generic(0))
+        .id();
+    let mut runner = scenario.build();
+
+    let cap = cast_and_capture_riku_cap(&mut runner, abrade, &[0], &[dummy]);
+    assert_eq!(
+        cap, 1,
+        "Riku's dynamic cap must equal the 1 mode chosen for Abrade (CR 700.2d)"
+    );
+}
+
+/// END-TO-END: casting a modal spell that chose TWO modes (Atarka's Command
+/// "Choose two") resolves Riku's dynamic cap to 2 (`min(2, 3)`). The contrast
+/// with the one-mode case above proves the cap tracks the ACTUAL mode count, not
+/// a constant or Riku's own mode_count.
+///
+/// Revert probes: (a) resolver arm `=> 0` → cap 0 ≠ 2; (b) drop stamp/population
+/// → 0 ≠ 2; (c) drop the parser where-X arm → Riku header `Fixed{1,1}` → cap 1
+/// ≠ 2.
+#[test]
+fn riku_cap_resolves_to_two_modes_chosen() {
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(Phase::PreCombatMain);
+    let _riku = scenario
+        .add_creature_from_oracle(P0, "Riku, of Many Paths", 2, 4, RIKU_ORACLE)
+        .id();
+    let atarka = scenario
+        .add_spell_to_hand_from_oracle(P0, "Atarka's Command", true, ATARKAS_COMMAND_ORACLE)
+        .with_mana_cost(ManaCost::generic(0))
+        .id();
+    let mut runner = scenario.build();
+
+    // Modes 0 (opponents can't gain life) and 3 (creatures +1/+1) are targetless.
+    let cap = cast_and_capture_riku_cap(&mut runner, atarka, &[0, 3], &[]);
+    assert_eq!(
+        cap, 2,
+        "Riku's dynamic cap must equal the 2 modes chosen for Atarka's Command (CR 700.2d)"
+    );
+}
 
 /// STORAGE SEAM (real modal SPELL, subset with a gap): casting Atarka's Command
 /// choosing modes {3, 0} stamps the ascending indices `[0, 3]` onto the
