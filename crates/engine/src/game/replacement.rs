@@ -3950,7 +3950,8 @@ fn bind_search_found_definition(
     }
 
     // CR 611.2b + CR 601.3: only the exact permanent exile-play permission
-    // rider is bound here; its resolved copy is installed after delivery.
+    // rider is bound here; its resolved copy is installed after delivery only
+    // if the "for as long as it remains exiled" duration actually starts.
     let grant = match execute.sub_ability.as_deref() {
         None => None,
         Some(child) => {
