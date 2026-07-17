@@ -31,11 +31,11 @@ use super::oracle_ir::feature::{
 use super::swallow_evidence::UnitEvidence;
 use crate::types::ability::{
     AbilityCondition, AbilityDefinition, ActivationRestriction, CastingPermission, Comparator,
-    ContinuousModification, CopyRetargetPermission, DelayedTriggerCondition, Duration, Effect,
-    FilterProp, ManaProduction, ModalSelectionConstraint, OpponentMayScope, ParsedCondition,
-    PlayerFilter, QuantityExpr, QuantityRef, ReplacementCondition, ReplacementMode,
-    RestrictionExpiry, StaticCondition, StaticDefinition, TargetFilter, TriggerCondition,
-    TriggerConstraint, TriggerDefinition, UnlessPayScaling,
+    ContinuousModification, CopyRetargetPermission, DelayedTriggerCondition, DoubleTarget,
+    Duration, Effect, FilterProp, ManaProduction, ModalSelectionConstraint, OpponentMayScope,
+    ParsedCondition, PlayerFilter, QuantityExpr, QuantityRef, ReplacementCondition,
+    ReplacementMode, RestrictionExpiry, StaticCondition, StaticDefinition, TargetFilter,
+    TriggerCondition, TriggerConstraint, TriggerDefinition, UnlessPayScaling,
 };
 use crate::types::game_state::RetargetScope;
 use crate::types::keywords::Keyword;
@@ -2214,8 +2214,24 @@ fn detect_dynamic_qty(
     {
         return;
     }
+    // CR 701.10e: The counter-multiplier escape hatch. Both `MultiplyCounter`
+    // ("double the number of +1/+1 counters") and the "each kind" form
+    // (`Effect::Double { target_kind: DoubleTarget::Counters, .. }`, counter.rs)
+    // carry the doubled amount intrinsically in the resolver ("give as many of
+    // those counters as already present"), never as a `QuantityExpr`. So the
+    // "the number of" dynamic marker IS represented by the effect itself — the
+    // DynamicQty warning would be a false positive.
     if cleaned_has_only_counter_multiplier_dynamic(cleaned)
-        && evidence.any_effect(|e| matches!(e, Effect::MultiplyCounter { .. }))
+        && evidence.any_effect(|e| {
+            matches!(
+                e,
+                Effect::MultiplyCounter { .. }
+                    | Effect::Double {
+                        target_kind: DoubleTarget::Counters { .. },
+                        ..
+                    }
+            )
+        })
     {
         return;
     }
@@ -2487,8 +2503,16 @@ fn decline_iteration_prefix(input: &str) -> bool {
 }
 
 fn cleaned_has_only_counter_multiplier_dynamic(cleaned: &str) -> bool {
+    // The counter multiplier phrase: either the "+1/+1 counters" form
+    // (`Effect::MultiplyCounter`) or the "each kind of counter" form
+    // (`Effect::Double { DoubleTarget::Counters }`, counter.rs).
+    let has_counter_multiplier = [
+        "double the number of +1/+1 counters",
+        "double the number of each kind of counter",
+    ]
+    .iter()
     // allow-noncombinator: swallow detector phrase scan on classified text
-    let has_counter_multiplier = cleaned.contains("double the number of +1/+1 counters");
+    .any(|phrase| cleaned.contains(phrase));
     if !has_counter_multiplier {
         return false;
     }
@@ -8371,6 +8395,77 @@ this spell's mana cost.\nAttacking creatures get -3/-0 until end of turn.",
             !has_swallowed_detector(&parsed, "ActivateOnlyDuring"),
             "a TYPED timing window must not be reported as swallowed"
         );
+    }
+
+    /// FIX1 recognizer (CR 701.10e): the counter-multiplier escape-hatch phrase
+    /// scan must ALSO accept the "each kind of counter" doubling form (which
+    /// emits `Effect::Double`, not `MultiplyCounter`), while staying
+    /// RED-conservative — a SECOND dynamic marker keeps the warning alive.
+    #[test]
+    fn counter_multiplier_recognizer_accepts_each_kind_form() {
+        // "each kind" doubling form — newly recognized.
+        assert!(super::cleaned_has_only_counter_multiplier_dynamic(
+            "double the number of each kind of counter on target creature"
+        ));
+        // Historical "+1/+1 counters" form — regression guard.
+        assert!(super::cleaned_has_only_counter_multiplier_dynamic(
+            "double the number of +1/+1 counters on target creature"
+        ));
+        // A SECOND dynamic marker ("for each") must keep the warning: a real
+        // uncaptured clause may hide behind it.
+        assert!(!super::cleaned_has_only_counter_multiplier_dynamic(
+            "double the number of each kind of counter on target creature for each card in your hand"
+        ));
+    }
+
+    /// FIX1 end-to-end (CR 701.10e): the "each kind of counter" doubling form no
+    /// longer produces a false-positive DynamicQty swallowed-clause warning — the
+    /// escape hatch now recognizes `Effect::Double { DoubleTarget::Counters }` as
+    /// the intrinsic carrier of the doubled count. Covers a synthetic targeted
+    /// instant AND Zimone, Paradox Sculptor's real activated line.
+    #[test]
+    fn double_each_kind_of_counter_is_not_a_dynamic_qty_swallow() {
+        use crate::parser::oracle_ir::feature::OracleSemanticFeature;
+
+        for (text, name, types) in [
+            (
+                "Double the number of each kind of counter on target creature.",
+                "Synthetic Counter Doubler",
+                &["Instant"][..],
+            ),
+            (
+                "{G}{U}, {T}: Double the number of each kind of counter on up to two target creatures and/or artifacts you control.",
+                "Zimone, Paradox Sculptor",
+                &["Legendary", "Creature"][..],
+            ),
+        ] {
+            let parsed = parse_named(text, name, types);
+
+            // REACH GUARDS (avoid vacuity): the line must actually parse and the
+            // detector's dynamic marker must be present, or the silence proves
+            // nothing about the escape-hatch arm.
+            assert!(
+                !parsed.abilities.is_empty(),
+                "{name}: the line must parse to at least one ability"
+            );
+            assert!(
+                !any_ability_has_unimplemented(&parsed),
+                "{name}: the targeted form must parse — a self-suppressing Unimplemented would make this vacuous"
+            );
+            assert!(
+                // allow-noncombinator: test reach-guard asserting the fixture text carries the marker
+                text.to_lowercase().contains("the number of"),
+                "{name}: the dynamic-qty marker must be present in the fixture"
+            );
+
+            assert!(
+                !has_swallowed_detector(
+                    &parsed,
+                    OracleSemanticFeature::DynamicQty.detector_label()
+                ),
+                "{name}: an intrinsic counter-doubler must not be flagged as a swallowed DynamicQty clause"
+            );
+        }
     }
 
     /// The OTHER half of the `ActivateOnlyDuring` input space, pinned to what the parser
