@@ -23,7 +23,34 @@ use super::targeting;
 use super::zone_pipeline::{self, ZoneMoveRequest, ZoneMoveResult};
 
 /// CR 405.1: Add an object to the stack.
-pub fn push_to_stack(state: &mut GameState, entry: StackEntry, events: &mut Vec<GameEvent>) {
+pub fn push_to_stack(state: &mut GameState, mut entry: StackEntry, events: &mut Vec<GameEvent>) {
+    // CR 701.27f: an activated or triggered ability of a permanent may
+    // transform that permanent only if it has not transformed/converted since
+    // the ability was put onto the stack. Spells and keyword actions do not
+    // receive this guard.
+    if matches!(
+        entry.kind,
+        StackEntryKind::ActivatedAbility { .. } | StackEntryKind::TriggeredAbility { .. }
+    ) {
+        let source = state
+            .objects
+            .get(&entry.source_id)
+            .filter(|object| object.back_face.is_some());
+        let count = source.map(|object| object.transformation_count);
+        let incarnation = source.map(|object| object.incarnation);
+        if let Some(ability) = entry.ability_mut() {
+            // CR 701.27f: delayed triggered abilities already carry their
+            // creation-time generation and must not be restamped when fired.
+            if ability.context.source_transformation_count.is_none() {
+                ability.set_source_transformation_count_recursive(count);
+                // CR 400.7: a re-entered source can share the same storage ID
+                // and transformation generation, so retain its incarnation too.
+                if ability.source_incarnation.is_none() {
+                    ability.set_source_incarnation_recursive(incarnation);
+                }
+            }
+        }
+    }
     events.push(GameEvent::StackPushed {
         object_id: entry.id,
     });
