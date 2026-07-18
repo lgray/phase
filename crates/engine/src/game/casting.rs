@@ -33,13 +33,12 @@ use crate::types::zones::{ExileCostSourceZone, Zone};
 use std::collections::{BTreeSet, HashMap, HashSet};
 
 use super::ability_utils::{
-    ability_target_legality_needs_chosen_x, assign_targets_in_chain, auto_select_targets,
-    auto_select_targets_for_ability, begin_target_selection, begin_target_selection_for_ability,
-    build_resolved_from_def, build_target_slots, compute_unavailable_modes,
-    filter_references_target_player, flatten_targets_in_chain,
-    has_legal_target_assignment_for_ability, kicker_instead_spell_has_legal_targets,
-    modal_choice_for_player, simple_legal_target_assignment_exists_for_ability,
-    target_constraints_from_modal,
+    ability_target_legality_needs_chosen_x, additional_cost_instead_spell_has_legal_targets,
+    assign_targets_in_chain, auto_select_targets, auto_select_targets_for_ability,
+    begin_target_selection, begin_target_selection_for_ability, build_resolved_from_def,
+    build_target_slots, compute_unavailable_modes, filter_references_target_player,
+    flatten_targets_in_chain, has_legal_target_assignment_for_ability, modal_choice_for_player,
+    simple_legal_target_assignment_exists_for_ability, target_constraints_from_modal,
 };
 use super::casting_costs::{self, check_additional_cost_or_pay};
 use super::engine::EngineError;
@@ -11566,6 +11565,36 @@ fn continue_with_prepared(
             prepared.payment_mode,
             events,
         );
+    } else if requires_additional_cost_declaration_before_targets(&resolved)
+        && !casting_costs::build_effective_additional_cost_queue(state, player, prepared.object_id)
+            .is_empty()
+    {
+        // CR 601.2b + CR 702.194c: generalizes the kicker-only gate above to
+        // every OTHER target-dependent "instead" additional cost with a
+        // non-empty effective queue (currently Teamwork/Bargain; Too Evil to
+        // Stay Dead, Cruel Alliance). Bounded by the queue-emptiness check so
+        // non-kicker `AdditionalCostPaidInstead` cards with an empty queue
+        // (no queue-synthesized cost to declare pre-target) fall through to
+        // the ordinary target-slot path below, unchanged.
+        return casting_costs::begin_target_dependent_additional_cost_declaration(
+            state,
+            player,
+            prepared.object_id,
+            prepared.card_id,
+            resolved,
+            prepared.mana_cost,
+            Some(prepared.base_mana_cost.clone()),
+            prepared.casting_variant,
+            prepared.casting_permission_index,
+            prepared.cast_timing_permission,
+            prepared
+                .ability_def
+                .as_ref()
+                .and_then(|a| a.distribute.clone()),
+            prepared.origin_zone,
+            prepared.payment_mode,
+            events,
+        );
     }
 
     let mut target_slots = build_target_slots(state, &resolved)?;
@@ -11864,7 +11893,9 @@ fn modal_requires_additional_cost_declaration(modal: &crate::types::ability::Mod
     })
 }
 
-fn requires_additional_cost_declaration_before_targets(ability: &ResolvedAbility) -> bool {
+pub(crate) fn requires_additional_cost_declaration_before_targets(
+    ability: &ResolvedAbility,
+) -> bool {
     let Some(sub_ability) = ability.sub_ability.as_deref() else {
         return false;
     };
@@ -12149,6 +12180,24 @@ fn legal_target_slots_for_castable_spell_in_flushed_state(
         .is_some_and(|additional| matches!(additional, AdditionalCost::Kicker { .. }));
     if has_kicker_cost && requires_additional_cost_declaration_before_targets(&resolved) {
         return Ok(Vec::new());
+    } else if requires_additional_cost_declaration_before_targets(&resolved)
+        && !casting_costs::build_effective_additional_cost_queue(state, player, prepared.object_id)
+            .is_empty()
+    {
+        // CR 601.2c: parity with the live-cast gate above — the preview must
+        // defer EXACTLY the cards the live path defers. The queue-emptiness
+        // guard is load-bearing (NOT merely a Gift exclusion — Gift's
+        // `AdditionalCostPaidInstead` sits at sub_ability level 2 under
+        // `GiftDelivery`, so `requires_additional_cost_declaration_before_
+        // targets`, which inspects only the first level, already returns
+        // `false` for Gift and it never reaches this check either way). Its
+        // real protected class is non-kicker LEVEL-1 `AdditionalCostPaidInstead`
+        // cards with a PRINTED additional cost (empty effective queue, e.g.
+        // `obj.additional_cost = Optional`/`Required`/`Choice`): those have
+        // `requires_ == true` but must NOT defer here (there is no
+        // queue-synthesized cost to declare pre-target), so a bare `requires_`
+        // gate would wrongly return `Ok(Vec::new())` for them.
+        return Ok(Vec::new());
     }
 
     // CR 601.2c: Once all earlier casting choices are known, enumerate the
@@ -12248,7 +12297,7 @@ fn spell_has_legal_targets_in_flushed_state(
     if base_ok {
         return true;
     }
-    if kicker_instead_spell_has_legal_targets(state, &ability_def, obj.id, player) {
+    if additional_cost_instead_spell_has_legal_targets(state, &ability_def, obj.id, player) {
         return true;
     }
     ability_target_legality_needs_chosen_x(&resolved, ability_def.distribute.as_ref())
