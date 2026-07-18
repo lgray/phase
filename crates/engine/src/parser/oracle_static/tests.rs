@@ -24109,6 +24109,132 @@ fn static_cant_play_lands_players() {
     );
 }
 
+// --- CR 602.5 + CR 606.2: The Immortal Sun — subject-first loyalty-activation
+// prohibition ("Players can't activate planeswalkers' loyalty abilities") ---
+
+#[test]
+fn immortal_sun_line1_parses_to_loyalty_kind_cant_be_activated() {
+    // CR 602.5 + CR 606.2: subject "Players" → AllPlayers; possessive type
+    // "planeswalkers'" → exactly Typed(Planeswalker) on the source axis;
+    // "loyalty abilities" → kind = Some(Loyalty). Revert-failing: drop the parser
+    // and the line falls to Effect::Unimplemented (no static); emit kind = None
+    // and it wrongly blocks a planeswalker's non-loyalty abilities too.
+    let def = parse_static_line("Players can't activate planeswalkers' loyalty abilities.")
+        .expect("The Immortal Sun line 1 must parse to a CantBeActivated static");
+    match def.mode {
+        StaticMode::CantBeActivated {
+            who,
+            source_filter,
+            exemption,
+            kind,
+        } => {
+            assert_eq!(
+                who,
+                ProhibitionScope::AllPlayers,
+                "\"Players\" → AllPlayers"
+            );
+            assert_eq!(
+                source_filter,
+                TargetFilter::Typed(TypedFilter::new(TypeFilter::Planeswalker)),
+                "possessive \"planeswalkers'\" → exactly Typed(Planeswalker)"
+            );
+            assert_eq!(
+                exemption,
+                ActivationExemption::None,
+                "no mana-ability carve-out on this class"
+            );
+            assert_eq!(
+                kind,
+                Some(ActivatedAbilityKind::Loyalty),
+                "\"loyalty abilities\" narrows the prohibition to the loyalty kind"
+            );
+        }
+        other => panic!("expected CantBeActivated, got {other:?}"),
+    }
+}
+
+#[test]
+fn immortal_sun_line1_covers_the_subject_and_type_class_generically() {
+    // Build-for-the-class: the same combinator handles other subjects/types via
+    // the shared subject and type-phrase helpers, not a verbatim string match.
+    // "you" → Controller scope; possessive type stays generic.
+    let def = parse_static_line("You can't activate planeswalkers' loyalty abilities.")
+        .expect("subject axis must compose through strip_casting_prohibition_subject");
+    match def.mode {
+        StaticMode::CantBeActivated {
+            who,
+            source_filter,
+            kind,
+            ..
+        } => {
+            assert_eq!(who, ProhibitionScope::Controller, "\"You\" → Controller");
+            assert_eq!(
+                source_filter,
+                TargetFilter::Typed(TypedFilter::new(TypeFilter::Planeswalker))
+            );
+            assert_eq!(kind, Some(ActivatedAbilityKind::Loyalty));
+        }
+        other => panic!("expected CantBeActivated, got {other:?}"),
+    }
+}
+
+#[test]
+fn loyalty_activation_prohibition_accepts_singular_possessive_type() {
+    // The shared type parser accepts a singular type noun. The possessive suffix
+    // must therefore accept both singular spellings as well, otherwise an
+    // otherwise-valid class member silently falls through to Unimplemented.
+    for possessive in ["planeswalker's", "planeswalker\u{2019}s"] {
+        let text = format!("Players can't activate {possessive} loyalty abilities.");
+        let def = parse_static_line(&text)
+            .unwrap_or_else(|| panic!("singular possessive must parse: {text}"));
+        match def.mode {
+            StaticMode::CantBeActivated {
+                source_filter,
+                kind,
+                ..
+            } => {
+                assert_eq!(
+                    source_filter,
+                    TargetFilter::Typed(TypedFilter::new(TypeFilter::Planeswalker)),
+                    "singular possessive must retain the planeswalker filter: {text}"
+                );
+                assert_eq!(
+                    kind,
+                    Some(ActivatedAbilityKind::Loyalty),
+                    "singular possessive must retain the loyalty kind: {text}"
+                );
+            }
+            other => panic!("expected CantBeActivated for {text:?}, got {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn regression_cant_be_activated_family_keeps_kind_none() {
+    // CR 606.2: The kind axis is opt-in — pre-existing activation prohibitions
+    // (Karn/Clarion source-scoped, Pithing Needle chosen-name, Damping Matrix
+    // mana exemption, self-reference) must still emit kind = None so they keep
+    // blocking ANY activated ability. Revert-failing: if the new combinator over-
+    // matched or defaulted kind to Some(..), these would stop blocking non-loyalty
+    // abilities.
+    let cases = [
+        "Activated abilities of artifacts your opponents control can't be activated.",
+        "Activated abilities of sources with the chosen name can't be activated unless they're mana abilities.",
+        "Activated abilities of artifacts and creatures can't be activated unless they're mana abilities.",
+        "Its activated abilities can't be activated.",
+    ];
+    for text in cases {
+        let def = parse_static_line(text).unwrap_or_else(|| panic!("must parse: {text}"));
+        match def.mode {
+            StaticMode::CantBeActivated { kind, .. } => assert_eq!(
+                kind, None,
+                "existing activation-prohibition class must keep kind = None: {text}"
+            ),
+            other => panic!("expected CantBeActivated for {text:?}, got {other:?}"),
+        }
+    }
+}
+
 // --- CR 602.5 + CR 603.2a: Global filter-scoped CantBeActivated (Clarion/Karn class) ---
 
 #[test]
@@ -24121,6 +24247,7 @@ fn cant_be_activated_self_ref_preserves_legacy_semantics() {
             who,
             source_filter,
             exemption,
+            ..
         } => {
             assert_eq!(who, ProhibitionScope::AllPlayers);
             assert_eq!(source_filter, TargetFilter::SelfRef);
@@ -24142,6 +24269,7 @@ fn cant_be_activated_self_ref_mana_exemption_suffix() {
             who,
             source_filter,
             exemption,
+            ..
         } => {
             assert_eq!(who, ProhibitionScope::AllPlayers);
             assert_eq!(source_filter, TargetFilter::SelfRef);
@@ -24170,6 +24298,7 @@ fn cant_be_activated_self_ref_typographic_apostrophe_keeps_mana_exemption() {
             who,
             source_filter,
             exemption,
+            ..
         } => {
             assert_eq!(who, ProhibitionScope::AllPlayers);
             assert_eq!(source_filter, TargetFilter::SelfRef);
@@ -24207,6 +24336,7 @@ fn cant_be_activated_compound_aura_mana_exemption_suffix() {
             who,
             source_filter,
             exemption,
+            ..
         } => {
             assert_eq!(*who, ProhibitionScope::AllPlayers);
             assert_eq!(source_filter, &expected_affected);
@@ -24278,6 +24408,7 @@ fn cant_be_activated_compound_aura_with_cant_crew_and_activation_clause() {
             who,
             source_filter,
             exemption,
+            ..
         } => {
             assert_eq!(*who, ProhibitionScope::AllPlayers);
             assert_eq!(source_filter, &expected_affected);
@@ -24313,6 +24444,7 @@ fn cant_be_activated_compound_aura_with_crew_only_activation_clause() {
             who,
             source_filter,
             exemption,
+            ..
         } => {
             assert_eq!(*who, ProhibitionScope::AllPlayers);
             assert_eq!(source_filter, &expected_affected);
@@ -24354,6 +24486,7 @@ fn cant_be_activated_compound_equipment_with_transform_clause() {
             who,
             source_filter,
             exemption,
+            ..
         } => {
             assert_eq!(*who, ProhibitionScope::AllPlayers);
             assert_eq!(source_filter, &expected_affected);
@@ -24383,6 +24516,7 @@ fn cant_be_activated_clarion_multi_type_filter() {
             who,
             source_filter: TargetFilter::Or { filters },
             exemption,
+            ..
         } => {
             assert_eq!(who, ProhibitionScope::AllPlayers);
             assert_eq!(exemption, ActivationExemption::None);
@@ -24423,6 +24557,7 @@ fn cant_be_activated_karn_single_type_filter() {
             who,
             source_filter: TargetFilter::Typed(tf),
             exemption,
+            ..
         } => {
             assert_eq!(who, ProhibitionScope::AllPlayers);
             assert_eq!(exemption, ActivationExemption::None);
@@ -24448,6 +24583,7 @@ fn cant_be_activated_pithing_needle_chosen_name_with_mana_exemption() {
             who,
             source_filter,
             exemption,
+            ..
         } => {
             assert_eq!(who, ProhibitionScope::AllPlayers);
             assert_eq!(source_filter, TargetFilter::HasChosenName);
@@ -24476,6 +24612,7 @@ fn cant_be_activated_chosen_name_typographic_apostrophe_keeps_mana_exemption() {
             who,
             source_filter,
             exemption,
+            ..
         } => {
             assert_eq!(who, ProhibitionScope::AllPlayers);
             assert_eq!(source_filter, TargetFilter::HasChosenName);
@@ -24526,6 +24663,7 @@ fn cant_be_activated_phyrexian_revoker_chosen_name_no_exemption_suffix() {
             who,
             source_filter,
             exemption,
+            ..
         } => {
             assert_eq!(who, ProhibitionScope::AllPlayers);
             assert_eq!(source_filter, TargetFilter::HasChosenName);
