@@ -1462,19 +1462,22 @@ fn parse_opponents_attacked_clause(input: &str) -> nom::IResult<&str, (), Oracle
 /// (GE); the count-style predicates (cards drawn, battlefield entries) are always
 /// "N or more" (GE), so a `map` adapter tags them with `Comparator::GE`.
 fn parse_for_each_opponent_player_attribute_clause(clause: &str) -> Option<QuantityRef> {
-    let ((relation, attr, comparator, count), rest) = nom_on_lower(clause, clause, |input| {
+    let ((relation, attr, comparator, value_expr), rest) = nom_on_lower(clause, clause, |input| {
         let (input, relation) = parse_player_population(input)?;
-        let (input, (attr, comparator, count)) = alt((
-            parse_hand_size_who_attr_clause,
-            map(parse_cards_drawn_attr_clause, |(attr, n)| {
-                (attr, Comparator::GE, n)
+        let (input, (attr, comparator, value_expr)) = alt((
+            map(parse_hand_size_who_attr_clause, |(a, c, n)| {
+                (a, c, QuantityExpr::Fixed { value: n })
             }),
-            map(parse_battlefield_entries_attr_clause, |(attr, n)| {
-                (attr, Comparator::GE, n)
+            parse_comparative_hand_size_who_clause,
+            map(parse_cards_drawn_attr_clause, |(a, n)| {
+                (a, Comparator::GE, QuantityExpr::Fixed { value: n })
+            }),
+            map(parse_battlefield_entries_attr_clause, |(a, n)| {
+                (a, Comparator::GE, QuantityExpr::Fixed { value: n })
             }),
         ))
         .parse(input)?;
-        Ok((input, (relation, attr, comparator, count)))
+        Ok((input, (relation, attr, comparator, value_expr)))
     })?;
     if !rest.is_empty() || relation != PlayerRelation::Opponent {
         return None;
@@ -1484,7 +1487,7 @@ fn parse_for_each_opponent_player_attribute_clause(clause: &str) -> Option<Quant
             relation,
             attr: Box::new(attr),
             comparator,
-            value: Box::new(QuantityExpr::Fixed { value: count }),
+            value: Box::new(value_expr),
         },
     })
 }
@@ -1515,6 +1518,41 @@ fn parse_hand_size_who_attr_clause(
             },
             comparator,
             n as i32,
+        ),
+    ))
+}
+
+/// CR 402.1 + CR 109.5: "who has/have {more|fewer} cards in hand than you" /
+/// "who has/have as many cards in hand as you" — the comparative-operand form of
+/// the hand-size population predicate (CR 402.1, the hand zone). The reference
+/// operand "you" (CR 109.5; for a triggered ability, the controller when it
+/// triggered) reuses the SAME `HandSize` noun as the per-candidate attr, so both
+/// sides read hand size (Wojek Investigator). Composed by axis (comparator × noun ×
+/// operand), not enumerated full-string tags.
+fn parse_comparative_hand_size_who_clause(
+    input: &str,
+) -> OracleResult<'_, (QuantityRef, Comparator, QuantityExpr)> {
+    let (input, _) = alt((tag("who has "), tag("who have "))).parse(input)?;
+    let (input, (comparator, connector)) = alt((
+        value((Comparator::GT, "than "), tag("more ")),
+        value((Comparator::LT, "than "), tag("fewer ")),
+        value((Comparator::EQ, "as "), tag("as many ")),
+    ))
+    .parse(input)?;
+    let (input, _) = tag("cards in hand ").parse(input)?;
+    let (input, _) = tag(connector).parse(input)?;
+    // Reference-operand axis; today only "you" → controller. `value`-ready for future refs.
+    let (input, ref_scope) = value(PlayerScope::Controller, tag("you")).parse(input)?;
+    Ok((
+        input,
+        (
+            QuantityRef::HandSize {
+                player: PlayerScope::ScopedPlayer,
+            }, // per-candidate (inert scope)
+            comparator,
+            QuantityExpr::Ref {
+                qty: QuantityRef::HandSize { player: ref_scope },
+            }, // CR 109.5 operand
         ),
     ))
 }
@@ -3383,6 +3421,89 @@ mod tests {
         RoundingMode, SubtypeExclusion, TypeFilter, TypedFilter,
     };
     use crate::types::mana::ManaColor;
+
+    /// DynQty subgroup D / Matrix #1 — the comparative hand-size producer builds the
+    /// exact `PlayerAttribute` AST (Wojek Investigator). Fails iff EDIT 2 is reverted;
+    /// independent of EDIT 1. The full `assert_eq` pins operand scope (Controller,
+    /// CR 109.5) ≠ per-candidate attr scope (ScopedPlayer) — swapping them flips it.
+    /// Sibling cells (fewer→LT, as many→EQ) and the fixed-arm reach-guard prove the
+    /// alt is axis-composed and the numeric backtrack is intact.
+    #[test]
+    fn comparative_hand_size_producer_builds_player_attribute() {
+        let gt = parse_for_each_clause("opponent who has more cards in hand than you");
+        assert_eq!(
+            gt,
+            Some(QuantityRef::PlayerCount {
+                filter: PlayerFilter::PlayerAttribute {
+                    relation: PlayerRelation::Opponent,
+                    attr: Box::new(QuantityRef::HandSize {
+                        player: PlayerScope::ScopedPlayer
+                    }),
+                    comparator: Comparator::GT,
+                    value: Box::new(QuantityExpr::Ref {
+                        qty: QuantityRef::HandSize {
+                            player: PlayerScope::Controller
+                        }
+                    }),
+                }
+            }),
+            "Wojek exact AST"
+        );
+
+        let lt = parse_for_each_clause("opponent who has fewer cards in hand than you");
+        assert!(
+            matches!(
+                lt,
+                Some(QuantityRef::PlayerCount {
+                    filter: PlayerFilter::PlayerAttribute {
+                        comparator: Comparator::LT,
+                        ..
+                    }
+                })
+            ),
+            "fewer → LT: {lt:?}"
+        );
+
+        let eq = parse_for_each_clause("opponent who has as many cards in hand as you");
+        assert!(
+            matches!(
+                eq,
+                Some(QuantityRef::PlayerCount {
+                    filter: PlayerFilter::PlayerAttribute {
+                        comparator: Comparator::EQ,
+                        ..
+                    }
+                })
+            ),
+            "as many → EQ: {eq:?}"
+        );
+
+        // Reach-guard: the fixed-threshold arm is untouched — a numeric "N or more"
+        // still lowers to a `Fixed` operand with `GE` (backtrack intact).
+        let fixed = parse_for_each_clause("opponent who has 3 or more cards in hand");
+        assert!(
+            matches!(
+                fixed,
+                Some(QuantityRef::PlayerCount {
+                    filter: PlayerFilter::PlayerAttribute {
+                        comparator: Comparator::GE,
+                        ..
+                    }
+                })
+            ),
+            "fixed 'N or more' must still parse to GE: {fixed:?}"
+        );
+        if let Some(QuantityRef::PlayerCount {
+            filter: PlayerFilter::PlayerAttribute { value, .. },
+        }) = fixed
+        {
+            assert_eq!(
+                *value,
+                QuantityExpr::Fixed { value: 3 },
+                "fixed operand = 3"
+            );
+        }
+    }
 
     /// The expected `QuantityExpr::Difference` for "power and toughness" order:
     /// `Difference { Ref(Power{Recipient}), Ref(Toughness{Recipient}) }`.

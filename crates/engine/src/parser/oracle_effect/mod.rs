@@ -28002,6 +28002,20 @@ pub(crate) fn parse_effect_chain_ir(
             let (suffix_repeat_for, stripped_text_no_qty) =
                 strip_for_each_repeat_suffix(&text_no_qty);
             let mut stripped_clause = parse_effect_clause(&stripped_text_no_qty, ctx);
+            // CR 701.16a + CR 608.2c: a fieldless Investigate (no count slot) drops a
+            // trailing "[once] for each <set>" multiplier. Precompute the lift,
+            // gated to Investigate + no prior repeat_for, so ONLY the repeatable-for-each
+            // Investigate class (player-set OR object-set) enters the branch below; every
+            // other Investigate chunk (plain "Investigate.", non-Investigate for-each)
+            // falls through to the unchanged final else.
+            // `for_each_repeatable_repeat_for` returns None without a real
+            // "for each <set>" suffix.
+            let investigate_repeatable_lift =
+                if repeat_for.is_none() && matches!(stripped_clause.effect, Effect::Investigate) {
+                    lower::for_each_repeatable_repeat_for(&text_no_qty)
+                } else {
+                    None
+                };
             if suffix_repeat_for.is_some()
                 && matches!(stripped_clause.effect, Effect::CopySpell { .. })
             {
@@ -28032,6 +28046,12 @@ pub(crate) fn parse_effect_chain_ir(
                 *ctx = fanout_ctx;
                 multi_target = Some(fanout_spec);
                 (fanout_clause, None)
+            } else if let Some(lifted_qty) = investigate_repeatable_lift {
+                // CR 608.2c: re-parse `text_no_qty` EXACTLY as the final else does
+                // (clause + ctx byte-identical), attaching ONLY the lifted repeat_for.
+                // The gate guaranteed `repeat_for.is_none()`, so `Some(lifted_qty)`
+                // cannot clobber a prior count.
+                (parse_effect_clause(&text_no_qty, ctx), Some(lifted_qty))
             } else {
                 (parse_effect_clause(&text_no_qty, ctx), repeat_for)
             }

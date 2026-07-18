@@ -3757,6 +3757,9 @@ pub enum FilterProp {
     Suspected,
     /// CR 702.112b: Matches permanents with the renowned designation.
     Renowned,
+    /// CR 701.15b/c: Matches creatures with the goaded designation (at least one
+    /// player has goaded it).
+    Goaded,
     /// CR 510.1c: Matches creatures whose toughness is greater than their power.
     ToughnessGTPower,
     /// CR 208.1 + CR 613.4a + CR 613.4b: Matches a creature whose current
