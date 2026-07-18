@@ -5718,7 +5718,9 @@ fn object_replacement_candidate_applies(
     if let ProposedEvent::SearchFound { searcher, .. } = event {
         let player_ok = match &repl_def.valid_player {
             Some(crate::types::ability::ReplacementPlayerScope::Opponent) => {
-                *searcher != replacement_player
+                // CR 102.3: SearchFound "opponent" scope excludes teammates
+                // in team games; use the engine's canonical team-aware relation.
+                crate::game::players::is_opponent(state, replacement_player, *searcher)
             }
             Some(crate::types::ability::ReplacementPlayerScope::You) => {
                 *searcher == replacement_player
@@ -6227,10 +6229,18 @@ pub fn find_applicable_replacements(
                     }
                     if let Some(ref tf) = repl_def.damage_target_filter {
                         if let ProposedEvent::Damage { target, .. } = event {
+                            // CR 109.4 + CR 614.1a: `Controller`/`Opponent` target
+                            // scopes resolve against the installing player anchored
+                            // at install time (`source_controller`, computed above) —
+                            // the sentinel host `ObjectId(0)` has no controller of
+                            // its own (Angel's Grace's "your life total" floor binds
+                            // to its caster). `Any`/`Specific` ignore the controller,
+                            // and `SourceChosenPlayer` consults the source object,
+                            // so only the two player-relative scopes read it.
                             if !matches_damage_target_filter(
                                 tf,
                                 target,
-                                PlayerId(0),
+                                source_controller,
                                 ObjectId(0),
                                 state,
                             ) {

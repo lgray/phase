@@ -8512,6 +8512,21 @@ pub struct GameState {
     pub priority_player: PlayerId,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub turn_decision_controller: Option<PlayerId>,
+    /// CR 723.1a: Creation timestamp of the player-control effect currently
+    /// latched in `turn_decision_controller`. This remains independent from
+    /// future scheduled effects that may replace the consumed schedule entry.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn_decision_control_timestamp: Option<u64>,
+    /// CR 723.1a: Identity of the full-turn player-control effect that is
+    /// currently applicable. Kept separately from the winning decision latch
+    /// so a newer phase-scoped effect can temporarily override it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_full_turn_control: Option<ActivePlayerControl>,
+    /// CR 723.1a + CR 723.2: Identity of the combat-phase player-control effect
+    /// that is currently applicable. The newest applicable identity wins, and
+    /// the full-turn identity resumes after this window ends.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_combat_phase_control: Option<ActivePlayerControl>,
     #[serde(default, skip_serializing_if = "ActiveLibrarySearches::is_empty")]
     pub active_library_searches: ActiveLibrarySearches,
     #[serde(
@@ -11244,6 +11259,11 @@ pub struct PendingMutateMerge {
 pub struct ScheduledTurnControl {
     pub target_player: PlayerId,
     pub controller: PlayerId,
+    /// CR 723.1a: Creation timestamp used only to compare this player-control
+    /// effect with other currently applicable player-control effects. Legacy
+    /// saves deserialize to zero, making them deterministically oldest.
+    #[serde(default)]
+    pub timestamp: u64,
     #[serde(default)]
     pub grant_extra_turn_after: bool,
     /// CR 723.1 / CR 723.2: which window this control binds to. `NextTurn` is
@@ -11252,6 +11272,15 @@ pub struct ScheduledTurnControl {
     /// games predating this field load unchanged.
     #[serde(default)]
     pub window: ControlWindow,
+}
+
+/// CR 723.1a: Stable identity of one currently applicable player-control
+/// effect. Controller alone is insufficient when the same player creates
+/// multiple effects; creation timestamp distinguishes them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ActivePlayerControl {
+    pub controller: PlayerId,
+    pub timestamp: u64,
 }
 
 /// CR 500.8: An extra phase added to a turn by an effect, anchored to the
@@ -11541,6 +11570,9 @@ impl GameState {
             players,
             priority_player: starting_player,
             turn_decision_controller: None,
+            turn_decision_control_timestamp: None,
+            active_full_turn_control: None,
+            active_combat_phase_control: None,
             active_library_searches: ActiveLibrarySearches::default(),
             active_search_decision_controls: ActiveSearchDecisionControls::default(),
             objects: im::HashMap::default(),
@@ -12546,6 +12578,9 @@ fn _gamestate_partition_is_total(s: &GameState) {
         players: _,
         priority_player: _,
         turn_decision_controller: _,
+        turn_decision_control_timestamp: _,
+        active_full_turn_control: _,
+        active_combat_phase_control: _,
         active_library_searches: _,
         active_search_decision_controls: _,
         objects: _,
@@ -12877,6 +12912,9 @@ impl PartialEq for GameState {
             && self.players == other.players
             && self.priority_player == other.priority_player
             && self.turn_decision_controller == other.turn_decision_controller
+            && self.turn_decision_control_timestamp == other.turn_decision_control_timestamp
+            && self.active_full_turn_control == other.active_full_turn_control
+            && self.active_combat_phase_control == other.active_combat_phase_control
             && self.active_library_searches == other.active_library_searches
             && self.active_search_decision_controls == other.active_search_decision_controls
             && self.objects.len() == other.objects.len()
@@ -14555,6 +14593,89 @@ mod tests {
         let state = GameState::default();
         assert_eq!(state.lands_played_this_turn, 0);
         assert_eq!(state.max_lands_per_turn, 1);
+    }
+
+    /// Phase-0 migration oracle for Amendment B's shipped, split authority.
+    /// This is intentionally test-only: Phase 2/3 will replace these labels
+    /// with resolution frames, but must preserve the current nesting order for
+    /// each valid mixed shape. `PostReplacementDrainStack` is positional today
+    /// (there are no drain ids), while draw work is addressed by frame id and
+    /// the connive tail has its dedicated slot.
+    #[test]
+    fn phase0_migration_oracle_shipped_mixed_slots_preserve_drain_order() {
+        #[derive(Debug, PartialEq, Eq)]
+        enum ShippedLegacySlot {
+            GeneralPostReplacement,
+            DrawSequence,
+            ConniveTail,
+        }
+
+        fn outer_to_inner(state: &GameState) -> Vec<ShippedLegacySlot> {
+            let mut order = Vec::new();
+            if state.pending_connive_reentry.is_some() {
+                order.push(ShippedLegacySlot::ConniveTail);
+            }
+            if state.post_replacement_drains.has_ready() {
+                order.push(ShippedLegacySlot::GeneralPostReplacement);
+            }
+            if state.draw_sequences.active().is_some() {
+                order.push(ShippedLegacySlot::DrawSequence);
+            }
+            order
+        }
+
+        let draw = |state: &mut GameState| {
+            state.draw_sequences.push(PlayerId(0), 1);
+        };
+        let general = |state: &mut GameState| {
+            state.install_ready_continuation(
+                crate::types::ability::PostReplacementContinuation::Template(Box::new(
+                    crate::types::ability::AbilityDefinition::new(
+                        crate::types::ability::AbilityKind::Spell,
+                        crate::types::ability::Effect::Draw {
+                            count: crate::types::ability::QuantityExpr::Fixed { value: 1 },
+                            target: crate::types::ability::TargetFilter::Controller,
+                        },
+                    ),
+                )),
+            );
+        };
+
+        // A general drain that has entered a true draw keeps the general work
+        // outside the draw sequence; the child draw is the active (inner) work.
+        let mut general_then_draw = GameState::new_two_player(42);
+        general(&mut general_then_draw);
+        draw(&mut general_then_draw);
+        assert!(general_then_draw.post_replacement_drains.has_ready());
+        assert!(general_then_draw.draw_sequences.active().is_some());
+        assert_eq!(
+            outer_to_inner(&general_then_draw),
+            vec![
+                ShippedLegacySlot::GeneralPostReplacement,
+                ShippedLegacySlot::DrawSequence,
+            ],
+            "outer-to-inner migration order for a general drain that started a draw"
+        );
+
+        // Leader-style "draw, then connive" carries its tail separately. The
+        // connive tail is outer work and the draw remains the active inner work.
+        let mut draw_then_connive = GameState::new_two_player(42);
+        draw(&mut draw_then_connive);
+        draw_then_connive.pending_connive_reentry = Some(PendingConniveReentry {
+            conniver: ObjectId(99),
+            count: 1,
+            applied: HashSet::new(),
+        });
+        assert!(draw_then_connive.draw_sequences.active().is_some());
+        assert!(draw_then_connive.pending_connive_reentry.is_some());
+        assert_eq!(
+            outer_to_inner(&draw_then_connive),
+            vec![
+                ShippedLegacySlot::ConniveTail,
+                ShippedLegacySlot::DrawSequence,
+            ],
+            "outer-to-inner migration order for the dedicated connive tail and its draw"
+        );
     }
 
     #[test]

@@ -9,7 +9,7 @@ use nom::Parser;
 
 use super::oracle_effect::{
     condition_text_is_rehomeable, lower_effect_chain_ir, parse_effect_chain_ir,
-    try_parse_each_player_copy_chosen, try_parse_exile_top_each_library_with_collection_counter,
+    try_parse_exile_top_each_library_with_collection_counter,
     try_parse_grant_graveyard_keyword_to_target, try_parse_reanimator_aura_etb_effect,
     try_parse_reanimator_aura_grant_etb_effect,
 };
@@ -1453,16 +1453,6 @@ pub(crate) fn parse_trigger_line_with_index_ir(
                 // whole two-sentence shape parses, so a card with an unparsed
                 // target filter stays an honest Unimplemented rather than misparsing.
                 try_parse_grant_graveyard_keyword_to_target(&effect_for_parse, AbilityKind::Spell)
-                    .map(|ability| TriggerBody::PreLowered(Box::new(ability)))
-            })
-            .or_else(|| {
-                // CR 101.4 + CR 707.2 + CR 122.1: whole-body "each player chooses …
-                // creates a token copy of the first … (then scales by the second)"
-                // (WHO phenomena). Fail-closed multi-sentence detector; sees the
-                // full pre-split body. Placed before the terminal
-                // `parse_effect_chain_ir` fallthrough so an unparsed shape stays an
-                // honest Unimplemented rather than misparsing.
-                try_parse_each_player_copy_chosen(&effect_for_parse, AbilityKind::Spell)
                     .map(|ability| TriggerBody::PreLowered(Box::new(ability)))
             })
             .or_else(|| {
@@ -13347,15 +13337,21 @@ fn try_parse_player_trigger(lower: &str) -> Option<(TriggerMode, TriggerDefiniti
     // `static_condition_to_trigger_condition`, so every presence filter the
     // condition parser already handles (subtype, type, P/T comparator, keyword,
     // …) is covered without re-implementing filter parsing here. Gated on a
-    // `ControlsType` result so only genuine single-permanent presence conditions
-    // become state triggers; the effect ("sacrifice this creature") is parsed
-    // separately by the caller, exactly as for the `ControlsNone` arm.
+    // `ControlsType` (single-permanent presence) or `QuantityComparison`
+    // (count / emptiness — e.g. "there are no creatures on the battlefield",
+    // which `parse_inner_condition` lowers to `ObjectCount(<filter>) == 0` with
+    // no controller restriction, so it counts *any* player's matching
+    // permanents; CR 110.1 / CR 403.1) result, so only genuine game-state
+    // conditions (CR 603.8) become state triggers; the effect ("sacrifice this
+    // creature") is parsed separately by the caller, as for the `ControlsNone` arm.
     for prefix in ["whenever ", "when "] {
         if let Ok((rest, ())) = value((), tag::<_, _, OracleError<'_>>(prefix)).parse(lower) {
             if let Ok((cond_rest, sc)) = parse_inner_condition(rest) {
                 if cond_rest.trim().is_empty() {
-                    if let Some(cond @ TriggerCondition::ControlsType { .. }) =
-                        static_condition_to_trigger_condition(&sc)
+                    if let Some(
+                        cond @ (TriggerCondition::ControlsType { .. }
+                        | TriggerCondition::QuantityComparison { .. }),
+                    ) = static_condition_to_trigger_condition(&sc)
                     {
                         let mut def = make_base();
                         def.mode = TriggerMode::StateCondition;

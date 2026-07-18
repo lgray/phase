@@ -1958,6 +1958,53 @@ fn try_parse_global_damage_modification_replacement(text: &str) -> Option<Effect
     })
 }
 
+/// CR 614.1a + CR 514.2 + CR 611.2c: Recognize the one-shot spell/trigger form
+/// of the life-floor damage replacement — "damage that would reduce your life
+/// total to less than N reduces it to N instead" (Angel's Grace, Angel of
+/// Grace's ETB trigger) — and lift it to an
+/// `Effect::AddTargetReplacement { target: None }` that installs a floating
+/// turn-bound replacement in `pending_damage_replacements`. Unlike the
+/// one-shot "the next time …" shields (`CreateDamageReplacement`), the
+/// installed definition keeps `ShieldKind::None`, so it re-applies to every
+/// damage event until it expires (the floor is continuous for the turn). The
+/// permanent-static form of the same sentence (Worship, Fortune Thief, Ali
+/// from Cairo, Sustaining Spirit) routes at document level through the
+/// replacement parser and never reaches this dispatch.
+///
+/// `lower` is the already-lowercased, duration-stripped clause text — the
+/// leading "until end of turn," is consumed upstream by
+/// `strip_leading_duration` and re-attached via `with_clause_duration`, so
+/// `expiry` is left `None` on the produced definition; the install resolver
+/// derives it from `ability.duration` via `expiry_from_duration` (mirrors
+/// `parse_enter_from_zone_redirect_replacement` below).
+///
+/// Parsing is delegated to `parse_replacement_line` — the single authority
+/// for replacement sentences (it reaches the all-consuming
+/// `parse_unconditional_life_floor_damage_replacement`). The typed acceptance
+/// check keeps the lift scoped to the life-floor family; the
+/// "if [source] would deal … instead" family is owned by
+/// `try_parse_global_damage_modification_replacement`.
+fn try_parse_global_life_floor_replacement(text: &str, lower: &str) -> Option<Effect> {
+    use super::oracle_replacement::parse_replacement_line;
+    // Structural nom prefix gate; the parse itself is delegated below.
+    tag::<_, _, OracleError<'_>>("damage that would reduce ")
+        .parse(lower)
+        .ok()?;
+    let replacement = parse_replacement_line(text, "")?;
+    if !matches!(replacement.event, ReplacementEvent::DamageDone)
+        || !matches!(
+            replacement.damage_modification,
+            Some(DamageModification::LifeFloor { .. })
+        )
+    {
+        return None;
+    }
+    Some(Effect::AddTargetReplacement {
+        replacement: Box::new(replacement),
+        target: TargetFilter::None,
+    })
+}
+
 /// CR 614.1a + CR 614.1d + CR 601: Recognize a floating zone-change redirect
 /// replacement of the shape
 /// "if one or more <creatures/permanents> would enter [from <zone>]
@@ -8011,6 +8058,17 @@ fn parse_effect_clause_inner(text: &str, ctx: &mut ParseContext) -> ParsedEffect
         return parsed_clause(effect);
     }
 
+    // CR 614.1a + CR 514.2: floating turn-bound life-floor replacement
+    // ("Until end of turn, damage that would reduce your life total to less
+    // than 1 reduces it to 1 instead." — Angel's Grace; Angel of Grace's ETB
+    // trigger). Dispatched after `strip_leading_duration` for the same reason
+    // as the zone-redirect lift above: the recursive (duration-stripped) call
+    // reaches it, and `AbilityDefinition.duration == UntilEndOfTurn` reaches
+    // `expiry_from_duration` in the install resolver.
+    if let Some(effect) = try_parse_global_life_floor_replacement(text, &lower) {
+        return parsed_clause(effect);
+    }
+
     // "it's still a/an [type]" / "that's still a/an [type]" — type-retention clause
     // CR 205.1a: Retains the original type in addition to new types from animation effects
     if let Some(clause) = try_parse_still_a_type(tp) {
@@ -12754,7 +12812,11 @@ pub(crate) fn try_parse_threshold_land_balance(
 /// `.abs()` and `Draw` clamps `.max(0)` (CR 107.1b), so the leader(s) draw 0 and
 /// the "with fewer cards in hand" subject restriction needs no separate
 /// `PlayerFilter`.
-pub(crate) fn try_parse_catch_up_draw(text: &str, kind: AbilityKind) -> Option<AbilityDefinition> {
+pub(crate) fn parse_catch_up_draw_ir(
+    text: &str,
+    kind: AbilityKind,
+    ctx: &ParseContext,
+) -> Option<EffectChainIr> {
     let lower = text.to_lowercase();
 
     let (extremum, _) = nom_on_lower(text, &lower, |input| {
@@ -12798,16 +12860,18 @@ pub(crate) fn try_parse_catch_up_draw(text: &str, kind: AbilityKind) -> Option<A
             },
         }),
     };
-    let mut def = AbilityDefinition::new(
+    Some(EffectChainIr::single_clause(
+        text,
         kind,
-        Effect::Draw {
+        parsed_clause(Effect::Draw {
             count,
             target: TargetFilter::Controller,
-        },
-    );
-    // CR 101.4: APNAP fan-out over every player.
-    def.player_scope = Some(PlayerFilter::All);
-    Some(def)
+        }),
+        // CR 101.4: APNAP fan-out over every player.
+        Some(PlayerFilter::All),
+        ctx.actor.clone(),
+        ctx.in_trigger,
+    ))
 }
 
 /// Parse "for each" quantity patterns on draw/life/damage/mill effects.
@@ -19748,13 +19812,22 @@ fn try_parse_emblem_creation(lower: &str, original: &str) -> Option<Effect> {
         });
     }
 
-    // Try to parse the emblem text as a static ability line.
-    if let Some(mut static_def) = super::oracle_static::parse_static_line(inner) {
+    // Try to parse the emblem text as one or more static ability lines.
+    // CR 604.1 + CR 114.4: a compound emblem body ("… you can't lose the game
+    // and your opponents can't win the game" — Gideon of the Trials) defines
+    // several statics at once; `parse_static_line_multi` emits them all and
+    // internally falls back to the single-def parser for simple bodies. An
+    // empty result still routes to the honest `EmblemStatic` fallback below,
+    // so an unparseable body stays a visible coverage gap.
+    let mut static_defs = super::oracle_static::parse_static_line_multi(inner);
+    if !static_defs.is_empty() {
         // CR 114: retain the emblem's granted rules text for the display
-        // tooltip, mirroring the trigger and fallback branches.
-        static_def.description = Some(inner.to_string());
+        // tooltip on the first def only, mirroring the trigger branch.
+        if let Some(first) = static_defs.first_mut() {
+            first.description = Some(inner.to_string());
+        }
         Some(Effect::CreateEmblem {
-            statics: vec![static_def],
+            statics: static_defs,
             triggers: Vec::new(),
         })
     } else {
@@ -24623,10 +24696,11 @@ fn try_parse_conditional_protection_grant_ability(
 /// [`CopyChooseScope`]: "<type> they control" → `Chooser` (Human—Time Lord
 /// Meta-Crisis), "<type> controlled by the player to their {left|right}" →
 /// `Neighbor { direction }` (Caught in a Parallel Universe).
-pub(crate) fn try_parse_each_player_copy_chosen(
+pub(crate) fn parse_each_player_copy_chosen_ir(
     text: &str,
     kind: AbilityKind,
-) -> Option<AbilityDefinition> {
+    ctx: &ParseContext,
+) -> Option<EffectChainIr> {
     let lower = text.to_ascii_lowercase();
     let i = lower.as_str();
 
@@ -24714,25 +24788,27 @@ pub(crate) fn try_parse_each_player_copy_chosen(
         return None;
     }
 
-    let mut def = AbilityDefinition::new(
+    Some(EffectChainIr::single_clause(
+        text,
         kind,
-        Effect::EachPlayerCopyChosen {
+        parsed_clause(Effect::EachPlayerCopyChosen {
             choose_filter,
             min,
             max,
             copy_modifications,
             scale,
             choose_scope,
-        },
-    );
-    // CR 101.4: "each player" → scope over all players; the self-iterating
-    // resolver reads this and walks the scoped set itself.
-    def.player_scope = Some(PlayerFilter::All);
-    Some(def)
+        }),
+        // CR 101.4: "each player" → scope over all players; the self-iterating
+        // resolver reads this and walks the scoped set itself.
+        Some(PlayerFilter::All),
+        ctx.actor.clone(),
+        ctx.in_trigger,
+    ))
 }
 
 /// CR 122.1 + CR 208.1: Parse the optional scaling sentence of
-/// [`try_parse_each_player_copy_chosen`] — "then each player who chose a second
+/// [`parse_each_player_copy_chosen_ir`] — "then each player who chose a second
 /// <noun> puts a number of <counter> counters on the token they created equal to
 /// the <property> of the second <noun> they chose." Returns the `CopyScale` and
 /// the remaining text.
@@ -25012,12 +25088,6 @@ fn try_parse_chain_bypass(
         return Some(def);
     }
     if let Some(def) = try_parse_threshold_land_balance(text, kind) {
-        return Some(def);
-    }
-    if let Some(def) = try_parse_each_player_copy_chosen(text, kind) {
-        return Some(def);
-    }
-    if let Some(def) = try_parse_catch_up_draw(text, kind) {
         return Some(def);
     }
     if let Some(def) = try_parse_return_target_and_same_name_from_your_graveyard(text, kind) {
@@ -25633,6 +25703,12 @@ pub(crate) fn parse_effect_chain_ir(
     kind: AbilityKind,
     ctx: &mut ParseContext,
 ) -> EffectChainIr {
+    if let Some(ir) = parse_catch_up_draw_ir(text, kind, ctx) {
+        return ir;
+    }
+    if let Some(ir) = parse_each_player_copy_chosen_ir(text, kind, ctx) {
+        return ir;
+    }
     let text = strip_trailing_activation_restriction_sentence(text);
     // CR 107.1a: Strip a trailing "Round down each time" / "Round up each time"
     // sentence before chain splitting — it is a chain-level rounding annotation
@@ -28796,11 +28872,34 @@ pub(crate) fn parse_effect_chain_ir(
 
         // Non-absorbed followup continuation — store on the current clause
         // (it applies to the PREVIOUS clause in lowering).
-        let followup_for_this = if followup_continuation.is_some() && !absorb_followup {
+        let mut followup_for_this = if followup_continuation.is_some() && !absorb_followup {
             followup_continuation
         } else {
             None
         };
+
+        if let Some(ContinuationAst::RevealHandFilter {
+            card_filter,
+            choice_optional: true,
+        }) = &mut followup_for_this
+        {
+            if matches!(
+                card_filter,
+                None | Some(TargetFilter::Any | TargetFilter::None)
+            ) {
+                if let Effect::ChangeZone { target, .. } = &clause.effect {
+                    *card_filter = Some(target.clone());
+                }
+            }
+        }
+        let is_optional = is_optional
+            && !matches!(
+                followup_for_this,
+                Some(ContinuationAst::RevealHandFilter {
+                    choice_optional: true,
+                    ..
+                })
+            );
 
         // CR 603.6 + CR 608.2k: A reflexive zone-change trigger body ("When a
         // creature is put onto the battlefield this way, it deals damage equal to
@@ -29188,6 +29287,11 @@ fn try_parse_put_zone_change_parts(
             };
             let up_to = parse_up_to_one_target_prefix(before.lower) || choice_count.is_some();
             let (target, _) = parse_target(target_text);
+            let multi_origin_zones = put_hand_graveyard_origin_zones(before.lower);
+            let target = match multi_origin_zones.as_ref() {
+                Some(zones) => add_put_multi_origin_constraint(target, zones),
+                None => target,
+            };
             // CR 202.3 + CR 107.3i: A trailing "where X is <expression>"
             // defining clause (Birthing Ritual: "...with mana value X or less
             // ..., where X is 1 plus the sacrificed creature's mana value")
@@ -29275,7 +29379,7 @@ fn try_parse_put_zone_change_parts(
             // graveyard"); "into your graveyard" then yields `origin: None`,
             // matching the hand branch and letting the injected reveal target
             // drive the move uniformly across the whole destination class.
-            let origin = if is_tracked_anaphor {
+            let origin = if is_tracked_anaphor || multi_origin_zones.is_some() {
                 None
             } else {
                 let origin_text = format!("{}{}", before.lower, after.lower);
@@ -29365,6 +29469,44 @@ fn try_parse_put_zone_change_parts(
     }
 
     None
+}
+
+fn put_hand_graveyard_origin_zones(lower: &str) -> Option<Vec<Zone>> {
+    if [
+        "from your hand and/or graveyard",
+        "from your hand or graveyard",
+    ]
+    .iter()
+    .any(|phrase| scan_contains_phrase(lower, phrase))
+    {
+        Some(vec![Zone::Hand, Zone::Graveyard])
+    } else if [
+        "from your graveyard and/or hand",
+        "from your graveyard or hand",
+    ]
+    .iter()
+    .any(|phrase| scan_contains_phrase(lower, phrase))
+    {
+        Some(vec![Zone::Graveyard, Zone::Hand])
+    } else {
+        None
+    }
+}
+
+fn add_put_multi_origin_constraint(target: TargetFilter, zones: &[Zone]) -> TargetFilter {
+    match target {
+        TargetFilter::Typed(mut typed) => {
+            typed
+                .properties
+                .retain(|prop| !matches!(prop, FilterProp::InZone { .. }));
+            typed.properties.push(FilterProp::InAnyZone {
+                zones: zones.to_vec(),
+            });
+            typed.controller = Some(ControllerRef::You);
+            TargetFilter::Typed(typed)
+        }
+        other => other,
+    }
 }
 
 fn strip_put_resolution_choice_quantifier(target_text: &str) -> (&str, Option<MultiTargetSpec>) {
