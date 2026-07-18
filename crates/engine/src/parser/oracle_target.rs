@@ -3095,6 +3095,31 @@ pub fn parse_type_phrase_with_ctx<'a>(
         }
     }
 
+    // CR 202.3 + CR 608.2c + CR 115.2: a mana-value clause may TRAIL a zone clause
+    // ("target creature card in your graveyard with mana value X/4 or less/less than
+    // or equal to the number of permanent cards in your graveyard" — Lazav the
+    // Multifarious, Likeness Looter, Squirming Emergence, Too Evil to Stay Dead's
+    // narrow branch). The pre-zone parse_mana_value_suffix pass above only catches
+    // the clause when it precedes the zone; this second pass catches the
+    // zone-then-mana-value ordering so the full source-filter phrase is consumed
+    // (a leftover would trip the clone-replacement guard) and FilterProp::Cmc reaches
+    // the target filter. Mirrors the zone->counter and zone->without second passes below.
+    //
+    // PRE-EXISTING ENGINE GAP unmasked by this fix (documented per maintainer
+    // decision, no tracker): correctly narrowing Too Evil to Stay Dead's BASE branch
+    // to `Cmc{LE, Fixed 4}` exposes that its teamwork "instead" broad override is not
+    // applied at cast-time target selection — only kicker propagates
+    // `additional_cost_paid` there. Two prior bugs canceled (base branch broad via the
+    // dropped suffix + override-not-applied), so pre-fix teamwork was accidentally
+    // correct. This parser fix is correct; the fix for the teamwork branch is an engine
+    // generalization of `additional_cost_paid` cast-time propagation from kicker to ALL
+    // `AdditionalCost`-"instead" (parameterize-don't-proliferate). See
+    // `game/ability_utils.rs`: `collect_target_slots_inner` + `kicker_instead_spell_has_legal_targets`.
+    if let Some((prop, consumed)) = parse_mana_value_suffix(&lower[pos..], ctx) {
+        properties.push(prop);
+        pos += consumed;
+    }
+
     // CR 122.1 + CR 400.1: A counter-presence clause may TRAIL a zone clause
     // ("a creature card in exile with a takeover counter on it" — The Master,
     // Formed Anew). The pre-zone `parse_counter_suffix` pass above only catches

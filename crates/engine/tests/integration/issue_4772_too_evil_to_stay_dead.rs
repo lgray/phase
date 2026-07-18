@@ -216,3 +216,138 @@ fn too_evil_to_stay_dead_with_teamwork_still_reanimates() {
         "WITH teamwork, the targeted graveyard creature must be returned to the battlefield"
     );
 }
+
+// ---------------------------------------------------------------------------
+// dq-f: the NARROW (no-teamwork) branch's "mana value 4 or less" clause TRAILS
+// its zone clause ("target creature card in your graveyard with mana value 4 or
+// less"). Before the zone-then-mana-value second pass in
+// `parse_type_phrase_with_ctx`, that clause was dropped, so the narrow branch
+// behaved identically to the broad (teamwork-paid) branch — any creature card in
+// the graveyard was a legal target regardless of mana value. This test pins that
+// dq-f now correctly restricts the no-teamwork target slot.
+//
+// STOP-AND-RETURN (reported to the orchestrator): the teamwork-paid BROAD branch
+// is deliberately NOT covered here. Measured (revert-probe): the engine does not
+// apply the "...instead choose target creature card in your graveyard" conditional
+// target-filter swap at CAST-time target legality — only kicker-`instead` spells
+// have that castability support (`kicker_instead_spell_has_legal_targets`, gated
+// on `AdditionalCost::Kicker`); teamwork lacks it. Because dq-f correctly adds the
+// mana-value bound to the base branch, the teamwork-paid cast now also applies the
+// narrow filter (a pre-existing engine gap this fix exposes): pre-fix a MV5 card
+// was reanimatable with teamwork, post-fix it is not. A teamwork-branch test would
+// have to pin that regression as "expected", so it is omitted pending an
+// engine-layer fix rather than shipped as a green bandaid.
+// ---------------------------------------------------------------------------
+
+/// Build a scenario with Too Evil to Stay Dead in P0's hand (cost {0}) and two
+/// mana-value-3 creature cards plus one mana-value-5 creature card in P0's
+/// graveyard. The two MV3 cards keep the narrow-branch target slot interactive (no
+/// sole-legal-target auto-pick); the MV5 card is the discriminator.
+fn setup_mv_discriminating() -> (GameRunner, ObjectId, ObjectId, ObjectId, ObjectId) {
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(Phase::PreCombatMain);
+
+    let mut mv3a = scenario.add_creature_to_graveyard(P0, "MV Three A", 3, 3);
+    mv3a.with_mana_cost(ManaCost::Cost {
+        shards: vec![],
+        generic: 3,
+    });
+    let mv3a = mv3a.id();
+    let mut mv3b = scenario.add_creature_to_graveyard(P0, "MV Three B", 3, 3);
+    mv3b.with_mana_cost(ManaCost::Cost {
+        shards: vec![],
+        generic: 3,
+    });
+    let mv3b = mv3b.id();
+    let mut mv5 = scenario.add_creature_to_graveyard(P0, "MV Five", 5, 5);
+    mv5.with_mana_cost(ManaCost::Cost {
+        shards: vec![],
+        generic: 5,
+    });
+    let mv5 = mv5.id();
+
+    let mut builder = scenario.add_spell_to_hand_from_oracle(
+        P0,
+        "Too Evil to Stay Dead",
+        false,
+        TOO_EVIL_TO_STAY_DEAD,
+    );
+    builder.with_mana_cost(ManaCost::Cost {
+        shards: vec![],
+        generic: 0,
+    });
+    let spell = builder.id();
+
+    let runner = scenario.build();
+    (runner, spell, mv3a, mv3b, mv5)
+}
+
+/// dq-f (T4-A): WITHOUT teamwork, the narrow "mana value 4 or less" filter must
+/// exclude the mana-value-5 card. Reverting the zone-then-mana-value second pass
+/// drops the filter, making the narrow branch behave like the broad branch — the
+/// mana-value-5 card would then be legal and the discriminator assertion flips
+/// (confirmed by revert-probe: this test passes with the fix, fails without it).
+#[test]
+fn too_evil_no_teamwork_narrow_filter_excludes_high_mv() {
+    let (mut runner, spell, mv3a, mv3b, mv5) = setup_mv_discriminating();
+    let card_id = runner.state().objects[&spell].card_id;
+
+    runner
+        .act(GameAction::CastSpell {
+            object_id: spell,
+            card_id,
+            targets: vec![],
+            payment_mode: CastPaymentMode::Auto,
+        })
+        .expect("casting Too Evil to Stay Dead must be accepted");
+
+    // Decline teamwork, then halt at target selection to inspect legality (the
+    // teamwork decision precedes targeting because it selects the target filter).
+    let mut legal = None;
+    for _ in 0..16 {
+        match runner.state().waiting_for.clone() {
+            WaitingFor::OptionalCostChoice { .. } => {
+                runner
+                    .act(GameAction::DecideOptionalCost { pay: false })
+                    .expect("declining teamwork must be accepted");
+            }
+            WaitingFor::TargetSelection {
+                target_slots,
+                selection,
+                ..
+            } => {
+                legal = Some(target_slots[selection.current_slot].legal_targets.clone());
+                break;
+            }
+            _ => break,
+        }
+    }
+    let legal = legal.expect("cast must halt at target selection after declining teamwork");
+
+    // Non-vacuous positive reach-guard: both MV3 cards satisfy the narrow filter.
+    assert!(
+        legal.contains(&TargetRef::Object(mv3a)),
+        "MV3 card A (<= 4) must be legal in the narrow branch, got {legal:?}"
+    );
+    assert!(
+        legal.contains(&TargetRef::Object(mv3b)),
+        "MV3 card B (<= 4) must be legal in the narrow branch, got {legal:?}"
+    );
+    // Discriminator.
+    assert!(
+        !legal.contains(&TargetRef::Object(mv5)),
+        "MV5 card (> 4) must NOT be legal in the narrow (no-teamwork) branch, got {legal:?}"
+    );
+
+    runner
+        .act(GameAction::ChooseTarget {
+            target: Some(TargetRef::Object(mv3a)),
+        })
+        .expect("choosing the MV3 card must be accepted");
+    resolve_stack(&mut runner);
+
+    assert!(
+        runner.state().battlefield.contains(&mv3a),
+        "the chosen MV3 card must be reanimated to the battlefield"
+    );
+}

@@ -385,6 +385,19 @@ pub fn kicker_instead_spell_has_legal_targets(
     object_id: ObjectId,
     player: PlayerId,
 ) -> bool {
+    // PRE-EXISTING GAP (documented per maintainer decision, no tracker): this
+    // cast-time `additional_cost_paid = true` propagation — which lets
+    // `collect_target_slots_inner` surface the broad `AdditionalCostPaidInstead`
+    // sub_ability's target filter at target legality — is gated on
+    // `AdditionalCost::Kicker` ALONE. Every other `AdditionalCost`-"instead" card
+    // (e.g. Teamwork: Too Evil to Stay Dead's "if this spell was cast using
+    // teamwork, instead choose target creature card in your graveyard") never gets
+    // the flag propagated here, so its broad override is silently NOT applied at
+    // cast-time target selection — the narrow base-branch filter is used instead.
+    // The correct fix GENERALIZES this from kicker to ALL `AdditionalCost`-"instead"
+    // (parameterize-don't-proliferate), touching this shared cast-time target-slot
+    // path — deferred to its own focused change. Surfaced by the dq-f parser fix,
+    // which correctly narrows Too Evil's base branch and thereby unmasks this gap.
     let has_kicker_cost = state
         .objects
         .get(&object_id)
@@ -2070,6 +2083,16 @@ fn collect_target_slots_inner(
             Some(AbilityCondition::AdditionalCostPaidInstead)
         )
     }) {
+        // PRE-EXISTING GAP (documented per maintainer decision, no tracker): the broad
+        // "instead" override is surfaced here only when `additional_cost_paid` is set at
+        // slot-build time. At CAST time that flag is propagated for kicker ONLY (see
+        // `kicker_instead_spell_has_legal_targets`); teamwork and every other
+        // `AdditionalCost`-"instead" do not propagate it, so their broad override is not
+        // applied at cast-time target selection and the narrow base filter is used
+        // (e.g. Too Evil to Stay Dead cast with teamwork wrongly excludes MV>4 targets).
+        // The correct fix generalizes the cast-time propagation from kicker to ALL
+        // `AdditionalCost`-"instead" (parameterize-don't-proliferate); deferred to its own
+        // focused change. Unmasked by the dq-f parser fix (Squirming Emergence).
         if ability.context.additional_cost_paid {
             collect_target_slots(state, sub_ability, acc)?;
             return Ok(());
