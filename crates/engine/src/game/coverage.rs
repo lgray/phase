@@ -3602,12 +3602,33 @@ fn ability_details(def: &AbilityDefinition) -> Vec<(String, String)> {
     if let Some(dur) = &def.duration {
         d.push(("duration".into(), fmt_duration(dur)));
     }
-    // CR 608.2c: a lifted "[once] for each ⟨set⟩" repeat multiplier (e.g. the
-    // fieldless-Investigate lift) is an `AbilityDefinition` field — surface it so
-    // the per-card signature reflects the member-count. `None` pushes nothing, so
-    // cards without a `repeat_for` keep a byte-identical signature.
+    // CR 608.2c: a lifted "[once] for each ⟨set⟩" repeat multiplier is an
+    // `AbilityDefinition` field. Surface it in the per-card parse-diff signature ONLY
+    // for the shapes THIS PR's lift produces — a fieldless `Effect::Investigate` whose
+    // `repeat_for` is a member-count `QuantityRef` (`PlayerCount`/`ObjectCount`), i.e.
+    // exactly the eligibility set of `for_each_repeatable_repeat_for`
+    // (parser/oracle_effect/mod.rs). Projecting the *whole* repeat_for surface
+    // (CopySpell/Token/Proliferate/… and pre-existing `Fixed`/`Variable`/tracked-set
+    // Investigate forms) would migrate ~250 unrelated, parse-identical cards' coverage
+    // signatures in one shot — a deliberate global coverage-schema migration, deferred
+    // out of this focused feature. `None`, or any out-of-scope shape, pushes nothing,
+    // so those cards keep a byte-identical signature.
+    // COUPLING: if the lift's eligible quantity set ever widens (e.g. the Gap B
+    // leading-adjective fix), this scope MUST widen in lockstep, or the new lift class
+    // becomes false-green in the parse-diff.
     if let Some(rf) = &def.repeat_for {
-        d.push(("repeat_for".into(), fmt_quantity(rf)));
+        let is_lift_shape = matches!(&*def.effect, Effect::Investigate)
+            && matches!(
+                rf,
+                QuantityExpr::Ref { qty }
+                    if matches!(
+                        qty,
+                        QuantityRef::PlayerCount { .. } | QuantityRef::ObjectCount { .. }
+                    )
+            );
+        if is_lift_shape {
+            d.push(("repeat_for".into(), fmt_quantity(rf)));
+        }
     }
     if def.optional_targeting {
         d.push(("targeting".into(), "optional (up to)".into()));
@@ -10685,33 +10706,80 @@ mod tests {
 
     #[test]
     fn investigate_signature_exposes_repeat_for() {
-        // ASK 2: a lifted "[once] for each ⟨set⟩" multiplier (e.g. the fieldless
-        // Investigate lift → `def.repeat_for = Some(ObjectCount/PlayerCount)`) must be
-        // visible in the per-card parse-diff signature. `None` adds no row so unrelated
-        // cards keep a byte-identical signature. Reverting the `ability_details`
-        // projection flips the `Some` assertion to fail.
+        // ASK 2 + #6110 3rd review: a lifted "[once] for each ⟨set⟩" multiplier
+        // (`def.repeat_for = Some(PlayerCount/ObjectCount)`) must be visible in the
+        // per-card parse-diff signature — but ONLY for the shapes this PR's lift
+        // produces (fieldless `Effect::Investigate` + a member-count `QuantityRef`).
+        // The projection must NOT fire for the whole pre-existing repeat_for surface
+        // (CopySpell/Token/Proliferate, or pre-existing `Fixed`/`Variable` Investigate
+        // forms), which would migrate ~250 parse-identical cards' signatures at once.
         use crate::types::ability::{
-            AbilityDefinition, AbilityKind, QuantityExpr, QuantityRef, TargetFilter, TypedFilter,
+            AbilityDefinition, AbilityKind, PlayerFilter, QuantityExpr, QuantityRef, TargetFilter,
+            TypedFilter,
         };
-        let detail_keys = |repeat: Option<QuantityExpr>| -> Vec<String> {
-            let mut def = AbilityDefinition::new(AbilityKind::Spell, Effect::Investigate);
+        let projects = |effect: Effect, repeat: Option<QuantityExpr>| -> bool {
+            let mut def = AbilityDefinition::new(AbilityKind::Spell, effect);
             def.repeat_for = repeat;
-            ability_details(&def).into_iter().map(|(k, _)| k).collect()
+            ability_details(&def)
+                .into_iter()
+                .any(|(k, _)| k == "repeat_for")
         };
-        let object_count = QuantityExpr::Ref {
+        let object_count = || QuantityExpr::Ref {
             qty: QuantityRef::ObjectCount {
                 filter: TargetFilter::Typed(TypedFilter::creature()),
             },
         };
+        let player_count = || QuantityExpr::Ref {
+            qty: QuantityRef::PlayerCount {
+                filter: PlayerFilter::OpponentLostLife,
+            },
+        };
+
+        // Positive — both member-count lift shapes surface (Serene = ObjectCount,
+        // Teysa/Wojek = PlayerCount). Revert-probe: reverting the `ability_details`
+        // projection drops the row and flips both.
         assert!(
-            detail_keys(Some(object_count))
-                .iter()
-                .any(|k| k == "repeat_for"),
-            "a lifted repeat_for must appear in the per-card signature",
+            projects(Effect::Investigate, Some(object_count())),
+            "Investigate + ObjectCount lift must appear in the signature",
         );
         assert!(
-            !detail_keys(None).iter().any(|k| k == "repeat_for"),
-            "an ability with no repeat_for must not add the row (byte-identical signature)",
+            projects(Effect::Investigate, Some(player_count())),
+            "Investigate + PlayerCount lift must appear in the signature",
+        );
+
+        // Negative — no repeat_for → byte-identical signature (unchanged cards).
+        assert!(
+            !projects(Effect::Investigate, None),
+            "an Investigate with no repeat_for must not add the row",
+        );
+        // Negative — a `Fixed` multiplier ("investigate twice", Confirm Suspicions et
+        // al.) is not a member-count lift. Revert-probe: dropping the
+        // `QuantityExpr::Ref` guard flips this.
+        assert!(
+            !projects(Effect::Investigate, Some(QuantityExpr::Fixed { value: 2 })),
+            "a Fixed repeat_for must not project (not a member-count lift)",
+        );
+        // Negative — a non-member-count `Ref` (pre-existing `Variable`/tracked-set
+        // Investigate forms: Disorder in the Court, Declaration in Stone) must not
+        // project. Revert-probe: dropping the inner `PlayerCount|ObjectCount` guard
+        // flips this.
+        assert!(
+            !projects(
+                Effect::Investigate,
+                Some(QuantityExpr::Ref {
+                    qty: QuantityRef::Variable { name: "x".into() },
+                }),
+            ),
+            "a non-member-count Ref repeat_for must not project",
+        );
+        // Negative (team-lead required) — the SAME member-count lift on a
+        // NON-Investigate effect (stand-in for the CopySpell/Token/Proliferate
+        // repeat_for surface) must not project. Revert-probe: dropping the
+        // `Effect::Investigate` guard widens the scope to the whole surface and flips
+        // this — this case is what locks a1.
+        assert!(
+            !projects(Effect::Populate, Some(object_count())),
+            "a non-Investigate repeat_for must not project (scope is the Investigate lift class)",
         );
     }
 
