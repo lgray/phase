@@ -188,11 +188,12 @@ pub fn build_resolved_from_def_with_targets(
 /// original_controller, scoped_player, chosen_x, cost_paid_object,
 /// ability_index, may_trigger_origin.
 ///
-/// `targets`: preserved from `parent` in the common case, but conditionally
-/// taken from `sub` when the parent's were emptied at resolution — CR 608.2b's
-/// per-node re-validation can reject the parent's target against its own
-/// (narrower) filter while the override's (broader) filter still accepts it.
-/// See the guard at the end of this function.
+/// `targets`: an override with its own declared target filter takes its
+/// independently resolution-validated target list from `sub`; a context-ref
+/// override preserves the parent's announced targets. CR 608.2b re-validates
+/// every chain node against its own filter, so retaining a nonempty but
+/// narrower parent list would silently discard targets legal only for the
+/// override.
 ///
 /// `condition` is intentionally **cleared** — the override sub's own
 /// `ConditionInstead { inner }` (or AdditionalCostPaidInstead, etc.) has
@@ -236,16 +237,17 @@ pub(crate) fn apply_instead_swap(
     overridden.distribution = sub.distribution.clone();
     overridden.target_selection_mode = sub.target_selection_mode;
     overridden.target_chooser = sub.target_chooser.clone();
-    // CR 608.2b + CR 601.2c: the swapped-in override effect resolves against its OWN
-    // resolution-validated targets. validate_targets_in_chain (CR 608.2b) re-validates
-    // each chain node against that node's own filter; when the base clause's narrow
-    // filter rejects a target legal only for the broad override (Bloodchief's Thirst
-    // kicked onto an over-value creature; Too Evil / Cruel Alliance cast with teamwork),
-    // it empties the parent's targets while the override retains its validated target.
-    // Take the override's targets in exactly that case; when the parent kept its targets
-    // (same-filter kicker, context-ref/targetless overrides, the mana-swap caller) this
-    // is not taken and resolution is byte-identical.
-    if overridden.targets.is_empty() && !sub.targets.is_empty() {
+    // CR 608.2b + CR 601.2c: a swapped-in effect with its own declared target
+    // resolves against its OWN resolution-validated targets. The parent may
+    // retain a subset that still meets its narrower filter while dropping other
+    // targets that are legal only for the broad override, so emptiness is not a
+    // sound proxy for whether to adopt the override list. Context refs have no
+    // independently declared target and must retain the parent's target list.
+    if sub
+        .effect
+        .target_filter()
+        .is_some_and(|filter| !filter.is_context_ref())
+    {
         overridden.targets = sub.targets.clone();
     }
     overridden
@@ -7819,15 +7821,13 @@ mod tests {
             "swap must clear parent.condition (CR 608.2c)"
         );
 
-        // Layer-3 case (finding #2, PR #6143): when the PARENT's targets were
-        // emptied at resolution (e.g. CR 608.2b rejected them against the
-        // base's narrower filter) but the SUB retained its own validated
-        // targets, the swap must take the sub's targets rather than silently
-        // keep the parent's empty list.
+        // Layer-3 case (PR #6143): when the swapped-in effect has its own
+        // declared target, it must use that node's CR 608.2b-validated list.
+        // A parent may be empty after its narrower filter rejects every target.
         let empty_parent = ResolvedAbility::new(
             Effect::Mill {
                 count: QuantityExpr::Fixed { value: 1 },
-                target: TargetFilter::Controller,
+                target: TargetFilter::Player,
                 destination: crate::types::zones::Zone::Graveyard,
             },
             vec![],
@@ -7837,9 +7837,9 @@ mod tests {
         let sub_with_targets = ResolvedAbility::new(
             Effect::Draw {
                 count: QuantityExpr::Fixed { value: 1 },
-                target: TargetFilter::Controller,
+                target: TargetFilter::Player,
             },
-            vec![TargetRef::Object(ObjectId(99))],
+            vec![TargetRef::Player(PlayerId(1))],
             ObjectId(10),
             PlayerId(0),
         );
@@ -7847,8 +7847,43 @@ mod tests {
         let swapped_empty_parent = apply_instead_swap(&empty_parent, &sub_with_targets);
         assert_eq!(
             swapped_empty_parent.targets,
-            vec![TargetRef::Object(ObjectId(99))],
+            vec![TargetRef::Player(PlayerId(1))],
             "swap must take sub's targets when the parent's were emptied at resolution (CR 608.2b)"
+        );
+
+        // The partial case is the same rule: the base filter can retain one
+        // target while rejecting another target that remains legal for the
+        // broader override. Keeping a nonempty parent list would silently drop
+        // the override-only target.
+        let partially_validated_parent = ResolvedAbility::new(
+            Effect::Mill {
+                count: QuantityExpr::Fixed { value: 1 },
+                target: TargetFilter::Player,
+                destination: crate::types::zones::Zone::Graveyard,
+            },
+            vec![TargetRef::Player(PlayerId(0))],
+            ObjectId(10),
+            PlayerId(0),
+        );
+        let sub_with_broader_targets = ResolvedAbility::new(
+            Effect::Draw {
+                count: QuantityExpr::Fixed { value: 1 },
+                target: TargetFilter::Player,
+            },
+            vec![
+                TargetRef::Player(PlayerId(0)),
+                TargetRef::Player(PlayerId(1)),
+            ],
+            ObjectId(10),
+            PlayerId(0),
+        );
+
+        let swapped_partial_parent =
+            apply_instead_swap(&partially_validated_parent, &sub_with_broader_targets);
+        assert_eq!(
+            swapped_partial_parent.targets,
+            vec![TargetRef::Player(PlayerId(0)), TargetRef::Player(PlayerId(1))],
+            "swap must retain every target valid for the override, even when the parent retained a narrower subset"
         );
     }
 
