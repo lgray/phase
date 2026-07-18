@@ -185,8 +185,14 @@ pub fn build_resolved_from_def_with_targets(
 /// min_x_value, forward_result, unless_pay, distribution, target_selection_mode.
 ///
 /// Fields preserved from `parent`: controller, source_id, kind, context,
-/// original_controller, scoped_player, targets, chosen_x, cost_paid_object,
+/// original_controller, scoped_player, chosen_x, cost_paid_object,
 /// ability_index, may_trigger_origin.
+///
+/// `targets`: preserved from `parent` in the common case, but conditionally
+/// taken from `sub` when the parent's were emptied at resolution — CR 608.2b's
+/// per-node re-validation can reject the parent's target against its own
+/// (narrower) filter while the override's (broader) filter still accepts it.
+/// See the guard at the end of this function.
 ///
 /// `condition` is intentionally **cleared** — the override sub's own
 /// `ConditionInstead { inner }` (or AdditionalCostPaidInstead, etc.) has
@@ -230,6 +236,18 @@ pub(crate) fn apply_instead_swap(
     overridden.distribution = sub.distribution.clone();
     overridden.target_selection_mode = sub.target_selection_mode;
     overridden.target_chooser = sub.target_chooser.clone();
+    // CR 608.2b + CR 601.2c: the swapped-in override effect resolves against its OWN
+    // resolution-validated targets. validate_targets_in_chain (CR 608.2b) re-validates
+    // each chain node against that node's own filter; when the base clause's narrow
+    // filter rejects a target legal only for the broad override (Bloodchief's Thirst
+    // kicked onto an over-value creature; Too Evil / Cruel Alliance cast with teamwork),
+    // it empties the parent's targets while the override retains its validated target.
+    // Take the override's targets in exactly that case; when the parent kept its targets
+    // (same-filter kicker, context-ref/targetless overrides, the mana-swap caller) this
+    // is not taken and resolution is byte-identical.
+    if overridden.targets.is_empty() && !sub.targets.is_empty() {
+        overridden.targets = sub.targets.clone();
+    }
     overridden
 }
 
@@ -376,34 +394,40 @@ pub fn build_target_slots(
     Ok(acc.slots)
 }
 
-/// CR 601.2b + CR 702.33d: Kicker "instead" spells (e.g. Bloodchief's Thirst)
-/// replace their base targeting when the kicker is paid. Castability must admit
-/// the kicked target assignment when the unkicked assignment is unsatisfiable.
-pub fn kicker_instead_spell_has_legal_targets(
+/// CR 601.2b + CR 702.33a/702.194c: "instead" spells with a target-dependent
+/// additional cost (Kicker, e.g. Bloodchief's Thirst; or a queue-synthesized
+/// cost such as Teamwork, e.g. Too Evil to Stay Dead) replace their base
+/// targeting when the cost is paid. Castability must admit the paid-cost
+/// target assignment when the unpaid assignment is unsatisfiable.
+///
+/// RESOLVED (finding #1): this used to gate the cast-time
+/// `additional_cost_paid = true` propagation on `AdditionalCost::Kicker`
+/// alone, so every other `AdditionalCost`-"instead" card's broad override was
+/// silently skipped here. Generalized to admit Kicker OR a non-empty effective
+/// queue (`build_effective_additional_cost_queue` — Casualty/Offspring/Squad/
+/// Replicate/Bargain/Teamwork), mirroring the cast-time deferral gates in
+/// `casting.rs`.
+///
+/// INHERITED LATENT GAP (out of scope, mirrors kicker's pre-existing
+/// behavior): this reports the spell castable once a legal paid-cost target
+/// assignment exists, without proving the additional cost itself is payable
+/// (e.g. enough eligible creatures to tap for Teamwork's total-power
+/// requirement) — actual payability is validated at payment time, not here.
+pub fn additional_cost_instead_spell_has_legal_targets(
     state: &GameState,
     ability_def: &AbilityDefinition,
     object_id: ObjectId,
     player: PlayerId,
 ) -> bool {
-    // PRE-EXISTING GAP (documented per maintainer decision, no tracker): this
-    // cast-time `additional_cost_paid = true` propagation — which lets
-    // `collect_target_slots_inner` surface the broad `AdditionalCostPaidInstead`
-    // sub_ability's target filter at target legality — is gated on
-    // `AdditionalCost::Kicker` ALONE. Every other `AdditionalCost`-"instead" card
-    // (e.g. Teamwork: Too Evil to Stay Dead's "if this spell was cast using
-    // teamwork, instead choose target creature card in your graveyard") never gets
-    // the flag propagated here, so its broad override is silently NOT applied at
-    // cast-time target selection — the narrow base-branch filter is used instead.
-    // The correct fix GENERALIZES this from kicker to ALL `AdditionalCost`-"instead"
-    // (parameterize-don't-proliferate), touching this shared cast-time target-slot
-    // path — deferred to its own focused change. Surfaced by the dq-f parser fix,
-    // which correctly narrows Too Evil's base branch and thereby unmasks this gap.
     let has_kicker_cost = state
         .objects
         .get(&object_id)
         .and_then(|obj| obj.additional_cost.as_ref())
         .is_some_and(|additional| matches!(additional, AdditionalCost::Kicker { .. }));
-    if !has_kicker_cost {
+    let has_queue_cost =
+        !super::casting_costs::build_effective_additional_cost_queue(state, player, object_id)
+            .is_empty();
+    if !has_kicker_cost && !has_queue_cost {
         return false;
     }
     let Some(sub) = ability_def.sub_ability.as_deref() else {
@@ -417,6 +441,17 @@ pub fn kicker_instead_spell_has_legal_targets(
     }
     let mut resolved = build_resolved_from_def(ability_def, object_id, player);
     resolved.context.additional_cost_paid = true;
+    // CR 601.2c: a queue-synthesized "instead" cost only broadens castability when the
+    // override re-selects a REAL (non-context-ref) target — mirror the cast-time gate
+    // (requires_additional_cost_declaration_before_targets). A context-ref override
+    // ("that permanent" = ParentTarget, e.g. Torch the Tower / Bargain) does NOT broaden;
+    // it inherits the base clause's target requirement, so fall through to the base
+    // castability check. Kicker is unaffected (has_kicker_cost short-circuits).
+    if !has_kicker_cost
+        && !crate::game::casting::requires_additional_cost_declaration_before_targets(&resolved)
+    {
+        return false;
+    }
     match build_target_slots(state, &resolved) {
         Ok(slots) if slots.is_empty() => true,
         Ok(slots) => {
@@ -2083,16 +2118,15 @@ fn collect_target_slots_inner(
             Some(AbilityCondition::AdditionalCostPaidInstead)
         )
     }) {
-        // PRE-EXISTING GAP (documented per maintainer decision, no tracker): the broad
-        // "instead" override is surfaced here only when `additional_cost_paid` is set at
-        // slot-build time. At CAST time that flag is propagated for kicker ONLY (see
-        // `kicker_instead_spell_has_legal_targets`); teamwork and every other
-        // `AdditionalCost`-"instead" do not propagate it, so their broad override is not
-        // applied at cast-time target selection and the narrow base filter is used
-        // (e.g. Too Evil to Stay Dead cast with teamwork wrongly excludes MV>4 targets).
-        // The correct fix generalizes the cast-time propagation from kicker to ALL
-        // `AdditionalCost`-"instead" (parameterize-don't-proliferate); deferred to its own
-        // focused change. Unmasked by the dq-f parser fix (Squirming Emergence).
+        // CR 601.2b/c + CR 702.194c: the broad "instead" override is surfaced
+        // here only when `additional_cost_paid` is set at slot-build time.
+        // RESOLVED (finding #1): cast-time propagation of that flag used to be
+        // gated on Kicker alone; the pre-target deferral gates in `casting.rs`
+        // and `additional_cost_instead_spell_has_legal_targets` now propagate
+        // it for every `AdditionalCost`-"instead" card with a non-empty
+        // effective queue (Teamwork/Bargain today), not just Kicker. This
+        // function's own logic (reading `additional_cost_paid` variant-
+        // agnostically) was already correct and needed no change.
         if ability.context.additional_cost_paid {
             collect_target_slots(state, sub_ability, acc)?;
             return Ok(());
@@ -7783,6 +7817,38 @@ mod tests {
         assert!(
             swapped.condition.is_none(),
             "swap must clear parent.condition (CR 608.2c)"
+        );
+
+        // Layer-3 case (finding #2, PR #6143): when the PARENT's targets were
+        // emptied at resolution (e.g. CR 608.2b rejected them against the
+        // base's narrower filter) but the SUB retained its own validated
+        // targets, the swap must take the sub's targets rather than silently
+        // keep the parent's empty list.
+        let empty_parent = ResolvedAbility::new(
+            Effect::Mill {
+                count: QuantityExpr::Fixed { value: 1 },
+                target: TargetFilter::Controller,
+                destination: crate::types::zones::Zone::Graveyard,
+            },
+            vec![],
+            ObjectId(10),
+            PlayerId(0),
+        );
+        let sub_with_targets = ResolvedAbility::new(
+            Effect::Draw {
+                count: QuantityExpr::Fixed { value: 1 },
+                target: TargetFilter::Controller,
+            },
+            vec![TargetRef::Object(ObjectId(99))],
+            ObjectId(10),
+            PlayerId(0),
+        );
+
+        let swapped_empty_parent = apply_instead_swap(&empty_parent, &sub_with_targets);
+        assert_eq!(
+            swapped_empty_parent.targets,
+            vec![TargetRef::Object(ObjectId(99))],
+            "swap must take sub's targets when the parent's were emptied at resolution (CR 608.2b)"
         );
     }
 

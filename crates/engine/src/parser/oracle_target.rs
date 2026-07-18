@@ -3105,16 +3105,16 @@ pub fn parse_type_phrase_with_ctx<'a>(
     // (a leftover would trip the clone-replacement guard) and FilterProp::Cmc reaches
     // the target filter. Mirrors the zone->counter and zone->without second passes below.
     //
-    // PRE-EXISTING ENGINE GAP unmasked by this fix (documented per maintainer
-    // decision, no tracker): correctly narrowing Too Evil to Stay Dead's BASE branch
-    // to `Cmc{LE, Fixed 4}` exposes that its teamwork "instead" broad override is not
-    // applied at cast-time target selection — only kicker propagates
-    // `additional_cost_paid` there. Two prior bugs canceled (base branch broad via the
-    // dropped suffix + override-not-applied), so pre-fix teamwork was accidentally
-    // correct. This parser fix is correct; the fix for the teamwork branch is an engine
-    // generalization of `additional_cost_paid` cast-time propagation from kicker to ALL
-    // `AdditionalCost`-"instead" (parameterize-don't-proliferate). See
-    // `game/ability_utils.rs`: `collect_target_slots_inner` + `kicker_instead_spell_has_legal_targets`.
+    // RESOLVED (finding #1, follow-up to the engine gap this fix originally
+    // unmasked): correctly narrowing Too Evil to Stay Dead's BASE branch to
+    // `Cmc{LE, Fixed 4}` had exposed that its teamwork "instead" broad
+    // override was not applied at cast-time target selection — only kicker
+    // propagated `additional_cost_paid` there. That cast-time propagation is
+    // now generalized from kicker to every `AdditionalCost`-"instead" with a
+    // non-empty effective queue (parameterize-don't-proliferate). See
+    // `game/ability_utils.rs`: `collect_target_slots_inner` +
+    // `additional_cost_instead_spell_has_legal_targets`; `game/casting.rs`'s
+    // pre-target deferral gates.
     if let Some((prop, consumed)) = parse_mana_value_suffix(&lower[pos..], ctx) {
         properties.push(prop);
         pos += consumed;
