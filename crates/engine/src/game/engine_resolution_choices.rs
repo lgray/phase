@@ -511,6 +511,45 @@ pub(super) enum ResolutionChoiceOutcome {
     ActionResult(ActionResult),
 }
 
+/// CR 603.2 + CR 603.3b + CR 608.2g: A spell cast while an effect is
+/// resolving can finish its announcement at another resolution prompt (for
+/// example, Ripple's next revealed-card offer) rather than at Priority. Its
+/// `SpellCast` event nevertheless happened and must be collected exactly once;
+/// it merely cannot be put onto the stack until the parent resolution finishes.
+///
+/// This is the single paused cast-during-resolution settlement seam. It covers
+/// free casts, casts that pause for targets or payment, and continuation offers
+/// uniformly because the final reducer calls it after every successful action.
+pub(super) fn park_cast_during_resolution_cast_observers(
+    state: &mut GameState,
+    events: &mut Vec<GameEvent>,
+    event_start: usize,
+    waiting_for: &WaitingFor,
+) -> Result<Option<WaitingFor>, EngineError> {
+    let cast_announced = events[event_start..]
+        .iter()
+        .any(|event| matches!(event, GameEvent::SpellCast { .. }));
+    let paused_resolution_cast =
+        handles(waiting_for) || matches!(waiting_for, WaitingFor::CopyRetarget { .. });
+    if state.resolving_stack_entry.is_none() || !paused_resolution_cast || !cast_announced {
+        return Ok(None);
+    }
+
+    // `run_post_action_pipeline_from` recognizes the non-Priority resolution
+    // choice and parks the suffix's observers in `deferred_triggers`; it does
+    // not drain them while the parent continuation is still active.
+    state.waiting_for = waiting_for.clone();
+    let settled = super::engine_priority::run_post_action_pipeline_from(
+        state,
+        events,
+        event_start,
+        waiting_for,
+        false,
+        true,
+    )?;
+    Ok(Some(settled))
+}
+
 /// CR 603.2 + CR 603.3b: After a resolution-choice handler has moved objects
 /// (sacrifice, change-zone, bounce, discard) and resolved any reflexive
 /// continuation, dispatch the observer triggers (dies-, discarded-, etc.)
@@ -1860,13 +1899,17 @@ pub(super) fn handle_resolution_choice(
                     state,
                     &all_to_bottom,
                     source_id,
-                    None,
+                    Some(
+                        crate::types::game_state::BatchCompletion::RippleTerminalComplete {
+                            player,
+                            source_id,
+                            final_cast: None,
+                        },
+                    ),
                     events,
                 ) {
                     crate::game::zone_pipeline::BatchMoveResult::Done => {
-                        ResolutionChoiceOutcome::WaitingFor(finish_with_continuation(
-                            state, player, events,
-                        ))
+                        ResolutionChoiceOutcome::WaitingFor(state.waiting_for.clone())
                     }
                     crate::game::zone_pipeline::BatchMoveResult::NeedsChoice => {
                         ResolutionChoiceOutcome::WaitingFor(state.waiting_for.clone())
@@ -6429,6 +6472,41 @@ pub(crate) fn run_batch_completion(
                 source_id,
                 subject: None,
             });
+            crate::game::zone_pipeline::BatchMoveResult::Done
+        }
+        BatchCompletion::RippleTerminalComplete {
+            player,
+            source_id,
+            final_cast,
+        } => {
+            // CR 702.60a + CR 603.3b: The final accepted Ripple cast has not yet emitted SpellCast: this
+            // batch completion runs inside its pre-finalization cleanup. Mark the
+            // terminal settlement now, but leave both the resolver LKI and parked
+            // triggers intact until that spell finishes announcement.
+            let matches_resolving_ripple =
+                state.resolving_stack_entry.as_ref().is_some_and(|entry| {
+                    entry.source_id == source_id
+                        && entry.controller == player
+                        && matches!(
+                            &entry.kind,
+                            crate::types::game_state::StackEntryKind::TriggeredAbility {
+                                ability, ..
+                            } if matches!(ability.effect, Effect::Ripple { .. })
+                        )
+                });
+            if matches_resolving_ripple {
+                state.pending_resolution_completion =
+                    Some(crate::types::game_state::PendingResolutionCompletion {
+                        player,
+                        source_id,
+                        final_cast,
+                    });
+                // CR 608.2c: the terminal Ripple instruction is complete. The
+                // post-action pipeline owns collecting and ordering the parked
+                // cast observers; it will keep the marker through any final-cast
+                // announcement or replacement tail.
+                state.waiting_for = WaitingFor::Priority { player };
+            }
             crate::game::zone_pipeline::BatchMoveResult::Done
         }
         BatchCompletion::DiscoverBottomComplete { source_id } => {

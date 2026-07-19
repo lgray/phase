@@ -582,6 +582,17 @@ fn cast_stack_spell_copy_during_resolution(
         )));
     }
 
+    // CR 113.2c + CR 601.2i + CR 608.2g: this copy is now being CAST, so
+    // snapshot its effective spell keywords before recording SpellCast. This
+    // mirrors `casting_costs::finalize_cast_with_phyrexian_choices_inner` and
+    // preserves the selected static-grant instances/provenance for cast-trigger
+    // synthesis (notably multiple Ripple grants) after the event is recorded.
+    let cast_spell_keywords =
+        crate::game::casting::effective_spell_keyword_instances(state, ability.controller, copy_id);
+    if let Some(copy) = state.objects.get_mut(&copy_id) {
+        copy.cast_spell_keywords = cast_spell_keywords;
+    }
+
     let origin = obj.cast_from_zone.unwrap_or(Zone::Exile);
     events.push(GameEvent::SpellCast {
         card_id: obj.card_id,

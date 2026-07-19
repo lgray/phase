@@ -3435,19 +3435,27 @@ fn collect_pending_triggers_with_collection(
             // CR 702.60a + CR 702.60b: Ripple — synthesized "when you cast this
             // spell" trigger off the just-cast spell, one per Ripple instance,
             // each carrying that instance's N. Mirrors the Cascade synthesis above.
-            let ripple_instances: Vec<u32> =
-                super::casting::effective_spell_keywords(state, *caster, *cast_obj_id)
-                    .into_iter()
-                    .filter_map(|k| match k {
-                        Keyword::Ripple(n) => Some(n),
-                        _ => None,
-                    })
-                    .collect();
-            let ripple_controller = state
+            // CR 113.2c + CR 702.60b: use the cast-time keyword snapshot, not
+            // a live static-ability query. This is the same authority as
+            // Cascade above: the spell's abilities are fixed as it is cast, and
+            // each separately-functioning Ripple instance produces its own
+            // triggered ability.
+            let (ripple_instances, ripple_controller): (Vec<u32>, PlayerId) = state
                 .objects
                 .get(cast_obj_id)
-                .map(|o| o.controller)
-                .unwrap_or(*caster);
+                .map(|obj| {
+                    (
+                        obj.cast_spell_keywords
+                            .iter()
+                            .filter_map(|keyword| match keyword {
+                                Keyword::Ripple(n) => Some(*n),
+                                _ => None,
+                            })
+                            .collect(),
+                        obj.controller,
+                    )
+                })
+                .unwrap_or_default();
             for n in ripple_instances {
                 let ripple_trig_def = TriggerDefinition::new(TriggerMode::SpellCast)
                     .description("Ripple".to_string())
@@ -6386,10 +6394,11 @@ fn dispatch_pending_trigger_context(
 /// `deferred_triggers`. Mid-resolution `Priority` from player-scope iteration,
 /// `repeat_for`, or replacement continuations must not drain (or offer CR
 /// 603.3b ordering) until those continuations finish.
-fn can_drain_deferred_triggers(state: &GameState, allow_spell_on_stack: bool) -> bool {
-    if state.deferred_triggers.is_empty() {
-        return false;
-    }
+/// CR 603.3b + CR 608.2g: whether a paused resolution has reached a real
+/// post-announcement settlement boundary. This intentionally permits spells on
+/// the stack: cast triggers go above the spells that caused them once the parent
+/// resolution is complete.
+pub(crate) fn resolution_completion_can_settle(state: &GameState) -> bool {
     if is_pending_trigger_construction_active(state) {
         return false;
     }
@@ -6403,6 +6412,21 @@ fn can_drain_deferred_triggers(state: &GameState, allow_spell_on_stack: bool) ->
         return false;
     }
     if state.pending_change_zone_iteration.is_some() {
+        return false;
+    }
+    if state.pending_replacement.is_some()
+        || state.pending_batch_deliveries.is_some()
+        || state.pending_counter_additions.is_some()
+        || state.pending_counter_moves.is_some()
+        || state.pending_counter_removals.is_some()
+    {
+        return false;
+    }
+    true
+}
+
+fn can_drain_deferred_triggers(state: &GameState, allow_spell_on_stack: bool) -> bool {
+    if state.deferred_triggers.is_empty() || !resolution_completion_can_settle(state) {
         return false;
     }
     // CR 603.3b + issue #1793: observer triggers parked during a spell's
@@ -6456,6 +6480,14 @@ pub(crate) fn drain_deferred_triggers_after_stack_object_announcement(
     state: &mut GameState,
     events_out: &mut Vec<GameEvent>,
 ) -> Option<crate::types::game_state::WaitingFor> {
+    // CR 603.3b + CR 608.2g: terminal Ripple settlement owns this exact
+    // post-announcement boundary. It must first collect the current final
+    // cast's SpellCast event with earlier accepted casts, then drain one batch.
+    // Callers that finalize an announcement before that reducer seam therefore
+    // leave the queue intact while the typed marker is live.
+    if state.pending_resolution_completion.is_some() {
+        return None;
+    }
     if !can_drain_deferred_triggers(state, true) {
         return None;
     }
@@ -6960,30 +6992,37 @@ fn trigger_event_occurrence(events: &[GameEvent], event_index: usize) -> usize {
         .count()
 }
 
+/// Filter a suffix while comparing consumed occurrence identities against the
+/// complete action event buffer. An occurrence is an identity within the full
+/// buffer, not within a later continuation slice: rebasing it at `event_start`
+/// can consume an equal-looking event from the wrong resolution segment.
+pub(crate) fn filter_consumed_trigger_events_from(
+    events: &[GameEvent],
+    event_start: usize,
+    consumed: &[ConsumedTriggerEventOccurrence],
+) -> Vec<GameEvent> {
+    events[event_start..]
+        .iter()
+        .enumerate()
+        .filter_map(|(offset, event)| {
+            let occurrence = trigger_event_occurrence(events, event_start + offset);
+            if !consumed
+                .iter()
+                .any(|consumed| consumed.event == *event && consumed.occurrence == occurrence)
+            {
+                Some(event.clone())
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
 pub(crate) fn filter_consumed_trigger_events(
     events: &[GameEvent],
     consumed: &[ConsumedTriggerEventOccurrence],
 ) -> Vec<GameEvent> {
-    let mut seen: Vec<(GameEvent, usize)> = Vec::new();
-    let mut filtered = Vec::new();
-    for event in events {
-        let occurrence =
-            if let Some((_, count)) = seen.iter_mut().find(|(seen_event, _)| seen_event == event) {
-                let occurrence = *count;
-                *count += 1;
-                occurrence
-            } else {
-                seen.push((event.clone(), 1));
-                0
-            };
-        if !consumed
-            .iter()
-            .any(|consumed| consumed.event == *event && consumed.occurrence == occurrence)
-        {
-            filtered.push(event.clone());
-        }
-    }
-    filtered
+    filter_consumed_trigger_events_from(events, 0, consumed)
 }
 
 fn delayed_trigger_to_context(
@@ -15679,6 +15718,33 @@ pub mod tests {
         );
 
         assert_eq!(filtered, vec![events[0].clone(), events[2].clone()]);
+    }
+
+    #[test]
+    fn filter_consumed_trigger_events_from_keeps_prefix_occurrence_identity() {
+        let events = vec![
+            GameEvent::PhaseChanged {
+                phase: Phase::Upkeep,
+            },
+            GameEvent::PhaseChanged {
+                phase: Phase::Upkeep,
+            },
+            GameEvent::PhaseChanged { phase: Phase::Draw },
+        ];
+        let filtered = filter_consumed_trigger_events_from(
+            &events,
+            1,
+            &[ConsumedTriggerEventOccurrence {
+                event: events[1].clone(),
+                occurrence: 1,
+            }],
+        );
+
+        assert_eq!(
+            filtered,
+            vec![events[2].clone()],
+            "the suffix-local first upkeep is globally the second occurrence"
+        );
     }
 
     /// Issue #1304 — RUNTIME: Keeper of the Accord's intervening-if must compare

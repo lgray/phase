@@ -4367,6 +4367,15 @@ pub enum BatchCompletion {
         source_id: ObjectId,
         exiled_count: u32,
     },
+    /// CR 702.60a + CR 603.3b + CR 616.1: A terminal Ripple bottom batch
+    /// settled after a replacement-choice pause. Only now may the resolving
+    /// trigger's deferred cast observers be placed above their spells.
+    RippleTerminalComplete {
+        player: PlayerId,
+        source_id: ObjectId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        final_cast: Option<ObjectId>,
+    },
     /// CR 701.57a + CR 616.1: A no-hit Discover's randomized bottom batch has
     /// settled, so the discover resolution completes exactly once.
     DiscoverBottomComplete { source_id: ObjectId },
@@ -4625,6 +4634,22 @@ pub enum BatchCompletion {
     /// second physical card has completed its independently replaceable move,
     /// carrying the originating event's applied-set through every pause.
     MeldRedirect { source_id: ObjectId },
+}
+
+/// CR 603.3b + CR 608.2g: terminal settlement that must wait until the
+/// resolution-cast spell has completed its announcement. `source_id` proves
+/// the terminal batch belongs to the still-stashed resolving Ripple ability;
+/// the post-announcement boundary then combines this cast's triggers with the
+/// earlier accepted casts' parked observers before ordering the one batch.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PendingResolutionCompletion {
+    pub player: PlayerId,
+    pub source_id: ObjectId,
+    /// `Some` for a terminal accepted Ripple hit. The marker cannot settle
+    /// until this spell has actually reached the stack, which prevents a
+    /// replacement-choice pause in its bottom batch from draining earlier casts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub final_cast: Option<ObjectId>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -12275,6 +12300,12 @@ pub struct GameState {
     /// `current_trigger_event`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resolving_stack_entry: Option<StackEntry>,
+    /// CR 603.3b + CR 608.2g: a terminal resolution batch (currently Ripple)
+    /// has settled, but its final spell is still completing announcement. Keep
+    /// the provenance until the post-announcement priority pipeline can collect
+    /// that spell's cast triggers into the same deferred ordering batch.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending_resolution_completion: Option<PendingResolutionCompletion>,
     /// CR 107.3i: the X announced for an in-flight COST, keyed by the object whose cost
     /// it is. CR 107.3i: "Normally, all instances of X on an object have the same value
     /// at any given time" — so a triggered ability of that SAME object which fires
@@ -13924,6 +13955,7 @@ impl GameState {
             announced_source_x: None,
             current_trigger_match_count: None,
             resolving_stack_entry: None,
+            pending_resolution_completion: None,
             resolution_source_relatch: None,
             last_recast_context: None,
             current_trigger_events: Vec::new(),
@@ -15046,6 +15078,7 @@ fn _gamestate_partition_is_total(s: &GameState) {
         // per-cycle accumulator and PartialEq does not compare it.
         announced_source_x: _,
         resolving_stack_entry: _,
+        pending_resolution_completion: _,
         current_trigger_events: _,
         stack_trigger_event_batches: _,
         lki_cache: _,
@@ -15288,6 +15321,7 @@ impl PartialEq for GameState {
             && self.revealed_cards == other.revealed_cards
             && self.public_revealed_cards == other.public_revealed_cards
             && self.pending_continuation == other.pending_continuation
+            && self.pending_resolution_completion == other.pending_resolution_completion
             && self.pending_repeat_iteration == other.pending_repeat_iteration
             && self.pending_repeated_optional_payment == other.pending_repeated_optional_payment
             && self.pending_change_zone_iteration == other.pending_change_zone_iteration
