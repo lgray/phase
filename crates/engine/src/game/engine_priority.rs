@@ -59,6 +59,46 @@ pub(crate) fn run_post_action_pipeline_from(
     // and fired a second time by the replay, causing double-fire for ETB
     // observers like Soul Warden (issue #830).
     if !skip_trigger_scan {
+        // A paused logical zone-change owner has already Segment-collected its
+        // retained ZoneChanged occurrences into deferred trigger contexts. Do
+        // not rediscover those records through the generic post-action scan;
+        // its batched definitions remain reserved for final settlement.
+        let mut retained_logical_zone_events = Vec::new();
+        if let Some(pending) = state.pending_change_zone_iteration.as_ref() {
+            retained_logical_zone_events.extend(
+                pending
+                    .logical_zone_change_group
+                    .all_origin_occurrences
+                    .iter()
+                    .map(|occurrence| &occurrence.event),
+            );
+            if let Some(paused_current) = pending.paused_current.as_ref() {
+                retained_logical_zone_events.extend(&paused_current.delivery_events);
+            }
+        }
+        if let Some(pending) = state.pending_batch_deliveries.as_ref() {
+            retained_logical_zone_events.extend(
+                pending
+                    .logical_zone_change_group
+                    .all_origin_occurrences
+                    .iter()
+                    .map(|occurrence| &occurrence.event),
+            );
+            if let Some(paused_current) = pending.paused_current.as_ref() {
+                retained_logical_zone_events.extend(&paused_current.delivery_events);
+            }
+        }
+        // A completed logical owner has already collected its segment and
+        // settlement contexts into the existing deferred queue. The owner is
+        // intentionally gone before the trailing completion event, so use those
+        // exact queued occurrences to keep the generic scan from rediscovering
+        // them while still allowing every unrelated event through.
+        let deferred_logical_zone_events: Vec<_> = state
+            .deferred_triggers
+            .iter()
+            .flat_map(|context| context.trigger_events.iter())
+            .filter(|event| matches!(event, GameEvent::ZoneChanged { .. }))
+            .collect();
         let unconsumed_events = triggers::filter_consumed_trigger_events(
             &events[event_start..],
             &consumed_trigger_events,
@@ -68,6 +108,8 @@ pub(crate) fn run_post_action_pipeline_from(
             .filter(|event| {
                 !matches!(event, GameEvent::PhaseChanged { .. })
                     && !state.deferred_entry_events.contains(event)
+                    && !retained_logical_zone_events.contains(event)
+                    && !deferred_logical_zone_events.contains(event)
             })
             .cloned()
             .collect();
@@ -147,15 +189,29 @@ pub(crate) fn run_post_action_pipeline_from(
     // before that choice is surfaced; otherwise the source's ZoneChanged
     // event is lost with this pipeline pass and its exiled card never returns.
     let events_before_exile_returns = events.len();
+    let deferred_trigger_count_before_exile_returns = state.deferred_triggers.len();
     check_exile_returns(state, events);
     if events.len() > events_before_exile_returns {
         let exile_return_events: Vec<_> = events[events_before_exile_returns..].to_vec();
+        let consumed_exile_return_events =
+            std::mem::take(&mut state.consumed_before_priority_trigger_events);
+        let unconsumed_exile_return_events = triggers::filter_consumed_trigger_events(
+            &exile_return_events,
+            &consumed_exile_return_events,
+        );
         if !matches!(state.waiting_for, WaitingFor::Priority { .. }) {
-            triggers::collect_triggers_into_deferred(state, &exile_return_events);
+            triggers::collect_triggers_into_deferred(state, &unconsumed_exile_return_events);
         } else {
-            let outcome = triggers::process_triggers_with_delayed_events(
+            let mut normal_pending = state
+                .deferred_triggers
+                .split_off(deferred_trigger_count_before_exile_returns);
+            normal_pending.extend(triggers::collect_triggers_for_batch(
                 state,
-                &exile_return_events,
+                &unconsumed_exile_return_events,
+            ));
+            let outcome = triggers::process_collected_triggers_with_delayed_events(
+                state,
+                normal_pending,
                 &exile_return_events,
                 events,
             );

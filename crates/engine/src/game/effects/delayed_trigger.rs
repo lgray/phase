@@ -156,6 +156,20 @@ pub fn resolve(
     // CR 603.7c: A delayed triggered ability that refers to information from
     // its creation event keeps that creation-time binding for later resolution.
     delayed_ability.scoped_player = ability.scoped_player;
+    // A delayed trigger is a continuation of this resolved ability, so preserve
+    // the same exact trigger source across its later match and resolution. Spell
+    // and activated-ability sources may not already carry trigger provenance;
+    // capture their current incarnation at creation rather than later rebinding
+    // the stored ObjectId. CR 400.7.
+    let source_context = ability.trigger_source.clone().or_else(|| {
+        state
+            .objects
+            .get(&ability.source_id)
+            .map(|source| super::super::triggers::trigger_source_context_for_latch(state, source))
+    });
+    if let Some(source_context) = source_context {
+        delayed_ability.set_trigger_source_recursive(source_context);
+    }
 
     // CR 701.27f: A delayed triggered ability may transform its source only if
     // that permanent has not transformed or converted since the delayed
