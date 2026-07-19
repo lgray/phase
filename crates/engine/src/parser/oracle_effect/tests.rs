@@ -38803,6 +38803,54 @@ fn delayed_trigger_change_zone_after_token_creator_rewrites_to_last_created() {
     );
 }
 
+/// CR 603.7 + CR 707.2 (issue #5972): Saheeli, the Gifted's -7 creates a
+/// token copy of each artifact, grants haste to "those tokens", then exiles
+/// "those tokens" at the next end step. The plural anaphor must stay on
+/// `TrackedSet` with `uses_tracked_set: true` — not `LastCreated`, which
+/// only binds the last token in the batch.
+#[test]
+fn saheeli_minus_seven_those_tokens_delayed_exile_keeps_tracked_set() {
+    use crate::types::identifiers::TrackedSetId;
+
+    let ability = parse_effect_chain(
+            "for each artifact you control, create a token that's a copy of it. those tokens gain haste. exile those tokens at the beginning of the next end step",
+            AbilityKind::Activated,
+        );
+
+    fn find_delayed_exile(def: &AbilityDefinition) -> Option<(bool, TargetFilter)> {
+        if let Effect::CreateDelayedTrigger {
+            uses_tracked_set,
+            effect: inner,
+            ..
+        } = &*def.effect
+        {
+            if let Effect::ChangeZone {
+                target,
+                destination: Zone::Exile,
+                ..
+            } = &*inner.effect
+            {
+                return Some((*uses_tracked_set, target.clone()));
+            }
+        }
+        def.sub_ability.as_deref().and_then(find_delayed_exile)
+    }
+
+    let (uses_tracked_set, target) =
+        find_delayed_exile(&ability).expect("expected delayed exile ChangeZone in chain");
+    assert!(
+        uses_tracked_set,
+        "those tokens delayed cleanup must set uses_tracked_set=true"
+    );
+    assert_eq!(
+        target,
+        TargetFilter::TrackedSet {
+            id: TrackedSetId(0)
+        },
+        "plural token cleanup must bind TrackedSet, not LastCreated"
+    );
+}
+
 /// CR 614.1a + CR 614.6: Whip-style "If it would leave the battlefield,
 /// exile it instead of putting it anywhere else" is a replacement effect
 /// installed on the returned object, not an immediate follow-up exile.

@@ -787,9 +787,18 @@ fn altair_ibn_la_ahad_for_each_exile_memory_counter_copy_parses() {
         .sub_ability
         .as_deref()
         .expect("delayed end-of-combat cleanup");
-    let Effect::CreateDelayedTrigger { effect, .. } = delayed.effect.as_ref() else {
+    let Effect::CreateDelayedTrigger {
+        effect,
+        uses_tracked_set,
+        ..
+    } = delayed.effect.as_ref()
+    else {
         panic!("expected delayed cleanup trigger, got {:?}", delayed.effect);
     };
+    assert!(
+        *uses_tracked_set,
+        "Altaïr 'those tokens' cleanup must set uses_tracked_set=true"
+    );
     let Effect::ChangeZone {
         target,
         origin: Some(Zone::Battlefield),
@@ -798,11 +807,16 @@ fn altair_ibn_la_ahad_for_each_exile_memory_counter_copy_parses() {
     } = effect.effect.as_ref()
     else {
         panic!(
-            "expected LastCreated Battlefield->Exile cleanup, got {:?}",
+            "expected TrackedSet Battlefield->Exile cleanup, got {:?}",
             effect.effect
         );
     };
-    assert_eq!(*target, TargetFilter::LastCreated);
+    assert_eq!(
+        *target,
+        TargetFilter::TrackedSet {
+            id: crate::types::identifiers::TrackedSetId(0)
+        }
+    );
 }
 
 /// CR 702.34a / CR 702.128a / CR 702.180a: the three self-cost graveyard
@@ -14635,11 +14649,31 @@ fn twinflame_full_parse() {
         .expect("CreateDelayedTrigger sub-ability");
     match &*delayed.effect {
         Effect::CreateDelayedTrigger {
-            uses_tracked_set, ..
-        } => assert!(
-            *uses_tracked_set,
-            "'those tokens' must mark uses_tracked_set=true"
-        ),
+            uses_tracked_set,
+            effect: inner,
+            ..
+        } => {
+            assert!(
+                *uses_tracked_set,
+                "'those tokens' must mark uses_tracked_set=true"
+            );
+            match &*inner.effect {
+                Effect::ChangeZone {
+                    target,
+                    destination: Zone::Exile,
+                    ..
+                } => {
+                    assert_eq!(
+                        *target,
+                        TargetFilter::TrackedSet {
+                            id: crate::types::identifiers::TrackedSetId(0)
+                        },
+                        "Twinflame 'those tokens' exile must bind TrackedSet (issue #5972)"
+                    );
+                }
+                other => panic!("expected inner ChangeZone exile, got {other:?}"),
+            }
+        }
         other => panic!("expected CreateDelayedTrigger, got {other:?}"),
     }
 }
