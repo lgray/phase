@@ -348,9 +348,31 @@ fn strip_cost_mod_cast_scope_suffix(input: &str) -> &str {
     stripped.trim()
 }
 
+/// CR 604.1: Parse a LEADING "during your turn, " / "during turns other than
+/// yours, " turn-scope clause into its `StaticCondition`. Shares the negated-turn
+/// vocabulary the CDA / dispatch / type-change static parsers already recognize
+/// (`nom_tag_tp("during turns other than yours, ")`), and the affirmative form
+/// mirrors the trailing suffix arm below. `peel_leading_cost_modifier_condition`
+/// consumes this before self-spell and first-qualified dispatch, so every
+/// cost-modifier branch retains the scope.
+fn parse_leading_turn_scope(text: &str) -> OracleResult<'_, StaticCondition> {
+    alt((
+        value(
+            StaticCondition::Not {
+                condition: Box::new(StaticCondition::DuringYourTurn),
+            },
+            tag("during turns other than yours, "),
+        ),
+        value(StaticCondition::DuringYourTurn, tag("during your turn, ")),
+    ))
+    .parse(text)
+}
+
 /// CR 604.1 + CR 601.2f: Strip an inline "during your turn" timing clause from
 /// a cost-modification subject before type parsing. Paladin Class: "Spells your
-/// opponents cast during your turn cost {1} more to cast."
+/// opponents cast during your turn cost {1} more to cast." The LEADING clause
+/// (affirmative + negated) is handled once for every branch before dispatch by
+/// `peel_leading_cost_modifier_condition`.
 fn strip_cost_mod_during_your_turn_scope(text: &str) -> (&str, Option<StaticCondition>) {
     if let Ok((_, prefix)) = terminated(
         take_until(" during your turn"),
@@ -879,14 +901,19 @@ pub(crate) fn try_parse_cost_modification(
     if is_self_spell {
         definition.active_zones = crate::types::zones::self_spell_cost_mod_active_zones();
     }
-    if let Some((filter, timing, ordinal)) = nth_qualified_spell.as_ref() {
-        definition.condition = Some(nth_qualified_spell_condition(filter, timing, *ordinal));
-    } else if let Some(during_your_turn_scope) = during_your_turn_scope {
-        definition.condition = Some(during_your_turn_scope);
-    }
-    if definition.condition.is_none() {
-        definition.condition = leading_condition;
-    }
+    let branch_condition = if let Some((filter, timing, ordinal)) = nth_qualified_spell.as_ref() {
+        Some(nth_qualified_spell_condition(filter, timing, *ordinal))
+    } else {
+        during_your_turn_scope
+    };
+    definition.condition = match (leading_condition, branch_condition) {
+        (Some(leading), Some(branch)) => Some(StaticCondition::And {
+            conditions: vec![leading, branch],
+        }),
+        (Some(leading), None) => Some(leading),
+        (None, Some(branch)) => Some(branch),
+        (None, None) => None,
+    };
 
     // Extract trailing "if [condition]" / "as long as [condition]" clause from
     // cost modification lines.
@@ -950,21 +977,6 @@ pub(crate) fn try_parse_cost_modification(
         }
     }
 
-    // CR 102.1 + CR 601.2f: Leading "During your turn," timing restriction —
-    // the cost modification functions only on the static controller's turn
-    // (Tithe Taker: "During your turn, spells your opponents cast cost {1} more
-    // to cast ..."). The trailing/`if` scans above miss this because it is a
-    // comma-separated timing prefix, not an "if"/"as long as" clause. The cost
-    // resolver gates on `StaticCondition::DuringYourTurn`, which is evaluated
-    // against the source permanent's controller (CR 102.1: active player).
-    if definition.condition.is_none()
-        && tag::<_, _, OracleError<'_>>("during your turn, ")
-            .parse(lower)
-            .is_ok()
-    {
-        definition.condition = Some(StaticCondition::DuringYourTurn);
-    }
-
     // CR 601.2f + CR 702.34a: Caller-proven casting variant (e.g. Flashback from
     // the compound-line parser) gates self-spell cost modifiers — never inferred
     // from generic "cast this way" wording alone.
@@ -984,6 +996,18 @@ fn peel_leading_cost_modifier_condition<'a>(
     pair: TextPair<'a>,
 ) -> (TextPair<'a>, Option<StaticCondition>) {
     let trimmed = pair.trim_start();
+    if let Ok((remainder, condition)) = parse_leading_turn_scope(trimmed.lower) {
+        let consumed = trimmed.lower.len() - remainder.len();
+        let cost_clause = trimmed.slice(consumed, trimmed.lower.len()).trim_start();
+        if nom_primitives::scan_contains(cost_clause.lower, "less to cast")
+            || nom_primitives::scan_contains(cost_clause.lower, "more to cast")
+            || nom_primitives::scan_contains(cost_clause.lower, "less to activate")
+            || nom_primitives::scan_contains(cost_clause.lower, "more to activate")
+        {
+            return (cost_clause, Some(condition));
+        }
+    }
+
     let Ok((after_if, _)) = tag::<_, _, OracleError<'_>>("if ").parse(trimmed.lower) else {
         return (pair, None);
     };

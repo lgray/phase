@@ -6262,6 +6262,90 @@ fn static_opponent_spells_cost_more_during_your_turn() {
     ));
 }
 
+/// CR 604.1: a LEADING "during turns other than yours, " / "during your turn, "
+/// timing clause on a cost modifier lowers to the negated / affirmative
+/// `StaticCondition` instead of being dropped (Geyser Drake, Naiad of Hidden
+/// Coves reduced EVERY spell — including on the controller's own turn). Shares the
+/// negated-turn vocabulary of the CDA / dispatch / type-change static parsers and
+/// mirrors the trailing "during your turn" suffix arm.
+#[test]
+fn cost_mod_leading_turn_scope_negated_and_affirmative() {
+    // "During turns other than yours, spells you cast cost {1} less" → Not(DuringYourTurn).
+    let def =
+        parse_static_line("During turns other than yours, spells you cast cost {1} less to cast.")
+            .expect("cost reduction should parse");
+    assert!(matches!(
+        def.mode,
+        StaticMode::ModifyCost {
+            mode: CostModifyMode::Reduce,
+            ..
+        }
+    ));
+    assert_eq!(
+        def.condition,
+        Some(StaticCondition::Not {
+            condition: Box::new(StaticCondition::DuringYourTurn),
+        }),
+        "leading negated-turn clause must gate the reducer, got {:?}",
+        def.condition,
+    );
+
+    // Affirmative leading form → DuringYourTurn.
+    let def = parse_static_line("During your turn, spells you cast cost {1} less to cast.")
+        .expect("cost reduction should parse");
+    assert_eq!(def.condition, Some(StaticCondition::DuringYourTurn));
+
+    // Regression: a plain cost mod with no timing clause is unconditioned.
+    let def = parse_static_line("Spells you cast cost {1} less to cast.")
+        .expect("cost reduction should parse");
+    assert_eq!(def.condition, None);
+
+    // Branch symmetry: the shared leading-clause authority gates a SELF-spell cost
+    // modifier too, not only the generic "spells you cast" branch.
+    let def =
+        parse_static_line("During turns other than yours, this spell costs {1} less to cast.")
+            .expect("self-spell cost reduction should parse");
+    assert_eq!(
+        def.condition,
+        Some(StaticCondition::Not {
+            condition: Box::new(StaticCondition::DuringYourTurn),
+        }),
+        "the negated leading clause must gate the self-spell branch too, got {:?}",
+        def.condition,
+    );
+    assert!(matches!(def.affected, Some(TargetFilter::SelfRef)));
+    assert_eq!(
+        def.active_zones,
+        crate::types::zones::self_spell_cost_mod_active_zones(),
+        "the leading scope must be peeled before self-spell detection so the modifier works from hand and stack",
+    );
+
+    // The leading scope must also reach the first-qualified branch before its
+    // grammar runs, then compose with (rather than replace) the first-spell gate.
+    let def = parse_static_line(
+        "During turns other than yours, the first spell you cast each turn costs {1} less to cast.",
+    )
+    .expect("first-spell cost reduction should parse");
+    let Some(StaticCondition::And { conditions }) = def.condition else {
+        panic!(
+            "leading turn scope and first-spell gate must compose, got {:?}",
+            def.condition
+        );
+    };
+    assert_eq!(conditions.len(), 2);
+    assert_eq!(
+        &conditions[0],
+        &StaticCondition::Not {
+            condition: Box::new(StaticCondition::DuringYourTurn),
+        }
+    );
+    assert!(
+        matches!(&conditions[1], StaticCondition::QuantityComparison { .. }),
+        "the first-spell condition must survive alongside the leading scope: {:?}",
+        conditions,
+    );
+}
+
 #[test]
 fn static_opponent_creature_spells_cost_more_during_your_turn() {
     let def = parse_static_line(
