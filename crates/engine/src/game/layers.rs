@@ -4641,6 +4641,23 @@ pub(crate) fn gather_transient_continuous_effects(
             ) {
                 continue;
             }
+            // CR 113.3d + CR 604.1 + CR 611.2c: Mirror the printed-static gather
+            // path — a transient `GrantStaticAbility` must expand its inner
+            // modifications to recipients during the same layer pass (Roar of the
+            // Fifth People chapter II: saga gains "Creatures you control have …").
+            if let ContinuousModification::GrantStaticAbility { definition: inner } = modification {
+                effects.extend(expand_granted_static_effects(
+                    state,
+                    tce.source_id,
+                    tce.timestamp,
+                    &tce.affected,
+                    inner.as_ref(),
+                    Some(TriggerProducerOrigin::Transient {
+                        continuous_effect_id: tce.id,
+                        modification_index: mod_index,
+                    }),
+                ));
+            }
             effects.push(ActiveContinuousEffect {
                 source_id: tce.source_id,
                 controller: tce.controller,
