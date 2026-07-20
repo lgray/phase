@@ -2077,7 +2077,8 @@ fn remember_public_reveals(state: &mut GameState, events: &[GameEvent]) {
 /// - `Concede` self-authenticates via its own `player_id` field — but we still
 ///   require it to match `actor` so a player cannot concede someone else on
 ///   their behalf (CR 104.3a).
-/// - **Preference actions** (SetPhaseStops, CancelAutoPass) are per-player UI
+/// - **Preference actions** (SetPhaseStops, SetPriorityPassingMode,
+///   CancelAutoPass) are per-player UI
 ///   settings. They have no CR semantics, mutate only the submitter's own
 ///   preference slot, and may legitimately fire at any time — e.g. the human
 ///   toggles a phase stop while the AI holds priority. The downstream handlers
@@ -2100,6 +2101,7 @@ fn check_actor_authorization(
     if matches!(
         action,
         GameAction::SetPhaseStops { .. }
+            | GameAction::SetPriorityPassingMode { .. }
             | GameAction::SetPriorityYield { .. }
             | GameAction::SetMayTriggerAutoChoice { .. }
             | GameAction::SetTriggerOrderTemplate { .. }
@@ -2984,6 +2986,22 @@ fn apply_action(
         });
     }
 
+    // Priority-passing mode is a standing, actor-scoped UI preference. It may
+    // be changed in any state and does not itself pass priority, advance the
+    // game, emit events, clear yields, or disturb takeback/loop state.
+    if let GameAction::SetPriorityPassingMode { mode } = &action {
+        if *mode == crate::types::game_state::PriorityPassingMode::Standard {
+            state.priority_passing_modes.remove(&actor);
+        } else {
+            state.priority_passing_modes.insert(actor, *mode);
+        }
+        return Ok(ActionResult {
+            events: vec![],
+            waiting_for: state.waiting_for.clone(),
+            log_entries: vec![],
+        });
+    }
+
     // CR 117.3d: SetPriorityYield propagates the actor's standing priority-yield
     // preference — a pre-committed decision to pass priority while a class of
     // triggered ability resolves. Pure preference state, routed by `actor`, and
@@ -3205,7 +3223,8 @@ fn apply_action(
     // non-pass action (cast / activate / play-land) breaks a self-refilling mandatory
     // cascade, so the accumulated detection window is stale and must be dropped.
     // Placed AFTER every preference early-return (CancelAutoPass / SetPhaseStops /
-    // ReorderHand / Debug / Grant- & RevokeDebugPermission) so a no-op preference
+    // SetPriorityPassingMode / ReorderHand / Debug / Grant- & RevokeDebugPermission)
+    // so a no-op preference
     // toggle never reaches here; PassPriority and OrderTriggers are the only actions
     // that CONTINUE a cascade and so must NOT clear (see the CR 603.3b note below).
     // `run_auto_pass_loop` and `resolve_all_fast_forward`

@@ -372,6 +372,9 @@ export interface PhaseStop {
   scope: PhaseStopScope;
 }
 
+/** Standing engine preference for ordinary priority recommendations. */
+export type PriorityPassingMode = "Standard" | "SkipLowUseWindows";
+
 export type Zone =
   | "Library"
   | "Hand"
@@ -2126,6 +2129,7 @@ export type GameAction =
     }
   | { type: "CancelAutoPass" }
   | { type: "SetPhaseStops"; data: { stops: PhaseStop[] } }
+  | { type: "SetPriorityPassingMode"; data: { mode: PriorityPassingMode } }
   | { type: "SetPriorityYield"; data: { op: PriorityYieldOp } }
   | { type: "SetMayTriggerAutoChoice"; data: { op: MayTriggerAutoChoiceOp } }
   // CR 603.3b: mirror engine GameAction::SetTriggerOrderTemplate (PR-7 phase-2 boundary sync).
@@ -2806,6 +2810,7 @@ export interface GameState {
   command_zone?: ObjectId[];
   auto_pass?: Record<number, AutoPassMode>;
   phase_stops?: Record<number, PhaseStop[]>;
+  priority_passing_modes?: Record<number, PriorityPassingMode>;
   /** CR 117.3d: the viewer's standing priority-yield preferences. */
   priority_yields?: PriorityYield[];
   /** CR 603.5: the viewer's stored "don't ask again" auto-choices for optional ("may") triggers. */

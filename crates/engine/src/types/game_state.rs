@@ -9572,6 +9572,23 @@ pub enum AutoPassMode {
     },
 }
 
+/// How the engine recommends passing ordinary priority windows for one player.
+///
+/// This is an opt-in interface preference, not a change to priority itself:
+/// every recommended pass is still submitted as `GameAction::PassPriority` and
+/// resolved by the normal CR 117.3d / CR 117.4 engine path. `Standard` preserves
+/// the existing meaningful-action-aware recommendation ladder.
+/// `SkipLowUseWindows` adds a
+/// narrow fast path for the active player's empty-stack Upkeep, Draw, and End
+/// priority windows; explicit phase stops, priority yields, and Full Control
+/// remain higher-authority user choices.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default, Serialize, Deserialize)]
+pub enum PriorityPassingMode {
+    #[default]
+    Standard,
+    SkipLowUseWindows,
+}
+
 /// CR 732.2a: user-controllable gate for the live combo (infinite-loop) detector.
 ///
 /// `Off` (the default) restores EXACT pre-detector behavior: the engine records
@@ -11216,6 +11233,11 @@ pub struct GameState {
     /// resolved against `active_player` (CR 102.1) by `phase_stop_hit`.
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub phase_stops: HashMap<PlayerId, Vec<PhaseStop>>,
+
+    /// Sparse per-player priority-passing preference. Missing entries are
+    /// [`PriorityPassingMode::Standard`], preserving legacy saved-game behavior.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub priority_passing_modes: HashMap<PlayerId, PriorityPassingMode>,
 
     /// CR 605.3: Lands manually tapped for mana via TapLandForMana this priority window.
     /// Per-player map enables multiplayer correctness (e.g., UnlessPayment opponent tapping).
@@ -13895,6 +13917,16 @@ impl GameState {
         })
     }
 
+    /// Return `player`'s priority-passing preference. The sparse representation
+    /// deliberately treats absence as Standard so old saves and filtered views
+    /// retain the pre-feature recommendation behavior.
+    pub fn priority_passing_mode(&self, player: PlayerId) -> PriorityPassingMode {
+        self.priority_passing_modes
+            .get(&player)
+            .copied()
+            .unwrap_or_default()
+    }
+
     /// CR 730.2: True if `object_id` is an absorbed (non-surviving) component of
     /// some merged permanent. Such a component is part of one battlefield object
     /// (the merged permanent, identified by the surviving target's `ObjectId`) and
@@ -14129,6 +14161,7 @@ impl GameState {
             priority_passes: BTreeSet::new(),
             auto_pass: HashMap::new(),
             phase_stops: HashMap::new(),
+            priority_passing_modes: HashMap::new(),
             lands_tapped_for_mana: HashMap::new(),
             prepaid_mulligan_bottoms: HashMap::new(),
             match_config: MatchConfig::default(),
@@ -15246,6 +15279,7 @@ fn _gamestate_partition_is_total(s: &GameState) {
         priority_passes: _,
         auto_pass: _,
         phase_stops: _,
+        priority_passing_modes: _,
         lands_tapped_for_mana: _,
         prepaid_mulligan_bottoms: _,
         debug_mode: _,
@@ -15567,6 +15601,7 @@ impl PartialEq for GameState {
             && self.priority_passes == other.priority_passes
             && self.auto_pass == other.auto_pass
             && self.phase_stops == other.phase_stops
+            && self.priority_passing_modes == other.priority_passing_modes
             && self.lands_tapped_for_mana == other.lands_tapped_for_mana
             && self.match_config == other.match_config
             && self.match_phase == other.match_phase
@@ -16546,6 +16581,37 @@ mod tests {
             AutoPassMode::UntilStackEmpty {
                 initial_stack_len: 3
             }
+        );
+    }
+
+    #[test]
+    fn priority_passing_mode_defaults_and_sparse_state_roundtrip() {
+        assert_eq!(
+            PriorityPassingMode::default(),
+            PriorityPassingMode::Standard
+        );
+        assert_eq!(
+            serde_json::from_str::<PriorityPassingMode>("\"SkipLowUseWindows\"").unwrap(),
+            PriorityPassingMode::SkipLowUseWindows
+        );
+
+        let mut state = GameState::new_two_player(42);
+        let standard_json = serde_json::to_value(&state).unwrap();
+        assert!(standard_json.get("priority_passing_modes").is_none());
+
+        state
+            .priority_passing_modes
+            .insert(PlayerId(0), PriorityPassingMode::SkipLowUseWindows);
+        let json = serde_json::to_value(&state).unwrap();
+        assert_eq!(json["priority_passing_modes"]["0"], "SkipLowUseWindows");
+        let decoded: GameState = serde_json::from_value(json).unwrap();
+        assert_eq!(
+            decoded.priority_passing_mode(PlayerId(0)),
+            PriorityPassingMode::SkipLowUseWindows
+        );
+        assert_eq!(
+            decoded.priority_passing_mode(PlayerId(1)),
+            PriorityPassingMode::Standard
         );
     }
 
