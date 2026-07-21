@@ -3379,7 +3379,13 @@ pub struct PendingCopyTokenBatch {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum PersistentAxisMaterialization {
     /// CR 707.2 + CR 111.1: mint N tapped copy-tokens of this fodder profile
-    /// (the `TokensCreated` axis).
+    /// (the `TokensCreated` axis). Carries NO per-cycle count because the per-cycle
+    /// fodder count k is STRUCTURALLY ≡ 1: this stash is only registered when
+    /// `materialize_object_growth_shortcut`'s `derived_fodder_class`
+    /// (engine.rs:1991-2005) found EXACTLY one new battlefield object per period
+    /// (a two+-object period returns `None` ⇒ no `Tokens` stash), so the boundary
+    /// mint of `count: amount` == k·amount is EXACT. (Contrast `Counters`/`Life`,
+    /// which carry a measured `per_cycle_delta` to handle k>1.)
     Tokens(Box<CopiableValues>),
     /// CR 122.1 / CR 701.34a: apply `per_cycle_delta × N` counters to each captured
     /// target (the beneficial-growable counter axis: Generic / +1/+1 / loyalty / defense).

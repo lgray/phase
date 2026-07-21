@@ -35,7 +35,7 @@ use engine::game::deck_loading::{
 use engine::game::derived_views::derive_views;
 use engine::game::engine::{apply, start_game};
 use engine::game::layers::{flush_layers, mark_layers_full};
-use engine::game::scenario::GameRunner;
+use engine::game::scenario::{GameRunner, GameScenario};
 use engine::game::zones::{add_to_zone, create_object, remove_from_zone};
 use engine::types::actions::{GameAction, MulliganChoice};
 use engine::types::card_type::CoreType;
@@ -2059,5 +2059,292 @@ fn loop_collapse_axis_from_materializations_maps_each_shape() {
     assert_eq!(
         LoopCollapseAxis::from_materializations(&drive_mana),
         LoopCollapseAxis::Mixed
+    );
+}
+
+/// [MED] (CR 732.2a defense-in-depth): the `Tokens` boundary-mint arm must early-return when the
+/// copy-token mint PAUSES for a replacement choice, preserving the replacement `waiting_for` and
+/// the paused `pending_copy_token_resolution` instead of advancing the phase / overwriting
+/// `waiting_for = Priority`.
+///
+/// DELIBERATELY FIREWALL-UNREACHABLE: the offer firewall (`drive_loop_action_iteration`'s
+/// exhaustive fail-closed `_ => Err(RecastAbort)`, engine.rs:1871-1873) guarantees a certified
+/// shortcut's per-cycle fodder mint cannot pause, so this state cannot arise in real play. The test
+/// constructs it directly — installing an OPTIONAL token-creation replacement (CR 616.1 single
+/// optional candidate → `replace_event` returns `NeedsChoice`, replacement.rs:8191-8214) on a P0
+/// battlefield object AFTER accept — to exercise the defensive guard. (Two IDENTICAL replacements
+/// would be immaterially ordered and auto-resolve with NO pause, making the test vacuous; a single
+/// MANDATORY replacement applies without a pause — hence a single OPTIONAL candidate.)
+///
+/// NON-VACUITY REACH-GUARD: the first assertion checks the mint actually paused
+/// (`pending_copy_token_resolution.is_some()`), so a fizzled/auto-resolved mint (non-matching or
+/// immaterial replacement) fails loudly rather than passing vacuously.
+///
+/// REVERT-FAILING assertion (MEASURED, implementer-run revert-probe): delete the guard → the arm
+/// falls through to `collapsed.push(Tokens)` + `clear_collapsed_materializations`, which cashes out
+/// the Tokens ∞ axis (`TokensCreated`) and DROPS the ∞ token pile — even though the paused mint
+/// created ZERO tokens. So the guard's load-bearing effect is PRESERVING the ∞ axis/pile on a
+/// paused mint; the revert-probe flips the `unbounded_resources`/`unbounded_loop_pile` assertions
+/// below (the phase-drain is a no-op while a replacement choice is pending, so `waiting_for` stays
+/// `ReplacementChoice` either way — that is a correctness sanity check, not the discriminator).
+#[test]
+fn med_tokens_boundary_mint_pause_preserves_replacement_choice() {
+    use engine::analysis::resource::ResourceAxis;
+    use engine::types::ability::{QuantityModification, ReplacementDefinition, ReplacementMode};
+    use engine::types::replacements::ReplacementEvent;
+    use std::sync::Arc;
+
+    let mut state: GameState = serde_json::from_str(&OFFER_STATE)
+        .expect("the real 4p offer dump must deserialize into the current GameState");
+    drive_all_accept(&mut state);
+
+    // Install an OPTIONAL token-count-doubling replacement ("you may create twice that many tokens
+    // instead", CR 616.1) on a fresh P0 battlefield permanent — AFTER accept, so it never perturbs
+    // the accept-time fodder-derivation clone-drive (installing it before accept would abort
+    // certification at the firewall, which is exactly the invariant this guard backstops). At the
+    // boundary Tokens mint, `replace_event` sees ONE optional candidate for the copy-token
+    // `CreateToken` event → returns `NeedsChoice` → `drive_copy_token_batches` sets
+    // `pending_copy_token_resolution` AND `waiting_for = ReplacementChoice`.
+    let doubler = create_object(
+        &mut state,
+        CardId(9001),
+        P0,
+        "Optional Token Doubler".to_string(),
+        Zone::Battlefield,
+    );
+    let mut def = ReplacementDefinition::new(ReplacementEvent::CreateToken);
+    def.mode = ReplacementMode::Optional { decline: None };
+    def.quantity_modification = Some(QuantityModification::DOUBLE);
+    let reps = vec![def];
+    let obj = state.objects.get_mut(&doubler).unwrap();
+    obj.replacement_definitions = reps.clone().into();
+    obj.base_replacement_definitions = Arc::new(reps);
+
+    drive_priority_to_next_boundary(&mut state);
+    assert!(
+        matches!(
+            state.waiting_for,
+            WaitingFor::PayAmountChoice { player, resource: PayableResource::LoopCollapse { .. }, .. }
+                if player == P0
+        ),
+        "the boundary must prompt P0 for the Tokens LoopCollapse count, got {:?}",
+        state.waiting_for
+    );
+    // Pre-submit reach-guards: the accepted token loop marked the Tokens ∞ axis + a non-empty ∞
+    // pile — the capability the paused mint must NOT cash out. (Non-vacuity: if these were absent
+    // the preservation assertions below would be trivially satisfiable.)
+    assert!(
+        state
+            .unbounded_resources
+            .get(&P0)
+            .is_some_and(|a| a.contains(&ResourceAxis::TokensCreated)),
+        "pre-submit reach-guard: the accepted token loop marks the TokensCreated ∞ axis"
+    );
+    assert!(
+        state
+            .unbounded_loop_pile
+            .get(&P0)
+            .is_some_and(|p| !p.is_empty()),
+        "pre-submit reach-guard: the accepted token loop has a non-empty ∞ pile"
+    );
+
+    apply(&mut state, P0, GameAction::SubmitPayAmount { amount: 3 })
+        .expect("P0 submits the finite token loop-collapse count");
+
+    // Non-vacuity reach-guard: the mint actually paused for the replacement (proves the OPTIONAL
+    // replacement matched the synthetic mint; a non-matching / auto-resolving construction leaves
+    // this None and fails the test loudly).
+    assert!(
+        state.pending_copy_token_resolution.is_some(),
+        "reach-guard: the boundary Tokens mint paused on the optional replacement \
+         (pending_copy_token_resolution set)"
+    );
+    // Correctness sanity (holds with AND without the guard — the phase-drain no-ops while a
+    // replacement choice is pending): the replacement prompt is surfaced, not clobbered to Priority.
+    assert!(
+        matches!(state.waiting_for, WaitingFor::ReplacementChoice { .. }),
+        "the paused replacement choice is surfaced, got {:?}",
+        state.waiting_for
+    );
+    // DISCRIMINATOR (revert-flip): the paused mint created ZERO tokens, so it must NOT cash out
+    // the Tokens ∞ capability. Without the guard, `collapsed.push(Tokens)` +
+    // `clear_collapsed_materializations` remove the TokensCreated axis and drop the ∞ pile ⇒ both
+    // assertions FLIP to FAIL (measured via implementer revert-probe).
+    assert!(
+        state
+            .unbounded_resources
+            .get(&P0)
+            .is_some_and(|a| a.contains(&ResourceAxis::TokensCreated)),
+        "REVERT-FLIP: the paused mint must preserve the Tokens ∞ axis, not cash it out for a \
+         batch that minted zero tokens"
+    );
+    assert!(
+        state
+            .unbounded_loop_pile
+            .get(&P0)
+            .is_some_and(|p| !p.is_empty()),
+        "REVERT-FLIP: the paused mint must preserve the ∞ token pile, not drop it"
+    );
+}
+
+/// Activate `ability_index` on `source`, then pass priority until the stack settles empty at a
+/// `Priority` window OR a `LoopShortcut` offer surfaces (mirrors the mana-engine harness).
+fn low3_activate_and_settle(runner: &mut GameRunner, source: ObjectId, ability_index: usize) {
+    runner
+        .act(GameAction::ActivateAbility {
+            source_id: source,
+            ability_index,
+        })
+        .expect("activation is legal");
+    for _ in 0..60 {
+        match &runner.state().waiting_for {
+            WaitingFor::LoopShortcut { .. } => break,
+            WaitingFor::Priority { .. } if runner.state().stack.is_empty() => break,
+            _ => {}
+        }
+        if runner.act(GameAction::PassPriority).is_err() {
+            break;
+        }
+    }
+}
+
+/// [LOW-3] E2E: accepting a REAL UNOBSERVED life-growth loop drives the accept-time production
+/// routing in `materialize_object_growth_shortcut` (engine.rs) into the BATCHED `Life` branch —
+/// the branch every prior Counters/Life collapse test GRAFTS via `register_pending_materialization`
+/// (bypassing the real δ-capture + `life_growth_is_observed` decision). The OBSERVED (DriveSequence)
+/// counter route is already covered by `kilo_accept_collapses_at_boundary_to_exactly_n_counters`
+/// (kilo_live_offer_from_real_dump.rs); this closes the UNOBSERVED batched gap.
+///
+/// CONSTRUCTION (self-contained, no dump): a synthetic creature with an off-stack mana ability
+/// (CR 605.3b — the only activation class that SEEDS a loop period, engine.rs:4141-4173), plus a
+/// free gain-life and a free untap. Ordered [mana, gain-life, untap] so the 2-step prefix leaves
+/// the creature TAPPED — the offer's re-drive can't re-tap it, aborting any premature pure-mana
+/// offer and forcing the life beat into the certified 3-step period. No `LifeChanged` trigger /
+/// `GainLife` replacement / life-total reader is on the board ⇒ `life_growth_is_observed == false`
+/// ⇒ the accept routes to the BATCHED `Life` stash.
+///
+/// REVERT-FAILING assertion: break the routing predicate — force the observed branch, or drop the
+/// `else`/`if !life.is_empty()` batched registration in `materialize_object_growth_shortcut` — and
+/// the produced stash shape changes (a `DriveSequence`, or an empty stash) ⇒ the batched-`Life`
+/// assertion FLIPS. Non-vacuity reach-guards: the recorded 3-step period, the surfaced offer, and
+/// the non-empty post-accept stash all gate the shape assertion.
+#[test]
+fn low3_unobserved_life_growth_accept_registers_batched_life() {
+    use engine::analysis::resource::ResourceAxis;
+    use engine::game::mana_abilities::is_mana_ability;
+    use engine::types::ability::{Effect, TapStateChange};
+
+    let mut scenario = GameScenario::new_n_player(2, 7);
+    scenario.at_phase(Phase::PreCombatMain);
+    let engine_id = scenario
+        .add_creature_from_oracle(
+            P0,
+            "Lifedynamo",
+            2,
+            2,
+            "{T}: Add {C}.\n{0}: You gain 1 life.\n{0}: Untap Lifedynamo.",
+        )
+        .id();
+    let mut runner = scenario.build();
+    runner.state_mut().loop_detection = LoopDetectionMode::Interactive;
+
+    // Derive the ability indices off the layer-built object (robust to parser ordering).
+    let (mana_idx, life_idx, untap_idx) = {
+        let abilities = &runner.state().objects[&engine_id].abilities;
+        let mana_idx = abilities
+            .iter()
+            .position(is_mana_ability)
+            .expect("the {T}: Add {C} mana ability");
+        let life_idx = abilities
+            .iter()
+            .position(|d| matches!(&*d.effect, Effect::GainLife { .. }))
+            .expect("the {0}: You gain 1 life ability");
+        let untap_idx = abilities
+            .iter()
+            .position(|d| {
+                matches!(
+                    &*d.effect,
+                    Effect::SetTapState {
+                        state: TapStateChange::Untap,
+                        ..
+                    }
+                )
+            })
+            .expect("the {0}: Untap ability");
+        (mana_idx, life_idx, untap_idx)
+    };
+
+    // Drive one period [mana, gain-life, untap], settling each beat; the offer surfaces after the
+    // untap beat closes the 3-step certified period.
+    low3_activate_and_settle(&mut runner, engine_id, mana_idx);
+    low3_activate_and_settle(&mut runner, engine_id, life_idx);
+    low3_activate_and_settle(&mut runner, engine_id, untap_idx);
+
+    // Reach-guard: the 3-step period recorded (non-vacuous — a shorter seq would be a different
+    // loop / a drive artifact).
+    assert_eq!(
+        runner.state().last_loop_action_sequence.len(),
+        3,
+        "the certified period is the 3-step [mana, gain-life, untap] sequence, got {:?}",
+        runner.state().last_loop_action_sequence
+    );
+    // Reach-guard: the CR 732.2a offer surfaced for P0.
+    assert!(
+        matches!(runner.state().waiting_for, WaitingFor::LoopShortcut { proposer, .. } if proposer == P0),
+        "the unobserved life engine must surface a LoopShortcut offer for P0, got {:?}",
+        runner.state().waiting_for
+    );
+
+    // Accept through the REAL APNAP pipeline → materialize_object_growth_shortcut routing.
+    runner
+        .act(GameAction::DeclareShortcut {
+            count: IterationCount::Fixed(1),
+            template: None,
+        })
+        .expect("P0 declares the shortcut");
+    runner
+        .act(GameAction::RespondToShortcut {
+            response: ShortcutResponse::Accept,
+        })
+        .expect("the single opponent accepts");
+
+    // Reach-guard: the accept produced a non-empty deferred stash (not a no-op).
+    let stash = runner
+        .state()
+        .pending_unbounded_materialization
+        .get(&P0)
+        .cloned()
+        .unwrap_or_default();
+    assert!(
+        !stash.is_empty(),
+        "reach-guard: the accept must register a deferred materialization stash for P0"
+    );
+    // DISCRIMINATOR: the UNOBSERVED life growth routes to a BATCHED `Life` item carrying the
+    // per-cycle δ — produced by the real accept-time routing, never grafted.
+    assert!(
+        stash.iter().any(|m| matches!(
+            m,
+            PersistentAxisMaterialization::Life { player, per_cycle_delta }
+                if *player == P0 && *per_cycle_delta >= 1
+        )),
+        "the unobserved life loop must register a BATCHED Life stash (per_cycle_delta captured), \
+         got {stash:?}"
+    );
+    // DISCRIMINATOR: an UNOBSERVED loop BATCHES — it must NOT register a DriveSequence (that is the
+    // observed route; forcing the observed branch flips this).
+    assert!(
+        !stash
+            .iter()
+            .any(|m| matches!(m, PersistentAxisMaterialization::DriveSequence { .. })),
+        "an unobserved life loop batches; it must not register a DriveSequence, got {stash:?}"
+    );
+    // The life axis is ∞-marked (the mana axis is too; both are real unbounded axes here).
+    assert!(
+        runner
+            .state()
+            .unbounded_resources
+            .get(&P0)
+            .is_some_and(|axes| axes.contains(&ResourceAxis::Life(P0))),
+        "the accepted loop marks the Life axis ∞ for P0"
     );
 }

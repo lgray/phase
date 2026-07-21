@@ -2197,6 +2197,19 @@ pub(super) fn handle_resolution_choice(
                                 // CR 707.2 (+ CR 111.10): mint N tapped copy-tokens of the
                                 // fodder profile — a source-less mint, so route through
                                 // `drive_copy_token_batches` (`ObjectId(0)` sentinel source).
+                                //
+                                // CR 732.2a k≡1 INVARIANT: this mints `count: amount` == k·amount
+                                // with the per-cycle fodder count k STRUCTURALLY ≡ 1. A `Tokens`
+                                // stash is only registered under `if let Some(profile)` in
+                                // `materialize_object_growth_shortcut` (engine.rs), whose
+                                // `current_period_fodder` derives the profile from
+                                // `derived_fodder_class` (engine.rs:1991-2005), which returns `None`
+                                // unless EXACTLY one new battlefield object appeared per period
+                                // (`let id = new_ids.next()?; if new_ids.next().is_some() { None }`).
+                                // A k>1 period (two+ new objects/cycle) fails that gate ⇒ no `Tokens`
+                                // stash ⇒ this arm is never reached for k≠1. So `count: amount` is
+                                // EXACT, not a k·N undercount. (Counters/Life instead carry a measured
+                                // `per_cycle_delta`, so those axes handle k>1 by construction.)
                                 let batch = crate::types::game_state::PendingCopyTokenBatch {
                                     owner: player,
                                     count: amount,
@@ -2222,6 +2235,24 @@ pub(super) fn handle_resolution_choice(
                                     ObjectId(0),
                                     events,
                                 );
+                                // CR 732.2a defense-in-depth: the offer firewall (the exhaustive
+                                // fail-closed `_ => Err(RecastAbort)` in `drive_loop_action_iteration`,
+                                // engine.rs:1871-1873, has no replacement-/target-choice arm)
+                                // guarantees a certified shortcut's per-cycle fodder mint cannot
+                                // pause, so this mint is unreachable-paused today. The boundary copies
+                                // the SAME fodder class (CR 707.2), so a mint that would pause implies
+                                // a certification that would have aborted. If that invariant ever
+                                // weakens, DO NOT advance the phase / mark the axis collapsed /
+                                // overwrite the replacement `waiting_for`: preserve the paused
+                                // copy-resolution and hand the replacement choice back (CR 732.2b
+                                // leaves the ∞ axes for manual play; game totals stay correct because
+                                // the ∞ marks are not cleared). No `debug_assert!` — the defensive
+                                // test deliberately drives this pause, which a debug_assert would panic.
+                                if state.pending_copy_token_resolution.is_some() {
+                                    return Ok(ResolutionChoiceOutcome::WaitingFor(
+                                        state.waiting_for.clone(),
+                                    ));
+                                }
                                 collapsed.push(item.clone());
                             }
                             PersistentAxisMaterialization::Counters(growths) => {
@@ -2284,6 +2315,27 @@ pub(super) fn handle_resolution_choice(
                     // end their ∞ status + stash + pile, PRESERVING any coexisting axis (a
                     // debug infinite-mana capability, or a finding-#4-declined axis). The ∞
                     // display collapses to an ordinary ×N for the collapsed axes (§9).
+                    //
+                    // FINDING #4 DECLINED-AXIS ∞ LIFECYCLE (CR 732.2b): a declined `Counters`/`Life`
+                    // axis (`continue`d above without `collapsed.push`) is absent from `collapsed`,
+                    // so `clear_collapsed_materializations` — which iterates ONLY `collapsed`
+                    // (game_state.rs) — never removes its `unbounded_resources` /
+                    // `unbounded_counter_targets` entry. That ∞ mark is an INTENTIONAL capability
+                    // marker that PERSISTS (the loop machinery still exists, so the capability is
+                    // real), with game totals correct (the declined axis was not applied — no double
+                    // count). It is retired by exactly TWO LIVE paths:
+                    //   (a) a later GENUINE re-detection re-collapsing it — the empty-stack offer
+                    //       hook `try_offer_object_growth_shortcut` (engine.rs:472), which is NOT
+                    //       ∞-gated, so a fresh manual re-loop re-offers and re-registers a stash; and
+                    //   (b) debug toggle-off — `clear_unbounded_loop` via `engine_debug.rs:417`.
+                    // NOTE: the enabler-departure clear (`clear_unbounded_loop` from
+                    // `zones.rs:544-554`) is INERT for this object-growth ∞-mark class, because
+                    // `materialize_object_growth_shortcut` (engine.rs) never calls
+                    // `register_unbounded_loop_enablers` (only the Interactive Path-C arm at
+                    // engine.rs:682 does), so `zones.rs`'s `unbounded_loop_enablers.contains(id)`
+                    // gate never matches an object-growth mark. Registering enablers for the
+                    // object-growth path is a PRE-EXISTING, broader gap (deferred follow-up F2), not
+                    // introduced by this declined-axis handling.
                     state.clear_collapsed_materializations(player, &collapsed);
                     // Continue the boundary fixpoint (§7): re-draining either prompts the
                     // next APNAP player with a stash or restores Priority now.
