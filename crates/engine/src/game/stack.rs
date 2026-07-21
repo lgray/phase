@@ -512,7 +512,7 @@ pub fn resolve_top(state: &mut GameState, events: &mut Vec<GameEvent>) {
             Some(target_id) => {
                 // CR 702.140c: pause for the top/bottom choice. The merging spell
                 // (`entry.id`) has already been popped from the stack.
-                state.pending_mutate_merge = Some(crate::types::game_state::PendingMutateMerge {
+                state.push_mutate_merge_frame(crate::types::resolution::PendingMutateMerge {
                     merging_id: entry.id,
                     target_id,
                     controller: entry.controller,
@@ -1256,21 +1256,20 @@ pub fn resolve_top(state: &mut GameState, events: &mut Vec<GameEvent>) {
                                 .map(|o| o.additional_cost_payments.clone())
                                 .unwrap_or_default()
                         });
-                    state.pending_spell_resolution =
-                        Some(crate::types::game_state::PendingSpellResolution {
-                            object_id: entry.id,
-                            controller: entry.controller,
-                            casting_variant,
-                            cast_from_zone,
-                            cast_controller: Some(entry.controller),
-                            cast_timing_permission,
-                            spell_targets: spell_targets.clone(),
-                            actual_mana_spent,
-                            kickers_paid,
-                            additional_cost_payment_count,
-                            additional_cost_payments,
-                            convoked_creatures,
-                        });
+                    state.push_spell_resolution(crate::types::game_state::PendingSpellResolution {
+                        object_id: entry.id,
+                        controller: entry.controller,
+                        casting_variant,
+                        cast_from_zone,
+                        cast_controller: Some(entry.controller),
+                        cast_timing_permission,
+                        spell_targets: spell_targets.clone(),
+                        actual_mana_spent,
+                        kickers_paid,
+                        additional_cost_payment_count,
+                        additional_cost_payments,
+                        convoked_creatures,
+                    });
                     state.waiting_for =
                         super::replacement::replacement_choice_waiting_for(player, state);
                     // Emit StackResolved now — the spell has left the stack even though
@@ -2101,23 +2100,7 @@ fn inert_trigger_batch_state_is_settled(state: &GameState) -> bool {
         && state.current_trigger_events.is_empty()
         && state.current_trigger_match_count.is_none()
         && state.die_result_this_resolution.is_none()
-        && state.pending_continuation.is_none()
-        && state.pending_repeat_iteration.is_none()
-        && state.pending_repeated_optional_payment.is_none()
-        && state.pending_repeat_until.is_none()
-        && state.pending_change_zone_iteration.is_none()
-        && state.pending_copy_token_resolution.is_none()
-        && state.pending_vote_ballot_iteration.is_none()
-        && state.pending_per_player_zone_choice.is_none()
-        && state.pending_per_category_zone_choice.is_none()
-        && state.pending_batch_deliveries.is_none()
-        && state.pending_proliferate_actions.is_none()
-        && state.pending_counter_additions.is_none()
-        && state.pending_counter_moves.is_none()
-        && state.pending_optional_effect.is_none()
-        && state.pending_optional_trigger_event.is_none()
-        && state.pending_optional_trigger_match_count.is_none()
-        && state.pending_choose_zone_trigger_context.is_none()
+        && state.resolution_stack.is_empty()
         && state.pending_miracle_offers.is_empty()
         && state.pending_paradigm_remaining_offers.is_none()
         && state.pending_damage_replacements.is_empty()
@@ -6131,8 +6114,9 @@ mod tests {
     mod batch_resolve {
         // Driver internals under test (the stack module).
         use super::super::{
-            batch_run_len, effects, fixed_controller_gain_life_run_len, observers_are_batch_safe,
-            resolve_next, resolve_next_with_limit, resolve_top, self_counter_run_len,
+            batch_run_len, effects, fixed_controller_gain_life_run_len,
+            inert_trigger_batch_state_is_settled, observers_are_batch_safe, resolve_next,
+            resolve_next_with_limit, resolve_top, self_counter_run_len,
         };
         // Test fixtures from the parent `tests` module.
         use super::setup;
@@ -6151,6 +6135,7 @@ mod tests {
         use crate::types::mana::ManaColor;
         use crate::types::player::PlayerId;
         use crate::types::proposed_event::TokenSpec;
+        use crate::types::resolution::PendingProliferateActions;
         use crate::types::triggers::TriggerMode;
         use crate::types::zones::Zone;
         use std::sync::Arc;
@@ -6737,6 +6722,21 @@ mod tests {
             assert_eq!(
                 crate::game::perf_counters::snapshot().stack_batched_entries,
                 2
+            );
+        }
+
+        #[test]
+        fn self_counter_batch_requires_an_empty_resolution_stack() {
+            let mut state = setup();
+            state.push_proliferate_frame(PendingProliferateActions {
+                actor: PlayerId(0),
+                source_id: ObjectId(9_501),
+                remaining: 1,
+            });
+
+            assert!(
+                !inert_trigger_batch_state_is_settled(&state),
+                "an active resolution frame makes a skipped priority checkpoint observable"
             );
         }
 
