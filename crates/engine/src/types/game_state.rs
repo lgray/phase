@@ -1031,6 +1031,22 @@ pub struct SpellCastRecord {
     /// cast-time for per-turn spell-history filters ("first kicked spell each turn").
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub was_kicked: bool,
+    /// CR 400.7: Storage id of the spell object this record was created for. The
+    /// engine keeps ObjectId STABLE across zone changes — `zones::move_to_zone`
+    /// never reallocates ids; instead `reset_for_battlefield_entry` bumps the
+    /// object's incarnation at the same storage id (CR 400.7 "new object"). A
+    /// same-id record is therefore NOT necessarily the same CR-object: a card
+    /// cast, dying, and recast this turn leaves TWO same-id records, and the
+    /// earlier one denotes a distinct prior object that DOES count as "another"
+    /// spell. Consumers must identify "this object's own cast" positionally: the
+    /// LAST same-id record in the caster's chronological turn history (a spell
+    /// pending on the stack cannot be cast again, so the most recent same-id
+    /// record is always the pending cast). incarnation is deliberately NOT
+    /// recorded — it bumps only on battlefield entry, so it cannot discriminate a
+    /// counter-and-recast, while positional identity is exact there too. `None`
+    /// for records built by Default / legacy deserialization.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spell_object_id: Option<ObjectId>,
 }
 
 /// Snapshot of a land play's cast-capable origin for per-turn history queries.
@@ -1063,6 +1079,7 @@ impl Default for SpellCastRecord {
             from_zone: Zone::Hand,
             cast_variant: CastingVariant::Normal,
             was_kicked: false,
+            spell_object_id: None,
         }
     }
 }
@@ -20646,6 +20663,30 @@ mod tests {
         }"#;
         let record: SpellCastRecord = serde_json::from_str(no_field_json).unwrap();
         assert_eq!(record.from_zone, Zone::Hand);
+        // CR 400.7: an absent `spell_object_id` field (legacy / pre-migration
+        // snapshot) deserializes to `None` — the record has no provenance.
+        assert_eq!(record.spell_object_id, None);
+    }
+
+    /// CR 400.7: `spell_object_id` provenance survives a serde round trip when
+    /// present (`Some(id)`), and `None` is omitted from the serialized form
+    /// (`skip_serializing_if = "Option::is_none"`) so it never bloats snapshots.
+    #[test]
+    fn spell_cast_record_spell_object_id_round_trips() {
+        let original = SpellCastRecord {
+            spell_object_id: Some(ObjectId(42)),
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&original).unwrap();
+        assert!(json.contains("spell_object_id"));
+        let round_tripped: SpellCastRecord = serde_json::from_str(&json).unwrap();
+        assert_eq!(round_tripped, original);
+        assert_eq!(round_tripped.spell_object_id, Some(ObjectId(42)));
+
+        // `None` provenance is omitted from the serialized form.
+        let none_record = SpellCastRecord::default();
+        let none_json = serde_json::to_string(&none_record).unwrap();
+        assert!(!none_json.contains("spell_object_id"));
     }
 
     /// CR 601.2a: A snapshot with a real `from_zone` value (the modern non-Option
@@ -20665,6 +20706,7 @@ mod tests {
             from_zone: Zone::Graveyard,
             cast_variant: CastingVariant::Normal,
             was_kicked: false,
+            spell_object_id: None,
         };
         let json = serde_json::to_string(&original).unwrap();
         let round_tripped: SpellCastRecord = serde_json::from_str(&json).unwrap();
