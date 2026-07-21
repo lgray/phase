@@ -11308,11 +11308,42 @@ mod tests {
     fn analyze_token_coverage_treats_source_defined_pt_as_represented() {
         let summary = analyze_token_coverage();
 
-        assert_eq!(summary.total_tokens, 2845);
-        assert_eq!(summary.supported_tokens, 2845);
-        assert_eq!(summary.rules_text_tokens, 1480);
-        assert_eq!(summary.parsed_rules_text_tokens, 1480);
-        assert_eq!(summary.total_tokens - summary.supported_tokens, 0);
+        // The weekly MTGJSON vintage refresh (#6237) makes absolute token counts
+        // data-dependent, so assert invariants (full coverage) plus ratchet floors
+        // pinned to the COMMITTED vintage. `>=` keeps weekly additions green; a
+        // shrink fails, which is the case worth a human look: #6199 silently dropped
+        // 1173 source_card_refs (9810 -> 8637) while the token count GREW, so the ref
+        // floor is the only one of the three that catches a partial regen. Raise these
+        // with each verified regen; lower one only in the commit that shrank it.
+        //
+        // These floors do not establish provenance — that this catalog is tokens-gen's
+        // output for its declared vintage. No test can: the generator input
+        // (`data/mtgjson/sets`) is gitignored and absent at test time.
+        // `scripts/gen-card-data.sh` regenerates on every run and refuses to promote
+        // when MTGJSON's `.meta.date` predates `crates/engine/data/mtgjson-vintage`, so
+        // the tracked file cannot regress to older inputs; nothing re-derives an
+        // already-committed one. tokens-gen is deterministic, so a clean `cmp` proves it:
+        //
+        //     ./scripts/fetch-token-sets.sh   # populates the gitignored input
+        //     cargo run --bin tokens-gen -- --input data/mtgjson/sets --output /tmp/kt.toml
+        //     cmp /tmp/kt.toml crates/engine/data/known-tokens.toml
+        assert_eq!(summary.supported_tokens, summary.total_tokens);
+        assert_eq!(summary.parsed_rules_text_tokens, summary.rules_text_tokens);
+        assert!(
+            summary.total_tokens >= 2858,
+            "token catalog shrank: {} presets < 2858",
+            summary.total_tokens
+        );
+        assert!(
+            summary.rules_text_tokens >= 1490,
+            "token catalog shrank: {} rules-text presets < 1490",
+            summary.rules_text_tokens
+        );
+        assert!(
+            summary.source_card_refs >= 9821,
+            "token catalog shrank: {} source_card_refs < 9821",
+            summary.source_card_refs
+        );
         assert!(!summary.top_gaps.iter().any(|gap| {
             gap.handler == TOKEN_BODY_DYNAMIC_OR_SOURCE_DEFINED_POWER_TOUGHNESS_LABEL
         }));
