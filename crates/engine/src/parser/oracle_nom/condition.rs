@@ -1873,6 +1873,23 @@ fn parse_source_is_saddled(input: &str) -> OracleResult<'_, StaticCondition> {
     Ok((rest, condition))
 }
 
+/// CR 702.171b + CR 508.1m: Bare elided-subject participle state gate
+/// ("Whenever this creature attacks while saddled" — Alacrian Jaguar). The
+/// printed while-gate elides the subject; the participle is part of the trigger
+/// EVENT (a property of the attacking creature at declaration), so
+/// `strip_while_state_clause` folds it into the trigger subject filter
+/// (`valid_card`) evaluated once when attackers are declared (CR 508.1m) — it
+/// is NOT an intervening-`if` and is never rechecked at resolution. Intervening-
+/// if text always prints an explicit subject, so this leaf is composed ONLY at
+/// the while-gate seam (`strip_while_state_clause`), NOT added to
+/// `parse_inner_condition`. Future bare-state participles join as `alt()` arms
+/// here.
+pub(crate) fn parse_elided_subject_state_condition(
+    input: &str,
+) -> OracleResult<'_, StaticCondition> {
+    value(StaticCondition::SourceIsSaddled, tag("saddled")).parse(input)
+}
+
 /// CR 301.5 + CR 303.4: Parse "<subject> is attached to a creature [you control]"
 /// → SourceAttachedToCreature.
 ///
@@ -9242,6 +9259,31 @@ mod tests {
             }
             other => panic!("expected QuantityComparison BendTypesThisTurn>=4, got {other:?}"),
         }
+    }
+
+    /// CR 702.171b + CR 603.4: the bare elided-subject "saddled" participle
+    /// (Alacrian Jaguar's "attacks while saddled") parses to `SourceIsSaddled`
+    /// with empty remainder.
+    #[test]
+    fn parse_elided_subject_state_condition_saddled() {
+        let (rest, cond) =
+            parse_elided_subject_state_condition("saddled").expect("bare 'saddled' must parse");
+        assert_eq!(
+            rest, "",
+            "bare 'saddled' must fully consume, remainder {rest:?}"
+        );
+        assert_eq!(cond, StaticCondition::SourceIsSaddled);
+    }
+
+    /// A superstring like "saddledness" parses the "saddled" prefix but leaves a
+    /// nonempty remainder — the caller's full-consumption guard
+    /// (`strip_while_state_clause`) is the rejection authority, not this leaf.
+    #[test]
+    fn parse_elided_subject_state_condition_superstring_leaves_remainder() {
+        let (rest, cond) =
+            parse_elided_subject_state_condition("saddledness").expect("prefix 'saddled' parses");
+        assert_eq!(rest, "ness", "remainder is the unconsumed suffix");
+        assert_eq!(cond, StaticCondition::SourceIsSaddled);
     }
 
     /// CR 603.12 + CR 701.21a: the active-voice reflexive sacrifice gate

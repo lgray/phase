@@ -5425,8 +5425,7 @@ fn zone_change_record_matches_property(
                     .contains(&record.object_id)
         }
 
-        FilterProp::IsSaddled
-        | FilterProp::SaddledSource
+        FilterProp::SaddledSource
         | FilterProp::ConvokedSource
         | FilterProp::ProtectorMatches { .. }
         | FilterProp::HasHasteOrControlledSinceTurnBegan
@@ -5460,7 +5459,13 @@ fn zone_change_record_matches_property(
         // was suspected" reads the cost-paid LKI, taken before the sacrifice
         // zone-change reset the flag).
         FilterProp::Suspected => record.is_suspected,
-        FilterProp::IsChosenColor
+        // CR 702.171b + CR 508.1m: saddled is no longer snapshotted onto
+        // zone-change records — the "attacks while saddled" attack gate is a
+        // declaration-time subject match folded into the trigger's `valid_card`
+        // (evaluated once when attackers are declared), not a resolution
+        // recheck. A departed source therefore fails closed here.
+        FilterProp::IsSaddled
+        | FilterProp::IsChosenColor
         | FilterProp::IsChosenCardType
         | FilterProp::HasSingleTarget
         // ZoneChangeRecord carries no modal field — conservative gap (CR 700.2
