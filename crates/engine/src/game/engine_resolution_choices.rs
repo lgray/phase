@@ -2165,11 +2165,21 @@ pub(super) fn handle_resolution_choice(
                     // early-return above. `take_` removes the whole stash even on the
                     // error path so the boundary fixpoint terminates rather than
                     // re-prompting forever.
-                    let Some(items) = state.take_pending_materialization(player) else {
+                    let Some(mut items) = state.take_pending_materialization(player) else {
                         return Err(EngineError::InvalidAction(format!(
                             "LoopCollapse pay-amount for {player:?} has no pending materialization stash"
                         )));
                     };
+                    // CR 732.2a pause-safety: process the ONLY pause-prone axis (`Tokens` — its
+                    // per-cycle fodder mint can raise an ETB replacement `NeedsChoice`, unlike
+                    // the deterministic Counters/Life/DriveSequence axes) LAST. A mixed loop
+                    // stashes multiple axes at once (Guide of Souls + Sprout Swarm =
+                    // tokens+life; Witherbloom + Sprout Swarm = tokens+counters). Committing the
+                    // deterministic axes first means a `Tokens` pause leaves the finite
+                    // non-token effects applied exactly once and only the paused `Tokens` axis
+                    // ∞ — order-independent of how the stash was registered. Stable: relative
+                    // order of the non-Tokens axes is preserved.
+                    items.sort_by_key(|i| matches!(i, PersistentAxisMaterialization::Tokens(_)));
                     // FINDING #4 (accept→boundary observer-drift): the observed-growth
                     // firewall ran at ACCEPT, but the controller held priority between
                     // accept and this boundary and could have cast an observer (Heliod /
@@ -2249,6 +2259,14 @@ pub(super) fn handle_resolution_choice(
                                 // the ∞ marks are not cleared). No `debug_assert!` — the defensive
                                 // test deliberately drives this pause, which a debug_assert would panic.
                                 if state.pending_copy_token_resolution.is_some() {
+                                    // CR 732.2a pause-safe transaction: cash out the axes already
+                                    // applied THIS pass (a mixed stash, Edit 1 puts Tokens last) so
+                                    // no finite-applied Counters/Life axis is left with a stale ∞
+                                    // mark. The still-paused Tokens axis is NOT in `collapsed`, so
+                                    // its ∞ axis/pile is preserved for manual play (CR 732.2b never
+                                    // forces a shortcut). Do NOT drain the phase — the mint is
+                                    // mid-flight.
+                                    state.clear_collapsed_materializations(player, &collapsed);
                                     return Ok(ResolutionChoiceOutcome::WaitingFor(
                                         state.waiting_for.clone(),
                                     ));

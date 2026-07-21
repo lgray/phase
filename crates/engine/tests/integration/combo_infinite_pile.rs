@@ -2187,6 +2187,173 @@ fn med_tokens_boundary_mint_pause_preserves_replacement_choice() {
     );
 }
 
+/// [BLOCKER] (#6259 review, CR 732.2a pause-safety): a MIXED stash pausing on the `Tokens`
+/// axis must NOT strand a finite-applied `Counters` axis with a stale ∞ mark, and must not
+/// skip the deterministic `Counters` axis depending on stash registration order. Before this
+/// fix, production registers `Tokens` before `Counters` (Tokens→Counters→Life in
+/// `materialize_object_growth_shortcut`), so the `for item in &items` loop hit `Tokens` FIRST —
+/// a pausing Tokens mint early-returned before `Counters` ever ran on this pass, and whatever
+/// HAD already landed in `collapsed` was never cashed out, leaving stale ∞ marks.
+///
+/// FIX: Edit 1 sorts `items` so the ONLY pause-prone axis (`Tokens`) runs LAST regardless of
+/// registration order. Edit 2 calls `clear_collapsed_materializations(player, &collapsed)` at
+/// the `Tokens` pause guard, cashing out whatever finite axes DID commit before the pause.
+///
+/// CONSTRUCTION: real 4p offer dump → real accept (registers the `Tokens` stash for P0) →
+/// graft an UNOBSERVED `Counters` axis onto a P0 Saproling (the same single-authority
+/// `mark_unbounded_loop` + `register_pending_materialization` writers the accept path uses, per
+/// `real_4p_boundary_collapse_batches_unobserved_counter_and_declines_observed_life`) → install
+/// the OPTIONAL token-doubler replacement AFTER accept (per
+/// `med_tokens_boundary_mint_pause_preserves_replacement_choice`) so the boundary `Tokens` mint
+/// PAUSES on a `NeedsChoice` replacement choice → drive to the boundary → `SubmitPayAmount{4}`.
+///
+/// REVERT-FLIPS (MEASURED, implementer-run revert-probe — see report):
+///  - delete Edit 2's `clear_collapsed_materializations` call at the pause guard ⇒ the
+///    collapsed `Counters` axis is never cashed out ⇒ assertion (3)'s "Counter axis gone"
+///    FLIPS to FAIL (stale ∞ left on the applied counter axis).
+///  - delete Edit 1's `sort_by_key` ⇒ `Tokens` (registered by the accept path before this
+///    test's `Counters` graft) processes FIRST, pauses at index 0, and `Counters` is NEVER
+///    reached ⇒ assertion (2) FLIPS to FAIL (counter stays at base, unchanged).
+#[test]
+fn med_mixed_counter_tokens_pause_commits_finite_counter_and_keeps_only_tokens_unbounded() {
+    use engine::analysis::resource::{CounterClass, ObjectClass, ResourceAxis};
+    use engine::types::ability::{QuantityModification, ReplacementDefinition, ReplacementMode};
+    use engine::types::counter::CounterType;
+    use engine::types::game_state::CounterGrowth;
+    use engine::types::replacements::ReplacementEvent;
+    use std::sync::Arc;
+
+    let mut state: GameState = serde_json::from_str(&OFFER_STATE)
+        .expect("the real 4p offer dump must deserialize into the current GameState");
+    drive_all_accept(&mut state);
+
+    // Graft an UNOBSERVED +1/+1 counter axis onto a P0 Saproling — the same single-authority
+    // writers the accept path uses (mirrors
+    // real_4p_boundary_collapse_batches_unobserved_counter_and_declines_observed_life).
+    let creature = *p0_saproling_ids(&state)
+        .iter()
+        .next()
+        .expect("P0 controls at least one Saproling to bear a +1/+1 counter");
+    let base_counters = 1u32;
+    state
+        .objects
+        .get_mut(&creature)
+        .unwrap()
+        .counters
+        .insert(CounterType::Plus1Plus1, base_counters);
+    state.mark_unbounded_loop(
+        P0,
+        &[ResourceAxis::Counter(
+            CounterClass::Plus1Plus1,
+            ObjectClass::Creature,
+        )],
+    );
+    state.register_pending_materialization(
+        P0,
+        PersistentAxisMaterialization::Counters(vec![CounterGrowth {
+            object: creature,
+            counter: CounterType::Plus1Plus1,
+            per_cycle_delta: 2,
+        }]),
+    );
+
+    // Install the OPTIONAL token-doubler replacement AFTER accept (mirrors
+    // med_tokens_boundary_mint_pause_preserves_replacement_choice) so the boundary Tokens mint
+    // pauses on a NeedsChoice replacement instead of completing.
+    let doubler = create_object(
+        &mut state,
+        CardId(9002),
+        P0,
+        "Optional Token Doubler".to_string(),
+        Zone::Battlefield,
+    );
+    let mut def = ReplacementDefinition::new(ReplacementEvent::CreateToken);
+    def.mode = ReplacementMode::Optional { decline: None };
+    def.quantity_modification = Some(QuantityModification::DOUBLE);
+    let reps = vec![def];
+    let obj = state.objects.get_mut(&doubler).unwrap();
+    obj.replacement_definitions = reps.clone().into();
+    obj.base_replacement_definitions = Arc::new(reps);
+
+    drive_priority_to_next_boundary(&mut state);
+    assert!(
+        matches!(
+            state.waiting_for,
+            WaitingFor::PayAmountChoice { player, resource: PayableResource::LoopCollapse { .. }, .. }
+                if player == P0
+        ),
+        "the boundary must prompt P0 for the mixed Counters+Tokens LoopCollapse count, got {:?}",
+        state.waiting_for
+    );
+
+    apply(&mut state, P0, GameAction::SubmitPayAmount { amount: 4 })
+        .expect("P0 submits the finite mixed-axis loop-collapse count");
+
+    // (1) Reach-guard: the Tokens mint actually paused (proves the submit ran past the
+    //     Counters axis and into the Tokens axis, not a fizzled/auto-resolved mint).
+    assert!(
+        state.pending_copy_token_resolution.is_some(),
+        "reach-guard: the boundary Tokens mint paused on the optional replacement"
+    );
+    assert!(
+        matches!(state.waiting_for, WaitingFor::ReplacementChoice { .. }),
+        "the paused replacement choice is surfaced, not clobbered, got {:?}",
+        state.waiting_for
+    );
+
+    // (2) FINITE PRIOR EFFECT ONCE: the grafted counter axis committed exactly once — 4×2 = 8 —
+    //     which only holds because Edit 1 processes Counters BEFORE the Tokens pause.
+    assert_eq!(
+        state
+            .objects
+            .get(&creature)
+            .unwrap()
+            .counters
+            .get(&CounterType::Plus1Plus1)
+            .copied()
+            .unwrap_or(0),
+        base_counters + 4 * 2,
+        "SubmitPayAmount{{4}} commits the Counters axis exactly once (4×2 = 8) despite the \
+         Tokens axis pausing later in the same pass"
+    );
+
+    // (3) ONLY Tokens ∞: the collapsed Counters axis is cashed out (Edit 2), the still-paused
+    //     Tokens axis is NOT (its ∞ axis + pile survive for the eventual resume/manual play).
+    assert!(
+        !state
+            .unbounded_resources
+            .get(&P0)
+            .is_some_and(|a| a.contains(&ResourceAxis::Counter(
+                CounterClass::Plus1Plus1,
+                ObjectClass::Creature
+            ))),
+        "REVERT-FLIP: the committed Counters axis must cash out of the ∞ status, not strand a \
+         stale ∞ mark on a finite-applied axis"
+    );
+    assert!(
+        state
+            .unbounded_resources
+            .get(&P0)
+            .is_some_and(|a| a.contains(&ResourceAxis::TokensCreated)),
+        "the still-paused Tokens axis stays ∞-marked (not yet collapsed)"
+    );
+    assert!(
+        state
+            .unbounded_loop_pile
+            .get(&P0)
+            .is_some_and(|p| !p.is_empty()),
+        "the still-paused Tokens axis keeps its ∞ pile (not dropped mid-pause)"
+    );
+
+    // (4) Phase NOT advanced: the boundary drain is skipped while the replacement is pending —
+    //     the paused prompt stays surfaced, not clobbered to Priority.
+    assert!(
+        !matches!(state.waiting_for, WaitingFor::Priority { .. }),
+        "the phase drain must not run while the Tokens mint is mid-pause, got {:?}",
+        state.waiting_for
+    );
+}
+
 /// Activate `ability_index` on `source`, then pass priority until the stack settles empty at a
 /// `Priority` window OR a `LoopShortcut` offer surfaces (mirrors the mana-engine harness).
 fn low3_activate_and_settle(runner: &mut GameRunner, source: ObjectId, ability_index: usize) {
