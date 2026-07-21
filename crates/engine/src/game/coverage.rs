@@ -11308,11 +11308,13 @@ mod tests {
     fn analyze_token_coverage_treats_source_defined_pt_as_represented() {
         let summary = analyze_token_coverage();
 
-        assert_eq!(summary.total_tokens, 2845);
-        assert_eq!(summary.supported_tokens, 2845);
-        assert_eq!(summary.rules_text_tokens, 1480);
-        assert_eq!(summary.parsed_rules_text_tokens, 1480);
-        assert_eq!(summary.total_tokens - summary.supported_tokens, 0);
+        // The weekly MTGJSON vintage refresh (#6237) makes absolute token counts
+        // data-dependent, so assert invariants (full coverage) plus non-vacuity
+        // floors at the last-known-good baseline (the catalog only grows).
+        assert_eq!(summary.supported_tokens, summary.total_tokens);
+        assert_eq!(summary.parsed_rules_text_tokens, summary.rules_text_tokens);
+        assert!(summary.total_tokens >= 2845);
+        assert!(summary.rules_text_tokens >= 1480);
         assert!(!summary.top_gaps.iter().any(|gap| {
             gap.handler == TOKEN_BODY_DYNAMIC_OR_SOURCE_DEFINED_POWER_TOUGHNESS_LABEL
         }));
