@@ -4,6 +4,17 @@ mod migration;
 mod native_engine;
 
 pub fn run() {
+    // WebKitGTK's dmabuf renderer renders blank frames when the GPU import
+    // path misbehaves (NVIDIA drivers); forcing shared-memory buffers avoids
+    // that while keeping the dmabuf renderer (and thus acceleration), unlike
+    // WEBKIT_DISABLE_DMABUF_RENDERER which tanks in-game performance. Must be
+    // set before the first webview is created. A value already present in the
+    // environment wins so users can override.
+    #[cfg(target_os = "linux")]
+    if std::env::var_os("WEBKIT_DMABUF_RENDERER_FORCE_SHM").is_none() {
+        std::env::set_var("WEBKIT_DMABUF_RENDERER_FORCE_SHM", "1");
+    }
+
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _, _| {
             if let Some(window) = app.get_webview_window("main") {

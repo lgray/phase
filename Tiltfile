@@ -97,9 +97,6 @@ local_resource('tauri',
     cmd = 'cargo build -p phase-server && mkdir -p client/src-tauri/binaries && cp target/debug/phase-server ' + SIDECAR_DEST,
     serve_cmd = 'pnpm tauri:dev',
     serve_dir = 'client',
-    # Keep the dmabuf renderer (disabling it tanks in-game perf) but force
-    # shared-memory buffers, dodging the GPU-path glitches.
-    serve_env = {'WEBKIT_DMABUF_RENDERER_FORCE_SHM': '1'},
     deps = ENGINE_SRC + AI_SRC + WASM_SRC + TAURI_SRC + ['crates/server-core/src/', 'crates/phase-server/src/'],
     ignore = TMP_IGNORE,
     auto_init = 'tauri' in enabled,
