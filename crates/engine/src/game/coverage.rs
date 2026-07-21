@@ -11309,12 +11309,29 @@ mod tests {
         let summary = analyze_token_coverage();
 
         // The weekly MTGJSON vintage refresh (#6237) makes absolute token counts
-        // data-dependent, so assert invariants (full coverage) plus non-vacuity
-        // floors at the last-known-good baseline (the catalog only grows).
+        // data-dependent, so assert invariants (full coverage) plus ratchet floors
+        // pinned to the COMMITTED vintage. `>=` keeps weekly additions green; a
+        // shrink fails, which is the case worth a human look: #6199 silently dropped
+        // 1173 source_card_refs (9810 -> 8637) while the token count GREW, so the ref
+        // floor is the only one of the three that catches a partial regen. Raise these
+        // with each verified regen; lower one only in the commit that shrank it.
         assert_eq!(summary.supported_tokens, summary.total_tokens);
         assert_eq!(summary.parsed_rules_text_tokens, summary.rules_text_tokens);
-        assert!(summary.total_tokens >= 2845);
-        assert!(summary.rules_text_tokens >= 1480);
+        assert!(
+            summary.total_tokens >= 2858,
+            "token catalog shrank: {} presets < 2858",
+            summary.total_tokens
+        );
+        assert!(
+            summary.rules_text_tokens >= 1490,
+            "token catalog shrank: {} rules-text presets < 1490",
+            summary.rules_text_tokens
+        );
+        assert!(
+            summary.source_card_refs >= 9821,
+            "token catalog shrank: {} source_card_refs < 9821",
+            summary.source_card_refs
+        );
         assert!(!summary.top_gaps.iter().any(|gap| {
             gap.handler == TOKEN_BODY_DYNAMIC_OR_SOURCE_DEFINED_POWER_TOUGHNESS_LABEL
         }));
