@@ -11315,6 +11315,18 @@ mod tests {
         // 1173 source_card_refs (9810 -> 8637) while the token count GREW, so the ref
         // floor is the only one of the three that catches a partial regen. Raise these
         // with each verified regen; lower one only in the commit that shrank it.
+        //
+        // These floors do not establish provenance — that this catalog is tokens-gen's
+        // output for its declared vintage. No test can: the generator input
+        // (`data/mtgjson/sets`) is gitignored and absent at test time.
+        // `scripts/gen-card-data.sh` regenerates on every run and refuses to promote
+        // when MTGJSON's `.meta.date` predates `crates/engine/data/mtgjson-vintage`, so
+        // the tracked file cannot regress to older inputs; nothing re-derives an
+        // already-committed one. tokens-gen is deterministic, so a clean `cmp` proves it:
+        //
+        //     ./scripts/fetch-token-sets.sh   # populates the gitignored input
+        //     cargo run --bin tokens-gen -- --input data/mtgjson/sets --output /tmp/kt.toml
+        //     cmp /tmp/kt.toml crates/engine/data/known-tokens.toml
         assert_eq!(summary.supported_tokens, summary.total_tokens);
         assert_eq!(summary.parsed_rules_text_tokens, summary.rules_text_tokens);
         assert!(
