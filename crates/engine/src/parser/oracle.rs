@@ -1330,7 +1330,14 @@ fn quantity_ref_uses_filter_prop(qty: &QuantityRef, pred: &impl Fn(&FilterProp) 
         | QuantityRef::ControlledByEachPlayer { filter, .. }
         | QuantityRef::DistinctColorsAmongPermanents { filter }
         | QuantityRef::DistinctCounterKindsAmong { filter }
-        | QuantityRef::EnteredThisTurn { filter } => target_filter_uses_filter_prop(filter, pred),
+        | QuantityRef::EnteredThisTurn { filter }
+        // CR 608.2i: the look-back sibling carries a `TargetFilter` too, and this
+        // predicate's question ("does any `TargetFilter` reachable from this
+        // quantity use `pred`?") is variant-agnostic — so it must recurse rather
+        // than fall to `_ => false`.
+        | QuantityRef::BattlefieldEntriesThisTurn { filter, .. } => {
+            target_filter_uses_filter_prop(filter, pred)
+        }
         QuantityRef::DistinctCardTypes {
             source: crate::types::ability::CardTypeSetSource::Objects { filter },
         }
