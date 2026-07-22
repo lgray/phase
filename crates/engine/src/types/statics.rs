@@ -1709,8 +1709,8 @@ pub enum StaticMode {
     /// Doomscourge and Maximum Carnage chapter I are the two printed members.
     ///
     /// The avoided player is `StaticDefinition::source_controller`, snapshotted
-    /// at graft time (CR 611.2c locks a resolution-created effect's anchor at
-    /// materialization). Nullary and registry-registered (mirrors [`Goaded`]);
+    /// at graft time: CR 109.5 fixes "you" in a resolving ability to that
+    /// ability's controller. Nullary and registry-registered (mirrors [`Goaded`]);
     /// runtime enforcement lives in `combat.rs`.
     MustAttackAwayFromSource,
     /// CR 506.5 + CR 508.1c + CR 509.1b: Parameterized "alone" combat

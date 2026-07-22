@@ -672,6 +672,11 @@ fn cant_attack_restriction_beats_the_spelled_out_requirement() {
     // Reach: BOTH creatures carry the requirement, so the legality difference
     // below is the Pacifism restriction and not a missing grant.
     assert!(
+        bound_by_requirement(runner.state(), pacified),
+        "reach: the pacified creature must still carry the requirement after \
+         Pacifism is applied"
+    );
+    assert!(
         bound_by_requirement(runner.state(), free),
         "reach: the unrestricted creature must carry the requirement"
     );
