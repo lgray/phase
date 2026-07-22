@@ -30676,7 +30676,13 @@ fn extract_resolution_unless_pay_modifier(
     text: &str,
     player_scope: Option<&PlayerFilter>,
 ) -> (String, Option<UnlessPayModifier>) {
-    let lower = text.to_lowercase();
+    // ASCII-fold, not Unicode `to_lowercase()`: the matched byte offsets from the
+    // mask below index the ORIGINAL `text`, so the fold MUST preserve byte length.
+    // Unicode lowercasing can change it (a capital dotted `İ` expands to `i̇`),
+    // which would misalign the cleaned-effect slice or panic on a quoted card name.
+    // The grammar this scan matches ("unless", "pays", "its controller", mana
+    // symbols) is entirely ASCII, so ASCII folding matches identically.
+    let lower = text.to_ascii_lowercase();
     if tag::<_, _, OracleError<'_>>("counter ")
         .parse(lower.trim_start())
         .is_ok()
@@ -30684,14 +30690,37 @@ fn extract_resolution_unless_pay_modifier(
         return (text.to_string(), None);
     }
 
+    // CR 111.3 + CR 113.3: An "unless … pays" that lives INSIDE a quoted granted
+    // ability — a created token's `with "…"`, an aura's `target creature gains
+    // "…"` — belongs to that ability, not to this clause's own effect. It is
+    // already captured on the grant (`classify_quoted_inner` / the granted static
+    // parser). Scanning the raw chunk would hoist the inner clause onto the outer
+    // effect (Mage's Attendant's Wizard token; Whipgrass Entangler's granted
+    // "can't attack … unless its controller pays {1}"), and stripping it would
+    // also unbalance the quoted span so the whole grant is lost.
+    //
+    // Scan a byte-length-preserving mask of the quoted spans instead of `lower`.
+    // Every "unless" INSIDE a grant is masked (never matched); an "unless" OUTSIDE
+    // quotes keeps its text intact, and because the mask preserves byte length the
+    // matched offsets still index the ORIGINAL `text` for the cleaned-effect slice.
+    // An unterminated quote is left unmasked, so a legitimate resolution-level
+    // clause after a malformed span is still found.
+    let masked = nom_primitives::mask_double_quoted_spans_preserving_len(&lower);
+
     // CR 118.12a: "[Effect] unless a player has [~] deal N to them" (Barbarian
     // Bully). Checked before the generic "unless " scan so the player-have-deal
     // shape is not misclassified as a mana-payment unless.
     if let Some((before_unless, _, after_unless_lower)) =
-        nom_primitives::scan_preceded(&lower, |i| tag("unless a player has ").parse(i))
+        nom_primitives::scan_preceded(&masked, |i| tag("unless a player has ").parse(i))
     {
         if let Some(cost) = parse_unless_player_have_deal_damage_cost(after_unless_lower) {
-            let cleaned = text[..before_unless.trim_end().len()].trim().to_string();
+            // Slice the ORIGINAL text at the (untrimmed) `unless` offset, then trim.
+            // `before_unless` is a slice of the byte-length-preserving mask, so its
+            // masked quote spans became spaces; trimming it FIRST would collapse a
+            // quoted prefix in the effect ("… named \"X\" unless …") back onto the
+            // preceding word. The mask preserves byte length, so `.len()` indexes
+            // the original text exactly.
+            let cleaned = text[..before_unless.len()].trim().to_string();
             return (
                 cleaned,
                 Some(UnlessPayModifier {
@@ -30711,7 +30740,9 @@ fn extract_resolution_unless_pay_modifier(
     // (single authority for non-mana unless-cost shapes — see
     // `crate::parser::oracle_trigger`).
     if let Some((before_unless, _, after_unless_lower)) =
-        nom_primitives::scan_preceded(&lower, |i| tag::<_, _, OracleError<'_>>("unless ").parse(i))
+        nom_primitives::scan_preceded(&masked, |i| {
+            tag::<_, _, OracleError<'_>>("unless ").parse(i)
+        })
     {
         // CR 118.12a: "unless you sacrifice/discard/exile/..." — the ability
         // controller is the payer (Read the Runes: discard unless you sacrifice
@@ -30723,7 +30754,13 @@ fn extract_resolution_unless_pay_modifier(
             if let Some(cost) =
                 crate::parser::oracle_trigger::parse_unless_alt_cost(after_unless_lower)
             {
-                let cleaned = text[..before_unless.trim_end().len()].trim().to_string();
+                // Slice the ORIGINAL text at the (untrimmed) `unless` offset, then trim.
+                // `before_unless` is a slice of the byte-length-preserving mask, so its
+                // masked quote spans became spaces; trimming it FIRST would collapse a
+                // quoted prefix in the effect ("… named \"X\" unless …") back onto the
+                // preceding word. The mask preserves byte length, so `.len()` indexes
+                // the original text exactly.
+                let cleaned = text[..before_unless.len()].trim().to_string();
                 return (
                     cleaned,
                     Some(UnlessPayModifier {
@@ -30734,11 +30771,23 @@ fn extract_resolution_unless_pay_modifier(
             }
         }
         if let Some((cost, payer)) = parse_unless_have_deal_damage_cost(after_unless_lower) {
-            let cleaned = text[..before_unless.trim_end().len()].trim().to_string();
+            // Slice the ORIGINAL text at the (untrimmed) `unless` offset, then trim.
+            // `before_unless` is a slice of the byte-length-preserving mask, so its
+            // masked quote spans became spaces; trimming it FIRST would collapse a
+            // quoted prefix in the effect ("… named \"X\" unless …") back onto the
+            // preceding word. The mask preserves byte length, so `.len()` indexes
+            // the original text exactly.
+            let cleaned = text[..before_unless.len()].trim().to_string();
             return (cleaned, Some(UnlessPayModifier { cost, payer }));
         }
         if let Some(cost) = parse_unless_have_you_draw_cost(after_unless_lower) {
-            let cleaned = text[..before_unless.trim_end().len()].trim().to_string();
+            // Slice the ORIGINAL text at the (untrimmed) `unless` offset, then trim.
+            // `before_unless` is a slice of the byte-length-preserving mask, so its
+            // masked quote spans became spaces; trimming it FIRST would collapse a
+            // quoted prefix in the effect ("… named \"X\" unless …") back onto the
+            // preceding word. The mask preserves byte length, so `.len()` indexes
+            // the original text exactly.
+            let cleaned = text[..before_unless.len()].trim().to_string();
             return (
                 cleaned,
                 Some(UnlessPayModifier {
@@ -30754,7 +30803,13 @@ fn extract_resolution_unless_pay_modifier(
             // text. `before_unless` is the lowercase prefix slice ending
             // just before " unless "; trim trailing whitespace there to
             // produce the cleaned effect.
-            let cleaned = text[..before_unless.trim_end().len()].trim().to_string();
+            // Slice the ORIGINAL text at the (untrimmed) `unless` offset, then trim.
+            // `before_unless` is a slice of the byte-length-preserving mask, so its
+            // masked quote spans became spaces; trimming it FIRST would collapse a
+            // quoted prefix in the effect ("… named \"X\" unless …") back onto the
+            // preceding word. The mask preserves byte length, so `.len()` indexes
+            // the original text exactly.
+            let cleaned = text[..before_unless.len()].trim().to_string();
             // CR 118.12a + CR 608.2f: select the payer for "they X". A
             // permanent's controller in the pre-"unless" text (Fade Away)
             // takes precedence. Otherwise, when this chunk carries a
@@ -30774,7 +30829,7 @@ fn extract_resolution_unless_pay_modifier(
     }
 
     let Some((before, payer, cost_text)) =
-        nom_primitives::scan_preceded(&lower, parse_resolution_unless_payer)
+        nom_primitives::scan_preceded(&masked, parse_resolution_unless_payer)
     else {
         return (text.to_string(), None);
     };
@@ -30804,7 +30859,8 @@ fn extract_resolution_unless_pay_modifier(
         payer
     };
 
-    let cleaned = text[..before.trim_end().len()].trim().to_string();
+    // See the note above: slice original at the untrimmed offset (mask-safe).
+    let cleaned = text[..before.len()].trim().to_string();
     (cleaned, Some(UnlessPayModifier { cost, payer }))
 }
 
