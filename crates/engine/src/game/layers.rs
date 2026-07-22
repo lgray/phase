@@ -5290,7 +5290,7 @@ fn static_mode_needs_source_controller_anchor(mode: &crate::types::statics::Stat
         | StaticMode::MustBeBlocked { by: Some(filter) } => {
             target_filter_controller_is_relative(filter)
         }
-        // CR 611.2c + CR 701.15b: the avoided player is the INSTALLING player,
+        // CR 109.5 + CR 701.15b: the avoided player is the INSTALLING player,
         // not the carrier's controller — the requirement is grafted onto an
         // opponent's creature (Kardur, Doomscourge) or the controller's own
         // (Maximum Carnage chapter I), so re-deriving it from the carrier would

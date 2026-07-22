@@ -4236,7 +4236,7 @@ pub(crate) fn players_to_attack_away_from_gated(
 ) -> HashSet<PlayerId> {
     let mut players = goading_players_for_creature_gated(state, creature_id, has_goad_static);
     if let Some(obj) = state.objects.get(&creature_id) {
-        // CR 611.2c: the avoided player is the anchor snapshotted at graft time.
+        // CR 109.5: the avoided player is the anchor snapshotted at graft time.
         // `unwrap_or(obj.controller)` is a defensive default with NO producer
         // today — the parser is the sole producer of this mode and always routes
         // through the transient graft, which stamps the anchor (layers.rs). It is
