@@ -10,6 +10,7 @@ pub mod events;
 pub mod format;
 pub mod game_state;
 pub mod identifiers;
+pub mod interaction;
 pub mod keywords;
 pub mod layers;
 pub mod log;
@@ -53,11 +54,16 @@ pub use identifiers::{
     CardId, ObjectId, ObjectIdentityBinding, ObjectIncarnationRef, ObjectProvenance,
     LEGACY_INCARNATION,
 };
+pub use interaction::{
+    ActiveInteractionSlot, InteractionChoiceId, InteractionId, InteractionSessionId,
+    InteractionSlotKind, PreviewRequestId, ViewerInteraction,
+};
 pub use keywords::{Keyword, PartnerType, ProtectionTarget};
 pub use layers::{ActiveContinuousEffect, Layer};
 pub use log::{GameLogEntry, LogCategory, LogSegment};
 pub use mana::{
-    ManaColor, ManaCost, ManaCostShard, ManaPool, ManaRestriction, ManaType, ManaUnit, SpellMeta,
+    ManaColor, ManaCost, ManaCostShard, ManaPool, ManaRestriction, ManaSourcePenalty,
+    ManaSourceSelection, ManaType, ManaUnit, SpellMeta, TapsForManaSelection,
 };
 pub use match_config::{
     BetweenGamesPrompt, DeckCardCount, MatchConfig, MatchPhase, MatchScore, MatchType,
@@ -66,7 +72,7 @@ pub use phase::Phase;
 pub use player::{Player, PlayerId};
 pub use proposed_event::{AppliedReplacementKey, ProposedEvent, ReplacementId};
 pub use replacements::ReplacementEvent;
-pub use replay::{RecordedAction, ReplayHeader, ReplayLog};
+pub use replay::{RecordedAction, ReplayHeader, ReplayLog, REPLAY_FORMAT_VERSION};
 pub use resolution::{
     AbilityContinuationFrame, ChangeZoneFrame, DirectChoiceGate, FrameGate, FrameKind,
     MultiDrawFrame, OptionalEffectFrame, PerCategoryZoneChoiceFrame, RepeatedOptionalPaymentFrame,
