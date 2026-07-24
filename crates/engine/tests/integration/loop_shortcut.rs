@@ -194,6 +194,9 @@ fn setup_3p_draw(mode: LoopDetectionMode) -> (GameRunner, ObjectId) {
 /// partition each cycle: fallers = {P1}, non-fallers = {P0, P2} — so `live_mandatory_loop_winner`
 /// refuses to name a winner (CR 104.2a). P1 starts very high so it never dies inside the drive
 /// window: the test asserts the mid-loop grind (no crown), not a natural CR 704.5a death.
+/// The headroom is deliberate and far exceeds `PRIMED_LOOP_BEATS` — P1 ends the capped drive
+/// ~14 points below its 1000 start, hundreds of points from lethal. Do NOT trim it to match
+/// the cap; the slack is what keeps the no-death premise robust to engine drift.
 fn setup_3p_subset_lethal(mode: LoopDetectionMode) -> (GameRunner, ObjectId) {
     let mut scenario = GameScenario::new_n_player(3, 7);
     scenario.at_phase(Phase::PreCombatMain);
@@ -1099,6 +1102,33 @@ fn interactive_queued_opponent_concede_no_deadlock() {
 
 // ───────────── T-subset-lethal (D2 — nonfallers.len()==1 guard) ─────────────
 
+/// Drive cap for the three tests below. Measured beats actually consumed at this cap, per
+/// drive: `setup_3p_subset_lethal` **24/24** (both tests), `setup_3p_both_fall(1000, 1050)`
+/// **24/24**, `setup_3p_both_fall(1000, 1000)` **0/24**. The first three genuinely pay every
+/// beat — that bridge deliberately falls through to the pre-feature grind, so their drives
+/// never reach `drive_collect`'s terminal-state exit. The equal-life half is the exception and
+/// costs nothing at ANY cap: its loop is mandatory with a single non-faller, so the natural
+/// bridge already crowned `GameOver{Some(P0)}` while the kick-off resolved, and the drive
+/// returns on beat 0. That is pre-existing and cap-independent — it is why shrinking this
+/// constant speeds up three drives, not four.
+///
+/// Measured per-beat cost, `setup_3p_subset_lethal`: ~40 ms at invariant state (stack 1,
+/// 4 objects). `setup_3p_both_fall` is NOT flat — its stack grows 13 → 45 and its per-beat
+/// cost 78 → 152 ms over 200 beats — so its justification rests on verdict invariance, not on
+/// periodicity.
+///
+/// MEASURED — DO NOT CHANGE to a value outside the swept set {4, 8, 12, 16, 24, 32, 48, 64,
+/// 100} without re-running the cap sweep (an unswept *lowering* is as uncovered as a raise).
+/// Across that whole swept range the PASS/FAIL verdict and every reach-guard of the three
+/// tests below are invariant, and each test's revert-probe still flips it to FAIL at every
+/// cap ≥ 4 (weakened `nonfallers.len() != 1`; bypassed E1-measure `live_mandatory_loop_winner`
+/// gate; removed F2 `fallers_lives_pairwise_equal` re-check). The loop is primed by beat ~4,
+/// so more beats buy zero discrimination and only burn wall clock; 24 is itself a swept value
+/// (6× margin over the measured priming point), not an interpolation. If the engine ever needs
+/// more beats to prime, the paired reach-guards ("P1 must have bled", "both opponents must
+/// have bled") FAIL LOUDLY instead of degrading silently.
+const PRIMED_LOOP_BEATS: usize = 24;
+
 /// D2: a 3p loop that drains ONLY P1 (P2 a bystander, life delta 0) must NOT crown.
 /// `live_mandatory_loop_winner` (loop_check.rs) partitions living into fallers/non-fallers and
 /// requires `nonfallers.len() == 1` (CR 104.2a — determinate only when EVERY other living
@@ -1108,13 +1138,15 @@ fn interactive_queued_opponent_concede_no_deadlock() {
 /// pre-feature grind.
 ///
 /// REVERT-FAIL: weaken the `nonfallers.len() != 1` gate to an "any-faller wins" rewrite and
-/// this MANDATORY loop is wrongly crowned `GameOver{winner: Some(P0)}` — flipping the two
-/// no-crown assertions below. (Passes today, proving the gate holds.)
+/// this MANDATORY loop is wrongly crowned `GameOver{winner: Some(P0)}` — flipping the `wf`
+/// no-crown assertion below, which is the sole discriminator here: under that mutation the
+/// event-scan assertion measurably stays TRUE (no `GameOver{Some}` lands in the collected
+/// events) at every cap from 4 to 100. (Passes today, proving the gate holds.)
 #[test]
 fn interactive_3p_subset_lethal_does_not_crown() {
     let (mut runner, kickoff) = setup_3p_subset_lethal(LoopDetectionMode::Interactive);
     let _ = runner.cast(kickoff).resolve();
-    let (events, wf) = drive_collect(&mut runner, 500);
+    let (events, wf) = drive_collect(&mut runner, PRIMED_LOOP_BEATS);
 
     // Positive reach-guard: the drain loop genuinely ran on P1 while P2 stayed untouched — we
     // are in the subset-lethal regime the gate must refuse, not an unrelated upstream no-op.
@@ -1277,7 +1309,7 @@ fn vito_2p_optional_offer_declare_crowns() {
 fn injected_3p_one_faller_no_crown() {
     let (mut runner, kickoff) = setup_3p_subset_lethal(LoopDetectionMode::Interactive);
     let _ = runner.cast(kickoff).resolve();
-    let (_events, _wf) = drive_collect(&mut runner, 500);
+    let (_events, _wf) = drive_collect(&mut runner, PRIMED_LOOP_BEATS);
 
     // Reach-guard: the drain loop genuinely ran (P1 bled, alive) and P2 is untouched — this
     // is the subset-lethal regime the E1 measure must refuse.
@@ -1479,7 +1511,7 @@ fn injected_3p_unequal_life_pin_all_no_crown() {
         let (mut runner, kickoff) =
             setup_3p_both_fall(LoopDetectionMode::Interactive, p1_life, p2_life);
         let _ = runner.cast(kickoff).resolve();
-        let (_events, _wf) = drive_collect(&mut runner, 200);
+        let (_events, _wf) = drive_collect(&mut runner, PRIMED_LOOP_BEATS);
         // Reach-guard: both opponents bled equally (loop primed, both are fallers) and stay
         // pairwise-offset by the initial gap (equal deltas preserve the difference).
         assert!(
