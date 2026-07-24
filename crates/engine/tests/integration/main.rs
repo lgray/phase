@@ -769,6 +769,7 @@ mod repro_pilot_crew;
 mod rhys_evermore_remove_counters;
 mod riot_control_regression;
 mod ripples_of_undeath_regression;
+mod riptide_gearhulk_5994;
 mod rite_of_consumption_damage;
 mod roots_of_wisdom_if_you_cant_draw;
 mod roughshod_mentor_green_trample_grant;
