@@ -140,9 +140,8 @@ fn unrelink(def: &mut AbilityDefinition) {
     }
 }
 
-/// Grant mana AND energy only when `funded`. The energy half is load-bearing:
-/// a fixture that seeds energy unconditionally can never drive Saheeli's
-/// `{E}{E}{E}` gate false, which is the whole point of T16.
+/// Grant mana only when `funded`. `drive_ship` seeds energy separately, so a
+/// false fixture can still drive Saheeli's `{E}{E}{E}` gate false in T16.
 fn fund(scenario: &mut GameScenario, funded: bool) {
     if funded {
         scenario.with_mana_pool(

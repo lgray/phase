@@ -2664,10 +2664,10 @@ pub(super) fn instruction_spine_is_continuation(def: &AbilityDefinition) -> bool
 
 /// CR 111.1: Does this ability (or anything nested inside it) read the
 /// just-created-token referent `TargetFilter::LastCreated`? Walks the whole
-/// definition — target filter, `GenericEffect` grant recipients, a
-/// `CreateDelayedTrigger`'s inner definition, and the within-clause
-/// sub/else chain — so the answer does not depend on an enumeration of which
-/// `Effect` variants can carry the referent.
+/// definition — target filter (including composite wrappers), `GenericEffect`
+/// grant recipients, a `CreateDelayedTrigger`'s inner definition, modal modes,
+/// and the within-clause sub/else chain — so the answer does not depend on an
+/// enumeration of which `Effect` variants can carry the referent.
 fn ability_reads_last_created(def: &AbilityDefinition) -> bool {
     fn filter_reads(filter: &TargetFilter) -> bool {
         match filter {
@@ -2675,7 +2675,59 @@ fn ability_reads_last_created(def: &AbilityDefinition) -> bool {
             TargetFilter::And { filters } | TargetFilter::Or { filters } => {
                 filters.iter().any(filter_reads)
             }
-            _ => false,
+            TargetFilter::Not { filter } | TargetFilter::TrackedSetFiltered { filter, .. } => {
+                filter_reads(filter)
+            }
+            TargetFilter::ChosenDamageSource { filter } => {
+                filter.as_deref().is_some_and(filter_reads)
+            }
+            TargetFilter::None
+            | TargetFilter::Any
+            | TargetFilter::Player
+            | TargetFilter::Controller
+            | TargetFilter::ControllerAndControlledPermanents { .. }
+            | TargetFilter::Opponent
+            | TargetFilter::SelfRef
+            | TargetFilter::GrantingObject
+            | TargetFilter::SourceOrPaired
+            | TargetFilter::Typed(..)
+            | TargetFilter::StackAbility { .. }
+            | TargetFilter::StackSpell
+            | TargetFilter::SpecificObject { .. }
+            | TargetFilter::SpecificPlayer { .. }
+            | TargetFilter::PlayerWhoChoseLabel { .. }
+            | TargetFilter::Neighbor { .. }
+            | TargetFilter::ScopedPlayer
+            | TargetFilter::AttachedTo
+            | TargetFilter::LastRevealed
+            | TargetFilter::LastZoneChanged
+            | TargetFilter::CostPaidObject
+            | TargetFilter::ChosenCard
+            | TargetFilter::TrackedSet { .. }
+            | TargetFilter::ExiledBySource
+            | TargetFilter::ExiledCardByIndex { .. }
+            | TargetFilter::TriggeringSpellController
+            | TargetFilter::TriggeringSpellOwner
+            | TargetFilter::TriggeringPlayer
+            | TargetFilter::TriggeringSource
+            | TargetFilter::EventTarget
+            | TargetFilter::TriggeringSourceController
+            | TargetFilter::ParentTarget
+            | TargetFilter::ParentTargetSlot { .. }
+            | TargetFilter::ParentTargetController
+            | TargetFilter::ParentTargetOwner
+            | TargetFilter::SourceChosenPlayer
+            | TargetFilter::OriginalController
+            | TargetFilter::OriginalSource
+            | TargetFilter::PostReplacementSourceController
+            | TargetFilter::PostReplacementDamageSource
+            | TargetFilter::PostReplacementDamageTarget
+            | TargetFilter::PostReplacementDamageTargetOwner
+            | TargetFilter::DefendingPlayer
+            | TargetFilter::HasChosenName
+            | TargetFilter::Named { .. }
+            | TargetFilter::Owner
+            | TargetFilter::AllPlayers => false,
         }
     }
     if def.effect.target_filter().is_some_and(filter_reads) {
@@ -2702,6 +2754,7 @@ fn ability_reads_last_created(def: &AbilityDefinition) -> bool {
             .else_ability
             .as_deref()
             .is_some_and(ability_reads_last_created)
+        || def.mode_abilities.iter().any(ability_reads_last_created)
 }
 
 /// CR 603.12: Would replicating `defs[template]` at the TAIL of `defs`
@@ -10226,15 +10279,17 @@ mod tests {
     use super::{
         match_create_of_those_tokens, nest_whenever_this_turn_token_cleanup_delayed_trigger,
         parse_where_x_quantity_expression, patch_choose_from_zone_counter_continuation_target,
-        strip_redundant_flip_win_quantifier, strip_return_destination_ext_with_remainder,
-        strip_temporal_prefix, strip_temporal_suffix, strip_trailing_duration,
-        strip_trailing_where_x, value_quantity_clause_owns_this_turn_suffix,
+        relink_gated_token_referent_consumers, strip_redundant_flip_win_quantifier,
+        strip_return_destination_ext_with_remainder, strip_temporal_prefix, strip_temporal_suffix,
+        strip_trailing_duration, strip_trailing_where_x,
+        value_quantity_clause_owns_this_turn_suffix,
     };
     use crate::parser::oracle_util::TextPair;
     use crate::types::ability::{
-        AbilityDefinition, AbilityKind, AggregateFunction, ContinuousModification,
-        DelayedTriggerCondition, Duration, Effect, ObjectProperty, ObjectScope, PtValue,
-        QuantityExpr, QuantityRef, TargetFilter, TriggerDefinition,
+        AbilityCondition, AbilityDefinition, AbilityKind, AggregateFunction,
+        ContinuousModification, DelayedTriggerCondition, Duration, Effect, ModalChoice,
+        ObjectProperty, ObjectScope, PtValue, QuantityExpr, QuantityRef, SubAbilityLink,
+        TargetFilter, TriggerDefinition,
     };
     use crate::types::counter::CounterType;
     use crate::types::phase::Phase;
@@ -10255,6 +10310,110 @@ mod tests {
                 "must strip {prefix:?}"
             );
         }
+    }
+
+    fn gated_token_creator_for_relink() -> AbilityDefinition {
+        let mut creator = AbilityDefinition::new(
+            AbilityKind::Spell,
+            Effect::Token {
+                name: "Soldier".to_string(),
+                power: PtValue::Fixed(1),
+                toughness: PtValue::Fixed(1),
+                types: vec!["Creature".to_string(), "Soldier".to_string()],
+                colors: vec![],
+                keywords: vec![],
+                tapped: false,
+                count: QuantityExpr::Fixed { value: 1 },
+                owner: TargetFilter::Controller,
+                attach_to: None,
+                enters_attacking: false,
+                supertypes: vec![],
+                static_abilities: vec![],
+                enter_with_counters: vec![],
+            },
+        );
+        creator.condition = Some(AbilityCondition::WhenYouDo);
+        creator
+    }
+
+    fn last_created_consumer_for_relink(target: TargetFilter) -> AbilityDefinition {
+        let mut consumer = AbilityDefinition::new(
+            AbilityKind::Spell,
+            Effect::PutCounter {
+                counter_type: CounterType::Plus1Plus1,
+                count: QuantityExpr::Fixed { value: 1 },
+                target,
+            },
+        );
+        consumer.sub_link = SubAbilityLink::SequentialSibling;
+        consumer
+    }
+
+    /// CR 603.12 + CR 608.2c: a token referent hidden by any `TargetFilter`
+    /// wrapper still makes the following clause dependent on the gated token
+    /// creator, so the false branch cannot bind an earlier resolution's token.
+    #[test]
+    fn relink_follows_last_created_through_target_filter_wrappers() {
+        let wrapped_filters = [
+            TargetFilter::Not {
+                filter: Box::new(TargetFilter::LastCreated),
+            },
+            TargetFilter::TrackedSetFiltered {
+                id: crate::types::identifiers::TrackedSetId(0),
+                filter: Box::new(TargetFilter::LastCreated),
+                caused_by: None,
+            },
+            TargetFilter::ChosenDamageSource {
+                filter: Some(Box::new(TargetFilter::LastCreated)),
+            },
+        ];
+
+        for filter in wrapped_filters {
+            let mut defs = vec![
+                gated_token_creator_for_relink(),
+                last_created_consumer_for_relink(filter),
+            ];
+            relink_gated_token_referent_consumers(&mut defs);
+            assert_eq!(
+                defs[1].sub_link,
+                SubAbilityLink::ContinuationStep,
+                "a wrapped LastCreated reader must stay on the gated creator's continuation path"
+            );
+        }
+    }
+
+    /// CR 700.2 + CR 603.12: modal mode bodies are part of the containing
+    /// definition for the re-link decision. A `LastCreated` reader in a chosen
+    /// mode must not remain a standalone sibling of its gated token creator.
+    #[test]
+    fn relink_follows_last_created_through_modal_modes() {
+        let modal = ModalChoice {
+            min_choices: 1,
+            max_choices: 1,
+            mode_count: 1,
+            ..Default::default()
+        };
+        let consumer = AbilityDefinition::new(
+            AbilityKind::Spell,
+            Effect::Draw {
+                count: QuantityExpr::Fixed { value: 1 },
+                target: TargetFilter::Controller,
+            },
+        )
+        .with_modal(
+            modal,
+            vec![last_created_consumer_for_relink(TargetFilter::LastCreated)],
+        );
+        let mut defs = vec![gated_token_creator_for_relink(), consumer];
+        defs[1].sub_link = SubAbilityLink::SequentialSibling;
+
+        relink_gated_token_referent_consumers(&mut defs);
+
+        assert_eq!(
+            defs[1].sub_link,
+            SubAbilityLink::ContinuationStep,
+            "a modal LastCreated reader must keep its wrapper on the gated continuation path"
+        );
     }
 
     /// CR 608.2c: a `ChooseFromZone` head with a `RemoveCounter`/`PutCounter`
