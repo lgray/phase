@@ -4302,8 +4302,14 @@ fn object_growth_with_bystander(bystander_oracle: &str) -> (GameRunner, ObjectId
 /// rebuilding the same board with a `Typed{Artifact}` ledger filter, which still
 /// vetoed at BASE. The card's trigger is `damage_kind: CombatOnly` and the loop
 /// window is `PreCombatMain`, so the observer cannot fire inside the window. The
-/// residual filter-match narrowing (statics, `trigger.condition` observers, and
-/// every phase-reachable non-ETB shape) is follow-up **`BB-FU10-N2`**.
+/// shallow filter-match narrowing now also ships (a `QuantityCheck`-shaped ledger read
+/// sitting directly in a block-(1) trigger's `execute.condition`, proven sole-source by
+/// single-field clone-and-rescan); rows `K4-N1`/`K4-N2` are its matched pair. Measured on
+/// the current card pool that shape matches exactly ONE printed card — this one — which
+/// it correctly REFUSES, because `Typed{Creature}` genuinely counts a Saproling creature
+/// token. Everything the shallow form cannot reach — `trigger.condition` observers (21
+/// cards), statics (16), abilities (13), `casting_options` (4), replacements (1), compound
+/// conditions, rhs-position reads, blocks (2)/(3)/(5b) — remains **`BB-FU10-N2`**.
 ///
 /// REVERT-PROBE: delete X2's `continue` in
 /// `fire_time_conditions_read_growing_class_scoped` block (1) ⇒ this row returns to
@@ -5798,4 +5804,146 @@ fn witherbloom_lumaret_4p_offers_with_opponent_utility_lands() {
              call count in the PR body, and STOP."
         ),
     }
+}
+
+// ===========================================================================
+// K4 — CR 608.2i ledger-FILTER exclusion (the shallow BB-FU10-N narrowing).
+// Every fixture carries the harness's shared `"Flying, trample\n"` keyword prefix, so
+// subject and control differ ONLY in the ledger clause.
+// ===========================================================================
+
+/// FIXTURE C (PRIMARY) — measured `mode=DamageDone`, `phase=null`, `damage_kind=Any`,
+/// `constraint=null`. `damage_kind: Any` is what makes this pair STRUCTURALLY independent
+/// of the CR 510.2 phase relief, whose damage arm requires `CombatOnly`.
+const LEDGER_ARTIFACT_FILTER_ORACLE: &str = "Flying, trample\nWhenever this creature deals damage to a player, draw a card if you had two or more artifacts enter the battlefield under your control this turn.";
+
+/// FIXTURE D (PRIMARY) — fixture C with one Oracle noun changed. Measured: the two
+/// serialized trigger definitions are 984 bytes each and differ at exactly TWO token
+/// positions — `filter.type_filters[0]` and the humanized `description` string — both
+/// projections of that ONE noun, and `description` is a display string no scan predicate
+/// reads.
+const LEDGER_CREATURE_FILTER_ORACLE: &str = "Flying, trample\nWhenever this creature deals damage to a player, draw a card if you had two or more creatures enter the battlefield under your control this turn.";
+
+/// FIXTURE A (CORROBORATING) — a DIFFERENT `TriggerMode`. Measured `mode=Phase`,
+/// `phase=PreCombatMain`, `damage_kind=Any`, `constraint=OnlyDuringYourTurn`. Its
+/// independence from the phase relief rests on the ⛔ STRICT-INEQUALITY pin
+/// (`p != phase`, so `PreCombatMain` in a `PreCombatMain` window is NOT relieved) — hence
+/// corroborating rather than primary.
+const PHASE_LEDGER_ARTIFACT_FILTER_ORACLE: &str = "Flying, trample\nAt the beginning of your precombat main phase, draw a card if you had two or more artifacts enter the battlefield under your control this turn.";
+
+/// FIXTURE B (CORROBORATING) — fixture A one Oracle noun apart.
+const PHASE_LEDGER_CREATURE_FILTER_ORACLE: &str = "Flying, trample\nAt the beginning of your precombat main phase, draw a card if you had two or more creatures enter the battlefield under your control this turn.";
+
+/// K4-N1 (PRIMARY) — CR 608.2i. A ledger observer whose entry filter PROVABLY cannot
+/// count the growing fodder has a read whose value is invariant across the loop's growth,
+/// so it does not observe the loop and must not suppress the CR 732.2a offer.
+///
+/// ATTRIBUTION, structural rather than argued:
+/// * the CR 510.2 relief cannot move this row — `damage_kind: Any` (measured) can never
+///   satisfy its damage arm, which requires `CombatOnly` (pinned by
+///   `trigger_event_unreachable_in_phase_shape_is_pinned` arm 2), and `mode: DamageDone`
+///   never reaches its Phase arm.
+/// * the CR 117.1b relief cannot move it — the bystander is the DRIVER'S OWN.
+///   ⇒ the flip is attributable to the ledger-filter narrowing alone.
+///
+/// REVERT-PROBES: (1) delete the `&& !class_member.is_some_and(..)` guard ⇒ veto ⇒ FAILS.
+/// (2) make `execute_ledger_condition_provably_excludes_class` return `false`
+/// unconditionally ⇒ the same failure ⇒ the PREDICATE, not the plumbing, carries the flip.
+#[test]
+fn noncombat_damage_ledger_observer_whose_filter_excludes_the_class_does_not_suppress_offer() {
+    use engine::types::zones::Zone;
+
+    // (2) ANTI-VACUITY CONTROL, granted in BOTH builds.
+    let (control_runner, _) = object_growth_with_bystander(PLAIN_DRAW_TRIGGER_ORACLE);
+    assert!(
+        matches!(
+            control_runner.state().waiting_for,
+            WaitingFor::LoopShortcut { .. }
+        ),
+        "(2) control: a plain draw-trigger bystander must not suppress the offer"
+    );
+
+    let (runner, bystander) = object_growth_with_bystander(LEDGER_ARTIFACT_FILTER_ORACLE);
+
+    // (3) reach-guards.
+    let obj = &runner.state().objects[&bystander];
+    assert_eq!(obj.zone, Zone::Battlefield);
+    assert_eq!(
+        obj.trigger_definitions.len(),
+        1,
+        "(3) reach-guard: exactly one trigger definition carries the ledger read"
+    );
+
+    match &runner.state().waiting_for {
+        WaitingFor::LoopShortcut { certificate, .. } => assert!(
+            certificate.unbounded.contains(&ResourceAxis::TokensCreated),
+            "(1) unbounded axis must be TokensCreated, got {:?}",
+            certificate.unbounded
+        ),
+        other => panic!(
+            "(1) CR 608.2i: a `Typed{{Artifact}}` entry filter cannot count a Saproling \
+             creature token, so the observer's read is invariant across the loop's growth \
+             and must not suppress the offer; got {other:?}. \
+             ⛔ PRE-REGISTERED FAILURE BRANCH: report the NEXT rejecter by name and its \
+             call count and STOP — do not widen a conjunct to manufacture the offer. \
+             Conjunct (a) is measured to pass; the remaining candidates in order are (c) \
+             and the offer-path gates downstream of the firewall."
+        ),
+    }
+}
+
+/// K4-N2 (PRIMARY) — THE ROW THAT KILLS THE LAZY-BUT-UNSOUND NARROWING. Fixture D is
+/// fixture C with one Oracle noun changed, and its `Typed{Creature}` filter GENUINELY
+/// counts the Saproling creature token the loop creates each cycle. So the veto must
+/// survive.
+///
+/// This pair IS the acceptance criterion: a correct narrowing moves K4-N1 and not this
+/// row; a blanket relaxation moves both; an inert guard moves neither.
+///
+/// REVERT-PROBE: make conjunct (c) unconditionally `true` (a blanket relaxation) ⇒ this
+/// row flips to an offer ⇒ FAILS.
+#[test]
+fn noncombat_damage_ledger_observer_whose_filter_matches_the_class_still_suppresses_offer() {
+    let (runner, _) = object_growth_with_bystander(LEDGER_CREATURE_FILTER_ORACLE);
+    assert!(
+        !matches!(runner.state().waiting_for, WaitingFor::LoopShortcut { .. }),
+        "CR 608.2i: a `Typed{{Creature}}` entry filter DOES count a Saproling creature \
+         token, so the observer genuinely observes the loop and must keep vetoing; got {:?}",
+        runner.state().waiting_for
+    );
+}
+
+/// K4-N4a (CORROBORATING) — the same relief through a DIFFERENT `TriggerMode`, which is
+/// what proves it keys on the ledger FILTER and not on any one trigger shape.
+///
+/// ⚠ Independence from the CR 510.2 relief is CONDITIONAL on the ⛔ strict-inequality pin
+/// (`p != phase`): fixture A is `phase: Some(PreCombatMain)` in a `PreCombatMain` window,
+/// so the phase arm answers `false` and cannot classify it. Hence corroborating.
+#[test]
+fn phase_reachable_ledger_observer_whose_filter_excludes_the_class_does_not_suppress_offer() {
+    let (runner, _) = object_growth_with_bystander(PHASE_LEDGER_ARTIFACT_FILTER_ORACLE);
+    match &runner.state().waiting_for {
+        WaitingFor::LoopShortcut { certificate, .. } => assert!(
+            certificate.unbounded.contains(&ResourceAxis::TokensCreated),
+            "K4-N4a: unbounded axis must be TokensCreated, got {:?}",
+            certificate.unbounded
+        ),
+        other => panic!(
+            "K4-N4a CR 608.2i: a phase-REACHABLE observer whose entry filter excludes the \
+             fodder must not suppress the offer; got {other:?}"
+        ),
+    }
+}
+
+/// K4-N4b (CORROBORATING) — fixture B, one Oracle noun from K4-N4a, keeps its veto.
+///
+/// REVERT-PROBE: make conjunct (c) unconditional ⇒ flips ⇒ FAILS.
+#[test]
+fn phase_reachable_ledger_observer_whose_filter_matches_the_class_still_suppresses_offer() {
+    let (runner, _) = object_growth_with_bystander(PHASE_LEDGER_CREATURE_FILTER_ORACLE);
+    assert!(
+        !matches!(runner.state().waiting_for, WaitingFor::LoopShortcut { .. }),
+        "K4-N4b: the matching half of the corroborating pair must keep vetoing; got {:?}",
+        runner.state().waiting_for
+    );
 }

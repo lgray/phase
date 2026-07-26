@@ -1939,6 +1939,187 @@ fn eq_except_growable(pa: &GameState, pb: &GameState, grown: &HashSet<ObjectId>)
         && a.last_loop_action_sequence == b.last_loop_action_sequence
 }
 
+/// CR 732.2a + CR 608.2h + CR 608.2i: does this trigger's `execute` body observe the
+/// growing class ONLY through a battlefield-entry-ledger condition whose filter PROVABLY
+/// cannot count `class_member`? Returns `true` iff so — then the read's value is
+/// invariant across the loop's growth and the observer does not observe the loop.
+///
+/// SOUNDNESS rests on the SAME disjointness premise as
+/// `etb_observer_provably_excludes_class` (the GAP-1 doc on this function's caller): the
+/// fodder is the only class that changes across the covered cycle, guaranteed IN ORDER by
+/// `derived_fodder_class` (engine.rs:2191, called at engine.rs:2461) then
+/// `board_covers_modulo_fodder` (`fn` at resource.rs:1267, whose only call is
+/// resource.rs:1354), which PRECEDES this call. Do not reorder that gate after the
+/// firewall.
+///
+/// WHAT THE ONE-REPRESENTATIVE TEST ESTABLISHES, AND WHAT IT DOES NOT (a measured bound,
+/// not a generalisation proof — an earlier draft asserted the generalisation and it was
+/// FALSE). Fodder membership is `fodder_content_eq`, which routes through
+/// `object_content_eq` (types/game_state.rs:17475-17518). That function compares exactly
+/// 32 `GameObject` fields and does NOT compare `card_types`, `color` or `keywords`.
+/// `BattlefieldEntryRecord` has exactly 8 fields (types/game_state.rs:1650-1670, no
+/// `..`): object_id / name / core_types / subtypes / supertypes / colors / keywords /
+/// controller.
+///   COVERED by the fodder relation:  `name`, `controller`.
+///   NOT COVERED:                     `core_types`, `subtypes`, `supertypes`, `colors`,
+///                                    `keywords` — and this matcher reads every one of
+///                                    them (restrictions.rs:493 type, :502 color,
+///                                    :507 keyword).
+///   `object_id` differs by construction and feeds exactly one predicate,
+///   `FilterProp::Another` (restrictions.rs:514), whose verdict is invariant across
+///   fodder members because none of them is the ability source.
+/// ⇒ ESTABLISHED: the representative's exclusion carries to every fodder member that
+///   agrees with it on those five uncompared record fields.
+/// ⇒ NOT ESTABLISHED: that fodder members must so agree. Two objects can be
+///   `fodder_content_eq` — hence both in the growing class — while differing in exactly
+///   the fields this matcher tests. The residual is a member whose
+///   type/subtype/supertype/colour/keyword set diverges under an effect that moves none
+///   of the 32 compared fields, against a filter reading the diverged field. That is
+///   relief for a class whose later members the observer DOES count — the one direction
+///   #4603 forbids — so it is a STATED residual, not an accepted one.
+/// ⇒ MEASURED, PER AXIS, EACH COUNT WITH ITS POPULATION PREDICATE. Population: all 60
+///   live `QuantityRef::BattlefieldEntriesThisTurn` refs in `data/card-data.json` sha256
+///   f6dfbe98… (recursively 68 `Typed` leaves; NONE has an empty `type_filters`).
+///   - `keywords`: `FilterProp::WithKeyword` is 0/60 — but that is a PROP count, NOT a
+///     `keywords`-axis count. `TypeFilter::Subtype` also reads `record.keywords`
+///     (restrictions.rs:452, the CR 702.73a Changeling branch), and 18 of the 79
+///     type-filter entries are `Subtype`.
+///   - `core_types`: read by the other 61 of the 79 entries — Creature 17, Artifact 11,
+///     Permanent 11, Non(Land) 11, Land 9, Planeswalker 2.
+///   - `subtypes` + `supertypes`: read by those same 18 `Subtype` entries.
+///   - `colors`: `FilterProp::HasColor` is 1/60, LIVE.
+///   - filter-level `controller` is 0/60 and IRRELEVANT: `controller` IS one of the 32
+///     compared fields, so it cannot diverge inside a fodder class at all.
+///
+///   ⇒ FOUR of the five uncompared record fields are read VERDICT-BEARINGLY by a live
+///   filter on today's pool. THE RESIDUAL IS REACHABLE, NOT LATENT. The fifth,
+///   `supertypes`, is argument-read but verdict-inert (its only consumer is gated on the
+///   subtype being `Host`, and none of the 18 live subtype values is `Host`);
+///   over-stating it as read is the CONSERVATIVE direction. What is NOT measured and NOT
+///   excluded is the other half: whether a per-member characteristic-changing effect
+///   exists that moves NONE of the 32 compared fields (`name` among them).
+///   Undischarged, deliberately. Re-derive if `data/card-data.json` is regenerated.
+/// DO NOT restate this as "all fodder members' records differ only in `object_id`". That
+/// sentence is false, and it was shipped once already as the closure of a review finding.
+///
+/// ⛔ ARG-EQUIVALENCE PIN — THE LOAD-BEARING SOUNDNESS PREMISE, AND THE REASON THERE IS
+/// NO SEPARATE "is this filter evaluable?" CONJUNCT. This predicate must call
+/// `battlefield_entry_matches_filter` with arguments EQUIVALENT to the resolver's own
+/// call at game/quantity.rs:3426-3432 (inside `resolve_per_player_scalar`,
+/// game/quantity.rs:5354; the whole `BattlefieldEntriesThisTurn` resolver arm is
+/// :3411-3436) — same record source, same `filter`, the ability controller for `player`,
+/// the same `all_creature_types`, and `Some(<source object id>)`.
+///
+/// GIVEN THAT, THE INVARIANT IS: this predicate asks THE SAME MATCHER the resolver will
+/// ask, about the NEW class member. A `false` verdict therefore means each member the
+/// loop creates contributes 0 TO THE TALLY WHATEVER THE TALLY'S ABSOLUTE VALUE IS —
+/// invariance under growth, which is all the soundness argument needs. Do NOT restate
+/// this as "an unanswerable filter makes the tally a constant 0": restrictions.rs's
+/// `ledger_filter_is_evaluable` doc does say that, but restrictions.rs:519-526 documents
+/// the exception in the same file — under `TargetFilter::Or` an unsupported leaf turns a
+/// LOUD constant 0 into a SILENT PARTIAL COUNT, and `Or` is live in this class (4 of 60
+/// refs). Invariance-under-growth is `Or`-proof; constant-0 is not. Relieving an
+/// unanswerable filter is therefore CORRECT, not merely harmless, and gating on
+/// `ledger_filter_is_evaluable` would refuse a sound relief (measured benefit 0/60,
+/// measured cost 0/60). Asserted by `ledger_exclusion_is_precise_and_fail_closed` arms
+/// (vi) and (vii). If the argument shapes ever diverge, this pin is what breaks first —
+/// do not "simplify" the call by dropping `source.id` or by substituting the scoped
+/// player for the controller.
+///
+/// NOT A VISITOR, deliberately (#4603 error direction): an INCOMPLETE `QuantityRef`
+/// collector is unsound HERE, because "every collected read excludes" is vacuously true
+/// over a set that missed one. Instead, FOUR fail-closed conjuncts, each of which keeps
+/// the conservative veto whenever it cannot prove its half:
+///   (0) NO ACTIVATION RESTRICTIONS on this def: `exec.activation_restrictions.is_empty()`.
+///       LOAD-BEARING, and conjunct (a) does NOT cover it — `ability_definition_axes`
+///       destructures `activation_restrictions: _` (ability_scan.rs:4238), so the scan is
+///       BLIND to it and the clone-and-rescan would return `false` even with a
+///       class-MATCHING `ActivationRestriction::RequiresCondition` on the same def.
+///       Measured cost: ZERO — no trigger `execute` in the card pool carries any
+///       (positive control: 3195 on `abilities`).
+///   (a) SOLE-SOURCE by single-field clone-and-rescan: clone the def, set
+///       `condition = None`, and re-run `ability_definition_reads_sibling_mutable_for_loop`.
+///       Only if THAT is `false` is `condition` the def's only sibling read — so no effect
+///       body, cost, sub-ability or other field hides a second read this predicate never
+///       looked at.
+///   (b) SHAPE by a SINGLE-LEVEL pattern match with `_ => false`. No recursion, therefore
+///       no totality obligation: a compound (`And`/`Or`/`Not`), an rhs-position read, a
+///       non-`QuantityCheck` variant, or a non-`BattlefieldEntriesThisTurn` ref all fall
+///       to `_` and KEEP the veto. `rhs` must be `Fixed` so it cannot smuggle a second
+///       board read.
+///   (c) EXCLUSION delegated verbatim to the ledger's own fire-time matcher
+///       `restrictions::battlefield_entry_matches_filter` — the SAME matcher, with the
+///       SAME arguments (see the ARG-EQUIVALENCE PIN), that
+///       `QuantityRef::BattlefieldEntriesThisTurn` resolves through. NOT
+///       `matches_target_filter`: game/quantity.rs:1069-1085 documents that it is not a
+///       superset of the ledger matcher (entry-time snapshot vs live object), so its
+///       `false` can coexist with a fire-time `true` — relief in the forbidden direction.
+///       The resolver's scoped-player test is a separate AND conjunct
+///       (game/quantity.rs:3425), so a `false` here excludes the member for EVERY scoped
+///       player and no `PlayerScope` resolution is required.
+fn execute_ledger_condition_provably_excludes_class(
+    exec: &crate::types::ability::AbilityDefinition,
+    state: &GameState,
+    class_member: ObjectId,
+    source: &GameObject,
+) -> bool {
+    use crate::types::ability::{AbilityCondition, QuantityExpr, QuantityRef};
+
+    // (0) the firewall is BLIND to activation restrictions (ability_scan.rs:4238) —
+    // fail closed.
+    if !exec.activation_restrictions.is_empty() {
+        return false;
+    }
+    // (a) sole-source by single-field clone-and-rescan.
+    let mut probe = exec.clone();
+    probe.condition = None;
+    if crate::game::ability_scan::ability_definition_reads_sibling_mutable_for_loop(&probe) {
+        return false;
+    }
+    // (b) shape — single level, `_ => false` via let-else.
+    let Some(AbilityCondition::QuantityCheck {
+        lhs:
+            QuantityExpr::Ref {
+                qty: QuantityRef::BattlefieldEntriesThisTurn { filter, .. },
+            },
+        rhs: QuantityExpr::Fixed { .. },
+        ..
+    }) = exec.condition.as_ref()
+    else {
+        return false;
+    };
+    // (c) exclusion — fail-closed if the member is gone from the scanned frame.
+    //     ARG-EQUIVALENCE PIN: these five arguments mirror game/quantity.rs:3426-3432.
+    let Some(member_obj) = state.objects.get(&class_member) else {
+        return false;
+    };
+    let probe_record = crate::game::restrictions::battlefield_entry_record_for(member_obj);
+    // The `std::iter::once` is LOAD-BEARING: it guarantees the iterator is never empty,
+    // so `.all()` cannot be vacuously `true` — the classic fail-open shape for an
+    // `.all()` guard. Do not "optimise" it away when a real record exists. Both
+    // authorities are required because the class member is chosen from `all_fodder` and
+    // can be a pre-existing object that never went through `record_battlefield_entry`
+    // (so real-records-only would be inert), while a Layer-4 type change can make the
+    // live object differ from its genuine entry-time snapshot (so synthesized-only would
+    // ignore the real record).
+    std::iter::once(&probe_record)
+        .chain(
+            state
+                .battlefield_entries_this_turn
+                .iter()
+                .filter(|r| r.object_id == class_member),
+        )
+        .all(|r| {
+            !crate::game::restrictions::battlefield_entry_matches_filter(
+                r,
+                filter,
+                source.controller,
+                &state.all_creature_types,
+                Some(source.id),
+            )
+        })
+}
+
 /// §5.3a firewall (BLOCKER-S1 + S5 + MAJOR-A): does ANY live off-stack fire-time
 /// observer read the growing class (the axis-2 `sibling` read)? Scans, on the
 /// FLUSHED current: (1) trigger conditions AND `execute` bodies; (2) [S5] EVERY
@@ -2037,12 +2218,20 @@ fn fire_time_conditions_read_growing_class_scoped(
             // content, not provenance). This is what lets Intruder Alarm's `untap all
             // creatures` (a `SetTapState{Typed{Creature}}` body) relax under the
             // CR 732.2a `Typed`-precision firewall so the canary can OFFER.
-            if def
-                .execute
-                .as_ref()
-                .is_some_and(|a| scan::ability_definition_reads_sibling_mutable_for_loop(a))
-            {
-                return true;
+            if let Some(exec) = def.execute.as_ref() {
+                // CR 608.2h + CR 608.2i: a ledger read whose filter provably cannot count
+                // the growing fodder has a value invariant across the loop's growth, so
+                // this def does not observe the loop — skip it rather than veto.
+                // Fail-closed on `class_member: None` (the OFFLINE cover passes `None` and
+                // is therefore untouched BY this narrowing — note that the CR 117.1b /
+                // CR 510.2 scope guards above are NOT class_member-gated and DO reach it).
+                if scan::ability_definition_reads_sibling_mutable_for_loop(exec)
+                    && !class_member.is_some_and(|m| {
+                        execute_ledger_condition_provably_excludes_class(exec, state, m, obj)
+                    })
+                {
+                    return true;
+                }
             }
         }
     }
@@ -8499,6 +8688,330 @@ mod tests {
             fire_time_conditions_read_projected_resource_scoped(&state, recast_scope),
             "X4-3 matched negative: a window that DOES cast the Spear keeps its veto — \
              the only variable is cast-set membership"
+        );
+    }
+
+    /// A Saproling creature token, the fodder class 2c's rows exclude or match.
+    fn saproling_class_member(state: &mut GameState) -> ObjectId {
+        let oid = ObjectId(800);
+        let mut object = crate::game::game_object::GameObject::new(
+            oid,
+            CardId(0),
+            PlayerId(0),
+            "Saproling".to_string(),
+            Zone::Battlefield,
+        );
+        object.card_types.core_types = vec![CoreType::Creature];
+        object.card_types.subtypes = vec!["Saproling".to_string()];
+        object.color = vec![crate::types::mana::ManaColor::Green];
+        object.is_token = true;
+        state.objects.insert(oid, object);
+        state.battlefield.push_back(oid);
+        oid
+    }
+
+    /// The ability source the ledger read belongs to (the observer permanent).
+    fn ledger_observer_source(state: &mut GameState) -> ObjectId {
+        let oid = ObjectId(801);
+        let mut object = crate::game::game_object::GameObject::new(
+            oid,
+            CardId(801),
+            PlayerId(0),
+            "BBFU10 Bystander".to_string(),
+            Zone::Battlefield,
+        );
+        object.card_types.core_types = vec![CoreType::Creature];
+        state.objects.insert(oid, object);
+        state.battlefield.push_back(oid);
+        oid
+    }
+
+    /// Parse `oracle` and hand back the first trigger's `execute` body — the exact
+    /// `AbilityDefinition` block (1) scans.
+    fn trigger_execute_from_oracle(oracle: &str) -> crate::types::ability::AbilityDefinition {
+        let parsed = crate::parser::parse_oracle_text(
+            oracle,
+            "BBFU10 Bystander",
+            &[],
+            &["Creature".to_string()],
+            &[],
+        );
+        parsed
+            .triggers
+            .first()
+            .and_then(|t| t.execute.as_deref())
+            .cloned()
+            .expect("the constructed oracle must parse a trigger execute body")
+    }
+
+    /// K4-N3 + NW-2 — the CR 608.2i exclusion predicate, SEVEN arms, both polarities on
+    /// every axis. Each `false` arm is paired with a `true` arm in the same row, so a
+    /// constant implementation fails at least one.
+    ///
+    /// REVERT-PROBES, one per conjunct (each named with the arm it flips):
+    /// * (ii) disable conjunct (c) ⇒ verbatim Park Heights Pegasus is wrongly relieved ⇒
+    ///   (ii) FAILS. (a) is measured to PASS for Pegasus, so (c) is the only conjunct
+    ///   carrying its refusal.
+    /// * (iii) drop conjunct (0) ⇒ FAILS. This is NW-2: the scan destructures
+    ///   `activation_restrictions: _` (ability_scan.rs:4238), so conjunct (a) returns
+    ///   `false` and the predicate would wrongly return `true` with a class-MATCHING
+    ///   `ActivationRestriction::RequiresCondition` on the very def being relieved.
+    /// * (iv) replace conjunct (b)'s `_ => false` with `_ => true` ⇒ FAILS.
+    /// * (v) drop conjunct (a) ⇒ FAILS.
+    /// * (vi) flip the matcher's `FilterProp` fail-closed `_ => false`
+    ///   (restrictions.rs:515) to `_ => true` ⇒ the `FaceDown` filter now matches the
+    ///   record ⇒ relief is refused ⇒ FAILS.
+    /// * (vii) swap conjunct (c)'s call to `matches_target_filter`, or drop
+    ///   `Some(source.id)` ⇒ the verdict diverges from the resolver's ⇒ FAILS.
+    #[test]
+    fn ledger_exclusion_is_precise_and_fail_closed() {
+        use crate::types::ability::{
+            AbilityCondition, Comparator, FilterProp, PlayerScope, QuantityExpr, QuantityRef,
+            TargetFilter, TypeFilter, TypedFilter,
+        };
+
+        let mut state = GameState::new_two_player(7);
+        state.phase = Phase::PreCombatMain;
+        let member = saproling_class_member(&mut state);
+        let source_id = ledger_observer_source(&mut state);
+        let source = state.objects[&source_id].clone();
+
+        let ledger_condition = |filter: TargetFilter| AbilityCondition::QuantityCheck {
+            lhs: QuantityExpr::Ref {
+                qty: QuantityRef::BattlefieldEntriesThisTurn {
+                    player: PlayerScope::Controller,
+                    filter,
+                },
+            },
+            comparator: Comparator::GE,
+            rhs: QuantityExpr::Fixed { value: 2 },
+        };
+        let typed = |t: TypeFilter, props: Vec<FilterProp>| {
+            TargetFilter::Typed(TypedFilter {
+                type_filters: vec![t],
+                controller: None,
+                properties: props,
+            })
+        };
+
+        // The fixture-C shape: a ledger read in `execute.condition` whose body is a plain
+        // fixed draw, so `condition` is the def's ONLY sibling read.
+        const FIXTURE_C: &str = "Whenever this creature deals damage to a player, draw a card if you had two or more artifacts enter the battlefield under your control this turn.";
+        let mut exec_artifact = trigger_execute_from_oracle(FIXTURE_C);
+        // Reach-guard: the parsed shape is the one conjunct (b) matches.
+        assert!(
+            matches!(
+                exec_artifact.condition,
+                Some(AbilityCondition::QuantityCheck {
+                    lhs: QuantityExpr::Ref {
+                        qty: QuantityRef::BattlefieldEntriesThisTurn { .. }
+                    },
+                    rhs: QuantityExpr::Fixed { .. },
+                    ..
+                })
+            ),
+            "reach-guard: fixture C must parse into the single-level shape conjunct (b) \
+             accepts, else every arm below tests conjunct (b)'s `_` arm instead; got {:?}",
+            exec_artifact.condition
+        );
+
+        // ── (i) TRUE — an Artifact ledger filter provably cannot count a Saproling ──
+        assert!(
+            execute_ledger_condition_provably_excludes_class(
+                &exec_artifact,
+                &state,
+                member,
+                &source
+            ),
+            "(i) CR 608.2i: `Typed{{Artifact}}` cannot count a creature token, so the \
+             read's value is invariant across the loop's growth"
+        );
+
+        // ── (ii) FALSE — verbatim Park Heights Pegasus GENUINELY matches ──
+        let db = crate::test_support::shared_card_db();
+        let pegasus = db
+            .face_index
+            .get("park heights pegasus")
+            .expect("Park Heights Pegasus is in the integration card fixtures");
+        assert_eq!(pegasus.triggers.len(), 1, "(ii) reach-guard: one trigger");
+        let pegasus_exec = pegasus.triggers[0]
+            .execute
+            .as_deref()
+            .expect("(ii) reach-guard: the trigger carries an execute body")
+            .clone();
+        assert!(
+            !execute_ledger_condition_provably_excludes_class(
+                &pegasus_exec,
+                &state,
+                member,
+                &source
+            ),
+            "(ii) the printed card's `Typed{{Creature}}` ledger filter DOES count a \
+             Saproling creature token, so relief must be REFUSED — conjunct (c) is the \
+             only conjunct carrying this refusal"
+        );
+
+        // ── (iii) NW-2: FALSE when the def carries an activation restriction ──
+        // The firewall never reads that field, so this must be a PROGRAMMATIC fixture:
+        // measured, 0 trigger `execute` bodies in the card pool carry one (positive
+        // control: 3195 on `abilities[]`), so no parser path can build it.
+        let mut restricted = exec_artifact.clone();
+        restricted
+            .activation_restrictions
+            .push(ActivationRestriction::RequiresCondition {
+                condition: Some(crate::types::ability::ParsedCondition::QuantityComparison {
+                    lhs: QuantityExpr::Ref {
+                        qty: QuantityRef::BattlefieldEntriesThisTurn {
+                            player: PlayerScope::Controller,
+                            filter: TargetFilter::Typed(TypedFilter::creature()),
+                        },
+                    },
+                    comparator: Comparator::GE,
+                    rhs: QuantityExpr::Fixed { value: 2 },
+                }),
+            });
+        assert!(
+            !execute_ledger_condition_provably_excludes_class(&restricted, &state, member, &source),
+            "(iii) NW-2: the two defs differ in EXACTLY that one field — the scan is blind \
+             to it (`activation_restrictions: _`), so conjunct (0) is the only closure for \
+             a class-MATCHING activation restriction on the def being relieved"
+        );
+
+        // ── (iv) FALSE when the condition is a COMPOUND (conjunct b's `_` arm) ──
+        let mut compound = exec_artifact.clone();
+        compound.condition = Some(AbilityCondition::And {
+            conditions: vec![ledger_condition(typed(TypeFilter::Artifact, vec![]))],
+        });
+        assert!(
+            !execute_ledger_condition_provably_excludes_class(&compound, &state, member, &source),
+            "(iv) conjunct (b) is single-level with `_ => false`: an `And`/`Or`/`Not` \
+             wrapper keeps the veto rather than recursing without a totality obligation"
+        );
+
+        // ── (v) FALSE when a SECOND sibling read hides in the effect body (conjunct a) ──
+        const FIXTURE_TWO_READS: &str = "Whenever this creature deals damage to a player, draw a card for each creature you control if you had two or more artifacts enter the battlefield under your control this turn.";
+        let two_reads = trigger_execute_from_oracle(FIXTURE_TWO_READS);
+        assert!(
+            !execute_ledger_condition_provably_excludes_class(&two_reads, &state, member, &source),
+            "(v) conjunct (a): with the `condition` cleared the def STILL reads the board, \
+             so `condition` is not its sole sibling source and no exclusion proof about \
+             `condition` alone can license relief"
+        );
+
+        // ── (vi) TRUE for an UNEVALUABLE filter — invariance under growth ──
+        // `FilterProp::FaceDown` is live (1/60, tunnel tipster) and outside
+        // `ledger_filter_is_evaluable`'s allow-list. The matcher answers `false` for
+        // every record, so each new class member adds 0 TO THE TALLY WHATEVER THE
+        // TALLY'S VALUE IS — which is all soundness needs. Do NOT restate this as "the
+        // tally is a constant 0": under `Or` an unsupported leaf yields a SILENT PARTIAL
+        // COUNT instead (restrictions.rs:519-526), and `Or` is live 4/60.
+        exec_artifact.condition = Some(ledger_condition(typed(
+            TypeFilter::Creature,
+            vec![FilterProp::FaceDown],
+        )));
+        assert!(
+            execute_ledger_condition_provably_excludes_class(
+                &exec_artifact,
+                &state,
+                member,
+                &source
+            ),
+            "(vi) an unanswerable filter is relieved because relief is CORRECT here: the \
+             same matcher the resolver asks answers `false` for the new member, so the \
+             tally is invariant under growth"
+        );
+
+        // ── (vii) ARG-EQUIVALENCE PIN: the predicate's verdict IS the resolver's ──
+        let creature_filter = typed(TypeFilter::Creature, vec![]);
+        exec_artifact.condition = Some(ledger_condition(creature_filter.clone()));
+        let record =
+            crate::game::restrictions::battlefield_entry_record_for(&state.objects[&member]);
+        let resolver_shaped = !crate::game::restrictions::battlefield_entry_matches_filter(
+            &record,
+            &creature_filter,
+            source.controller,
+            &state.all_creature_types,
+            Some(source.id),
+        );
+        assert_eq!(
+            execute_ledger_condition_provably_excludes_class(
+                &exec_artifact,
+                &state,
+                member,
+                &source
+            ),
+            resolver_shaped,
+            "(vii) ⛔ ARG-EQUIVALENCE PIN: conjunct (c) must ask the SAME matcher the \
+             CR 608.2i resolver asks (game/quantity.rs:3426-3432), with the ability \
+             CONTROLLER for `player` and `Some(source.id)` for the CR 109.1 `Another` \
+             exclusion. Swapping in `matches_target_filter`, or dropping `source.id`, \
+             makes the two verdicts diverge and this arm fails."
+        );
+        assert!(
+            !resolver_shaped,
+            "(vii) reach-guard: the resolver-shaped call must answer MATCH for a creature \
+             filter vs a creature token, else the equality above is vacuously true on two \
+             `true`s"
+        );
+
+        // ── (viii) ARG-EQUIVALENCE PIN, the `Some(source.id)` ARGUMENT specifically ──
+        // CR 109.1: `FilterProp::Another` is `source_id.is_some_and(|s| record.object_id != s)`.
+        // The class member is NOT the ability source, so with the source id supplied the
+        // matcher answers MATCH and relief must be REFUSED. Dropping `Some(source.id)` to
+        // `None` makes `Another` answer `false`, the filter stops matching, and relief is
+        // wrongly GRANTED — so this arm flips to FAIL on exactly that one-argument change,
+        // which arms (i)-(vii) cannot see (none of their filters carries a `FilterProp`).
+        exec_artifact.condition = Some(ledger_condition(typed(
+            TypeFilter::Creature,
+            vec![FilterProp::Another],
+        )));
+        assert_ne!(
+            member, source.id,
+            "(viii) reach-guard: the class member must NOT be the ability source, else \
+             `Another` excludes it for the wrong reason"
+        );
+        assert!(
+            !execute_ledger_condition_provably_excludes_class(
+                &exec_artifact,
+                &state,
+                member,
+                &source
+            ),
+            "(viii) with `Some(source.id)` supplied, `Typed{{Creature,[Another]}}` MATCHES \
+             the class member (it is another object), so relief must be refused. Dropping \
+             that argument silently changes the verdict — the ARG-EQUIVALENCE PIN."
+        );
+
+        // ── (ix) conjunct (b)'s `rhs: Fixed` REQUIREMENT, pinned ──
+        // The shape match reads `lhs` and conjunct (c) only interrogates the lhs filter, so
+        // an rhs-position board read would go completely unexamined. Requiring `rhs: Fixed`
+        // is what forecloses that: a comparison whose rhs is itself a `QuantityRef` falls to
+        // conjunct (b)'s `_` arm and KEEPS the veto. Dropping the requirement flips this
+        // arm — no other arm carries a non-`Fixed` rhs, and conjunct (a) cannot catch it
+        // (the clone-and-rescan clears the whole `condition`, rhs included).
+        exec_artifact.condition = Some(AbilityCondition::QuantityCheck {
+            lhs: QuantityExpr::Ref {
+                qty: QuantityRef::BattlefieldEntriesThisTurn {
+                    player: PlayerScope::Controller,
+                    filter: typed(TypeFilter::Artifact, vec![]),
+                },
+            },
+            comparator: Comparator::LE,
+            rhs: QuantityExpr::Ref {
+                qty: QuantityRef::ObjectCount {
+                    filter: typed(TypeFilter::Creature, vec![]),
+                },
+            },
+        });
+        assert!(
+            !execute_ledger_condition_provably_excludes_class(
+                &exec_artifact,
+                &state,
+                member,
+                &source
+            ),
+            "(ix) an rhs-position board read is never interrogated by conjunct (c), so \
+             conjunct (b)'s `rhs: Fixed` requirement must keep the veto"
         );
     }
 
