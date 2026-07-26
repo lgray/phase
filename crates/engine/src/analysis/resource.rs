@@ -903,8 +903,9 @@ pub fn board_delta(before: &GameState, after: &GameState) -> BoardDelta {
 ///
 /// The `_scoped` predicates below stay identity for [`LoopWindowScope::unproven`]
 /// (asserted by `scoped_wrappers_are_identity`) because every guard that reads a field
-/// sits inside an `if let Some(..)`. `phase_invariant` and `sole_driver` ARE now read —
-/// by the growing-class firewall's CR 510.2 / CR 506.1 and CR 117.1b guards — so the
+/// sits inside an `if let Some(..)` / `is_some_and`. `phase_invariant` and `sole_driver`
+/// ARE now read — by the growing-class firewall's CR 510.2 / CR 506.1 and CR 117.1b
+/// guards — and `cast_card_ids` by the projected firewall's CR 601.2f cost guard, so the
 /// scope is no longer write-only; `pinned_slots` is the remaining unread field.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct LoopWindowScope<'a> {
@@ -926,7 +927,6 @@ pub(crate) struct LoopWindowScope<'a> {
     /// CR 601.2f (cost determination reads static cost modifiers): `Some(ids)` iff the
     /// caller proved the EXACT set of card ids this window casts — `Some(&[])` for a
     /// window that provably casts nothing. `None` means NO PROOF, i.e. scan everything.
-    #[allow(dead_code)] // write-only until the projected firewall's cost guard lands.
     cast_card_ids: Option<&'a [CardId]>,
 }
 
@@ -1041,11 +1041,36 @@ pub(crate) fn loop_states_cover_modulo_growth(prior: &GameState, current: &GameS
     loop_states_cover_modulo_growth_scoped(prior, current, LoopWindowScope::unproven())
 }
 
+/// CR 601.2f + CR 601.2a: the set of card ids this loop window's recorded driving
+/// sequence touches — a SUPERSET of the true cast set (only `LoopAction::Recast`
+/// genuinely casts, CR 601.2a; `Activate` and `TapLandForMana` do not), which is the
+/// CONSERVATIVE direction: over-stating the cast set makes `!ids.contains(..)` false
+/// more often ⇒ fewer relieved defs ⇒ more vetoes.
+///
+/// FAIL-CLOSED ON EMPTY, and this is the whole reason the function exists: an empty
+/// `last_loop_action_sequence` means NO RECORDED PROOF, not "this window casts
+/// nothing". `Some(vec![])` would assert the latter and relieve EVERY conditioned
+/// self-cost static — relief in the forbidden direction. `None` = scan everything.
+/// Pinned by `empty_loop_action_sequence_proves_nothing_about_casting`.
+fn window_cast_card_ids(state: &GameState) -> Option<Vec<CardId>> {
+    let ids: Vec<CardId> = state
+        .last_loop_action_sequence
+        .iter()
+        .map(|ctx| ctx.card_id)
+        .collect();
+    if ids.is_empty() {
+        None
+    } else {
+        Some(ids)
+    }
+}
+
 /// Scoped sibling of [`loop_states_cover_modulo_growth`] — see [`LoopWindowScope`].
-/// Identical to the 2-arg wrapper for `LoopWindowScope::unproven()` **by
-/// construction**: the scope reaches no branch in this body yet. It is the seam a
-/// later phase narrows the fail-closed guards through, so the proof surface exists
-/// at the call sites that can supply it without any behaviour moving now.
+/// The `_scope` PARAMETER is still unread: this body's own axis is the PROJECTED
+/// firewall, and the scope parameter is the seam for the SIBLING covers. The projected
+/// scope conjunct (5) passes downstream is therefore derived LOCALLY, from `current`'s
+/// own driving sequence ([`window_cast_card_ids`]) — so behaviour does move through
+/// this body even though the parameter does not carry it.
 pub(crate) fn loop_states_cover_modulo_growth_scoped(
     prior: &GameState,
     current: &GameState,
@@ -1100,7 +1125,21 @@ pub(crate) fn loop_states_cover_modulo_growth_scoped(
     }
 
     // (5) Off-stack fail-closed fire-time condition guard (the second read surface).
-    if fire_time_conditions_read_projected_resource(current) {
+    // CR 601.2f: `cast_ids` is bound BEFORE `projected_scope` so NLL keeps the borrow
+    // live across the call (`LoopWindowScope::cast_card_ids` is `Option<&'a [CardId]>`).
+    let cast_ids = window_cast_card_ids(current);
+    // All four fields written explicitly — no functional-update base, so there is no
+    // `LoopWindowScope<'static>` -> `LoopWindowScope<'_>` variance question to reason
+    // about, and a future FIFTH field is a compile error that forces a decision rather
+    // than a silent default. The other three stay at their `unproven()` values: 2b's
+    // axis is `projected`, and the sibling proofs belong to the sibling covers.
+    let projected_scope = LoopWindowScope {
+        phase_invariant: None,
+        sole_driver: None,
+        pinned_slots: &[],
+        cast_card_ids: cast_ids.as_deref(),
+    };
+    if fire_time_conditions_read_projected_resource_scoped(current, projected_scope) {
         return false;
     }
 
@@ -2767,10 +2806,12 @@ fn fire_time_conditions_read_projected_resource(state: &GameState) -> bool {
 }
 
 /// Scoped sibling of [`fire_time_conditions_read_projected_resource`] — see
-/// [`LoopWindowScope`]. Identity in the scope by construction today.
+/// [`LoopWindowScope`]. Reads `scope.cast_card_ids` (CR 601.2f, block (iii-static));
+/// that guard sits inside an `is_some_and`, so [`LoopWindowScope::unproven`] never
+/// reaches it and the 2-arg wrapper stays identity (`scoped_wrappers_are_identity`).
 fn fire_time_conditions_read_projected_resource_scoped(
     state: &GameState,
-    _scope: LoopWindowScope<'_>,
+    scope: LoopWindowScope<'_>,
 ) -> bool {
     // (i) Trigger fire-time intervening-if conditions (CR 603.4). `active_trigger_
     // definitions` is the liveness authority (CR 702.26b phased-out + CR 114.4
@@ -2837,6 +2878,24 @@ fn fire_time_conditions_read_projected_resource_scoped(
             // growing-class firewall's block (4) fix; keeps graveyard/exile-
             // functional statics and command emblems, drops inert deck/hand cards).
             if !crate::game::functioning_abilities::static_functions_in_zone(obj, def) {
+                continue;
+            }
+            // CR 601.2f vs CR 604.1 / CR 613.1: a self-cost modifier on a card the
+            // window provably never casts cannot modify any cost paid inside the
+            // window, so its condition's read of a projected resource is not an
+            // observation of the loop. Fail-closed on `cast_card_ids: None` (no proof
+            // ⇒ scan everything); `Some(&[])` can never arise (see
+            // `window_cast_card_ids`).
+            if matches!(
+                def.mode,
+                crate::types::statics::StaticMode::ModifyCost { .. }
+            ) && matches!(
+                def.affected,
+                Some(crate::types::ability::TargetFilter::SelfRef)
+            ) && scope
+                .cast_card_ids
+                .is_some_and(|ids| !ids.contains(&obj.card_id))
+            {
                 continue;
             }
             if def
@@ -8003,6 +8062,444 @@ mod tests {
                 "untargeted twin: the same board with no published slot bounds identically"
             );
         }
+    }
+
+    /// A conditioned SELF-cost-modifying static (CR 601.2f) on a card sitting in
+    /// `zone`, whose condition reads a PROJECTED player resource (life gained this
+    /// turn). This is dump-D's Mortality Spear shape: a `ModifyCost` whose `affected`
+    /// is `SelfRef`, visible from a never-cast-from zone.
+    fn conditioned_self_cost_static_board(zone: Zone, card_id: u64) -> GameState {
+        use crate::types::ability::{
+            Comparator, PlayerScope, QuantityExpr, QuantityRef, StaticCondition, StaticDefinition,
+            TargetFilter,
+        };
+        use crate::types::mana::ManaCost;
+        use crate::types::statics::{CostModifyMode, StaticMode};
+
+        let mut state = GameState::new_two_player(7);
+        state.phase = Phase::PreCombatMain;
+        let oid = ObjectId(500);
+        let mut object = crate::game::game_object::GameObject::new(
+            oid,
+            CardId(card_id),
+            PlayerId(0),
+            "Conditioned Cost Static".to_string(),
+            zone,
+        );
+        object.static_definitions = vec![StaticDefinition::new(StaticMode::ModifyCost {
+            mode: CostModifyMode::Reduce,
+            amount: ManaCost::NoCost,
+            spell_filter: None,
+            dynamic_count: None,
+        })
+        .affected(TargetFilter::SelfRef)
+        .condition(StaticCondition::QuantityComparison {
+            lhs: QuantityExpr::Ref {
+                qty: QuantityRef::LifeGainedThisTurn {
+                    player: PlayerScope::Controller,
+                },
+            },
+            comparator: Comparator::GE,
+            rhs: QuantityExpr::Fixed { value: 1 },
+        })
+        .active_zones(vec![
+            Zone::Hand,
+            Zone::Stack,
+            Zone::Command,
+            Zone::Graveyard,
+            Zone::Exile,
+            Zone::Library,
+            Zone::Battlefield,
+        ])]
+        .into();
+        state.objects.insert(oid, object);
+        if zone == Zone::Battlefield {
+            state.battlefield.push_back(oid);
+        }
+        state
+    }
+
+    /// X4-1 — CR 601.2f. A conditioned SELF-cost modifier on a card the window
+    /// provably never casts cannot modify any cost paid inside the window, so its
+    /// condition's projected read is not an observation of the loop. Asserted across
+    /// FOUR never-cast-from zones, each with its own positive control: the UNSCOPED
+    /// call (`cast_card_ids: None`, no proof) still vetoes in all four.
+    ///
+    /// REVERT-PROBES:
+    /// * delete the `continue` ⇒ all four scoped assertions FAIL.
+    /// * drop the `ModifyCost` conjunct ⇒ the `Continuous` sibling below is wrongly
+    ///   relieved ⇒ FAILS.
+    /// * drop the `Some(TargetFilter::SelfRef)` conjunct ⇒ the affects-others sibling
+    ///   below is wrongly relieved ⇒ FAILS.
+    #[test]
+    fn a_conditioned_cost_static_in_a_zone_the_window_never_casts_from_does_not_observe() {
+        use crate::types::ability::TargetFilter;
+        use crate::types::statics::StaticMode;
+
+        // A card id the window's driving sequence does NOT contain.
+        let never_cast = [CardId(999)];
+
+        for zone in [Zone::Library, Zone::Hand, Zone::Graveyard, Zone::Exile] {
+            let state = conditioned_self_cost_static_board(zone, 500);
+
+            // POSITIVE CONTROL for this zone: with NO proof the firewall still vetoes.
+            assert!(
+                fire_time_conditions_read_projected_resource(&state),
+                "X4-1 control ({zone:?}): `cast_card_ids: None` is NO PROOF, so the \
+                 conservative veto must be preserved"
+            );
+
+            let scope = LoopWindowScope {
+                phase_invariant: None,
+                sole_driver: None,
+                pinned_slots: &[],
+                cast_card_ids: Some(&never_cast),
+            };
+            assert!(
+                !fire_time_conditions_read_projected_resource_scoped(&state, scope),
+                "X4-1 ({zone:?}): CR 601.2f — the window provably never casts this card, \
+                 so its self-cost modifier cannot modify any cost paid inside the window"
+            );
+        }
+
+        // NON-BLANKET siblings, both in the SAME never-cast-from zone with the SAME
+        // proof: only a `ModifyCost` + `SelfRef` static may be relieved.
+        let mut not_modify_cost = conditioned_self_cost_static_board(Zone::Library, 500);
+        {
+            let obj = not_modify_cost.objects.get_mut(&ObjectId(500)).unwrap();
+            let mut defs: Vec<_> = obj.static_definitions.iter_all().cloned().collect();
+            defs[0].mode = StaticMode::Continuous;
+            obj.static_definitions = defs.into();
+        }
+        let scope = LoopWindowScope {
+            phase_invariant: None,
+            sole_driver: None,
+            pinned_slots: &[],
+            cast_card_ids: Some(&never_cast),
+        };
+        assert!(
+            fire_time_conditions_read_projected_resource_scoped(&not_modify_cost, scope),
+            "X4-1: a NON-`ModifyCost` static with the same condition is NOT a cost \
+             modifier, so CR 601.2f's argument does not apply — keep vetoing"
+        );
+
+        let mut affects_others = conditioned_self_cost_static_board(Zone::Library, 500);
+        {
+            let obj = affects_others.objects.get_mut(&ObjectId(500)).unwrap();
+            let mut defs: Vec<_> = obj.static_definitions.iter_all().cloned().collect();
+            defs[0].affected = Some(TargetFilter::Any);
+            obj.static_definitions = defs.into();
+        }
+        assert!(
+            fire_time_conditions_read_projected_resource_scoped(&affects_others, scope),
+            "X4-1: a cost modifier affecting OTHER objects can modify a cost paid in the \
+             window even though its own card is never cast — keep vetoing"
+        );
+    }
+
+    /// X4-2 — the matched negative that kills the lazy-but-unsound X4. The SAME static
+    /// on a card whose id IS in the window's cast set keeps vetoing: the window does
+    /// cast it, so its self-cost modifier does apply inside the window.
+    ///
+    /// REVERT-PROBE: replace the guard with a bare `ModifyCost ⇒ continue` ⇒ FAILS.
+    #[test]
+    fn a_cost_static_on_a_card_the_loop_recasts_still_vetoes() {
+        let state = conditioned_self_cost_static_board(Zone::Hand, 500);
+        let recast = [CardId(500)];
+        let scope = LoopWindowScope {
+            phase_invariant: None,
+            sole_driver: None,
+            pinned_slots: &[],
+            cast_card_ids: Some(&recast),
+        };
+        assert!(
+            fire_time_conditions_read_projected_resource_scoped(&state, scope),
+            "X4-2: CR 601.2f — the window DOES cast this card, so its conditioned \
+             self-cost modifier is read inside the window and must keep vetoing"
+        );
+
+        // PAIRED POSITIVE (same board, one variable — the cast set): a different id is
+        // relieved, so the assertion above is not a constant.
+        let other = [CardId(501)];
+        let relieved_scope = LoopWindowScope {
+            phase_invariant: None,
+            sole_driver: None,
+            pinned_slots: &[],
+            cast_card_ids: Some(&other),
+        };
+        assert!(
+            !fire_time_conditions_read_projected_resource_scoped(&state, relieved_scope),
+            "X4-2 paired positive: the identical board with the card OUT of the cast set \
+             IS relieved — the only variable is membership"
+        );
+    }
+
+    /// X4-5 — THE `:1038` BINDING EXPRESSION, pinned through the PRODUCTION entry point.
+    ///
+    /// X4-4 tests [`window_cast_card_ids`] directly and X4-1 uses a hand-built scope, so
+    /// neither pins the premise *"conjunct (5) derives `cast_card_ids` from
+    /// `window_cast_card_ids(current)`, fail-closed"*. Measured: writing
+    /// `Some(cast_ids.as_deref().unwrap_or(&[]))` at that binding re-opens the fail-open
+    /// and every other X4 row still passes. This row closes that gap: it drives
+    /// [`loop_states_cover_modulo_growth`] — the real 2-arg production predicate, which
+    /// `loop_check.rs` calls with NO non-empty-sequence precondition — over a covering
+    /// frame pair carrying a library-visible conditioned self-cost static.
+    ///
+    /// MATCHED PAIR, one variable (the recorded driving sequence):
+    /// * half A — EMPTY sequence ⇒ no proof ⇒ the guard is fail-closed ⇒ conjunct (5)
+    ///   rejects the cover.
+    /// * half B — a one-entry sequence naming a DIFFERENT card ⇒ proof ⇒ relieved ⇒ the
+    ///   cover holds.
+    ///
+    /// REVERT-PROBES, both measured to flip half A:
+    /// * bind `Some(cast_ids.as_deref().unwrap_or(&[]))` instead of `cast_ids.as_deref()`.
+    /// * make `window_cast_card_ids` return `Some(ids)` unconditionally.
+    #[test]
+    fn empty_sequence_keeps_the_projected_cost_veto_through_the_production_cover() {
+        use crate::types::ability::{
+            Comparator, PlayerScope, QuantityExpr, QuantityRef, StaticCondition, StaticDefinition,
+            TargetFilter,
+        };
+        use crate::types::game_state::{BuybackUsage, LoopAction, LoopActionContext};
+        use crate::types::mana::ManaCost;
+        use crate::types::statics::{CostModifyMode, StaticMode};
+
+        const STATIC_CARD: CardId = CardId(90);
+        const DRIVER_CARD: CardId = CardId(64);
+
+        // A library-resident conditioned SELF-cost static, added identically to BOTH
+        // frames so it cannot perturb the board-equality conjuncts (1)-(4).
+        let add_static = |state: &mut GameState| {
+            let oid = ObjectId(700);
+            let mut object = crate::game::game_object::GameObject::new(
+                oid,
+                STATIC_CARD,
+                PlayerId(0),
+                "Library Cost Static".to_string(),
+                Zone::Library,
+            );
+            object.static_definitions = vec![StaticDefinition::new(StaticMode::ModifyCost {
+                mode: CostModifyMode::Reduce,
+                amount: ManaCost::NoCost,
+                spell_filter: None,
+                dynamic_count: None,
+            })
+            .affected(TargetFilter::SelfRef)
+            .condition(StaticCondition::QuantityComparison {
+                lhs: QuantityExpr::Ref {
+                    qty: QuantityRef::LifeGainedThisTurn {
+                        player: PlayerScope::Controller,
+                    },
+                },
+                comparator: Comparator::GE,
+                rhs: QuantityExpr::Fixed { value: 1 },
+            })
+            .active_zones(vec![Zone::Library, Zone::Hand, Zone::Stack])]
+            .into();
+            state.objects.insert(oid, object);
+        };
+
+        // REACH-GUARD: the untouched pair covers, so any `false` below is caused by the
+        // static and not by an upstream conjunct.
+        let (bare_prior, bare_current) = cover_base();
+        assert!(
+            loop_states_cover_modulo_growth(&bare_prior, &bare_current),
+            "reach-guard: the base frame pair must COVER, else conjuncts (1)-(4) dominate"
+        );
+
+        // ── half A: empty driving sequence ⇒ NO PROOF ⇒ the veto survives ──
+        let (mut prior, mut current) = cover_base();
+        add_static(&mut prior);
+        add_static(&mut current);
+        assert!(
+            current.last_loop_action_sequence.is_empty(),
+            "half A precondition: no recorded driving sequence"
+        );
+        assert!(
+            !loop_states_cover_modulo_growth(&prior, &current),
+            "half A: an EMPTY `last_loop_action_sequence` proves NOTHING about what the \
+             window casts, so the conditioned self-cost static must keep its veto and \
+             conjunct (5) must reject. `Some(&[])` here would assert `this window casts \
+             nothing` and relieve every such static — the forbidden direction."
+        );
+
+        // ── half B: a real one-entry sequence naming a DIFFERENT card ⇒ relieved ──
+        let ctx = LoopActionContext {
+            card_id: DRIVER_CARD,
+            controller: PlayerId(0),
+            action: LoopAction::Recast {
+                from_zone: Zone::Hand,
+                uses_buyback: BuybackUsage::Used,
+            },
+            convoke: None,
+            pins: Vec::new(),
+        };
+        prior.last_loop_action_sequence = vec![ctx.clone()];
+        current.last_loop_action_sequence = vec![ctx];
+        assert_ne!(DRIVER_CARD, STATIC_CARD);
+        assert!(
+            loop_states_cover_modulo_growth(&prior, &current),
+            "half B: with the cast set PROVEN and the static's card outside it, CR 601.2f \
+             says the modifier cannot apply inside the window ⇒ the cover holds"
+        );
+    }
+
+    /// X4-4 — [`window_cast_card_ids`]'s emptiness contract, called DIRECTLY so no cover
+    /// conjunct can dominate it. An empty `last_loop_action_sequence` means NO RECORDED
+    /// PROOF, not "this window casts nothing": `Some(vec![])` would assert the latter
+    /// and relieve EVERY conditioned self-cost static.
+    ///
+    /// REVERT-PROBE: replace `if ids.is_empty() { None } else { Some(ids) }` with a bare
+    /// `Some(ids)` ⇒ assertion (1) FAILS while (2) still passes ⇒ the probe is isolated
+    /// to the emptiness test.
+    ///
+    /// ⛔ WHAT THIS ROW DOES NOT CLAIM: it does not assert "and the X4-1 static still
+    /// vetoes". That half is carried by X4-1's own UNSCOPED arm
+    /// (`LoopWindowScope::unproven()` has `cast_card_ids: None`, measured `true` on all
+    /// four zones). The end-to-end property is the COMPOSITION of two directly-tested
+    /// seams — X4-4 (`empty ⇒ None`) and X4-1 (`None ⇒ veto`) — and is stated as a
+    /// composition, not asserted as a third row.
+    #[test]
+    fn empty_loop_action_sequence_proves_nothing_about_casting() {
+        use crate::types::game_state::{BuybackUsage, LoopAction, LoopActionContext};
+
+        let mut state = GameState::new_two_player(7);
+        assert!(state.last_loop_action_sequence.is_empty());
+        assert_eq!(
+            window_cast_card_ids(&state),
+            None,
+            "(1) an empty driving sequence is NO PROOF — `Some(vec![])` would assert \
+             `this window casts nothing` and relieve every conditioned self-cost static"
+        );
+
+        // (2) PAIRED POSITIVE. `action` is not load-bearing here (the derivation reads
+        // only `card_id`); `Recast` is the cheapest to construct.
+        state.last_loop_action_sequence = vec![LoopActionContext {
+            card_id: CardId(64),
+            controller: PlayerId(0),
+            action: LoopAction::Recast {
+                from_zone: Zone::Hand,
+                uses_buyback: BuybackUsage::Used,
+            },
+            convoke: None,
+            pins: Vec::new(),
+        }];
+        assert_eq!(
+            window_cast_card_ids(&state),
+            Some(vec![CardId(64)]),
+            "(2) a one-entry sequence yields exactly that card id"
+        );
+    }
+
+    /// X4-3 — the REAL 4-player Dina/Conqueror capture (`dina_conqueror_4p.json.gz`),
+    /// loaded through the production restore chokepoint
+    /// `PersistedGameState::into_game_state`. It carries dump-D obj 90 **Mortality
+    /// Spear** in P0's LIBRARY: a conditioned `ModifyCost` static whose `affected` is
+    /// `SelfRef` and whose `active_zones` make it visible from the library — exactly
+    /// X4's subject, on a board nobody synthesized.
+    ///
+    /// MEASURED on this board (which is what makes the flip attributable): the Spear's
+    /// static is the **ONLY** projected-resource-reading fire-time surface in the entire
+    /// dump — 1 static, 0 trigger conditions — so the unscoped `true` is caused by it
+    /// alone and the scoped `false` cannot come from anything else.
+    ///
+    /// ⛔ NO OFFER CLAIM IS MADE HERE. 2b's deliverable-visible acceptance is that it
+    /// changes nothing observable (an empty `combo-verify` rowdiff); this row asserts the
+    /// SEAM, not a shortcut offer.
+    ///
+    /// REVERT-PROBE: delete X4's `continue` in
+    /// `fire_time_conditions_read_projected_resource_scoped` block (iii-static) ⇒ the
+    /// scoped half returns `true` ⇒ FAILS. Both directions are probed in this one row:
+    /// the unscoped call is the positive control for the scoped call.
+    #[test]
+    fn dina_untargeted_drain_4p_cover_is_not_vetoed_by_a_library_cost_static() {
+        use crate::types::ability::TargetFilter;
+        use crate::types::statics::StaticMode;
+        use std::io::Read;
+
+        let gz = include_bytes!("../../tests/fixtures/dina_conqueror_4p.json.gz");
+        let mut json = String::new();
+        flate2::read::GzDecoder::new(&gz[..])
+            .read_to_string(&mut json)
+            .expect("fixture .json.gz must inflate to UTF-8 JSON");
+        let envelope: serde_json::Value =
+            serde_json::from_str(&json).expect("dump envelope parses as JSON");
+        let raw: GameState = serde_json::from_value(envelope["gameState"].clone())
+            .expect("the real 4p gameState must deserialize into the current GameState");
+        let state =
+            crate::types::game_state::PersistedGameState::Raw(Box::new(raw)).into_game_state();
+
+        // ── reach-guards: the X4 subject really is present, in a never-cast-from zone ──
+        let spear = state
+            .objects
+            .get(&ObjectId(90))
+            .expect("dump-D obj 90 is present");
+        assert_eq!(spear.name, "Mortality Spear");
+        assert_eq!(
+            spear.zone,
+            Zone::Library,
+            "the subject is visible from a zone the window never casts from"
+        );
+        let subjects: Vec<_> = state
+            .objects
+            .values()
+            .filter(|o| {
+                o.static_definitions.iter_all().any(|d| {
+                    matches!(d.mode, StaticMode::ModifyCost { .. })
+                        && matches!(d.affected, Some(TargetFilter::SelfRef))
+                        && d.condition.is_some()
+                })
+            })
+            .map(|o| (o.id, o.name.clone(), o.zone))
+            .collect();
+        assert_eq!(
+            subjects.len(),
+            1,
+            "ATTRIBUTION reach-guard: the dump must carry EXACTLY ONE conditioned \
+             self-cost static, else the flip below is not attributable to it; got \
+             {subjects:?}"
+        );
+
+        // ── POSITIVE CONTROL: with no proof, the real board vetoes ──
+        assert!(
+            fire_time_conditions_read_projected_resource(&state),
+            "X4-3 control: `cast_card_ids: None` is NO PROOF, so the real 4p board must \
+             keep its conservative veto"
+        );
+
+        // ── the window provably casts something else (any id but the Spear's) ──
+        let spear_card = spear.card_id;
+        let cast = [CardId(spear_card.0 + 1)];
+        assert!(!cast.contains(&spear_card));
+        let scope = LoopWindowScope {
+            phase_invariant: None,
+            sole_driver: None,
+            pinned_slots: &[],
+            cast_card_ids: Some(&cast),
+        };
+        assert!(
+            !fire_time_conditions_read_projected_resource_scoped(&state, scope),
+            "X4-3: CR 601.2f — the window provably never casts Mortality Spear, so its \
+             library-visible self-cost modifier cannot modify any cost paid inside the \
+             window and must not veto the cover. \
+             ⛔ PRE-REGISTERED FAILURE BRANCH: if this fails, name the NEXT rejecting \
+             surface (the measurement above says the Spear is the only one) and its call \
+             count in the PR body, and STOP — do not widen the guard."
+        );
+
+        // ── non-blanket: the SAME board with the Spear IN the cast set keeps vetoing ──
+        let recast = [spear_card];
+        let recast_scope = LoopWindowScope {
+            phase_invariant: None,
+            sole_driver: None,
+            pinned_slots: &[],
+            cast_card_ids: Some(&recast),
+        };
+        assert!(
+            fire_time_conditions_read_projected_resource_scoped(&state, recast_scope),
+            "X4-3 matched negative: a window that DOES cast the Spear keeps its veto — \
+             the only variable is cast-set membership"
+        );
     }
 
     /// G6-1 — ROUTER BYTE-IDENTITY. `counter_growth_is_observed` (`:2923`) and
