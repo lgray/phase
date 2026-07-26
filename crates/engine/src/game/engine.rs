@@ -3787,17 +3787,27 @@ fn pass_priority_once_with_pipeline(
         } else if !wf.is_forced_cascade_window() {
             state.loop_detect_ring.clear();
         }
-        // CR 603.3b/603.3d/603.5/608.2/903.9a + CR 732.2a: leave the ring intact on every
-        // FORCED PRE-PRIORITY window, not just trigger ordering. `is_forced_cascade_window`
-        // is the single authority for that class (the other clear site,
-        // `apply_action`, consults the same predicate); it holds exactly the windows at
-        // which no player has priority, so answering one is a forced step of putting
-        // triggers on the stack / finishing a resolution, never a settle or a deliberate
-        // break. The stack is momentarily shrunk or empty at these windows (an ordering
-        // batch is staged in `pending_trigger_order`; a mid-resolution "may" pause has
-        // already popped its entry), so without this arm the accumulated
-        // `Priority{active}` samples would be discarded and a self-refilling
-        // multi-trigger loop could never reach CR 732.2a detection.
+        // CR 603.3b/603.3d/603.5/608.2/903.9a + CR 703.1/117.3a + CR 732.2a: leave the
+        // ring intact on every FORCED PRE-PRIORITY window, not just trigger ordering.
+        // `is_forced_cascade_window` is the single authority for that class (the other
+        // clear site, `apply_action`, consults the same predicate); it holds exactly the
+        // windows at which no player has priority — the forced steps of putting triggers
+        // on the stack / finishing a resolution, plus the CR 703.1 turn-based actions
+        // CR 117.3a places before the step's own grant of priority — so answering one is
+        // never a settle or a deliberate break. The stack is momentarily shrunk or empty
+        // at these windows (an ordering batch is staged in `pending_trigger_order`; a
+        // mid-resolution "may" pause has already popped its entry; a turn-based window
+        // opens between phases with the stack drained), so without this arm the
+        // accumulated `Priority{active}` samples would be discarded and a self-refilling
+        // multi-trigger loop could never reach CR 732.2a detection. The turn-based
+        // members buy RING SURVIVAL across a turn boundary — necessary but not yet
+        // sufficient for the cross-turn shortcut CR 732.2a contemplates ("may even cross
+        // multiple turns"), because `loop_states_equal` still compares `turn_number`
+        // (via `impl PartialEq for GameState`, un-neutralized by `normalize_for_loop` and
+        // `project_out_resources`), so no cross-turn pair certifies today. The measured
+        // justification is the wipe itself: without these members the Fantastic Four dump
+        // force-clears the ring once per 99-beat turn period at declare-attackers,
+        // capping it at 2 frames where the widened class reaches 13.
     }
     // No else-branch: a bare handoff or an empty-stack pass-to-advance-phase does NOT
     // touch the ring (leave-intact), so accumulation survives the inter-resolution beats.
@@ -4533,7 +4543,8 @@ fn apply_action(
     // not a deliberate action). Every other action (cast/activate/play-land) is a
     // deliberate break and still invalidates the ring.
     //
-    // CR 603.3d / CR 603.5 + CR 608.2 / CR 903.9a: the second conjunct keys on the
+    // CR 603.3d / CR 603.5 + CR 608.2 / CR 903.9a / CR 703.1 + CR 117.3a: the second
+    // conjunct keys on the
     // WINDOW BEING ANSWERED, not on the action, because `state.waiting_for` has not been
     // reduced yet here — the very next statement reads `state.waiting_for.acting_player()`
     // for `semantic_actor`. Answering a forced pre-priority window is not a deliberate
@@ -4543,6 +4554,12 @@ fn apply_action(
     // than the action also covers every answering variant at once — an action-keyed list
     // would need `ChooseTarget`, `SelectTargets`, `DecideOptionalEffect` AND
     // `DecideOptionalEffectAndRemember`, and would silently miss the next one added.
+    // Widening the class to the CR 703.1 turn-based windows makes that the decisive
+    // argument rather than a convenience one: the same conjunct picked up
+    // `DeclareAttackers`, `DeclareBlockers`, `ChooseUntap`, `ChooseExert`, `ChooseEnlist`
+    // and the `SelectCards` that answers `DiscardToHandSize` with no edit here — and
+    // `SelectCards` in particular is answer-overloaded across a dozen unrelated windows,
+    // so an action-keyed list could not have expressed the class correctly at all.
     // `PassPriority` keeps its own action-side exemption because it is answered at a
     // `Priority` window, which is deliberately NOT in the forced class.
     if !matches!(

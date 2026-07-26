@@ -7129,28 +7129,130 @@ mod tests {
         );
     }
 
-    /// Candidate windows for the Seam A cast proof. This list deliberately includes
-    /// `Priority`, which is NOT exempt today: the caller filters it through
-    /// `is_forced_cascade_window` itself, so widening that predicate widens what the
-    /// proof row has to prove. A hardcoded exempt-only list would make the row's
-    /// revert-probe inert (measured: adding `Priority` to the class left it green).
-    /// Keep this list in step with the predicate's members — a member absent from here
-    /// is simply never proved.
-    fn cast_proof_candidate_windows() -> Vec<(&'static str, crate::types::game_state::WaitingFor)> {
+    /// Candidate windows for the Seam A cast proof, each paired with its EXPECTED
+    /// `is_forced_cascade_window` membership.
+    ///
+    /// The `bool` is what makes drift loud in BOTH directions, and it exists because the
+    /// caller previously derived its obligation by FILTERING this list through the very
+    /// predicate under test: deleting a member then silently shrank the proof obligation
+    /// and left the row green (measured — a reviewer's revert probe deleted seven members
+    /// and the row still passed). With an expected-membership column, deleting a member
+    /// fails its `true` row and adding one of the listed non-members fails its `false`
+    /// row. The list is the authority; the predicate is the thing being measured against
+    /// it. A member absent from here is still simply never proved — see the `ponytail:`
+    /// note on the caller for that residual and its upgrade path.
+    ///
+    /// `on_board` must be objects that really exist ON THE BATTLEFIELD in the caller's
+    /// state and `in_hand` a card that really exists in hand: the turn-based windows
+    /// carry object references the per-viewer legal-action enumerator dereferences, and
+    /// each reference has a zone the window implies — untap candidates, the exerting /
+    /// enlisting attacker and the enlist-eligible creature are battlefield permanents
+    /// (CR 502.3 / CR 508.1g), while `DiscardToHandSize` names cards in hand (CR 514.1).
+    /// Passing a hand card as an untap candidate measures a window no rules path can
+    /// produce.
+    ///
+    /// Same requirement, one level deeper: a window whose payload the enumerator needs
+    /// but the fixture leaves at `Default::default()` produces ZERO actions of any kind,
+    /// so "it enumerates no cast" is inert rather than measured. `attacker` is an
+    /// OPPOSING battlefield creature the caller has also entered into `state.combat`, so
+    /// the CR 509.1 window offers a real block. The caller's per-window reach-guard is
+    /// what keeps that requirement enforced instead of documented.
+    fn cast_proof_candidate_windows(
+        on_board: [ObjectId; 2],
+        in_hand: ObjectId,
+        attacker: ObjectId,
+    ) -> Vec<(&'static str, crate::types::game_state::WaitingFor, bool)> {
         use crate::types::game_state::WaitingFor;
         vec![
             (
-                "Priority{active} (NOT exempt — the positive control)",
+                "Priority{active} — CR 704.3 SBA point; NOT exempt, and the positive control",
                 WaitingFor::Priority {
                     player: PlayerId(0),
                 },
+                false,
+            ),
+            (
+                "Priority{non-active} — same, and the sampler's ring-clearing arm",
+                WaitingFor::Priority {
+                    player: PlayerId(1),
+                },
+                false,
+            ),
+            (
+                "RedistributeLifeTotals — a window that CAN MOVE LIFE, so never exempt",
+                WaitingFor::RedistributeLifeTotals {
+                    player: PlayerId(0),
+                    options: Vec::new(),
+                },
+                false,
+            ),
+            (
+                "AssignCombatDamage — turn-based (CR 510.1c) but CR 510.2 deals the damage \
+                 with no intervening priority, so it MOVES LIFE",
+                WaitingFor::AssignCombatDamage {
+                    player: PlayerId(0),
+                    attacker_id: on_board[0],
+                    total_damage: 2,
+                    blockers: Vec::new(),
+                    assignment_modes: Vec::new(),
+                    trample: None,
+                    defending_player: PlayerId(1),
+                    attack_target: crate::game::combat::default_attack_target(),
+                    pw_loyalty: None,
+                    pw_controller: None,
+                },
+                false,
+            ),
+            (
+                "CombatTaxPayment — CR 508.1h / CR 509.1d cost sub-step; a Phyrexian tax \
+                 symbol is paid with 2 life (CR 107.4f), so it MOVES LIFE",
+                WaitingFor::CombatTaxPayment {
+                    player: PlayerId(0),
+                    context: crate::types::game_state::CombatTaxContext::Attacking,
+                    total_cost: crate::types::mana::ManaCost::Cost {
+                        shards: vec![crate::types::mana::ManaCostShard::PhyrexianWhite],
+                        generic: 0,
+                    },
+                    per_creature: Vec::new(),
+                    pending: crate::types::game_state::CombatTaxPending::Attack {
+                        attacks: Vec::new(),
+                        bands: Vec::new(),
+                    },
+                },
+                false,
             ),
             (
                 "OrderTriggers (CR 603.3b)",
                 WaitingFor::OrderTriggers {
                     player: PlayerId(0),
-                    triggers: Vec::new(),
+                    // TWO summaries, matching the two-trigger group the caller puts in
+                    // `state.pending_trigger_order`: `order_triggers_candidates` is keyed
+                    // on this length and yields nothing at length 0, and
+                    // `handle_order_triggers` rejects any order whose length disagrees
+                    // with the pending group. CR 603.3b needs a real choice — with ONE
+                    // trigger `begin_trigger_ordering` auto-orders the group
+                    // (`g.triggers.len() <= 1 => g.ordered = true`) and
+                    // `build_next_order_triggers_prompt` only ever returns an UNORDERED
+                    // group, so no rules path opens this window over a singleton and
+                    // `order: [0]` is the only legal answer rather than an ordering.
+                    // The two members must also differ, or the order-independence check
+                    // auto-orders them too; each `description` mirrors the group's
+                    // `PendingTrigger.description`, which is what the real builder copies
+                    // into the summary.
+                    triggers: vec![
+                        crate::types::game_state::PendingTriggerSummary {
+                            source_id: on_board[0],
+                            source_name: "Test Bear 0".to_string(),
+                            description: "you gain 1 life".to_string(),
+                        },
+                        crate::types::game_state::PendingTriggerSummary {
+                            source_id: on_board[1],
+                            source_name: "Test Bear 1".to_string(),
+                            description: "you gain 2 life".to_string(),
+                        },
+                    ],
                 },
+                true,
             ),
             (
                 "TriggerTargetSelection (CR 603.3d)",
@@ -7162,19 +7264,28 @@ mod tests {
                     target_slots: Vec::new(),
                     mode_labels: Vec::new(),
                     target_constraints: Vec::new(),
-                    selection: Default::default(),
+                    // CR 603.3d: one legal target for the current slot. The enumerator
+                    // for this window maps `current_legal_targets` directly to
+                    // `ChooseTarget`, so an empty progress makes the window offer nothing
+                    // at all and the cast-zero below unreadable.
+                    selection: crate::types::game_state::TargetSelectionProgress {
+                        current_legal_targets: vec![TargetRef::Object(on_board[0])],
+                        ..Default::default()
+                    },
                     source_id: None,
                     description: None,
                 },
+                true,
             ),
             (
                 "OptionalEffectChoice (CR 603.5 + CR 608.2)",
                 WaitingFor::OptionalEffectChoice {
                     player: PlayerId(0),
-                    source_id: ObjectId(1),
+                    source_id: on_board[0],
                     description: None,
                     may_trigger_key: None,
                 },
+                true,
             ),
             (
                 "CommanderZoneChoice (CR 903.9a)",
@@ -7183,14 +7294,16 @@ mod tests {
                     commander_id: ObjectId(2),
                     current_zone: Zone::Graveyard,
                 },
+                true,
             ),
             (
                 "ChooseLegend (CR 704.5j)",
                 WaitingFor::ChooseLegend {
                     player: PlayerId(0),
                     legend_name: "Delianfel, Prayerful Herald".to_string(),
-                    candidates: vec![ObjectId(3), ObjectId(4)],
+                    candidates: on_board.to_vec(),
                 },
+                true,
             ),
             (
                 "BattleProtectorChoice (CR 310.10 + CR 704.5w / CR 704.5x)",
@@ -7199,6 +7312,110 @@ mod tests {
                     battle_id: ObjectId(5),
                     candidates: vec![PlayerId(1)],
                 },
+                true,
+            ),
+            // CR 703.1 turn-based members. CR 117.3a puts every one of them strictly
+            // before the active player receives priority, so CR 117.1a / CR 305.1 bar
+            // a cast or land play at each just as they do at the SBA members above.
+            (
+                "UntapChoice (CR 502.3 + CR 117.3a)",
+                WaitingFor::UntapChoice {
+                    player: PlayerId(0),
+                    // CR 502.3 untaps PERMANENTS: the candidates must be on the
+                    // battlefield, not a card in hand.
+                    candidates: on_board.to_vec(),
+                    chosen_not_to_untap: Vec::new(),
+                },
+                true,
+            ),
+            (
+                "ChooseUntapSubset (CR 502.3)",
+                WaitingFor::ChooseUntapSubset {
+                    player: PlayerId(0),
+                    group: on_board.to_vec(),
+                    // CR 502.3 cap. `max: 1` over a 2-permanent group keeps the
+                    // variant's `group.len() > max` invariant AND admits a real
+                    // non-empty choice — with `max: 0` the only legal selection is the
+                    // empty one, so "this window enumerates no cast" would be a
+                    // degenerate zero rather than a measured one.
+                    max: 1,
+                },
+                true,
+            ),
+            (
+                "DeclareAttackers (CR 508.1)",
+                WaitingFor::DeclareAttackers {
+                    player: PlayerId(0),
+                    valid_attacker_ids: on_board.to_vec(),
+                    // CR 506.2: in a two-player game the NONACTIVE player is the defending
+                    // player, and only that player (plus their planeswalkers and the
+                    // battles they protect) may be attacked. `default_attack_target()` is
+                    // `Player(PlayerId(0))`, i.e. P0's own creatures attacking P0, which
+                    // the simulation filter rejects for every non-empty proposal. The
+                    // guard below then passes on the decline alone (measured: the window
+                    // offered `[DeclareAttackers { attacks: [], bands: [] }]`). The
+                    // opposing seat is what makes it offer a GENUINE attack.
+                    valid_attack_targets: vec![crate::game::combat::AttackTarget::Player(
+                        PlayerId(1),
+                    )],
+                    valid_attack_targets_by_attacker: None,
+                    attacker_constraints: Default::default(),
+                },
+                true,
+            ),
+            (
+                "ExertChoice (CR 508.1g + CR 701.43d)",
+                WaitingFor::ExertChoice {
+                    player: PlayerId(0),
+                    // CR 701.43d exerts an ATTACKING permanent.
+                    attacker: on_board[0],
+                    remaining: Vec::new(),
+                },
+                true,
+            ),
+            (
+                "EnlistChoice (CR 508.1g + CR 702.154a)",
+                WaitingFor::EnlistChoice {
+                    player: PlayerId(0),
+                    attacker: on_board[0],
+                    // CR 702.154a taps another untapped creature you control — a
+                    // battlefield permanent, and a DIFFERENT one from the attacker.
+                    eligible: vec![on_board[1]],
+                    remaining: Vec::new(),
+                },
+                true,
+            ),
+            (
+                "DeclareBlockers (CR 509.1)",
+                WaitingFor::DeclareBlockers {
+                    player: PlayerId(0),
+                    valid_blocker_ids: on_board.to_vec(),
+                    // CR 509.1a: a real "this creature may block that attacker" pairing.
+                    // `blocker_actions` enumerates block proposals strictly from this
+                    // map, so an empty map leaves only the decline (the empty
+                    // declaration) — measured: with `state.combat` present but this map
+                    // empty the guard below passes on the decline alone. Populating it is
+                    // what makes the window offer a GENUINE block, which is what the
+                    // cast-zero is supposed to be measured against.
+                    valid_block_targets: on_board
+                        .iter()
+                        .map(|&blocker| (blocker, vec![attacker]))
+                        .collect(),
+                    block_requirements: Default::default(),
+                    blocker_constraints: Default::default(),
+                },
+                true,
+            ),
+            (
+                "DiscardToHandSize (CR 514.1 + CR 514.3)",
+                WaitingFor::DiscardToHandSize {
+                    player: PlayerId(0),
+                    count: 1,
+                    // CR 514.1 discards from HAND — the one window whose object
+                    // reference is correctly a hand card.
+                    cards: vec![in_hand],
+                },
+                true,
             ),
         ]
     }
@@ -7212,11 +7429,37 @@ mod tests {
     /// deliberate class (`CastSpell` / `PlayLand` / `ActivateAbility`) at a `Priority`
     /// window and at every window `is_forced_cascade_window` currently exempts.
     ///
-    /// The exempt set is FILTERED OUT OF a candidate list that includes `Priority`,
-    /// rather than hardcoded. That is what keeps the revert-probe live: widening the
-    /// predicate widens what this row has to prove. Measured — with a hardcoded
-    /// exempt-only list, adding `Priority` to the class left this row green, because
-    /// the legal-action enumerator never consults the predicate.
+    /// The exempt set is DERIVED from a candidate list that includes non-members, rather
+    /// than hardcoded. That is what keeps the revert-probe live: widening the predicate
+    /// widens what this row has to prove. Measured — with a hardcoded exempt-only list,
+    /// adding `Priority` to the class left this row green, because the legal-action
+    /// enumerator never consults the predicate.
+    ///
+    /// FAILS LOUDLY ON CLASS DRIFT IN BOTH DIRECTIONS. Deriving the obligation by
+    /// FILTERING the candidate list through `is_forced_cascade_window` — the predicate
+    /// under test — was itself a hole: deleting a member just shrank the loop, and a
+    /// reviewer's revert probe deleting seven members left this row GREEN. Each candidate
+    /// now carries its EXPECTED membership and that expectation is asserted before the
+    /// cast proof runs, so DELETING a member fails its `true` row and ADDING one of the
+    /// enumerated non-members (`Priority` either seat, `RedistributeLifeTotals`,
+    /// `AssignCombatDamage`, `CombatTaxPayment`) fails its `false` row.
+    ///
+    /// ponytail: a brand-new `WaitingFor` variant added to the predicate but to no list
+    /// is still silent. Closing that needs an exhaustive 127-arm `WaitingFor` destructure;
+    /// deliberately not built, because the load-bearing non-members are enumerated here
+    /// and `is_forced_cascade_window`'s FAIL-CLOSED fall-through makes a forgotten variant
+    /// a conservative miss rather than a soundness hole. Upgrade path if that changes:
+    /// mirror `types::game_state::_gamestate_partition_is_total`'s no-`..` destructure
+    /// over `WaitingFor` so the build breaks when a variant is added.
+    ///
+    /// That mechanism did its job when the class was widened to the CR 703.1 turn-based
+    /// actions: the seven new members (CR 502.3 untap, CR 508.1 / CR 508.1g declare
+    /// attackers + exert/enlist, CR 509.1 declare blockers, CR 514.1 cleanup discard)
+    /// were added to the candidate list and re-measured, and none of them enumerates a
+    /// `CastSpell` / `PlayLand` / `ActivateAbility`. So `cast_card_ids: Some(&[])` still
+    /// holds for a window retained across a turn boundary: untapping, declaring,
+    /// exerting/enlisting and discarding to hand size are not casts, and CR 117.3a
+    /// grants nobody the priority CR 117.1a / CR 305.1 require.
     ///
     /// NON-VACUITY (trap 7 — a zero from an instrument that cannot return non-zero):
     /// the `Priority` arm runs FIRST and is asserted NON-EMPTY on the same board, so
@@ -7250,7 +7493,9 @@ mod tests {
         };
         // A land in hand makes the deliberate class REACHABLE on this board (CR 305.1:
         // main phase, empty stack, the active player holds priority, land drop unused).
-        let land = crate::game::zones::create_object(
+        // It is also the ONLY correct object for `DiscardToHandSize` (CR 514.1 discards
+        // from hand) — every other window below names a battlefield permanent.
+        let in_hand = crate::game::zones::create_object(
             &mut state,
             CardId(701),
             PlayerId(0),
@@ -7259,11 +7504,121 @@ mod tests {
         );
         state
             .objects
-            .get_mut(&land)
+            .get_mut(&in_hand)
             .unwrap()
             .card_types
             .core_types
             .push(CoreType::Land);
+        // Two real battlefield creatures. CR 502.3 untap candidates, the CR 508.1g
+        // exerting attacker and its CR 702.154a enlist-eligible partner are all
+        // permanents; passing the hand card for those built windows no rules path can
+        // produce, and the per-viewer enumerator dereferences every one of them.
+        let on_board = [0u64, 1].map(|i| {
+            let id = crate::game::zones::create_object(
+                &mut state,
+                CardId(710 + i),
+                PlayerId(0),
+                format!("Test Bear {i}"),
+                Zone::Battlefield,
+            );
+            let obj = state.objects.get_mut(&id).unwrap();
+            obj.card_types.core_types.push(CoreType::Creature);
+            obj.base_card_types = obj.card_types.clone();
+            obj.power = Some(2);
+            obj.toughness = Some(2);
+            obj.base_power = Some(2);
+            obj.base_toughness = Some(2);
+            id
+        });
+
+        // CR 508.1 + CR 509.1: a real attacking creature CONTROLLED BY THE OPPONENT and
+        // entered into `state.combat`, so the CR 509.1 window below is answerable. The
+        // blocker-action enumerator runs every proposal through the engine's own
+        // `handle_declare_blockers`, which errors out with "No combat state (attackers
+        // not declared)" when `state.combat` is `None` — every candidate is then filtered
+        // away and the window offers nothing at all.
+        let attacker = crate::game::zones::create_object(
+            &mut state,
+            CardId(730),
+            PlayerId(1),
+            "Test Ogre".to_string(),
+            Zone::Battlefield,
+        );
+        {
+            let obj = state.objects.get_mut(&attacker).unwrap();
+            obj.card_types.core_types.push(CoreType::Creature);
+            obj.base_card_types = obj.card_types.clone();
+            obj.power = Some(2);
+            obj.toughness = Some(2);
+            obj.base_power = Some(2);
+            obj.base_toughness = Some(2);
+        }
+        state.combat = Some(crate::game::combat::CombatState {
+            attackers: vec![crate::game::combat::AttackerInfo::attacking_player(
+                attacker,
+                PlayerId(0),
+            )],
+            ..Default::default()
+        });
+
+        // CR 603.3b: one unordered group, matching the two-summary `OrderTriggers`
+        // window. `handle_order_triggers` reads the group (not the window) for the
+        // permutation length and rejects the submission outright without it, so the
+        // window's candidates would be filtered out and its zero rendered inert.
+        //
+        // TWO members, and DIFFERENT ones. `begin_trigger_ordering` auto-orders any
+        // group that is a singleton or `group_is_order_independent`, and only an
+        // unordered group ever becomes a prompt — so a one-trigger group, or two
+        // triggers with identical normalized abilities, is a window no rules path can
+        // open. Distinct life amounts make the group order-dependent by the engine's
+        // own conservative identity check, which is the reachable shape. Both stay
+        // inert: no targets, no modes, no resolution choice.
+        let inert_life_trigger = |source_id, value, description: &str| {
+            // `single` (not a struct literal) supplies the CR 603.7 firing identity:
+            // `TriggerFiring::Ordinary`. A literal would leave the field's `#[default]`
+            // `UnknownLegacy`, which is reserved for persisted records whose install
+            // receipt cannot be reconstructed — never for a freshly built trigger.
+            crate::game::triggers::PendingTriggerContext::single(
+                crate::game::triggers::PendingTrigger {
+                    source_id,
+                    controller: PlayerId(0),
+                    condition: None,
+                    ability: Box::new(ResolvedAbility::new(
+                        Effect::GainLife {
+                            amount: QuantityExpr::Fixed { value },
+                            player: TargetFilter::Controller,
+                        },
+                        vec![],
+                        source_id,
+                        PlayerId(0),
+                    )),
+                    timestamp: 0,
+                    target_constraints: Vec::new(),
+                    distribute: None,
+                    trigger_event: None,
+                    modal: None,
+                    mode_abilities: Vec::new(),
+                    // The real prompt builder COPIES this into the summary
+                    // (`description.clone().unwrap_or_default()`), so a `None` here
+                    // under a described summary is a state the engine cannot produce.
+                    description: Some(description.to_string()),
+                    may_trigger_origin: None,
+                    subject_match_count: None,
+                    die_result: None,
+                },
+            )
+        };
+        state.pending_trigger_order = Some(crate::types::game_state::PendingTriggerOrder {
+            groups: vec![crate::types::game_state::TriggerOrderGroup {
+                controller: PlayerId(0),
+                triggers: vec![
+                    inert_life_trigger(on_board[0], 1, "you gain 1 life"),
+                    inert_life_trigger(on_board[1], 2, "you gain 2 life"),
+                ],
+                ordered: false,
+            }],
+            resume_after_ordering: None,
+        });
 
         let deliberate = |s: &GameState| -> Vec<GameAction> {
             crate::ai_support::legal_actions(s)
@@ -7287,18 +7642,47 @@ mod tests {
              window on this board, else every zero below is an inert instrument"
         );
 
-        // The exempt set as the PREDICATE defines it, not as this test remembers it.
-        let exempt: Vec<_> = cast_proof_candidate_windows()
-            .into_iter()
-            .filter(|(_, w)| w.is_forced_cascade_window())
-            .collect();
+        // CLASS-DRIFT GATE, run before the cast proof: every candidate's membership must
+        // be what the list says it is. A deleted member reds its `true` row here; an
+        // added non-member reds its `false` row.
+        let candidates = cast_proof_candidate_windows(on_board, in_hand, attacker);
+        for (why, window, expected_member) in &candidates {
+            assert_eq!(
+                window.is_forced_cascade_window(),
+                *expected_member,
+                "CLASS DRIFT — `is_forced_cascade_window` disagrees with the candidate \
+                 table on {why}. Expected member = {expected_member}."
+            );
+        }
+        let (members, non_members): (usize, usize) = candidates.iter().fold(
+            (0, 0),
+            |(m, n), (_, _, e)| if *e { (m + 1, n) } else { (m, n + 1) },
+        );
         assert!(
-            !exempt.is_empty(),
-            "reach-guard: an empty exempt class would make the loop below vacuous"
+            members > 0 && non_members > 0,
+            "reach-guard: both halves of the table must be populated — a one-sided table \
+             is satisfiable by a constant predicate; got {members} members / \
+             {non_members} non-members"
         );
 
-        for (why, window) in exempt {
+        for (why, window, expected_member) in candidates {
+            if !expected_member {
+                continue;
+            }
             state.waiting_for = window;
+            // PER-WINDOW REACH-GUARD. The zero below is only evidence if the enumerator
+            // is live AT THIS WINDOW. A member whose fixture is under-populated (a
+            // `Default::default()` where the enumerator needs real data) yields zero
+            // deliberate actions because it yields zero actions AT ALL — an inert
+            // instrument, not a measured absence. Measured on the pre-guard fixtures,
+            // three members were exactly that: `OrderTriggers` (no `pending_trigger_order`
+            // group ⇒ no valid permutation), `TriggerTargetSelection` (empty
+            // `current_legal_targets`) and `DeclareBlockers` (`state.combat: None` ⇒ every
+            // proposal rejected by the simulation filter).
+            assert!(
+                !crate::ai_support::legal_actions(&state).is_empty(),
+                "{why} must offer at least one legal answer, else the zero below is inert"
+            );
             let found = deliberate(&state);
             assert!(
                 found.is_empty(),

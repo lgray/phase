@@ -4404,7 +4404,14 @@ fn dump_beat_actor(state: &GameState) -> Option<(PlayerId, Vec<GameAction>)> {
 /// One beat of the drain-loop drive policy: at `Priority` ALWAYS pass (the mandatory
 /// triggers resolve and re-trigger — that IS the loop; casting here wanders off it), and
 /// answer every other prompt, preferring a target choice aimed at `pin`.
-fn dump_drive_one_beat(state: &mut GameState, pin: Option<PlayerId>) -> Result<(), String> {
+///
+/// Returns the beat's `GameEvent`s so a caller can key on what the beat actually DID
+/// (`CombatDamageDealtToPlayer` / `DamageDealt` for the CR 510.2 rows) instead of
+/// inferring it from phase and life deltas. Callers that only need liveness ignore it.
+fn dump_drive_one_beat(
+    state: &mut GameState,
+    pin: Option<PlayerId>,
+) -> Result<Vec<GameEvent>, String> {
     let Some((who, actions)) = dump_beat_actor(state) else {
         return Err(format!("no legal actor at {:?}", state.waiting_for));
     };
@@ -4432,7 +4439,7 @@ fn dump_drive_one_beat(state: &mut GameState, pin: Option<PlayerId>) -> Result<(
         return Err(format!("empty action list at {:?}", state.waiting_for));
     };
     apply(state, who, action.clone())
-        .map(|_| ())
+        .map(|r| r.events)
         .map_err(|e| format!("apply err ({action:?}): {e:?}"))
 }
 
@@ -4768,5 +4775,549 @@ fn template_none_against_a_pin_consuming_schema_falls_back_to_manual_play() {
         "reach-guard: the object-growth route re-derives its template from the sequence and \
          must keep opening APNAP — the guard is two-conjunct, not a blanket template-None \
          rejection; got {with_sequence:?}"
+    );
+}
+
+/// A loop-free board that carries the CR 732.2a ring ACROSS TURN BOUNDARIES and still
+/// refuses to offer — the no-false-positive control for widening
+/// [`WaitingFor::is_forced_cascade_window`] to the CR 703.1 turn-based actions.
+///
+/// CR 732.2a says a proposed shortcut "may even cross multiple turns", which is why the
+/// class now retains across CR 502.3 untap / CR 508.1 declare attackers / CR 509.1
+/// declare blockers / CR 514.1 cleanup discard. Retention is NECESSARY BUT NOT YET
+/// SUFFICIENT for that: `loop_states_equal` still compares `turn_number`, so no
+/// cross-turn pair certifies today — which is exactly what the ATTRIBUTION half below
+/// measures. The risk that widening introduces is the
+/// mirror image of the bug it fixes: a ring that now survives turn cycling might
+/// accumulate on an ordinary board and certify a loop that isn't there.
+///
+/// FIXTURE (loop-free by construction, and hostile on purpose): P0 has an upkeep ticker
+/// ("At the beginning of your upkeep, you gain 1 life"), a drain cleric (gain ⇒ each
+/// opponent loses 1) and a "may draw" scribe (opponent loses life ⇒ optional draw). Each
+/// of P0's upkeeps runs a FINITE 3-deep cascade — nothing re-triggers the ticker — yet the
+/// per-turn shape is drain-like (P1 loses 1 every other turn), which is exactly the shape
+/// a naive detector would mistake for a loop. The cascade ends at the scribe's CR 603.5
+/// "may" pause, which leaves the stack already popped, so the sampler's clear arm never
+/// fires on the tail resolution and the accumulated frames survive into the rest of the
+/// turn. That is what makes cross-turn retention observable on a board with no loop at
+/// all.
+///
+/// NON-VACUITY, both halves, measured (300 beats, 23 turns):
+/// * POSITIVE — the ring really is retained across turn boundaries: at beat 58 the drive
+///   sits at a `DeclareAttackers` window in turn 6 holding 4 frames whose OLDEST was
+///   sampled in turn 4. Without the widening that frame cannot exist: BASE clears at
+///   `DeclareAttackers`. So the widening is demonstrably LIVE on this board.
+/// * DISCRIMINANT GUARD — `OptionalEffectChoice` is a PRE-EXISTING member of the class and
+///   also occurs on this board (10 times). The retention witness is therefore required to
+///   be one of the NEWLY exempt turn-based windows; an `OptionalEffectChoice` witness
+///   would satisfy the row without the widening being consulted at all.
+/// * NEGATIVE — no `LoopShortcut` / `RespondToShortcut` is ever raised, even after the ring
+///   saturates at all 16 frames (measured: reached by turn 22, spanning ~9 turn boundaries).
+/// * ATTRIBUTION — the decline is a MEASURED comparison failure, not an absent one. The
+///   engine's own recurrence gate `loop_states_equal_modulo_resources` reports FALSE on the
+///   oldest/newest retained pair, while reporting TRUE on the oldest against itself (the
+///   positive control that the comparator is live on this data, trap 7). The monotone axis
+///   is named and asserted: each turn's CR 504.1 draw strictly shrinks the library, so no
+///   two retained frames can be the same position. Measured at the witness beat: P0's
+///   library 60 → 59, P1's 59 → 58. (Honest scope: equalizing library and hand alone does
+///   NOT flip the gate to true — turn number and life differ too. The library shrink is
+///   asserted as a monotone non-recurrence witness, not as the sole cause.)
+///
+/// REVERT-PROBE (measured, not predicted): delete the CR 703.1 turn-based members from
+/// `is_forced_cascade_window` and the POSITIVE half fails — the retention witness is never
+/// found, because `apply_action` clears the ring on the very first `DeclareAttackers` of
+/// each turn.
+#[test]
+fn drawgo_ring_spans_turns_but_never_offers() {
+    let mut scenario = GameScenario::new_n_player(2, 7);
+    scenario.at_phase(Phase::PreCombatMain);
+    scenario.with_life(P0, 20);
+    scenario.with_life(P1, 20);
+    scenario.add_creature_from_oracle(
+        P0,
+        "Test Upkeep Ticker",
+        2,
+        2,
+        "At the beginning of your upkeep, you gain 1 life.",
+    );
+    scenario.add_creature_from_oracle(P0, "Test Drain Cleric", 2, 2, DRAIN_CLERIC);
+    scenario.add_creature_from_oracle(
+        P0,
+        "Test May Scribe",
+        2,
+        2,
+        "Whenever an opponent loses life, you may draw a card.",
+    );
+    // CR 504.1: both players draw every turn, so the libraries must outlast the drive —
+    // a deck-out would end the game and silently truncate every assertion below.
+    let names: Vec<String> = (0..60).map(|i| format!("Filler {i}")).collect();
+    let refs: Vec<&str> = names.iter().map(|s| s.as_str()).collect();
+    scenario.with_library_top(P0, &refs);
+    scenario.with_library_top(P1, &refs);
+    let mut runner = scenario.build();
+    runner.state_mut().loop_detection = LoopDetectionMode::Interactive;
+    let mut state = runner.state().clone();
+
+    assert!(
+        state.loop_detection.samples(),
+        "reach-guard: a non-sampling mode never populates the ring, making every \
+         assertion below vacuous; got {:?}",
+        state.loop_detection
+    );
+    assert_eq!(
+        state.loop_detect_ring.len(),
+        0,
+        "reach-guard: the board must start with an EMPTY ring — every frame below is \
+         accumulated by this drive"
+    );
+
+    // The cross-turn retention witness: (window name, live turn, oldest frame's turn,
+    // ring before the answer, ring after it, oldest frame, newest frame).
+    let mut witness: Option<(String, u32, u32, usize, usize, GameState, GameState)> = None;
+    let mut offer_at: Option<(usize, String)> = None;
+    let mut turns_seen: Vec<u32> = Vec::new();
+
+    for beat in 0..300usize {
+        if !turns_seen.contains(&state.turn_number) {
+            turns_seen.push(state.turn_number);
+        }
+        let name = state.waiting_for.variant_name().to_string();
+        if matches!(
+            state.waiting_for,
+            WaitingFor::LoopShortcut { .. } | WaitingFor::RespondToShortcut { .. }
+        ) {
+            offer_at = Some((beat, name));
+            break;
+        }
+        // The witness must be a NEWLY exempt CR 703.1 turn-based window, never the
+        // pre-existing `OptionalEffectChoice` member (see DISCRIMINANT GUARD above).
+        let turn_based = matches!(
+            state.waiting_for,
+            WaitingFor::UntapChoice { .. }
+                | WaitingFor::ChooseUntapSubset { .. }
+                | WaitingFor::DeclareAttackers { .. }
+                | WaitingFor::ExertChoice { .. }
+                | WaitingFor::EnlistChoice { .. }
+                | WaitingFor::DeclareBlockers { .. }
+                | WaitingFor::DiscardToHandSize { .. }
+        );
+        let before = state.loop_detect_ring.len();
+        let pair = (witness.is_none() && turn_based && before >= 4)
+            .then(|| {
+                let front = state.loop_detect_ring.front()?.clone();
+                let back = state.loop_detect_ring.back()?.clone();
+                (front.turn_number < state.turn_number).then_some((front, back))
+            })
+            .flatten();
+        let live_turn = state.turn_number;
+        if dump_drive_one_beat(&mut state, None).is_err() {
+            break;
+        }
+        if let Some((front, back)) = pair {
+            witness = Some((
+                name,
+                live_turn,
+                front.turn_number,
+                before,
+                state.loop_detect_ring.len(),
+                (*front).clone(),
+                (*back).clone(),
+            ));
+        }
+    }
+
+    assert!(
+        turns_seen.len() >= 3,
+        "reach-guard: the drive must cross at least 2 full turn boundaries for a \
+         cross-turn claim to mean anything; saw turns {turns_seen:?}"
+    );
+
+    let (window, live_turn, frame_turn, before, after, oldest, newest) = witness.expect(
+        "POSITIVE HALF: no CR 703.1 turn-based window (CR 502.3 / CR 508.1 / CR 509.1 / \
+             CR 514.1) was ever reached holding >= 4 frames whose oldest was sampled in an \
+             EARLIER turn. That is precisely BASE behaviour — dropping the turn-based \
+             members from `is_forced_cascade_window` reproduces this failure, because \
+             `apply_action` then clears the ring at the first declare-attackers of every \
+             turn. Without this witness the no-offer assertion below is vacuous.",
+    );
+    assert!(
+        after >= before,
+        "answering the forced turn-based window {window} must not discard the ring \
+         (CR 703.1 + CR 117.3a: no player had priority there, so the answer is not a \
+         deliberate break); ring went {before} -> {after}"
+    );
+    assert!(
+        frame_turn < live_turn,
+        "the retained frame must predate the live turn; frame turn {frame_turn}, live \
+         turn {live_turn}"
+    );
+
+    assert!(
+        offer_at.is_none(),
+        "NO-FALSE-POSITIVE: this board has no loop — each upkeep runs a FINITE cascade and \
+         nothing re-triggers the ticker — so no CR 732.2a shortcut may ever be offered, \
+         however many frames the widened class lets the ring carry across turns. Got an \
+         offer at {offer_at:?} (witness: {window} in turn {live_turn} held a turn-{frame_turn} frame)"
+    );
+
+    // ATTRIBUTION: the decline is a measured comparison FAILURE on a live comparator,
+    // not an absent comparison.
+    assert!(
+        loop_states_equal_modulo_resources(&oldest, &oldest),
+        "positive control (trap 7): the engine's recurrence gate must report TRUE on a \
+         retained frame against itself, else the FALSE asserted next is an inert \
+         instrument rather than a measured non-recurrence"
+    );
+    assert!(
+        !loop_states_equal_modulo_resources(&oldest, &newest),
+        "the turn-{frame_turn} and turn-{} frames must NOT compare recurrent — that \
+         comparison failing is WHY no offer forms",
+        newest.turn_number
+    );
+    for (i, (old_p, new_p)) in oldest.players.iter().zip(newest.players.iter()).enumerate() {
+        assert!(
+            new_p.library.len() < old_p.library.len(),
+            "CR 504.1: every turn's draw strictly shrinks each library, which is the \
+             monotone axis that makes two retained frames un-recurrable. P{i} went \
+             {} -> {} across the retained window",
+            old_p.library.len(),
+            new_p.library.len()
+        );
+    }
+}
+
+// ===========================================================================
+// CR 510.2 EVENT-KEYED loop-ring invalidation.
+//
+// `WaitingFor::AssignCombatDamage` / `AssignBlockerDamage` are excluded from
+// `is_forced_cascade_window` because CR 510.2 deals the assigned damage with no
+// intervening priority. That WINDOW-keyed exclusion is necessary but NOT
+// sufficient: the window opens only when a damage DIVISION choice is required
+// (`game::combat_damage`: "Auto-assign for unblocked, single blocker, or
+// blocked-but-no-current-blockers"). An UNBLOCKED attacker moves a life total
+// with NO window to exclude — and with the CR 703.1 turn-based members now in
+// the class, `DeclareAttackers` / `DeclareBlockers` no longer clear the ring
+// either, so the ring rides straight through the life change.
+//
+// The sufficient guard is `GameState::invalidate_loop_ring_on_unobserved_life_move`,
+// called at the end of `apply_combat_damage` — the CR 510.2 batch itself.
+// ===========================================================================
+
+fn player_life(state: &GameState, p: PlayerId) -> i32 {
+    state
+        .players
+        .iter()
+        .find(|pl| pl.id == p)
+        .map(|pl| pl.life)
+        .expect("seat exists")
+}
+
+/// `dump_drive_one_beat`, but it actually fights.
+///
+/// MEASURED, and the reason this helper exists: at a CR 508.1 / CR 509.1 declaration the
+/// generic driver takes the FIRST legal action, and that is the EMPTY declaration —
+/// 14 `DeclareAttackers` windows over 400 beats produced
+/// `DeclareAttackers { attacks: [], bands: [] }` every time and ZERO combat damage. A row
+/// about CR 510.2 driven by that policy is vacuous by construction. Here the largest
+/// non-empty declaration wins, so the attack and the block both really happen; every
+/// other window keeps the shared policy.
+fn combat_drive_one_beat(state: &mut GameState) -> Result<Vec<GameEvent>, String> {
+    if matches!(
+        state.waiting_for,
+        WaitingFor::DeclareAttackers { .. } | WaitingFor::DeclareBlockers { .. }
+    ) {
+        if let Some((who, actions)) = dump_beat_actor(state) {
+            let biggest = actions
+                .iter()
+                .filter_map(|a| match a {
+                    GameAction::DeclareAttackers { attacks, .. } => Some((attacks.len(), a)),
+                    GameAction::DeclareBlockers { assignments } => Some((assignments.len(), a)),
+                    _ => None,
+                })
+                .max_by_key(|(n, _)| *n)
+                .filter(|(n, _)| *n > 0)
+                .map(|(_, a)| a.clone());
+            if let Some(action) = biggest {
+                return apply(state, who, action.clone())
+                    .map(|r| r.events)
+                    .map_err(|e| format!("apply err ({action:?}): {e:?}"));
+            }
+        }
+    }
+    dump_drive_one_beat(state, None)
+}
+
+/// The shared board for both CR 510.2 rows. P0 runs the same loop-FREE upkeep cascade
+/// `drawgo_ring_spans_turns_but_never_offers` uses (ticker → drain cleric → "may" scribe),
+/// which is what accumulates a CR 732.2a ring at all; the trio carries Defender so the
+/// only creature that can attack is the dedicated 3/3, making the combat shape of each
+/// row a deliberate fixture property rather than an artifact of which creature the driver
+/// happened to declare.
+///
+/// `p1_wall` gives P1 a single 0/20 blocker. With it, the attack is BLOCKED and CR 510.2
+/// moves no player's life (creature-only damage). Without it, the attacker is UNBLOCKED
+/// and CR 510.2 moves P1's life with no assignment window — CR 510.1c's window needs 2+
+/// blockers to divide damage among.
+fn combat_ring_board(p1_wall: bool) -> GameState {
+    let mut scenario = GameScenario::new_n_player(2, 7);
+    scenario.at_phase(Phase::PreCombatMain);
+    // Deep life totals on BOTH seats: the drive must outlast several turn cycles of
+    // combat damage plus the cleric's drain, and a CR 704.5a death would end the game
+    // and silently truncate every assertion below.
+    scenario.with_life(P0, 400);
+    scenario.with_life(P1, 400);
+    scenario.add_creature_from_oracle(
+        P0,
+        "Test Upkeep Ticker",
+        2,
+        2,
+        "Defender\nAt the beginning of your upkeep, you gain 1 life.",
+    );
+    scenario.add_creature_from_oracle(
+        P0,
+        "Test Drain Cleric",
+        2,
+        2,
+        &format!("Defender\n{DRAIN_CLERIC}"),
+    );
+    scenario.add_creature_from_oracle(
+        P0,
+        "Test May Scribe",
+        2,
+        2,
+        "Defender\nWhenever an opponent loses life, you may draw a card.",
+    );
+    scenario.add_creature(P0, "Test Lone Attacker", 3, 3);
+    if p1_wall {
+        // 0 power so the trade kills nothing and the block repeats every turn cycle;
+        // toughness 20 so the 3/3 never kills it either. Defender is load-bearing, not
+        // flavour: without it the wall attacks on P1's turn, is still TAPPED on P0's, and
+        // cannot block — measured, the attack then went through unblocked and the row
+        // silently became a duplicate of the unblocked one.
+        scenario.add_creature_from_oracle(P1, "Test Wall", 0, 20, "Defender");
+    }
+    // CR 504.1: both players draw every turn, so the libraries must outlast the drive —
+    // a deck-out would end the game and truncate the row.
+    let names: Vec<String> = (0..60).map(|i| format!("Filler {i}")).collect();
+    let refs: Vec<&str> = names.iter().map(|s| s.as_str()).collect();
+    scenario.with_library_top(P0, &refs);
+    scenario.with_library_top(P1, &refs);
+    let mut runner = scenario.build();
+    runner.state_mut().loop_detection = LoopDetectionMode::Interactive;
+    runner.state().clone()
+}
+
+/// HIGH-1: the CR 510.2 damage EVENT clears the CR 732.2a ring even though no
+/// `AssignCombatDamage` window ever opens.
+///
+/// FIXTURE: P0 attacks with one unblocked 3/3 into an empty board while the loop-free
+/// upkeep cascade keeps the ring populated. CR 510.1c's assignment window needs a
+/// division choice, so on this board it never opens at all — which is exactly the hole
+/// the window-keyed exclusion leaves and the reason the fence has to be event-keyed.
+///
+/// ASSERTIONS, in the order they discharge each other:
+/// 1. REACH-GUARD — the drive reaches a CR 510.2 beat that damaged P1 while the ring
+///    already carried >= 2 frames. Without that, "the ring is empty afterwards" is
+///    unobservable: an already-empty ring would satisfy it.
+/// 2. DISCRIMINANT GUARD — no `AssignCombatDamage` / `AssignBlockerDamage` window is
+///    observed anywhere in the drive. This row's whole point is that the damage lands
+///    with NO window; a fixture drift that introduces a division choice would make the
+///    window-keyed exclusion sufficient and the row vacuous, so it fails loudly instead.
+/// 3. LIFE-MOVE WITNESS — P1's life strictly decreased across that beat, so assertion 4
+///    is about a real CR 119.3 / CR 120.3a life movement.
+/// 4. THE DELIVERABLE — the ring is empty immediately after the beat.
+///
+/// REVERT-PROBE (measured, recorded in the handoff report): delete the
+/// `invalidate_loop_ring_on_unobserved_life_move` call from `apply_combat_damage` ⇒
+/// assertion 4 FAILS while 1–3 still PASS, which is what proves 4 is the discriminator.
+#[test]
+fn unblocked_attacker_damage_clears_the_loop_ring_with_no_window() {
+    let mut state = combat_ring_board(false);
+
+    assert!(
+        state.loop_detection.samples(),
+        "reach-guard: a non-sampling mode never populates the ring; got {:?}",
+        state.loop_detection
+    );
+    assert_eq!(
+        state.loop_detect_ring.len(),
+        0,
+        "reach-guard: every frame below is accumulated by this drive, not preloaded"
+    );
+
+    let mut assignment_window: Option<String> = None;
+    // (beat, ring before, ring after, P1 life before, P1 life after, combat damage)
+    let mut witness: Option<(usize, usize, usize, i32, i32, u32)> = None;
+    let mut max_ring = 0usize;
+    let mut damage_beats = 0usize;
+
+    for beat in 0..400usize {
+        if matches!(
+            state.waiting_for,
+            WaitingFor::AssignCombatDamage { .. } | WaitingFor::AssignBlockerDamage { .. }
+        ) {
+            assignment_window.get_or_insert_with(|| state.waiting_for.variant_name().to_string());
+        }
+        let before = state.loop_detect_ring.len();
+        max_ring = max_ring.max(before);
+        let life_before = player_life(&state, P1);
+        let Ok(events) = combat_drive_one_beat(&mut state) else {
+            break;
+        };
+        let dealt: u32 = events
+            .iter()
+            .filter_map(|e| match e {
+                GameEvent::CombatDamageDealtToPlayer {
+                    player_id,
+                    total_damage,
+                    ..
+                } if *player_id == P1 => Some(*total_damage),
+                _ => None,
+            })
+            .sum();
+        if dealt > 0 {
+            damage_beats += 1;
+            if witness.is_none() && before >= 2 {
+                witness = Some((
+                    beat,
+                    before,
+                    state.loop_detect_ring.len(),
+                    life_before,
+                    player_life(&state, P1),
+                    dealt,
+                ));
+                // The evidence is complete; the rest of the drive only costs time. The
+                // window guard has already covered every beat up to here, and the loop
+                // below re-checks the settled window once more.
+                break;
+            }
+        }
+    }
+    if matches!(
+        state.waiting_for,
+        WaitingFor::AssignCombatDamage { .. } | WaitingFor::AssignBlockerDamage { .. }
+    ) {
+        assignment_window.get_or_insert_with(|| state.waiting_for.variant_name().to_string());
+    }
+
+    let (beat, before, after, life_before, life_after, dealt) = witness.unwrap_or_else(|| {
+        panic!(
+            "reach-guard: no CR 510.2 beat dealt combat damage to P1 while the ring held \
+             >= 2 frames, so the clear below would be unobservable. Combat-damage beats \
+             seen: {damage_beats}; max ring: {max_ring}. ATTRIBUTION: if \
+             `is_forced_cascade_window` no longer exempts \
+             `DeclareAttackers`/`DeclareBlockers`, the ring is wiped before combat and \
+             this guard reds first — read that as a class-membership regression, not as a \
+             failure of the combat-damage fence below"
+        )
+    });
+
+    assert!(
+        assignment_window.is_none(),
+        "DISCRIMINANT GUARD: this row exists because an UNBLOCKED attacker deals CR 510.2 \
+         damage with NO window — CR 510.1c's assignment window opens only for a division \
+         choice. A {assignment_window:?} window means the fixture drifted into the case \
+         the window-keyed exclusion already covers, making the row vacuous."
+    );
+    assert!(
+        life_after < life_before,
+        "LIFE-MOVE WITNESS: CR 120.3a — {dealt} combat damage to P1 must have reduced its \
+         life; got {life_before} -> {life_after} at beat {beat}"
+    );
+    assert!(
+        before >= 2,
+        "reach-guard: the ring must carry >= 2 frames INTO the damage beat; got {before}"
+    );
+    assert_eq!(
+        after, 0,
+        "CR 510.2 + CR 704.5a: the damage batch moved a life total with no intervening \
+         priority, so the ring accumulated before it may not be compared across it — it \
+         must be EMPTY after the beat. Ring went {before} -> {after} at beat {beat} \
+         (P1 {life_before} -> {life_after}). Deleting the \
+         `invalidate_loop_ring_on_unobserved_life_move` call from `apply_combat_damage` \
+         reproduces this failure: with `DeclareAttackers` / `DeclareBlockers` in the \
+         forced-cascade class and no assignment window ever opening, nothing else clears \
+         here."
+    );
+}
+
+/// The matched negative: CR 510.2 damage that moves NO player's life leaves the ring
+/// alone. Same board, but P1 fields a single 0/20 wall, so the 3/3 is blocked and the
+/// whole batch is creature-to-creature.
+///
+/// This pins the `p.life != before` predicate as load-bearing. Replacing it with an
+/// unconditional `clear()` — "clear on every combat damage" — still passes the row above
+/// but flips this one to FAIL, and would be a needless retention regression on every
+/// board where creatures merely trade.
+///
+/// NON-VACUITY: the witness requires a beat that BOTH dealt combat damage to a creature
+/// (`DamageDealt { target: Object, is_combat: true }`) AND left every player's life
+/// unchanged, with the ring already carrying >= 2 frames. A beat where no combat happened
+/// cannot satisfy it, so the row cannot pass by the attack never occurring. The single
+/// blocker also keeps CR 510.1c's division window shut, matching the row above.
+#[test]
+fn creature_only_combat_damage_leaves_the_loop_ring_intact() {
+    let mut state = combat_ring_board(true);
+
+    assert!(
+        state.loop_detection.samples(),
+        "reach-guard: a non-sampling mode never populates the ring; got {:?}",
+        state.loop_detection
+    );
+
+    // (beat, ring before, ring after, creature damage dealt)
+    let mut witness: Option<(usize, usize, usize, u32)> = None;
+    let mut max_ring = 0usize;
+    let mut creature_damage_beats = 0usize;
+
+    for beat in 0..400usize {
+        let before = state.loop_detect_ring.len();
+        max_ring = max_ring.max(before);
+        let lives_before: Vec<i32> = state.players.iter().map(|p| p.life).collect();
+        let Ok(events) = combat_drive_one_beat(&mut state) else {
+            break;
+        };
+        let to_creatures: u32 = events
+            .iter()
+            .filter_map(|e| match e {
+                GameEvent::DamageDealt {
+                    target: TargetRef::Object(_),
+                    amount,
+                    is_combat: true,
+                    ..
+                } => Some(*amount),
+                _ => None,
+            })
+            .sum();
+        let lives_after: Vec<i32> = state.players.iter().map(|p| p.life).collect();
+        if to_creatures > 0 && lives_after == lives_before {
+            creature_damage_beats += 1;
+            if witness.is_none() && before >= 2 {
+                witness = Some((beat, before, state.loop_detect_ring.len(), to_creatures));
+                break;
+            }
+        }
+    }
+
+    let (beat, before, after, dealt) = witness.unwrap_or_else(|| {
+        panic!(
+            "reach-guard: no beat dealt CR 510.2 damage to a creature with every player's \
+             life unchanged while the ring held >= 2 frames. Creature-damage beats seen: \
+             {creature_damage_beats}; max ring: {max_ring}. ATTRIBUTION: if \
+             `is_forced_cascade_window` no longer exempts \
+             `DeclareAttackers`/`DeclareBlockers`, the ring is wiped before combat and \
+             this guard reds first — read that as a class-membership regression, not as a \
+             failure of the combat-damage fence below"
+        )
+    });
+
+    assert!(
+        after >= before,
+        "CR 119.3: no player's life moved in this CR 510.2 batch ({dealt} damage, all of it \
+         to creatures), so there is nothing for the loop-ring prohibition to fence and the \
+         accumulated ring must SURVIVE. Ring went {before} -> {after} at beat {beat}. \
+         Replacing the `p.life != before` predicate in \
+         `invalidate_loop_ring_on_unobserved_life_move` with an unconditional `clear()` \
+         reproduces this failure."
     );
 }
