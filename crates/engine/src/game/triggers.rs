@@ -4,10 +4,11 @@ use crate::database::synthesis::KeywordTriggerInstaller;
 use crate::types::ability::{
     AbilityCondition, AbilityCost, AbilityDefinition, AbilityKind, AdditionalCostOrigin,
     BounceSelection, CardTypeSetSource, CastManaSpentMetric, ChosenAttribute, CommanderOwnership,
-    ControllerRef, CopyRetargetPermission, DelayedTriggerCondition, Effect, ModalChoice,
-    ObjectScope, OriginConstraint, PlayerFilter, PtValue, QuantityExpr, QuantityRef, RenownSubject,
-    ResolvedAbility, SacrificeCost, TargetFilter, TargetRef, TributeOutcome, TriggerCondition,
-    TriggerConstraint, TriggerDefinition, TriggerDefinitionOccurrenceRef, TriggerDefinitionRef,
+    ControllerRef, CopyRetargetPermission, DamageKindFilter, DelayedTriggerCondition, Effect,
+    ModalChoice, ObjectScope, OriginConstraint, PlayerFilter, PtValue, QuantityExpr, QuantityRef,
+    RenownSubject, ResolvedAbility, SacrificeCost, TargetFilter, TargetRef, TributeOutcome,
+    TriggerCondition, TriggerConstraint, TriggerDefinition, TriggerDefinitionOccurrenceRef,
+    TriggerDefinitionRef,
     TriggerEntry, TriggerGrantProducerKey, TypeFilter, TypedFilter,
 };
 #[cfg(test)]
@@ -2378,13 +2379,13 @@ pub(crate) fn trigger_definition_functions_in_zone(def: &TriggerDefinition, zone
 /// class that changes across the covered cycle:
 ///
 /// 1. the FIRST accept-time frame pair's single-new-battlefield-object is guaranteed by
-///    `game::engine::derived_fodder_class` (engine.rs:1996 — it returns `None` if more than one
-///    object entered the battlefield that cycle, so a `Some` fodder class means the fodder was
-///    the sole entrant); and
+///    `game::engine::derived_fodder_class` (`fn` at engine.rs:2191, called at engine.rs:2461 — it
+///    returns `None` if more than one object entered the battlefield that cycle, so a `Some`
+///    fodder class means the fodder was the sole entrant); and
 /// 2. the SECOND cover frame pair's "only the fodder partition grows" is guaranteed SOLELY by
-///    `analysis::resource::board_covers_modulo_fodder` (resource.rs:1058), whose all-zones
-///    stable-partition content-equality is asserted at resource.rs:1145 — which PRECEDES the
-///    firewall call at resource.rs:1156. A reader/refactor must not reorder the
+///    `analysis::resource::board_covers_modulo_fodder` (`fn` at resource.rs:1267), whose all-zones
+///    stable-partition content-equality is enforced by its own return value at its ONLY call site,
+///    resource.rs:1354 — which PRECEDES the firewall call in the same function. A reader/refactor must not reorder the
 ///    `board_covers_modulo_fodder` gate after the firewall: the disjointness argument here
 ///    relies on it having already proven that nothing but the fodder entered.
 ///
@@ -2425,6 +2426,55 @@ pub(crate) fn etb_observer_provably_excludes_class(
                 &source_context,
             )
         }
+}
+
+/// CR 510.2 / CR 506.1 (+ CR 500.1 for the phase list): can this trigger's event occur
+/// while the loop window sits in `phase`? Returns `true` iff it PROVABLY cannot — then
+/// the trigger never fires inside the window and does not observe the growing class.
+///
+/// Exhaustive dispatch on [`TriggerMode`] with a fail-closed `_ => false` arm: a mode
+/// this predicate cannot classify KEEPS its veto. That wildcard is the deliberate
+/// error-direction deviation — a future mode is swallowed into *conservatism*, never
+/// into relief.
+///
+/// ⛔ SHAPE IS PINNED ON BOTH ARMS.
+/// (1) The `Phase` arm is STRICT inequality. `def.phase == Some(phase)` MUST return
+///     `false`, and widening it to relieve `p == phase` ("it already triggered this
+///     phase, so it cannot trigger again") is a SOUNDNESS change, not a precision one:
+///     CR 117.3a puts beginning-of-phase abilities ON THE STACK before the active
+///     player receives the priority at which CR 732.2a lets a shortcut be proposed, and
+///     CR 608.2h determines an on-stack ability's information AT RESOLUTION — inside
+///     the window. Such a refinement needs a stack-emptiness proof no caller supplies.
+/// (2) The combat-damage arm REQUIRES `damage_kind == CombatOnly`. CR 510.2 confines
+///     combat damage to the combat damage step (extra combat damage steps are still
+///     `Phase::CombatDamage`), which is exactly what makes the arm sound; a
+///     `damage_kind: Any` trigger can fire on NONCOMBAT damage in any phase, so
+///     dropping the requirement would relieve observers that genuinely fire in the
+///     window.
+/// Both pins are asserted by `trigger_event_unreachable_in_phase_shape_is_pinned`.
+pub(crate) fn trigger_event_unreachable_in_phase(def: &TriggerDefinition, phase: Phase) -> bool {
+    match def.mode {
+        // CR 500.1 / CR 506.1: a phase/step-keyed trigger's event is the arrival of
+        // that phase or step, which cannot occur inside a window proven invariant at a
+        // DIFFERENT one. `def.phase == None` proves nothing ⇒ keep the veto.
+        TriggerMode::Phase => def.phase.is_some_and(|p| p != phase),
+        // CR 510.2: the whole CR 120.2a combat-damage family. Combat damage is dealt
+        // only by the combat damage step's turn-based action, so a `CombatOnly` filter
+        // cannot match any damage event inside a window invariant at another step.
+        TriggerMode::DamageDone
+        | TriggerMode::DamageDoneOnce
+        | TriggerMode::DamageAll
+        | TriggerMode::DamageDealtOnce
+        | TriggerMode::DamageDoneOnceByController
+        | TriggerMode::DamageReceived
+        | TriggerMode::DamagePreventedOnce
+        | TriggerMode::ExcessDamage
+        | TriggerMode::ExcessDamageAll => {
+            def.damage_kind == DamageKindFilter::CombatOnly && phase != Phase::CombatDamage
+        }
+        // Fail-closed: every mode this predicate cannot classify keeps its veto.
+        _ => false,
+    }
 }
 
 fn live_battlefield_source_was_present_at_event(event: &GameEvent, source_id: ObjectId) -> bool {
@@ -36639,6 +36689,87 @@ pub mod tests {
         assert_eq!(
             idle_triggers, 0,
             "Azula's copy trigger must NOT fire when she is not attacking (CR 603.4)"
+        );
+    }
+
+    /// X2-3 — `trigger_event_unreachable_in_phase` is FAIL-CLOSED on the modes it
+    /// cannot classify, and still answers `true` for the two families it can. Both
+    /// polarities live in one row, so a constant implementation fails an arm.
+    ///
+    /// REVERT-PROBE: replace the predicate's `_ => false` arm with `_ => true` ⇒ the
+    /// `ChangesZone` assertion FAILS while the two `true` assertions still pass, so the
+    /// probe is isolated to the fail-closed arm.
+    #[test]
+    fn trigger_event_unreachable_in_phase_is_fail_closed() {
+        // Unclassifiable mode: an ETB observer's event can occur in any phase, so the
+        // predicate must NOT claim unreachability — the veto is kept.
+        let mut etb = TriggerDefinition::new(TriggerMode::ChangesZone);
+        etb.destination = Some(Zone::Battlefield);
+        assert!(
+            !trigger_event_unreachable_in_phase(&etb, Phase::PreCombatMain),
+            "CR 603.6a: a zone-change observer is unclassifiable by phase ⇒ fail closed"
+        );
+
+        // Classified family 1 — CR 500.1 / CR 506.1 phase-keyed.
+        let mut end_step = TriggerDefinition::new(TriggerMode::Phase);
+        end_step.phase = Some(Phase::End);
+        assert!(
+            trigger_event_unreachable_in_phase(&end_step, Phase::PreCombatMain),
+            "an end-step trigger's event cannot occur in a precombat-main window"
+        );
+
+        // Classified family 2 — CR 510.2 combat damage.
+        let mut combat_damage = TriggerDefinition::new(TriggerMode::DamageDone);
+        combat_damage.damage_kind = DamageKindFilter::CombatOnly;
+        assert!(
+            trigger_event_unreachable_in_phase(&combat_damage, Phase::PreCombatMain),
+            "CR 510.2: combat damage is dealt only in the combat damage step"
+        );
+    }
+
+    /// X2-4a + X2-4b — the ⛔ ANTI-COLLAPSE PIN on both classified arms. Each arm
+    /// carries its own paired positive, so the row proves the SHAPE and not merely
+    /// that the function returns something.
+    ///
+    /// REVERT-PROBES, one per arm:
+    /// * arm 1 (X2-4a): widen the `Phase` arm from `p != phase` to `def.phase.is_some()`
+    ///   (or to any `p == phase` relief) ⇒ the first assertion FAILS. It fails for a
+    ///   SOUNDNESS reason, not to protect a test: CR 117.3a puts a beginning-of-phase
+    ///   ability on the stack BEFORE the shortcut's priority and CR 608.2h reads its
+    ///   information at resolution, inside the window.
+    /// * arm 2 (X2-4b): drop the `damage_kind == CombatOnly` requirement ⇒ the third
+    ///   assertion FAILS. A `damage_kind: Any` trigger fires on NONCOMBAT damage in any
+    ///   phase, so classifying it would relieve an observer that genuinely fires.
+    #[test]
+    fn trigger_event_unreachable_in_phase_shape_is_pinned() {
+        // ── arm 1: the Phase arm is STRICT inequality ──
+        let mut precombat = TriggerDefinition::new(TriggerMode::Phase);
+        precombat.phase = Some(Phase::PreCombatMain);
+        assert!(
+            !trigger_event_unreachable_in_phase(&precombat, Phase::PreCombatMain),
+            "X2-4a PIN: `p == phase` must NOT be relieved (CR 117.3a + CR 603.3 + CR 608.2h)"
+        );
+        assert!(
+            trigger_event_unreachable_in_phase(&precombat, Phase::CombatDamage),
+            "X2-4a paired positive: the same def IS unreachable at a different phase"
+        );
+
+        // ── arm 2: the damage arm REQUIRES `CombatOnly` ──
+        let mut any_damage = TriggerDefinition::new(TriggerMode::DamageDone);
+        any_damage.damage_kind = DamageKindFilter::Any;
+        assert!(
+            !trigger_event_unreachable_in_phase(&any_damage, Phase::PreCombatMain),
+            "X2-4b PIN: `damage_kind: Any` can fire on noncombat damage in any phase"
+        );
+        let mut combat_only = TriggerDefinition::new(TriggerMode::DamageDone);
+        combat_only.damage_kind = DamageKindFilter::CombatOnly;
+        assert!(
+            trigger_event_unreachable_in_phase(&combat_only, Phase::PreCombatMain),
+            "X2-4b paired positive: `CombatOnly` IS unreachable outside CR 510.2's step"
+        );
+        assert!(
+            !trigger_event_unreachable_in_phase(&combat_only, Phase::CombatDamage),
+            "X2-4b: `CombatOnly` is reachable IN the combat damage step (CR 510.2)"
         );
     }
 }

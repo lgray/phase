@@ -901,14 +901,12 @@ pub fn board_delta(before: &GameState, after: &GameState) -> BoardDelta {
 /// design is FAIL-CLOSED BY CONSTRUCTION — forgetting to thread a proof can only make
 /// a predicate more conservative, never less.
 ///
-/// The scope is threaded but not yet consumed: the `_scoped` predicates below are
-/// currently identity in it (asserted by `scoped_wrappers_are_identity`). A later
-/// phase narrows the fail-closed guards using these proofs; introducing the seam
-/// separately keeps that change to the guard bodies alone.
+/// The `_scoped` predicates below stay identity for [`LoopWindowScope::unproven`]
+/// (asserted by `scoped_wrappers_are_identity`) because every guard that reads a field
+/// sits inside an `if let Some(..)`. `phase_invariant` and `sole_driver` ARE now read —
+/// by the growing-class firewall's CR 510.2 / CR 506.1 and CR 117.1b guards — so the
+/// scope is no longer write-only; `pinned_slots` is the remaining unread field.
 #[derive(Debug, Clone, Copy)]
-// The fields are the proof surface the window guards read; the guards that read them
-// land in the phase that narrows them. Until then every field is write-only.
-#[allow(dead_code)]
 pub(crate) struct LoopWindowScope<'a> {
     /// `Some(phase)` iff the caller proved both frames are equal on turn number AND
     /// step-granular phase (CR 500.1 turn structure / CR 506.1 combat steps /
@@ -923,10 +921,12 @@ pub(crate) struct LoopWindowScope<'a> {
     /// CR 732.2a: the per-iteration choice slots the OFFER publishes, which
     /// `decision_template::predictability_gate` then FORCES the declaration to pin.
     /// A slot listed here is a *specified* choice in CR 732.2a's sense, not a free one.
+    #[allow(dead_code)] // write-only until the phase that consumes pinned slots.
     pinned_slots: &'a [DecisionSlot],
     /// CR 601.2f (cost determination reads static cost modifiers): `Some(ids)` iff the
     /// caller proved the EXACT set of card ids this window casts — `Some(&[])` for a
     /// window that provably casts nothing. `None` means NO PROOF, i.e. scan everything.
+    #[allow(dead_code)] // write-only until the projected firewall's cost guard lands.
     cast_card_ids: Option<&'a [CardId]>,
 }
 
@@ -940,6 +940,68 @@ impl LoopWindowScope<'static> {
             pinned_slots: &[],
             cast_card_ids: None,
         }
+    }
+}
+
+/// CR 510.2 / CR 506.1 / CR 117.1b: the proof a cover pair carries about its own
+/// window. SINGLE AUTHORITY — both suppressing firewall callers derive their scope
+/// here, so the two [`LoopWindowScope`] populations can never drift apart.
+///
+/// `phase_invariant`: `Some(phase)` only when the frames agree on turn number AND
+/// step-granular phase AND neither carries a pending extra phase (CR 500.8 can insert
+/// a duplicate of the SAME phase inside one turn, which would break "equal phase ⇒
+/// never left it"). Derived LOCALLY from the frames rather than read off a preceding
+/// gate, so it is independent of gate ORDER — in
+/// [`loop_states_cover_modulo_fodder_growth`] the firewall call PRECEDES
+/// `eq_except_growable`. (`extra_turns` is deliberately NOT a conjunct: an extra TURN
+/// is taken after the current one and `turn_number` is monotone, so it cannot insert a
+/// duplicate phase inside a window whose frames already agree on `turn_number`.)
+///
+/// `sole_driver`: `Some(p)` only when BOTH frames' driving sequences are non-empty and
+/// every entry in BOTH names controller `p` (CR 117.1b: a player may activate an
+/// ability only with priority, and no other player receives priority inside the taken
+/// shortcut). Reading only `prior` would mint `Some(p)` for a window whose other frame
+/// was driven by someone else — the RELIEVING direction. An empty sequence proves
+/// nothing, so it yields `None`, not "nobody drove this".
+///
+/// Fail-closed in every branch: a frame pair that proves nothing gets the
+/// [`LoopWindowScope::unproven`] values and therefore byte-identical behaviour.
+fn window_scope_from_cover_frames<'a>(
+    pa: &GameState,
+    pb: &GameState,
+    pinned_slots: &'a [DecisionSlot],
+) -> LoopWindowScope<'a> {
+    // (p1) same turn, (p2) same step-granular phase, (p3) no pending extra phase in
+    // either frame (CR 500.8).
+    let phase_invariant = (pa.turn_number == pb.turn_number
+        && pa.phase == pb.phase
+        && pa.extra_phases.is_empty()
+        && pb.extra_phases.is_empty())
+    .then_some(pa.phase);
+
+    // (s1) BOTH sequences non-empty — the `(Some, Some)` arm; (s2) one controller
+    // across BOTH sequences.
+    let sole_driver = match (
+        pa.last_loop_action_sequence.first(),
+        pb.last_loop_action_sequence.first(),
+    ) {
+        (Some(first), Some(_)) => {
+            let driver = first.controller;
+            pa.last_loop_action_sequence
+                .iter()
+                .chain(pb.last_loop_action_sequence.iter())
+                .all(|ctx| ctx.controller == driver)
+                .then_some(driver)
+        }
+        _ => None,
+    };
+
+    LoopWindowScope {
+        phase_invariant,
+        sole_driver,
+        pinned_slots,
+        // 2b's axis (the PROJECTED covers), derived at its own call site.
+        cast_card_ids: None,
     }
 }
 
@@ -1177,8 +1239,16 @@ pub(crate) fn loop_states_cover_modulo_object_growth(
     // (3″) No live fire-time observer reads the growing class (§5.3a, S5).
     // `None` class context: the offline object-growth path (`detect_loop`) has no single fodder
     // representative to gate ETB matchers against, so the firewall keeps its conservative veto on
-    // every observer (byte-identical to pre-gate behavior).
-    if fire_time_conditions_read_growing_class(&cf, None) {
+    // every observer whose relief is class-keyed (byte-identical to pre-gate behavior).
+    // ⚠ The window scope is NOT class-keyed: CR 117.1b (`sole_driver`) and CR 510.2 / CR 506.1
+    // (`phase_invariant`) relief IS live here, so this OFFLINE classifier can now emit
+    // certificates where it previously vetoed. That is the one seam this phase can widen, and
+    // `cargo combo-verify`'s row-for-row diff is its detector.
+    if fire_time_conditions_read_growing_class_scoped(
+        &cf,
+        None,
+        window_scope_from_cover_frames(&pa, &pb, &[]),
+    ) {
         return false;
     }
 
@@ -1375,7 +1445,11 @@ pub(crate) fn loop_states_cover_modulo_fodder_growth(
         .copied()
         .filter(|id| cf.objects.contains_key(id))
         .min_by_key(|id| (cf.objects[id].tapped, *id));
-    if fire_time_conditions_read_growing_class(&cf, class_member) {
+    if fire_time_conditions_read_growing_class_scoped(
+        &cf,
+        class_member,
+        window_scope_from_cover_frames(&pa, &pb, &[]),
+    ) {
         return false;
     }
     if cf.stack.iter().any(stack_entry_reads_growing_class) {
@@ -1844,11 +1918,14 @@ fn fire_time_conditions_read_growing_class(
 }
 
 /// Scoped sibling of [`fire_time_conditions_read_growing_class`] — see
-/// [`LoopWindowScope`]. Identity in the scope by construction today.
+/// [`LoopWindowScope`]. Reads `scope.phase_invariant` (CR 510.2 / CR 506.1, blocks (1)
+/// and (5b)) and `scope.sole_driver` (CR 117.1b, block (2)); every such guard sits
+/// inside an `if let Some(..)`, so [`LoopWindowScope::unproven`] still reaches none of
+/// them and the 2-arg wrapper stays identity (`scoped_wrappers_are_identity`).
 fn fire_time_conditions_read_growing_class_scoped(
     state: &GameState,
     class_member: Option<ObjectId>,
-    _scope: LoopWindowScope<'_>,
+    scope: LoopWindowScope<'_>,
 ) -> bool {
     use crate::game::ability_scan as scan;
     // (1) Trigger fire-time conditions (CR 603.4) AND effect bodies.
@@ -1870,16 +1947,25 @@ fn fire_time_conditions_read_growing_class_scoped(
             if !crate::game::triggers::trigger_definition_functions_in_zone(def, obj.zone) {
                 continue;
             }
+            // CR 510.2 / CR 506.1: a trigger whose event cannot occur in the window's
+            // invariant phase never fires inside the loop, so it does not observe the
+            // growing class. Fail-closed: `phase_invariant: None` (the caller proved
+            // nothing) keeps the conservative veto.
+            if let Some(phase) = scope.phase_invariant {
+                if crate::game::triggers::trigger_event_unreachable_in_phase(def, phase) {
+                    continue;
+                }
+            }
             // CR 603.2 / CR 603.6a: an enters-the-battlefield observer whose entry matcher
             // PROVABLY excludes the growing fodder `class_member` never fires on the loop's
             // per-cycle token creation, so it does NOT observe the loop — skip it rather than
             // veto. GAP-1 (soundness + ordering, load-bearing): this is sound only because the
             // fodder is the ONLY class that changed across the covered cycle, guaranteed IN ORDER
             // by (a) `game::engine::derived_fodder_class`'s single-new-battlefield-object rule
-            // (engine.rs:1996) on the FIRST accept-time frame pair, and (b)
-            // `board_covers_modulo_fodder`'s all-zones stable-partition content-equality
-            // (resource.rs:1058, asserted at resource.rs:1145) on the SECOND cover frame pair —
-            // which PRECEDES this firewall call (resource.rs:1156). Do not reorder that gate
+            // (`fn` at engine.rs:2191, called at engine.rs:2461) on the FIRST accept-time frame
+            // pair, and (b) `board_covers_modulo_fodder`'s all-zones stable-partition
+            // content-equality (`fn` at resource.rs:1267, whose ONLY call is resource.rs:1354) on
+            // the SECOND cover frame pair — which PRECEDES this firewall call. Do not reorder that gate
             // after the firewall. GAP-2 (block(1)-ONLY, deliberate FAIL-CLOSED residual): only
             // this printed-trigger surface is gated. Block (5b)'s
             // `granted_keyword_triggers_in_zone` (triggers.rs:440) CAN synthesize granted ETB
@@ -1935,11 +2021,21 @@ fn fire_time_conditions_read_growing_class_scoped(
         if obj.zone != Zone::Battlefield || obj.is_phased_out() {
             continue;
         }
-        if obj
-            .abilities
-            .iter()
-            .any(scan::ability_definition_reads_sibling_mutable_for_loop)
-        {
+        if obj.abilities.iter().any(|ability| {
+            // CR 117.1b + CR 732.2c: no player but the sole driver receives priority
+            // inside the taken shortcut, so a FOREIGN-controlled activated ability
+            // cannot be activated during the window and cannot read the growing class.
+            // CR 605.3a bounds this: a mana ability is activatable outside the priority
+            // rule (while another player casts a spell or activates an ability), so it
+            // is NOT relieved and keeps vetoing.
+            // PER-ABILITY, never per-object: another surface on the same object (a
+            // trigger body, block (1)) must keep vetoing.
+            // Fail-closed on `sole_driver: None` (the caller proved nothing).
+            let relieved = scope.sole_driver.is_some_and(|driver| {
+                obj.controller != driver && !crate::game::mana_abilities::is_mana_ability(ability)
+            });
+            !relieved && scan::ability_definition_reads_sibling_mutable_for_loop(ability)
+        }) {
             return true;
         }
     }
@@ -2036,6 +2132,14 @@ fn fire_time_conditions_read_growing_class_scoped(
             continue;
         }
         for def in crate::game::triggers::granted_keyword_triggers_in_zone(state, obj) {
+            // CR 510.2 / CR 506.1: same phase-unreachability relief as block (1). The
+            // guard is per-`def` and applies to any trigger definition, however it was
+            // produced. Fail-closed on `phase_invariant: None`.
+            if let Some(phase) = scope.phase_invariant {
+                if crate::game::triggers::trigger_event_unreachable_in_phase(&def, phase) {
+                    continue;
+                }
+            }
             if def
                 .condition
                 .as_ref()
@@ -7035,10 +7139,11 @@ mod tests {
     ///
     /// REVERT-PROBE (live at this phase): stop a wrapper delegating (restore the old
     /// inline body, or have it pass anything other than `unproven()`) ⇒ the matching
-    /// arm's `assert_eq!` fails. **Honest scope limit:** "make `unproven()` populate a
-    /// field" is NOT yet a live probe — no `_scoped` body reads the scope until the
-    /// phase that narrows the guards, so populating a field is a no-op by
-    /// construction. That is the point of shipping the seam inert.
+    /// arm's `assert_eq!` fails. Since the growing-class firewall now READS
+    /// `phase_invariant` / `sole_driver`, "make `unproven()` populate a field" is a live
+    /// probe too: the phase-gated observer board below is precisely the population a
+    /// populated `phase_invariant` changes the answer on, so a non-`None` `unproven()`
+    /// breaks the identity here rather than silently.
     #[test]
     fn scoped_wrappers_are_identity() {
         use crate::types::ability::TriggerCondition;
@@ -7898,5 +8003,163 @@ mod tests {
                 "untargeted twin: the same board with no published slot bounds identically"
             );
         }
+    }
+
+    /// G6-1 — ROUTER BYTE-IDENTITY. `counter_growth_is_observed` (`:2923`) and
+    /// `life_growth_is_observed` (`:2946`) are ROUTERS, not suppressors: a `true` there
+    /// selects the O(N) discrete driver and the offer still forms. They keep the 2-arg
+    /// wrappers (`LoopWindowScope::unproven()`), so the phase-unreachability narrowing
+    /// must NOT reach them — a `{Phase, End}` observer scanned at `PreCombatMain` still
+    /// reports OBSERVED at both routers even though the identically-shaped observer IS
+    /// relieved at the two suppressing covers (rows X2-1 / X2-2).
+    ///
+    /// REVERT-PROBE: switch either router to its `_scoped` sibling with a populated
+    /// `phase_invariant` ⇒ the matching assertion flips to `false` ⇒ FAILS.
+    #[test]
+    fn observedness_callers_literal_expectation() {
+        use crate::types::ability::TriggerCondition;
+
+        // A SIBLING (growing-class) observer gated on a step the state is not in.
+        let sibling = phase_gated_observer_board(TriggerCondition::ControlsType {
+            filter: TargetFilter::Any,
+        });
+        assert_eq!(sibling.phase, Phase::PreCombatMain);
+        assert!(
+            counter_growth_is_observed(&sibling),
+            "G6-1: the counter router must stay byte-identical — a phase-unreachable \
+             observer is still OBSERVED here, because routing true only picks the \
+             discrete driver (it never suppresses the offer)"
+        );
+
+        // A PROJECTED (life) observer gated on the same unreachable step.
+        let projected = phase_gated_observer_board(TriggerCondition::GainedLife { minimum: 1 });
+        assert!(
+            life_growth_is_observed(&projected),
+            "G6-1: the life router must stay byte-identical for the same reason"
+        );
+
+        // PAIRED NEGATIVE (so the instrument provably returns both answers): a board
+        // with no observer at all reports NOT observed at both routers.
+        let benign = GameState::new_two_player(7);
+        assert!(!counter_growth_is_observed(&benign));
+        assert!(!life_growth_is_observed(&benign));
+    }
+
+    /// X1-3 — [`window_scope_from_cover_frames`] is FAIL-CLOSED on every conjunct, and
+    /// each `None` assertion is PAIRED with the `Some` it degenerates from, so the
+    /// instrument provably returns both answers on both axes.
+    ///
+    /// REVERT-PROBES, one per conjunct:
+    /// * drop the all-equal fold over the two sequences (return the first controller) ⇒
+    ///   the heterogeneous `sole_driver == None` assertion FAILS.
+    /// * drop the both-frames requirement (read only `pa`) ⇒ the one-empty-sequence
+    ///   `sole_driver == None` assertion FAILS.
+    /// * drop the `extra_phases` conjunct (CR 500.8) ⇒ the `phase_invariant == None`
+    ///   assertion FAILS while the turn/phase ones still pass.
+    /// * drop the turn-number conjunct ⇒ the differing-turn assertion FAILS.
+    #[test]
+    fn window_scope_is_fail_closed_on_a_heterogeneous_window() {
+        use crate::types::game_state::{BuybackUsage, LoopAction, LoopActionContext};
+
+        fn ctx(controller: u8) -> LoopActionContext {
+            LoopActionContext {
+                card_id: CardId(64),
+                controller: PlayerId(controller),
+                action: LoopAction::Recast {
+                    from_zone: Zone::Hand,
+                    uses_buyback: BuybackUsage::Used,
+                },
+                convoke: None,
+                pins: Vec::new(),
+            }
+        }
+
+        // Baseline frame pair: same turn, same step-granular phase, no extra phases,
+        // both sequences driven by P0.
+        let base = || {
+            let mut s = GameState::new_two_player(7);
+            s.turn_number = 13;
+            s.phase = Phase::PreCombatMain;
+            s.last_loop_action_sequence = vec![ctx(0)];
+            s
+        };
+
+        // ── `sole_driver` — CR 117.1b ──
+        let (pa, pb) = (base(), base());
+        assert_eq!(
+            window_scope_from_cover_frames(&pa, &pb, &[]).sole_driver,
+            Some(PlayerId(0)),
+            "PAIRED POSITIVE: a homogeneous single-driver window proves CR 117.1b's premise"
+        );
+
+        // (s2) heterogeneous ACROSS the two frames — the case a `pa`-only read would
+        // mint `Some(P0)` for, which is the relieving direction #4603 forbids.
+        let mut pb_other = base();
+        pb_other.last_loop_action_sequence = vec![ctx(1)];
+        assert_eq!(
+            window_scope_from_cover_frames(&pa, &pb_other, &[]).sole_driver,
+            None,
+            "(s2) a two-controller window proves nothing about who holds priority"
+        );
+
+        // (s2) heterogeneous WITHIN one frame.
+        let mut pa_mixed = base();
+        pa_mixed.last_loop_action_sequence = vec![ctx(0), ctx(1)];
+        assert_eq!(
+            window_scope_from_cover_frames(&pa_mixed, &pb, &[]).sole_driver,
+            None,
+            "(s2) an interleaved sequence is fail-closed"
+        );
+
+        // (s1) an EMPTY sequence proves nothing — not "nobody drove this".
+        let mut pb_empty = base();
+        pb_empty.last_loop_action_sequence.clear();
+        assert_eq!(
+            window_scope_from_cover_frames(&pa, &pb_empty, &[]).sole_driver,
+            None,
+            "(s1) an empty driving sequence is NO PROOF, so it cannot relieve anything"
+        );
+
+        // ── `phase_invariant` — CR 500.1 / CR 506.1 / CR 500.8 ──
+        assert_eq!(
+            window_scope_from_cover_frames(&pa, &pb, &[]).phase_invariant,
+            Some(Phase::PreCombatMain),
+            "PAIRED POSITIVE: agreeing frames with no extra phase prove the window's phase"
+        );
+
+        // (p3) CR 500.8: a queued extra phase can duplicate the SAME phase inside one
+        // turn, so "equal phase" no longer implies "never left it".
+        let mut pb_extra = base();
+        pb_extra
+            .extra_phases
+            .push(crate::types::game_state::ExtraPhase {
+                anchor: Phase::PreCombatMain,
+                phase: Phase::PreCombatMain,
+                attacker_restriction: None,
+                attacker_restriction_source: None,
+            });
+        assert_eq!(
+            window_scope_from_cover_frames(&pa, &pb_extra, &[]).phase_invariant,
+            None,
+            "(p3) CR 500.8: a pending extra phase breaks `equal phase ⇒ never left it`"
+        );
+
+        // (p1) different turns.
+        let mut pb_turn = base();
+        pb_turn.turn_number = 14;
+        assert_eq!(
+            window_scope_from_cover_frames(&pa, &pb_turn, &[]).phase_invariant,
+            None,
+            "(p1) frames from different turns bound nothing about one window's phase"
+        );
+
+        // (p2) different step-granular phases.
+        let mut pb_phase = base();
+        pb_phase.phase = Phase::PostCombatMain;
+        assert_eq!(
+            window_scope_from_cover_frames(&pa, &pb_phase, &[]).phase_invariant,
+            None,
+            "(p2) a window that crosses a phase boundary is not phase-invariant"
+        );
     }
 }
