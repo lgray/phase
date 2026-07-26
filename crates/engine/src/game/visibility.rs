@@ -787,6 +787,11 @@ pub fn filter_state_for_viewer(state: &GameState, viewer: PlayerId) -> GameState
                 certificate: certificate.clone(),
                 schema: ShortcutDecisionSchema {
                     iteration_count: schema.iteration_count.clone(),
+                    // CR 732.2a: the count bound is derived from PUBLIC board state (life,
+                    // poison, library sizes over the living players), so it carries through
+                    // the per-viewer projection unredacted — only hidden-info legal targets
+                    // are rewritten above.
+                    max_iterations: schema.max_iterations,
                     points,
                     convoke_tappable_count,
                 },

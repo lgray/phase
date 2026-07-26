@@ -1514,6 +1514,8 @@ fn declare_illegal_pin_falls_back_legal_ingests() {
     };
     let schema = ShortcutDecisionSchema {
         iteration_count: IterationCount::UntilLethal,
+        // No narrowed CR 732.2a bound — the global cap, as every offer states today.
+        max_iterations: ShortcutDecisionSchema::default().max_iterations,
         points: vec![DecisionPoint {
             slot: slot.clone(),
             kind: DecisionPointKind::Targets {
@@ -3947,6 +3949,8 @@ fn loop_shortcut_schema_redacts_hidden_targets_for_non_controller() {
     };
     let schema = ShortcutDecisionSchema {
         iteration_count: IterationCount::UntilLethal,
+        // No narrowed CR 732.2a bound — the global cap, as every offer states today.
+        max_iterations: ShortcutDecisionSchema::default().max_iterations,
         points: vec![DecisionPoint {
             slot,
             kind: DecisionPointKind::Targets {
@@ -4327,5 +4331,442 @@ fn object_growth_ledger_observer_bystander_suppresses_offer() {
          follow-up) has landed, this assertion is expected to flip back to an OFFER \
          — update it, do not delete the test.",
         runner.state().waiting_for
+    );
+}
+
+// ===========================================================================
+// PR-7 Phase 1b — CR 732.2a loop-detect ring retention across a FORCED
+// pre-priority window and the action that answers it.
+//
+// Both rows LOAD a committed real 4-player dump through the production restore
+// chokepoint (`PersistedGameState::Raw(..).into_game_state()`, the same path the
+// server's `from_persisted` and WASM's `decode_restored_game_state` funnel
+// through) and DRIVE through the public `apply()` boundary. Synthetic
+// `GameScenario` boards are deliberately NOT used here: the property under test
+// is an accumulation across dozens of real beats.
+// ===========================================================================
+
+fn gunzip_dump(gz: &[u8]) -> String {
+    use std::io::Read;
+    let mut json = String::new();
+    flate2::read::GzDecoder::new(gz)
+        .read_to_string(&mut json)
+        .expect("fixture .json.gz must inflate to UTF-8 JSON");
+    json
+}
+
+fn restore_dump(json: &str) -> GameState {
+    let envelope: serde_json::Value =
+        serde_json::from_str(json).expect("dump envelope parses as JSON");
+    let raw: GameState = serde_json::from_value(envelope["gameState"].clone())
+        .expect("the real 4p gameState must deserialize into the current GameState");
+    engine::types::game_state::PersistedGameState::Raw(Box::new(raw)).into_game_state()
+}
+
+/// Opponents the ENGINE considers living. `Player::is_eliminated` is the authority the
+/// CR 732.2a detector uses when it builds its `living` set — `eliminated_players` and
+/// `life > 0` are not sufficient on their own, so this reads the field the detector reads.
+fn engine_live_opponents(state: &GameState, of: PlayerId) -> Vec<PlayerId> {
+    state
+        .players
+        .iter()
+        .filter(|p| p.id != of && !p.is_eliminated)
+        .map(|p| p.id)
+        .collect()
+}
+
+/// Actions a dump driver must never take: they end the game or bypass the reducer, and a
+/// generic "first legal action" driver otherwise picks them and fakes a result.
+fn dump_driver_forbids(a: &GameAction) -> bool {
+    matches!(a, GameAction::Concede { .. } | GameAction::Debug(_))
+}
+
+/// The seat that can act on this beat plus its legal actions, read through the same
+/// per-viewer enumerator the multiplayer transport uses. `WaitingFor::acting_player` is
+/// the engine's own answer to "whose beat is this", so it is tried first; the all-seat
+/// scan is the fallback and costs roughly 4x per beat.
+fn dump_beat_actor(state: &GameState) -> Option<(PlayerId, Vec<GameAction>)> {
+    if let Some(p) = state.waiting_for.acting_player() {
+        let (actions, _costs, _grouped) = engine::ai_support::legal_actions_for_viewer(state, p);
+        if !actions.is_empty() {
+            return Some((p, actions));
+        }
+    }
+    for p in state.players.iter().map(|p| p.id) {
+        let (actions, _costs, _grouped) = engine::ai_support::legal_actions_for_viewer(state, p);
+        if !actions.is_empty() {
+            return Some((p, actions));
+        }
+    }
+    None
+}
+
+/// One beat of the drain-loop drive policy: at `Priority` ALWAYS pass (the mandatory
+/// triggers resolve and re-trigger — that IS the loop; casting here wanders off it), and
+/// answer every other prompt, preferring a target choice aimed at `pin`.
+fn dump_drive_one_beat(state: &mut GameState, pin: Option<PlayerId>) -> Result<(), String> {
+    let Some((who, actions)) = dump_beat_actor(state) else {
+        return Err(format!("no legal actor at {:?}", state.waiting_for));
+    };
+    let chosen = if matches!(state.waiting_for, WaitingFor::Priority { .. }) {
+        actions
+            .iter()
+            .find(|a| matches!(a, GameAction::PassPriority))
+            .cloned()
+    } else {
+        pin.and_then(|t| {
+            actions.iter().find(|a| {
+                matches!(a, GameAction::SelectTargets { targets }
+                    if targets.iter().any(|r| matches!(r, TargetRef::Player(p) if *p == t)))
+            })
+        })
+        .or_else(|| {
+            actions
+                .iter()
+                .find(|a| !matches!(a, GameAction::PassPriority) && !dump_driver_forbids(a))
+        })
+        .or_else(|| actions.iter().find(|a| !dump_driver_forbids(a)))
+        .cloned()
+    };
+    let Some(action) = chosen else {
+        return Err(format!("empty action list at {:?}", state.waiting_for));
+    };
+    apply(state, who, action.clone())
+        .map(|_| ())
+        .map_err(|e| format!("apply err ({action:?}): {e:?}"))
+}
+
+/// Phase 1b, BOTH clear sites. The CR 732.2a ring must survive (i) the forced
+/// pre-priority window itself — the sampler's clear arm, which BASE took for every
+/// window except `OrderTriggers` — and (ii) the action that ANSWERS that window, which
+/// `apply_action`'s deliberate-break clear discarded unconditionally.
+///
+/// Fixture: `dellian_emblem_conqueror_4p.json.gz`, the real 4p Delianfel/Bloodthirsty
+/// Conqueror drain (P0 69 / P1 12 / P2 13 / P3 28, all four living, stack 152, ring 0,
+/// `loop_detection: Interactive`). It ships AT a `TriggerTargetSelection` window, which is
+/// precisely the window class BASE wiped.
+///
+/// NON-VACUITY: the fixture drives hundreds of real beats (it is NOT a saved-offer board
+/// that halts at beat 0), and the BASE measurement is the positive control that the
+/// instrument CAN report a large ring — it reports 16 once only ONE opponent is left
+/// alive, while measuring exactly 1 over the whole ≥2-living stretch. A `>= 5` assertion
+/// over that same stretch cannot pass on a BASE tree.
+///
+/// REVERT-PROBES (MEASURED outcomes, not predicted ones):
+/// ⓐ restore `apply_action`'s clear to its action-only form (drop the
+///   `!state.waiting_for.is_forced_cascade_window()` conjunct) ⇒ (i) FAILS FIRST — and (ii)
+///   and (iii) are never reached. The prediction that ⓐ would leave (i) passing was WRONG,
+///   and the reason is the interlock between the two sites: with the answer clearing the
+///   ring, the drive can never carry >= 2 frames INTO a forced window either, so the
+///   sampler half has nothing left to retain. The two clear sites are therefore not
+///   independently observable on this fixture — ⓐ still proves a one-site fix is inert,
+///   just at (i) rather than at (ii).
+/// ⓑ restore the sampler's `!matches!(wf, WaitingFor::OrderTriggers { .. })` arm ⇒ (i)
+///   FAILS.
+///
+/// DISCRIMINANT GUARD on (ii): `apply_action` has a PRE-EXISTING action-side exemption for
+/// `GameAction::OrderTriggers`, so if the window (ii) happens to catch were an
+/// `OrderTriggers` window, (ii) would be satisfied without the new window-keyed conjunct
+/// being consulted at all. The window's discriminant is therefore captured alongside
+/// `(before, after)` and asserted to be something else — a fixture or engine change that
+/// drifts (ii) onto an `OrderTriggers` window fails loudly instead of going quietly
+/// vacuous.
+#[test]
+fn two_site_retention_survives_a_prompt_and_its_answer() {
+    let json = gunzip_dump(include_bytes!(
+        "../fixtures/dellian_emblem_conqueror_4p.json.gz"
+    ));
+    let mut state = restore_dump(&json);
+
+    // Reach guards on the loaded board — every assertion below is meaningless without them.
+    assert!(
+        state.loop_detection.samples(),
+        "reach-guard: the dump must load with a SAMPLING loop-detection mode, else the \
+         ring is never populated and every retention assertion is vacuous; got {:?}",
+        state.loop_detection
+    );
+    assert_eq!(
+        engine_live_opponents(&state, P0).len(),
+        3,
+        "reach-guard: the dump must load with 3 living opponents"
+    );
+    assert_eq!(
+        state.loop_detect_ring.len(),
+        0,
+        "reach-guard: the dump ships with an EMPTY ring — every frame below was accumulated \
+         by this drive, not restored"
+    );
+    assert!(
+        matches!(state.waiting_for, WaitingFor::TriggerTargetSelection { .. }),
+        "reach-guard: the dump ships AT a TriggerTargetSelection window (CR 603.3d), the \
+         window class BASE wiped; got {:?}",
+        state.waiting_for
+    );
+
+    let pin = engine_live_opponents(&state, P0).first().copied();
+
+    // (i) the `:3457` sampler half: a forced pre-priority window observed with an
+    //     ALREADY-ACCUMULATED ring (>= 2 frames, so a single fresh sample cannot explain it).
+    let mut prompt_ring: Option<usize> = None;
+    // (ii) the `apply_action` half: the ring across the ANSWER to such a window, with the
+    //      window itself so the row can prove it was not the pre-exempt `OrderTriggers`.
+    let mut answer_ring: Option<(WaitingFor, usize, usize)> = None;
+    // (iii) the ≥2-living stretch, where BASE measured a maximum of exactly 1.
+    let mut max_ring_two_or_more_living = 0usize;
+
+    for _ in 0..400 {
+        if engine_live_opponents(&state, P0).len() >= 2 {
+            max_ring_two_or_more_living =
+                max_ring_two_or_more_living.max(state.loop_detect_ring.len());
+        }
+        if matches!(state.waiting_for, WaitingFor::LoopShortcut { .. }) {
+            break;
+        }
+        let forced = state.waiting_for.is_forced_cascade_window();
+        let before = state.loop_detect_ring.len();
+        let window = (forced && before >= 2).then(|| state.waiting_for.clone());
+        if forced && before >= 2 {
+            prompt_ring.get_or_insert(before);
+        }
+        if dump_drive_one_beat(&mut state, pin).is_err() {
+            break;
+        }
+        if let (Some(window), None) = (window, answer_ring.as_ref()) {
+            answer_ring = Some((window, before, state.loop_detect_ring.len()));
+        }
+        // Every assertion below is already satisfiable — stop driving. The drive is the
+        // expensive part of this row (a per-beat legal-action enumeration on a 152-entry
+        // stack), and continuing past the evidence buys nothing.
+        if prompt_ring.is_some() && answer_ring.is_some() && max_ring_two_or_more_living >= 5 {
+            break;
+        }
+    }
+
+    let observed = prompt_ring.unwrap_or_else(|| {
+        panic!(
+            "(i) CR 603.3d: no forced pre-priority window was ever reached carrying an \
+             accumulated ring of >= 2 frames. BASE behaviour (the sampler clearing at every \
+             non-OrderTriggers window) is exactly this; max ring seen at >= 2 living was {max_ring_two_or_more_living}"
+        )
+    });
+    assert!(
+        observed >= 2,
+        "(i) the ring must be RETAINED across the forced window itself"
+    );
+
+    let (window, before, after) = answer_ring.expect(
+        "(ii) the drive must have applied the answer to a forced window that carried an \
+         accumulated ring — otherwise the apply_action half is untested",
+    );
+    assert!(
+        !matches!(window, WaitingFor::OrderTriggers { .. }),
+        "(ii) DISCRIMINANT GUARD: `apply_action` already exempts `GameAction::OrderTriggers` \
+         on the ACTION side, so an OrderTriggers window would satisfy the survival assertion \
+         below without the window-keyed conjunct ever being consulted. The window measured \
+         here must be one of the newly exempt classes; got {}",
+        window.variant_name()
+    );
+    assert!(
+        after >= before,
+        "(ii) CR 603.3d + CR 732.2a: answering a forced pre-priority window is not a \
+         deliberate break, so the accumulated ring must SURVIVE the answer; \
+         ring went {before} -> {after}. Dropping the \
+         `!state.waiting_for.is_forced_cascade_window()` conjunct at apply_action's clear \
+         reproduces this failure — measured, it takes (i) down first, because the answer-side \
+         clear also stops the ring ever reaching a forced window with >= 2 frames."
+    );
+
+    assert!(
+        max_ring_two_or_more_living >= 5,
+        "(iii) two full periods of the drain need 2k+1 = 5 retained frames while >= 2 \
+         opponents are still alive; BASE measured exactly 1 over that stretch. Got \
+         {max_ring_two_or_more_living}"
+    );
+}
+
+/// Phase 1b crown-safety row. Retention only ADDS older frames to the ring, and
+/// `find_live_loop_winner` scans every suffix, so a window that crowns today must still
+/// crown after the exemption. Dump C is the population where that is measurable: it ships
+/// with exactly ONE living opponent, which is the only shape `loop_check`'s
+/// `nonfallers.len() == 1` crown gate admits.
+///
+/// ARM CHOICE (this is the anti-vacuity decision, stated explicitly): the fixture ships AT
+/// `WaitingFor::LoopShortcut`, so loading it and asserting the saved payload would drive
+/// **0 beats** and prove nothing — the assertion would read the offer the dump was saved
+/// with. This row therefore DECLINES the saved offer first, forcing the detector to
+/// RE-DERIVE the crown from live beats, and asserts a non-zero driven beat count before
+/// asserting anything about the payload. `revive_decline` (reviving P1/P2 to three living
+/// opponents) is FORBIDDEN here: at three living opponents the crown gate short-circuits
+/// and there is no crown left to assert.
+///
+/// REVERT-PROBES: ⓐ implement the withdrawn "count + clear_loop_detect_ring + Path-A
+/// early-return" remedy ⇒ C's crown disappears as soon as a `TriggerTargetSelection`
+/// enters the accumulation — this row is the measured reason that remedy stays withdrawn;
+/// ⓑ narrow `find_live_loop_winner` to the first prior frame only ⇒ the crown is lost.
+#[test]
+fn dump_c_still_crowns_at_one_living_opponent_after_pause_retention() {
+    let json = gunzip_dump(include_bytes!(
+        "../fixtures/tenacity_exquisite_blood_4p.json.gz"
+    ));
+    let mut state = restore_dump(&json);
+
+    assert!(
+        state.loop_detection.samples(),
+        "reach-guard: sampling mode required; got {:?}",
+        state.loop_detection
+    );
+    assert_eq!(
+        engine_live_opponents(&state, P0),
+        vec![PlayerId(3)],
+        "reach-guard: dump C ships with EXACTLY ONE living opponent (P3) — the only \
+         population the CR 732.2a crown gate admits"
+    );
+    let WaitingFor::LoopShortcut { proposer, .. } = state.waiting_for.clone() else {
+        panic!(
+            "reach-guard: dump C ships AT a saved offer; got {:?}",
+            state.waiting_for
+        )
+    };
+    assert_eq!(proposer, P0);
+
+    // Discard the saved offer so the detector must re-derive it from live beats.
+    apply(&mut state, proposer, GameAction::DeclineShortcut).expect("decline the saved offer");
+
+    let pin = engine_live_opponents(&state, P0).first().copied();
+    let mut beats = 0usize;
+    for _ in 0..200 {
+        if matches!(state.waiting_for, WaitingFor::LoopShortcut { .. }) {
+            break;
+        }
+        if let Err(why) = dump_drive_one_beat(&mut state, pin) {
+            panic!("drive stopped after {beats} beats: {why}");
+        }
+        beats += 1;
+    }
+
+    // ANTI-VACUITY CONTROL: a zero here means the row asserted the dump's saved offer
+    // instead of a re-derived one, and both revert-probes above would be inert. The
+    // exact count is reported (not just `> 0`) so a change in how far the detector has
+    // to drive to re-derive the crown surfaces as a diff rather than passing silently.
+    assert_eq!(
+        beats, 6,
+        "the `c decline` arm re-derives the crown after a measured 6 driven beats — a 0 here \
+         would mean the row read the dump's saved offer back instead of re-deriving one, \
+         which is what makes both revert-probes above live"
+    );
+
+    let WaitingFor::LoopShortcut {
+        predicted_winner,
+        certificate,
+        schema,
+        ..
+    } = state.waiting_for.clone()
+    else {
+        panic!(
+            "the crown must survive pause retention; after {beats} beats waiting_for was {:?}",
+            state.waiting_for
+        )
+    };
+    assert_eq!(predicted_winner, Some(P0), "the crown still names P0");
+    assert_eq!(certificate.win_kind, WinKind::LethalDamage);
+    assert_eq!(
+        certificate.unbounded,
+        vec![ResourceAxis::Life(P0), ResourceAxis::Life(PlayerId(3))],
+        "the re-derived certificate names the same two life axes as BASE"
+    );
+    assert!(
+        schema.points.is_empty(),
+        "a choice-free drain publishes no decision points"
+    );
+    assert_eq!(schema.iteration_count, IterationCount::UntilLethal);
+}
+
+/// Seam D (CR 732.2a): a `template: None` declaration against a NON-EMPTY schema BYPASSES the
+/// declare-time pin firewall entirely — `predictability_gate` and `validate_pins` are simply not
+/// run, because there is no template to run them against. That bypass is legitimate for exactly
+/// one drive shape: the object-growth route, which re-derives its template from
+/// `state.last_loop_action_sequence` and never reads `proposal.template`. With an EMPTY sequence
+/// there is nothing to re-derive from, so a pin-consuming drive would run with no pins at all.
+///
+/// This row is the two-conjunct guard's matched pair, on ONE fixture and ONE schema so nothing
+/// but the sequence differs between the halves:
+///
+/// * EMPTY sequence  ⇒ fail-closed manual-play handback (Priority), APNAP never opens.
+/// * NON-EMPTY sequence ⇒ APNAP opens unchanged — the reach-guard proving the guard is not a
+///   blanket "reject every `template: None`", which would break every shipped object-growth
+///   declaration.
+///
+/// REVERT-PROBE: delete the `None if state.last_loop_action_sequence.is_empty()` arm ⇒ the first
+/// half opens `RespondToShortcut` and FAILS. Drop the sequence conjunct instead (reject on
+/// `template.is_none()` alone) ⇒ the second half FAILS.
+#[test]
+fn template_none_against_a_pin_consuming_schema_falls_back_to_manual_play() {
+    use engine::types::game_state::{BuybackUsage, LoopAction, LoopActionContext};
+    use engine::types::identifiers::CardId;
+
+    let source = YieldTarget::ThisObject {
+        source_id: ObjectId(1),
+        incarnation: None,
+        trigger_description: None,
+    };
+    let schema = ShortcutDecisionSchema {
+        iteration_count: IterationCount::UntilLethal,
+        max_iterations: ShortcutDecisionSchema::default().max_iterations,
+        points: vec![DecisionPoint {
+            slot: DecisionSlot { source, index: 0 },
+            kind: DecisionPointKind::Targets {
+                legal_targets: vec![TargetRef::Player(P1)],
+                min_targets: 1,
+                max_targets: 1,
+                ordered: true,
+            },
+        }],
+        convoke_tappable_count: 0,
+    };
+
+    let declare_with_sequence = |sequence: Vec<LoopActionContext>| -> WaitingFor {
+        let (mut runner, _kickoff) = setup_3p_draw(LoopDetectionMode::Interactive);
+        runner.state_mut().last_loop_action_sequence = sequence;
+        runner.state_mut().waiting_for = WaitingFor::LoopShortcut {
+            proposer: P0,
+            predicted_winner: Some(P0),
+            certificate: synthetic_lethal_cert(),
+            schema: schema.clone(),
+        };
+        runner
+            .act(GameAction::DeclareShortcut {
+                count: IterationCount::UntilLethal,
+                template: None,
+            })
+            .expect("declare dispatch succeeds (a rejection is a manual fallback, not an error)");
+        runner.state().waiting_for.clone()
+    };
+
+    // The object-growth route's routing signal: a captured recast context. Only its PRESENCE
+    // matters to the guard, which is exactly the discriminant `materialize` dispatches on.
+    let recast = LoopActionContext {
+        card_id: CardId(7),
+        controller: P0,
+        action: LoopAction::Recast {
+            from_zone: engine::types::zones::Zone::Hand,
+            uses_buyback: BuybackUsage::Used,
+        },
+        convoke: None,
+        pins: Vec::new(),
+    };
+
+    let empty_sequence = declare_with_sequence(Vec::new());
+    assert!(
+        matches!(empty_sequence, WaitingFor::Priority { .. }),
+        "CR 732.2a: a pin-consuming schema declared with NO template and NO re-derivable \
+         sequence must fail closed to manual play, not open APNAP; got {empty_sequence:?}"
+    );
+
+    let with_sequence = declare_with_sequence(vec![recast]);
+    assert!(
+        matches!(with_sequence, WaitingFor::RespondToShortcut { .. }),
+        "reach-guard: the object-growth route re-derives its template from the sequence and \
+         must keep opening APNAP — the guard is two-conjunct, not a blanket template-None \
+         rejection; got {with_sequence:?}"
     );
 }

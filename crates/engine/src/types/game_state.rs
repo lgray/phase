@@ -11097,6 +11097,124 @@ impl WaitingFor {
     pub fn allows_cancel_cast(&self) -> bool {
         self.has_pending_cast() && !matches!(self, WaitingFor::ManaSourceSelection { .. })
     }
+
+    /// CR 603.3b / CR 603.3d / CR 603.5 + CR 608.2 / CR 903.9a / CR 704.5j / CR 310.10 +
+    /// CR 704.3: the windows
+    /// that open BETWEEN a resolution completing (or during one) and the next grant of
+    /// priority. **No player has priority at any of them**, which is the single
+    /// property every consumer relies on:
+    ///
+    /// * Answering one is never a *deliberate* break of a mandatory cascade — the
+    ///   player is being forced to make a choice, not choosing to act. That is why the
+    ///   CR 732.2a loop-detection ring is RETAINED across them rather than discarded.
+    /// * CR 704.3 checks state-based actions whenever a player *would* get priority,
+    ///   and every priority point arrives as [`WaitingFor::Priority`] — never a member
+    ///   here — so retaining across these windows skips no SBA check.
+    /// * Nothing can be cast or played here: casting a spell (CR 117.1a) and playing a
+    ///   land (CR 305.1) both require priority. This is what keeps a retained window's
+    ///   proved-empty cast set (`analysis::resource::LoopWindowScope::cast_card_ids`)
+    ///   sound.
+    ///
+    /// Members, with the rule that puts each one before priority:
+    /// * [`WaitingFor::OrderTriggers`] — CR 603.3b, ordering simultaneous triggers is a
+    ///   forced part of putting them on the stack (the pre-existing exemption).
+    /// * [`WaitingFor::TriggerTargetSelection`] — CR 603.3d, target choice is part of
+    ///   that same pre-priority step.
+    /// * [`WaitingFor::OptionalEffectChoice`] — CR 603.5 + CR 608.2, a "may" pause
+    ///   happens mid-resolution.
+    /// * [`WaitingFor::CommanderZoneChoice`] — CR 903.9a, the commander-zone choice
+    ///   *is* a state-based action, and CR 704.3 checks SBAs before priority is granted.
+    /// * [`WaitingFor::ChooseLegend`] — CR 704.5j, the legend rule ("that player chooses
+    ///   one of them") *is* a state-based action, answered inside the same CR 704.3
+    ///   fixpoint before priority is granted.
+    /// * [`WaitingFor::BattleProtectorChoice`] — CR 310.10 (which says in so many words
+    ///   "This is a state-based action") + CR 704.5w / CR 704.5x, likewise answered
+    ///   inside the CR 704.3 fixpoint.
+    ///
+    /// The last three members are the COMPLETE set of player-choice pauses `game::sba`
+    /// opens inside the SBA fixpoint (`check_commander_zone_return`, `check_legend_rule`,
+    /// `check_battle_protector`) — the class is derived from that enumeration, not from a
+    /// recollection of which ones happened to come up. A member missing from here is
+    /// fail-closed but is still a class hole: a loop whose cascade passes through that
+    /// window can never accumulate a ring, so it can never reach CR 732.2a detection.
+    ///
+    /// FAIL-CLOSED: the other 121 variants fall through to `false`, and `false` keeps
+    /// the ring-clearing behaviour, so a newly added variant defaults to the safe side
+    /// without anyone remembering to update this list.
+    pub fn is_forced_cascade_window(&self) -> bool {
+        matches!(
+            self,
+            WaitingFor::OrderTriggers { .. }
+                | WaitingFor::TriggerTargetSelection { .. }
+                | WaitingFor::OptionalEffectChoice { .. }
+                | WaitingFor::CommanderZoneChoice { .. }
+                | WaitingFor::ChooseLegend { .. }
+                | WaitingFor::BattleProtectorChoice { .. }
+        )
+    }
+
+    /// Look-at-top-N states whose legal selections cannot be captured by the
+    /// candidate enumerator (it lists only {empty, full-in-original-order,
+    /// singletons}), so the multiplayer legality gate would wrongly reject a
+    /// legal reordered or partial selection. For these, `apply()` is the real
+    /// validation boundary and validates the submitted selection structurally
+    /// (see handle_resolution_choice); the server bypasses its enumeration gate.
+    ///
+    /// - CR 701.22a / CR 701.25a: scry/surveil keep the chosen cards on top
+    ///   "in any order" — any duplicate-free subset, in any order, is legal.
+    /// - Dig (look at N, keep some): the handler enforces the keep_count /
+    ///   up_to constraint, uniqueness, and the selectable-cards filter, and
+    ///   preserves the chosen order for library-destined keeps.
+    pub fn accepts_freeform_card_selection(&self) -> bool {
+        matches!(
+            self,
+            WaitingFor::ScryChoice { .. }
+                | WaitingFor::ArrangePlanarDeckTopChoice { .. }
+                | WaitingFor::SurveilChoice { .. }
+                | WaitingFor::DigChoice { .. }
+        )
+    }
+
+    pub fn accepts_freeform_counter_move_distribution(&self) -> bool {
+        matches!(self, WaitingFor::MoveCountersDistribution { .. })
+    }
+
+    /// CR 107.1c: "Remove any number of counters" has a combinatorial legal
+    /// space (any per-type subset 0..=available, including the empty set) that
+    /// the coarse AI candidate enumerator (`counter_removal_candidates`, which
+    /// offers only "remove all" and "remove none") cannot fully cover. The
+    /// server bypasses its enumeration gate for this state so a human's
+    /// intermediate submission (e.g. "remove 2 of 3") is not wrongly rejected;
+    /// `apply()` (the `RemoveCountersChoice` handler) is the real validation
+    /// boundary via `validate_counter_selection`.
+    pub fn accepts_freeform_counter_removal(&self) -> bool {
+        matches!(self, WaitingFor::RemoveCountersChoice { .. })
+    }
+
+    /// Combat-damage assignment whose legal divisions cannot be captured by the
+    /// candidate enumerator. `candidates.rs` lists exactly one
+    /// `AssignCombatDamage` candidate (the greedy trample-through split), so the
+    /// multiplayer legality gate would wrongly reject every other legal division
+    /// — e.g. keeping excess on the blocker instead of trampling it through
+    /// (CR 702.19b), or any of the freely-chosen splits across multiple blockers
+    /// (CR 510.1c/d). The combinatorial space of legal divisions is too large to
+    /// enumerate, so `apply()` (handle_assign_combat_damage) is the real
+    /// validation boundary: it enforces total conservation, blocker membership,
+    /// and the CR 702.19b lethal-before-excess precondition, and rejects illegal
+    /// submissions. The server bypasses its enumeration gate for these.
+    pub fn accepts_freeform_combat_damage_assignment(&self) -> bool {
+        matches!(self, WaitingFor::AssignCombatDamage { .. })
+    }
+
+    /// CR 510.1d + CR 702.22k: A blocker's free division of its combat damage
+    /// among the attackers it blocks cannot be captured by the candidate
+    /// enumerator (the combinatorial space of legal divisions is too large to
+    /// enumerate), so the server bypasses its enumeration gate for this state
+    /// and `apply()` (handle_assign_blocker_damage) is the real validation
+    /// boundary: it enforces total conservation and blocked-attacker membership.
+    pub fn accepts_freeform_blocker_damage_assignment(&self) -> bool {
+        matches!(self, WaitingFor::AssignBlockerDamage { .. })
+    }
 }
 
 /// CR 102.1 + CR 500.1: which turn boundary ends an auto-pass session.
@@ -19744,6 +19862,194 @@ mod active_search_provenance_tests {
 /// serialized `WaitingFor::SeparatePiles*` states).
 fn default_pile_source_battlefield() -> PileSource {
     PileSource::Battlefield
+}
+
+#[cfg(test)]
+mod forced_cascade_window_tests {
+    use super::*;
+
+    fn certificate() -> crate::analysis::loop_check::LoopCertificate {
+        crate::analysis::loop_check::LoopCertificate {
+            unbounded: vec![crate::analysis::resource::ResourceAxis::Life(PlayerId(1))],
+            win_kind: crate::analysis::loop_check::WinKind::LethalDamage,
+            mandatory: false,
+            residual_board_delta: crate::analysis::resource::BoardDelta::default(),
+        }
+    }
+
+    /// CR 603.3b / CR 603.3d / CR 603.5 + CR 608.2 / CR 903.9a / CR 704.5j /
+    /// CR 310.10: the membership matrix for
+    /// [`WaitingFor::is_forced_cascade_window`], asserted in BOTH directions — six
+    /// members and six non-members, each named.
+    ///
+    /// The class is defined by "no player has priority here", and each half of the
+    /// matrix pins a different consequence:
+    ///
+    /// * The TRUE half is what lets the CR 732.2a loop-detection ring survive a
+    ///   forced pre-priority window and the action that answers it. Its last three
+    ///   members are the complete enumeration of `game::sba`'s in-fixpoint player
+    ///   choices; a missing one is fail-closed but is a class hole, because a cascade
+    ///   passing through it can never accumulate a ring and so can never reach
+    ///   CR 732.2a detection.
+    /// * The FALSE half is load-bearing for soundness, not tidiness.
+    ///   `Priority{..}` must stay out: every point at which a CR 704.5a
+    ///   state-based action can fire arrives as `Priority` (CR 704.3), so admitting
+    ///   it would break the "every such point either samples or clears the ring"
+    ///   invariant that `analysis::loop_check::winner_life_never_dips` rests on.
+    ///   That invariant is the whole reason the per-resolution sampler's three
+    ///   outcomes (SAMPLE at `Priority{active}`, RETAIN at a forced window, CLEAR
+    ///   everywhere else) are sound: it needs only DISJOINTNESS of `Priority` from
+    ///   the retained class, never the false claim that consecutive ring frames are
+    ///   consecutive resolutions. Both priority seats are asserted, since the
+    ///   non-active seat is the sampler's clear arm.
+    ///   `RedistributeLifeTotals` must stay out because it is a window that CAN
+    ///   MOVE LIFE — a life-moving window may never be exempt, or a retained frame
+    ///   pair could straddle an unobserved life change. `LoopShortcut` /
+    ///   `RespondToShortcut` must stay out because their answers
+    ///   (`DeclareShortcut` / `RespondToShortcut`) are deliberate protocol actions
+    ///   whose ring-clear the bounded drive depends on.
+    ///
+    /// NON-VACUITY: neither half is empty, so a constant implementation (always
+    /// `true` or always `false`) fails one of the two loops. REVERT-PROBE: adding
+    /// `Priority{..}` to the `matches!` flips the `Priority` rows here AND breaks
+    /// the sampler invariant; adding `RedistributeLifeTotals` flips its row here;
+    /// dropping `ChooseLegend` or `BattleProtectorChoice` flips its TRUE row here.
+    ///
+    /// This row owns the RULES invariant only. Runtime WIRING — that the sampler and
+    /// `apply_action` really consult this predicate — is proved by
+    /// `loop_shortcut.rs::two_site_retention_survives_a_prompt_and_its_answer`, and
+    /// that no exempt window admits a cast by
+    /// `analysis::resource`'s `no_exempt_window_admits_a_cast`.
+    #[test]
+    fn forced_cascade_window_class() {
+        let forced: Vec<(&str, WaitingFor)> = vec![
+            (
+                "OrderTriggers (CR 603.3b, the shipped exemption)",
+                WaitingFor::OrderTriggers {
+                    player: PlayerId(0),
+                    triggers: Vec::new(),
+                },
+            ),
+            (
+                "TriggerTargetSelection (CR 603.3d)",
+                WaitingFor::TriggerTargetSelection {
+                    player: PlayerId(0),
+                    trigger_controller: None,
+                    trigger_event: None,
+                    trigger_events: Vec::new(),
+                    target_slots: Vec::new(),
+                    mode_labels: Vec::new(),
+                    target_constraints: Vec::new(),
+                    selection: Default::default(),
+                    source_id: None,
+                    description: None,
+                },
+            ),
+            (
+                "OptionalEffectChoice (CR 603.5 + CR 608.2)",
+                WaitingFor::OptionalEffectChoice {
+                    player: PlayerId(0),
+                    source_id: ObjectId(1),
+                    description: None,
+                    may_trigger_key: None,
+                },
+            ),
+            (
+                "CommanderZoneChoice (CR 903.9a — it IS a state-based action)",
+                WaitingFor::CommanderZoneChoice {
+                    player: PlayerId(0),
+                    commander_id: ObjectId(2),
+                    current_zone: Zone::Graveyard,
+                },
+            ),
+            (
+                "ChooseLegend (CR 704.5j — the legend rule IS a state-based action)",
+                WaitingFor::ChooseLegend {
+                    player: PlayerId(0),
+                    legend_name: "Delianfel, Prayerful Herald".to_string(),
+                    candidates: vec![ObjectId(3), ObjectId(4)],
+                },
+            ),
+            (
+                "BattleProtectorChoice (CR 310.10 + CR 704.5w / CR 704.5x — likewise an SBA)",
+                WaitingFor::BattleProtectorChoice {
+                    player: PlayerId(0),
+                    battle_id: ObjectId(5),
+                    candidates: vec![PlayerId(1)],
+                },
+            ),
+        ];
+
+        let not_forced: Vec<(&str, WaitingFor)> = vec![
+            (
+                "Priority{active} — CR 704.3 SBA point, must sample or clear",
+                WaitingFor::Priority {
+                    player: PlayerId(0),
+                },
+            ),
+            (
+                "Priority{non-active} — same, and the ring-clearing arm",
+                WaitingFor::Priority {
+                    player: PlayerId(1),
+                },
+            ),
+            (
+                "DeclareBlockers — a priority-adjacent turn-based choice",
+                WaitingFor::DeclareBlockers {
+                    player: PlayerId(0),
+                    valid_blocker_ids: Vec::new(),
+                    valid_block_targets: Default::default(),
+                    block_requirements: Default::default(),
+                    blocker_constraints: Default::default(),
+                },
+            ),
+            (
+                "RedistributeLifeTotals — a window that CAN MOVE LIFE",
+                WaitingFor::RedistributeLifeTotals {
+                    player: PlayerId(0),
+                    options: Vec::new(),
+                },
+            ),
+            (
+                "LoopShortcut — answered by the deliberate DeclareShortcut",
+                WaitingFor::LoopShortcut {
+                    proposer: PlayerId(0),
+                    predicted_winner: Some(PlayerId(0)),
+                    certificate: certificate(),
+                    schema: Default::default(),
+                },
+            ),
+            (
+                "RespondToShortcut — answered by the deliberate RespondToShortcut",
+                WaitingFor::RespondToShortcut {
+                    player: PlayerId(1),
+                    remaining_players: Vec::new(),
+                    proposal: crate::analysis::loop_check::ShortcutProposal {
+                        proposer: PlayerId(0),
+                        predicted_winner: Some(PlayerId(0)),
+                        count: crate::analysis::decision_template::IterationCount::UntilLethal,
+                        unbounded: vec![crate::analysis::resource::ResourceAxis::Life(PlayerId(1))],
+                        win_kind: crate::analysis::loop_check::WinKind::LethalDamage,
+                        template: None,
+                    },
+                },
+            ),
+        ];
+
+        assert!(
+            !forced.is_empty() && !not_forced.is_empty(),
+            "both halves must be populated — a one-sided matrix is satisfiable by a constant"
+        );
+        for (why, wf) in &forced {
+            assert!(
+                wf.is_forced_cascade_window(),
+                "{why} is a forced pre-priority window and must be a member"
+            );
+        }
+        for (why, wf) in &not_forced {
+            assert!(!wf.is_forced_cascade_window(), "{why} must NOT be a member");
+        }
+    }
 }
 
 #[cfg(test)]

@@ -511,7 +511,8 @@ fn reconcile_terminal_result(state: &mut GameState, result: &mut ActionResult) {
     // above (CR 704.3 ordering), so a player ALREADY at 0 life loses via the real
     // 704.5a SBA first and this never preempts or double-fires a legitimate win — it
     // only fires when the game would otherwise grind on (high victim life, or mid-drain
-    // before 0). The `!GameOver` guard makes it idempotent across the :196/:200 calls.
+    // before 0). The `!GameOver` guard makes it idempotent across the two
+    // `reconcile_terminal_result` calls in `apply` (`:326` and `:330`).
     if !matches!(state.waiting_for, WaitingFor::GameOver { .. })
         && matches!(state.waiting_for, WaitingFor::Priority { .. }) // a player would get priority (CR 704.3)
         // CR 732.2a: the mandatory-loop game-ending shortcut is gated behind the
@@ -713,7 +714,15 @@ fn interactive_loop_bridge(state: &mut GameState, result: &mut ActionResult) {
             let WaitingFor::Priority { player: proposer } = state.waiting_for else {
                 unreachable!("interactive bridge only runs during priority")
             };
-            let schema = build_shortcut_schema(&[], certificate.win_kind, state, proposer);
+            // CR 732.2a: a non-targeted drain publishes no decision points, and this path
+            // states no narrowed CR 704 count bound — `UntilLethal` is terminated by the
+            // real SBA, not by a caller-supplied count, so the ceiling stays the global
+            // safety limit.
+            let schema = build_shortcut_schema(
+                Vec::new(),
+                shortcut_iteration_count(certificate.win_kind),
+                MAX_SHORTCUT_CYCLES,
+            );
             state.waiting_for = WaitingFor::LoopShortcut {
                 proposer,
                 predicted_winner: Some(winner),
@@ -935,21 +944,17 @@ fn shortcut_iteration_count(
     }
 }
 
-/// CR 732.2a: build the READ-side decision schema for a loop-shortcut offer. `pins` is the
-/// carried single-authority decision list (`build_recast_template` output for the object-growth
-/// path; `&[]` for a non-targeted drain) — never re-derived here. Legal sets come from live
-/// engine queries (`is_convoke_eligible`); the frontend computes nothing.
-fn build_shortcut_schema(
+/// CR 732.2a: reify a carried pin list into the READ-side decision points an offer publishes.
+/// `pins` is the single-authority decision list (`build_recast_template` output for the
+/// object-growth path; empty for a non-targeted drain) — never re-derived here. Legal sets come
+/// from live engine queries (`is_convoke_eligible`); the frontend computes nothing.
+fn pinned_decisions_to_points(
     pins: &[crate::analysis::decision_template::PinnedDecision],
-    win_kind: crate::analysis::loop_check::WinKind,
     state: &GameState,
     controller: PlayerId,
-) -> crate::analysis::decision_template::ShortcutDecisionSchema {
-    use crate::analysis::decision_template::{
-        DecisionPoint, DecisionPointKind, PinnedDecision, ShortcutDecisionSchema,
-    };
-    let points: Vec<DecisionPoint> = pins
-        .iter()
+) -> Vec<crate::analysis::decision_template::DecisionPoint> {
+    use crate::analysis::decision_template::{DecisionPoint, DecisionPointKind, PinnedDecision};
+    pins.iter()
         .filter_map(|pin| match pin {
             // CR 603.3b: trigger ordering is not a loop-declaration choice — no read-side peer.
             PinnedDecision::Order { .. } => None,
@@ -1025,7 +1030,23 @@ fn build_shortcut_schema(
                 kind: DecisionPointKind::UnlessBreak,
             }),
         })
-        .collect();
+        .collect()
+}
+
+/// CR 732.2a: assemble a loop-shortcut offer's READ-side schema from its already-reified
+/// decision `points`, its proposed repeat mode, and its CR 704 count bound.
+///
+/// `iteration_count` and `max_iterations` are separate inputs on purpose: the first is the
+/// SUGGESTION the frontend seeds its picker with, the second is the LEGAL CEILING the
+/// declared-count check enforces. A producer that cannot compute a real bound passes
+/// `MAX_SHORTCUT_CYCLES`, which is what every offer built today does — so the ceiling is
+/// inert until a producer narrows it.
+fn build_shortcut_schema(
+    points: Vec<crate::analysis::decision_template::DecisionPoint>,
+    iteration_count: crate::analysis::decision_template::IterationCount,
+    max_iterations: u32,
+) -> crate::analysis::decision_template::ShortcutDecisionSchema {
+    use crate::analysis::decision_template::{DecisionPointKind, ShortcutDecisionSchema};
     // CR 702.51a: engine-owned total of untapped convoke-eligible creatures across every
     // ConvokeTaps point — the frontend renders this directly instead of re-deriving it from
     // `points` (display-layer purity). Identical predicate/sum to the deleted React reduce.
@@ -1037,7 +1058,8 @@ fn build_shortcut_schema(
         })
         .sum();
     ShortcutDecisionSchema {
-        iteration_count: shortcut_iteration_count(win_kind),
+        iteration_count,
+        max_iterations,
         points,
         convoke_tappable_count,
     }
@@ -2579,11 +2601,13 @@ fn try_offer_object_growth_shortcut(
     // recast, else `[]` (a multi-activation period carries no convoke pin). Legal sets are derived
     // against the live offer-time board.
     let schema_template = build_recast_template(&seq[0]);
+    // CR 732.2a: an UNBOUNDED object-growth offer is not repeated a CR 704-limited number of
+    // times — it is materialized once as an unbounded axis — so it states no narrowed count
+    // bound and keeps the global safety limit.
     let schema = build_shortcut_schema(
-        &schema_template.decisions,
-        certificate.win_kind,
-        state,
-        caster,
+        pinned_decisions_to_points(&schema_template.decisions, state, caster),
+        shortcut_iteration_count(certificate.win_kind),
+        MAX_SHORTCUT_CYCLES,
     );
     Some((certificate, schema))
 }
@@ -2872,15 +2896,40 @@ fn handle_declare_shortcut(
     // any template the caller supplies is inert for the drive (the loop raises no target
     // prompt). This preserves the established `Fixed(N)` drain behavior (the resolve-firewall
     // materialize tests drive a synthetic pin against the empty drain schema).
-    if let Some(t) = &template {
-        if !offer.schema.points.is_empty() {
-            let required: Vec<crate::analysis::decision_template::DecisionSlot> =
-                offer.schema.points.iter().map(|p| p.slot.clone()).collect();
-            let period = shortcut_drive_period(Some(t));
-            if crate::analysis::decision_template::predictability_gate(t, &required).is_err()
-                || crate::analysis::decision_template::validate_pins(offer.schema, t, period, state)
+    if !offer.schema.points.is_empty() {
+        match &template {
+            Some(t) => {
+                let required: Vec<crate::analysis::decision_template::DecisionSlot> =
+                    offer.schema.points.iter().map(|p| p.slot.clone()).collect();
+                let period = shortcut_drive_period(Some(t));
+                if crate::analysis::decision_template::predictability_gate(t, &required).is_err()
+                    || crate::analysis::decision_template::validate_pins(
+                        offer.schema,
+                        t,
+                        period,
+                        state,
+                    )
                     .is_err()
-            {
+                {
+                    priority::reset_priority(state);
+                    // CR 800.4a: hand priority to the next living seat.
+                    state.waiting_for = WaitingFor::Priority {
+                        player: living_priority_seat(state),
+                    };
+                    result.waiting_for = state.waiting_for.clone();
+                    return Ok(result);
+                }
+            }
+            // CR 732.2a: a `template: None` declaration against a NON-EMPTY schema skips the
+            // validation above entirely — the pins the offer published are never checked. That
+            // is legitimate for exactly one drive shape: the object-growth route, which
+            // re-derives its template from `state.last_loop_action_sequence` (the same routing
+            // discriminant `materialize` dispatches on) and never reads `proposal.template`.
+            // With an EMPTY sequence there is nothing to re-derive from, so a pin-consuming
+            // drive would run with no pins at all — fail closed into the same manual-play
+            // handback the validation failure above uses. Both conjuncts are required: keying
+            // on `template.is_none()` alone breaks the shipped object-growth declarations.
+            None if state.last_loop_action_sequence.is_empty() => {
                 priority::reset_priority(state);
                 // CR 800.4a: hand priority to the next living seat.
                 state.waiting_for = WaitingFor::Priority {
@@ -2889,6 +2938,7 @@ fn handle_declare_shortcut(
                 result.waiting_for = state.waiting_for.clone();
                 return Ok(result);
             }
+            None => {}
         }
     }
     // CR 732.2a SAFETY LIMIT (see MAX_SHORTCUT_CYCLES): reject an over-cap Fixed count at
@@ -2906,6 +2956,36 @@ fn handle_declare_shortcut(
     match &count {
         crate::analysis::decision_template::IterationCount::Fixed(n)
             if *n > MAX_SHORTCUT_CYCLES =>
+        {
+            priority::reset_priority(state);
+            // CR 800.4a: hand priority to the next living seat.
+            state.waiting_for = WaitingFor::Priority {
+                player: living_priority_seat(state),
+            };
+            result.waiting_for = state.waiting_for.clone();
+            return Ok(result);
+        }
+        // CR 732.2a: the per-offer CR 704 bound, enforced at the same single authority as the
+        // global cap. A `Fixed(n)` above `max_iterations` would contain a conditional action —
+        // some living player crosses a CR 704.5a / CR 704.5c / CR 104.3c loss threshold inside
+        // the proposal, and what happens next depends on that — so it is not a legal shortcut.
+        crate::analysis::decision_template::IterationCount::Fixed(n)
+            if *n > offer.schema.max_iterations =>
+        {
+            priority::reset_priority(state);
+            // CR 800.4a: hand priority to the next living seat.
+            state.waiting_for = WaitingFor::Priority {
+                player: living_priority_seat(state),
+            };
+            result.waiting_for = state.waiting_for.clone();
+            return Ok(result);
+        }
+        // CR 732.2a: `UntilLethal` names no count at all, so it can only be legal when the
+        // offer states no narrowed bound. An offer that DID narrow its bound is one whose
+        // producer measured a CR 704 threshold inside the loop; running it "until lethal"
+        // would run past that threshold.
+        crate::analysis::decision_template::IterationCount::UntilLethal
+            if offer.schema.max_iterations < MAX_SHORTCUT_CYCLES =>
         {
             priority::reset_priority(state);
             // CR 800.4a: hand priority to the next living seat.
@@ -3704,14 +3784,20 @@ fn pass_priority_once_with_pipeline(
             && matches!(wf, WaitingFor::Priority { player } if player == state.active_player)
         {
             state.record_loop_detect_sample();
-        } else if !matches!(wf, WaitingFor::OrderTriggers { .. }) {
+        } else if !wf.is_forced_cascade_window() {
             state.loop_detect_ring.clear();
         }
-        // CR 603.3b + CR 732.2a: leave the ring intact on the mandatory trigger-ordering
-        // window — ordering simultaneous triggers is a forced step of putting them on the
-        // stack (staged in pending_trigger_order, so the stack is momentarily shrunk/empty
-        // here), not a settle or deliberate break. Preserving the Priority{active} samples
-        // across the beat lets a self-refilling multi-trigger loop reach CR 732.2a detection.
+        // CR 603.3b/603.3d/603.5/608.2/903.9a + CR 732.2a: leave the ring intact on every
+        // FORCED PRE-PRIORITY window, not just trigger ordering. `is_forced_cascade_window`
+        // is the single authority for that class (the other clear site,
+        // `apply_action`, consults the same predicate); it holds exactly the windows at
+        // which no player has priority, so answering one is a forced step of putting
+        // triggers on the stack / finishing a resolution, never a settle or a deliberate
+        // break. The stack is momentarily shrunk or empty at these windows (an ordering
+        // batch is staged in `pending_trigger_order`; a mid-resolution "may" pause has
+        // already popped its entry), so without this arm the accumulated
+        // `Priority{active}` samples would be discarded and a self-refilling
+        // multi-trigger loop could never reach CR 732.2a detection.
     }
     // No else-branch: a bare handoff or an empty-stack pass-to-advance-phase does NOT
     // touch the ring (leave-intact), so accumulation survives the inter-resolution beats.
@@ -4446,10 +4532,24 @@ fn apply_action(
     // cascade (OrderTriggers is the forced CR 603.3b placement of simultaneous triggers,
     // not a deliberate action). Every other action (cast/activate/play-land) is a
     // deliberate break and still invalidates the ring.
+    //
+    // CR 603.3d / CR 603.5 + CR 608.2 / CR 903.9a: the second conjunct keys on the
+    // WINDOW BEING ANSWERED, not on the action, because `state.waiting_for` has not been
+    // reduced yet here — the very next statement reads `state.waiting_for.acting_player()`
+    // for `semantic_actor`. Answering a forced pre-priority window is not a deliberate
+    // break of the cascade (no player had priority to break it with), so the ring must
+    // survive the answer as well as the prompt; the sampler at the other clear site
+    // consults the same `is_forced_cascade_window` authority. Keying on the window rather
+    // than the action also covers every answering variant at once — an action-keyed list
+    // would need `ChooseTarget`, `SelectTargets`, `DecideOptionalEffect` AND
+    // `DecideOptionalEffectAndRemember`, and would silently miss the next one added.
+    // `PassPriority` keeps its own action-side exemption because it is answered at a
+    // `Priority` window, which is deliberately NOT in the forced class.
     if !matches!(
         action,
         GameAction::PassPriority | GameAction::OrderTriggers { .. }
-    ) {
+    ) && !state.waiting_for.is_forced_cascade_window()
+    {
         state.loop_detect_ring.clear();
     }
 

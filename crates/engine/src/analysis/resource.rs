@@ -25,12 +25,13 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use serde::{Deserialize, Serialize};
 
+use crate::analysis::decision_template::DecisionSlot;
 use crate::game::game_object::GameObject;
 use crate::types::ability::{ActivationRestriction, DamageModification};
 use crate::types::card_type::{CoreType, Supertype};
 use crate::types::counter::CounterType;
 use crate::types::game_state::{loop_states_equal, GameState, StackEntry, StackEntryKind};
-use crate::types::identifiers::{ObjectId, TriggerFiring};
+use crate::types::identifiers::{CardId, ObjectId, TriggerFiring};
 use crate::types::mana::ManaType;
 use crate::types::phase::Phase;
 use crate::types::player::{Player, PlayerId};
@@ -483,6 +484,149 @@ impl ResourceVector {
         out
     }
 
+    /// CR 732.2a + CR 704.5a / CR 704.5c / CR 104.3c + CR 121.4: the largest number of
+    /// times this per-period delta may legally be repeated in one shortcut proposal.
+    ///
+    /// # The convention, and why it stops STRICTLY SHORT
+    ///
+    /// `N` is the largest count such that after each of the `N` cycles **no living player
+    /// has crossed a CR 704 loss threshold**. CR 732.2a forbids a shortcut that contains a
+    /// conditional action and requires its ending point to be a place a player would
+    /// receive priority; CR 704.3 checks state-based actions whenever a player would get
+    /// priority, and a cycle contains several such points. A mid-sequence CR 704.5a death
+    /// therefore makes the remaining declared choices unmakeable — CR 800.4a removes the
+    /// seat — which is both a conditional action and an illegal proposal. So the bound is
+    /// `headroom / magnitude` with headroom measured to *one short of* the threshold.
+    ///
+    /// | axis | threshold | headroom for a living `p` |
+    /// |---|---|---|
+    /// | life | CR 704.5a (0 or less life) | `life[p] - 1` |
+    /// | poison | CR 704.5c (ten or more counters) | `9 - poison[p]` |
+    /// | library | CR 104.3c + CR 121.4 (draw from empty) | `library[p].len()` |
+    ///
+    /// # Aggregation per DECLARABLE victim
+    ///
+    /// `declarable_victims` is the union of the published `Targets` slots' legal targets —
+    /// EMPTY for the untargeted class. `slot_magnitude` is the per-period life loss the
+    /// certificate attributed to each published slot. A declaration may aim **every** slot
+    /// at **one** opponent, so a declarable victim's life magnitude is the SUM over all
+    /// slots; that is what makes an all-slots-on-one-seat declaration bounded by
+    /// construction rather than by a cross-slot check in `validate_pins`.
+    ///
+    /// PRECISELY WHAT IS IMPLEMENTED, and how it differs from the specified rule: this
+    /// sums **every** positive `slot_magnitude` and charges that one total `S` to **every**
+    /// member of `declarable_victims`. The specified rule is `S(p) = Σ over slots s with
+    /// p ∈ s.legal_targets` — a per-victim sum. The two coincide exactly when every slot
+    /// can reach every declarable victim, which is the only shape reachable today
+    /// (`declarable_victims` arrives as the UNION of the slots' legal targets, and the
+    /// per-slot sets are not passed in at all — the signature carries no per-slot target
+    /// information, so the per-victim sum is not computable here). Where they differ —
+    /// a slot that can only reach seat A, another that can only reach seat B — this
+    /// charges A with A+B and B with A+B, i.e. it OVER-charges, which yields a SMALLER
+    /// bound. Conservative, therefore safe, and deliberately so: this is the fail-closed
+    /// approximation of the specified rule, not the rule itself. **No current test
+    /// discriminates the two** (every case's slots share identical legal-target sets), so
+    /// do not read the battery as evidence for the exact rule. Threading per-slot
+    /// `legal_targets` in (replacing `slot_magnitude: &BTreeMap<DecisionSlot, i64>` with a
+    /// per-slot `(legal_targets, magnitude)` pairing) is what turns this into the exact
+    /// §4.2 rule; it would only ever RAISE the bound, so it cannot invalidate an offer
+    /// this form already permitted.
+    ///
+    /// The observed per-period loss and the declared slot magnitude are combined with
+    /// `max`, **not** `+`. For a targeted drain they are the SAME loss measured two ways —
+    /// the ring observed the drain that the slot causes — so adding them double-counts and
+    /// halves the bound (measured: a one-slot drain on a 16-life seat yields 15, while the
+    /// additive form yields 7).
+    ///
+    /// # CONDITIONAL SOUNDNESS — read this before wiring a production caller
+    ///
+    /// `max` is **CORRECT ONLY IF `L_unattributed(p) == 0`** for every declarable victim —
+    /// i.e. only if every non-proposer loss in the measured period is attributable to a
+    /// published slot (the 1:1 attribution gate). It is **NOT** generally safe:
+    ///
+    /// A victim carrying an untargeted drain of 1 **and** a re-aimable slot of magnitude 1
+    /// has a true per-period loss of **2**; this returns **1**, overstating the bound 2× and
+    /// permitting an in-proposal elimination (CR 704.5a) inside a proposed shortcut — exactly
+    /// the conditional action CR 732.2a forbids. Note the failure direction: **`max` fails
+    /// OPEN, the additive form fails CLOSED.** This repo's convention is fail-closed.
+    ///
+    /// Every current case in `elimination_bounds_conventions` has either `S == 0` or
+    /// `L_unattributed == 0`, so the battery is green **and non-discriminating on this axis**.
+    ///
+    /// The unconditionally correct form needs no gate and its input already exists: the
+    /// certificate carries per-slot victim attribution, so compute
+    /// `L_unattributed(p) + S(p)` directly. A production caller MUST either establish the
+    /// 1:1 gate or switch to that attribution-aware form.
+    ///
+    /// # Uniform over EVERY living player, including the proposer
+    ///
+    /// There is deliberately no `p == proposer => unbounded` case: `net_progress_for` reads
+    /// only the proposer's mana and life, so it is blind to the proposer's own poison and
+    /// to intra-cycle life dips. A proposer who drains themselves is bounded here like
+    /// anyone else. An ELIMINATED seat contributes no term at all (CR 800.4a — it is no
+    /// longer in the game), so a corpse at 1 life cannot pin the bound to zero.
+    ///
+    /// # Per-cycle magnitude constancy is a PREMISE, not a proof
+    ///
+    /// The bound extrapolates one measured period. Do NOT add a monotone-magnitude
+    /// conjunct to "fix" that — it would reject every 2-frame window. The backstops are
+    /// conformance (a cycle whose magnitude changed stops committing) and the live
+    /// elimination guard during the drive, never an extrapolated total.
+    ///
+    /// Clamped to `MAX_SHORTCUT_CYCLES`. A return of `0` means no legal repetition exists
+    /// and the caller must not offer; callers require `N >= 1`.
+    // The first production consumer is the bounded offer, which lands in a later phase; the
+    // bound ships ahead of it so its conventions are pinned by a unit row before any producer
+    // depends on them.
+    #[allow(dead_code)]
+    pub(crate) fn elimination_bounds(
+        &self,
+        state: &GameState,
+        declarable_victims: &[PlayerId],
+        slot_magnitude: &BTreeMap<DecisionSlot, i64>,
+    ) -> u32 {
+        let cap = crate::game::engine::MAX_SHORTCUT_CYCLES as i64;
+        // Every published slot is assumed reachable to every declarable victim, so ONE
+        // total is charged to each of them (see "PRECISELY WHAT IS IMPLEMENTED" above:
+        // the conservative, over-charging approximation of the per-victim sum).
+        let declared_life_magnitude: i64 =
+            slot_magnitude.values().copied().filter(|m| *m > 0).sum();
+
+        let mut bound = cap;
+        let mut narrow = |headroom: i64, magnitude: i64| {
+            if magnitude > 0 {
+                bound = bound.min(headroom.max(0) / magnitude);
+            }
+        };
+
+        for p in &state.players {
+            // CR 800.4a: an eliminated seat has left the game and constrains nothing.
+            if p.is_eliminated {
+                continue;
+            }
+            // CR 704.5a. A negative life delta is the per-period loss.
+            let observed_life_loss = -self.life.get(&p.id).copied().unwrap_or(0);
+            let life_magnitude = if declarable_victims.contains(&p.id) {
+                observed_life_loss.max(declared_life_magnitude)
+            } else {
+                observed_life_loss
+            };
+            narrow(p.life as i64 - 1, life_magnitude);
+            // CR 704.5c. A positive poison delta is the per-period gain.
+            narrow(
+                9 - p.poison_counters as i64,
+                self.poison.get(&p.id).copied().unwrap_or(0),
+            );
+            // CR 104.3c + CR 121.4. A negative library delta is the per-period drain.
+            narrow(
+                p.library.len() as i64,
+                -self.library_delta.get(&p.id).copied().unwrap_or(0),
+            );
+        }
+
+        bound.clamp(0, cap) as u32
+    }
+
     /// CR 732.2a: **controller-scoped** net-progress — the single authority shared
     /// by Engine A ([`crate::analysis::detect_loop`]) and Engine B
     /// ([`crate::analysis::candidate_cycles`]). Returns true iff the cycle makes
@@ -750,6 +894,55 @@ pub fn board_delta(before: &GameState, after: &GameState) -> BoardDelta {
     BoardDelta { added, removed }
 }
 
+/// CR 732.2a: the facts a CALLER has PROVED about the loop window it is asking a
+/// window predicate to certify. Every field is a *proof obligation discharged by the
+/// caller*, never a request: a caller that has proved nothing passes
+/// [`LoopWindowScope::unproven`] and gets byte-identical pre-change behaviour, so the
+/// design is FAIL-CLOSED BY CONSTRUCTION — forgetting to thread a proof can only make
+/// a predicate more conservative, never less.
+///
+/// The scope is threaded but not yet consumed: the `_scoped` predicates below are
+/// currently identity in it (asserted by `scoped_wrappers_are_identity`). A later
+/// phase narrows the fail-closed guards using these proofs; introducing the seam
+/// separately keeps that change to the guard bodies alone.
+#[derive(Debug, Clone, Copy)]
+// The fields are the proof surface the window guards read; the guards that read them
+// land in the phase that narrows them. Until then every field is write-only.
+#[allow(dead_code)]
+pub(crate) struct LoopWindowScope<'a> {
+    /// `Some(phase)` iff the caller proved both frames are equal on turn number AND
+    /// step-granular phase (CR 500.1 turn structure / CR 506.1 combat steps /
+    /// CR 510.2 the combat-damage step). `None` at any caller whose window CROSSES a
+    /// phase or step boundary.
+    phase_invariant: Option<Phase>,
+    /// `Some(p)` iff the caller proved the whole window is driven by `p` and no other
+    /// player receives priority inside the taken shortcut (CR 117.1b: a player may
+    /// activate an ability only with priority; CR 732.2c: the shortcut advances to
+    /// the proposed ending point once every player has accepted).
+    sole_driver: Option<PlayerId>,
+    /// CR 732.2a: the per-iteration choice slots the OFFER publishes, which
+    /// `decision_template::predictability_gate` then FORCES the declaration to pin.
+    /// A slot listed here is a *specified* choice in CR 732.2a's sense, not a free one.
+    pinned_slots: &'a [DecisionSlot],
+    /// CR 601.2f (cost determination reads static cost modifiers): `Some(ids)` iff the
+    /// caller proved the EXACT set of card ids this window casts — `Some(&[])` for a
+    /// window that provably casts nothing. `None` means NO PROOF, i.e. scan everything.
+    cast_card_ids: Option<&'a [CardId]>,
+}
+
+impl LoopWindowScope<'static> {
+    /// The zero-proof scope. Every 2-arg wrapper passes this, which is what makes the
+    /// wrappers structurally identity rather than conditionally so.
+    pub(crate) const fn unproven() -> Self {
+        Self {
+            phase_invariant: None,
+            sole_driver: None,
+            pinned_slots: &[],
+            cast_card_ids: None,
+        }
+    }
+}
+
 /// Karp–Miller-style ω-acceleration (Karp–Miller 1969; Finkel et al. 2021), sound
 /// GIVEN the in-loop transition relation — the WHOLE beat: top-of-stack resolution
 /// (CR 608.1) with its resolution-time payments (CR 605.3a / CR 608.2g), trigger
@@ -783,6 +976,19 @@ pub fn board_delta(before: &GameState, after: &GameState) -> BoardDelta {
 /// choice — either intrinsically or through the life-event replacement
 /// environment (item 6, CR 732.2a + CR 608.2d).
 pub(crate) fn loop_states_cover_modulo_growth(prior: &GameState, current: &GameState) -> bool {
+    loop_states_cover_modulo_growth_scoped(prior, current, LoopWindowScope::unproven())
+}
+
+/// Scoped sibling of [`loop_states_cover_modulo_growth`] — see [`LoopWindowScope`].
+/// Identical to the 2-arg wrapper for `LoopWindowScope::unproven()` **by
+/// construction**: the scope reaches no branch in this body yet. It is the seam a
+/// later phase narrows the fail-closed guards through, so the proof surface exists
+/// at the call sites that can supply it without any behaviour moving now.
+pub(crate) fn loop_states_cover_modulo_growth_scoped(
+    prior: &GameState,
+    current: &GameState,
+    _scope: LoopWindowScope<'_>,
+) -> bool {
     // (1) Board equal modulo the NARROWED projection AND modulo the stack, with the
     // object resource axes STRICT-COMPARED (R5-B1). Project both, clear both stacks
     // and their stack-entry-indexed firing sidecars (the stack is compared separately
@@ -1634,6 +1840,16 @@ fn fire_time_conditions_read_growing_class(
     state: &GameState,
     class_member: Option<ObjectId>,
 ) -> bool {
+    fire_time_conditions_read_growing_class_scoped(state, class_member, LoopWindowScope::unproven())
+}
+
+/// Scoped sibling of [`fire_time_conditions_read_growing_class`] — see
+/// [`LoopWindowScope`]. Identity in the scope by construction today.
+fn fire_time_conditions_read_growing_class_scoped(
+    state: &GameState,
+    class_member: Option<ObjectId>,
+    _scope: LoopWindowScope<'_>,
+) -> bool {
     use crate::game::ability_scan as scan;
     // (1) Trigger fire-time conditions (CR 603.4) AND effect bodies.
     for obj in state.objects.values() {
@@ -2443,6 +2659,15 @@ fn stack_entry_resolution_choice_freedom(
 /// `game::triggers` still pins the flagged set so a NEW projected-reading
 /// granted-keyword condition surfaces as a review signal.
 fn fire_time_conditions_read_projected_resource(state: &GameState) -> bool {
+    fire_time_conditions_read_projected_resource_scoped(state, LoopWindowScope::unproven())
+}
+
+/// Scoped sibling of [`fire_time_conditions_read_projected_resource`] — see
+/// [`LoopWindowScope`]. Identity in the scope by construction today.
+fn fire_time_conditions_read_projected_resource_scoped(
+    state: &GameState,
+    _scope: LoopWindowScope<'_>,
+) -> bool {
     // (i) Trigger fire-time intervening-if conditions (CR 603.4). `active_trigger_
     // definitions` is the liveness authority (CR 702.26b phased-out + CR 114.4
     // command-zone gate) that deliberately does NOT filter by `condition`.
@@ -6772,5 +6997,522 @@ mod tests {
             grown_life_deltas(&prior, &shrink).is_empty(),
             "a life LOSS yields no batched gain δ"
         );
+    }
+
+    /// A battlefield permanent carrying ONE `TriggerMode::Phase` trigger whose step
+    /// (`Phase::End`) the state is NOT in — the "phase-gated observer" population.
+    /// CR 500.1 / CR 506.1: phases and steps proceed in a fixed order, so a window
+    /// that provably never leaves `PreCombatMain` never reaches this trigger's step.
+    /// That is exactly the population a populated `LoopWindowScope::phase_invariant`
+    /// proof can change the answer on, which is why the identity row asserts here.
+    fn phase_gated_observer_board(condition: crate::types::ability::TriggerCondition) -> GameState {
+        use crate::types::ability::TriggerDefinition;
+        use crate::types::triggers::TriggerMode;
+
+        let mut state = GameState::new_two_player(7);
+        state.phase = Phase::PreCombatMain;
+        let id = bf_object(&mut state, 100);
+        state.objects.get_mut(&id).unwrap().trigger_definitions =
+            vec![TriggerDefinition::new(TriggerMode::Phase)
+                .phase(Phase::End)
+                .condition(condition)]
+            .into();
+        state
+    }
+
+    /// Phase 1a (Seam A). Each of the three CR 732.2a window predicates keeps its
+    /// 2-arg/1-arg name as a **1-line wrapper** delegating to a `_scoped` sibling with
+    /// [`LoopWindowScope::unproven`], so pre-change neutrality is STRUCTURAL
+    /// (`f(a,b) ≡ f_scoped(a,b, unproven())`) rather than something each caller has
+    /// to re-establish. This row pins that identity over five populations, including
+    /// the phase-gated observer board named in `phase_gated_observer_board`.
+    ///
+    /// NON-VACUITY (trap 7 — the instrument must be able to return both values):
+    /// every predicate is asserted at a population where it answers `true` AND at one
+    /// where it answers `false`, and the row asserts the collected answer vectors
+    /// directly. A constant `_scoped` body — the failure a bare `a == b` identity
+    /// check cannot see — fails the vector assertions.
+    ///
+    /// REVERT-PROBE (live at this phase): stop a wrapper delegating (restore the old
+    /// inline body, or have it pass anything other than `unproven()`) ⇒ the matching
+    /// arm's `assert_eq!` fails. **Honest scope limit:** "make `unproven()` populate a
+    /// field" is NOT yet a live probe — no `_scoped` body reads the scope until the
+    /// phase that narrows the guards, so populating a field is a no-op by
+    /// construction. That is the point of shipping the seam inert.
+    #[test]
+    fn scoped_wrappers_are_identity() {
+        use crate::types::ability::TriggerCondition;
+
+        // (1)/(2) cover pairs: one that covers, one that does not (an extra permanent
+        // breaks gate (1)'s board equality) — so the cover predicate is exercised at
+        // both answers.
+        let (cover_prior, cover_current) = cover_base();
+        let (nocover_prior, nocover_current) = {
+            let (p, mut c) = cover_base();
+            bf_object(&mut c, 900);
+            (p, c)
+        };
+
+        // (3) a benign board: neither firewall fires.
+        let benign = GameState::new_two_player(7);
+        // (4) phase-gated SIBLING observer: `ControlsType` is a live board census ⇒ the
+        // growing-class firewall vetoes, the projected-resource firewall does not.
+        let sibling_observer = phase_gated_observer_board(TriggerCondition::ControlsType {
+            filter: TargetFilter::Any,
+        });
+        // (5) phase-gated PROJECTED observer: "if you gained life this turn" reads a
+        // projected player axis ⇒ the projected firewall vetoes.
+        let projected_observer =
+            phase_gated_observer_board(TriggerCondition::GainedLife { minimum: 1 });
+
+        let cover = |prior: &GameState, current: &GameState| {
+            let plain = loop_states_cover_modulo_growth(prior, current);
+            assert_eq!(
+                plain,
+                loop_states_cover_modulo_growth_scoped(prior, current, LoopWindowScope::unproven()),
+                "loop_states_cover_modulo_growth must be its _scoped sibling at unproven()"
+            );
+            plain
+        };
+        let growing = |state: &GameState| {
+            let plain = fire_time_conditions_read_growing_class(state, None);
+            assert_eq!(
+                plain,
+                fire_time_conditions_read_growing_class_scoped(
+                    state,
+                    None,
+                    LoopWindowScope::unproven()
+                ),
+                "fire_time_conditions_read_growing_class must be its _scoped sibling at unproven()"
+            );
+            plain
+        };
+        let projected = |state: &GameState| {
+            let plain = fire_time_conditions_read_projected_resource(state);
+            assert_eq!(
+                plain,
+                fire_time_conditions_read_projected_resource_scoped(
+                    state,
+                    LoopWindowScope::unproven()
+                ),
+                "fire_time_conditions_read_projected_resource must be its _scoped sibling at unproven()"
+            );
+            plain
+        };
+
+        assert_eq!(
+            [
+                cover(&cover_prior, &cover_current),
+                cover(&nocover_prior, &nocover_current)
+            ],
+            [true, false],
+            "the cover predicate must answer BOTH ways across the two pairs — a constant \
+             implementation would satisfy identity alone"
+        );
+        assert_eq!(
+            [
+                growing(&benign),
+                growing(&sibling_observer),
+                growing(&projected_observer)
+            ],
+            [false, true, false],
+            "the growing-class firewall vetoes on the sibling observer only"
+        );
+        assert_eq!(
+            [
+                projected(&benign),
+                projected(&sibling_observer),
+                projected(&projected_observer)
+            ],
+            [false, false, true],
+            "the projected-resource firewall vetoes on the projected observer only"
+        );
+    }
+
+    /// Candidate windows for the Seam A cast proof. This list deliberately includes
+    /// `Priority`, which is NOT exempt today: the caller filters it through
+    /// `is_forced_cascade_window` itself, so widening that predicate widens what the
+    /// proof row has to prove. A hardcoded exempt-only list would make the row's
+    /// revert-probe inert (measured: adding `Priority` to the class left it green).
+    /// Keep this list in step with the predicate's members — a member absent from here
+    /// is simply never proved.
+    fn cast_proof_candidate_windows() -> Vec<(&'static str, crate::types::game_state::WaitingFor)> {
+        use crate::types::game_state::WaitingFor;
+        vec![
+            (
+                "Priority{active} (NOT exempt — the positive control)",
+                WaitingFor::Priority {
+                    player: PlayerId(0),
+                },
+            ),
+            (
+                "OrderTriggers (CR 603.3b)",
+                WaitingFor::OrderTriggers {
+                    player: PlayerId(0),
+                    triggers: Vec::new(),
+                },
+            ),
+            (
+                "TriggerTargetSelection (CR 603.3d)",
+                WaitingFor::TriggerTargetSelection {
+                    player: PlayerId(0),
+                    trigger_controller: None,
+                    trigger_event: None,
+                    trigger_events: Vec::new(),
+                    target_slots: Vec::new(),
+                    mode_labels: Vec::new(),
+                    target_constraints: Vec::new(),
+                    selection: Default::default(),
+                    source_id: None,
+                    description: None,
+                },
+            ),
+            (
+                "OptionalEffectChoice (CR 603.5 + CR 608.2)",
+                WaitingFor::OptionalEffectChoice {
+                    player: PlayerId(0),
+                    source_id: ObjectId(1),
+                    description: None,
+                    may_trigger_key: None,
+                },
+            ),
+            (
+                "CommanderZoneChoice (CR 903.9a)",
+                WaitingFor::CommanderZoneChoice {
+                    player: PlayerId(0),
+                    commander_id: ObjectId(2),
+                    current_zone: Zone::Graveyard,
+                },
+            ),
+            (
+                "ChooseLegend (CR 704.5j)",
+                WaitingFor::ChooseLegend {
+                    player: PlayerId(0),
+                    legend_name: "Delianfel, Prayerful Herald".to_string(),
+                    candidates: vec![ObjectId(3), ObjectId(4)],
+                },
+            ),
+            (
+                "BattleProtectorChoice (CR 310.10 + CR 704.5w / CR 704.5x)",
+                WaitingFor::BattleProtectorChoice {
+                    player: PlayerId(0),
+                    battle_id: ObjectId(5),
+                    candidates: vec![PlayerId(1)],
+                },
+            ),
+        ]
+    }
+
+    /// Seam A's `cast_card_ids: Some(&[])` proof, pinned as a row.
+    ///
+    /// CR 117.1a (a spell is cast only with priority) and CR 305.1 (a land is played
+    /// only with priority) say no cast or land-play can happen at a window where
+    /// nobody holds priority. This row measures that claim against the engine's own
+    /// legal-action enumerator instead of trusting it: on ONE board it enumerates the
+    /// deliberate class (`CastSpell` / `PlayLand` / `ActivateAbility`) at a `Priority`
+    /// window and at every window `is_forced_cascade_window` currently exempts.
+    ///
+    /// The exempt set is FILTERED OUT OF a candidate list that includes `Priority`,
+    /// rather than hardcoded. That is what keeps the revert-probe live: widening the
+    /// predicate widens what this row has to prove. Measured — with a hardcoded
+    /// exempt-only list, adding `Priority` to the class left this row green, because
+    /// the legal-action enumerator never consults the predicate.
+    ///
+    /// NON-VACUITY (trap 7 — a zero from an instrument that cannot return non-zero):
+    /// the `Priority` arm runs FIRST and is asserted NON-EMPTY on the same board, so
+    /// the zeros below are proved zeros, not an inert enumerator. The exempt set is
+    /// also asserted non-empty, so "no exempt window admits a cast" cannot pass by the
+    /// class being empty.
+    ///
+    /// ⚠️ SCOPE LIMIT (stated, not implied): this row enumerates the legal actions
+    /// available **at** a window. It therefore cannot see the `apply_action` bypass
+    /// class — the handful of `GameAction`s that early-return before the ring clear
+    /// (`ReorderHand`, `Concede`, `Debug`, `GrantDebugPermission`,
+    /// `RevokeDebugPermission`, `CancelAutoPass`, `SetPhaseStops`,
+    /// `SetPriorityPassingMode`). That class is discharged separately by enumeration:
+    /// none of those actions casts a spell or plays a land, so the proof is unaffected.
+    ///
+    /// REVERT-PROBE: add `WaitingFor::Priority { .. }` to `is_forced_cascade_window`'s
+    /// `matches!` ⇒ a `Priority` window becomes "exempt", casts become admissible
+    /// inside a retained window, and the `Some(&[])` proof this row pins is false.
+    #[test]
+    fn no_exempt_window_admits_a_cast() {
+        use crate::types::actions::GameAction;
+        use crate::types::game_state::WaitingFor;
+
+        let mut state = GameState::new_two_player(42);
+        state.turn_number = 2;
+        state.phase = Phase::PreCombatMain;
+        state.active_player = PlayerId(0);
+        state.priority_player = PlayerId(0);
+        state.waiting_for = WaitingFor::Priority {
+            player: PlayerId(0),
+        };
+        // A land in hand makes the deliberate class REACHABLE on this board (CR 305.1:
+        // main phase, empty stack, the active player holds priority, land drop unused).
+        let land = crate::game::zones::create_object(
+            &mut state,
+            CardId(701),
+            PlayerId(0),
+            "Forest".to_string(),
+            Zone::Hand,
+        );
+        state
+            .objects
+            .get_mut(&land)
+            .unwrap()
+            .card_types
+            .core_types
+            .push(CoreType::Land);
+
+        let deliberate = |s: &GameState| -> Vec<GameAction> {
+            crate::ai_support::legal_actions(s)
+                .into_iter()
+                .filter(|a| {
+                    matches!(
+                        a,
+                        GameAction::CastSpell { .. }
+                            | GameAction::PlayLand { .. }
+                            | GameAction::ActivateAbility { .. }
+                    )
+                })
+                .collect()
+        };
+
+        // POSITIVE CONTROL, asserted before any zero is read.
+        let at_priority = deliberate(&state);
+        assert!(
+            !at_priority.is_empty(),
+            "reach-guard: the enumerator must return a deliberate action at a Priority \
+             window on this board, else every zero below is an inert instrument"
+        );
+
+        // The exempt set as the PREDICATE defines it, not as this test remembers it.
+        let exempt: Vec<_> = cast_proof_candidate_windows()
+            .into_iter()
+            .filter(|(_, w)| w.is_forced_cascade_window())
+            .collect();
+        assert!(
+            !exempt.is_empty(),
+            "reach-guard: an empty exempt class would make the loop below vacuous"
+        );
+
+        for (why, window) in exempt {
+            state.waiting_for = window;
+            let found = deliberate(&state);
+            assert!(
+                found.is_empty(),
+                "{why} holds no priority (CR 117.1a / CR 305.1), so it must admit no \
+                 CastSpell/PlayLand/ActivateAbility; got {found:?}"
+            );
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // CR 704 elimination bound (§4.2)
+    // -----------------------------------------------------------------------
+
+    /// `n` living players, seat `i` at `lives[i]`. Poison and library stay at their
+    /// constructor defaults unless a case sets them.
+    fn bound_board(lives: &[i32]) -> GameState {
+        let mut state = GameState::new(
+            crate::types::format::FormatConfig::free_for_all(),
+            lives.len() as u8,
+            7,
+        );
+        for (p, &life) in state.players.iter_mut().zip(lives) {
+            p.life = life;
+        }
+        state
+    }
+
+    /// A per-period delta carrying `losses[i]` life loss on seat `i` (0 = no term).
+    fn life_loss_delta(losses: &[(u8, i64)]) -> ResourceVector {
+        let mut v = ResourceVector::default();
+        for &(seat, magnitude) in losses {
+            v.life.insert(PlayerId(seat), -magnitude);
+        }
+        v
+    }
+
+    fn slot(index: u8) -> DecisionSlot {
+        DecisionSlot {
+            source: crate::types::game_state::YieldTarget::AllCopies {
+                card_id: CardId(u64::from(index) + 900),
+                trigger_description: None,
+            },
+            index,
+        }
+    }
+
+    fn slot_magnitudes(magnitudes: &[i64]) -> BTreeMap<DecisionSlot, i64> {
+        magnitudes
+            .iter()
+            .enumerate()
+            .map(|(i, &m)| (slot(i as u8), m))
+            .collect()
+    }
+
+    /// CR 704.5a / CR 704.5c / CR 104.3c + CR 121.4 + CR 732.2a: the bound's conventions,
+    /// case by case. Every case names the WRONG implementation it kills, so this row is a
+    /// battery of discriminators rather than one assertion repeated.
+    ///
+    /// P-A: the four real fixture bounds (dump B/C/D/F4) are deliberately NOT asserted here.
+    /// They are shipped-state values while a real `max_iterations` is computed at the OFFER
+    /// beat, dozens of beats later, where the lives differ — a literal measured in a
+    /// different state than the one under test. This row asserts the PURE FUNCTION against
+    /// hand-supplied lives, which is exactly what a unit row is for; every fixture row
+    /// computes its expectation in-test from the offer-beat state.
+    #[test]
+    fn elimination_bounds_conventions() {
+        let no_slots: BTreeMap<DecisionSlot, i64> = BTreeMap::new();
+
+        // (a) life 40, Δ2 ⇒ 19. Kills `floor(life / Δ)` (= 20): at 20 cycles the victim is
+        //     at exactly 0 and CR 704.5a has already removed them mid-proposal.
+        //     THE ONLY CASE THAT KILLS `floor(life/Δ)` — never drop it.
+        assert_eq!(
+            life_loss_delta(&[(1, 2)]).elimination_bounds(&bound_board(&[40, 40]), &[], &no_slots),
+            19
+        );
+        // (b) life 39, Δ2 ⇒ 19. Kills `ceil`: 38/2 = 19 exactly, so a ceiling would say 20.
+        assert_eq!(
+            life_loss_delta(&[(1, 2)]).elimination_bounds(&bound_board(&[40, 39]), &[], &no_slots),
+            19
+        );
+        // (c) poison 0, Δ5 ⇒ 1. Kills `(10 - poison) / Δ` (= 2): CR 704.5c loses at TEN, so
+        //     the headroom is 9, and 2 cycles would already have delivered 10.
+        {
+            let mut v = ResourceVector::default();
+            v.poison.insert(PlayerId(1), 5);
+            assert_eq!(
+                v.elimination_bounds(&bound_board(&[40, 40]), &[], &no_slots),
+                1
+            );
+        }
+        // (d) library 8, Δ2 ⇒ 4. Kills `(L - 1) / Δ` (= 3): CR 104.3c/CR 121.4 lose on the
+        //     DRAW FROM EMPTY, not on reaching one card, so all 8 cards may legally go.
+        {
+            let mut state = bound_board(&[40, 40]);
+            state.players[1].library = (0..8).map(|i| ObjectId(1000 + i)).collect();
+            let mut v = ResourceVector::default();
+            v.library_delta.insert(PlayerId(1), -2);
+            assert_eq!(v.elimination_bounds(&state, &[], &no_slots), 4);
+        }
+        // (e) two living at 40 and 12, Δ1 each ⇒ 11. Kills max-instead-of-min.
+        assert_eq!(
+            life_loss_delta(&[(0, 1), (1, 1)]).elimination_bounds(
+                &bound_board(&[40, 12]),
+                &[],
+                &no_slots
+            ),
+            11
+        );
+        // (f) life 5000, Δ1 ⇒ 1000. Kills a missing clamp to MAX_SHORTCUT_CYCLES.
+        assert_eq!(
+            life_loss_delta(&[(1, 1)]).elimination_bounds(
+                &bound_board(&[40, 5000]),
+                &[],
+                &no_slots
+            ),
+            crate::game::engine::MAX_SHORTCUT_CYCLES
+        );
+        // (g) CR 800.4a: an ELIMINATED seat at life 1 must not lower N — PAIRED with the
+        //     same seat un-eliminated, which DOES (trap 7: the zero has a non-zero control).
+        {
+            let mut alive = bound_board(&[40, 1, 40]);
+            let delta = life_loss_delta(&[(1, 1), (2, 1)]);
+            assert_eq!(
+                delta.elimination_bounds(&alive, &[], &no_slots),
+                0,
+                "control: while that seat is IN the game it pins the bound to 0"
+            );
+            alive.players[1].is_eliminated = true;
+            assert_eq!(
+                delta.elimination_bounds(&alive, &[], &no_slots),
+                39,
+                "an eliminated seat has left the game and constrains nothing"
+            );
+        }
+        // (h) the PROPOSER at life 3 losing 1/cycle ⇒ N <= 2. Kills the deleted
+        //     `p == proposer => unbounded` special case: `net_progress_for` reads only the
+        //     proposer's mana and life, so it cannot see this at all.
+        assert!(
+            life_loss_delta(&[(0, 1)]).elimination_bounds(&bound_board(&[3, 40]), &[], &no_slots)
+                <= 2
+        );
+        // (i) the PROPOSER gaining 3 poison/cycle from 0 ⇒ N <= 3. Same defect on the axis
+        //     `net_progress_for` is entirely blind to.
+        {
+            let mut v = ResourceVector::default();
+            v.poison.insert(PlayerId(0), 3);
+            assert!(v.elimination_bounds(&bound_board(&[40, 40]), &[], &no_slots) <= 3);
+        }
+        // (j) observed drain on P3 only, lives P1/P2/P3 = 12/13/28, ONE published slot of
+        //     magnitude 1 whose legal targets are every opponent ⇒ 11. Kills the
+        //     observed-victim-only bound (which returns 27, P3's own headroom): the
+        //     declaration may aim the slot at P1 instead. Paired with the untargeted twin.
+        {
+            let board = bound_board(&[69, 12, 13, 28]);
+            let delta = life_loss_delta(&[(3, 1)]);
+            let victims = [PlayerId(1), PlayerId(2), PlayerId(3)];
+            assert_eq!(
+                delta.elimination_bounds(&board, &victims, &slot_magnitudes(&[1])),
+                11
+            );
+            assert_eq!(
+                delta.elimination_bounds(&board, &[], &no_slots),
+                27,
+                "with NO declarable victims only the observed victim constrains the bound"
+            );
+        }
+        // (k) TWO published slots, each magnitude 1, both able to name any opponent ⇒ each
+        //     declarable victim's magnitude is 2 ⇒ N == 5. Kills a per-slot (non-aggregated)
+        //     bound, which returns 11 and would let a both-slots-on-P1 declaration kill P1
+        //     at cycle 6 — inside the proposal.
+        {
+            let board = bound_board(&[69, 12, 13, 28]);
+            let victims = [PlayerId(1), PlayerId(2), PlayerId(3)];
+            assert_eq!(
+                ResourceVector::default().elimination_bounds(
+                    &board,
+                    &victims,
+                    &slot_magnitudes(&[1, 1])
+                ),
+                5
+            );
+        }
+        // (l) a 12-life seat at Δ1 ⇒ N == 11, and cycle TWELVE is the killing cycle. The
+        //     off-by-one stated as an arithmetic identity, not a comment.
+        {
+            let board = bound_board(&[40, 12]);
+            let n = life_loss_delta(&[(1, 1)]).elimination_bounds(&board, &[], &no_slots);
+            assert_eq!(n, 11);
+            assert_eq!(
+                board.players[1].life as i64 - (i64::from(n) + 1),
+                0,
+                "cycle N+1 = 12 is the one that reaches 0 life (CR 704.5a)"
+            );
+        }
+        // (m) the dump-C shape: ONE slot of magnitude 1 over every opponent, lives
+        //     77/20/20/16, and an OBSERVED loss of 1 on P3 — the same drain, measured twice.
+        //     ⇒ N == 15. FLIPS to 7 if `observed_per_period_loss` is ADDED to the targeted
+        //     class instead of combined with `max`. Paired with its untargeted twin, which
+        //     must also be 15, so neither reading can pass by accident.
+        {
+            let board = bound_board(&[77, 20, 20, 16]);
+            let delta = life_loss_delta(&[(3, 1)]);
+            let victims = [PlayerId(1), PlayerId(2), PlayerId(3)];
+            assert_eq!(
+                delta.elimination_bounds(&board, &victims, &slot_magnitudes(&[1])),
+                15,
+                "the slot magnitude and the observed loss are the SAME drain — adding them \
+                 double-counts and returns 7"
+            );
+            assert_eq!(
+                delta.elimination_bounds(&board, &[], &no_slots),
+                15,
+                "untargeted twin: the same board with no published slot bounds identically"
+            );
+        }
     }
 }

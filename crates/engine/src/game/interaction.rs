@@ -2445,10 +2445,27 @@ fn loop_shortcut_projection(
     }
     let count = match schema.iteration_count {
         crate::analysis::decision_template::IterationCount::Fixed(suggested) => {
+            // CR 732.2a: the picker's ceiling is the offer's own CR 704 bound, never the raw
+            // global safety limit — a count above it would specify a sequence containing an
+            // elimination, which is a conditional action. The engine owns this number; the
+            // frontend renders it. Every offer built today states `MAX_SHORTCUT_CYCLES`, so
+            // this is the same value it was, clamped at the same authority.
+            //
+            // The LOWER clamp is defensive only: `elimination_bounds` documents `0` as "no
+            // legal repetition exists and the caller must not offer", so a `0` arriving here
+            // means a producer published an offer it was required to withhold. Repairing it
+            // to 1 keeps the projection total in release, but the contract violation must
+            // not pass silently in dev.
+            debug_assert!(
+                schema.max_iterations >= 1,
+                "a published CR 732.2a offer must carry max_iterations >= 1; \
+                 elimination_bounds returns 0 to mean DO NOT OFFER"
+            );
+            let max = schema.max_iterations.clamp(1, MAX_SHORTCUT_CYCLES);
             InteractionShortcutCountSpec::Fixed {
                 min: 1,
-                max: MAX_SHORTCUT_CYCLES,
-                suggested: suggested.clamp(1, MAX_SHORTCUT_CYCLES),
+                max,
+                suggested: suggested.clamp(1, max),
             }
         }
         crate::analysis::decision_template::IterationCount::UntilLethal => {

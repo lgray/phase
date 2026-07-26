@@ -2341,8 +2341,8 @@ fn loop_shortcut_number_schema_accepts_a_fixed_count_above_one() {
         },
         schema: engine::analysis::decision_template::ShortcutDecisionSchema {
             iteration_count: engine::analysis::decision_template::IterationCount::Fixed(2),
-            points: Vec::new(),
-            convoke_tappable_count: 0,
+            // No narrowed CR 732.2a bound — `Default` carries the global cap.
+            ..Default::default()
         },
     };
     bind(&mut state, "loop-count");
@@ -2395,6 +2395,8 @@ fn loop_shortcut_schema_and_materializer_cover_every_decision_point_kind() {
         },
         schema: ShortcutDecisionSchema {
             iteration_count: IterationCount::Fixed(2),
+            // No narrowed CR 732.2a bound — the global cap, as every offer states today.
+            max_iterations: ShortcutDecisionSchema::default().max_iterations,
             points: vec![
                 DecisionPoint {
                     slot: slot(0),
