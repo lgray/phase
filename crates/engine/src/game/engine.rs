@@ -2777,20 +2777,38 @@ fn materialize_object_growth_shortcut(
         !growths.is_empty() && crate::analysis::resource::counter_growth_is_observed(state);
     let life_observed =
         !life.is_empty() && crate::analysis::resource::life_growth_is_observed(state);
-    if counter_observed || life_observed {
+    // CR 732.2a + CR 603.6a: a life axis the board RE-EARNS on a battlefield entry also belongs on
+    // the concrete replay. Not an observedness question (the batched arithmetic is right) but a
+    // ROUTE one: the batched `Tokens` collapse mints N real tokens whose real CR 603.6a entries
+    // re-earn the same life the batched `Life` already applied, so the accept pays twice.
+    //
+    // The conjuncts are AXIS-shaped, never effect-shaped: a life axis grew (`!life.is_empty()`),
+    // the collapse will mint the tokens that re-earn it (`token_profile.is_some()` — a mana-only
+    // collapse mints nothing, so nothing re-fires), and the board has an entry trigger at all.
+    // Testing the trigger's EFFECT for `GainLife` would be under-approximate: life reaches
+    // `apply_life_gain` from four resolvers, including CR 702.15b lifelink on an ETB damage
+    // trigger (the Terror of the Peaks shape), which no effect-shape test can see.
+    let life_etb_sourced = !life.is_empty()
+        && token_profile.is_some()
+        && crate::analysis::resource::board_has_functioning_etb_trigger(state);
+    // M5: hoisted out of the branch so an empty period can never register NOTHING — a route
+    // flipped to the replay falls back to the batched arm instead of silently dropping the whole
+    // materialization. (Unreachable today: `growths`/`life` are derived from the same
+    // `drive_one_period_frames`, which returns `None` on an empty sequence, so every route
+    // predicate is already false there. Kept explicit so a future route conjunct cannot
+    // reintroduce the hole.)
+    let sequence = state.last_loop_action_sequence.clone();
+    if (counter_observed || life_observed || life_etb_sourced) && !sequence.is_empty() {
         // CR 732.2a: OBSERVED batchable growth — one DriveSequence collapses the WHOLE loop (all
         // axes); replaying the captured sequence recreates every per-cycle effect honoring
         // observers. Do NOT also register batched items (the routes are exclusive per accept).
-        let sequence = state.last_loop_action_sequence.clone();
-        if !sequence.is_empty() {
-            state.register_pending_materialization(
-                proposal.proposer,
-                crate::types::game_state::PersistentAxisMaterialization::DriveSequence {
-                    sequence,
-                    collapsed_axes: proposal.unbounded.clone(),
-                },
-            );
-        }
+        state.register_pending_materialization(
+            proposal.proposer,
+            crate::types::game_state::PersistentAxisMaterialization::DriveSequence {
+                sequence,
+                collapsed_axes: proposal.unbounded.clone(),
+            },
+        );
     } else {
         // UNOBSERVED fast path — register each grown persistent axis for the batched N×δ collapse.
         if let Some(profile) = token_profile {
