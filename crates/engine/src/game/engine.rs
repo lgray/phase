@@ -1598,8 +1598,61 @@ fn materialize_fixed_shortcut(
     // activation period) is the routing signal; the `seq` rides `state.last_loop_action_sequence`
     // (carried on the clone since the offer). The drain path below is byte-identical for every
     // other loop.
+    //
+    // CR 732.2c: record the count the shortcut was ACCEPTED at. "Once the last player has
+    // either accepted or shortened the shortcut proposal, the shortcut is taken" — its ending
+    // point is fixed at N, so the CR 500.5 boundary collapse prompt may only offer `0..=N`.
+    // Re-asking with a wider range would let the controller take a longer sequence than the
+    // one the table agreed to.
+    //
+    // STASH-GATED, and it must stay that way. A bound with no deferred materialization to
+    // bound is unclearable — all three clears (`take_pending_materialization`,
+    // `clear_collapsed_materializations`, `clear_unbounded_loop`) are keyed on the stash, and
+    // the field is `#[serde(default)]`-persistent — so it would outlive its accept and
+    // silently cap the NEXT accept's agreed count forever (a mana accept at `Fixed(1)`
+    // capping a later, unanimously agreed `Fixed(500)` object-growth collapse at 1). Only the
+    // object-growth route below registers anything, and even it registers CONDITIONALLY: a
+    // mana engine grows no token/counter/life axis and registers nothing at all. So the gate
+    // is a measured STASH-GREW check taken ACROSS the call — testing before it would be
+    // unconditionally false, since that call is what registers. Length-delta rather than
+    // `contains_key`, so a non-registering accept cannot `min`-shrink a bound that an
+    // earlier, larger, genuinely-registering accept owns.
+    //
+    // MINIMUM, not overwrite: `register_pending_materialization` APPENDS, so a controller who
+    // accepts twice before the CR 500.5 boundary owns ONE stash holding both accepts' items,
+    // and the boundary applies ONE submitted amount to every item in it. Overwriting the bound
+    // would let a later `Fixed(1000)` accept re-scale an earlier `Fixed(1)` accept's items
+    // 1000×, materializing growth the table never agreed to. The minimum is the only bound
+    // that no accept in the stash can exceed. Conservative on purpose: the later accept is
+    // UNDER-delivered (its agreed 1000 caps at the earlier 1) rather than the earlier one
+    // being over-delivered — divergence from the table's agreement in the safe direction.
+    //
+    // The exact fix is a per-accept bound, deferred for its WIRE-COMPATIBILITY COST — not
+    // because it is unrepresentable. A bound carried ON each item, or the accept-grouped
+    // `Vec<MaterializationBatch { n, items }>` this is tracked as, survives the boundary's
+    // pause-safety `sort_by_key` fine: the sort moves each payload along with its key. What
+    // it costs is a shape change to `pending_unbounded_materialization`, a SAVED-GAME field,
+    // plus the `cr733/authority_matrix` census fixture that pins its composition. (Only a
+    // PARALLEL per-item bound VECTOR would be positionally unsyncable across that sort; that
+    // is the shape being rejected here, not per-accept binding as such.)
     if !state.last_loop_action_sequence.is_empty() {
+        let stashed_before = state
+            .pending_unbounded_materialization
+            .get(&proposal.proposer)
+            .map_or(0, Vec::len);
         materialize_object_growth_shortcut(state, result, proposal);
+        if state
+            .pending_unbounded_materialization
+            .get(&proposal.proposer)
+            .map_or(0, Vec::len)
+            > stashed_before
+        {
+            state
+                .pending_materialization_count
+                .entry(proposal.proposer)
+                .and_modify(|bound| *bound = (*bound).min(n))
+                .or_insert(n);
+        }
         return;
     }
 

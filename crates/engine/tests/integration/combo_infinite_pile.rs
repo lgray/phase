@@ -114,14 +114,23 @@ fn p0_tapped_vanilla_saprolings(state: &GameState) -> BTreeSet<ObjectId> {
         .collect()
 }
 
-/// Drive the APNAP accept: P0 (the proposer) declares, then every prompted opponent accepts
-/// in turn order until the protocol closes back to ordinary priority.
+/// Drive the APNAP accept at the harness default of one cycle. CR 732.2c makes the
+/// accepted count BINDING on the boundary collapse prompt, so any test that later submits
+/// a larger N must declare that N here — use [`drive_all_accept_n`].
 fn drive_all_accept(state: &mut GameState) {
+    drive_all_accept_n(state, 1);
+}
+
+/// Drive the APNAP accept at `n`: P0 (the proposer) declares `Fixed(n)`, then every
+/// prompted opponent accepts in turn order until the protocol closes back to ordinary
+/// priority. CR 732.2c: `n` is the count the table agrees to, so it bounds the CR 500.5
+/// boundary collapse prompt — a test collapsing to N must accept at ≥ N.
+fn drive_all_accept_n(state: &mut GameState, n: u32) {
     apply(
         state,
         P0,
         GameAction::DeclareShortcut {
-            count: IterationCount::Fixed(1),
+            count: IterationCount::Fixed(n),
             template: None,
         },
     )
@@ -209,7 +218,33 @@ fn real_4p_object_growth_accept_writes_infinite_pile() {
     );
 
     // (2) DERIVED — derive_views projects the pile (battlefield-filtered, public board state).
-    let derived = derive_views(&state, Some(P0));
+    //
+    // R6a (CR 732.2c): this accept ALSO scheduled a finite `TokensCreated` collapse, and a
+    // scheduled axis is already bounded — so the ∞ group must be hidden on the WIRE in
+    // lockstep with its resource badge. Filter the PROJECTION, never the store: the store
+    // assertions above and the round-trip below are unchanged and still pass.
+    assert!(
+        derive_views(&state, Some(P0)).unbounded_pile.is_empty(),
+        "CR 732.2c: a scheduled finite collapse hides the ∞ group (the store keeps it)"
+    );
+    // Non-vacuity + the ORIGINAL claim, retained: with nothing scheduled the projection is
+    // still exactly the battlefield-filtered pile set.
+    //
+    // NOT A SYNTHETIC STATE — "pile present, stash absent" is engine-reachable, and this is
+    // the production sequence that reaches it (cited so the next auditor need not re-derive
+    // it): accept an object-growth loop → the CR 500.5 boundary prompt → `SubmitPayAmount` →
+    // the handler's `take_pending_materialization` (`game::engine_resolution_choices`) empties
+    // the stash FIRST → the `Tokens` mint then PAUSES on an optional token-doubling
+    // replacement (CR 616.1) → the pause path calls `clear_collapsed_materializations(player,
+    // &collapsed)` with `collapsed` NOT containing the still-paused `Tokens` item ⇒ pile and
+    // ∞ axes preserved, stash already gone. NOT A CLAIM — ASSERTED, in
+    // `combo_infinite_pile::med_tokens_boundary_mint_pause_preserves_replacement_choice`, whose
+    // closing two assertions drive that exact sequence and check
+    // `pending_unbounded_materialization[P0]` ABSENT while `derive_views(..).unbounded_pile` is
+    // non-empty. That test is this arm's production-reachability evidence.
+    let mut unscheduled = state.clone();
+    unscheduled.pending_unbounded_materialization.clear();
+    let derived = derive_views(&unscheduled, Some(P0));
     let derived_set: BTreeSet<ObjectId> = derived.unbounded_pile.iter().copied().collect();
     assert_eq!(
         derived_set, oracle,
@@ -225,7 +260,20 @@ fn real_4p_object_growth_accept_writes_infinite_pile() {
         Some(&oracle),
         "the ∞ pile survives a serde round-trip (post-fix saves reload it)"
     );
-    let reloaded_set: BTreeSet<ObjectId> = derive_views(&reloaded, Some(P0))
+    // R6a (CR 732.2c): the stash round-trips too, so the reloaded state's collapse is still
+    // SCHEDULED and its ∞ group stays hidden on the WIRE — same gate, same authority.
+    assert!(
+        derive_views(&reloaded, Some(P0)).unbounded_pile.is_empty(),
+        "CR 732.2c: the reloaded scheduled collapse still hides the ∞ group"
+    );
+    // Same engine-reachable "pile present, stash absent" shape as above — see the
+    // `SubmitPayAmount` → `take_pending_materialization` → CR 616.1 mint-pause →
+    // `clear_collapsed_materializations` sequence cited at (2).
+    let mut reloaded_unscheduled = reloaded.clone();
+    reloaded_unscheduled
+        .pending_unbounded_materialization
+        .clear();
+    let reloaded_set: BTreeSet<ObjectId> = derive_views(&reloaded_unscheduled, Some(P0))
         .unbounded_pile
         .iter()
         .copied()
@@ -575,7 +623,23 @@ fn build_fresh_4p_cast_offer_accept_writes_infinite_pile() {
     );
 
     // (2) DERIVED — derive_views projects the pile.
-    let derived_set: BTreeSet<ObjectId> = derive_views(runner.state(), Some(P0))
+    //
+    // R6a (CR 732.2c): the accept also scheduled a finite `TokensCreated` collapse ⇒ the ∞
+    // group is hidden on the WIRE while it is scheduled. Store unchanged (see the round-trip).
+    assert!(
+        derive_views(runner.state(), Some(P0))
+            .unbounded_pile
+            .is_empty(),
+        "CR 732.2c: a scheduled finite collapse hides the ∞ group (the store keeps it)"
+    );
+    // Non-vacuity + the ORIGINAL claim, retained. "Pile present, stash absent" is
+    // engine-reachable, not synthetic — the `SubmitPayAmount` → `take_pending_materialization`
+    // → CR 616.1 mint-pause → `clear_collapsed_materializations` sequence cited in
+    // `real_4p_object_growth_accept_writes_infinite_pile`, ASSERTED by
+    // `med_tokens_boundary_mint_pause_preserves_replacement_choice`'s closing two assertions.
+    let mut unscheduled = runner.state().clone();
+    unscheduled.pending_unbounded_materialization.clear();
+    let derived_set: BTreeSet<ObjectId> = derive_views(&unscheduled, Some(P0))
         .unbounded_pile
         .iter()
         .copied()
@@ -713,7 +777,7 @@ fn real_4p_observed_drive_sequence_replays_captured_period_n_times() {
         !seq.is_empty(),
         "the offer carries the real recast period the DriveSequence replays"
     );
-    drive_all_accept(&mut state);
+    drive_all_accept_n(&mut state, 3);
 
     // An OBSERVED loop's accept registers ONE DriveSequence over the whole loop (all axes) instead
     // of the batched Tokens/Counters/Life. Emulate that route: drop the batched token stash the
@@ -830,7 +894,7 @@ fn real_4p_object_growth_boundary_collapse_mints_finite_tokens() {
         state.waiting_for
     );
 
-    drive_all_accept(&mut state);
+    drive_all_accept_n(&mut state, 5);
 
     // Reach-guard (accept-capture, §1): accepting the object-growth loop stashed the
     // fodder's copiable profile for P0. Non-vacuity anchor for the negatives below.
@@ -944,7 +1008,7 @@ fn real_4p_object_growth_boundary_collapse_mints_finite_tokens() {
 fn loop_collapse_large_mint_does_not_overflow_small_stack() {
     let mut state: GameState =
         serde_json::from_str(&OFFER_STATE).expect("the real 4p offer dump must deserialize");
-    drive_all_accept(&mut state);
+    drive_all_accept_n(&mut state, 1000);
     let before = p0_saproling_ids(&state).len();
     drive_priority_to_next_boundary(&mut state);
     assert!(
@@ -1339,7 +1403,7 @@ fn real_4p_one_shot_bootstrap_seeds_tapped_infinite_pile_and_w_plus_1_untapped()
     );
 
     // ── Step 2: APNAP accept → materialize.
-    drive_all_accept(runner.state_mut());
+    drive_all_accept_n(runner.state_mut(), 5);
     assert!(
         matches!(runner.state().waiting_for, WaitingFor::Priority { .. }),
         "after all accept, materialize hands priority back, got {:?}",
@@ -1382,7 +1446,23 @@ fn real_4p_one_shot_bootstrap_seeds_tapped_infinite_pile_and_w_plus_1_untapped()
     );
 
     // derive_views projects the pile; it survives a serde round-trip.
-    let derived_set: BTreeSet<ObjectId> = derive_views(runner.state(), Some(P0))
+    //
+    // R6a (CR 732.2c): the accept also scheduled a finite `TokensCreated` collapse ⇒ the ∞
+    // group is hidden on the WIRE while it is scheduled. Store unchanged (round-trip below).
+    assert!(
+        derive_views(runner.state(), Some(P0))
+            .unbounded_pile
+            .is_empty(),
+        "CR 732.2c: a scheduled finite collapse hides the ∞ group (the store keeps it)"
+    );
+    // Non-vacuity + the ORIGINAL claim, retained. "Pile present, stash absent" is
+    // engine-reachable, not synthetic — the `SubmitPayAmount` → `take_pending_materialization`
+    // → CR 616.1 mint-pause → `clear_collapsed_materializations` sequence cited in
+    // `real_4p_object_growth_accept_writes_infinite_pile`, ASSERTED by
+    // `med_tokens_boundary_mint_pause_preserves_replacement_choice`'s closing two assertions.
+    let mut unscheduled = runner.state().clone();
+    unscheduled.pending_unbounded_materialization.clear();
+    let derived_set: BTreeSet<ObjectId> = derive_views(&unscheduled, Some(P0))
         .unbounded_pile
         .iter()
         .copied()
@@ -1606,7 +1686,7 @@ fn real_4p_boundary_collapse_batches_unobserved_counter_and_declines_observed_li
 
     let mut state: GameState = serde_json::from_str(&OFFER_STATE)
         .expect("the real 4p offer dump must deserialize into the current GameState");
-    drive_all_accept(&mut state);
+    drive_all_accept_n(&mut state, 5);
 
     // Graft a beneficial +1/+1 counter axis (UNOBSERVED on this board) and a life axis (OBSERVED)
     // onto the accepted token loop — the SAME single-authority writers the accept path uses.
@@ -1739,7 +1819,7 @@ fn real_4p_counter_observer_drift_in_window_declines_batched_counter_but_still_m
 
     let mut state: GameState = serde_json::from_str(&OFFER_STATE)
         .expect("the real 4p offer dump must deserialize into the current GameState");
-    drive_all_accept(&mut state);
+    drive_all_accept_n(&mut state, 5);
 
     // Graft a +1/+1 counter axis (UNOBSERVED at accept — MEASURED counter_growth_is_observed=false).
     let creature = *p0_saproling_ids(&state)
@@ -2097,7 +2177,7 @@ fn med_tokens_boundary_mint_pause_preserves_replacement_choice() {
 
     let mut state: GameState = serde_json::from_str(&OFFER_STATE)
         .expect("the real 4p offer dump must deserialize into the current GameState");
-    drive_all_accept(&mut state);
+    drive_all_accept_n(&mut state, 3);
 
     // Install an OPTIONAL token-count-doubling replacement ("you may create twice that many tokens
     // instead", CR 616.1) on a fresh P0 battlefield permanent — AFTER accept, so it never perturbs
@@ -2186,6 +2266,26 @@ fn med_tokens_boundary_mint_pause_preserves_replacement_choice() {
             .is_some_and(|p| !p.is_empty()),
         "REVERT-FLIP: the paused mint must preserve the ∞ token pile, not drop it"
     );
+
+    // PRODUCTION-REACHABILITY ANCHOR for the "pile present, stash absent" shape. Several R6a
+    // rows build that shape by cloning a post-accept state and clearing
+    // `pending_unbounded_materialization` by hand; these two lines assert the ENGINE produces it
+    // unaided, right here, so those clones are grounded in a measured production sequence rather
+    // than in a comment. The sequence is the CR 616.1 mint-pause above:
+    // `SubmitPayAmount` → `take_pending_materialization` (removes the whole stash) →
+    // `engine_resolution_choices`' pause guard → `clear_collapsed_materializations(player,
+    // &collapsed)` with the paused `Tokens` item ABSENT from `collapsed` ⇒ the pile survives
+    // while the stash is gone.
+    assert!(
+        !state.pending_unbounded_materialization.contains_key(&P0),
+        "the submit's take_pending_materialization removed P0's stash, got {:?}",
+        state.pending_unbounded_materialization.get(&P0)
+    );
+    assert!(
+        !derive_views(&state, Some(P0)).unbounded_pile.is_empty(),
+        "…and with no stash left to schedule a collapse, the ∞ pile renders on the WIRE — the \
+         engine-reachable 'pile present, stash absent' shape the clone-based R6a arms emulate"
+    );
 }
 
 /// [BLOCKER] (#6259 review, CR 732.2a pause-safety): a MIXED stash pausing on the `Tokens`
@@ -2226,7 +2326,7 @@ fn med_mixed_counter_tokens_pause_commits_finite_counter_and_keeps_only_tokens_u
 
     let mut state: GameState = serde_json::from_str(&OFFER_STATE)
         .expect("the real 4p offer dump must deserialize into the current GameState");
-    drive_all_accept(&mut state);
+    drive_all_accept_n(&mut state, 4);
 
     // Graft an UNOBSERVED +1/+1 counter axis onto a P0 Saproling — the same single-authority
     // writers the accept path uses (mirrors
