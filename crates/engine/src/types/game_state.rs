@@ -1719,10 +1719,15 @@ pub struct BattlefieldEntryRecord {
     /// with flying entered this turn") evaluate via the CR 603.10 last-known-state
     /// against entry-time characteristics (like the existing core_types/colors
     /// snapshots). KNOWN LIMITATION: this captures the object's keywords at record
-    /// time, which is BEFORE the layer system re-evaluates (layers are only marked
-    /// dirty, not recomputed, at zone-change). Printed flyers and keyword-counter /
-    /// intrinsic flyers are counted; a creature granted flying ONLY by a Layer-6
-    /// continuous effect (e.g. an anthem) at the moment it enters is NOT counted.
+    /// time, which for most entries is BEFORE the layer system re-evaluates (layers
+    /// are only marked dirty, not recomputed, at zone-change). Printed flyers and
+    /// keyword-counter / intrinsic flyers are counted; a creature granted flying ONLY
+    /// by a Layer-6 continuous effect (e.g. an anthem) at the moment it enters is NOT
+    /// counted. EXCEPTION — a token created attached to a host (Role/Aura tokens):
+    /// `effects::attach::attach_to` runs `mark_layers_full` + `flush_layers`, and the
+    /// token path records its entry AFTER the attach, so that sub-path's snapshot IS
+    /// post-flush and does see Layer-6 grants. Not a defect: the paired
+    /// `ZoneChangeRecord` has always been taken post-attach, so the two ledgers agree.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub keywords: Vec<Keyword>,
     pub controller: PlayerId,

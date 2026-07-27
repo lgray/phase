@@ -1196,6 +1196,7 @@ mod there_are_no_permanents_state_trigger;
 mod they_gain_keyword_anaphor;
 mod three_blind_mice;
 mod token_storm_scaling_gate;
+mod token_zone_change_index;
 mod tomb_cradle_atropal_deathtouch_runtime;
 mod tomb_oubliette_discard_sacrifice_runtime;
 mod tomb_sandfall_cell_life_loss_runtime;

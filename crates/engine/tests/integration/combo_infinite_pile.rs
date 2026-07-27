@@ -3076,6 +3076,52 @@ fn opponents_etb_life_gainer_does_not_suppress_your_axis() {
     );
 }
 
+/// R4-C1 COMBINED GATE (4a + 4b together; per-commit green is explicitly insufficient).
+///
+/// The same ETB life gainer as `batched_and_replay_routes_converge_on_the_same_life_total`, but
+/// with `batched: true` — the "Whenever ONE OR MORE creatures you control enter, you gain 1 life"
+/// shape (CR 603.2c). Collapsing at N now produces N SEPARATE same-turn token batches (one per
+/// replayed cycle), so the total is right only if BOTH fixes hold:
+///
+/// * 4a (route): the ETB-sourced axis must take the concrete replay. Reverting it re-introduces
+///   the batched `Life` on top of the real entries ⇒ amplified over-count.
+/// * 4b (index): each replayed cycle's entry must carry its OWN zone-change index. Reverting it
+///   leaves every entry on the `0` placeholder, so `batched_zone_change_already_collected` keys
+///   all N batches to `(def, 0)` and only the FIRST fires ⇒ the trigger-count assertion fails.
+///
+/// Both revert-probes were RUN; observed values are in the assertion messages.
+#[test]
+fn combined_batched_etb_gainer_fires_once_per_replayed_cycle() {
+    const N: u32 = 5;
+    let mut state: GameState = serde_json::from_str(&OFFER_STATE)
+        .expect("the real 4p offer dump must deserialize into the current GameState");
+    strip_life_conditional_cost_static(&mut state);
+    let mut batched_gainer = innkeeper_etb_life_trigger(&state);
+    batched_gainer.batched = true;
+    let host = create_life_gainer(&mut state, P0, "Grafted Batched Innkeeper");
+    graft_trigger(&mut state, host, batched_gainer);
+
+    drive_all_accept_n(&mut state, N);
+    assert_eq!(
+        route_labels(&state, P0),
+        vec!["DriveSequence".to_string()],
+        "4a: a batched ETB life gainer still routes the axis to the concrete replay"
+    );
+
+    let life_before = life_of(&state, P0);
+    let minted = collapse_at(&mut state, N);
+
+    // POSITIVE reach-guard: N cycles really replayed.
+    assert_eq!(minted, N as usize, "the replay minted one token per cycle");
+    // DISCRIMINATOR (needs BOTH fixes): N distinct same-turn batches ⇒ N fires ⇒ +N.
+    // revert 4b ⇒ all N batches collide on `(def, 0)` ⇒ +1. revert 4a ⇒ batched Life on top ⇒ >N.
+    assert_eq!(
+        life_of(&state, P0) - life_before,
+        N as i32,
+        "each replayed cycle is its OWN batch and fires once (revert 4b ⇒ 1, revert 4a ⇒ more)"
+    );
+}
+
 /// NON-`GainLife` LIFE SOURCE (CR 732.2a + CR 603.6a + CR 702.15b): the Terror-of-the-Peaks
 /// shape — an ETB *damage* trigger on a permanent with LIFELINK. The life axis is just as
 /// ETB-sourced as Soul Warden's, but it never passes through `Effect::GainLife`: it reaches

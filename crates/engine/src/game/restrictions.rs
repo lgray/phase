@@ -379,9 +379,9 @@ pub(crate) fn battlefield_entry_record_for(
         subtypes: obj.card_types.subtypes.clone(),
         supertypes: obj.card_types.supertypes.clone(),
         colors: obj.color.clone(),
-        // CR 403.3: snapshot the object's keywords at entry time. This is the
-        // printed/base + counter-granted keyword set (pre-layer; see the field doc
-        // on BattlefieldEntryRecord.keywords for the documented Layer-6 limitation).
+        // CR 403.3: snapshot the object's keywords at entry time — whatever the layer
+        // state is at the caller's record point (pre-flush for most entries, post-flush
+        // for an attached token). See the field doc on `BattlefieldEntryRecord.keywords`.
         keywords: obj.keywords.clone(),
         controller: obj.controller,
     }
