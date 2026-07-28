@@ -308,6 +308,10 @@ pub enum DecisionPointKind {
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum TargetPin {
     ByIdentity(DecisionSource),
+    /// A CONSTANT target (CR 732.2a): this pin answers EVERY firing of its source within
+    /// the period with the declared player. A seat is state-independent by construction —
+    /// it can never denote "the newest copy" — so no iteration can turn the pin into the
+    /// conditional action CR 732.2a forbids.
     Player(PlayerId),
     Scheduled(TargetSchedule),
 }
@@ -411,15 +415,17 @@ pub enum ConcreteTarget {
 /// `Static` or `Scheduled`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ReplayFailure {
-    /// CR 608.2b: a TARGET pin (`Targets`'s `ByIdentity`, or a `Scheduled` schedule) no
-    /// longer resolves to a legal live object (left its zone / ceased to exist). Raised
-    /// whenever a *target* is illegal-or-absent, in ANY `ReplayMode` — a `Static`-mode
-    /// `Targets` pin with a removed target yields THIS, not `MissingSource`. ⇒ abort the
-    /// auto-shortcut, hand back to manual.
-    IllegalTarget {
-        slot: DecisionSlot,
-        source: DecisionSource,
-    },
+    /// CR 608.2b: a TARGET pin no longer resolves to a legal live target (left its zone /
+    /// ceased to exist / CR 800.4a left the game). Raised whenever a *target* is
+    /// illegal-or-absent, in ANY `ReplayMode` — a `Static`-mode `Targets` pin with a
+    /// removed target yields THIS, not `MissingSource`. ⇒ abort the auto-shortcut, hand
+    /// back to manual.
+    ///
+    /// Carries the [`TargetPin`] itself rather than a `DecisionSource`: `Player` and
+    /// `Scheduled` pins are equally capable of going illegal, and a `DecisionSource` can
+    /// name neither. Parameterizing the existing variant keeps ONE "target went illegal"
+    /// failure instead of growing a per-pin-kind sibling cluster.
+    IllegalTarget { slot: DecisionSlot, pin: TargetPin },
     /// CR 400.7: an ORDER pin's source (`Order`) is absent from the current battlefield
     /// ⇒ the ordering template no longer matches ⇒ fall through to a normal manual
     /// prompt. Raised ONLY for the `Order` pin kind, in any `ReplayMode`.
@@ -538,22 +544,49 @@ fn resolve_pin(
     }
 }
 
-/// Resolve one target pin. CR 608.2b: a by-identity or scheduled target must still be a
-/// legal live object; an absent one is `IllegalTarget`.
+/// Resolve one target pin. CR 608.2b: a by-identity, player, or scheduled target must
+/// still be a legal live target; an absent or departed one is `IllegalTarget`.
 fn resolve_target(
     pin: &TargetPin,
     slot: &DecisionSlot,
     iteration: IterationIndex,
     state: &GameState,
 ) -> Result<ConcreteTarget, ReplayFailure> {
+    let illegal = || ReplayFailure::IllegalTarget {
+        slot: slot.clone(),
+        pin: pin.clone(),
+    };
     match pin {
         TargetPin::ByIdentity(source) => resolve_source(source, state)
             .map(ConcreteTarget::Object)
-            .ok_or_else(|| ReplayFailure::IllegalTarget {
-                slot: slot.clone(),
-                source: source.clone(),
-            }),
-        TargetPin::Player(p) => Ok(ConcreteTarget::Player(*p)),
+            .ok_or_else(illegal),
+        // CR 800.4a: eliminated players are not legal targets. A pin declared against a seat
+        // that has since left the game must fail the CR 608.2b per-iteration re-check rather
+        // than silently resolving to a departed player. `game::players::is_alive` is the
+        // shipped "in the game and not eliminated" authority, and it mirrors exactly ONE of
+        // the exclusions `game::targeting::find_legal_targets` applies when it enumerates
+        // the offer's legal set: `targeting.rs:200-201`.
+        //
+        // NOT PARITY, and deliberately so. That authority's player branch
+        // (`targeting.rs:196-213`) excludes on THREE grounds; this conjunct covers one:
+        //   * `player.is_eliminated`             (CR 800.4a) — covered here
+        //   * `player.is_phased_out()`           — NOT checked here. The CR defines phasing
+        //     for PERMANENTS only (CR 702.26a-p); the engine's player-level flag is a
+        //     mirror of CR 702.26b's "treated as though it does not exist", not a citation.
+        //   * `player_cannot_be_targeted_by(..)` (CR 702.11c / CR 702.18a / CR 702.16b,
+        //     player-scope hexproof / shroud / protection) — NOT checked here
+        // Widening this to a shared predicate factored out of `targeting.rs:196-213` is the
+        // recorded OWED ITEM 1 in `.combofb-pr-followups.md` ("Phase 5a — `TargetPin::Player`'s
+        // CR 608.2b re-check covers elimination only"), assigned to the FIRST commit of the
+        // phase that builds the drive: this phase mints `TargetPin::Player` only behind
+        // `#[cfg(any(test, feature = "test-support"))]`, so no shipped path reaches the gap.
+        // Measured there: a phased-out declared target survives THIS check and is killed
+        // downstream by `apply_action`'s spec-aware CR 608.2b re-validation, so the gap is a
+        // drift/attribution defect rather than a silent wrong answer — conditional on every
+        // pin consumer routing through `apply_action`.
+        TargetPin::Player(p) => crate::game::players::is_alive(state, *p)
+            .then_some(ConcreteTarget::Player(*p))
+            .ok_or_else(illegal),
         TargetPin::Scheduled(sched) => evaluate_schedule(sched, slot, iteration, state),
     }
 }
@@ -621,7 +654,7 @@ fn evaluate_schedule(
         .map(ConcreteTarget::Object)
         .ok_or_else(|| ReplayFailure::IllegalTarget {
             slot: slot.clone(),
-            source: source.clone(),
+            pin: TargetPin::Scheduled(sched.clone()),
         })
 }
 
@@ -1217,6 +1250,62 @@ mod tests {
         let mut present = GameState::new_two_player(7);
         bf_object(&mut present, 30, 30, 1);
         assert!(resolve(&template, 0, &present).is_ok());
+    }
+
+    /// CR 800.4a + CR 608.2b: a `TargetPin::Player` aimed at a seat that has LEFT THE GAME
+    /// is not a legal target, so the per-iteration re-check must raise
+    /// `IllegalTarget{pin}` — mirroring `game::targeting::find_legal_targets`'s own
+    /// exclusion (`crates/engine/src/game/targeting.rs:200-201`). This row is the sole
+    /// owner of `IllegalTarget{pin}` for the `Player` kind, and it is reachable by
+    /// construction.
+    ///
+    /// MATCHED PAIR, one variable (`is_eliminated`): the LIVE half resolves, the DEAD half
+    /// fails. REVERT-PROBE: drop the `!is_eliminated` conjunct in `resolve_target`'s
+    /// `TargetPin::Player` arm ⇒ the dead half resolves ⇒ FAILS.
+    #[test]
+    fn a_dead_player_pin_is_illegal() {
+        let pin_slot = DecisionSlot {
+            source: this_obj(70, Some(0)),
+            index: 0,
+        };
+        let template = |victim: u8| DecisionTemplate {
+            owner: PlayerId(0),
+            decisions: vec![PinnedDecision::Targets {
+                slot: pin_slot.clone(),
+                targets: vec![TargetPin::Player(PlayerId(victim))],
+            }],
+            replay: ReplayMode::Scheduled {
+                count: IterationCount::Fixed(1),
+            },
+            key: tri_key(),
+        };
+
+        // LIVE half — the positive reach-guard: nothing upstream of the liveness check
+        // rejects this pin, so the dead half's failure is attributable to liveness alone.
+        let live = GameState::new_two_player(7);
+        assert!(!live.players[1].is_eliminated, "fixture: P1 starts alive");
+        assert_eq!(
+            resolve(&template(1), 0, &live).unwrap(),
+            vec![ConcreteDecision::Targets {
+                slot: pin_slot.clone(),
+                targets: vec![ConcreteTarget::Player(PlayerId(1))],
+            }],
+            "a live player pin resolves unchanged"
+        );
+
+        // DEAD half — the identical board with exactly one field flipped.
+        let mut dead = live.clone();
+        dead.players[1].is_eliminated = true;
+        let err = resolve(&template(1), 0, &dead).unwrap_err();
+        assert_eq!(
+            err,
+            ReplayFailure::IllegalTarget {
+                slot: pin_slot,
+                pin: TargetPin::Player(PlayerId(1)),
+            },
+            "CR 800.4a: a departed seat is not a legal target — and the failure NAMES the \
+             pin, which a `source: DecisionSource` payload could not express"
+        );
     }
 
     /// T5b (G2 sibling): the SAME `Static` mode with an `Order` pin (different pin kind)

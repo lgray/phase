@@ -977,10 +977,10 @@ pub fn board_delta(before: &GameState, after: &GameState) -> BoardDelta {
 ///
 /// The `_scoped` predicates below stay identity for [`LoopWindowScope::unproven`]
 /// (asserted by `scoped_wrappers_are_identity`) because every guard that reads a field
-/// sits inside an `if let Some(..)` / `is_some_and`. `phase_invariant` and `sole_driver`
-/// ARE now read — by the growing-class firewall's CR 510.2 / CR 506.1 and CR 117.1b
-/// guards — and `cast_card_ids` by the projected firewall's CR 601.2f cost guard, so the
-/// scope is no longer write-only; `pinned_slots` is the remaining unread field.
+/// sits inside an `if let Some(..)` / `is_some_and`. EVERY field is now read:
+/// `phase_invariant` and `sole_driver` by the growing-class firewall's CR 510.2 / CR 506.1
+/// and CR 117.1b guards, `cast_card_ids` by the projected firewall's CR 601.2f cost guard,
+/// and `pinned` by [`loop_states_cover_modulo_growth_scoped`]'s CR 732.2a gates (3) and (6).
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct LoopWindowScope<'a> {
     /// `Some(phase)` iff the caller proved both frames are equal on turn number AND
@@ -993,15 +993,32 @@ pub(crate) struct LoopWindowScope<'a> {
     /// activate an ability only with priority; CR 732.2c: the shortcut advances to
     /// the proposed ending point once every player has accepted).
     sole_driver: Option<PlayerId>,
-    /// CR 732.2a: the per-iteration choice slots the OFFER publishes, which
-    /// `decision_template::predictability_gate` then FORCES the declaration to pin.
-    /// A slot listed here is a *specified* choice in CR 732.2a's sense, not a free one.
-    #[allow(dead_code)] // write-only until the phase that consumes pinned slots.
-    pinned_slots: &'a [DecisionSlot],
+    /// `Some(pins)` iff the caller proved an OFFER published exactly these per-iteration
+    /// choice slots. READ by [`loop_states_cover_modulo_growth_scoped`]'s gates (3)/(6).
+    pinned: Option<PinnedChoices<'a>>,
     /// CR 601.2f (cost determination reads static cost modifiers): `Some(ids)` iff the
     /// caller proved the EXACT set of card ids this window casts — `Some(&[])` for a
     /// window that provably casts nothing. `None` means NO PROOF, i.e. scan everything.
     cast_card_ids: Option<&'a [CardId]>,
+}
+
+/// CR 732.2a: the per-iteration choice slots ONE offer published, carried together with the
+/// seat whose offer minted them.
+///
+/// The proposer travels WITH the slots because the relief side re-runs the MINT's own
+/// per-entry acceptance test (`game::engine::entry_publishes_pin_slots`), whose first
+/// conjunct is `entry.controller == proposer` — the EXTENSION POINT's precondition (c),
+/// "only the acting player's own choices are pinnable". A bare slot list cannot express
+/// that conjunct, and a SECOND scope field could disagree with the first; one field
+/// carrying both makes the pair unable to drift.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct PinnedChoices<'a> {
+    /// The offer's proposer. Every slot in `slots` was minted for this seat.
+    pub(crate) proposer: PlayerId,
+    /// The published slots, which `decision_template::predictability_gate` then FORCES the
+    /// declaration to pin. A slot listed here is a *specified* choice in CR 732.2a's sense,
+    /// not a free one.
+    pub(crate) slots: &'a [DecisionSlot],
 }
 
 impl LoopWindowScope<'static> {
@@ -1011,7 +1028,7 @@ impl LoopWindowScope<'static> {
         Self {
             phase_invariant: None,
             sole_driver: None,
-            pinned_slots: &[],
+            pinned: None,
             cast_card_ids: None,
         }
     }
@@ -1043,7 +1060,7 @@ impl LoopWindowScope<'static> {
 fn window_scope_from_cover_frames<'a>(
     pa: &GameState,
     pb: &GameState,
-    pinned_slots: &'a [DecisionSlot],
+    pinned: Option<PinnedChoices<'a>>,
 ) -> LoopWindowScope<'a> {
     // (p1) same turn, (p2) same step-granular phase, (p3) no pending extra phase in
     // either frame (CR 500.8).
@@ -1073,9 +1090,90 @@ fn window_scope_from_cover_frames<'a>(
     LoopWindowScope {
         phase_invariant,
         sole_driver,
-        pinned_slots,
+        pinned,
         // 2b's axis (the PROJECTED covers), derived at its own call site.
         cast_card_ids: None,
+    }
+}
+
+/// CR 732.2a: is this stack entry's ANNOUNCEMENT-time target choice (gate (3)) already
+/// SPECIFIED by a slot the offer published?
+///
+/// The acceptance test is NOT re-derived here: it is the mint's own,
+/// [`crate::game::engine::entry_publishes_pin_slots`], called for this one entry with the
+/// pins' own proposer. That is what keeps the relief predicate from being coarser than the
+/// mint predicate — controller (precondition (c)), entry kind, target shape and the
+/// CR 400.7 incarnation binding are all one function, so a slot can never be *matched*
+/// here on terms it was not *minted* on.
+///
+/// SCOPE OF DISCHARGE. The caller's relief is a bare `continue`, so a `true` here skips
+/// ALL FOUR facts [`stack_entry_has_no_ordering_input`] rejects on, while the pin answers
+/// exactly one of them (the target). Three of the other three are ability facts the mint
+/// itself now refuses to publish on (`multi_target` / `distribution` /
+/// `target_constraints`). The fourth, `pending_trigger_entry` (CR 603.3c mid-construction),
+/// is a property of THIS state rather than of the offer's schema, so it is enforced HERE —
+/// the mint is documented pure over `(stack, objects, proposer)` and must not read a
+/// prompt-coupled field. That makes this predicate strictly NARROWER than the mint's, which
+/// is the safe direction; the forbidden direction is coarser.
+///
+/// Fail-closed in every branch: no published pins, a non-qualifying entry, a missing source
+/// object, or a mid-construction entry ⇒ not pinned ⇒ the gate that called this keeps
+/// rejecting.
+fn entry_target_choice_is_pinned(
+    state: &GameState,
+    entry: &StackEntry,
+    scope: LoopWindowScope<'_>,
+) -> bool {
+    let Some(pins) = scope.pinned else {
+        return false;
+    };
+    if state.pending_trigger_entry == Some(entry.id) {
+        return false;
+    }
+    crate::game::engine::entry_publishes_pin_slots(state, entry, pins.proposer)
+        .is_some_and(|e| pins.slots.contains(&e.target))
+}
+
+/// CR 732.2a + CR 603.5: is this entry's RESOLUTION-time `MayPrompt` (gate (6)) fully
+/// explained by an optional gate the offer published — and if so, what verdict does the
+/// entry carry once that one axis is discharged?
+///
+/// `Some(residual)` ⇒ relieved, and `residual` is the classification the entry would have
+/// had WITHOUT its CR 603.5 gate, which the caller must go on to gate exactly like any
+/// unpinned entry's (a pinned "may" says nothing about the CR 616.1 life-event replacement
+/// surface). `None` ⇒ no relief.
+///
+/// ATTRIBUTION is the load-bearing part. `ability_resolution_choice_freedom` returns
+/// `MayPrompt` for SIX independent reasons (`game/ability_scan.rs:6534-6560` plus the
+/// sub/else effect join), and the offer publishes a `MayChoice` point for exactly ONE of
+/// them — `ability.optional`. So relief requires both published slots to be pinned AND the
+/// same ability, re-classified with `optional` cleared, to come back choice-free: an
+/// `unless_pay`, a resolution-time target chooser, a modal header, a controller-choice
+/// repeat, or a CR 701.34a proliferate sub-ability keeps returning `MayPrompt` and gets no
+/// relief, because no published pin specifies it.
+fn pinned_may_choice_relief(
+    state: &GameState,
+    entry: &StackEntry,
+    scope: LoopWindowScope<'_>,
+) -> Option<crate::game::ability_scan::ResolutionChoiceFreedom> {
+    use crate::game::ability_scan::ResolutionChoiceFreedom;
+    let pins = scope.pinned?;
+    let published = crate::game::engine::entry_publishes_pin_slots(state, entry, pins.proposer)?;
+    let may = published.may?;
+    if !pins.slots.contains(&may) || !pins.slots.contains(&published.target) {
+        return None;
+    }
+    let StackEntryKind::TriggeredAbility { ability, .. } = &entry.kind else {
+        return None;
+    };
+    // The clone is confined to this path (a published-and-pinned optional entry, so never
+    // reached while `scope.pinned` is `None`) and is what lets the ONE classifier answer
+    // the counterfactual instead of this module re-implementing its six reasons.
+    let mut without_may_gate = (**ability).clone();
+    without_may_gate.optional = false;
+    match crate::game::ability_scan::ability_resolution_choice_freedom(&without_may_gate) {
+        ResolutionChoiceFreedom::MayPrompt => None,
+        residual @ ResolutionChoiceFreedom::FreeUnlessLifeReplacements => Some(residual),
     }
 }
 
@@ -1140,15 +1238,26 @@ fn window_cast_card_ids(state: &GameState) -> Option<Vec<CardId>> {
 }
 
 /// Scoped sibling of [`loop_states_cover_modulo_growth`] — see [`LoopWindowScope`].
-/// The `_scope` PARAMETER is still unread: this body's own axis is the PROJECTED
-/// firewall, and the scope parameter is the seam for the SIBLING covers. The projected
-/// scope conjunct (5) passes downstream is therefore derived LOCALLY, from `current`'s
-/// own driving sequence ([`window_cast_card_ids`]) — so behaviour does move through
-/// this body even though the parameter does not carry it.
+/// The `scope` parameter now carries CR 732.2a pin proofs INTO this body: gate (3)
+/// skips an entry whose published target [`DecisionSlot`] the offer pinned
+/// ([`entry_target_choice_is_pinned`]) and gate (6) discharges a `MayPrompt` that is
+/// wholly attributable to a published CR 603.5 gate ([`pinned_may_choice_relief`]), per
+/// the EXTENSION POINT's three preconditions. That is this body's own use of the
+/// parameter.
+///
+/// The parameter is ALSO the seam for the SIBLING covers, which build their scope
+/// through the single authority [`window_scope_from_cover_frames`] — its third
+/// argument is `pinned`, passed `None` at both live sibling call sites today.
+///
+/// Not carried by the parameter: the PROJECTED conjunct (5) this body passes
+/// downstream is derived LOCALLY from `current`'s own driving sequence
+/// ([`window_cast_card_ids`]), and the `projected_scope` built for that call
+/// deliberately holds `pinned: None` — the projected firewall is a different
+/// axis and must not inherit the caller's pins.
 pub(crate) fn loop_states_cover_modulo_growth_scoped(
     prior: &GameState,
     current: &GameState,
-    _scope: LoopWindowScope<'_>,
+    scope: LoopWindowScope<'_>,
 ) -> bool {
     // (1) Board equal modulo the NARROWED projection AND modulo the stack, with the
     // object resource axes STRICT-COMPARED (R5-B1). Project both, clear both stacks
@@ -1180,6 +1289,12 @@ pub(crate) fn loop_states_cover_modulo_growth_scoped(
     // Iterate the ORIGINAL current-stack entries (so the mid-construction firewall
     // sees real stack-entry ids) and check each whose normalized kind strictly grew.
     for (orig, norm) in current.stack.iter().zip(cur_stack.iter()) {
+        // CR 732.2a EXTENSION POINT (see item 6's block): a slot the OFFER publishes is
+        // a SPECIFIED choice, not a free one, so its announcement-time target input is
+        // no longer player ordering input.
+        if entry_target_choice_is_pinned(current, orig, scope) {
+            continue;
+        }
         let cn = cur_stack.iter().filter(|e| *e == norm).count();
         let pn = prior_stack.iter().filter(|e| *e == norm).count();
         if cn > pn && !stack_entry_has_no_ordering_input(current, orig) {
@@ -1210,7 +1325,7 @@ pub(crate) fn loop_states_cover_modulo_growth_scoped(
     let projected_scope = LoopWindowScope {
         phase_invariant: None,
         sole_driver: None,
-        pinned_slots: &[],
+        pinned: None,
         cast_card_ids: cast_ids.as_deref(),
     };
     if fire_time_conditions_read_projected_resource_scoped(current, projected_scope) {
@@ -1241,10 +1356,32 @@ pub(crate) fn loop_states_cover_modulo_growth_scoped(
     // option preserves the certificate (the win stays forced per the
     // CR 104.2a-grounded winner predicate). Plug pins in at THIS seam as an
     // additional input; do not rewire the classifiers or spread the decision.
+    //
+    // PINS ARE PLUGGED IN HERE (`scope.pinned`, minted by the single authority
+    // `game::engine::bounded_cycle_pin_slots`). Precondition (a) holds by construction:
+    // the pins that channel carries are `TargetPin::Player` / `MayChoice` designations,
+    // both state-independent (never "the newest copy"). Precondition (c) is NOT taken on
+    // trust from the mint site: [`pinned_may_choice_relief`] re-runs the mint's own
+    // per-entry acceptance test — controller conjunct included — for THIS entry, so the
+    // relief predicate is the mint predicate rather than a coarser sibling of it.
+    // Precondition (b) is why relief is not a `continue`: the entry's RESIDUAL verdict
+    // (its classification with the published CR 603.5 gate discharged) re-enters the same
+    // gating an unpinned entry gets, so `FreeUnlessLifeReplacements` still arms the
+    // CR 616.1 environmental guard below — a pinned target/"may" says nothing about whose
+    // life-event replacements might prompt.
     let mut needs_life_guard = false;
     for entry in &current.stack {
         match stack_entry_resolution_choice_freedom(entry) {
-            crate::game::ability_scan::ResolutionChoiceFreedom::MayPrompt => return false,
+            crate::game::ability_scan::ResolutionChoiceFreedom::MayPrompt => {
+                match pinned_may_choice_relief(current, entry, scope) {
+                    Some(
+                        crate::game::ability_scan::ResolutionChoiceFreedom::FreeUnlessLifeReplacements,
+                    ) => needs_life_guard = true,
+                    Some(crate::game::ability_scan::ResolutionChoiceFreedom::MayPrompt) | None => {
+                        return false
+                    }
+                }
+            }
             crate::game::ability_scan::ResolutionChoiceFreedom::FreeUnlessLifeReplacements => {
                 needs_life_guard = true
             }
@@ -1381,7 +1518,7 @@ pub(crate) fn loop_states_cover_modulo_object_growth(
     if fire_time_conditions_read_growing_class_scoped(
         &cf,
         None,
-        window_scope_from_cover_frames(&pa, &pb, &[]),
+        window_scope_from_cover_frames(&pa, &pb, None),
     ) {
         return false;
     }
@@ -1589,7 +1726,7 @@ pub(crate) fn loop_states_cover_modulo_fodder_growth(
     if fire_time_conditions_read_growing_class_scoped(
         &cf,
         Some(&class_members),
-        window_scope_from_cover_frames(&pa, &pb, &[]),
+        window_scope_from_cover_frames(&pa, &pb, None),
     ) {
         return false;
     }
@@ -5468,6 +5605,750 @@ mod tests {
         );
     }
 
+    /// CR 601.2c (reached for a triggered ability via CR 603.3d): the mint must ask the
+    /// ANNOUNCEMENT authority how many choices announcing an entry requires — never a proxy
+    /// for it. `Effect::target_filter()` answers a DIFFERENT question ("is there a
+    /// player-target filter on the head effect?"); `ability_utils::build_target_slots`
+    /// answers this one, and is the same function the relief's own `forced_unique_targeting`
+    /// rebuilds slots with. Three rows, each a shape where the two answers DIVERGE, plus a
+    /// positive control so the conjunct cannot be constant-false.
+    ///
+    /// MEASURED REVERT-PROBE (delete the `build_target_slots` conjunct in
+    /// `entry_publishes_pin_slots`), on row (a)'s board:
+    /// `mint_publishes` false→TRUE, `bounded_cycle_pin_slots(..).len()` 0→1 (ONE point with
+    /// `min/max_targets: 1` for a TWO-choice announcement), and the pinned cover false→TRUE.
+    /// That last flip is the fail-open: gate (3)'s bare `continue` discharges a slot no pin
+    /// specifies. Rows (b) and (c) flip `mint_publishes` false→TRUE on the same probe.
+    #[test]
+    fn bounded_cycle_pin_slots_requires_a_single_mandatory_announcement_slot() {
+        use crate::game::ability_utils::build_target_slots;
+        use crate::game::engine::{bounded_cycle_pin_slots, entry_publishes_pin_slots};
+
+        // ── (a) TWO announcement choices: a chained sub-ability that also drains
+        // `target opponent`. CR 601.2c: "if the spell uses the word `target` in multiple
+        // places, the same object or player can be chosen once for each instance."
+        let (prior, current) = grown_window(3, |id| {
+            let mut ability = lose_life_targeting(event_amount(), opp_typed(vec![]));
+            ability.targets = vec![TargetRef::Player(PlayerId(1))];
+            ability.sub_ability = Some(Box::new(lose_life_targeting(
+                event_amount(),
+                opp_typed(vec![]),
+            )));
+            churn_entry(id, 0, ability, None)
+        });
+        let ability = current.stack[2].ability().unwrap();
+        assert_eq!(
+            build_target_slots(&current, ability).map(|s| s.len()).ok(),
+            Some(2),
+            "reach-guard: `collect_target_slots_inner` recurses into `sub_ability`, so the \
+             runtime announcement carries two independent CR 601.2c choices"
+        );
+        assert!(
+            ability.effect.target_filter().is_some(),
+            "reach-guard: the PROXY still reports a single head-effect filter — that is the \
+             whole divergence"
+        );
+        // Reach-guards that gate (3) is the SOLE rejector here (gates (4)/(6) clean), so the
+        // cover assertions below are attributable to the pin relief and nothing else.
+        assert!(
+            !forced_unique_targeting(&current, ability),
+            "reach-guard: three opponents ⇒ not forced-unique ⇒ gate (3) rejects"
+        );
+        assert!(
+            !crate::game::ability_scan::ability_reads_projected_resource(ability),
+            "reach-guard: gate (4) passes"
+        );
+        assert!(
+            entry_publishes_pin_slots(&current, &current.stack[2], PlayerId(0)).is_none(),
+            "a published point says `min/max_targets: 1`; this announcement has TWO choices"
+        );
+        assert!(
+            bounded_cycle_pin_slots(&current, PlayerId(0)).is_empty(),
+            "and the mint therefore publishes nothing rather than under-describing it"
+        );
+        let slot = churn_src_slot(&current, 0);
+        for pinned in [&[][..], std::slice::from_ref(&slot)] {
+            assert!(
+                !loop_states_cover_modulo_growth_scoped(&prior, &current, pinned_scope(pinned)),
+                "gate (3)'s relief is a bare `continue`: an unpublished second target choice \
+                 must keep rejecting ({} pinned slot(s))",
+                pinned.len()
+            );
+        }
+
+        // ── (b) ZERO announcement choices, two ways. `Effect::target_filter()` returns
+        // `Some` for both, but the SLOT BUILDER surfaces no stack slot: CR 701.21a
+        // `Sacrifice` is carved out of `triggers::extract_target_filter_from_effect` (the
+        // accessor the builder actually uses), and a CR 601.2c choice made at resolution
+        // (`TargetChoiceTiming::Resolution`) is not announced at all.
+        let zero_slot_cases: [(&str, ResolvedAbility); 2] = [
+            ("CR 701.21a Sacrifice — not a target", {
+                ResolvedAbility::new(
+                    Effect::Sacrifice {
+                        target: opp_typed(vec![]),
+                        count: QuantityExpr::Fixed { value: 1 },
+                        min_count: 0,
+                    },
+                    vec![],
+                    ObjectId(CHURN_SRC),
+                    PlayerId(0),
+                )
+            }),
+            ("CR 601.2c — chosen at resolution, not announcement", {
+                let mut a = lose_life_targeting(event_amount(), opp_typed(vec![]));
+                a.targets = vec![TargetRef::Player(PlayerId(1))];
+                a.target_choice_timing = crate::types::ability::TargetChoiceTiming::Resolution;
+                a
+            }),
+        ];
+        for (label, ability) in zero_slot_cases {
+            let (_p, c) = grown_window(3, |id| churn_entry(id, 0, ability.clone(), None));
+            let live = c.stack[2].ability().unwrap();
+            assert!(
+                live.effect.target_filter().is_some(),
+                "reach-guard: the PROXY says `Some` ({label})"
+            );
+            assert_eq!(
+                build_target_slots(&c, live).map(|s| s.len()).ok(),
+                Some(0),
+                "reach-guard: the ANNOUNCEMENT authority says zero ({label})"
+            );
+            assert!(
+                entry_publishes_pin_slots(&c, &c.stack[2], PlayerId(0)).is_none(),
+                "no announcement choice ⇒ no published point ({label})"
+            );
+        }
+
+        // ── (c) an "up to one target" announcement: CR 601.2c makes the real minimum ZERO,
+        // and the slot may legally carry an EMPTY legal set, so `min_targets: 1` overstates
+        // it. One slot — the count half of the conjunct does NOT catch this; `!optional` does.
+        let (_p_opt, c_opt) = grown_window(3, |id| {
+            let mut ability = lose_life_targeting(event_amount(), opp_typed(vec![]));
+            ability.targets = vec![TargetRef::Player(PlayerId(1))];
+            ability.optional_targeting = true;
+            churn_entry(id, 0, ability, None)
+        });
+        assert_eq!(
+            build_target_slots(&c_opt, c_opt.stack[2].ability().unwrap())
+                .map(|s| s.iter().map(|slot| slot.optional).collect::<Vec<_>>())
+                .ok(),
+            Some(vec![true]),
+            "reach-guard: exactly ONE slot, and it is OPTIONAL — so only the `!optional` \
+             half of the conjunct can reject this row"
+        );
+        assert!(
+            entry_publishes_pin_slots(&c_opt, &c_opt.stack[2], PlayerId(0)).is_none(),
+            "CR 601.2c: an `up to one target` announcement's minimum is 0, not the \
+             published 1"
+        );
+
+        // ── positive control: the shipped drain still publishes, so none of the above is a
+        // constant-false conjunct. Same board as arm 1 of
+        // `a_pinned_slot_skips_gate_three_and_six`.
+        let (_p_ok, c_ok) = grown_window(3, |id| drain_entry(id, vec![]));
+        assert_eq!(
+            build_target_slots(&c_ok, c_ok.stack[2].ability().unwrap())
+                .map(|s| s.len())
+                .ok(),
+            Some(1),
+            "control: one mandatory announcement choice"
+        );
+        assert_eq!(
+            bounded_cycle_pin_slots(&c_ok, PlayerId(0)).len(),
+            1,
+            "control: the instrument still returns a NON-zero point set"
+        );
+    }
+
+    /// CR 115.2 + CR 601.2c (via CR 603.3d): the mint must take *which* choice it publishes
+    /// from the ANNOUNCEMENT authority too — not just *how many*.
+    ///
+    /// The sibling row above closed the cardinality axis. This is the same divergence on the
+    /// legal-SET axis, and it is the shape the cardinality conjunct cannot see: the head
+    /// effect declares the CR 115.2 player filter but announces NOTHING
+    /// (`TargetChoiceTiming::Resolution` ⇒ 0 slots), while a chained sub-ability announces
+    /// the one mandatory slot — over CREATURES. `Effect::target_filter()` answers
+    /// `Typed{[], Opponent, []}`; `build_target_slots` answers "one mandatory slot,
+    /// `[Object(500), Object(901), Object(902)]`" (measured, both).
+    ///
+    /// MEASURED REVERT-PROBE (drop the all-`Player` conjunct in
+    /// `entry_publishes_pin_slots`): `entry_publishes_pin_slots(..).is_some()` false→TRUE and
+    /// `bounded_cycle_pin_slots(..)` 0→1 point, whose `legal_targets` before the fix was the
+    /// re-derived `[Player(1), Player(2)]` — a published point claiming a PLAYER set for a
+    /// three-OBJECT announcement, which no `TargetPin::Player` can specify and which gate
+    /// (3)'s bare `continue` would discharge anyway.
+    ///
+    /// The positive control asserts the published set EQUALS the builder's slot rather than
+    /// a literal, so it fails if the mint ever re-derives the set from the accessor again.
+    #[test]
+    fn bounded_cycle_pin_slots_legal_set_comes_from_the_announcement_authority() {
+        use crate::game::ability_utils::build_target_slots;
+        use crate::game::engine::{bounded_cycle_pin_slots, entry_publishes_pin_slots};
+        use crate::types::ability::{TargetChoiceTiming, TypeFilter};
+
+        // A chained sub-ability targeting CREATURES: the one slot the announcement really
+        // surfaces. `controller: None` so the set spans all three seats' creatures.
+        let creature_filter = TargetFilter::Typed(TypedFilter {
+            type_filters: vec![TypeFilter::Creature],
+            controller: None,
+            properties: vec![],
+        });
+        let (mut prior, mut current) = grown_window(3, |id| {
+            let mut ability = lose_life_targeting(event_amount(), opp_typed(vec![]));
+            ability.targets = vec![TargetRef::Player(PlayerId(1))];
+            // CR 601.2c: chosen at RESOLUTION ⇒ the head contributes no announcement slot.
+            ability.target_choice_timing = TargetChoiceTiming::Resolution;
+            ability.sub_ability = Some(Box::new(lose_life_targeting(
+                event_amount(),
+                creature_filter.clone(),
+            )));
+            churn_entry(id, 0, ability, None)
+        });
+        // Added to BOTH windows: the object axes are STRICT-compared, so a creature present
+        // only in `current` would make the cover false for an unrelated reason.
+        for state in [&mut prior, &mut current] {
+            for (id, controller) in [(901u64, 1u8), (902, 2)] {
+                let oid = ObjectId(id);
+                let mut obj = GameObject::new(
+                    oid,
+                    CardId(9),
+                    PlayerId(controller),
+                    format!("Bystander {id}"),
+                    Zone::Battlefield,
+                );
+                obj.card_types.core_types.push(CoreType::Creature);
+                state.objects.insert(oid, obj);
+                state.battlefield.push_back(oid);
+            }
+        }
+
+        let ability = current.stack[2].ability().unwrap();
+        assert!(
+            ability.effect.target_filter().is_some(),
+            "reach-guard: the PROXY still reports the head effect's player filter — that is \
+             the whole divergence"
+        );
+        let announced = build_target_slots(&current, ability).expect("one announcement slot");
+        assert_eq!(
+            announced
+                .iter()
+                .map(|slot| (slot.optional, slot.legal_targets.clone()))
+                .collect::<Vec<_>>(),
+            vec![(
+                false,
+                vec![
+                    TargetRef::Object(ObjectId(CHURN_SRC)),
+                    TargetRef::Object(ObjectId(901)),
+                    TargetRef::Object(ObjectId(902)),
+                ]
+            )],
+            "reach-guard: the CARDINALITY conjunct passes here (exactly one MANDATORY slot), \
+             so the all-`Player` conjunct is the sole rejector — and the announced set is \
+             three OBJECTS, not the head filter's players"
+        );
+        assert!(
+            !forced_unique_targeting(&current, ability),
+            "reach-guard: three legal creatures ⇒ not forced-unique ⇒ gate (3) rejects"
+        );
+        assert!(
+            !crate::game::ability_scan::ability_reads_projected_resource(ability),
+            "reach-guard: gate (4) passes, so the cover rows below are gate (3)'s"
+        );
+
+        assert!(
+            entry_publishes_pin_slots(&current, &current.stack[2], PlayerId(0)).is_none(),
+            "the announced choice is among OBJECTS; a `TargetPin::Player` cannot specify it, \
+             so nothing may be published"
+        );
+        assert!(
+            bounded_cycle_pin_slots(&current, PlayerId(0)).is_empty(),
+            "and the mint publishes no point rather than one describing a different choice"
+        );
+        let slot = churn_src_slot(&current, 0);
+        for pinned in [&[][..], std::slice::from_ref(&slot)] {
+            assert!(
+                !loop_states_cover_modulo_growth_scoped(&prior, &current, pinned_scope(pinned)),
+                "gate (3)'s relief is a bare `continue`: an object-valued announcement choice \
+                 must keep rejecting ({} pinned slot(s))",
+                pinned.len()
+            );
+        }
+
+        // ── the RESIDUAL divergence the all-`Player` conjunct alone does NOT close: a
+        // chained sub-ability that announces a choice among ALL players (CR 115.2 "target
+        // player") under the same "target opponent" head. Every conjunct passes — one
+        // mandatory slot, every candidate a player, head shape accepted — so the mint
+        // publishes, and the ONLY thing that keeps the point honest is that the set is
+        // carried through from the builder instead of re-derived from the head filter.
+        let (_p_any, any_player) = grown_window(3, |id| {
+            let mut ability = lose_life_targeting(event_amount(), opp_typed(vec![]));
+            ability.targets = vec![TargetRef::Player(PlayerId(1))];
+            ability.target_choice_timing = TargetChoiceTiming::Resolution;
+            ability.sub_ability = Some(Box::new(lose_life_targeting(
+                event_amount(),
+                TargetFilter::Typed(TypedFilter {
+                    type_filters: vec![],
+                    controller: None,
+                    properties: vec![],
+                }),
+            )));
+            churn_entry(id, 0, ability, None)
+        });
+        let all_seats = vec![
+            TargetRef::Player(PlayerId(0)),
+            TargetRef::Player(PlayerId(1)),
+            TargetRef::Player(PlayerId(2)),
+        ];
+        assert_eq!(
+            build_target_slots(&any_player, any_player.stack[2].ability().unwrap())
+                .map(|slots| slots
+                    .iter()
+                    .map(|s| (s.optional, s.legal_targets.clone()))
+                    .collect::<Vec<_>>())
+                .ok(),
+            Some(vec![(false, all_seats.clone())]),
+            "reach-guard: ONE mandatory slot whose candidates are all PLAYERS — so every \
+             acceptance conjunct passes and only the publication path can still be wrong"
+        );
+        let any_points = bounded_cycle_pin_slots(&any_player, PlayerId(0));
+        assert_eq!(
+            any_points.len(),
+            1,
+            "reach-guard: the mint accepts this entry"
+        );
+        assert_eq!(
+            any_points[0].kind,
+            crate::analysis::decision_template::DecisionPointKind::Targets {
+                legal_targets: all_seats,
+                min_targets: 1,
+                max_targets: 1,
+                ordered: false,
+            },
+            "the point describes the choice the ANNOUNCEMENT offers (three seats); \
+             re-deriving from the head filter would publish the two opponents"
+        );
+
+        // ── positive control + EQUIVALENCE: the shipped drain publishes, and the published
+        // legal set is the BUILDER's, asserted against it rather than against a literal.
+        let (_p_ok, c_ok) = grown_window(3, |id| drain_entry(id, vec![]));
+        let mut control_slots =
+            build_target_slots(&c_ok, c_ok.stack[2].ability().unwrap()).expect("control announces");
+        assert_eq!(control_slots.len(), 1, "control: one announcement slot");
+        let builder_set = control_slots.swap_remove(0).legal_targets;
+        assert_eq!(
+            builder_set,
+            vec![
+                TargetRef::Player(PlayerId(1)),
+                TargetRef::Player(PlayerId(2))
+            ],
+            "control: the builder enumerates the two opponents"
+        );
+        let published = bounded_cycle_pin_slots(&c_ok, PlayerId(0));
+        assert_eq!(
+            published.len(),
+            1,
+            "control: the instrument returns non-zero"
+        );
+        assert_eq!(
+            published[0].kind,
+            crate::analysis::decision_template::DecisionPointKind::Targets {
+                legal_targets: builder_set,
+                min_targets: 1,
+                max_targets: 1,
+                ordered: false,
+            },
+            "the published legal set IS the announcement authority's slot"
+        );
+    }
+
+    /// A slot an OFFER would publish for `CHURN_SRC`'s entries — built through the same
+    /// authority the gates rebuild it with, so the rows prove the KEY matches rather than
+    /// asserting a hand-written literal. `index: 0` is the CR 115.2 target choice,
+    /// `index: 1` the CR 603.5 "may" gate.
+    fn churn_src_slot(state: &GameState, index: u8) -> DecisionSlot {
+        DecisionSlot {
+            source: crate::game::engine::object_decision_source(state, ObjectId(CHURN_SRC))
+                .expect("fixture: the churn source is on the battlefield"),
+            index,
+        }
+    }
+
+    /// The published-pin channel as a P0 offer would carry it.
+    fn pinned_scope(slots: &[DecisionSlot]) -> LoopWindowScope<'_> {
+        LoopWindowScope {
+            phase_invariant: None,
+            sole_driver: None,
+            pinned: Some(PinnedChoices {
+                proposer: PlayerId(0),
+                slots,
+            }),
+            cast_card_ids: None,
+        }
+    }
+
+    /// An optional (CR 603.5 "may") forced-unique drain — `MayPrompt` at
+    /// `ability_scan.rs:6534` for exactly ONE reason, the one the offer publishes a
+    /// `MayChoice` point for.
+    fn optional_drain(id: u64) -> StackEntry {
+        let mut ability = lose_life_targeting(event_amount(), opp_typed(vec![]));
+        ability.targets = vec![TargetRef::Player(PlayerId(1))];
+        ability.optional = true;
+        churn_entry(id, 0, ability, None)
+    }
+
+    /// The same drain whose `MayPrompt` ALSO has a second, unpublished cause: a
+    /// CR 701.34a proliferate sub-ability.
+    fn proliferate_drain(id: u64, optional: bool) -> StackEntry {
+        let mut ability = lose_life_targeting(event_amount(), opp_typed(vec![]));
+        ability.targets = vec![TargetRef::Player(PlayerId(1))];
+        ability.optional = optional;
+        ability.sub_ability = Some(Box::new(ResolvedAbility::new(
+            Effect::Proliferate,
+            vec![],
+            ObjectId(CHURN_SRC),
+            PlayerId(0),
+        )));
+        churn_entry(id, 0, ability, None)
+    }
+
+    /// Grow a 2-entry window to 3 of the same kind: `[e(10),e(11)] → [e(20),e(21),e(22)]`.
+    fn grown_window(players: u8, entry: impl Fn(u64) -> StackEntry) -> (GameState, GameState) {
+        let mut prior = drain_state(players);
+        prior.stack.push_back(entry(10));
+        prior.stack.push_back(entry(11));
+        let mut current = prior.clone();
+        current.stack.clear();
+        current.stack.push_back(entry(20));
+        current.stack.push_back(entry(21));
+        current.stack.push_back(entry(22));
+        (prior, current)
+    }
+
+    /// CR 732.2a EXTENSION POINT: a per-iteration choice the OFFER publishes is a
+    /// *specified* choice, not a free one, so gates (3) and (6) must stop rejecting on it —
+    /// and ONLY on it. Every relief runs the MINT's own per-entry acceptance test
+    /// (`game::engine::entry_publishes_pin_slots`), so the relief predicate cannot be
+    /// coarser than the mint predicate.
+    ///
+    /// SIX ARMS. Arms 1–2 are matched pairs whose only variable is `scope.pinned`; arms
+    /// 3–6 are the over-match controls that a coarser relief would fail.
+    /// * arm 1 — gate (3), 3p open targeting (two legal opponents ⇒ `auto_select =>
+    ///   Ok(None)` ⇒ NOT forced-unique). Same board as
+    ///   `n1_open_target_growing_still_rejected`.
+    /// * arm 2 — gate (6), an OPTIONAL drain: `MayPrompt` caused solely by CR 603.5
+    ///   `optional`, the one axis the offer publishes a `MayChoice` point for.
+    /// * arm 3 — gate (6) NON-ATTRIBUTION: a CR 701.34a proliferate choice is NOT relieved,
+    ///   with or without an optional gate pinned on top of it. The proliferate board is
+    ///   `item6_still_vetoes_under_forced_unique_targets`' board.
+    /// * arm 4 — precondition (c): an entry the PROPOSER does not control is never relieved
+    ///   by the proposer's pin, even when it shares the pinned source.
+    /// * arm 5 — gate (3) SCOPE: the relief is a `continue`, so it discharges the whole
+    ///   item-3 predicate — but a slot answers ONE target. `multi_target` (CR 601.2c),
+    ///   `distribution` (CR 601.2d) and `target_constraints` (CR 601.2c) are separate
+    ///   announcement-time facts no published slot specifies, each isolated as the sole
+    ///   rejector on a forced-unique board. Its tail row covers the fourth such fact,
+    ///   `pending_trigger_entry` (CR 603.3c), through the cover as well, with its own
+    ///   gate-(1) control (see there).
+    /// * arm 6 — gate (6) RESIDUAL: arm 2's relieved board plus an optional life
+    ///   replacement still rejects, because a discharged CR 603.5 gate does not discharge
+    ///   the CR 616.1 environmental surface.
+    ///
+    /// REVERT-PROBES (each measured; see the impl report):
+    /// * drop the `entry_target_choice_is_pinned` guard at gate (3) ⇒ arm 1's PINNED half
+    ///   stays `false` ⇒ FAILS.
+    /// * drop the `pinned_may_choice_relief` arm at gate (6) ⇒ arm 2's PINNED half ⇒ FAILS.
+    /// * drop the residual re-classification in `pinned_may_choice_relief` (relieve whenever
+    ///   the may slot is pinned) ⇒ arm 3's optional+proliferate half ⇒ FAILS.
+    /// * drop the `entry.controller != proposer` conjunct in `entry_publishes_pin_slots`
+    ///   ⇒ arm 4 ⇒ FAILS.
+    /// * drop the ordering-input block in `entry_publishes_pin_slots` ⇒ arm 5's PINNED
+    ///   half covers ⇒ FAILS (once per mutated field).
+    /// * turn gate (6)'s `needs_life_guard = true` re-arm back into a `continue` ⇒ arm 6
+    ///   covers ⇒ FAILS.
+    ///
+    /// Non-vacuity: every arm asserts BOTH directions (or pairs its negative with arm 1/2's
+    /// positive on the same predicate), so neither a constant-`true` nor a constant-`false`
+    /// relief survives.
+    #[test]
+    fn a_pinned_slot_skips_gate_three_and_six() {
+        // ── arm 1: gate (3), open (≥2-legal) targeting ──
+        let (prior, current) = grown_window(3, |id| drain_entry(id, vec![]));
+
+        // Reach-guard: the rejector really is gate (3) on this board.
+        assert!(
+            !forced_unique_targeting(&current, current.stack[2].ability().unwrap()),
+            "reach-guard: two opponents ⇒ not forced-unique ⇒ gate (3) is the rejector"
+        );
+        assert!(
+            !loop_states_cover_modulo_growth_scoped(&prior, &current, pinned_scope(&[])),
+            "UNPINNED: an open per-opponent target choice is a free choice ⇒ reject"
+        );
+        let target_slot = churn_src_slot(&current, 0);
+        assert!(
+            loop_states_cover_modulo_growth_scoped(
+                &prior,
+                &current,
+                pinned_scope(std::slice::from_ref(&target_slot))
+            ),
+            "PINNED: the offer published this slot ⇒ CR 732.2a specified choice ⇒ cover"
+        );
+
+        // ── arm 2: gate (6), a CR 603.5 "may" gate — the published resolution choice ──
+        let (p_may, c_may) = grown_window(2, optional_drain);
+        let may_ability = c_may.stack[2].ability().unwrap();
+        // Reach-guards: gates (3) and (4) PASS here, so gate (6) is the rejector, and its
+        // MayPrompt is the `optional` one.
+        assert!(
+            forced_unique_targeting(&c_may, may_ability),
+            "reach-guard: the single opponent is forced-unique ⇒ gate (3) passes"
+        );
+        assert!(
+            !crate::game::ability_scan::ability_reads_projected_resource(may_ability),
+            "reach-guard: gate (4) passes ⇒ gate (6) is the rejector"
+        );
+        assert_eq!(
+            crate::game::ability_scan::ability_resolution_choice_freedom(may_ability),
+            crate::game::ability_scan::ResolutionChoiceFreedom::MayPrompt,
+            "reach-guard: CR 603.5 `optional` is what makes this entry MayPrompt"
+        );
+        assert!(
+            !loop_states_cover_modulo_growth_scoped(&p_may, &c_may, pinned_scope(&[])),
+            "UNPINNED: an optional trigger's take/decline is a free choice ⇒ reject"
+        );
+        let may_slots = [churn_src_slot(&c_may, 0), churn_src_slot(&c_may, 1)];
+        assert!(
+            loop_states_cover_modulo_growth_scoped(&p_may, &c_may, pinned_scope(&may_slots)),
+            "PINNED: the published CR 603.5 gate specifies that choice ⇒ cover"
+        );
+        // The MayChoice point is load-bearing on its own: pinning only the target slot
+        // leaves the resolution choice unspecified.
+        assert!(
+            !loop_states_cover_modulo_growth_scoped(&p_may, &c_may, pinned_scope(&may_slots[..1])),
+            "a pinned TARGET does not specify the CR 603.5 take/decline choice"
+        );
+
+        // ── arm 3: gate (6) NON-ATTRIBUTION — CR 701.34a proliferate is never relieved ──
+        for optional in [false, true] {
+            let (p6, c6) = grown_window(2, |id| proliferate_drain(id, optional));
+            let ability = c6.stack[2].ability().unwrap();
+            assert!(
+                forced_unique_targeting(&c6, ability),
+                "reach-guard: gate (3) passes ⇒ gate (6) is the rejector (optional={optional})"
+            );
+            assert!(
+                !crate::game::ability_scan::ability_reads_projected_resource(ability),
+                "reach-guard: gate (4) passes (optional={optional})"
+            );
+            // Publish EVERYTHING this entry could publish — target slot and, when the
+            // ability is optional, its CR 603.5 gate. The proliferate choice still has no
+            // published pin, so no relief may be granted.
+            let slots = [churn_src_slot(&c6, 0), churn_src_slot(&c6, 1)];
+            for pinned in [&slots[..0], &slots[..1], &slots[..]] {
+                assert!(
+                    !loop_states_cover_modulo_growth_scoped(&p6, &c6, pinned_scope(pinned)),
+                    "CR 701.34a proliferate is a resolution-time choice NO published slot \
+                     specifies (optional={optional}, {} pinned slot(s))",
+                    pinned.len()
+                );
+            }
+        }
+
+        // ── arm 4: precondition (c) — a non-proposer entry sharing the pinned source ──
+        let foreign_drain = |id| {
+            let mut ability = lose_life_targeting(event_amount(), opp_typed(vec![]));
+            ability.controller = PlayerId(1);
+            ability.targets = vec![TargetRef::Player(PlayerId(0))];
+            churn_entry(id, 1, ability, None)
+        };
+        let (p_foreign, c_foreign) = grown_window(3, foreign_drain);
+        assert!(
+            !forced_unique_targeting(&c_foreign, c_foreign.stack[2].ability().unwrap()),
+            "reach-guard: P1 has two opponents ⇒ not forced-unique ⇒ gate (3) rejects"
+        );
+        assert_eq!(
+            churn_src_slot(&c_foreign, 0),
+            target_slot,
+            "the foreign entry's source is BYTE-IDENTICAL to arm 1's pinned slot — the pin \
+             list cannot discriminate it, only the controller conjunct can"
+        );
+        assert!(
+            !loop_states_cover_modulo_growth_scoped(
+                &p_foreign,
+                &c_foreign,
+                pinned_scope(std::slice::from_ref(&target_slot))
+            ),
+            "CR 732.2a precondition (c): P0's offer specifies none of P1's choices"
+        );
+
+        // ── arm 5: gate (3) SCOPE OF DISCHARGE ──
+        // The relief is a bare `continue`, so it skips the WHOLE item-3 predicate — but a
+        // published slot answers ONE target. Each row mutates exactly one of the other
+        // announcement-time facts `stack_entry_has_no_ordering_input` rejects on, on a 2p
+        // board where the target fact PASSES, so the mutated field is the sole rejector.
+        {
+            use crate::types::ability::MultiTargetSpec;
+            use crate::types::game_state::TargetSelectionConstraint;
+            type Mutate = fn(&mut ResolvedAbility);
+            let mutations: [(&str, Mutate); 3] = [
+                ("multi_target — CR 601.2c variable target count", |a| {
+                    a.multi_target = Some(MultiTargetSpec::fixed(1, 2))
+                }),
+                ("distribution — CR 601.2d divide-among", |a| {
+                    a.distribution = Some(vec![(TargetRef::Player(PlayerId(1)), 1)])
+                }),
+                ("target_constraints — CR 601.2c cross-target", |a| {
+                    a.target_constraints = vec![TargetSelectionConstraint::DifferentTargetPlayers]
+                }),
+            ];
+            for (label, mutate) in mutations {
+                let (p5, c5) = grown_window(2, |id| {
+                    let mut e = drain_entry(id, vec![]);
+                    let StackEntryKind::TriggeredAbility { ability, .. } = &mut e.kind else {
+                        unreachable!("drain_entry builds a TriggeredAbility")
+                    };
+                    mutate(ability.as_mut());
+                    e
+                });
+                assert!(
+                    forced_unique_targeting(&c5, c5.stack[2].ability().unwrap()),
+                    "reach-guard: the single opponent is forced-unique ⇒ the TARGET fact is \
+                     not what rejects ({label})"
+                );
+                assert!(
+                    !stack_entry_has_no_ordering_input(&c5, &c5.stack[2]),
+                    "reach-guard: {label} is therefore item 3's SOLE rejector"
+                );
+                let slot = churn_src_slot(&c5, 0);
+                for pinned in [&[][..], std::slice::from_ref(&slot)] {
+                    assert!(
+                        !loop_states_cover_modulo_growth_scoped(&p5, &c5, pinned_scope(pinned)),
+                        "a published slot specifies ONE target; {label} is announcement-time \
+                         ordering input no slot specifies ({} pinned)",
+                        pinned.len()
+                    );
+                }
+            }
+
+            // The FOURTH fact, `pending_trigger_entry` (CR 603.3c mid-construction), is
+            // state-dependent, so it lives on the relief predicate rather than in the pure
+            // mint — and it is REACHABLE through the cover, so the row is written there.
+            // Measured: `normalize_for_loop` leaves the field AS-IS, so a `current` carrying
+            // one that `prior` lacks does fail gate (1) — but when BOTH frames carry it,
+            // gate (1) passes and gate (3) is the sole rejector. Both controls below.
+            // (Both production call sites compare states at `WaitingFor::Priority`, where
+            // the field is `None`; that bounds the exposure, it does not make it
+            // unreachable.)
+            let (p_pend, c_pend) = grown_window(2, |id| drain_entry(id, vec![]));
+            let pend_slot = churn_src_slot(&c_pend, 0);
+            assert!(
+                loop_states_cover_modulo_growth_scoped(
+                    &p_pend,
+                    &c_pend,
+                    pinned_scope(std::slice::from_ref(&pend_slot))
+                ),
+                "positive control: this entry's published slot IS otherwise matched"
+            );
+            let (mut p_mid, mut c_mid) = (p_pend.clone(), c_pend.clone());
+            let mid = c_mid.stack[2].id;
+            for s in [&mut p_mid, &mut c_mid] {
+                s.pending_trigger_entry = Some(mid);
+            }
+            assert!(
+                !loop_states_cover_modulo_growth_scoped(
+                    &p_mid,
+                    &c_mid,
+                    pinned_scope(std::slice::from_ref(&pend_slot))
+                ),
+                "CR 603.3c: a mid-construction announcement is not specified by any \
+                 published slot — the relief must not discharge item 3's firewall"
+            );
+            // The gate-(1) control for the row above: the SAME both-frames shape naming no
+            // live entry still covers, so the rejection there is gate (3), not the mere
+            // presence of a non-`None` field.
+            let (mut p_other, mut c_other) = (p_pend, c_pend);
+            for s in [&mut p_other, &mut c_other] {
+                s.pending_trigger_entry = Some(ObjectId(u64::MAX));
+            }
+            assert!(
+                loop_states_cover_modulo_growth_scoped(
+                    &p_other,
+                    &c_other,
+                    pinned_scope(std::slice::from_ref(&pend_slot))
+                ),
+                "gate-(1) control: a `pending_trigger_entry` naming no live entry is not \
+                 what rejects — CR 603.3c's firewall is entry-scoped"
+            );
+        }
+
+        // ── arm 6: gate (6) RESIDUAL re-arms the CR 616.1 environmental guard ──
+        // Arm 2's board (relief GRANTED there) plus one optional life replacement. A
+        // pinned CR 603.5 gate says nothing about whose life-event replacements prompt.
+        {
+            use crate::types::ability::ReplacementMode;
+            let (mut p_life, mut c_life) = grown_window(2, optional_drain);
+            let mut def = ReplacementDefinition::new(ReplacementEvent::LoseLife);
+            def.mode = ReplacementMode::Optional { decline: None };
+            for state in [&mut p_life, &mut c_life] {
+                let oid = bf_object(state, 812);
+                state
+                    .objects
+                    .get_mut(&oid)
+                    .unwrap()
+                    .replacement_definitions
+                    .push(def.clone());
+            }
+            assert!(
+                life_event_replacements_may_prompt(&c_life),
+                "reach-guard: the installed optional def makes the CR 616.1 surface \
+                 prompt-capable (arm 2's bare board does not)"
+            );
+            let slots = [churn_src_slot(&c_life, 0), churn_src_slot(&c_life, 1)];
+            assert!(
+                !loop_states_cover_modulo_growth_scoped(&p_life, &c_life, pinned_scope(&slots)),
+                "the discharged `may` leaves a FreeUnlessLifeReplacements RESIDUAL that must \
+                 re-arm the CR 616.1 guard — relief is not a `continue`"
+            );
+        }
+
+        // ── non-widening control: an unrelated slot relieves nothing ──
+        let unrelated = DecisionSlot {
+            source: crate::types::game_state::YieldTarget::ThisObject {
+                source_id: ObjectId(CHURN_SRC + 1),
+                incarnation: Some(0),
+                trigger_description: None,
+            },
+            index: 0,
+        };
+        for (p, c, label) in [(&prior, &current, "gate (3)"), (&p_may, &c_may, "gate (6)")] {
+            assert!(
+                !loop_states_cover_modulo_growth_scoped(
+                    p,
+                    c,
+                    pinned_scope(std::slice::from_ref(&unrelated))
+                ),
+                "{label}: a pin on a DIFFERENT source must not relieve this entry"
+            );
+        }
+
+        // ── CR 400.7 control: a stale incarnation is a different slot ──
+        let stale = DecisionSlot {
+            source: crate::types::game_state::YieldTarget::ThisObject {
+                source_id: ObjectId(CHURN_SRC),
+                incarnation: Some(u64::MAX),
+                trigger_description: None,
+            },
+            index: 0,
+        };
+        assert!(
+            !loop_states_cover_modulo_growth_scoped(
+                &prior,
+                &current,
+                pinned_scope(std::slice::from_ref(&stale))
+            ),
+            "CR 400.7: a pin latched to a stale incarnation does not match the live source"
+        );
+    }
+
     /// CONSTRAINT-3 ORTHOGONALITY: an item-3-passing, item-4-clean forced-unique
     /// drain that ALSO carries a `Proliferate` sub_ability (CR 701.34a resolution
     /// choice ⇒ `MayPrompt`) is vetoed by item-6. Revert-probe: dropping the
@@ -6882,7 +7763,7 @@ mod tests {
         let driver_scope = LoopWindowScope {
             phase_invariant: None,
             sole_driver: Some(PlayerId(0)),
-            pinned_slots: &[],
+            pinned: None,
             cast_card_ids: None,
         };
 
@@ -6957,7 +7838,7 @@ mod tests {
         let driver_scope = LoopWindowScope {
             phase_invariant: None,
             sole_driver: Some(PlayerId(0)),
-            pinned_slots: &[],
+            pinned: None,
             cast_card_ids: None,
         };
 
@@ -8804,7 +9685,7 @@ mod tests {
             let scope = LoopWindowScope {
                 phase_invariant: None,
                 sole_driver: None,
-                pinned_slots: &[],
+                pinned: None,
                 cast_card_ids: Some(&never_cast),
             };
             assert!(
@@ -8826,7 +9707,7 @@ mod tests {
         let scope = LoopWindowScope {
             phase_invariant: None,
             sole_driver: None,
-            pinned_slots: &[],
+            pinned: None,
             cast_card_ids: Some(&never_cast),
         };
         assert!(
@@ -8861,7 +9742,7 @@ mod tests {
         let scope = LoopWindowScope {
             phase_invariant: None,
             sole_driver: None,
-            pinned_slots: &[],
+            pinned: None,
             cast_card_ids: Some(&recast),
         };
         assert!(
@@ -8876,7 +9757,7 @@ mod tests {
         let relieved_scope = LoopWindowScope {
             phase_invariant: None,
             sole_driver: None,
-            pinned_slots: &[],
+            pinned: None,
             cast_card_ids: Some(&other),
         };
         assert!(
@@ -9126,7 +10007,7 @@ mod tests {
         let scope = LoopWindowScope {
             phase_invariant: None,
             sole_driver: None,
-            pinned_slots: &[],
+            pinned: None,
             cast_card_ids: Some(&cast),
         };
         assert!(
@@ -9144,7 +10025,7 @@ mod tests {
         let recast_scope = LoopWindowScope {
             phase_invariant: None,
             sole_driver: None,
-            pinned_slots: &[],
+            pinned: None,
             cast_card_ids: Some(&recast),
         };
         assert!(
@@ -9832,7 +10713,7 @@ mod tests {
         // ── `sole_driver` — CR 117.1 ──
         let (pa, pb) = (base(), base());
         assert_eq!(
-            window_scope_from_cover_frames(&pa, &pb, &[]).sole_driver,
+            window_scope_from_cover_frames(&pa, &pb, None).sole_driver,
             Some(PlayerId(0)),
             "PAIRED POSITIVE: a homogeneous single-driver window proves CR 117.1's premise"
         );
@@ -9842,7 +10723,7 @@ mod tests {
         let mut pb_other = base();
         pb_other.last_loop_action_sequence = vec![ctx(1)];
         assert_eq!(
-            window_scope_from_cover_frames(&pa, &pb_other, &[]).sole_driver,
+            window_scope_from_cover_frames(&pa, &pb_other, None).sole_driver,
             None,
             "(s2) a two-controller window proves nothing about who holds priority"
         );
@@ -9851,7 +10732,7 @@ mod tests {
         let mut pa_mixed = base();
         pa_mixed.last_loop_action_sequence = vec![ctx(0), ctx(1)];
         assert_eq!(
-            window_scope_from_cover_frames(&pa_mixed, &pb, &[]).sole_driver,
+            window_scope_from_cover_frames(&pa_mixed, &pb, None).sole_driver,
             None,
             "(s2) an interleaved sequence is fail-closed"
         );
@@ -9860,14 +10741,14 @@ mod tests {
         let mut pb_empty = base();
         pb_empty.last_loop_action_sequence.clear();
         assert_eq!(
-            window_scope_from_cover_frames(&pa, &pb_empty, &[]).sole_driver,
+            window_scope_from_cover_frames(&pa, &pb_empty, None).sole_driver,
             None,
             "(s1) an empty driving sequence is NO PROOF, so it cannot relieve anything"
         );
 
         // ── `phase_invariant` — CR 500.1 / CR 506.1 / CR 500.8 ──
         assert_eq!(
-            window_scope_from_cover_frames(&pa, &pb, &[]).phase_invariant,
+            window_scope_from_cover_frames(&pa, &pb, None).phase_invariant,
             Some(Phase::PreCombatMain),
             "PAIRED POSITIVE: agreeing frames with no extra phase prove the window's phase"
         );
@@ -9884,7 +10765,7 @@ mod tests {
                 attacker_restriction_source: None,
             });
         assert_eq!(
-            window_scope_from_cover_frames(&pa, &pb_extra, &[]).phase_invariant,
+            window_scope_from_cover_frames(&pa, &pb_extra, None).phase_invariant,
             None,
             "(p3) CR 500.8: a pending extra phase breaks `equal phase ⇒ never left it`"
         );
@@ -9893,7 +10774,7 @@ mod tests {
         let mut pb_turn = base();
         pb_turn.turn_number = 14;
         assert_eq!(
-            window_scope_from_cover_frames(&pa, &pb_turn, &[]).phase_invariant,
+            window_scope_from_cover_frames(&pa, &pb_turn, None).phase_invariant,
             None,
             "(p1) frames from different turns bound nothing about one window's phase"
         );
@@ -9902,7 +10783,7 @@ mod tests {
         let mut pb_phase = base();
         pb_phase.phase = Phase::PostCombatMain;
         assert_eq!(
-            window_scope_from_cover_frames(&pa, &pb_phase, &[]).phase_invariant,
+            window_scope_from_cover_frames(&pa, &pb_phase, None).phase_invariant,
             None,
             "(p2) a window that crosses a phase boundary is not phase-invariant"
         );

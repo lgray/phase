@@ -1075,6 +1075,291 @@ fn pinned_decisions_to_points(
         .collect()
 }
 
+/// CR 115.2 + CR 732.2a: does the ability's HEAD effect declare the "target opponent" PLAYER
+/// filter — a `Typed` filter with no type constraints, no object properties, and
+/// `controller: Opponent`, the shape `game::targeting::find_legal_targets` collapses to
+/// players-only (`crates/engine/src/game/targeting.rs:192-193`)?
+///
+/// SHAPE ACCEPTANCE ONLY, and the `bool` return is what enforces it: the published legal
+/// set must come from the announcement authority (`ability_utils::build_target_slots`), never
+/// from here, because this predicate reads the HEAD effect's filter while the choice being
+/// announced can belong to a CHAINED sub-ability (CR 601.2c reached via CR 603.3d). Handing
+/// the filter back would re-open exactly that divergence, so it is not handed back.
+///
+/// What the `controller` conjunct contributes, and nothing else does: `controller: You` /
+/// `None` ALSO collapses to players, so an all-`Player` legal set alone would admit a single
+/// forced seat, which is not the per-opponent choice a bounded drain cycle pins. Measured on
+/// the 3p drain board: `Typed{[], You, []}` builds ONE mandatory slot whose legal set is
+/// `[Player(0)]`, and only this conjunct rejects it.
+///
+/// What the `type_filters` / `properties` conjuncts contribute (issue #2004 — "target token
+/// you control" must not collapse to a player) is the MIRROR of that chained-slot
+/// divergence: an object-shaped HEAD effect whose single announced slot is nonetheless a
+/// player choice. When the head announces its own slot, an object-shaped filter is already
+/// rejected upstream — it either enumerates OBJECTS (the caller's all-`Player` conjunct) or
+/// enumerates nothing, making `build_target_slots` return `Err` (the caller's cardinality
+/// conjunct). It is only when the head announces NOTHING
+/// (`TargetChoiceTiming::Resolution`) and a chained `target opponent` sub-ability supplies
+/// the one slot that these two conjuncts become the sole rejector — which is the board
+/// `bounded_cycle_pin_slots_conjuncts_are_each_load_bearing` measures them on.
+fn declares_opponent_player_target(ability: &crate::types::ability::ResolvedAbility) -> bool {
+    use crate::types::ability::{ControllerRef, TargetFilter};
+    let Some(TargetFilter::Typed(tf)) = ability.effect.target_filter() else {
+        return false;
+    };
+    tf.type_filters.is_empty()
+        && tf.properties.is_empty()
+        && tf.controller == Some(ControllerRef::Opponent)
+}
+
+/// What ONE accepted stack entry publishes: the slot keys, plus the legal set the
+/// ANNOUNCEMENT authority itself built for the target slot.
+pub(crate) struct EntryPinSlots {
+    /// CR 115.2 target choice — `index: 0`.
+    pub(crate) target: crate::analysis::decision_template::DecisionSlot,
+    /// CR 603.5 "may" gate — `index: 1`, `Some` iff `ability.optional`. `DecisionSlot`'s
+    /// sub-index disambiguates two choices of ONE ability instance (target vs. may gate).
+    pub(crate) may: Option<crate::analysis::decision_template::DecisionSlot>,
+    /// The legal set of the ONE announcement slot, taken VERBATIM from
+    /// `ability_utils::build_target_slots` — the same authority that decided there is
+    /// exactly one mandatory choice. Deriving it a second time from the head effect's
+    /// filter would let the two disagree about WHICH choice is being published, which is
+    /// the same class of divergence the cardinality conjunct closes about HOW MANY.
+    pub(crate) legal_targets: Vec<crate::types::ability::TargetRef>,
+}
+
+/// CR 732.2a: the per-iteration choice slots ONE stack entry publishes for `proposer`, or
+/// `None` when it publishes none.
+///
+/// SINGLE AUTHORITY, and that is the whole point of its existence: the MINT
+/// ([`bounded_cycle_pin_slots`]) maps it over `state.stack`, and the RELIEF
+/// (`analysis::resource`'s CR 732.2a gate-(3)/(6) pin skip) calls it for one entry. Because
+/// both sides ask the same function, the relief predicate cannot be COARSER than the mint
+/// predicate — relieving a verdict the published pin does not specify is impossible by
+/// construction rather than by convention.
+///
+/// The acceptance conjuncts, in the order the EXTENSION POINT's preconditions name them:
+/// (c) `entry.controller == proposer` — CR 732.2a leaves every OTHER player owning their own
+/// choices, so an opponent-controlled entry is never pinnable; the entry is a triggered
+/// ability (a spell / activated ability re-announces from scratch); ANNOUNCING it requires
+/// exactly one mandatory choice OVER PLAYERS, asked of the announcement authority itself
+/// (`ability_utils::build_target_slots`, the function the relief's own
+/// `forced_unique_targeting` rebuilds slots with) rather than of a proxy; its head effect
+/// declares the player-target shape ([`declares_opponent_player_target`]); and its source
+/// object still exists, so the slot can re-bind (CR 400.7 incarnation, fail-closed on
+/// absence).
+///
+/// SCOPE OF THE ANSWER: because the relief is a `continue` at gate (3), the relief
+/// predicate must be no coarser than EVERY fact `stack_entry_has_no_ordering_input`
+/// rejects on — not just the target one. Correspondence, in that function's own order:
+/// entry kind (the destructure below), `pending_trigger_entry` (the ONE state-dependent
+/// fact, enforced at the relief so this enumerator stays pure — see the block below),
+/// `multi_target` / `distribution` / `target_constraints` (the block below), and the
+/// target choice itself, which is the one fact the published slot actually answers.
+pub(crate) fn entry_publishes_pin_slots(
+    state: &GameState,
+    entry: &StackEntry,
+    proposer: PlayerId,
+) -> Option<EntryPinSlots> {
+    use crate::analysis::decision_template::DecisionSlot;
+    if entry.controller != proposer {
+        return None;
+    }
+    let StackEntryKind::TriggeredAbility { ability, .. } = &entry.kind else {
+        return None;
+    };
+    // The published slot answers ONE target (`min_targets: 1, max_targets: 1` below). A
+    // variable-count choice (CR 601.2c "if the spell has a variable number of targets, the
+    // player announces how many"), a divide/distribute assignment (CR 601.2d), or a
+    // cross-target constraint (CR 601.2c "the same target can't be chosen multiple times" /
+    // "must be chosen") — all reached for a triggered ability via CR 603.3d — is
+    // announcement-time ordering input NO published slot specifies. These are the ABILITY's
+    // own facts, so they live here, where mint and relief share them: the gate-(3) relief
+    // is a `continue` that discharges the whole of `stack_entry_has_no_ordering_input`,
+    // which rejects on each of them independently of its target check.
+    //
+    // The fourth fact that function rejects on — `pending_trigger_entry == entry.id`,
+    // CR 603.3c mid-construction — is deliberately NOT here: it is a property of the
+    // COMPARED STATE, not of the offer's schema, and reading it would break this
+    // enumerator's purity contract (see [`bounded_cycle_pin_slots`]: pure over
+    // `(state.stack, state.objects, proposer)`, never `waiting_for`). It is set exactly
+    // while a `TriggerTargetSelection` prompt is up, so a mint that read it would publish
+    // nothing on a prompted board — measured on dump B, where it zeroes the emblem slot.
+    // It is enforced at the relief instead (`analysis::resource::entry_target_choice_is_pinned`),
+    // which makes the relief strictly NARROWER than the mint — never coarser.
+    if ability.multi_target.is_some()
+        || ability.distribution.is_some()
+        || !ability.target_constraints.is_empty()
+    {
+        return None;
+    }
+    // THE ANNOUNCEMENT AUTHORITY, not a proxy for it. Everything above is an ability FACT;
+    // this is the only conjunct that asks the questions the published point actually
+    // answers — "how many choices does announcing this entry require, is each one
+    // mandatory, and WHICH objects or players may be chosen?" `Effect::target_filter()`
+    // (below) cannot answer any of them: it reports the head effect's filter, while
+    // CR 601.2c ("if the spell uses the word 'target' in multiple places, the same object
+    // or player can be chosen once for each instance") — reached for a triggered ability
+    // via CR 603.3d — makes a CHAINED sub-ability's own target a SECOND independent choice,
+    // with its OWN legal set. `build_target_slots` is the function
+    // `stack_entry_has_no_ordering_input` itself rebuilds slots with (via
+    // `forced_unique_targeting`), so mint and relief now measure the same quantities.
+    //
+    // Exactly one MANDATORY slot over PLAYERS, and each of the three parts is load-bearing
+    // — the first two discriminated by
+    // `bounded_cycle_pin_slots_requires_a_single_mandatory_announcement_slot`, the third by
+    // `bounded_cycle_pin_slots_legal_set_comes_from_the_announcement_authority`:
+    // * `len() == 1` — a chained second "target" (2 slots) or an effect whose filter the
+    //   SLOT BUILDER declines (0 slots: `triggers::extract_target_filter_from_effect`
+    //   carves out `Sacrifice`/`UnattachAll`/… for which `Effect::target_filter()` still
+    //   returns `Some`, and `target_choice_timing == Resolution` surfaces no stack slot at
+    //   all) would leave the published `min/max_targets: 1` contradicting the announcement.
+    // * `!optional` — `ability.optional_targeting` ("up to one target") makes the real
+    //   minimum ZERO (CR 601.2c), and its slot may legally carry an EMPTY legal set, so a
+    //   `min_targets: 1` point would over-state the choice the offer specifies.
+    // * every legal target is a PLAYER (CR 115.2) — the head effect can declare the
+    //   player shape while the ONE slot the announcement actually surfaces belongs to a
+    //   chained sub-ability targeting OBJECTS (measured: head `LoseLife` at
+    //   `TargetChoiceTiming::Resolution` contributing 0 slots + a chained
+    //   `LoseLife{Typed{[Creature]}}` contributing 1, legal set three objects). A
+    //   `TargetPin::Player` cannot specify such a choice, so publishing it would hand
+    //   gate (3)'s `continue` a slot no pin can answer.
+    //
+    // `Err` (no legal target, CR 603.3d) also yields `None` — fail-closed, matching this
+    // function's contract that the schema can only ever UNDER-publish. Purity survives:
+    // `build_target_slots` never reads `state.waiting_for` (its only hit in
+    // `ability_utils.rs` is a test at `:7722`).
+    let mut slots = super::ability_utils::build_target_slots(state, ability).ok()?;
+    if slots.len() != 1 {
+        return None;
+    }
+    let slot = slots.swap_remove(0);
+    if slot.optional
+        || !slot
+            .legal_targets
+            .iter()
+            .all(|target| matches!(target, crate::types::ability::TargetRef::Player(_)))
+    {
+        return None;
+    }
+    // SHAPE conjunct only — the legal set above is already the announcement authority's, and
+    // the predicate's `bool` return makes re-deriving one from the head filter impossible
+    // rather than merely discouraged. This rejects a head effect that is not the CR 115.2
+    // "target opponent" declaration, which an all-`Player` legal set alone does not
+    // (`controller: You` builds exactly one mandatory slot whose legal set is the
+    // controller — measured).
+    if !declares_opponent_player_target(ability) {
+        return None;
+    }
+    let source = object_decision_source(state, entry.source_id)?;
+    Some(EntryPinSlots {
+        target: DecisionSlot {
+            source: source.clone(),
+            index: 0,
+        },
+        may: ability
+            .optional
+            .then_some(DecisionSlot { source, index: 1 }),
+        legal_targets: slot.legal_targets,
+    })
+}
+
+/// CR 732.2a: the per-iteration decision points a BOUNDED cycle shortcut must publish for
+/// `proposer` — one `Targets` point per proposer-controlled triggered-ability SOURCE that
+/// declares a single *player* target (CR 115.2), plus a `MayChoice` point (CR 603.5) when
+/// that ability is optional.
+///
+/// Only a *published* slot is a "specified choice" in CR 732.2a's sense; an unpublished
+/// per-opponent choice would make the proposal a conditional action. This is the SINGLE
+/// authority for that slot set — the offer's cover call, its schema, the drive's cover call
+/// and the per-cycle `predictability_gate` all read the same list.
+///
+/// PURE function of `(state.stack, state.objects, proposer)`. It deliberately does **not**
+/// read `state.waiting_for`, and it cannot: both production call sites run at
+/// `WaitingFor::Priority` (`interactive_loop_bridge`'s destructure, and the drive's
+/// `Priority{active}` settle arm), where no prompt and no materialized `legal_targets`
+/// exist. The legal set is the one `ability_utils::build_target_slots` built for the
+/// accepted announcement slot, carried through verbatim — so the SAME authority answers
+/// how many choices exist and which targets each admits. That builder routes this filter
+/// shape to the native authority [`crate::game::targeting::find_legal_targets`]
+/// (`ability_utils.rs:4382-4402`: no ability-context ref, no relative controller), which
+/// already excludes eliminated players (CR 800.4a, `targeting.rs:200-201`) — never a
+/// declaration, so the offer still cannot ratify its own pin. Note the enumeration context
+/// shifts with the authority: it is now the ABILITY's own `controller`/`source_id`
+/// (CR 601.2c — the ability's controller announces its targets) rather than the offer's
+/// `proposer` and the stack entry's `source_id`.
+///
+/// Fail-closed: an entry whose source object is gone yields NO point (rather than a point
+/// with an unbindable slot), so the schema can only ever under-publish.
+///
+/// Class served: every proposer-controlled triggered ability on the stack whose declared
+/// target is a player — never a named card. Command-zone sources (CR 114.2 emblems) are
+/// included; [`slot_source_prompted`] is the matching half at replay time.
+///
+/// PER SOURCE, NOT PER ENTRY: N stack entries from ONE source mint N byte-identical
+/// `DecisionSlot`s (real boards reach 35 entries on one source), and the sub-index
+/// disambiguates choices WITHIN an ability instance, not instances of it
+/// ([`crate::analysis::decision_template::DecisionSlot`]'s own doc). Publishing the same
+/// slot N times would make the frontend render N identical pickers and
+/// `predictability_gate` demand N pins for a choice [`inject_pinned_answer`] answers ONCE
+/// per source (its `find_map` matches on the slot's SOURCE and is index-blind). So the
+/// offer publishes the SET of open choices; one state-independent pin ("always target
+/// P1") specifies every instance of it.
+///
+/// VISIBILITY GATE: this phase ships the enumerator with NO production caller — an offer
+/// that publishes these slots is a later commit — so it is gated behind the repo's
+/// `test-support` boundary (the same one `game::scenario` uses) rather than widening the
+/// crate's public surface for an unused item. The gate lifts, unchanged, when the bounded
+/// offer that consumes it lands.
+#[cfg(any(test, feature = "test-support"))]
+pub fn bounded_cycle_pin_slots(
+    state: &GameState,
+    proposer: PlayerId,
+) -> Vec<crate::analysis::decision_template::DecisionPoint> {
+    use crate::analysis::decision_template::{DecisionPoint, DecisionPointKind};
+    let mut points: Vec<DecisionPoint> = Vec::new();
+    for entry in &state.stack {
+        let Some(pins) = entry_publishes_pin_slots(state, entry, proposer) else {
+            continue;
+        };
+        if !points.iter().any(|p| p.slot == pins.target) {
+            points.push(DecisionPoint {
+                slot: pins.target,
+                kind: DecisionPointKind::Targets {
+                    // VERBATIM the slot `ability_utils::build_target_slots` built for this
+                    // announcement — not a second derivation. That is what makes WHICH
+                    // choice is published and HOW MANY choices are published the same
+                    // authority's answers, so they cannot disagree.
+                    legal_targets: pins.legal_targets,
+                    // Exactly one, and that cannot contradict the ANNOUNCEMENT: the
+                    // acceptance test admits an entry only when
+                    // `ability_utils::build_target_slots` — the authority that decides how
+                    // many choices announcing it actually requires (CR 601.2c via
+                    // CR 603.3d) — yields exactly one MANDATORY slot. An ability-fact
+                    // check alone (`multi_target` / CR 601.2d division) does NOT bound
+                    // the slot count: a chained sub-ability's own "target" is a second
+                    // instance of the word and a second slot.
+                    min_targets: 1,
+                    max_targets: 1,
+                    ordered: false,
+                },
+            });
+        }
+        // CR 603.5: "the choice is made when the ability resolves" — a "may" gate on the
+        // same source is a SECOND per-iteration choice, published so the declaration must
+        // pin it too.
+        if let Some(may) = pins.may {
+            if !points.iter().any(|p| p.slot == may) {
+                points.push(DecisionPoint {
+                    slot: may,
+                    kind: DecisionPointKind::MayChoice,
+                });
+            }
+        }
+    }
+    points
+}
+
 /// CR 732.2a: assemble a loop-shortcut offer's READ-side schema from its already-reified
 /// decision `points`, its proposed repeat mode, and its CR 704 count bound.
 ///
@@ -1584,10 +1869,7 @@ fn inject_pinned_answer(
                 .into_iter()
                 .find_map(|d| match d {
                     ConcreteDecision::Targets { slot, targets }
-                        if crate::analysis::decision_template::resolve_source(
-                            &slot.source,
-                            work,
-                        ) == Some(source_id) =>
+                        if slot_source_prompted(work, &slot.source, source_id) =>
                     {
                         Some(targets)
                     }
@@ -1614,6 +1896,44 @@ fn inject_pinned_answer(
         // no Stage-2 pin producer ⇒ fail-closed.
         _ => Err(RecastAbort),
     }
+}
+
+/// CR 608.2b + CR 114.2: does this SLOT's source identify the ability instance that raised
+/// the prompt carrying `source_id`?
+///
+/// [`crate::analysis::decision_template::resolve_source`] is deliberately BATTLEFIELD-ONLY,
+/// and that filter IS the CR 608.2b (`docs/MagicCompRules.txt:2789`) legality re-check for
+/// `ByIdentity` **target** pins — a pinned target that left the battlefield must stop
+/// matching. It must not be widened. But a SLOT's source only identifies WHICH ability
+/// instance prompts, and CR 114.2 (`:828`) puts a planeswalker EMBLEM — "both owned and
+/// controlled by that player" — in the **command zone**, where it stays for the whole game
+/// and raises its triggers from. So the command-zone disjunct lives HERE, at the caller,
+/// scoped to object identity + the pinned CR 400.7 incarnation.
+///
+/// Graveyard / exile / hand sources still fail ⇒ the caller aborts to manual play.
+fn slot_source_prompted(
+    state: &GameState,
+    src: &crate::analysis::decision_template::DecisionSource,
+    source_id: ObjectId,
+) -> bool {
+    if crate::analysis::decision_template::resolve_source(src, state) == Some(source_id) {
+        return true;
+    }
+    // CR 114.2: the command-zone arm. `AllCopies` is card-identity matching and an emblem
+    // has no card, so only `ThisObject` participates.
+    let crate::types::game_state::YieldTarget::ThisObject {
+        source_id: pinned_id,
+        incarnation,
+        ..
+    } = src
+    else {
+        return false;
+    };
+    *pinned_id == source_id
+        && state.objects.get(pinned_id).is_some_and(|o| {
+            o.zone == crate::types::zones::Zone::Command
+                && (incarnation.is_none() || *incarnation == Some(o.incarnation))
+        })
 }
 
 /// PR-7 Phase 4b: CR 732.2a finite materialization of a confirmed `Fixed(N)` loop
@@ -1931,7 +2251,7 @@ fn pinnable_mana_color(
 /// FIX-1 (CR 400.7): a live-object identity source for a pin — `ThisObject` bound to the object's
 /// CURRENT incarnation, so a re-entered permanent (new incarnation) stops matching and the loop is
 /// correctly re-detected rather than falsely replayed. `None` if the object is absent.
-fn object_decision_source(
+pub(crate) fn object_decision_source(
     state: &GameState,
     id: ObjectId,
 ) -> Option<crate::types::game_state::YieldTarget> {
@@ -11778,6 +12098,572 @@ mod stage2_injector_tests {
             shortcut_drive_period(Some(&oversized)),
             MAX_SHORTCUT_CYCLES,
             "RoundRobin(MAX+5) clamps to MAX_SHORTCUT_CYCLES"
+        );
+    }
+
+    /// Place a bare object in `zone` without touching the zone vectors — enough for the
+    /// identity/zone predicates under test, which read `state.objects` only.
+    fn place(state: &mut GameState, id: u64, zone: crate::types::zones::Zone) -> ObjectId {
+        let oid = ObjectId(id);
+        let mut o = crate::game::game_object::GameObject::new(
+            oid,
+            CardId(0),
+            P0,
+            "Emblem".to_string(),
+            zone,
+        );
+        o.incarnation = 3;
+        state.objects.insert(oid, o);
+        oid
+    }
+
+    /// CR 114.2 + CR 608.2b: a pinned SLOT whose source is a command-zone emblem must match
+    /// the prompt that emblem raised; a graveyard or exile source must NOT.
+    ///
+    /// This is the zone predicate `inject_pinned_answer`'s `TriggerTargetSelection` arm
+    /// dispatches on. Its production drive lands with the bounded offer in a later commit,
+    /// so it is pinned here at the seam — the shipped BATTLEFIELD arm is exercised
+    /// end-to-end by `injector_routes_pinned_targets_per_source` above and by the
+    /// `kilo_live_offer_from_real_dump` rows, and this row asserts that arm is unchanged.
+    ///
+    /// REVERT-PROBES: (a) delete the command-zone disjunct in `slot_source_prompted` ⇒ the
+    /// Command assertion FAILS (and `inject_pinned_answer` would `RecastAbort` on an
+    /// emblem-pinned drive); (b) widen the disjunct to accept any zone ⇒ the graveyard and
+    /// exile assertions FAIL; (c) drop the incarnation conjunct ⇒ the CR 400.7 assertion
+    /// FAILS.
+    #[test]
+    fn command_zone_sourced_slot_matches_and_graveyard_still_aborts() {
+        use crate::types::zones::Zone;
+        let mut state = GameScenario::new_n_player(2, 7).build().state().clone();
+        let battlefield = place(&mut state, 900, Zone::Battlefield);
+        let emblem = place(&mut state, 901, Zone::Command);
+        let graveyard = place(&mut state, 902, Zone::Graveyard);
+        let exiled = place(&mut state, 903, Zone::Exile);
+
+        let pin = |id: ObjectId, inc: Option<u64>| YieldTarget::ThisObject {
+            source_id: id,
+            incarnation: inc,
+            trigger_description: None,
+        };
+
+        // Shipped behaviour, unchanged: the battlefield arm still matches.
+        assert!(
+            slot_source_prompted(&state, &pin(battlefield, Some(3)), battlefield),
+            "the shipped CR 608.2b battlefield arm must be untouched"
+        );
+        // NEW: CR 114.2 — an emblem lives in the command zone and prompts from there.
+        assert!(
+            slot_source_prompted(&state, &pin(emblem, Some(3)), emblem),
+            "CR 114.2: a command-zone emblem's slot must match the prompt it raised"
+        );
+        // Fail-closed: every other off-battlefield zone still misses ⇒ `RecastAbort`.
+        assert!(
+            !slot_source_prompted(&state, &pin(graveyard, Some(3)), graveyard),
+            "a graveyard-sourced slot must NOT match — the drive aborts to manual"
+        );
+        assert!(
+            !slot_source_prompted(&state, &pin(exiled, Some(3)), exiled),
+            "an exile-sourced slot must NOT match"
+        );
+        // CR 400.7: the command arm re-binds ONE incarnation, exactly like the
+        // battlefield arm — a re-created emblem does not answer the old pin.
+        assert!(
+            !slot_source_prompted(&state, &pin(emblem, Some(2)), emblem),
+            "CR 400.7: a stale incarnation must not match even in the command zone"
+        );
+        // A pin naming a DIFFERENT object never answers this prompt.
+        assert!(
+            !slot_source_prompted(&state, &pin(emblem, Some(3)), battlefield),
+            "the matcher is keyed on identity, not merely on zone"
+        );
+    }
+
+    /// CR 732.2a + CR 603.5: `bounded_cycle_pin_slots` publishes the per-iteration TARGET
+    /// choice for a proposer-controlled player-targeting trigger, plus a second `MayChoice`
+    /// point (disambiguated by `slot.index`) when that trigger is optional.
+    ///
+    /// MATCHED PAIRS, one variable each:
+    /// * `optional` false ⇒ 1 point; true ⇒ 2 points. REVERT-PROBE: delete the `optional`
+    ///   branch ⇒ the 2-point assertion FAILS.
+    /// * controller == proposer ⇒ published; a bystander proposer gets nothing.
+    ///   REVERT-PROBE: delete the `entry.controller != proposer` filter ⇒ the bystander
+    ///   assertion FAILS.
+    #[test]
+    fn bounded_cycle_pin_slots_publishes_the_may_gate_of_an_optional_trigger() {
+        use crate::analysis::decision_template::{DecisionPointKind, DecisionSlot};
+        use crate::types::ability::{
+            ControllerRef, Effect, QuantityExpr, ResolvedAbility, TargetFilter, TypedFilter,
+        };
+
+        let mut state = GameScenario::new_n_player(3, 7).build().state().clone();
+        let src = place(&mut state, 910, crate::types::zones::Zone::Battlefield);
+
+        let entry = |id: u64, controller: PlayerId, optional: bool| {
+            let mut ability = ResolvedAbility::new(
+                Effect::LoseLife {
+                    amount: QuantityExpr::Fixed { value: 1 },
+                    target: Some(TargetFilter::Typed(TypedFilter {
+                        type_filters: vec![],
+                        controller: Some(ControllerRef::Opponent),
+                        properties: vec![],
+                    })),
+                },
+                vec![],
+                src,
+                controller,
+            );
+            ability.optional = optional;
+            StackEntry {
+                id: ObjectId(id),
+                source_id: src,
+                controller,
+                kind: StackEntryKind::TriggeredAbility {
+                    source_id: src,
+                    ability: Box::new(ability),
+                    condition: None,
+                    trigger_event: None,
+                    description: None,
+                    source_name: String::new(),
+                    subject_match_count: None,
+                    die_result: None,
+                },
+            }
+        };
+        let live_source =
+            object_decision_source(&state, src).expect("the source is on the battlefield");
+        let expected_slot = |index: u8| DecisionSlot {
+            source: live_source.clone(),
+            index,
+        };
+
+        // Mandatory: exactly one point, the target choice.
+        state.stack.push_back(entry(920, P0, false));
+        let mandatory = bounded_cycle_pin_slots(&state, P0);
+        assert_eq!(
+            mandatory.len(),
+            1,
+            "a mandatory trigger publishes one point"
+        );
+        assert_eq!(mandatory[0].slot, expected_slot(0));
+        assert!(
+            matches!(
+                &mandatory[0].kind,
+                DecisionPointKind::Targets { legal_targets, .. }
+                    if *legal_targets == vec![TargetRef::Player(P1), TargetRef::Player(P2)]
+            ),
+            "the legal set comes from `find_legal_targets`, not from a declaration: {:?}",
+            mandatory[0].kind
+        );
+
+        // Bystander proposer: the same board publishes nothing for a seat that controls
+        // none of the entries (CR 732.2a — the proposer specifies their OWN choices).
+        assert!(
+            bounded_cycle_pin_slots(&state, P1).is_empty(),
+            "a bystander proposer controls none of these choices"
+        );
+
+        // Optional: the SAME entry with one field flipped publishes the CR 603.5 gate too.
+        state.stack.clear();
+        state.stack.push_back(entry(921, P0, true));
+        let optional = bounded_cycle_pin_slots(&state, P0);
+        assert_eq!(
+            optional.len(),
+            2,
+            "an optional trigger publishes two points"
+        );
+        assert_eq!(
+            optional[1].slot,
+            expected_slot(1),
+            "`slot.index` disambiguates"
+        );
+        assert_eq!(optional[1].kind, DecisionPointKind::MayChoice);
+
+        // Fail-closed: no source object ⇒ no point (never a slot that cannot re-bind).
+        state.objects.remove(&src);
+        assert!(
+            bounded_cycle_pin_slots(&state, P0).is_empty(),
+            "an absent source emits nothing rather than an unbindable slot"
+        );
+    }
+
+    /// Each of [`declares_opponent_player_target`]'s three conjuncts, discriminated
+    /// SEPARATELY. The gross "accept any `Typed`" widening is caught by the row above; this
+    /// row is what fails when ONE conjunct is dropped.
+    ///
+    /// Why each matters: `find_legal_targets` collapses a `Typed` filter to PLAYERS ONLY
+    /// when both `type_filters` and `properties` are empty (`targeting.rs:192-193`, issue
+    /// #2004). A type- or property-bearing filter therefore falls through to OBJECT
+    /// enumeration — publishing it would put a point whose legal set is object refs into
+    /// player-pin machinery. `controller: You` does collapse to players, but to exactly ONE
+    /// (the controller), which is not the per-opponent choice a bounded drain cycle pins.
+    ///
+    /// THE BOARD IS LOAD-BEARING, and picking the wrong one is what hollows this row out.
+    /// On a head-announced board an object-shaped filter enumerates NOTHING, so
+    /// `build_target_slots` returns `Err` and the caller's CARDINALITY conjunct rejects
+    /// first — measured: with both arms on that board, dropping `type_filters.is_empty()` or
+    /// `properties.is_empty()` left the row GREEN. Those two arms therefore run on the
+    /// MIRROR shape, the one thing they alone reject: an object-shaped head at
+    /// `TargetChoiceTiming::Resolution` (announces nothing) chained to a `target opponent`
+    /// sub-ability (announces the one slot). Cardinality and all-`Player` both pass there.
+    /// The per-arm reach-guard asserts that announced slot verbatim, so a future change that
+    /// re-hollows an arm fails the reach-guard instead of passing silently.
+    ///
+    /// REVERT-PROBES (each measured on the boards below): drop `type_filters.is_empty()` ⇒
+    /// ONLY the Creature arm publishes; drop `properties.is_empty()` ⇒ ONLY the Token arm;
+    /// drop `controller == Some(Opponent)` ⇒ ONLY the `You` arm. The accepted shape is
+    /// asserted to publish in the SAME row, so a constant-`false` predicate cannot pass.
+    #[test]
+    fn bounded_cycle_pin_slots_conjuncts_are_each_load_bearing() {
+        use crate::types::ability::{
+            ControllerRef, Effect, FilterProp, QuantityExpr, ResolvedAbility, TargetChoiceTiming,
+            TargetFilter, TargetRef, TypeFilter, TypedFilter,
+        };
+
+        let mut base = GameScenario::new_n_player(3, 7).build().state().clone();
+        let src = place(&mut base, 940, crate::types::zones::Zone::Battlefield);
+
+        let board = |ability: ResolvedAbility| {
+            let mut state = base.clone();
+            state.stack.push_back(StackEntry {
+                id: ObjectId(950),
+                source_id: src,
+                controller: P0,
+                kind: StackEntryKind::TriggeredAbility {
+                    source_id: src,
+                    ability: Box::new(ability),
+                    condition: None,
+                    trigger_event: None,
+                    description: None,
+                    source_name: String::new(),
+                    subject_match_count: None,
+                    die_result: None,
+                },
+            });
+            state
+        };
+        let accepted = TypedFilter {
+            type_filters: vec![],
+            controller: Some(ControllerRef::Opponent),
+            properties: vec![],
+        };
+        let head_only = |tf: TypedFilter| {
+            ResolvedAbility::new(
+                Effect::LoseLife {
+                    amount: QuantityExpr::Fixed { value: 1 },
+                    target: Some(TargetFilter::Typed(tf)),
+                },
+                vec![],
+                src,
+                P0,
+            )
+        };
+        // The head's own choice is made on resolution, so CR 601.2c is never reached for it
+        // and it announces no slot; the ONE announced slot is the chained sub-ability's
+        // `target opponent` player choice (CR 603.3d). Cardinality and all-`Player` pass
+        // whatever shape the head declares — which is what leaves the head-shape conjunct
+        // alone to reject.
+        let chained = |head: TypedFilter| {
+            let mut ability = head_only(head);
+            ability.target_choice_timing = TargetChoiceTiming::Resolution;
+            ability.sub_ability = Some(Box::new(head_only(accepted.clone())));
+            ability
+        };
+
+        // POSITIVE CONTROL, same row: the accepted "target opponent" shape publishes.
+        assert_eq!(
+            bounded_cycle_pin_slots(&board(head_only(accepted.clone())), P0).len(),
+            1,
+            "the accepted CR 115.2 player shape must publish — otherwise the three zeros \
+             below are vacuous"
+        );
+
+        let opponents = vec![TargetRef::Player(P1), TargetRef::Player(P2)];
+        // Collected, not asserted per-arm: a revert-probe must show which arms flipped, and
+        // a bare `assert!` in the loop would abort at the first and hide the rest.
+        let mut still_published: Vec<&str> = Vec::new();
+        for (label, ability, announced) in [
+            (
+                "type_filters: a creature filter enumerates OBJECTS, not players",
+                chained(TypedFilter {
+                    type_filters: vec![TypeFilter::Creature],
+                    ..accepted.clone()
+                }),
+                opponents.clone(),
+            ),
+            (
+                "properties: issue #2004 — `token` is an object characteristic",
+                chained(TypedFilter {
+                    properties: vec![FilterProp::Token],
+                    ..accepted.clone()
+                }),
+                opponents.clone(),
+            ),
+            (
+                "controller: `You` is a single forced seat, not a per-opponent choice",
+                head_only(TypedFilter {
+                    controller: Some(ControllerRef::You),
+                    ..accepted.clone()
+                }),
+                vec![TargetRef::Player(P0)],
+            ),
+        ] {
+            let state = board(ability);
+            let announcement = crate::game::ability_utils::build_target_slots(
+                &state,
+                state.stack[0]
+                    .ability()
+                    .expect("the board pushes a trigger"),
+            )
+            .map(|slots| {
+                slots
+                    .iter()
+                    .map(|slot| (slot.optional, slot.legal_targets.clone()))
+                    .collect::<Vec<_>>()
+            })
+            .ok();
+            assert_eq!(
+                announcement,
+                Some(vec![(false, announced)]),
+                "reach-guard [{label}]: exactly ONE mandatory slot and every candidate a \
+                 PLAYER — so the cardinality and all-`Player` conjuncts both PASS on this \
+                 board and the head-shape conjunct under test is the SOLE rejector"
+            );
+            if !bounded_cycle_pin_slots(&state, P0).is_empty() {
+                still_published.push(label);
+            }
+        }
+        assert!(
+            still_published.is_empty(),
+            "each conjunct must reject its own arm ALONE; these arms published anyway: \
+             {still_published:?}"
+        );
+
+        // ORDERING-INPUT CONJUNCTS. The published point declares `min/max_targets: 1`, and
+        // the gate-(3) relief is a bare `continue` that discharges the WHOLE of
+        // `stack_entry_has_no_ordering_input` (analysis/resource.rs) — which rejects on
+        // four facts, only one of which a slot answers. The three ABILITY facts must block
+        // publication outright (the state-dependent fourth, `pending_trigger_entry`, is the
+        // relief's, pinned by `a_pinned_slot_skips_gate_three_and_six`'s arm 5). Shares the
+        // positive control above.
+        {
+            use crate::types::ability::MultiTargetSpec;
+            use crate::types::game_state::TargetSelectionConstraint;
+
+            fn ability_of(state: &mut GameState) -> &mut ResolvedAbility {
+                let StackEntryKind::TriggeredAbility { ability, .. } = &mut state.stack[0].kind
+                else {
+                    unreachable!("the fixture board pushes a TriggeredAbility")
+                };
+                ability.as_mut()
+            }
+
+            type Mutate = fn(&mut GameState);
+            let ordering_input: [(&str, Mutate); 3] = [
+                ("multi_target — CR 601.2c variable target count", |s| {
+                    ability_of(s).multi_target = Some(MultiTargetSpec::fixed(1, 2))
+                }),
+                ("distribution — CR 601.2d divide-among", |s| {
+                    ability_of(s).distribution = Some(vec![(TargetRef::Player(P1), 1)])
+                }),
+                ("target_constraints — CR 601.2c cross-target", |s| {
+                    ability_of(s).target_constraints =
+                        vec![TargetSelectionConstraint::DifferentTargetPlayers]
+                }),
+            ];
+            for (label, mutate) in ordering_input {
+                let mut state = board(head_only(accepted.clone()));
+                mutate(&mut state);
+                assert!(
+                    bounded_cycle_pin_slots(&state, P0).is_empty(),
+                    "{label}: announcement-time ordering input NO published slot specifies \
+                     ⇒ the mint must not publish"
+                );
+            }
+        }
+    }
+
+    /// The real 4p acceptance board (dump B): a CR 114.2 emblem in the COMMAND zone
+    /// (obj 541, incarnation 0) whose triggered ability drains `target opponent`.
+    fn load_dellian_dump() -> GameState {
+        use crate::types::game_state::PersistedGameState;
+        use std::io::Read;
+        let gz: &[u8] = include_bytes!("../../tests/fixtures/dellian_emblem_conqueror_4p.json.gz");
+        let mut json = String::new();
+        flate2::read::GzDecoder::new(gz)
+            .read_to_string(&mut json)
+            .expect("fixture inflates");
+        let envelope: serde_json::Value = serde_json::from_str(&json).expect("envelope parses");
+        let raw: GameState =
+            serde_json::from_value(envelope["gameState"].clone()).expect("gameState deserializes");
+        PersistedGameState::Raw(Box::new(raw)).into_game_state()
+    }
+
+    const EMBLEM: ObjectId = ObjectId(541);
+
+    /// CR 732.2a: the offer publishes the SET of open per-iteration choices — one point per
+    /// SOURCE, not one per stack ENTRY.
+    ///
+    /// `DecisionSlot`'s sub-index disambiguates two choices of ONE ability instance, so N
+    /// entries from one source would mint N byte-identical slots: N identical frontend
+    /// pickers, and `predictability_gate` demanding N pins for a choice
+    /// `inject_pinned_answer` answers ONCE per source (its `find_map` matches on the slot's
+    /// SOURCE and is index-blind). Real boards reach this shape — this very dump carries 35
+    /// entries on source 25, 34 on 126 and 34 on 208.
+    ///
+    /// Built on the LOADED 4p board plus ONE measured mutation: a byte-copy of the real
+    /// emblem entry under a fresh stack-entry id, which is exactly what a second loop
+    /// iteration puts there.
+    ///
+    /// REVERT-PROBE: drop either `points.iter().any(|p| p.slot == ..)` dedupe guard ⇒ the
+    /// two-entry board publishes 2 points ⇒ FAILS.
+    #[test]
+    fn bounded_cycle_pin_slots_publishes_one_point_per_source_not_per_entry() {
+        let mut state = load_dellian_dump();
+        let emblem_entry = state
+            .stack
+            .iter()
+            .find(|e| e.source_id == EMBLEM)
+            .expect("reach-guard: the dump carries the emblem's trigger")
+            .clone();
+        let single = bounded_cycle_pin_slots(&state, P0);
+        assert_eq!(
+            single.len(),
+            1,
+            "reach-guard: the shipped board qualifies exactly one source"
+        );
+
+        let mut second = emblem_entry;
+        second.id = ObjectId(9_001);
+        state.stack.push_back(second);
+        assert_eq!(
+            state.stack.iter().filter(|e| e.source_id == EMBLEM).count(),
+            2,
+            "reach-guard: two live entries now share one source"
+        );
+
+        assert_eq!(
+            bounded_cycle_pin_slots(&state, P0),
+            single,
+            "a second entry from the SAME source is the same open choice — one published \
+             point, byte-identical to the one-entry board's"
+        );
+    }
+
+    /// CR 114.2 + CR 608.2b, on a REAL restored 4p board: `inject_pinned_answer` accepts a
+    /// pin whose slot source is the COMMAND-zone emblem (obj 541) that raised the prompt.
+    ///
+    /// This is the production-path row for [`slot_source_prompted`]. The seam is live
+    /// TODAY: `inject_pinned_answer` calls it, and every pin-recording site builds its slot
+    /// source with the zone-agnostic `object_decision_source`, so a command-zone-sourced pin
+    /// already flips from `RecastAbort` (safe handback) to accepted injection.
+    ///
+    /// The dump ships AT that prompt (`TriggerTargetSelection { source_id: 541 }`), so no
+    /// synthetic placement is involved.
+    ///
+    /// REVERT-PROBES (each measured): delete the command-zone disjunct ⇒ the accept arm
+    /// raises `RecastAbort` ⇒ FAILS; drop the incarnation conjunct ⇒ the stale-pin arm is
+    /// accepted ⇒ FAILS. The negative arms are paired with a positive on the SAME board, so
+    /// neither an always-accept nor an always-abort matcher survives.
+    #[test]
+    fn a_command_zone_pin_answers_a_real_restored_boards_prompt() {
+        let state = load_dellian_dump();
+
+        // ── reach guards, all read off the loaded board ──
+        let emblem = state
+            .objects
+            .get(&EMBLEM)
+            .expect("reach-guard: dump B carries the emblem object");
+        assert_eq!(
+            emblem.zone,
+            crate::types::zones::Zone::Command,
+            "reach-guard: CR 114.2 puts the emblem in the command zone"
+        );
+        let emblem_incarnation = emblem.incarnation;
+        let WaitingFor::TriggerTargetSelection {
+            source_id: Some(prompt_source),
+            ..
+        } = &state.waiting_for
+        else {
+            panic!(
+                "reach-guard: the dump ships at the emblem's target prompt; got {:?}",
+                state.waiting_for
+            );
+        };
+        assert_eq!(
+            *prompt_source, EMBLEM,
+            "reach-guard: it is the EMBLEM's prompt that is up"
+        );
+
+        let src = object_decision_source(&state, EMBLEM).expect("the emblem object exists");
+        // The control that makes this row non-vacuous: the shipped battlefield-only
+        // `resolve_source` does NOT match this source, so an accept can only come from the
+        // CR 114.2 disjunct.
+        assert_eq!(
+            crate::analysis::decision_template::resolve_source(&src, &state),
+            None,
+            "CR 608.2b: `resolve_source` is battlefield-only and must stay so"
+        );
+
+        let template = |source: YieldTarget| DecisionTemplate {
+            owner: P0,
+            decisions: vec![PinnedDecision::Targets {
+                slot: DecisionSlot {
+                    source: source.clone(),
+                    index: 0,
+                },
+                targets: vec![TargetPin::Player(P1)],
+            }],
+            replay: ReplayMode::Scheduled {
+                count: IterationCount::UntilLethal,
+            },
+            key: DecisionGroupKey::from_sources(&[source], DecisionKind::LoopChoice),
+        };
+        let prompt = state.waiting_for.clone();
+
+        // ── ACCEPT: the command-zone pin answers the prompt on the real board ──
+        let mut work = state.clone();
+        inject_pinned_answer(&mut work, Some(&template(src.clone())), 0, &prompt)
+            .expect("CR 114.2: the emblem's own pin must answer the prompt it raised");
+        assert_ne!(
+            work.waiting_for, prompt,
+            "the prompt was actually consumed, not silently skipped"
+        );
+        assert!(
+            !matches!(
+                &work.waiting_for,
+                WaitingFor::TriggerTargetSelection {
+                    source_id: Some(id),
+                    ..
+                } if *id == EMBLEM
+            ),
+            "the emblem's target prompt is answered; got {:?}",
+            work.waiting_for
+        );
+
+        // ── CR 400.7: a pin latched to a stale incarnation must NOT answer it ──
+        let stale = YieldTarget::ThisObject {
+            source_id: EMBLEM,
+            incarnation: Some(emblem_incarnation + 1),
+            trigger_description: None,
+        };
+        let mut stale_work = state.clone();
+        assert!(
+            inject_pinned_answer(&mut stale_work, Some(&template(stale)), 0, &prompt).is_err(),
+            "CR 400.7: a stale-incarnation pin hands back to manual play"
+        );
+
+        // ── fail-closed: a pin naming a DIFFERENT object never answers this prompt ──
+        let other = state
+            .stack
+            .iter()
+            .map(|e| e.source_id)
+            .find(|id| *id != EMBLEM)
+            .expect("the 152-deep stack carries other sources");
+        let other_src = object_decision_source(&state, other).expect("that source exists");
+        let mut other_work = state.clone();
+        assert!(
+            inject_pinned_answer(&mut other_work, Some(&template(other_src)), 0, &prompt).is_err(),
+            "a pin for another source does not answer the emblem's prompt"
         );
     }
 }

@@ -5155,6 +5155,149 @@ fn two_site_retention_survives_a_prompt_and_its_answer() {
     );
 }
 
+/// PR-7 Phase 5a — CR 732.2a per-iteration pin enumeration, on a REAL 4p board.
+///
+/// `bounded_cycle_pin_slots` is the single authority for the choice slots a bounded cycle
+/// offer must publish. Dump B is the acceptance population: obj **541** is a CR 114.2
+/// emblem (command zone, "both owned and controlled by that player") whose triggered
+/// ability drains `target opponent`, i.e. the
+/// `Typed{type_filters: [], controller: Opponent, properties: []}` player shape.
+///
+/// **TWO ARMS, and the pairing is the whole point.** The dump ships with the prompt UP
+/// (`TriggerTargetSelection` carrying already-materialized `legal_targets`), so arm ⓐ alone
+/// would pass against a prompt-READING implementation — which returns ZERO slots at the
+/// real offer beat, where `waiting_for` is `Priority`. Arm ⓑ is the identical state with
+/// exactly one field reassigned.
+///
+/// REVERT-PROBES (both must flip):
+/// * ⓘ narrow the AST predicate so `Typed{[], Opponent, []}` is rejected ⇒ BOTH arms return
+///   zero ⇒ FAILS.
+/// * ⓙ re-implement the enumerator to read `state.waiting_for`'s
+///   `target_slots[..].legal_targets` ⇒ arm ⓐ still passes, arm ⓑ returns zero ⇒ FAILS.
+/// * ⓐ' delete the `entry.controller != proposer` filter ⇒ the bystander-proposer
+///   assertion FAILS. (On THIS board every one of the 152 stack entries is P0-controlled —
+///   measured — so the honest form of that probe is a bystander proposer, not a rising
+///   count for P0.)
+///
+/// MUST-NOT-FLIP: `bounded_cycle_pin_slots(..).is_empty()` on the shipped
+/// `b3_materialize_stop_short` offer board — asserted, not assumed. That zero is the
+/// byte-identity pin for every shipped `Fixed(N)` drive, and pairing it with dump B's
+/// non-zero in the SAME row proves the instrument returns both values.
+#[test]
+fn bounded_cycle_pin_slots_enumerates_the_emblem_slot() {
+    use engine::game::engine::bounded_cycle_pin_slots;
+    use engine::types::zones::Zone;
+
+    const EMBLEM: ObjectId = ObjectId(541);
+    const P3: PlayerId = PlayerId(3);
+
+    let mut state = restore_dump(&gunzip_dump(include_bytes!(
+        "../fixtures/dellian_emblem_conqueror_4p.json.gz"
+    )));
+
+    // ── reach guards, all derived from the loaded board, none from the predicate ──
+    let emblem = state
+        .objects
+        .get(&EMBLEM)
+        .expect("reach-guard: dump B carries the emblem object");
+    assert_eq!(
+        emblem.zone,
+        Zone::Command,
+        "reach-guard: CR 114.2 puts the emblem in the command zone — the whole reason this \
+         row exists (a battlefield-only slot builder would be untested by it)"
+    );
+    let emblem_incarnation = emblem.incarnation;
+    let emblem_entries = state.stack.iter().filter(|e| e.source_id == EMBLEM).count();
+    assert_eq!(
+        emblem_entries, 1,
+        "reach-guard, measured off the loaded 152-deep stack: the emblem has exactly one \
+         live entry here, so this row's COUNT carries no claim about the per-SOURCE dedupe \
+         — that is \
+         `bounded_cycle_pin_slots_publishes_one_point_per_source_not_per_entry`'s job"
+    );
+    assert_eq!(
+        engine_live_opponents(&state, P0),
+        vec![P1, P2, P3],
+        "reach-guard: three living opponents, so the per-iteration choice is REAL"
+    );
+
+    let expected_slot = DecisionSlot {
+        source: YieldTarget::ThisObject {
+            source_id: EMBLEM,
+            incarnation: Some(emblem_incarnation),
+            trigger_description: None,
+        },
+        index: 0,
+    };
+    let expected_legal = vec![
+        TargetRef::Player(P1),
+        TargetRef::Player(P2),
+        TargetRef::Player(P3),
+    ];
+
+    // ── arm ⓐ: the shipped board, prompt UP ──
+    assert!(
+        matches!(state.waiting_for, WaitingFor::TriggerTargetSelection { .. }),
+        "arm ⓐ precondition: the dump ships AT the prompt; got {:?}",
+        state.waiting_for
+    );
+    let with_prompt = bounded_cycle_pin_slots(&state, P0);
+    assert_eq!(
+        with_prompt.len(),
+        emblem_entries,
+        "one point per qualifying SOURCE; on this board that count coincides with the \
+         emblem's single entry, which is asserted above rather than assumed"
+    );
+    for point in &with_prompt {
+        assert_eq!(
+            point.slot, expected_slot,
+            "the slot names the CR 114.2 command-zone emblem at its CR 400.7 incarnation"
+        );
+        assert_eq!(
+            point.kind,
+            DecisionPointKind::Targets {
+                legal_targets: expected_legal.clone(),
+                min_targets: 1,
+                max_targets: 1,
+                ordered: false,
+            },
+            "the legal set is `find_legal_targets`' native output (CR 115.2), not a \
+             declaration echo"
+        );
+    }
+
+    // ── arm ⓑ: the SAME state at the real offer beat — one field reassigned ──
+    state.waiting_for = WaitingFor::Priority { player: P0 };
+    assert_eq!(
+        bounded_cycle_pin_slots(&state, P0),
+        with_prompt,
+        "arm ⓑ: byte-for-byte the same slot set with NO prompt to read. Both production \
+         call sites run at `WaitingFor::Priority`, so an implementation that reads \
+         `target_slots[..].legal_targets` publishes nothing when it matters"
+    );
+
+    // ── ⓐ': a bystander proposer specifies none of these choices (CR 732.2a) ──
+    assert!(
+        state.stack.iter().all(|e| e.controller == P0),
+        "measured: every dump-B stack entry is P0-controlled, so the controller filter is \
+         probed from the PROPOSER side"
+    );
+    for bystander in [P1, P2, P3] {
+        assert!(
+            bounded_cycle_pin_slots(&state, bystander).is_empty(),
+            "a bystander ({bystander:?}) controls none of these entries"
+        );
+    }
+
+    // ── must-NOT-flip: the shipped Fixed(N) drive board publishes NOTHING ──
+    let (shipped, _l0, _cleric) = reach_2p_optional_drain_offer();
+    assert!(
+        bounded_cycle_pin_slots(shipped.state(), P0).is_empty(),
+        "the untargeted `each opponent loses 1 life` drain reifies no per-iteration player \
+         choice — every shipped Fixed(N) drive must stay byte-identical"
+    );
+}
+
 /// Phase 1b crown-safety row. Retention only ADDS older frames to the ring, and
 /// `find_live_loop_winner` scans every suffix, so a window that crowns today must still
 /// crown after the exemption. Dump C is the population where that is measurable: it ships
