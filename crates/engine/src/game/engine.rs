@@ -1160,10 +1160,13 @@ pub fn try_offer_bounded_cycle_shortcut(
     // exactly what disables the relief that would otherwise let cover succeed. Two
     // individually-correct constraints composing into a refusal neither intended.
     //
-    // ⚠ NEVER attribute the basis from `frames_per_period`. Basis A publishes `1`
-    // unconditionally and basis B publishes the same `1` whenever its derived `k` is 1, so
-    // `== 1` discriminates nothing. `!= 1` is sufficient for "not basis A" and never
-    // necessary. The only sound attribution is a discriminating probe: force
+    // ⚠ NEVER attribute the basis from `frames_per_period`. BOTH bases now MEASURE it — basis A
+    // from the certifying prior's ring index above, basis B from `ring_delta_signature`'s
+    // derived `k` — so the two publish overlapping value ranges and NO value discriminates in
+    // either direction. (Before fix round 1 basis A published a hardcoded `1`, which made
+    // `!= 1` sufficient-but-not-necessary for "not basis A"; that inference is now dead too,
+    // since a basis-A span of 2 is exactly what the `interactive_3p_subset_lethal_does_not_crown`
+    // fixture publishes.) The only sound attribution is a discriminating probe: force
     // `ring_delta_signature` to return `None` (basis B's sole entry point is the `None =>`
     // arm below) — the rows that survive are basis A, the rows that fail are basis B.
     let (cert_prior, cert_current, mut periodic) = match basis_a {
@@ -2497,6 +2500,21 @@ fn materialize_fixed_shortcut(
             }
             // Runaway cap / unpinned prompt / engine error ⇒ abort to manual. The aborting
             // cycle's events were already dropped (no partial-cycle event leak).
+            //
+            // ⚠ THE TWO LETHAL ARMS ARE ASYMMETRIC, and a future drive must learn that here
+            // rather than by accident. A cycle that takes EVERY remaining opponent to 0 at once
+            // reaches `WaitingFor::GameOver` and lands in the `CrossLethal` arm above: it
+            // COMMITS and the game ends. A cycle that takes ONE seat to 0 while >= 2 players
+            // survive raises no `GameOver` (CR 104.2a crowns nobody), the loop's shape changes
+            // under it as the drained seat leaves, no settle beat recurs, and it arrives HERE —
+            // rolled back whole, `eliminated` empty, priority handed back. Both are out of
+            // contract for a legitimately-derived bound (`elimination_bounds` reserves
+            // `life - 1` of CR 704.5a headroom, so a within-bound count crosses no threshold),
+            // so either arm means the published bound was wrong. Rolling the out-of-contract
+            // cycle back is deliberate: the remaining repetitions were bounded by a delta the
+            // board stops moving the moment a drain target leaves the game. Rows:
+            // `bounded_fixed_drive_stops_at_the_first_lethal_cycle` (total wipe) and
+            // `bounded_fixed_drive_rolls_back_a_partial_crossing_cycle` (partial).
             CycleOutcome::Abort => break 'cycles,
         }
     }
@@ -13451,10 +13469,19 @@ mod kilo_interruptibility_tests {
 /// FIX ROUND 1 (MED-2) — a named negative row per [`try_offer_bounded_cycle_shortcut`] conjunct
 /// that no tracked test was exercising.
 ///
-/// The reviewer measured all three by disabling them: step (2) `ProposerIsNotActivePlayer` and
-/// step (5) `AdvantageOnlyCycle` could each be deleted with **4167 passed / 0 failed**, and only
-/// `DrivingSequenceNotEmpty` was asserted by name anywhere. A conjunct no row can name is a
-/// conjunct nobody notices losing.
+/// The reviewer measured all three by disabling them on the PRE-ROW tree: step (2)
+/// `ProposerIsNotActivePlayer` and step (5) `AdvantageOnlyCycle` could each be deleted with the
+/// whole suite still green, and only `DrivingSequenceNotEmpty` was asserted by name anywhere.
+/// A conjunct no row can name is a conjunct nobody notices losing.
+///
+/// ⚠ The pass COUNT that used to appear here ("4167 passed / 0 failed") is deleted rather than
+/// re-dressed, because it shipped with no runner and no filter recorded beside it and a bare
+/// count means nothing without both (fix round 2, LOW-2: a count in this file named a shape it
+/// did not have). It is also not reproducible on this tree BY DESIGN — the rows below now exist,
+/// so deleting either conjunct today flips its named row, which is the entire point. Each row's
+/// own REVERT-PROBE line is the reproducible claim; run it with
+/// `cargo test -p engine --lib -- game::engine::bounded_offer_conjunct_tests::` (module filter on
+/// the `engine` lib target).
 ///
 /// # Why these are UNIT rows on a synthetic ring
 ///
@@ -13518,6 +13545,28 @@ mod bounded_offer_conjunct_tests {
             for _ in 0..i {
                 player.library.pop_back();
             }
+        })
+    }
+
+    /// Drain `victim` by one life per retained frame — a constant per-frame LIFE delta.
+    ///
+    /// The counterpart to [`mill_ring`], and the difference is exactly the one basis A turns on:
+    /// library size is BOARD (`loop_states_equal_modulo_resources` compares it), while life is a
+    /// PROJECTED resource (`project_out_resources` removes it). So a mill ring's frames are
+    /// board-UNEQUAL and can only certify through basis B's `ring_delta_signature`, whereas a
+    /// drain ring's frames are board-EQUAL and certify through basis A's first disjunct.
+    ///
+    /// Frame `i` sits `frames - i` life ABOVE the live state, so the newest frame is exactly one
+    /// period ahead of it and every older frame one more — i.e. the live state is the far end of
+    /// the period, which is the orientation `ResourceVector::delta(prior, current)` reads.
+    fn drain_ring(victim: PlayerId, frames: usize) -> GameState {
+        ring_state(frames, move |frame, i| {
+            let player = frame
+                .players
+                .iter_mut()
+                .find(|p| p.id == victim)
+                .expect("seat exists");
+            player.life += (frames - i) as i32;
         })
     }
 
@@ -13638,6 +13687,78 @@ mod bounded_offer_conjunct_tests {
             Err(BoundedOfferRefusal::NoNarrowedLegalCount),
             "CR 104.3c: with zero cards left there is no legal repetition, and a `Fixed(0)` \
              offer would spend the CR 732.2b response window to commit nothing"
+        );
+    }
+
+    /// FIX ROUND 2 — basis A's `span >= 1` fail-closed guard, which shipped in fix round 1 with
+    /// no row of its own.
+    ///
+    /// The basis-A walk is `.rev()`, so the FIRST candidate it tries is `ring.last()` — the
+    /// sample `pass_priority_once_with_pipeline` recorded at this very beat, whose span from the
+    /// current state is 0. In a production trajectory that pair carries a zero δ and dies on
+    /// `net_progress_for`, but nothing structural forces that: this fixture's newest retained
+    /// frame is board-equal to the live state and its δ IS net progress (the reach-guards below
+    /// assert exactly that, so the guard is provably reached rather than assumed to be).
+    ///
+    /// The fixture is a [`drain_ring`], NOT a [`mill_ring`], and the difference is load-bearing:
+    /// library size is BOARD, so a mill ring's frames are board-unequal, basis A refuses them
+    /// outright and every mill-ring row in this module is really exercising basis B. A guard
+    /// inside the basis-A walk is unreachable from that fixture. (Measured: the board-equality
+    /// reach-guard below FAILS on `mill_ring(P1, 3)`.)
+    ///
+    /// A published `frames_per_period: 0` would mean "one repetition spans no retained frames",
+    /// which `drive_one_shortcut_cycle`'s delimiter cannot honour — `frames_this_cycle >= 0`
+    /// holds before a single beat is driven, so the first settle beat would complete a "cycle"
+    /// that moved nothing, and `materialize_fixed_shortcut`'s conformance check would then drop
+    /// every one of them. The bounded offer would be minted, accepted, and commit nothing.
+    ///
+    /// REVERT-PROBE: delete `span >= 1 &&` from the basis-A closure ⇒ the span-0 pair certifies
+    /// first and the published `frames_per_period` is 0 ⇒ this row FAILS.
+    #[test]
+    fn a_zero_span_certifying_pair_never_publishes_a_zero_width_period() {
+        use crate::analysis::resource::{loop_states_equal_modulo_resources, ResourceVector};
+
+        let state = drain_ring(P1, 3);
+
+        // ── REACH-GUARDS: the span-0 pair really is a certifying candidate on this fixture, so
+        //    the guard is what refuses it. Both halves of basis A's first disjunct, asserted on
+        //    the exact pair the `.rev()` walk reaches first.
+        let newest = state
+            .loop_detect_ring
+            .back()
+            .expect("the fixture builds a ring")
+            .as_ref()
+            .clone();
+        assert!(
+            loop_states_equal_modulo_resources(&newest, &state),
+            "REACH-GUARD: the newest retained frame must be board-equal to the live state, else \
+             the span-0 pair fails the board predicate and the guard is never the refuser"
+        );
+        let span_zero_delta = ResourceVector::delta(
+            &ResourceVector::snapshot(&newest),
+            &ResourceVector::snapshot(&state),
+        );
+        assert!(
+            span_zero_delta.net_progress_for(P0),
+            "REACH-GUARD: the span-0 pair must carry net progress, else `net_progress_for` \
+             refuses it first and this row would pass without the guard existing; δ \
+             {span_zero_delta:?}"
+        );
+
+        let offer = try_offer_bounded_cycle_shortcut(&state, false)
+            .expect("REACH-GUARD: the fixture must OFFER, else nothing publishes a period");
+        let WaitingFor::LoopShortcut { certificate, .. } = &offer else {
+            panic!("a bounded offer is a LoopShortcut window; got {offer:?}")
+        };
+        let per_cycle = certificate
+            .per_cycle
+            .as_ref()
+            .expect("a bounded offer publishes its per-period signature");
+        assert!(
+            per_cycle.frames_per_period >= 1,
+            "CR 732.2a: a repetition spans at least one retained ring frame — a published 0 is a \
+             delimiter no drive can honour; got {}",
+            per_cycle.frames_per_period
         );
     }
 }

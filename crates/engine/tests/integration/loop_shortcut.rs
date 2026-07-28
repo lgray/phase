@@ -7226,13 +7226,17 @@ fn bounded_offer_parts(
 ///   gate-(1) refusal measured in this run, so it is NOT the refuser here.)
 ///
 /// THE PUBLISHED PAYLOAD CANNOT DISTINGUISH THE TWO HERE, and that is why the row asserts a
-/// structural `frames_per_period >= 1` and not a basis. Basis A publishes `1` unconditionally
-/// and basis B *derives* `k` from `1` upward, so `== 1` is observationally identical from
-/// both. `!= 1` is sufficient for "not basis A" (that is the attribution
-/// `bounded_offer_on_a_within_turn_draw_drain_is_basis_b` uses) but is never NECESSARY, and no
-/// `pub` predicate closes the gap: basis A's certifying condition is a DISJUNCTION whose
+/// structural `frames_per_period >= 1` and not a basis. ⚠ RE-DERIVED IN FIX ROUND 2, because
+/// fix round 1 moved the ground under the older wording: basis A no longer publishes a hardcoded
+/// `1`, it MEASURES the span from the certifying prior's ring index, and basis B *derives* `k`
+/// from `1` upward. Both therefore range over the same values and **NO published value
+/// discriminates in either direction** — not `== 1`, and no longer `!= 1` either (a basis-A span
+/// of 2 is exactly what `interactive_3p_subset_lethal_does_not_crown` publishes). Any row still
+/// reading a basis off this field is stating a necessary-not-sufficient condition at best. No
+/// `pub` predicate closes the gap either: basis A's certifying condition is a DISJUNCTION whose
 /// second half, `loop_states_cover_modulo_growth_pinned`, is `pub(crate)` and unnameable from
-/// an integration test.
+/// an integration test — so the sound attribution stays the discriminating probe (force
+/// `ring_delta_signature` to return `None`; basis-B rows lose their offer, basis-A rows keep it).
 ///
 /// CONSEQUENCE, and it is the good one: this row is a basis-B positive control on a REAL 4p
 /// dump. It is also therefore SUBJECT TO the CR 703.1 turn-position conjunct rather than
@@ -7263,9 +7267,15 @@ fn bounded_offer_parts(
 /// * make step (7)'s range check `1..=MAX_SHORTCUT_CYCLES` ⇒ NOTHING flips, anywhere. The
 ///   claim this bullet used to make — that the `schema.is_bounded()` assertion below "is the
 ///   one that flips" — was FALSE, and is corrected rather than quietly deleted. RE-MEASURED
-///   under that exact mutation: the entire `loop_shortcut` integration set stays green
-///   (106 passed / 0 failed), `schema.is_bounded()` included, because on every fixture the
-///   bound really IS narrowed and that assertion holds independently of the range check.
+///   under that exact mutation, with the runner and the filter both named because the earlier
+///   revision quoted a count whose shape did not match the filter beside it (fix round 2,
+///   LOW-2): `cargo test -p engine --test integration -- loop_shortcut::` (module filter on the
+///   `integration` binary) ⇒ **85 passed / 0 failed, 4090 filtered out**. `schema.is_bounded()`
+///   included, because on every fixture the bound really IS narrowed and that assertion holds
+///   independently of the range check. A SUBSTRING filter is a different question with a
+///   different answer — `cargo test -p engine loop_shortcut` sweeps every target and additionally
+///   matches `loop_shortcut_activation` / `loop_shortcut_mana_engine`; do not quote one shape's
+///   number beside the other's filter.
 ///   No single-conjunct revert of step (7) flips a row on THIS fixture, and that is a property
 ///   of the mutation rather than a gap: it widens only the range's UPPER end, and a bound of
 ///   exactly `MAX_SHORTCUT_CYCLES` means no axis narrowed — which `classify_win_kind` already
@@ -7563,16 +7573,20 @@ fn bounded_offer_on_a_within_turn_draw_drain_is_basis_b() {
         "a zero-delta cycle states no CR 704 threshold and must never be offered"
     );
 
-    // (iii) BASIS ATTRIBUTION. Basis A publishes `frames_per_period: 1` UNCONDITIONALLY, so
-    // `!= 1` is sufficient for "not basis A" — and it is exactly symmetric with the dina row's
-    // `== 1`, so the two read as one pair. It is deliberately not NECESSARY (basis B searches
-    // k from 1, so a hypothetical basis-B offer with k == 1 would fail here); that is the
-    // fail-LOUD direction. If this fixture's derived k ever drifts to 1 the row must be
-    // re-derived, not relaxed.
+    // (iii) A PERIOD-WIDTH TRIPWIRE — no longer a basis attribution (fix round 2). The older
+    // wording read `!= 1` as sufficient for "not basis A" on the premise that basis A published
+    // a hardcoded `1`. Fix round 1 replaced that hardcode with a MEASURED span, so basis A now
+    // publishes 2 on at least one shipped fixture
+    // (`interactive_3p_subset_lethal_does_not_crown`) and the inference is dead in both
+    // directions. The basis attribution this row actually stands on is its named revert-probe ⓐ
+    // — force `ring_delta_signature` to return `None` and this row loses its offer entirely,
+    // which no basis-A row does. The assertion is KEPT as a width tripwire: this cascade draws a
+    // card every cycle, so its period genuinely spans more than one retained frame, and a drift
+    // to 1 means the fixture stopped being what the row describes.
     assert_ne!(
         k, 1,
-        "basis B must be what certified this board: basis A publishes frames_per_period 1 \
-         unconditionally, and this cascade draws a card every cycle so basis A cannot match"
+        "this cascade draws a card every cycle, so one repetition spans more than one retained \
+         ring frame; a k of 1 means the fixture no longer has the shape this row asserts"
     );
 
     // (iv) the bound is narrowed, asked of the single authority. `MAX_SHORTCUT_CYCLES` is
@@ -7624,10 +7638,12 @@ fn bounded_offer_on_a_within_turn_draw_drain_is_basis_b() {
 /// GREEN at both player counts while `dina_untargeted_drain_4p_offers_at_three_live_opponents`
 /// and `bounded_offer_on_a_within_turn_draw_drain_is_basis_b` both FAIL. Surviving that
 /// mutation is what proves basis A certified here. **`frames_per_period == 1` proves NOTHING
-/// about the basis** — basis A publishes `1` unconditionally and basis B *derives* `k` from
-/// `1` upward, so a k==1 basis-B offer is byte-identical in the payload. The `== 1` assertion
-/// below is a structural consistency check, necessary but never sufficient; treating it as a
-/// basis attribution is the exact non-discriminating inference that mislabelled the dina row.
+/// about the basis** — basis B *derives* `k` from `1` upward, so a k==1 basis-B offer is
+/// byte-identical in the payload, and since fix round 1 basis A MEASURES its span too (2 on
+/// `interactive_3p_subset_lethal_does_not_crown`), so a `!= 1` reading is dead as well. The
+/// `== 1` assertion below is a structural consistency check on THIS fixture's period width,
+/// necessary but never sufficient; treating it as a basis attribution is the exact
+/// non-discriminating inference that mislabelled the dina row.
 ///
 /// ⚠ MECHANISM — CORRECTED, and the correction is load-bearing. An earlier revision of this
 /// doc said *"a pure life↔life loop moves only axes `loop_states_equal_modulo_resources`
@@ -7729,10 +7745,12 @@ fn multiplayer_pure_life_drain_offers_at_three_and_four_players() {
             .expect("a bounded offer publishes its per-period signature");
         assert_eq!(
             per_cycle.frames_per_period, 1,
-            "{seats}p: NECESSARY-but-not-sufficient for the basis-A label. Basis A publishes 1 \
-             unconditionally, so != 1 would refute the label outright and must be re-derived, \
-             not relaxed — but == 1 does NOT establish it, because basis B derives k from 1 \
-             upward and publishes the identical value. The label is carried by the \
+            "{seats}p: a PERIOD-WIDTH tripwire, not a basis attribution. This cascade's \
+             certifying prior sits one retained frame back, so its MEASURED span is 1 — a drift \
+             means the fixture changed shape and the row must be re-derived, not relaxed. It \
+             establishes nothing about the basis in either direction: basis B derives k from 1 \
+             upward, and since fix round 1 basis A measures its span too (2 on \
+             `interactive_3p_subset_lethal_does_not_crown`). The label is carried by the \
              `ring_delta_signature -> None` probe named in this row's doc, not by this number"
         );
 
@@ -8067,7 +8085,9 @@ fn bloodloop_mandatory_draw_cascade_offers_at_2p_3p_and_4p() {
             .expect("a bounded offer states its per-period signature");
         assert_eq!(
             per_cycle.frames_per_period, 2,
-            "{players}p: derived period (basis B); basis A publishes 1"
+            "{players}p: this cascade's derived period spans two retained ring frames. A WIDTH \
+             tripwire only — since fix round 1 both bases measure the span, so no value \
+             attributes a basis (see `bounded_offer_on_a_within_turn_draw_drain_is_basis_b`)"
         );
 
         // The multiplayer property the ≥3p rows exist for: ONE cycle charges EVERY
@@ -8270,6 +8290,137 @@ fn bounded_fixed_count_commits_exactly_n_periods() {
     }
 }
 
+/// FIX ROUND 2 (MED-2) — the same `n × δ` property on a certification-basis **A** offer, at
+/// DRIVE level. The row above covers basis **B** on all three of its fixtures; every basis-A
+/// claim in this lane rested on ONE published-number assertion until this row.
+///
+/// # Why the basis matters, and what was uncovered
+///
+/// `frames_per_period` reaches the drive from two different producers.
+/// Basis B derives it from `ring_delta_signature` (the ring window's own period `k`); basis A
+/// derives it from the certifying prior's ring index. Fix round 1 changed ONLY the basis-A
+/// producer — a hardcoded `1` became the measured span — and MEASURED, reverting that hardcode
+/// flips exactly one row of the 85 in this file's `loop_shortcut::` module:
+/// [`interactive_3p_subset_lethal_does_not_crown`]. That row asserts the PUBLISHED VALUE and
+/// nothing else; it never declares a count, so nothing in the tree observed what a basis-A
+/// offer's drive actually commits. The claim "under the hardcode that fixture's accepted drive
+/// committed nothing at all" was true and untracked. This row tracks it.
+///
+/// # The fixture, and why it is the right one
+///
+/// `setup_3p_subset_lethal` is the ONE basis-A fixture whose published span is not 1: the
+/// `DRAIN_CLERIC` / `BLOOD_SIPPER` pairing alternates a gain-life resolution and a lose-life
+/// resolution, so one whole repetition spans TWO retained ring frames (`frames_per_period == 2`,
+/// asserted below as a reach-guard). A fixture with `k == 1` could not tell a drive that reads
+/// the VALUE from one that reads any positive constant.
+///
+/// # MEASURED, through the production accept path (`apply` → declare → APNAP accepts)
+///
+/// derived `k = 2` ⇒ `n=1` commits `{P0:+1, P1:-1, P2:0}`, `n=2` `{+2,-2,0}`, `n=3` `{+3,-3,0}`
+/// — exactly `n × δ`. P2 is the CR 119.8 life-loss-immune bystander and is untouched at every
+/// `n`, which is the multiplayer half: one cycle charges the seats the certificate names and
+/// only those.
+///
+/// # REVERT-PROBES — both RUN, and the second one does NOT flip
+///
+/// * ⓐ **FLIPS.** Restore basis A's hardcoded `frames_per_period: 1` ⇒ every `n` commits
+///   `{P0: 0, P1: 0, P2: 0}`, and the row reports it at the non-zero-commit guard. The
+///   mechanism: `frames_per_period` is an OR-ed delimiter, so a `k` SMALLER than the true span
+///   cuts the cycle early — here at one frame, half a period — and
+///   `materialize_fixed_shortcut`'s conformance check then drops every one of them.
+/// * ⓑ **DOES NOT FLIP**, measured, and it is recorded rather than quietly dropped. Deleting
+///   `|| frames_per_period.is_some_and(|k| frames_this_cycle >= k)` from
+///   `drive_one_shortcut_cycle` leaves this row GREEN, because this is a basis-**A** fixture:
+///   its board genuinely RECURS, so `loop_states_equal_modulo_resources(boundary, &norm)` is a
+///   working delimiter on its own and lands on the same two-frame cycle. (The same probe flips
+///   five other rows in this module, including
+///   `bounded_fixed_drive_rolls_back_a_partial_crossing_cycle` — the basis-B fixtures, whose
+///   boards never recur, are the ones that need the delimiter to exist at all.)
+///
+/// So this row's discrimination rests ENTIRELY on ⓐ — which is the point: ⓐ is the only edit
+/// that distinguishes a measured span from a hardcoded one, and before this row nothing in the
+/// tree observed its drive-level consequence.
+#[test]
+fn basis_a_bounded_fixed_count_commits_exactly_n_periods() {
+    let mut boards: Vec<Vec<(PlayerId, i64)>> = vec![];
+    for n in [1u32, 2, 3] {
+        // Rebuilt per `n`: a driven trajectory is not replayable from a used state.
+        let (mut runner, kickoff) = setup_3p_subset_lethal(LoopDetectionMode::Interactive);
+        let _ = runner.cast(kickoff).resolve();
+        drive_scenario_to_bounded_offer(&mut runner, PRIMED_LOOP_BEATS).unwrap_or_else(|| {
+            panic!(
+                "the subset-lethal class raises a bounded offer (see \
+                 `interactive_3p_subset_lethal_does_not_crown`); got {:?}",
+                runner.state().waiting_for
+            )
+        });
+        let mut state = runner.state().clone();
+
+        let (committed, per_cycle, bound) = accept_bounded_fixed(&mut state, n);
+
+        // ── reach-guards: without these the `n × δ` equality can pass degenerately ──
+        assert!(
+            per_cycle.delta.life.values().filter(|v| **v != 0).count() >= 2,
+            "a zero-or-single-term δ makes `n × δ` trivially satisfiable; got {:?}",
+            per_cycle.delta.life
+        );
+        assert!(
+            bound >= 3,
+            "`n = 3` must be WITHIN the offered bound, else the declaration is handed back and \
+             this row silently tests the rejection arm; bound = {bound}"
+        );
+        // THE ANTIDOTE TO THE HARDCODE: the drive must commit something. Under
+        // `frames_per_period: 1` on this fixture the conformance check drops every half-period
+        // and this is `{0,0,0}` — a state in which the `n × δ` equality below still holds for
+        // the zero-δ seats and would not, on its own, notice.
+        assert!(
+            committed.iter().any(|(_, delta)| *delta != 0),
+            "n={n}: a basis-A drive that commits nothing is the hardcoded-span defect; \
+             committed {committed:?}"
+        );
+
+        // ── THE PROPERTY: committed delta == n × published per-period delta ──
+        for (seat, delta) in &committed {
+            assert_eq!(
+                *delta,
+                i64::from(n) * per_cycle.delta.life.get(seat).copied().unwrap_or(0),
+                "n={n}: {seat:?}'s committed life delta must be exactly `n` copies of the \
+                 period the offer published ({:?}); committed {committed:?}",
+                per_cycle.delta.life
+            );
+        }
+
+        assert_eq!(
+            state.players.iter().filter(|p| p.is_eliminated).count(),
+            0,
+            "n={n}: CR 704.5a — a within-bound drive eliminates nobody"
+        );
+        assert!(
+            matches!(state.waiting_for, WaitingFor::Priority { .. }),
+            "n={n}: a completed finite drive hands back to ordinary priority; got {:?}",
+            state.waiting_for
+        );
+
+        // ── WIDTH TRIPWIRE, deliberately LAST. It is the same published-number observation
+        //    `interactive_3p_subset_lethal_does_not_crown` already carries, and MED-2's whole
+        //    finding is that a published number is not a drive-level fact. Placed after the
+        //    assertions above so that under the hardcoded-span revert the failure this row
+        //    REPORTS is "the drive committed nothing", not "the offer published 1" — measured:
+        //    with it placed first, the hardcode probe failed here and the drive assertions were
+        //    never reached, which would have made this row a second copy of the existing one.
+        assert_eq!(
+            per_cycle.frames_per_period, 2,
+            "n={n}: this fixture's repetition spans two retained ring frames; a drift changes \
+             what one committed cycle means and every equality above with it"
+        );
+        boards.push(committed);
+    }
+
+    // Three DISTINCT boards. Under the hardcoded span all three are `{0,0,0}`.
+    assert_ne!(boards[0], boards[1], "`Fixed(1)` vs `Fixed(2)`");
+    assert_ne!(boards[1], boards[2], "`Fixed(2)` vs `Fixed(3)`");
+}
+
 /// FIX ROUND 1 MIRROR (A1.2) — the drive STOPS AT the first lethal cycle. It does not commit
 /// `n` cycles blindly and reconcile the deaths afterwards.
 ///
@@ -8294,6 +8445,17 @@ fn bounded_fixed_count_commits_exactly_n_periods() {
 /// drive's every beat goes through `pass_priority_once_with_pipeline`, so CR 704.5a ("if a
 /// player has 0 or less life, that player loses the game") is applied INSIDE the drive.
 ///
+/// # SCOPE — this row covers the TOTAL-WIPE arm ONLY (fix round 2, MED-1)
+///
+/// bloodloop3 seats its two opponents at EQUAL life (17/17 at the offer beat, measured), so they
+/// cross 0 on the SAME cycle, CR 104.2a crowns, and the drive takes `CycleOutcome::CrossLethal`.
+/// The fixture is structurally incapable of a partial wipe: a symmetric fixture collapses every
+/// partial case into a total case. The other arm — one seat crosses while ≥2 players survive, no
+/// `GameOver`, `CycleOutcome::Abort`, full rollback of the crossing cycle — behaves DIFFERENTLY
+/// and has its own row, [`bounded_fixed_drive_rolls_back_a_partial_crossing_cycle`], which
+/// carries the arm-asymmetry table. Both arms are out of contract for any legitimately-derived
+/// bound; each is reachable only under a doctored one.
+///
 /// # The MATCHED PAIR, on the same doctored offer
 ///
 /// * ⓐ `n = cycles_to_lethal - 1` — the drive runs to completion, every seat survives at
@@ -8303,6 +8465,14 @@ fn bounded_fixed_count_commits_exactly_n_periods() {
 /// Without ⓐ, ⓑ alone is satisfied by a materializer that ignores `n` entirely and simply runs
 /// the loop until something dies — which is exactly what `c6d834040` did. ⓐ is what forces the
 /// stop point to be `n`-sensitive.
+///
+/// ⚠ ⓐ's DOCTORING IS A NO-OP ON THIS FIXTURE, and that is stated rather than dressed up (fix
+/// round 2, LOW-1). bloodloop3's honest bound is 16 and `cycles_to_lethal - 1 = 17 - 1 = 16`, so
+/// `schema.max_iterations = survivor_n` writes back the value already present — asserted below,
+/// so a fixture drift cannot silently turn it into a real widening. ⓐ is therefore an
+/// AT-THE-BOUND instance of [`bounded_fixed_count_commits_exactly_n_periods`], not an
+/// independent stop-short observation. The pair's stop-short content rests entirely on ⓑ's
+/// clause (b).
 ///
 /// # What flips
 ///
@@ -8373,6 +8543,15 @@ fn bounded_fixed_drive_stops_at_the_first_lethal_cycle() {
         let WaitingFor::LoopShortcut { schema, .. } = &mut survive.waiting_for else {
             unreachable!("bounded_offer_parts already matched the offer")
         };
+        // The no-op recorded in this row's doc, pinned so it cannot drift unnoticed: on THIS
+        // fixture the honest bound already equals `cycles_to_lethal - 1`, so the line below
+        // rewrites the value in place. If a fixture change ever makes them differ, ⓐ becomes a
+        // genuine doctored widening and its doc must be re-derived rather than re-read.
+        assert_eq!(
+            schema.max_iterations, survivor_n,
+            "ⓐ's assignment is a NO-OP on this fixture (honest bound == cycles_to_lethal - 1); \
+             a divergence means ⓐ is no longer an at-the-bound instance"
+        );
         schema.max_iterations = survivor_n;
         r6a_declare_and_accept_all(&mut survive, proposer, survivor_n);
         assert_eq!(
@@ -8422,13 +8601,22 @@ fn bounded_fixed_drive_stops_at_the_first_lethal_cycle() {
         .map(|p| p.id)
         .collect();
 
-    // (c) EXACTLY the seats the partial drive lethals — never a full-`n` overshoot that takes
+    // (c) EXACTLY the seats the published period drains — never a full-`n` overshoot that takes
     //     the proposer down too, and never a subset that leaves a drained seat alive.
+    //
+    //     ⚠ THIS CLAIM IS PER-ARM (fix round 2, MED-1). It holds on the `CycleOutcome::
+    //     CrossLethal` arm, which is the only arm this symmetric fixture can reach: the crossing
+    //     cycle COMMITS and the eliminated set is exactly the victims. On the `Abort` arm — one
+    //     seat crosses while ≥2 survive — the eliminated set is EMPTY, and empty because the
+    //     crossing cycle was rolled back whole, not because nobody crossed. Same surface
+    //     reading, two different facts; conflating them is what let this doc ship a claim
+    //     measurement contradicts. The Abort arm's own row is
+    //     `bounded_fixed_drive_rolls_back_a_partial_crossing_cycle`.
     assert_eq!(
         eliminated,
         victims,
-        "CR 704.5a: the eliminated set is exactly the seats the published period drains; \
-         lives {:?}",
+        "CR 704.5a: on the total-wipe (GameOver) arm the eliminated set is exactly the seats the \
+         published period drains; lives {:?}",
         state.players.iter().map(|p| p.life).collect::<Vec<_>>()
     );
 
@@ -8449,6 +8637,196 @@ fn bounded_fixed_drive_stops_at_the_first_lethal_cycle() {
                  `ceil(life / loss)` periods, derived from the published δ, not one more"
             );
         }
+    }
+}
+
+/// FIX ROUND 2 (MED-1) — THE OTHER LETHAL ARM. A crossing that eliminates ONE seat while
+/// **≥2 players survive** raises no `GameOver`, so the drive does not cross-lethal: it ABORTS,
+/// the crossing cycle is rolled back whole, and every seat is still alive at handback.
+///
+/// # The arm asymmetry, stated so a future drive learns it from the doc and not by accident
+///
+/// | arm | trigger | outcome |
+/// |---|---|---|
+/// | **total wipe** | every remaining opponent crosses 0 on the SAME cycle ⇒ `WaitingFor::GameOver` | `CycleOutcome::CrossLethal` — the crossing cycle **COMMITS**, the game ends, `eliminated == victims` |
+/// | **partial crossing** | one seat crosses 0 while ≥2 players survive ⇒ no `GameOver` | `CycleOutcome::Abort` — the crossing cycle is **ROLLED BACK WHOLE**, `eliminated == []` |
+///
+/// Both arms are **out of contract for any legitimately-derived bound**. `elimination_bounds`
+/// narrows to `min over living seats of (life - 1) / per-cycle loss` with FLOOR division, so
+/// `n * loss <= life - 1` for every seat at every legal `n` and a within-bound drive can never
+/// reach either arm. Each is therefore reachable only under a **doctored** bound — which is what
+/// both this row and [`bounded_fixed_drive_stops_at_the_first_lethal_cycle`] construct.
+///
+/// The `Abort` is the DESIGNED behaviour and this row asserts it rather than a wish: rolling the
+/// out-of-contract cycle back whole and handing the table its priority beats materializing a
+/// partial elimination whose remaining repetitions were bounded by a δ the board no longer moves
+/// (the surviving seats' per-cycle drain changes the moment a drain target leaves the game).
+/// See `materialize_fixed_shortcut`'s `CycleOutcome::Abort` arm.
+///
+/// # Why this row had to exist separately — the fixture-symmetry trap
+///
+/// [`bounded_fixed_drive_stops_at_the_first_lethal_cycle`] is the mirror for the same
+/// stop-short property, but its bloodloop3 fixture seats **two opponents at equal life** (17/17,
+/// measured), so they cross on the SAME cycle and it can only ever exhibit the total-wipe arm.
+/// A symmetric fixture collapses every partial case into a total case; the partial arm — the one
+/// real multiplayer boards take, since equal life totals are the exception — had no fixture at
+/// all. This row's dina 4p dump is ASYMMETRIC by measurement (opponents at 35/31/36, all draining
+/// 1 per period ⇒ first crossings 35/31/36), and the reach-guards below FAIL if that ever drifts
+/// into symmetry, which is what stops this row from silently becoming a second copy of the mirror.
+///
+/// # What is asserted, and what is deliberately NOT
+///
+/// Every quantity is derived from the certificate the ENGINE published and the offer-beat board.
+/// The row asserts the OBSERVABLE outcome: exactly `first_crossing - 1` periods committed, zero
+/// eliminations, every seat above 0, handback to ordinary priority.
+///
+/// It does NOT assert "the conformance check never fired", because a conformance drop at the same
+/// cycle index and an `Abort` at that index leave IDENTICAL final states — both `break 'cycles`
+/// onto the same rollback. That distinction was settled by a REVERT-PROBE instead: deleting the
+/// conformance check from `materialize_fixed_shortcut` leaves this row GREEN and unchanged, so
+/// the stop is the `Abort`, not the conformance drop. Asserting it from the state would have been
+/// an unfalsifiable claim.
+///
+/// # REVERT-PROBES
+///
+/// * delete `|| frames_per_period.is_some_and(|k| frames_this_cycle >= k)` from
+///   `drive_one_shortcut_cycle` ⇒ the dina drive commits ZERO (`Abort` at cycle 0) ⇒ the
+///   committed-delta `assert_eq!` FAILS.
+/// * MUST-NOT-FLIP: deleting the conformance check leaves this row green (measured) — it is the
+///   `Abort` arm, not the conformance arm.
+#[test]
+fn bounded_fixed_drive_rolls_back_a_partial_crossing_cycle() {
+    let mut state = restore_dump(&gunzip_dump(include_bytes!(
+        "../fixtures/dina_conqueror_4p.json.gz"
+    )));
+    drive_to_bounded_offer(&mut state, 400).expect("the bounded offer must fire on the 4p dump");
+
+    let (proposer, certificate, schema) = bounded_offer_parts(&state);
+    let per_cycle = certificate
+        .per_cycle
+        .clone()
+        .expect("a bounded offer publishes its per-period signature");
+    let honest_bound = schema.max_iterations;
+    let lives_before: Vec<(PlayerId, i64)> = state
+        .players
+        .iter()
+        .map(|p| (p.id, p.life as i64))
+        .collect();
+    let loss = |seat: &PlayerId| -per_cycle.delta.life.get(seat).copied().unwrap_or(0);
+
+    // `ceil(life / loss)` — the first cycle index at which each drained seat crosses 0.
+    let crossings: Vec<(PlayerId, i64)> = lives_before
+        .iter()
+        .filter(|(id, _)| loss(id) > 0)
+        .map(|(id, l0)| {
+            (
+                *id,
+                l0.div_euclid(loss(id)) + i64::from(l0.rem_euclid(loss(id)) != 0),
+            )
+        })
+        .collect();
+    assert!(
+        crossings.len() >= 2,
+        "REACH-GUARD: a PARTIAL wipe needs at least two drained seats, else 'one crosses while \
+         others survive' is unconstructible; published δ {:?}",
+        per_cycle.delta.life
+    );
+    let first_crossing = crossings
+        .iter()
+        .map(|(_, c)| *c)
+        .min()
+        .expect("at least two drained seats, asserted above");
+
+    // ── THE ASYMMETRY REACH-GUARD. This is the guard the mirror row could not have had.
+    let first_victims: Vec<PlayerId> = crossings
+        .iter()
+        .filter(|(_, c)| *c == first_crossing)
+        .map(|(id, _)| *id)
+        .collect();
+    assert_eq!(
+        first_victims.len(),
+        1,
+        "REACH-GUARD: this row is about the PARTIAL arm, so exactly ONE seat may cross first. \
+         Equal crossings would make the whole table die together, take `CycleOutcome::CrossLethal` \
+         and silently re-test the mirror row's total-wipe arm instead; crossings {crossings:?}"
+    );
+    let survivors = state.players.iter().filter(|p| !p.is_eliminated).count() - first_victims.len();
+    assert!(
+        survivors >= 2,
+        "REACH-GUARD: with fewer than two survivors CR 104.2a crowns and `WaitingFor::GameOver` \
+         routes the drive to the CrossLethal arm; got {survivors} survivors at the first crossing"
+    );
+
+    // The honest bound is exactly one period short of that crossing — the CR 704.5a headroom
+    // term (`life - 1`) with floor division. Asserted, not assumed: it is what makes the
+    // doctoring below a REAL widening rather than a re-write of the value already present.
+    assert_eq!(
+        i64::from(honest_bound),
+        first_crossing - 1,
+        "`elimination_bounds` reserves one point of headroom, so the honest bound sits one \
+         period below the first crossing; bound {honest_bound}, crossings {crossings:?}"
+    );
+
+    // Three doctored bounds: at the crossing, and comfortably past it. All three must stop at
+    // the same place — a drive that stopped `n`-relative rather than at the boundary would not.
+    for over in [0u32, 3, 9] {
+        let mut doctored = state.clone();
+        let n = u32::try_from(first_crossing).expect("fits") + over;
+        let WaitingFor::LoopShortcut { schema, .. } = &mut doctored.waiting_for else {
+            unreachable!("bounded_offer_parts already matched the offer")
+        };
+        schema.max_iterations = n;
+
+        r6a_declare_and_accept_all(&mut doctored, proposer, n);
+
+        // (a) NOBODY is eliminated — by ROLLBACK, not because nobody crossed. `n >= first
+        //     crossing` means the arithmetic says a seat must die; the drive refuses the cycle.
+        assert_eq!(
+            doctored
+                .players
+                .iter()
+                .filter(|p| p.is_eliminated)
+                .map(|p| p.id)
+                .collect::<Vec<_>>(),
+            Vec::<PlayerId>::new(),
+            "n={n}: the crossing cycle is rolled back whole, so the eliminated set is EMPTY — \
+             which is a different fact from 'nobody crossed'; lives {:?}",
+            doctored.players.iter().map(|p| p.life).collect::<Vec<_>>()
+        );
+        assert!(
+            doctored.players.iter().all(|p| p.life > 0),
+            "n={n}: every seat is above the CR 704.5a threshold; lives {:?}",
+            doctored.players.iter().map(|p| p.life).collect::<Vec<_>>()
+        );
+
+        // (b) EXACTLY `first_crossing - 1` periods committed: every cycle before the crossing
+        //     one, and none of it. Derived from the published δ, never from a literal.
+        for (seat, l0) in &lives_before {
+            let committed = l0
+                - doctored
+                    .players
+                    .iter()
+                    .find(|p| p.id == *seat)
+                    .unwrap()
+                    .life as i64;
+            assert_eq!(
+                committed,
+                (first_crossing - 1) * -per_cycle.delta.life.get(seat).copied().unwrap_or(0),
+                "n={n} {seat:?}: the drive commits every period up to the crossing cycle and \
+                 rolls that one back; lives {:?}",
+                doctored.players.iter().map(|p| p.life).collect::<Vec<_>>()
+            );
+        }
+
+        // (c) NOT the CrossLethal arm. `GameOver` here would mean the partial crossing crowned
+        //     someone, which is the confusion this row exists to keep separate.
+        assert_eq!(
+            doctored.waiting_for,
+            WaitingFor::Priority { player: proposer },
+            "n={n}: CR 104.2a — a player wins only once ALL their opponents have left, and this \
+             crossing eliminates at most one of three, so there is no winner to crown and the \
+             aborted drive hands back ordinary priority rather than ending the game"
+        );
     }
 }
 
