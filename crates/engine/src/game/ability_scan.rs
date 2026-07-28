@@ -5887,6 +5887,50 @@ fn effect_census_role(e: &Effect) -> CensusRole {
 // header. Fail-closed default is `MayPrompt`.
 // ---------------------------------------------------------------------------
 
+/// CR 616.1: the proposed-event classes whose replacement environment a
+/// [`ResolutionChoiceFreedom::FreeUnlessReplacements`] verdict leaves for the caller
+/// to discharge.
+///
+/// A SET (same shape as [`Axes`] above), not one enum variant per class. Two reasons,
+/// both load-bearing: a resolution chain joins `effect` with `sub_ability`/`else_ability`
+/// and a mixed life+draw chain must accumulate BOTH obligations instead of collapsing
+/// to `MayPrompt`; and the caller ORs the obligation across every stack entry, which is
+/// a union, not a choice. Sibling variants (`FreeUnlessLifeReplacements` /
+/// `FreeUnlessDrawReplacements`) would have re-derived that union at each of the three
+/// consumers.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) struct ReplacementPromptClasses {
+    /// CR 119.3: the resolver runs the LIFE-event replacement pipeline
+    /// (`ProposedEvent::LifeGain` / `ProposedEvent::LifeLoss`).
+    pub(crate) life: bool,
+    /// CR 121.1: the resolver runs the DRAW-event replacement pipeline
+    /// (`ProposedEvent::Draw`).
+    pub(crate) draw: bool,
+}
+
+impl ReplacementPromptClasses {
+    /// No obligation — the accumulator's identity for the caller's union fold.
+    pub(crate) const NONE: Self = Self {
+        life: false,
+        draw: false,
+    };
+    pub(crate) const LIFE: Self = Self {
+        life: true,
+        draw: false,
+    };
+    pub(crate) const DRAW: Self = Self {
+        life: false,
+        draw: true,
+    };
+
+    pub(crate) fn or(self, other: Self) -> Self {
+        Self {
+            life: self.life || other.life,
+            draw: self.draw || other.draw,
+        }
+    }
+}
+
 /// CR 732.2a + CR 608.2d: resolution-time choice-freeness verdict for the
 /// growing-cascade cover gate (`analysis::resource` item 6). NOT an `Axes`
 /// axis — this classifies RESOLVER prompting behavior, not AST reads (module
@@ -5894,45 +5938,81 @@ fn effect_census_role(e: &Effect) -> CensusRole {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum ResolutionChoiceFreedom {
     /// Resolving can never enter a non-priority `WaitingFor` in ANY state,
-    /// EXCEPT through the life-event replacement pipeline (single optional
-    /// candidate, replacement.rs:6221; CR 616.1 material ordering,
-    /// replacement.rs:6263; mandatory body-continuation drain,
-    /// replacement.rs:5511-5524 → engine_replacement.rs:1159). Callers MUST
-    /// pair this verdict with `analysis::resource::life_event_replacements_may_prompt`
-    /// — the paired environmental obligation is part of this variant's contract.
+    /// EXCEPT through the replacement pipeline for the carried event classes
+    /// (single optional candidate, replacement.rs:8775-8798; CR 616.1 material
+    /// ordering, replacement.rs:8814-8838; mandatory body-continuation drain,
+    /// replacement.rs:7834-7847 → engine_replacement.rs:2273). All three of those
+    /// prompt seams live in the event-agnostic `pipeline_loop`, which is why one
+    /// parameterized obligation covers every class rather than one guard per class.
+    /// Callers MUST pair this verdict with
+    /// `analysis::resource::replacement_environment_may_prompt` for exactly the
+    /// carried classes — the paired environmental obligation is part of this
+    /// variant's contract.
     ///
-    /// There is deliberately no plain `Free` variant yet: both allow-listed
-    /// kinds (`GainLife`/`LoseLife`) genuinely can prompt via the life-event
-    /// replacement pipeline, so `Free` would be uninhabited today. Adding it
-    /// later is compiler-guided (a new variant flags every exhaustive match).
-    FreeUnlessLifeReplacements,
+    /// There is deliberately no plain `Free` variant yet: every allow-listed kind
+    /// genuinely can prompt through its own replacement pipeline, so `Free` would be
+    /// uninhabited today. Adding it later is compiler-guided (a new variant flags
+    /// every exhaustive match).
+    FreeUnlessReplacements(ReplacementPromptClasses),
     /// May prompt, or unproven — the fail-closed default.
     MayPrompt,
 }
 
 impl ResolutionChoiceFreedom {
     /// Worst-of join for a resolution chain: `MayPrompt` dominates (a chain that
-    /// can prompt on either branch can prompt).
+    /// can prompt on either branch can prompt); two free verdicts UNION their
+    /// outstanding replacement-environment obligations.
     fn join(self, other: ResolutionChoiceFreedom) -> ResolutionChoiceFreedom {
-        if matches!(self, ResolutionChoiceFreedom::FreeUnlessLifeReplacements)
-            && matches!(other, ResolutionChoiceFreedom::FreeUnlessLifeReplacements)
-        {
-            ResolutionChoiceFreedom::FreeUnlessLifeReplacements
-        } else {
-            ResolutionChoiceFreedom::MayPrompt
+        match (self, other) {
+            (
+                ResolutionChoiceFreedom::FreeUnlessReplacements(a),
+                ResolutionChoiceFreedom::FreeUnlessReplacements(b),
+            ) => ResolutionChoiceFreedom::FreeUnlessReplacements(a.or(b)),
+            _ => ResolutionChoiceFreedom::MayPrompt,
+        }
+    }
+}
+
+/// CR 608.2d: is this `QuantityExpr` a CR 608.2d "up to N" count — a magnitude the
+/// resolving player picks rather than one the state determines?
+///
+/// Recursive and wildcard-free for the same reason the classifier it serves is: a NEW
+/// `QuantityExpr` variant must be classified before it compiles, so an `UpTo` can never
+/// be smuggled in under a newly-added wrapper.
+///
+/// MEASURED DISCREPANCY, and the reason this guard exists at all: `Effect::Draw`'s own
+/// type doc (types/ability.rs) says the drawer "chooses any 0..=resolve(max) at
+/// resolution time via the `engine_resolution_choices` flow", but `effects/draw.rs`
+/// never calls `QuantityExpr::peel_up_to` and contains no `WaitingFor` — the prompt is
+/// documented, not implemented, so an `UpTo` draw currently draws the maximum. Rejecting
+/// it is therefore a false-negative TODAY and stays sound the day the prompt is wired.
+fn quantity_offers_up_to_choice(q: &QuantityExpr) -> bool {
+    match q {
+        QuantityExpr::UpTo { .. } => true,
+        QuantityExpr::Fixed { .. } | QuantityExpr::Ref { .. } => false,
+        QuantityExpr::DivideRounded { inner, .. }
+        | QuantityExpr::Offset { inner, .. }
+        | QuantityExpr::ClampMin { inner, .. }
+        | QuantityExpr::Multiply { inner, .. } => quantity_offers_up_to_choice(inner),
+        QuantityExpr::Power { exponent, base: _ } => quantity_offers_up_to_choice(exponent),
+        QuantityExpr::Difference { left, right } => {
+            quantity_offers_up_to_choice(left) || quantity_offers_up_to_choice(right)
+        }
+        QuantityExpr::Sum { exprs } | QuantityExpr::Max { exprs } => {
+            exprs.iter().any(quantity_offers_up_to_choice)
         }
     }
 }
 
 /// CR 608.2d: can resolving this single `Effect` ever offer a resolution-time
 /// player choice? Exhaustive `match` with NO wildcard catch-all arm — a NEW
-/// `Effect` variant fails to compile here until it is classified. Only the two
+/// `Effect` variant fails to compile here until it is classified. Only the
 /// allow-list arms make a soundness claim (grounded by a resolver trace); every
 /// other variant is the fail-closed `MayPrompt` (an ungrounded reject is only a
 /// false-negative cover rejection, so grouped arms need no per-kind evidence).
 fn effect_resolution_choice_freedom(e: &Effect) -> ResolutionChoiceFreedom {
     match e {
-        // ---- allow-list: choice-free EXCEPT the life-event replacement
+        // ---- allow-list: choice-free EXCEPT that kind's own replacement
         //      pipeline (destructured WITHOUT `..` so a new field forces a
         //      re-audit of the soundness claim) ----
         //
@@ -5942,20 +6022,54 @@ fn effect_resolution_choice_freedom(e: &Effect) -> ResolutionChoiceFreedom {
         // selection = pure filter eval (game/filter.rs: no WaitingFor); amount =
         // pure quantity eval (game/quantity.rs: no WaitingFor). Verdict is
         // payload-independent. CR 119.7 can't-gain short-circuit is deterministic.
-        // PAIRED OBLIGATION: caller runs life_event_replacements_may_prompt
-        // (resource.rs item 6), which also covers the mandatory body-continuation
-        // drain (H4 route c) and the Execute-arm stack.rs drain.
+        // PAIRED OBLIGATION: caller runs replacement_environment_may_prompt for
+        // the LIFE class (resource.rs item 6), which also covers the mandatory
+        // body-continuation drain (H4 route c) and the Execute-arm stack.rs drain.
         Effect::GainLife {
             amount: _,
             player: _,
-        } => ResolutionChoiceFreedom::FreeUnlessLifeReplacements,
+        } => ResolutionChoiceFreedom::FreeUnlessReplacements(ReplacementPromptClasses::LIFE),
         // CR 119.3 + CR 732.2a: same shape — resolve_lose (life.rs:293-365),
         // only prompt = NeedsChoice (life.rs:352-355). CR 119.8 can't-lose
         // short-circuit is deterministic. Same PAIRED OBLIGATION.
         Effect::LoseLife {
             amount: _,
             target: _,
-        } => ResolutionChoiceFreedom::FreeUnlessLifeReplacements,
+        } => ResolutionChoiceFreedom::FreeUnlessReplacements(ReplacementPromptClasses::LIFE),
+        // CR 121.1 + CR 121.2 + CR 732.2a: resolver trace effects/draw.rs —
+        // `resolve` (draw.rs:104-160) computes the count with a pure quantity eval
+        // (`resolve_quantity_with_targets`, game/quantity.rs: no WaitingFor) and the
+        // drawer with a pure lookup (`resolve_player_for_context_ref`,
+        // effects/mod.rs:6084: reads `ability`/`state`, returns a `PlayerId`), then
+        // hands the whole instruction to `start_draw_sequence_*` →
+        // `resume_draw_sequence`, i.e. the CR 121.2 per-card replacement pipeline.
+        // Its ONLY prompt is `ReplacementResult::NeedsChoice` (draw.rs:150); the
+        // whole file contains zero `WaitingFor` (`rg -c WaitingFor
+        // src/game/effects/draw.rs` == 0). Drawing from an empty library is not a
+        // prompt either — CR 704.5b makes it a state-based action. Same shape as the
+        // life pair, so the SAME parameterized PAIRED OBLIGATION applies, for the
+        // DRAW class.
+        //
+        // THE MECHANISM THIS ARM CLAIMS, and it is not "the variant is Draw":
+        // a draw is choice-free only when it is STARVED — when its sole route to a
+        // resolution-time prompt is the replacement ENVIRONMENT, which the paired
+        // obligation then measures. Two payload/context routes are NOT that, and both
+        // are excluded:
+        //   * OPTIONAL draws ("you MAY draw a card", CR 603.5) never reach this arm.
+        //     `ability_resolution_choice_freedom` returns `MayPrompt` on `optional` /
+        //     `optional_targeting` / `optional_for` BEFORE dispatching to the effect
+        //     classifier, and that refusal is CORRECT: the "may" is a genuine
+        //     per-iteration CR 608.2d choice with no replacement effect involved.
+        //     Widening keyed on the variant NAME would have silently swallowed it.
+        //   * CR 608.2d "draw up to N" (`count: UpTo`) is a resolution-time COUNT
+        //     choice; rejected here, fail-closed, by `quantity_offers_up_to_choice`.
+        Effect::Draw { count, target: _ } => {
+            if quantity_offers_up_to_choice(count) {
+                ResolutionChoiceFreedom::MayPrompt
+            } else {
+                ResolutionChoiceFreedom::FreeUnlessReplacements(ReplacementPromptClasses::DRAW)
+            }
+        }
         // ---- everything else: fail-closed MayPrompt. Grouped so the compiler
         //      still enforces exhaustiveness (every variant is named); no payload
         //      scanning needed on the reject side. ----
@@ -5966,7 +6080,6 @@ fn effect_resolution_choice_freedom(e: &Effect) -> ResolutionChoiceFreedom {
         | Effect::EachDealsDamageEqualToPower { .. }
         | Effect::OpponentGuess { .. }
         | Effect::SwapChosenLabels { .. }
-        | Effect::Draw { .. }
         | Effect::Pump { .. }
         | Effect::PairWith { .. }
         | Effect::Destroy { .. }
@@ -8210,25 +8323,32 @@ mod tests {
     /// Guard test (9092a8961 standard): pins `effect_resolution_choice_freedom`
     /// and the ability-level wrapper flips.
     ///
-    /// The `FreeUnlessLifeReplacements` allow set is EXACTLY
-    /// `{Effect::GainLife, Effect::LoseLife}` — asserted below and pinned by the
-    /// allow-arm census (`rg -c 'ResolutionChoiceFreedom::FreeUnlessLifeReplacements'
-    /// ability_scan.rs` == 2, both inside `effect_resolution_choice_freedom`). A
-    /// future third allow arm must update this pin, the census, and add a
-    /// resolver-trace grounding row.
+    /// The `FreeUnlessReplacements` allow set is EXACTLY
+    /// `{Effect::GainLife, Effect::LoseLife, non-"up to" Effect::Draw}` — asserted
+    /// below and pinned by the allow-arm census
+    /// (`rg -c 'FreeUnlessReplacements\(ReplacementPromptClasses::' ability_scan.rs`
+    /// == 3, all inside `effect_resolution_choice_freedom`). The census matches on the
+    /// named-const payload on purpose: the looser
+    /// `FreeUnlessReplacements\(` counts 6, because `join`'s three match patterns bind
+    /// the payload as a variable and would drown the signal. A future fourth allow arm
+    /// must update this pin, the census, and add a resolver-trace grounding row.
+    /// Each allow arm's obligation CLASS is asserted too, not just its variant: a
+    /// life arm that returned `DRAW` would pass a variant-only assertion while
+    /// silently checking the wrong replacement environment.
     ///
     /// Compiler-exhaustiveness leg: `effect_resolution_choice_freedom`'s match has
     /// no wildcard catch-all, so a NEW `Effect` variant fails to compile until classified.
     /// Executed revert-fail (documented in the commit): classifying `Effect::Scry`
-    /// ⇒ `FreeUnlessLifeReplacements` turns this test RED.
+    /// ⇒ `FreeUnlessReplacements` turns this test RED.
     #[test]
     fn resolution_choice_verdicts_are_exactly_pinned() {
         use crate::types::ability::{
             AbilityCost, AbilityDefinition, AbilityKind, UnlessPayModifier,
         };
-        use ResolutionChoiceFreedom::{FreeUnlessLifeReplacements, MayPrompt};
+        use ResolutionChoiceFreedom::{FreeUnlessReplacements, MayPrompt};
 
-        // Allow-list (soundness claims) ⇒ FreeUnlessLifeReplacements.
+        // Allow-list (soundness claims) ⇒ FreeUnlessReplacements, each naming the
+        // event class whose replacement environment the caller must then check.
         let gain = Effect::GainLife {
             amount: QuantityExpr::Fixed { value: 1 },
             player: TargetFilter::Controller,
@@ -8237,13 +8357,55 @@ mod tests {
             amount: QuantityExpr::Fixed { value: 1 },
             target: None,
         };
+        let draw = Effect::Draw {
+            count: QuantityExpr::Fixed { value: 1 },
+            target: TargetFilter::Controller,
+        };
         assert_eq!(
             effect_resolution_choice_freedom(&gain),
-            FreeUnlessLifeReplacements
+            FreeUnlessReplacements(ReplacementPromptClasses::LIFE)
         );
         assert_eq!(
             effect_resolution_choice_freedom(&lose),
-            FreeUnlessLifeReplacements
+            FreeUnlessReplacements(ReplacementPromptClasses::LIFE)
+        );
+        // CR 121.1: a MANDATORY, non-"up to" draw is starved — its only prompt route
+        // is the CR 616.1 draw-replacement environment, which the DRAW obligation
+        // hands to the caller.
+        assert_eq!(
+            effect_resolution_choice_freedom(&draw),
+            FreeUnlessReplacements(ReplacementPromptClasses::DRAW)
+        );
+        // CR 608.2d: "draw up to N" is a resolution-time COUNT choice ⇒ excluded,
+        // including under an arithmetic wrapper (the recursion, not just the top level).
+        for count in [
+            QuantityExpr::UpTo {
+                max: Box::new(QuantityExpr::Fixed { value: 3 }),
+            },
+            QuantityExpr::Offset {
+                inner: Box::new(QuantityExpr::UpTo {
+                    max: Box::new(QuantityExpr::Fixed { value: 3 }),
+                }),
+                offset: 1,
+            },
+        ] {
+            assert_eq!(
+                effect_resolution_choice_freedom(&Effect::Draw {
+                    count: count.clone(),
+                    target: TargetFilter::Controller,
+                }),
+                MayPrompt,
+                "up-to draw count {count:?} is a CR 608.2d resolution-time choice"
+            );
+        }
+        // The join is a UNION of obligations, not a collapse to MayPrompt: a chain
+        // that both drains and draws owes BOTH environmental checks.
+        assert_eq!(
+            effect_resolution_choice_freedom(&lose).join(effect_resolution_choice_freedom(&draw)),
+            FreeUnlessReplacements(ReplacementPromptClasses {
+                life: true,
+                draw: true
+            })
         );
 
         // Reject side: the finding's kinds + adjacent siblings ⇒ MayPrompt, each
@@ -8278,14 +8440,14 @@ mod tests {
             );
         }
 
-        // Explicit allow-set pin: exactly {GainLife, LoseLife}. Every other kind
-        // sampled above is on the reject side; the allow-arm census is the
-        // structural guard against a silent third allow arm.
+        // Explicit allow-set pin: exactly {GainLife, LoseLife, non-"up to" Draw}.
+        // Every other kind sampled above is on the reject side; the allow-arm census
+        // is the structural guard against a silent fourth allow arm.
         assert!(
             rejects
                 .iter()
                 .all(|e| effect_resolution_choice_freedom(e) == MayPrompt),
-            "the FreeUnlessLifeReplacements set is exactly {{Effect::GainLife, Effect::LoseLife}}"
+            "the FreeUnlessReplacements set is exactly {{GainLife, LoseLife, non-up-to Draw}}"
         );
 
         // Ability-level wrapper flips: base ⇒ Free (paired positive reach-guard),
@@ -8294,12 +8456,31 @@ mod tests {
         let base = ResolvedAbility::new(gain.clone(), Vec::new(), ObjectId(1), PlayerId(0));
         assert_eq!(
             ability_resolution_choice_freedom(&base),
-            FreeUnlessLifeReplacements
+            FreeUnlessReplacements(ReplacementPromptClasses::LIFE)
         );
 
         let mut a = base.clone();
         a.optional = true;
         assert_eq!(ability_resolution_choice_freedom(&a), MayPrompt);
+
+        // CR 603.5: THE MECHANISM GUARD for the draw widening. The same
+        // `Effect::Draw` payload classifies FREE when the ability is mandatory and
+        // `MayPrompt` when it is optional — proving the allow arm is keyed on the
+        // starved MECHANISM and not on the variant name. Both directions asserted, so
+        // neither can go vacuous.
+        let draw_base = ResolvedAbility::new(draw.clone(), Vec::new(), ObjectId(1), PlayerId(0));
+        assert_eq!(
+            ability_resolution_choice_freedom(&draw_base),
+            FreeUnlessReplacements(ReplacementPromptClasses::DRAW)
+        );
+        let mut optional_draw = draw_base.clone();
+        optional_draw.optional = true;
+        assert_eq!(
+            ability_resolution_choice_freedom(&optional_draw),
+            MayPrompt,
+            "an optional draw is a genuine CR 603.5 resolution-time choice and must NOT be \
+             swallowed by the mandatory-draw allow arm"
+        );
 
         let mut a = base.clone();
         a.optional_targeting = true;

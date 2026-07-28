@@ -1317,8 +1317,8 @@ fn entry_target_choice_is_pinned(
 ///
 /// `Some(residual)` ⇒ relieved, and `residual` is the classification the entry would have
 /// had WITHOUT its CR 603.5 gate, which the caller must go on to gate exactly like any
-/// unpinned entry's (a pinned "may" says nothing about the CR 616.1 life-event replacement
-/// surface). `None` ⇒ no relief.
+/// unpinned entry's (a pinned "may" says nothing about the CR 616.1 replacement surface
+/// for whichever event classes the residual names). `None` ⇒ no relief.
 ///
 /// ATTRIBUTION is the load-bearing part. `ability_resolution_choice_freedom` returns
 /// `MayPrompt` for SIX independent reasons (`game/ability_scan.rs:6534-6560` plus the
@@ -1350,7 +1350,7 @@ fn pinned_may_choice_relief(
     without_may_gate.optional = false;
     match crate::game::ability_scan::ability_resolution_choice_freedom(&without_may_gate) {
         ResolutionChoiceFreedom::MayPrompt => None,
-        residual @ ResolutionChoiceFreedom::FreeUnlessLifeReplacements => Some(residual),
+        residual @ ResolutionChoiceFreedom::FreeUnlessReplacements(_) => Some(residual),
     }
 }
 
@@ -1406,14 +1406,25 @@ pub(crate) fn loop_states_cover_modulo_growth(prior: &GameState, current: &GameS
 /// for a triggered ability via CR 603.3d), the same
 /// [`stack_entry_resolution_choice_freedom`] (CR 608.2d resolution-time prompts), the same
 /// [`entry_target_choice_is_pinned`] / [`pinned_may_choice_relief`] pin relief, and the same
-/// CR 616.1 [`life_event_replacements_may_prompt`] environmental guard the
-/// `FreeUnlessLifeReplacements` verdict's own contract requires. Nothing is re-derived here.
+/// CR 616.1 [`replacement_environment_may_prompt`] environmental guard the
+/// `FreeUnlessReplacements` verdict's own contract requires. Nothing is re-derived here.
 ///
 /// STRICTER than gate (3) in one deliberate way: gate (3) examines only entries whose
 /// normalized kind strictly GREW, because a non-grown place is one the window already
 /// observed resolving. An offer makes a stronger claim — that N FUTURE repetitions are
-/// predictable — and in an exact-recurrence window every entry re-announces each cycle, so
-/// every entry is examined.
+/// predictable — so every entry is examined, not only the grown ones.
+///
+/// ⚠ THE ORIGINAL JUSTIFICATION FOR THAT WIDTH WAS MEASURED FALSE AND IS CORRECTED HERE.
+/// It read: "in an exact-recurrence window every entry re-announces each cycle, so every
+/// entry is examined." A shortcut window need not be exact-recurrence at all, and when it
+/// is a GROWING CASCADE the premise fails outright. Measured on the `dellian` 4p fixture:
+/// the window is a growing cascade over a FROZEN 140-deep bottom prefix — the same 107
+/// entries, identical `ObjectId` set and identical index range, survived 220 beats while
+/// the stack grew above them. Those entries provably never re-announced and never
+/// resolved, so nothing the window observed says anything about them.
+/// That does not weaken the predicate — it STRENGTHENS the case for scanning every entry:
+/// a frozen entry is one the window has NO evidence about, which is precisely the entry a
+/// grown-only scan would skip. The width is right; only the stated reason was wrong.
 pub(crate) fn stack_choices_are_all_specified(
     state: &GameState,
     proposer: PlayerId,
@@ -1438,25 +1449,29 @@ pub(crate) fn stack_choices_are_all_specified(
         }
     }
     // Resolution-time (gate (6)'s fact), including its paired CR 616.1 obligation.
-    let mut needs_life_guard = false;
+    // The obligation is a UNION over entries: a stack holding both a life entry and a
+    // draw entry owes both environmental checks, and each verdict names its own class.
+    let mut obligations = crate::game::ability_scan::ReplacementPromptClasses::NONE;
     for entry in &state.stack {
         match stack_entry_resolution_choice_freedom(entry) {
             crate::game::ability_scan::ResolutionChoiceFreedom::MayPrompt => {
                 match pinned_may_choice_relief(state, entry, scope) {
                     Some(
-                        crate::game::ability_scan::ResolutionChoiceFreedom::FreeUnlessLifeReplacements,
-                    ) => needs_life_guard = true,
+                        crate::game::ability_scan::ResolutionChoiceFreedom::FreeUnlessReplacements(
+                            classes,
+                        ),
+                    ) => obligations = obligations.or(classes),
                     Some(crate::game::ability_scan::ResolutionChoiceFreedom::MayPrompt) | None => {
                         return false
                     }
                 }
             }
-            crate::game::ability_scan::ResolutionChoiceFreedom::FreeUnlessLifeReplacements => {
-                needs_life_guard = true
+            crate::game::ability_scan::ResolutionChoiceFreedom::FreeUnlessReplacements(classes) => {
+                obligations = obligations.or(classes)
             }
         }
     }
-    !(needs_life_guard && life_event_replacements_may_prompt(state))
+    !replacement_environment_may_prompt(state, obligations)
 }
 
 /// CR 732.2a: [`loop_states_cover_modulo_growth`] with an OFFER's published pin slots in
@@ -1607,11 +1622,11 @@ pub(crate) fn loop_states_cover_modulo_growth_scoped(
     // eligibility over player counters, CR 701.34a) can open a prompt that the
     // AST-level item-4 scan cannot see. Verdicts come from the ability_scan
     // classifier (pure fact-producers — rejection is decided ONLY here);
-    // FreeUnlessLifeReplacements additionally requires the CR 616.1 environmental
-    // guard below. THIS block is the single gate seam for resolution-choice
-    // rejection (item 3 is untouched and gates a different fact — announcement-time
-    // ordering input). Perf: O(stack × AST) + O(objects × defs) via the guard —
-    // same order as items (4)/(5).
+    // FreeUnlessReplacements additionally requires the CR 616.1 environmental
+    // guard below, for exactly the event classes its payload names. THIS block is the
+    // single gate seam for resolution-choice rejection (item 3 is untouched and gates
+    // a different fact — announcement-time ordering input). Perf: O(stack × AST) +
+    // O(objects × defs) via the guard — same order as items (4)/(5).
     //
     // EXTENSION POINT — pinned fixed choices (CR 732.2a): a shortcut proposal MAY
     // pre-specify choices in advance ("always choose permanent P"); only
@@ -1634,28 +1649,30 @@ pub(crate) fn loop_states_cover_modulo_growth_scoped(
     // relief predicate is the mint predicate rather than a coarser sibling of it.
     // Precondition (b) is why relief is not a `continue`: the entry's RESIDUAL verdict
     // (its classification with the published CR 603.5 gate discharged) re-enters the same
-    // gating an unpinned entry gets, so `FreeUnlessLifeReplacements` still arms the
-    // CR 616.1 environmental guard below — a pinned target/"may" says nothing about whose
-    // life-event replacements might prompt.
-    let mut needs_life_guard = false;
+    // gating an unpinned entry gets, so `FreeUnlessReplacements` still arms the
+    // CR 616.1 environmental guard below for the classes it names — a pinned target/"may"
+    // says nothing about whose life- or draw-event replacements might prompt.
+    let mut obligations = crate::game::ability_scan::ReplacementPromptClasses::NONE;
     for entry in &current.stack {
         match stack_entry_resolution_choice_freedom(entry) {
             crate::game::ability_scan::ResolutionChoiceFreedom::MayPrompt => {
                 match pinned_may_choice_relief(current, entry, scope) {
                     Some(
-                        crate::game::ability_scan::ResolutionChoiceFreedom::FreeUnlessLifeReplacements,
-                    ) => needs_life_guard = true,
+                        crate::game::ability_scan::ResolutionChoiceFreedom::FreeUnlessReplacements(
+                            classes,
+                        ),
+                    ) => obligations = obligations.or(classes),
                     Some(crate::game::ability_scan::ResolutionChoiceFreedom::MayPrompt) | None => {
                         return false
                     }
                 }
             }
-            crate::game::ability_scan::ResolutionChoiceFreedom::FreeUnlessLifeReplacements => {
-                needs_life_guard = true
+            crate::game::ability_scan::ResolutionChoiceFreedom::FreeUnlessReplacements(classes) => {
+                obligations = obligations.or(classes)
             }
         }
     }
-    if needs_life_guard && life_event_replacements_may_prompt(current) {
+    if replacement_environment_may_prompt(current, obligations) {
         return false;
     }
 
@@ -3848,42 +3865,51 @@ pub(crate) fn life_growth_is_observed(state: &GameState) -> bool {
         )
 }
 
-/// The proposed-event class a life-affecting `ReplacementEvent` watches. CR 616.1
+/// The proposed-event class a `ReplacementEvent` watches. CR 616.1
 /// material-ordering competition is counted PER proposed-event class, because a
 /// single `ProposedEvent::LifeLoss` draws candidates from every LifeLoss-matching
 /// registry key at once (`LoseLife` + `LifeReduced` + `PayLife`).
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum LifeEventClass {
+enum ReplacedEventClass {
     /// Matches `ProposedEvent::LifeGain`.
     LifeGain,
     /// Matches `ProposedEvent::LifeLoss`.
     LifeLoss,
+    /// Matches `ProposedEvent::Draw`.
+    Draw,
 }
 
-/// CR 614.1a: is this replacement event in the LIFE class — i.e. does its
-/// registry matcher match `ProposedEvent::LifeGain` or `ProposedEvent::LifeLoss`?
-/// Compiler-exhaustive over ALL `ReplacementEvent` variants (no wildcard) so a
-/// NEW variant fails to compile until classified against the coupling rule.
+/// CR 614.1a: which proposed-event class does this replacement event's registry
+/// matcher (`crate::game::replacement`) watch? Compiler-exhaustive over ALL
+/// `ReplacementEvent` variants (no wildcard) so a NEW variant fails to compile until
+/// classified against the coupling rule.
 ///
-/// COUPLING RULE (grep-enforced when the set is edited): life-class ⇔ the event's
-/// registry matcher (`crate::game::replacement`) matches a life `ProposedEvent`.
-/// Measured (`rg -n 'ProposedEvent::Life(Gain|Loss)'` over the matcher fns):
+/// COUPLING RULE (grep-enforced when the set is edited): a variant is classified by
+/// the `ProposedEvent` its MATCHER matches, never by its name — a hand-picked set had
+/// already missed `PayLife` and `LifeReduced`. Measured (`rg -n 'ProposedEvent::'` over
+/// the matcher fns, cross-checked against `replacement_event_keys_for_event`, which is
+/// what actually selects candidate keys for a proposed event):
 /// `gain_life_matcher` (GainLife → LifeGain), `lose_life_matcher` (LoseLife →
 /// LifeLoss), `life_reduced_matcher` (LifeReduced → LifeLoss), `pay_life_matcher`
-/// (PayLife → LifeLoss). Classify by the MATCHER, not the name — a hand-picked
-/// set had already missed `PayLife` and `LifeReduced`.
-fn replacement_event_matches_life(event: &ReplacementEvent) -> Option<LifeEventClass> {
+/// (PayLife → LifeLoss), `draw_matcher` (Draw → Draw).
+///
+/// `DrawCards` is classified `Draw` FAIL-CLOSED even though it cannot currently apply:
+/// its registry entry is a `stub()` and `replacement_event_keys_for_event` emits only
+/// `ReplacementEvent::Draw` for a `ProposedEvent::Draw`, so a `DrawCards` def is never
+/// a live candidate. Counting it anyway only over-counts the CR 616.1 competition ⇒
+/// over-rejects ⇒ safe, and it survives the alias being wired up later.
+fn replacement_event_proposed_class(event: &ReplacementEvent) -> Option<ReplacedEventClass> {
     match event {
-        ReplacementEvent::GainLife => Some(LifeEventClass::LifeGain),
+        ReplacementEvent::GainLife => Some(ReplacedEventClass::LifeGain),
         ReplacementEvent::LoseLife | ReplacementEvent::LifeReduced | ReplacementEvent::PayLife => {
-            Some(LifeEventClass::LifeLoss)
+            Some(ReplacedEventClass::LifeLoss)
         }
-        // Non-life events (explicitly listed ⇒ None, so a new variant must be
+        ReplacementEvent::Draw | ReplacementEvent::DrawCards => Some(ReplacedEventClass::Draw),
+        // Unclassified events (explicitly listed ⇒ None, so a new variant must be
         // classified against the coupling rule before it compiles).
         ReplacementEvent::DamageDone
         | ReplacementEvent::Destroy
         | ReplacementEvent::Discard
-        | ReplacementEvent::Draw
         | ReplacementEvent::TurnFaceUp
         | ReplacementEvent::Counter
         | ReplacementEvent::ChangeZone
@@ -3897,7 +3923,6 @@ fn replacement_event_matches_life(event: &ReplacementEvent) -> Option<LifeEventC
         | ReplacementEvent::Mill
         | ReplacementEvent::Attached
         | ReplacementEvent::SearchFound
-        | ReplacementEvent::DrawCards
         | ReplacementEvent::ProduceMana
         | ReplacementEvent::Scry
         | ReplacementEvent::CoinFlip
@@ -3922,9 +3947,18 @@ fn replacement_event_matches_life(event: &ReplacementEvent) -> Option<LifeEventC
 }
 
 /// §2.2 item 6 environmental guard (CR 616.1 + CR 614.1a): can the current
-/// life-event replacement environment open a resolution-time prompt on an
-/// allow-listed `GainLife`/`LoseLife` resolution? Paired obligation of
-/// `ResolutionChoiceFreedom::FreeUnlessLifeReplacements`.
+/// replacement environment open a resolution-time prompt on an allow-listed
+/// resolution of one of `classes`? Paired obligation of
+/// `ResolutionChoiceFreedom::FreeUnlessReplacements`.
+///
+/// PARAMETERIZED BY CLASS, not duplicated per class, because all three rejection
+/// reasons below live in the EVENT-AGNOSTIC `pipeline_loop`: the optional-candidate
+/// park (replacement.rs:8775-8798) and the CR 616.1 material-ordering park
+/// (replacement.rs:8814-8838) branch on `replacement_is_optional` /
+/// `replacement_ordering_is_material` and never inspect the event's class, and the
+/// body-continuation stash (replacement.rs:7834-7847) is reached from the same
+/// `(Execute, Mandatory)` arm for every proposed event. A per-class copy of this
+/// function would have been three copies of one CR 616.1 argument.
 ///
 /// Over-approximates `find_applicable_replacements` fail-closed: conditions,
 /// `valid_player` scopes, and amounts are deliberately ignored (over-count ⇒
@@ -3934,17 +3968,21 @@ fn replacement_event_matches_life(event: &ReplacementEvent) -> Option<LifeEventC
 /// scanned by `find_applicable_replacements` replacement.rs:4838-4862; skip
 /// `is_consumed`, mirroring :4859-4861). `pending_step_end_mana_handlers` is a
 /// different type gated behind `ProposedEvent::EmptyManaPool`
-/// (replacement.rs:4971-4980) that structurally cannot produce a life-class
+/// (replacement.rs:4971-4980) that structurally cannot produce a life- or draw-class
 /// candidate ⇒ excluded. There are NO virtual life candidates in
 /// `find_applicable_replacements` (measured — the only `ProposedEvent::LifeGain`
 /// there is a `valid_player` filter, not a candidate creator, replacement.rs:4674).
 ///
-/// Rejects when a life-class def is:
-/// (a) OPTIONAL — a single optional candidate prompts (replacement.rs:6221-6247);
+/// Rejects when an in-class def is:
+/// (a) OPTIONAL — a single optional candidate prompts (replacement.rs:8775-8798).
+///     This is the CR 702.52a dredge-class route on the draw side ("if you would draw
+///     a card, you MAY instead mill N cards"): a "you may" replacement makes an
+///     otherwise-mandatory draw genuinely choice-bearing;
 /// (b) carries a body continuation (`execute`/`runtime_execute`) — a MANDATORY
-///     body is stashed as `PostReplacementContinuation::Resolved`
-///     (replacement.rs:5511-5524) and drained via
-///     `apply_pending_post_replacement_effect` (engine_replacement.rs:1159),
+///     body is stashed as a `PostReplacementContinuation`
+///     (replacement.rs:7834-7847, `Resolved` for `runtime_execute` and `Template`
+///     for a CR 614.11 draw-count rider's `sub_ability`) and drained via
+///     `apply_pending_post_replacement_effect` (engine_replacement.rs:2273),
 ///     which runs an arbitrary `ResolvedAbility` and can set a non-priority
 ///     `waiting_for` (e.g. a Sacrifice body ⇒ EffectZoneChoice). `execute` is
 ///     also rejected by item 5 (resource.rs:1058-1060); re-checked here so the
@@ -3952,14 +3990,22 @@ fn replacement_event_matches_life(event: &ReplacementEvent) -> Option<LifeEventC
 ///     otherwise covered (item 5 scans it only for projected reads,
 ///     resource.rs:976-981);
 /// (c) one of ≥2 defs competing for the SAME proposed-event class — CR 616.1
-///     material-ordering prompt (replacement.rs:6263-6279). A single mandatory
-///     quantity-mod def with no body (Bloodletter / Rhox Faithmender class)
-///     trips NONE of these and resolves deterministically (replacement.rs:6250-6261).
-fn life_event_replacements_may_prompt(state: &GameState) -> bool {
+///     material-ordering prompt (replacement.rs:8814-8838). A single mandatory
+///     quantity-mod def with no body (Bloodletter / Rhox Faithmender class on the
+///     life side, Teferi's Ageless Insight class on the draw side) trips NONE of
+///     these and resolves deterministically (replacement.rs:8839-8860).
+fn replacement_environment_may_prompt(
+    state: &GameState,
+    classes: crate::game::ability_scan::ReplacementPromptClasses,
+) -> bool {
+    let in_scope = |class: ReplacedEventClass| match class {
+        ReplacedEventClass::LifeGain | ReplacedEventClass::LifeLoss => classes.life,
+        ReplacedEventClass::Draw => classes.draw,
+    };
     // CR 614.1 / CR 113.6: `active_replacements` is all-zones (its callers restrict).
     // `find_applicable_replacements` — the real pipeline this over-approximates —
     // scans [Battlefield, Command] (plus the entering/discarded card, irrelevant to a
-    // life event). A life-class replacement on a card in the library / hand /
+    // life or draw event). An in-class replacement on a card in the library / hand /
     // graveyard cannot apply during the loop; scanning it is the same all-zones
     // false-reject class as the observer firewalls, so match the pipeline's scope.
     let object_defs = crate::game::functioning_abilities::active_replacements(state)
@@ -3972,8 +4018,10 @@ fn life_event_replacements_may_prompt(state: &GameState) -> bool {
 
     let mut gain_defs = 0usize;
     let mut loss_defs = 0usize;
+    let mut draw_defs = 0usize;
     for def in object_defs.chain(floating_defs) {
-        let Some(class) = replacement_event_matches_life(&def.event) else {
+        let Some(class) = replacement_event_proposed_class(&def.event).filter(|c| in_scope(*c))
+        else {
             continue;
         };
         // (a) single optional candidate prompts.
@@ -3985,12 +4033,13 @@ fn life_event_replacements_may_prompt(state: &GameState) -> bool {
             return true;
         }
         match class {
-            LifeEventClass::LifeGain => gain_defs += 1,
-            LifeEventClass::LifeLoss => loss_defs += 1,
+            ReplacedEventClass::LifeGain => gain_defs += 1,
+            ReplacedEventClass::LifeLoss => loss_defs += 1,
+            ReplacedEventClass::Draw => draw_defs += 1,
         }
     }
     // (c) ≥2 defs competing for one proposed-event class ⇒ CR 616.1 ordering prompt.
-    gain_defs >= 2 || loss_defs >= 2
+    gain_defs >= 2 || loss_defs >= 2 || draw_defs >= 2
 }
 
 /// CR 614.1a: a replacement's BODY (not its `condition`) can read a projected
@@ -6566,14 +6615,17 @@ mod tests {
                     .push(def.clone());
             }
             assert!(
-                life_event_replacements_may_prompt(&c_life),
+                replacement_environment_may_prompt(
+                    &c_life,
+                    crate::game::ability_scan::ReplacementPromptClasses::LIFE
+                ),
                 "reach-guard: the installed optional def makes the CR 616.1 surface \
                  prompt-capable (arm 2's bare board does not)"
             );
             let slots = [churn_src_slot(&c_life, 0), churn_src_slot(&c_life, 1)];
             assert!(
                 !loop_states_cover_modulo_growth_scoped(&p_life, &c_life, pinned_scope(&slots)),
-                "the discharged `may` leaves a FreeUnlessLifeReplacements RESIDUAL that must \
+                "the discharged `may` leaves a FreeUnlessReplacements(LIFE) RESIDUAL that must \
                  re-arm the CR 616.1 guard — relief is not a `continue`"
             );
         }
@@ -7010,7 +7062,7 @@ mod tests {
     }
 
     /// Fixed-amount `LoseLife` churner — allow-listed
-    /// (`FreeUnlessLifeReplacements`), reads no projected resource. Distinct
+    /// (`FreeUnlessReplacements(LIFE)`), reads no projected resource. Distinct
     /// normalized kind from `gain_ability`.
     fn lose_ability(amount: i32) -> ResolvedAbility {
         ResolvedAbility::new(
@@ -7031,7 +7083,7 @@ mod tests {
     /// STRUCTURAL, not observational (the projected poison axis, CR 701.34a, can
     /// inhabit the option surface mid-extrapolation). Item 4 does NOT mask this:
     /// `scan_effect(Proliferate)` is `Axes::NONE`. Revert-fail: delete the item-6
-    /// loop, or classify `Proliferate` ⇒ `FreeUnlessLifeReplacements`.
+    /// loop, or classify `Proliferate` ⇒ `FreeUnlessReplacements`.
     #[test]
     fn n1_o_grown_choice_opening_proliferate_false() {
         let p = |id| churn_entry(id, 0, proliferate_ability(), None);
@@ -11598,6 +11650,141 @@ mod tests {
             !shipped_json.contains("per_cycle"),
             "an offer stating no per-period signature must be byte-identical to BASE; got \
              {shipped_json}"
+        );
+    }
+
+    // ── PR-7 Phase 5c: the DRAW verdict's paired CR 616.1 obligation ──
+
+    /// A mandatory, non-"up to" `Effect::Draw` trigger — the starved shape the
+    /// `FreeUnlessReplacements(DRAW)` arm claims.
+    fn draw_entry(id: u64) -> StackEntry {
+        churn_entry(
+            id,
+            0,
+            ResolvedAbility::new(
+                Effect::Draw {
+                    count: QuantityExpr::Fixed { value: 1 },
+                    target: TargetFilter::Controller,
+                },
+                vec![],
+                ObjectId(CHURN_SRC),
+                PlayerId(0),
+            ),
+            None,
+        )
+    }
+
+    fn with_replacements(entry: StackEntry, defs: &[ReplacementDefinition]) -> GameState {
+        let mut state = GameState::new_two_player(7);
+        state.stack.push_back(entry);
+        let oid = bf_object(&mut state, 900);
+        let object = state.objects.get_mut(&oid).expect("just inserted");
+        for def in defs {
+            object.replacement_definitions.push(def.clone());
+        }
+        state
+    }
+
+    fn repl(event: ReplacementEvent, optional: bool) -> ReplacementDefinition {
+        let mut def = ReplacementDefinition::new(event);
+        if optional {
+            def.mode = crate::types::ability::ReplacementMode::Optional { decline: None };
+        }
+        def
+    }
+
+    /// CR 616.1 + CR 121.1: the draw verdict's environmental obligation is REAL (it can
+    /// reject) and CLASS-SCOPED (it rejects only on its own event class).
+    ///
+    /// Every arm is paired with the control that makes it non-vacuous: the bare board
+    /// arm proves a mandatory draw entry reaches and PASSES step (6) at all — without it
+    /// the three `false` arms would be indistinguishable from "draws are still refused
+    /// upstream" — and the cross-class arms prove the parameterization is load-bearing
+    /// rather than a rename of a guard that scans everything.
+    #[test]
+    fn draw_verdict_obligation_is_real_and_class_scoped() {
+        // (i) REACH-GUARD: a bare board with a mandatory draw on the stack PASSES. This
+        // is the assertion that flips if `Effect::Draw` goes back to `MayPrompt`.
+        assert!(
+            stack_choices_are_all_specified(
+                &with_replacements(draw_entry(10), &[]),
+                PlayerId(0),
+                &[]
+            ),
+            "a mandatory non-`up to` draw is starved: no replacement environment, no prompt"
+        );
+
+        // (ii) CR 702.52a dredge-class: a single OPTIONAL draw replacement prompts.
+        assert!(
+            !stack_choices_are_all_specified(
+                &with_replacements(draw_entry(10), &[repl(ReplacementEvent::Draw, true)]),
+                PlayerId(0),
+                &[]
+            ),
+            "an optional draw replacement is a genuine CR 608.2d resolution-time choice"
+        );
+
+        // (iii) CR 616.1 material ordering: two MANDATORY draw replacements compete.
+        assert!(
+            !stack_choices_are_all_specified(
+                &with_replacements(
+                    draw_entry(10),
+                    &[
+                        repl(ReplacementEvent::Draw, false),
+                        repl(ReplacementEvent::Draw, false)
+                    ]
+                ),
+                PlayerId(0),
+                &[]
+            ),
+            "CR 616.1: the affected player orders two competing mandatory replacements"
+        );
+
+        // (iv) ACCEPT-SIDE control: ONE mandatory, body-less draw replacement (Teferi's
+        // Ageless Insight class) resolves deterministically — the guard is not a blanket
+        // "any draw replacement rejects".
+        assert!(
+            stack_choices_are_all_specified(
+                &with_replacements(draw_entry(10), &[repl(ReplacementEvent::Draw, false)]),
+                PlayerId(0),
+                &[]
+            ),
+            "a lone mandatory quantity-mod replacement applies without a prompt"
+        );
+
+        // (v) CLASS SCOPING, both directions. A LIFE replacement says nothing about a
+        // DRAW-only stack and vice versa; an unparameterized guard would reject both.
+        assert!(
+            stack_choices_are_all_specified(
+                &with_replacements(draw_entry(10), &[repl(ReplacementEvent::GainLife, true)]),
+                PlayerId(0),
+                &[]
+            ),
+            "an optional LIFE replacement cannot prompt on a draw-only stack"
+        );
+        assert!(
+            stack_choices_are_all_specified(
+                &with_replacements(
+                    churn_entry(11, 0, lose_ability(1), None),
+                    &[repl(ReplacementEvent::Draw, true)]
+                ),
+                PlayerId(0),
+                &[]
+            ),
+            "an optional DRAW replacement cannot prompt on a life-only stack"
+        );
+        // …and the same optional LIFE replacement DOES reject a life stack, proving the
+        // arm above passes because of scoping and not because the def is inert.
+        assert!(
+            !stack_choices_are_all_specified(
+                &with_replacements(
+                    churn_entry(11, 0, lose_ability(1), None),
+                    &[repl(ReplacementEvent::LoseLife, true)]
+                ),
+                PlayerId(0),
+                &[]
+            ),
+            "positive control: the life guard still rejects its own class"
         );
     }
 }

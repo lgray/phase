@@ -7921,3 +7921,115 @@ fn until_lethal_against_a_bounded_offer_is_rejected() {
         "zero committed cycles"
     );
 }
+
+// ─────────────── PR-7 Phase 5c — the MANDATORY-DRAW cascade, ≥3 players ───────────────
+
+/// Real card (Psychosis Crawler is the printed member of this class); the synthetic name
+/// keeps the fixture off the card database.
+const BLEEDER: &str = "Whenever you draw a card, each opponent loses 1 life.";
+/// Synthetic mandatory payoff. Deliberately NOT "you may draw a card" — the "may" is a
+/// genuine CR 603.5 resolution-time choice that step (6) must keep refusing, and this
+/// fixture's whole job is to exercise the MANDATORY arm.
+const CHRONICLER: &str = "Whenever an opponent loses life, draw a card.";
+
+/// `bloodloop` at N players: a WITHIN-TURN MANDATORY drain cascade whose every cycle also
+/// DRAWS, so the board never recurs (a card moves library→hand each cycle) and the offer
+/// must come from the growth-cover basis rather than exact recurrence.
+///
+/// The draw payload is the POINT of the fixture, not an incidental detail. Before this
+/// commit, `Effect::Draw` was fail-closed `MayPrompt`, so step (6)
+/// `stack_choices_are_all_specified` refused every beat whose stack held one of these
+/// triggers and the multiplayer cascade could never be offered. Do NOT "simplify" this to
+/// a pure life loop to make it pass — a control that steers around the hole guards nothing
+/// about the hole.
+fn bloodloop_state(players: u8) -> GameState {
+    let mut scenario = GameScenario::new_n_player(players, 7);
+    scenario.at_phase(Phase::PreCombatMain);
+    for i in 0..players {
+        scenario.with_life(PlayerId(i), 20);
+    }
+    scenario.add_creature_from_oracle(P0, "Test Bleeder", 2, 2, BLEEDER);
+    scenario.add_creature_from_oracle(P0, "Test Chronicler", 2, 2, CHRONICLER);
+    let names: Vec<String> = (0..60).map(|i| format!("Filler {i}")).collect();
+    let refs: Vec<&str> = names.iter().map(String::as_str).collect();
+    for i in 0..players {
+        scenario.with_library_top(PlayerId(i), &refs);
+    }
+    let mut runner = scenario.build();
+    runner.state_mut().loop_detection = LoopDetectionMode::Interactive;
+    runner.state().clone()
+}
+
+/// PR-7 Phase 5c ACCEPTANCE — the bounded CR 732.2a offer fires on a MANDATORY-DRAW
+/// cascade at 2, 3 and 4 players.
+///
+/// # What flips when the widening is reverted
+///
+/// Measured at HEAD `ea6000b5c` with the same fixture and the same driver: 3p and 4p mint
+/// **`ENGINE_OFFERS = 0`**, every candidate beat refused `UnspecifiedChoiceWindow` (34
+/// bridge-moment refusals on each), while certification itself succeeded. Classify
+/// `Effect::Draw` back to `MayPrompt` and `drive_to_bounded_offer` returns `None` for
+/// `players >= 3` — `expect` panics and this test is RED. The 2p row discriminates too, on
+/// the beat: the offer moves 29 → 31 under the revert, because step (6) starts passing one
+/// full drain cycle earlier once the draw entries stop refusing.
+///
+/// # Why the beats are pinned literals
+///
+/// The drive is deterministic — fixed scenario seed, `dump_drive_one_beat`'s policy is
+/// total (always pass at `Priority`, first legal answer otherwise), and no RNG is on the
+/// path. Re-run identical across runs. An offer beat is observable behaviour that this
+/// commit CHANGED; pinning it is what stops a later change from moving it silently.
+#[test]
+fn bloodloop_mandatory_draw_cascade_offers_at_2p_3p_and_4p() {
+    for (players, expected_beat, expected_turn) in [(2u8, 29usize, 4u32), (3, 58, 5), (4, 97, 6)] {
+        let mut state = bloodloop_state(players);
+        let beat = drive_to_bounded_offer(&mut state, 400).unwrap_or_else(|| {
+            panic!(
+                "{players}p mandatory-draw cascade must raise a bounded offer; a `None` here is \
+                 the pre-widening behaviour (step (6) refusing every draw-bearing stack)"
+            )
+        });
+        assert_eq!(beat, expected_beat, "{players}p offer beat");
+        assert_eq!(state.turn_number, expected_turn, "{players}p offer turn");
+
+        let (proposer, certificate, schema) = bounded_offer_parts(&state);
+        assert_eq!(
+            proposer, P0,
+            "{players}p: the cascade's controller proposes"
+        );
+        assert!(
+            schema.is_bounded(),
+            "{players}p: an unbounded schema would take a different declare arm"
+        );
+        let per_cycle = certificate
+            .per_cycle
+            .as_ref()
+            .expect("a bounded offer states its per-period signature");
+        assert_eq!(
+            per_cycle.frames_per_period, 2,
+            "{players}p: derived period (basis B); basis A publishes 1"
+        );
+
+        // The multiplayer property the ≥3p rows exist for: ONE cycle charges EVERY
+        // opponent, not just the first. A 2p-only guard could not see this.
+        let opponents: Vec<PlayerId> = state
+            .players
+            .iter()
+            .map(|p| p.id)
+            .filter(|p| *p != P0)
+            .collect();
+        assert_eq!(opponents.len(), usize::from(players) - 1);
+        for opponent in &opponents {
+            assert_eq!(
+                per_cycle.delta.life.get(opponent).copied(),
+                Some(-1),
+                "{players}p: one cycle drains {opponent:?}"
+            );
+        }
+        assert_eq!(
+            per_cycle.delta.life.get(&P0).copied().unwrap_or(0),
+            0,
+            "{players}p: the cascade's controller loses no life"
+        );
+    }
+}
