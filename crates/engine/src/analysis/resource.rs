@@ -157,7 +157,11 @@ pub enum TriggerKind {
 /// Compare two snapshots with [`ResourceVector::delta`] to get the per-cycle
 /// change; [`ResourceVector::is_net_progress`] then decides whether the cycle is
 /// a beneficial (CR 732.2) loop.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+///
+/// `Serialize`/`Deserialize` exist because a per-cycle delta rides
+/// [`PeriodicDelta`] on the `WaitingFor::LoopShortcut` wire. One field needs an
+/// adaptor to get there — see [`counter_key_pairs`].
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ResourceVector {
     /// CR 106.1: floating mana by color, indexed `[W, U, B, R, G, C]` (see
     /// [`MANA_INDEX`]). Summed across all players' pools. **State-readable.**
@@ -223,11 +227,69 @@ pub struct ResourceVector {
     /// CR 122.1: counters by `(kind, object class)`. Includes +1/+1, loyalty,
     /// and poison (poison/energy are keyed under [`ObjectClass::Player`]).
     /// **State-readable.**
+    #[serde(with = "counter_key_pairs")]
     pub counters: BTreeMap<(CounterClass, ObjectClass), i64>,
 
     /// Generic trigger/keyword-action firings by family (proliferate, magecraft,
     /// …) — the mana-neutral axis a proliferate loop pumps. **Event-fed.**
     pub generic_triggers: BTreeMap<TriggerKind, i64>,
+}
+
+/// Serde adaptor for [`ResourceVector::counters`], whose key is the
+/// `(CounterClass, ObjectClass)` TUPLE. `serde_json` accepts only string-like map
+/// keys, and `crates/engine-wasm/src/lib.rs` PANICS on a serialization error, so an
+/// unadapted tuple key is a browser crash rather than a soft failure. Ride the wire as
+/// a pair SEQUENCE — the shape `ShortcutDecisionSchema.points` already uses.
+///
+/// Not reusing `types::game_state::tuple_key_map` (the repo's other adaptor, which
+/// stringifies instead): it is monomorphic over `HashMap<(ObjectId, usize), u32>`.
+/// The two sibling maps need no adaptor — `PlayerId` is a newtype over an integer and
+/// `TriggerKind` is a unit-variant enum, both of which `serde_json` accepts as keys.
+mod counter_key_pairs {
+    use super::{BTreeMap, CounterClass, ObjectClass};
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    pub(super) fn serialize<S: Serializer>(
+        map: &BTreeMap<(CounterClass, ObjectClass), i64>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        map.iter().collect::<Vec<_>>().serialize(serializer)
+    }
+
+    pub(super) fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<BTreeMap<(CounterClass, ObjectClass), i64>, D::Error> {
+        Ok(
+            Vec::<((CounterClass, ObjectClass), i64)>::deserialize(deserializer)?
+                .into_iter()
+                .collect(),
+        )
+    }
+}
+
+/// CR 732.2a: the resource signature of ONE repetition of a certified loop — what the
+/// offer publishes so a bounded drive can check that each committed cycle actually
+/// conformed, and so the CR 704 count bound has a per-period magnitude to divide by.
+///
+/// The `Vec` victim term (rather than a `BTreeMap` keyed by [`DecisionSlot`]) is
+/// deliberate: a struct map key hits exactly the `serde_json` restriction
+/// [`counter_key_pairs`] exists for, and the single consumer
+/// ([`ResourceVector::elimination_bounds`]) collects at its call site.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PeriodicDelta {
+    /// How many RETAINED RING FRAMES one repetition spans. `1` for a pair certified by
+    /// direct recurrence; `k` for a signature derived by [`ring_delta_signature`].
+    ///
+    /// Named for its unit on purpose: `game::engine::shortcut_drive_period` maps a
+    /// TEMPLATE to a repeat count, which is a different quantity in the same subsystem.
+    pub frames_per_period: u32,
+    /// The whole-game resource change across one repetition, measured from the very
+    /// frame pair that certified it.
+    pub delta: ResourceVector,
+    /// CR 704.5a: per published choice slot, the life magnitude one repetition charges
+    /// to whichever player that slot's pin names. EMPTY for the untargeted class, where
+    /// the victims are already visible in `delta.life`.
+    pub victim_slot: Vec<(DecisionSlot, i64)>,
 }
 
 impl ResourceVector {
@@ -602,10 +664,30 @@ impl ResourceVector {
     ///
     /// Clamped to `MAX_SHORTCUT_CYCLES`. A return of `0` means no legal repetition exists
     /// and the caller must not offer; callers require `N >= 1`.
-    // The first production consumer is the bounded offer, which lands in a later phase; the
-    // bound ships ahead of it so its conventions are pinned by a unit row before any producer
-    // depends on them.
-    #[allow(dead_code)]
+    /// CR 704.5a: the per-period life loss ONE published pin slot may charge to whichever
+    /// seat its declaration names — the `slot_magnitude` term
+    /// [`ResourceVector::elimination_bounds`] divides the headroom by.
+    ///
+    /// **MAX over seats, not SUM, and not the observed spread.** A pin is a
+    /// STATE-INDEPENDENT designation (CR 732.2a), so a declaration may aim *every*
+    /// iteration of a slot at *one* seat. Charging what the observed — unpinned — iteration
+    /// happened to spread around would UNDER-charge and overstate the bound, which fails
+    /// OPEN. Charging the sum over seats is not a loss any single seat can suffer from one
+    /// slot; it over-charges, which only SHRINKS the bound and is the fail-closed direction
+    /// this repo takes when the two disagree.
+    ///
+    /// Life GAINS contribute nothing (`(-n).max(0)`), so a proposer gaining 5 while three
+    /// opponents lose 1, 2 and 3 yields 3 — never 5, and never 6.
+    ///
+    /// Extracted from `game::engine::try_offer_bounded_cycle_shortcut` so the max-vs-sum
+    /// fork has a callable seam: `victim_slot` is empty on every trajectory that offers
+    /// today, so this expression's value is dropped in production and no fixture reaches
+    /// it. `worst_seat_life_loss_is_the_max_seat_never_the_sum` is its only discriminator.
+    pub(crate) fn worst_seat_life_loss(&self) -> i64 {
+        self.life.values().map(|&n| (-n).max(0)).max().unwrap_or(0)
+    }
+
+    // The first production consumer is `game::engine::try_offer_bounded_cycle_shortcut`.
     pub(crate) fn elimination_bounds(
         &self,
         state: &GameState,
@@ -822,6 +904,101 @@ fn map_delta<K: Ord + Copy>(
         }
     }
     out
+}
+
+/// CR 732.2a: the per-period resource signature of the RETAINED RING, derived — the
+/// second certification basis for a bounded cycle offer, and the one that consults no
+/// **board** predicate (objects / zones / tap-state) at all.
+///
+/// Searches `k` in `1..=(frames - 1) / 2`, smallest first, for a period whose consecutive
+/// frame-deltas repeat, and certifies only a period it has observed **twice** (`2k` deltas
+/// ⇒ `2k + 1` frames). `k` is an OUTPUT, never an input: no period constant exists in this
+/// subsystem — `game::engine::shortcut_drive_period` derives its period from the template
+/// schedule and `LOOP_DETECT_RING_CAP` merely CAPS how large a derivable `k` can be
+/// (16 frames ⇒ `k <= 7`).
+///
+/// Fail-closed in FOUR places. Fewer than `2k + 1` frames for every candidate `k` ⇒ `None`
+/// (a period seen once is a coincidence, not a signature). A smallest repeating period whose
+/// delta is the zero vector ⇒ `None`, because every multiple of it is zero too and a cycle
+/// that moves no resource states no CR 704 threshold to bound. A certifying window that is
+/// not TURN-POSITION invariant ⇒ `None` (the CR 703.1 conjunct below). Reading the RING only
+/// — never the live `state` — keeps the compared frames homogeneous: every ring frame is a
+/// `normalize_for_loop` snapshot taken at `WaitingFor::Priority{active_player}`
+/// (`game::engine`'s sole `record_loop_detect_sample` call site), while the live state is not
+/// normalized. It does not consult a board predicate, but it DOES require the frames it
+/// compares to be homogeneous in turn position, which is what "homogeneous" above now means
+/// in full.
+pub(crate) fn ring_delta_signature(state: &GameState) -> Option<(u32, ResourceVector)> {
+    let frames = state.loop_detect_ring.len();
+    // 2k + 1 with k >= 1.
+    if frames < 3 {
+        return None;
+    }
+    let snaps: Vec<ResourceVector> = state
+        .loop_detect_ring
+        .iter()
+        .map(|f| ResourceVector::snapshot(f))
+        .collect();
+    let deltas: Vec<ResourceVector> = snaps
+        .windows(2)
+        .map(|w| ResourceVector::delta(&w[0], &w[1]))
+        .collect();
+    for k in 1..=(frames - 1) / 2 {
+        // The MOST RECENT 2k deltas: a stale repeat in an older stretch of the ring says
+        // nothing about the period the loop is running now.
+        let recent = &deltas[deltas.len() - 2 * k..];
+        if recent[..k] != recent[k..] {
+            continue;
+        }
+        let per_period = ResourceVector::delta(&snaps[frames - 1 - k], &snaps[frames - 1]);
+        // Smallest repeating period, so every longer one is a whole number of copies of
+        // this one — a zero here cannot become non-zero at a larger `k`.
+        if per_period == ResourceVector::default() {
+            return None;
+        }
+        // CR 703.1 + CR 703.3: turn-based actions "happen automatically when certain steps
+        // or phases begin, or when each step and phase ends", and CR 703.2 says they are
+        // "not controlled by any player". CR 732.2a licenses a shortcut only over "a
+        // sequence of game choices, for all players" — so a period whose repetition is paved
+        // by step/phase boundaries is not a sequence that rule can describe. A 2-player
+        // draw-go board is exactly periodic in `library_delta` and in an upkeep life ticker,
+        // and without this conjunct that turn structure certifies as a "loop".
+        //
+        // Basis A cannot make that mistake: `loop_states_equal` delegates to
+        // `impl PartialEq for GameState`, which compares `turn_number`, `active_player` and
+        // `phase`, and neither `normalize_for_loop` nor `project_out_resources` neutralizes
+        // any of the three — the deliberate, ratified design recorded at
+        // `types::game_state::WaitingFor::is_forced_cascade_window`'s doc. Basis B compares
+        // only resource deltas, so it escaped that discipline silently; this restores parity.
+        // It is NOT a new policy and NOT a claim that shortcuts may not cross turns —
+        // CR 732.2a says verbatim that a shortcut "may even cross multiple turns". What is
+        // refused is a cross-turn certification by the BOARD-BLIND basis.
+        //
+        // KNOWINGLY ACCEPTED FALSE NEGATIVE, and it is the price of reusing the shipped
+        // authority instead of forking a second turn-position predicate:
+        // `window_scope_from_cover_frames` requires `extra_phases.is_empty()` on BOTH frames
+        // (CR 500.8 — effects can add phases to a turn), not merely equal counts. So a
+        // legitimate WITHIN-turn loop running while an extra phase is queued (the
+        // extra-combat class) mints no basis-B offer. That is the fail-closed direction — a
+        // missed offer, never a wrong one. If that class ever needs to certify, widen
+        // `window_scope_from_cover_frames` ITSELF, where both suppressing firewall callers
+        // see the change too; do not add a second local test here.
+        let window: Vec<&GameState> = state
+            .loop_detect_ring
+            .iter()
+            .skip(frames - (2 * k + 1))
+            .map(|f| f.as_ref())
+            .collect();
+        if !window.windows(2).all(|w| {
+            window_scope_from_cover_frames(w[0], w[1], None)
+                .phase_invariant
+                .is_some()
+        }) {
+            return None;
+        }
+        return Some((k as u32, per_period));
+    }
+    None
 }
 
 /// CR 732.2a vs CR 104.4b: the **complement** of the engine's strict loop
@@ -1211,6 +1388,97 @@ fn pinned_may_choice_relief(
 /// environment (item 6, CR 732.2a + CR 608.2d).
 pub(crate) fn loop_states_cover_modulo_growth(prior: &GameState, current: &GameState) -> bool {
     loop_states_cover_modulo_growth_scoped(prior, current, LoopWindowScope::unproven())
+}
+
+/// CR 732.2a "predictable results": is EVERY per-iteration choice this stack can open a
+/// SPECIFIED one — published by the offer's pins, or absent altogether?
+///
+/// The conjunct a BOUNDED offer needs, and the reason it is not
+/// [`loop_states_cover_modulo_growth_scoped`]: that predicate answers whether one frame
+/// COVERS another, and its item (1) additionally requires `object_resource_axes_match`
+/// STRICTLY — an axis [`loop_states_equal_modulo_resources`] deliberately projects OUT. An
+/// offer certified by exact recurrence would therefore be refused by an unrelated BOARD fact
+/// while its choice surface was never examined. Cover is the authority for cover; this is the
+/// authority for choices.
+///
+/// SINGLE AUTHORITY nonetheless, shared verbatim with that predicate's gates (3) and (6) —
+/// the same [`stack_entry_has_no_ordering_input`] (CR 601.2c announcement-time input, reached
+/// for a triggered ability via CR 603.3d), the same
+/// [`stack_entry_resolution_choice_freedom`] (CR 608.2d resolution-time prompts), the same
+/// [`entry_target_choice_is_pinned`] / [`pinned_may_choice_relief`] pin relief, and the same
+/// CR 616.1 [`life_event_replacements_may_prompt`] environmental guard the
+/// `FreeUnlessLifeReplacements` verdict's own contract requires. Nothing is re-derived here.
+///
+/// STRICTER than gate (3) in one deliberate way: gate (3) examines only entries whose
+/// normalized kind strictly GREW, because a non-grown place is one the window already
+/// observed resolving. An offer makes a stronger claim — that N FUTURE repetitions are
+/// predictable — and in an exact-recurrence window every entry re-announces each cycle, so
+/// every entry is examined.
+pub(crate) fn stack_choices_are_all_specified(
+    state: &GameState,
+    proposer: PlayerId,
+    slots: &[DecisionSlot],
+) -> bool {
+    // Only `pinned` is read by the two relief predicates below; the other three proofs belong
+    // to the cover axes and this predicate makes no claim about them. Written out in full so a
+    // future FIFTH field is a compile error that forces a decision rather than a silent
+    // default.
+    let scope = LoopWindowScope {
+        phase_invariant: None,
+        sole_driver: None,
+        pinned: Some(PinnedChoices { proposer, slots }),
+        cast_card_ids: None,
+    };
+    // Announcement-time (gate (3)'s fact).
+    for entry in &state.stack {
+        if !(entry_target_choice_is_pinned(state, entry, scope)
+            || stack_entry_has_no_ordering_input(state, entry))
+        {
+            return false;
+        }
+    }
+    // Resolution-time (gate (6)'s fact), including its paired CR 616.1 obligation.
+    let mut needs_life_guard = false;
+    for entry in &state.stack {
+        match stack_entry_resolution_choice_freedom(entry) {
+            crate::game::ability_scan::ResolutionChoiceFreedom::MayPrompt => {
+                match pinned_may_choice_relief(state, entry, scope) {
+                    Some(
+                        crate::game::ability_scan::ResolutionChoiceFreedom::FreeUnlessLifeReplacements,
+                    ) => needs_life_guard = true,
+                    Some(crate::game::ability_scan::ResolutionChoiceFreedom::MayPrompt) | None => {
+                        return false
+                    }
+                }
+            }
+            crate::game::ability_scan::ResolutionChoiceFreedom::FreeUnlessLifeReplacements => {
+                needs_life_guard = true
+            }
+        }
+    }
+    !(needs_life_guard && life_event_replacements_may_prompt(state))
+}
+
+/// CR 732.2a: [`loop_states_cover_modulo_growth`] with an OFFER's published pin slots in
+/// scope — the entry point `game::engine`'s bounded-cycle offer uses for both its
+/// certification disjunct and its pin-coverage conjunct.
+///
+/// This wrapper exists so the pins reach the gates through the SINGLE AUTHORITY
+/// [`window_scope_from_cover_frames`] rather than through a [`LoopWindowScope`] a caller
+/// in another module assembled itself; the scope's fields are private for exactly that
+/// reason. Passing `slots` empty is NOT the same as passing no proof: `Some(PinnedChoices
+/// { slots: &[] })` still names a proposer whose entries the relief tests, and every such
+/// test fails on an empty slot list, so an empty publication is byte-identically as strict
+/// as [`LoopWindowScope::unproven`].
+pub(crate) fn loop_states_cover_modulo_growth_pinned(
+    prior: &GameState,
+    current: &GameState,
+    proposer: PlayerId,
+    slots: &[DecisionSlot],
+) -> bool {
+    let scope =
+        window_scope_from_cover_frames(prior, current, Some(PinnedChoices { proposer, slots }));
+    loop_states_cover_modulo_growth_scoped(prior, current, scope)
 }
 
 /// CR 601.2f + CR 601.2a: the set of card ids this loop window's recorded driving
@@ -9351,6 +9619,98 @@ mod tests {
             .collect()
     }
 
+    /// PR-7 Phase 5b (PA-2A(e)) — CR 704.5a: the MAX-vs-SUM fork in `victim_slot`'s magnitude
+    /// derivation, which is otherwise UNTESTED and whose wrong answer surfaces in playtesting
+    /// as a wrong elimination bound rather than as a failure.
+    ///
+    /// WHY IT NEEDS ITS OWN ROW: `victim_slot` is EMPTY on every trajectory that offers today
+    /// — dina, the ≥3p life drain and the F4 predicate all publish `points == 0` — so in
+    /// production `worst_seat_life_loss` is evaluated only where its value is collected into
+    /// an empty `Vec` and dropped. No fixture reaches the fork. Stated as a coverage hole in
+    /// the PR body; 5d's targeted class is its first production-path consumer.
+    ///
+    /// O4 DERIVE conformance — all THREE legs, not one:
+    /// 1. **DERIVED, never compared to a literal.** `m` is bound from the return value and
+    ///    asserted only against structural invariants of the input map. No expected magnitude
+    ///    is written in arm ⓐ, and the function is CALLED, never re-derived.
+    /// 2. **NON-ZERO POPULATION + a fork reach-guard.** `losses` must be non-empty (else every
+    ///    ∀ below is vacuously true over an empty seat set) and must hold ≥2 STRICTLY POSITIVE
+    ///    entries — which is what makes the sum strictly exceed every single seat's loss. A
+    ///    single-seat fixture would make max and sum COINCIDE and the row would pass under
+    ///    both derivations, i.e. the degenerate-fixture trap this leg exists to catch.
+    /// 3. **POSITIVE CONTROL on the same instrument.** Arms ⓑ and ⓒ assert the OPPOSITE
+    ///    outcome (`0`) on the same function, so no constant implementation passes: ⓐ alone
+    ///    would be satisfied by anything that always returns a large number, and ⓑ/ⓒ alone by
+    ///    anything that always returns zero.
+    ///
+    /// MAX-vs-SUM DISCRIMINATION, structural rather than numeric. `m` is asserted to be
+    /// (i) an UPPER BOUND on every seat's clamped loss and (ii) ATTAINED by a seat that
+    /// actually LOST life. Together those two are the definition of `max` with no number
+    /// named. Switching the derivation to `sum` keeps (i) and breaks (ii) — no single seat
+    /// suffers the total of an asymmetric map (it reports 6; the seats lose 1, 2 and 3).
+    /// `first`/`last`/`min` break (i), because arm ⓐ's map is keyed so the first entry is the
+    /// proposer's GAIN and clamps to 0. `abs()` breaks (ii) in ⓐ (it reports the proposer's 5,
+    /// which no seat lost) and breaks ⓑ outright (it reports 7 where the contract says 0).
+    /// Arms ⓑ/ⓒ do NOT kill `sum` — a gain-only map sums to 0 either way; killing `sum` is
+    /// arm ⓐ's job alone, which is why ⓐ's asymmetry reach-guard is load-bearing.
+    #[test]
+    fn worst_seat_life_loss_is_the_max_seat_never_the_sum() {
+        // ⓐ asymmetric multi-seat losses PLUS a proposer GAIN larger than any of them.
+        let mut v = life_loss_delta(&[(1, 1), (2, 3), (3, 2)]);
+        v.life.insert(pid(0), 5);
+
+        let m = v.worst_seat_life_loss();
+
+        // O4(2): non-zero population, and the fixture really does separate max from sum.
+        let losses: Vec<i64> = v.life.values().map(|&n| (-n).max(0)).collect();
+        assert!(
+            losses.iter().filter(|&&l| l > 0).count() >= 2,
+            "reach-guard: with fewer than two seats LOSING life the sum equals the max and \
+             this row passes under either derivation, proving nothing; got {losses:?}"
+        );
+
+        // (i) UPPER BOUND — kills `first`, `last`, `min`, and any non-largest per-seat pick.
+        assert!(
+            v.life.values().all(|&n| (-n).max(0) <= m),
+            "CR 704.5a: a slot aimed at ANY one seat must be charged at least what that seat \
+             loses per period, else the bound overstates the legal repetition count and the \
+             drive can cross a threshold inside the proposal. m = {m}, losses = {losses:?}"
+        );
+        // (ii) ATTAINED BY A LOSER — kills `sum` (no seat suffers the total) and kills
+        //      `abs()`/gain-inclusive forms (the proposer's +5 is not a loss anyone suffers).
+        assert!(
+            v.life.iter().any(|(_, &n)| n < 0 && -n == m),
+            "the magnitude must be a loss some single seat actually took: `sum` reports a \
+             total no seat suffers, and a gains-inclusive derivation reports the proposer's \
+             own gain. m = {m}, life = {:?}",
+            v.life
+        );
+
+        // ⓑ POSITIVE CONTROL — the refusing value IS reachable on a NON-EMPTY map, which is
+        // what proves the `(-n).max(0)` clamp is doing the work rather than `unwrap_or(0)`.
+        let mut gains_only = ResourceVector::default();
+        gains_only.life.insert(pid(0), 7);
+        gains_only.life.insert(pid(1), 2);
+        assert!(
+            !gains_only.life.is_empty(),
+            "reach-guard: an EMPTY map returns 0 through `unwrap_or`, a different arm; this \
+             control is about the clamp"
+        );
+        assert_eq!(
+            gains_only.worst_seat_life_loss(),
+            0,
+            "a period in which nobody LOSES life charges nothing — 0 is the contract's \
+             no-repetition sentinel, not a fixture number"
+        );
+
+        // ⓒ the empty arm, the other way to reach 0 (`max()` yields None).
+        assert_eq!(
+            ResourceVector::default().worst_seat_life_loss(),
+            0,
+            "a delta with no life term charges nothing"
+        );
+    }
+
     /// CR 704.5a / CR 704.5c / CR 104.3c + CR 121.4 + CR 732.2a: the bound's conventions,
     /// case by case. Every case names the WRONG implementation it kills, so this row is a
     /// battery of discriminators rather than one assertion repeated.
@@ -10786,6 +11146,458 @@ mod tests {
             window_scope_from_cover_frames(&pa, &pb_phase, None).phase_invariant,
             None,
             "(p2) a window that crosses a phase boundary is not phase-invariant"
+        );
+    }
+    /// CR 732.2a — `ring_delta_signature`'s "seen TWICE" contract, at the building-block
+    /// level: five arms over synthetically-built rings, so every input shape the function can
+    /// meet is exercised rather than whichever one a fixture happens to produce.
+    ///
+    /// `k` is an OUTPUT here, exactly as O4 requires of production: no period constant exists
+    /// in the function, and the only numbers in this row are the periods THIS TEST
+    /// CONSTRUCTED. Comparing a derived period against a constructed one is the discriminator
+    /// for "smallest repeating period"; it is not fixture-brittleness, because the input is
+    /// built two lines above the assertion.
+    ///
+    /// PRODUCTION-PATH COMPANIONS, both in `tests/integration/loop_shortcut.rs`:
+    /// `bounded_offer_on_a_within_turn_draw_drain_is_basis_b`, where the ENGINE writes a
+    /// basis-B offer whose published `frames_per_period != 1` on a within-turn draw↔drain
+    /// cascade; and `dina_untargeted_drain_4p_offers_at_three_live_opponents`, measured to
+    /// certify through this function with a derived `k == 1` on a REAL 4-player dump (see that
+    /// row's doc for the two measurements, and for why a `k == 1` basis-B offer is
+    /// indistinguishable from a basis-A one in the published payload).
+    ///
+    /// RETRACTION, kept on the record: this doc previously named
+    /// `fantastic_four_bounded_loop_4p` as that companion, "a DERIVED `k == 2` and a bound of
+    /// 35". Both numbers reproduce, and the reading was wrong — measured, F4's δ carries
+    /// `library -1` for ALL FOUR players and its certifying frames sit at turns
+    /// `[5, 9, 9, 13, 13]`, so the "period" is one 4-player TURN CYCLE (CR 703.4d: only the
+    /// active player draws in a draw step) and the "35" is 35 turn cycles, not 35 loop
+    /// iterations. That certificate is the same artifact as the drawgo false positive, which
+    /// is why `ring_delta_signature` now refuses it outright.
+    ///
+    /// REVERT-PROBES, each flipping a DIFFERENT arm so none dominates another:
+    /// * accept a period seen ONCE (search `k` up to `frames - 1` and compare only one
+    ///   window) ⇒ arm ⓐ's `None` at 2 frames becomes `Some` ⇒ FAILS.
+    /// * drop the zero-delta refusal ⇒ arm ⓓ returns `Some` ⇒ FAILS.
+    /// * scan the OLDEST `2k` deltas instead of the most recent ⇒ arm ⓔ (a ring whose old
+    ///   stretch repeats and whose recent stretch does not) returns `Some` ⇒ FAILS.
+    /// * take the LARGEST repeating `k` instead of the smallest ⇒ arm ⓑ returns `k = 2` for a
+    ///   constant-delta ring ⇒ FAILS.
+    /// * delete the CR 703.1 turn-position conjunct ⇒ arm ⓕ returns `Some` ⇒ FAILS.
+    #[test]
+    fn ring_delta_signature_certifies_only_a_period_seen_twice() {
+        /// A ring whose frames carry the given life totals for P1, in order. Everything else
+        /// is held identical, so the frame-deltas are exactly the successive differences.
+        fn ring_of(lives: &[i32]) -> GameState {
+            let mut state = GameState::new_two_player(0);
+            for &life in lives {
+                let mut frame = GameState::new_two_player(0);
+                frame.players[1].life = life;
+                state
+                    .loop_detect_ring
+                    .push_back(std::sync::Arc::new(frame.normalize_for_loop()));
+            }
+            state
+        }
+
+        // ⓐ REFUSING: 2 frames is one delta — a period seen ONCE. `2k + 1 = 3` is the
+        //   threshold at the smallest possible `k`, and it is an EXPRESSION, never a literal
+        //   in the function.
+        let short = ring_of(&[40, 39]);
+        assert_eq!(
+            short.loop_detect_ring.len(),
+            2,
+            "reach-guard on the built ring"
+        );
+        assert_eq!(
+            ring_delta_signature(&short),
+            None,
+            "a period observed once is a coincidence; certifying it would let an offer be \
+             minted off a single frame pair"
+        );
+
+        // ⓑ POSITIVE CONTROL, same shape one frame longer: the instrument provably returns
+        //   `Some`, so ⓐ is not a function that always refuses.
+        let steady = ring_of(&[40, 39, 38]);
+        let (k, delta) = ring_delta_signature(&steady)
+            .expect("three frames observe a 1-frame period TWICE, which is the contract");
+        assert_eq!(
+            k, 1,
+            "the SMALLEST repeating period, derived — a constant per-frame delta has period 1"
+        );
+        // Bound to a local rather than inlined: `2k + 1` is the CONTRACT expression (2k deltas
+        // ⇒ the period was observed twice), and clippy's `int_plus_one` would otherwise push it
+        // to a `> 2k` that no longer reads as the rule.
+        let frames_needed = 2 * k as usize + 1;
+        assert!(
+            steady.loop_detect_ring.len() >= frames_needed,
+            "the structural invariant every certified period satisfies: 2k+1 frames"
+        );
+        assert_ne!(
+            delta,
+            ResourceVector::default(),
+            "a certified period moves some resource"
+        );
+        assert_eq!(
+            delta.life.get(&PlayerId(1)).copied(),
+            Some(-1),
+            "and the published delta is the one measured across ONE period"
+        );
+
+        // ⓒ a 2-frame period, seen twice: 5 frames. The derived `k` must be the constructed
+        //   one, and the delta must span the WHOLE period, not one frame of it.
+        let period_two = ring_of(&[40, 39, 36, 35, 32]);
+        let (k2, delta2) = ring_delta_signature(&period_two)
+            .expect("(-1, -3) repeated twice over 5 frames is a period seen twice");
+        assert_eq!(
+            k2, 2,
+            "derived from the ring, and equal to the period this test BUILT two lines above"
+        );
+        assert_eq!(
+            delta2.life.get(&PlayerId(1)).copied(),
+            Some(-4),
+            "one whole period is -1 + -3, not either half"
+        );
+
+        // ⓓ a ring that repeats perfectly but moves NOTHING: no CR 704 threshold to bound, so
+        //   no signature. Without this the offer's bound would be the safety cap.
+        let flat = ring_of(&[40, 40, 40, 40, 40]);
+        assert_eq!(
+            ring_delta_signature(&flat),
+            None,
+            "a zero-delta cycle states no threshold; every multiple of a zero period is zero \
+             too, which is why this refuses outright rather than searching on"
+        );
+
+        // ⓕ the CR 703.1 turn-position conjunct, at the building-block level: the SAME ring as
+        //   ⓑ, with only the newest frame's turn number moved on. Nothing about the deltas
+        //   changes (`ResourceVector::snapshot` never reads `turn_number` or `phase`), so a
+        //   `None` here is attributable to the conjunct alone.
+        let mut turn_crossing = ring_of(&[40, 39, 38]);
+        {
+            let last = turn_crossing
+                .loop_detect_ring
+                .back_mut()
+                .expect("the ring was just built with three frames");
+            std::sync::Arc::make_mut(last).turn_number += 1;
+        }
+        assert_eq!(
+            ring_delta_signature(&turn_crossing),
+            None,
+            "a period paved by a turn boundary is the game advancing, not a CR 732.2a loop — \
+             the board-blind basis must refuse it (the ⓑ ring differs from this one in \
+             `turn_number` and nothing else)"
+        );
+
+        // ⓔ the OLD stretch repeats, the RECENT one does not. A scan anchored at the oldest
+        //   deltas would certify a period the loop is no longer running.
+        let stale = ring_of(&[40, 39, 38, 37, 30]);
+        assert_eq!(
+            ring_delta_signature(&stale),
+            None,
+            "the certified period must be the one the loop is running NOW: the most recent \
+             2k deltas are (-1, -7) at k=1 and (-1,-1),(-1,-7) at k=2, neither of which repeats"
+        );
+    }
+
+    /// CR 703.1 / CR 732.2a — the PRODUCTION-DRIVEN half of the turn-position conjunct: on a
+    /// board with NO loop at all, the game's own turn structure is exactly periodic in the
+    /// resource axes basis B reads, and this row asserts the board-blind basis derives no
+    /// signature from it at any beat.
+    ///
+    /// HOME. This lives in `resource.rs`'s unit module and NOT in
+    /// `tests/integration/loop_shortcut.rs` because `ring_delta_signature` is `pub(crate)`:
+    /// an integration test is a separate crate and cannot name it. The only alternative — a
+    /// re-derivation of the period search inside the test — is prohibited: it would be a
+    /// second copy of the very algorithm this row exists to pin, and it would stay green
+    /// while production drifted. What is copied here is a test HARNESS (the drawgo fixture
+    /// builder from `drawgo_ring_spans_turns_but_never_offers` and a beat driver), never the
+    /// thing under test, which is CALLED.
+    ///
+    /// FIXTURE, loop-free by construction: P0 has an upkeep ticker, a drain cleric and a
+    /// "may draw" scribe. Each of P0's upkeeps runs a FINITE 3-deep cascade — nothing
+    /// re-triggers the ticker — yet the per-turn shape is drain-like, which is exactly what a
+    /// board-blind periodicity test mistakes for a loop. MEASURED, on this tree: with the
+    /// conjunct absent the engine minted offers on this board (the sibling integration row
+    /// `drawgo_ring_spans_turns_but_never_offers` failed on its `offer_at.is_none()`
+    /// assertion); with it, that row is green and a seam probe over 400 beats counts ZERO
+    /// engine offers.
+    ///
+    /// THE FLATTEN ARM discharges two obligations at once, on the SAME trajectory and the
+    /// SAME ring, with exactly ONE axis neutralized:
+    /// * NON-ZERO POPULATION — a `∀ beats: is_none()` over an empty beat set is vacuously
+    ///   true, so the row must prove its quantifier ranged over beats where a signature was
+    ///   actually derivable. `flattened_some > 0` is that proof.
+    /// * SAME-TRAJECTORY POSITIVE CONTROL — the instrument is shown returning the
+    ///   non-refusing value on drawgo's own data, so the `None`s above are a measured refusal
+    ///   rather than an inert instrument.
+    /// * ATTRIBUTION — `ResourceVector::snapshot` reads life / library / poison / energy /
+    ///   mana / battlefield counters / `combat_phases_started_this_turn` / `extra_phases`, and
+    ///   never `turn_number` or `phase`, so δ and the derived `k` are unchanged by the
+    ///   flattening and the `None` → `Some` flip is attributable to the turn-position
+    ///   conjunct alone.
+    ///
+    /// MEASURED on this tree: 253 of the 300 driven beats hold >= 3 frames, and the flatten
+    /// arm derives a signature at **225** of them, over 22 turns.
+    ///
+    /// REVERT-PROBE (must FLIP): delete the CR 703.1 conjunct from `ring_delta_signature` ⇒
+    /// the `is_none()` assertion fires on the first signature-bearing beat.
+    #[test]
+    fn drawgo_turn_structure_yields_no_basis_b_signature() {
+        use crate::game::scenario::GameScenario;
+        use crate::types::actions::GameAction;
+        use crate::types::game_state::{LoopDetectionMode, WaitingFor};
+
+        /// One beat of the shared dump drive policy (`tests/integration/loop_shortcut.rs`'s
+        /// `dump_drive_one_beat`): at `Priority` always pass — the mandatory triggers resolve
+        /// and re-trigger, which IS the loop when there is one — and otherwise take the first
+        /// legal non-terminal action.
+        fn drive_one_beat(state: &mut GameState) -> Result<(), String> {
+            let actor = state
+                .waiting_for
+                .acting_player()
+                .into_iter()
+                .chain(state.players.iter().map(|p| p.id))
+                .find_map(|p| {
+                    let (actions, _costs, _grouped) =
+                        crate::ai_support::legal_actions_for_viewer(state, p);
+                    (!actions.is_empty()).then_some((p, actions))
+                });
+            let Some((who, actions)) = actor else {
+                return Err(format!("no legal actor at {:?}", state.waiting_for));
+            };
+            let forbidden =
+                |a: &GameAction| matches!(a, GameAction::Concede { .. } | GameAction::Debug(_));
+            let chosen = if matches!(state.waiting_for, WaitingFor::Priority { .. }) {
+                actions
+                    .iter()
+                    .find(|a| matches!(a, GameAction::PassPriority))
+            } else {
+                actions
+                    .iter()
+                    .find(|a| !matches!(a, GameAction::PassPriority) && !forbidden(a))
+                    .or_else(|| actions.iter().find(|a| !forbidden(a)))
+            };
+            let Some(action) = chosen.cloned() else {
+                return Err(format!("empty action list at {:?}", state.waiting_for));
+            };
+            crate::game::engine::apply(state, who, action.clone())
+                .map(|_| ())
+                .map_err(|e| format!("apply err ({action:?}): {e:?}"))
+        }
+
+        let mut scenario = GameScenario::new_n_player(2, 7);
+        scenario.at_phase(Phase::PreCombatMain);
+        scenario.with_life(PlayerId(0), 20);
+        scenario.with_life(PlayerId(1), 20);
+        scenario.add_creature_from_oracle(
+            PlayerId(0),
+            "Test Upkeep Ticker",
+            2,
+            2,
+            "At the beginning of your upkeep, you gain 1 life.",
+        );
+        scenario.add_creature_from_oracle(
+            PlayerId(0),
+            "Test Drain Cleric",
+            2,
+            2,
+            "Whenever you gain life, each opponent loses 1 life.",
+        );
+        scenario.add_creature_from_oracle(
+            PlayerId(0),
+            "Test May Scribe",
+            2,
+            2,
+            "Whenever an opponent loses life, you may draw a card.",
+        );
+        // CR 504.1: both players draw every turn, so the libraries must outlast the drive — a
+        // deck-out would end the game and silently truncate every assertion below.
+        let names: Vec<String> = (0..60).map(|i| format!("Filler {i}")).collect();
+        let refs: Vec<&str> = names.iter().map(|s| s.as_str()).collect();
+        scenario.with_library_top(PlayerId(0), &refs);
+        scenario.with_library_top(PlayerId(1), &refs);
+        let mut runner = scenario.build();
+        runner.state_mut().loop_detection = LoopDetectionMode::Interactive;
+        let mut state = runner.state().clone();
+
+        assert!(
+            state.loop_detection.samples(),
+            "reach-guard: a non-sampling mode never populates the ring, which would make the \
+             per-beat `is_none()` below vacuous; got {:?}",
+            state.loop_detection
+        );
+        assert_eq!(
+            state.loop_detect_ring.len(),
+            0,
+            "reach-guard: every frame the assertions below read was accumulated by THIS drive"
+        );
+
+        let mut long_ring_beats = 0usize;
+        let mut flattened_some = 0usize;
+        let mut turns_seen: Vec<u32> = Vec::new();
+        for beat in 0..300usize {
+            if !turns_seen.contains(&state.turn_number) {
+                turns_seen.push(state.turn_number);
+            }
+            // 2k + 1 at the smallest derivable k: below three frames the refusal is the
+            // short-ring one, which says nothing about turn position.
+            if state.loop_detect_ring.len() >= 3 {
+                long_ring_beats += 1;
+                assert_eq!(
+                    ring_delta_signature(&state),
+                    None,
+                    "beat {beat} (turn {}, {} frames): this board has no loop — each upkeep \
+                     runs a FINITE cascade and nothing re-triggers the ticker — so the \
+                     board-blind basis must derive no period from the game's own turn \
+                     structure",
+                    state.turn_number,
+                    state.loop_detect_ring.len()
+                );
+
+                // Same trajectory, same ring, ONE axis neutralized.
+                let mut flat = state.clone();
+                for frame in flat.loop_detect_ring.iter_mut() {
+                    let f = std::sync::Arc::make_mut(frame);
+                    f.turn_number = 1;
+                    f.phase = Phase::Upkeep;
+                }
+                if ring_delta_signature(&flat).is_some() {
+                    flattened_some += 1;
+                }
+            }
+            if drive_one_beat(&mut state).is_err() {
+                break;
+            }
+        }
+
+        assert!(
+            turns_seen.len() >= 3,
+            "reach-guard: the drive must cross at least two full turn boundaries for a \
+             turn-position claim to mean anything; saw turns {turns_seen:?}"
+        );
+        assert!(
+            long_ring_beats > 0,
+            "reach-guard: the ∀ above ranged over ZERO beats holding 2k+1 frames, so it was \
+             vacuously true"
+        );
+        assert!(
+            flattened_some > 0,
+            "O4(2) + O4(3): with `turn_number` and `phase` flattened on a clone of THIS \
+             trajectory's own ring — and nothing else changed — a signature must appear at \
+             some beat. It appeared at {flattened_some} of {long_ring_beats} long-ring beats. \
+             A zero here would mean the `None`s above are attributable to a short ring or a \
+             non-repeating delta rather than to the CR 703.1 conjunct, and the row would not \
+             be sound"
+        );
+    }
+
+    /// CR 732.2a — `PeriodicDelta` rides `WaitingFor::LoopShortcut` over the wire, so the
+    /// whole payload must survive `serde_json`. TWO map-key hazards, both real: a
+    /// `ResourceVector.counters` key is the `(CounterClass, ObjectClass)` TUPLE, and a
+    /// `BTreeMap` keyed by `DecisionSlot` (a struct) would be the same failure — which is
+    /// why `victim_slot` is a `Vec` of pairs and not a map at all.
+    ///
+    /// The runtime symptom of getting this wrong is NOT a soft failure:
+    /// `crates/engine-wasm/src/lib.rs`'s serializer `panic!`s on the error, i.e. a browser
+    /// crash.
+    ///
+    /// ARM (ii) ALONE WOULD PASS AGAINST A BROKEN MAP — an empty map serializes fine
+    /// whatever its key type. Arm (i) is what discriminates, and both are asserted here.
+    ///
+    /// REVERT-PROBES: drop `#[serde(with = "counter_key_pairs")]` from
+    /// `ResourceVector.counters` ⇒ arm (i) and the payload arm both fail with "key must be a
+    /// string"; change `PeriodicDelta.victim_slot` to a `BTreeMap<DecisionSlot, i64>` ⇒ same.
+    /// MUST-NOT-FLIP: a `LoopShortcut` payload with `per_cycle: None` stays byte-identical
+    /// (`skip_serializing_if`), asserted in the third block.
+    #[test]
+    fn periodic_delta_survives_the_serde_json_wire() {
+        use crate::analysis::decision_template::{DecisionSlot, ShortcutDecisionSchema};
+        use crate::analysis::loop_check::{LoopCertificate, WinKind};
+        use crate::types::game_state::{WaitingFor, YieldTarget};
+
+        let slot = DecisionSlot {
+            source: YieldTarget::ThisObject {
+                source_id: ObjectId(403),
+                incarnation: Some(7),
+                trigger_description: None,
+            },
+            index: 0,
+        };
+
+        // (i) POPULATED — a non-empty tuple-keyed `counters` map is the discriminating input.
+        let mut delta = ResourceVector::default();
+        delta.life.insert(PlayerId(1), -3);
+        delta.life.insert(PlayerId(0), 3);
+        delta
+            .counters
+            .insert((CounterClass::Plus1Plus1, ObjectClass::Creature), 2);
+        delta
+            .counters
+            .insert((CounterClass::Poison, ObjectClass::Player), 1);
+        delta.generic_triggers.insert(TriggerKind::Proliferate, 4);
+        assert!(
+            !delta.counters.is_empty() && !delta.life.is_empty(),
+            "reach-guard: arm (i) is only discriminating while `counters` is NON-EMPTY — an \
+             empty map round-trips whatever the key type"
+        );
+        let populated = PeriodicDelta {
+            frames_per_period: 2,
+            delta,
+            victim_slot: vec![(slot.clone(), 1)],
+        };
+        let json = serde_json::to_string(&populated)
+            .expect("a populated PeriodicDelta must serialize (engine-wasm PANICS otherwise)");
+        assert_eq!(
+            serde_json::from_str::<PeriodicDelta>(&json).expect("and round-trip"),
+            populated
+        );
+
+        // (ii) EMPTY — the degenerate arm, kept only so the pair is visible.
+        let empty = PeriodicDelta::default();
+        let empty_json = serde_json::to_string(&empty).expect("an empty PeriodicDelta too");
+        assert_eq!(
+            serde_json::from_str::<PeriodicDelta>(&empty_json).expect("and round-trip"),
+            empty
+        );
+
+        // The ACTUAL wire payload: the `WaitingFor` variant that carries it.
+        let cert = LoopCertificate {
+            unbounded: vec![],
+            win_kind: WinKind::LethalDamage,
+            mandatory: false,
+            residual_board_delta: BoardDelta::default(),
+            per_cycle: Some(populated),
+        };
+        let offer = WaitingFor::LoopShortcut {
+            proposer: PlayerId(0),
+            predicted_winner: None,
+            certificate: cert.clone(),
+            schema: ShortcutDecisionSchema::default(),
+        };
+        let offer_json =
+            serde_json::to_string(&offer).expect("the LoopShortcut payload carrying it must too");
+        assert_eq!(
+            serde_json::from_str::<WaitingFor>(&offer_json).expect("and round-trip"),
+            offer
+        );
+
+        // MUST-NOT-FLIP: `skip_serializing_if` keeps the shipped payload byte-identical —
+        // `per_cycle` appears nowhere in the JSON of an offer that states none.
+        let shipped = WaitingFor::LoopShortcut {
+            proposer: PlayerId(0),
+            predicted_winner: None,
+            certificate: LoopCertificate {
+                per_cycle: None,
+                ..cert
+            },
+            schema: ShortcutDecisionSchema::default(),
+        };
+        let shipped_json = serde_json::to_string(&shipped).expect("serializes");
+        assert!(
+            !shipped_json.contains("per_cycle"),
+            "an offer stating no per-period signature must be byte-identical to BASE; got \
+             {shipped_json}"
         );
     }
 }

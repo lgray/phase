@@ -134,6 +134,7 @@ impl TacticalPolicy for LoopShortcutPolicy {
         let WaitingFor::LoopShortcut {
             proposer,
             predicted_winner,
+            schema,
             ..
         } = &ctx.state.waiting_for
         else {
@@ -176,23 +177,56 @@ impl TacticalPolicy for LoopShortcutPolicy {
                 PolicyVerdict::reject(PolicyReason::new("loop_shortcut_untillethal_cannot_crown"))
             }
 
-            // CR 732.2a "a loop that repeats a specified number of times": neither rejected nor
-            // boosted. Two independent reasons. (1) The AI never emits `Fixed` — its ONLY
-            // `DeclareShortcut` construction site (`candidates.rs:3012`) hardcodes `UntilLethal`.
-            // (2) A count-blind reject would be wrong for the CLASS: `materialize_fixed_shortcut`
-            // drives and COMMITS `n` whole cycles without ever reading `predicted_winner`, so a
-            // small-`n` `Fixed` is genuine committed board progress whoever is latched.
+            // CR 732.2a "a loop that repeats a specified number of times". The verdict splits
+            // on whether the OFFER states a real CR 704 bound, because the domination argument
+            // below is valid only when it does.
             //
-            // NOTE (tripwire): a `Fixed(n)` large enough to cross lethal WOULD commit a `GameOver`
-            // crowning whoever the DRIVE's state-based actions crown (`drive_one_shortcut_cycle`,
-            // `engine.rs:1180-1186`, forwards the SBA's own `Option<PlayerId>` — which is the
-            // latched winner when the prediction was right, and can even be `None`, a CR 104.4b
-            // draw). `materialize_fixed_shortcut`'s `CrossLethal` arm (`engine.rs:1393-1402`)
-            // forwards it WITHOUT filtering on `proposal.predicted_winner`, unlike BOTH
-            // `UntilLethal` crown gates (`engine.rs:971`, `engine.rs:1000`). Such a declare by a
-            // faller proposer is therefore a committed self-loss — exactly what the `UntilLethal`
-            // arm above rejects. REVISIT THIS ARM if the candidate generator ever emits `Fixed`.
-            (_, IterationCount::Fixed(_)) => na(),
+            // UNBOUNDED offer ⇒ neither rejected nor boosted, deliberately. An offer whose
+            // producer could not compute a bound publishes `MAX_SHORTCUT_CYCLES`, so it states
+            // no CR 704 threshold for a domination argument to stand on, and a count-blind
+            // reject would be wrong for the CLASS: `materialize_fixed_shortcut` drives and
+            // COMMITS `n` whole cycles without ever reading `predicted_winner`, so a small-`n`
+            // `Fixed` is genuine committed board progress whoever is latched.
+            //
+            // NOTE (tripwire, still live for the unbounded branch): a `Fixed(n)` large enough
+            // to cross lethal WOULD commit a `GameOver` crowning whoever the DRIVE's
+            // state-based actions crown — `materialize_fixed_shortcut`'s `CrossLethal` arm
+            // forwards the SBA's own `Option<PlayerId>` WITHOUT filtering on
+            // `proposal.predicted_winner`, unlike both `UntilLethal` crown gates. Such a
+            // declare by a faller proposer is a committed self-loss, exactly what the
+            // `UntilLethal` arm above rejects. On a BOUNDED offer that hazard is discharged by
+            // `elimination_bounds`' contract rather than by an AI-side computation: every `n`
+            // within `max_iterations` provably eliminates nobody.
+            (_, IterationCount::Fixed(_)) if !schema.is_bounded() => na(),
+
+            // CR 732.2a: over the offered bound. The AI-side mirror of the engine's own
+            // declare-time guard — such a declare names a count at which some living player
+            // crosses a CR 704.5a / CR 704.5c / CR 104.3c threshold inside the proposal, which
+            // is a conditional action, so the engine hands it back fail-closed with ZERO
+            // committed cycles while the CR 732.2b response window is spent. Weakly dominated
+            // by declining: the outcome set is {no-op minus a response window}. Same
+            // domination shape the `(None, UntilLethal)` arm above encodes.
+            (_, IterationCount::Fixed(n)) if *n > schema.max_iterations => PolicyVerdict::reject(
+                PolicyReason::new("loop_shortcut_bounded_declare_over_bound")
+                    .with_fact("declared", i64::from(*n))
+                    .with_fact("max_iterations", i64::from(schema.max_iterations)),
+            ),
+
+            // CR 732.2a: within the offered bound on a bounded offer ⇒ committed board
+            // progress that eliminates nobody. Game-deciding ⇒ critical band, via the
+            // auto-banding `PolicyVerdict::score` (NEVER `preference`, whose `debug_assert!`
+            // band domain panics on this field's default). Both declare kinds route through
+            // the one reused config field on purpose: the winning arm above and this one are
+            // never both scoreable at a single node — a winning offer carries
+            // `predicted_winner: Some(..)` and an unnarrowed bound (so no `Fixed` candidate is
+            // generated), and a bounded offer carries `predicted_winner: None` (so the winning
+            // arm cannot be reached). With no ordering to distort, a second tuned field would
+            // buy nothing and cost the full `UNTUNED_POLICY_PENALTY_FIELDS` protocol.
+            (_, IterationCount::Fixed(n)) => PolicyVerdict::score(
+                ctx.penalties().loop_shortcut_winning_declare_bonus,
+                PolicyReason::new("loop_shortcut_bounded_declare_progress")
+                    .with_fact("declared", i64::from(*n)),
+            ),
         }
     }
 }
@@ -223,6 +257,7 @@ mod tests {
             win_kind: WinKind::LethalDamage,
             mandatory: false,
             residual_board_delta: BoardDelta::default(),
+            per_cycle: None,
         }
     }
 
@@ -389,6 +424,13 @@ mod tests {
     /// Rows 3 + 5 + 7 — THE CLASS GUARD: `materialize_fixed_shortcut` never reads
     /// `predicted_winner` and COMMITS every cycle it drives, so a `Fixed(n)` declare is real board
     /// progress for ANY latched winner. Proves the reject set is not one state too wide.
+    ///
+    /// This row stays green LEGITIMATELY, not by luck: `ShortcutDecisionSchema::default()`
+    /// carries `max_iterations == MAX_SHORTCUT_CYCLES`, so `is_bounded()` is FALSE and the
+    /// verdict takes the deliberately-neutral unbounded branch. That branch is asserted
+    /// DIRECTLY by `loop_shortcut_unbounded_offer_keeps_fixed_neutral` below, so a future
+    /// re-scoping that deletes the `!schema.is_bounded()` guard fails THERE with a message
+    /// naming the guard, rather than here with no explanation.
     #[test]
     fn declare_fixed_is_never_rejected() {
         for predicted_winner in [None, Some(P0), Some(P1)] {
@@ -399,6 +441,115 @@ mod tests {
                 0.0,
                 "Fixed(n) is committed progress, never vetoed nor boosted (winner \
                  {predicted_winner:?})"
+            );
+            assert_eq!(kind_of(&v), "loop_shortcut_na");
+        }
+    }
+
+    /// A BOUNDED offer — the only shape `try_offer_bounded_cycle_shortcut` mints. `points`
+    /// stays empty because the engine's `Fixed` candidate generator is gated on that too.
+    fn bounded_offer_state(max_iterations: u32) -> GameState {
+        let mut state = GameState::new_two_player(0);
+        state.waiting_for = WaitingFor::LoopShortcut {
+            proposer: P0,
+            predicted_winner: None,
+            certificate: cert(),
+            schema: ShortcutDecisionSchema {
+                max_iterations,
+                ..Default::default()
+            },
+        };
+        state
+    }
+
+    fn schema_of(state: &GameState) -> &ShortcutDecisionSchema {
+        match &state.waiting_for {
+            WaitingFor::LoopShortcut { schema, .. } => schema,
+            other => panic!("expected a LoopShortcut offer, got {other:?}"),
+        }
+    }
+
+    /// CR 732.2a — the BOUNDED branch, both halves, on ONE schema differing only in `n`.
+    ///
+    /// (i) `Fixed(4)` with `max_iterations == 10` ⇒ committed progress that eliminates nobody
+    /// (`elimination_bounds`' contract), so the critical band `PolicyVerdict::score` routes
+    /// `8.0` to. (ii) `Fixed(11)` ⇒ the engine hands it back fail-closed with ZERO committed
+    /// cycles and the CR 732.2b window spent, i.e. weakly dominated by declining.
+    ///
+    /// REVERT-PROBES, each flipping a DIFFERENT subset so neither dominates the other:
+    /// * ⓟ1 restore `(_, IterationCount::Fixed(_)) => na()` ⇒ BOTH arms collapse to
+    ///   `delta == 0.0` / `"loop_shortcut_na"` ⇒ FAILS.
+    /// * ⓟ2 delete the `n > schema.max_iterations` conjunct ⇒ arm (ii) SCORES instead of
+    ///   rejecting ⇒ FAILS while arm (i) still passes, which is what proves the reject half is
+    ///   not carried by ⓟ1.
+    /// * ⓟ3 invert `ShortcutDecisionSchema::is_bounded()` to `>=` ⇒ the in-test schema reads
+    ///   unbounded ⇒ both arms take `na()` ⇒ FAILS, and so does
+    ///   `loop_shortcut_unbounded_offer_keeps_fixed_neutral`. ⓟ3 flipping BOTH rows plus the
+    ///   engine's `until_lethal_against_a_bounded_offer_is_rejected` is the single-authority
+    ///   proof: one edit to one predicate is measurable at every caller.
+    #[test]
+    fn loop_shortcut_bounded_declare_scores_and_rejects_over_bound() {
+        let state = bounded_offer_state(10);
+        assert!(
+            schema_of(&state).is_bounded(),
+            "REACH-GUARD: every assertion below is vacuous unless the in-test schema really is \
+             bounded; max_iterations = {}",
+            schema_of(&state).max_iterations
+        );
+
+        // (i) within the bound.
+        let inside = verdict_for(&state, &declare(IterationCount::Fixed(4)));
+        assert!(
+            matches!(inside, PolicyVerdict::Score { .. }),
+            "a declare within the offered bound must SCORE, got {inside:?}"
+        );
+        assert_eq!(kind_of(&inside), "loop_shortcut_bounded_declare_progress");
+        assert!(
+            delta_of(&inside) > STRONG_MAX,
+            "a bounded declare is board-deciding ⇒ the critical band; got {} (STRONG_MAX = \
+             {STRONG_MAX})",
+            delta_of(&inside)
+        );
+
+        // (ii) above the bound — the OPPOSITE verdict variant on the SAME schema.
+        let outside = verdict_for(&state, &declare(IterationCount::Fixed(11)));
+        assert!(
+            matches!(outside, PolicyVerdict::Reject { .. }),
+            "a declare above the offered bound contains a conditional action and is handed \
+             back with zero committed cycles ⇒ weakly dominated, got {outside:?}"
+        );
+        assert_eq!(
+            kind_of(&outside),
+            "loop_shortcut_bounded_declare_over_bound"
+        );
+    }
+
+    /// CR 732.2a — the `na()` branch asserted DIRECTLY rather than inferred from which arm
+    /// happened to be reached. This row and the one above assert OPPOSITE outcomes for the
+    /// SAME `Fixed(n)`, discriminated by ONE field of the schema: a constant-`na()`
+    /// implementation fails the row above, a constant-`Score` implementation fails this one.
+    ///
+    /// REVERT-PROBES: ⓟ3 (invert `is_bounded()` to `>=`) ⇒ the default schema reads bounded ⇒
+    /// this row gets `Score` / `"…_progress"` ⇒ FAILS. ⓟ4 delete the
+    /// `!schema.is_bounded() => na()` branch ⇒ same failure, and `declare_fixed_is_never_rejected`
+    /// fails with it.
+    #[test]
+    fn loop_shortcut_unbounded_offer_keeps_fixed_neutral() {
+        for predicted_winner in [None, Some(P0), Some(P1)] {
+            let state = offer_state(predicted_winner);
+            assert!(
+                !schema_of(&state).is_bounded(),
+                "REACH-GUARD: this row asserts the UNBOUNDED branch, so the default schema must \
+                 read unbounded — `ShortcutDecisionSchema::default()` carries \
+                 `max_iterations == MAX_SHORTCUT_CYCLES`; measured {}",
+                schema_of(&state).max_iterations
+            );
+            let v = verdict_for(&state, &declare(IterationCount::Fixed(4)));
+            assert_eq!(
+                delta_of(&v),
+                0.0,
+                "an offer stating NO CR 704 bound gives the domination argument nothing to \
+                 stand on, so `Fixed(n)` is deliberately neutral (winner {predicted_winner:?})"
             );
             assert_eq!(kind_of(&v), "loop_shortcut_na");
         }

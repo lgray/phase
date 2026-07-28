@@ -20336,6 +20336,7 @@ mod forced_cascade_window_tests {
             win_kind: crate::analysis::loop_check::WinKind::LethalDamage,
             mandatory: false,
             residual_board_delta: crate::analysis::resource::BoardDelta::default(),
+            per_cycle: None,
         }
     }
 
@@ -20607,6 +20608,7 @@ mod forced_cascade_window_tests {
                         unbounded: vec![crate::analysis::resource::ResourceAxis::Life(PlayerId(1))],
                         win_kind: crate::analysis::loop_check::WinKind::LethalDamage,
                         template: None,
+                        per_cycle: None,
                     },
                 },
             ),

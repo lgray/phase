@@ -262,6 +262,23 @@ impl Default for ShortcutDecisionSchema {
     }
 }
 
+impl ShortcutDecisionSchema {
+    /// CR 732.2a: `true` iff this offer's producer NARROWED the repetition bound below the
+    /// engine-wide safety cap — i.e. it measured a CR 704.5a / CR 704.5c / CR 104.3c
+    /// threshold inside the loop. A producer that cannot compute a real bound publishes
+    /// `MAX_SHORTCUT_CYCLES` (see `max_iterations` above), so an unnarrowed offer is NOT
+    /// bounded in this sense.
+    ///
+    /// The SINGLE AUTHORITY for that question, and the reason it is a method rather than
+    /// an inline comparison repeated at each caller: `MAX_SHORTCUT_CYCLES` is `pub(crate)`
+    /// to the engine, so `phase-ai`'s declare policy cannot name it and would otherwise
+    /// hard-code the literal. This predicate crosses the crate boundary; the constant does
+    /// not.
+    pub fn is_bounded(&self) -> bool {
+        self.max_iterations < crate::game::engine::MAX_SHORTCUT_CYCLES
+    }
+}
+
 /// One open decision-point. `slot` is the same [`DecisionSlot`] the frontend echoes on the
 /// [`PinnedDecision`] it produces; `kind` carries that decision's legal option set.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

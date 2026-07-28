@@ -303,10 +303,42 @@ fn drive_collect(runner: &mut GameRunner, cap: usize) -> (Vec<GameEvent>, Waitin
 /// {1, 2, 3, 4, 8, 24} it holds at 2 and 8 and not at 1/3/4/24 (period 6), so inspecting only
 /// the terminal state would report `false` on a perfectly primed loop. The scan short-circuits
 /// at the first hit — measured 5.6–17.5 ms per drive, priming at beat 2.
-fn drive_collect_primed(runner: &mut GameRunner, cap: usize) -> (Vec<GameEvent>, WaitingFor, bool) {
+///
+/// # PR-7 Phase 5b — the DECLINE arm, and why the guard would otherwise hollow out
+///
+/// These boards now raise a natural bounded CR 732.2a offer. A `WaitingFor::LoopShortcut` is
+/// neither `Priority` nor `OrderTriggers`, so without the arm below the break test fires at
+/// the offer and the drive ends BEFORE recurrence can be witnessed — every caller's `primed`
+/// reach-guard would then report `false` on a perfectly primed loop, i.e. the guard fails for
+/// a reason that has nothing to do with what it guards.
+///
+/// The remedy re-grounds each guard THROUGH the offer rather than around it: decline and keep
+/// driving. Declining is a PASS-THROUGH, not an assertion — these rows' claims are about the
+/// CROWN, not about the offer — and the declined offers are returned so a caller that wants to
+/// assert on one can (`.first()`), and so the number of declines is reportable (`.len()`).
+///
+/// MEASURED CONSEQUENCE: `DeclineShortcut` is a deliberate action and invalidates the ring
+/// (`apply_action`'s deliberate-action ring invalidation), so the recurrence witness must be
+/// re-accumulated after each decline and the caps tuned against an un-cleared ring no longer
+/// hold. See `PRIMED_LOOP_BEATS`.
+fn drive_collect_primed(
+    runner: &mut GameRunner,
+    cap: usize,
+) -> (Vec<GameEvent>, WaitingFor, bool, Vec<WaitingFor>) {
     let mut all: Vec<GameEvent> = Vec::new();
     let mut primed = false;
+    let mut declined: Vec<WaitingFor> = Vec::new();
     for _ in 0..cap {
+        // Two separate `matches!` guards, not one `match`: the first borrow ends before
+        // `act` needs `&mut`.
+        if matches!(runner.state().waiting_for, WaitingFor::LoopShortcut { .. }) {
+            declined.push(runner.state().waiting_for.clone());
+            let result = runner
+                .act(GameAction::DeclineShortcut)
+                .expect("DeclineShortcut is legal at a LoopShortcut window");
+            all.extend(result.events);
+            continue;
+        }
         if !matches!(
             runner.state().waiting_for,
             WaitingFor::Priority { .. } | WaitingFor::OrderTriggers { .. }
@@ -323,7 +355,7 @@ fn drive_collect_primed(runner: &mut GameRunner, cap: usize) -> (Vec<GameEvent>,
                 .any(|prior| loop_states_equal_modulo_resources(prior, state));
         }
     }
-    (all, runner.state().waiting_for.clone(), primed)
+    (all, runner.state().waiting_for.clone(), primed, declined)
 }
 
 // ────────────────────────────── T-OFF ──────────────────────────────
@@ -912,6 +944,7 @@ fn loop_shortcut_acting_player_reads_proposer() {
         win_kind: WinKind::LethalDamage,
         mandatory: false,
         residual_board_delta: BoardDelta::default(),
+        per_cycle: None,
     };
     let wf_a = WaitingFor::LoopShortcut {
         proposer: P1,
@@ -936,6 +969,7 @@ fn loop_shortcut_acting_player_reads_proposer() {
         unbounded: vec![],
         win_kind: WinKind::LethalDamage,
         template: None,
+        per_cycle: None,
     };
     let wf_r = WaitingFor::RespondToShortcut {
         player: P2,
@@ -1191,6 +1225,13 @@ fn interactive_queued_opponent_concede_no_deadlock() {
 /// suppression does not touch, so the ring still fills and this guard still reports primed.
 /// A negative "did not crown" test cannot distinguish a refused classification from a disabled
 /// one; the positive-side tests named above are what cover it.
+///
+/// PR-7 Phase 5b — the cap was RE-MEASURED, not re-derived. `DeclineShortcut` is a deliberate
+/// action and invalidates the ring, so the decline arm [`drive_collect_primed`] gained could in
+/// principle have pushed the recurrence witness past this cap. Measured on this tree: it does
+/// not — all three rows below still witness recurrence at 24 with the arm live, so the swept
+/// value stands unchanged. The arm's liveness is not assumed either: deleting it drops all
+/// three to `primed == false` / "0 bounded offers declined".
 const PRIMED_LOOP_BEATS: usize = 24;
 
 /// D2: a 3p loop that drains ONLY P1 (P2 a bystander, life delta 0) must NOT crown.
@@ -1206,11 +1247,20 @@ const PRIMED_LOOP_BEATS: usize = 24;
 /// no-crown assertion below, which is the sole discriminator here: under that mutation the
 /// event-scan assertion measurably stays TRUE (no `GameOver{Some}` lands in the collected
 /// events) at every cap from 4 to 100. (Passes today, proving the gate holds.)
+///
+/// PR-7 Phase 5b: this class now also raises a bounded CR 732.2a offer, so the row's former
+/// "must NOT raise a LoopShortcut offer" clause is superseded and replaced by a positive
+/// discriminator on `predicted_winner`. See the comment at that assertion. Two further
+/// revert-probes, each flipping a DIFFERENT assertion so neither dominates the other:
+/// * make `try_offer_bounded_cycle_shortcut` refuse unconditionally ⇒ `declined` is empty ⇒
+///   the `offered` `let-else` panics, while both no-CROWN assertions stay green.
+/// * delete the `DeclineShortcut` arm from [`drive_collect_primed`] ⇒ the drive breaks at the
+///   offer ⇒ `primed == false` ⇒ the trailing reach-guard FAILS.
 #[test]
 fn interactive_3p_subset_lethal_does_not_crown() {
     let (mut runner, kickoff) = setup_3p_subset_lethal(LoopDetectionMode::Interactive);
     let _ = runner.cast(kickoff).resolve();
-    let (events, wf, primed) = drive_collect_primed(&mut runner, PRIMED_LOOP_BEATS);
+    let (events, wf, primed, declined) = drive_collect_primed(&mut runner, PRIMED_LOOP_BEATS);
 
     // Positive reach-guard: the drain loop genuinely ran on P1 while P2 stayed untouched — we
     // are in the subset-lethal regime the gate must refuse, not an unrelated upstream no-op.
@@ -1236,10 +1286,57 @@ fn interactive_3p_subset_lethal_does_not_crown() {
             .any(|e| matches!(e, GameEvent::GameOver { winner: Some(_) })),
         "no GameOver{{Some}} event may be emitted for a subset-lethal loop"
     );
-    // No offer either: the bridge does not OFFER a shortcut for a non-winner loop.
-    assert!(
-        !matches!(wf, WaitingFor::LoopShortcut { .. }),
-        "subset-lethal loop must NOT raise a LoopShortcut offer, got {wf:?}"
+    // PR-7 Phase 5b — the SUPERSEDED clause, replaced by its positive discriminator.
+    //
+    // This row used to assert `!matches!(wf, WaitingFor::LoopShortcut { .. })`. That
+    // expectation is superseded, not violated: a subset-lethal drain that crowns nobody is
+    // the exact class the bounded CR 732.2a offer exists to serve, so the class now OFFERS.
+    // The no-CROWN claims above are unchanged and are still the row's soundness content.
+    //
+    // Deleting a negative assertion silently would leave the row weaker than it was, so it is
+    // replaced by a POSITIVE assertion on the field that separates the two classes: a bounded
+    // offer must carry `predicted_winner: None`. A `Some(winner)` here would mean the offer
+    // came from Path A — i.e. something DID crown after all — which is exactly what the two
+    // assertions above forbid.
+    let offered = declined.first();
+    let Some(WaitingFor::LoopShortcut {
+        predicted_winner,
+        certificate,
+        ..
+    }) = offered
+    else {
+        panic!(
+            "PR-7 5b: this class now OFFERS the bounded shortcut, and the drive above declined \
+             every offer it saw; got {} declined offers, terminal {wf:?}",
+            declined.len()
+        );
+    };
+    assert_eq!(
+        *predicted_winner, None,
+        "the offer must carry predicted_winner: None — a Some(winner) here would mean Path A \
+         crowned after all, contradicting the CR 104.2a assertions above"
+    );
+    // BASIS: measured **A** (direct recurrence) — instrumenting the `basis_a` match in
+    // `try_offer_bounded_cycle_shortcut` prints `BASIS=A turn=2 phase=PreCombatMain ring=3` at
+    // this row's offer beat, which is consistent with `primed` below witnessing exactly basis
+    // A's first disjunct. `ring_delta_signature` — the only function the CR 703.1
+    // turn-position conjunct modifies — is reached ONLY from the `None =>` arm, so this row is
+    // orthogonal to that conjunct in both directions.
+    //
+    // HONEST SCOPE OF THE ASSERTION BELOW: `frames_per_period == 1` is a TRIPWIRE, not a proof
+    // of basis A. Basis B derives `k` from 1 upward, so a k==1 basis-B offer publishes the
+    // same value (the `dina_untargeted_drain_4p_offers_at_three_live_opponents` row is exactly
+    // that case). What this line catches is the class silently acquiring a multi-frame period,
+    // which is the drift that would make the orthogonality claim above stop holding.
+    assert_eq!(
+        certificate
+            .per_cycle
+            .as_ref()
+            .expect("a bounded offer publishes its per-period signature")
+            .frames_per_period,
+        1,
+        "this class certifies on a single-frame period; a multi-frame one would mean the class \
+         moved to a basis-B signature and the orthogonality note above no longer holds"
     );
 
     // Reach-guard on the regime itself (see `drive_collect_primed`): the drive really did reach
@@ -1249,10 +1346,16 @@ fn interactive_3p_subset_lethal_does_not_crown() {
     // mode live in the same drive, so under the weakened-gate defect the crown must report as a
     // crown (the `wf` assertion above) — measured, a guard placed first steals that panic (M1
     // crowns at beat ~1, before recurrence) and reports the wrong cause.
+    //
+    // RE-GROUNDED THROUGH the offer, not around it: `DeclineShortcut` invalidates the ring, so
+    // the witness must be re-accumulated after each decline, which is why the decline count is
+    // reported here.
     assert!(
         primed,
-        "the loop never reached a board-recurrent state within {PRIMED_LOOP_BEATS} beats — this \
-         is not the primed-loop regime the assertions above assume, so they passed vacuously"
+        "the loop never reached a board-recurrent state within {PRIMED_LOOP_BEATS} beats \
+         ({} bounded offers declined en route) — this is not the primed-loop regime the \
+         assertions above assume, so they passed vacuously",
+        declined.len()
     );
 }
 
@@ -1320,6 +1423,7 @@ fn synthetic_lethal_cert() -> LoopCertificate {
         win_kind: WinKind::LethalDamage,
         mandatory: false,
         residual_board_delta: BoardDelta::default(),
+        per_cycle: None,
     }
 }
 
@@ -1382,20 +1486,30 @@ fn vito_2p_optional_offer_declare_crowns() {
 /// `live_mandatory_loop_winner` returns None (CR 104.2a) and the shortcut falls back to manual
 /// play. REVERT-PROBE: making the crown unconditional (deleting the `live_mandatory_loop_winner`
 /// gate) wrongly crowns P0 here.
+///
+/// PR-7 Phase 5b: the leading reach-guard is re-grounded THROUGH the bounded offers this class
+/// now raises (see [`drive_collect_primed`]). REVERT-PROBE (MEASURED, not predicted): delete
+/// that decline arm ⇒ `primed == false` ⇒ this row FAILS with "0 bounded offers declined".
 #[test]
 fn injected_3p_one_faller_no_crown() {
     let (mut runner, kickoff) = setup_3p_subset_lethal(LoopDetectionMode::Interactive);
     let _ = runner.cast(kickoff).resolve();
-    let (_events, _wf, primed) = drive_collect_primed(&mut runner, PRIMED_LOOP_BEATS);
+    let (_events, _wf, primed, declined) = drive_collect_primed(&mut runner, PRIMED_LOOP_BEATS);
 
     // Reach-guard on the regime (see `drive_collect_primed`): the board reached a genuine
     // recurrence, so the E1 clone-drive below has a real cycle to measure rather than an
     // un-primed board. (It witnesses the live bridge's frame pair, not the E1 measure's own
     // boundary/work pair — those are different frames.)
+    //
+    // PR-7 Phase 5b: RE-GROUNDED THROUGH the bounded offers this class now raises — the driver
+    // declines each one and keeps driving, so the witness still ranges over a non-empty beat
+    // set. `DeclineShortcut` invalidates the ring, hence the decline count in the message.
     assert!(
         primed,
-        "the loop never reached a board-recurrent state within {PRIMED_LOOP_BEATS} beats — the \
-         E1 measure below would have no primed cycle, so its no-crown assertion is vacuous"
+        "the loop never reached a board-recurrent state within {PRIMED_LOOP_BEATS} beats \
+         ({} bounded offers declined en route) — the E1 measure below would have no primed \
+         cycle, so its no-crown assertion is vacuous",
+        declined.len()
     );
 
     // Reach-guard: the drain loop genuinely ran (P1 bled, alive) and P2 is untouched — this
@@ -1407,7 +1521,11 @@ fn injected_3p_one_faller_no_crown() {
     );
     assert_eq!(life(&runner, P2), 20, "P2 untouched (second non-faller)");
 
-    // Inject the offer this subset-lethal loop never raises naturally, then confirm it.
+    // Inject the offer, then confirm it. PR-7 Phase 5b: this board is now ALSO reachable
+    // naturally (the drive above declined its natural bounded offers), but the injection stays
+    // — the injected `predicted_winner: Some(P0)` + `UntilLethal` certificate is what pins the
+    // E1 declare path this row is about, and the natural offer is a `None`/`Fixed` one that
+    // would route somewhere else entirely.
     runner.state_mut().waiting_for = WaitingFor::LoopShortcut {
         proposer: P0,
         predicted_winner: Some(P0),
@@ -1430,6 +1548,11 @@ fn injected_3p_one_faller_no_crown() {
         "subset-lethal loop must NOT crown (CR 104.2a), got {:?}",
         runner.state().waiting_for
     );
+    // MEASURED, not assumed (PA-2B.0b was a HYPOTHESIS that the materialized settle would now
+    // raise a natural bounded offer here and turn this green assertion red): on this tree the
+    // post-settle state IS `Priority`, so the assertion stands VERBATIM and needs no
+    // decline-and-re-read pass-through. Do not relax it to an `||` over two `WaitingFor`
+    // variants — that would make it pass on a state this row exists to exclude.
     assert!(
         matches!(runner.state().waiting_for, WaitingFor::Priority { .. }),
         "the E1 measure hands back to manual play, got {:?}",
@@ -1592,15 +1715,23 @@ fn declare_illegal_pin_falls_back_legal_ingests() {
 /// (staggered CR 704.3 lethal). The EQUAL-life sibling DOES crown (reach-guard proving the
 /// check is not always-reject). REVERT-PROBE: removing the F2 check wrongly crowns the
 /// unequal-life half.
+///
+/// PR-7 Phase 5b: this class now raises a natural bounded CR 732.2a offer mid-drive, which
+/// would end the drive before the recurrence witness accumulates. [`drive_collect_primed`]
+/// declines it and keeps driving, so the reach-guard is grounded THROUGH the offer.
+/// REVERT-PROBE (MEASURED, not predicted): delete that decline arm ⇒ the UNEQUAL half's
+/// `primed` goes false and this row FAILS, while the equal half is untouched (it consumes 0
+/// beats) — so the probe flips exactly one half, which is the proof the two halves are
+/// independently grounded.
 #[test]
 fn injected_3p_unequal_life_pin_all_no_crown() {
     // Drive one primed cycle of a confirmed 3p both-fall drain and report the terminal
     // waiting_for.
-    fn drive_confirmed(p1_life: i32, p2_life: i32) -> (WaitingFor, bool) {
+    fn drive_confirmed(p1_life: i32, p2_life: i32) -> (WaitingFor, bool, usize) {
         let (mut runner, kickoff) =
             setup_3p_both_fall(LoopDetectionMode::Interactive, p1_life, p2_life);
         let _ = runner.cast(kickoff).resolve();
-        let (_events, _wf, primed) = drive_collect_primed(&mut runner, PRIMED_LOOP_BEATS);
+        let (_events, _wf, primed, declined) = drive_collect_primed(&mut runner, PRIMED_LOOP_BEATS);
         // Reach-guard: both opponents bled equally (loop primed, both are fallers) and stay
         // pairwise-offset by the initial gap (equal deltas preserve the difference).
         assert!(
@@ -1625,31 +1756,40 @@ fn injected_3p_unequal_life_pin_all_no_crown() {
             })
             .expect("P0 declares UntilLethal");
         accept_all_opponents(&mut runner);
-        (runner.state().waiting_for.clone(), primed)
+        (runner.state().waiting_for.clone(), primed, declined.len())
     }
 
     // UNEQUAL absolute life (gap 50) ⇒ NO crown (F2 staggered-death veto).
-    let (unequal, unequal_primed) = drive_confirmed(1000, 1050);
+    let (unequal, unequal_primed, unequal_declines) = drive_confirmed(1000, 1050);
     // Reach-guard on the regime (see `drive_collect_primed`) — asserted on THIS half only: the
     // equal-life half below is measured to consume 0 beats (already crowned as the kick-off
     // resolved), so it has no drive in which to recur. This is the half the F2 revert-probe
     // flips, so the whole discriminator lives on the guarded side.
+    //
+    // PR-7 Phase 5b: RE-GROUNDED THROUGH the bounded offers this class now raises — declined,
+    // not avoided. Only the unequal half is re-grounded, for the reason above.
     assert!(
         unequal_primed,
-        "the loop never reached a board-recurrent state within {PRIMED_LOOP_BEATS} beats — this \
-         is not the ≥2-faller primed regime the assertions below assume"
+        "the loop never reached a board-recurrent state within {PRIMED_LOOP_BEATS} beats \
+         ({unequal_declines} bounded offers declined en route) — this is not the ≥2-faller \
+         primed regime the assertions below assume"
     );
     assert!(
         !matches!(unequal, WaitingFor::GameOver { winner: Some(_) }),
         "unequal-life ≥2-faller drain must NOT crown (CR 704.3 simultaneity), got {unequal:?}"
     );
+    // MEASURED, not assumed (PA-2B.0b was a HYPOTHESIS that the materialized settle would now
+    // raise a natural bounded offer here and turn this green assertion red): on this tree the
+    // post-settle state IS `Priority`, so the assertion stands VERBATIM and needs no
+    // decline-and-re-read pass-through. Do not relax it to an `||` over two `WaitingFor`
+    // variants — that would make it pass on a state this row exists to exclude.
     assert!(
         matches!(unequal, WaitingFor::Priority { .. }),
         "the F2 veto hands back to manual play, got {unequal:?}"
     );
 
     // EQUAL absolute life ⇒ CROWN (reach-guard: the F2 check is not always-reject).
-    let (equal, _) = drive_confirmed(1000, 1000);
+    let (equal, _, _) = drive_confirmed(1000, 1000);
     assert_eq!(
         equal,
         WaitingFor::GameOver { winner: Some(P0) },
@@ -3979,6 +4119,7 @@ fn loop_shortcut_schema_redacts_hidden_targets_for_non_controller() {
         win_kind: WinKind::LethalDamage,
         mandatory: false,
         residual_board_delta: BoardDelta::default(),
+        per_cycle: None,
     };
     runner.state_mut().waiting_for = WaitingFor::LoopShortcut {
         proposer: P0,
@@ -6963,4 +7104,820 @@ fn ai_collapse_candidate_is_clamped_to_the_accepted_bound() {
     // a restatement of the generator.
     apply(&mut state, P0, candidates[0].clone())
         .expect("the AI's generated candidate must be accepted by the reducer");
+}
+
+// ===========================================================================
+// PR-7 Phase 5b — CR 732.2a BOUNDED cycle fast-forward, on a REAL 4p dump.
+//
+// The class Path A and Path B both refuse: a drain lethal to SOME opponents leaves a
+// second non-faller, so CR 104.2a determinacy (`loop_check`'s crown gate) will not crown,
+// and a life-loss axis is not a CR 732.4 no-loss draw. Every row below LOADS
+// `dina_conqueror_4p.json.gz` through the production restore chokepoint and DRIVES real
+// beats through `apply()` — the offer is an accumulation across dozens of them, which no
+// synthetic `GameScenario` reproduces.
+// ===========================================================================
+
+/// Drive the loaded dump until the ENGINE ITSELF writes a bounded offer, and return the
+/// state at that beat. Reads `state.waiting_for` — i.e. the production Path D write inside
+/// `interactive_loop_bridge` — NEVER an out-of-band call to the offer predicate, which
+/// would prove only that the predicate agrees with itself.
+fn drive_to_bounded_offer(state: &mut GameState, cap: usize) -> Option<usize> {
+    let pin = engine_live_opponents(state, P0).first().copied();
+    for beat in 0..cap {
+        if matches!(
+            state.waiting_for,
+            WaitingFor::LoopShortcut {
+                predicted_winner: None,
+                ..
+            }
+        ) {
+            return Some(beat);
+        }
+        if dump_drive_one_beat(state, pin).is_err() {
+            return None;
+        }
+    }
+    None
+}
+
+fn bounded_offer_parts(
+    state: &GameState,
+) -> (
+    PlayerId,
+    &engine::analysis::loop_check::LoopCertificate,
+    &engine::analysis::decision_template::ShortcutDecisionSchema,
+) {
+    match &state.waiting_for {
+        WaitingFor::LoopShortcut {
+            proposer,
+            predicted_winner: None,
+            certificate,
+            schema,
+        } => (*proposer, certificate, schema),
+        other => panic!("expected a bounded LoopShortcut offer, got {other:?}"),
+    }
+}
+
+/// PR-7 Phase 5b acceptance — the bounded offer FIRES on the real 4-player Dina/Conqueror
+/// drain, at three living opponents, with a bound computed from the offer-beat board.
+///
+/// ⚠ CERTIFICATION BASIS — **B**, with a derived `frames_per_period == 1`. An earlier revision
+/// of this doc said basis **A** ("direct recurrence"); that was WRONG and the correction is
+/// load-bearing, so it is recorded rather than swapped. MEASURED two independent ways:
+/// (i) instrumenting the `basis_a` match in `try_offer_bounded_cycle_shortcut` prints
+/// `BASIS=B k=1 turn=5 phase=CombatDamage ring=3` at this row's offer beat; (ii) making
+/// `ring_delta_signature` return `None` unconditionally removes this row's offer entirely
+/// (the drive runs its full 400-beat cap and the `expect` below fires) — which could not
+/// happen if basis A were certifying, because `ring_delta_signature` is reached only from the
+/// `None =>` arm.
+///
+/// ⚠ WHY BASIS A REFUSED — the MECHANISM, measured at this row's own offer beat by
+/// instrumenting the `basis_a` walk (ring length 3, walked newest-first). Both disjuncts fail,
+/// for two DIFFERENT reasons, and neither is the one a reader would guess:
+/// * the **equal** disjunct is refused by stack growth. `ring[1] -> current` is
+///   `stack[8 -> 10]`: **two more `ObjectId(401)` "Bloodthirsty Conqueror" `GainLife`
+///   triggered-ability entries per period** (7 -> 9, alongside one steady `ObjectId(71)`
+///   "Dina, Soul Steeper" `LoseLife` entry) — a super-critical mu > 1 cascade, so the board
+///   provably never recurs. The single pair that IS `eq == true` (`ring[2]`, `stack[10 -> 10]`)
+///   carries a ZERO delta, so `net_progress_for(proposer)` is false and it is discarded.
+/// * the **cover** disjunct clears gates (1)-(4) on that same pair and is then vetoed at
+///   **gate (5)** — the off-stack fire-time condition guard — by `ObjectId(90)`
+///   **"Mortality Spear"** sitting in the **Library**, carrying
+///   `ModifyCost { Reduce, {2} }` / `affected: SelfRef` gated on
+///   `LifeGainedThisTurn { Controller } >= 1`: a PROJECTED axis read at fire time.
+///   The `scope.cast_card_ids` relief that exists for exactly this def shape cannot apply,
+///   because step (1b) of the bounded class REQUIRES an empty `last_loop_action_sequence`,
+///   so `window_cast_card_ids` returns `None` and gate (5) scans everything. Two
+///   individually-correct constraints composing into a refusal neither intended.
+///   (On the older `ring[0]` pair cover instead fails at **gate (1)**, on `loop_states_equal`
+///   of the stack-cleared projected board — `object_resource_axes_match` was `true` at every
+///   gate-(1) refusal measured in this run, so it is NOT the refuser here.)
+///
+/// THE PUBLISHED PAYLOAD CANNOT DISTINGUISH THE TWO HERE, and that is why the row asserts a
+/// structural `frames_per_period >= 1` and not a basis. Basis A publishes `1` unconditionally
+/// and basis B *derives* `k` from `1` upward, so `== 1` is observationally identical from
+/// both. `!= 1` is sufficient for "not basis A" (that is the attribution
+/// `bounded_offer_on_a_within_turn_draw_drain_is_basis_b` uses) but is never NECESSARY, and no
+/// `pub` predicate closes the gap: basis A's certifying condition is a DISJUNCTION whose
+/// second half, `loop_states_cover_modulo_growth_pinned`, is `pub(crate)` and unnameable from
+/// an integration test.
+///
+/// CONSEQUENCE, and it is the good one: this row is a basis-B positive control on a REAL 4p
+/// dump. It is also therefore SUBJECT TO the CR 703.1 turn-position conjunct rather than
+/// bypassing it — the conjunct is evaluated here and PASSES, because the certifying window is
+/// `turns[5,5,5] phases[CombatDamage x3] extra[0x3]`. It is a must-NOT-flip in both
+/// directions, MEASURED: deleting the conjunct leaves this row green, and keeping it leaves
+/// this row green. It is therefore NOT a discriminating control for that conjunct — the rows
+/// that carry that discrimination are `analysis::resource`'s
+/// `drawgo_turn_structure_yields_no_basis_b_signature` and
+/// `ring_delta_signature_certifies_only_a_period_seen_twice` arm ⓕ (refusing side), and
+/// `bounded_offer_on_a_within_turn_draw_drain_is_basis_b` (positive side).
+///
+/// EVERY NUMBER IS COMPUTED IN-TEST from the offer-beat state. The chain's reported "32"
+/// is not a fixture fact: it drifts with how many beats the drive takes to accumulate, and
+/// this row recomputes `min over living opponents of (life - 1) / per-cycle loss` at the
+/// beat the offer actually appeared.
+///
+/// NON-VACUITY: BASE is a measured NO-OFFER trajectory. Before Path D existed the same
+/// drive ran 326 beats on this dump and reached `WaitingFor::LoopShortcut` zero times, so
+/// the offer cannot appear here vacuously. The two field-value discriminators are asserted
+/// rather than a code location: `predicted_winner == None` (this seam never calls
+/// `live_mandatory_loop_winner`, so it cannot have inherited Path A's crown) and
+/// `last_loop_action_sequence` EMPTY (the object-growth producer's class is the complement).
+///
+/// REVERT-PROBES (each must FLIP to FAIL):
+/// * delete the Path D block in `interactive_loop_bridge` ⇒ no offer ⇒ the
+///   `drive_to_bounded_offer` expect FAILS.
+/// * make step (7)'s range check `1..=MAX_SHORTCUT_CYCLES` ⇒ nothing here flips (the bound
+///   really is narrowed), which is why the SEPARATE `schema.is_bounded()` assertion below
+///   exists — it is the one that flips.
+/// * remove `elimination_bounds`' `p.life as i64 - 1` headroom term ⇒ the recomputed bound
+///   and the published one diverge ⇒ FAILS.
+#[test]
+fn dina_untargeted_drain_4p_offers_at_three_live_opponents() {
+    let mut state = restore_dump(&gunzip_dump(include_bytes!(
+        "../fixtures/dina_conqueror_4p.json.gz"
+    )));
+
+    // ── reach-guards on the loaded board; every assertion below is meaningless without them
+    assert!(
+        state.loop_detection.samples(),
+        "reach-guard: a non-sampling mode never populates the ring, so no offer could ever \
+         be raised and this row would be vacuous; got {:?}",
+        state.loop_detection
+    );
+    assert_eq!(
+        state.loop_detect_ring.len(),
+        0,
+        "reach-guard: the dump ships with an EMPTY ring — every frame the offer certifies \
+         against was accumulated by THIS drive, not restored"
+    );
+    assert_eq!(
+        engine_live_opponents(&state, P0).len(),
+        3,
+        "reach-guard: the whole point of this class is that Path A cannot crown, which needs \
+         >= 2 non-fallers, i.e. three living opponents here"
+    );
+    assert!(
+        !matches!(state.waiting_for, WaitingFor::LoopShortcut { .. }),
+        "reach-guard: the dump must NOT ship at a saved offer — the offer is this row's \
+         deliverable, not its input"
+    );
+
+    let beat = drive_to_bounded_offer(&mut state, 400).expect(
+        "CR 732.2a: the bounded offer must FIRE on this real 4p drain. BASE (no Path D) drove \
+         326 beats on this same dump and reached zero LoopShortcut beats, so a failure here is \
+         the offer never being raised, not a fixture accident.",
+    );
+
+    let (proposer, certificate, schema) = bounded_offer_parts(&state);
+
+    // ── the two binding field-value discriminators ──
+    assert_eq!(
+        proposer, state.active_player,
+        "CR 732.2a: the proposer is the priority holder, and step (2) requires that to be the \
+         active player the ring sampler gates on"
+    );
+    assert!(
+        state.last_loop_action_sequence.is_empty(),
+        "the bounded class's entry must NOT require a driving sequence — a non-empty one \
+         routes an accepted proposal to the object-growth materializer, which commits zero \
+         bounded cycles (beat {beat})"
+    );
+    assert!(
+        schema.points.is_empty(),
+        "the UNTARGETED class publishes no per-iteration choice, so the schema exposes no \
+         decision points; got {:?}",
+        schema.points
+    );
+
+    // ── the per-period signature, bound FROM the value ──
+    let per_cycle = certificate
+        .per_cycle
+        .as_ref()
+        .expect("a bounded offer publishes the per-period signature its bound was divided by");
+    assert!(
+        per_cycle.frames_per_period >= 1,
+        "a period spans at least one retained frame; got {}",
+        per_cycle.frames_per_period
+    );
+    assert!(
+        per_cycle.victim_slot.is_empty(),
+        "no slot is published, so nothing is charged to a declared victim — the victims are \
+         already visible in `delta.life`; got {:?}",
+        per_cycle.victim_slot
+    );
+    assert!(
+        per_cycle.delta != engine::analysis::resource::ResourceVector::default(),
+        "a zero-delta cycle states no CR 704 threshold and must never be offered"
+    );
+
+    // ── the bound, RECOMPUTED from the offer-beat board ──
+    let living_opponents: Vec<PlayerId> = engine_live_opponents(&state, proposer);
+    assert_eq!(
+        living_opponents.len(),
+        3,
+        "three living opponents must still be the population AT THE OFFER BEAT ({beat}), not \
+         only at load — otherwise the bound below is computed over the wrong seats"
+    );
+    let mut losses: Vec<(PlayerId, i64, i64)> = vec![];
+    for p in state.players.iter().filter(|p| !p.is_eliminated) {
+        let loss = -per_cycle.delta.life.get(&p.id).copied().unwrap_or(0);
+        losses.push((p.id, p.life as i64, loss));
+    }
+    let opponent_losses: Vec<i64> = losses
+        .iter()
+        .filter(|(id, _, _)| *id != proposer)
+        .map(|(_, _, loss)| *loss)
+        .collect();
+    assert!(
+        opponent_losses.iter().all(|&l| l > 0),
+        "REACH-GUARD against a degenerate fixture: every living opponent must actually be \
+         LOSING life per cycle, else the CR 704.5a headroom term never narrows and the bound \
+         below would be the safety cap for the wrong reason; measured {losses:?}"
+    );
+    let expected_bound = losses
+        .iter()
+        .filter(|(_, _, loss)| *loss > 0)
+        .map(|(_, life, loss)| (life - 1) / loss)
+        .min()
+        .expect("at least one seat is losing life, asserted above");
+    assert_eq!(
+        i64::from(schema.max_iterations),
+        expected_bound,
+        "CR 704.5a: the published bound must equal `min over living seats of (life - 1) / \
+         per-cycle loss`, recomputed here from the offer-beat board {losses:?} at beat {beat}"
+    );
+    assert_eq!(
+        schema.iteration_count,
+        engine::analysis::decision_template::IterationCount::Fixed(schema.max_iterations),
+        "CR 732.1b: the SUGGESTION seeded into the picker is the bound itself"
+    );
+    assert!(
+        schema.is_bounded(),
+        "the whole claim of this producer is that it NARROWED the repetition bound; \
+         max_iterations = {}",
+        schema.max_iterations
+    );
+
+    // ── siblings: nothing terminal happened, and no revocable-infinity was marked ──
+    assert_eq!(
+        certificate.win_kind,
+        engine::analysis::loop_check::WinKind::LethalDamage,
+        "CR 704.5a: a life drain is not `Advantage`, which is the conjunct that keeps this \
+         seam disjoint from the Path C revocable-infinity mark"
+    );
+    assert!(
+        state.unbounded_resources.is_empty(),
+        "an OFFER is not a grant: CR 104.4b's revocable-infinity mark belongs to Path C and \
+         must not be written by raising a bounded offer; got {:?}",
+        state.unbounded_resources
+    );
+}
+
+/// Drive a `GameScenario`-built board until the ENGINE writes a bounded offer, declining
+/// nothing and injecting nothing. Returns the beat, or `None` if the cap ran out. Reads
+/// `state.waiting_for` — the production Path D write — never an out-of-band predicate call.
+fn drive_scenario_to_bounded_offer(runner: &mut GameRunner, cap: usize) -> Option<usize> {
+    for beat in 0..cap {
+        if matches!(
+            runner.state().waiting_for,
+            WaitingFor::LoopShortcut {
+                predicted_winner: None,
+                ..
+            }
+        ) {
+            return Some(beat);
+        }
+        if dump_drive_one_beat(runner.state_mut(), None).is_err() {
+            return None;
+        }
+    }
+    None
+}
+
+/// PR-7 Phase 5b — THE BASIS-B POSITIVE CONTROL, at the offer level.
+///
+/// This is the row that detects a back-door deletion of certification basis B, and it is the
+/// only one that does: every other bounded-offer row in this file certifies on basis A.
+///
+/// FIXTURE — a fully mandatory two-card draw↔drain cascade. What it shares with the class
+/// basis B exists for is the one property that matters: **it draws a card every cycle**, so a
+/// card moves library→hand each period, the board never recurs, and basis A's
+/// `loop_states_equal_modulo_resources` (library and hand are board, not projected resources)
+/// and its cover disjunct must BOTH refuse. The `None =>` arm is then the only way an offer
+/// can be minted here.
+///
+/// ORACLE-TEXT PROVENANCE, verified against the Scryfall API, and deliberately honest:
+/// * *"Whenever you draw a card, each opponent loses 1 life."* is **real** — Psychosis
+///   Crawler's second ability, verbatim.
+/// * *"Whenever an opponent loses life, draw a card."* matches **no printing**. The two
+///   nearest real cards are both GATED — Kefka, Ruler of Ruin (*"…during your turn"*) and
+///   Valgavoth, Harrower of Souls (*"…for the first time during each of their turns"*) — and
+///   that gating is precisely what would stop the cascade. This fixture is therefore
+///   SYNTHETIC and deliberately stronger than any printed card. It must not be described as a
+///   real-card loop. Its matched negative control
+///   (`drawgo_ring_spans_turns_but_never_offers`) is a `GameScenario` too, which is the
+///   precedent for a synthetic matched control pair for one predicate.
+///
+/// MEASURED at the seam (not from an out-of-band predicate call): the engine writes the offer
+/// at beat 31, turn 4, `Draw`, with a derived `frames_per_period == 2`, δ =
+/// `life{P1:-1} lib{P0:-1}` and a bound of 16; the whole ring sits at `turns[4×6]`
+/// `phases[Draw×6]` `extra[0×6]`, so every consecutive pair is turn-position invariant and the
+/// CR 703.1 conjunct passes. Note δ carries `lib{P0:-1}` ONLY — P1's library is untouched, so
+/// no second draw step is inside the period. Contrast drawgo (`lib{P0:-1,P1:-1}`), whose
+/// "period" is one 2-player turn cycle.
+///
+/// REVERT-PROBE ⓐ (MEASURED, not predicted): make `ring_delta_signature` return `None`
+/// unconditionally ⇒ the `None =>` arm converts that into `Err(NoCertification)` ⇒ no offer is
+/// written ⇒ the `expect` below FAILS.
+///
+/// ⚠ SCOPE, stated so it is not overread: this SYNTHETIC control fires at TWO players. The
+/// same cascade built at 3 and 4 players certifies but mints zero offers (they refuse
+/// downstream, at step (6) `stack_choices_are_all_specified`, because `Effect::Draw` is
+/// outside that gate's allow-list). `multiplayer_pure_life_drain_offers_at_three_and_four_players`
+/// is NOT a substitute — it is measured basis A. The ≥3-player basis-B coverage this file DOES
+/// carry is `dina_untargeted_drain_4p_offers_at_three_live_opponents`, which is measured basis
+/// B (k == 1) on a real 4p dump; see that row's doc for the measurement and for why its
+/// published payload cannot assert the basis on its own.
+#[test]
+fn bounded_offer_on_a_within_turn_draw_drain_is_basis_b() {
+    let mut scenario = GameScenario::new_n_player(2, 7);
+    scenario.at_phase(Phase::PreCombatMain);
+    scenario.with_life(P0, 20);
+    scenario.with_life(P1, 20);
+    scenario.add_creature_from_oracle(
+        P0,
+        "Test Bleeder",
+        2,
+        2,
+        "Whenever you draw a card, each opponent loses 1 life.",
+    );
+    scenario.add_creature_from_oracle(
+        P0,
+        "Test Chronicler",
+        2,
+        2,
+        "Whenever an opponent loses life, draw a card.",
+    );
+    // CR 504.1: the libraries must outlast the drive — a deck-out would end the game and
+    // silently truncate every assertion below.
+    let names: Vec<String> = (0..60).map(|i| format!("Filler {i}")).collect();
+    let refs: Vec<&str> = names.iter().map(|s| s.as_str()).collect();
+    scenario.with_library_top(P0, &refs);
+    scenario.with_library_top(P1, &refs);
+    let mut runner = scenario.build();
+    runner.state_mut().loop_detection = LoopDetectionMode::Interactive;
+
+    assert!(
+        runner.state().loop_detection.samples(),
+        "reach-guard: a non-sampling mode never populates the ring, so no offer could ever be \
+         raised and this row would be vacuous"
+    );
+    assert_eq!(
+        runner.state().loop_detect_ring.len(),
+        0,
+        "reach-guard: every frame the offer certifies against is accumulated by THIS drive"
+    );
+
+    let beat = drive_scenario_to_bounded_offer(&mut runner, 200).expect(
+        "CR 732.2a: the within-turn mandatory draw↔drain cascade must raise a bounded offer. \
+         A failure here means basis B minted nothing — which is exactly what revert-probe ⓐ \
+         (make `ring_delta_signature` return None) produces.",
+    );
+
+    let state = runner.state();
+    let (proposer, certificate, schema) = bounded_offer_parts(state);
+
+    // (i) the binding field-value discriminator.
+    assert_eq!(
+        proposer, state.active_player,
+        "CR 732.2a: the proposer is the priority holder, and step (2) requires that to be the \
+         active player the ring sampler gates on"
+    );
+
+    // (ii) the period, bound FROM the returned value — no literal `2` appears in this row.
+    let per_cycle = certificate
+        .per_cycle
+        .as_ref()
+        .expect("a bounded offer publishes the per-period signature its bound was divided by");
+    let k = per_cycle.frames_per_period;
+    assert!(
+        k >= 1,
+        "a period spans at least one retained frame; got {k}"
+    );
+    // Bound to a local rather than inlined: `2k + 1` is the CONTRACT expression (2k deltas ⇒
+    // the period was observed twice), and clippy's `int_plus_one` would otherwise push it to a
+    // `> 2k` that no longer reads as the rule.
+    let frames_needed = 2 * k as usize + 1;
+    assert!(
+        state.loop_detect_ring.len() >= frames_needed,
+        "the structural invariant every certified period satisfies: a period seen TWICE needs \
+         2k+1 frames. k = {k}, ring = {} (beat {beat})",
+        state.loop_detect_ring.len()
+    );
+    assert!(
+        per_cycle.delta != engine::analysis::resource::ResourceVector::default(),
+        "a zero-delta cycle states no CR 704 threshold and must never be offered"
+    );
+
+    // (iii) BASIS ATTRIBUTION. Basis A publishes `frames_per_period: 1` UNCONDITIONALLY, so
+    // `!= 1` is sufficient for "not basis A" — and it is exactly symmetric with the dina row's
+    // `== 1`, so the two read as one pair. It is deliberately not NECESSARY (basis B searches
+    // k from 1, so a hypothetical basis-B offer with k == 1 would fail here); that is the
+    // fail-LOUD direction. If this fixture's derived k ever drifts to 1 the row must be
+    // re-derived, not relaxed.
+    assert_ne!(
+        k, 1,
+        "basis B must be what certified this board: basis A publishes frames_per_period 1 \
+         unconditionally, and this cascade draws a card every cycle so basis A cannot match"
+    );
+
+    // (iv) the bound is narrowed, asked of the single authority. `MAX_SHORTCUT_CYCLES` is
+    // `pub(crate)` and unnameable from an integration test; `is_bounded()` is the shipped
+    // `pub` predicate for exactly this question.
+    assert!(
+        schema.max_iterations >= 1,
+        "a bound of 0 states no repetition and must not be offered"
+    );
+    assert!(
+        schema.is_bounded(),
+        "the whole claim of this producer is that it NARROWED the repetition bound below the \
+         engine-wide safety cap; max_iterations = {}",
+        schema.max_iterations
+    );
+
+    // (v) the untargeted class publishes no per-iteration choice.
+    assert!(
+        schema.points.is_empty(),
+        "the UNTARGETED class exposes no decision points; got {:?}",
+        schema.points
+    );
+}
+
+/// PR-7 Phase 5b — the MULTIPLAYER offer control: the untargeted every-opponent drain raises a
+/// bounded offer at THREE and at FOUR players, not only at two.
+///
+/// FIXTURE — the pure life↔life cascade, both halves verbatim real-card Oracle text verified
+/// against the Scryfall API: Marauding Blight-Priest (*"Whenever you gain life, each opponent
+/// loses 1 life."*) plus Exquisite Blood (*"Whenever an opponent loses life, you gain that much
+/// life."*). Untargeted and every-opponent, which is the true full-multiplayer drain and the
+/// same class as the real 4p `dina_conqueror_4p` dump.
+///
+/// WHY THIS SHAPE: its stack holds only `GainLife` / `LoseLife`, so it clears step (6)
+/// `stack_choices_are_all_specified` and is DECOUPLED from the separate `Effect::Draw`
+/// allow-list hole that silences the 2-player basis-B control at ≥3 players. A control that
+/// steered around that hole would guard nothing about it; this one does not touch it.
+///
+/// UNEQUAL OPPONENT LIFE IS LOAD-BEARING, not decoration. With every opponent falling, the
+/// living partition is `nonfallers == {P0}`, and at EQUAL life `live_mandatory_loop_winner`'s
+/// CR 704.3 simultaneity floor passes and Path A crowns P0 while the kick-off is still
+/// resolving — measured, at 2, 3 and 4 players. Staggering the totals fails
+/// `fallers_lives_pairwise_equal`, which is what leaves the board in the "lethal to some,
+/// crowns nobody" regime the bounded offer exists to serve.
+///
+/// ⚠ BASIS: **A** — established by DISCRIMINATING PROBE, never from `frames_per_period`.
+/// The probe: force `ring_delta_signature` to return `None` unconditionally (basis B's only
+/// entry point, reached solely from the `basis_a` match's `None =>` arm). This row stays
+/// GREEN at both player counts while `dina_untargeted_drain_4p_offers_at_three_live_opponents`
+/// and `bounded_offer_on_a_within_turn_draw_drain_is_basis_b` both FAIL. Surviving that
+/// mutation is what proves basis A certified here. **`frames_per_period == 1` proves NOTHING
+/// about the basis** — basis A publishes `1` unconditionally and basis B *derives* `k` from
+/// `1` upward, so a k==1 basis-B offer is byte-identical in the payload. The `== 1` assertion
+/// below is a structural consistency check, necessary but never sufficient; treating it as a
+/// basis attribution is the exact non-discriminating inference that mislabelled the dina row.
+///
+/// ⚠ MECHANISM — CORRECTED, and the correction is load-bearing. An earlier revision of this
+/// doc said *"a pure life↔life loop moves only axes `loop_states_equal_modulo_resources`
+/// projects out, so the board DOES recur and basis A always matches."* That is MEASURABLY
+/// FALSE on this very fixture: the loop moves the STACK, which is not a projected axis.
+/// Instrumenting the `basis_a` walk at the offer beat (ring length 3, walked newest-first):
+/// * `ring[2]` — the only pair with `eq == true` (stack unchanged) — carries a ZERO δ, so
+///   `net_progress_for(proposer)` is **false** and the pair is discarded.
+/// * `ring[1]` — `eq == FALSE`, and this is the pair that certifies, through the
+///   **`loop_states_cover_modulo_growth_pinned` disjunct**, never through the equal one.
+///   The stack grows one period's worth of `Test Exquisite Blood` triggered abilities:
+///   **3p `stack[2 -> 3]` (+1), 4p `stack[3 -> 5]` (+2)**. Cover exists for exactly this —
+///   growth confined to places `prior` already occupied, by mandatory no-ordering-input
+///   triggers.
+///
+/// So the real reason basis A wins here is not resource-purity: it is that nothing on this
+/// board trips a cover gate. Contrast dina, whose identical-in-kind stack growth also clears
+/// cover's gates (1)-(4) and is then vetoed at **gate (5)** by an off-stack `ModifyCost`
+/// static whose fire-time condition reads a projected axis. The shared write-up lives at the
+/// `basis_a` dispatch site in `game::engine::try_offer_bounded_cycle_shortcut`.
+///
+/// ⚠ CONSEQUENCE for "no basis-B control at ≥3 players from this shape": still true AS BUILT,
+/// but for the corrected reason — cover SUCCEEDS here, so the `None =>` arm is never reached.
+/// That is a property of this board, not a resource-purity invariant: adding a gate-(5)
+/// refuser to the same two cards would flip it to basis B. The ≥3p basis-B coverage this file
+/// carries is `dina_untargeted_drain_4p_offers_at_three_live_opponents` (basis B, k == 1, on a
+/// real 4p dump).
+///
+/// REVERT-PROBE (must FLIP): delete the Path D block in `interactive_loop_bridge` ⇒ no offer
+/// at either player count ⇒ the `expect` FAILS.
+#[test]
+fn multiplayer_pure_life_drain_offers_at_three_and_four_players() {
+    /// Marauding Blight-Priest, verbatim (Scryfall).
+    const BLIGHT_PRIEST: &str = "Whenever you gain life, each opponent loses 1 life.";
+    /// Exquisite Blood, verbatim (Scryfall).
+    const EXQUISITE_BLOOD: &str = "Whenever an opponent loses life, you gain that much life.";
+
+    /// Build the cascade at `seats` players with staggered opponent life, cast the kick-off,
+    /// and return the runner plus the seats the engine considers living opponents of P0.
+    fn cascade(seats: u8) -> GameRunner {
+        let mut scenario = GameScenario::new_n_player(seats, 7);
+        scenario.at_phase(Phase::PreCombatMain);
+        scenario.with_life(P0, 20);
+        for (i, seat) in (1..seats).map(PlayerId).enumerate() {
+            // Staggered: pairwise-UNEQUAL absolute life, equal per-cycle delta.
+            scenario.with_life(seat, 1000 + 50 * i as i32);
+        }
+        scenario.add_creature_from_oracle(P0, "Test Blight Priest", 2, 2, BLIGHT_PRIEST);
+        scenario.add_creature_from_oracle(P0, "Test Exquisite Blood", 2, 2, EXQUISITE_BLOOD);
+        let kickoff = scenario
+            .add_spell_to_hand_from_oracle(P0, "Test Lifegain Kickoff", false, KICKOFF)
+            .id();
+        let mut runner = scenario.build();
+        runner.state_mut().loop_detection = LoopDetectionMode::Interactive;
+        let _ = runner.cast(kickoff).resolve();
+        runner
+    }
+
+    for seats in [3u8, 4] {
+        let mut runner = cascade(seats);
+        let opponents = engine_live_opponents(runner.state(), P0);
+        assert_eq!(
+            opponents.len(),
+            usize::from(seats) - 1,
+            "reach-guard at {seats} players: every opponent must still be living at the offer \
+             beat, else the bound below is computed over the wrong seats"
+        );
+        assert!(
+            !matches!(runner.state().waiting_for, WaitingFor::GameOver { .. }),
+            "reach-guard at {seats} players: the staggered life totals must keep Path A from \
+             crowning while the kick-off resolves — at EQUAL life it does, and then there is \
+             no board left to offer on; got {:?}",
+            runner.state().waiting_for
+        );
+
+        let beat = drive_scenario_to_bounded_offer(&mut runner, 200).unwrap_or_else(|| {
+            panic!(
+                "CR 732.2a: the untargeted every-opponent drain must raise a bounded offer at \
+                 {seats} players. This is the multiplayer half of the claim — a 2-player-only \
+                 detector is not what this lane ships."
+            )
+        });
+
+        let state = runner.state();
+        let (proposer, certificate, schema) = bounded_offer_parts(state);
+        assert_eq!(
+            proposer, state.active_player,
+            "{seats}p: CR 732.2a step (2) — the proposer is the active priority holder"
+        );
+        assert!(
+            schema.points.is_empty(),
+            "{seats}p: the UNTARGETED class exposes no decision points; got {:?}",
+            schema.points
+        );
+
+        let per_cycle = certificate
+            .per_cycle
+            .as_ref()
+            .expect("a bounded offer publishes its per-period signature");
+        assert_eq!(
+            per_cycle.frames_per_period, 1,
+            "{seats}p: NECESSARY-but-not-sufficient for the basis-A label. Basis A publishes 1 \
+             unconditionally, so != 1 would refute the label outright and must be re-derived, \
+             not relaxed — but == 1 does NOT establish it, because basis B derives k from 1 \
+             upward and publishes the identical value. The label is carried by the \
+             `ring_delta_signature -> None` probe named in this row's doc, not by this number"
+        );
+
+        // EVERY living opponent loses life every cycle — the multiplayer content of the claim.
+        // A 2-player-shaped detector that only ever charges one seat fails here.
+        let losses: Vec<(PlayerId, i64)> = opponents
+            .iter()
+            .map(|p| (*p, -per_cycle.delta.life.get(p).copied().unwrap_or(0)))
+            .collect();
+        assert!(
+            losses.iter().all(|(_, loss)| *loss > 0),
+            "{seats}p: the published per-cycle δ must charge EVERY living opponent, which is \
+             what makes this the untargeted multiplayer class; measured {losses:?} at beat \
+             {beat}"
+        );
+
+        // The bound, RECOMPUTED from the offer-beat board.
+        let expected_bound = state
+            .players
+            .iter()
+            .filter(|p| !p.is_eliminated)
+            .filter_map(|p| {
+                let loss = -per_cycle.delta.life.get(&p.id).copied().unwrap_or(0);
+                (loss > 0).then(|| (p.life as i64 - 1) / loss)
+            })
+            .min()
+            .expect("at least one seat is losing life, asserted above");
+        assert_eq!(
+            i64::from(schema.max_iterations),
+            expected_bound,
+            "{seats}p: CR 704.5a — the published bound must equal `min over living seats of \
+             (life - 1) / per-cycle loss`, recomputed here from the offer-beat board"
+        );
+        assert!(
+            schema.is_bounded(),
+            "{seats}p: this producer's whole claim is that it NARROWED the bound; \
+             max_iterations = {}",
+            schema.max_iterations
+        );
+    }
+}
+
+/// PR-7 Phase 5b (G1) — the bounded offer must FORBID a non-empty `last_loop_action_sequence`.
+///
+/// PAIRED ARMS ON ONE CERTIFYING STATE, differing in exactly one field, asserting opposite
+/// outcomes — so no constant implementation passes.
+///
+/// WHY THE GUARD IS LOAD-BEARING (measured, not hypothetical): `materialize_fixed_shortcut`
+/// EARLY-RETURNS into `materialize_object_growth_shortcut` when the sequence is non-empty,
+/// and the bounded drain path begins strictly below that return. An offer minted with a
+/// non-empty sequence would be accepted and routed to the object-growth materializer,
+/// committing ZERO bounded cycles — the guard converts that silent misroute into an
+/// observable refusal. The two conjuncts are NOT disjoint in the tree: the bridge's own gate
+/// needs a non-empty STACK, and an on-stack `ActivateAbility` appends to the sequence once a
+/// mana activation has armed a period.
+///
+/// REVERT-PROBE: delete step (1b) ⇒ arm ⓑ returns `Ok(..)` ⇒ FAILS. The refusal is asserted
+/// BY REASON (`DrivingSequenceNotEmpty`), not merely as "no offer": an assertion that only
+/// observed absence would keep passing if some EARLIER conjunct started refusing first, which
+/// is the domination trap.
+#[test]
+fn a_nonempty_action_sequence_mints_no_bounded_offer() {
+    use engine::game::engine::{try_offer_bounded_cycle_shortcut, BoundedOfferRefusal};
+    use engine::types::game_state::{BuybackUsage, LoopAction, LoopActionContext};
+
+    let mut state = restore_dump(&gunzip_dump(include_bytes!(
+        "../fixtures/dina_conqueror_4p.json.gz"
+    )));
+    drive_to_bounded_offer(&mut state, 400)
+        .expect("the paired arms need a state that PROVABLY certifies; see the acceptance row");
+
+    // The offer beat's `waiting_for` is the offer itself, so rewind that one field to the
+    // Priority beat the offer was raised AT — the bridge's own entry condition.
+    let (proposer, _, _) = bounded_offer_parts(&state);
+    state.waiting_for = WaitingFor::Priority { player: proposer };
+
+    // ⓐ the state certifies.
+    let armed = try_offer_bounded_cycle_shortcut(&state, false);
+    assert!(
+        armed.is_ok(),
+        "REACH-GUARD: arm ⓑ is vacuous unless the SAME state certifies with an empty \
+         sequence; got {armed:?}"
+    );
+
+    // ⓑ one field reassigned.
+    state.last_loop_action_sequence = vec![LoopActionContext {
+        card_id: state
+            .objects
+            .values()
+            .next()
+            .map(|o| o.card_id)
+            .expect("the dump has objects"),
+        controller: proposer,
+        action: LoopAction::Recast {
+            from_zone: engine::types::zones::Zone::Hand,
+            uses_buyback: BuybackUsage::NotUsed,
+        },
+        convoke: None,
+        pins: vec![],
+    }];
+    assert_eq!(
+        try_offer_bounded_cycle_shortcut(&state, false),
+        Err(BoundedOfferRefusal::DrivingSequenceNotEmpty),
+        "CR 732.2a: a bounded offer minted with a driving sequence would be routed to the \
+         object-growth materializer and commit zero bounded cycles"
+    );
+}
+
+/// PR-7 Phase 5b — a declared count ABOVE the offered bound is handed back fail-closed.
+///
+/// **TEST-ONLY ROW, ZERO NEW PRODUCTION CODE.** The guard already ships
+/// (`handle_declare_shortcut`'s `Fixed(n) if *n > offer.schema.max_iterations` arm). It was
+/// unbuildable before this phase because no producer narrowed the bound below
+/// `MAX_SHORTCUT_CYCLES`, so the comparison was inert; the bounded offer is the first
+/// producer that can exercise it. Do not read this row as new mechanism.
+///
+/// REVERT-PROBE: delete that arm ⇒ the over-bound count is accepted, APNAP opens, and the
+/// proposal drives past a CR 704.5a threshold INSIDE the proposal ⇒ the zero-elimination
+/// assertion FAILS.
+/// MUST-NOT-FLIP: `over_cap_fixed_count_hands_back_with_no_drive` (the global-cap arm) and
+/// every unbounded offer's acceptance of any `Fixed(n <= MAX)`.
+#[test]
+fn declared_count_above_the_offered_bound_is_handed_back() {
+    use engine::analysis::decision_template::IterationCount;
+
+    let mut state = restore_dump(&gunzip_dump(include_bytes!(
+        "../fixtures/dina_conqueror_4p.json.gz"
+    )));
+    drive_to_bounded_offer(&mut state, 400)
+        .expect("the bounded offer must fire; see the acceptance row");
+    let (proposer, _, schema) = bounded_offer_parts(&state);
+    let bound = schema.max_iterations;
+    assert!(
+        schema.is_bounded(),
+        "REACH-GUARD: this row is about the PER-OFFER bound, so the offer must have narrowed \
+         one — at `MAX_SHORTCUT_CYCLES` the global-cap arm would answer instead and the row \
+         would test the wrong guard; got {bound}"
+    );
+    let lives_before: Vec<i32> = state.players.iter().map(|p| p.life).collect();
+    let eliminated_before = state.players.iter().filter(|p| p.is_eliminated).count();
+
+    let result = apply(
+        &mut state,
+        proposer,
+        GameAction::DeclareShortcut {
+            count: IterationCount::Fixed(bound + 1),
+            template: None,
+        },
+    )
+    .expect("the declare is a legal action; it is REFUSED by being handed back, not by Err");
+
+    assert!(
+        matches!(result.waiting_for, WaitingFor::Priority { .. }),
+        "CR 732.2a: an over-bound count contains a conditional action, so it is handed back to \
+         ordinary priority — no APNAP window, no drive; got {:?}",
+        result.waiting_for
+    );
+    assert!(
+        !matches!(state.waiting_for, WaitingFor::RespondToShortcut { .. }),
+        "the CR 732.2b response window must never open for a rejected declaration"
+    );
+    assert_eq!(
+        state.players.iter().filter(|p| p.is_eliminated).count(),
+        eliminated_before,
+        "ZERO eliminations: the whole reason the bound exists is that a count above it crosses \
+         a CR 704.5a threshold inside the proposal"
+    );
+    assert_eq!(
+        state.players.iter().map(|p| p.life).collect::<Vec<_>>(),
+        lives_before,
+        "zero committed cycles ⇒ no life moved"
+    );
+}
+
+/// PR-7 Phase 5b — `UntilLethal` against a BOUNDED offer is rejected.
+///
+/// **TEST-ONLY ROW** for the same reason as the row above: the guard ships already. It is
+/// also the D-1 rider — the ONLY test that exercises `handle_declare_shortcut`'s
+/// `UntilLethal if offer.schema.is_bounded()` arm, so it is the behavioural proof that
+/// swapping the inline `max_iterations < MAX_SHORTCUT_CYCLES` for the shared predicate is
+/// semantics-preserving.
+///
+/// REVERT-PROBES: delete that arm ⇒ an unbounded drive runs past the measured threshold.
+/// Invert `ShortcutDecisionSchema::is_bounded()` to `>=` ⇒ THIS row flips too, together with
+/// both `phase-ai` rows — one edit to one predicate measurable at every caller. If that
+/// inversion leaves this row green, the engine kept a private copy of the comparison.
+/// MUST-NOT-FLIP: the whole shipped suite's unbounded offers still accept `UntilLethal`.
+#[test]
+fn until_lethal_against_a_bounded_offer_is_rejected() {
+    use engine::analysis::decision_template::IterationCount;
+
+    let mut state = restore_dump(&gunzip_dump(include_bytes!(
+        "../fixtures/dina_conqueror_4p.json.gz"
+    )));
+    drive_to_bounded_offer(&mut state, 400)
+        .expect("the bounded offer must fire; see the acceptance row");
+    let (proposer, _, schema) = bounded_offer_parts(&state);
+    assert!(
+        schema.is_bounded(),
+        "REACH-GUARD: the guard under test is keyed on `is_bounded()`, so an unnarrowed offer \
+         would take a different arm and the row would be vacuous"
+    );
+    let lives_before: Vec<i32> = state.players.iter().map(|p| p.life).collect();
+
+    let result = apply(
+        &mut state,
+        proposer,
+        GameAction::DeclareShortcut {
+            count: IterationCount::UntilLethal,
+            template: None,
+        },
+    )
+    .expect("the declare is a legal action; it is REFUSED by being handed back");
+
+    assert!(
+        matches!(result.waiting_for, WaitingFor::Priority { .. }),
+        "CR 732.2a: `UntilLethal` names no count at all, so it cannot be legal against an \
+         offer whose producer measured a CR 704 threshold inside the loop; got {:?}",
+        result.waiting_for
+    );
+    assert!(
+        !matches!(state.waiting_for, WaitingFor::RespondToShortcut { .. }),
+        "no CR 732.2b window for a rejected declaration"
+    );
+    assert_eq!(
+        state.players.iter().map(|p| p.life).collect::<Vec<_>>(),
+        lives_before,
+        "zero committed cycles"
+    );
 }

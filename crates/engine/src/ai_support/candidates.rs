@@ -3232,21 +3232,43 @@ pub fn candidate_actions_broad_with_probe(
         // policy/search layer, rather than the candidate generator, decides whether an AI
         // proposer declares or returns to ordinary priority.
         // (Scored by `phase_ai::policies::loop_shortcut::LoopShortcutPolicy`.)
-        WaitingFor::LoopShortcut { proposer, .. } => vec![
-            candidate(
+        WaitingFor::LoopShortcut {
+            proposer, schema, ..
+        } => {
+            let mut v = vec![candidate(
                 GameAction::DeclareShortcut {
                     count: crate::analysis::decision_template::IterationCount::UntilLethal,
                     template: None,
                 },
                 TacticalClass::Utility,
                 Some(*proposer),
-            ),
-            candidate(
+            )];
+            // CR 732.2a: a BOUNDED offer states a legal repetition count, and the declare
+            // handler rejects `UntilLethal` against one outright — so without this candidate
+            // the AI's only non-declining option at such a node is an answer the engine
+            // refuses. `ShortcutDecisionSchema::is_bounded()` is the engine's single
+            // authority for "this producer narrowed the bound"; do NOT re-spell it as a
+            // comparison against `MAX_SHORTCUT_CYCLES`. Gated on empty `points` because this
+            // candidate carries `template: None`, which a published pin set fail-closes on.
+            if schema.points.is_empty() && schema.is_bounded() {
+                v.push(candidate(
+                    GameAction::DeclareShortcut {
+                        count: crate::analysis::decision_template::IterationCount::Fixed(
+                            schema.max_iterations,
+                        ),
+                        template: None,
+                    },
+                    TacticalClass::Utility,
+                    Some(*proposer),
+                ));
+            }
+            v.push(candidate(
                 GameAction::DeclineShortcut,
                 TacticalClass::Pass,
                 Some(*proposer),
-            ),
-        ],
+            ));
+            v
+        }
         // CR 732.2b/c: an opponent answers a loop-shortcut offer. PR-7 Phase 4c (LOW-2):
         // self-preservation via the single-authority `smart_shortcut_response` — Shorten
         // when the polled player has a meaningful way to break the loop, else Accept.
@@ -5234,6 +5256,7 @@ mod tests {
                 win_kind: crate::analysis::loop_check::WinKind::LethalDamage,
                 mandatory: false,
                 residual_board_delta: crate::analysis::resource::BoardDelta::default(),
+                per_cycle: None,
             },
             schema: crate::analysis::decision_template::ShortcutDecisionSchema::default(),
         };
