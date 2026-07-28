@@ -2507,12 +2507,16 @@ fn materialize_fixed_shortcut(
             // COMMITS and the game ends. A cycle that takes ONE seat to 0 while >= 2 players
             // survive raises no `GameOver` (CR 104.2a crowns nobody), the loop's shape changes
             // under it as the drained seat leaves, no settle beat recurs, and it arrives HERE —
-            // rolled back whole, `eliminated` empty, priority handed back. Both are out of
-            // contract for a legitimately-derived bound (`elimination_bounds` reserves
-            // `life - 1` of CR 704.5a headroom, so a within-bound count crosses no threshold),
-            // so either arm means the published bound was wrong. Rolling the out-of-contract
-            // cycle back is deliberate: the remaining repetitions were bounded by a delta the
-            // board stops moving the moment a drain target leaves the game. Rows:
+            // THAT CYCLE rolls back whole while every PRIOR conforming cycle stays committed,
+            // `eliminated` is empty, priority is handed back. (It is not a whole-drive rollback:
+            // the `break` below falls through to `*state = committed`, which is the last WHOLE
+            // cycle, not the offer state.) Both are out of contract for a legitimately-derived
+            // bound (`elimination_bounds` reserves `life - 1` of CR 704.5a headroom, so a
+            // within-bound count crosses no threshold), so either arm means the published bound
+            // was wrong. The atomic per-cycle refusal is the designed property — NO HALF-APPLIED
+            // PERIOD, EVER — and it is why the out-of-contract cycle is dropped rather than
+            // materialized: its remaining repetitions were bounded by a delta the board stops
+            // moving the moment a drain target leaves the game. Rows:
             // `bounded_fixed_drive_stops_at_the_first_lethal_cycle` (total wipe) and
             // `bounded_fixed_drive_rolls_back_a_partial_crossing_cycle` (partial).
             CycleOutcome::Abort => break 'cycles,

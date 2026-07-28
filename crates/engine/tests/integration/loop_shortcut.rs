@@ -8451,7 +8451,8 @@ fn basis_a_bounded_fixed_count_commits_exactly_n_periods() {
 /// cross 0 on the SAME cycle, CR 104.2a crowns, and the drive takes `CycleOutcome::CrossLethal`.
 /// The fixture is structurally incapable of a partial wipe: a symmetric fixture collapses every
 /// partial case into a total case. The other arm — one seat crosses while ≥2 players survive, no
-/// `GameOver`, `CycleOutcome::Abort`, full rollback of the crossing cycle — behaves DIFFERENTLY
+/// `GameOver`, `CycleOutcome::Abort`, the crossing cycle rolling back whole while prior
+/// conforming cycles stay committed — behaves DIFFERENTLY
 /// and has its own row, [`bounded_fixed_drive_rolls_back_a_partial_crossing_cycle`], which
 /// carries the arm-asymmetry table. Both arms are out of contract for any legitimately-derived
 /// bound; each is reachable only under a doctored one.
@@ -8641,15 +8642,16 @@ fn bounded_fixed_drive_stops_at_the_first_lethal_cycle() {
 }
 
 /// FIX ROUND 2 (MED-1) — THE OTHER LETHAL ARM. A crossing that eliminates ONE seat while
-/// **≥2 players survive** raises no `GameOver`, so the drive does not cross-lethal: it ABORTS,
-/// the crossing cycle is rolled back whole, and every seat is still alive at handback.
+/// **≥2 players survive** raises no `GameOver`, so the drive does not cross-lethal: it ABORTS.
+/// The crossing cycle rolls back whole, the cycles before it stay committed, and every seat is
+/// still alive at handback.
 ///
 /// # The arm asymmetry, stated so a future drive learns it from the doc and not by accident
 ///
 /// | arm | trigger | outcome |
 /// |---|---|---|
-/// | **total wipe** | every remaining opponent crosses 0 on the SAME cycle ⇒ `WaitingFor::GameOver` | `CycleOutcome::CrossLethal` — the crossing cycle **COMMITS**, the game ends, `eliminated == victims` |
-/// | **partial crossing** | one seat crosses 0 while ≥2 players survive ⇒ no `GameOver` | `CycleOutcome::Abort` — the crossing cycle is **ROLLED BACK WHOLE**, `eliminated == []` |
+/// | **total wipe** | every remaining opponent crosses 0 on the same cycle ⇒ `WaitingFor::GameOver` | `CycleOutcome::CrossLethal` — **the crossing cycle COMMITS**, the game ends |
+/// | **partial crossing** | one seat crosses 0 while **≥2** players survive ⇒ no `GameOver` | `CycleOutcome::Abort` — **the crossing cycle rolls back WHOLE; prior conforming cycles STAY COMMITTED**; priority handback |
 ///
 /// Both arms are **out of contract for any legitimately-derived bound**. `elimination_bounds`
 /// narrows to `min over living seats of (life - 1) / per-cycle loss` with FLOOR division, so
@@ -8657,11 +8659,18 @@ fn bounded_fixed_drive_stops_at_the_first_lethal_cycle() {
 /// reach either arm. Each is therefore reachable only under a **doctored** bound — which is what
 /// both this row and [`bounded_fixed_drive_stops_at_the_first_lethal_cycle`] construct.
 ///
-/// The `Abort` is the DESIGNED behaviour and this row asserts it rather than a wish: rolling the
-/// out-of-contract cycle back whole and handing the table its priority beats materializing a
-/// partial elimination whose remaining repetitions were bounded by a δ the board no longer moves
-/// (the surviving seats' per-cycle drain changes the moment a drain target leaves the game).
-/// See `materialize_fixed_shortcut`'s `CycleOutcome::Abort` arm.
+/// The `Abort` is the DESIGNED behaviour and this row asserts it rather than a wish. The property
+/// it buys is **no half-applied period, ever**: the out-of-contract cycle is refused ATOMICALLY,
+/// while conforming work already done is NOT discarded. That is strictly better than a
+/// whole-drive rollback — materializing a partial elimination would leave the remaining
+/// repetitions bounded by a δ the board stops moving (the surviving seats' per-cycle drain
+/// changes the moment a drain target leaves the game), and discarding the conforming prefix
+/// would throw away cycles the table's own agreed bound covers. See
+/// `materialize_fixed_shortcut`'s `CycleOutcome::Abort` arm.
+///
+/// MEASURED SHAPE of that split on this fixture: honest bound 30, doctored `n` at or past the
+/// first crossing (31) ⇒ **30 periods committed**, cycle 30 refused, nobody eliminated. The
+/// assertions below bind to exactly that: `first_crossing - 1` periods, not zero and not `n`.
 ///
 /// # Why this row had to exist separately — the fixture-symmetry trap
 ///
