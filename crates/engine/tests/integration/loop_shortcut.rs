@@ -1323,20 +1323,52 @@ fn interactive_3p_subset_lethal_does_not_crown() {
     // turn-position conjunct modifies — is reached ONLY from the `None =>` arm, so this row is
     // orthogonal to that conjunct in both directions.
     //
-    // HONEST SCOPE OF THE ASSERTION BELOW: `frames_per_period == 1` is a TRIPWIRE, not a proof
-    // of basis A. Basis B derives `k` from 1 upward, so a k==1 basis-B offer publishes the
-    // same value (the `dina_untargeted_drain_4p_offers_at_three_live_opponents` row is exactly
-    // that case). What this line catches is the class silently acquiring a multi-frame period,
-    // which is the drift that would make the orthogonality claim above stop holding.
+    // HONEST SCOPE OF THE ASSERTION BELOW: `frames_per_period` is a TRIPWIRE on the period's
+    // WIDTH, not a proof of basis. Basis B derives `k` from 1 upward, so a k==1 basis-B offer
+    // publishes the same value as a 1-frame basis-A one (the
+    // `dina_untargeted_drain_4p_offers_at_three_live_opponents` row is exactly that case).
+    //
+    // ⚠ VALUE CORRECTED 1 → 2. The NUMBER is the small half of the correction; the MECHANISM
+    // is the half worth carrying forward, because it names a class of defect rather than one
+    // fixture's constant.
+    //
+    // THIS ASSERTION WAS A SELF-RATIFYING ORACLE. Basis A published a HARDCODED
+    // `frames_per_period: 1` regardless of how far back its certifying prior actually sat. So
+    // the assertion compared a literal `1` against a constant `1` that no game state could
+    // influence: it could not fail for ANY fixture, ANY period width, or ANY future change to
+    // how the ring is sampled. It read the implementation's constant back to itself and
+    // reported that as agreement. Its stated premise — "this class certifies on a single-frame
+    // period" — was therefore never measured; it was inferred from the very line it was
+    // supposedly checking.
+    //
+    // That is the same family as this lane's other "guard that passes while proving nothing"
+    // findings: a check whose subject cannot vary is not a check. The tell is available
+    // WITHOUT running anything — trace the asserted expression back to its producer and ask
+    // whether any input can move it. If nothing can, the row's green is a tautology.
+    //
+    // The mint now DERIVES the span from the prior's ring index, so the expression varies with
+    // the fixture. For this one it is 2: the DRAIN_CLERIC / BLOOD_SIPPER pairing alternates a
+    // gain-life resolution and a lose-life resolution, so one whole repetition spans two
+    // retained ring frames and the pair one frame back does not recur.
+    //
+    // MEASURED through the production accept path on this same fixture (declare `Fixed(n)` +
+    // APNAP accepts), which is what makes 2 the RIGHT value rather than merely a different one:
+    //   derived k = 2 ⇒ n=1 → δ{P0:+1,P1:-1}; n=2 → +2/-2; n=3 → +3/-3   (exactly n × δ)
+    //   hardcoded   1 ⇒ n=1, 2, 3 → ZERO committed, every time
+    // That zero is `materialize_fixed_shortcut`'s conformance check doing its job: a cycle cut
+    // at one frame delivers half a period, which does not equal the published δ, so the drive
+    // drops it and hands back. A wrong period is therefore never a silent half-commit — but it
+    // does make the offer unusable, which is why the span has to be measured and not assumed.
     assert_eq!(
         certificate
             .per_cycle
             .as_ref()
             .expect("a bounded offer publishes its per-period signature")
             .frames_per_period,
-        1,
-        "this class certifies on a single-frame period; a multi-frame one would mean the class \
-         moved to a basis-B signature and the orthogonality note above no longer holds"
+        2,
+        "this class's repetition spans two retained ring frames (a gain-life resolution, then a \
+         lose-life resolution); a drift in that width silently changes what one committed cycle \
+         means"
     );
 
     // Reach-guard on the regime itself (see `drive_collect_primed`): the drive really did reach
@@ -7228,9 +7260,19 @@ fn bounded_offer_parts(
 /// REVERT-PROBES (each must FLIP to FAIL):
 /// * delete the Path D block in `interactive_loop_bridge` ⇒ no offer ⇒ the
 ///   `drive_to_bounded_offer` expect FAILS.
-/// * make step (7)'s range check `1..=MAX_SHORTCUT_CYCLES` ⇒ nothing here flips (the bound
-///   really is narrowed), which is why the SEPARATE `schema.is_bounded()` assertion below
-///   exists — it is the one that flips.
+/// * make step (7)'s range check `1..=MAX_SHORTCUT_CYCLES` ⇒ NOTHING flips, anywhere. The
+///   claim this bullet used to make — that the `schema.is_bounded()` assertion below "is the
+///   one that flips" — was FALSE, and is corrected rather than quietly deleted. RE-MEASURED
+///   under that exact mutation: the entire `loop_shortcut` integration set stays green
+///   (106 passed / 0 failed), `schema.is_bounded()` included, because on every fixture the
+///   bound really IS narrowed and that assertion holds independently of the range check.
+///   No single-conjunct revert of step (7) flips a row on THIS fixture, and that is a property
+///   of the mutation rather than a gap: it widens only the range's UPPER end, and a bound of
+///   exactly `MAX_SHORTCUT_CYCLES` means no axis narrowed — which `classify_win_kind` already
+///   reports as `Advantage`, so step (5) refuses two conjuncts earlier. The REACHABLE end is
+///   the lower one, and its named row is
+///   `game::engine::bounded_offer_conjunct_tests::a_bound_of_zero_mints_no_bounded_offer`
+///   (revert-probe: `0..MAX_SHORTCUT_CYCLES` ⇒ that row FAILS; measured).
 /// * remove `elimination_bounds`' `p.life as i64 - 1` headroom term ⇒ the recomputed bound
 ///   and the published one diverge ⇒ FAILS.
 #[test]
@@ -7812,6 +7854,17 @@ fn a_nonempty_action_sequence_mints_no_bounded_offer() {
 /// assertion FAILS.
 /// MUST-NOT-FLIP: `over_cap_fixed_count_hands_back_with_no_drive` (the global-cap arm) and
 /// every unbounded offer's acceptance of any `Fixed(n <= MAX)`.
+///
+/// ⚠ WHAT SEPARATES THE ARMS, and why this row was NON-DISCRIMINATING until fix round 1.
+/// `lives_after == lives_before` + zero eliminations is the handback observation — but at
+/// `c6d834040` the ACCEPTED, within-bound path produced the identical observation on this same
+/// dump, because `materialize_fixed_shortcut` aborted at cycle 0 and committed nothing. The row
+/// therefore could not tell "handed back" from "accepted and driven", and would have stayed
+/// green with the guard deleted. It discriminates now because the accepted path MOVES LIFE:
+/// `bounded_fixed_count_commits_exactly_n_periods` measures `n × δ` committed on this exact
+/// dump (`n=1` → `[50,34,30,35]`, `n=3` → `[52,32,28,33]` from `[49,35,31,36]`). That row is
+/// this one's positive control; the `WaitingFor::Priority` + no-`RespondToShortcut` assertions
+/// below are what separate a handback from a completed drive, since both end at priority.
 #[test]
 fn declared_count_above_the_offered_bound_is_handed_back() {
     use engine::analysis::decision_template::IterationCount;
@@ -7878,6 +7931,13 @@ fn declared_count_above_the_offered_bound_is_handed_back() {
 /// both `phase-ai` rows — one edit to one predicate measurable at every caller. If that
 /// inversion leaves this row green, the engine kept a private copy of the comparison.
 /// MUST-NOT-FLIP: the whole shipped suite's unbounded offers still accept `UntilLethal`.
+///
+/// ⚠ SAME NON-DISCRIMINATION CORRECTION as the row above. `lives_after == lives_before` was
+/// satisfied by BOTH arms at `c6d834040` (the accepted path committed nothing), so it did not
+/// separate "rejected" from "accepted and driven". `bounded_fixed_count_commits_exactly_n_periods`
+/// is now the positive control that makes the accepted path observably move life on this dump;
+/// the discriminating assertions here are the `Priority` handback plus the absence of a
+/// `RespondToShortcut` window, which no accepted declaration produces.
 #[test]
 fn until_lethal_against_a_bounded_offer_is_rejected() {
     use engine::analysis::decision_template::IterationCount;
@@ -8032,4 +8092,551 @@ fn bloodloop_mandatory_draw_cascade_offers_at_2p_3p_and_4p() {
             "{players}p: the cascade's controller loses no life"
         );
     }
+}
+
+// ═══════════════ FIX ROUND 1 — the declared count is CONSUMABLE ═══════════════
+//
+// Before this round `materialize_fixed_shortcut`'s `'cycles: for i in 0..n` advanced only on
+// `CycleOutcome::Recurred`, which needs board RECURRENCE. A basis-B certificate — what
+// `ring_delta_signature` mints, and the whole class `try_offer_bounded_cycle_shortcut` widened
+// offers to — certifies a periodic DELTA, not a recurring board, so neither recurrence
+// predicate can ever fire and `n` was structurally inert. MEASURED at `c6d834040` with the same
+// fixtures and the same production entry (`apply` → declare → APNAP accepts):
+//
+//   bloodloop3 n=1 → [20,0,0] GameOver{P0} elim=2 │ n=3 → [20,0,0] GameOver{P0} elim=2
+//   bloodloop4 n=1 → [20,0,0,0] elim=3           │ n=3 → [20,0,0,0] elim=3
+//   dina    4p n=1 → [49,35,31,36] (unchanged)   │ n=3 → [49,35,31,36] (unchanged)
+//
+// `Fixed(1)` and `Fixed(3)` byte-identical — either the table dies or nothing commits. The
+// rows below are the antidote: the same trajectories, with `n` bound to the OBSERVED board
+// delta and to the OFFER's own published signature, never to a literal.
+
+/// Declare `Fixed(n)` on the bounded offer `state` is parked at, accept with every living
+/// opponent through `apply()`, and return the per-seat life delta the drive COMMITTED
+/// alongside the signature and bound the offer published.
+///
+/// Everything is read off the production state: the signature comes from the offer the ENGINE
+/// wrote, the delta from `Player::life` before and after. Nothing is recomputed by the test.
+fn accept_bounded_fixed(
+    state: &mut GameState,
+    n: u32,
+) -> (
+    Vec<(PlayerId, i64)>,
+    engine::analysis::resource::PeriodicDelta,
+    u32,
+) {
+    let (proposer, certificate, schema) = bounded_offer_parts(state);
+    let per_cycle = certificate
+        .per_cycle
+        .clone()
+        .expect("a bounded offer publishes the per-period signature its bound was divided by");
+    let bound = schema.max_iterations;
+    let before: Vec<(PlayerId, i64)> = state
+        .players
+        .iter()
+        .map(|p| (p.id, p.life as i64))
+        .collect();
+    r6a_declare_and_accept_all(state, proposer, n);
+    let committed: Vec<(PlayerId, i64)> = state
+        .players
+        .iter()
+        .zip(&before)
+        .map(|(p, (id, l0))| {
+            assert_eq!(
+                p.id, *id,
+                "the seat vector is positional and never reordered"
+            );
+            (p.id, p.life as i64 - l0)
+        })
+        .collect();
+    (committed, per_cycle, bound)
+}
+
+/// FIX ROUND 1 PRIMARY (HIGH-1/HIGH-2/HIGH-3) — an accepted `Fixed(n)` within the offered
+/// bound commits **exactly `n` copies of the published per-period delta**, on the real 4p
+/// Dina/Conqueror dump and on the synthetic mandatory-draw cascade at 3 and 4 players.
+///
+/// # What the assertion is bound to
+///
+/// `n * per_cycle.delta.life[seat]`, derived from the certificate the ENGINE published at the
+/// offer beat. No literal life total appears in an equality. A fixture whose drain rate drifts
+/// moves both sides together; a drive that commits the wrong NUMBER of periods moves only one.
+///
+/// # Why this is not vacuous
+///
+/// * Reach-guards below establish that the published δ is non-zero, that at least two seats
+///   carry a non-zero term (so a 2-player-shaped bug cannot hide), and that the bound leaves
+///   room for `n = 3` — without which the `n`-scaling is untestable.
+/// * The `n = 1` vs `n = 3` boards are asserted DIFFERENT on the same fixture. That single
+///   assertion is the direct antidote to the defect: at `c6d834040` they were byte-identical.
+///
+/// # REVERT-PROBES (each RUN, each FLIPPED)
+///
+/// * ⓐ delete `|| frames_per_period.is_some_and(|k| frames_this_cycle >= k)` from
+///   `drive_one_shortcut_cycle` ⇒ HEAD behaviour returns: dina commits ZERO (`Abort` at cycle
+///   0, delta `[0,0,0,0]`) and bloodloop cross-lethals the whole table. Every `assert_eq!` on
+///   the committed delta FAILS, and so does `no seat is eliminated`.
+/// * ⓑ replace the delimiter's `k` with a hardcoded `1` ⇒ bloodloop (whose derived period is
+///   `k == 2` ring frames) commits HALF-periods: `n` cycles deliver `n/2` copies of δ. The
+///   3p/4p `assert_eq!` FAILS while the `k == 1` dina row stays green — which is what proves
+///   the row reads the VALUE of `frames_per_period` and not merely its presence.
+#[test]
+fn bounded_fixed_count_commits_exactly_n_periods() {
+    /// Rebuilt from scratch per `n` — a driven trajectory is not replayable from a used state.
+    fn build(name: &str) -> GameState {
+        match name {
+            "dina_conqueror_4p" => restore_dump(&gunzip_dump(include_bytes!(
+                "../fixtures/dina_conqueror_4p.json.gz"
+            ))),
+            "bloodloop3" => bloodloop_state(3),
+            "bloodloop4" => bloodloop_state(4),
+            other => panic!("unknown fixture {other}"),
+        }
+    }
+
+    for name in ["dina_conqueror_4p", "bloodloop3", "bloodloop4"] {
+        let mut boards: Vec<Vec<(PlayerId, i64)>> = vec![];
+        for n in [1u32, 3] {
+            let mut state = build(name);
+            drive_to_bounded_offer(&mut state, 400).unwrap_or_else(|| {
+                panic!("{name}: the bounded offer must fire; see the acceptance row")
+            });
+
+            let (committed, per_cycle, bound) = accept_bounded_fixed(&mut state, n);
+
+            // ── reach-guards: without these the equality below can pass degenerately ──
+            assert!(
+                per_cycle.delta != engine::analysis::resource::ResourceVector::default(),
+                "{name}: a zero-delta period makes `n * δ` zero for every `n`, so the scaling \
+                 assertion would hold for a drive that committed nothing"
+            );
+            assert!(
+                per_cycle.delta.life.values().filter(|v| **v != 0).count() >= 2,
+                "{name}: fewer than two seats with a non-zero life term is a 2-player shape; \
+                 the whole class exists because a MULTIPLAYER drain crowns nobody. got {:?}",
+                per_cycle.delta.life
+            );
+            assert!(
+                bound >= 3,
+                "{name}: `n = 3` must be WITHIN the offered bound, else the declaration is \
+                 handed back and this row silently tests the rejection arm; bound = {bound}"
+            );
+            assert!(
+                per_cycle.frames_per_period >= 1,
+                "{name}: a period spans at least one retained ring frame; got {}",
+                per_cycle.frames_per_period
+            );
+
+            // ── THE PROPERTY: committed delta == n × published per-period delta ──
+            for (seat, delta) in &committed {
+                assert_eq!(
+                    *delta,
+                    i64::from(n) * per_cycle.delta.life.get(seat).copied().unwrap_or(0),
+                    "{name} n={n}: {seat:?}'s committed life delta must be exactly `n` copies \
+                     of the period the offer published ({:?}); committed {committed:?}",
+                    per_cycle.delta.life
+                );
+            }
+
+            // ── the bound's own contract: CR 704.5a headroom is `life - 1`, so no seat may
+            //    be eliminated by a within-bound count ──
+            assert_eq!(
+                state.players.iter().filter(|p| p.is_eliminated).count(),
+                0,
+                "{name} n={n}: CR 704.5a — `min over living seats of (life - 1) / loss` \
+                 reserves one point of headroom, so a within-bound drive eliminates nobody"
+            );
+            assert!(
+                state.players.iter().all(|p| p.life > 0),
+                "{name} n={n}: every seat is above the CR 704.5a threshold; lives {:?}",
+                state.players.iter().map(|p| p.life).collect::<Vec<_>>()
+            );
+            assert!(
+                matches!(state.waiting_for, WaitingFor::Priority { .. }),
+                "{name} n={n}: a completed finite drive hands back to ordinary priority \
+                 (CR 800.4a living seat), not a terminal state; got {:?}",
+                state.waiting_for
+            );
+
+            boards.push(committed);
+        }
+
+        // ── THE DISCRIMINATOR. At `c6d834040` these two were identical for every fixture.
+        assert_ne!(
+            boards[0], boards[1],
+            "{name}: `Fixed(1)` and `Fixed(3)` must produce MEASURABLY different boards — \
+             identical outcomes are exactly the defect this round fixes"
+        );
+    }
+}
+
+/// FIX ROUND 1 MIRROR (A1.2) — the drive STOPS AT the first lethal cycle. It does not commit
+/// `n` cycles blindly and reconcile the deaths afterwards.
+///
+/// # Why the offer has to be doctored, and why that is the honest construction
+///
+/// A within-bound count can NEVER cross a CR 704.5a threshold: `elimination_bounds` narrows to
+/// `min over living seats of (life - 1) / per-cycle loss` with FLOOR division, so `n * loss <=
+/// life - 1` for every seat and every legal `n`. MEASURED at the bound on both fixtures after
+/// this round's fix — bloodloop3 `n = 16` lands `[20, 1, 1]`, dina `n = 30` lands
+/// `[79, 5, 1, 6]`, zero eliminations in both. The bounded class therefore cannot reach its
+/// own cross-lethal arm through an undoctored offer, and a mirror row built on one would be
+/// unbuildable rather than merely weak.
+///
+/// So this row is a HOSTILE fixture: it widens `schema.max_iterations` on the offer the engine
+/// wrote — simulating a producer whose bound is WRONG — and then declares a count that arithmetic
+/// says must kill. Everything downstream is production: `apply()`'s declare handler, the APNAP
+/// window, `apply_confirmed_shortcut`, `materialize_fixed_shortcut`. The question it answers is
+/// the one that matters when a certificate is unsound: does the drive stop at the boundary, or
+/// does it drive through it?
+///
+/// CR 704.3: state-based actions are checked whenever a player would get priority, and the
+/// drive's every beat goes through `pass_priority_once_with_pipeline`, so CR 704.5a ("if a
+/// player has 0 or less life, that player loses the game") is applied INSIDE the drive.
+///
+/// # The MATCHED PAIR, on the same doctored offer
+///
+/// * ⓐ `n = cycles_to_lethal - 1` — the drive runs to completion, every seat survives at
+///   exactly one point of life, nobody is eliminated.
+/// * ⓑ `n = 2 * cycles_to_lethal` — the drive stops at the FIRST crossing cycle.
+///
+/// Without ⓐ, ⓑ alone is satisfied by a materializer that ignores `n` entirely and simply runs
+/// the loop until something dies — which is exactly what `c6d834040` did. ⓐ is what forces the
+/// stop point to be `n`-sensitive.
+///
+/// # What flips
+///
+/// * delete the frame delimiter from `drive_one_shortcut_cycle` ⇒ arm ⓐ runs to lethal instead
+///   of stopping at 16 periods ⇒ its zero-elimination assertion FAILS. (Arm ⓑ does NOT flip:
+///   the unbounded HEAD drive coincidentally halts at the same lethal board. Stated so the
+///   pair's discrimination is not overclaimed — ⓐ carries it.)
+/// * a blind implementation that ran all `2 * cycles_to_lethal` periods and reconciled the
+///   deaths afterwards would leave the opponents at `17 - 34 = -17`; ⓑ's (b) pins the stop
+///   point to `ceil(life / loss)` periods, derived from the published δ, so an overshoot of
+///   even one cycle FAILS.
+#[test]
+fn bounded_fixed_drive_stops_at_the_first_lethal_cycle() {
+    let mut state = bloodloop_state(3);
+    drive_to_bounded_offer(&mut state, 400).expect("the bounded offer must fire at 3 players");
+
+    let (proposer, certificate, schema) = bounded_offer_parts(&state);
+    let per_cycle = certificate
+        .per_cycle
+        .clone()
+        .expect("a bounded offer publishes its per-period signature");
+    let bound = schema.max_iterations;
+    let lives_before: Vec<(PlayerId, i64)> = state
+        .players
+        .iter()
+        .map(|p| (p.id, p.life as i64))
+        .collect();
+
+    // Per-seat loss the offer published; the stop point is derived from it, never from a literal.
+    let loss = |seat: &PlayerId| -per_cycle.delta.life.get(seat).copied().unwrap_or(0);
+    let victims: Vec<PlayerId> = lives_before
+        .iter()
+        .map(|(id, _)| *id)
+        .filter(|id| loss(id) > 0)
+        .collect();
+    assert_eq!(
+        victims.len(),
+        2,
+        "REACH-GUARD: this row is about a MULTI-seat partial wipe, so both opponents must be \
+         losing life per period; published δ {:?}",
+        per_cycle.delta.life
+    );
+
+    // The smallest count that drives some living seat to 0 or less: `ceil(life / loss)`.
+    let cycles_to_lethal = lives_before
+        .iter()
+        .filter(|(id, _)| loss(id) > 0)
+        .map(|(id, l0)| l0.div_euclid(loss(id)) + i64::from(l0.rem_euclid(loss(id)) != 0))
+        .min()
+        .expect("at least one seat is losing life, asserted above");
+    let n = u32::try_from(cycles_to_lethal).expect("fits") * 2;
+    assert!(
+        i64::from(n) > cycles_to_lethal,
+        "REACH-GUARD: `n` must be COMFORTABLY past the first lethal cycle, else 'stops at the \
+         boundary' and 'ran to completion' are the same observation"
+    );
+    assert!(
+        n > bound,
+        "REACH-GUARD: a lethal `n` is by construction above the honest bound ({bound}) — that \
+         is the contract this row is deliberately violating to test the drive's own behaviour"
+    );
+
+    // ⓐ SURVIVING ARM — one period short of the first crossing. Same doctored offer, so the
+    //   only difference between the arms is `n` itself.
+    {
+        let mut survive = state.clone();
+        let survivor_n = u32::try_from(cycles_to_lethal - 1).expect("fits");
+        let WaitingFor::LoopShortcut { schema, .. } = &mut survive.waiting_for else {
+            unreachable!("bounded_offer_parts already matched the offer")
+        };
+        schema.max_iterations = survivor_n;
+        r6a_declare_and_accept_all(&mut survive, proposer, survivor_n);
+        assert_eq!(
+            survive.players.iter().filter(|p| p.is_eliminated).count(),
+            0,
+            "ⓐ CR 704.5a: one period short of the crossing, every seat is still above 0; \
+             lives {:?}",
+            survive.players.iter().map(|p| p.life).collect::<Vec<_>>()
+        );
+        for (seat, l0) in &lives_before {
+            let life_now = survive.players.iter().find(|p| p.id == *seat).unwrap().life as i64;
+            assert_eq!(
+                l0 - life_now,
+                i64::from(survivor_n) * loss(seat),
+                "ⓐ {seat:?}: exactly `n` periods committed, no more — the drive must stop \
+                 because `n` ran out, not because something died"
+            );
+        }
+        assert!(
+            matches!(survive.waiting_for, WaitingFor::Priority { .. }),
+            "ⓐ a completed finite drive hands back to priority; got {:?}",
+            survive.waiting_for
+        );
+    }
+
+    // ⓑ the doctoring, and ONLY this ──
+    let WaitingFor::LoopShortcut { schema, .. } = &mut state.waiting_for else {
+        unreachable!("bounded_offer_parts already matched the offer")
+    };
+    schema.max_iterations = n;
+
+    r6a_declare_and_accept_all(&mut state, proposer, n);
+
+    // (a) CR 704.3 + CR 704.5a: the drive stopped at a terminal state applied INSIDE it.
+    assert_eq!(
+        state.waiting_for,
+        WaitingFor::GameOver {
+            winner: Some(proposer)
+        },
+        "CR 704.5a: with every opponent at 0 or less life, CR 104.2a crowns the last player \
+         standing, and the drive commits + stops there"
+    );
+    let eliminated: Vec<PlayerId> = state
+        .players
+        .iter()
+        .filter(|p| p.is_eliminated)
+        .map(|p| p.id)
+        .collect();
+
+    // (c) EXACTLY the seats the partial drive lethals — never a full-`n` overshoot that takes
+    //     the proposer down too, and never a subset that leaves a drained seat alive.
+    assert_eq!(
+        eliminated,
+        victims,
+        "CR 704.5a: the eliminated set is exactly the seats the published period drains; \
+         lives {:?}",
+        state.players.iter().map(|p| p.life).collect::<Vec<_>>()
+    );
+
+    // (b) STRICTLY LESS than `n` periods committed, and pinned to the FIRST crossing cycle.
+    for (seat, l0) in &lives_before {
+        let committed = l0 - state.players.iter().find(|p| p.id == *seat).unwrap().life as i64;
+        let full_n = i64::from(n) * loss(seat);
+        if loss(seat) > 0 {
+            assert!(
+                committed < full_n,
+                "{seat:?}: a drive that ran all {n} periods would have committed {full_n}; it \
+                 must stop at the CR 704.5a boundary instead, got {committed}"
+            );
+            assert_eq!(
+                committed,
+                cycles_to_lethal * loss(seat),
+                "{seat:?}: the drive stops at the FIRST cycle that crosses the threshold — \
+                 `ceil(life / loss)` periods, derived from the published δ, not one more"
+            );
+        }
+    }
+}
+
+/// FIX ROUND 1 (HIGH-3) — the conformance check `PeriodicDelta`'s doc has always specified
+/// ("so a bounded drive can check that each committed cycle actually conformed") and which
+/// nothing implemented. A committed cycle whose measured resource delta differs from the
+/// published signature is DROPPED WHOLE and the drive hands back to manual play.
+///
+/// # Why it is load-bearing rather than belt-and-braces
+///
+/// `elimination_bounds` divided the CR 704.5a headroom (`life - 1`) by `per_cycle.delta` to
+/// produce the count the table agreed to. If a committed cycle moves a different amount, that
+/// division no longer describes the drive, and the remaining repetitions can carry a seat past
+/// the threshold INSIDE the proposal — the exact conditional action CR 732.2a forbids.
+///
+/// # The hostile fixture
+///
+/// The offer is real (the engine wrote it after 400 driven beats); ONE field is then doctored —
+/// the published `per_cycle.delta` gains a life term for a seat the loop does not touch, which
+/// no cycle can ever produce. Everything downstream is production: `apply()`'s declare handler,
+/// the APNAP window, `apply_confirmed_shortcut`, `materialize_fixed_shortcut`.
+///
+/// # Non-vacuity — the paired positive control is arm ⓐ
+///
+/// ⓐ runs the SAME trajectory with the signature untouched and commits `n × δ`. Without it, ⓑ's
+/// zero-delta observation would be indistinguishable from "the offer never fired" or "the drive
+/// aborts on this fixture anyway" — which is precisely the shape the HEAD defect had.
+///
+/// REVERT-PROBE: delete the `if actual != pd.delta { break 'cycles; }` block in
+/// `materialize_fixed_shortcut` ⇒ ⓑ commits `n × (real δ)` like ⓐ ⇒ ⓑ's zero-delta assertion
+/// FAILS while ⓐ stays green.
+#[test]
+fn a_cycle_that_does_not_match_the_published_period_is_dropped() {
+    let n: u32 = 2;
+
+    // ⓐ POSITIVE CONTROL — untouched signature, same trajectory.
+    let mut control = bloodloop_state(3);
+    drive_to_bounded_offer(&mut control, 400).expect("the bounded offer must fire");
+    let (committed_ok, per_cycle, _) = accept_bounded_fixed(&mut control, n);
+    assert!(
+        committed_ok.iter().any(|(_, d)| *d != 0),
+        "REACH-GUARD: the undoctored drive must COMMIT something, else ⓑ's zero proves nothing \
+         about the conformance check; got {committed_ok:?}"
+    );
+
+    // ⓑ the same offer with the published period made unproducible.
+    let mut state = bloodloop_state(3);
+    drive_to_bounded_offer(&mut state, 400).expect("the bounded offer must fire");
+    let (proposer, _, _) = bounded_offer_parts(&state);
+    let stowaway = state
+        .players
+        .iter()
+        .map(|p| p.id)
+        .find(|id| per_cycle.delta.life.get(id).copied().unwrap_or(0) == 0)
+        .expect("the cascade's own controller loses no life, so a zero-term seat exists");
+    let WaitingFor::LoopShortcut { certificate, .. } = &mut state.waiting_for else {
+        unreachable!("bounded_offer_parts already matched the offer")
+    };
+    certificate
+        .per_cycle
+        .as_mut()
+        .expect("a bounded offer publishes its signature")
+        .delta
+        .life
+        .insert(stowaway, -7);
+
+    let lives_before: Vec<i32> = state.players.iter().map(|p| p.life).collect();
+    r6a_declare_and_accept_all(&mut state, proposer, n);
+
+    assert_eq!(
+        state.players.iter().map(|p| p.life).collect::<Vec<_>>(),
+        lives_before,
+        "CR 732.2a: no cycle can produce the doctored period, so the FIRST one is dropped whole \
+         and ZERO life moves — a partial commit would mean the drive kept a cycle whose \
+         magnitude the agreed bound was not computed from"
+    );
+    assert!(
+        matches!(state.waiting_for, WaitingFor::Priority { .. }),
+        "a non-conforming drive falls closed to manual play (CR 800.4a living seat), it does \
+         not crown and does not wedge; got {:?}",
+        state.waiting_for
+    );
+    assert_eq!(
+        state.players.iter().filter(|p| p.is_eliminated).count(),
+        0,
+        "nothing was committed, so nothing crossed a CR 704.5a threshold"
+    );
+}
+
+/// FIX ROUND 1 (MED-4) — the AI's bounded-declare candidate is GENERATED, LEGAL, and DRIVES.
+///
+/// The `if schema.points.is_empty() && schema.is_bounded()` block in
+/// `ai_support::candidates` shipped with zero coverage: deleting it left the engine suite
+/// (4167) and every `phase-ai` suite green. Its sibling one screen away
+/// (`ai_collapse_candidate_is_clamped_to_the_accepted_bound`) sets the standard this row
+/// mirrors — generate the candidate through the production generator, then `apply()` it.
+///
+/// Without that candidate an AI proposer at a bounded offer has exactly two options:
+/// `UntilLethal`, which `handle_declare_shortcut` refuses outright against a bounded offer, and
+/// `DeclineShortcut`. The block is the difference between an AI that can take this shortcut and
+/// one that structurally cannot.
+///
+/// ⚠ RECORDED, NOT FIXED (a scope note, measured here): the block is gated on
+/// `schema.points.is_empty()`. A TARGETED bounded offer publishes pins, so the AI gets no
+/// accept candidate at all — `UntilLethal` is refused for bounded and the `Fixed` candidate
+/// carries `template: None`, which fail-closes on published pins. A targeted bounded offer is
+/// therefore AI-undeclarable today. That is a coverage gap in the candidate generator, not a
+/// soundness bug (the AI declines, which is always legal), and it is left for its own round.
+///
+/// REVERT-PROBE: delete the `schema.points.is_empty() && schema.is_bounded()` block ⇒
+/// assertion (2) FAILS (`Fixed(bound)` absent from the generated candidates).
+#[test]
+fn ai_bounded_declare_candidate_is_generated_legal_and_drives() {
+    use engine::analysis::decision_template::IterationCount;
+
+    let mut state = bloodloop_state(3);
+    drive_to_bounded_offer(&mut state, 400).expect("the bounded offer must fire at 3 players");
+    let (proposer, certificate, schema) = bounded_offer_parts(&state);
+    let per_cycle = certificate
+        .per_cycle
+        .clone()
+        .expect("a bounded offer publishes its per-period signature");
+    let bound = schema.max_iterations;
+
+    // (1) reach-guards: this row is about the BOUNDED, UNTARGETED shape the block gates on.
+    assert!(
+        schema.is_bounded(),
+        "REACH-GUARD: an unbounded offer takes a different generator arm; bound = {bound}"
+    );
+    assert!(
+        schema.points.is_empty(),
+        "REACH-GUARD: the block is gated on an empty pin set; got {:?}",
+        schema.points
+    );
+
+    // (2) the production generator offers it.
+    let expected = GameAction::DeclareShortcut {
+        count: IterationCount::Fixed(bound),
+        template: None,
+    };
+    let candidates = engine::ai_support::legal_actions(&state);
+    assert!(
+        candidates.contains(&expected),
+        "the AI must be able to declare the bounded offer's own count; got {candidates:?}"
+    );
+
+    // (3) ...and the reducer ACCEPTS it — which is what makes (2) load-bearing rather than a
+    //     restatement of the generator. A refused declaration hands straight back to priority.
+    let lives_before: Vec<i64> = state.players.iter().map(|p| p.life as i64).collect();
+    apply(&mut state, proposer, expected)
+        .expect("the AI's generated candidate must be accepted by the reducer");
+    assert!(
+        matches!(state.waiting_for, WaitingFor::RespondToShortcut { .. }),
+        "CR 732.2b: an accepted declaration opens the APNAP response window; a handback to \
+         Priority would mean the generator produced a count the engine refuses. got {:?}",
+        state.waiting_for
+    );
+
+    // (4) ...and the accepted count DRIVES. Bound to the published period, never a literal.
+    while let WaitingFor::RespondToShortcut { player, .. } = state.waiting_for.clone() {
+        apply(
+            &mut state,
+            player,
+            GameAction::RespondToShortcut {
+                response: ShortcutResponse::Accept,
+            },
+        )
+        .expect("each living opponent accepts");
+    }
+    for (seat, l0) in state
+        .players
+        .iter()
+        .map(|p| p.id)
+        .zip(&lives_before)
+        .collect::<Vec<_>>()
+    {
+        let now = state.players.iter().find(|p| p.id == seat).unwrap().life as i64;
+        assert_eq!(
+            now - l0,
+            i64::from(bound) * per_cycle.delta.life.get(&seat).copied().unwrap_or(0),
+            "{seat:?}: the AI-declared count commits exactly `max_iterations` copies of the \
+             published period"
+        );
+    }
+    assert_eq!(
+        state.players.iter().filter(|p| p.is_eliminated).count(),
+        0,
+        "CR 704.5a: the offered bound reserves `life - 1` of headroom, so the AI's own \
+         maximal legal declaration still eliminates nobody"
+    );
 }

@@ -1092,19 +1092,38 @@ pub fn try_offer_bounded_cycle_shortcut(
     // prior first: the most recent recurrence is the least extrapolation.
     let ring: Vec<&GameState> = state.loop_detect_ring.iter().map(|f| f.as_ref()).collect();
     let cur = ResourceVector::snapshot(state);
-    let basis_a = ring.iter().rev().find_map(|&prior| {
+    let basis_a = ring.iter().enumerate().rev().find_map(|(idx, &prior)| {
+        // The span, in RETAINED RING FRAMES, that this candidate pair covers.
+        // `ring.last()` is the sample `pass_priority_once_with_pipeline` recorded at THIS
+        // beat, before the bridge ran, so the newest frame is the current state and the
+        // span from `ring[idx]` is `len - 1 - idx`.
+        //
+        // A span of 0 is the pair `state` against its own snapshot. It is already refused
+        // by `net_progress_for` on the resulting zero delta in every production
+        // trajectory, but it is refused HERE too, explicitly: `materialize_fixed_shortcut`
+        // now DELIMITS a committed cycle by this count, and a published `0` would mean
+        // "one repetition spans no frames", which no drive can honour. Fail closed on the
+        // degenerate pair rather than rely on a downstream conjunct to catch it.
+        let span = ring.len() - 1 - idx;
         let delta = ResourceVector::delta(&ResourceVector::snapshot(prior), &cur);
-        ((crate::analysis::resource::loop_states_equal_modulo_resources(prior, state)
-            || crate::analysis::resource::loop_states_cover_modulo_growth_pinned(
-                prior, state, proposer, &slots,
-            ))
+        (span >= 1
+            && (crate::analysis::resource::loop_states_equal_modulo_resources(prior, state)
+                || crate::analysis::resource::loop_states_cover_modulo_growth_pinned(
+                    prior, state, proposer, &slots,
+                ))
             && delta.net_progress_for(proposer))
         .then(|| {
             (
                 prior,
                 state,
                 PeriodicDelta {
-                    frames_per_period: 1,
+                    // MEASURED span, not the former hardcoded `1`. The walk is `.rev()`, so
+                    // `idx` is usually `len - 2` and the span is 1 — but it is 1 by
+                    // MEASUREMENT, not by assumption, and it is NOT always 1: the
+                    // `interactive_3p_subset_lethal_does_not_crown` fixture's repetition
+                    // spans TWO frames (a gain-life resolution then a lose-life one), and
+                    // under the old hardcode its accepted drive committed nothing at all.
+                    frames_per_period: span as u32,
                     delta,
                     victim_slot: Vec::new(),
                 },
@@ -1855,8 +1874,19 @@ fn apply_until_lethal_shortcut(
         let cap = auto_pass_loop_max_iterations(&committed);
         let mut running = committed.clone();
         for i in 0..period {
-            match drive_one_shortcut_cycle(&running, &boundary, proposal.template.as_ref(), i, cap)
-            {
+            // The SAME single authority the `Fixed(N)` drive reads. Unreachably `Some` today —
+            // `handle_declare_shortcut` rejects `UntilLethal` against a bounded offer, and the
+            // bounded producer is the only one that publishes a signature — so this is
+            // behaviour-identical to the former no-delimiter call; it is threaded so the two
+            // drives cannot drift apart on what delimits a cycle.
+            match drive_one_shortcut_cycle(
+                &running,
+                &boundary,
+                proposal.template.as_ref(),
+                i,
+                cap,
+                proposal.per_cycle.as_ref().map(|pd| pd.frames_per_period),
+            ) {
                 CycleOutcome::Recurred { state: s, .. } => running = *s,
                 CycleOutcome::CrossLethal {
                     state: s,
@@ -2065,12 +2095,35 @@ enum CycleOutcome {
 /// Uses the INTERNAL `apply_action` path throughout (via `pass_priority_once_with_pipeline`
 /// and the injector), never the top-level reconcile boundary, so the detection hook cannot
 /// recurse mid-drive.
+///
+/// # Two cycle delimiters, and why the second one exists
+///
+/// `frames_per_period` is the published [`crate::analysis::resource::PeriodicDelta`] span, or
+/// `None` for every offer whose producer states no per-period signature. When it is `Some(k)`,
+/// a cycle ALSO completes once `k` retained ring frames have been recorded since the cycle
+/// began.
+///
+/// Board recurrence alone is not a delimiter for the class
+/// [`try_offer_bounded_cycle_shortcut`] mints on certification basis **B**: that basis consults
+/// no board predicate at all — it certifies a periodic *delta* over a ring window — so
+/// `loop_states_equal_modulo_resources` and `loop_states_cover_modulo_growth` are both FALSE at
+/// every settle beat by construction. Without the frame delimiter such a drive can only end at
+/// the beat cap (`Abort`, committing zero cycles) or by crossing lethal, and the declared `n`
+/// is inert: `Fixed(1)` and `Fixed(3)` produce byte-identical boards.
+///
+/// The frame count is the same quantity `frames_per_period` names, measured the same way: the
+/// single `record_loop_detect_sample` call site lives in `pass_priority_once_with_pipeline`,
+/// which is the very function this loop steps, so a driven beat samples the ring under exactly
+/// the gates an observed beat does. A new frame is detected by `Arc` identity of the ring's
+/// back rather than by length, because the ring evicts at `LOOP_DETECT_RING_CAP` and a length
+/// delta reads 0 once it is full.
 fn drive_one_shortcut_cycle(
     committed: &GameState,
     boundary: &GameState,
     template: Option<&crate::analysis::decision_template::DecisionTemplate>,
     iteration: crate::analysis::decision_template::IterationIndex,
     cycle_beat_cap: usize,
+    frames_per_period: Option<u32>,
 ) -> CycleOutcome {
     let mut work = committed.clone();
     priority::reset_priority(&mut work);
@@ -2079,12 +2132,14 @@ fn drive_one_shortcut_cycle(
     };
     let mut ev: Vec<GameEvent> = Vec::new();
     let mut beat = 0usize;
+    let mut frames_this_cycle = 0u32;
 
     loop {
         beat += 1;
         if beat > cycle_beat_cap {
             return CycleOutcome::Abort; // runaway backstop
         }
+        let ring_back_before = work.loop_detect_ring.back().map(std::sync::Arc::as_ptr);
         // A FRESH per-beat buffer (see the former inline note): reusing one growing buffer
         // would make `run_post_action_pipeline` re-scan prior beats' events and re-fire
         // already-consumed triggers.
@@ -2101,12 +2156,20 @@ fn drive_one_shortcut_cycle(
                 };
             }
             // Active-player settle beat: cycle complete iff the board recurred (constant-depth
-            // equal-modulo-resources OR ω-covering growth).
+            // equal-modulo-resources OR ω-covering growth) or the published period's worth of
+            // ring frames has elapsed. This is the ONLY beat kind the ring samples at (the
+            // sampler's own gate is `Priority{player == active_player}`), so the frame counter
+            // is advanced here and nowhere else.
             Ok(WaitingFor::Priority { player }) if player == work.active_player => {
                 ev.append(&mut beat_events);
+                let ring_back_after = work.loop_detect_ring.back().map(std::sync::Arc::as_ptr);
+                if ring_back_after.is_some() && ring_back_after != ring_back_before {
+                    frames_this_cycle += 1;
+                }
                 let norm = work.normalize_for_loop();
                 if crate::analysis::resource::loop_states_equal_modulo_resources(boundary, &norm)
                     || crate::analysis::resource::loop_states_cover_modulo_growth(boundary, &norm)
+                    || frames_per_period.is_some_and(|k| frames_this_cycle >= k)
                 {
                     return CycleOutcome::Recurred {
                         state: Box::new(work),
@@ -2330,6 +2393,11 @@ fn materialize_fixed_shortcut(
     }
 
     let template = proposal.template.clone();
+    // CR 732.2a: the per-period signature the offer published, carried verbatim onto the
+    // proposal. `None` for every producer that states none, and that `None` is what keeps
+    // every pre-bounded offer's drive byte-identical: no frame delimiter, no conformance
+    // check, board recurrence alone — exactly the shipped behavior.
+    let per_cycle = proposal.per_cycle.as_ref();
 
     // Last fully-completed cycle (clean owned O(1) rollback); starts at the offer state —
     // `apply_confirmed_shortcut`'s doc comment establishes the board is unchanged since the
@@ -2381,12 +2449,35 @@ fn materialize_fixed_shortcut(
         // inline beat loop for a non-targeted `Fixed(N)` drain (which raises no mid-cycle
         // prompt, so the injector is inert); a targeted drive additionally answers each
         // OrderTriggers / target prompt from the pins.
-        match drive_one_shortcut_cycle(&committed, &boundary, template.as_ref(), i, cycle_beat_cap)
-        {
+        match drive_one_shortcut_cycle(
+            &committed,
+            &boundary,
+            template.as_ref(),
+            i,
+            cycle_beat_cap,
+            per_cycle.map(|pd| pd.frames_per_period),
+        ) {
             CycleOutcome::Recurred {
                 state: s,
                 mut events,
             } => {
+                // CR 732.2a "predictable results" + CR 704.5a: the CONFORMANCE CHECK the
+                // published signature exists for. `elimination_bounds` divided the CR 704
+                // headroom by `per_cycle.delta`, so a committed cycle that moved a
+                // DIFFERENT amount invalidates the very bound the table agreed to — the
+                // remaining repetitions could carry a seat past a threshold inside the
+                // proposal. Measured before commit, on the same axes the bound reads, and
+                // fail-closed: a divergent cycle is dropped whole and the drive hands back
+                // to manual play with the last conforming cycle intact.
+                if let Some(pd) = per_cycle {
+                    let actual = crate::analysis::resource::ResourceVector::delta(
+                        &crate::analysis::resource::ResourceVector::snapshot(&committed),
+                        &crate::analysis::resource::ResourceVector::snapshot(&s),
+                    );
+                    if actual != pd.delta {
+                        break 'cycles;
+                    }
+                }
                 committed = *s; // ATOMIC: commit state ...
                 result.events.append(&mut events); // ... with its events together
                 continue 'cycles;
@@ -12341,7 +12432,9 @@ mod stage2_injector_tests {
         let template = two_drainer_template(drainer_a, P1, drainer_b, P2);
         let cap = auto_pass_loop_max_iterations(&committed);
 
-        match drive_one_shortcut_cycle(&committed, &boundary, Some(&template), 0, cap) {
+        // `None`: this row is about the injector arm on a board-recurring targeted loop, so
+        // it drives under the same no-signature delimiter every pre-bounded offer uses.
+        match drive_one_shortcut_cycle(&committed, &boundary, Some(&template), 0, cap, None) {
             CycleOutcome::CrossLethal { winner, state, .. } => {
                 assert_eq!(
                     winner,
@@ -13351,6 +13444,200 @@ mod kilo_interruptibility_tests {
             try_offer_object_growth_shortcut(&marked).is_some(),
             "the empty-stack offer hook is NOT ∞-gated: a persisted declined ∞ axis does not \
              suppress a genuine re-detection re-offering the loop (CR 732.2a / CR 732.2b)"
+        );
+    }
+}
+
+/// FIX ROUND 1 (MED-2) — a named negative row per [`try_offer_bounded_cycle_shortcut`] conjunct
+/// that no tracked test was exercising.
+///
+/// The reviewer measured all three by disabling them: step (2) `ProposerIsNotActivePlayer` and
+/// step (5) `AdvantageOnlyCycle` could each be deleted with **4167 passed / 0 failed**, and only
+/// `DrivingSequenceNotEmpty` was asserted by name anywhere. A conjunct no row can name is a
+/// conjunct nobody notices losing.
+///
+/// # Why these are UNIT rows on a synthetic ring
+///
+/// Each row must reach ONE conjunct and refuse there, which means holding every earlier conjunct
+/// satisfied on purpose. A ring is the input the certification step reads, and
+/// `GameState::normalize_for_loop` is `pub(crate)`, so an integration test cannot build one. The
+/// refusal is asserted BY REASON (`BoundedOfferRefusal`), never as a bare "no offer": a row that
+/// only observes absence silently stops testing its own conjunct the moment an EARLIER one
+/// starts refusing first, which is the domination trap the enum exists to close.
+#[cfg(test)]
+mod bounded_offer_conjunct_tests {
+    use super::{try_offer_bounded_cycle_shortcut, BoundedOfferRefusal};
+    use crate::game::scenario::GameScenario;
+    use crate::types::game_state::{GameState, LoopDetectionMode, WaitingFor};
+    use crate::types::player::PlayerId;
+
+    const P0: PlayerId = PlayerId(0);
+    const P1: PlayerId = PlayerId(1);
+
+    /// A 2-player board parked at `Priority{P0}` (P0 active) whose retained ring encodes a
+    /// period seen twice: `frames` successive normalized snapshots, each mutated by `shape`.
+    ///
+    /// `2k + 1 = 3` frames at `k = 1` is the smallest ring `ring_delta_signature` will certify,
+    /// and every frame shares `turn_number` / `phase` / `extra_phases`, so the CR 703.1
+    /// turn-position conjunct passes and this fixture is not silently testing that instead.
+    fn ring_state(frames: usize, shape: impl Fn(&mut GameState, usize)) -> GameState {
+        let mut scenario = GameScenario::new_n_player(2, 7);
+        // A stocked library is load-bearing, not scenery: the period this fixture encodes IS a
+        // library delta, and an empty library makes every frame identical ⇒ a zero per-period
+        // vector ⇒ `ring_delta_signature` returns `None` and every row below refuses at
+        // `NoCertification` instead of at the conjunct it is about.
+        let names: Vec<String> = (0..40).map(|i| format!("Filler {i}")).collect();
+        let refs: Vec<&str> = names.iter().map(String::as_str).collect();
+        scenario.with_library_top(P0, &refs);
+        scenario.with_library_top(P1, &refs);
+        let mut runner = scenario.build();
+        let mut state = runner.state_mut().clone();
+        state.loop_detection = LoopDetectionMode::Interactive;
+        state.waiting_for = WaitingFor::Priority { player: P0 };
+        state.active_player = P0;
+        state.last_loop_action_sequence.clear();
+        for i in 0..frames {
+            let mut frame = state.clone();
+            shape(&mut frame, i);
+            state
+                .loop_detect_ring
+                .push_back(std::sync::Arc::new(frame.normalize_for_loop()));
+        }
+        state
+    }
+
+    /// Mill `victim` by one card per retained frame — a constant per-frame library delta, which
+    /// is a period observed twice at `frames >= 3`.
+    fn mill_ring(victim: PlayerId, frames: usize) -> GameState {
+        ring_state(frames, move |frame, i| {
+            let player = frame
+                .players
+                .iter_mut()
+                .find(|p| p.id == victim)
+                .expect("seat exists");
+            for _ in 0..i {
+                player.library.pop_back();
+            }
+        })
+    }
+
+    /// STEP (2) `ProposerIsNotActivePlayer`. CR 732.2a lets the player with priority propose;
+    /// this conjunct additionally requires that player to be the ACTIVE one, because the ring
+    /// sampler only samples at `Priority{active_player}` — which is what establishes the
+    /// proposer held priority at every certified frame.
+    ///
+    /// REVERT-PROBE: delete the conjunct ⇒ arm ⓑ stops returning `ProposerIsNotActivePlayer`
+    /// and falls through to a later conjunct (or an offer) ⇒ FAILS.
+    #[test]
+    fn a_non_active_priority_holder_mints_no_bounded_offer() {
+        let mut state = mill_ring(P1, 3);
+
+        // ⓐ REACH-GUARD / positive control: the SAME ring certifies for the active player, so
+        //   ⓑ's refusal is attributable to the seat and not to an unsatisfied earlier conjunct.
+        let armed = try_offer_bounded_cycle_shortcut(&state, false);
+        assert_ne!(
+            armed,
+            Err(BoundedOfferRefusal::ProposerIsNotActivePlayer),
+            "the active player must NOT be refused by step (2); got {armed:?}"
+        );
+        assert_ne!(
+            armed,
+            Err(BoundedOfferRefusal::NoCertification),
+            "REACH-GUARD: the ring must actually certify, else ⓑ never reaches step (2); \
+             got {armed:?}"
+        );
+
+        // ⓑ one field reassigned: priority moves to the non-active seat.
+        state.waiting_for = WaitingFor::Priority { player: P1 };
+        assert_eq!(
+            try_offer_bounded_cycle_shortcut(&state, false),
+            Err(BoundedOfferRefusal::ProposerIsNotActivePlayer),
+            "CR 732.2a: the ring sampler gates on `Priority{{active_player}}`, so a proposer \
+             who is not the active player did not hold priority at the certified frames"
+        );
+    }
+
+    /// STEP (5) `AdvantageOnlyCycle`. CR 732.2a: this producer's whole claim is that it measured
+    /// a CR 704 threshold INSIDE the loop and divided the headroom by the per-period magnitude.
+    /// An `Advantage` cycle drives nobody toward such a threshold, so it has no bound to state
+    /// and belongs to Path C's revocable-infinity mark instead.
+    ///
+    /// The pair is a SELF-mill against an OPPONENT-mill, which is exactly the discrimination
+    /// `classify_win_kind` makes: `Decking` requires "an unbounded downward library delta on a
+    /// player other than the loop's controller", so a controller milling themselves falls
+    /// through to `Advantage`. Without this conjunct that self-mill takes Path D and is offered
+    /// a bound — `elimination_bounds` narrows on `narrow(p.library.len(), -library_delta[p])`
+    /// for the PROPOSER too, so it happily produces one.
+    ///
+    /// REVERT-PROBE: delete the conjunct ⇒ arm ⓑ stops returning `AdvantageOnlyCycle` ⇒ FAILS.
+    #[test]
+    fn a_self_mill_advantage_cycle_mints_no_bounded_offer() {
+        // ⓐ POSITIVE CONTROL: the SAME shape aimed at the OPPONENT is `Decking`, not
+        //   `Advantage`, so step (5) must let it through. Without this arm ⓑ would pass for a
+        //   fixture that simply never certifies.
+        let opponent_mill = try_offer_bounded_cycle_shortcut(&mill_ring(P1, 3), false);
+        assert_ne!(
+            opponent_mill,
+            Err(BoundedOfferRefusal::AdvantageOnlyCycle),
+            "CR 104.3c: milling an OPPONENT is a win kind, not an advantage engine; got \
+             {opponent_mill:?}"
+        );
+        assert_ne!(
+            opponent_mill,
+            Err(BoundedOfferRefusal::NoCertification),
+            "REACH-GUARD: the mill ring must certify, else neither arm reaches step (5); got \
+             {opponent_mill:?}"
+        );
+
+        // ⓑ the same period, victim = the proposer.
+        assert_eq!(
+            try_offer_bounded_cycle_shortcut(&mill_ring(P0, 3), false),
+            Err(BoundedOfferRefusal::AdvantageOnlyCycle),
+            "CR 732.2a: a cycle that drives nobody toward a CR 704 threshold has no bound to \
+             state, so it belongs to Path C's revocable-infinity mark, not to this seam"
+        );
+    }
+
+    /// STEP (7) `NoNarrowedLegalCount`, LOWER end. `elimination_bounds` returning 0 states that
+    /// no repetition is legal at all — a seat is already AT the CR 704 threshold's last legal
+    /// step — and `1..MAX_SHORTCUT_CYCLES` refuses it rather than minting a `Fixed(0)` offer
+    /// whose acceptance would commit nothing while spending the CR 732.2b window.
+    ///
+    /// ⚠ SCOPE, stated because the reviewer's probe targeted the OTHER end. Widening the check
+    /// to `1..=MAX_SHORTCUT_CYCLES` flips nothing in the tracked suite, and that is not an
+    /// oversight: the upper end is DOMINATED by step (5). A bound of exactly
+    /// `MAX_SHORTCUT_CYCLES` means no axis narrowed, i.e. the period drives no living seat
+    /// toward any CR 704 threshold, which is precisely what `classify_win_kind` reports as
+    /// `Advantage` — so such a cycle has already been refused two conjuncts earlier. This row
+    /// therefore covers the reachable end and names the reason the other is unreachable rather
+    /// than leaving it as an untested branch of unknown status.
+    ///
+    /// REVERT-PROBE: change the range to `0..MAX_SHORTCUT_CYCLES` ⇒ arm ⓑ mints an offer ⇒ FAILS.
+    #[test]
+    fn a_bound_of_zero_mints_no_bounded_offer() {
+        // ⓐ POSITIVE CONTROL: a full library certifies and narrows to a legal count.
+        let healthy = try_offer_bounded_cycle_shortcut(&mill_ring(P1, 3), false);
+        assert!(
+            healthy.is_ok(),
+            "REACH-GUARD: the un-narrowed fixture must OFFER, else ⓑ's refusal could come from \
+             any earlier conjunct; got {healthy:?}"
+        );
+
+        // ⓑ the same ring, with the victim's library already empty at the offer beat: CR 104.3c
+        //   headroom 0 ⇒ `0 / 1 == 0` ⇒ no legal repetition count.
+        let mut state = mill_ring(P1, 3);
+        state
+            .players
+            .iter_mut()
+            .find(|p| p.id == P1)
+            .expect("seat exists")
+            .library
+            .clear();
+        assert_eq!(
+            try_offer_bounded_cycle_shortcut(&state, false),
+            Err(BoundedOfferRefusal::NoNarrowedLegalCount),
+            "CR 104.3c: with zero cards left there is no legal repetition, and a `Fixed(0)` \
+             offer would spend the CR 732.2b response window to commit nothing"
         );
     }
 }

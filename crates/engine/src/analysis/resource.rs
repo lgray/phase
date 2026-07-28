@@ -277,8 +277,20 @@ mod counter_key_pairs {
 /// ([`ResourceVector::elimination_bounds`]) collects at its call site.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PeriodicDelta {
-    /// How many RETAINED RING FRAMES one repetition spans. `1` for a pair certified by
-    /// direct recurrence; `k` for a signature derived by [`ring_delta_signature`].
+    /// How many RETAINED RING FRAMES one repetition spans. DERIVED on both certification
+    /// bases — from the certifying prior's index in the ring for direct recurrence, and as
+    /// `k` for a signature derived by [`ring_delta_signature`]. It is NOT "1 for direct
+    /// recurrence": that was a hardcode until fix round 1, and it was measured wrong (the
+    /// `interactive_3p_subset_lethal_does_not_crown` fixture's repetition spans TWO frames,
+    /// a gain-life resolution then a lose-life one).
+    ///
+    /// CONSUMER: `game::engine::drive_one_shortcut_cycle` DELIMITS a committed cycle by this
+    /// count. It has to, for the class [`ring_delta_signature`] certifies: that basis proves
+    /// a periodic DELTA, not a recurring board, so the drive's board-recurrence predicates are
+    /// false at every settle beat and `Fixed(n)`'s `n` would otherwise be structurally inert.
+    /// The count is measured the same way it is minted — the engine's single
+    /// `record_loop_detect_sample` call site is inside `pass_priority_once_with_pipeline`,
+    /// which is the function the drive steps.
     ///
     /// Named for its unit on purpose: `game::engine::shortcut_drive_period` maps a
     /// TEMPLATE to a repeat count, which is a different quantity in the same subsystem.
@@ -1418,10 +1430,17 @@ pub(crate) fn loop_states_cover_modulo_growth(prior: &GameState, current: &GameS
 /// It read: "in an exact-recurrence window every entry re-announces each cycle, so every
 /// entry is examined." A shortcut window need not be exact-recurrence at all, and when it
 /// is a GROWING CASCADE the premise fails outright. Measured on the `dellian` 4p fixture:
-/// the window is a growing cascade over a FROZEN 140-deep bottom prefix — the same 107
-/// entries, identical `ObjectId` set and identical index range, survived 220 beats while
-/// the stack grew above them. Those entries provably never re-announced and never
-/// resolved, so nothing the window observed says anything about them.
+/// the window is a growing cascade over a FROZEN bottom prefix that never re-announces.
+///
+/// ⚠ THE TWO NUMBERS THIS CLAUSE USED TO CARRY ("a FROZEN 140-deep bottom prefix — the same
+/// 107 entries") CONTRADICTED EACH OTHER, and RE-MEASUREMENT shows neither was right. Driving
+/// `dellian_emblem_conqueror_4p.json.gz` 220 beats from its shipped state through the
+/// production per-beat driver, recording the stack's `ObjectId` sequence at every beat:
+///   stack depth 152 at beat 0, min 152, max 182 over the run
+///   FROZEN BOTTOM PREFIX = **151** entries — same `ObjectId` at the same index at every
+///   one of the 220 beats
+/// So the cascade grows entirely ABOVE a 151-deep prefix. Those 151 entries provably never
+/// re-announced and never resolved, so nothing the window observed says anything about them.
 /// That does not weaken the predicate — it STRENGTHENS the case for scanning every entry:
 /// a frozen entry is one the window has NO evidence about, which is precisely the entry a
 /// grown-only scan would skip. The width is right; only the stated reason was wrong.

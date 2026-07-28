@@ -195,8 +195,26 @@ impl TacticalPolicy for LoopShortcutPolicy {
             // `proposal.predicted_winner`, unlike both `UntilLethal` crown gates. Such a
             // declare by a faller proposer is a committed self-loss, exactly what the
             // `UntilLethal` arm above rejects. On a BOUNDED offer that hazard is discharged by
-            // `elimination_bounds`' contract rather than by an AI-side computation: every `n`
-            // within `max_iterations` provably eliminates nobody.
+            // `elimination_bounds`' contract rather than by an AI-side computation: it narrows to
+            // `min over living seats of (life - 1) / per-cycle loss` with FLOOR division, so
+            // `n * loss <= life - 1` for every seat and every `n` within `max_iterations`.
+            //
+            // ⚠ THAT PREMISE WAS FALSE WHEN THIS ARM SHIPPED, and it is stated here only because
+            // it has since been made true and RE-MEASURED. At `c6d834040`
+            // `materialize_fixed_shortcut` had no cycle delimiter for the basis-B class, so the
+            // drive ran to the beat cap and `Fixed(1)` on a bounded 3p/4p drain eliminated the
+            // whole table — the arithmetic above described a bound the drive never honoured. Fix
+            // round 1 delimits a cycle by the published `PeriodicDelta::frames_per_period` and
+            // drops any cycle whose measured delta differs from the published one.
+            //
+            // RE-MEASURED after that fix, through the production accept path (declare + APNAP
+            // accepts) at `n` = 1, 3 and AT the offered bound:
+            //   bloodloop 3p (bound 16): n=1 [20,16,16]  n=3 [20,14,14]  n=16 [20,1,1]  elim 0
+            //   bloodloop 4p (bound 16): n=1/3/16 likewise, elim 0
+            //   dina 4p      (bound 30): n=1 [50,34,30,35] … n=30 [79,5,1,6]            elim 0
+            // The engine-side regression row that keeps this honest is
+            // `bounded_fixed_count_commits_exactly_n_periods`, which asserts zero eliminations
+            // and `committed == n × published δ` on all three fixtures.
             (_, IterationCount::Fixed(_)) if !schema.is_bounded() => na(),
 
             // CR 732.2a: over the offered bound. The AI-side mirror of the engine's own
