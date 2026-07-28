@@ -8300,8 +8300,15 @@ fn bounded_fixed_count_commits_exactly_n_periods() {
 /// Basis B derives it from `ring_delta_signature` (the ring window's own period `k`); basis A
 /// derives it from the certifying prior's ring index. Fix round 1 changed ONLY the basis-A
 /// producer — a hardcoded `1` became the measured span — and MEASURED, reverting that hardcode
-/// flips exactly one row of the 85 in this file's `loop_shortcut::` module:
-/// [`interactive_3p_subset_lethal_does_not_crown`]. That row asserts the PUBLISHED VALUE and
+/// flips exactly one of the **83** rows that existed in this file's `loop_shortcut::` module
+/// BEFORE this row: [`interactive_3p_subset_lethal_does_not_crown`]. ⚠ On THIS tree the count is
+/// **2 of 85** — the second being this row, by design (its probe ⓐ below IS that revert). Fix
+/// round 3 (LOW-1) corrected the earlier wording "one row of the 85", which took its numerator
+/// from the pre-commit tree and its denominator from the post-commit one — two epochs in one
+/// sentence. Runner and filter for the flip claim:
+/// `cargo test -p engine --test integration -- loop_shortcut::` (module filter on the
+/// `integration` binary); the 83 / 85 are `#[test]` attributes in this file at `bc20d4ff4` and
+/// `e3c76d1e8` respectively. That row asserts the PUBLISHED VALUE and
 /// nothing else; it never declares a count, so nothing in the tree observed what a basis-A
 /// offer's drive actually commits. The claim "under the hardcode that fixture's accepted drive
 /// committed nothing at all" was true and untracked. This row tracks it.
@@ -8314,12 +8321,24 @@ fn bounded_fixed_count_commits_exactly_n_periods() {
 /// asserted below as a reach-guard). A fixture with `k == 1` could not tell a drive that reads
 /// the VALUE from one that reads any positive constant.
 ///
+/// ⚠ SCOPE (fix round 3, LOW-4): this coverage is **synthetic-only**. All three basis-A rows in
+/// this file are `GameScenario` builds; **no real dump certifies on basis A** — the file's real
+/// 4p dumps are basis B, `dina_untargeted_drain_4p_offers_at_three_live_opponents` measured so
+/// two ways in its own doc. This repo's standing lesson is real-dump-over-synthetic, so the row
+/// says which it is rather than letting a reader take it for real-game evidence. Building a real
+/// basis-A dump is its own round, not this one.
+///
 /// # MEASURED, through the production accept path (`apply` → declare → APNAP accepts)
 ///
 /// derived `k = 2` ⇒ `n=1` commits `{P0:+1, P1:-1, P2:0}`, `n=2` `{+2,-2,0}`, `n=3` `{+3,-3,0}`
-/// — exactly `n × δ`. P2 is the CR 119.8 life-loss-immune bystander and is untouched at every
-/// `n`, which is the multiplayer half: one cycle charges the seats the certificate names and
-/// only those.
+/// — exactly `n × δ`. P2 is the life-loss-immune bystander and is untouched at every `n`, which
+/// is the multiplayer half: one cycle charges the seats the certificate names and only those.
+/// The governing rule is **CR 101.2** — `LIFE_LOSS_IMMUNE` is "Your life total can't change.",
+/// a "can't" effect, which takes precedence over the trigger's life-loss instruction. (Fix
+/// round 3, LOW-2: this line cited CR 119.8, which governs life EXCHANGES, life REDISTRIBUTION,
+/// and pay-life COSTS — none of which happens here. `setup_3p_bystander_winner` above already
+/// names 101.2 as governing, with 119.8 only as a `cf.`, and 101.2 is the engine's own
+/// convention for "can't" overrides.)
 ///
 /// # REVERT-PROBES — both RUN, and the second one does NOT flip
 ///
@@ -8928,8 +8947,12 @@ fn a_cycle_that_does_not_match_the_published_period_is_dropped() {
 /// FIX ROUND 1 (MED-4) — the AI's bounded-declare candidate is GENERATED, LEGAL, and DRIVES.
 ///
 /// The `if schema.points.is_empty() && schema.is_bounded()` block in
-/// `ai_support::candidates` shipped with zero coverage: deleting it left the engine suite
-/// (4167) and every `phase-ai` suite green. Its sibling one screen away
+/// `ai_support::candidates` shipped with zero coverage: deleting it left the engine suite and
+/// every `phase-ai` suite green. (Fix round 3, LOW-3: a bare "(4167)" stood here with neither a
+/// runner nor a filter recorded beside it, so it named a shape nobody could reproduce; it is
+/// deleted rather than re-dressed, exactly as the same count was at
+/// `bounded_offer_conjunct_tests`' module doc. The reproducible claim is this row's own
+/// REVERT-PROBE line below.) Its sibling one screen away
 /// (`ai_collapse_candidate_is_clamped_to_the_accepted_bound`) sets the standard this row
 /// mirrors — generate the candidate through the production generator, then `apply()` it.
 ///

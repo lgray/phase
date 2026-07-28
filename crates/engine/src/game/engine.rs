@@ -13705,10 +13705,27 @@ mod bounded_offer_conjunct_tests {
     /// assert exactly that, so the guard is provably reached rather than assumed to be).
     ///
     /// The fixture is a [`drain_ring`], NOT a [`mill_ring`], and the difference is load-bearing:
-    /// library size is BOARD, so a mill ring's frames are board-unequal, basis A refuses them
-    /// outright and every mill-ring row in this module is really exercising basis B. A guard
-    /// inside the basis-A walk is unreachable from that fixture. (Measured: the board-equality
-    /// reach-guard below FAILS on `mill_ring(P1, 3)`.)
+    /// library size is BOARD, so basis A certifies NOTHING on a mill ring, every mill-ring row in
+    /// this module is really exercising basis B, and a guard inside the basis-A walk is
+    /// unreachable from that fixture.
+    ///
+    /// ⚠ Basis A is a DISJUNCTION, and the board-equality reach-guard below — which does FAIL on
+    /// `mill_ring(P1, 3)` — measures only its FIRST half. Fix round 3 (LOW-5) MEASURED the second,
+    /// `loop_states_cover_modulo_growth_pinned`, rather than leaving the wider claim resting on
+    /// the narrower evidence: a probe evaluating both disjuncts plus `net_progress_for` at every
+    /// `(prior, live)` pair of `mill_ring(P1, 3)` (temporary `#[test]` in this module, run with
+    /// `cargo test -p engine --lib -- game::engine::bounded_offer_conjunct_tests:: --nocapture`,
+    /// then reverted) reports `cover = false` at ALL THREE ring indices. Both halves refuse, so
+    /// the conclusion holds.
+    ///
+    /// The probe also corrects the REASON at one index, which the board-inequality phrasing had
+    /// wrong: `mill_ring`'s OLDEST frame pops zero cards, so it IS board-equal to the live state
+    /// (`span = 2`, `eq = true`) and is refused by `net_progress_for` on its zero δ, not by board
+    /// inequality. Newest-first, the `.rev()` walk therefore refuses `span = 0` at `span >= 1`,
+    /// `span = 1` on `eq`/`cover` both false, and `span = 2` on net progress. (`drain_ring(P1, 3)`
+    /// under the same probe: `eq = true` and `net = true` at every index, `cover = false`
+    /// throughout — so it certifies through the FIRST disjunct at `span = 1`, which is the pair
+    /// this row's guard is about.)
     ///
     /// A published `frames_per_period: 0` would mean "one repetition spans no retained frames",
     /// which `drive_one_shortcut_cycle`'s delimiter cannot honour — `frames_this_cycle >= 0`
