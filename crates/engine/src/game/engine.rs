@@ -13556,9 +13556,18 @@ mod bounded_offer_conjunct_tests {
     ///
     /// The counterpart to [`mill_ring`], and the difference is exactly the one basis A turns on:
     /// library size is BOARD (`loop_states_equal_modulo_resources` compares it), while life is a
-    /// PROJECTED resource (`project_out_resources` removes it). So a mill ring's frames are
-    /// board-UNEQUAL and can only certify through basis B's `ring_delta_signature`, whereas a
-    /// drain ring's frames are board-EQUAL and certify through basis A's first disjunct.
+    /// PROJECTED resource (`project_out_resources` removes it). So a mill ring can only certify
+    /// through basis B's `ring_delta_signature`, whereas a drain ring's frames are board-EQUAL
+    /// at every index and certify through basis A's first disjunct.
+    ///
+    /// ⚠ The REASON basis A refuses a mill ring is not uniform across the ring, and an earlier
+    /// revision of this doc claimed it was ("a mill ring's frames are board-UNEQUAL"). MEASURED
+    /// in fix round 3 (LOW-5) and recorded at
+    /// [`a_zero_span_certifying_pair_never_publishes_a_zero_width_period`]: `mill_ring`'s frames
+    /// are board-unequal at every index EXCEPT the OLDEST, which pops zero cards and IS
+    /// board-equal (`span = 2`, `eq = true`) — that one is refused by `net_progress_for` on its
+    /// zero δ instead. Basis A still certifies nothing on a mill ring; only the per-index reason
+    /// differs.
     ///
     /// Frame `i` sits `frames - i` life ABOVE the live state, so the newest frame is exactly one
     /// period ahead of it and every older frame one more — i.e. the live state is the far end of

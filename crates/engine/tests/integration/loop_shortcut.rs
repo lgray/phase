@@ -189,7 +189,9 @@ fn setup_3p_draw(mode: LoopDetectionMode) -> (GameRunner, ObjectId) {
 
 /// 3-player SUBSET-LETHAL loop: the SAME proven-detected constant-depth mutual drain as
 /// `setup_2p_drain` (P0's `DRAIN_CLERIC` + `BLOOD_SIPPER`), embedded in a 3p pod where P2 is
-/// IMMUNE to life loss (CR 119.8 "you can't lose life"). So the cycle drains ONLY P1 (sole
+/// IMMUNE to life loss (CR 101.2 — a "can't" effect takes precedence over the trigger's
+/// life-loss instruction; cf. CR 119.8, which governs only life EXCHANGES, life
+/// REDISTRIBUTION and pay-life COSTS, none of which happens here). So the cycle drains ONLY P1 (sole
 /// faller); P2 is a bystander with per-cycle life delta 0 (a second non-faller). Living
 /// partition each cycle: fallers = {P1}, non-fallers = {P0, P2} — so `live_mandatory_loop_winner`
 /// refuses to name a winner (CR 104.2a). P1 starts very high so it never dies inside the drive
@@ -219,7 +221,8 @@ fn setup_3p_subset_lethal(mode: LoopDetectionMode) -> (GameRunner, ObjectId) {
 /// (EQUAL — required by `live_mandatory_loop_winner`'s CR 704.3 simultaneity floor: fallers die in
 /// ONE SBA event, so unequal lives are not a determinate single-winner shape), P2 = 0
 /// (life-loss-immune: CR 101.2 — a "can't" effect takes precedence over the trigger's life-loss
-/// instruction; cf. CR 119.8 for the same const elsewhere in this file). Living partition each
+/// instruction; cf. CR 119.8, which governs only life EXCHANGES, life REDISTRIBUTION and
+/// pay-life COSTS, none of which happens here). Living partition each
 /// cycle: fallers = {P0, P1}, nonfallers = {P2} ⇒ len == 1 ⇒ the engine NATURALLY latches
 /// `predicted_winner = Some(P2)` — a winner who controls no loop enabler and is not the proposer.
 /// No injection.
@@ -7450,8 +7453,35 @@ fn drive_scenario_to_bounded_offer(runner: &mut GameRunner, cap: usize) -> Optio
 
 /// PR-7 Phase 5b — THE BASIS-B POSITIVE CONTROL, at the offer level.
 ///
-/// This is the row that detects a back-door deletion of certification basis B, and it is the
-/// only one that does: every other bounded-offer row in this file certifies on basis A.
+/// This is the row whose WHOLE PURPOSE is detecting a back-door deletion of certification
+/// basis B. It is **not** the only row that detects one — an earlier revision of this doc said
+/// it was ("every other bounded-offer row in this file certifies on basis A") and that was
+/// MEASURABLY FALSE, and it licenses exactly the overread that the ⚠ SCOPE note on
+/// [`basis_a_bounded_fixed_count_commits_exactly_n_periods`] exists to prevent — which a reader
+/// reaches much later in this file than this sentence.
+///
+/// RE-MEASURED in fix round 4 at `025015135`, using this file's own prescribed attribution
+/// probe (force `ring_delta_signature` to return `None` unconditionally — basis-B rows lose
+/// their offer, basis-A rows keep it), runner
+/// `cargo test -p engine --test integration -- loop_shortcut::` (module filter on the
+/// `integration` binary): **74 passed / 11 failed / 4090 filtered out**, against a clean
+/// **85 passed / 0 failed / 4090 filtered out**. ELEVEN rows flip. This one, plus these ten:
+/// `dina_untargeted_drain_4p_offers_at_three_live_opponents` (the real 4p dump),
+/// `bloodloop_mandatory_draw_cascade_offers_at_2p_3p_and_4p`,
+/// `ai_bounded_declare_candidate_is_generated_legal_and_drives`,
+/// `bounded_fixed_count_commits_exactly_n_periods`,
+/// `bounded_fixed_drive_stops_at_the_first_lethal_cycle`,
+/// `bounded_fixed_drive_rolls_back_a_partial_crossing_cycle`,
+/// `a_cycle_that_does_not_match_the_published_period_is_dropped`,
+/// `declared_count_above_the_offered_bound_is_handed_back`,
+/// `until_lethal_against_a_bounded_offer_is_rejected`,
+/// `a_nonempty_action_sequence_mints_no_bounded_offer`.
+///
+/// What is distinctive here is INTENT and DIAGNOSIS, not exclusivity: each of those ten fails
+/// for a reason its own doc does not name, whereas this row says so in the failure text
+/// ("A failure here means basis B minted nothing"). Nor is the list a basis census: it is the
+/// set of rows that cannot reach their assertions once basis B stops minting, which includes
+/// rows whose subject is the DRIVE rather than the basis.
 ///
 /// FIXTURE — a fully mandatory two-card draw↔drain cascade. What it shares with the class
 /// basis B exists for is the one property that matters: **it draws a card every cycle**, so a
@@ -8307,8 +8337,17 @@ fn bounded_fixed_count_commits_exactly_n_periods() {
 /// from the pre-commit tree and its denominator from the post-commit one — two epochs in one
 /// sentence. Runner and filter for the flip claim:
 /// `cargo test -p engine --test integration -- loop_shortcut::` (module filter on the
-/// `integration` binary); the 83 / 85 are `#[test]` attributes in this file at `bc20d4ff4` and
-/// `e3c76d1e8` respectively. That row asserts the PUBLISHED VALUE and
+/// `integration` binary) — and that runner is also the AUTHORITY for the denominator: it
+/// reports **85 passed / 0 failed / 4090 filtered out** on this tree, re-run in fix round 4 at
+/// `025015135`. The 83 is the same module at `bc20d4ff4`.
+///
+/// ⚠ The denominator is anchored to the RUNNER and not, as fix round 3 wrote it, to a grep of
+/// the test-attribute literal over this file (fix round 4, LOW-4). That grep is contaminable by
+/// this very doc: round 3's own correction quoted the literal inside this comment, so at
+/// `025015135` the grep returned **86** while the runner still reported 85, and a reader
+/// applying the stated method would have concluded the doc was stale. This round dropped the
+/// quoted literal, so the two agree again — but the runner counts ROWS and the grep counts
+/// MENTIONS, and only one of those is what "of 85" means. That row asserts the PUBLISHED VALUE and
 /// nothing else; it never declares a count, so nothing in the tree observed what a basis-A
 /// offer's drive actually commits. The claim "under the hardcode that fixture's accepted drive
 /// committed nothing at all" was true and untracked. This row tracks it.
