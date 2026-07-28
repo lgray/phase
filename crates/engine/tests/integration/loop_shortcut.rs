@@ -7466,7 +7466,7 @@ fn drive_scenario_to_bounded_offer(runner: &mut GameRunner, cap: usize) -> Optio
 /// `cargo test -p engine --test integration -- loop_shortcut::` (module filter on the
 /// `integration` binary): **74 passed / 11 failed / 4090 filtered out**, against a clean
 /// **85 passed / 0 failed / 4090 filtered out**. ELEVEN rows flip. This one, plus these ten:
-/// `dina_untargeted_drain_4p_offers_at_three_live_opponents` (the real 4p dump),
+/// `dina_untargeted_drain_4p_offers_at_three_live_opponents`,
 /// `bloodloop_mandatory_draw_cascade_offers_at_2p_3p_and_4p`,
 /// `ai_bounded_declare_candidate_is_generated_legal_and_drives`,
 /// `bounded_fixed_count_commits_exactly_n_periods`,
@@ -7477,9 +7477,31 @@ fn drive_scenario_to_bounded_offer(runner: &mut GameRunner, cap: usize) -> Optio
 /// `until_lethal_against_a_bounded_offer_is_rejected`,
 /// `a_nonempty_action_sequence_mints_no_bounded_offer`.
 ///
-/// What is distinctive here is INTENT and DIAGNOSIS, not exclusivity: each of those ten fails
-/// for a reason its own doc does not name, whereas this row says so in the failure text
-/// ("A failure here means basis B minted nothing"). Nor is the list a basis census: it is the
+/// FIXTURE PROVENANCE of those eleven, RE-COUNTED in fix round 5 over the whole set rather
+/// than asserted of one row (an earlier revision annotated dina alone as "the real 4p dump",
+/// which reads as an exclusivity it does not have). SIX load the real `dina_conqueror_4p`
+/// 4-player capture from `tests/fixtures`, through the same gunzip → restore loader:
+/// `dina_untargeted_drain_4p_offers_at_three_live_opponents`,
+/// `a_nonempty_action_sequence_mints_no_bounded_offer`,
+/// `declared_count_above_the_offered_bound_is_handed_back`,
+/// `until_lethal_against_a_bounded_offer_is_rejected`,
+/// `bounded_fixed_count_commits_exactly_n_periods` (which loops that dump AND two
+/// `bloodloop_state` boards, so it is the one MIXED row), and
+/// `bounded_fixed_drive_rolls_back_a_partial_crossing_cycle`. The remaining five are
+/// `GameScenario` builds only — this row inline, the other four via `bloodloop_state`. Counted
+/// by resolving every fixture-loading call site in this file to its enclosing test fn, NOT by
+/// grep hit count: these very sentences add doc-comment hits for the names they list.
+/// Consistent with the plural "the file's real 4p dumps" at the ⚠ SCOPE note on
+/// [`basis_a_bounded_fixed_count_commits_exactly_n_periods`].
+///
+/// What is distinctive here is INTENT and DIAGNOSIS, not exclusivity: NINE of those ten fail
+/// for a reason their own docs do not name, whereas this row says so in the failure text
+/// ("A failure here means basis B minted nothing"). The tenth,
+/// `dina_untargeted_drain_4p_offers_at_three_live_opponents`, is the EXCEPTION and was
+/// mis-covered by an earlier "each of those ten" — its ⚠ CERTIFICATION BASIS note documents
+/// this very probe as measurement (ii), down to the drive running its full 400-beat cap and
+/// its `expect` firing. Checked against all ten doc blocks in fix round 5: no other one
+/// mentions `ring_delta_signature` or basis B at all. Nor is the list a basis census: it is the
 /// set of rows that cannot reach their assertions once basis B stops minting, which includes
 /// rows whose subject is the DRIVE rather than the basis.
 ///
