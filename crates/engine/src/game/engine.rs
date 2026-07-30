@@ -13484,7 +13484,7 @@ mod kilo_interruptibility_tests {
 /// did not have). It is also not reproducible on this tree BY DESIGN — the rows below now exist,
 /// so deleting either conjunct today flips its named row, which is the entire point. Each row's
 /// own REVERT-PROBE line is the reproducible claim; run it with
-/// `cargo test -p engine --lib -- game::engine::bounded_offer_conjunct_tests::` (module filter on
+/// `cargo test -p phase-engine --lib -- game::engine::bounded_offer_conjunct_tests::` (module filter on
 /// the `engine` lib target).
 ///
 /// # Why these are UNIT rows on a synthetic ring
@@ -13723,7 +13723,7 @@ mod bounded_offer_conjunct_tests {
     /// `loop_states_cover_modulo_growth_pinned`, rather than leaving the wider claim resting on
     /// the narrower evidence: a probe evaluating both disjuncts plus `net_progress_for` at every
     /// `(prior, live)` pair of `mill_ring(P1, 3)` (temporary `#[test]` in this module, run with
-    /// `cargo test -p engine --lib -- game::engine::bounded_offer_conjunct_tests:: --nocapture`,
+    /// `cargo test -p phase-engine --lib -- game::engine::bounded_offer_conjunct_tests:: --nocapture`,
     /// then reverted) reports `cover = false` at ALL THREE ring indices. Both halves refuse, so
     /// the conclusion holds.
     ///

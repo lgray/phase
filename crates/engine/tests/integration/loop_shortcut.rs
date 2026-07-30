@@ -7272,11 +7272,11 @@ fn bounded_offer_parts(
 ///   one that flips" — was FALSE, and is corrected rather than quietly deleted. RE-MEASURED
 ///   under that exact mutation, with the runner and the filter both named because the earlier
 ///   revision quoted a count whose shape did not match the filter beside it (fix round 2,
-///   LOW-2): `cargo test -p engine --test integration -- loop_shortcut::` (module filter on the
+///   LOW-2): `cargo test -p phase-engine --test integration -- loop_shortcut::` (module filter on the
 ///   `integration` binary) ⇒ **85 passed / 0 failed, 4090 filtered out**. `schema.is_bounded()`
 ///   included, because on every fixture the bound really IS narrowed and that assertion holds
 ///   independently of the range check. A SUBSTRING filter is a different question with a
-///   different answer — `cargo test -p engine loop_shortcut` sweeps every target and additionally
+///   different answer — `cargo test -p phase-engine loop_shortcut` sweeps every target and additionally
 ///   matches `loop_shortcut_activation` / `loop_shortcut_mana_engine`; do not quote one shape's
 ///   number beside the other's filter.
 ///   No single-conjunct revert of step (7) flips a row on THIS fixture, and that is a property
@@ -7463,7 +7463,7 @@ fn drive_scenario_to_bounded_offer(runner: &mut GameRunner, cap: usize) -> Optio
 /// RE-MEASURED in fix round 4 at `025015135`, using this file's own prescribed attribution
 /// probe (force `ring_delta_signature` to return `None` unconditionally — basis-B rows lose
 /// their offer, basis-A rows keep it), runner
-/// `cargo test -p engine --test integration -- loop_shortcut::` (module filter on the
+/// `cargo test -p phase-engine --test integration -- loop_shortcut::` (module filter on the
 /// `integration` binary): **74 passed / 11 failed / 4090 filtered out**, against a clean
 /// **85 passed / 0 failed / 4090 filtered out**. ELEVEN rows flip. This one, plus these ten:
 /// `dina_untargeted_drain_4p_offers_at_three_live_opponents`,
@@ -8358,7 +8358,7 @@ fn bounded_fixed_count_commits_exactly_n_periods() {
 /// round 3 (LOW-1) corrected the earlier wording "one row of the 85", which took its numerator
 /// from the pre-commit tree and its denominator from the post-commit one — two epochs in one
 /// sentence. Runner and filter for the flip claim:
-/// `cargo test -p engine --test integration -- loop_shortcut::` (module filter on the
+/// `cargo test -p phase-engine --test integration -- loop_shortcut::` (module filter on the
 /// `integration` binary) — and that runner is also the AUTHORITY for the denominator: it
 /// reports **85 passed / 0 failed / 4090 filtered out** on this tree, re-run in fix round 4 at
 /// `025015135`. The 83 is the same module at `bc20d4ff4`.
