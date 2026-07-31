@@ -8,8 +8,7 @@ use crate::types::ability::{
     ModalChoice, ObjectScope, OriginConstraint, PlayerFilter, PtValue, QuantityExpr, QuantityRef,
     RenownSubject, ResolvedAbility, SacrificeCost, TargetFilter, TargetRef, TributeOutcome,
     TriggerCondition, TriggerConstraint, TriggerDefinition, TriggerDefinitionOccurrenceRef,
-    TriggerDefinitionRef,
-    TriggerEntry, TriggerGrantProducerKey, TypeFilter, TypedFilter,
+    TriggerDefinitionRef, TriggerEntry, TriggerGrantProducerKey, TypeFilter, TypedFilter,
 };
 #[cfg(test)]
 use crate::types::ability::{EffectScope, TapStateChange};
