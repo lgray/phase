@@ -7590,6 +7590,7 @@ fn decode_persisted_resolution_state(mut value: serde_json::Value) -> Result<Gam
         .map(ResolutionStateWire::into_game_state)
         .map_err(|error| error.to_string())?;
     validate_trigger_firing_coherence(&state)?;
+    reject_zero_bound_shortcut_offer(&state)?;
     #[cfg(debug_assertions)]
     debug_assert_runtime_resolution_invariants(&state);
     Ok(state)
@@ -8535,6 +8536,46 @@ fn delayed_trigger_payload_matches(
     delayed == command_trigger
 }
 
+/// CR 732.2a: a shortcut proposal describes "a sequence of game choices ... that may be
+/// legally taken based on the current game state". A restored `LoopShortcut` OFFER whose
+/// bound is `0` can describe no such sequence — it admits only the empty one — so the
+/// saved offer is corrupt and the load fails closed rather than reviving it.
+///
+/// WHY THIS SEAM AND NOT THE DECLARE SEAM. `max_iterations >= 1` holds for every schema
+/// minted IN-PROCESS (`decision_template`'s `Default` via `default_max_iterations`, its
+/// `MAX_SHORTCUT_CYCLES` literal, and `game::engine::build_shortcut_schema`'s clamped
+/// parameter). A WIRE-sourced offer has no such producer, so the guarantee holds
+/// everywhere except across deserialization — which is exactly here. This must NEVER be
+/// "fixed" instead by re-refusing the DECLARED count at `handle_declare_shortcut`: a
+/// declared `IterationCount::Fixed(0)` is a legal zero-repetition proposal (CR 732.2a
+/// admits "a non-repetitive series of choices"), and refusing it there re-creates the
+/// over-refusal this phase exists to remove. The zero in the OFFER'S BOUND and the zero
+/// in a DECLARED COUNT are different values at different seams.
+///
+/// SCOPED TO `LoopShortcut` ONLY, deliberately. `WaitingFor::RespondToShortcut` carries a
+/// `ShortcutProposal`, which has no `schema`/`max_iterations` field at all — there is no
+/// bound to check. Its only reachable zero is `proposal.count`, the ALREADY-DECLARED
+/// count, where `Fixed(0)` is legal; re-refusing it here would re-break the same
+/// over-refusal at a seam no row can see.
+///
+/// `== 0` is the COMPLETE rejection predicate and must not be widened: `max_iterations`
+/// is `u32`, so negatives fail serde before this runs; values at or above
+/// `MAX_SHORTCUT_CYCLES` mean "unbounded", a legitimate state; and an ABSENT wire key
+/// decodes to `MAX_SHORTCUT_CYCLES` through `#[serde(default = "default_max_iterations")]`,
+/// so every legacy save predating the field is untouched.
+fn reject_zero_bound_shortcut_offer(state: &GameState) -> Result<(), String> {
+    if let WaitingFor::LoopShortcut { schema, .. } = &state.waiting_for {
+        if schema.max_iterations == 0 {
+            return Err(
+                "persisted LoopShortcut offer states max_iterations 0, which CR 732.2a admits \
+                 no legally takeable sequence for"
+                    .to_string(),
+            );
+        }
+    }
+    Ok(())
+}
+
 impl Serialize for TrustedGameStateEnvelope {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
@@ -8624,7 +8665,11 @@ impl GameState {
 
 /// Decodes both current trusted snapshots and historical raw `GameState`
 /// snapshots. The raw form has no pre-cast route authority, so restoring it
-/// always drops any protocol wait before it reaches a live game session.
+/// routes through `precast_copy_shortcut::normalize_untrusted_restore`, which
+/// rewrites only the PRE-CAST COPY waits. Other protocol waits survive intact —
+/// a `WaitingFor::LoopShortcut` offer restores as itself — and what validates a
+/// restored offer's bound is `reject_zero_bound_shortcut_offer` on the decode
+/// path, not a blanket drop here.
 #[derive(Debug, Clone)]
 pub enum PersistedGameState {
     Raw(Box<GameState>),

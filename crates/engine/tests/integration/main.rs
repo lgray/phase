@@ -219,6 +219,7 @@ mod giada_angel_counters;
 mod giant_ox_crew_toughness;
 mod gideon_trials_emblem;
 mod gift_delivery_draw_sequence_migration;
+mod gift_recipient_phased_out_opponent;
 mod giggling_skitterspike_issue_890;
 mod gimbal_gremlin_prodigy;
 mod glen_elendras_answer_counter_all_conjunction;

@@ -22007,6 +22007,59 @@ mod tests {
         assert!(evaluate_condition(&cond, &state, &ability));
     }
 
+    /// CR 701.30b: "Choose an opponent. You and that opponent each clash." — a CHOICE,
+    /// not a target (CR 115.10a), so the offered list must exclude seats that cannot be
+    /// chosen at all while still offering every seat that can.
+    ///
+    /// Board: 5 seats. P0 clashes; **P1 phased out** through the production API;
+    /// **P2 eliminated**; P3/P4 valid.
+    ///
+    /// REACH-GUARD, and the reason the board is 5 seats rather than 3: `clash::resolve`
+    /// publishes `ClashChooseOpponent` only at `candidates.len() >= 2`. With one surviving
+    /// opponent it takes the immediate-clash path and publishes NOTHING, so an
+    /// exclusion-only assertion would pass vacuously on a narrower board.
+    ///
+    /// REVERT-PROBE: restore HEAD's `.filter(|p| p.id != controller && !p.is_eliminated)`
+    /// at this site ⇒ candidates become `[P1, P3, P4]` ⇒ the total-equality assertion
+    /// FAILS. That isolates exactly the conjunct this change adds.
+    #[test]
+    fn clash_offer_excludes_a_phased_out_opponent_and_still_offers_the_rest() {
+        let mut state = GameState::new(FormatConfig::standard(), 5, 42);
+        let mut events = Vec::new();
+
+        // Anti-vacuity on the SETUP, asserted FIRST: `phase_out_player` returns the ids it
+        // transitioned, so a setup that silently no-opped fails loudly here.
+        let transitioned =
+            crate::game::phasing::phase_out_player(&mut state, PlayerId(1), &mut events);
+        assert_eq!(
+            transitioned,
+            vec![PlayerId(1)],
+            "phase_out_player must actually transition P1"
+        );
+        assert!(state.players[1].is_phased_out());
+        crate::game::elimination::eliminate_player(&mut state, PlayerId(2), &mut events);
+        assert!(state.players[2].is_eliminated);
+
+        let ability = ResolvedAbility::new(Effect::Clash, vec![], ObjectId(1), PlayerId(0));
+        let mut events = Vec::new();
+        clash::resolve(&mut state, &ability, &mut events).expect("clash resolves");
+
+        match &state.waiting_for {
+            WaitingFor::ClashChooseOpponent {
+                player, candidates, ..
+            } => {
+                assert_eq!(*player, PlayerId(0));
+                // TOTAL EQUALITY, not `contains`: exclusion AND identity in one assertion.
+                assert_eq!(
+                    candidates,
+                    &vec![PlayerId(3), PlayerId(4)],
+                    "phased-out P1 and eliminated P2 are out; both valid opponents are in"
+                );
+            }
+            other => panic!("expected ClashChooseOpponent, got {other:?}"),
+        }
+    }
+
     /// CR 701.30b: "Clash with an opponent" lets the clashing player CHOOSE the
     /// opponent. With two or more opponents the engine must pause on
     /// `ClashChooseOpponent` (offering every opponent) instead of silently

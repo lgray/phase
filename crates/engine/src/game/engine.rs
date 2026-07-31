@@ -1329,12 +1329,13 @@ fn pinned_decisions_to_points(
     pins: &[crate::analysis::decision_template::PinnedDecision],
     state: &GameState,
     controller: PlayerId,
-) -> Vec<crate::analysis::decision_template::DecisionPoint> {
+) -> Option<Vec<crate::analysis::decision_template::DecisionPoint>> {
     use crate::analysis::decision_template::{DecisionPoint, DecisionPointKind, PinnedDecision};
-    pins.iter()
-        .filter_map(|pin| match pin {
+    let mut points = Vec::with_capacity(pins.len());
+    for pin in pins {
+        let point = match pin {
             // CR 603.3b: trigger ordering is not a loop-declaration choice — no read-side peer.
-            PinnedDecision::Order { .. } => None,
+            PinnedDecision::Order { .. } => continue,
             // CR 702.51a: the untapped creatures the controller may tap for convoke. Sorted by
             // the public inner id: `im::HashMap::values()` order is nondeterministic and this Vec
             // serializes to the wire (cf. `resolve_source`'s `min_by_key` for the same reason).
@@ -1346,10 +1347,10 @@ fn pinned_decisions_to_points(
                     .map(|o| o.id)
                     .collect();
                 tappable.sort_by_key(|id| id.0);
-                Some(DecisionPoint {
+                DecisionPoint {
                     slot: slot.clone(),
                     kind: DecisionPointKind::ConvokeTaps { tappable },
-                })
+                }
             }
             // FIX-1 (B1): reify the recorded fixed in-cycle choices. The drive replays these SAME
             // pins via `decision_template::resolve` (CR 608.2b ByIdentity live re-binding), so the
@@ -1357,14 +1358,23 @@ fn pinned_decisions_to_points(
             // CR 608.2b: resolve each pinned target to its live legal `TargetRef` — the pinned
             // identity IS the singleton legal set (a fixed declinable ∞ offer, no FE re-selection).
             PinnedDecision::Targets { slot, targets } => {
+                // CR 732.2a: a proposal must describe a sequence "that may be legally taken
+                // based on the current game state". If ANY pinned target no longer resolves,
+                // the offer must be WITHDRAWN, not published — the `?` below is that
+                // withdrawal. `filter_map`ping the failure away instead would publish a point
+                // with a short `legal_targets` under `min_targets = targets.len()`: a
+                // self-inconsistent, UNDECLARABLE point that fails downstream as
+                // `IllegalPinValue`/`UnknownChoice` rather than as "there is no offer".
+                // Dropping the point entirely is also wrong — it would let
+                // `predictability_gate`'s coverage check pass trivially.
                 let legal_targets: Vec<crate::types::ability::TargetRef> = targets
                     .iter()
-                    .filter_map(|t| {
+                    .map(|t| {
                         crate::analysis::decision_template::resolve_target_ref(t, slot, 0, state)
                     })
-                    .collect();
+                    .collect::<Option<Vec<_>>>()?;
                 let count = targets.len().min(u32::MAX as usize) as u32;
-                Some(DecisionPoint {
+                DecisionPoint {
                     slot: slot.clone(),
                     kind: DecisionPointKind::Targets {
                         legal_targets,
@@ -1372,19 +1382,19 @@ fn pinned_decisions_to_points(
                         max_targets: count,
                         ordered: true,
                     },
-                })
+                }
             }
             // CR 608.2d: the latched mana color — a read-only fixed point (no legal set to bound).
-            PinnedDecision::ManaColor { slot, color } => Some(DecisionPoint {
+            PinnedDecision::ManaColor { slot, color } => DecisionPoint {
                 slot: slot.clone(),
                 kind: DecisionPointKind::ManaColor { color: *color },
-            }),
+            },
             PinnedDecision::Mode { slot, indices } => {
                 let mut available_modes = indices.clone();
                 available_modes.sort_unstable();
                 available_modes.dedup();
                 let count = indices.len().min(u32::MAX as usize) as u32;
-                Some(DecisionPoint {
+                DecisionPoint {
                     slot: slot.clone(),
                     kind: DecisionPointKind::Mode {
                         available_modes,
@@ -1396,18 +1406,20 @@ fn pinned_decisions_to_points(
                                 .collect::<std::collections::HashSet<_>>()
                                 .len(),
                     },
-                })
+                }
             }
-            PinnedDecision::MayChoice { slot, .. } => Some(DecisionPoint {
+            PinnedDecision::MayChoice { slot, .. } => DecisionPoint {
                 slot: slot.clone(),
                 kind: DecisionPointKind::MayChoice,
-            }),
-            PinnedDecision::UnlessBreak { slot, .. } => Some(DecisionPoint {
+            },
+            PinnedDecision::UnlessBreak { slot, .. } => DecisionPoint {
                 slot: slot.clone(),
                 kind: DecisionPointKind::UnlessBreak,
-            }),
-        })
-        .collect()
+            },
+        };
+        points.push(point);
+    }
+    Some(points)
 }
 
 /// CR 115.2 + CR 732.2a: does the ability's HEAD effect declare the "target opponent" PLAYER
@@ -1616,10 +1628,16 @@ pub(crate) fn entry_publishes_pin_slots(
 /// exist. The legal set is the one `ability_utils::build_target_slots` built for the
 /// accepted announcement slot, carried through verbatim — so the SAME authority answers
 /// how many choices exist and which targets each admits. That builder routes this filter
-/// shape to the native authority [`crate::game::targeting::find_legal_targets`]
-/// (`ability_utils.rs:4382-4402`: no ability-context ref, no relative controller), which
-/// already excludes eliminated players (CR 800.4a, `targeting.rs:200-201`) — never a
-/// declaration, so the offer still cannot ratify its own pin. Note the enumeration context
+/// shape to the native authority [`crate::game::targeting::find_legal_targets`] (via
+/// `ability_utils::legal_targets_for_ability_filter_uncapped`'s `relative_kind.is_none()`
+/// / `!needs_ability_context` arm), whose empty-`Typed` players branch already excludes
+/// departed seats — CR 800.4 (multiplayer games continue after players leave) + CR 102.1
+/// (a player is one of the people in the game): a seat that has left the game is no longer
+/// one of them, so it is not choosable by anything; player phasing per the CR 702.26b
+/// MIRROR (permanent-phasing text, NEVER authority for players). NOT CR 800.4a, which
+/// governs a departed player's objects, control effects and priority — not the legality of
+/// a choice. Never a declaration, so the offer still cannot ratify its own pin. Note the
+/// enumeration context
 /// shifts with the authority: it is now the ABILITY's own `controller`/`source_id`
 /// (CR 601.2c — the ability's controller announces its targets) rather than the offer's
 /// `proposer` and the stack entry's `source_id`.
@@ -1699,8 +1717,8 @@ pub fn bounded_cycle_pin_slots(
 /// `iteration_count` and `max_iterations` are separate inputs on purpose: the first is the
 /// SUGGESTION the frontend seeds its picker with, the second is the LEGAL CEILING the
 /// declared-count check enforces. A producer that cannot compute a real bound passes
-/// `MAX_SHORTCUT_CYCLES`, which is what every offer built today does — so the ceiling is
-/// inert until a producer narrows it.
+/// `MAX_SHORTCUT_CYCLES`. The bounded-cycle producer narrows it; the drain and object-growth
+/// producers do not — so the ceiling is live for bounded offers only.
 fn build_shortcut_schema(
     points: Vec<crate::analysis::decision_template::DecisionPoint>,
     iteration_count: crate::analysis::decision_template::IterationCount,
@@ -2066,6 +2084,42 @@ fn shortcut_drive_period(
         // drive measures a smaller (more conservative) delta ⇒ FEWER crowns / more manual
         // fallbacks, never a wrong crown.
         .clamp(1, MAX_SHORTCUT_CYCLES)
+}
+
+/// CR 732.2a: the index range the declare-time firewall must validate a pin over — the range
+/// the ACCEPTED COUNT will actually drive, read off the two drive loops themselves:
+/// `materialize_fixed_shortcut` drives `for i in 0..n` for a `Fixed(n)`, and
+/// `apply_until_lethal_shortcut` drives whole periods for `UntilLethal`, whose length is
+/// [`shortcut_drive_period`].
+///
+/// THIS IS NOT `shortcut_drive_period`, and the difference is the whole point of the fix.
+/// That helper answers "how many cycles must one measurement aggregate" — a schedule property
+/// with nothing to do with the declared count. Validating over it both ACCEPTED a pin whose
+/// driven image leaves the offer's PUBLISHED legal set at an index the count reaches, and
+/// REFUSED conforming declarations whose count is shorter than the schedule.
+///
+/// NO CONSERVATIVE PADDING. Widening the range with `.max(shortcut_drive_period(..))` is
+/// bug-preserving — it re-imports the schedule-derived period the invariant exists to remove,
+/// and at a count of 1 over a length-2 rotation `Ok` is the CORRECT answer. Do not re-derive
+/// and re-add that term.
+///
+/// PRECONDITION, discharged at its call site: the count is already cap-checked, because
+/// `handle_declare_shortcut` runs the `MAX_SHORTCUT_CYCLES` / `max_iterations` match ABOVE
+/// the pin-validation block. Without that ordering a hostile `Fixed(4e9)` would become a
+/// four-billion-iteration validation loop. Exactly ONE call site consumes this helper.
+///
+/// Exhaustive over `IterationCount` with no wildcard, so a future variant build-breaks here
+/// and forces a range decision instead of silently inheriting one.
+fn shortcut_validated_range(
+    count: &crate::analysis::decision_template::IterationCount,
+    template: Option<&crate::analysis::decision_template::DecisionTemplate>,
+) -> crate::analysis::decision_template::IterationIndex {
+    match count {
+        crate::analysis::decision_template::IterationCount::Fixed(n) => *n,
+        crate::analysis::decision_template::IterationCount::UntilLethal => {
+            shortcut_drive_period(template)
+        }
+    }
 }
 
 /// PR-7 Combo-UI Stage 2: the typed result of driving ONE whole loop-shortcut cycle on a
@@ -3444,7 +3498,9 @@ fn try_offer_object_growth_shortcut(
     // times — it is materialized once as an unbounded axis — so it states no narrowed count
     // bound and keeps the global safety limit.
     let schema = build_shortcut_schema(
-        pinned_decisions_to_points(&schema_template.decisions, state, caster),
+        // CR 732.2a: an unresolvable pin WITHDRAWS the offer rather than publishing an
+        // undeclarable point — see `pinned_decisions_to_points`.
+        pinned_decisions_to_points(&schema_template.decisions, state, caster)?,
         shortcut_iteration_count(certificate.win_kind),
         MAX_SHORTCUT_CYCLES,
     );
@@ -3766,42 +3822,19 @@ fn handle_declare_shortcut(
     // any template the caller supplies is inert for the drive (the loop raises no target
     // prompt). This preserves the established `Fixed(N)` drain behavior (the resolve-firewall
     // materialize tests drive a synthetic pin against the empty drain schema).
-    if !offer.schema.points.is_empty() {
-        match &template {
-            Some(t) => {
-                let required: Vec<crate::analysis::decision_template::DecisionSlot> =
-                    offer.schema.points.iter().map(|p| p.slot.clone()).collect();
-                let period = shortcut_drive_period(Some(t));
-                if crate::analysis::decision_template::predictability_gate(t, &required).is_err()
-                    || crate::analysis::decision_template::validate_pins(
-                        offer.schema,
-                        t,
-                        period,
-                        state,
-                    )
-                    .is_err()
-                {
-                    reject_shortcut_declaration(state, &mut result);
-                    return Ok(result);
-                }
-            }
-            // CR 732.2a: a `template: None` declaration against a NON-EMPTY schema skips the
-            // validation above entirely — the pins the offer published are never checked. That
-            // is legitimate for exactly one drive shape: the object-growth route, which
-            // re-derives its template from `state.last_loop_action_sequence` (the same routing
-            // discriminant `materialize` dispatches on) and never reads `proposal.template`.
-            // With an EMPTY sequence there is nothing to re-derive from, so a pin-consuming
-            // drive would run with no pins at all — fail closed into the same manual-play
-            // handback the validation failure above uses. Both conjuncts are required: keying
-            // on `template.is_none()` alone breaks the shipped object-growth declarations.
-            None if state.last_loop_action_sequence.is_empty() => {
-                reject_shortcut_declaration(state, &mut result);
-                return Ok(result);
-            }
-            None => {}
-        }
-    }
-    // CR 732.2a SAFETY LIMIT (see MAX_SHORTCUT_CYCLES): reject an over-cap Fixed count at
+    // ⚠ ORDER IS LOAD-BEARING: the count cap runs BEFORE the pin validation below, because
+    // `shortcut_validated_range` derives the validated range FROM the declared count and so
+    // must not be handed an unchecked one — a `Fixed(4_000_000_000)` would otherwise become
+    // a four-billion-iteration validation loop. Observation-equivalence of the reorder is
+    // structural: every refusal arm in BOTH blocks lands on the same single authority
+    // (`reject_shortcut_declaration`), and `handle_declare_shortcut` pushes NO events at all,
+    // so no row can observe which block refused first.
+    // IMPLEMENTATION BUDGET BOUND (see MAX_SHORTCUT_CYCLES) — deliberately NOT labelled as a
+    // CR 732.2a constraint: the rules place no ceiling on how many times a shortcut may be
+    // repeated (CR 732.2a's own example runs to a million), so this ceiling is ours, not the
+    // game's. The label matters because a maintainer applying the CR 732.2a iff to a branch
+    // that wears a CR number will either trust it wrongly or delete it wrongly. Reject an
+    // over-cap Fixed count at
     // the single authority — BEFORE the proposal is built — into the same fail-closed
     // manual-play handback the pin validation above uses. This is THE catastrophic remote
     // vector: `Fixed(u32)` scalar-encodes up to ~4.3e9 cycles in ~10 bytes, sailing through
@@ -3844,6 +3877,47 @@ fn handle_declare_shortcut(
         // proceed to the proposal.
         crate::analysis::decision_template::IterationCount::Fixed(_)
         | crate::analysis::decision_template::IterationCount::UntilLethal => {}
+    }
+    if !offer.schema.points.is_empty() {
+        match &template {
+            Some(t) => {
+                let required: Vec<crate::analysis::decision_template::DecisionSlot> =
+                    offer.schema.points.iter().map(|p| p.slot.clone()).collect();
+                // CR 732.2a: validate over the range the ACCEPTED COUNT will drive, not
+                // over the schedule's own period. `shortcut_drive_period` answers a
+                // different question (how many cycles one measurement must aggregate), and
+                // using it here both ACCEPTED a pin whose driven image leaves the published
+                // set at an index the count reaches, and REFUSED conforming declarations
+                // whose count is shorter than the schedule.
+                let validated_range = shortcut_validated_range(&count, Some(t));
+                if crate::analysis::decision_template::predictability_gate(t, &required).is_err()
+                    || crate::analysis::decision_template::validate_pins(
+                        offer.schema,
+                        t,
+                        validated_range,
+                        state,
+                    )
+                    .is_err()
+                {
+                    reject_shortcut_declaration(state, &mut result);
+                    return Ok(result);
+                }
+            }
+            // CR 732.2a: a `template: None` declaration against a NON-EMPTY schema skips the
+            // validation above entirely — the pins the offer published are never checked. That
+            // is legitimate for exactly one drive shape: the object-growth route, which
+            // re-derives its template from `state.last_loop_action_sequence` (the same routing
+            // discriminant `materialize` dispatches on) and never reads `proposal.template`.
+            // With an EMPTY sequence there is nothing to re-derive from, so a pin-consuming
+            // drive would run with no pins at all — fail closed into the same manual-play
+            // handback the validation failure above uses. Both conjuncts are required: keying
+            // on `template.is_none()` alone breaks the shipped object-growth declarations.
+            None if state.last_loop_action_sequence.is_empty() => {
+                reject_shortcut_declaration(state, &mut result);
+                return Ok(result);
+            }
+            None => {}
+        }
     }
     let proposal = crate::analysis::loop_check::ShortcutProposal {
         proposer: offer.proposer,
@@ -12922,12 +12996,67 @@ mod stage2_injector_tests {
             .read_to_string(&mut json)
             .expect("fixture inflates");
         let envelope: serde_json::Value = serde_json::from_str(&json).expect("envelope parses");
-        let raw: GameState =
-            serde_json::from_value(envelope["gameState"].clone()).expect("gameState deserializes");
-        PersistedGameState::Raw(Box::new(raw)).into_game_state()
+        // Cross the dump through the PRODUCTION decoder rather than a bare `GameState`
+        // decode wrapped in `Raw`: `PersistedGameState`'s own `Deserialize` runs
+        // `reject_legacy_raw_prompt_authority` and `decode_persisted_resolution_state`
+        // first, so this helper exercises the chokepoint the server's `from_persisted`
+        // and WASM's `decode_restored_game_state` actually funnel through — including
+        // the CR 732.2a load-seam bound invariant.
+        // `.expect(..)`, not `?`: `into_game_state` returns `GameState`, not `Result`.
+        serde_json::from_value::<PersistedGameState>(envelope["gameState"].clone())
+            .expect("gameState deserializes through the production decoder")
+            .into_game_state()
     }
 
     const EMBLEM: ObjectId = ObjectId(541);
+
+    /// CR 601.2c + CR 115.1: the migrated fixture's `effect_kind` is not an assertion of
+    /// taste — it is exactly what the ANNOUNCEMENT AUTHORITY builds for this ability on
+    /// this board. `scripts/migrate-dump-fixture.sh` takes the value as an explicit
+    /// argument precisely so the engine, and never a jq name→variant table, stays the
+    /// authority for it; this row is what holds the script's operator to that.
+    ///
+    /// It is also the row that would have caught upstream #6718 (`0468df1f4`, which added
+    /// `TargetSelectionSlot::effect_kind` with no `#[serde(default)]`) the day it landed:
+    /// `TargetSelectionSlot` derives `PartialEq`/`Eq`, so this compares ALL five fields,
+    /// not just the migrated one.
+    ///
+    /// REVERT-PROBE: re-run the migration script with `--effect-kind NoOp` ⇒ the stamped
+    /// slot stops matching what `build_target_slots` derives ⇒ FAILS. This assertion is
+    /// the SOLE guard on the migrated value — nothing on the drive path reads the field
+    /// (its only production readers are the two `target_intent` calls in the interaction
+    /// DTO projection), so a wrong value cannot move the game and must be caught by a
+    /// reading test instead of by a behavioural one.
+    #[test]
+    fn dellian_dump_slots_are_what_the_announcement_authority_builds() {
+        let state = load_dellian_dump();
+        let pt = state
+            .pending_trigger
+            .as_ref()
+            .expect("dellian dump pauses on a pending trigger");
+        // `let … else` rather than `if let`: it fails LOUDLY if the dump ever restores
+        // into some other prompt, which would otherwise make the assertion unreachable
+        // rather than false.
+        let WaitingFor::TriggerTargetSelection { target_slots, .. } = &state.waiting_for else {
+            panic!(
+                "dellian dump must restore into TriggerTargetSelection, got {:?}",
+                state.waiting_for
+            );
+        };
+        // Reach-guard: an empty slot vector would satisfy a total-equality assertion
+        // vacuously on both sides.
+        assert_eq!(
+            target_slots.len(),
+            1,
+            "the dellian dump publishes exactly one target slot"
+        );
+        assert_eq!(
+            &crate::game::ability_utils::build_target_slots(&state, &pt.ability)
+                .expect("the emblem's drain ability builds its announcement slots"),
+            target_slots,
+            "the restored dump's slots must equal what the announcement authority builds"
+        );
+    }
 
     /// CR 732.2a: the offer publishes the SET of open per-iteration choices — one point per
     /// SOURCE, not one per stack ENTRY.
@@ -12993,6 +13122,19 @@ mod stage2_injector_tests {
     /// raises `RecastAbort` ⇒ FAILS; drop the incarnation conjunct ⇒ the stale-pin arm is
     /// accepted ⇒ FAILS. The negative arms are paired with a positive on the SAME board, so
     /// neither an always-accept nor an always-abort matcher survives.
+    ///
+    /// R3 — CR 608.2b + CR 113.7a: this row is ALSO the witness that a pin's SEAT legality
+    /// does not depend on recovering the SOURCE's characteristics. The choice authority
+    /// `game::players::player_exists_for_choice` takes no source parameter at all, by
+    /// design: a command-zone emblem has no battlefield LKI to recover, and if seat
+    /// legality consulted the source, a pin raised by such a source would be invalidated
+    /// for a reason the rules do not state. The claim is STRUCTURAL — there is no source
+    /// parameter to revert — so what makes it checkable is the PAIR: this row proves a
+    /// source with no recoverable LKI still answers its prompt, and
+    /// `analysis::decision_template::tests::a_dead_player_pin_is_illegal`'s LIVE half
+    /// proves the seat check is nonetheless doing work on that same pin kind. (Contrast
+    /// `targeting::player_is_legal_target`, which DOES take a source — because targeting
+    /// exclusions are source-relative, CR 702.11c, and choice legality is not.)
     #[test]
     fn a_command_zone_pin_answers_a_real_restored_boards_prompt() {
         let state = load_dellian_dump();
@@ -13130,9 +13272,13 @@ mod kilo_interruptibility_tests {
         // (`migrate_transient_loop_sequence`) drops the dump's 6 stale pinless steps on load —
         // exactly as the integration helper does. Deserializing directly would bypass the hook,
         // leaving the stale prefix so the live drive yields an 8-step (not 2-step) sequence.
-        let raw: GameState =
-            serde_json::from_value(envelope["gameState"].clone()).expect("gameState deserializes");
-        PersistedGameState::Raw(Box::new(raw)).into_game_state()
+        // Decoding AS `PersistedGameState` (rather than decoding a bare `GameState` and
+        // wrapping it) additionally routes the dump through
+        // `reject_legacy_raw_prompt_authority` + `decode_persisted_resolution_state`.
+        // `.expect(..)`, not `?`: `into_game_state` returns `GameState`, not `Result`.
+        serde_json::from_value::<PersistedGameState>(envelope["gameState"].clone())
+            .expect("gameState deserializes through the production decoder")
+            .into_game_state()
     }
 
     fn beat_actor(state: &GameState) -> PlayerId {
@@ -13466,6 +13612,192 @@ mod kilo_interruptibility_tests {
             try_offer_object_growth_shortcut(&marked).is_some(),
             "the empty-stack offer hook is NOT ∞-gated: a persisted declined ∞ axis does not \
              suppress a genuine re-detection re-offering the loop (CR 732.2a / CR 732.2b)"
+        );
+    }
+
+    /// Plant ONE extra `Targets` pin into the recorded period's first step, on a slot that
+    /// no prompt in the replay answers. That is what makes these three rows isolate the
+    /// OFFER-BUILDER: the drive never consults the planted pin, while
+    /// `pinned_decisions_to_points` — which builds its points from exactly
+    /// `build_recast_template(&seq[0]).decisions` — always does.
+    fn plant_offer_pin(state: &mut GameState, pin: TargetPin) -> GameState {
+        let mut planted = state.clone();
+        let step = planted
+            .last_loop_action_sequence
+            .first_mut()
+            .expect("reach-guard: the recorded period has a first step to plant into");
+        step.pins.push(PinnedDecision::Targets {
+            slot: crate::analysis::decision_template::DecisionSlot {
+                source: YieldTarget::ThisObject {
+                    source_id: KILO,
+                    incarnation: None,
+                    trigger_description: None,
+                },
+                // An index no live prompt publishes, so only the point-builder reads it.
+                index: 99,
+            },
+            targets: vec![pin],
+        });
+        planted
+    }
+
+    /// R4b — CR 732.2a: *"a sequence of game choices ... that may be legally taken based on
+    /// the current game state"*. If a pinned target no longer resolves, there IS no such
+    /// sequence, so the offer must be WITHDRAWN — not published with a short legal set.
+    ///
+    /// Before the fix, `pinned_decisions_to_points` `filter_map`ped the unresolvable pin out
+    /// of `legal_targets` while keeping `min_targets = targets.len()`, publishing a point
+    /// that no legal declaration could satisfy: the player is offered a shortcut they cannot
+    /// take, and the failure surfaces later as `IllegalPinValue` instead of as "no offer".
+    ///
+    /// MATCHED PAIR on one board, one variable — the planted pin's identity:
+    ///   * live object  ⇒ the point resolves ⇒ the offer FIRES (the reach-guard: it proves
+    ///     the plant itself does not break the drive, so the negative arm's `None` is the
+    ///     withdrawal and not a broken fixture);
+    ///   * absent object ⇒ the offer is WITHDRAWN.
+    ///
+    /// REVERT-PROBE: restore the `filter_map` (drop the `?`) ⇒ the negative arm publishes an
+    /// undeclarable point instead of withdrawing ⇒ FAILS. Reachable TODAY and independent of
+    /// item 1: this arm's pin is `ByIdentity`, and no player legality is involved.
+    #[test]
+    fn an_unresolvable_identity_pin_withdraws_the_offer() {
+        let mut driven = load_migrated_dump();
+        drive_one_live_cycle(&mut driven);
+        let base = at_priority_window(driven);
+
+        let live = plant_offer_pin(
+            &mut base.clone(),
+            TargetPin::ByIdentity(YieldTarget::ThisObject {
+                source_id: KILO,
+                incarnation: None,
+                trigger_description: None,
+            }),
+        );
+        assert!(
+            try_offer_object_growth_shortcut(&live).is_some(),
+            "reach-guard: a planted pin that RESOLVES leaves the offer intact, so the \
+             negative arm below is the withdrawal and not the plant"
+        );
+
+        let mut dangling = plant_offer_pin(
+            &mut base.clone(),
+            TargetPin::ByIdentity(YieldTarget::ThisObject {
+                source_id: ObjectId(999_999),
+                incarnation: None,
+                trigger_description: None,
+            }),
+        );
+        assert!(
+            !dangling.objects.contains_key(&ObjectId(999_999)),
+            "setup: the planted identity must genuinely be absent from the board"
+        );
+        assert!(
+            try_offer_object_growth_shortcut(&dangling).is_none(),
+            "CR 732.2a: a pin that cannot resolve withdraws the offer"
+        );
+        // The withdrawal is the whole point: nothing was published to be declared.
+        assert!(matches!(dangling.waiting_for, WaitingFor::Priority { .. }));
+        dangling.last_loop_action_sequence.clear();
+    }
+
+    /// R4d — the same withdrawal, on the OTHER end of the invariant: a `TargetPin::Player`
+    /// aimed at a seat that has left the game (CR 800.4 + CR 102.1) no longer resolves, so
+    /// the offer is withdrawn rather than ratifying its own pin.
+    ///
+    /// This is the offer-builder half of the pair whose MINT half is
+    /// `effects::proliferate`'s R4a row: the two ends of the invariant that a Player pin
+    /// must never reach materialization validated only against a legal set derived from the
+    /// pins themselves. `pinned_decisions_to_points` derives its legal sets FROM the pins,
+    /// so on this route the seat's existence check inside `resolve_target` is the only
+    /// authority there is.
+    ///
+    /// MATCHED PAIR, one variable (`is_eliminated`): live seat ⇒ offer fires; departed seat
+    /// ⇒ offer withdrawn. REVERT-PROBE: drop the existence conjunct in
+    /// `players::player_exists_for_choice` ⇒ the departed seat resolves ⇒ the offer is
+    /// published ⇒ FAILS.
+    #[test]
+    fn a_departed_player_pin_withdraws_the_offer() {
+        let mut driven = load_migrated_dump();
+        drive_one_live_cycle(&mut driven);
+        let base = at_priority_window(driven);
+        let victim = PlayerId(1);
+
+        let live = plant_offer_pin(&mut base.clone(), TargetPin::Player(victim));
+        assert!(
+            !live.players[1].is_eliminated,
+            "reach-guard: the seat starts in the game"
+        );
+        assert!(
+            try_offer_object_growth_shortcut(&live).is_some(),
+            "reach-guard: a Player pin on a LIVE seat leaves the offer intact"
+        );
+
+        let mut departed = live.clone();
+        departed.players[1].is_eliminated = true;
+        assert!(
+            try_offer_object_growth_shortcut(&departed).is_none(),
+            "a Player pin aimed at a departed seat withdraws the offer (CR 732.2a)"
+        );
+    }
+
+    /// R2b — the CR 115.10a boundary, enforced at the OFFER level rather than explained in a
+    /// comment. A shrouded seat (CR 702.18a) is un-TARGETable, and this row proves the
+    /// offer-builder still publishes it as a CHOICE: the point carries it in
+    /// `legal_targets`, and the offer FIRES.
+    ///
+    /// This is the enforcement half of the pair whose explanation half is the site-4 comment
+    /// and whose seam-level half is
+    /// `analysis::decision_template::tests::a_shrouded_seat_is_untargetable_yet_still_
+    /// choosable_at_the_pin_recheck`. Without it, re-introducing target-scoped conjuncts at
+    /// site 4 would silently restore the over-veto at the one seam that publishes an offer.
+    ///
+    /// REVERT-PROBE: route `resolve_target`'s `TargetPin::Player` arm through
+    /// `targeting::player_is_legal_target` ⇒ the shrouded seat stops resolving ⇒ the offer is
+    /// WITHDRAWN ⇒ both assertions FAIL. The paired positive that keeps this from passing on
+    /// an un-shrouded board is the shroud reach-guard asserted first.
+    #[test]
+    fn a_shrouded_player_pin_is_still_published_by_the_offer_builder() {
+        use crate::types::statics::StaticMode;
+
+        let mut driven = load_migrated_dump();
+        drive_one_live_cycle(&mut driven);
+        let mut base = at_priority_window(driven);
+        let victim = PlayerId(1);
+
+        // P1 gains shroud, through the single TCE construction authority — the same route
+        // a resolved "target player gains shroud until end of turn" effect takes.
+        base.add_transient_continuous_effect(
+            KILO,
+            P0,
+            crate::types::ability::Duration::UntilEndOfTurn,
+            crate::types::ability::TargetFilter::SpecificPlayer { id: victim },
+            vec![
+                crate::types::ability::ContinuousModification::AddStaticMode {
+                    mode: StaticMode::Shroud,
+                },
+            ],
+            None,
+        );
+        crate::game::layers::flush_layers(&mut base);
+
+        // Reach-guard, and the paired positive: the shroud actually bites at the TARGET
+        // seam. Without this the row would pass on a board with no shroud at all.
+        assert!(
+            crate::game::static_abilities::player_cannot_be_targeted_by(&base, victim, KILO, P0),
+            "CR 702.18a: the planted shroud must make the seat un-targetable"
+        );
+
+        let planted = plant_offer_pin(&mut base, TargetPin::Player(victim));
+        let (_, schema) = try_offer_object_growth_shortcut(&planted)
+            .expect("CR 115.10a: a shrouded seat is still CHOOSABLE, so the offer fires");
+        assert!(
+            schema.points.iter().any(|point| matches!(
+                &point.kind,
+                crate::analysis::decision_template::DecisionPointKind::Targets { legal_targets, .. }
+                    if legal_targets.contains(&TargetRef::Player(victim))
+            )),
+            "the published point carries the shrouded seat: exclusion belongs to the TARGET \
+             seam, not to this one"
         );
     }
 }

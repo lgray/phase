@@ -2448,7 +2448,9 @@ fn loop_shortcut_projection(
             // CR 732.2a (MagicCompRules.txt:6372): the picker's ceiling is the offer's own
             // CR 704 bound, never the raw global safety limit — a count above it would
             // specify a sequence containing an elimination, which is a conditional action.
-            // The engine owns this number; the frontend renders it.
+            // The engine owns this number; the frontend renders it. An unnarrowed offer
+            // states `MAX_SHORTCUT_CYCLES`; a bounded offer states less. Either way this is
+            // the offer's own bound, clamped at the same authority.
             //
             // CR 704.5a (MagicCompRules.txt:5492): `elimination_bounds` returns `0` to
             // mean "no legal repetition exists and the caller must not offer". A
@@ -8836,6 +8838,18 @@ fn materialize_loop_shortcut_response(
             .iter()
             .map(|point| point.slot.clone())
             .collect::<Vec<_>>();
+        // TRAP REMOVAL, NOT A BUG FIX — recorded so the next reader does not "correct" this
+        // literal into `shortcut_validated_range(..)` and then wonder what changed. This
+        // decoder emits only `Player` and `ByIdentity` pins, both of which resolve
+        // INDEPENDENTLY of `iteration`, so validating at index 0 alone is correct by
+        // construction here: a wider range would re-resolve the same pin to the same value.
+        // It is also strictly weaker than the declare-path firewall rather than a second
+        // hole — `1` is a prefix of any range that path validates. It cannot mint a
+        // `Fixed(0)` either: the count-spec projection's `Fixed` arm hard-codes `min: 1`
+        // beside its `debug_assert!(schema.max_iterations >= 1, ..)` and its clamp.
+        // ⚠ Navigation trap: `shortcut_drive_period`'s doc enumerates its own consumers, and
+        // this site consumes `validate_pins` WITHOUT consuming that helper, so it is
+        // invisible from there.
         if predictability_gate(template, &required).is_err()
             || validate_pins(authoritative_schema, template, 1, authoritative_state).is_err()
         {

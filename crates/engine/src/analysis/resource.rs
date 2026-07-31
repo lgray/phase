@@ -10388,10 +10388,17 @@ mod tests {
             .expect("fixture .json.gz must inflate to UTF-8 JSON");
         let envelope: serde_json::Value =
             serde_json::from_str(&json).expect("dump envelope parses as JSON");
-        let raw: GameState = serde_json::from_value(envelope["gameState"].clone())
-            .expect("the real 4p gameState must deserialize into the current GameState");
-        let state =
-            crate::types::game_state::PersistedGameState::Raw(Box::new(raw)).into_game_state();
+        // Cross the dump through the PRODUCTION decoder rather than a bare `GameState`
+        // decode wrapped in `Raw`: `PersistedGameState`'s own `Deserialize` runs
+        // `reject_legacy_raw_prompt_authority` and `decode_persisted_resolution_state`
+        // first, so this row exercises the chokepoint the server's `from_persisted` and
+        // WASM's `decode_restored_game_state` actually funnel through.
+        // `.expect(..)`, not `?`: `into_game_state` returns `GameState`, not `Result`.
+        let state = serde_json::from_value::<crate::types::game_state::PersistedGameState>(
+            envelope["gameState"].clone(),
+        )
+        .expect("gameState deserializes through the production decoder")
+        .into_game_state();
 
         // ── reach-guards: the X4 subject really is present, in a never-cast-from zone ──
         let spear = state

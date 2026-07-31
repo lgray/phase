@@ -2526,7 +2526,7 @@ fn loop_shortcut_schema_and_materializer_cover_every_decision_point_kind() {
         },
         schema: ShortcutDecisionSchema {
             iteration_count: IterationCount::Fixed(2),
-            // No narrowed CR 732.2a bound — the global cap, as every offer states today.
+            // No narrowed CR 732.2a bound — `Default` carries the global cap.
             max_iterations: ShortcutDecisionSchema::default().max_iterations,
             points: vec![
                 DecisionPoint {
