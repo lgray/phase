@@ -1389,8 +1389,13 @@ fn entry_target_choice_is_pinned(
     if state.pending_trigger_entry == Some(entry.id) {
         return false;
     }
+    // CR 601.2c: a may-only entry (shape (B)) publishes NO target slot, so it is not
+    // target-relieved here — its announcement freedom comes from
+    // `stack_entry_has_no_ordering_input`'s own `targets.is_empty()` arm instead. Requiring
+    // `Some` keeps this predicate strictly narrower than the mint, never coarser.
     crate::game::engine::entry_publishes_pin_slots(state, entry, pins.proposer)
-        .is_some_and(|e| pins.slots.contains(&e.target))
+        .and_then(|e| e.target)
+        .is_some_and(|target| pins.slots.contains(&target))
 }
 
 /// CR 732.2a + CR 603.5: is this entry's RESOLUTION-time `MayPrompt` (gate (6)) fully
@@ -1420,7 +1425,16 @@ fn pinned_may_choice_relief(
     let pins = scope.pinned?;
     let published = crate::game::engine::entry_publishes_pin_slots(state, entry, pins.proposer)?;
     let may = published.may?;
-    if !pins.slots.contains(&may) || !pins.slots.contains(&published.target) {
+    // Strictly the mint's own facts, never coarser (CR 603.5): the `may` slot must be
+    // pinned, and the target slot must be pinned WHEN THERE IS ONE. Shape (B) publishes
+    // `target: None` — an entry that announces no choice has none for a pin to leave
+    // unspecified — so demanding a pinned target there would refuse relief the mint's own
+    // schema fully describes.
+    if !pins.slots.contains(&may)
+        || published
+            .target
+            .is_some_and(|target| !pins.slots.contains(&target))
+    {
         return None;
     }
     let StackEntryKind::TriggeredAbility { ability, .. } = &entry.kind else {
@@ -12209,5 +12223,297 @@ mod tests {
         let mut starved = ProbeBudget::new(0);
         assert!(!starved.try_charge_one());
         assert!(starved.denied());
+    }
+    // ───────────────── 5d U2 — the shape-(B) mint's relief-side rows ─────────────────
+
+    /// A 3-seat board with one battlefield source, shared by the two U2 relief rows.
+    fn u2_relief_board() -> (GameState, ObjectId) {
+        use crate::game::scenario::GameScenario;
+        let mut state = GameScenario::new_n_player(3, 7).build().state().clone();
+        let src = ObjectId(970);
+        let mut obj = crate::game::game_object::GameObject::new(
+            src,
+            crate::types::identifiers::CardId(0),
+            PlayerId(0),
+            "U2 Source".to_string(),
+            crate::types::zones::Zone::Battlefield,
+        );
+        obj.incarnation = 3;
+        state.objects.insert(src, obj);
+        (state, src)
+    }
+
+    /// Shape (B): a proposer-controlled OPTIONAL, NO-TARGET triggered ability.
+    ///
+    /// Shape (B) is reached whenever `build_target_slots` yields ZERO slots. There are two
+    /// routes to that, and the difference matters HERE and not at the mint: an effect whose
+    /// head filter announces nothing (`Draw { target: Controller }`) leaves the residual
+    /// classification choice-FREE, while `TargetChoiceTiming::Resolution` (the Braids
+    /// per-player-upkeep shape the mint rows use) is itself one of the six `MayPrompt`
+    /// reasons — such an entry mints but can never be RELIEVED, so its offer is refused at
+    /// conjunct (6). That is the fail-closed direction, and it is why the relief rows below
+    /// take the announce-nothing route rather than the resolution-timing one.
+    fn u2_shape_b_entry(
+        src: ObjectId,
+        id: u64,
+        effect: crate::types::ability::Effect,
+        mutate: impl FnOnce(&mut crate::types::ability::ResolvedAbility),
+    ) -> StackEntry {
+        let mut ability =
+            crate::types::ability::ResolvedAbility::new(effect, vec![], src, PlayerId(0));
+        ability.optional = true;
+        mutate(&mut ability);
+        StackEntry {
+            id: ObjectId(id),
+            source_id: src,
+            controller: PlayerId(0),
+            kind: StackEntryKind::TriggeredAbility {
+                source_id: src,
+                ability: Box::new(ability),
+                condition: None,
+                trigger_event: None,
+                description: None,
+                source_name: String::new(),
+                subject_match_count: None,
+                die_result: None,
+            },
+        }
+    }
+
+    fn u2_draw_effect() -> crate::types::ability::Effect {
+        crate::types::ability::Effect::Draw {
+            count: crate::types::ability::QuantityExpr::Fixed { value: 1 },
+            target: crate::types::ability::TargetFilter::Controller,
+        }
+    }
+
+    /// The `LoopWindowScope` an offer that published exactly `slots` hands the relief.
+    fn u2_scope(slots: &[DecisionSlot]) -> LoopWindowScope<'_> {
+        LoopWindowScope {
+            phase_invariant: None,
+            sole_driver: None,
+            pinned: Some(PinnedChoices {
+                proposer: PlayerId(0),
+                slots,
+            }),
+            cast_card_ids: None,
+        }
+    }
+
+    /// R6 — **an optional trigger carrying an additional unpublishable axis still refuses,
+    /// and the RELIEF is the layer that refuses it.**
+    ///
+    /// `ability_resolution_choice_freedom` returns `MayPrompt` for six independent reasons and
+    /// the offer publishes a `MayChoice` point for exactly ONE of them (`ability.optional`).
+    /// `pinned_may_choice_relief` therefore re-classifies the ability with `optional` cleared:
+    /// an `unless_pay` (CR 118.12) keeps coming back `MayPrompt` and gets no relief, because
+    /// no published pin specifies it.
+    ///
+    /// **(a′) THE MATCHED POSITIVE (ROUND-42 M15), byte-identical except the axis.** Without
+    /// it this row is a dominated negative: `entry_publishes_pin_slots` returns `None` from
+    /// four conjuncts that all sit ABOVE R6's axis (`entry.controller != proposer`, the
+    /// `TriggeredAbility` let-else, and the `multi_target`/`distribution`/`target_constraints`
+    /// block), so a fixture tripping any of them would refuse for a reason that has nothing to
+    /// do with the residual re-classification. The positive proves the fixture is
+    /// proposer-controlled, is a triggered ability, carries none of those three, and reaches
+    /// the mint — and this row additionally asserts the negative fixture MINTS, so the refusal
+    /// is attributable to the relief and to nothing upstream of it.
+    ///
+    /// SCOPE, so this row is not read as covering the cardinality axis: `unless_pay` and a
+    /// modal header are axes the relief catches. A `repeat_for`-driven multi-prompt ability
+    /// does NOT fail that way — it can re-classify choice-free while the resolution still
+    /// opens N prompts — so it is caught one layer earlier, at the mint, by
+    /// `one_published_may_slot_stands_for_exactly_one_cr_603_5_prompt`.
+    ///
+    /// REVERT-PROBE: make `pinned_may_choice_relief` return the residual without
+    /// re-classifying (drop the `without_may_gate` round-trip and return
+    /// `FreeUnlessReplacements` unconditionally) ⇒ the `unless_pay` arm is relieved ⇒ FLIPS.
+    #[test]
+    fn an_unpublishable_residual_axis_is_refused_by_the_relief_not_by_the_mint() {
+        use crate::game::engine::entry_publishes_pin_slots;
+        use crate::game::resolution_prompt::ResolutionChoiceFreedom;
+
+        let (state, src) = u2_relief_board();
+
+        // ── (a′) matched positive: no residual axis ──
+        let clean = u2_shape_b_entry(src, 980, u2_draw_effect(), |_| {});
+        let published = entry_publishes_pin_slots(&state, &clean, PlayerId(0))
+            .expect("(a′) reach-guard: the clean fixture must reach the mint");
+        let may = published
+            .may
+            .expect("(a′) the clean fixture publishes its CR 603.5 gate");
+        assert!(
+            published.target.is_none(),
+            "(a′) shape (B): no announcement choice, so no target slot"
+        );
+        let slots = vec![may.clone()];
+        let mut budget = ProbeBudget::new(PROBE_BUDGET);
+        assert!(
+            matches!(
+                pinned_may_choice_relief(&state, &clean, u2_scope(&slots), &mut budget),
+                Some(ResolutionChoiceFreedom::FreeUnlessReplacements(_))
+            ),
+            "(a′) with the may pinned and no other axis, the residual classification is \
+             choice-free and the entry is relieved"
+        );
+
+        // ── (a) the negative: one CR 118.12 `unless_pay` axis, nothing else changed ──
+        let gated = u2_shape_b_entry(src, 981, u2_draw_effect(), |ability| {
+            ability.unless_pay = Some(crate::types::ability::UnlessPayModifier {
+                cost: crate::types::ability::AbilityCost::Mana {
+                    cost: crate::types::mana::ManaCost::Cost {
+                        shards: vec![],
+                        generic: 2,
+                    },
+                },
+                payer: crate::types::ability::TargetFilter::Controller,
+            });
+        });
+        let gated_published = entry_publishes_pin_slots(&state, &gated, PlayerId(0))
+            .expect("(a) reach-guard: the MINT still publishes — it does not read `unless_pay`");
+        assert_eq!(
+            gated_published.may.as_ref(),
+            Some(&may),
+            "(a) reach-guard: the same slot is published, so the two arms differ ONLY in the \
+             residual axis and the refusal below cannot come from the mint"
+        );
+        let mut budget = ProbeBudget::new(PROBE_BUDGET);
+        assert!(
+            pinned_may_choice_relief(&state, &gated, u2_scope(&slots), &mut budget).is_none(),
+            "(a) CR 118.12: an `unless_pay` is a SECOND resolution-time choice no published \
+             pin specifies, so the residual re-classification still returns `MayPrompt` and \
+             the entry gets no relief"
+        );
+    }
+
+    /// R31 — **the `may` mint's recipient conjunct may read the board, but it can never move
+    /// a published offer.**
+    ///
+    /// Conjunct (a) calls `optional_prompt_player`, whose sole state-touching callee is
+    /// `targeting::resolve_effect_player_ref`, reaching eleven distinct `GameState` fields
+    /// (`players`, `seat_order`, `format_config`, `objects`, `lki_cache`, `stack`,
+    /// `current_trigger_event`, `last_created_token_ids`, `last_revealed_ids`,
+    /// `last_zone_changed_ids`, `resolution_stack`). Every one of the three branches that
+    /// reach it is gated on an `Effect` that `effect_resolution_choice_freedom` puts in its
+    /// fail-closed grouped arm — so conjunct (6) refuses any offer carrying such an entry.
+    /// The reads happen; they cannot bear on a published result.
+    ///
+    /// NO PRODUCTION DELTA: this row pins an ARGUMENT, which is why it needs a revert-probe
+    /// that edits code rather than deletes a guard.
+    ///
+    /// THREE ARMS, and the first two exist so the third cannot pass vacuously:
+    /// * **(a) the branch is REACHED** — `Effect::PayCost { payer: Controller }` routes
+    ///   through `resolve_effect_player_ref`'s `Controller` arm and returns the proposer ⇒ a
+    ///   `may` slot IS published.
+    /// * **(a′) matched negative, differing in exactly the payer filter** — `payer: Opponent`
+    ///   resolves through `players::is_opponent`/`opponents` to a seat ≠ proposer ⇒ no slot.
+    ///   The pair proves the verdict is decided BY the callee's return value, which is why no
+    ///   function-level inertness is claimed anywhere.
+    /// * **(b) the closure** — the offer is refused anyway, repeated for all three
+    ///   state-reading branches (`PayCost`, `Sacrifice`, `SearchLibrary`) so the arm covers
+    ///   the closure's whole population rather than one member of it.
+    ///
+    /// REVERT-PROBE (symbol-anchored, so it survives file moves): in
+    /// `game/resolution_prompt.rs`, move `Effect::PayCost { .. }` out of
+    /// `effect_resolution_choice_freedom`'s fail-closed grouped arm into a
+    /// `FreeUnlessReplacements(vec![])` arm ⇒ **(b) FLIPS to `true`** for the `PayCost` case
+    /// while (a)/(a′) stay green — proving the closure rests on the scope filter and not on
+    /// the fixture.
+    ///
+    /// The COMPLETENESS arm ("every minted pair is scanned") ships in U3: its probe names
+    /// `touch.announced`, which does not exist until the announcement loop gains its window.
+    #[test]
+    fn the_recipient_conjunct_reads_the_board_but_can_never_move_a_published_offer() {
+        use crate::game::engine::entry_publishes_pin_slots;
+        use crate::types::ability::{AbilityCost, Effect, QuantityExpr, TargetFilter};
+
+        let (state, src) = u2_relief_board();
+        let mana = || AbilityCost::Mana {
+            cost: crate::types::mana::ManaCost::Cost {
+                shards: vec![],
+                generic: 1,
+            },
+        };
+        let pay_cost = |payer: TargetFilter| Effect::PayCost {
+            cost: mana(),
+            scale: None,
+            payer,
+        };
+
+        // ── (a) the state-reading branch is REACHED and returns the proposer ──
+        let reached = u2_shape_b_entry(src, 990, pay_cost(TargetFilter::Controller), |_| {});
+        let StackEntryKind::TriggeredAbility { ability, .. } = &reached.kind else {
+            panic!("the fixture is a triggered ability");
+        };
+        assert_eq!(
+            crate::game::effects::optional_prompt_player(&state, ability),
+            PlayerId(0),
+            "(a) reach-guard: the `PayCost` branch really routes through \
+             `resolve_effect_player_ref`'s `Controller` arm and returns the proposer"
+        );
+        let published = entry_publishes_pin_slots(&state, &reached, PlayerId(0))
+            .expect("(a) the state-reading branch publishes");
+        let may = published
+            .may
+            .expect("(a) a `may` slot IS minted through the state-reading branch");
+
+        // ── (a′) matched negative: exactly the payer filter differs ──
+        let opposed = u2_shape_b_entry(src, 991, pay_cost(TargetFilter::Opponent), |_| {});
+        let StackEntryKind::TriggeredAbility { ability, .. } = &opposed.kind else {
+            panic!("the fixture is a triggered ability");
+        };
+        assert_ne!(
+            crate::game::effects::optional_prompt_player(&state, ability),
+            PlayerId(0),
+            "(a′) reach-guard: the `Opponent` arm resolves to a seat that is NOT the proposer"
+        );
+        assert!(
+            entry_publishes_pin_slots(&state, &opposed, PlayerId(0)).is_none(),
+            "(a′) the mint's verdict is decided by `resolve_effect_player_ref`'s RETURN value, \
+             not by the effect's shape — so the state reads really are result-bearing"
+        );
+
+        // ── (b) the closure: the offer is refused anyway, on all three branches ──
+        let branches: Vec<(&str, Effect)> = vec![
+            ("PayCost", pay_cost(TargetFilter::Controller)),
+            (
+                "Sacrifice",
+                Effect::Sacrifice {
+                    target: TargetFilter::ParentTargetController,
+                    count: QuantityExpr::Fixed { value: 1 },
+                    min_count: 1,
+                },
+            ),
+            (
+                "SearchLibrary",
+                Effect::SearchLibrary {
+                    source_zones: vec![crate::types::zones::Zone::Library],
+                    filter: TargetFilter::Controller,
+                    count: QuantityExpr::Fixed { value: 1 },
+                    reveal: false,
+                    target_player: Some(TargetFilter::ParentTargetController),
+                    selection_constraint: Default::default(),
+                    split: None,
+                },
+            ),
+        ];
+        for (label, effect) in branches {
+            let mut board = state.clone();
+            let entry = u2_shape_b_entry(src, 992, effect, |_| {});
+            // Reach-guard for the ANNOUNCEMENT loop: without this, a `false` below could come
+            // from gate (3) instead of from gate (6) and the closure claim would be vacuous.
+            assert!(
+                stack_entry_has_no_ordering_input(&board, &entry),
+                "{label}: reach-guard — shape (B) announces no choice, so the announcement \
+                 loop must PASS and the refusal below is attributable to gate (6)"
+            );
+            board.stack.push_back(entry);
+            assert!(
+                !stack_choices_are_all_specified(&board, PlayerId(0), std::slice::from_ref(&may)),
+                "{label}: CR 732.2a conjunct (6) refuses the offer — the effect sits in \
+                 `effect_resolution_choice_freedom`'s fail-closed grouped arm, so a `may` \
+                 slot minted through a state-reading branch can never reach a published offer"
+            );
+        }
     }
 }

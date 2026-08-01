@@ -1478,16 +1478,22 @@ fn declares_opponent_player_target(ability: &crate::types::ability::ResolvedAbil
 /// What ONE accepted stack entry publishes: the slot keys, plus the legal set the
 /// ANNOUNCEMENT authority itself built for the target slot.
 pub(crate) struct EntryPinSlots {
-    /// CR 115.2 target choice — `index: 0`.
-    pub(crate) target: crate::analysis::decision_template::DecisionSlot,
-    /// CR 603.5 "may" gate — `index: 1`, `Some` iff `ability.optional`. `DecisionSlot`'s
-    /// sub-index disambiguates two choices of ONE ability instance (target vs. may gate).
+    /// CR 115.2 target choice — `index: 0`. `None` for shape (B), the may-only entry:
+    /// announcing it surfaces NO choice at all (`targets.is_empty()` and zero built slots),
+    /// so there is no CR 601.2c announcement choice for a pin to specify.
+    pub(crate) target: Option<crate::analysis::decision_template::DecisionSlot>,
+    /// CR 603.5 "may" gate — `index: 1`, `Some` only if `ability.optional` — the mint
+    /// additionally refuses on recipient, stored auto-choice and prompt-cardinality grounds
+    /// (see the `may` mint below), so `None` here does NOT imply the ability is mandatory.
+    /// `DecisionSlot`'s sub-index disambiguates two choices of ONE ability instance (target
+    /// vs. may gate).
     pub(crate) may: Option<crate::analysis::decision_template::DecisionSlot>,
     /// The legal set of the ONE announcement slot, taken VERBATIM from
     /// `ability_utils::build_target_slots` — the same authority that decided there is
     /// exactly one mandatory choice. Deriving it a second time from the head effect's
     /// filter would let the two disagree about WHICH choice is being published, which is
     /// the same class of divergence the cardinality conjunct closes about HOW MANY.
+    /// Empty for shape (B), which publishes no target slot to carry a legal set for.
     pub(crate) legal_targets: Vec<crate::types::ability::TargetRef>,
 }
 
@@ -1505,12 +1511,13 @@ pub(crate) struct EntryPinSlots {
 /// (c) `entry.controller == proposer` — CR 732.2a leaves every OTHER player owning their own
 /// choices, so an opponent-controlled entry is never pinnable; the entry is a triggered
 /// ability (a spell / activated ability re-announces from scratch); ANNOUNCING it requires
-/// exactly one mandatory choice OVER PLAYERS, asked of the announcement authority itself
-/// (`ability_utils::build_target_slots`, the function the relief's own
-/// `forced_unique_targeting` rebuilds slots with) rather than of a proxy; its head effect
-/// declares the player-target shape ([`declares_opponent_player_target`]); and its source
-/// object still exists, so the slot can re-bind (CR 400.7 incarnation, fail-closed on
-/// absence).
+/// either exactly one mandatory choice over players whose head effect declares the
+/// player-target shape (shape (A): asked of the announcement authority itself,
+/// `ability_utils::build_target_slots` — the function the relief's own
+/// `forced_unique_targeting` rebuilds slots with — rather than of a proxy, plus
+/// [`declares_opponent_player_target`]), or NO announcement choice at all (shape (B):
+/// `targets.is_empty()` and zero built slots); and its source object still exists, so the
+/// slot can re-bind (CR 400.7 incarnation, fail-closed on absence).
 ///
 /// SCOPE OF THE ANSWER: because the relief is a `continue` at gate (3), the relief
 /// predicate must be no coarser than EVERY fact `stack_entry_has_no_ordering_input`
@@ -1544,8 +1551,18 @@ pub(crate) fn entry_publishes_pin_slots(
     // The fourth fact that function rejects on — `pending_trigger_entry == entry.id`,
     // CR 603.3c mid-construction — is deliberately NOT here: it is a property of the
     // COMPARED STATE, not of the offer's schema, and reading it would break this
-    // enumerator's purity contract (see [`bounded_cycle_pin_slots`]: pure over
-    // `(state.stack, state.objects, proposer)`, never `waiting_for`). It is set exactly
+    // enumerator's PROMPT-state independence (see [`bounded_cycle_pin_slots`]: it never
+    // reads `waiting_for`, nor `pending_trigger_entry`, which is set exactly while a prompt
+    // is up). NOT a claim of purity over a three-field surface: the CR 603.5 recipient
+    // conjunct below resolves a player through `optional_prompt_player` →
+    // `resolve_effect_player_ref`, which reaches ELEVEN distinct `GameState` fields —
+    // `state.players`, `state.seat_order`, `state.format_config`, `state.objects`,
+    // `state.lki_cache`, `state.stack`, `state.current_trigger_event`,
+    // `state.last_created_token_ids`, `state.last_revealed_ids`,
+    // `state.last_zone_changed_ids` and `state.resolution_stack`. The contract is narrower
+    // and exact — the mint is a function of the BOARD, never of the PROMPT — and it is what
+    // keeps the mint's verdict stable across a prompted and an unprompted beat.
+    // It is set exactly
     // while a `TriggerTargetSelection` prompt is up, so a mint that read it would publish
     // nothing on a prompted board — measured on dump B, where it zeroes the emblem slot.
     // It is enforced at the relief instead (`analysis::resource::entry_target_choice_is_pinned`),
@@ -1592,7 +1609,72 @@ pub(crate) fn entry_publishes_pin_slots(
     // function's contract that the schema can only ever UNDER-publish. Purity survives:
     // `build_target_slots` never reads `state.waiting_for` (its only hit in
     // `ability_utils.rs` is a test at `:7722`).
+    let source = object_decision_source(state, entry.source_id)?;
+    // CR 603.5 + CR 732.2a: `entry.controller == proposer` above bounds who OWNS the entry;
+    // it does NOT bound who the resolver ASKS, nor WHETHER it asks, nor HOW MANY TIMES.
+    // Three mint-time conjunct groups, all FAIL-CLOSED pre-filters on the ONE gate a
+    // `MayChoice` pin is for — the CR 603.5 gate inside `resolve_chain_body`
+    // (`effects/mod.rs`, the `if ability.optional && !has_kind_driven_repeat(..)` block).
+    // THIS IS THE ONE PLACE `may` IS MINTED, so the guards cover shape (A) and shape (B)
+    // together rather than being restated per shape. Soundness over the OTHER FOUR
+    // production producers of `WaitingFor::OptionalEffectChoice` is NOT claimed here; it is
+    // discharged at the consumption point, where the instrument is total.
+    //
+    // (a) RECIPIENT. `optional_prompt_player` is THIS gate's own recipient authority —
+    //     five of its branches route to a NON-controller and the last is EFFECT-AGNOSTIC
+    //     (CR 503.1a + CR 608.2d, the Braids / Conjurer Adept `scoped_player` class), so
+    //     asking the same function the gate asks keeps THIS pair from drifting. Without
+    //     it a proposer's pin can be spent as another seat's CR 603.5 choice.
+    // (b) SECOND AUTHORITY. A stored "don't ask again" auto-choice ALREADY ANSWERS this
+    //     may and the gate returns BEFORE setting any prompt, so a pin minted here would
+    //     be silently unused — invisible even to a fail-closed inject arm. The key is
+    //     built exactly as the gate builds it; `player` is `proposer` only because `&&`
+    //     short-circuits left to right and (a) has already proved them equal. Present ⇒
+    //     refuse; `may_trigger_origin: None` ⇒ no key exists ⇒ nothing to refuse.
+    // (c) CARDINALITY. CR 732.2a: the shortcut describes THE sequence of choices, so one
+    //     published slot may stand for exactly ONE CR 603.5 prompt. Production suppresses
+    //     the single up-front gate for three `repeat_for` shapes and re-fires optionality
+    //     PER ITERATION (CR 608.2c + CR 608.2d) instead. `has_kind_driven_repeat` keys on
+    //     `repeat_for` ALONE — no `Effect` restriction — so an optional `PutCounter` /
+    //     `Draw` / `Token` of that shape would otherwise mint ONE slot for N prompts. Ask
+    //     production's own three predicates rather than re-deriving them here, which is
+    //     the same authority-sharing rule (a) follows.
+    let may = (ability.optional
+        && crate::game::effects::optional_prompt_player(state, ability) == proposer
+        && !crate::game::effects::has_kind_driven_repeat(ability)
+        && !crate::game::effects::has_member_driven_repeat_after_hydration(state, ability)
+        && !crate::game::effects::is_repeated_optional_payment(ability)
+        && ability.may_trigger_origin.as_ref().is_none_or(|origin| {
+            state
+                .may_trigger_auto_choice(&crate::types::game_state::MayTriggerAutoChoiceKey {
+                    player: proposer,
+                    source_id: ability.source_id,
+                    origin: origin.clone(),
+                })
+                .is_none()
+        }))
+    .then(|| DecisionSlot {
+        source: source.clone(),
+        index: 1,
+    });
     let mut slots = super::ability_utils::build_target_slots(state, ability).ok()?;
+    // SHAPE (B) — may-only. The announcement authority surfaced NO choice, so there is no
+    // CR 601.2c target for a pin to specify and the entry publishes its CR 603.5 gate
+    // alone. `ability.targets.is_empty()` is what makes "zero built slots" mean "declares
+    // nothing" rather than "declared something the builder declined"; `optional` is
+    // inherited from the `may` expression, which is `None` without it. A `may` the three
+    // conjunct groups above suppressed leaves shape (B) with NO slot at all, so the whole
+    // entry publishes `None` — the fail-closed direction.
+    if slots.is_empty() {
+        if !ability.targets.is_empty() {
+            return None;
+        }
+        return Some(EntryPinSlots {
+            target: None,
+            may: Some(may?),
+            legal_targets: vec![],
+        });
+    }
     if slots.len() != 1 {
         return None;
     }
@@ -1614,15 +1696,11 @@ pub(crate) fn entry_publishes_pin_slots(
     if !declares_opponent_player_target(ability) {
         return None;
     }
-    let source = object_decision_source(state, entry.source_id)?;
+    // Shape (A) — targeted. Index 1 is kept for the may slot in BOTH shapes, so slot
+    // identity is stable across them.
     Some(EntryPinSlots {
-        target: DecisionSlot {
-            source: source.clone(),
-            index: 0,
-        },
-        may: ability
-            .optional
-            .then_some(DecisionSlot { source, index: 1 }),
+        target: Some(DecisionSlot { source, index: 0 }),
+        may,
         legal_targets: slot.legal_targets,
     })
 }
@@ -1689,9 +1767,12 @@ pub fn bounded_cycle_pin_slots(
         let Some(pins) = entry_publishes_pin_slots(state, entry, proposer) else {
             continue;
         };
-        if !points.iter().any(|p| p.slot == pins.target) {
+        // CR 601.2c: a `Targets` point only when the entry actually announces a choice.
+        // Shape (B) publishes `target: None` — announcing it surfaces no target at all —
+        // so a `min_targets: 1` point would over-state the sequence CR 732.2a describes.
+        if let Some(target) = pins.target.filter(|t| !points.iter().any(|p| &p.slot == t)) {
             points.push(DecisionPoint {
-                slot: pins.target,
+                slot: target,
                 kind: DecisionPointKind::Targets {
                     // VERBATIM the slot `ability_utils::build_target_slots` built for this
                     // announcement — not a second derivation. That is what makes WHICH
@@ -1818,6 +1899,19 @@ fn apply_confirmed_shortcut(
         || proposal
             .predicted_winner
             .is_some_and(|winner| !crate::game::players::is_alive(state, winner))
+        // CR 732.2a + CR 603.5: `template.owner` decides WHOSE CR 603.5 choice a pin may
+        // answer (the drive's seat guard in `inject_pinned_answer`). The two live ingresses
+        // bind it at declare; a RESTORED `WaitingFor::RespondToShortcut` is plain serde and
+        // the untrusted-restore scrubber rewrites only the two PRE-CAST waits, so it never
+        // ran that firewall. Re-validate the SAME invariant at the one point every drive
+        // passes through, so the seat guard is meaningful on every ingress and not only the
+        // two live ones. Refusing (rather than forcing `owner = proposer`) keeps the
+        // fail-closed direction every other conjunct at this seam uses: forcing would make a
+        // tampered proposal runnable under a rewritten owner.
+        || proposal
+            .template
+            .as_ref()
+            .is_some_and(|t| t.owner != proposal.proposer)
     {
         priority::reset_priority(state);
         // CR 800.4a: priority passes to the next player in turn order still in the game.
@@ -3842,9 +3936,11 @@ fn handle_declare_shortcut(
     // `shortcut_validated_range` derives the validated range FROM the declared count and so
     // must not be handed an unchecked one — a `Fixed(4_000_000_000)` would otherwise become
     // a four-billion-iteration validation loop. Observation-equivalence of the reorder is
-    // structural: every refusal arm in BOTH blocks lands on the same single authority
-    // (`reject_shortcut_declaration`), and `handle_declare_shortcut` pushes NO events at all,
-    // so no row can observe which block refused first.
+    // structural: all six refusal arms across the three blocks (this match, the CR 732.2a +
+    // CR 603.5 `template.owner` firewall between them, and the pin-validation block) land on
+    // the same single authority (`reject_shortcut_declaration`), and
+    // `handle_declare_shortcut` pushes NO events at all, so no row can observe which block
+    // refused first.
     // IMPLEMENTATION BUDGET BOUND (see MAX_SHORTCUT_CYCLES) — deliberately NOT labelled as a
     // CR 732.2a constraint: the rules place no ceiling on how many times a shortcut may be
     // repeated (CR 732.2a's own example runs to a million), so this ceiling is ours, not the
@@ -3893,6 +3989,26 @@ fn handle_declare_shortcut(
         // proceed to the proposal.
         crate::analysis::decision_template::IterationCount::Fixed(_)
         | crate::analysis::decision_template::IterationCount::UntilLethal => {}
+    }
+    // CR 732.2a + CR 603.5: the declared template's `owner` is CLIENT-SUPPLIED — the
+    // `GameAction::DeclareShortcut { template }` payload arrives here verbatim — and it is
+    // the comparand `inject_pinned_answer` uses to decide WHOSE CR 603.5 choice a pin may
+    // answer. Bind it to the engine-issued seat here, at declare, or that seat guard
+    // compares an attacker-chosen value against itself. `offer.proposer` is engine state,
+    // copied from `WaitingFor::LoopShortcut { proposer }`.
+    //
+    // PLACEMENT IS LOAD-BEARING: this sits OUTSIDE the `!offer.schema.points.is_empty()`
+    // block below, so it is reached for every declaration regardless of schema emptiness —
+    // an empty-schema offer skips `predictability_gate` / `validate_pins` entirely and would
+    // otherwise reach the proposal with an unvalidated owner. It is the SIXTH sibling of the
+    // five refusal arms and lands on their single authority (`reject_shortcut_declaration`),
+    // so no row can observe which refusal fired first — the "sixth reject path added later"
+    // that authority's doc anticipates. Defence in depth for the RESTORE ingress (a persisted
+    // `WaitingFor::RespondToShortcut` never runs this handler) lives on
+    // `apply_confirmed_shortcut`'s consumption guard.
+    if template.as_ref().is_some_and(|t| t.owner != offer.proposer) {
+        reject_shortcut_declaration(state, &mut result);
+        return Ok(result);
     }
     if !offer.schema.points.is_empty() {
         match &template {
@@ -13100,10 +13216,26 @@ mod stage2_injector_tests {
             .expect("reach-guard: the dump carries the emblem's trigger")
             .clone();
         let single = bounded_cycle_pin_slots(&state, P0);
+        // Reach-guard, re-derived from the loaded board rather than from a literal: the
+        // mint qualifies FOUR sources here — the CR 115.2 emblem target (541) plus three
+        // shape-(B) CR 603.5 may-only sources (126, 208, 274). 126 and 208 carry 34 stack
+        // entries apiece, so the shipped board ALREADY exercises the dedupe: without it
+        // this count would be 69, not 4.
         assert_eq!(
             single.len(),
+            4,
+            "reach-guard: the shipped board qualifies exactly four sources"
+        );
+        assert_eq!(
+            single
+                .iter()
+                .filter(|p| matches!(
+                    p.kind,
+                    crate::analysis::decision_template::DecisionPointKind::Targets { .. }
+                ))
+                .count(),
             1,
-            "reach-guard: the shipped board qualifies exactly one source"
+            "reach-guard: exactly one of them is the emblem's TARGETS point"
         );
 
         let mut second = emblem_entry;
@@ -13251,6 +13383,546 @@ mod stage2_injector_tests {
         assert!(
             inject_pinned_answer(&mut other_work, Some(&template(other_src)), 0, &prompt).is_err(),
             "a pin for another source does not answer the emblem's prompt"
+        );
+    }
+
+    // ───────────────────────── 5d U2 — the shape-(B) mint ─────────────────────────
+
+    use crate::types::ability::ResolvedAbility;
+
+    /// A 3-seat board plus one battlefield source object, shared by every U2 mint row so a
+    /// row's verdict cannot come from board differences.
+    fn u2_board() -> (GameState, ObjectId) {
+        let mut state = GameScenario::new_n_player(3, 7).build().state().clone();
+        let src = place(&mut state, 930, crate::types::zones::Zone::Battlefield);
+        (state, src)
+    }
+
+    /// A proposer-controlled OPTIONAL, NO-TARGET triggered ability — shape (B)'s own shape.
+    ///
+    /// `target_choice_timing: Resolution` is what makes it shape (B), and it is the class's
+    /// real rules shape rather than a test convenience: CR 601.2c announces only DECLARED
+    /// targets, so a per-player-upkeep "that player may put a +1/+1 counter on a creature
+    /// they control" (Braids / Conjurer Adept — CR 503.1a + CR 608.2d) chooses its subject
+    /// AT RESOLUTION and surfaces zero announcement slots. Measured on `u2_board`:
+    /// `build_target_slots` returns `Ok(0)` for every fixture below (each row asserts the
+    /// consequence through its own matched positive), so each really reaches the shape-(B)
+    /// arm rather than falling out at an upstream conjunct.
+    fn shape_b(src: ObjectId, effect: crate::types::ability::Effect) -> ResolvedAbility {
+        let mut ability = ResolvedAbility::new(effect, vec![], src, P0);
+        ability.optional = true;
+        ability.target_choice_timing = crate::types::ability::TargetChoiceTiming::Resolution;
+        ability
+    }
+
+    fn shape_b_entry(id: u64, src: ObjectId, ability: ResolvedAbility) -> StackEntry {
+        StackEntry {
+            id: ObjectId(id),
+            source_id: src,
+            controller: P0,
+            kind: StackEntryKind::TriggeredAbility {
+                source_id: src,
+                ability: Box::new(ability),
+                condition: None,
+                trigger_event: None,
+                description: None,
+                source_name: String::new(),
+                subject_match_count: None,
+                die_result: None,
+            },
+        }
+    }
+
+    /// `Effect::PutCounter` on a `ScopedPlayer`-scoped creature filter — inside D4.3's
+    /// six-arm scope filter, and the exact filter shape
+    /// `filter_uses_relative_controller_scoped` keys on.
+    fn scoped_put_counter() -> crate::types::ability::Effect {
+        use crate::types::ability::{
+            ControllerRef, Effect, QuantityExpr, TargetFilter, TypedFilter,
+        };
+        Effect::PutCounter {
+            target: TargetFilter::Typed(TypedFilter {
+                type_filters: vec![crate::types::ability::TypeFilter::Creature],
+                controller: Some(ControllerRef::ScopedPlayer),
+                properties: vec![],
+            }),
+            counter_type: crate::types::counter::CounterType::Plus1Plus1,
+            count: QuantityExpr::Fixed { value: 1 },
+        }
+    }
+
+    /// R23, conjuncts 1–2 — **CR 603.5: the `may` pin binds the prompt's RECIPIENT, not only
+    /// the entry's OWNER.**
+    ///
+    /// Asserted AT THE MINT SEAM, deliberately: an offer-level negative would be satisfied by
+    /// D4.3's scope filter on many boards regardless of this guard (the
+    /// upstream-conjunct-dominates trap). The mint has no such upstream.
+    ///
+    /// `entry.controller == proposer` bounds who OWNS the entry; it does not bound who the
+    /// resolver ASKS. `optional_prompt_player`'s last branch is EFFECT-AGNOSTIC — it fires on
+    /// `ability.scoped_player` plus a `ScopedPlayer`-scoped `target_filter()` (CR 503.1a +
+    /// CR 608.2d, the Braids / Conjurer Adept class) — so an allow-listed `PutCounter` reaches
+    /// it. Without the conjunct, P0's pin would be spendable as P1's CR 603.5 choice.
+    ///
+    /// MATCHED POSITIVE, on the same instrument and differing in exactly `scoped_player`: it
+    /// proves the fixture reaches the mint at all, so the negative is keyed to the recipient
+    /// axis and not to one of the four upstream conjuncts.
+    ///
+    /// REVERT-PROBE: delete `&& effects::optional_prompt_player(state, ability) == proposer`
+    /// from the `may` mint ⇒ the scoped-player entry publishes a `MayChoice` slot ⇒ the
+    /// negative arm FLIPS TO FAIL.
+    #[test]
+    fn a_may_slot_is_minted_only_for_the_seat_the_cr_603_5_gate_will_ask() {
+        let (mut state, src) = u2_board();
+
+        // ── negative: the gate will ask P1, not the proposer ──
+        let mut scoped = shape_b(src, scoped_put_counter());
+        scoped.scoped_player = Some(P1);
+        assert_eq!(
+            crate::game::effects::optional_prompt_player(&state, &scoped),
+            P1,
+            "reach-guard: the recipient authority must really route this entry to the OTHER \
+             seat, or the negative below is about nothing"
+        );
+        let negative = shape_b_entry(940, src, scoped);
+        assert!(
+            entry_publishes_pin_slots(&state, &negative, P0).is_none(),
+            "CR 603.5: a `may` the resolver will ask ANOTHER seat publishes no pin slot"
+        );
+
+        // ── matched positive: byte-identical except `scoped_player` ──
+        let unscoped = shape_b(src, scoped_put_counter());
+        assert_eq!(
+            crate::game::effects::optional_prompt_player(&state, &unscoped),
+            P0,
+            "reach-guard: with no scoped player the gate asks the controller = proposer"
+        );
+        let positive = shape_b_entry(941, src, unscoped);
+        let published = entry_publishes_pin_slots(&state, &positive, P0)
+            .expect("the matched positive must reach the mint and publish");
+        assert!(
+            published.may.is_some(),
+            "the matched positive publishes the CR 603.5 gate"
+        );
+        assert!(
+            published.target.is_none(),
+            "shape (B): announcing it surfaces no CR 601.2c choice, so no target slot"
+        );
+        assert!(
+            published.legal_targets.is_empty(),
+            "no target slot carries no legal set"
+        );
+
+        // The published pair also reaches the point mint as ONE `MayChoice` point.
+        state.stack.push_back(positive);
+        let points = bounded_cycle_pin_slots(&state, P0);
+        assert_eq!(
+            points.len(),
+            1,
+            "shape (B) publishes exactly the may point: {points:?}"
+        );
+        assert_eq!(
+            points[0].kind,
+            crate::analysis::decision_template::DecisionPointKind::MayChoice
+        );
+        assert_eq!(
+            points[0].slot.index, 1,
+            "index 1 is the may slot in BOTH shapes"
+        );
+    }
+
+    /// R23, conjunct 3 — **the PRODUCER census, so a new producer is a COUNTED event.**
+    ///
+    /// The struck form of this conjunct pinned `optional_prompt_player`'s own call-site count,
+    /// which is trivially stable at 2 and moves neither when the guard is deleted nor when an
+    /// unguarded producer is added — this plan's own "verify the seam, not the line" defect,
+    /// committed. What actually bounds the mint conjunct's reach is how many things PRODUCE
+    /// `WaitingFor::OptionalEffectChoice`: the conjunct is a fail-closed pre-filter on ONE of
+    /// them, and soundness over the others is discharged at the consumption point.
+    ///
+    /// The five production producers are named individually, and exactly one of them is inside
+    /// the CR 603.5 gate that consults the recipient authority. If a sixth appears, this row
+    /// fails and whoever added it must decide where its recipient is bound.
+    #[test]
+    fn the_cr_603_5_prompt_census_is_pinned_so_a_sixth_producer_is_a_counted_event() {
+        /// Every `.rs` under the crate's `src`, and the `#[cfg(test)]`-attributed
+        /// column-0 `mod … {` … column-0 `}` spans inside it. A whole file whose stem
+        /// ends `_tests` is test-only (its parent declares it under `#[cfg(test)]`).
+        fn rs_files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+            for entry in std::fs::read_dir(dir).expect("readable source dir") {
+                let path = entry.expect("readable dir entry").path();
+                if path.is_dir() {
+                    rs_files(&path, out);
+                } else if path.extension().is_some_and(|e| e == "rs") {
+                    out.push(path);
+                }
+            }
+        }
+        fn cfg_test_spans(lines: &[&str]) -> Vec<(usize, usize)> {
+            let mut spans = Vec::new();
+            let mut i = 0;
+            while i < lines.len() {
+                if lines[i].trim() == "#[cfg(test)]" {
+                    let mut j = i + 1;
+                    while j < lines.len()
+                        && (lines[j].trim_start().starts_with("#[") || lines[j].trim().is_empty())
+                    {
+                        j += 1;
+                    }
+                    let is_mod = j < lines.len()
+                        && lines[j].starts_with(['m', 'p'])
+                        && lines[j].contains("mod ")
+                        && lines[j].trim_end().ends_with('{');
+                    if is_mod {
+                        let mut k = j + 1;
+                        while k < lines.len() && lines[k] != "}" {
+                            k += 1;
+                        }
+                        spans.push((j, k));
+                        i = k;
+                    }
+                }
+                i += 1;
+            }
+            spans
+        }
+
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut files = Vec::new();
+        rs_files(&root, &mut files);
+        files.sort();
+        assert!(files.len() > 100, "reach-guard: the walker found the crate");
+
+        // The needle is ASSEMBLED so this row's own source cannot be counted by its own
+        // instrument. `..` excludes multi-line READ destructures whose rest-pattern sits on
+        // a later line — the inflation the raw grep suffers from.
+        let needle = format!("WaitingFor::{}Choice {{", "OptionalEffect");
+        let (mut producers, mut readers, mut in_test) = (Vec::new(), Vec::new(), 0usize);
+        for path in &files {
+            let text = std::fs::read_to_string(path).expect("readable source file");
+            let lines: Vec<&str> = text.lines().collect();
+            let spans = cfg_test_spans(&lines);
+            let rel = path
+                .strip_prefix(&root)
+                .expect("under src")
+                .display()
+                .to_string();
+            let test_file = rel.trim_end_matches(".rs").ends_with("_tests");
+            for (n, line) in lines.iter().enumerate() {
+                if !line.contains(&needle) || line.contains("..") {
+                    continue;
+                }
+                if test_file || spans.iter().any(|(a, b)| (*a..=*b).contains(&n)) {
+                    in_test += 1;
+                } else if line.contains("waiting_for = ") || line.contains("Ok(Some(") {
+                    producers.push(format!("{rel}:{}", n + 1));
+                } else {
+                    readers.push(format!("{rel}:{}", n + 1));
+                }
+            }
+        }
+
+        assert_eq!(
+            producers.len() + readers.len() + in_test,
+            34,
+            "CR 603.5 prompt census drifted. A new PRODUCER must have its recipient bound \
+             somewhere — the mint's conjunct (a) covers exactly ONE of them.\n\
+             producers={producers:#?}\nreaders={readers:#?}"
+        );
+        assert_eq!(
+            (producers.len(), readers.len(), in_test),
+            (5, 6, 23),
+            "the partition, not just the total: five PRODUCTION producers, six PRODUCTION \
+             readers (they read `state.waiting_for` and never write it), 23 `#[cfg(test)]` \
+             lines.\nproducers={producers:#?}\nreaders={readers:#?}"
+        );
+        assert_eq!(
+            producers,
+            vec![
+                "game/effects/mod.rs:5896".to_string(),
+                "game/effects/mod.rs:5973".to_string(),
+                "game/effects/mod.rs:8927".to_string(),
+                "game/effects/scoped_library_search.rs:452".to_string(),
+                "game/engine.rs:10155".to_string(),
+            ],
+            "the five production producers, NAMED: the CR 603.5 gate in `resolve_chain_body` \
+             plus the two repeated-optional-payment drivers, the per-player acceptance cursor \
+             in `scoped_library_search`, and `begin_pending_trigger_target_selection`'s \
+             ANNOUNCEMENT-time modal prompt. Four of the five choose `player` WITHOUT \
+             consulting the recipient authority, which is exactly why the mint conjunct is a \
+             fail-closed pre-filter and not a soundness proof"
+        );
+
+        // Exactly ONE of them routes through the recipient authority: the CR 603.5 gate.
+        let effects_src = std::fs::read_to_string(root.join("game/effects/mod.rs"))
+            .expect("readable effects module");
+        let authority = format!("{}_prompt_player", "optional");
+        assert_eq!(
+            effects_src.matches(&authority).count(),
+            2,
+            "one definition + exactly one call — the CR 603.5 gate's `let prompt_player = ..`. \
+             A second call inside `effects/mod.rs` means a second producer started consulting \
+             the authority and this row's partition needs re-deriving"
+        );
+    }
+
+    /// R25 — **a stored `may` auto-choice is a SECOND authority on the same CR 603.5
+    /// question, and the mint must refuse to it.**
+    ///
+    /// Without the conjunct the pin is minted, then the gate consumes the stored choice and
+    /// **returns before setting any prompt** — so `inject_pinned_answer` is never entered and
+    /// the fail-closed `_ => Err(RecastAbort)` arm the design leans on cannot fire on a prompt
+    /// that is never raised. The declared `Take` would be silently replaced by the stored
+    /// `Decline`. `MayTriggerAutoChoiceKey`/`Record` are `Serialize + Deserialize`, so a real
+    /// dump can carry one.
+    ///
+    /// MATCHED POSITIVE, differing ONLY in the seeded record, so no upstream conjunct can
+    /// dominate.
+    ///
+    /// REVERT-PROBE: delete the `ability.may_trigger_origin.as_ref().is_none_or(…is_none())`
+    /// conjunct from the `may` mint ⇒ the seeded entry publishes a `MayChoice` slot ⇒ the
+    /// negative arm FLIPS TO FAIL.
+    #[test]
+    fn a_stored_may_auto_choice_is_a_second_authority_the_mint_refuses_to() {
+        use crate::types::ability::{
+            Effect, QuantityExpr, TargetFilter, TriggerBaseSetInstanceRef,
+            TriggerDefinitionOccurrenceRef, TriggerDefinitionRef,
+        };
+        use crate::types::game_state::{AutoMayChoice, MayTriggerAutoChoiceKey, MayTriggerOrigin};
+        use crate::types::identifiers::ObjectIncarnationRef;
+
+        let (mut state, src) = u2_board();
+        // The production shape: `triggers.rs` mints `Definition { definition_ref }` from the
+        // source's own incarnation plus the printed occurrence — built here identically.
+        let origin = MayTriggerOrigin::Definition {
+            definition_ref: TriggerDefinitionRef {
+                source: ObjectIncarnationRef::of(src, 3),
+                occurrence: TriggerDefinitionOccurrenceRef::Printed {
+                    base_set: TriggerBaseSetInstanceRef::INITIAL,
+                    printed_index: 0,
+                },
+            },
+        };
+        let with_origin = |src: ObjectId| {
+            let mut ability = shape_b(
+                src,
+                Effect::Draw {
+                    count: QuantityExpr::Fixed { value: 1 },
+                    target: TargetFilter::Controller,
+                },
+            );
+            ability.may_trigger_origin = Some(origin.clone());
+            ability
+        };
+
+        // ── matched positive: no stored record ⇒ the gate WILL prompt ⇒ mint publishes ──
+        let entry = shape_b_entry(950, src, with_origin(src));
+        assert!(
+            state.may_trigger_auto_choices.is_empty(),
+            "reach-guard: the positive arm runs with NO stored record"
+        );
+        assert!(
+            entry_publishes_pin_slots(&state, &entry, P0)
+                .expect("the positive arm publishes")
+                .may
+                .is_some(),
+            "with no stored answer the CR 603.5 gate really asks, so the pin is spendable"
+        );
+
+        // ── negative: the SAME board with one record seeded ──
+        state.set_may_trigger_auto_choice(
+            MayTriggerAutoChoiceKey {
+                player: P0,
+                source_id: src,
+                origin: origin.clone(),
+            },
+            AutoMayChoice::Decline,
+        );
+        assert_eq!(
+            state.may_trigger_auto_choice(&MayTriggerAutoChoiceKey {
+                player: P0,
+                source_id: src,
+                origin,
+            }),
+            Some(AutoMayChoice::Decline),
+            "reach-guard: the mint's key must be the key the seed stored, or the negative \
+             passes for the wrong reason"
+        );
+        assert!(
+            entry_publishes_pin_slots(&state, &entry, P0).is_none(),
+            "CR 603.5: a stored auto-choice already answers this may, so a minted pin would \
+             be silently unused — refuse it at the mint. Shape (B) has no other slot, so the \
+             whole entry publishes nothing"
+        );
+    }
+
+    /// R30 — **one published `MayChoice` slot stands for exactly ONE CR 603.5 prompt.**
+    ///
+    /// CR 732.2a requires the shortcut to describe *the* sequence of choices; a schema point
+    /// is a choice SURFACE, so a slot that answers one prompt while the resolution opens N is
+    /// a schema that under-describes its own sequence. Production suppresses the single
+    /// up-front CR 603.5 gate for three `repeat_for` shapes and re-fires optionality PER
+    /// ITERATION (CR 608.2c + CR 608.2d) instead. The mint asks production's own three
+    /// predicates rather than re-deriving them — re-deriving is the drift defect one symbol
+    /// over.
+    ///
+    /// THREE ARMS, one per predicate, each with its matched positive on the same instrument:
+    /// * **(a) kind-driven — the reachable one.** `has_kind_driven_repeat` matches on
+    ///   `repeat_for` and on NOTHING else (no `Effect` restriction), so an allow-listed
+    ///   optional `PutCounter` of that shape reaches it. **(a′)** differs only in
+    ///   `repeat_for: None`.
+    /// * **(b) member-driven — live for an allow-listed effect.** `Effect::Token` with
+    ///   `attach_to: Some(ParentTarget)` (Asinine Antics' shape, named in
+    ///   `effect_parent_ref_slots`' own doc) is inside the allow list and reaches
+    ///   `effect_iterates_over_parent_target`. **(b′)** differs in exactly the predicate's
+    ///   own deciding leaf: `attach_to: Some(LastCreated)` is ALSO a context ref, so the head
+    ///   filter is still `owner`, the shape is still (B) and the `repeat_for` is still
+    ///   `ObjectCount` — only `filter_refs_parent_target` flips. Without (b′) a blanket
+    ///   "refuse every `ObjectCount`" would pass, which is coarser than production and a mint
+    ///   cost.
+    /// * **(c) repeated optional payment — DISCLOSED as not independently reachable.** It
+    ///   requires `Effect::PayCost`, which D4.3's scope filter refuses at conjunct (6), so no
+    ///   certifiable offer carries such an entry. The arm asserts the mint's refusal only and
+    ///   claims NO closed hole; it ships so the mint asks the same three questions production
+    ///   asks.
+    ///
+    /// REVERT-PROBE: delete the three sub-conjuncts from the `may` mint ⇒ (a) and (b) FLIP TO
+    /// FAIL while (a′)/(b′) stay green — the pairs discriminate the conjunct, not the fixture.
+    #[test]
+    fn one_published_may_slot_stands_for_exactly_one_cr_603_5_prompt() {
+        use crate::types::ability::{
+            AbilityCondition, AbilityCost, Effect, PtValue, QuantityExpr, QuantityRef, TargetFilter,
+        };
+
+        let (state, src) = u2_board();
+        let publishes_may = |ability: ResolvedAbility, id: u64| -> bool {
+            let entry = shape_b_entry(id, src, ability);
+            entry_publishes_pin_slots(&state, &entry, P0)
+                .and_then(|p| p.may)
+                .is_some()
+        };
+
+        // ── (a) kind-driven, and (a′) its matched positive ──
+        let kind_driven = || {
+            let mut a = shape_b(src, scoped_put_counter());
+            a.repeat_for = Some(QuantityExpr::Ref {
+                qty: QuantityRef::DistinctCounterKindsAmong {
+                    filter: TargetFilter::Controller,
+                },
+            });
+            a
+        };
+        assert!(
+            crate::game::effects::has_kind_driven_repeat(&kind_driven()),
+            "reach-guard: production's own predicate must say TRUE for arm (a)'s fixture"
+        );
+        assert!(
+            !publishes_may(kind_driven(), 960),
+            "(a) CR 608.2c/608.2d: a `DistinctCounterKindsAmong` repeat fires ONE prompt PER \
+             ITERATION, so a single slot would under-describe the CR 732.2a sequence"
+        );
+        let mut kind_positive = kind_driven();
+        kind_positive.repeat_for = None;
+        assert!(
+            publishes_may(kind_positive, 961),
+            "(a′) byte-identical except `repeat_for: None` ⇒ published, so (a) keys on the \
+             repeat axis and not on `optional`, the recipient or the auto-choice conjunct"
+        );
+
+        // ── (b) member-driven, and (b′) the one-leaf matched positive ──
+        let token_attached = |attach: TargetFilter| {
+            let mut a = shape_b(
+                src,
+                Effect::Token {
+                    name: "Cursed Role".to_string(),
+                    power: PtValue::Fixed(1),
+                    toughness: PtValue::Fixed(1),
+                    types: vec!["Enchantment".to_string()],
+                    colors: vec![],
+                    keywords: vec![],
+                    tapped: false,
+                    count: QuantityExpr::Fixed { value: 1 },
+                    owner: TargetFilter::Controller,
+                    attach_to: Some(attach),
+                    enters_attacking: false,
+                    supertypes: vec![],
+                    static_abilities: vec![],
+                    enter_with_counters: vec![],
+                },
+            );
+            a.repeat_for = Some(QuantityExpr::Ref {
+                qty: QuantityRef::ObjectCount {
+                    filter: TargetFilter::Controller,
+                },
+            });
+            a
+        };
+        assert!(
+            crate::game::effects::has_member_driven_repeat_after_hydration(
+                &state,
+                &token_attached(TargetFilter::ParentTarget)
+            ),
+            "reach-guard: the `ParentTarget` fixture must really reach \
+             `effect_iterates_over_parent_target`"
+        );
+        assert!(
+            !publishes_may(token_attached(TargetFilter::ParentTarget), 962),
+            "(b) CR 608.2c/608.2d: an `ObjectCount` repeat over a parent-target ref fires one \
+             prompt per iterated member"
+        );
+        assert!(
+            !crate::game::effects::has_member_driven_repeat_after_hydration(
+                &state,
+                &token_attached(TargetFilter::LastCreated)
+            ),
+            "reach-guard: `LastCreated` is also a context ref, so (b′) differs from (b) in \
+             the predicate's own deciding leaf and in nothing else"
+        );
+        assert!(
+            publishes_may(token_attached(TargetFilter::LastCreated), 963),
+            "(b′) a blanket `refuse every ObjectCount` would be coarser than production and \
+             would fail here"
+        );
+
+        // ── (c) repeated optional payment — refusal asserted, reach DISCLOSED as closed ──
+        let repeated_payment = || {
+            let mut a = shape_b(
+                src,
+                Effect::PayCost {
+                    cost: AbilityCost::Mana {
+                        cost: crate::types::mana::ManaCost::Cost {
+                            shards: vec![],
+                            generic: 1,
+                        },
+                    },
+                    scale: None,
+                    payer: TargetFilter::Controller,
+                },
+            );
+            a.repeat_for = Some(QuantityExpr::Fixed { value: 2 });
+            let mut sub = ResolvedAbility::new(
+                Effect::Draw {
+                    count: QuantityExpr::Fixed { value: 1 },
+                    target: TargetFilter::Controller,
+                },
+                vec![],
+                src,
+                P0,
+            );
+            sub.condition = Some(AbilityCondition::WhenYouDo);
+            a.sub_ability = Some(Box::new(sub));
+            a
+        };
+        assert!(
+            crate::game::effects::is_repeated_optional_payment(&repeated_payment()),
+            "reach-guard: production's own predicate must say TRUE for arm (c)'s fixture"
+        );
+        assert!(
+            !publishes_may(repeated_payment(), 964),
+            "(c) CR 603.12a: the payment process offers its `may` PER iteration. This arm \
+             asserts the mint's refusal only — `Effect::PayCost` is outside D4.3's six-arm \
+             allow list, so no certifiable offer carries such an entry and NO closed hole is \
+             claimed here"
         );
     }
 }

@@ -5658,7 +5658,7 @@ fn rebind_first_object_target(
 /// see the card's official ruling), so the up-front single-gate at the top of
 /// `resolve_chain_body` is suppressed for this shape and optionality is fired
 /// per-iteration inside the `repeat_for` loop instead.
-fn has_kind_driven_repeat(ability: &ResolvedAbility) -> bool {
+pub(crate) fn has_kind_driven_repeat(ability: &ResolvedAbility) -> bool {
     matches!(
         ability.repeat_for,
         Some(QuantityExpr::Ref {
@@ -5681,7 +5681,10 @@ fn has_member_driven_repeat(ability: &ResolvedAbility) -> bool {
     ) && effect_iterates_over_parent_target(&ability.effect)
 }
 
-fn has_member_driven_repeat_after_hydration(state: &GameState, ability: &ResolvedAbility) -> bool {
+pub(crate) fn has_member_driven_repeat_after_hydration(
+    state: &GameState,
+    ability: &ResolvedAbility,
+) -> bool {
     has_member_driven_repeat(&ability_with_event_context_targets(state, ability))
 }
 
@@ -5823,7 +5826,7 @@ fn optional_effect_is_infeasible(state: &GameState, ability: &ResolvedAbility) -
 /// continuation. Any repeated-optional ability whose cost pauses falls through to
 /// the generic `repeat_for` path and stays honestly unimplemented (no false
 /// green) until the driver gains pause-resume plumbing.
-fn is_repeated_optional_payment(ability: &ResolvedAbility) -> bool {
+pub(crate) fn is_repeated_optional_payment(ability: &ResolvedAbility) -> bool {
     ability.optional
         && is_synchronous_mana_pay_cost(&ability.effect)
         && matches!(ability.repeat_for, Some(QuantityExpr::Fixed { .. }))
@@ -6390,7 +6393,7 @@ pub(crate) fn resolve_player_for_context_ref(
 /// acting subject (the target permanent's controller). This mirrors the
 /// `resolve_library_owner` logic in `search_library.rs` but applies generally
 /// to any optional effect whose embedded player-scope target is a context-ref.
-fn optional_prompt_player(state: &GameState, ability: &ResolvedAbility) -> PlayerId {
+pub(crate) fn optional_prompt_player(state: &GameState, ability: &ResolvedAbility) -> PlayerId {
     if let Effect::PayCost { payer, .. } = &ability.effect {
         if let Some(player) =
             crate::game::targeting::resolve_effect_player_ref(state, ability, payer)

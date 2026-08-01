@@ -5736,13 +5736,20 @@ fn bounded_cycle_pin_slots_enumerates_the_emblem_slot() {
         state.waiting_for
     );
     let with_prompt = bounded_cycle_pin_slots(&state, P0);
+    // The CR 115.2 TARGETS half — this row's subject. Filtered rather than counted whole
+    // because the mint also admits shape (B) (may-only, no announcement choice), whose
+    // points are asserted separately below; before shape (B) existed the two coincided.
+    let targets: Vec<_> = with_prompt
+        .iter()
+        .filter(|p| matches!(p.kind, DecisionPointKind::Targets { .. }))
+        .collect();
     assert_eq!(
-        with_prompt.len(),
+        targets.len(),
         emblem_entries,
-        "one point per qualifying SOURCE; on this board that count coincides with the \
-         emblem's single entry, which is asserted above rather than assumed"
+        "one TARGETS point per qualifying SOURCE; on this board that count coincides with \
+         the emblem's single entry, which is asserted above rather than assumed"
     );
-    for point in &with_prompt {
+    for point in &targets {
         assert_eq!(
             point.slot, expected_slot,
             "the slot names the CR 114.2 command-zone emblem at its CR 400.7 incarnation"
@@ -5757,6 +5764,32 @@ fn bounded_cycle_pin_slots_enumerates_the_emblem_slot() {
             },
             "the legal set is `find_legal_targets`' native output (CR 115.2), not a \
              declaration echo"
+        );
+    }
+    // ── the shape-(B) half, measured on the SAME board rather than asserted elsewhere ──
+    // CR 603.5: three P0-controlled optional no-target triggers (sources 126, 208, 274)
+    // publish a `MayChoice` gate each. 126 and 208 carry 34 stack entries apiece here, so
+    // this count is ALSO the per-source dedupe on a real board: without it the shipped
+    // dump would publish 69 may points, not 3.
+    let may_sources: Vec<_> = with_prompt
+        .iter()
+        .filter(|p| p.kind == DecisionPointKind::MayChoice)
+        .map(|p| match &p.slot.source {
+            YieldTarget::ThisObject { source_id, .. } => *source_id,
+            other => panic!("a mint slot names an object source; got {other:?}"),
+        })
+        .collect();
+    assert_eq!(
+        may_sources,
+        vec![ObjectId(126), ObjectId(208), ObjectId(274)],
+        "CR 603.5: the may-only (shape (B)) sources this board publishes, deduped per \
+         SOURCE across their 34/34/1 stack entries"
+    );
+    for src in [ObjectId(126), ObjectId(208)] {
+        assert!(
+            state.stack.iter().filter(|e| e.source_id == src).count() > 1,
+            "reach-guard: {src:?} must carry MORE than one entry, or the dedupe assertion \
+             above is vacuous"
         );
     }
 
@@ -10175,4 +10208,332 @@ fn a_recorded_loop_detect_sample_keeps_a_live_half_normalization_would_have_eras
          (a2)/(a3)/(b)/(c) — every one of which asserts that a period-touch consumer reads the \
          un-normalized half — would be satisfiable by a build in which the split does not exist"
     );
+}
+
+// ─────────── 5d U2 / R28 — the declared template's `owner` is ENGINE-BOUND ───────────
+
+/// The engine-issued offer's own point set, hand-assembled to match `r5_pin_template`'s slot.
+///
+/// The R5 board's live offer publishes an EMPTY schema (`r5_reach_offer` asserts it), so a
+/// NON-empty-schema declaration has to be staged. This is the tree's own idiom for staging a
+/// `LoopShortcut` wait; `offer.proposer` — the firewall's engine-issued comparand — still comes
+/// from `WaitingFor::LoopShortcut`, which is what the row is about.
+fn r28_nonempty_schema_offer(runner: &mut GameRunner, bond: ObjectId) {
+    let WaitingFor::LoopShortcut {
+        proposer,
+        predicted_winner,
+        certificate,
+        schema,
+    } = runner.state().waiting_for.clone()
+    else {
+        panic!("staged from the live offer, never from thin air");
+    };
+    let slot = DecisionSlot {
+        source: YieldTarget::ThisObject {
+            source_id: bond,
+            incarnation: None,
+            trigger_description: None,
+        },
+        index: 0,
+    };
+    runner.state_mut().waiting_for = WaitingFor::LoopShortcut {
+        proposer,
+        predicted_winner,
+        certificate,
+        schema: ShortcutDecisionSchema {
+            points: vec![DecisionPoint {
+                slot,
+                kind: DecisionPointKind::Targets {
+                    legal_targets: vec![
+                        TargetRef::Player(P1),
+                        TargetRef::Player(P2),
+                        TargetRef::Player(P3),
+                    ],
+                    min_targets: 1,
+                    max_targets: 1,
+                    ordered: false,
+                },
+            }],
+            ..schema
+        },
+    };
+}
+
+/// R28 arms (a)/(a′) — **CR 732.2a + CR 603.5: a declaration whose `template.owner` names
+/// another seat is refused AT DECLARE.**
+///
+/// `template.owner` arrives VERBATIM from the client (`GameAction::DeclareShortcut { template }`
+/// is forwarded whole) and it is the comparand the drive's seat guard uses to decide whose
+/// CR 603.5 choice a pin may answer. Without a declare-time binding to the engine-issued
+/// `LoopShortcutOffer.proposer`, that guard compares an attacker-chosen value against itself:
+/// a declaration carrying `owner: <other seat>` satisfies `*player != template.owner` exactly
+/// when the prompt's recipient IS that other seat, and the proposer's pinned value is
+/// dispatched as the other seat's `GameAction::DecideOptionalEffect`.
+///
+/// **(a′) is the reach-guard**: the byte-identical declaration with `owner = P0` builds the
+/// proposal and opens APNAP, proving the fixture reaches the firewall and that (a) is keyed to
+/// the `owner` axis rather than to `predictability_gate` / `validate_pins` / the count cap.
+///
+/// REVERT-PROBE: delete `if template.as_ref().is_some_and(|t| t.owner != offer.proposer) { .. }`
+/// from `handle_declare_shortcut` ⇒ the wrong-owner declaration is accepted, a proposal is
+/// built, APNAP opens ⇒ **(a) FLIPS TO FAIL** while (a′) stays green.
+#[test]
+fn r28_a_declared_template_owning_another_seat_is_refused_at_declare() {
+    for hostile in [false, true] {
+        let (mut runner, bond, _hexproof, _lives) = r5_reach_offer();
+        r28_nonempty_schema_offer(&mut runner, bond);
+        let WaitingFor::LoopShortcut { schema, .. } = runner.state().waiting_for.clone() else {
+            panic!("staged offer");
+        };
+        assert_eq!(
+            schema.points.len(),
+            1,
+            "reach-guard: this arm runs on a NON-empty schema, so `predictability_gate` and \
+             `validate_pins` really run and (a′) proves they PASS"
+        );
+
+        let mut template = r5_pin_template(bond, P1, 1);
+        if hostile {
+            template.owner = P1;
+        }
+        assert_eq!(
+            template.owner,
+            if hostile { P1 } else { P0 },
+            "the two arms differ in exactly one field"
+        );
+        let before = runner.state().clone();
+        let result = runner
+            .act(GameAction::DeclareShortcut {
+                count: IterationCount::Fixed(1),
+                template: Some(template),
+            })
+            .expect("the declaration is dispatched either way — refusal is a HANDBACK");
+
+        if hostile {
+            // (a) refused into the manual handback.
+            assert!(
+                matches!(runner.state().waiting_for, WaitingFor::Priority { .. }),
+                "(a) CR 800.4a: a wrong-`owner` declaration hands priority back, got {:?}",
+                runner.state().waiting_for
+            );
+            assert!(
+                !matches!(
+                    runner.state().waiting_for,
+                    WaitingFor::RespondToShortcut { .. }
+                ),
+                "(a) no `ShortcutProposal` may be built"
+            );
+            assert!(
+                result.events.is_empty(),
+                "(a) `handle_declare_shortcut` pushes NO events at all, so this is an exact \
+                 assertion rather than a wildcard: {:?}",
+                result.events
+            );
+            assert_eq!(
+                before.players.iter().map(|p| p.life).collect::<Vec<_>>(),
+                runner
+                    .state()
+                    .players
+                    .iter()
+                    .map(|p| p.life)
+                    .collect::<Vec<_>>(),
+                "(a) nothing was driven"
+            );
+        } else {
+            // (a′) the matched positive: the proposal IS built and APNAP opens.
+            let WaitingFor::RespondToShortcut { proposal, .. } = &runner.state().waiting_for else {
+                panic!(
+                    "(a′) the honest declaration must open APNAP, got {:?}",
+                    runner.state().waiting_for
+                );
+            };
+            assert_eq!(
+                proposal.template.as_ref().map(|t| t.owner),
+                Some(P0),
+                "(a′) the proposal carries the engine-bound owner"
+            );
+        }
+    }
+}
+
+/// R28 arm (a″) — **the firewall's PLACEMENT, which no other arm can see.**
+///
+/// The firewall sits OUTSIDE `if !offer.schema.points.is_empty()`. On an EMPTY-schema offer
+/// that block is skipped entirely, so a `Some(template)` declaration would otherwise reach the
+/// proposal without passing any template validation at all — `predictability_gate` and
+/// `validate_pins` both live inside it. Arms (a)/(a′) run on a non-empty schema and therefore
+/// pass whether the firewall is inside the block or outside it.
+///
+/// The R5 offer's schema is empty (asserted by `r5_reach_offer`), so this arm reaches exactly
+/// that path.
+///
+/// REVERT-PROBE: move the firewall INSIDE the `!offer.schema.points.is_empty()` block ⇒ the
+/// wrong-owner declaration is accepted here ⇒ **(a″) FLIPS TO FAIL** while (a)/(a′) stay green.
+#[test]
+fn r28_a_the_owner_firewall_is_reached_on_an_empty_schema_offer_too() {
+    // matched positive first: the empty-schema path DOES accept an honest declaration.
+    let (mut runner, bond, _h, _l) = r5_reach_offer();
+    runner
+        .act(GameAction::DeclareShortcut {
+            count: IterationCount::Fixed(1),
+            template: Some(r5_pin_template(bond, P1, 1)),
+        })
+        .expect("declare");
+    assert!(
+        matches!(
+            runner.state().waiting_for,
+            WaitingFor::RespondToShortcut { .. }
+        ),
+        "(a″) reach-guard: an EMPTY-schema offer accepts an owner-correct declaration, so the \
+         refusal below is the firewall and not the empty-schema path refusing everything"
+    );
+
+    let (mut runner, bond, _h, _l) = r5_reach_offer();
+    let mut template = r5_pin_template(bond, P1, 1);
+    template.owner = P1;
+    let result = runner
+        .act(GameAction::DeclareShortcut {
+            count: IterationCount::Fixed(1),
+            template: Some(template),
+        })
+        .expect("dispatched");
+    assert!(
+        matches!(runner.state().waiting_for, WaitingFor::Priority { .. }),
+        "(a″) the firewall runs BEFORE the `!points.is_empty()` guard, so an empty-schema \
+         offer is covered too, got {:?}",
+        runner.state().waiting_for
+    );
+    assert!(result.events.is_empty(), "(a″) no events on the handback");
+}
+
+/// R28 arms (c)/(c′)/(c″) — **the RESTORE ingress, the only one the declare firewall cannot
+/// see, closed at the single consumption chokepoint.**
+///
+/// `ShortcutProposal` is plainly serialized inside `GameState.waiting_for`, and the
+/// untrusted-restore scrubber rewrites only the two PRE-CAST waits — so a persisted
+/// `WaitingFor::RespondToShortcut` decodes with its template intact, having never run
+/// `handle_declare_shortcut`. `apply_confirmed_shortcut` is the sole route into both drives,
+/// which is why the re-validation conjunct joins ITS existing fail-closed guard.
+///
+/// Driven over BOTH trust branches, because `Deserialize for PersistedGameState` dispatches on
+/// the presence of a top-level `"state"` key and only the RAW arm runs the scrubber. Asserting
+/// one branch would leave the other untested — and (c″) below shows they really are different
+/// code paths rather than one path asserted twice.
+///
+/// * **(c)** `t.owner = P1` on a `proposal.proposer = P0` proposal ⇒ Accept is refused into the
+///   manual handback: priority to a living seat, ZERO cycles committed, no `GameOver`.
+/// * **(c′)** MATCHED POSITIVE, byte-identical except that one field ⇒ the drive runs and
+///   commits. This is the reach-guard proving the fixture reaches `apply_confirmed_shortcut` at
+///   all, and that (c) is keyed to the `owner` axis rather than to `is_alive`, the count cap or
+///   the conformance check.
+/// * **(c″-Raw)** the scrubber RUNS on this branch and leaves the wait untouched — which is the
+///   mechanism that makes (c) necessary. **(c″-Trusted)** is a DIFFERENT claim: the scrubber is
+///   not on that path at all, so the arm asserts survival across the trusted envelope and
+///   claims nothing about the scrubber.
+///
+/// REVERT-PROBE: delete the `|| proposal.template.as_ref().is_some_and(|t| t.owner !=
+/// proposal.proposer)` conjunct from `apply_confirmed_shortcut`'s guard ⇒ the round-tripped
+/// wrong-owner proposal drives and commits ⇒ **(c) FLIPS TO FAIL** on both branches, while
+/// (c′) stays green (it never depended on the conjunct).
+#[test]
+fn r28_c_a_restored_proposal_with_a_foreign_template_owner_is_refused_at_consumption() {
+    for hostile in [false, true] {
+        for trusted in [false, true] {
+            let label = format!("hostile={hostile} trusted={trusted}");
+            let (mut runner, bond, _h, lives) = r5_reach_offer();
+            runner
+                .act(GameAction::DeclareShortcut {
+                    count: IterationCount::Fixed(1),
+                    template: Some(r5_pin_template(bond, P1, 1)),
+                })
+                .expect("declare opens APNAP");
+
+            // Tamper the persisted wait exactly as a hand-edited dump would, THEN round-trip.
+            // The declare firewall has already run and passed on the honest value, so nothing
+            // below can be attributed to it.
+            let WaitingFor::RespondToShortcut { proposal, .. } =
+                &mut runner.state_mut().waiting_for
+            else {
+                panic!("{label}: APNAP must be open");
+            };
+            let expected_owner = if hostile { P1 } else { P0 };
+            proposal
+                .template
+                .as_mut()
+                .expect("the declared template rode into the proposal")
+                .owner = expected_owner;
+            // MEASURED CONSTRAINT ON THIS INGRESS, applied to BOTH arms so they stay
+            // byte-identical except `owner`: `ShortcutProposal.per_cycle` carries a
+            // `PlayerId`-keyed resource map, and `PlayerId` cannot deserialize from a JSON
+            // object KEY — so a persisted `RespondToShortcut` whose proposal carries a
+            // per-cycle signature fails to decode with `invalid type: string "0", expected
+            // u8`. That is a pre-existing serde asymmetry this change does not touch; its
+            // consequence here is that ingress I3 is reachable only for `per_cycle: None`
+            // proposals, which is exactly the shipped `Some(template)` population. The guard
+            // under test does not read `per_cycle`, so nulling it costs the row nothing.
+            proposal.per_cycle = None;
+
+            let raw = serde_json::to_value(runner.state()).expect("state serializes");
+            let payload = if trusted {
+                serde_json::json!({ "state": raw })
+            } else {
+                raw
+            };
+            let restored: GameState =
+                serde_json::from_value::<engine::types::game_state::PersistedGameState>(payload)
+                    .expect("decodes through the production boundary")
+                    .into_game_state();
+
+            // (c″) — the wait and its tampered owner SURVIVE the decode. On the Raw branch the
+            // scrubber ran and left it alone (its `semantic_owner` match names only the two
+            // pre-cast waits); on the Trusted branch the scrubber is not on the path at all.
+            let WaitingFor::RespondToShortcut { proposal, .. } = &restored.waiting_for else {
+                panic!(
+                    "{label}: (c\u{2033}) the restore must NOT drop the wait — otherwise (c) \
+                     would pass by a different mechanism entirely; got {:?}",
+                    restored.waiting_for
+                );
+            };
+            assert_eq!(
+                proposal.template.as_ref().map(|t| t.owner),
+                Some(expected_owner),
+                "{label}: (c\u{2033}) the tampered owner reaches `apply_confirmed_shortcut` \
+                 unchanged"
+            );
+            assert_eq!(
+                proposal.proposer, P0,
+                "{label}: the proposer is engine state"
+            );
+
+            let mut restored_runner = GameRunner::from_state(restored);
+            accept_all_opponents(&mut restored_runner);
+
+            let after: Vec<i32> = restored_runner
+                .state()
+                .players
+                .iter()
+                .map(|p| p.life)
+                .collect();
+            if hostile {
+                assert!(
+                    matches!(
+                        restored_runner.state().waiting_for,
+                        WaitingFor::Priority { .. }
+                    ),
+                    "{label}: (c) CR 800.4a manual handback, got {:?}",
+                    restored_runner.state().waiting_for
+                );
+                assert_eq!(
+                    after, lives,
+                    "{label}: (c) ZERO cycles committed — the board is byte-equal on life"
+                );
+            } else {
+                assert_ne!(
+                    after, lives,
+                    "{label}: (c\u{2032}) the honest proposal DRIVES — without this the \
+                     hostile arm's `no delta` assertion is vacuous"
+                );
+            }
+        }
+    }
 }
