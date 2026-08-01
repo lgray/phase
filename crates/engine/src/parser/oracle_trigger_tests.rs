@@ -25991,7 +25991,7 @@ fn smart_ass_they_may_reveal_hand_binds_to_defending_player() {
 /// Sibling case for `smart_ass_they_may_reveal_hand_binds_to_defending_player`:
 /// a "they may" pronoun under a DIFFERENT relative-player scope
 /// (`ControllerRef::TargetPlayer`, stamped by a "deals combat damage to a
-/// player" condition — CR 120.3) must still resolve to `TriggeringPlayer`
+/// player" condition — CR 120.1) must still resolve to `TriggeringPlayer`
 /// (the damaged player), not fall into the new `DefendingPlayer` arm. Guards
 /// the scope routing in `resolve_they_pronoun`: the two `if` checks read the
 /// same `Option<ControllerRef>` field and are mutually exclusive by

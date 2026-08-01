@@ -2867,6 +2867,19 @@ struct LoopShortcutOffer<'a> {
     schema: &'a crate::analysis::decision_template::ShortcutDecisionSchema,
 }
 
+/// CR 732.2a (MagicCompRules.txt:6372) + CR 800.4a (MagicCompRules.txt:6408): reject a
+/// shortcut declaration and hand priority back to the next living seat — the manual-play
+/// handback every reject path in `handle_declare_shortcut` lands on. Single
+/// authority: a sixth reject path added later cannot forget to sync
+/// `result.waiting_for`.
+fn reject_shortcut_declaration(state: &mut GameState, result: &mut ActionResult) {
+    priority::reset_priority(state);
+    state.waiting_for = WaitingFor::Priority {
+        player: living_priority_seat(state),
+    };
+    result.waiting_for = state.waiting_for.clone();
+}
+
 /// CR 732.2a: the proposer declared the loop shortcut. Build the public proposal and open
 /// the APNAP accept-or-shorten window over the proposer's living opponents (turn order). No
 /// opponents (solitaire / all eliminated) ⇒ take the shortcut immediately.
@@ -2911,12 +2924,7 @@ fn handle_declare_shortcut(
                     )
                     .is_err()
                 {
-                    priority::reset_priority(state);
-                    // CR 800.4a: hand priority to the next living seat.
-                    state.waiting_for = WaitingFor::Priority {
-                        player: living_priority_seat(state),
-                    };
-                    result.waiting_for = state.waiting_for.clone();
+                    reject_shortcut_declaration(state, &mut result);
                     return Ok(result);
                 }
             }
@@ -2930,12 +2938,7 @@ fn handle_declare_shortcut(
             // handback the validation failure above uses. Both conjuncts are required: keying
             // on `template.is_none()` alone breaks the shipped object-growth declarations.
             None if state.last_loop_action_sequence.is_empty() => {
-                priority::reset_priority(state);
-                // CR 800.4a: hand priority to the next living seat.
-                state.waiting_for = WaitingFor::Priority {
-                    player: living_priority_seat(state),
-                };
-                result.waiting_for = state.waiting_for.clone();
+                reject_shortcut_declaration(state, &mut result);
                 return Ok(result);
             }
             None => {}
@@ -2957,12 +2960,7 @@ fn handle_declare_shortcut(
         crate::analysis::decision_template::IterationCount::Fixed(n)
             if *n > MAX_SHORTCUT_CYCLES =>
         {
-            priority::reset_priority(state);
-            // CR 800.4a: hand priority to the next living seat.
-            state.waiting_for = WaitingFor::Priority {
-                player: living_priority_seat(state),
-            };
-            result.waiting_for = state.waiting_for.clone();
+            reject_shortcut_declaration(state, &mut result);
             return Ok(result);
         }
         // CR 732.2a: the per-offer CR 704 bound, enforced at the same single authority as the
@@ -2972,12 +2970,7 @@ fn handle_declare_shortcut(
         crate::analysis::decision_template::IterationCount::Fixed(n)
             if *n > offer.schema.max_iterations =>
         {
-            priority::reset_priority(state);
-            // CR 800.4a: hand priority to the next living seat.
-            state.waiting_for = WaitingFor::Priority {
-                player: living_priority_seat(state),
-            };
-            result.waiting_for = state.waiting_for.clone();
+            reject_shortcut_declaration(state, &mut result);
             return Ok(result);
         }
         // CR 732.2a: `UntilLethal` names no count at all, so it can only be legal when the
@@ -2987,12 +2980,7 @@ fn handle_declare_shortcut(
         crate::analysis::decision_template::IterationCount::UntilLethal
             if offer.schema.max_iterations < MAX_SHORTCUT_CYCLES =>
         {
-            priority::reset_priority(state);
-            // CR 800.4a: hand priority to the next living seat.
-            state.waiting_for = WaitingFor::Priority {
-                player: living_priority_seat(state),
-            };
-            result.waiting_for = state.waiting_for.clone();
+            reject_shortcut_declaration(state, &mut result);
             return Ok(result);
         }
         // Under-cap `Fixed` and `UntilLethal` (period-bounded by `shortcut_drive_period`)

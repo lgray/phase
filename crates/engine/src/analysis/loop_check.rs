@@ -633,7 +633,7 @@ mod tests {
     // The CR 704.3 partition `winner_life_never_dips` rests on — `Priority` DISJOINT from
     // the retained class, over both priority seats — is asserted by
     // `types::game_state::forced_cascade_window_tests::forced_cascade_window_class`, which
-    // covers it strictly more completely (six members and six non-members, including both
+    // covers it strictly more completely (thirteen members and eight non-members, including both
     // `Priority` seats). A second weaker row here would only be a place for the two to
     // drift apart.
 

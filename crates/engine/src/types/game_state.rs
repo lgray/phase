@@ -11098,7 +11098,7 @@ impl WaitingFor {
         self.has_pending_cast() && !matches!(self, WaitingFor::ManaSourceSelection { .. })
     }
 
-    /// CR 603.3b / CR 603.3d / CR 603.5 + CR 608.2 / CR 903.9a / CR 704.5j / CR 310.10 /
+    /// CR 603.3b / CR 603.3d / CR 603.5 + CR 608.2d / CR 903.9a / CR 704.5j / CR 310.10 /
     /// CR 703.1 + CR 117.3a + CR 704.3: the windows the ENGINE forces open before the
     /// next grant of priority. Two sources feed the class — the windows that open
     /// between (or during) a resolution and the next priority, and the turn-based
@@ -11123,7 +11123,7 @@ impl WaitingFor {
     ///   forced part of putting them on the stack (the pre-existing exemption).
     /// * [`WaitingFor::TriggerTargetSelection`] — CR 603.3d, target choice is part of
     ///   that same pre-priority step.
-    /// * [`WaitingFor::OptionalEffectChoice`] — CR 603.5 + CR 608.2, a "may" pause
+    /// * [`WaitingFor::OptionalEffectChoice`] — CR 603.5 + CR 608.2d, a "may" pause
     ///   happens mid-resolution.
     /// * [`WaitingFor::CommanderZoneChoice`] — CR 903.9a, the commander-zone choice
     ///   *is* a state-based action, and CR 704.3 checks SBAs before priority is granted.
@@ -11152,7 +11152,7 @@ impl WaitingFor {
     ///   only afterwards at CR 508.2.
     /// * [`WaitingFor::ExertChoice`] / [`WaitingFor::EnlistChoice`] — CR 508.1g, the
     ///   optional "as it attacks" costs are chosen *within* that same CR 508.1
-    ///   declaration (CR 701.43d for exert, CR 702.154a for enlist).
+    ///   declaration (CR 701.43d for exert, CR 702.154b for enlist).
     /// * [`WaitingFor::DeclareBlockers`] — CR 509.1, "the defending player declares
     ///   blockers. This turn-based action doesn't use the stack".
     /// * [`WaitingFor::DiscardToHandSize`] — CR 514.1, "they discard enough cards to
@@ -11209,8 +11209,8 @@ impl WaitingFor {
     /// declaration windows above move no life, but CR 508.1h / CR 509.1d put the
     /// declaration's COSTS in a separate sub-step ("Costs may include paying mana,
     /// tapping permanents, sacrificing permanents, discarding cards, and so on"), and a
-    /// Phyrexian symbol in an attack or block tax is paid with 2 life (CR 107.4f) —
-    /// `game::engine_combat::handle_pay_combat_tax` pays through
+    /// Phyrexian symbol in an attack or block tax is paid with 2 life (CR 107.4f) at
+    /// CR 508.1j / CR 509.1f — `game::engine_combat::handle_pay_combat_tax` pays through
     /// `game::casting::pay_unless_cost`, which settles Phyrexian `life_payments` via
     /// `game::life_costs::pay_life_as_cost`. So the tax window CAN move life and must
     /// stay out, exactly as `RedistributeLifeTotals` does. It falls through to `false`
@@ -11236,7 +11236,7 @@ impl WaitingFor {
                 | WaitingFor::ChooseUntapSubset { .. }
                 // CR 508.1: declaring attackers is a turn-based action that doesn't use
                 // the stack; CR 508.2 grants priority only after it. CR 508.1g folds the
-                // optional "as it attacks" costs (CR 701.43d exert, CR 702.154a enlist)
+                // optional "as it attacks" costs (CR 701.43d exert, CR 702.154b enlist)
                 // into that same declaration.
                 | WaitingFor::DeclareAttackers { .. }
                 | WaitingFor::ExertChoice { .. }
@@ -18831,13 +18831,20 @@ impl GameState {
     /// this can produce a conservative MISS and never a wrong certification.
     ///
     /// `lives_before` is positional over `self.players`, the fixed seat vector — seats are
-    /// never removed (elimination sets `Player::is_eliminated`), so `zip` cannot misalign.
+    /// never removed (elimination sets `Player::is_eliminated`) and the sole caller
+    /// snapshots the same vector inside one call, so the lengths agree today. A LENGTH
+    /// mismatch is nevertheless treated as an unobserved move: `zip` truncates to the
+    /// shorter slice, so a short snapshot would silently skip tail seats and RETAIN the
+    /// ring — the one direction the "clearing can only SHRINK the prior set" guarantee
+    /// forbids. One comparison keeps that guarantee structural instead of contractual.
+    /// (CR 119.3, `MagicCompRules.txt:1065`, is the rule the life comparison implements.)
     pub(crate) fn invalidate_loop_ring_on_unobserved_life_move(&mut self, lives_before: &[i32]) {
-        if self
-            .players
-            .iter()
-            .zip(lives_before)
-            .any(|(p, &before)| p.life != before)
+        if self.players.len() != lives_before.len()
+            || self
+                .players
+                .iter()
+                .zip(lives_before)
+                .any(|(p, &before)| p.life != before)
         {
             self.loop_detect_ring.clear();
         }
@@ -20018,7 +20025,7 @@ mod forced_cascade_window_tests {
         }
     }
 
-    /// CR 603.3b / CR 603.3d / CR 603.5 + CR 608.2 / CR 903.9a / CR 704.5j /
+    /// CR 603.3b / CR 603.3d / CR 603.5 + CR 608.2d / CR 903.9a / CR 704.5j /
     /// CR 310.10 / CR 703.1 + CR 117.3a: the membership matrix for
     /// [`WaitingFor::is_forced_cascade_window`], asserted in BOTH directions —
     /// thirteen members and eight non-members, each named.
@@ -20053,12 +20060,12 @@ mod forced_cascade_window_tests {
     ///   `RedistributeLifeTotals` must stay out because it is a window that CAN
     ///   MOVE LIFE — a life-moving window may never be exempt, or a retained frame
     ///   pair could straddle an unobserved life change. `AssignCombatDamage` is out
-    ///   under that SAME rule even though CR 510.1c makes it turn-based: CR 510.2
+    ///   under that SAME rule even though CR 510.1 makes it turn-based: CR 510.2
     ///   deals the assigned damage with "no player has the chance to cast spells or
     ///   activate abilities" in between, so no priority separates the window from the
     ///   life change it causes. `CombatTaxPayment` is out under that same rule and is
     ///   the sharpest case, because the window it interrupts (`DeclareAttackers`) IS a
-    ///   member: CR 508.1h / CR 509.1d make paying to declare a separate sub-step, and
+    ///   member: CR 508.1j / CR 509.1f make paying to declare a separate sub-step, and
     ///   a Phyrexian tax symbol is paid with 2 life (CR 107.4f). Declaring moves no
     ///   life; paying to declare can. `LoopShortcut` /
     ///   `RespondToShortcut` must stay out because their answers
@@ -20104,7 +20111,7 @@ mod forced_cascade_window_tests {
                 },
             ),
             (
-                "OptionalEffectChoice (CR 603.5 + CR 608.2)",
+                "OptionalEffectChoice (CR 603.5 + CR 608.2d)",
                 WaitingFor::OptionalEffectChoice {
                     player: PlayerId(0),
                     source_id: ObjectId(1),
@@ -20171,7 +20178,7 @@ mod forced_cascade_window_tests {
                 },
             ),
             (
-                "EnlistChoice (CR 508.1g optional attack cost + CR 702.154a, inside CR 508.1)",
+                "EnlistChoice (CR 508.1g optional attack cost + CR 702.154b, inside CR 508.1)",
                 WaitingFor::EnlistChoice {
                     player: PlayerId(0),
                     attacker: ObjectId(8),
@@ -20220,7 +20227,7 @@ mod forced_cascade_window_tests {
                 },
             ),
             (
-                "AssignCombatDamage — turn-based (CR 510.1c) but CR 510.2 deals the damage \
+                "AssignCombatDamage — turn-based (CR 510.1) but CR 510.2 deals the damage \
                  with no intervening priority, so it MOVES LIFE",
                 WaitingFor::AssignCombatDamage {
                     player: PlayerId(0),
@@ -20245,7 +20252,7 @@ mod forced_cascade_window_tests {
                 },
             ),
             (
-                "CombatTaxPayment — CR 508.1h / CR 509.1d put the declaration's COSTS in a \
+                "CombatTaxPayment — CR 508.1j / CR 509.1f put the declaration's COSTS in a \
                  separate sub-step, and a Phyrexian tax symbol is paid with 2 life \
                  (CR 107.4f), so it MOVES LIFE and must stay OUT even though the \
                  DeclareAttackers window it interrupts is a member",
@@ -25923,5 +25930,82 @@ mod tests {
             "an unknown group must report that nothing was removed"
         );
         assert_eq!(state.transient_continuous_effects.len(), 1);
+    }
+
+    /// GAP 3 — `invalidate_loop_ring_on_unobserved_life_move` must treat a SHORT
+    /// `lives_before` snapshot as an unobserved move. `zip` truncates to the shorter
+    /// slice, so without the length disjunct a short snapshot silently skips the tail
+    /// seats and RETAINS the ring — the one direction the doc's "clearing can only
+    /// SHRINK the prior set" guarantee forbids. (CR 119.3 is the rule the life
+    /// comparison implements.)
+    ///
+    /// The second arm is the ZERO-CENSUS POSITIVE CONTROL: a FULL-length snapshot with
+    /// EQUAL lives must RETAIN, which proves the instrument can return "not cleared" and
+    /// that arm 1's clear is a verdict rather than an unconditional wipe.
+    ///
+    /// REVERT-PROBE: delete `self.players.len() != lives_before.len() ||` ⇒ arm 1's `zip`
+    /// yields nothing over the tail, `any` is false, the ring survives ⇒ arm 1 FAILS while
+    /// arm 2 still passes, so the probe is isolated to the length disjunct.
+    #[test]
+    fn unobserved_life_move_invalidates_on_a_short_snapshot() {
+        let seed = |state: &mut GameState| {
+            state.record_loop_detect_sample();
+            assert!(
+                !state.loop_detect_ring.is_empty(),
+                "reach-guard: the ring must be seeded, else both arms below are vacuous"
+            );
+        };
+
+        // ── ARM 1 (SUBJECT): a SHORT snapshot whose covered prefix AGREES on life ──
+        let mut short_state = GameState::new_two_player(7);
+        assert!(
+            short_state.players.len() >= 2,
+            "reach-guard: the board needs a tail seat for a short snapshot to skip"
+        );
+        seed(&mut short_state);
+        let short: Vec<i32> = vec![short_state.players[0].life];
+        assert!(
+            short.len() < short_state.players.len(),
+            "reach-guard: the snapshot really is SHORT — this is the whole premise"
+        );
+        assert_eq!(
+            short_state.players[0].life, short[0],
+            "reach-guard: the COVERED prefix agrees on life, so a `zip`-only comparison \
+             finds no difference and the clear below can only come from the length test"
+        );
+        short_state.invalidate_loop_ring_on_unobserved_life_move(&short);
+        assert!(
+            short_state.loop_detect_ring.is_empty(),
+            "a SHORT `lives_before` cannot prove the tail seats did not move, so the ring \
+             must be dropped; `zip` would silently truncate and retain it"
+        );
+
+        // ── ARM 2 (POSITIVE CONTROL): FULL length, EQUAL lives ⇒ RETAINED ──
+        let mut equal_state = GameState::new_two_player(7);
+        seed(&mut equal_state);
+        let full: Vec<i32> = equal_state.players.iter().map(|p| p.life).collect();
+        assert_eq!(
+            full.len(),
+            equal_state.players.len(),
+            "reach-guard: this arm's snapshot is FULL length"
+        );
+        equal_state.invalidate_loop_ring_on_unobserved_life_move(&full);
+        assert!(
+            !equal_state.loop_detect_ring.is_empty(),
+            "positive control: a full-length snapshot with unchanged lives observed NO \
+             move, so the ring must be RETAINED — this is what proves arm 1's clear is a \
+             verdict and not an unconditional wipe"
+        );
+
+        // ── ARM 3: FULL length, a life that MOVED ⇒ cleared (the pre-existing contract) ──
+        let mut moved_state = GameState::new_two_player(7);
+        seed(&mut moved_state);
+        let before: Vec<i32> = moved_state.players.iter().map(|p| p.life).collect();
+        moved_state.players[1].life -= 1;
+        moved_state.invalidate_loop_ring_on_unobserved_life_move(&before);
+        assert!(
+            moved_state.loop_detect_ring.is_empty(),
+            "an observed life move on a full-length snapshot still clears the ring"
+        );
     }
 }

@@ -2894,10 +2894,18 @@ fn object_growth_library_observer_does_not_suppress_offer() {
 
     // Sanity: Kodama really is in the library (not the battlefield), so any offer
     // must come from correctly IGNORING it, not from it having been removed.
+    let kodama_obj = &runner.state().objects[&kodama];
     assert_eq!(
-        runner.state().objects.get(&kodama).unwrap().zone,
+        kodama_obj.zone,
         Zone::Library,
         "the growing-class observer must sit in the library for this to discriminate",
+    );
+    assert_eq!(
+        kodama_obj.trigger_definitions.len(),
+        1,
+        "reach-guard: the observer must have PARSED — a misparse leaves zero trigger \
+         defs and the offer below forms for the wrong reason (nothing to ignore); got {}",
+        kodama_obj.trigger_definitions.len()
     );
 
     let outcome = runner
@@ -4397,6 +4405,8 @@ fn object_growth_phase_unreachable_ledger_observer_does_not_suppress_offer() {
 /// ⇒ the subject half flips to an offer ⇒ FAILS.
 #[test]
 fn combat_damage_step_ledger_observer_still_suppresses_offer() {
+    use engine::types::zones::Zone;
+
     // Control: the plain-draw bystander on the same board at the same step.
     let (control_runner, _) =
         object_growth_with_bystander_at(Phase::CombatDamage, P0, PLAIN_DRAW_TRIGGER_ORACLE);
@@ -4413,8 +4423,34 @@ fn combat_damage_step_ledger_observer_still_suppresses_offer() {
     );
 
     // Subject: Pegasus, whose CombatOnly trigger IS reachable in this step.
-    let (runner, _) =
+    let (runner, bystander) =
         object_growth_with_bystander_at(Phase::CombatDamage, P0, PARK_HEIGHTS_PEGASUS_ORACLE);
+
+    // (3) reach-guards — block (2) hard-skips non-battlefield zones, and this row's claim is
+    // about ONE named TRIGGER surface: without these the veto could arrive from a surface the
+    // row does not name (wrong-attribution vacuity).
+    let obj = &runner.state().objects[&bystander];
+    assert_eq!(
+        obj.zone,
+        Zone::Battlefield,
+        "reach-guard: block (2) hard-skips non-battlefield zones, so a veto from this \
+         bystander would not be attributable to it at all"
+    );
+    assert_eq!(
+        obj.trigger_definitions.len(),
+        1,
+        "reach-guard: this row's claim is about ONE named trigger surface; got {}",
+        obj.trigger_definitions.len()
+    );
+    assert!(
+        obj.abilities.is_empty(),
+        "reach-guard: this row's claim is about ONE named TRIGGER surface; the bystander \
+         also carries {} ability def(s) {:?}, so a veto here would not be attributable to \
+         the trigger",
+        obj.abilities.len(),
+        obj.abilities.iter().map(|a| a.kind).collect::<Vec<_>>(),
+    );
+
     assert!(
         !matches!(runner.state().waiting_for, WaitingFor::LoopShortcut { .. }),
         "CR 510.2: in the combat damage step the observer's event IS reachable, so the \
@@ -4483,6 +4519,8 @@ fn smugglers_share_end_step_observer_does_not_suppress_offer() {
 /// offer ⇒ FAILS.
 #[test]
 fn end_step_window_end_step_observer_still_suppresses_offer() {
+    use engine::types::zones::Zone;
+
     let (control_runner, _) =
         object_growth_with_bystander_at(Phase::End, P0, PLAIN_DRAW_TRIGGER_ORACLE);
     assert!(
@@ -4496,7 +4534,31 @@ fn end_step_window_end_step_observer_still_suppresses_offer() {
         control_runner.state().waiting_for
     );
 
-    let (runner, _) = object_growth_with_bystander_at(Phase::End, P0, SMUGGLERS_SHARE_ORACLE);
+    let (runner, bystander) =
+        object_growth_with_bystander_at(Phase::End, P0, SMUGGLERS_SHARE_ORACLE);
+
+    // (3) reach-guards — see the sibling row: the veto must be attributable to the ONE
+    // named trigger surface, not to some other surface on this bystander.
+    let obj = &runner.state().objects[&bystander];
+    assert_eq!(
+        obj.zone,
+        Zone::Battlefield,
+        "reach-guard: block (2) hard-skips non-battlefield zones"
+    );
+    assert_eq!(
+        obj.trigger_definitions.len(),
+        1,
+        "reach-guard: this row's claim is about ONE named trigger surface; got {}",
+        obj.trigger_definitions.len()
+    );
+    assert!(
+        obj.abilities.is_empty(),
+        "reach-guard: this row's claim is about ONE named TRIGGER surface; the bystander \
+         also carries {} ability def(s) {:?}",
+        obj.abilities.len(),
+        obj.abilities.iter().map(|a| a.kind).collect::<Vec<_>>(),
+    );
+
     assert!(
         !matches!(runner.state().waiting_for, WaitingFor::LoopShortcut { .. }),
         "CR 117.3a + CR 608.2h: an end-step observer in an END-STEP window keeps its \
@@ -4526,7 +4588,35 @@ const PRYDWEN_BROAD_ORACLE: &str = "Flying, trample\nFlying\nWhenever another cr
 /// this row.
 #[test]
 fn prydwen_artifact_matcher_bystander_does_not_suppress_offer() {
-    let (runner, _) = object_growth_with_bystander(PRYDWEN_ORACLE);
+    use engine::types::zones::Zone;
+
+    let (runner, bystander) = object_growth_with_bystander(PRYDWEN_ORACLE);
+
+    // (3) reach-guards, ALL BEFORE the offer match. On a positive (offer-forming) row a
+    // parse failure yields NO observer at all, which would make the offer trivially green —
+    // these guards are what make that vacuity mode loud. `Crew` is a keyword, not an
+    // `abilities[]` entry, so the ONE surface here is the ETB trigger.
+    let obj = &runner.state().objects[&bystander];
+    assert_eq!(
+        obj.zone,
+        Zone::Battlefield,
+        "reach-guard: block (2) hard-skips non-battlefield zones"
+    );
+    assert_eq!(
+        obj.trigger_definitions.len(),
+        1,
+        "reach-guard: the ETB observer must have PARSED — a misparse leaves zero trigger \
+         defs and the offer below forms for the wrong reason; got {}",
+        obj.trigger_definitions.len()
+    );
+    assert!(
+        obj.abilities.is_empty(),
+        "reach-guard: this row's claim is about ONE named TRIGGER surface; the bystander \
+         also carries {} ability def(s) {:?}",
+        obj.abilities.len(),
+        obj.abilities.iter().map(|a| a.kind).collect::<Vec<_>>(),
+    );
+
     match &runner.state().waiting_for {
         WaitingFor::LoopShortcut { certificate, .. } => assert!(
             certificate.unbounded.contains(&ResourceAxis::TokensCreated),
@@ -4540,7 +4630,34 @@ fn prydwen_artifact_matcher_bystander_does_not_suppress_offer() {
     }
 
     // HF-K3: the genuinely-matching sibling keeps its veto.
-    let (broad_runner, _) = object_growth_with_bystander(PRYDWEN_BROAD_ORACLE);
+    let (broad_runner, broad_bystander) = object_growth_with_bystander(PRYDWEN_BROAD_ORACLE);
+
+    // (3) reach-guards on the BROAD half — this is a veto row, so the veto must be
+    // attributable to the ONE named trigger surface and not to any other.
+    let broad_obj = &broad_runner.state().objects[&broad_bystander];
+    assert_eq!(
+        broad_obj.zone,
+        Zone::Battlefield,
+        "reach-guard: block (2) hard-skips non-battlefield zones"
+    );
+    assert_eq!(
+        broad_obj.trigger_definitions.len(),
+        1,
+        "reach-guard: this row's claim is about ONE named trigger surface; got {}",
+        broad_obj.trigger_definitions.len()
+    );
+    assert!(
+        broad_obj.abilities.is_empty(),
+        "reach-guard: this row's claim is about ONE named TRIGGER surface; the bystander \
+         also carries {} ability def(s) {:?}",
+        broad_obj.abilities.len(),
+        broad_obj
+            .abilities
+            .iter()
+            .map(|a| a.kind)
+            .collect::<Vec<_>>(),
+    );
+
     assert!(
         !matches!(
             broad_runner.state().waiting_for,
@@ -4579,6 +4696,9 @@ const AGGREGATE_TWO_SURFACE_ORACLE: &str = "Flying, trample\n{2}: Draw a card fo
 /// ⇒ BOTH assertions FAIL.
 #[test]
 fn driver_own_activated_ability_still_vetoes() {
+    use engine::types::ability::AbilityKind;
+    use engine::types::zones::Zone;
+
     // PAIRED POSITIVE first: the same ability under an OPPONENT is relieved.
     let (foreign_runner, _) =
         object_growth_with_bystander_at(Phase::PreCombatMain, P1, AGGREGATE_ACTIVATED_ORACLE);
@@ -4594,8 +4714,39 @@ fn driver_own_activated_ability_still_vetoes() {
     );
 
     // SUBJECT: byte-identical board, ability under the DRIVER.
-    let (own_runner, _) =
+    let (own_runner, bystander) =
         object_growth_with_bystander_at(Phase::PreCombatMain, P0, AGGREGATE_ACTIVATED_ORACLE);
+
+    // (3) reach-guards — the veto must come from the ONE named ACTIVATED-ability surface.
+    // `kind == Activated` is what item A makes load-bearing on the very relief this row
+    // exercises, and `trigger_definitions.is_empty()` keeps block (1) silent so the verdict
+    // is attributable to block (2).
+    let obj = &own_runner.state().objects[&bystander];
+    assert_eq!(
+        obj.zone,
+        Zone::Battlefield,
+        "reach-guard: block (2) hard-skips non-battlefield zones"
+    );
+    assert_eq!(
+        obj.abilities.len(),
+        1,
+        "reach-guard: exactly one ability surface; got {:?}",
+        obj.abilities.iter().map(|a| a.kind).collect::<Vec<_>>()
+    );
+    assert_eq!(
+        obj.abilities[0].kind,
+        AbilityKind::Activated,
+        "reach-guard: X1's relief is stated for ACTIVATED abilities only, so this row's \
+         subject must BE one; got {:?}",
+        obj.abilities[0].kind
+    );
+    assert!(
+        obj.trigger_definitions.is_empty(),
+        "reach-guard: block (1) must be silent, so the verdict is attributable to block \
+         (2); got {} trigger def(s)",
+        obj.trigger_definitions.len()
+    );
+
     assert!(
         !matches!(
             own_runner.state().waiting_for,
@@ -4617,6 +4768,9 @@ fn driver_own_activated_ability_still_vetoes() {
 /// ⇒ FAILS.
 #[test]
 fn foreign_mana_ability_still_vetoes() {
+    use engine::types::ability::AbilityKind;
+    use engine::types::zones::Zone;
+
     // PAIRED POSITIVE: the same aggregate read on a NON-mana ability, same controller.
     let (nonmana_runner, _) =
         object_growth_with_bystander_at(Phase::PreCombatMain, P1, AGGREGATE_ACTIVATED_ORACLE);
@@ -4628,8 +4782,42 @@ fn foreign_mana_ability_still_vetoes() {
         "HF-X1-a PAIRED POSITIVE: an opponent's NON-mana activated ability is relieved"
     );
 
-    let (mana_runner, _) =
+    let (mana_runner, bystander) =
         object_growth_with_bystander_at(Phase::PreCombatMain, P1, AGGREGATE_MANA_ORACLE);
+
+    // (3) reach-guards. The row's WHOLE claim is the CR 605.3a mana carve-out, so nothing
+    // short of proving the def IS a mana ability makes the veto attributable to it.
+    let obj = &mana_runner.state().objects[&bystander];
+    assert_eq!(
+        obj.zone,
+        Zone::Battlefield,
+        "reach-guard: block (2) hard-skips non-battlefield zones"
+    );
+    assert_eq!(
+        obj.abilities.len(),
+        1,
+        "reach-guard: exactly one ability surface; got {:?}",
+        obj.abilities.iter().map(|a| a.kind).collect::<Vec<_>>()
+    );
+    assert_eq!(
+        obj.abilities[0].kind,
+        AbilityKind::Activated,
+        "reach-guard: a mana ability is an ACTIVATED ability; got {:?}",
+        obj.abilities[0].kind
+    );
+    assert!(
+        engine::game::mana_abilities::is_mana_ability(&obj.abilities[0]),
+        "reach-guard: this row's entire claim is the CR 605.3a mana carve-out, so the def \
+         must actually BE a mana ability — otherwise the veto is attributable to the \
+         ordinary foreign-activated path and the row proves nothing"
+    );
+    assert!(
+        obj.trigger_definitions.is_empty(),
+        "reach-guard: block (1) must be silent, so the verdict is attributable to block \
+         (2); got {} trigger def(s)",
+        obj.trigger_definitions.len()
+    );
+
     assert!(
         !matches!(
             mana_runner.state().waiting_for,
@@ -4657,6 +4845,9 @@ fn foreign_mana_ability_still_vetoes() {
 /// the object in block (2) AND block (1)) ⇒ half B flips to an offer ⇒ FAILS.
 #[test]
 fn foreign_object_second_surface_still_vetoes_after_x1() {
+    use engine::types::ability::AbilityKind;
+    use engine::types::zones::Zone;
+
     // half A: the relieved surface alone ⇒ offer.
     let (one_surface, _) =
         object_growth_with_bystander_at(Phase::PreCombatMain, P1, AGGREGATE_ACTIVATED_ORACLE);
@@ -4677,6 +4868,24 @@ fn foreign_object_second_surface_still_vetoes_after_x1() {
         obj.trigger_definitions.len(),
         1,
         "NW-1' reach-guard: the second surface really is a trigger definition"
+    );
+    assert_eq!(
+        obj.zone,
+        Zone::Battlefield,
+        "NW-1' reach-guard: block (2) hard-skips non-battlefield zones"
+    );
+    assert_eq!(
+        obj.abilities.len(),
+        1,
+        "NW-1' reach-guard: the FIRST surface is exactly one ability def; got {:?}",
+        obj.abilities.iter().map(|a| a.kind).collect::<Vec<_>>()
+    );
+    assert_eq!(
+        obj.abilities[0].kind,
+        AbilityKind::Activated,
+        "NW-1' reach-guard: half A's relieved surface is an ACTIVATED ability, so half B's \
+         first surface must be the same one; got {:?}",
+        obj.abilities[0].kind
     );
     assert!(
         !matches!(
@@ -5715,6 +5924,7 @@ const X1_FODDER: ObjectId = ObjectId(421);
 /// opponents' utility-land abilities veto again ⇒ the offer disappears ⇒ FAILS.
 #[test]
 fn witherbloom_lumaret_4p_offers_with_opponent_utility_lands() {
+    use engine::types::ability::AbilityKind;
     use engine::types::game_state::LoopDetectionMode;
     use engine::types::zones::Zone;
 
@@ -5752,6 +5962,57 @@ fn witherbloom_lumaret_4p_offers_with_opponent_utility_lands() {
         foreign_permanents >= 3,
         "fixture precondition: the dump carries opponent-controlled permanents (the X1 \
          class); got {foreign_permanents}"
+    );
+
+    // ── SHAPE, not just a count. This offer rests on the X1 (`obj.controller != driver`)
+    // relief, and item A narrows that relief to `kind == AbilityKind::Activated` with
+    // `activator_filter.is_none()`. A bare `foreign_permanents >= 3` count cannot tell
+    // whether the relieved population is the one item A governs; this does.
+    let foreign_ability_kinds: Vec<AbilityKind> = state
+        .battlefield
+        .iter()
+        .filter_map(|id| state.objects.get(id))
+        .filter(|o| o.controller != P0)
+        .flat_map(|o| o.abilities.iter().map(|a| a.kind))
+        .collect();
+    assert!(
+        !foreign_ability_kinds.is_empty(),
+        "fixture precondition: the foreign battlefield ability population must be NON-EMPTY, \
+         else item A's `kind == Activated` narrowing has nothing to act on here and this \
+         row's offer is not evidence about X1 at all"
+    );
+    assert!(
+        foreign_ability_kinds
+            .iter()
+            .all(|k| *k == AbilityKind::Activated),
+        "fixture precondition: every foreign battlefield ability def must be `Activated` — \
+         item A relieves ONLY that kind, so a non-`Activated` def here would keep vetoing \
+         and the offer would be attributable to something else; got {foreign_ability_kinds:?}"
+    );
+    assert!(
+        state
+            .battlefield
+            .iter()
+            .filter_map(|id| state.objects.get(id))
+            .filter(|o| o.controller != P0)
+            .all(|o| o.abilities.iter().all(|a| a.activator_filter.is_none())),
+        "fixture precondition: no foreign def carries an `activator_filter` — item E refuses \
+         relief on ANY `Some(..)`, so one here would suppress this offer"
+    );
+    let jadar = state
+        .objects
+        .get(&engine::types::identifiers::ObjectId(75))
+        .expect("fixture precondition: object 75 is present");
+    assert_eq!(
+        (jadar.name.as_str(), jadar.zone, jadar.controller),
+        ("Jadar, Ghoulcaller of Nephalia", Zone::Battlefield, P0),
+        "fixture precondition: the driver-side observer this row names"
+    );
+    assert_eq!(
+        jadar.trigger_definitions.len(),
+        1,
+        "fixture precondition: Jadar carries exactly one trigger definition; got {}",
+        jadar.trigger_definitions.len()
     );
 
     let outcome = GameRunner::from_state(state)
@@ -5807,7 +6068,7 @@ fn witherbloom_lumaret_4p_offers_with_opponent_utility_lands() {
 }
 
 // ===========================================================================
-// K4 — CR 608.2i ledger-FILTER exclusion (the shallow BB-FU10-N narrowing).
+// K4 — CR 608.2i + CR 608.2j ledger-FILTER exclusion (the shallow BB-FU10-N narrowing).
 // Every fixture carries the harness's shared `"Flying, trample\n"` keyword prefix, so
 // subject and control differ ONLY in the ledger clause.
 // ===========================================================================
@@ -5834,7 +6095,7 @@ const PHASE_LEDGER_ARTIFACT_FILTER_ORACLE: &str = "Flying, trample\nAt the begin
 /// FIXTURE B (CORROBORATING) — fixture A one Oracle noun apart.
 const PHASE_LEDGER_CREATURE_FILTER_ORACLE: &str = "Flying, trample\nAt the beginning of your precombat main phase, draw a card if you had two or more creatures enter the battlefield under your control this turn.";
 
-/// K4-N1 (PRIMARY) — CR 608.2i. A ledger observer whose entry filter PROVABLY cannot
+/// K4-N1 (PRIMARY) — CR 608.2i + CR 608.2j. A ledger observer whose entry filter PROVABLY cannot
 /// count the growing fodder has a read whose value is invariant across the loop's growth,
 /// so it does not observe the loop and must not suppress the CR 732.2a offer.
 ///
@@ -5846,7 +6107,7 @@ const PHASE_LEDGER_CREATURE_FILTER_ORACLE: &str = "Flying, trample\nAt the begin
 /// * the CR 117.1b relief cannot move it — the bystander is the DRIVER'S OWN.
 ///   ⇒ the flip is attributable to the ledger-filter narrowing alone.
 ///
-/// REVERT-PROBES: (1) delete the `&& !class_member.is_some_and(..)` guard ⇒ veto ⇒ FAILS.
+/// REVERT-PROBES: (1) delete the `&& !class_members.is_some_and(..)` guard ⇒ veto ⇒ FAILS.
 /// (2) make `execute_ledger_condition_provably_excludes_class` return `false`
 /// unconditionally ⇒ the same failure ⇒ the PREDICATE, not the plumbing, carries the flip.
 #[test]
@@ -5881,7 +6142,7 @@ fn noncombat_damage_ledger_observer_whose_filter_excludes_the_class_does_not_sup
             certificate.unbounded
         ),
         other => panic!(
-            "(1) CR 608.2i: a `Typed{{Artifact}}` entry filter cannot count a Saproling \
+            "(1) CR 608.2j: a `Typed{{Artifact}}` entry filter cannot count a Saproling \
              creature token, so the observer's read is invariant across the loop's growth \
              and must not suppress the offer; got {other:?}. \
              ⛔ PRE-REGISTERED FAILURE BRANCH: report the NEXT rejecter by name and its \
@@ -5904,10 +6165,37 @@ fn noncombat_damage_ledger_observer_whose_filter_excludes_the_class_does_not_sup
 /// row flips to an offer ⇒ FAILS.
 #[test]
 fn noncombat_damage_ledger_observer_whose_filter_matches_the_class_still_suppresses_offer() {
-    let (runner, _) = object_growth_with_bystander(LEDGER_CREATURE_FILTER_ORACLE);
+    use engine::types::zones::Zone;
+
+    let (runner, bystander) = object_growth_with_bystander(LEDGER_CREATURE_FILTER_ORACLE);
+
+    // (3) reach-guards. Anti-vacuity for a VETO row: the sibling POSITIVE
+    // `noncombat_damage_ledger_observer_whose_filter_excludes_the_class_does_not_suppress_offer`
+    // shows the same board DOES offer when the filter excludes, so this row's veto is
+    // attributable to the filter and not to the board.
+    let obj = &runner.state().objects[&bystander];
+    assert_eq!(
+        obj.zone,
+        Zone::Battlefield,
+        "reach-guard: block (1) hard-skips non-battlefield zones"
+    );
+    assert_eq!(
+        obj.trigger_definitions.len(),
+        1,
+        "reach-guard: exactly one trigger definition carries the ledger read; got {}",
+        obj.trigger_definitions.len()
+    );
+    assert!(
+        obj.abilities.is_empty(),
+        "reach-guard: this row's claim is about ONE named TRIGGER surface; the bystander \
+         also carries {} ability def(s) {:?}",
+        obj.abilities.len(),
+        obj.abilities.iter().map(|a| a.kind).collect::<Vec<_>>(),
+    );
+
     assert!(
         !matches!(runner.state().waiting_for, WaitingFor::LoopShortcut { .. }),
-        "CR 608.2i: a `Typed{{Creature}}` entry filter DOES count a Saproling creature \
+        "CR 608.2j: a `Typed{{Creature}}` entry filter DOES count a Saproling creature \
          token, so the observer genuinely observes the loop and must keep vetoing; got {:?}",
         runner.state().waiting_for
     );
@@ -5921,7 +6209,34 @@ fn noncombat_damage_ledger_observer_whose_filter_matches_the_class_still_suppres
 /// so the phase arm answers `false` and cannot classify it. Hence corroborating.
 #[test]
 fn phase_reachable_ledger_observer_whose_filter_excludes_the_class_does_not_suppress_offer() {
-    let (runner, _) = object_growth_with_bystander(PHASE_LEDGER_ARTIFACT_FILTER_ORACLE);
+    use engine::types::zones::Zone;
+
+    let (runner, bystander) = object_growth_with_bystander(PHASE_LEDGER_ARTIFACT_FILTER_ORACLE);
+
+    // (3) reach-guards, ALL BEFORE the offer match. This is a POSITIVE row: a parse failure
+    // yields no observer at all and the offer would form trivially, so these guards are what
+    // make that vacuity mode loud.
+    let obj = &runner.state().objects[&bystander];
+    assert_eq!(
+        obj.zone,
+        Zone::Battlefield,
+        "reach-guard: block (1) hard-skips non-battlefield zones"
+    );
+    assert_eq!(
+        obj.trigger_definitions.len(),
+        1,
+        "reach-guard: the ledger observer must have PARSED — a misparse leaves zero trigger \
+         defs and the offer below forms for the wrong reason; got {}",
+        obj.trigger_definitions.len()
+    );
+    assert!(
+        obj.abilities.is_empty(),
+        "reach-guard: this row's claim is about ONE named TRIGGER surface; the bystander \
+         also carries {} ability def(s) {:?}",
+        obj.abilities.len(),
+        obj.abilities.iter().map(|a| a.kind).collect::<Vec<_>>(),
+    );
+
     match &runner.state().waiting_for {
         WaitingFor::LoopShortcut { certificate, .. } => assert!(
             certificate.unbounded.contains(&ResourceAxis::TokensCreated),
@@ -5929,7 +6244,7 @@ fn phase_reachable_ledger_observer_whose_filter_excludes_the_class_does_not_supp
             certificate.unbounded
         ),
         other => panic!(
-            "K4-N4a CR 608.2i: a phase-REACHABLE observer whose entry filter excludes the \
+            "K4-N4a CR 608.2j: a phase-REACHABLE observer whose entry filter excludes the \
              fodder must not suppress the offer; got {other:?}"
         ),
     }
@@ -5940,7 +6255,33 @@ fn phase_reachable_ledger_observer_whose_filter_excludes_the_class_does_not_supp
 /// REVERT-PROBE: make conjunct (c) unconditional ⇒ flips ⇒ FAILS.
 #[test]
 fn phase_reachable_ledger_observer_whose_filter_matches_the_class_still_suppresses_offer() {
-    let (runner, _) = object_growth_with_bystander(PHASE_LEDGER_CREATURE_FILTER_ORACLE);
+    use engine::types::zones::Zone;
+
+    let (runner, bystander) = object_growth_with_bystander(PHASE_LEDGER_CREATURE_FILTER_ORACLE);
+
+    // (3) reach-guards. Anti-vacuity for a VETO row: the sibling POSITIVE
+    // `phase_reachable_ledger_observer_whose_filter_excludes_the_class_does_not_suppress_offer`
+    // shows the same board DOES offer when the filter excludes.
+    let obj = &runner.state().objects[&bystander];
+    assert_eq!(
+        obj.zone,
+        Zone::Battlefield,
+        "reach-guard: block (1) hard-skips non-battlefield zones"
+    );
+    assert_eq!(
+        obj.trigger_definitions.len(),
+        1,
+        "reach-guard: exactly one trigger definition carries the ledger read; got {}",
+        obj.trigger_definitions.len()
+    );
+    assert!(
+        obj.abilities.is_empty(),
+        "reach-guard: this row's claim is about ONE named TRIGGER surface; the bystander \
+         also carries {} ability def(s) {:?}",
+        obj.abilities.len(),
+        obj.abilities.iter().map(|a| a.kind).collect::<Vec<_>>(),
+    );
+
     assert!(
         !matches!(runner.state().waiting_for, WaitingFor::LoopShortcut { .. }),
         "K4-N4b: the matching half of the corroborating pair must keep vetoing; got {:?}",

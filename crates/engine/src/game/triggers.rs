@@ -2378,13 +2378,15 @@ pub(crate) fn trigger_definition_functions_in_zone(def: &TriggerDefinition, zone
 /// class that changes across the covered cycle:
 ///
 /// 1. the FIRST accept-time frame pair's single-new-battlefield-object is guaranteed by
-///    `game::engine::derived_fodder_class` (`fn` at engine.rs:2191, called at engine.rs:2461 — it
-///    returns `None` if more than one object entered the battlefield that cycle, so a `Some`
-///    fodder class means the fodder was the sole entrant); and
+///    `game::engine::derived_fodder_class` (it returns `None` if more than one object entered the
+///    battlefield that cycle, so a `Some` fodder class means the fodder was the sole entrant;
+///    note it also has a second, display-only caller — the soundness-bearing one is inside the
+///    fodder-cover arm); and
 /// 2. the SECOND cover frame pair's "only the fodder partition grows" is guaranteed SOLELY by
-///    `analysis::resource::board_covers_modulo_fodder` (`fn` at resource.rs:1267), whose all-zones
-///    stable-partition content-equality is enforced by its own return value at its ONLY call site,
-///    resource.rs:1354 — which PRECEDES the firewall call in the same function. A reader/refactor must not reorder the
+///    `analysis::resource::board_covers_modulo_fodder`, whose all-zones
+///    stable-partition content-equality is enforced by its own return value at its ONLY call
+///    site — which PRECEDES the firewall call in the same function. A reader/refactor
+///    must not reorder the
 ///    `board_covers_modulo_fodder` gate after the firewall: the disjointness argument here
 ///    relies on it having already proven that nothing but the fodder entered.
 ///
