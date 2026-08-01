@@ -38,6 +38,76 @@ use crate::types::player::{Player, PlayerId};
 use crate::types::replacements::ReplacementEvent;
 use crate::types::zones::Zone;
 
+/// CR 732.2a: the metered spend the resolution probe charges against.
+///
+/// A NESTED module, not a new file, and that nesting is the enforcement: Rust
+/// privacy is module-scoped, so a budget defined beside its consumers could be
+/// re-constructed by any same-module code and its spend would be invisible to
+/// the meter. Defining it one module down lets the constructor be narrowed
+/// without also narrowing it away from this module's own wrappers.
+mod verdict_memo {
+    /// The shipped probe cap, per classification run.
+    pub(crate) const PROBE_BUDGET: u32 = 12;
+
+    /// CR 732.2a: cost is a COVERAGE knob, never a soundness knob — an
+    /// unaffordable probe degrades to honest-red (no certificate, no offer),
+    /// never to a wrong certificate and never to an unbounded stall.
+    ///
+    /// **Derive list pinned to exactly `#[derive(Debug)]`** — no `Default`, no
+    /// `Clone`/`Copy`. A derived constructor recompiles the construction escape
+    /// with `new` untouched: the derived value is a zero-cap always-denying
+    /// budget, which is fail-closed but meter-invisible and relief-disabling.
+    #[derive(Debug)]
+    pub(crate) struct ProbeBudget {
+        remaining: u32,
+        /// Latched by [`ProbeBudget::try_charge_one`] so an exhaustion can be
+        /// ATTRIBUTED rather than inferred from a zero remainder. Its production
+        /// reader is the metered mint's exhaustion accounting, which is not
+        /// built yet; until then the latch is exercised by this module's own
+        /// unit row, which is why the accessor is `cfg(test)`.
+        #[cfg_attr(not(test), allow(dead_code))]
+        denied: bool,
+    }
+
+    impl ProbeBudget {
+        /// `pub(super)` while the parent module is the only constructor site.
+        pub(super) fn new(cap: u32) -> Self {
+            Self {
+                remaining: cap,
+                denied: false,
+            }
+        }
+
+        /// `false` ⇒ exhausted, and the exhaustion fact is latched so it can be
+        /// attributed rather than inferred from a zero remainder.
+        pub(crate) fn try_charge_one(&mut self) -> bool {
+            if self.remaining == 0 {
+                self.denied = true;
+                return false;
+            }
+            self.remaining -= 1;
+            true
+        }
+
+        /// Did any charge get denied against this budget?
+        #[cfg(test)]
+        pub(crate) fn denied(&self) -> bool {
+            self.denied
+        }
+
+        /// TEST-ONLY constructor. `new` stays `pub(super)` so no PRODUCTION site
+        /// outside this module's own wrappers can mint a budget whose spend
+        /// would be invisible to a meter; a `cfg(test)` door cannot widen that,
+        /// because it does not exist in a production build.
+        #[cfg(test)]
+        pub(crate) fn for_test(cap: u32) -> Self {
+            Self::new(cap)
+        }
+    }
+}
+
+pub(crate) use verdict_memo::{ProbeBudget, PROBE_BUDGET};
+
 /// WUBRG + colorless, the canonical index order used by [`ResourceVector::mana`].
 ///
 /// Matches `ManaColor::ALL` (WUBRG) with colorless appended, so index `i` of the
@@ -1344,8 +1414,9 @@ fn pinned_may_choice_relief(
     state: &GameState,
     entry: &StackEntry,
     scope: LoopWindowScope<'_>,
-) -> Option<crate::game::ability_scan::ResolutionChoiceFreedom> {
-    use crate::game::ability_scan::ResolutionChoiceFreedom;
+    budget: &mut ProbeBudget,
+) -> Option<crate::game::resolution_prompt::ResolutionChoiceFreedom> {
+    use crate::game::resolution_prompt::ResolutionChoiceFreedom;
     let pins = scope.pinned?;
     let published = crate::game::engine::entry_publishes_pin_slots(state, entry, pins.proposer)?;
     let may = published.may?;
@@ -1360,7 +1431,18 @@ fn pinned_may_choice_relief(
     // the counterfactual instead of this module re-implementing its six reasons.
     let mut without_may_gate = (**ability).clone();
     without_may_gate.optional = false;
-    match crate::game::ability_scan::ability_resolution_choice_freedom(&without_may_gate) {
+    // CR 603.4 + CR 608.2k: same resolution board the primary classification
+    // uses — this entry off the stack, scope bound.
+    let mut board = state.clone();
+    board.stack.retain(|e| e.id != entry.id);
+    if !crate::game::stack::bind_resolution_scope(&mut board, entry, None) {
+        return None;
+    }
+    match crate::game::resolution_prompt::ability_resolution_choice_freedom(
+        &board,
+        &without_may_gate,
+        budget,
+    ) {
         ResolutionChoiceFreedom::MayPrompt => None,
         residual @ ResolutionChoiceFreedom::FreeUnlessReplacements(_) => Some(residual),
     }
@@ -1418,7 +1500,7 @@ pub(crate) fn loop_states_cover_modulo_growth(prior: &GameState, current: &GameS
 /// for a triggered ability via CR 603.3d), the same
 /// [`stack_entry_resolution_choice_freedom`] (CR 608.2d resolution-time prompts), the same
 /// [`entry_target_choice_is_pinned`] / [`pinned_may_choice_relief`] pin relief, and the same
-/// CR 616.1 [`replacement_environment_may_prompt`] environmental guard the
+/// CR 616.1 [`proposed_event_prompt_cause`] environmental guard the
 /// `FreeUnlessReplacements` verdict's own contract requires. Nothing is re-derived here.
 ///
 /// STRICTER than gate (3) in one deliberate way: gate (3) examines only entries whose
@@ -1468,29 +1550,61 @@ pub(crate) fn stack_choices_are_all_specified(
         }
     }
     // Resolution-time (gate (6)'s fact), including its paired CR 616.1 obligation.
-    // The obligation is a UNION over entries: a stack holding both a life entry and a
-    // draw entry owes both environmental checks, and each verdict names its own class.
-    let mut obligations = crate::game::ability_scan::ReplacementPromptClasses::NONE;
+    // The obligation is discharged PER ENTRY against the pipeline's own candidate
+    // authority, on the same board the entry's events were derived on.
+    let mut budget = ProbeBudget::new(PROBE_BUDGET);
     for entry in &state.stack {
-        match stack_entry_resolution_choice_freedom(entry) {
-            crate::game::ability_scan::ResolutionChoiceFreedom::MayPrompt => {
-                match pinned_may_choice_relief(state, entry, scope) {
-                    Some(
-                        crate::game::ability_scan::ResolutionChoiceFreedom::FreeUnlessReplacements(
-                            classes,
-                        ),
-                    ) => obligations = obligations.or(classes),
-                    Some(crate::game::ability_scan::ResolutionChoiceFreedom::MayPrompt) | None => {
-                        return false
-                    }
+        let verdict = match stack_entry_resolution_choice_freedom(state, entry, &mut budget) {
+            crate::game::resolution_prompt::ResolutionChoiceFreedom::MayPrompt => {
+                match pinned_may_choice_relief(state, entry, scope, &mut budget) {
+                    Some(residual) => residual,
+                    None => return false,
                 }
             }
-            crate::game::ability_scan::ResolutionChoiceFreedom::FreeUnlessReplacements(classes) => {
-                obligations = obligations.or(classes)
-            }
+            free => free,
+        };
+        if !resolution_events_are_discharged(state, verdict) {
+            return false;
         }
     }
-    !replacement_environment_may_prompt(state, obligations)
+    true
+}
+
+/// CR 614.1 + CR 616.1: discharge one entry's resolution verdict against the
+/// replacement pipeline's own candidate authority, on the board its events were
+/// derived on.
+///
+/// `board` is the frame carrying the resolution. BOTH halves of this discharge
+/// are frame-sensitive: the events are the EVENT half and
+/// `proposed_event_prompt_cause`'s first argument is the CANDIDATE-AUTHORITY
+/// half — it runs `find_applicable_replacements` over that board's replacement
+/// population, so handing it a different board would check one frame's events
+/// against another frame's candidates.
+fn resolution_events_are_discharged(
+    board: &GameState,
+    verdict: crate::game::resolution_prompt::ResolutionChoiceFreedom,
+) -> bool {
+    use crate::game::resolution_prompt::ResolutionChoiceFreedom;
+    match verdict {
+        ResolutionChoiceFreedom::MayPrompt => false,
+        ResolutionChoiceFreedom::FreeUnlessReplacements(events) => {
+            // `events` came from the RESOLVER, never from a per-arm list, and is
+            // non-empty by construction — `probe_resolution` returns `Prompted`
+            // on an empty derivation, so `any()` can never discharge vacuously.
+            debug_assert!(
+                !events.is_empty(),
+                "empty derivations are MayPrompt, never FreeUnlessReplacements"
+            );
+            !events.iter().any(|ev| {
+                !crate::game::replacement::proposed_event_prompt_cause(
+                    board,
+                    ev,
+                    crate::game::replacement::replacement_registry(),
+                )
+                .is_empty()
+            })
+        }
+    }
 }
 
 /// CR 732.2a: [`loop_states_cover_modulo_growth`] with an OFFER's published pin slots in
@@ -1671,28 +1785,20 @@ pub(crate) fn loop_states_cover_modulo_growth_scoped(
     // gating an unpinned entry gets, so `FreeUnlessReplacements` still arms the
     // CR 616.1 environmental guard below for the classes it names — a pinned target/"may"
     // says nothing about whose life- or draw-event replacements might prompt.
-    let mut obligations = crate::game::ability_scan::ReplacementPromptClasses::NONE;
+    let mut budget = ProbeBudget::new(PROBE_BUDGET);
     for entry in &current.stack {
-        match stack_entry_resolution_choice_freedom(entry) {
-            crate::game::ability_scan::ResolutionChoiceFreedom::MayPrompt => {
-                match pinned_may_choice_relief(current, entry, scope) {
-                    Some(
-                        crate::game::ability_scan::ResolutionChoiceFreedom::FreeUnlessReplacements(
-                            classes,
-                        ),
-                    ) => obligations = obligations.or(classes),
-                    Some(crate::game::ability_scan::ResolutionChoiceFreedom::MayPrompt) | None => {
-                        return false
-                    }
+        let verdict = match stack_entry_resolution_choice_freedom(current, entry, &mut budget) {
+            crate::game::resolution_prompt::ResolutionChoiceFreedom::MayPrompt => {
+                match pinned_may_choice_relief(current, entry, scope, &mut budget) {
+                    Some(residual) => residual,
+                    None => return false,
                 }
             }
-            crate::game::ability_scan::ResolutionChoiceFreedom::FreeUnlessReplacements(classes) => {
-                obligations = obligations.or(classes)
-            }
+            free => free,
+        };
+        if !resolution_events_are_discharged(current, verdict) {
+            return false;
         }
-    }
-    if replacement_environment_may_prompt(current, obligations) {
-        return false;
     }
 
     true
@@ -3555,12 +3661,37 @@ fn stack_entry_reads_projected_resource(entry: &StackEntry) -> bool {
 /// a real fixture needs it.) The trigger-level `condition` (intervening-if
 /// re-check, CR 603.4) is pure evaluation and contributes no prompt.
 fn stack_entry_resolution_choice_freedom(
+    state: &GameState,
     entry: &StackEntry,
-) -> crate::game::ability_scan::ResolutionChoiceFreedom {
-    use crate::game::ability_scan::ResolutionChoiceFreedom;
+    budget: &mut ProbeBudget,
+) -> crate::game::resolution_prompt::ResolutionChoiceFreedom {
+    use crate::game::resolution_prompt::ResolutionChoiceFreedom;
     match &entry.kind {
         StackEntryKind::TriggeredAbility { ability, .. } => {
-            crate::game::ability_scan::ability_resolution_choice_freedom(ability)
+            // CR 603.4 + CR 608.2k: the classifier probes a RESOLUTION, so it
+            // must be handed the board `resolve_top` would hand
+            // `resolve_ability_chain` — this entry off the stack, with
+            // resolution scope bound. Handing it the raw pre-resolution board
+            // resolves every `EventContextAmount` / `Triggering*` reference
+            // against an absent context and is FAIL-OPEN for the `> 0`-gated
+            // virtual replacement arms.
+            //
+            // The entry is removed BY ID, never by `pop`: the callers walk the
+            // stack at arbitrary depth, so "pop the top" is wrong for every
+            // non-top entry, while "this entry is the one resolving" is the
+            // counterfactual being asked. The clone lands only on the probe —
+            // `resolve_top` calls the same shared binding on its own
+            // `&mut GameState` and pays nothing.
+            let mut board = state.clone();
+            board.stack.retain(|e| e.id != entry.id);
+            if !crate::game::stack::bind_resolution_scope(&mut board, entry, None) {
+                // CR 603.4 false ⇒ the live resolution proposes nothing, and an
+                // empty derivation is never "safe".
+                return ResolutionChoiceFreedom::MayPrompt;
+            }
+            crate::game::resolution_prompt::ability_resolution_choice_freedom(
+                &board, ability, budget,
+            )
         }
         StackEntryKind::Spell { .. }
         | StackEntryKind::ActivatedAbility { .. }
@@ -3882,183 +4013,6 @@ pub(crate) fn life_growth_is_observed(state: &GameState) -> bool {
             TriggerEventKey::LifeChanged,
             ReplacementEvent::GainLife,
         )
-}
-
-/// The proposed-event class a `ReplacementEvent` watches. CR 616.1
-/// material-ordering competition is counted PER proposed-event class, because a
-/// single `ProposedEvent::LifeLoss` draws candidates from every LifeLoss-matching
-/// registry key at once (`LoseLife` + `LifeReduced` + `PayLife`).
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum ReplacedEventClass {
-    /// Matches `ProposedEvent::LifeGain`.
-    LifeGain,
-    /// Matches `ProposedEvent::LifeLoss`.
-    LifeLoss,
-    /// Matches `ProposedEvent::Draw`.
-    Draw,
-}
-
-/// CR 614.1a: which proposed-event class does this replacement event's registry
-/// matcher (`crate::game::replacement`) watch? Compiler-exhaustive over ALL
-/// `ReplacementEvent` variants (no wildcard) so a NEW variant fails to compile until
-/// classified against the coupling rule.
-///
-/// COUPLING RULE (grep-enforced when the set is edited): a variant is classified by
-/// the `ProposedEvent` its MATCHER matches, never by its name — a hand-picked set had
-/// already missed `PayLife` and `LifeReduced`. Measured (`rg -n 'ProposedEvent::'` over
-/// the matcher fns, cross-checked against `replacement_event_keys_for_event`, which is
-/// what actually selects candidate keys for a proposed event):
-/// `gain_life_matcher` (GainLife → LifeGain), `lose_life_matcher` (LoseLife →
-/// LifeLoss), `life_reduced_matcher` (LifeReduced → LifeLoss), `pay_life_matcher`
-/// (PayLife → LifeLoss), `draw_matcher` (Draw → Draw).
-///
-/// `DrawCards` is classified `Draw` FAIL-CLOSED even though it cannot currently apply:
-/// its registry entry is a `stub()` and `replacement_event_keys_for_event` emits only
-/// `ReplacementEvent::Draw` for a `ProposedEvent::Draw`, so a `DrawCards` def is never
-/// a live candidate. Counting it anyway only over-counts the CR 616.1 competition ⇒
-/// over-rejects ⇒ safe, and it survives the alias being wired up later.
-fn replacement_event_proposed_class(event: &ReplacementEvent) -> Option<ReplacedEventClass> {
-    match event {
-        ReplacementEvent::GainLife => Some(ReplacedEventClass::LifeGain),
-        ReplacementEvent::LoseLife | ReplacementEvent::LifeReduced | ReplacementEvent::PayLife => {
-            Some(ReplacedEventClass::LifeLoss)
-        }
-        ReplacementEvent::Draw | ReplacementEvent::DrawCards => Some(ReplacedEventClass::Draw),
-        // Unclassified events (explicitly listed ⇒ None, so a new variant must be
-        // classified against the coupling rule before it compiles).
-        ReplacementEvent::DamageDone
-        | ReplacementEvent::Destroy
-        | ReplacementEvent::Discard
-        | ReplacementEvent::TurnFaceUp
-        | ReplacementEvent::Counter
-        | ReplacementEvent::ChangeZone
-        | ReplacementEvent::Moved
-        | ReplacementEvent::AddCounter
-        | ReplacementEvent::RemoveCounter
-        | ReplacementEvent::CreateToken
-        | ReplacementEvent::Tap
-        | ReplacementEvent::Untap
-        | ReplacementEvent::DealtDamage
-        | ReplacementEvent::Mill
-        | ReplacementEvent::Attached
-        | ReplacementEvent::SearchFound
-        | ReplacementEvent::ProduceMana
-        | ReplacementEvent::Scry
-        | ReplacementEvent::CoinFlip
-        | ReplacementEvent::Transform
-        | ReplacementEvent::Explore
-        | ReplacementEvent::Connive
-        | ReplacementEvent::AssembleContraption
-        | ReplacementEvent::BeginPhase
-        | ReplacementEvent::BeginTurn
-        | ReplacementEvent::Cascade
-        | ReplacementEvent::CopySpell
-        | ReplacementEvent::DeclareBlocker
-        | ReplacementEvent::GameLoss
-        | ReplacementEvent::GameWin
-        | ReplacementEvent::Learn
-        | ReplacementEvent::LoseMana
-        | ReplacementEvent::PlanarDiceResult
-        | ReplacementEvent::Planeswalk
-        | ReplacementEvent::Proliferate
-        | ReplacementEvent::Other(_) => None,
-    }
-}
-
-/// §2.2 item 6 environmental guard (CR 616.1 + CR 614.1a): can the current
-/// replacement environment open a resolution-time prompt on an allow-listed
-/// resolution of one of `classes`? Paired obligation of
-/// `ResolutionChoiceFreedom::FreeUnlessReplacements`.
-///
-/// PARAMETERIZED BY CLASS, not duplicated per class, because all three rejection
-/// reasons below live in the EVENT-AGNOSTIC `pipeline_loop`: the optional-candidate
-/// park (replacement.rs:8775-8798) and the CR 616.1 material-ordering park
-/// (replacement.rs:8814-8838) branch on `replacement_is_optional` /
-/// `replacement_ordering_is_material` and never inspect the event's class, and the
-/// body-continuation stash (replacement.rs:7834-7847) is reached from the same
-/// `(Execute, Mandatory)` arm for every proposed event. A per-class copy of this
-/// function would have been three copies of one CR 616.1 argument.
-///
-/// Over-approximates `find_applicable_replacements` fail-closed: conditions,
-/// `valid_player` scopes, and amounts are deliberately ignored (over-count ⇒
-/// over-reject ⇒ fail-safe). Def sources = object-attached defs
-/// (`active_replacements`, item 5's authority) CHAINED with the game-state-level
-/// floating store `state.pending_damage_replacements` (sentinel `ObjectId(0)`,
-/// scanned by `find_applicable_replacements` replacement.rs:4838-4862; skip
-/// `is_consumed`, mirroring :4859-4861). `pending_step_end_mana_handlers` is a
-/// different type gated behind `ProposedEvent::EmptyManaPool`
-/// (replacement.rs:4971-4980) that structurally cannot produce a life- or draw-class
-/// candidate ⇒ excluded. There are NO virtual life candidates in
-/// `find_applicable_replacements` (measured — the only `ProposedEvent::LifeGain`
-/// there is a `valid_player` filter, not a candidate creator, replacement.rs:4674).
-///
-/// Rejects when an in-class def is:
-/// (a) OPTIONAL — a single optional candidate prompts (replacement.rs:8775-8798).
-///     This is the CR 702.52a dredge-class route on the draw side ("if you would draw
-///     a card, you MAY instead mill N cards"): a "you may" replacement makes an
-///     otherwise-mandatory draw genuinely choice-bearing;
-/// (b) carries a body continuation (`execute`/`runtime_execute`) — a MANDATORY
-///     body is stashed as a `PostReplacementContinuation`
-///     (replacement.rs:7834-7847, `Resolved` for `runtime_execute` and `Template`
-///     for a CR 614.11 draw-count rider's `sub_ability`) and drained via
-///     `apply_pending_post_replacement_effect` (engine_replacement.rs:2273),
-///     which runs an arbitrary `ResolvedAbility` and can set a non-priority
-///     `waiting_for` (e.g. a Sacrifice body ⇒ EffectZoneChoice). `execute` is
-///     also rejected by item 5 (resource.rs:1058-1060); re-checked here so the
-///     guard does not depend on item ordering, and `runtime_execute` is NOT
-///     otherwise covered (item 5 scans it only for projected reads,
-///     resource.rs:976-981);
-/// (c) one of ≥2 defs competing for the SAME proposed-event class — CR 616.1
-///     material-ordering prompt (replacement.rs:8814-8838). A single mandatory
-///     quantity-mod def with no body (Bloodletter / Rhox Faithmender class on the
-///     life side, Teferi's Ageless Insight class on the draw side) trips NONE of
-///     these and resolves deterministically (replacement.rs:8839-8860).
-fn replacement_environment_may_prompt(
-    state: &GameState,
-    classes: crate::game::ability_scan::ReplacementPromptClasses,
-) -> bool {
-    let in_scope = |class: ReplacedEventClass| match class {
-        ReplacedEventClass::LifeGain | ReplacedEventClass::LifeLoss => classes.life,
-        ReplacedEventClass::Draw => classes.draw,
-    };
-    // CR 614.1 / CR 113.6: `active_replacements` is all-zones (its callers restrict).
-    // `find_applicable_replacements` — the real pipeline this over-approximates —
-    // scans [Battlefield, Command] (plus the entering/discarded card, irrelevant to a
-    // life or draw event). An in-class replacement on a card in the library / hand /
-    // graveyard cannot apply during the loop; scanning it is the same all-zones
-    // false-reject class as the observer firewalls, so match the pipeline's scope.
-    let object_defs = crate::game::functioning_abilities::active_replacements(state)
-        .filter(|(_, obj, _)| matches!(obj.zone, Zone::Battlefield | Zone::Command))
-        .map(|(_, _, def)| def);
-    let floating_defs = state
-        .pending_damage_replacements
-        .iter()
-        .filter(|def| !def.is_consumed);
-
-    let mut gain_defs = 0usize;
-    let mut loss_defs = 0usize;
-    let mut draw_defs = 0usize;
-    for def in object_defs.chain(floating_defs) {
-        let Some(class) = replacement_event_proposed_class(&def.event).filter(|c| in_scope(*c))
-        else {
-            continue;
-        };
-        // (a) single optional candidate prompts.
-        if crate::game::replacement::replacement_mode_is_optional(&def.mode) {
-            return true;
-        }
-        // (b) mandatory body-continuation drain is prompt-capable.
-        if def.execute.is_some() || def.runtime_execute.is_some() {
-            return true;
-        }
-        match class {
-            ReplacedEventClass::LifeGain => gain_defs += 1,
-            ReplacedEventClass::LifeLoss => loss_defs += 1,
-            ReplacedEventClass::Draw => draw_defs += 1,
-        }
-    }
-    // (c) ≥2 defs competing for one proposed-event class ⇒ CR 616.1 ordering prompt.
-    gain_defs >= 2 || loss_defs >= 2 || draw_defs >= 2
 }
 
 /// CR 614.1a: a replacement's BODY (not its `condition`) can read a projected
@@ -5571,7 +5525,13 @@ mod tests {
                 trigger_event: None,
                 description: None,
                 source_name: String::new(),
-                subject_match_count: None,
+                // CR 603.2c: the batched-subject count these entries' `event_amount()`
+                // drains resolve "that many" against. `bind_resolution_scope` lifts it
+                // into resolution scope; with it absent the drain's amount resolves to
+                // ZERO, the resolver proposes nothing, and gate (6)'s probe is
+                // fail-closed on the EMPTY derivation — a different fact from the ones
+                // these rows test.
+                subject_match_count: Some(1),
                 die_result: None,
             },
         }
@@ -5754,11 +5714,22 @@ mod tests {
     }
 
     fn bf_object(state: &mut GameState, id: u64) -> ObjectId {
+        bf_object_owned_by(state, id, PlayerId(1))
+    }
+
+    /// CR 614.1: a replacement definition's applicability is scoped to ITS
+    /// controller's events, so a fixture that installs a def to be DRAWN as a
+    /// candidate must put it on a permanent controlled by the player whose
+    /// event it is meant to replace. The event-derived discharge asks the
+    /// pipeline's own `find_applicable_replacements`, which honours that scope;
+    /// the def-scan it replaced deliberately ignored it (over-count ⇒
+    /// over-reject), so a P1-controlled def used to reject a P0 life gain.
+    fn bf_object_owned_by(state: &mut GameState, id: u64, owner: PlayerId) -> ObjectId {
         let oid = ObjectId(id);
         let object = crate::game::game_object::GameObject::new(
             oid,
             CardId(7),
-            PlayerId(1),
+            owner,
             "Test Board Permanent".to_string(),
             Zone::Battlefield,
         );
@@ -6443,8 +6414,12 @@ mod tests {
             "reach-guard: gate (4) passes ⇒ gate (6) is the rejector"
         );
         assert_eq!(
-            crate::game::ability_scan::ability_resolution_choice_freedom(may_ability),
-            crate::game::ability_scan::ResolutionChoiceFreedom::MayPrompt,
+            crate::game::resolution_prompt::ability_resolution_choice_freedom(
+                &c_may,
+                may_ability,
+                &mut ProbeBudget::new(PROBE_BUDGET)
+            ),
+            crate::game::resolution_prompt::ResolutionChoiceFreedom::MayPrompt,
             "reach-guard: CR 603.5 `optional` is what makes this entry MayPrompt"
         );
         assert!(
@@ -6624,8 +6599,14 @@ mod tests {
             let (mut p_life, mut c_life) = grown_window(2, optional_drain);
             let mut def = ReplacementDefinition::new(ReplacementEvent::LoseLife);
             def.mode = ReplacementMode::Optional { decline: None };
+            // CR 614.1a: a `valid_player`-less player-event replacement applies only
+            // to ITS controller's events (`replacement_source_player`). The residual
+            // this arm must re-arm is the drain's own `LifeLoss` on the OPPONENT
+            // (P1), so the def has to sit on a P1-controlled permanent to be drawn
+            // as a candidate at all. Measured: on a P0 permanent the same def draws
+            // ZERO candidates for `LifeLoss{P1}` and the arm would pass vacuously.
             for state in [&mut p_life, &mut c_life] {
-                let oid = bf_object(state, 812);
+                let oid = bf_object_owned_by(state, 812, PlayerId(1));
                 state
                     .objects
                     .get_mut(&oid)
@@ -6633,13 +6614,20 @@ mod tests {
                     .replacement_definitions
                     .push(def.clone());
             }
+            let life_loss = crate::types::proposed_event::ProposedEvent::LifeLoss {
+                player_id: PlayerId(1),
+                amount: 1,
+                applied: Default::default(),
+            };
             assert!(
-                replacement_environment_may_prompt(
+                crate::game::replacement::proposed_event_prompt_cause(
                     &c_life,
-                    crate::game::ability_scan::ReplacementPromptClasses::LIFE
-                ),
-                "reach-guard: the installed optional def makes the CR 616.1 surface \
-                 prompt-capable (arm 2's bare board does not)"
+                    &life_loss,
+                    crate::game::replacement::replacement_registry(),
+                )
+                .contains(crate::game::replacement::ReplacementPromptCause::OptionalCandidate),
+                "reach-guard: the installed optional def makes the CR 614.1a surface \
+                 prompt-capable for a LifeLoss event (arm 2's bare board does not)"
             );
             let slots = [churn_src_slot(&c_life, 0), churn_src_slot(&c_life, 1)];
             assert!(
@@ -7173,7 +7161,8 @@ mod tests {
         fn with_object_def(def: ReplacementDefinition) -> (GameState, GameState) {
             let (mut prior, mut current) = cover_base();
             for state in [&mut prior, &mut current] {
-                let oid = bf_object(state, 810);
+                // Owned by P0 — the player whose life gain these defs replace.
+                let oid = bf_object_owned_by(state, 810, PlayerId(0));
                 state
                     .objects
                     .get_mut(&oid)
@@ -7199,12 +7188,21 @@ mod tests {
         {
             let (mut prior, mut current) = cover_base();
             for state in [&mut prior, &mut current] {
-                let oid = bf_object(state, 811);
+                let oid = bf_object_owned_by(state, 811, PlayerId(0));
                 let obj = state.objects.get_mut(&oid).unwrap();
-                obj.replacement_definitions
-                    .push(ReplacementDefinition::new(ReplacementEvent::GainLife));
-                obj.replacement_definitions
-                    .push(ReplacementDefinition::new(ReplacementEvent::GainLife));
+                // CR 616.1: ordering is a choice only when it is MATERIAL. Two
+                // no-op definitions COMMUTE, so the fixture must carry two
+                // modifications whose composition order changes the result —
+                // `+1` then `×2` is 4, `×2` then `+1` is 3. The def-scan this
+                // replaces counted definitions instead of asking the pipeline.
+                let mut plus = ReplacementDefinition::new(ReplacementEvent::GainLife);
+                plus.quantity_modification =
+                    Some(crate::types::ability::QuantityModification::Plus { value: 1 });
+                let mut times = ReplacementDefinition::new(ReplacementEvent::GainLife);
+                times.quantity_modification =
+                    Some(crate::types::ability::QuantityModification::Times { factor: 2 });
+                obj.replacement_definitions.push(plus);
+                obj.replacement_definitions.push(times);
             }
             assert!(
                 !loop_states_cover_modulo_growth(&prior, &current),
@@ -7227,7 +7225,7 @@ mod tests {
             current.stack.push_back(l(21));
             current.stack.push_back(l(22));
             for state in [&mut prior, &mut current] {
-                let oid = bf_object(state, 812);
+                let oid = bf_object_owned_by(state, 812, PlayerId(0));
                 let mut def = ReplacementDefinition::new(ReplacementEvent::PayLife);
                 def.mode = ReplacementMode::Optional { decline: None };
                 state
@@ -11715,7 +11713,9 @@ mod tests {
     fn with_replacements(entry: StackEntry, defs: &[ReplacementDefinition]) -> GameState {
         let mut state = GameState::new_two_player(7);
         state.stack.push_back(entry);
-        let oid = bf_object(&mut state, 900);
+        // Owned by P0 — the player whose draw these defs are meant to replace
+        // (CR 614.1 scopes a def to its controller's events).
+        let oid = bf_object_owned_by(&mut state, 900, PlayerId(0));
         let object = state.objects.get_mut(&oid).expect("just inserted");
         for def in defs {
             object.replacement_definitions.push(def.clone());
@@ -11724,10 +11724,24 @@ mod tests {
     }
 
     fn repl(event: ReplacementEvent, optional: bool) -> ReplacementDefinition {
+        let is_draw = matches!(event, ReplacementEvent::Draw);
         let mut def = ReplacementDefinition::new(event);
         if optional {
             def.mode = crate::types::ability::ReplacementMode::Optional { decline: None };
         }
+        // CR 121.2: a Draw definition MUST declare whether it modifies the
+        // instruction's count or replaces one individual draw. The pipeline
+        // debug-asserts on a definition that declares neither; the def-scan this
+        // replaces never ran the pipeline, so the fixture could omit it.
+        if is_draw {
+            def.draw_scope = Some(crate::types::ability::DrawReplacementScope::IndividualDraw);
+        }
+        // CR 616.1: ordering is a player choice only when it is MATERIAL. Two
+        // no-op definitions commute, so a fixture built to exercise the ordering
+        // prompt must carry a modification whose composition order matters. The
+        // def-scan this replaces counted definitions instead of asking.
+        def.quantity_modification =
+            Some(crate::types::ability::QuantityModification::Plus { value: 1 });
         def
     }
 
@@ -11763,15 +11777,48 @@ mod tests {
         );
 
         // (iii) CR 616.1 material ordering: two MANDATORY draw replacements compete.
+        // The second one multiplies where the first adds — measured, `Plus` and
+        // `Times` are different `CommuteClass`es, so their composition order changes
+        // the drawn count and the affected player must order them. Two `Plus` defs
+        // COMMUTE and the pipeline correctly opens no prompt for them (measured
+        // `replacement_ordering_is_material == false`), which is why this arm cannot
+        // be built from two copies of `repl(..)`.
+        let material_pair = {
+            let mut doubler = repl(ReplacementEvent::Draw, false);
+            doubler.quantity_modification =
+                Some(crate::types::ability::QuantityModification::Times { factor: 2 });
+            [repl(ReplacementEvent::Draw, false), doubler]
+        };
+        {
+            let board = with_replacements(draw_entry(10), &material_pair);
+            let drawn_event = crate::types::proposed_event::ProposedEvent::Draw {
+                player_id: PlayerId(0),
+                count: 1,
+                applied: Default::default(),
+            };
+            let candidates = crate::game::replacement::find_applicable_replacements(
+                &board,
+                &drawn_event,
+                crate::game::replacement::replacement_registry(),
+            );
+            assert_eq!(
+                candidates.len(),
+                2,
+                "reach-guard: the live candidate authority draws BOTH defs for the \
+                 event this entry's resolution proposes"
+            );
+            assert!(
+                crate::game::replacement::replacement_ordering_is_material(
+                    &board,
+                    &candidates,
+                    &drawn_event
+                ),
+                "reach-guard: those two candidates really are CR 616.1 order-material"
+            );
+        }
         assert!(
             !stack_choices_are_all_specified(
-                &with_replacements(
-                    draw_entry(10),
-                    &[
-                        repl(ReplacementEvent::Draw, false),
-                        repl(ReplacementEvent::Draw, false)
-                    ]
-                ),
+                &with_replacements(draw_entry(10), &material_pair),
                 PlayerId(0),
                 &[]
             ),
@@ -11824,5 +11871,343 @@ mod tests {
             ),
             "positive control: the life guard still rejects its own class"
         );
+    }
+
+    // ── §6 R24: the probe resolves on `resolve_top`'s board ──
+
+    /// A drain entry whose `EventContextAmount` resolves against a batched
+    /// subject count of `match_count` (CR 603.2c) rather than `churn_entry`'s
+    /// fixed `Some(1)` — a distinctive amount is what makes R24(a)'s equality
+    /// non-degenerate.
+    fn scoped_drain_entry(
+        id: u64,
+        match_count: Option<u32>,
+        condition: Option<TriggerCondition>,
+    ) -> StackEntry {
+        let mut ability = lose_life_targeting(event_amount(), opp_typed(vec![]));
+        ability.targets = vec![TargetRef::Player(PlayerId(1))];
+        StackEntry {
+            id: ObjectId(id),
+            source_id: ObjectId(CHURN_SRC),
+            controller: PlayerId(0),
+            kind: StackEntryKind::TriggeredAbility {
+                source_id: ObjectId(CHURN_SRC),
+                ability: Box::new(ability),
+                condition,
+                trigger_event: None,
+                description: None,
+                source_name: String::new(),
+                subject_match_count: match_count,
+                die_result: None,
+            },
+        }
+    }
+
+    /// **§6 R24 — THE PROBE RESOLVES ON `resolve_top`'s BOARD: SCOPE BOUND,
+    /// ENTRY OFF THE STACK, CR 603.4 RE-CHECKED.**
+    ///
+    /// Three arms, each keyed to one thing the classifier gets wrong when it is
+    /// handed the raw pre-resolution board instead of the one
+    /// `resolve_top` hands `resolve_ability_chain`.
+    ///
+    /// * **(a) THE EVENT-CONTEXT AXIS — the FAIL-OPEN closer.** A
+    ///   `LoseLife { amount: Ref(EventContextAmount) }` drain (the Sanguine Bond
+    ///   shape) resolves "that many" against the entry's batched subject count
+    ///   (CR 603.2c), which only `bind_resolution_scope` lifts. The derived
+    ///   `ProposedEvent::LifeLoss.amount` must equal the amount the LIVE
+    ///   resolution proposes, and must be non-zero. Without the lift the derived
+    ///   amount is 0 — a `> 0`-gated virtual candidate is then never drawn and
+    ///   the probe certifies a resolution the live pipeline would prompt on.
+    ///   REVERT-PROBE (RUN): hand `probe_resolution` the raw board (drop the
+    ///   `bind_resolution_scope` call from `stack_entry_resolution_choice_freedom`)
+    ///   ⇒ derived `0` vs live `7` ⇒ FLIPS.
+    /// * **(b) CR 603.4.** The same entry with a FALSE intervening-if ⇒
+    ///   `bind_resolution_scope` returns `false` ⇒ `MayPrompt`; matched against
+    ///   the TRUE twin, which classifies. Direction note, so the arm is not
+    ///   over-claimed: skipping the re-check is fail-CLOSED (a superset of
+    ///   events draws a superset of candidates), so (b) is a FIDELITY arm —
+    ///   (a) is the fail-open closer.
+    /// * **(c) AMOUNT-INSENSITIVITY, and the zero arm RE-KEYED ON A
+    ///   MEASUREMENT.** On one board with a single in-class (Compleated,
+    ///   CR 702.150a) virtual candidate, sweeping the ability's resolved count
+    ///   over `{1, 2, 7, 99}` yields an IDENTICAL candidate set — candidate
+    ///   selection is amount-insensitive ABOVE zero. The `0` arm does NOT reach
+    ///   the zero-payload accounting guard the plan predicted: measured, a
+    ///   zero-count resolution proposes no event at all (as do
+    ///   `DealDamage { amount: 0 }` and `Draw { count: 0 }`), so the refusal is
+    ///   the `is_empty` arm and the plan's stated revert-probe for this arm
+    ///   cannot reproduce. Both facts are asserted in place, with the
+    ///   guard's own classification pinned separately on the partition. See the
+    ///   block comment at the arm.
+    ///
+    /// REACH-GUARDS on every arm: `bind_resolution_scope` is asserted to have
+    /// returned `true` and the probe to have returned `Events(..)` on each
+    /// positive arm, so a board that refuses for an unrelated reason fails
+    /// LOUDLY instead of passing a negative vacuously.
+    #[test]
+    fn the_probe_resolves_on_resolve_tops_board_with_scope_bound_and_603_4_rechecked() {
+        use crate::game::resolution_prompt::ResolutionChoiceFreedom;
+        use crate::types::proposed_event::ProposedEvent;
+
+        // ── (a) the event-context axis ──
+        const MATCHES: u32 = 7;
+        let mut state = drain_state(2);
+        let entry = scoped_drain_entry(20, Some(MATCHES), None);
+        state.stack.push_back(entry.clone());
+
+        // Reach-guard: the binding this arm is about actually succeeds.
+        let mut board = state.clone();
+        board.stack.retain(|e| e.id != entry.id);
+        assert!(
+            crate::game::stack::bind_resolution_scope(&mut board, &entry, None),
+            "reach-guard: no CR 603.4 condition on this entry ⇒ the scope binds"
+        );
+
+        let freedom = stack_entry_resolution_choice_freedom(
+            &state,
+            &entry,
+            &mut ProbeBudget::new(PROBE_BUDGET),
+        );
+        let ResolutionChoiceFreedom::FreeUnlessReplacements(derived) = freedom else {
+            panic!("reach-guard: the probe must return Events(..) on this board, got {freedom:?}");
+        };
+        let derived_amount = derived
+            .iter()
+            .find_map(|event| match event {
+                ProposedEvent::LifeLoss {
+                    player_id, amount, ..
+                } if *player_id == PlayerId(1) => Some(*amount),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("no LifeLoss on P1 in the derived set: {derived:?}"));
+
+        let mut live = state.clone();
+        let before = live.players[1].life;
+        let mut events = Vec::new();
+        crate::game::stack::resolve_top(&mut live, &mut events);
+        let live_amount = before - live.players[1].life;
+        assert_eq!(
+            i64::from(derived_amount),
+            i64::from(live_amount),
+            "CR 603.2c + CR 608.2k: the derived amount must equal the one the LIVE \
+             resolution proposes — an unbound scope resolves EventContextAmount \
+             against an absent context"
+        );
+        assert_eq!(
+            derived_amount, MATCHES,
+            "non-degeneracy: the amount is the lifted batched subject count, not zero \
+             and not a coincidental 1"
+        );
+
+        // ── (b) CR 603.4 intervening-if re-check ──
+        // `drain_state` builds a standard-format board (20 starting life; the `7`
+        // it passes is the RNG seed), so `LifeTotalGE 6` is TRUE and `LifeTotalGE 30`
+        // FALSE for the entry's controller.
+        for (label, condition, binds) in [
+            ("TRUE", TriggerCondition::LifeTotalGE { minimum: 6 }, true),
+            (
+                "FALSE",
+                TriggerCondition::LifeTotalGE { minimum: 30 },
+                false,
+            ),
+        ] {
+            let mut s = drain_state(2);
+            let e = scoped_drain_entry(21, Some(MATCHES), Some(condition));
+            s.stack.push_back(e.clone());
+
+            let mut b = s.clone();
+            b.stack.retain(|x| x.id != e.id);
+            assert_eq!(
+                crate::game::stack::bind_resolution_scope(&mut b, &e, None),
+                binds,
+                "reach-guard: the CR 603.4 re-check is what decides arm ({label})"
+            );
+
+            let verdict =
+                stack_entry_resolution_choice_freedom(&s, &e, &mut ProbeBudget::new(PROBE_BUDGET));
+            if binds {
+                assert!(
+                    matches!(verdict, ResolutionChoiceFreedom::FreeUnlessReplacements(_)),
+                    "the condition-TRUE twin classifies ({label}); got {verdict:?}"
+                );
+            } else {
+                assert_eq!(
+                    verdict,
+                    ResolutionChoiceFreedom::MayPrompt,
+                    "CR 603.4: a FALSE intervening-if means the live resolution proposes \
+                     NOTHING, and an empty derivation is never safe ({label})"
+                );
+            }
+        }
+
+        // ── (c) amount-insensitivity above zero, and the zero-payload guard ──
+        let mut counter_state = drain_state(2);
+        {
+            // CR 702.150a: the Compleated virtual AddCounter candidate is drawn
+            // only for a loyalty placement on a source whose Phyrexian life was paid.
+            let src = counter_state
+                .objects
+                .get_mut(&ObjectId(CHURN_SRC))
+                .expect("fixture: the churn source exists");
+            src.phyrexian_life_paid = 2;
+            src.keywords
+                .push(crate::types::keywords::Keyword::Compleated);
+        }
+        let loyalty_ability = |count: i32| {
+            ResolvedAbility::new(
+                Effect::PutCounter {
+                    target: TargetFilter::SelfRef,
+                    counter_type: crate::types::counter::CounterType::Loyalty,
+                    count: QuantityExpr::Fixed { value: count },
+                },
+                vec![],
+                ObjectId(CHURN_SRC),
+                PlayerId(0),
+            )
+        };
+        let counter_entry = |count: i32| {
+            let mut e = scoped_drain_entry(22, Some(MATCHES), None);
+            let StackEntryKind::TriggeredAbility { ability, .. } = &mut e.kind else {
+                unreachable!("scoped_drain_entry builds a TriggeredAbility")
+            };
+            **ability = loyalty_ability(count);
+            e
+        };
+
+        let mut candidate_sets = Vec::new();
+        for count in [1, 2, 7, 99] {
+            let e = counter_entry(count);
+            let mut s = counter_state.clone();
+            s.stack.push_back(e.clone());
+            let verdict =
+                stack_entry_resolution_choice_freedom(&s, &e, &mut ProbeBudget::new(PROBE_BUDGET));
+            let ResolutionChoiceFreedom::FreeUnlessReplacements(events) = verdict else {
+                panic!("reach-guard: count {count} must probe to Events(..), got {verdict:?}");
+            };
+            let add = events
+                .iter()
+                .find(|event| matches!(event, ProposedEvent::AddCounter { .. }))
+                .unwrap_or_else(|| panic!("count {count} derived no AddCounter: {events:?}"));
+            candidate_sets.push(crate::game::replacement::find_applicable_replacements(
+                &s,
+                add,
+                crate::game::replacement::replacement_registry(),
+            ));
+        }
+        assert!(
+            !candidate_sets[0].is_empty(),
+            "reach-guard: the CR 702.150a Compleated virtual candidate IS drawn above \
+             zero — without it the sweep would compare four empty sets"
+        );
+        assert!(
+            candidate_sets.windows(2).all(|pair| pair[0] == pair[1]),
+            "CR 614.1a: candidate SELECTION is amount-insensitive above zero; got \
+             {candidate_sets:?}"
+        );
+
+        // The `0` arm, RE-KEYED ON A MEASUREMENT that contradicts the plan's
+        // stated mechanism — recorded here rather than papered over.
+        //
+        // The plan expects a zero-count `PutCounter` to DERIVE an
+        // `AddCounter { count: 0 }` which the zero-payload guard then classifies
+        // Unaccounted (arm 4). Measured on this board: the zero-count resolution
+        // proposes NOTHING AT ALL — and so do `DealDamage { amount: 0 }` and
+        // `Draw { count: 0 }`, the other two zero-payload classes. Every counter/
+        // damage/draw resolver short-circuits above the pipeline at zero. So no
+        // zero-payload `ProposedEvent` is reachable through the six allow-listed
+        // classes, the refusal below is arm 3 (`is_empty`), and the plan's
+        // (c) revert-probe (delete the `AddCounter { count: 0 }` guard ⇒ the
+        // derivation certifies) CANNOT REPRODUCE — there is no derivation to
+        // certify. DIRECTION: fail-CLOSED either way, so this is a coverage fact,
+        // not a hole. The guards remain correct defence-in-depth for events
+        // proposed by non-allow-listed routes and are pinned directly on the
+        // partition in BOTH directions by
+        // `resolution_prompt::tests::an_unaccounted_derived_event_is_prompted_in_the_resolver`.
+        let zero_entry = counter_entry(0);
+        let mut zero_state = counter_state.clone();
+        zero_state.stack.push_back(zero_entry.clone());
+        let mut zero_board = zero_state.clone();
+        zero_board.stack.retain(|e| e.id != zero_entry.id);
+        assert!(
+            crate::game::stack::bind_resolution_scope(&mut zero_board, &zero_entry, None),
+            "reach-guard: the zero arm's refusal is not the CR 603.4 arm"
+        );
+        let zero_events = crate::game::replacement::record_proposed_events(|| {
+            let mut work = zero_board.clone();
+            let mut sink = Vec::new();
+            let _ = crate::game::effects::resolve_ability_chain(
+                &mut work,
+                &loyalty_ability(0),
+                &mut sink,
+                0,
+            );
+        });
+        assert!(
+            zero_events.is_empty(),
+            "MEASURED, and the reason the arm is re-keyed: a zero count proposes no \
+             event at all; recorded {zero_events:?}. If this ever becomes non-empty the \
+             accounting arm becomes the reachable one and this arm must be re-keyed \
+             back onto it."
+        );
+        assert!(
+            !crate::game::replacement::event_is_accounted(&ProposedEvent::AddCounter {
+                placement: crate::types::proposed_event::CounterPlacement::Object {
+                    actor: PlayerId(0),
+                    object_id: ObjectId(CHURN_SRC),
+                    counter_type: crate::types::counter::CounterType::Loyalty,
+                },
+                count: 0,
+                applied: Default::default(),
+            }),
+            "the CR 702.150a zero-payload guard still classifies the event Unaccounted \
+             — it is simply not reachable from an allow-listed resolution"
+        );
+        assert_eq!(
+            stack_entry_resolution_choice_freedom(
+                &zero_state,
+                &zero_entry,
+                &mut ProbeBudget::new(PROBE_BUDGET)
+            ),
+            ResolutionChoiceFreedom::MayPrompt,
+            "CR 732.2a: at zero the live pipeline draws no candidate (`count > 0`) and \
+             the resolution proposes nothing, so the probe refuses fail-CLOSED rather \
+             than certifying an empty derivation"
+        );
+    }
+
+    /// CR 732.2a: `BUDGET-EXCEEDED ⇒ Prompted` is what keeps the probe's cost a
+    /// COVERAGE knob rather than an unbounded player-facing stall, so the budget
+    /// must actually stop granting and must LATCH the denial (an exhaustion that
+    /// is only inferable from a zero remainder cannot be attributed).
+    ///
+    /// Both directions asserted so neither can go vacuous: exactly
+    /// [`PROBE_BUDGET`] charges are granted with `denied()` still `false`, and
+    /// only the charge AFTER that flips it.
+    #[test]
+    fn probe_budget_grants_exactly_its_cap_then_latches_the_denial() {
+        let mut budget = ProbeBudget::new(PROBE_BUDGET);
+        for i in 0..PROBE_BUDGET {
+            assert!(
+                budget.try_charge_one(),
+                "charge {i} of {PROBE_BUDGET} must be granted"
+            );
+            assert!(
+                !budget.denied(),
+                "no denial may be latched while charges are still granted (after {i})"
+            );
+        }
+        assert!(
+            !budget.try_charge_one(),
+            "the charge past the cap must be refused"
+        );
+        assert!(
+            budget.denied(),
+            "the exhaustion fact must be latched, not inferred from the remainder"
+        );
+        // A zero-cap budget denies its FIRST charge — the shape a lowered cap
+        // takes, and the reason exhaustion is fail-closed rather than silent.
+        let mut starved = ProbeBudget::new(0);
+        assert!(!starved.try_charge_one());
+        assert!(starved.denied());
     }
 }
