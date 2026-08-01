@@ -355,7 +355,7 @@ fn drive_collect_primed(
             primed = state
                 .loop_detect_ring
                 .iter()
-                .any(|prior| loop_states_equal_modulo_resources(prior, state));
+                .any(|prior| loop_states_equal_modulo_resources(&prior.normalized, state));
         }
     }
     (all, runner.state().waiting_for.clone(), primed, declined)
@@ -6105,8 +6105,10 @@ fn drawgo_ring_spans_turns_but_never_offers() {
         let before = state.loop_detect_ring.len();
         let pair = (witness.is_none() && turn_based && before >= 4)
             .then(|| {
-                let front = state.loop_detect_ring.front()?.clone();
-                let back = state.loop_detect_ring.back()?.clone();
+                // The witness reports on the basis-B turn conjunct, which reads the
+                // CR 104.4b comparand half.
+                let front = state.loop_detect_ring.front()?.normalized.clone();
+                let back = state.loop_detect_ring.back()?.normalized.clone();
                 (front.turn_number < state.turn_number).then_some((front, back))
             })
             .flatten();
@@ -6121,8 +6123,8 @@ fn drawgo_ring_spans_turns_but_never_offers() {
                 front.turn_number,
                 before,
                 state.loop_detect_ring.len(),
-                (*front).clone(),
-                (*back).clone(),
+                front.clone(),
+                back.clone(),
             ));
         }
     }
@@ -10055,5 +10057,122 @@ fn a_declared_target_made_illegal_mid_drive_stops_short_and_never_retargets() {
         runner.state().battlefield.contains(&hexproof_src),
         "the roll-back is scoped to the DRIVE: the board change that made the pin illegal is \
          not undone by the abort"
+    );
+}
+
+/// **Row R27 conjunct (a1) — THE SPLIT IS REAL AND THE TWO HALVES DIFFER.**
+///
+/// CR 104.4b + CR 732.2a: `LoopDetectSample` separates the equality *comparand* from the
+/// shortcut *evaluable*. Every later conjunct of R27 (a2/a3/b/c, U3) asserts that a
+/// period-touch consumer reads the un-normalized half; **all of them are false PASSes if
+/// the two halves happen to hold the same thing.** This row is the BASE/POST discipline
+/// applied to the split itself: it pins that a real production sample's halves DIFFER on
+/// the axis that made the split necessary.
+///
+/// The axis is the object allocator. `normalize_for_loop` zeroes `next_object_id`
+/// (`types/game_state.rs`, `clone.next_object_id = 0;`) while the live sample keeps it,
+/// and `zones::create_object` allocates `ObjectId(state.next_object_id)` then
+/// `state.objects.insert(id, obj)` — so evaluating a token creation against a normalized
+/// frame allocates `ObjectId(0)` and REPLACES whatever object id 0 is, corrupting the map
+/// the resolution runs on. That is the concrete defect the split exists to prevent.
+///
+/// **Revert-probe:** make `GameState::loop_detect_live_sample` return
+/// `self.normalize_for_loop()` (i.e. collapse the split) ⇒ `live.next_object_id` becomes
+/// `0` ⇒ the `assert_ne!` and the `live == pre_sample` assertion both FAIL. The row is
+/// deliberately NOT sensitive to which half any consumer reads — that is (a2)/(a3)'s job —
+/// so it stays the honest positive control while those arms are the subject.
+///
+/// Fixture: the tracked `dellian_emblem_conqueror_4p` dump, driven through the production
+/// `apply()` path so the ring is populated by `record_loop_detect_sample` itself and not by
+/// a hand-built fixture.
+#[test]
+fn a_recorded_loop_detect_sample_keeps_a_live_half_normalization_would_have_erased() {
+    let json = gunzip_dump(include_bytes!(
+        "../fixtures/dellian_emblem_conqueror_4p.json.gz"
+    ));
+    let mut state = restore_dump(&json);
+
+    // ── REACH-GUARDS. Without these the assertions below are vacuous.
+    assert!(
+        state.loop_detection.samples(),
+        "reach-guard: the dump must load with a SAMPLING loop-detection mode, else no sample \
+         is ever recorded; got {:?}",
+        state.loop_detection
+    );
+    assert_eq!(
+        state.loop_detect_ring.len(),
+        0,
+        "reach-guard: the dump ships with an EMPTY ring — every frame below was accumulated by \
+         THIS drive through the production producer, not restored from the dump"
+    );
+
+    let pin = engine_live_opponents(&state, P0).first().copied();
+
+    // Drive until the production sampler has recorded at least one sample, capturing the
+    // live `next_object_id` observed at the beat immediately BEFORE the ring grew. That
+    // pre-sample value is what the `live` half must have preserved.
+    let mut witness: Option<(u64, u64, u64, u64)> = None;
+    for _ in 0..400 {
+        if matches!(state.waiting_for, WaitingFor::LoopShortcut { .. }) {
+            break;
+        }
+        let before = state.loop_detect_ring.len();
+        let next_object_id_before = state.next_object_id;
+        if dump_drive_one_beat(&mut state, pin).is_err() {
+            break;
+        }
+        if state.loop_detect_ring.len() > before {
+            let sample = state
+                .loop_detect_ring
+                .back()
+                .expect("the ring just grew, so it has a back element");
+            witness = Some((
+                next_object_id_before,
+                sample.live.next_object_id,
+                sample.normalized.next_object_id,
+                state.next_object_id,
+            ));
+            break;
+        }
+    }
+
+    let (before_beat, live, normalized, after_beat) = witness.expect(
+        "reach-guard: the drive must record at least one loop-detect sample, else this row \
+         asserts about a ring that was never populated and passes vacuously",
+    );
+
+    // The whole point of the axis: it must be non-degenerate on this board, so that
+    // `live != normalized` is a real inequality and not `0 != 0` dressed up, and so that
+    // the lower bound below actually bites.
+    assert!(
+        before_beat > 0,
+        "reach-guard: the allocator axis must be non-degenerate — a board that had allocated \
+         ZERO objects makes the split unobservable on this axis and every assertion below \
+         trivially true; got next_object_id = {before_beat}"
+    );
+
+    // ── THE CLAIM, both directions.
+    assert_eq!(
+        normalized, 0,
+        "CR 104.4b: the comparand half is `normalize_for_loop()`d, which zeroes the volatile \
+         monotonic allocator so two positions reached at different times can compare equal"
+    );
+    // The sampler runs at the POST-pipeline frame, so objects allocated earlier in the same
+    // beat are already counted: the live half is bracketed by the beat's own endpoints
+    // rather than equal to either. Collapsing the split drives it to 0, which is below
+    // `before_beat` (> 0 by the reach-guard above) and so fails this bound.
+    assert!(
+        (before_beat..=after_beat).contains(&live),
+        "CR 732.2a: the evaluable half is the beat un-normalized — it must carry the live \
+         allocator cursor as of the post-pipeline frame the sampler runs at, i.e. inside \
+         [{before_beat}, {after_beat}], because a shortcut's 'predictable results' are \
+         evaluated by really resolving against it and `zones::create_object` allocates \
+         `ObjectId(state.next_object_id)`; got {live}"
+    );
+    assert_ne!(
+        live, normalized,
+        "THE SPLIT IS REAL: if the two halves agreed on this axis, R27's later conjuncts \
+         (a2)/(a3)/(b)/(c) — every one of which asserts that a period-touch consumer reads the \
+         un-normalized half — would be satisfiable by a build in which the split does not exist"
     );
 }

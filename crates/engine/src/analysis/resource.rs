@@ -949,7 +949,7 @@ pub(crate) fn ring_delta_signature(state: &GameState) -> Option<(u32, ResourceVe
     let snaps: Vec<ResourceVector> = state
         .loop_detect_ring
         .iter()
-        .map(|f| ResourceVector::snapshot(f))
+        .map(|f| ResourceVector::snapshot(&f.normalized))
         .collect();
     let deltas: Vec<ResourceVector> = snaps
         .windows(2)
@@ -999,7 +999,7 @@ pub(crate) fn ring_delta_signature(state: &GameState) -> Option<(u32, ResourceVe
             .loop_detect_ring
             .iter()
             .skip(frames - (2 * k + 1))
-            .map(|f| f.as_ref())
+            .map(|f| &f.normalized)
             .collect();
         if !window.windows(2).all(|w| {
             window_scope_from_cover_frames(w[0], w[1], None)
@@ -11271,9 +11271,14 @@ mod tests {
             for &life in lives {
                 let mut frame = GameState::new_two_player(0);
                 frame.players[1].life = life;
-                state
-                    .loop_detect_ring
-                    .push_back(std::sync::Arc::new(frame.normalize_for_loop()));
+                // Both halves built exactly as `record_loop_detect_sample` builds them, so
+                // the fixture cannot diverge from production's construction.
+                state.loop_detect_ring.push_back(std::sync::Arc::new(
+                    crate::types::LoopDetectSample {
+                        normalized: frame.normalize_for_loop(),
+                        live: frame.loop_detect_live_sample(),
+                    },
+                ));
             }
             state
         }
@@ -11357,7 +11362,11 @@ mod tests {
                 .loop_detect_ring
                 .back_mut()
                 .expect("the ring was just built with three frames");
-            std::sync::Arc::make_mut(last).turn_number += 1;
+            // `.normalized` is the half the subject reads (`ring_delta_signature` →
+            // `window_scope_from_cover_frames`). Retargeting this to `.live` makes the
+            // subject see no turn crossing ⇒ `Some` ⇒ the `assert_eq!(.., None, ..)` below
+            // FAILS LOUDLY. That is the arm working, not a reason to weaken the assertion.
+            std::sync::Arc::make_mut(last).normalized.turn_number += 1;
         }
         assert_eq!(
             ring_delta_signature(&turn_crossing),
@@ -11536,7 +11545,10 @@ mod tests {
                 // Same trajectory, same ring, ONE axis neutralized.
                 let mut flat = state.clone();
                 for frame in flat.loop_detect_ring.iter_mut() {
-                    let f = std::sync::Arc::make_mut(frame);
+                    // `.normalized` is the half the subject reads. Writing `.live` instead
+                    // leaves the axis un-flattened ⇒ `flattened_some == 0` ⇒ the shipped
+                    // `assert!(flattened_some > 0, ..)` below FAILS LOUDLY.
+                    let f = &mut std::sync::Arc::make_mut(frame).normalized;
                     f.turn_number = 1;
                     f.phase = Phase::Upkeep;
                 }

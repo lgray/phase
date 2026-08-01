@@ -593,7 +593,7 @@ fn reconcile_terminal_result(state: &mut GameState, result: &mut ActionResult) {
             LoopDetectionMode::On => {
                 // Clone the Arc handles (cheap refcount bumps) to release the borrow on the
                 // ring before the GameOver mutation below.
-                let priors: Vec<std::sync::Arc<GameState>> =
+                let priors: Vec<std::sync::Arc<crate::types::LoopDetectSample>> =
                     state.loop_detect_ring.iter().cloned().collect();
                 let cur = crate::analysis::resource::ResourceVector::snapshot(state);
                 // Carry the matching cycle's `delta` out of the scan alongside the winner so
@@ -604,17 +604,19 @@ fn reconcile_terminal_result(state: &mut GameState, result: &mut ActionResult) {
                 // fails either seam gate, continue scanning older priors (fail-safe).
                 if let Some((winner, delta)) = priors.iter().enumerate().find_map(|(k, prior)| {
                     let delta = crate::analysis::resource::ResourceVector::delta(
-                        &crate::analysis::resource::ResourceVector::snapshot(prior),
+                        &crate::analysis::resource::ResourceVector::snapshot(&prior.normalized),
                         &cur,
                     );
                     let winner = crate::analysis::loop_check::live_mandatory_loop_winner(
-                        prior, state, &delta,
+                        &prior.normalized,
+                        state,
+                        &delta,
                     )?;
                     // The matched window: the prior frame at `k`, every subsequent ring frame,
                     // then the live state — all per-resolution, no gaps (a non-sampling beat
                     // clears the ring, so a confirmed window is gap-free).
                     let mut frames: Vec<&GameState> =
-                        priors[k..].iter().map(|p| p.as_ref()).collect();
+                        priors[k..].iter().map(|p| &p.normalized).collect();
                     frames.push(state);
                     // CR 704.5a + CR 104.4a (m9): the winner (sole non-faller) must never dip
                     // across the window — a transient intra-cycle dip a net-delta check cannot
@@ -750,7 +752,9 @@ fn interactive_loop_bridge(state: &mut GameState, result: &mut ActionResult) {
             // CR 732.2a: OPTIONAL winning drain — only the player with priority may propose
             // the shortcut. Keep that proposer distinct from the already-measured winner; a
             // loop can be detected during a different player's priority window.
-            let certificate = build_cert(prior.as_ref(), state, &delta, winner);
+            // `build_cert`'s only use of the frame is `board_delta(prior, state)`, a
+            // comparand read ⇒ the CR 104.4b `.normalized` half.
+            let certificate = build_cert(&prior.normalized, state, &delta, winner);
             // CR 732.2a: a non-targeted drain reifies no per-iteration player choice ⇒ carry an
             // empty pin list; only the `iteration_count` (from `win_kind`) is populated.
             let WaitingFor::Priority { player: proposer } = state.waiting_for else {
@@ -798,10 +802,11 @@ fn interactive_loop_bridge(state: &mut GameState, result: &mut ActionResult) {
     // found no determinate winner. `mandatory` gates it (CR 732.5); a loss axis or an
     // optional loop falls through to the pre-feature halt.
     if mandatory {
-        let priors: Vec<std::sync::Arc<GameState>> =
+        let priors: Vec<std::sync::Arc<crate::types::LoopDetectSample>> =
             state.loop_detect_ring.iter().cloned().collect();
         let cur = crate::analysis::resource::ResourceVector::snapshot(state);
         for prior in &priors {
+            let prior = &prior.normalized;
             let delta = crate::analysis::resource::ResourceVector::delta(
                 &crate::analysis::resource::ResourceVector::snapshot(prior),
                 &cur,
@@ -840,10 +845,11 @@ fn interactive_loop_bridge(state: &mut GameState, result: &mut ActionResult) {
     // under their own control", the closest live realization of CR 104.4b's grant.
     if !mandatory {
         let controller = state.active_player; // sampler gate is Priority{active_player}: the driver
-        let priors: Vec<std::sync::Arc<GameState>> =
+        let priors: Vec<std::sync::Arc<crate::types::LoopDetectSample>> =
             state.loop_detect_ring.iter().cloned().collect();
         let cur = crate::analysis::resource::ResourceVector::snapshot(state);
         for prior in &priors {
+            let prior = &prior.normalized;
             let delta = crate::analysis::resource::ResourceVector::delta(
                 &crate::analysis::resource::ResourceVector::snapshot(prior),
                 &cur,
@@ -937,17 +943,22 @@ fn find_live_loop_winner(
 ) -> Option<(
     PlayerId,
     crate::analysis::resource::ResourceVector,
-    std::sync::Arc<GameState>,
+    std::sync::Arc<crate::types::LoopDetectSample>,
 )> {
-    let priors: Vec<std::sync::Arc<GameState>> = state.loop_detect_ring.iter().cloned().collect();
+    let priors: Vec<std::sync::Arc<crate::types::LoopDetectSample>> =
+        state.loop_detect_ring.iter().cloned().collect();
     let cur = crate::analysis::resource::ResourceVector::snapshot(state);
     priors.iter().enumerate().find_map(|(k, prior)| {
         let delta = crate::analysis::resource::ResourceVector::delta(
-            &crate::analysis::resource::ResourceVector::snapshot(prior),
+            &crate::analysis::resource::ResourceVector::snapshot(&prior.normalized),
             &cur,
         );
-        let winner = crate::analysis::loop_check::live_mandatory_loop_winner(prior, state, &delta)?;
-        let mut frames: Vec<&GameState> = priors[k..].iter().map(|p| p.as_ref()).collect();
+        let winner = crate::analysis::loop_check::live_mandatory_loop_winner(
+            &prior.normalized,
+            state,
+            &delta,
+        )?;
+        let mut frames: Vec<&GameState> = priors[k..].iter().map(|p| &p.normalized).collect();
         frames.push(state);
         if !crate::analysis::loop_check::winner_life_never_dips(&frames, winner) {
             return None;
@@ -1090,7 +1101,12 @@ pub fn try_offer_bounded_cycle_shortcut(
     // copy … the `On` arm stays VERBATIM (byte-identity gate)" — and retargeting the four
     // shipped walks would edit byte-identity-gated paths inside a feature commit. Newest
     // prior first: the most recent recurrence is the least extrapolation.
-    let ring: Vec<&GameState> = state.loop_detect_ring.iter().map(|f| f.as_ref()).collect();
+    // CR 104.4b comparand half — every certification reader, unchanged in value from HEAD.
+    let ring: Vec<&GameState> = state
+        .loop_detect_ring
+        .iter()
+        .map(|f| &f.normalized)
+        .collect();
     let cur = ResourceVector::snapshot(state);
     let basis_a = ring.iter().enumerate().rev().find_map(|(idx, &prior)| {
         // The span, in RETAINED RING FRAMES, that this candidate pair covers.
@@ -13862,9 +13878,13 @@ mod bounded_offer_conjunct_tests {
         for i in 0..frames {
             let mut frame = state.clone();
             shape(&mut frame, i);
+            // Both halves built exactly as `record_loop_detect_sample` builds them.
             state
                 .loop_detect_ring
-                .push_back(std::sync::Arc::new(frame.normalize_for_loop()));
+                .push_back(std::sync::Arc::new(crate::types::LoopDetectSample {
+                    normalized: frame.normalize_for_loop(),
+                    live: frame.loop_detect_live_sample(),
+                }));
         }
         state
     }
@@ -14089,7 +14109,7 @@ mod bounded_offer_conjunct_tests {
             .loop_detect_ring
             .back()
             .expect("the fixture builds a ring")
-            .as_ref()
+            .normalized
             .clone();
         assert!(
             loop_states_equal_modulo_resources(&newest, &state),

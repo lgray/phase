@@ -12706,6 +12706,32 @@ impl<'de> Deserialize<'de> for PendingLiminalEntryResume {
     }
 }
 
+/// CR 104.4b + CR 732.2a: ONE retained loop-detection sample, with its two roles
+/// separated at the type level.
+///
+/// `normalized` is the **CR 104.4b comparand** — the only half
+/// `loop_states_equal_modulo_resources` / `loop_states_cover_modulo_growth*` /
+/// `ring_delta_signature` may read. It is byte-identical to the frame the ring held
+/// before the split, because [`GameState::normalize_for_loop`] is unchanged.
+///
+/// `live` is the **CR 732.2a evaluable** — the same beat un-normalized, and the only
+/// half the period-touch consumers may read. Normalization zeroes `next_object_id` and
+/// runs `clear_trigger_identity_recursive`, so evaluating a resolution against a
+/// normalized frame allocates `ObjectId(0)` over a live object and loses the trigger
+/// source identity; those are inputs to a mint and to a resolution probe, never to an
+/// equality comparand.
+///
+/// `Clone` is load-bearing, not decoration: ring elements are written through
+/// `Arc::make_mut` (two sites in `analysis/resource.rs`), which is bounded
+/// `T: CloneToUninit` ⇐ `T: Clone`. `PartialEq`/`Serialize`/`Default` are deliberately
+/// absent — the field is `#[serde(skip, default)]` and excluded from `impl PartialEq for
+/// GameState`, so no site needs them.
+#[derive(Debug, Clone)]
+pub struct LoopDetectSample {
+    pub normalized: GameState,
+    pub live: GameState,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GameState {
     pub turn_number: u32,
@@ -12988,7 +13014,9 @@ pub struct GameState {
     )]
     pub static_mode_presence: crate::types::statics::StaticModePresence,
     /// CR 732.2a loop-shortcut detection ring (PR-3). A bounded FIFO of recent
-    /// post-resolution NORMALIZED board snapshots, captured at the post-pipeline frame
+    /// post-resolution [`LoopDetectSample`]s — each carrying BOTH the CR 104.4b
+    /// `normalized` comparand (what this ring held before the two roles were split) and
+    /// the CR 732.2a `live` evaluable — captured at the post-pipeline frame
     /// of `game::engine::pass_priority_once_with_pipeline` (after
     /// `run_post_action_pipeline` places refilling triggers, CR 603.3) and scanned at
     /// the SBA-reconciliation seam (`game::engine::reconcile_terminal_result`). A
@@ -13008,7 +13036,7 @@ pub struct GameState {
     /// `layers_dirty`, which are `serde(skip)` but ARE compared in `eq`) so AI-search
     /// dedup on semantically-identical positions is unaffected.
     #[serde(skip, default)]
-    pub loop_detect_ring: std::collections::VecDeque<std::sync::Arc<GameState>>,
+    pub loop_detect_ring: std::collections::VecDeque<std::sync::Arc<LoopDetectSample>>,
     /// Live-only authority for the finite pre-cast shortcut. It is absent from
     /// raw/public serialization; trusted persistence uses the explicit codec
     /// envelope in `game::precast_copy_shortcut`.
@@ -19114,8 +19142,25 @@ impl GameState {
         if self.loop_detect_ring.len() == LOOP_DETECT_RING_CAP {
             self.loop_detect_ring.pop_front();
         }
-        let snapshot = std::sync::Arc::new(self.normalize_for_loop());
+        let snapshot = std::sync::Arc::new(LoopDetectSample {
+            normalized: self.normalize_for_loop(),
+            live: self.loop_detect_live_sample(),
+        });
         self.loop_detect_ring.push_back(snapshot);
+    }
+
+    /// CR 732.2a: the un-normalized half of a [`LoopDetectSample`] — this beat exactly as
+    /// it stood, so a period-touch consumer evaluates against real object ids and real
+    /// trigger-source identity.
+    ///
+    /// The ring clear is mandatory and is `normalize_for_loop`'s own reason: samples are
+    /// produced from the live state, so without it each stored sample would carry a clone
+    /// of the live ring ⇒ recursive/quadratic growth. **Nothing else is touched** — every
+    /// other field is what makes this half the evaluable one.
+    pub(crate) fn loop_detect_live_sample(&self) -> GameState {
+        let mut clone = self.clone();
+        clone.loop_detect_ring.clear();
+        clone
     }
 
     /// CR 510.2 + CR 704.3 + CR 704.5a + CR 732.2a: drop the loop-detection ring when a
