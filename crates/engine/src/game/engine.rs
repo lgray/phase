@@ -366,13 +366,23 @@ fn apply_action_boundary_core(
         *state = boundary_snapshot;
         return Err(err);
     }
-    let result = match apply_action(state, semantic_owner, action, stack_resolution_limit) {
+    let mut result = match apply_action(state, semantic_owner, action, stack_resolution_limit) {
         Ok(result) => result,
         Err(err) => {
             *state = boundary_snapshot;
             return Err(err);
         }
     };
+    // CR 400.7 + CR 403.3 + CR 614.12a: an as-enters choice (and any continuation it raises) can
+    // span an arbitrary number of client round-trips of ANY `WaitingFor` shape, so realization of a
+    // parked token battlefield entry is keyed on the action having SETTLED, not on prompt shape.
+    // `apply_action` realizes it itself on every route that reaches `run_post_action_pipeline` (see
+    // `realize_settled_token_battlefield_entry`, which is where the ETB-observer-correct placement
+    // lives). This call is the BACKSTOP for the handlers that return an `ActionResult` straight out
+    // of the reducer match and never reach that pipeline: they still realize the entry here, one
+    // trigger scan too late, rather than stranding it. `Option::take_if` makes it a no-op after any
+    // earlier convergence point.
+    effects::token::realize_settled_token_battlefield_entry(state, &mut result.events);
     Ok(RawActionApplication {
         result,
         journal_start,
@@ -8938,6 +8948,13 @@ fn apply_action(
         // the action's result, not the pre-action state (fixes stale TargetSelection
         // after CancelCast).
         state.waiting_for = waiting_for.clone();
+        // CR 603.2 + CR 603.6a: a token battlefield entry postponed by an as-enters choice is
+        // realized HERE, before the trigger scan, so this action's `events` carry the entry pair
+        // the scan reads — otherwise the copy token enters with no observer ("whenever another
+        // creature enters") ever seeing it. Also ahead of the pipeline's CR 704.3 SBA pass, so the
+        // CR 400.7 row survives a copy that enters with 0 toughness. Same gate as the
+        // action-boundary backstop, one authority.
+        effects::token::realize_settled_token_battlefield_entry(state, &mut events);
         let wf = engine_priority::run_post_action_pipeline(
             state,
             &mut events,
