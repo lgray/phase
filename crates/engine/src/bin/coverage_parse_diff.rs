@@ -335,12 +335,16 @@ fn main() {
     let mut markdown_out: Option<String> = None;
     let mut json_out: Option<String> = None;
     let mut base_sha = String::from("unknown");
+    // CI exports this on the `parsediff` step (`ci.yml`) as `pull_request.head.sha`. NOT derived
+    // from git: that job checks out the synthetic PR merge commit, so `HEAD` is not the PR head.
+    let mut head_sha = std::env::var("HEAD_SHA").unwrap_or_else(|_| String::from("unknown"));
     let mut max_clusters = 25usize;
     while let Some(a) = args.next() {
         match a.as_str() {
             "--markdown" => markdown_out = args.next(),
             "--json" => json_out = args.next(),
             "--base-sha" => base_sha = args.next().unwrap_or(base_sha),
+            "--head-sha" => head_sha = args.next().unwrap_or(head_sha),
             "--max-clusters" => {
                 max_clusters = args
                     .next()
@@ -351,7 +355,7 @@ fn main() {
         }
     }
     if positional.len() != 2 {
-        eprintln!("usage: coverage-parse-diff <baseline.json> <head.json> [--base-sha SHA] [--markdown OUT] [--json OUT] [--max-clusters N]");
+        eprintln!("usage: coverage-parse-diff <baseline.json> <head.json> [--base-sha SHA] [--head-sha SHA] [--markdown OUT] [--json OUT] [--max-clusters N]");
         process::exit(2);
     }
     let base = load(&positional[0]);
@@ -438,6 +442,7 @@ fn main() {
 
     let md = render_markdown(
         &base_sha,
+        &head_sha,
         &clusters,
         max_clusters,
         changed_card_set.len(),
@@ -577,6 +582,7 @@ fn render_cluster_sections(s: &mut String, clusters: &[Cluster], show_cards: boo
 #[allow(clippy::too_many_arguments)]
 fn render_markdown(
     base_sha: &str,
+    head_sha: &str,
     clusters: &[Cluster],
     max_clusters: usize,
     changed_cards: usize,
@@ -586,6 +592,12 @@ fn render_markdown(
 ) -> String {
     let mut s = String::new();
     s.push_str("<!-- coverage-parse-diff -->\n");
+    // Provenance: bind this comment to the head it was generated from. The sticky is EDITED in
+    // place on every re-push (coverage-parse-diff-comment.yml), so without the head SHA a reader
+    // cannot tell a fresh "no changes" from a stale one. Emitted before the branch so the
+    // no-changes early return below carries it too, and above the fold so the 60k-char truncation
+    // in the comment workflow cannot drop it.
+    let _ = writeln!(s, "_Generated for head `{head_sha}`._\n");
     if clusters.is_empty() && added.is_empty() && removed.is_empty() {
         s.push_str("### Parse changes introduced by this PR\n\n");
         s.push_str("✓ No card-parse changes detected.\n");
@@ -685,6 +697,10 @@ fn render_json(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Stand-in for CI's `HEAD_SHA`; full 40 chars so the identity check the sticky supports is
+    /// exercised at its real width.
+    const HEAD_SHA_FIXTURE: &str = "bee984f809e084d2bd0c71c4bbbb3d67ac8d13b4";
 
     /// Build a childless ability item with the given label/details/support.
     fn item(label: &str, details: &[(&str, &str)], supported: bool) -> ParsedItem {
@@ -811,7 +827,16 @@ mod tests {
             ),
         ];
 
-        let markdown = render_markdown("e085a8d5fa08", &clusters, 4, 5, 0, &[], &[]);
+        let markdown = render_markdown(
+            "e085a8d5fa08",
+            HEAD_SHA_FIXTURE,
+            &clusters,
+            4,
+            5,
+            0,
+            &[],
+            &[],
+        );
 
         for section in [
             "#### 🟢 Added (1 signature)",
@@ -877,7 +902,16 @@ mod tests {
             ),
         ];
 
-        let markdown = render_markdown("e085a8d5fa08", &clusters, 1, 4, 0, &[], &[]);
+        let markdown = render_markdown(
+            "e085a8d5fa08",
+            HEAD_SHA_FIXTURE,
+            &clusters,
+            1,
+            4,
+            0,
+            &[],
+            &[],
+        );
 
         assert!(markdown.contains(
             "<details><summary>… 3 more signature(s) (3 card-changes) — showing first 3;"
@@ -886,6 +920,48 @@ mod tests {
             assert!(markdown.contains(marker), "missing tail marker: {marker}");
         }
         assert!(!markdown.contains("Affected (first 3): Added Card"));
+    }
+
+    /// The sticky is edited in place on every re-push, so a body with no head SHA cannot be told
+    /// apart from a stale one. Both render branches must carry it — the no-changes early return is
+    /// the one the maintainer hit.
+    #[test]
+    fn markdown_identifies_the_head_sha_in_both_branches() {
+        const HEAD: &str = HEAD_SHA_FIXTURE;
+
+        let empty = render_markdown("e085a8d5fa08", HEAD, &[], 4, 0, 0, &[], &[]);
+        assert!(
+            empty.contains(HEAD),
+            "the no-changes body must identify the head it was generated from: {empty}"
+        );
+        assert!(
+            empty.starts_with("<!-- coverage-parse-diff -->"),
+            "scripts/pr_review.py matches the sticky with startswith(MARKER); the marker must stay \
+             the first line: {empty}"
+        );
+        assert!(
+            !empty.contains("signature(s)"),
+            "scripts/pr_review.py classifies a body containing 'signature(s)' as real_changes; the \
+             no-changes body must not: {empty}"
+        );
+
+        let clusters = vec![cluster(
+            ChangeKind::SupportFlip,
+            "Mill",
+            "",
+            "false",
+            "true",
+            &["Support Card"],
+        )];
+        let changed = render_markdown("e085a8d5fa08", HEAD, &clusters, 4, 1, 0, &[], &[]);
+        assert!(
+            changed.contains(HEAD),
+            "the with-changes body must identify the head too: {changed}"
+        );
+        assert!(
+            changed.contains("e085a8d5fa08"),
+            "the baseline SHA is still reported alongside the head"
+        );
     }
 
     /// Regression guard for the sibling-collision case: two items share
