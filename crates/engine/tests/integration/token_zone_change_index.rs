@@ -1092,7 +1092,9 @@ fn suppressed_liminal_copy_token_entry_realizes_through_a_mandatory_as_enters_ch
     );
 
     // (3) The emit rides the SAME action that realized the entry, exactly once, carrying the
-    //     recorder-assigned CR 603.2c dedup key.
+    //     recorder-assigned `turn_zone_change_index`. That index is the engine's own key — the CR
+    //     does not name it — and the batched zone-change replay guard dedups on it to hold the
+    //     CR 603.2c once-per-occurrence bound (same framing as this file's module header).
     assert_eq!(
         settled.tokens_created, 1,
         "the entry pair is emitted exactly once, on the realizing action"
