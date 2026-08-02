@@ -180,16 +180,24 @@ fn census(needle: &str) -> Vec<Hit> {
 }
 
 /// R8 CONJUNCT 1 — the offer-writer surface, pinned BIDIRECTIONALLY (`== 22` /
-/// `== 13`, so a REMOVED site fails too) and by per-file multiset.
+/// `== 14`, so a REMOVED site fails too) and by per-file multiset.
 ///
-/// ⚠ THE `#[cfg(test)]` HALF MOVED ONCE, 12 ⇒ 13, AND THE ADJUDICATION IS
-/// RECORDED RATHER THAN THE ASSERT RELAXED. §6 R27 (b)
-/// (`analysis::resource::tests::r27_b_a_stored_may_auto_choice_survives_the_ring`)
-/// destructures the offer the mint RETURNED to count its published CR 603.5
-/// `MayChoice` points. That is a READ in a `#[cfg(test)]` scope — the benign
-/// case this row's own failure message names — and it writes no offer. The
-/// PRODUCTION half is unchanged at 22 and so is the per-file multiset below,
-/// which is the half §10 ruling condition (2) is about.
+/// ⚠ THE `#[cfg(test)]` HALF HAS MOVED TWICE, 12 ⇒ 13 ⇒ 14, AND EACH
+/// ADJUDICATION IS RECORDED RATHER THAN THE ASSERT RELAXED.
+/// * 12 ⇒ 13: §6 R27 (b)
+///   (`analysis::resource::tests::r27_b_a_stored_may_auto_choice_survives_the_ring`)
+///   destructures the offer the mint RETURNED to count its published CR 603.5
+///   `MayChoice` points.
+/// * 13 ⇒ 14 (5d U4): `game::engine::stage2_injector_tests::u4_park_on_offer`
+///   parks a constructed board on a `LoopShortcut { proposer: P0 }` so §6 R28's
+///   arm (b) can assert that the DECLARE firewall refuses a hostile
+///   `template.owner` — i.e. that arm (b)'s drive-seam configuration is
+///   production-unreachable.
+///
+/// Both are WRITES in a `#[cfg(test)]` scope, which is the benign case this
+/// row's own failure message names: a test fixture cannot make the period
+/// machinery certify. The PRODUCTION half is unchanged at 22 and so is the
+/// per-file multiset below, which is the half §10 ruling condition (2) is about.
 ///
 /// R8 CONJUNCT 2, same test — every production `validate_pins(` site is a
 /// declare-time gate paired with `predictability_gate`.
@@ -218,7 +226,7 @@ fn the_loop_shortcut_offer_writer_surface_is_pinned_and_every_declare_site_valid
 
     assert_eq!(
         (production.len(), in_test.len()),
-        (22, 13),
+        (22, 14),
         "CR 732.2a OFFER-WRITER SURFACE CHANGED (not re-measured — this number is an \
          INVARIANCE pin over the whole 5d U-series).\n\
          The three CERTIFICATION-PATH writers are `reconcile_terminal_result` (object-growth \
@@ -231,9 +239,11 @@ fn the_loop_shortcut_offer_writer_surface_is_pinned_and_every_declare_site_valid
          certify without declaring or driving — §10 ruling condition (2), i.e. \
          answer-legality-at-certification becomes OWED WORK and the U-series stops. A new READ \
          site is the benign case; adjudicate, do not relax the assert.\n\
-         THE TEST HALF HAS BEEN ADJUDICATED ONCE (12 ⇒ 13, §6 R27 (b)'s schema read in \
-         `engine/src/analysis/resource.rs`); if it moves again, name the new site here too \
-         rather than only moving the number.\n\
+         THE TEST HALF HAS BEEN ADJUDICATED TWICE (12 ⇒ 13, §6 R27 (b)'s schema read in \
+         `engine/src/analysis/resource.rs`; 13 ⇒ 14, 5d U4's `u4_park_on_offer` fixture in \
+         `engine/src/game/engine.rs`, which parks a constructed board on an offer so §6 R28 \
+         arm (b) can assert the DECLARE firewall refuses a hostile `template.owner`); if it \
+         moves again, name the new site here too rather than only moving the number.\n\
          measured per-file production multiset: {multiset:?}\n\
          production: {production:?}\n\
          test: {in_test:?}"

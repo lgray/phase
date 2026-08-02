@@ -2650,15 +2650,17 @@ fn drive_one_shortcut_cycle(
 /// There is deliberately NO top-level `template.ok_or(...)` guard: the `OrderTriggers` arm is
 /// TEMPLATE-INDEPENDENT (the real 2p Vito drive raises OrderTriggers with a `template = None`
 /// declaration, and the forced-unique target auto-selects at dispatch), so a top guard would
-/// wrongly abort it. The template guard lives INSIDE the `TriggerTargetSelection` arm, the only
-/// arm that consumes pins.
+/// wrongly abort it. Each pin-consuming arm therefore carries its own guard: the
+/// `TriggerTargetSelection` arm is the only arm that consumes a CR 608.2b `Targets` pin, and the
+/// `OptionalEffectChoice` arm consumes the CR 603.5 `MayChoice` pin and carries its own seat +
+/// beat guards on top of the same `template.ok_or(..)`.
 fn inject_pinned_answer(
     work: &mut GameState,
     template: Option<&crate::analysis::decision_template::DecisionTemplate>,
     iteration: crate::analysis::decision_template::IterationIndex,
     prompt: &WaitingFor,
 ) -> Result<(), RecastAbort> {
-    use crate::analysis::decision_template::{ConcreteDecision, ConcreteTarget};
+    use crate::analysis::decision_template::{ConcreteDecision, ConcreteTarget, MayChoiceOption};
     match prompt {
         // CR 603.3b / CR 732.2a: auto-order the confirmed shortcut's simultaneous
         // same-controller triggers by identity order (0..len). Template-INDEPENDENT and
@@ -2711,8 +2713,66 @@ fn inject_pinned_answer(
             .map_err(|_| RecastAbort)?;
             Ok(())
         }
-        // CR 732.2a "no conditional actions": any other prompt (mode / may / unless / X) has
-        // no Stage-2 pin producer ⇒ fail-closed.
+        // CR 603.5 + CR 732.2a: answer an in-cycle "may" from the pin its owner declared.
+        //
+        // The recipient is read OFF THE PROMPT, which is the only TOTAL instrument:
+        // `WaitingFor::OptionalEffectChoice` has five production producers and exactly one
+        // consults `effects::optional_prompt_player`, so the mint's recipient conjunct is a
+        // PREDICTION over one of five producers while this comparison is an OBSERVATION of
+        // the prompt in hand. Precondition (c) of the pin extension point — "only the acting
+        // player's own choices are pinnable" (`analysis::resource`) — is what it enforces.
+        //
+        // `template.owner` is only a legitimate comparand because `handle_declare_shortcut`
+        // firewalls it to the engine-issued `LoopShortcutOffer.proposer` at declare (and
+        // `apply_confirmed_shortcut` re-validates the same invariant for the restore ingress,
+        // which never runs the declare handler). Without those two, this test compares an
+        // attacker-chosen value against itself.
+        WaitingFor::OptionalEffectChoice {
+            player, source_id, ..
+        } => {
+            let template = template.ok_or(RecastAbort)?;
+            if *player != template.owner {
+                return Err(RecastAbort);
+            }
+            // CR 603.5 vs CR 603.3c + CR 700.2b: pin the BEAT as well as the seat. A
+            // `MayChoice` pin binds the RESOLUTION-time question (CR 603.5). While a trigger
+            // is still mid-construction the engine asks a same-`source_id`
+            // ANNOUNCEMENT-time one instead — the optional-modal gate raised out of
+            // `begin_pending_trigger_target_selection`, which runs with the construction
+            // cursor (`pending_trigger`) still live. `slot_source_prompted` cannot separate
+            // them: it matches the SOURCE OBJECT and both prompts carry it. So a live cursor
+            // means the prompt in hand may be the announcement-time question the pin does not
+            // answer ⇒ fail-closed.
+            if work.pending_trigger.is_some() {
+                return Err(RecastAbort);
+            }
+            let decisions = crate::analysis::decision_template::resolve(template, iteration, work)
+                .map_err(|_| RecastAbort)?;
+            let take = decisions
+                .into_iter()
+                .find_map(|d| match d {
+                    ConcreteDecision::MayChoice { slot, take }
+                        if slot_source_prompted(work, &slot.source, *source_id) =>
+                    {
+                        Some(take)
+                    }
+                    _ => None,
+                })
+                .ok_or(RecastAbort)?;
+            apply_action(
+                work,
+                *player,
+                GameAction::DecideOptionalEffect {
+                    accept: take == MayChoiceOption::Take,
+                },
+                None,
+            )
+            .map_err(|_| RecastAbort)?;
+            Ok(())
+        }
+        // CR 732.2a "no conditional actions": any other prompt (mode / unless / X) has no
+        // Stage-2 pin producer ⇒ fail-closed. `may` left this list when the mint gained its
+        // `EntryPinSlots.may` producer and the arm above; the remainder is still unpinnable.
         _ => Err(RecastAbort),
     }
 }
@@ -13821,6 +13881,15 @@ mod stage2_injector_tests {
     /// The five production producers are named individually, and exactly one of them is inside
     /// the CR 603.5 gate that consults the recipient authority. If a sixth appears, this row
     /// fails and whoever added it must decide where its recipient is bound.
+    ///
+    /// ⚠ **ADJUDICATED IN U4, NOT RELAXED.** The census moved `34 ⇒ 37`. The PRODUCER half is
+    /// unchanged at **5** and its per-file list is byte-identical (only one line NUMBER moved,
+    /// `game/engine.rs:10433 ⇒ :10493`, because U4's arm sits above it) — that half is what this
+    /// row's claim is about, and it did not move. The `+1` READER is `game/engine.rs`'s new
+    /// `OptionalEffectChoice` arm in `inject_pinned_answer`, i.e. the CONSUMPTION point this
+    /// doc already names as where soundness over the other four producers is discharged; the
+    /// `+2` are U4's own `#[cfg(test)]` fixtures. A new READER is the benign case — adjudicate
+    /// it, do not relax the assert.
     #[test]
     fn the_cr_603_5_prompt_census_is_pinned_so_a_sixth_producer_is_a_counted_event() {
         /// Every `.rs` under the crate's `src`, and the `#[cfg(test)]`-attributed
@@ -13902,17 +13971,20 @@ mod stage2_injector_tests {
 
         assert_eq!(
             producers.len() + readers.len() + in_test,
-            34,
+            37,
             "CR 603.5 prompt census drifted. A new PRODUCER must have its recipient bound \
-             somewhere — the mint's conjunct (a) covers exactly ONE of them.\n\
+             somewhere — the mint's conjunct (a) covers exactly ONE of them. A new READER is \
+             the benign case (U4's own consumption arm was one): adjudicate it in this doc and \
+             name the site, do not merely move the number.\n\
              producers={producers:#?}\nreaders={readers:#?}"
         );
         assert_eq!(
             (producers.len(), readers.len(), in_test),
-            (5, 6, 23),
-            "the partition, not just the total: five PRODUCTION producers, six PRODUCTION \
-             readers (they read `state.waiting_for` and never write it), 23 `#[cfg(test)]` \
-             lines.\nproducers={producers:#?}\nreaders={readers:#?}"
+            (5, 7, 25),
+            "the partition, not just the total: five PRODUCTION producers, seven PRODUCTION \
+             readers (they read `state.waiting_for` and never write it — the seventh is U4's \
+             `inject_pinned_answer` arm), 25 `#[cfg(test)]` lines.\nproducers={producers:#?}\n\
+             readers={readers:#?}"
         );
         assert_eq!(
             producers,
@@ -13921,7 +13993,7 @@ mod stage2_injector_tests {
                 "game/effects/mod.rs:5973".to_string(),
                 "game/effects/mod.rs:8927".to_string(),
                 "game/effects/scoped_library_search.rs:452".to_string(),
-                "game/engine.rs:10433".to_string(),
+                "game/engine.rs:10493".to_string(),
             ],
             "the five production producers, NAMED: the CR 603.5 gate in `resolve_chain_body` \
              plus the two repeated-optional-payment drivers, the per-player acceptance cursor \
@@ -14202,6 +14274,437 @@ mod stage2_injector_tests {
              allow list, so no certifiable offer carries such an entry and NO closed hole is \
              claimed here"
         );
+    }
+
+    // ────────── 5d U4 — the `OptionalEffectChoice` arm and its two TOTAL head guards ──────────
+
+    /// Life the shared U4 fixture's suspended optional ability gains when its CR 603.5 choice
+    /// is TAKEN. Named rather than inlined so every "the pin was APPLIED" assertion below is
+    /// keyed to the fixture instead of to a literal.
+    const U4_MAY_LIFE: i32 = 5;
+
+    /// A board parked on a REAL CR 603.5 resolution-time prompt. `asked` is the seat the
+    /// resolver is asking, and the suspended optional ability is THAT seat's, so taking the
+    /// choice gains `asked` exactly `U4_MAY_LIFE` life.
+    ///
+    /// The life delta is the observable that separates "the pinned `DecideOptionalEffect` was
+    /// dispatched" from "the injector returned `Ok(())` having done nothing": an empty board
+    /// would answer `Ok(())` just as happily.
+    ///
+    /// The pinned source is a BATTLEFIELD object because `resolve_source` is battlefield-only
+    /// (CR 400.7 incarnation binding) — on any other zone `slot_source_prompted` would refuse
+    /// every arm below for a reason none of them is about.
+    fn u4_may_board(asked: PlayerId) -> (GameState, ObjectId) {
+        use crate::types::ability::{Effect, QuantityExpr, TargetFilter};
+        let mut state = GameScenario::new_n_player(3, 7).build().state().clone();
+        let src = place(&mut state, 970, Zone::Battlefield);
+        let mut optional = ResolvedAbility::new(
+            Effect::GainLife {
+                amount: QuantityExpr::Fixed { value: U4_MAY_LIFE },
+                player: TargetFilter::Controller,
+            },
+            vec![],
+            src,
+            asked,
+        );
+        optional.optional = true;
+        state.push_optional_effect_frame(crate::types::resolution::OptionalEffectFrame {
+            ability: Box::new(optional),
+            trigger_event: None,
+            trigger_match_count: None,
+        });
+        state.waiting_for = WaitingFor::OptionalEffectChoice {
+            player: asked,
+            source_id: src,
+            description: None,
+            may_trigger_key: None,
+        };
+        (state, src)
+    }
+
+    /// A template carrying exactly one CR 603.5 `MayChoice` pin for `src` (slot index 1 — the
+    /// may slot in both mint shapes), declared by `owner`.
+    fn u4_may_template(
+        src: ObjectId,
+        owner: PlayerId,
+        take: crate::analysis::decision_template::MayChoiceOption,
+    ) -> DecisionTemplate {
+        let source = this_object(src);
+        DecisionTemplate {
+            owner,
+            decisions: vec![PinnedDecision::MayChoice {
+                slot: DecisionSlot {
+                    source: source.clone(),
+                    index: 1,
+                },
+                take,
+            }],
+            replay: ReplayMode::Scheduled {
+                count: IterationCount::Fixed(1),
+            },
+            key: DecisionGroupKey::from_sources(&[source], DecisionKind::LoopChoice),
+        }
+    }
+
+    /// R23, conjunct 4 — **CR 603.5 + CR 732.2a: a `may` pin answers only the seat the PROMPT
+    /// names.**
+    ///
+    /// The mint's recipient conjunct (U2) is a PREDICTION over one of five
+    /// `WaitingFor::OptionalEffectChoice` producers — only one of them consults
+    /// `optional_prompt_player` — so it is partial by construction. This guard reads the
+    /// recipient OFF THE PROMPT, which is total over all five and over any sixth.
+    ///
+    /// MATCHED POSITIVE, same instrument, same template, differing in exactly one fixture
+    /// parameter (the seat the prompt names — and, coherently, the controller of the suspended
+    /// optional ability, since the resolver asks that ability's controller): the pinned
+    /// `DecideOptionalEffect` is dispatched and `U4_MAY_LIFE` life is gained.
+    ///
+    /// Two reach-guards keep the negative off the arm's other refusals: the pin's slot really
+    /// does match the prompted source on the NEGATIVE's own board (so the `find_map` is not the
+    /// refuser), and the beat guard's cursor is absent on both boards.
+    ///
+    /// The POSITIVE is asserted FIRST, deliberately: under the revert-probe below one run then
+    /// shows the positive PASSING and the negative FAILING, which is what proves the pair
+    /// discriminates the SEAT rather than the fixture.
+    ///
+    /// REVERT-PROBE: delete `if *player != template.owner { return Err(RecastAbort); }` ⇒ the
+    /// negative arm FLIPS TO FAIL (it returns `Ok(())` and P1 gains the life P0's pin bought).
+    #[test]
+    fn a_may_pin_answers_only_the_seat_the_prompt_names() {
+        use crate::analysis::decision_template::MayChoiceOption;
+
+        // ── MATCHED POSITIVE: the template against ITS OWNER's own prompt ──
+        let (mut asks_owner, src) = u4_may_board(P0);
+        let template = u4_may_template(src, P0, MayChoiceOption::Take);
+        let own_prompt = asks_owner.waiting_for.clone();
+        let p0_before = life(&asks_owner, P0);
+        inject_pinned_answer(&mut asks_owner, Some(&template), 0, &own_prompt)
+            .expect("CR 603.5: the owner's own pin answers the owner's own choice");
+        assert_eq!(
+            life(&asks_owner, P0),
+            p0_before + U4_MAY_LIFE,
+            "the pinned `DecideOptionalEffect {{ accept: true }}` was really APPLIED — an \
+             `Ok(())` that dispatched nothing would leave this unchanged"
+        );
+        assert_ne!(
+            asks_owner.waiting_for, own_prompt,
+            "the prompt was consumed, not silently skipped"
+        );
+
+        // ── NEGATIVE: same template (owner P0), but the prompt asks P1 ──
+        let (mut asks_other, other_src) = u4_may_board(P1);
+        assert_eq!(
+            other_src, src,
+            "both boards mint the same pinned source object"
+        );
+        let prompt = asks_other.waiting_for.clone();
+        assert!(
+            slot_source_prompted(&asks_other, &this_object(src), src),
+            "reach-guard: the pin's slot MATCHES the prompted source on this very board, so a \
+             refusal below cannot be the `find_map`'s"
+        );
+        assert!(
+            asks_other.pending_trigger.is_none(),
+            "reach-guard: no construction cursor, so the BEAT guard cannot be the refuser"
+        );
+        let p1_before = life(&asks_other, P1);
+        assert!(
+            inject_pinned_answer(&mut asks_other, Some(&template), 0, &prompt).is_err(),
+            "CR 603.5: a pin owned by the proposer must not answer ANOTHER seat's choice"
+        );
+        assert_eq!(
+            life(&asks_other, P1),
+            p1_before,
+            "the refusal is fail-closed: nothing was dispatched as P1"
+        );
+        assert_eq!(
+            asks_other.waiting_for, prompt,
+            "the other seat's prompt is still standing, for a human to answer"
+        );
+    }
+
+    /// R23, conjunct 5 — **CR 603.5 vs CR 603.3c + CR 700.2b: the pin binds the BEAT as well as
+    /// the seat.**
+    ///
+    /// A `MayChoice` pin answers the RESOLUTION-time question (CR 603.5). The engine also asks a
+    /// same-`source_id` ANNOUNCEMENT-time question while a trigger is still mid-construction
+    /// (the optional-modal gate, CR 603.3c / CR 700.2b), and `slot_source_prompted` cannot
+    /// separate the two: it matches the SOURCE OBJECT and both prompts carry it. That is why the
+    /// pair below uses the SAME `source_id` in the cursor as in the prompt — a differing-source
+    /// fixture would be refused by the slot lookup instead and the row would report the wrong
+    /// guard.
+    ///
+    /// Both arms hold the seat guard SATISFIED (`player == template.owner == P0`), asserted
+    /// below, so conjunct 4's guard cannot be what decides either arm.
+    ///
+    /// (5-pos) is asserted FIRST so that under the revert-probe ONE run shows the positive
+    /// passing and the negative failing — the evidence that the pair discriminates the CURSOR
+    /// and not the fixture.
+    ///
+    /// REVERT-PROBE: delete `if work.pending_trigger.is_some() { return Err(RecastAbort); }` ⇒
+    /// (5-neg) FLIPS TO FAIL while (5-pos) and conjuncts 1–4 stay green.
+    #[test]
+    fn a_may_pin_never_answers_the_announcement_time_question() {
+        use crate::analysis::decision_template::MayChoiceOption;
+
+        let template = |src: ObjectId| u4_may_template(src, P0, MayChoiceOption::Take);
+
+        // ── (5-pos): the same board with NO construction cursor ──
+        let (mut cursor_clear, src) = u4_may_board(P0);
+        assert!(cursor_clear.pending_trigger.is_none());
+        let pos_prompt = cursor_clear.waiting_for.clone();
+        let pos_before = life(&cursor_clear, P0);
+        inject_pinned_answer(&mut cursor_clear, Some(&template(src)), 0, &pos_prompt).expect(
+            "(5-pos) CR 603.5: with no cursor the pin answers its own resolution-time question",
+        );
+        assert_eq!(
+            life(&cursor_clear, P0),
+            pos_before + U4_MAY_LIFE,
+            "(5-pos) the pinned choice was applied"
+        );
+
+        // ── (5-neg): a LIVE construction cursor on the SAME source ──
+        let (mut cursor_live, neg_src) = u4_may_board(P0);
+        assert_eq!(neg_src, src, "the pair is built from one fixture");
+        let mut mid_construction = ResolvedAbility::new(
+            crate::types::ability::Effect::GainLife {
+                amount: crate::types::ability::QuantityExpr::Fixed { value: 1 },
+                player: crate::types::ability::TargetFilter::Controller,
+            },
+            vec![],
+            src,
+            P0,
+        );
+        // The production shape that raises a same-source ANNOUNCEMENT-time prompt: an optional
+        // modal trigger, asked before its modes are chosen (CR 603.3c / CR 700.2b).
+        mid_construction.optional = true;
+        cursor_live.pending_trigger = Some(Box::new(super::triggers::PendingTrigger {
+            source_id: src,
+            controller: P0,
+            condition: None,
+            ability: Box::new(mid_construction),
+            timestamp: 0,
+            target_constraints: vec![],
+            distribute: None,
+            trigger_event: None,
+            modal: None,
+            mode_abilities: vec![],
+            description: None,
+            may_trigger_origin: None,
+            subject_match_count: None,
+            die_result: None,
+        }));
+        let prompt = cursor_live.waiting_for.clone();
+        assert_eq!(
+            prompt, pos_prompt,
+            "(5-neg) differs from (5-pos) in `work.pending_trigger` and in NOTHING else the \
+             injector reads — the prompts are equal"
+        );
+        let WaitingFor::OptionalEffectChoice {
+            player: asked,
+            source_id: prompt_source,
+            ..
+        } = &prompt
+        else {
+            panic!("the fixture parks on a CR 603.5 prompt; got {prompt:?}");
+        };
+        assert_eq!(
+            *asked,
+            template(src).owner,
+            "reach-guard: the SEAT guard is satisfied on both arms, so conjunct 4 cannot be \
+             what decides this pair"
+        );
+        assert_eq!(
+            cursor_live
+                .pending_trigger
+                .as_ref()
+                .map(|t| t.source_id)
+                .expect("(5-neg) carries a cursor"),
+            *prompt_source,
+            "the cursor names the SAME source as the prompt — that identity is what makes this \
+             arm non-vacuous, because `slot_source_prompted` matches on exactly that object"
+        );
+        let before = life(&cursor_live, P0);
+        assert!(
+            inject_pinned_answer(&mut cursor_live, Some(&template(src)), 0, &prompt).is_err(),
+            "CR 603.5 vs CR 603.3c: with a live construction cursor the prompt in hand may be \
+             the ANNOUNCEMENT-time question the pin does not answer ⇒ fail-closed"
+        );
+        assert_eq!(
+            life(&cursor_live, P0),
+            before,
+            "(5-neg) fail-closed: no `DecideOptionalEffect` was dispatched"
+        );
+        assert_eq!(
+            cursor_live.waiting_for, prompt,
+            "(5-neg) the prompt still stands"
+        );
+    }
+
+    /// The arm's own leaf, covered in BOTH directions — **CR 603.5: a "may" is binary, and the
+    /// pin says WHICH.**
+    ///
+    /// The injector's `accept` flag is one equality test against `MayChoiceOption`'s take
+    /// variant — the single place the typed pin becomes the engine's boolean. A
+    /// single-direction row would pass just as happily against the INVERTED mapping, which is
+    /// why both options are driven on one fixture. (That comparison is deliberately NOT quoted
+    /// verbatim here: a textual revert-probe whose needle also matched this doc line would
+    /// silently no-op — the tripwire this row's own probe hit on its first run.)
+    ///
+    /// `Decline` is separated from "nothing was dispatched" by the prompt: a declined optional
+    /// effect CONSUMES the prompt (the frame resolves its decline branch) while a refusal leaves
+    /// it standing. Both facts are asserted, so neither arm can pass by inaction.
+    #[test]
+    fn a_may_pin_dispatches_the_option_it_names_in_both_directions() {
+        use crate::analysis::decision_template::MayChoiceOption;
+
+        for take in [MayChoiceOption::Take, MayChoiceOption::Decline] {
+            let (mut board, src) = u4_may_board(P0);
+            let prompt = board.waiting_for.clone();
+            let before = life(&board, P0);
+            inject_pinned_answer(
+                &mut board,
+                Some(&u4_may_template(src, P0, take)),
+                0,
+                &prompt,
+            )
+            .expect("both options are legal answers to a CR 603.5 prompt");
+            assert_ne!(
+                board.waiting_for, prompt,
+                "{take:?}: the prompt is ANSWERED either way — that is what separates a \
+                 `Decline` from a fail-closed refusal"
+            );
+            assert_eq!(
+                life(&board, P0) - before,
+                match take {
+                    MayChoiceOption::Take => U4_MAY_LIFE,
+                    MayChoiceOption::Decline => 0,
+                },
+                "{take:?}: the pin's own option decides `accept`, so an inverted mapping fails \
+                 on one of these two arms"
+            );
+        }
+    }
+
+    /// A live `LoopShortcut` offer with an EMPTY schema, proposed by P0 on `state`.
+    fn u4_park_on_offer(state: &mut GameState) {
+        use crate::analysis::decision_template::ShortcutDecisionSchema;
+        use crate::analysis::loop_check::{LoopCertificate, WinKind};
+        use crate::analysis::resource::BoardDelta;
+        state.waiting_for = WaitingFor::LoopShortcut {
+            proposer: P0,
+            predicted_winner: None,
+            certificate: LoopCertificate {
+                unbounded: vec![],
+                win_kind: WinKind::LethalDamage,
+                mandatory: false,
+                residual_board_delta: BoardDelta::default(),
+                per_cycle: None,
+            },
+            schema: ShortcutDecisionSchema::default(),
+        };
+    }
+
+    /// R28 arm (b) — **the DRIVE seam cannot see a `template.owner` the engine never bound; the
+    /// DECLARE firewall is what makes the drive's seat guard meaningful.**
+    ///
+    /// ⚠ **(b1) ASSERTS A MEASURED BREACH, NOT A DESIRED BEHAVIOUR.** `template.owner` arrives
+    /// verbatim from the client, and `inject_pinned_answer` holds the template but not the
+    /// offer — so when an attacker sets `owner` to the seat the prompt names, the seat guard
+    /// compares that value against itself and passes. Measured on this tree: the injector
+    /// returns `Ok(())` and dispatches the PROPOSER's pinned choice as the OTHER seat's
+    /// `GameAction::DecideOptionalEffect` (P1 gains `U4_MAY_LIFE`). That is the whole reason the
+    /// binding lives at declare (`handle_declare_shortcut`) and at consumption
+    /// (`apply_confirmed_shortcut`), one layer above this one.
+    ///
+    /// ⚠ **PLAN DEVIATION, DISCLOSED:** §6 R28(b) predicts the drive seam refuses this pair
+    /// (*"must still `RecastAbort`"*). It does not, and cannot — the same cell's own analysis
+    /// says so two sentences later (*"under the round-33 design alone it returns `Ok(())`"*).
+    /// The arm ships keyed to the measurement, with (b2) supplying the refusal the row is
+    /// really about. If a future change closes the drive seam (e.g. by threading the
+    /// engine-issued proposer into the injector), (b1) FLIPS and must be re-keyed onto the new
+    /// refusal rather than deleted.
+    ///
+    /// **(b2) THE REFUSAL, AT THE SEAM THAT HAS THE ENGINE-ISSUED COMPARAND.** The identical
+    /// hostile template declared against a live `LoopShortcut { proposer: P0 }` is refused into
+    /// the manual handback — no `ShortcutProposal` is built — so the (b1) configuration is
+    /// unreachable in production. **MATCHED POSITIVE:** byte-identical except `owner`, which
+    /// opens APNAP; without it, "refused" would be indistinguishable from "this constructed
+    /// offer refuses everything".
+    ///
+    /// REVERT-PROBE: delete `if template.as_ref().is_some_and(|t| t.owner != offer.proposer)`
+    /// from `handle_declare_shortcut` ⇒ **(b2) FLIPS TO FAIL** (the hostile declaration builds a
+    /// proposal and APNAP opens), while **(b1) MUST NOT FLIP** — the injector reads no firewall.
+    /// The pair therefore proves the two halves measure two different seams rather than one
+    /// seam asserted twice. Arm (b) and arm (c) (`apply_confirmed_shortcut`, U2, integration)
+    /// take OPPOSITE reverts by design: (b) is about the drive-side comparand, (c) about the
+    /// restore ingress that never reaches declare.
+    #[test]
+    fn r28_b_the_drive_seat_guard_compares_a_client_supplied_owner_against_itself() {
+        use crate::analysis::decision_template::{IterationCount, MayChoiceOption};
+
+        // ── (b1) DRIVE seam: prompt player P1, template owner P1 (the attacker's choice) ──
+        let (mut board, src) = u4_may_board(P1);
+        let hostile = u4_may_template(src, P1, MayChoiceOption::Take);
+        let prompt = board.waiting_for.clone();
+        let p1_before = life(&board, P1);
+        let outcome = inject_pinned_answer(&mut board, Some(&hostile), 0, &prompt);
+        assert!(
+            outcome.is_ok(),
+            "(b1) MEASURED: with `owner` set to the prompt's own seat the drive guard has \
+             nothing to compare — it passes. Got {outcome:?}"
+        );
+        assert_eq!(
+            life(&board, P1),
+            p1_before + U4_MAY_LIFE,
+            "(b1) and the proposer's pinned value was really dispatched AS P1 — this is the \
+             breach the declare-time binding closes, measured rather than argued"
+        );
+
+        // ── (b2) DECLARE seam: the same template, refused by the engine-issued comparand ──
+        for owner in [P1, P0] {
+            let (mut state, offer_src) = u4_may_board(P0);
+            assert_eq!(offer_src, src, "one fixture feeds both halves");
+            u4_park_on_offer(&mut state);
+            apply_action(
+                &mut state,
+                P0,
+                GameAction::DeclareShortcut {
+                    count: IterationCount::Fixed(1),
+                    template: Some(u4_may_template(src, owner, MayChoiceOption::Take)),
+                },
+                None,
+            )
+            .expect("the declaration is dispatched either way — refusal is a HANDBACK");
+
+            if owner == P1 {
+                assert!(
+                    matches!(state.waiting_for, WaitingFor::Priority { .. }),
+                    "(b2) CR 732.2a + CR 603.5 + CR 800.4a: a declaration whose `owner` is not \
+                     the engine-issued proposer hands priority back; got {:?}",
+                    state.waiting_for
+                );
+                assert!(
+                    !matches!(state.waiting_for, WaitingFor::RespondToShortcut { .. }),
+                    "(b2) no `ShortcutProposal` carrying the hostile owner may exist — that is \
+                     what makes (b1)'s configuration production-unreachable"
+                );
+            } else {
+                let WaitingFor::RespondToShortcut { proposal, .. } = &state.waiting_for else {
+                    panic!(
+                        "(b2) matched positive: the honest declaration must open APNAP, so the \
+                         refusal above is keyed to `owner` and not to this constructed offer \
+                         refusing everything; got {:?}",
+                        state.waiting_for
+                    );
+                };
+                assert_eq!(
+                    proposal.template.as_ref().map(|t| t.owner),
+                    Some(P0),
+                    "(b2) the proposal that IS built carries the engine-bound owner"
+                );
+            }
+        }
     }
 }
 
