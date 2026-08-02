@@ -4298,6 +4298,28 @@ fn stack_entry_resolution_choice_freedom(
             // counterfactual being asked. The clone lands only on the probe —
             // `resolve_top` calls the same shared binding on its own
             // `&mut GameState` and pays nothing.
+            // CR 732.2a: THE CHEAP BINDING PRECONDITION RUNS BEFORE THE CLONE.
+            //
+            // The whole-`GameState` clone below is the dominant per-entry work, and it
+            // used to be paid unconditionally — including for entries the classifier was
+            // about to reject on a pure AST gate (`optional`, `unless_pay`, a modal
+            // header, an `UpTo` count, a non-allow-listed effect). Those entries bought
+            // a full board copy and a scope binding to reach a verdict that never looked
+            // at the board.
+            //
+            // `chain_offers_choice` is that verdict's AST half, so asking it here costs
+            // nothing and removes the clone entirely for every gated entry.
+            //
+            // DELIBERATELY NOT a `try_charge_one` in this position, which was the other
+            // remedy on offer: the meter's charge sits BELOW the `optional` gate by
+            // design, and `r16_the_f4_offering_beats_probe_demand_is_exactly_measured`
+            // pins `spent == conjunct6_asks` for exactly that reason — its own message
+            // predicts that hoisting the charge above the gate makes every optional ask
+            // charge twice. Measured: adding a charge here does make that row fail. The
+            // precondition form bounds the same dominant work without moving the meter.
+            if crate::game::resolution_prompt::chain_offers_choice(ability) {
+                return ResolutionChoiceFreedom::MayPrompt;
+            }
             let mut board = state.clone();
             board.stack.retain(|e| e.id != entry.id);
             if !crate::game::stack::bind_resolution_scope(&mut board, entry, None) {

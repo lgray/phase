@@ -45,24 +45,13 @@ pub(crate) enum ResolutionChoiceFreedom {
     MayPrompt,
 }
 
-impl ResolutionChoiceFreedom {
-    /// Worst-of join for a resolution chain: `MayPrompt` dominates (a chain that
-    /// can prompt on either branch can prompt); two free verdicts CONCATENATE
-    /// their derived event sets, because the caller's obligation is per-event
-    /// and a chain runs both branches' events through the same pipeline.
-    fn join(self, other: ResolutionChoiceFreedom) -> ResolutionChoiceFreedom {
-        match (self, other) {
-            (
-                ResolutionChoiceFreedom::FreeUnlessReplacements(mut a),
-                ResolutionChoiceFreedom::FreeUnlessReplacements(b),
-            ) => {
-                a.extend(b);
-                ResolutionChoiceFreedom::FreeUnlessReplacements(a)
-            }
-            _ => ResolutionChoiceFreedom::MayPrompt,
-        }
-    }
-}
+// A `join` combinator lived here, concatenating the event sets of a root verdict and
+// the separately-probed `sub_ability` / `else_ability` verdicts. It is deleted rather
+// than kept-and-allowed: with the probe running once at the chain root, there are no
+// sibling verdicts left to combine, and the union it performed was the mechanism by
+// which events from the NOT-taken branch entered the derived set. Keeping a dead
+// combinator that documents superseded semantics is how the next reader concludes the
+// union still happens.
 
 /// CR 616.1 + CR 614.1a: what ONE resolution asks of the player, observed by
 /// RUNNING the real resolver on a throwaway clone. Never a hand-written
@@ -214,12 +203,7 @@ fn quantity_offers_up_to_choice(q: &QuantityExpr) -> bool {
 /// `ResolutionProbe::Prompted`, which OBSERVES the real resolver opening a real
 /// prompt on the real board. The arm only decides which classes are worth paying
 /// a clone for.
-fn effect_resolution_choice_freedom(
-    state: &GameState,
-    ability: &ResolvedAbility,
-    e: &Effect,
-    budget: &mut ProbeBudget,
-) -> ResolutionChoiceFreedom {
+fn effect_offers_choice(e: &Effect) -> bool {
     match e {
         // ---- SCOPE FILTER. DESTRUCTURED WITHOUT `..` on every arm, exactly as
         //      HEAD's three allow arms are, so a new field on any of them forces
@@ -249,9 +233,9 @@ fn effect_resolution_choice_freedom(
             excess: _,
         } => {
             if quantity_offers_up_to_choice(amount) {
-                ResolutionChoiceFreedom::MayPrompt
+                true
             } else {
-                resolution_probe_verdict(state, ability, budget)
+                false
             }
         }
         Effect::PutCounter {
@@ -276,9 +260,9 @@ fn effect_resolution_choice_freedom(
             enter_with_counters: _,
         } => {
             if quantity_offers_up_to_choice(count) {
-                ResolutionChoiceFreedom::MayPrompt
+                true
             } else {
-                resolution_probe_verdict(state, ability, budget)
+                false
             }
         }
         // HEAD's own arm shape, kept verbatim (single arm + inner `if`, no match
@@ -287,9 +271,9 @@ fn effect_resolution_choice_freedom(
         // not prompted, inside `draw::resolve`.
         Effect::Draw { count, target: _ } => {
             if quantity_offers_up_to_choice(count) {
-                ResolutionChoiceFreedom::MayPrompt
+                true
             } else {
-                resolution_probe_verdict(state, ability, budget)
+                false
             }
         }
         // ---- everything else: fail-closed MayPrompt. HEAD's named list
@@ -525,21 +509,24 @@ fn effect_resolution_choice_freedom(
         | Effect::RedistributeLifeTotals
         | Effect::ReverseTurnOrder
         | Effect::ChooseOneOf { .. }
-        | Effect::Unimplemented { .. } => ResolutionChoiceFreedom::MayPrompt,
+        | Effect::Unimplemented { .. } => true,
     }
 }
 
-/// CR 608.2d + CR 732.2a: does resolving this ability (its whole chain) ever
-/// enter a resolution-time player choice? The `ResolvedAbility` destructure is
-/// EXHAUSTIVE with no `..` — `ability_scan::resolved_ability_axes`'s
-/// classifications are deliberately NOT reused (this is a different question:
-/// e.g. `optional` is read-free yet choice-bearing). A FUTURE field fails to
-/// compile here until classified for the choice question.
-pub(crate) fn ability_resolution_choice_freedom(
-    state: &GameState,
-    a: &ResolvedAbility,
-    budget: &mut ProbeBudget,
-) -> ResolutionChoiceFreedom {
+/// CR 608.2d + CR 732.2a: can resolving this ability's whole chain enter a
+/// resolution-time player choice?
+///
+/// PURE AST WALK — no `GameState`, no clone, no budget. That is what lets the
+/// recursion stay exhaustive over `sub_ability` / `else_ability` while the
+/// expensive probe runs exactly ONCE, at the chain root, in
+/// [`ability_resolution_choice_freedom`].
+///
+/// The `ResolvedAbility` destructure is EXHAUSTIVE with no `..` —
+/// `ability_scan::resolved_ability_axes`'s classifications are deliberately NOT
+/// reused (this is a different question: e.g. `optional` is read-free yet
+/// choice-bearing). A FUTURE field fails to compile here until classified for the
+/// choice question.
+pub(crate) fn chain_offers_choice(a: &ResolvedAbility) -> bool {
     let ResolvedAbility {
         // ---- choice-bearing: folded into the verdict below ----
         effect,
@@ -556,7 +543,7 @@ pub(crate) fn ability_resolution_choice_freedom(
         repeat_until,
         repeat_for,
         // ---- choice-free: bound `_` with a one-line justification ----
-        condition: _, // resolution branch selector, pure eval (both branches recursed)
+        condition: _, // resolution branch selector, pure eval (both branches gate-checked below)
         duration: _,  // continuous-effect lifetime, no prompt
         player_scope: _, // iteration fan-out, pure player-filter eval
         starting_with: _, // APNAP start override, no prompt
@@ -599,31 +586,31 @@ pub(crate) fn ability_resolution_choice_freedom(
     // CR 603.5 + CR 608.2d: an optional effect / optional targeting /
     // opponent-may effect prompts the controller (or opponent) before execution.
     if *optional || *optional_targeting || optional_for.is_some() {
-        return ResolutionChoiceFreedom::MayPrompt;
+        return true;
     }
     // CR 118.12: "unless a player pays {cost}" is a resolution-time pay prompt.
     if unless_pay.is_some() {
-        return ResolutionChoiceFreedom::MayPrompt;
+        return true;
     }
     // CR 601.2c + CR 603.3d: a resolution-time target chooser announces targets.
     if target_chooser.is_some() {
-        return ResolutionChoiceFreedom::MayPrompt;
+        return true;
     }
     // CR 608.2d: resolution-timed target selection is a resolution-time choice
     // even though `targets` is empty on the stack.
     if matches!(target_choice_timing, TargetChoiceTiming::Resolution) {
-        return ResolutionChoiceFreedom::MayPrompt;
+        return true;
     }
     // CR 700.2b + CR 603.3c: a modal header / reflexive per-mode abilities open a
     // mode choice at resolution (conservative — rejected even when the mode is
     // baked).
     if modal.is_some() || !mode_abilities.is_empty() {
-        return ResolutionChoiceFreedom::MayPrompt;
+        return true;
     }
     // CR 608.2c + CR 107.1c: only the controller-prompted repeat variant is a
     // player choice; while / until-stop predicates are pure re-evaluation.
     if matches!(repeat_until, Some(RepeatContinuation::ControllerChoice)) {
-        return ResolutionChoiceFreedom::MayPrompt;
+        return true;
     }
     // CR 608.2d + CR 107.1c: an "up to N" REPEAT COUNT is a resolution-time choice
     // exactly like an "up to N" damage/draw/counter count, and it is answered in the
@@ -641,24 +628,44 @@ pub(crate) fn ability_resolution_choice_freedom(
         .as_ref()
         .is_some_and(quantity_offers_up_to_choice)
     {
-        return ResolutionChoiceFreedom::MayPrompt;
+        return true;
     }
 
-    // CR 608.2c: the chain resolves the effect and, on the taken branch, a
-    // sub_ability / else_ability effect — join both (fail-safe: reject if either
-    // can prompt).
-    let mut acc = effect_resolution_choice_freedom(state, a, effect, budget);
-    if let Some(sub) = sub_ability {
-        acc = acc.join(ability_resolution_choice_freedom(state, sub, budget));
+    // CR 608.2c: gate-check the whole chain — this node's effect, plus the
+    // sub_ability / else_ability branches. Recursion is retained HERE, where it is a
+    // pure AST walk costing nothing, and dropped from the probe below.
+    effect_offers_choice(effect)
+        || sub_ability.as_deref().is_some_and(chain_offers_choice)
+        || else_ability.as_deref().is_some_and(chain_offers_choice)
+}
+
+/// CR 608.2d + CR 732.2a: the resolution-choice verdict for a whole ability chain.
+///
+/// TWO PHASES, and the split is the point. [`chain_offers_choice`] walks the entire
+/// chain as pure AST — free, so it stays exhaustive over both branches. Only if the
+/// whole chain is gate-clean does the expensive half run, and then exactly once, at
+/// the ROOT: `probe_resolution` drives `resolve_ability_chain`, which is the
+/// production entry and already resolves the taken `sub_ability` / `else_ability`
+/// branch itself. The previous shape probed the root AND recursed a probe into each
+/// branch, so a chain of depth N paid N whole-`GameState` clones and re-resolved every
+/// subchain the root resolution had already walked.
+///
+/// ⚠ ONE MEASURABLE CONSEQUENCE, stated rather than buried. The old form `join`ed the
+/// branch verdicts, and `join` UNIONS event sets, so the accumulated set included
+/// events from the branch NOT taken on this board. The single root probe reports only
+/// what the resolution actually proposes. That is a smaller, more accurate set — the
+/// old one described a resolution that cannot happen — but it IS a different set, so
+/// any change in certification is a real delta and is reported with the change rather
+/// than absorbed silently.
+pub(crate) fn ability_resolution_choice_freedom(
+    state: &GameState,
+    a: &ResolvedAbility,
+    budget: &mut ProbeBudget,
+) -> ResolutionChoiceFreedom {
+    if chain_offers_choice(a) {
+        return ResolutionChoiceFreedom::MayPrompt;
     }
-    if let Some(else_branch) = else_ability {
-        acc = acc.join(ability_resolution_choice_freedom(
-            state,
-            else_branch,
-            budget,
-        ));
-    }
-    acc
+    resolution_probe_verdict(state, a, budget)
 }
 
 /// The RECORDER-FREE half of the completeness witness (R10′).
@@ -1632,6 +1639,66 @@ mod tests {
             ResolutionChoiceFreedom::MayPrompt,
             "an `UpTo` nested under an arithmetic wrapper is still a resolution-time count choice"
         );
+
+        // ── THE RECURSION IS RETAINED FOR GATES, which is the premise that lets the
+        //    probe run once at the chain ROOT.
+        //
+        //    ⚠ MEASURED ASYMMETRY between the two branch sites, recorded because the
+        //    obvious reading of these two rows is WRONG. Each recursion site was
+        //    revert-probed independently:
+        //
+        //    * deleting the `else_ability` recursion FLIPS its row. The else branch is
+        //      not the branch this board resolves, so the root probe never executes it
+        //      and the AST walk is the ONLY thing that can see a gate there.
+        //    * deleting the `sub_ability` recursion does NOT flip its row — measured,
+        //      9 of 9 still pass. `resolve_ability_chain` resolves the TAKEN
+        //      sub-ability, so the root probe observes that prompt directly and the
+        //      upstream conjunct dominates the discriminator.
+        //
+        //    So the `sub_ability` row is a REGRESSION GUARD, not a proof of that
+        //    recursion, and says so rather than implying coverage it does not carry.
+        //    That recursion still earns its place on COST — `analysis::resource` calls
+        //    `chain_offers_choice` before cloning the board, where no probe has run yet
+        //    — but the soundness there rests on the probe, not on this row.
+        for (label, attach) in [
+            (
+                "sub_ability",
+                (&|a: &mut ResolvedAbility, branch: ResolvedAbility| {
+                    a.sub_ability = Some(Box::new(branch))
+                }) as &dyn Fn(&mut ResolvedAbility, ResolvedAbility),
+            ),
+            ("else_ability", &|a, branch| {
+                a.else_ability = Some(Box::new(branch))
+            }),
+        ] {
+            let mut branch = base.clone();
+            branch.optional = true; // a gate that only the recursion can see
+            let mut with_branch = base.clone();
+            attach(&mut with_branch, branch);
+            assert_eq!(
+                ability_resolution_choice_freedom(&state, &with_branch, &mut budget()),
+                ResolutionChoiceFreedom::MayPrompt,
+                "a choice gate on `{label}` must reject the whole chain — the root probe \
+                 cannot see it, so the AST recursion is the only thing that can"
+            );
+
+            // NEGATIVE CONTROL for the pair above: the identical chain SHAPE with a
+            // gate-free branch must still certify. Without it, a `chain_offers_choice`
+            // that rejected any ability merely for HAVING a branch would pass both rows
+            // and silently stop certifying every chained ability in the corpus.
+            let mut clean_branch = base.clone();
+            clean_branch.optional = false;
+            let mut with_clean = base.clone();
+            attach(&mut with_clean, clean_branch);
+            assert!(
+                matches!(
+                    ability_resolution_choice_freedom(&state, &with_clean, &mut budget()),
+                    ResolutionChoiceFreedom::FreeUnlessReplacements(_)
+                ),
+                "a gate-free `{label}` branch must remain probe-backed, or the recursion \
+                 is rejecting chain SHAPE rather than chain CONTENT"
+            );
+        }
     }
 
     /// STRUCTURAL INVARIANT: `game/ability_scan.rs` holds NO `GameState`.
