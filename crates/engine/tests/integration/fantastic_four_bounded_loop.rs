@@ -202,6 +202,62 @@ fn offer_parts(
     }
 }
 
+/// Build the CONFORMANT declaration template for a published schema: one pin per published
+/// point, `owner` and `count` supplied by the caller.
+///
+/// This is the shape `handle_declare_shortcut` ACCEPTS (measured in
+/// [`u6_the_ais_only_declare_candidate_is_refused_while_the_accepted_shape_is_one_it_never_emits`]),
+/// so every row that needs either an accepted declaration or a one-axis hostile variant of one
+/// builds it here rather than re-deriving the mapping. Keyed off `schema.points` — never off a
+/// hard-coded slot — so a re-dump that renumbers objects, or a remedy that widens the announced
+/// set, flows through without edit.
+///
+/// The per-kind mapping is deliberately total and LOUD on the kinds F4 cannot produce: a
+/// silently-skipped point would build a template that `predictability_gate` refuses, and the
+/// refusal would be read as the row's subject rather than as the fixture's own gap.
+fn f4_pin_template(
+    schema: &engine::analysis::decision_template::ShortcutDecisionSchema,
+    owner: PlayerId,
+    count: u32,
+) -> engine::analysis::decision_template::DecisionTemplate {
+    use engine::analysis::decision_template::{
+        DecisionGroupKey, DecisionTemplate, MayChoiceOption, PinnedDecision, ReplayMode, TargetPin,
+    };
+    DecisionTemplate {
+        owner,
+        decisions: schema
+            .points
+            .iter()
+            .map(|p| match &p.kind {
+                DecisionPointKind::MayChoice => PinnedDecision::MayChoice {
+                    slot: p.slot.clone(),
+                    take: MayChoiceOption::Take,
+                },
+                // CR 603.3d + CR 608.2b: F4's only target point is Torch's "target opponent",
+                // chosen when the trigger goes on the stack and re-checked for legality at
+                // each resolution. P1 is the constant seat `f4_drive_one_beat` aims at and is
+                // living on this board, so the pin stays legal for every driven cycle.
+                DecisionPointKind::Targets { .. } => PinnedDecision::Targets {
+                    slot: p.slot.clone(),
+                    targets: vec![TargetPin::Player(P1)],
+                },
+                other => panic!("unexpected point kind {other:?}"),
+            })
+            .collect(),
+        replay: ReplayMode::Scheduled {
+            count: IterationCount::Fixed(count),
+        },
+        key: DecisionGroupKey::from_sources(
+            &schema
+                .points
+                .iter()
+                .map(|p| p.slot.source.clone())
+                .collect::<Vec<_>>(),
+            DecisionKind::LoopChoice,
+        ),
+    }
+}
+
 /// Restore the `Priority` window the reconcile bridge consumed when it raised the offer, so
 /// the mint can be re-run on the offer beat's OWN board. Every caller proves the
 /// reconstruction faithful by requiring the same outcome the production path produced.
@@ -519,9 +575,6 @@ fn r1b_the_published_point_set_is_exactly_what_the_retained_window_announces() {
 /// * Reed's "may" is asserted UNPUBLISHED on the same offer, naming the cause.
 #[test]
 fn r2_an_accepted_declaration_commits_zero_cycles_because_reeds_may_is_unannounced() {
-    use engine::analysis::decision_template::{
-        DecisionGroupKey, DecisionTemplate, MayChoiceOption, PinnedDecision, ReplayMode,
-    };
     use engine::analysis::loop_check::ShortcutResponse;
 
     let mut committed_per_n = vec![];
@@ -540,34 +593,7 @@ fn r2_an_accepted_declaration_commits_zero_cycles_because_reeds_may_is_unannounc
              points, so no legal declaration can pin it"
         );
 
-        let decisions: Vec<PinnedDecision> = schema
-            .points
-            .iter()
-            .map(|p| match &p.kind {
-                DecisionPointKind::MayChoice => PinnedDecision::MayChoice {
-                    slot: p.slot.clone(),
-                    take: MayChoiceOption::Take,
-                },
-                DecisionPointKind::Targets { .. } => PinnedDecision::Targets {
-                    slot: p.slot.clone(),
-                    targets: vec![engine::analysis::decision_template::TargetPin::Player(P1)],
-                },
-                other => panic!("unexpected point kind {other:?}"),
-            })
-            .collect();
-        let sources: Vec<engine::types::game_state::YieldTarget> = schema
-            .points
-            .iter()
-            .map(|p| p.slot.source.clone())
-            .collect();
-        let template = DecisionTemplate {
-            owner: proposer,
-            decisions,
-            replay: ReplayMode::Scheduled {
-                count: IterationCount::Fixed(n),
-            },
-            key: DecisionGroupKey::from_sources(&sources, DecisionKind::LoopChoice),
-        };
+        let template = f4_pin_template(&schema, proposer, n);
 
         let life_before: Vec<i64> = state.players.iter().map(|p| p.life as i64).collect();
         let libs_before: Vec<usize> = state.players.iter().map(|p| p.library.len()).collect();
@@ -1090,4 +1116,288 @@ fn optional_entries(state: &GameState) -> usize {
             _ => false,
         })
         .count()
+}
+
+// ─────────────────────────────────────────────────────────────────────────────────────────
+// U6 — the AI's candidate set at the real F4 offer, and what the engine does with it
+//
+// Reachability of the seam under test: `phase_ai::search::choose_action` dispatches
+// `WaitingFor::LoopShortcut { .. } => engine::ai_support::legal_actions(state)`
+// (`crates/phase-ai/src/search.rs`), and `legal_actions` funnels into the
+// `WaitingFor::LoopShortcut` arm of `engine::ai_support::candidates`. These rows drive the
+// REAL dump to the REAL offer and measure that arm's output there, plus what
+// `handle_declare_shortcut` does with each member of it.
+//
+// ⚠ MEASURED SCOPE. §5 U6 as planned expects a declare candidate "whose template pins all
+// three F4 slots (or declines)". F4 publishes ONE point, not three (see `r1b`), and the
+// measured answer to the underlying question is the second branch: the AI DECLINES, because
+// the only declaration it can emit is one the engine refuses outright. These rows pin that,
+// name the two independent reasons, and pin the accepted shape the generator never emits —
+// they do not assert the planned prediction.
+// ─────────────────────────────────────────────────────────────────────────────────────────
+
+/// §5 U6 (i) — MEASURED: at the real F4 bounded offer the engine's AI candidate generator
+/// emits exactly two actions, and NEITHER is a declaration the engine will accept.
+///
+/// The generator's `Fixed(max_iterations)` candidate exists precisely for bounded offers, but
+/// it is gated on `schema.points.is_empty()` — it carries `template: None`, and a published pin
+/// set fail-closes on that. F4 publishes one point, so the gate excludes it and the sole
+/// declare candidate is the `UntilLethal` one, which
+/// [`u6_the_ais_only_declare_candidate_is_refused_while_the_accepted_shape_is_one_it_never_emits`]
+/// measures the engine refusing.
+///
+/// # Reach-guards (each excludes a way this could pass degenerately)
+///
+/// * the offer is BOUNDED (`is_bounded()`, bound narrowed below the ceiling) — on an unbounded
+///   offer the `Fixed` candidate would be absent for a second, unrelated reason and the row
+///   would not be measuring the `points` gate;
+/// * `schema.points` is NON-empty — that is the conjunct under test;
+/// * `predicted_winner` is `None`, which is the fact that routes
+///   `phase_ai::policies::loop_shortcut::LoopShortcutPolicy` to its
+///   `(None, UntilLethal) => reject` arm (covered there by
+///   `declare_until_lethal_with_no_predicted_winner_is_rejected`). This row supplies the
+///   REACHABILITY that policy row cannot: a real board that carries exactly that pair.
+///
+/// REVERT-PROBE: drop the `schema.points.is_empty() &&` conjunct from the `LoopShortcut` arm of
+/// `ai_support/candidates.rs` ⇒ a third candidate (`Fixed(35)`, `template: None`) appears ⇒
+/// this row FLIPS on the exact-equality assertion.
+#[test]
+fn u6_the_ai_candidate_set_at_the_f4_offer_is_untillethal_and_decline_only() {
+    let mut state = load_f4();
+    drive_f4_to_offer(&mut state, 400).expect("the bounded offer fires (see R1)");
+    let (proposer, _certificate, schema) = offer_parts(&state);
+    let WaitingFor::LoopShortcut {
+        predicted_winner, ..
+    } = &state.waiting_for
+    else {
+        unreachable!("offer_parts would have panicked")
+    };
+
+    assert!(
+        schema.is_bounded() && schema.max_iterations < MAX_SHORTCUT_CYCLES_MIRROR,
+        "reach-guard: the generator's `Fixed` candidate is gated on `is_bounded()` too, so an \
+         unbounded offer would exclude it for the wrong reason. bounded={} max_it={}",
+        schema.is_bounded(),
+        schema.max_iterations
+    );
+    assert!(
+        !schema.points.is_empty(),
+        "reach-guard: a NON-empty published pin set is the conjunct this row is about"
+    );
+    assert_eq!(
+        *predicted_winner, None,
+        "reach-guard + REACHABILITY for `phase_ai::policies::loop_shortcut`: the F4 offer \
+         latches NO predicted winner, which is what routes its `(None, UntilLethal)` reject arm"
+    );
+
+    // ── the seam: `phase-ai/src/search.rs` `WaitingFor::LoopShortcut { .. } =>` calls this ──
+    let actions = engine::ai_support::legal_actions(&state);
+    assert_eq!(
+        actions,
+        vec![
+            GameAction::DeclareShortcut {
+                count: IterationCount::UntilLethal,
+                template: None,
+            },
+            GameAction::DeclineShortcut,
+        ],
+        "MEASURED: exactly two candidates. No `Fixed` declaration (gated on \
+         `schema.points.is_empty()`, and this schema publishes {} point(s)) and no declaration \
+         carrying a template at all — so the AI cannot pin the point the offer DID publish",
+        schema.points.len()
+    );
+
+    // Stated separately from the equality above so a future generator change that adds an
+    // unrelated candidate reports the interesting fact rather than a diff of two long vectors.
+    assert!(
+        !actions.iter().any(|a| matches!(
+            a,
+            GameAction::DeclareShortcut {
+                count: IterationCount::Fixed(_),
+                ..
+            }
+        )),
+        "no `Fixed` candidate is generated against a points-carrying offer"
+    );
+    assert!(
+        !actions.iter().any(|a| matches!(
+            a,
+            GameAction::DeclareShortcut {
+                template: Some(_),
+                ..
+            }
+        )),
+        "the generator never builds a pin template — that is the capability §5 U6 asks about"
+    );
+    assert_eq!(
+        proposer, P0,
+        "every candidate is the proposer's own action (`ActionMetadata.actor`)"
+    );
+}
+
+/// §5 U6 (ii) — the branch that fires, and the MEASURED reason it fires.
+///
+/// Every action the AI can take at this offer hands priority straight back; the accepted shape
+/// is one the generator never emits. Four declarations are driven through `apply()` on the SAME
+/// real offer board, differing one axis at a time:
+///
+/// | declaration | measured |
+/// |---|---|
+/// | `UntilLethal` + `None` — **the AI's own candidate** | REFUSED ⇒ `Priority` |
+/// | `UntilLethal` + a conformant template | REFUSED ⇒ `Priority` (so the refusal is keyed on the COUNT, not on the pins) |
+/// | `Fixed(max)` + `None` | REFUSED ⇒ `Priority` (`template: None` against a non-empty schema fail-closes when `last_loop_action_sequence` is empty — measured empty here) |
+/// | `Fixed(max)` + a conformant template | **ACCEPTED** ⇒ the CR 732.2b APNAP window opens |
+///
+/// The last row is the ANTI-VACUITY control: without it, "everything reaches `Priority`" would
+/// be satisfied by a board that refuses every declaration for some unrelated reason. With it,
+/// the three refusals are proved to be refusals of *those* declarations.
+///
+/// ⚠ This row deliberately does NOT assert that the accepted declaration accomplishes
+/// anything — measured, it commits zero cycles ([`r2_an_accepted_declaration_commits_zero_cycles_because_reeds_may_is_unannounced`]).
+/// Closing the generator gap would therefore ride the grant mechanism, which is why U6 reports
+/// the gap rather than building the candidate.
+///
+/// REVERT-PROBES, both RUN, and the measured result CORRECTS the obvious prediction — the AI's
+/// own candidate is refused by TWO INDEPENDENT guards, so disabling either alone leaves it
+/// refused:
+///
+/// * disable `IterationCount::UntilLethal if offer.schema.is_bounded()` in
+///   `handle_declare_shortcut` ⇒ the *`UntilLethal` + conformant template* arm flips
+///   (`Priority` → `RespondToShortcut`), while the AI's own `template: None` candidate stays
+///   refused by the `None if last_loop_action_sequence.is_empty()` arm;
+/// * disable BOTH ⇒ the AI-candidate loop itself flips — `UntilLethal` + `None` builds a
+///   proposal and opens APNAP for `PlayerId(1)`.
+///
+/// The row asserts both arms for exactly that reason: a single-guard probe would report the
+/// AI's candidate as still-refused and hide the change.
+#[test]
+fn u6_the_ais_only_declare_candidate_is_refused_while_the_accepted_shape_is_one_it_never_emits() {
+    let mut state = load_f4();
+    drive_f4_to_offer(&mut state, 400).expect("the bounded offer fires (see R1)");
+    let (proposer, _certificate, schema) = offer_parts(&state);
+    let schema = schema.clone();
+    let max = schema.max_iterations;
+
+    assert!(
+        state.last_loop_action_sequence.is_empty(),
+        "the measured precondition for the `Fixed` + `None` arm below: with a NON-empty \
+         sequence a template-free declaration is legitimately re-derivable and that arm would \
+         be measuring something else. len={}",
+        state.last_loop_action_sequence.len()
+    );
+
+    // Every AI candidate, driven through the public boundary.
+    for action in engine::ai_support::legal_actions(&state) {
+        let mut probe = state.clone();
+        apply(&mut probe, proposer, action.clone()).expect("dispatched — refusal is a HANDBACK");
+        assert!(
+            matches!(probe.waiting_for, WaitingFor::Priority { .. }),
+            "CR 800.4a: the AI candidate {action:?} hands priority back. A \
+             `RespondToShortcut` here would mean the AI CAN open the CR 732.2b window, which \
+             is the capability this row measures absent. got {:?}",
+            probe.waiting_for
+        );
+    }
+
+    let outcome = |count: IterationCount, template: Option<_>| {
+        let mut probe = state.clone();
+        apply(
+            &mut probe,
+            proposer,
+            GameAction::DeclareShortcut { count, template },
+        )
+        .expect("dispatched — refusal is a HANDBACK");
+        probe.waiting_for.variant_name()
+    };
+
+    assert_eq!(
+        outcome(
+            IterationCount::UntilLethal,
+            Some(f4_pin_template(&schema, proposer, 1))
+        ),
+        "Priority",
+        "CR 732.2a: the refusal of the AI's candidate is keyed on the COUNT — `UntilLethal` \
+         against a narrowed bound — not on its missing pins. Carrying the very template the \
+         positive control below has accepted changes nothing"
+    );
+    assert_eq!(
+        outcome(IterationCount::Fixed(max), None),
+        "Priority",
+        "and 'just emit `Fixed`' is not a template-free remedy: a `template: None` declaration \
+         against a non-empty schema fail-closes when `last_loop_action_sequence` is empty"
+    );
+    // ── ANTI-VACUITY CONTROL: this board DOES accept a declaration ──
+    assert_eq!(
+        outcome(
+            IterationCount::Fixed(max),
+            Some(f4_pin_template(&schema, proposer, max))
+        ),
+        "RespondToShortcut",
+        "the accepted shape is `Fixed(n)` + a template pinning every published point, owner == \
+         proposer. Without this arm the three refusals above would be vacuous"
+    );
+}
+
+/// §5 U6 (iii) — the declare-time `template.owner` firewall, exercised on the REAL F4 offer.
+///
+/// `loop_shortcut.rs`'s `r28_a_declared_template_owning_another_seat_is_refused_at_declare`
+/// already covers this seam on a STAGED offer; this is the real-dump arm — a 4-player board
+/// whose schema, pin slots and proposer all come from a captured game rather than from a
+/// scenario built to reach the guard. The matched pair differs in exactly one field.
+///
+/// Reach-guards: the published pin set is non-empty, so `predictability_gate` and
+/// `validate_pins` really run and the accepting arm proves they PASS (a refusal on both arms
+/// would otherwise be reported as a firewall hit); and the hostile owner names a LIVING seat
+/// that is not the proposer, which is the only shape the guard can distinguish.
+///
+/// REVERT-PROBE (shared with `r28_a`, and recorded as shared): delete
+/// `if template.as_ref().is_some_and(|t| t.owner != offer.proposer)` from
+/// `handle_declare_shortcut` ⇒ the hostile arm opens APNAP ⇒ this row FLIPS.
+#[test]
+fn u6_the_declare_owner_firewall_holds_on_the_real_f4_offer() {
+    let mut state = load_f4();
+    drive_f4_to_offer(&mut state, 400).expect("the bounded offer fires (see R1)");
+    let (proposer, _certificate, schema) = offer_parts(&state);
+    let schema = schema.clone();
+
+    assert!(
+        !schema.points.is_empty(),
+        "reach-guard: a non-empty schema means `predictability_gate` / `validate_pins` really \
+         run, so the accepting arm below proves the pair is keyed to `owner`"
+    );
+    let hostile = state
+        .players
+        .iter()
+        .find(|p| p.id != proposer && !p.is_eliminated)
+        .map(|p| p.id)
+        .expect("reach-guard: a living seat other than the proposer must exist on a 4p board");
+
+    let mut outcomes = vec![];
+    for owner in [proposer, hostile] {
+        let template = f4_pin_template(&schema, owner, 1);
+        assert_eq!(
+            template.owner, owner,
+            "the two arms differ in exactly one field"
+        );
+        let mut probe = state.clone();
+        let result = apply(
+            &mut probe,
+            proposer,
+            GameAction::DeclareShortcut {
+                count: IterationCount::Fixed(1),
+                template: Some(template),
+            },
+        )
+        .expect("dispatched either way — refusal is a HANDBACK");
+        outcomes.push((probe.waiting_for.variant_name(), result.events.len()));
+    }
+
+    assert_eq!(
+        outcomes,
+        vec![("RespondToShortcut", 0), ("Priority", 0)],
+        "CR 732.2a + CR 603.5: the declaration owned by the engine-issued proposer opens the \
+         APNAP window; the byte-identical declaration owned by {hostile:?} is refused into the \
+         CR 800.4a manual handback. `handle_declare_shortcut` pushes no events on either path, \
+         so the event counts are exact rather than wildcards"
+    );
 }
