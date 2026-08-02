@@ -13934,6 +13934,24 @@ mod stage2_injector_tests {
     /// producer could not produce. Same set, new line numbers ⇒ benign, re-baselined here.
     /// NOTE for the record: this rebase did NOT add a CR 603.5 producer. An earlier report of
     /// mine said upstream had added one; that was wrong — the row fired on coordinates.
+    ///
+    /// ⚠ **RE-ADJUDICATED ON THE REBASE ONTO UPSTREAM #6851 (`96e41b3ab`), NOT RELAXED.**
+    /// The row fired in CI but not locally, because CI builds the MERGE ref (branch + main)
+    /// while the branch was still based on `e12447f4f`. The PRODUCER COUNT IS STILL **5**, no
+    /// sixth producer exists, and this time only ONE coordinate moved:
+    /// `game/engine.rs:10589 ⇒ :10640` (**+51**), with `game/effects/mod.rs:5918/5995/8949`
+    /// and `game/effects/scoped_library_search.rs:452` all **UNMOVED**.
+    /// Evidence this is a coordinate shift and not a set change, three independent ways:
+    /// (1) all five producers were re-read at their new coordinates and diffed against the
+    /// pre-rebase tree at their old ones — **byte-identical**, same files, same order, with a
+    /// negative control confirming the diff instrument discriminates (the new tree at the OLD
+    /// coordinate `:10589` is a bare `}`, not the producer); (2) the +51 is fully accounted
+    /// for by #6851's own insertions ABOVE this producer in the same file — measured net
+    /// `+51` from `git diff -U0 e12447f4f 96e41b3ab`, so predicted `10589+51 = 10640` equals
+    /// the observed coordinate exactly, and #6851's whole-file delta is also `+51`, i.e. it
+    /// adds nothing below; (3) the total stays **37** and the partition stays **5/7/25**, so
+    /// neither a producer nor a reader was gained or lost. Same set, one new line number ⇒
+    /// benign, re-baselined here.
     #[test]
     fn the_cr_603_5_prompt_census_is_pinned_so_a_sixth_producer_is_a_counted_event() {
         /// Every `.rs` under the crate's `src`, and the `#[cfg(test)]`-attributed
@@ -14048,7 +14066,12 @@ mod stage2_injector_tests {
                 // above); producer byte-identical, total 37 and partition 5/7/25 untouched.
                 // Rebase onto #6842: `:10500 ⇒ :10589`, on the same terms — that commit adds
                 // lines above this producer too. Producer byte-identical.
-                "game/engine.rs:10589".to_string(),
+                // Rebase onto #6851 (96e41b3ab): `:10589 ⇒ :10640`, again on the same terms.
+                // The +51 is exactly #6851's measured net insertion above this line (and its
+                // whole-file delta is also +51, so it adds nothing below). The OTHER FOUR
+                // entries did not move at all this time — a census that had gained or lost a
+                // producer could not leave four entries byte-identical AND in place.
+                "game/engine.rs:10640".to_string(),
             ],
             "the five production producers, NAMED: the CR 603.5 gate in `resolve_chain_body` \
              plus the two repeated-optional-payment drivers, the per-player acceptance cursor \
