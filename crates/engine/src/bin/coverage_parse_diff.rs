@@ -362,8 +362,18 @@ fn parse_args(
         match a.as_str() {
             "--markdown" => markdown_out = args.next(),
             "--json" => json_out = args.next(),
-            "--base-sha" => base_sha = args.next().ok_or("--base-sha requires a value")?,
-            "--head-sha" => head_sha = args.next().ok_or("--head-sha requires a value")?,
+            "--base-sha" => {
+                base_sha = args
+                    .next()
+                    .filter(|value| !value.is_empty() && !value.starts_with("--"))
+                    .ok_or("--base-sha requires a value")?
+            }
+            "--head-sha" => {
+                head_sha = args
+                    .next()
+                    .filter(|value| !value.is_empty() && !value.starts_with("--"))
+                    .ok_or("--head-sha requires a value")?
+            }
             "--max-clusters" => {
                 max_clusters = args
                     .next()
@@ -1067,11 +1077,12 @@ mod tests {
         v.into_iter()
     }
 
-    /// A trailing `--base-sha`/`--head-sha` is a usage error, not a silent fallback: the report
-    /// would otherwise be stamped with a commit the caller never named. Each arm asserts on its own
-    /// flag name, so fixing only one of the provenance pair fails the other.
+    /// A missing, empty, or option-token value after a provenance flag is a usage error, not a
+    /// silent fallback: the report would otherwise be stamped with a commit the caller never named.
+    /// Each arm asserts on its own flag name, so fixing only one of the provenance pair fails the
+    /// other.
     #[test]
-    fn provenance_flags_reject_a_missing_value() {
+    fn provenance_flags_reject_missing_empty_and_option_values() {
         let base_err = parse_args(argv(&["--base-sha"]), "env-head".into())
             .expect_err("a valueless --base-sha must not fall back to `unknown`");
         assert!(
@@ -1085,6 +1096,20 @@ mod tests {
             head_err.contains("--head-sha"),
             "the error must name the offending flag: {head_err}"
         );
+
+        for (flag, invalid_value) in [
+            ("--base-sha", ""),
+            ("--base-sha", "--markdown"),
+            ("--head-sha", ""),
+            ("--head-sha", "--markdown"),
+        ] {
+            let err = parse_args(argv(&[flag, invalid_value]), "env-head".into())
+                .expect_err("empty and option-token provenance values must be rejected");
+            assert!(
+                err.contains(flag),
+                "the error must name {flag} for {invalid_value:?}: {err}"
+            );
+        }
 
         // Positive control: the same flags WITH values parse, and an explicit --head-sha overrides
         // the env default rather than being ignored.
