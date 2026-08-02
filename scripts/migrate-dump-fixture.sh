@@ -113,13 +113,30 @@ GZIP_VERSION="$(gzip --version | head -1)"
 # 2. Patch + 3. compress. ONE filter, applied to every slot in the prompt.
 #    ONE definition of the recipe, used by BOTH the migration and the control —
 #    a control that re-spelled the recipe would certify its own copy.
+#
+# STAGE 2b — CR 603.7 firing carriers (upstream #6842, 8121fd1c6).
+# The derivation lives in ONE place, scripts/lib/trigger-firing.jq, loaded by
+# both this script's pristine path and its --in-place path. See that file for
+# the CR 603.1 vs CR 603.7a discriminant and why UnknownLegacy is not legal.
+FIRING_LIB="$(dirname "${BASH_SOURCE[0]}")/lib/trigger-firing.jq"
+[ -f "$FIRING_LIB" ] || { echo "missing $FIRING_LIB" >&2; exit 1; }
+
 regenerate() {   # regenerate <patched|unpatched> <destination>
   local mode="$1" dest="$2" filter='{gameState:.gameState}'
   if [ "$mode" = patched ]; then
-    filter='.gameState.waiting_for.data.target_slots |= map(. + {effect_kind: $k}) | {gameState:.gameState}'
+    # The `effect_kind` stage applies only to a dump whose prompt actually
+    # carries `target_slots`. Several dumps in this corpus are paused at a beat
+    # with no target prompt at all; for them this stage is vacuously absent, and
+    # `--effect-kind` is inert. Guarding it (rather than letting `map` abort on
+    # null) is what lets ONE recipe cover the whole corpus — an unguarded
+    # `|=` here made the script usable only on the two dumps that happen to have
+    # a prompt, which is why the other four were never regenerable through it.
+    filter="(if (.gameState.waiting_for.data.target_slots? // null) != null
+               then .gameState.waiting_for.data.target_slots |= map(. + {effect_kind: \$k})
+               else . end) | stamp_trigger_firing | stamp_delayed_allocators | {gameState:.gameState}"
   fi
   mkdir -p "$(dirname "$dest")"
-  unzip -p "$PRISTINE" | jq -c --arg k "$EFFECT_KIND" "$filter" | gzip -9 -n > "$dest"
+  unzip -p "$PRISTINE" | jq -c --arg k "$EFFECT_KIND" -f <(printf '%s\n%s\n' "$(cat "$FIRING_LIB")" "$filter") | gzip -9 -n > "$dest"
 }
 
 if [ "$CONTROL_MODE" -eq 1 ]; then
