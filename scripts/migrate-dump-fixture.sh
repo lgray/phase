@@ -401,8 +401,14 @@ if [ "$CONTROL_MODE" -eq 1 ]; then
   # stack entries, resolving_stack_entry) — inputs neither transform touches, so it is
   # identical on both sides by construction and contributes nothing to the comparison.
   # Keying on the STAMPED carriers is what makes the carrier half of this arm able to
-  # move at all; without it a disabled `stamp_trigger_firing` still reported a landing
-  # via the allocator terms alone.
+  # move at all.
+  #
+  # RESIDUAL, stated so the arm is not read as more than it is: the comparison is one
+  # equality over the COMBINED signature, so any differing term alone yields `true`. On
+  # the common corpus shape — allocators repaired 0 -> 1 — a carrier-stamp regression is
+  # still masked by the allocator half (measured: stamp disabled, allocators moving,
+  # arm reports LANDED=true). What the printed signature gives you is self-disclosure:
+  # `s:0` on both sides says the carrier half did not move, whatever the verdict.
   alloc_sig() {   # alloc_sig <gz> — the stage-2b observable: stamped carriers + allocators
     gzip -dc "$1" | jq -c '{p: .gameState.pending_trigger_firing,
                             s: (.gameState.stack_trigger_firings // {} | length),
