@@ -329,22 +329,41 @@ fn load(path: &str) -> CoverageFile {
     }
 }
 
-fn main() {
-    let mut args = std::env::args().skip(1);
+/// Parsed CLI arguments.
+#[derive(Debug)]
+struct Args {
+    base_path: String,
+    head_path: String,
+    base_sha: String,
+    head_sha: String,
+    markdown_out: Option<String>,
+    json_out: Option<String>,
+    max_clusters: usize,
+}
+
+/// Parse the CLI. `head_sha_default` is CI's `HEAD_SHA` env value, read by the caller so this stays
+/// a pure function of its inputs.
+///
+/// The two provenance flags REJECT a present-but-valueless form: falling back would silently
+/// misattribute the whole report to another commit, and a confidently wrong SHA is worse than a
+/// missing one. `--markdown` / `--json` / `--max-clusters` stay deliberately lenient — a missing
+/// value there omits or degrades output the caller can see, so there is nothing to misattribute.
+fn parse_args(
+    mut args: impl Iterator<Item = String>,
+    head_sha_default: String,
+) -> Result<Args, &'static str> {
     let mut positional: Vec<String> = Vec::new();
     let mut markdown_out: Option<String> = None;
     let mut json_out: Option<String> = None;
     let mut base_sha = String::from("unknown");
-    // CI exports this on the `parsediff` step (`ci.yml`) as `pull_request.head.sha`. NOT derived
-    // from git: that job checks out the synthetic PR merge commit, so `HEAD` is not the PR head.
-    let mut head_sha = std::env::var("HEAD_SHA").unwrap_or_else(|_| String::from("unknown"));
+    let mut head_sha = head_sha_default;
     let mut max_clusters = 25usize;
     while let Some(a) = args.next() {
         match a.as_str() {
             "--markdown" => markdown_out = args.next(),
             "--json" => json_out = args.next(),
-            "--base-sha" => base_sha = args.next().unwrap_or(base_sha),
-            "--head-sha" => head_sha = args.next().unwrap_or(head_sha),
+            "--base-sha" => base_sha = args.next().ok_or("--base-sha requires a value")?,
+            "--head-sha" => head_sha = args.next().ok_or("--head-sha requires a value")?,
             "--max-clusters" => {
                 max_clusters = args
                     .next()
@@ -354,12 +373,33 @@ fn main() {
             other => positional.push(other.to_string()),
         }
     }
-    if positional.len() != 2 {
-        eprintln!("usage: coverage-parse-diff <baseline.json> <head.json> [--base-sha SHA] [--head-sha SHA] [--markdown OUT] [--json OUT] [--max-clusters N]");
-        process::exit(2);
-    }
-    let base = load(&positional[0]);
-    let head = load(&positional[1]);
+    let [base_path, head_path] = <[String; 2]>::try_from(positional)
+        .map_err(|_| "expected exactly two positional arguments")?;
+    Ok(Args {
+        base_path,
+        head_path,
+        base_sha,
+        head_sha,
+        markdown_out,
+        json_out,
+        max_clusters,
+    })
+}
+
+fn main() {
+    // CI exports HEAD_SHA on the `parsediff` step (`ci.yml`) as `pull_request.head.sha`. NOT derived
+    // from git: that job checks out the synthetic PR merge commit, so `HEAD` is not the PR head.
+    let head_sha_default = std::env::var("HEAD_SHA").unwrap_or_else(|_| String::from("unknown"));
+    let args = match parse_args(std::env::args().skip(1), head_sha_default) {
+        Ok(a) => a,
+        Err(msg) => {
+            eprintln!("coverage-parse-diff: {msg}");
+            eprintln!("usage: coverage-parse-diff <baseline.json> <head.json> [--base-sha SHA] [--head-sha SHA] [--markdown OUT] [--json OUT] [--max-clusters N]");
+            process::exit(2);
+        }
+    };
+    let base = load(&args.base_path);
+    let head = load(&args.head_path);
 
     let bmap: BTreeMap<String, &CardCoverageResult> = base
         .cards
@@ -441,16 +481,16 @@ fn main() {
     });
 
     let md = render_markdown(
-        &base_sha,
-        &head_sha,
+        &args.base_sha,
+        &args.head_sha,
         &clusters,
-        max_clusters,
+        args.max_clusters,
         changed_card_set.len(),
         oracle_changed,
         &added_cards,
         &removed_cards,
     );
-    match &markdown_out {
+    match &args.markdown_out {
         Some(p) => {
             if let Err(e) = fs::write(p, &md) {
                 eprintln!("coverage-parse-diff: cannot write {p}: {e}");
@@ -460,8 +500,15 @@ fn main() {
         None => println!("{md}"),
     }
 
-    if let Some(p) = &json_out {
-        let json = render_json(&clusters, &added_cards, &removed_cards, oracle_changed);
+    if let Some(p) = &args.json_out {
+        let json = render_json(
+            &args.head_sha,
+            &args.base_sha,
+            &clusters,
+            &added_cards,
+            &removed_cards,
+            oracle_changed,
+        );
         if let Err(e) = fs::write(p, json) {
             eprintln!("coverage-parse-diff: cannot write {p}: {e}");
             process::exit(2);
@@ -649,6 +696,11 @@ fn render_markdown(
 /// hand-rolled escaping/joining.
 #[derive(Serialize)]
 struct DiffReport<'a> {
+    /// Same provenance pair the Markdown carries, in the order it presents them (head, then
+    /// baseline). The sticky comment sends a reader here when it truncates, so the artifact has to
+    /// identify its own commits rather than borrow the comment's.
+    head_sha: &'a str,
+    base_sha: &'a str,
     oracle_changed: usize,
     added_cards: &'a [String],
     removed_cards: &'a [String],
@@ -668,12 +720,16 @@ struct ClusterJson<'a> {
 }
 
 fn render_json(
+    head_sha: &str,
+    base_sha: &str,
     clusters: &[Cluster],
     added: &[String],
     removed: &[String],
     oracle_changed: usize,
 ) -> String {
     let report = DiffReport {
+        head_sha,
+        base_sha,
         oracle_changed,
         added_cards: added,
         removed_cards: removed,
@@ -1002,5 +1058,98 @@ mod tests {
         assert_eq!(changes.len(), 1);
         assert_eq!(changes[0].kind, ChangeKind::SupportFlip);
         assert_eq!(changes[0].label, "Mill");
+    }
+
+    /// The two required positionals plus whatever flags the case is exercising.
+    fn argv(flags: &[&str]) -> std::vec::IntoIter<String> {
+        let mut v = vec!["base.json".to_string(), "head.json".to_string()];
+        v.extend(flags.iter().map(|s| (*s).to_string()));
+        v.into_iter()
+    }
+
+    /// A trailing `--base-sha`/`--head-sha` is a usage error, not a silent fallback: the report
+    /// would otherwise be stamped with a commit the caller never named. Each arm asserts on its own
+    /// flag name, so fixing only one of the provenance pair fails the other.
+    #[test]
+    fn provenance_flags_reject_a_missing_value() {
+        let base_err = parse_args(argv(&["--base-sha"]), "env-head".into())
+            .expect_err("a valueless --base-sha must not fall back to `unknown`");
+        assert!(
+            base_err.contains("--base-sha"),
+            "the error must name the offending flag: {base_err}"
+        );
+
+        let head_err = parse_args(argv(&["--head-sha"]), "env-head".into())
+            .expect_err("a valueless --head-sha must not fall back to the env default");
+        assert!(
+            head_err.contains("--head-sha"),
+            "the error must name the offending flag: {head_err}"
+        );
+
+        // Positive control: the same flags WITH values parse, and an explicit --head-sha overrides
+        // the env default rather than being ignored.
+        let ok = parse_args(
+            argv(&["--base-sha", "e085a8d5fa08", "--head-sha", HEAD_SHA_FIXTURE]),
+            "env-head".into(),
+        )
+        .expect("both provenance flags with values must parse");
+        assert_eq!(ok.base_sha, "e085a8d5fa08");
+        assert_eq!(ok.head_sha, HEAD_SHA_FIXTURE);
+
+        // Omitting them entirely is still legal — that is CI's shape for the head (env-supplied).
+        let defaulted = parse_args(argv(&[]), "env-head".into()).expect("positionals alone parse");
+        assert_eq!(defaulted.head_sha, "env-head");
+        assert_eq!(defaulted.base_sha, "unknown");
+
+        // The positional arity check survives the Vec → [String; 2] rewrite.
+        assert!(parse_args(["only-one.json".to_string()].into_iter(), "env-head".into()).is_err());
+    }
+
+    /// The asymmetry with the provenance flags is deliberate. A missing `--markdown`/`--json`/
+    /// `--max-clusters` value omits or degrades output the caller can see for themselves; there is
+    /// no commit to misattribute. Pinned so a later "make every flag strict" sweep is a decision.
+    #[test]
+    fn output_flags_stay_lenient_on_a_missing_value() {
+        let md = parse_args(argv(&["--markdown"]), "env-head".into())
+            .expect("a valueless --markdown must not be a usage error");
+        assert!(md.markdown_out.is_none(), "output falls back to stdout");
+
+        let js = parse_args(argv(&["--json"]), "env-head".into())
+            .expect("a valueless --json must not be a usage error");
+        assert!(
+            js.json_out.is_none(),
+            "the drill-down artifact is simply skipped"
+        );
+
+        let mc = parse_args(argv(&["--max-clusters"]), "env-head".into())
+            .expect("a valueless --max-clusters must not be a usage error");
+        assert_eq!(mc.max_clusters, 25, "the default cluster cap stands");
+    }
+
+    /// The sticky comment sends a reader to `parse-diff.json` when its body is truncated, so the
+    /// artifact must identify its own commits instead of borrowing the comment's.
+    #[test]
+    fn json_report_carries_both_shas() {
+        const BASE: &str = "e085a8d5fa0817e3a1f6e7c9d40b2a5c3e8f1d62";
+
+        let clusters = vec![cluster(
+            ChangeKind::SupportFlip,
+            "Mill",
+            "",
+            "false",
+            "true",
+            &["Support Card"],
+        )];
+        let json = render_json(HEAD_SHA_FIXTURE, BASE, &clusters, &[], &[], 0);
+        let v: serde_json::Value =
+            serde_json::from_str(&json).expect("render_json must emit valid JSON");
+
+        // Distinct fixture values, so a head/base swap fails rather than passing symmetrically.
+        assert_eq!(v["head_sha"], HEAD_SHA_FIXTURE);
+        assert_eq!(v["base_sha"], BASE);
+        assert_eq!(
+            v["clusters"][0]["label"], "Mill",
+            "the drill-down is unchanged"
+        );
     }
 }
