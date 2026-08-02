@@ -1901,11 +1901,14 @@ pub(crate) fn flush_pending_token_battlefield_entry(
 ///   what makes the copy token's ETB observers ("whenever another creature enters") fire, and it
 ///   also puts the CR 400.7 row on the ledger before that pipeline's SBA pass (CR 704.3) can bury a
 ///   0-toughness copy under CR 704.5f.
-/// * in `apply_action_boundary_core`, after `apply_action` returned — the backstop for handlers
-///   that build an `ActionResult` straight out of the reducer match and never reach that pipeline
-///   (`handle_tribute_choice` is the reachable one). The entry is still realized on both ledgers
-///   and still emitted, but AFTER the trigger scan, so that class's ETB observers do not fire. That
-///   partial is tracked separately; it is strictly better than dropping the entry entirely.
+/// * in `apply_action_boundary_core`, after `apply_action` returned — for the handlers that build
+///   an `ActionResult` straight out of the reducer match and never reach that pipeline
+///   (`handle_tribute_choice` is the reachable one). That call site converges them onto
+///   `engine_priority::run_post_action_pipeline_from` over exactly the slice this realization
+///   appended, so the CR 603.6a check runs for them too and their ETB observers fire. For the
+///   REALIZED ENTRY the only remaining difference from the in-`apply_action` call is ordering
+///   against that action's CR 704.3 SBA pass, which is why both call sites are kept; the handler's
+///   OWN earlier events stay outside that scan window by design (`scan_from`).
 ///
 /// Order between the two is irrelevant: the flush's `Option::take_if` makes the second call — and
 /// any call after the two in-resolution convergence points in `engine_replacement.rs` /
@@ -1917,24 +1920,30 @@ pub(crate) fn flush_pending_token_battlefield_entry(
 /// left. The cost is a lost CR 400.7 row for an entry that did happen. After the in-`apply_action`
 /// call above, the only way to reach this branch is a settling action that never runs the pipeline
 /// AND removes the token within itself; no production route is known to do both.
+///
+/// Returns whether an entry pair was actually appended to `events` — `false` for an unsettled
+/// action, for nothing parked, for an entry an earlier convergence point already consumed, and
+/// for the CR 704.5f drop branch (which does consume the park but emits nothing). The boundary
+/// call site gates its CR 603.6a trigger pass on exactly that.
 pub(crate) fn realize_settled_token_battlefield_entry(
     state: &mut GameState,
     events: &mut Vec<GameEvent>,
-) {
+) -> bool {
     if !matches!(state.waiting_for, WaitingFor::Priority { .. }) {
-        return;
+        return false;
     }
     let Some(pending_id) = state
         .pending_token_battlefield_entry
         .as_ref()
         .map(|pending| pending.object_id)
     else {
-        return;
+        return false;
     };
     if state.battlefield.contains(&pending_id) {
-        flush_pending_token_battlefield_entry(state, pending_id, events);
+        flush_pending_token_battlefield_entry(state, pending_id, events)
     } else {
         state.pending_token_battlefield_entry = None;
+        false
     }
 }
 
@@ -4118,7 +4127,11 @@ mod tests {
             choices: Vec::new(),
         };
         let mut events = Vec::new();
-        realize_settled_token_battlefield_entry(&mut state, &mut events);
+        assert!(
+            !realize_settled_token_battlefield_entry(&mut state, &mut events),
+            "an unsettled action realizes nothing, so the boundary convergence must not run a \
+             trigger pass"
+        );
         assert_eq!(ledger_rows(&state, object_id), (0, 0));
         assert!(events.is_empty());
         assert!(
@@ -4130,7 +4143,11 @@ mod tests {
         state.waiting_for = WaitingFor::Priority {
             player: PlayerId(0),
         };
-        realize_settled_token_battlefield_entry(&mut state, &mut events);
+        assert!(
+            realize_settled_token_battlefield_entry(&mut state, &mut events),
+            "a settled action with the token still on the battlefield realizes the pair, which is \
+             what gates the CR 603.6a pass at the action boundary"
+        );
         assert_eq!(ledger_rows(&state, object_id), (1, 1));
         assert!(state.pending_token_battlefield_entry.is_none());
         assert_eq!(
@@ -4152,7 +4169,11 @@ mod tests {
             player: PlayerId(0),
         };
         let mut departed_events = Vec::new();
-        realize_settled_token_battlefield_entry(&mut departed, &mut departed_events);
+        assert!(
+            !realize_settled_token_battlefield_entry(&mut departed, &mut departed_events),
+            "the CR 704.5f drop branch consumes the park but emits nothing, so there is no slice \
+             for the boundary convergence to scan"
+        );
         assert_eq!(ledger_rows(&departed, departed_id), (0, 0));
         assert!(departed_events.is_empty());
         assert!(departed.pending_token_battlefield_entry.is_none());

@@ -713,11 +713,15 @@ fn suppressed_liminal_copy_token_entry_is_recorded_once() {
 // `GameState::pending_token_battlefield_entry` and realized as one indivisible operation by
 // `token::flush_pending_token_battlefield_entry` at the first instant the object IS that thing.
 //
-// Three convergence points call that one flush. (a) and (c) are pinned INDEPENDENTLY — deleting
-// either one alone flips its test. (b) is only EXERCISED, not isolated: on every route the card
-// pool reaches it settles in its own action, so (c) duplicates its work and deleting (b) alone
-// flips nothing (measured). Its test still discriminates the flush as a whole (deleting (b) AND
-// the in-`apply_action` (c) call takes it 1 → 0).
+// Three convergence points call that one flush, and a fourth defensive call in the `Suppress` arm
+// itself (`token.rs`) exists only so parking over a live entry cannot lose it. (a) is pinned
+// INDEPENDENTLY — deleting it alone flips its test. (b) and the in-`apply_action` half of (c) are
+// EXERCISED, not isolated: on every route the card pool reaches, the action-boundary half of (c)
+// converges the same work, so deleting either one alone flips nothing (measured). They are kept for
+// CR 704.3 ordering — the CR 400.7 row must be written before the settling action's SBA pass so
+// CR 704.5f cannot bury a 0-toughness copy first — and, for (b), for a drain that does not settle
+// in its own action. Their tests still discriminate the flush lifecycle as a whole (delete the park
+// and every route test fails).
 //   (a) `engine_replacement::finish_copy_target_choice_entry` — the unpaused route
 //       (`suppressed_liminal_copy_token_entry_is_recorded_once`, above).
 //   (b) `PendingCounterPostAction::EmitCommittedCopyTokenEntry` — the CR 616.1 ETB-counter
@@ -726,10 +730,11 @@ fn suppressed_liminal_copy_token_entry_is_recorded_once() {
 //       round trips it takes (`..._through_a_mandatory_as_enters_choice`,
 //       `..._that_raises_a_second_pause`). One gate (settled `Priority` + token still on the
 //       battlefield) called from two places in `engine.rs`: inside `apply_action` before
-//       `run_post_action_pipeline`, which is what keeps the realized token's ETB observers firing,
-//       and at the action boundary as the backstop for handlers that return an `ActionResult`
-//       straight out of the reducer match (`handle_tribute_choice`) and so never reach that
-//       pipeline. The two tests measure that difference directly: Painter +1 life, Fanatic 0.
+//       `run_post_action_pipeline`, and at the action boundary, where a realization now also runs
+//       `run_post_action_pipeline_from` over the slice it appended so the handlers that return an
+//       `ActionResult` straight out of the reducer match (`handle_tribute_choice`) get the same
+//       CR 603.6a check. Both tests measure +1 life; what distinguishes them is WHERE the pipeline
+//       runs, pinned by the presence of `OrderTriggers(2)` on the Fanatic route.
 
 /// Verbatim Oracle text from `data/card-data.json` (paraphrases can take a different parser
 /// branch, so the fixtures below must use the real strings).
@@ -940,6 +945,14 @@ fn drive_embalm_copy(
                 "TributeChoice".to_string(),
                 GameAction::DecideOptionalEffect { accept: false },
             ),
+            // CR 603.3b: a realized entry can trigger two same-controller abilities at once (the
+            // copy's own ETB plus a battlefield observer), which surfaces an ordering prompt.
+            WaitingFor::OrderTriggers { triggers, .. } => (
+                format!("OrderTriggers({})", triggers.len()),
+                GameAction::OrderTriggers {
+                    order: (0..triggers.len()).collect(),
+                },
+            ),
             other => {
                 drive.prompts.push(format!("{other:?}"));
                 break;
@@ -1014,11 +1027,12 @@ fn ledger_index(runner: &GameRunner, token: ObjectId) -> usize {
 /// `suppressed_liminal_copy_token_entry_is_recorded_once` (convergence point (a)) and
 /// `..._realizes_through_an_etb_counter_ordering_pause` (convergence point (b)) stay green.
 ///
-/// SECOND REVERT-PROBE, isolating WHERE the settled action realizes it (discriminating, RUN):
-/// delete only the `apply_action` call, keeping the boundary backstop ⇒ every ledger and emit
-/// assertion below stays green and ONLY the Soul Warden assertion flips 1 → 0, because the backstop
-/// appends the entry pair after `run_post_action_pipeline` has already scanned this action's events
-/// for triggers.
+/// SECOND REVERT-PROBE, isolating the CONVERGENCE as a whole (discriminating, RUN): deleting only
+/// the `apply_action` call now flips NOTHING — the action-boundary call realizes the entry and runs
+/// `run_post_action_pipeline_from` over the slice it appended, so the observer still fires. What
+/// still flips this test's Soul Warden assertion 1 → 0 is deleting the boundary block's pipeline
+/// call as well; the two placements now differ only in ordering against this action's CR 704.3 SBA
+/// pass, which no fixture on this route discriminates.
 #[test]
 fn suppressed_liminal_copy_token_entry_realizes_through_a_mandatory_as_enters_choice() {
     let mut scenario = GameScenario::new();
@@ -1105,11 +1119,12 @@ fn suppressed_liminal_copy_token_entry_realizes_through_a_mandatory_as_enters_ch
         "the emitted ZoneChanged carries the index the recorder assigned"
     );
 
-    // (4) DISCRIMINATOR for WHERE the settled action realizes it (CR 603.2 + CR 603.6a): the pair
-    //     is emitted from inside `apply_action`, ahead of `run_post_action_pipeline`, so this
-    //     action's trigger scan sees the token enter and the board's ETB observers fire. Realizing
-    //     at the action BOUNDARY instead (after the reducer returned) leaves this at 0 — that is
-    //     the maintainer's own named path, and it is the assertion that pins it.
+    // (4) CR 603.2 + CR 603.6a: the pair is emitted from inside `apply_action`, ahead of
+    //     `run_post_action_pipeline`, so this action's trigger scan sees the token enter and the
+    //     board's ETB observers fire. The action-boundary convergence would also produce +1 here
+    //     (it runs the same pipeline over the slice it appends), so this assertion pins THAT the
+    //     observer fires, not WHERE the realization happened; the Fanatic test's `OrderTriggers(2)`
+    //     is what pins the boundary route specifically.
     assert_eq!(
         life_of_p0(runner.state()) - life_start,
         1,
@@ -1123,18 +1138,17 @@ fn suppressed_liminal_copy_token_entry_realizes_through_a_mandatory_as_enters_ch
 /// trips of two different prompt shapes. This is the shape a fix hung off any single prompt
 /// variant's resume arm cannot see.
 ///
-/// REVERT-PROBE (discriminating, RUN): same as the Painter test — delete the
-/// `token::realize_settled_token_battlefield_entry` calls in `engine.rs` ⇒ 0 rows on both ledgers
-/// and no emit.
+/// REVERT-PROBE (discriminating, RUN): delete the `run_post_action_pipeline_from` block in
+/// `engine::apply_action_boundary_core` (leaving the bare realize call) ⇒ the reach-guard below
+/// loses its `"OrderTriggers(2)"` element and fails first, and the Soul Warden assertion goes
+/// 1 → 0. No other test in this file moves.
 ///
-/// KNOWN PARTIAL, pinned below rather than left unasserted: this class settles through
-/// `handle_tribute_choice`, which builds its `ActionResult` directly in the reducer match and never
-/// reaches `run_post_action_pipeline`, so the entry is realized by the action-BOUNDARY backstop —
-/// after that action's trigger scan. Its ETB observers therefore do not fire (assertion (4) below
-/// measures 0, where the Painter class measures 1). Not a regression: before this lifecycle the
-/// class emitted nothing at all and recorded a pre-copy row. The fix is to give the direct-return
-/// handlers the same pipeline the rest of the reducer uses; when that lands, assertion (4) flips to
-/// 1 and this test must be updated — a FAILURE here is a fix, not a regression.
+/// CR 603.6a (`docs/MagicCompRules.txt:2599`): this class settles through `handle_tribute_choice`,
+/// which builds its `ActionResult` directly in the reducer match and never reaches
+/// `run_post_action_pipeline`, so the action-boundary convergence is what runs the ETB check for
+/// it. TWO abilities trigger — Soul Warden's observer and the copy's own CR 603.4 "if tribute
+/// wasn't paid" ETB — same controller, so CR 603.3b makes their order the controller's choice and
+/// the ordering prompt is REQUIRED here, not an artifact of the harness.
 #[test]
 fn suppressed_liminal_copy_token_entry_realizes_through_an_as_enters_choice_with_a_second_pause() {
     let mut scenario = GameScenario::new();
@@ -1157,8 +1171,10 @@ fn suppressed_liminal_copy_token_entry_realizes_through_an_as_enters_choice_with
             "CopyTargetChoice".to_string(),
             "NamedChoice(1)".to_string(),
             "TributeChoice".to_string(),
+            "OrderTriggers(2)".to_string(),
         ],
-        "the tribute continuation must raise a SECOND pause after the as-enters choice"
+        "the tribute continuation raises a SECOND pause, and the realized entry then raises the \
+         CR 603.3b ordering prompt for its two ETB triggers"
     );
     let token = drive.token();
 
@@ -1210,18 +1226,18 @@ fn suppressed_liminal_copy_token_entry_realizes_through_an_as_enters_choice_with
         "the emitted ZoneChanged carries the index the recorder assigned"
     );
 
-    // (4) The KNOWN PARTIAL, measured instead of left silent (see the doc comment). The tribute
-    //     answer settles through `handle_tribute_choice`'s direct `ActionResult` return, so the
-    //     entry is realized by the action-boundary backstop, AFTER this action's trigger scan —
-    //     the same fixture on the Painter route (which does reach `run_post_action_pipeline`)
-    //     measures 1, and `declined_copy_replacement_records_the_token_entry_without_parking_it`
-    //     measures 1 on the `Emit` route, so a Soul Warden that simply never fires in this harness
-    //     is ruled out and this 0 is the real gap, not a blind instrument.
+    // (4) CR 603.6a (`MagicCompRules.txt:2599`): the realized entry is the event that put a
+    //     permanent onto the battlefield, so every permanent is checked for matching ETB triggers.
+    //     `handle_tribute_choice` builds its `ActionResult` straight out of the reducer match, so
+    //     the action-boundary convergence in `apply_action_boundary_core` is what runs that check
+    //     for this class. TWO triggers fire (Soul Warden's observer and Fanatic's own CR 603.4
+    //     "if tribute wasn't paid" ETB) — the `OrderTriggers(2)` element of the reach-guard above
+    //     pins that, and this assertion pins that the observer actually resolved.
     assert_eq!(
         life_of_p0(runner.state()) - life_start,
-        0,
-        "documented gap: this class realizes at the action boundary, after the trigger scan, so \
-         the token's ETB observers do not fire; prompts = {:?}",
+        1,
+        "Soul Warden observes the realized copy token entering through the direct-return handler; \
+         prompts = {:?}",
         drive.prompts
     );
 }
@@ -1229,21 +1245,21 @@ fn suppressed_liminal_copy_token_entry_realizes_through_an_as_enters_choice_with
 /// CR 400.7 + CR 616.1 — convergence point (b). Copying Faithful Watchdog ("enters with three
 /// +1/+1 counters") while Hardened Scales and Branching Evolution both want to modify that counter
 /// event forces the CR 616.1 ordering choice, which pauses the entry INSIDE the counter pipeline.
-/// Realizing there (rather than at the action boundary) is what puts the entry pair into `events`
-/// before this action's trigger scan, so the token's ETB observers still fire.
+/// Realizing there puts the entry pair into `events` before this action's trigger scan AND before
+/// its CR 704.3 SBA pass. The action-boundary convergence would also make the observers fire on
+/// this fixture (it runs the same pipeline over the slice it appends); what (b) and the
+/// in-`apply_action` call own, and the boundary does not, is that SBA ordering — (b) additionally
+/// owns a drain that does NOT settle in its own action.
 ///
-/// REVERT-PROBE (discriminating, RUN): delete BOTH in-action realization points — the flush call in
+/// REVERT-PROBE (discriminating, RUN): delete the park itself (`token.rs`'s `Suppress` arm stores
+/// nothing) ⇒ every ledger, emit and observer assertion in this test fails. Deleting the two
+/// IN-ACTION realization points — the flush call in
 /// `counters::apply_pending_counter_post_action`'s `EmitCommittedCopyTokenEntry` arm AND
-/// `token::realize_settled_token_battlefield_entry` inside `engine::apply_action` ⇒ the Soul Warden
-/// assertion flips 1 → 0 while every ledger and emit assertion above stays green (the action
-/// -boundary backstop still writes the rows and emits in the same action, just after the trigger
-/// scan) — which is exactly why the observer assertion is this test's discriminator.
-///
-/// MEASURED, and NOT what the earlier revision of this comment claimed: deleting the `counters.rs`
-/// call ALONE now flips nothing, because this fixture's counter-order answer settles to `Priority`
-/// and `apply_action` realizes the entry before the trigger scan regardless. The two points are
-/// redundant on this route; `counters.rs` still owns a drain that does not settle in its own
-/// action.
+/// `token::realize_settled_token_battlefield_entry` inside `engine::apply_action` — no longer flips
+/// anything here: this fixture's counter-order answer settles to `Priority`, so the action-boundary
+/// convergence realizes the entry and runs `run_post_action_pipeline_from` over it in the same
+/// action. What those two still own is CR 704.3 ordering (row before the SBA pass), which this
+/// fixture does not discriminate.
 #[test]
 fn suppressed_liminal_copy_token_entry_realizes_through_an_etb_counter_ordering_pause() {
     let mut scenario = GameScenario::new();
@@ -1300,13 +1316,13 @@ fn suppressed_liminal_copy_token_entry_realizes_through_an_etb_counter_ordering_
     assert_eq!(zone_name, "Faithful Watchdog");
     assert_eq!(battlefield_name, zone_name);
 
-    // (3) DISCRIMINATOR for convergence point (b): the pair is emitted BEFORE this action's
-    //     trigger scan, so a board ETB observer sees the token enter (CR 603.2).
+    // (3) The pair is emitted BEFORE this action's trigger scan, so a board ETB observer sees the
+    //     token enter (CR 603.2).
     assert_eq!(
         life_of_p0(runner.state()) - life_start,
         1,
-        "Soul Warden observes the copy token entering (flushing at the action boundary instead \
-         appends the pair after the trigger scan ⇒ 0)"
+        "Soul Warden observes the copy token entering (CR 603.6a); deleting the park entirely is \
+         what takes this to 0"
     );
 }
 

@@ -1783,8 +1783,10 @@ pub(super) fn handle_copy_target_choice(
         // record and CR 603.6a emit the unpaused one performs below.
         //
         // Realizing it INSIDE the counter drain (rather than leaving it to the action-boundary
-        // backstop) is what keeps this route's ETB observers firing: the post-action runs before
-        // that action's `run_post_action_pipeline` trigger scan, so the emitted pair is scanned.
+        // convergence) keeps the emitted pair ahead of this action's `run_post_action_pipeline`
+        // trigger scan AND ahead of its CR 704.3 SBA pass. The boundary now converges the trigger
+        // half for handlers that never reach that pipeline, so this hand-down is retained for the
+        // SBA ordering and for a drain that does not settle in its own action.
         //
         // On a pause this function returns at the `commit_liminal_token_entry_*` call below, so
         // the unpaused tail's CR 614.12a `BecomeCopy` chain, `finish_copy_target_choice_entry`,

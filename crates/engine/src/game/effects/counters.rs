@@ -722,12 +722,15 @@ fn apply_pending_counter_post_action(
             // MEASURED redundancy, stated rather than implied: when the drain's action DOES settle
             // to `Priority` (the Faithful Watchdog fixture in
             // `tests/integration/token_zone_change_index.rs`, and every route the current card pool
-            // reaches), `token::realize_settled_token_battlefield_entry` inside `apply_action`
-            // would realize it anyway, still ahead of the CR 603.2 trigger scan — deleting this
-            // call alone flips no test. It is kept for a drain that does NOT settle in its own
-            // action, where this is the only in-action realization point. `false` means an earlier
-            // convergence point already realized it (structurally idempotent, `Option::take_if`),
-            // which is not an error.
+            // reaches), `token::realize_settled_token_battlefield_entry` realizes it anyway — from
+            // inside `apply_action` ahead of that action's CR 603.2 scan, and, for handlers that
+            // never reach that pipeline, from `apply_action_boundary_core`, which now runs
+            // `run_post_action_pipeline_from` over the slice it appended. Deleting this call AND the
+            // in-`apply_action` one flips no test. It is kept for a drain that does NOT settle in
+            // its own action, where this is the only in-action realization point, and because the
+            // in-`apply_action` call orders the CR 400.7 row ahead of that action's CR 704.3 SBA
+            // pass (CR 704.5f). `false` means an earlier convergence point already realized it
+            // (structurally idempotent, `Option::take_if`), which is not an error.
             let _ = super::token::flush_pending_token_battlefield_entry(state, object_id, events);
             if !state.last_created_token_ids.contains(&object_id) {
                 state.last_created_token_ids.push(object_id);
