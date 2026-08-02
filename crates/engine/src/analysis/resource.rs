@@ -15114,4 +15114,790 @@ mod tests {
              choice that seat never described"
         );
     }
+
+    // ───────────────────────────────────────────────────────────────────────────────────
+    // §6 R27 — THE `.live`-READER CONJUNCTS (a3) / (b) / (c) / (e)
+    //
+    // All four need what (a1)/(a2) did not: an announced pair whose CARRYING FRAME is a
+    // RETAINED SAMPLE rather than `current`. The shared fixture below is the only thing that
+    // makes them differ from the shipped `.normalized`-blind rows — and, measured, it is what
+    // lets (b) and (c) flip BEHAVIOURALLY on the mint's own carrier line, which round 7's
+    // self-built-window rows structurally could not (probe P6).
+    // ───────────────────────────────────────────────────────────────────────────────────
+
+    /// A retained ring whose NEWEST sample carries stack entries neither the older samples nor
+    /// the live board hold.
+    ///
+    /// CR 732.2a + CR 608.1: [`certified_period_touch`] announces an entry at the FIRST window
+    /// frame it appears on, so an entry seeded only into the newest retained sample is
+    /// announced with THAT SAMPLE as its carrying frame — the `frame != current` population
+    /// every `.live` reader is about, and the one a fixture assembled from `current.stack`
+    /// can never reach. `state.stack` is deliberately left EMPTY: with no live entry at all,
+    /// an arm that passed by reading the live board would have nothing to read.
+    ///
+    /// Certification is basis A's EQUALITY disjunct, and that is a construction property
+    /// rather than a hope: `setup` runs BEFORE any frame is snapshotted, so `ring[1]`
+    /// (the certifying prior at `span == 1`) and `current` agree on everything, and only
+    /// `ring[2]` — which the equality disjunct never compares — is widened. Both halves of
+    /// every sample are built exactly as `record_loop_detect_sample` builds them, so the
+    /// fixture cannot diverge from production's construction; in particular the `.normalized`
+    /// half really is `normalize_for_loop`d, which is what the instrument-liveness controls
+    /// below depend on.
+    ///
+    /// The per-frame life step is `game::engine`'s `drain_ring` orientation — frame `i` sits
+    /// `FRAMES - i` life above the live board — so the certified period moves a real CR 704.5a
+    /// resource and step (7) publishes a bound instead of refusing at `NoNarrowedLegalCount`.
+    fn ring_announcing_on_its_newest_sample(
+        setup: impl Fn(&mut GameState),
+        newest_sample: impl Fn(&mut GameState),
+    ) -> GameState {
+        use crate::game::scenario::GameScenario;
+        use crate::types::game_state::{LoopDetectionMode, WaitingFor};
+        use crate::types::LoopDetectSample;
+
+        const FRAMES: usize = 3;
+        let mut scenario = GameScenario::new_n_player(2, 7);
+        // Stocked libraries are load-bearing for the arms whose announced entry DRAWS: an
+        // empty library derives no `ZoneChange`, which moves the classification for a reason
+        // that has nothing to do with the carrier axis.
+        let names: Vec<String> = (0..40).map(|i| format!("Filler {i}")).collect();
+        let refs: Vec<&str> = names.iter().map(String::as_str).collect();
+        scenario.with_library_top(PlayerId(0), &refs);
+        scenario.with_library_top(PlayerId(1), &refs);
+        let mut state = scenario.build().state().clone();
+        state.loop_detection = LoopDetectionMode::Interactive;
+        state.waiting_for = WaitingFor::Priority {
+            player: PlayerId(0),
+        };
+        state.active_player = PlayerId(0);
+        state.last_loop_action_sequence.clear();
+        setup(&mut state);
+        for i in 0..FRAMES {
+            let mut frame = state.clone();
+            frame
+                .players
+                .iter_mut()
+                .find(|p| p.id == PlayerId(1))
+                .expect("the two-seat scenario always has P1")
+                .life += (FRAMES - i) as i32;
+            if i + 1 == FRAMES {
+                newest_sample(&mut frame);
+            }
+            state
+                .loop_detect_ring
+                .push_back(std::sync::Arc::new(LoopDetectSample {
+                    normalized: frame.normalize_for_loop(),
+                    live: frame.loop_detect_live_sample(),
+                }));
+        }
+        state
+    }
+
+    /// The battlefield source every announced entry names. `entered_battlefield_turn` is set
+    /// to the live turn because R27 (c)'s intervening-if reads exactly that through its
+    /// `TriggerSourceContext` (CR 603.4); the other three arms are indifferent to it.
+    fn announcing_ring_source(state: &mut GameState, id: u64) -> ObjectId {
+        let oid = ObjectId(id);
+        let mut object = GameObject::new(
+            oid,
+            CardId(77),
+            PlayerId(0),
+            "Retained Sample Source".to_string(),
+            Zone::Battlefield,
+        );
+        object.card_types.core_types = vec![CoreType::Creature];
+        object.incarnation = 3;
+        object.entered_battlefield_turn = Some(state.turn_number);
+        state.objects.insert(oid, object);
+        state.battlefield.push_back(oid);
+        oid
+    }
+
+    /// One proposer-controlled triggered-ability entry for the newest sample's stack.
+    fn announced_trigger_entry(
+        id: u64,
+        src: ObjectId,
+        ability: crate::types::ability::ResolvedAbility,
+        condition: Option<crate::types::ability::TriggerCondition>,
+    ) -> StackEntry {
+        StackEntry {
+            id: ObjectId(id),
+            source_id: src,
+            controller: PlayerId(0),
+            kind: StackEntryKind::TriggeredAbility {
+                source_id: src,
+                ability: Box::new(ability),
+                condition,
+                trigger_event: None,
+                description: None,
+                source_name: String::new(),
+                subject_match_count: None,
+                die_result: None,
+            },
+        }
+    }
+
+    /// The ONE reach-guard every R27 `.live` arm runs before it asserts anything: the fixture
+    /// really announces from a retained sample, the live board carries no entry at all, and
+    /// the pair the production enumerator hands its consumers is that sample's — not
+    /// `current`'s. Returns the announced pair's carrying frame.
+    fn announced_from_retained_sample(state: &GameState, entry_id: u64) -> &GameState {
+        assert!(
+            state.stack.is_empty(),
+            "REACH-GUARD: `current.stack` must be EMPTY, else an arm could be satisfied by the \
+             live board and the `.live`-reader claim would not be under test"
+        );
+        let retained: Vec<&GameState> = state.loop_detect_ring.iter().map(|f| &f.live).collect();
+        assert!(
+            retained.len() >= 3,
+            "REACH-GUARD: the walk needs `span >= 1` at `idx = len - 2`; got {} frames",
+            retained.len()
+        );
+        let touch = certified_period_touch(
+            &retained[retained.len() - 2..],
+            state,
+            PeriodCertification::BoardEqualOnly,
+        );
+        let (frame, entry) = *touch
+            .announced
+            .first()
+            .expect("REACH-GUARD: the newest sample's extra entry must ANNOUNCE in the window");
+        assert_eq!(
+            (touch.announced.len(), entry.id),
+            (1, ObjectId(entry_id)),
+            "REACH-GUARD: exactly the constructed entry announces, so every assertion below is \
+             about it and not about an incidental second pair"
+        );
+        assert!(
+            !std::ptr::eq(frame, state),
+            "REACH-GUARD (the R27 precondition, executable rather than prose): the pair's \
+             carrying frame must NOT be `current`. A fixture drift that collapsed the pair onto \
+             the live board would leave every arm below passing for the degenerate reason"
+        );
+        frame
+    }
+
+    /// R27 (a3) — THE BEHAVIOUR: A RETAINED SAMPLE DERIVES THE SAME EVENT SET THE LIVE BOARD
+    /// DOES, AND THE NORMALIZED HALF DOES NOT.
+    ///
+    /// CR 732.2a + CR 104.4b + CR 111.1. (a2) pinned that every carrying frame is an
+    /// un-normalized board by reading `next_object_id`; this arm pins the CONSEQUENCE — that
+    /// the classification a `.live` carrier produces for an `Effect::Token` announcement is
+    /// the classification the live board produces, event for event.
+    ///
+    /// THE INSTRUMENT-LIVENESS CONTROL IS THE ARM THAT MAKES THE EQUALITY MEAN ANYTHING, and
+    /// it is MEASURED rather than predicted. The plan forecast the divergence at the
+    /// ALLOCATOR (`create_object` handing out `ObjectId(0)` over a live object); measured, the
+    /// derivation diverges one field earlier and more directly — `normalize_for_loop` runs
+    /// `clear_trigger_identity_recursive`, which sets `ability.source_id = ObjectId(0)`, and
+    /// the resolver carries that straight into `TokenSpec.source_id`. So a normalized carrier
+    /// proposes a token whose CR 111.1 source is the null object, and the two sets differ.
+    ///
+    /// ⚠ SCOPE, stated because a reader will ask why this arm is not an offer-level one:
+    /// BOTH derivations are `event_is_accounted`, so the mint OFFERS on either carrier and
+    /// (a3) alone has NO behavioural flip at the seam. The carrier axis IS flipped
+    /// behaviourally, on exactly the shared revert the plan names, by
+    /// `r27_b_a_stored_may_auto_choice_survives_the_ring` and
+    /// `r27_c_an_intervening_if_binds_with_the_retained_samples_trigger_source` below, and
+    /// structurally by `game::engine`'s `the_period_touch_window_is_carried_by_the_live_half`.
+    /// This arm's own flipping site is the control's: delete
+    /// `ResolvedAbility::clear_trigger_identity_recursive`'s `self.source_id = ObjectId(0)`
+    /// ⇒ the two halves stop differing ⇒ the control FAILS.
+    #[test]
+    fn r27_a3_a_retained_sample_derives_the_live_boards_event_set() {
+        use crate::game::engine::{try_offer_bounded_cycle_shortcut_metered, ProbeCap};
+        use crate::game::resolution_prompt::ResolutionChoiceFreedom;
+        use crate::types::ability::{Effect, PtValue, QuantityExpr, ResolvedAbility, TargetFilter};
+        use crate::types::proposed_event::ProposedEvent;
+
+        const SRC: ObjectId = ObjectId(940);
+        const ENTRY: u64 = 954;
+        let state = ring_announcing_on_its_newest_sample(
+            |s| {
+                announcing_ring_source(s, SRC.0);
+            },
+            |frame| {
+                let ability = ResolvedAbility::new(
+                    Effect::Token {
+                        name: "Servo".to_string(),
+                        power: PtValue::Fixed(1),
+                        toughness: PtValue::Fixed(1),
+                        types: vec!["Artifact".to_string(), "Creature".to_string()],
+                        colors: vec![],
+                        keywords: vec![],
+                        tapped: false,
+                        count: QuantityExpr::Fixed { value: 1 },
+                        owner: TargetFilter::Controller,
+                        attach_to: None,
+                        enters_attacking: false,
+                        supertypes: vec![],
+                        static_abilities: vec![],
+                        enter_with_counters: vec![],
+                    },
+                    vec![],
+                    SRC,
+                    PlayerId(0),
+                );
+                frame
+                    .stack
+                    .push_back(announced_trigger_entry(ENTRY, SRC, ability, None));
+            },
+        );
+        let frame = announced_from_retained_sample(&state, ENTRY);
+        let entry = frame.stack.back().expect("the announced entry").clone();
+
+        // ── the two derivations, each on its own budget so neither starves the other ──
+        let mut on_frame_budget = ProbeBudget::for_test(1_000);
+        let mut on_live_budget = ProbeBudget::for_test(1_000);
+        let from_sample =
+            stack_entry_resolution_choice_freedom(frame, &entry, &mut on_frame_budget);
+        let from_live = stack_entry_resolution_choice_freedom(&state, &entry, &mut on_live_budget);
+
+        // ── REACH-GUARD: both sides must be non-empty `FreeUnlessReplacements`, so the
+        //    equality below cannot be two refusals or two empties matching ──
+        let derived = |freedom: &ResolutionChoiceFreedom| -> Vec<ProposedEvent> {
+            match freedom {
+                ResolutionChoiceFreedom::FreeUnlessReplacements(events) => events.clone(),
+                ResolutionChoiceFreedom::MayPrompt => panic!(
+                    "REACH-GUARD: an `Effect::Token` announcement must classify as a derived \
+                     event set on BOTH boards; a refusal here means the fixture never reached \
+                     the derivation and the equality would be vacuous"
+                ),
+            }
+        };
+        let sample_events = derived(&from_sample);
+        let live_events = derived(&from_live);
+        assert!(
+            !sample_events.is_empty() && !live_events.is_empty(),
+            "REACH-GUARD: `probe_resolution` classifies an EMPTY derivation `Prompted`, so a \
+             non-empty set is what proves the resolution really ran"
+        );
+
+        // ── (a3): the retained sample's derivation IS the live board's ──
+        assert_eq!(
+            from_sample, from_live,
+            "(a3) CR 732.2a: an announcement carried by a retained sample must classify exactly \
+             as the same entry classified against the live board. Sequence equality is STRICTER \
+             than the set equality the row claims, which is the safe direction — both sides come \
+             from one deterministic `resolve_ability_chain`"
+        );
+
+        // ── INSTRUMENT-LIVENESS CONTROL: the OTHER half of the same sample, one field apart ──
+        let normalized_half = &state.loop_detect_ring[state.loop_detect_ring.len() - 1].normalized;
+        let normalized_entry = normalized_half
+            .stack
+            .back()
+            .expect("normalization preserves every `StackEntry.id` (R17 arm 3)")
+            .clone();
+        let mut control_budget = ProbeBudget::for_test(1_000);
+        let from_normalized = stack_entry_resolution_choice_freedom(
+            normalized_half,
+            &normalized_entry,
+            &mut control_budget,
+        );
+        let token_source = |freedom: &ResolutionChoiceFreedom| -> Option<ObjectId> {
+            match freedom {
+                ResolutionChoiceFreedom::FreeUnlessReplacements(events) => {
+                    events.iter().find_map(|event| match event {
+                        ProposedEvent::CreateToken { spec, .. } => Some(spec.source_id),
+                        _ => None,
+                    })
+                }
+                ResolutionChoiceFreedom::MayPrompt => None,
+            }
+        };
+        assert_eq!(
+            (token_source(&from_sample), token_source(&from_normalized)),
+            (Some(SRC), Some(ObjectId(0))),
+            "(a3) CONTROL — CR 400.7 + CR 111.1: `normalize_for_loop` runs \
+             `clear_trigger_identity_recursive`, which zeroes `ability.source_id`, and the \
+             resolver carries that into `TokenSpec.source_id`. The normalized half therefore \
+             proposes a token whose source is the NULL object. Without this arm the equality \
+             above would be true of any two boards and would prove nothing"
+        );
+        assert_ne!(
+            from_sample, from_normalized,
+            "(a3) CONTROL: and the two halves' derivations must genuinely DIFFER, so the \
+             carrier is a choice with a consequence rather than a label"
+        );
+
+        // ── the seam companion: conjunct (6) really consumed THIS pair on the real mint ──
+        let (outcome, meter) =
+            try_offer_bounded_cycle_shortcut_metered(&state, false, ProbeCap::Shipped);
+        assert!(
+            outcome.is_ok() && meter.conjunct6_asks == 1,
+            "(a3) the board the equality is asserted on must be one the SEAM evaluates: the \
+             mint offers and asks conjunct (6) exactly once — about the announced pair, since \
+             `current.stack` is empty. Got {outcome:?}, meter {meter:?}"
+        );
+    }
+
+    /// R27 (b) — THE ENTRY-IDENTITY AXIS: A STORED CR 603.5 AUTO-CHOICE STILL REFUSES THE MINT
+    /// WHEN THE PAIR ARRIVES FROM THE RING.
+    ///
+    /// CR 603.5 + CR 732.2a. R25 pinned the mint's second-authority conjunct on a board whose
+    /// entry sits on `current.stack`; this is its missing production twin — the same board
+    /// driven THROUGH the ring, so the mint is asked about a retained sample. The refusal has
+    /// to survive that, because the announced population is where the mint's domain actually
+    /// lives (`bounded_cycle_pin_slots_for_window` maps over `touch.announced`).
+    ///
+    /// MATCHED PAIR, differing ONLY in the seeded record, so no upstream conjunct can dominate:
+    /// without it the board OFFERS and publishes exactly one CR 603.5 `MayChoice` point; with
+    /// it the mint publishes nothing, the relief has no `may` to spend, and step (6) refuses
+    /// `UnspecifiedChoiceWindow`.
+    ///
+    /// REVERT-PROBE (the plan's shared carrier revert, and it FLIPS — measured): point
+    /// `game::engine::bounded_cycle_offer`'s `ring_live` at `&f.normalized` ⇒ the carrying
+    /// frame becomes a comparand whose `ability.source_id` is `ObjectId(0)`
+    /// (`clear_trigger_identity_recursive`) ⇒ the `MayTriggerAutoChoiceKey` misses ⇒ the `may`
+    /// slot IS minted ⇒ the negative arm OFFERS. This is the flip round 7 could not obtain:
+    /// a row that builds its own window is blind to the mint's carrier, a row driven through
+    /// the mint is not.
+    #[test]
+    fn r27_b_a_stored_may_auto_choice_survives_the_ring() {
+        use crate::game::engine::{
+            try_offer_bounded_cycle_shortcut_metered, BoundedOfferRefusal, ProbeCap,
+        };
+        use crate::types::ability::{
+            Effect, QuantityExpr, ResolvedAbility, TargetFilter, TriggerBaseSetInstanceRef,
+            TriggerDefinitionOccurrenceRef, TriggerDefinitionRef,
+        };
+        use crate::types::game_state::{AutoMayChoice, MayTriggerAutoChoiceKey, MayTriggerOrigin};
+        use crate::types::identifiers::ObjectIncarnationRef;
+
+        const SRC: ObjectId = ObjectId(940);
+        const ENTRY: u64 = 952;
+        // The production shape: `triggers.rs` mints `Definition { definition_ref }` from the
+        // source's own incarnation plus the printed occurrence — built here identically.
+        let origin = MayTriggerOrigin::Definition {
+            definition_ref: TriggerDefinitionRef {
+                source: ObjectIncarnationRef::of(SRC, 3),
+                occurrence: TriggerDefinitionOccurrenceRef::Printed {
+                    base_set: TriggerBaseSetInstanceRef::INITIAL,
+                    printed_index: 0,
+                },
+            },
+        };
+        let key = |origin: MayTriggerOrigin| MayTriggerAutoChoiceKey {
+            player: PlayerId(0),
+            source_id: SRC,
+            origin,
+        };
+        let announce = |origin: MayTriggerOrigin| {
+            move |frame: &mut GameState| {
+                // Shape (B): OPTIONAL, declaring no target, so the mint publishes its CR 603.5
+                // gate alone and the relief's residual is the same draw with `optional` cleared.
+                let mut ability = ResolvedAbility::new(
+                    Effect::Draw {
+                        count: QuantityExpr::Fixed { value: 1 },
+                        target: TargetFilter::Controller,
+                    },
+                    vec![],
+                    SRC,
+                    PlayerId(0),
+                );
+                ability.optional = true;
+                ability.may_trigger_origin = Some(origin.clone());
+                frame
+                    .stack
+                    .push_back(announced_trigger_entry(ENTRY, SRC, ability, None));
+            }
+        };
+
+        // ── MATCHED POSITIVE: no stored record ⇒ the CR 603.5 gate really asks ⇒ pin spendable
+        let open = ring_announcing_on_its_newest_sample(
+            |s| {
+                announcing_ring_source(s, SRC.0);
+            },
+            announce(origin.clone()),
+        );
+        announced_from_retained_sample(&open, ENTRY);
+        let (open_outcome, open_meter) =
+            try_offer_bounded_cycle_shortcut_metered(&open, false, ProbeCap::Shipped);
+        let published_may_points = match &open_outcome {
+            Ok(crate::types::game_state::WaitingFor::LoopShortcut { schema, .. }) => schema
+                .points
+                .iter()
+                .filter(|p| {
+                    matches!(
+                        p.kind,
+                        crate::analysis::decision_template::DecisionPointKind::MayChoice
+                    )
+                })
+                .count(),
+            other => panic!(
+                "MATCHED POSITIVE: the un-seeded board must OFFER, else the negative below is \
+                 a dominated refusal. Got {other:?}, meter {open_meter:?}"
+            ),
+        };
+        assert_eq!(
+            published_may_points, 1,
+            "CR 603.5: the announced pair publishes exactly ONE `MayChoice` point, so the \
+             negative's refusal is the loss of THAT point and not of an unrelated slot"
+        );
+
+        // ── NEGATIVE: the same board with one record seeded before the frames are snapshotted
+        let seeded_origin = origin.clone();
+        let sealed = ring_announcing_on_its_newest_sample(
+            move |s| {
+                announcing_ring_source(s, SRC.0);
+                s.set_may_trigger_auto_choice(key(seeded_origin.clone()), AutoMayChoice::Decline);
+            },
+            announce(origin.clone()),
+        );
+        let sealed_frame = announced_from_retained_sample(&sealed, ENTRY);
+        assert_eq!(
+            sealed_frame.may_trigger_auto_choice(&key(origin.clone())),
+            Some(AutoMayChoice::Decline),
+            "REACH-GUARD: the record must be readable ON THE CARRYING FRAME under the key the \
+             mint builds. Seeding it only on `current` would make the negative pass for the \
+             wrong reason — and would be exactly the defect this row exists to catch"
+        );
+        let (sealed_outcome, sealed_meter) =
+            try_offer_bounded_cycle_shortcut_metered(&sealed, false, ProbeCap::Shipped);
+        assert_eq!(
+            sealed_outcome,
+            Err(BoundedOfferRefusal::UnspecifiedChoiceWindow),
+            "(b) CR 603.5: a stored 'don't ask again' answer is a SECOND authority on the same \
+             gate, and the gate returns before setting any prompt — so a pin minted for it \
+             would be silently unused. The refusal must survive the pair arriving from a \
+             retained sample. meter {sealed_meter:?}"
+        );
+        assert_eq!(
+            (sealed_meter.conjunct6_asks, sealed_meter.certification),
+            (1, Some(PeriodCertification::BoardEqualOnly)),
+            "(b) ATTRIBUTION: the refusal is step (6)'s on the announced pair — certification \
+             matched and conjunct (6) ran exactly once — not an earlier conjunct's"
+        );
+    }
+
+    /// R27 (c) — THE SCOPE-BINDING AXIS: A CR 603.4 INTERVENING-IF ON A RETAINED SAMPLE BINDS
+    /// WITH ITS TRIGGER SOURCE.
+    ///
+    /// CR 603.4 + CR 732.2a. `bind_resolution_scope` rechecks the intervening-if as the
+    /// ability resolves, reading `ability.trigger_source`; `normalize_for_loop` sets that to
+    /// `None`. A `TriggerCondition::SourceEnteredThisTurn` is TRUE only when the context is
+    /// present, so classifying such an entry against a normalized carrier takes the
+    /// absent-context path, the recheck fails, and `stack_entry_resolution_choice_freedom`
+    /// returns `MayPrompt` — a mandatory entry the mint publishes no `may` for, hence a
+    /// refusal the live board would never make.
+    ///
+    /// THE MATCHED PAIR IS THE CONTEXT ITSELF, byte-identical otherwise, so the offer's
+    /// existence is attributable to `trigger_source` and to nothing else on the board. The
+    /// plan's "must classify identically to the same entry classified against `current`" ships
+    /// as its own conjunct alongside.
+    ///
+    /// REVERT-PROBE (the shared carrier revert, and it FLIPS — measured): point
+    /// `bounded_cycle_offer`'s `ring_live` at `&f.normalized` ⇒ the POSITIVE arm stops
+    /// offering and returns `UnspecifiedChoiceWindow`.
+    #[test]
+    fn r27_c_an_intervening_if_binds_with_the_retained_samples_trigger_source() {
+        use crate::game::engine::{
+            try_offer_bounded_cycle_shortcut_metered, BoundedOfferRefusal, ProbeCap,
+        };
+        use crate::game::resolution_prompt::ResolutionChoiceFreedom;
+        use crate::types::ability::{Effect, QuantityExpr, ResolvedAbility, TriggerCondition};
+
+        const SRC: ObjectId = ObjectId(940);
+        const ENTRY: u64 = 953;
+        let announce = |with_context: bool| {
+            move |frame: &mut GameState| {
+                // MANDATORY: an optional entry would be relieved through the CR 603.5 pin and
+                // the refusal below would be about the wrong gate.
+                let mut ability = ResolvedAbility::new(
+                    Effect::LoseLife {
+                        amount: QuantityExpr::Fixed { value: 1 },
+                        target: None,
+                    },
+                    vec![],
+                    SRC,
+                    PlayerId(0),
+                );
+                if with_context {
+                    let source = frame.objects[&SRC].clone();
+                    ability.trigger_source = Some(
+                        crate::game::triggers::trigger_source_context_for_latch(frame, &source),
+                    );
+                }
+                frame.stack.push_back(announced_trigger_entry(
+                    ENTRY,
+                    SRC,
+                    ability,
+                    Some(TriggerCondition::SourceEnteredThisTurn),
+                ));
+            }
+        };
+
+        // ── POSITIVE: the context is present, the CR 603.4 recheck passes, the mint offers ──
+        let bound = ring_announcing_on_its_newest_sample(
+            |s| {
+                announcing_ring_source(s, SRC.0);
+            },
+            announce(true),
+        );
+        let bound_frame = announced_from_retained_sample(&bound, ENTRY);
+        let entry = bound_frame
+            .stack
+            .back()
+            .expect("the announced entry")
+            .clone();
+
+        // (c)'s own claim, at the predicate: the retained sample classifies the intervening-if
+        // exactly as the live board would.
+        let mut sample_budget = ProbeBudget::for_test(1_000);
+        let mut live_budget = ProbeBudget::for_test(1_000);
+        let from_sample =
+            stack_entry_resolution_choice_freedom(bound_frame, &entry, &mut sample_budget);
+        let from_live = stack_entry_resolution_choice_freedom(&bound, &entry, &mut live_budget);
+        assert!(
+            matches!(
+                from_sample,
+                ResolutionChoiceFreedom::FreeUnlessReplacements(_)
+            ),
+            "REACH-GUARD: the recheck must PASS on the carrying frame, else the equality below \
+             is two refusals agreeing. Got {from_sample:?}"
+        );
+        assert_eq!(
+            from_sample, from_live,
+            "(c) CR 603.4: the intervening-if recheck reads `ability.trigger_source`, and a \
+             retained sample carries it, so the pair classifies exactly as the live board does"
+        );
+
+        // INSTRUMENT-LIVENESS CONTROL: the same sample's NORMALIZED half, one field apart.
+        let normalized_half = &bound.loop_detect_ring[bound.loop_detect_ring.len() - 1].normalized;
+        let normalized_entry = normalized_half
+            .stack
+            .back()
+            .expect("normalization preserves every `StackEntry.id`")
+            .clone();
+        let mut control_budget = ProbeBudget::for_test(1_000);
+        assert_eq!(
+            stack_entry_resolution_choice_freedom(
+                normalized_half,
+                &normalized_entry,
+                &mut control_budget
+            ),
+            ResolutionChoiceFreedom::MayPrompt,
+            "(c) CONTROL — CR 603.4 + CR 400.7: `clear_trigger_identity_recursive` sets \
+             `trigger_source = None`, so `check_trigger_condition_with_source` takes the \
+             absent-context path, `bind_resolution_scope` returns false and the classifier is \
+             fail-closed `MayPrompt`. Without this the equality above would hold on any board"
+        );
+
+        let (bound_outcome, bound_meter) =
+            try_offer_bounded_cycle_shortcut_metered(&bound, false, ProbeCap::Shipped);
+        assert!(
+            bound_outcome.is_ok(),
+            "(c) MATCHED POSITIVE: with the context present the mint OFFERS, so the negative \
+             below is attributable to the context. Got {bound_outcome:?}, {bound_meter:?}"
+        );
+
+        // ── NEGATIVE: byte-identical except that the entry carries no `TriggerSourceContext` ──
+        let unbound = ring_announcing_on_its_newest_sample(
+            |s| {
+                announcing_ring_source(s, SRC.0);
+            },
+            announce(false),
+        );
+        announced_from_retained_sample(&unbound, ENTRY);
+        let (unbound_outcome, unbound_meter) =
+            try_offer_bounded_cycle_shortcut_metered(&unbound, false, ProbeCap::Shipped);
+        assert_eq!(
+            unbound_outcome,
+            Err(BoundedOfferRefusal::UnspecifiedChoiceWindow),
+            "(c) CR 603.4: with no trigger source the recheck cannot pass, the resolution scope \
+             does not bind, and the fail-closed classifier refuses — which is exactly the \
+             verdict a normalized carrier would force on the POSITIVE board. meter \
+             {unbound_meter:?}"
+        );
+    }
+
+    /// R27 (e) — THE CANDIDATE-AUTHORITY HALF IS FRAME-SENSITIVE TOO.
+    ///
+    /// CR 614.1 + CR 616.1 + CR 732.2a. (a3) pins the EVENT half of the discharge against the
+    /// pair's carrying frame and says nothing about the half that CONSUMES it:
+    /// `resolution_events_are_discharged` hands `proposed_event_prompt_cause` a board, and
+    /// that board runs `find_applicable_replacements` over its OWN replacement population. A
+    /// wrong board there checks one frame's events against another frame's candidates, and
+    /// (a3) stays green while it does — both its sides are event sets.
+    ///
+    /// FOUR BOARDS, byte-identical except which one carries the definition and whether that
+    /// definition draws a PROMPT CAUSE (CR 614.1a: a mandatory replacement's own body is
+    /// stashed as a continuation and drained through an arbitrary `ResolvedAbility`, which can
+    /// set a non-priority `waiting_for` — the cause this fixture uses. CR 616.1's ORDERING
+    /// cause needs two competing candidates and is a different shape):
+    /// * **frame only** — the constructible direction (the sample holds the permanent, the
+    ///   live board no longer does) ⇒ conjunct (6) REFUSES.
+    /// * **both** ⇒ also refuses, so the arm is not passing because the def is unreachable.
+    /// * **neither** ⇒ certifies, the reach-guard proving the fixture reaches the discharge.
+    /// * **frame, but causeless** — the same permanent, a MANDATORY definition with no body,
+    ///   which is drawn as a candidate and yields NO cause ⇒ certifies. This is the control
+    ///   that keeps the first arm from being "an extra object on the frame refuses".
+    ///
+    /// THE DEFINITION SHAPE IS MEASURED, NOT CHOSEN. An OPTIONAL draw replacement makes
+    /// `probe_resolution` itself prompt (the resolution raises a choice), so the entry is
+    /// already `MayPrompt` at the PRIMARY classification and the discharge is never reached —
+    /// the refusal would be real but would key on the wrong seam. A MANDATORY definition with
+    /// a `runtime_execute` body classifies as a derived event set and still yields
+    /// `ReplacementPromptCause::MandatoryBodyContinuation`, which is the shape that reaches
+    /// the CR 614.1 + CR 616.1 discharge tail.
+    ///
+    /// REVERT-PROBE (the plan's own, and it FLIPS — measured): pass the live `state` instead
+    /// of `frame` to `resolution_events_are_discharged` in `stack_choices_are_all_specified`
+    /// ⇒ the frame-only definition is invisible to `find_applicable_replacements` ⇒ the pair
+    /// CERTIFIES and the first arm FLIPS TO FAIL, while the both-boards and neither-board arms
+    /// stay green — so the pair discriminates the BOARD ARGUMENT and not the fixture.
+    #[test]
+    fn r27_e_the_discharge_reads_the_pairs_carrying_frame_not_the_live_board() {
+        use crate::game::engine::{
+            try_offer_bounded_cycle_shortcut_metered, BoundedOfferRefusal, ProbeCap,
+        };
+        use crate::types::ability::{
+            DrawReplacementScope, Effect, QuantityExpr, ReplacementDefinition, ResolvedAbility,
+            TargetFilter,
+        };
+        use crate::types::replacements::ReplacementEvent;
+
+        const SRC: ObjectId = ObjectId(940);
+        const DEF_SRC: ObjectId = ObjectId(941);
+        const ENTRY: u64 = 955;
+
+        // CR 614.1 scopes a definition to its controller's events, so the definition sits on a
+        // P0-controlled permanent and replaces P0's own draw.
+        let install = |with_body: bool| {
+            move |board: &mut GameState| {
+                let mut definition = ReplacementDefinition::new(ReplacementEvent::Draw);
+                // CR 121.2: a Draw definition must declare which stage it watches; the
+                // pipeline debug-asserts on one that declares neither.
+                definition.draw_scope = Some(DrawReplacementScope::IndividualDraw);
+                if with_body {
+                    definition.runtime_execute = Some(Box::new(ResolvedAbility::new(
+                        Effect::LoseLife {
+                            amount: QuantityExpr::Fixed { value: 1 },
+                            target: None,
+                        },
+                        vec![],
+                        DEF_SRC,
+                        PlayerId(0),
+                    )));
+                }
+                let mut object = GameObject::new(
+                    DEF_SRC,
+                    CardId(78),
+                    PlayerId(0),
+                    "Frame-Only Watcher".to_string(),
+                    Zone::Battlefield,
+                );
+                object.replacement_definitions.push(definition);
+                board.objects.insert(DEF_SRC, object);
+                board.battlefield.push_back(DEF_SRC);
+            }
+        };
+        let announce = |board: &mut GameState| {
+            let ability = ResolvedAbility::new(
+                Effect::Draw {
+                    count: QuantityExpr::Fixed { value: 1 },
+                    target: TargetFilter::Controller,
+                },
+                vec![],
+                SRC,
+                PlayerId(0),
+            );
+            board
+                .stack
+                .push_back(announced_trigger_entry(ENTRY, SRC, ability, None));
+        };
+        let seed_source = |s: &mut GameState| {
+            announcing_ring_source(s, SRC.0);
+        };
+
+        let neither = ring_announcing_on_its_newest_sample(seed_source, announce);
+        let frame_only = ring_announcing_on_its_newest_sample(seed_source, |board| {
+            install(true)(board);
+            announce(board);
+        });
+        let both = ring_announcing_on_its_newest_sample(
+            |s| {
+                seed_source(s);
+                install(true)(s);
+            },
+            announce,
+        );
+        let causeless = ring_announcing_on_its_newest_sample(seed_source, |board| {
+            install(false)(board);
+            announce(board);
+        });
+
+        // ── the structural conjunct: ONE board carries both halves of the discharge ──
+        let frame = announced_from_retained_sample(&frame_only, ENTRY);
+        let verdicts = PeriodVerdicts::for_period(
+            &frame_only
+                .loop_detect_ring
+                .iter()
+                .map(|f| &f.live)
+                .collect::<Vec<_>>(),
+            &frame_only,
+            PlayerId(0),
+        );
+        let carried = verdicts
+            .frame_ix(frame)
+            .expect("the carrying frame is one this container holds");
+        let live_ix = verdicts
+            .frame_ix(&frame_only)
+            .expect("`current` is the container's last frame");
+        assert_ne!(
+            carried, live_ix,
+            "(e) STRUCTURAL: `PeriodVerdicts::frame_ix` mints by POINTER IDENTITY, so the pair's \
+             board and the live board must resolve to DIFFERENT indices. A future refactor that \
+             re-derived the discharge board from `current` would collapse them here rather than \
+             silently cross-check one frame's events against another frame's candidates"
+        );
+
+        // ── REACH-GUARD: without a definition anywhere the pair certifies ──
+        let (neither_outcome, neither_meter) =
+            try_offer_bounded_cycle_shortcut_metered(&neither, false, ProbeCap::Shipped);
+        assert!(
+            neither_outcome.is_ok() && neither_meter.conjunct6_asks == 1,
+            "(e) REACH-GUARD: the fixture must reach and PASS the CR 616.1 tail when nothing \
+             competes, else the three refusals below prove nothing about the board argument. \
+             Got {neither_outcome:?}, meter {neither_meter:?}"
+        );
+
+        // ── the CONTROL: the same permanent on the frame, drawing a candidate with NO cause ──
+        let (causeless_outcome, causeless_meter) =
+            try_offer_bounded_cycle_shortcut_metered(&causeless, false, ProbeCap::Shipped);
+        assert!(
+            causeless_outcome.is_ok(),
+            "(e) CONTROL: a MANDATORY, bodyless definition on the carrying frame is a candidate \
+             with NO prompt cause at all and must still certify. This is what makes the \
+             frame-only refusal attributable to the CAUSE rather than to the extra permanent. \
+             Got \
+             {causeless_outcome:?}, meter {causeless_meter:?}"
+        );
+
+        // ── the both-boards arm, ASSERTED FIRST so the stated revert-probe demonstrates in ONE
+        //    run that this arm is unaffected while the frame-only arm below flips ──
+        let (both_outcome, both_meter) =
+            try_offer_bounded_cycle_shortcut_metered(&both, false, ProbeCap::Shipped);
+        assert_eq!(
+            both_outcome,
+            Err(BoundedOfferRefusal::UnspecifiedChoiceWindow),
+            "(e) MATCHED POSITIVE: with the definition on BOTH boards the refusal also holds, \
+             so the frame-only arm below is keyed to WHICH board carries it and not to the \
+             definition being invisible to the pipeline. meter {both_meter:?}"
+        );
+
+        // ── (e): the definition the CARRYING FRAME holds refuses, even though `current` has none
+        let (frame_only_outcome, frame_only_meter) =
+            try_offer_bounded_cycle_shortcut_metered(&frame_only, false, ProbeCap::Shipped);
+        assert_eq!(
+            frame_only_outcome,
+            Err(BoundedOfferRefusal::UnspecifiedChoiceWindow),
+            "(e) CR 614.1 + CR 616.1: the candidate authority runs over the board the events \
+             were DERIVED on. A definition applicable on the pair's carrying frame and absent \
+             from the live board must still refuse — handing the discharge `current` would \
+             check one frame's events against another frame's candidates. meter \
+             {frame_only_meter:?}"
+        );
+    }
 }
