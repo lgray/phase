@@ -554,12 +554,12 @@ pub(crate) fn ability_resolution_choice_freedom(
         modal,
         mode_abilities,
         repeat_until,
+        repeat_for,
         // ---- choice-free: bound `_` with a one-line justification ----
         condition: _, // resolution branch selector, pure eval (both branches recursed)
         duration: _,  // continuous-effect lifetime, no prompt
         player_scope: _, // iteration fan-out, pure player-filter eval
         starting_with: _, // APNAP start override, no prompt
-        repeat_for: _, // "for each" count, pure quantity eval (game/quantity.rs)
         announced_x: _, // CR 601.2b announce-time count, pure quantity eval, no prompt
         multi_target: _, // announce-time variable-count bounds (Resolution case caught by timing)
         target_constraints: _, // announce-time cross-target legality, no resolution prompt
@@ -625,6 +625,24 @@ pub(crate) fn ability_resolution_choice_freedom(
     if matches!(repeat_until, Some(RepeatContinuation::ControllerChoice)) {
         return ResolutionChoiceFreedom::MayPrompt;
     }
+    // CR 608.2d + CR 107.1c: an "up to N" REPEAT COUNT is a resolution-time choice
+    // exactly like an "up to N" damage/draw/counter count, and it is answered in the
+    // same silent way — `game/quantity.rs` resolves `UpTo { max } => recurse(max)`,
+    // taking the maximum, and none of the six allow-listed classes calls
+    // `QuantityExpr::peel_up_to`. This field was previously bound `_` and justified as
+    // "pure quantity eval (game/quantity.rs)", which cites the very mechanism
+    // `quantity_offers_up_to_choice`'s own doc comment exists to distrust: the count is
+    // READ, not prompted. An allow-listed repeated ability carrying an `UpTo` repeat
+    // count was therefore probed choice-free and admitted to a loop certificate while
+    // its resolution opens a count prompt. Guarded with the SAME single authority the
+    // per-effect quantity positions use, so a new `QuantityExpr` wrapper is classified
+    // in one place rather than three.
+    if repeat_for
+        .as_ref()
+        .is_some_and(quantity_offers_up_to_choice)
+    {
+        return ResolutionChoiceFreedom::MayPrompt;
+    }
 
     // CR 608.2c: the chain resolves the effect and, on the taken branch, a
     // sub_ability / else_ability effect — join both (fail-safe: reject if either
@@ -668,8 +686,8 @@ mod tests {
     use super::*;
     use crate::game::zones::create_object;
     use crate::types::ability::{
-        AbilityCost, AbilityDefinition, AbilityKind, EffectScope, ModalChoice, PtValue,
-        QuantityExpr, TapStateChange, TargetFilter, TargetRef, UnlessPayModifier,
+        AbilityCost, AbilityDefinition, AbilityKind, EffectScope, ModalChoice, OpponentMayScope,
+        PtValue, QuantityExpr, TapStateChange, TargetFilter, TargetRef, UnlessPayModifier,
     };
     use crate::types::counter::CounterType;
     use crate::types::identifiers::{CardId, ObjectId};
@@ -1558,6 +1576,22 @@ mod tests {
             a.repeat_until = Some(RepeatContinuation::ControllerChoice)
         });
         push("modal", &|a| a.modal = Some(ModalChoice::default()));
+        // The gate at the top of the classifier is
+        // `*optional || *optional_targeting || optional_for.is_some()`, and only the
+        // first two disjuncts had a row. A row per DISJUNCT, not per gate: with two of
+        // three covered, `optional_for` could have been dropped from the condition and
+        // every existing row would still pass.
+        push("optional_for", &|a| {
+            a.optional_for = Some(OpponentMayScope::AnyOpponent)
+        });
+        // CR 608.2d + CR 107.1c: an `UpTo` REPEAT COUNT is a resolution-time choice.
+        // `repeat_for` used to be bound `_` as "pure quantity eval", so this class of
+        // ability was certified choice-free while its resolution opens a count prompt.
+        push("repeat_for_up_to", &|a| {
+            a.repeat_for = Some(QuantityExpr::UpTo {
+                max: Box::new(fixed(3)),
+            })
+        });
         for (label, a) in mutations {
             assert_eq!(
                 ability_resolution_choice_freedom(&state, &a, &mut budget()),
@@ -1565,6 +1599,39 @@ mod tests {
                 "{label} is a resolution-time choice the probe must not swallow"
             );
         }
+
+        // REACH-GUARD for the `repeat_for` row above, and the half that makes it
+        // DISCRIMINATING rather than merely red-on-mutation: a `repeat_for` that is NOT
+        // `UpTo` must still be probe-backed. Without this arm the row would pass just as
+        // well against a guard that rejected EVERY `repeat_for`, which would be a
+        // coverage loss dressed up as a fix — "for each" loops over a fixed or
+        // state-derived count really are pure evaluation, and that is the common case.
+        let mut fixed_repeat = base.clone();
+        fixed_repeat.repeat_for = Some(fixed(3));
+        assert!(
+            matches!(
+                ability_resolution_choice_freedom(&state, &fixed_repeat, &mut budget()),
+                ResolutionChoiceFreedom::FreeUnlessReplacements(_)
+            ),
+            "a non-`UpTo` repeat count is pure evaluation and must stay probe-backed — \
+             rejecting it too would trade the fail-open bug for lost certification"
+        );
+        // And the guard must see through a WRAPPER, or "up to N, doubled" would evade it.
+        // This is the composability the shared `quantity_offers_up_to_choice` authority
+        // buys; a bespoke `matches!(.., UpTo { .. })` here would pass the row above and
+        // fail this one.
+        let mut wrapped = base.clone();
+        wrapped.repeat_for = Some(QuantityExpr::Multiply {
+            inner: Box::new(QuantityExpr::UpTo {
+                max: Box::new(fixed(3)),
+            }),
+            factor: 2,
+        });
+        assert_eq!(
+            ability_resolution_choice_freedom(&state, &wrapped, &mut budget()),
+            ResolutionChoiceFreedom::MayPrompt,
+            "an `UpTo` nested under an arithmetic wrapper is still a resolution-time count choice"
+        );
     }
 
     /// STRUCTURAL INVARIANT: `game/ability_scan.rs` holds NO `GameState`.
