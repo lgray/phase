@@ -5099,6 +5099,84 @@ mod tests {
         oid
     }
 
+    /// Inflate one of the real 4p dumps through the PRODUCTION decoder — the same
+    /// chokepoint the server's `from_persisted` and WASM's `decode_restored_game_state`
+    /// funnel through, never a bare `GameState` decode.
+    fn dump_state(gz: &[u8]) -> GameState {
+        use std::io::Read;
+        let mut json = String::new();
+        flate2::read::GzDecoder::new(gz)
+            .read_to_string(&mut json)
+            .expect("fixture .json.gz must inflate to UTF-8 JSON");
+        let envelope: serde_json::Value =
+            serde_json::from_str(&json).expect("dump envelope parses as JSON");
+        serde_json::from_value::<crate::types::game_state::PersistedGameState>(
+            envelope["gameState"].clone(),
+        )
+        .expect("gameState deserializes through the production decoder")
+        .into_game_state()
+    }
+
+    /// One beat of the shared dump drive policy (`tests/integration/loop_shortcut.rs`'s
+    /// `dump_drive_one_beat`): at `Priority` always pass — the mandatory triggers resolve
+    /// and re-trigger, which IS the loop when there is one — otherwise take the first
+    /// legal non-terminal action. Every beat crosses `apply()`.
+    fn dump_drive_one_beat(state: &mut GameState) -> Result<(), String> {
+        use crate::types::actions::GameAction;
+        use crate::types::game_state::WaitingFor;
+
+        let actor = state
+            .waiting_for
+            .acting_player()
+            .into_iter()
+            .chain(state.players.iter().map(|p| p.id))
+            .find_map(|p| {
+                let (actions, _costs, _grouped) =
+                    crate::ai_support::legal_actions_for_viewer(state, p);
+                (!actions.is_empty()).then_some((p, actions))
+            });
+        let Some((who, actions)) = actor else {
+            return Err(format!("no legal actor at {:?}", state.waiting_for));
+        };
+        let forbidden =
+            |a: &GameAction| matches!(a, GameAction::Concede { .. } | GameAction::Debug(_));
+        let chosen = if matches!(state.waiting_for, WaitingFor::Priority { .. }) {
+            actions
+                .iter()
+                .find(|a| matches!(a, GameAction::PassPriority))
+        } else {
+            actions
+                .iter()
+                .find(|a| !matches!(a, GameAction::PassPriority) && !forbidden(a))
+                .or_else(|| actions.iter().find(|a| !forbidden(a)))
+        };
+        let Some(action) = chosen.cloned() else {
+            return Err(format!("empty action list at {:?}", state.waiting_for));
+        };
+        crate::game::engine::apply(state, who, action.clone())
+            .map(|_| ())
+            .map_err(|e| format!("apply err ({action:?}): {e:?}"))
+    }
+
+    /// A frozen-set LOWER BOUND computed INDEPENDENTLY of the function under test: the
+    /// longest common prefix, by object id, of every window frame's stack and `current`'s.
+    ///
+    /// Sound because it is a strictly weaker computation than the predicate it bounds —
+    /// `certified_period_touch` freezes an id iff it sits at the SAME INDEX in every window
+    /// frame, and every position inside a common prefix satisfies that by construction. It
+    /// is a prefix scan that stops at the first disagreement, not a per-index filter over
+    /// the whole stack, so it cannot degenerate into `f(x) == f(x)` against the callee.
+    fn frozen_lower_bound(window: &[&GameState], current: &GameState) -> usize {
+        (0..current.stack.len())
+            .take_while(|&i| {
+                let id = current.stack[i].id;
+                window
+                    .iter()
+                    .all(|f| f.stack.get(i).map(|e| e.id) == Some(id))
+            })
+            .count()
+    }
+
     fn test_trigger_ref(state: &GameState, object_id: ObjectId) -> TriggerDefinitionRef {
         let object = &state.objects[&object_id];
         TriggerDefinitionRef {
@@ -13132,5 +13210,160 @@ mod tests {
                  slot minted through a state-reading branch can never reach a published offer"
             );
         }
+    }
+
+    /// R33 arms (a) / (b) / (a′1) / (c) — THE FROZEN EXEMPTION IS KEYED TO THE CERTIFYING
+    /// DISJUNCT, AT THE CONSTRUCTOR **AND** AT THE CONSUMER, ON A REAL DRIVEN WINDOW.
+    ///
+    /// CR 732.2a + CR 608.1. The exemption's limb (*observed-frozen ⇒ frozen across the
+    /// fast-forward*) needs P2 (the period cannot SHRINK the stack) and P4 (the fast-forward
+    /// IS the repetition of the observed period). Exactly one certifying disjunct supplies
+    /// both, so `frozen_ids` is non-empty under `BoardCovered` and EMPTY under the other two.
+    ///
+    /// The board is the dellian dump DRIVEN through `apply()` — the dump ships with an empty
+    /// ring, so every frame the window is built from was accumulated by this drive. The beat
+    /// is SEARCHED FOR by its construction requirements rather than hardcoded, because a
+    /// hardcoded beat index is a fixture that drifts silently when the drive policy moves.
+    ///
+    /// (a) the window really freezes something — asserted against an INDEPENDENT lower bound
+    /// ([`frozen_lower_bound`]), never against the callee's own answer. (b)/(a′1) the two
+    /// matched negatives, differing from (a) in EXACTLY ONE ARGUMENT. (c) the consumer half:
+    /// the same two touches through `stack_choices_are_all_specified`, where the boolean flip
+    /// is the load-bearing assertion and the counters are its attribution.
+    ///
+    /// REVERT-PROBE 1: delete `certified_period_touch`'s pre-walk early return so `frozen_ids`
+    /// is computed unconditionally ⇒ (b) and (a′1) FLIP from empty to the full set and (c)'s
+    /// two arms collapse to equal populations.
+    #[test]
+    fn r33_frozen_exemption_is_keyed_to_the_certificate_on_the_real_dellian_window() {
+        let mut state = dump_state(include_bytes!(
+            "../../tests/fixtures/dellian_emblem_conqueror_4p.json.gz"
+        ));
+        assert_eq!(
+            state.loop_detect_ring.len(),
+            0,
+            "reach-guard: the dump must ship with an EMPTY ring — every frame the window \
+             below is built from is accumulated by THIS drive, not restored"
+        );
+
+        // Drive until a beat satisfies the row's construction requirements: a usable ring
+        // AND a window that genuinely freezes something. Both are checked BEFORE the board
+        // is captured, so the arms below cannot run on a beat that does not carry them.
+        let mut hit: Option<(usize, GameState)> = None;
+        for beat in 0..80usize {
+            if state.loop_detect_ring.len() >= 2 {
+                let live: Vec<&GameState> =
+                    state.loop_detect_ring.iter().map(|f| &f.live).collect();
+                let window = &live[live.len() - 2..];
+                if frozen_lower_bound(window, &state) > 0 {
+                    drop(live);
+                    hit = Some((beat, state.clone()));
+                    break;
+                }
+            }
+            if dump_drive_one_beat(&mut state).is_err() {
+                break;
+            }
+        }
+        let (beat, board) = hit.expect(
+            "REACH-GUARD: no driven beat carried a ring >= 2 frames AND a window with a \
+             non-empty observed-frozen prefix. Every arm below would be vacuous on such a \
+             beat, so the row FAILS rather than passing over a window that freezes nothing",
+        );
+
+        let live: Vec<&GameState> = board.loop_detect_ring.iter().map(|f| &f.live).collect();
+        // The newest candidate pair, i.e. `span == 1` — the shape §3 D2's walk reaches first.
+        let window = &live[live.len() - 2..];
+        let bound = frozen_lower_bound(window, &board);
+        let proposer = board.active_player;
+
+        // ── (a) the exemption is genuinely AVAILABLE on this window ──────────────────────
+        let cover = certified_period_touch(window, &board, PeriodCertification::BoardCovered);
+        assert!(
+            cover.frozen_ids.len() >= bound && bound > 0,
+            "(a) beat {beat}: the cover certificate must freeze at least the {bound} entries \
+             the independent common-prefix bound proves are index-stable across every window \
+             frame; got {}",
+            cover.frozen_ids.len()
+        );
+
+        // ── (b) / (a′1) the two matched negatives, ONE argument different ────────────────
+        let sig =
+            certified_period_touch(window, &board, PeriodCertification::ResourceSignatureOnly);
+        assert!(
+            sig.frozen_ids.is_empty(),
+            "(b) beat {beat}: basis B consults no board predicate, so it supplies neither P2 \
+             nor P4 and the subtraction is withdrawn; got {} frozen",
+            sig.frozen_ids.len()
+        );
+        let eq = certified_period_touch(window, &board, PeriodCertification::BoardEqualOnly);
+        assert!(
+            eq.frozen_ids.is_empty(),
+            "(a′1) beat {beat}: the equality disjunct supplies P2 but NOT P4 — it has no \
+             items (4)/(5) — so it is as fail-closed as basis B; got {} frozen",
+            eq.frozen_ids.len()
+        );
+
+        // ANTI-OVER-NARROWING: only the SUBTRACTION is keyed. A certificate change must not
+        // zero the whole touch — that would under-publish the mint instead of un-exempting.
+        let ids = |t: &PeriodTouch<'_>| -> Vec<ObjectId> {
+            t.announced.iter().map(|(_, e)| e.id).collect()
+        };
+        assert_eq!(
+            ids(&sig),
+            ids(&cover),
+            "the certificate keys the frozen subtraction ONLY: `announced` must be \
+             element-for-element identical under every value"
+        );
+        assert_eq!(ids(&eq), ids(&cover), "same, for the equality value");
+
+        // ── (c) THE CONSUMER HALF: the same two touches, through conjunct (6) ────────────
+        // Fresh containers per arm — a shared one would carry a warm memo and a part-spent
+        // budget into the second arm, making the counters incomparable.
+        let mut v_cover = PeriodVerdicts::for_period(&live, &board, proposer);
+        let c1 = stack_choices_are_all_specified(&board, proposer, &[], Some(&cover), &mut v_cover);
+        let mut v_sig = PeriodVerdicts::for_period(&live, &board, proposer);
+        let c2 = stack_choices_are_all_specified(&board, proposer, &[], Some(&sig), &mut v_sig);
+
+        // The BOOLEAN FLIP is the load-bearing assertion; the counters are its attribution.
+        assert!(
+            c1 && !c2,
+            "(c) beat {beat}: conjunct (6) must ACCEPT under the exempting certificate and \
+             REFUSE under the non-exempting one. Measured c1={c1} (asks={}, skips={}, \
+             spent={}, denied={}) c2={c2} (asks={}, skips={}, spent={}, denied={}), stack={}",
+            v_cover.conjunct6_asks(),
+            v_cover.conjunct6_frozen_skips(),
+            v_cover.spent(),
+            v_cover.denied(),
+            v_sig.conjunct6_asks(),
+            v_sig.conjunct6_frozen_skips(),
+            v_sig.spent(),
+            v_sig.denied(),
+            board.stack.len()
+        );
+        assert!(
+            v_cover.conjunct6_frozen_skips() as usize >= bound,
+            "(c1) the accepted arm must have SKIPPED the frozen ids rather than classified \
+             them; skips={} bound={bound}",
+            v_cover.conjunct6_frozen_skips()
+        );
+        assert!(
+            !v_cover.denied() && v_cover.spent() <= PROBE_BUDGET,
+            "(c1) the exempted classification must fit the cap: spent={} denied={}",
+            v_cover.spent(),
+            v_cover.denied()
+        );
+        assert_eq!(
+            v_sig.conjunct6_frozen_skips(),
+            0,
+            "(c2) the non-exempting certificate must skip NOTHING"
+        );
+        assert!(
+            v_sig.denied() && v_sig.spent() == PROBE_BUDGET,
+            "(c2) the unexempted sweep must exhaust the cap and refuse fail-closed — its \
+             measured demand is far above it. spent={} denied={} cap={PROBE_BUDGET}",
+            v_sig.spent(),
+            v_sig.denied()
+        );
     }
 }

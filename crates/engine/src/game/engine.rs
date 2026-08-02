@@ -14839,6 +14839,129 @@ mod bounded_offer_conjunct_tests {
         state
     }
 
+    /// R33 arm (a′2) — THE SELECTION SITE: AN EQUALITY-CERTIFIED CANDIDATE CARRIES NO FROZEN
+    /// EXEMPTION, EVEN THOUGH ITS WINDOW HAS ONE AVAILABLE.
+    ///
+    /// CR 732.2a + CR 608.1. Arms (a)/(b)/(a′1) prove the CONSTRUCTOR keys the subtraction to
+    /// the certificate value. This arm proves §3 D2's step 4b actually SELECTS the right
+    /// value: it is the only arm that fails on the round-39 shape (one `BoardCovered`
+    /// certificate for the whole `equality || cover` disjunction), which every other arm in
+    /// the row passes unchanged.
+    ///
+    /// The fixture is CONSTRUCTED, not fixture-mined: `drain_ring`'s frames are board-equal at
+    /// every index, so `loop_states_equal_modulo_resources` matches and — by the mutual
+    /// exclusivity of the two disjuncts (equality = constant depth, cover = strictly growing
+    /// depth) — `stack_covers` cannot. One stack entry is seeded IDENTICALLY into `current`
+    /// and into both halves of every retained frame, which is what makes the window carry a
+    /// non-empty observed-frozen set: the exemption is genuinely AVAILABLE here, and the row
+    /// is about it being genuinely WITHDRAWN.
+    ///
+    /// REVERT-PROBE 3 (the round's signature probe): delete step 4b and let conjunct (6)
+    /// consume step 3's `touch_cover` directly ⇒ this row FLIPS while (a)/(b)/(a′1)/(c) all
+    /// still pass — which is exactly why the arm exists.
+    #[test]
+    fn r33_equality_certified_candidate_carries_no_frozen_exemption() {
+        use crate::analysis::resource::{certified_period_touch, PeriodCertification};
+        use crate::game::engine::{try_offer_bounded_cycle_shortcut_metered, ProbeCap};
+        use crate::types::ability::{Effect, QuantityExpr, ResolvedAbility};
+        use crate::types::game_state::{StackEntry, StackEntryKind};
+        use crate::types::identifiers::{CardId, ObjectId};
+        use crate::types::LoopDetectSample;
+        use std::sync::Arc;
+
+        let mut state = drain_ring(P1, 3);
+        let src = ObjectId(941);
+        let mut source = crate::game::game_object::GameObject::new(
+            src,
+            CardId(0),
+            P0,
+            "Frozen Ticker".to_string(),
+            crate::types::zones::Zone::Battlefield,
+        );
+        source.incarnation = 3;
+        // A MANDATORY, choice-free resolution: conjunct (6) must be able to accept it, so a
+        // refusal below is attributable to the exemption and not to an unspecified choice.
+        let entry = StackEntry {
+            id: ObjectId(951),
+            source_id: src,
+            controller: P0,
+            kind: StackEntryKind::TriggeredAbility {
+                source_id: src,
+                ability: Box::new(ResolvedAbility::new(
+                    Effect::LoseLife {
+                        amount: QuantityExpr::Fixed { value: 1 },
+                        target: None,
+                    },
+                    vec![],
+                    src,
+                    P0,
+                )),
+                condition: None,
+                trigger_event: None,
+                description: None,
+                source_name: String::new(),
+                subject_match_count: None,
+                die_result: None,
+            },
+        };
+        // Injected identically everywhere, so board equality is preserved and the entry sits
+        // at the SAME INDEX in every window frame — the frozen predicate's exact condition.
+        let inject = |g: &mut GameState| {
+            g.objects.insert(src, source.clone());
+            g.battlefield.push_back(src);
+            g.stack.push_back(entry.clone());
+        };
+        inject(&mut state);
+        let frames: std::collections::VecDeque<Arc<LoopDetectSample>> = state
+            .loop_detect_ring
+            .iter()
+            .map(|s| {
+                let mut normalized = s.normalized.clone();
+                let mut live = s.live.clone();
+                inject(&mut normalized);
+                inject(&mut live);
+                Arc::new(LoopDetectSample { normalized, live })
+            })
+            .collect();
+        state.loop_detect_ring = frames;
+
+        // REACH-GUARD 1: the exemption is genuinely AVAILABLE on this candidate's window —
+        // otherwise "withdrawn" is indistinguishable from "there was nothing to withdraw".
+        let live: Vec<&GameState> = state.loop_detect_ring.iter().map(|f| &f.live).collect();
+        let window = &live[live.len() - 2..];
+        let available = certified_period_touch(window, &state, PeriodCertification::BoardCovered);
+        assert!(
+            !available.frozen_ids.is_empty(),
+            "REACH-GUARD: the constructed window must carry a non-empty observed-frozen set"
+        );
+
+        let (outcome, meter) =
+            try_offer_bounded_cycle_shortcut_metered(&state, false, ProbeCap::Shipped);
+
+        // REACH-GUARD 2: the EQUALITY arm is the one that matched. Without this the row could
+        // pass on a candidate that never certified, or one that took the cover disjunct.
+        assert_eq!(
+            meter.certification,
+            Some(PeriodCertification::BoardEqualOnly),
+            "REACH-GUARD: the constructed pair must certify through the EQUALITY disjunct, \
+             which is the case this arm is about; outcome {outcome:?}"
+        );
+
+        // THE RULING: equality supplies P2 but not P4, so the period carried forward exempts
+        // NOTHING — observable as conjunct (6) skipping nothing while it really does run.
+        assert_eq!(
+            meter.conjunct6_frozen_skips, 0,
+            "(a′2) step 4b must REBUILD the equality candidate's period with the subtraction \
+             withdrawn; a non-zero skip count means the `BoardCovered` touch from step 3 was \
+             carried into conjunct (6). meter {meter:?}"
+        );
+        assert!(
+            meter.conjunct6_asks > 0,
+            "REACH-GUARD against a vacuous skip count: conjunct (6) must actually have RUN, \
+             else `skips == 0` is trivially true. meter {meter:?}"
+        );
+    }
+
     /// Mill `victim` by one card per retained frame — a constant per-frame library delta, which
     /// is a period observed twice at `frames >= 3`.
     fn mill_ring(victim: PlayerId, frames: usize) -> GameState {
