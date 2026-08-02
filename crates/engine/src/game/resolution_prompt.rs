@@ -182,6 +182,9 @@ fn quantity_offers_up_to_choice(q: &QuantityExpr) -> bool {
         | QuantityExpr::Offset { inner, .. }
         | QuantityExpr::ClampMin { inner, .. }
         | QuantityExpr::Multiply { inner, .. } => quantity_offers_up_to_choice(inner),
+        // `base` is an `i32`, not a `Box<QuantityExpr>` (see `types/ability.rs`), so it
+        // is structurally incapable of carrying an `UpTo` and needs no recursion. Stated
+        // because the asymmetry with `Difference`/`Sum`/`Max` reads like an omission.
         QuantityExpr::Power { exponent, base: _ } => quantity_offers_up_to_choice(exponent),
         QuantityExpr::Difference { left, right } => {
             quantity_offers_up_to_choice(left) || quantity_offers_up_to_choice(right)
@@ -340,9 +343,11 @@ fn effect_offers_choice(e: &Effect) -> bool {
         | Effect::HideawayConceal { .. }
         | Effect::CopyTokenBlockingAttacker { .. }
         | Effect::BecomeCopy { .. }
-        // CR 707.2c: raises `WaitingFor::CopyTargetChoice` — prompts, fail-closed
-        // MayPrompt (never resolved through the normal chain, but classified here
-        // to keep the match exhaustive).
+        // CR 707.6: an object entering as a copy of a permanent does NOT inherit the
+        // original's choices — its controller makes the "as [this] enters" choices
+        // anew. That fresh choice is what raises `WaitingFor::CopyTargetChoice`, so
+        // this is a fail-closed MayPrompt (never resolved through the normal chain,
+        // but classified here to keep the match exhaustive).
         | Effect::ChoosePermanent { .. }
         | Effect::GainActivatedAbilitiesOfTarget { .. }
         | Effect::ChooseCard { .. }
@@ -1289,10 +1294,29 @@ mod tests {
             let mut work = state.clone();
             let mut ev = Vec::new();
             let _ = effects::resolve_ability_chain(&mut work, &chained, &mut ev, 0);
+            // The production guard has TWO legs (`!matches!(.., Priority)` OR the
+            // discriminants differ), and the attribution claim above names the whole
+            // arm rather than one leg of it, so both legs are asserted.
+            //
+            // COMPLETENESS GUARD, NOT A LIVE FIX — stated from measurement so it is not
+            // oversold. Deleting the accounting arm flips this row red WITH the leg
+            // assert and WITHOUT it, so the row was never vacuous as it stood. The
+            // divergence the second leg would catch (probe board at a non-priority
+            // `waiting_for` whose variant still matches `state`'s) is not expressible on
+            // this fixture: parking the board at `ReplacementChoice` changes what the
+            // chain proposes — the sub-ability's `Tap` stops being derived — so the row
+            // dies at its own reach-guard before any arm attribution is reached. This
+            // assert buys future-drift coverage, not a currently-reachable bug.
+            assert!(
+                matches!(work.waiting_for, WaitingFor::Priority { .. }),
+                "attribution (i): the non-priority leg of the waiting_for arm must NOT \
+                 be what fires here"
+            );
             assert_eq!(
                 std::mem::discriminant(&work.waiting_for),
                 std::mem::discriminant(&state.waiting_for),
-                "attribution (i): the waiting_for arm must NOT be what fires here"
+                "attribution (i): the discriminant leg of the waiting_for arm must NOT \
+                 be what fires here"
             );
         });
         assert!(
