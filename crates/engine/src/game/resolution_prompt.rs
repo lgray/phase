@@ -935,18 +935,6 @@ mod tests {
         ]
     }
 
-    /// R10′ — THE AXIS-COMPLETENESS WITNESS, over ALL SIX allow-listed arms.
-    ///
-    /// Two INDEPENDENT clone-and-resolves of the same ability on the same board:
-    /// ARM 1 derives the event set through the recorder; ARM 2 reads the axes
-    /// before/after and touches no recorder, no `ProposedEvent`, no
-    /// `replace_event`, no `pipeline_loop`. The two arms share
-    /// `resolve_ability_chain` + `GameState` — the SUBJECT under test — and
-    /// share NOTHING on the CHECKING side. That is the whole point: a check that
-    /// shares its deepest dependency with the thing checked is an identity.
-    ///
-    /// CONJUNCT 2 (the population gate) is asserted as a conjunct that FAILS the
-    /// test, not promised in prose: the set of arms observed must equal all six.
     /// CR 732.2a — a prompt already parked on the incoming board must REFUSE the probe,
     /// even though the resolution leaves the variant unchanged.
     ///
@@ -1024,6 +1012,18 @@ mod tests {
         );
     }
 
+    /// R10′ — THE AXIS-COMPLETENESS WITNESS, over ALL SIX allow-listed arms.
+    ///
+    /// Two INDEPENDENT clone-and-resolves of the same ability on the same board:
+    /// ARM 1 derives the event set through the recorder; ARM 2 reads the axes
+    /// before/after and touches no recorder, no `ProposedEvent`, no
+    /// `replace_event`, no `pipeline_loop`. The two arms share
+    /// `resolve_ability_chain` + `GameState` — the SUBJECT under test — and
+    /// share NOTHING on the CHECKING side. That is the whole point: a check that
+    /// shares its deepest dependency with the thing checked is an identity.
+    ///
+    /// CONJUNCT 2 (the population gate) is asserted as a conjunct that FAILS the
+    /// test, not promised in prose: the set of arms observed must equal all six.
     #[test]
     fn derived_event_set_accounts_for_every_board_axis_on_all_six_allow_listed_arms() {
         let state = probe_board();
