@@ -13920,6 +13920,20 @@ mod stage2_injector_tests {
     /// that caught this — which is the evidence that the SET did not move and only this
     /// entry's coordinate did. A line-number-only shift is the benign case; a changed
     /// producer set is not, and stays a counted event.
+    ///
+    /// ⚠ **RE-ADJUDICATED ON THE REBASE ONTO UPSTREAM #6842 (`8121fd1c6`), NOT RELAXED.**
+    /// The row fired again; the PRODUCER COUNT IS STILL **5** and no sixth producer exists.
+    /// Four of five coordinates shifted and one did not:
+    /// `game/effects/mod.rs:5896/5973/8927 ⇒ :5918/5995/8949` (uniform **+22**, lines that
+    /// commit adds above them in that file), `game/engine.rs:10500 ⇒ :10589` (**+89**, same
+    /// cause), and `game/effects/scoped_library_search.rs:452` **UNMOVED**.
+    /// Evidence this is a coordinate shift and not a set change: each of the five was re-read
+    /// at its new coordinate and diffed against the pre-rebase tree (`chain3-prefold-backup`)
+    /// at its old one — all five are BYTE-IDENTICAL, same files, same order, and the one
+    /// entry at an unchanged coordinate is byte-identical in place, which a gained-or-lost
+    /// producer could not produce. Same set, new line numbers ⇒ benign, re-baselined here.
+    /// NOTE for the record: this rebase did NOT add a CR 603.5 producer. An earlier report of
+    /// mine said upstream had added one; that was wrong — the row fired on coordinates.
     #[test]
     fn the_cr_603_5_prompt_census_is_pinned_so_a_sixth_producer_is_a_counted_event() {
         /// Every `.rs` under the crate's `src`, and the `#[cfg(test)]`-attributed
@@ -14019,13 +14033,22 @@ mod stage2_injector_tests {
         assert_eq!(
             producers,
             vec![
-                "game/effects/mod.rs:5896".to_string(),
-                "game/effects/mod.rs:5973".to_string(),
-                "game/effects/mod.rs:8927".to_string(),
+                // Rebase onto upstream #6842 (8121fd1c6): `:5896/:5973/:8927 ⇒
+                // :5918/:5995/:8949`, a uniform +22 shift from lines that commit adds ABOVE
+                // these three in the same file. Each producer re-read at its new coordinate
+                // and diffed against the pre-rebase tree: byte-identical.
+                "game/effects/mod.rs:5918".to_string(),
+                "game/effects/mod.rs:5995".to_string(),
+                "game/effects/mod.rs:8949".to_string(),
+                // UNMOVED across the rebase, and that is itself evidence the SET did not
+                // move: a census that had gained or lost a producer would not leave this
+                // entry both byte-identical AND at the same coordinate.
                 "game/effects/scoped_library_search.rs:452".to_string(),
                 // 5d LOW-fix: `:10493 ⇒ :10500`, a doc-only line shift (+7 comment lines
                 // above); producer byte-identical, total 37 and partition 5/7/25 untouched.
-                "game/engine.rs:10500".to_string(),
+                // Rebase onto #6842: `:10500 ⇒ :10589`, on the same terms — that commit adds
+                // lines above this producer too. Producer byte-identical.
+                "game/engine.rs:10589".to_string(),
             ],
             "the five production producers, NAMED: the CR 603.5 gate in `resolve_chain_body` \
              plus the two repeated-optional-payment drivers, the per-player acceptance cursor \
