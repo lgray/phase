@@ -46,8 +46,31 @@ use crate::types::zones::Zone;
 /// the meter. Defining it one module down lets the constructor be narrowed
 /// without also narrowing it away from this module's own wrappers.
 mod verdict_memo {
+    use std::collections::BTreeMap;
+
+    use crate::game::engine::{CapAuthority, EntryPinSlots};
+    use crate::game::resolution_prompt::ResolutionChoiceFreedom;
+    use crate::types::game_state::{GameState, StackEntry};
+    use crate::types::identifiers::ObjectId;
+    use crate::types::player::PlayerId;
+
     /// The shipped probe cap, per classification run.
-    pub(crate) const PROBE_BUDGET: u32 = 12;
+    ///
+    /// RE-DERIVED FROM MEASUREMENT. The retired `12` was fitted to per-mint charge
+    /// counts (dellian 2–4 / F4 1) taken over the CURRENT STACK only, before the
+    /// verdict door existed. Over the door's derived `(frame, entry)` population the
+    /// announcement gate mints keys too, and the measured demand at the corpus's one
+    /// offering beat — dina `beat=19`, `ring=3 stack=10`, driven through `apply()` —
+    /// is **13 charges** (`asks=13`, one charge per key), i.e. `12` starved the
+    /// acceptance offer by exactly one.
+    ///
+    /// `26` is `2 ×` that measured demand: an offering beat may carry double the
+    /// observed key population (≈ a 20-entry stack at the measured 1.3 keys/entry)
+    /// and still certify. The ceiling is not arbitrary either — it stays far below
+    /// the unexempted sweep the frozen exemption exists to prevent, whose demand
+    /// measures **96–107** on dellian's `ring=16 stack≈176` beats, so an unexempted
+    /// full-stack classification still exhausts and still refuses fail-closed.
+    pub(crate) const PROBE_BUDGET: u32 = 26;
 
     /// CR 732.2a: cost is a COVERAGE knob, never a soundness knob — an
     /// unaffordable probe degrades to honest-red (no certificate, no offer),
@@ -61,17 +84,20 @@ mod verdict_memo {
     pub(crate) struct ProbeBudget {
         remaining: u32,
         /// Latched by [`ProbeBudget::try_charge_one`] so an exhaustion can be
-        /// ATTRIBUTED rather than inferred from a zero remainder. Its production
-        /// reader is the metered mint's exhaustion accounting, which is not
-        /// built yet; until then the latch is exercised by this module's own
-        /// unit row, which is why the accessor is `cfg(test)`.
-        #[cfg_attr(not(test), allow(dead_code))]
+        /// ATTRIBUTED rather than inferred from a zero remainder. Read in
+        /// production by [`PeriodVerdicts::denied`], which the metered mint
+        /// carries out in its `MintMeter`.
         denied: bool,
     }
 
     impl ProbeBudget {
-        /// `pub(super)` while the parent module is the only constructor site.
-        pub(super) fn new(cap: u32) -> Self {
+        /// MODULE-PRIVATE. Every budget is born inside this module, so the
+        /// container that owns the meter is the only thing that can start a
+        /// spend — a fresh budget compiled beside a consumer would be a spend
+        /// the mint's meter never sees. Re-adding a
+        /// `ProbeBudget::new(PROBE_BUDGET)` call in `analysis::resource` is
+        /// E0624, which is the closure stated as a compile fact.
+        fn new(cap: u32) -> Self {
             Self {
                 remaining: cap,
                 denied: false,
@@ -90,23 +116,243 @@ mod verdict_memo {
         }
 
         /// Did any charge get denied against this budget?
-        #[cfg(test)]
         pub(crate) fn denied(&self) -> bool {
             self.denied
         }
 
-        /// TEST-ONLY constructor. `new` stays `pub(super)` so no PRODUCTION site
-        /// outside this module's own wrappers can mint a budget whose spend
-        /// would be invisible to a meter; a `cfg(test)` door cannot widen that,
-        /// because it does not exist in a production build.
+        /// TEST-ONLY constructor. `new` is module-private so no site outside
+        /// this module can mint a budget whose spend would be invisible to a
+        /// meter; a `cfg(test)` door cannot widen that, because it does not
+        /// exist in a production build.
         #[cfg(test)]
         pub(crate) fn for_test(cap: u32) -> Self {
             Self::new(cap)
         }
     }
+
+    /// A frame's position in ONE container's OWN `frames` table.
+    ///
+    /// The field is private and there is no public constructor and no
+    /// `From<usize>`: a `FrameIx` can only be minted by
+    /// [`PeriodVerdicts::frame_ix`], which resolves a `&GameState` by POINTER
+    /// IDENTITY against the very table [`PeriodVerdicts::verdict`] indexes. No
+    /// index arithmetic exists anywhere on the mint path, so the
+    /// window-relative off-by-`idx` class is unconstructible rather than merely
+    /// unobserved — forging `FrameIx(3)` one module out is E0603.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+    pub(crate) struct FrameIx(usize);
+
+    /// Everything ONE `(frame, entry)` pair answers, computed on first demand by
+    /// [`PeriodVerdicts::verdict`] and memoized for the rest of the mint.
+    ///
+    /// Every field is produced by a function whose signature takes NO published
+    /// slots, which is what removes the key-completeness obligation: a slot list
+    /// is a *window* fact and would make the memo key incomplete, so a fourth
+    /// field that reads one is a design error rather than an addition.
+    pub(crate) struct EntryVerdict {
+        /// THE MINT, CACHED — `entry_publishes_pin_slots(frame, entry,
+        /// proposer)` with the CONTAINER's bound proposer. A proposer-less
+        /// (`unproven`) container computes `None` for every key: nothing is
+        /// published when no offer binds a proposer, which is the mint's own
+        /// answer rather than an invented one.
+        pub(crate) published: Option<EntryPinSlots>,
+        /// `stack_entry_resolution_choice_freedom(frame, entry, budget)` on the
+        /// ability AS IT STANDS.
+        pub(crate) primary: ResolutionChoiceFreedom,
+        /// CR 603.5: the optional-cleared re-classification the relief used to
+        /// compute inline. `None` for an entry whose mint publishes no `may`
+        /// slot, and for one whose resolution scope cannot bind (CR 603.4).
+        pub(crate) residual: Option<ResolutionChoiceFreedom>,
+    }
+
+    /// CR 732.2a: the ONE per-mint verdict door — a TOTAL, `(FrameIx,
+    /// ObjectId)`-keyed, compute-on-miss memo that OWNS the probe budget.
+    ///
+    /// Totality is scoped honestly: [`PeriodVerdicts::verdict`] is total over
+    /// every `FrameIx` this container minted, and MINTING
+    /// ([`PeriodVerdicts::frame_ix`]) is the membership question — it returns
+    /// `Option` and every consumer treats `None` as a refusal, so a frame
+    /// outside the period costs a certificate, never a wrong one.
+    pub(crate) struct PeriodVerdicts<'a> {
+        /// `ring ++ [current]` — PRIVATE and not indexable, so a `FrameIx`
+        /// cannot be turned back into a board by the parent module.
+        frames: Vec<&'a GameState>,
+        memo: BTreeMap<(FrameIx, ObjectId), EntryVerdict>,
+        /// PRIVATE: the field route to a fresh spend is E0616 from the parent
+        /// module, and the construction route is shut by `new`'s module
+        /// privacy above.
+        budget: ProbeBudget,
+        /// The cap this container was born at, so `spent()` is a difference
+        /// rather than a second counter that could drift from the budget.
+        cap: u32,
+        /// The THIRD argument of the memoized mint, fixed at construction, so
+        /// the EFFECTIVE key is `(proposer, FrameIx, ObjectId)` with the first
+        /// component constant per container.
+        proposer: Option<PlayerId>,
+        conjunct6_asks: u32,
+        conjunct6_frozen_skips: u32,
+        conjunct4_scans: u32,
+    }
+
+    impl<'a> PeriodVerdicts<'a> {
+        fn build(
+            ring: &[&'a GameState],
+            current: &'a GameState,
+            proposer: Option<PlayerId>,
+            cap: u32,
+        ) -> Self {
+            let mut frames: Vec<&'a GameState> = ring.to_vec();
+            frames.push(current);
+            Self {
+                frames,
+                memo: BTreeMap::new(),
+                budget: ProbeBudget::new(cap),
+                cap,
+                proposer,
+                conjunct6_asks: 0,
+                conjunct6_frozen_skips: 0,
+                conjunct4_scans: 0,
+            }
+        }
+
+        /// The default-cap constructor, bound to the mint's own proposer.
+        ///
+        /// `pub(super)` and not `pub(crate)`: every in-scope construction site
+        /// lives in `analysis::resource` or a descendant, while an out-of-file
+        /// fresh container — whose spend the mint's meter would never see — is
+        /// E0624. The OFFER path constructs through
+        /// [`PeriodVerdicts::for_period_with_cap`] instead, because
+        /// `verdict_memo` cannot mint the `CapAuthority` that door demands.
+        ///
+        /// Every U3 caller is a `#[cfg(test)]` site, so the plain lib target sees
+        /// this as dead (U1's `denied()` precedent). Its production reader is the
+        /// still-unwritten R22 row; keeping the gate `not(test)`-scoped means that
+        /// row lands with no annotation churn.
+        #[cfg_attr(not(test), allow(dead_code))]
+        pub(super) fn for_period(
+            ring: &[&'a GameState],
+            current: &'a GameState,
+            proposer: PlayerId,
+        ) -> Self {
+            Self::build(ring, current, Some(proposer), PROBE_BUDGET)
+        }
+
+        /// The cap-parameterised twin — the ONLY budget-raise/lower channel,
+        /// and the reason it is safe is CAPABILITY rather than visibility: the
+        /// final parameter is a token whose tuple constructor is private to
+        /// `game::engine`, the metered seam's own module, so a fresh
+        /// arbitrary-cap container built anywhere else is E0603.
+        ///
+        /// `for_period` is this function at `cap = PROBE_BUDGET`; both construct
+        /// through the module-private `ProbeBudget::new`.
+        pub(crate) fn for_period_with_cap(
+            ring: &[&'a GameState],
+            current: &'a GameState,
+            proposer: PlayerId,
+            cap: u32,
+            _auth: CapAuthority,
+        ) -> Self {
+            Self::build(ring, current, Some(proposer), cap)
+        }
+
+        /// Every other path (including the unscoped sibling): frames =
+        /// `[current]`, NO proposer ⇒ nothing published ⇒ no relief. That is
+        /// byte-identical to the pre-change unproven behaviour, where relief
+        /// died on `scope.pinned == None` before any mint call.
+        pub(super) fn unproven(current: &'a GameState) -> Self {
+            Self::build(&[], current, None, PROBE_BUDGET)
+        }
+
+        /// THE ONLY `FrameIx` MINT. Resolves a frame to its position in
+        /// `self.frames` by `std::ptr::eq` — the same table `verdict` reads, so
+        /// the returned index is correct BY IDENTITY, not by arithmetic.
+        /// `rposition`, so the only conceivable duplicate (one pointer appearing
+        /// twice) resolves newest; a duplicate pointer is the same state, hence
+        /// the same verdict.
+        ///
+        /// `None` ⇒ the frame is not in this period ⇒ the CALLER refuses. That
+        /// is what makes "the memo's last frame IS the caller's current"
+        /// structural rather than a `debug_assert` compiled out of release.
+        pub(crate) fn frame_ix(&self, frame: &GameState) -> Option<FrameIx> {
+            self.frames
+                .iter()
+                .rposition(|f| std::ptr::eq(*f, frame))
+                .map(FrameIx)
+        }
+
+        /// THE ONE DOOR. Computes on miss against `self.frames[f.0]` — the memo,
+        /// never the caller, converts `FrameIx` back to a board — charges the
+        /// OWNED budget, and memoizes. Total over minted keys: it returns a
+        /// value, never an `Option`, so there is no miss contract to get wrong.
+        pub(crate) fn verdict(&mut self, f: FrameIx, entry: &StackEntry) -> &EntryVerdict {
+            let key = (f, entry.id);
+            if !self.memo.contains_key(&key) {
+                let frame = self.frames[f.0];
+                let published = self
+                    .proposer
+                    .and_then(|p| crate::game::engine::entry_publishes_pin_slots(frame, entry, p));
+                let primary =
+                    super::stack_entry_resolution_choice_freedom(frame, entry, &mut self.budget);
+                let residual = match published.as_ref().and_then(|p| p.may.as_ref()) {
+                    Some(_) => {
+                        super::optional_cleared_classification(frame, entry, &mut self.budget)
+                    }
+                    None => None,
+                };
+                self.memo.insert(
+                    key,
+                    EntryVerdict {
+                        published,
+                        primary,
+                        residual,
+                    },
+                );
+            }
+            &self.memo[&key]
+        }
+
+        /// Read-only: the bound proposer, for the relief-side agreement guard.
+        pub(crate) fn proposer(&self) -> Option<PlayerId> {
+            self.proposer
+        }
+
+        /// THE METER: charges taken against this container's one budget.
+        pub(crate) fn spent(&self) -> u32 {
+            self.cap - self.budget.remaining
+        }
+
+        /// At least one charge was REFUSED — the exhaustion fact, attributed
+        /// rather than inferred from a zero remainder.
+        pub(crate) fn denied(&self) -> bool {
+            self.budget.denied()
+        }
+
+        /// Item (6) loop bodies that reached the verdict door.
+        pub(crate) fn conjunct6_asks(&self) -> u32 {
+            self.conjunct6_asks
+        }
+        /// Frozen `continue`s taken in item (6) — the exemption, counted.
+        pub(crate) fn conjunct6_frozen_skips(&self) -> u32 {
+            self.conjunct6_frozen_skips
+        }
+        /// Calls of `stack_entry_reads_projected_resource` from item (4)'s
+        /// `.any()`, which is the only body change item (4) takes.
+        pub(crate) fn conjunct4_scans(&self) -> u32 {
+            self.conjunct4_scans
+        }
+        pub(crate) fn note_conjunct6_ask(&mut self) {
+            self.conjunct6_asks += 1;
+        }
+        pub(crate) fn note_conjunct6_frozen_skip(&mut self) {
+            self.conjunct6_frozen_skips += 1;
+        }
+        pub(crate) fn note_conjunct4_scan(&mut self) {
+            self.conjunct4_scans += 1;
+        }
+    }
 }
 
-pub(crate) use verdict_memo::{ProbeBudget, PROBE_BUDGET};
+pub(crate) use verdict_memo::{FrameIx, PeriodVerdicts, ProbeBudget, PROBE_BUDGET};
 
 /// WUBRG + colorless, the canonical index order used by [`ResourceVector::mana`].
 ///
@@ -1072,7 +1318,7 @@ pub(crate) fn ring_delta_signature(state: &GameState) -> Option<(u32, ResourceVe
             .map(|f| &f.normalized)
             .collect();
         if !window.windows(2).all(|w| {
-            window_scope_from_cover_frames(w[0], w[1], None)
+            window_scope_from_cover_frames(w[0], w[1], None, None)
                 .phase_invariant
                 .is_some()
         }) {
@@ -1227,6 +1473,182 @@ pub fn board_delta(before: &GameState, after: &GameState) -> BoardDelta {
     BoardDelta { added, removed }
 }
 
+/// CR 732.2a: WHICH certificate a window's touch is derived under.
+///
+/// The frozen exemption's extrapolation limb needs BOTH a board-level premise
+/// that the certified period cannot SHRINK the stack (P2) AND the Karp–Miller
+/// read-surface guard that makes the fast-forward the repetition of the observed
+/// period (P4). Exactly one certifying disjunct supplies both, so the exemption
+/// is keyed to the DISJUNCT rather than to the basis — as a type rather than a
+/// call-site convention, because a convention an executor drops compiles and is
+/// fail-OPEN.
+///
+/// Three variants, two of which behave identically today, and that is
+/// deliberate: collapsing the equality disjunct onto [`PeriodCertification::
+/// ResourceSignatureOnly`] would make the type lie about provenance (equality
+/// DOES consult a board predicate), and a mislabel is the fail-open re-entry
+/// path — the obvious future "fix" for an equality pair tagged
+/// `ResourceSignatureOnly` is to retag it `BoardCovered`.
+/// `pub` rather than `pub(crate)` for ONE reason, named so a future reader does not
+/// widen it further: it is the type of [`crate::game::engine::MintMeter`]'s
+/// `certification` field, the only surface on which the certifying disjunct is
+/// observable at all. It is not serialized, not a variant on any gated engine enum,
+/// and no card-data export reads it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PeriodCertification {
+    /// Basis A, COVER disjunct — the pair passed
+    /// [`loop_states_cover_modulo_growth_pinned`]. P2: item (2)'s `stack_covers`
+    /// ⇒ strictly growing depth. P4: items (4)/(5) ⇒ no current-stack entry and
+    /// no live fire-time condition reads a still-projected axis. This is the
+    /// ONLY value under which `frozen_ids` is non-empty.
+    BoardCovered,
+    /// Basis A, EQUALITY disjunct — the pair passed
+    /// [`loop_states_equal_modulo_resources`]. P2 holds (the stack is compared
+    /// exactly ⇒ constant depth) but P4 does NOT: that predicate has no items
+    /// (4)/(5), and this crate says so in its own words — the Karp–Miller NOTE
+    /// above [`loop_states_cover_modulo_growth`] ("makes the SAME extrapolation
+    /// with NONE of these") and that predicate's own inherited-assumption
+    /// section. A replacement that arms mid-extrapolation is exactly the route
+    /// P4 forecloses, so `frozen_ids` is forced EMPTY here. The shipped
+    /// constant-depth 2p drain detection is unaffected: this value narrows only
+    /// the NEW subtraction.
+    BoardEqualOnly,
+    /// Basis B — [`ring_delta_signature`] only, which by its own doc "does not
+    /// consult a board predicate". Neither P2 nor P4 ⇒ `frozen_ids` is forced
+    /// EMPTY and the resolution gate scans every current-stack entry, exactly as
+    /// before this change.
+    ResourceSignatureOnly,
+}
+
+/// CR 732.2a + CR 608.1: what ONE certified period actually announced, and which
+/// current-stack entries the window proves it never touched.
+///
+/// Derived from the retained ring window `[cert_prior .. current]` — never from
+/// the offer-beat stack snapshot. Its frames and entries are the ring sample's
+/// **LIVE** halves, never `normalize_for_loop()` products: normalization zeroes
+/// `next_object_id` and strips trigger identity, so a normalized frame is a
+/// CR 104.4b comparand and not an evaluation board.
+///
+/// Fail-closed both ways: an id the window cannot prove frozen is TOUCHED
+/// (scanned/refused as before), and an entry the window never shows announcing
+/// is not enumerable for pins (the offer under-publishes ⇒ the choice gate
+/// refuses ⇒ no offer).
+#[derive(Debug)]
+pub(crate) struct PeriodTouch<'a> {
+    /// `(carrying_frame, entry)` for every entry that ANNOUNCED inside the
+    /// window: present on frame `i`'s stack, absent from frame `i-1`'s (by
+    /// `StackEntry.id`). The carrying frame is the state the entry is evaluated
+    /// against — CR 603.3d announcement choices are a property of the board the
+    /// ability was put on the stack against.
+    pub(crate) announced: Vec<(&'a GameState, &'a StackEntry)>,
+    /// Entry ids of `current.stack` that the window proves FROZEN: the same id
+    /// at the same index in EVERY window frame AND in `current`. CR 608.1: only
+    /// the top of the stack resolves, so an entry that held its `(index, id)`
+    /// through the whole window neither announced nor resolved in it.
+    ///
+    /// NON-EMPTY ONLY UNDER [`PeriodCertification::BoardCovered`]: the
+    /// subtraction is the one fail-open half of this type, and the other two
+    /// certificates do not supply the premises it rests on.
+    pub(crate) frozen_ids: BTreeSet<ObjectId>,
+}
+
+/// CR 732.2a: derive one window's [`PeriodTouch`] under the certificate its
+/// caller actually holds.
+///
+/// `window` is `ring_live[cert_idx..]`, oldest first; the observed frame
+/// sequence is `window ++ [current]`. `announced` is IDENTICAL on all three
+/// certificate values — widening the announced set is the fail-CLOSED direction
+/// — and only the frozen subtraction is keyed.
+pub(crate) fn certified_period_touch<'a>(
+    window: &[&'a GameState],
+    current: &'a GameState,
+    cert: PeriodCertification,
+) -> PeriodTouch<'a> {
+    if window.is_empty() {
+        // CR 608.1 + CR 732.2a: with NO window frame there is no transition to
+        // observe, so there is no frozen proof and no observed period; the
+        // honest degenerate reading is "every current entry may announce",
+        // which is exactly the snapshot mint this function's alias replaces.
+        return PeriodTouch {
+            announced: current.stack.iter().map(|e| (current, e)).collect(),
+            frozen_ids: BTreeSet::new(),
+        };
+    }
+
+    let mut announced: Vec<(&'a GameState, &'a StackEntry)> = Vec::new();
+    let mut prev_ids: HashSet<ObjectId> = window[0].stack.iter().map(|e| e.id).collect();
+    for frame in window
+        .iter()
+        .skip(1)
+        .copied()
+        .chain(std::iter::once(current))
+    {
+        for entry in &frame.stack {
+            if !prev_ids.contains(&entry.id) {
+                announced.push((frame, entry));
+            }
+        }
+        prev_ids = frame.stack.iter().map(|e| e.id).collect();
+    }
+
+    // The fail-open subtraction, and the ONLY thing the certificate keys. Taken
+    // BEFORE the frozen walk, so a non-cover certificate never pays it either.
+    if !matches!(cert, PeriodCertification::BoardCovered) {
+        return PeriodTouch {
+            announced,
+            frozen_ids: BTreeSet::new(),
+        };
+    }
+
+    let frozen_ids = current
+        .stack
+        .iter()
+        .enumerate()
+        .filter(|(index, entry)| {
+            window
+                .iter()
+                .all(|frame| frame.stack.get(*index).map(|e| e.id) == Some(entry.id))
+        })
+        .map(|(_, entry)| entry.id)
+        .collect();
+    PeriodTouch {
+        announced,
+        frozen_ids,
+    }
+}
+
+/// CR 603.5 + CR 603.4 + CR 608.2k: re-classify ONE entry's ability with its
+/// published "may" gate discharged, on the board `resolve_top` would hand the
+/// resolver — this entry off the stack, resolution scope bound.
+///
+/// The ONE classifier answers the counterfactual; this module never
+/// re-implements the six independent reasons the classifier returns `MayPrompt`
+/// for. `None` ⇒ not a triggered ability, or the resolution scope cannot bind,
+/// both of which are refusals rather than relief.
+fn optional_cleared_classification(
+    frame: &GameState,
+    entry: &StackEntry,
+    budget: &mut ProbeBudget,
+) -> Option<crate::game::resolution_prompt::ResolutionChoiceFreedom> {
+    let StackEntryKind::TriggeredAbility { ability, .. } = &entry.kind else {
+        return None;
+    };
+    let mut without_may_gate = (**ability).clone();
+    without_may_gate.optional = false;
+    let mut board = frame.clone();
+    board.stack.retain(|e| e.id != entry.id);
+    if !crate::game::stack::bind_resolution_scope(&mut board, entry, None) {
+        return None;
+    }
+    Some(
+        crate::game::resolution_prompt::ability_resolution_choice_freedom(
+            &board,
+            &without_may_gate,
+            budget,
+        ),
+    )
+}
+
 /// CR 732.2a: the facts a CALLER has PROVED about the loop window it is asking a
 /// window predicate to certify. Every field is a *proof obligation discharged by the
 /// caller*, never a request: a caller that has proved nothing passes
@@ -1259,6 +1681,14 @@ pub(crate) struct LoopWindowScope<'a> {
     /// caller proved the EXACT set of card ids this window casts — `Some(&[])` for a
     /// window that provably casts nothing. `None` means NO PROOF, i.e. scan everything.
     cast_card_ids: Option<&'a [CardId]>,
+    /// CR 732.2a + CR 608.1: `Some(touch)` iff the caller proved WHICH pairs the
+    /// certified period announced and which current-stack entries it left
+    /// frozen. A Copy HANDLE, never the owned value — [`PeriodTouch`] owns a
+    /// `Vec` and a `BTreeSet`, so an owned field would be E0204 against this
+    /// struct's shipped `Copy` derive, while `Option<&T>` is `Copy` regardless
+    /// of `T`. `None` means NO PROOF: nothing is exempt and nothing is
+    /// enumerable, i.e. the pre-change width.
+    period: Option<&'a PeriodTouch<'a>>,
 }
 
 /// CR 732.2a: the per-iteration choice slots ONE offer published, carried together with the
@@ -1289,6 +1719,11 @@ impl LoopWindowScope<'static> {
             sole_driver: None,
             pinned: None,
             cast_card_ids: None,
+            // DELIBERATE, and it is the whole meaning of this constructor: a
+            // caller that has proved nothing gets byte-identical pre-change
+            // behaviour. `Option<&PeriodTouch>` is const-constructible as
+            // `None`, so this stays a `const fn` on `LoopWindowScope<'static>`.
+            period: None,
         }
     }
 }
@@ -1320,6 +1755,7 @@ fn window_scope_from_cover_frames<'a>(
     pa: &GameState,
     pb: &GameState,
     pinned: Option<PinnedChoices<'a>>,
+    period: Option<&'a PeriodTouch<'a>>,
 ) -> LoopWindowScope<'a> {
     // (p1) same turn, (p2) same step-granular phase, (p3) no pending extra phase in
     // either frame (CR 500.8).
@@ -1352,6 +1788,11 @@ fn window_scope_from_cover_frames<'a>(
         pinned,
         // 2b's axis (the PROJECTED covers), derived at its own call site.
         cast_card_ids: None,
+        // From the parameter: the SINGLE scope authority must be able to carry
+        // the period proof, or the cover disjunct's own caller would have to
+        // assemble a scope itself — which is exactly what the private fields
+        // exist to prevent.
+        period,
     }
 }
 
@@ -1378,24 +1819,44 @@ fn window_scope_from_cover_frames<'a>(
 /// Fail-closed in every branch: no published pins, a non-qualifying entry, a missing source
 /// object, or a mid-construction entry ⇒ not pinned ⇒ the gate that called this keeps
 /// rejecting.
+/// THE BOARD IS THE PAIR'S CARRYING FRAME — the identical `&GameState` the caller
+/// handed [`PeriodVerdicts::frame_ix`] to mint `f`, never a second board. That is
+/// what makes the two halves agree by construction: the cached `published` is
+/// `entry_publishes_pin_slots(frames[f], entry, proposer)`, so the mint half and
+/// the CR 603.3c half read ONE board per key. Dropping the board (and with it the
+/// CR 603.3c conjunct) would COMPILE and would be fail-OPEN, which is why it is a
+/// parameter rather than something a `FrameIx` is expected to recover:
+/// `PeriodVerdicts.frames` is private to `verdict_memo`.
 fn entry_target_choice_is_pinned(
-    state: &GameState,
+    board: &GameState,
+    f: FrameIx,
     entry: &StackEntry,
+    verdicts: &mut PeriodVerdicts<'_>,
     scope: LoopWindowScope<'_>,
 ) -> bool {
     let Some(pins) = scope.pinned else {
         return false;
     };
-    if state.pending_trigger_entry == Some(entry.id) {
+    // A container bound to one proposer can never relieve pins minted for
+    // another seat: the cached `published` IS the mint's answer for the
+    // container's own proposer, so consuming it under different pins would be
+    // reading a verdict minted for someone else.
+    if verdicts.proposer() != Some(pins.proposer) {
+        return false;
+    }
+    if board.pending_trigger_entry == Some(entry.id) {
         return false;
     }
     // CR 601.2c: a may-only entry (shape (B)) publishes NO target slot, so it is not
     // target-relieved here — its announcement freedom comes from
     // `stack_entry_has_no_ordering_input`'s own `targets.is_empty()` arm instead. Requiring
     // `Some` keeps this predicate strictly narrower than the mint, never coarser.
-    crate::game::engine::entry_publishes_pin_slots(state, entry, pins.proposer)
-        .and_then(|e| e.target)
-        .is_some_and(|target| pins.slots.contains(&target))
+    verdicts
+        .verdict(f, entry)
+        .published
+        .as_ref()
+        .and_then(|e| e.target.as_ref())
+        .is_some_and(|target| pins.slots.contains(target))
 }
 
 /// CR 732.2a + CR 603.5: is this entry's RESOLUTION-time `MayPrompt` (gate (6)) fully
@@ -1415,50 +1876,41 @@ fn entry_target_choice_is_pinned(
 /// `unless_pay`, a resolution-time target chooser, a modal header, a controller-choice
 /// repeat, or a CR 701.34a proliferate sub-ability keeps returning `MayPrompt` and gets no
 /// relief, because no published pin specifies it.
+/// It performs NO classification of its own and calls the mint not at all: both
+/// the published slots and the optional-cleared residual are read through the ONE
+/// door, which is what keeps the relief from being a second, drifting authority.
 fn pinned_may_choice_relief(
-    state: &GameState,
+    f: FrameIx,
     entry: &StackEntry,
+    verdicts: &mut PeriodVerdicts<'_>,
     scope: LoopWindowScope<'_>,
-    budget: &mut ProbeBudget,
 ) -> Option<crate::game::resolution_prompt::ResolutionChoiceFreedom> {
     use crate::game::resolution_prompt::ResolutionChoiceFreedom;
     let pins = scope.pinned?;
-    let published = crate::game::engine::entry_publishes_pin_slots(state, entry, pins.proposer)?;
-    let may = published.may?;
+    // Fail-closed agreement guard: relief may only consume a verdict minted for
+    // the seat whose offer published these pins.
+    if verdicts.proposer() != Some(pins.proposer) {
+        return None;
+    }
+    let cached = verdicts.verdict(f, entry);
+    let published = cached.published.as_ref()?;
+    let may = published.may.as_ref()?;
     // Strictly the mint's own facts, never coarser (CR 603.5): the `may` slot must be
     // pinned, and the target slot must be pinned WHEN THERE IS ONE. Shape (B) publishes
     // `target: None` — an entry that announces no choice has none for a pin to leave
     // unspecified — so demanding a pinned target there would refuse relief the mint's own
     // schema fully describes.
-    if !pins.slots.contains(&may)
+    if !pins.slots.contains(may)
         || published
             .target
-            .is_some_and(|target| !pins.slots.contains(&target))
+            .as_ref()
+            .is_some_and(|target| !pins.slots.contains(target))
     {
         return None;
     }
-    let StackEntryKind::TriggeredAbility { ability, .. } = &entry.kind else {
-        return None;
-    };
-    // The clone is confined to this path (a published-and-pinned optional entry, so never
-    // reached while `scope.pinned` is `None`) and is what lets the ONE classifier answer
-    // the counterfactual instead of this module re-implementing its six reasons.
-    let mut without_may_gate = (**ability).clone();
-    without_may_gate.optional = false;
-    // CR 603.4 + CR 608.2k: same resolution board the primary classification
-    // uses — this entry off the stack, scope bound.
-    let mut board = state.clone();
-    board.stack.retain(|e| e.id != entry.id);
-    if !crate::game::stack::bind_resolution_scope(&mut board, entry, None) {
-        return None;
-    }
-    match crate::game::resolution_prompt::ability_resolution_choice_freedom(
-        &board,
-        &without_may_gate,
-        budget,
-    ) {
+    match cached.residual.as_ref()? {
         ResolutionChoiceFreedom::MayPrompt => None,
-        residual @ ResolutionChoiceFreedom::FreeUnlessReplacements(_) => Some(residual),
+        residual @ ResolutionChoiceFreedom::FreeUnlessReplacements(_) => Some(residual.clone()),
     }
 }
 
@@ -1495,7 +1947,16 @@ fn pinned_may_choice_relief(
 /// choice — either intrinsically or through the life-event replacement
 /// environment (item 6, CR 732.2a + CR 608.2d).
 pub(crate) fn loop_states_cover_modulo_growth(prior: &GameState, current: &GameState) -> bool {
-    loop_states_cover_modulo_growth_scoped(prior, current, LoopWindowScope::unproven())
+    // The zero-proof container: frames = `[current]`, no proposer ⇒ nothing published ⇒ no
+    // relief, which is byte-identically what an `unproven()` scope already meant. The four
+    // production callers of this 2-arg entry point are therefore untouched.
+    let mut verdicts = PeriodVerdicts::unproven(current);
+    loop_states_cover_modulo_growth_scoped(
+        prior,
+        current,
+        LoopWindowScope::unproven(),
+        &mut verdicts,
+    )
 }
 
 /// CR 732.2a "predictable results": is EVERY per-iteration choice this stack can open a
@@ -1517,48 +1978,76 @@ pub(crate) fn loop_states_cover_modulo_growth(prior: &GameState, current: &GameS
 /// CR 616.1 [`proposed_event_prompt_cause`] environmental guard the
 /// `FreeUnlessReplacements` verdict's own contract requires. Nothing is re-derived here.
 ///
-/// STRICTER than gate (3) in one deliberate way: gate (3) examines only entries whose
-/// normalized kind strictly GREW, because a non-grown place is one the window already
-/// observed resolving. An offer makes a stronger claim — that N FUTURE repetitions are
-/// predictable — so every entry is examined, not only the grown ones.
+/// THE WIDTH IS THE CERTIFIED PERIOD'S, NOT THE OFFER-BEAT STACK'S. Both loops range over
+/// `touch.announced` ∪ (`state.stack` \ `touch.frozen_ids`), each pair evaluated against its
+/// own carrying frame. That is WIDER than the offer-beat stack on the announced half — the
+/// majority population on both measured dumps, 157/161 (F4) and 19/23 (dellian) beats carry
+/// off-stack announced pairs — and NARROWER only on the proven-frozen half.
 ///
-/// ⚠ THE ORIGINAL JUSTIFICATION FOR THAT WIDTH WAS MEASURED FALSE AND IS CORRECTED HERE.
-/// It read: "in an exact-recurrence window every entry re-announces each cycle, so every
-/// entry is examined." A shortcut window need not be exact-recurrence at all, and when it
-/// is a GROWING CASCADE the premise fails outright. Measured on the `dellian` 4p fixture:
-/// the window is a growing cascade over a FROZEN bottom prefix that never re-announces.
+/// ⚠ THE JUSTIFICATION THIS DOC USED TO CARRY FOR SCANNING EVERY CURRENT-STACK ENTRY WAS
+/// CORRECT FOR A FUNCTION WITH NO WINDOW, AND IS NOW SUPERSEDED BY ONE. It read: "a frozen
+/// entry is one the window has NO evidence about, which is precisely the entry a grown-only
+/// scan would skip. The width is right." Its PREMISE survives — without a window parameter
+/// "no evidence" was all this predicate could say. With one, absence of evidence about
+/// RESOLUTION becomes positive evidence about POSITION: a frozen id is PROVEN to hold the
+/// same (index, id) in every certified frame and in `state`, under a certificate that forbids
+/// the stack shrinking. Measured on the `dellian` 4p fixture, a growing cascade over a frozen
+/// bottom prefix: up to 152 of 156 current-stack entries are exempt at the certified beat.
 ///
-/// ⚠ THE TWO NUMBERS THIS CLAUSE USED TO CARRY ("a FROZEN 140-deep bottom prefix — the same
-/// 107 entries") CONTRADICTED EACH OTHER, and RE-MEASUREMENT shows neither was right. Driving
-/// `dellian_emblem_conqueror_4p.json.gz` 220 beats from its shipped state through the
-/// production per-beat driver, recording the stack's `ObjectId` sequence at every beat:
-///   stack depth 152 at beat 0, min 152, max 182 over the run
-///   FROZEN BOTTOM PREFIX = **151** entries — same `ObjectId` at the same index at every
-///   one of the 220 beats
-/// So the cascade grows entirely ABOVE a 151-deep prefix. Those 151 entries provably never
-/// re-announced and never resolved, so nothing the window observed says anything about them.
-/// That does not weaken the predicate — it STRENGTHENS the case for scanning every entry:
-/// a frozen entry is one the window has NO evidence about, which is precisely the entry a
-/// grown-only scan would skip. The width is right; only the stated reason was wrong.
-pub(crate) fn stack_choices_are_all_specified(
-    state: &GameState,
+/// WHAT LICENSES THE EXEMPTION HERE, since this function establishes none of the cover
+/// predicate's premises itself (its whole body is the two loops plus the CR 616.1 tail): a
+/// non-empty `frozen_ids` can only have been built under [`PeriodCertification::BoardCovered`]
+/// ⟺ the offer's basis-A `else if` matched ⟺ [`loop_states_cover_modulo_growth_pinned`]
+/// returned `true` ⇒ that predicate's items (2)/(4)/(5) all passed UNEXEMPTED, and those run
+/// strictly before this conjunct. The premises are inherited as discharged facts about the
+/// same `(prior, current)` pair, never assumed. When `frozen_ids` is empty — every basis-B
+/// path, every equality-certified path, the degenerate alias — every current-stack entry is
+/// scanned exactly as before this change.
+pub(crate) fn stack_choices_are_all_specified<'a>(
+    state: &'a GameState,
     proposer: PlayerId,
     slots: &[DecisionSlot],
+    touch: Option<&PeriodTouch<'a>>,
+    verdicts: &mut PeriodVerdicts<'a>,
 ) -> bool {
-    // Only `pinned` is read by the two relief predicates below; the other three proofs belong
-    // to the cover axes and this predicate makes no claim about them. Written out in full so a
-    // future FIFTH field is a compile error that forces a decision rather than a silent
-    // default.
+    // Only `pinned` and `period` are read below; the other three proofs belong to the cover
+    // axes and this predicate makes no claim about them. Written out in full so a future SIXTH
+    // field is a compile error that forces a decision rather than a silent default.
     let scope = LoopWindowScope {
         phase_invariant: None,
         sole_driver: None,
         pinned: Some(PinnedChoices { proposer, slots }),
         cast_card_ids: None,
+        period: touch,
     };
-    // Announcement-time (gate (3)'s fact).
+    // CR 732.2a: the described sequence is EVERY choice the shortcut makes, not the subset
+    // that happens to sit on the stack at the offer beat. The mint's own domain is
+    // `touch.announced`, so both loops range over the announced pairs UNION the current-stack
+    // entries the window did not prove frozen — each pair evaluated against ITS OWN carrying
+    // frame, never against the live board (a target legal on the frame but gone from `current`
+    // would collapse the assignment to "forced" and relieve a choice that is not forced).
+    let mut pairs: Vec<(&'a GameState, &'a StackEntry)> = Vec::new();
+    if let Some(t) = touch {
+        pairs.extend(t.announced.iter().copied());
+    }
     for entry in &state.stack {
-        if !(entry_target_choice_is_pinned(state, entry, scope)
-            || stack_entry_has_no_ordering_input(state, entry))
+        // CR 608.1: an entry the window proves held its (index, id) through every certified
+        // frame neither announced nor resolved in the described sequence.
+        if touch.is_some_and(|t| t.frozen_ids.contains(&entry.id)) {
+            verdicts.note_conjunct6_frozen_skip();
+            continue;
+        }
+        pairs.push((state, entry));
+    }
+
+    // Announcement-time (gate (3)'s fact), CR 603.3d.
+    for (frame, entry) in &pairs {
+        // Fail-closed: a frame outside this container's period cannot be asked about.
+        let Some(f) = verdicts.frame_ix(frame) else {
+            return false;
+        };
+        if !(entry_target_choice_is_pinned(frame, f, entry, verdicts, scope)
+            || stack_entry_has_no_ordering_input(frame, entry))
         {
             return false;
         }
@@ -1566,18 +2055,22 @@ pub(crate) fn stack_choices_are_all_specified(
     // Resolution-time (gate (6)'s fact), including its paired CR 616.1 obligation.
     // The obligation is discharged PER ENTRY against the pipeline's own candidate
     // authority, on the same board the entry's events were derived on.
-    let mut budget = ProbeBudget::new(PROBE_BUDGET);
-    for entry in &state.stack {
-        let verdict = match stack_entry_resolution_choice_freedom(state, entry, &mut budget) {
+    for (frame, entry) in &pairs {
+        let Some(f) = verdicts.frame_ix(frame) else {
+            return false;
+        };
+        verdicts.note_conjunct6_ask();
+        let primary = verdicts.verdict(f, entry).primary.clone();
+        let verdict = match primary {
             crate::game::resolution_prompt::ResolutionChoiceFreedom::MayPrompt => {
-                match pinned_may_choice_relief(state, entry, scope, &mut budget) {
+                match pinned_may_choice_relief(f, entry, verdicts, scope) {
                     Some(residual) => residual,
                     None => return false,
                 }
             }
             free => free,
         };
-        if !resolution_events_are_discharged(state, verdict) {
+        if !resolution_events_are_discharged(frame, verdict) {
             return false;
         }
     }
@@ -1632,15 +2125,21 @@ fn resolution_events_are_discharged(
 /// { slots: &[] })` still names a proposer whose entries the relief tests, and every such
 /// test fails on an empty slot list, so an empty publication is byte-identically as strict
 /// as [`LoopWindowScope::unproven`].
-pub(crate) fn loop_states_cover_modulo_growth_pinned(
+pub(crate) fn loop_states_cover_modulo_growth_pinned<'a>(
     prior: &GameState,
-    current: &GameState,
+    current: &'a GameState,
     proposer: PlayerId,
     slots: &[DecisionSlot],
+    touch: &PeriodTouch<'_>,
+    verdicts: &mut PeriodVerdicts<'a>,
 ) -> bool {
-    let scope =
-        window_scope_from_cover_frames(prior, current, Some(PinnedChoices { proposer, slots }));
-    loop_states_cover_modulo_growth_scoped(prior, current, scope)
+    let scope = window_scope_from_cover_frames(
+        prior,
+        current,
+        Some(PinnedChoices { proposer, slots }),
+        Some(touch),
+    );
+    loop_states_cover_modulo_growth_scoped(prior, current, scope, verdicts)
 }
 
 /// CR 601.2f + CR 601.2a: the set of card ids this loop window's recorded driving
@@ -1684,10 +2183,11 @@ fn window_cast_card_ids(state: &GameState) -> Option<Vec<CardId>> {
 /// ([`window_cast_card_ids`]), and the `projected_scope` built for that call
 /// deliberately holds `pinned: None` — the projected firewall is a different
 /// axis and must not inherit the caller's pins.
-pub(crate) fn loop_states_cover_modulo_growth_scoped(
+pub(crate) fn loop_states_cover_modulo_growth_scoped<'a>(
     prior: &GameState,
-    current: &GameState,
+    current: &'a GameState,
     scope: LoopWindowScope<'_>,
+    verdicts: &mut PeriodVerdicts<'a>,
 ) -> bool {
     // (1) Board equal modulo the NARROWED projection AND modulo the stack, with the
     // object resource axes STRICT-COMPARED (R5-B1). Project both, clear both stacks
@@ -1718,11 +2218,19 @@ pub(crate) fn loop_states_cover_modulo_growth_scoped(
     // (3) Every grown place is a mandatory, no-ordering-input triggered ability.
     // Iterate the ORIGINAL current-stack entries (so the mid-construction firewall
     // sees real stack-entry ids) and check each whose normalized kind strictly grew.
+    // Fail-closed: this predicate only answers about a `current` the container holds.
+    let Some(f_current) = verdicts.frame_ix(current) else {
+        return false;
+    };
     for (orig, norm) in current.stack.iter().zip(cur_stack.iter()) {
         // CR 732.2a EXTENSION POINT (see item 6's block): a slot the OFFER publishes is
         // a SPECIFIED choice, not a free one, so its announcement-time target input is
         // no longer player ordering input.
-        if entry_target_choice_is_pinned(current, orig, scope) {
+        //
+        // Deliberately NOT frozen-filtered: the PLACEMENT RULE keeps the frozen skip in
+        // item (6) alone, because items (4)/(5) are what establish the premise that skip
+        // consumes — reading it here would consume a premise not yet proved.
+        if entry_target_choice_is_pinned(current, f_current, orig, verdicts, scope) {
             continue;
         }
         let cn = cur_stack.iter().filter(|e| *e == norm).count();
@@ -1735,11 +2243,14 @@ pub(crate) fn loop_states_cover_modulo_growth_scoped(
     // (4) On-stack fail-closed resource-read guard: NO entry on `current`'s stack may
     // carry an AST that reads a still-projected axis (player monotone resources +
     // journals). Object-axis readers pass — their drift breaks gate (1) instead.
-    if current
-        .stack
-        .iter()
-        .any(stack_entry_reads_projected_resource)
-    {
+    // The closure is the ONLY body change item (4) takes: it counts the scans so the
+    // PLACEMENT RULE ("the frozen skip lives in item (6) and nowhere earlier") has an
+    // assertable surface instead of an argued one. The population is the UNEXEMPTED
+    // current stack — `frozen_ids` is deliberately not read here.
+    if current.stack.iter().any(|e| {
+        verdicts.note_conjunct4_scan();
+        stack_entry_reads_projected_resource(e)
+    }) {
         return false;
     }
 
@@ -1757,6 +2268,9 @@ pub(crate) fn loop_states_cover_modulo_growth_scoped(
         sole_driver: None,
         pinned: None,
         cast_card_ids: cast_ids.as_deref(),
+        // DELIBERATE, same rationale as the `pinned: None` above: the projected firewall is
+        // a different axis and must not inherit the caller's period proof.
+        period: None,
     };
     if fire_time_conditions_read_projected_resource_scoped(current, projected_scope) {
         return false;
@@ -1799,11 +2313,27 @@ pub(crate) fn loop_states_cover_modulo_growth_scoped(
     // gating an unpinned entry gets, so `FreeUnlessReplacements` still arms the
     // CR 616.1 environmental guard below for the classes it names — a pinned target/"may"
     // says nothing about whose life- or draw-event replacements might prompt.
-    let mut budget = ProbeBudget::new(PROBE_BUDGET);
+    //
+    // CR 608.1 + CR 732.2a: an entry the certified window proves FROZEN — same id at the
+    // same index in every window frame and in `current` — neither announced nor resolved in
+    // the described sequence, so it makes no choice there. THE FROZEN SKIP LIVES HERE AND
+    // NOWHERE EARLIER: items (2)/(4)/(5) are what establish the premises it consumes, and
+    // each of them returns on failure strictly above this loop, so by the time control
+    // arrives the premises are discharged facts about `(prior, current)` rather than
+    // assumptions about this predicate's own eventual answer.
     for entry in &current.stack {
-        let verdict = match stack_entry_resolution_choice_freedom(current, entry, &mut budget) {
+        if scope
+            .period
+            .is_some_and(|t| t.frozen_ids.contains(&entry.id))
+        {
+            verdicts.note_conjunct6_frozen_skip();
+            continue;
+        }
+        verdicts.note_conjunct6_ask();
+        let primary = verdicts.verdict(f_current, entry).primary.clone();
+        let verdict = match primary {
             crate::game::resolution_prompt::ResolutionChoiceFreedom::MayPrompt => {
-                match pinned_may_choice_relief(current, entry, scope, &mut budget) {
+                match pinned_may_choice_relief(f_current, entry, verdicts, scope) {
                     Some(residual) => residual,
                     None => return false,
                 }
@@ -1942,7 +2472,7 @@ pub(crate) fn loop_states_cover_modulo_object_growth(
     if fire_time_conditions_read_growing_class_scoped(
         &cf,
         None,
-        window_scope_from_cover_frames(&pa, &pb, None),
+        window_scope_from_cover_frames(&pa, &pb, None, None),
     ) {
         return false;
     }
@@ -2150,7 +2680,7 @@ pub(crate) fn loop_states_cover_modulo_fodder_growth(
     if fire_time_conditions_read_growing_class_scoped(
         &cf,
         Some(&class_members),
-        window_scope_from_cover_frames(&pa, &pb, None),
+        window_scope_from_cover_frames(&pa, &pb, None, None),
     ) {
         return false;
     }
@@ -3597,8 +4127,14 @@ fn stack_entry_has_no_ordering_input(state: &GameState, entry: &StackEntry) -> b
     }
     // CR 603.3d + CR 608.2b + CR 732.2a: a non-empty target list is NOT player
     // ordering input when exactly one legal assignment exists — the choice is
-    // FORCED, so the shortcut stays deterministic. Re-derived per-iteration against
-    // the live state (the SOLE caller iterates the grown current-stack entries).
+    // FORCED, so the shortcut stays deterministic. Re-derived per call against the
+    // board the CALLER passes, and that board is load-bearing rather than incidental:
+    // there are THREE call sites and none of them is "the live state" by construction
+    // — the announced loop passes the pair's own CARRYING FRAME (a retained ring
+    // sample), the current-stack loops pass `current`. The verdict is a function of
+    // the board's legal-target population, so handing a retained pair the live board
+    // is fail-OPEN: a target legal on the frame but gone from `current` collapses the
+    // assignment to "forced" and relieves a choice that is not forced.
     forced_unique_targeting(state, ability)
 }
 
@@ -5990,7 +6526,12 @@ mod tests {
         let slot = churn_src_slot(&current, 0);
         for pinned in [&[][..], std::slice::from_ref(&slot)] {
             assert!(
-                !loop_states_cover_modulo_growth_scoped(&prior, &current, pinned_scope(pinned)),
+                !loop_states_cover_modulo_growth_scoped(
+                    &prior,
+                    &current,
+                    pinned_scope(pinned),
+                    &mut PeriodVerdicts::for_period(&[], &current, PlayerId(0))
+                ),
                 "gate (3)'s relief is a bare `continue`: an unpublished second target choice \
                  must keep rejecting ({} pinned slot(s))",
                 pinned.len()
@@ -6188,7 +6729,12 @@ mod tests {
         let slot = churn_src_slot(&current, 0);
         for pinned in [&[][..], std::slice::from_ref(&slot)] {
             assert!(
-                !loop_states_cover_modulo_growth_scoped(&prior, &current, pinned_scope(pinned)),
+                !loop_states_cover_modulo_growth_scoped(
+                    &prior,
+                    &current,
+                    pinned_scope(pinned),
+                    &mut PeriodVerdicts::for_period(&[], &current, PlayerId(0))
+                ),
                 "gate (3)'s relief is a bare `continue`: an object-valued announcement choice \
                  must keep rejecting ({} pinned slot(s))",
                 pinned.len()
@@ -6304,6 +6850,7 @@ mod tests {
                 slots,
             }),
             cast_card_ids: None,
+            period: None,
         }
     }
 
@@ -6401,7 +6948,12 @@ mod tests {
             "reach-guard: two opponents ⇒ not forced-unique ⇒ gate (3) is the rejector"
         );
         assert!(
-            !loop_states_cover_modulo_growth_scoped(&prior, &current, pinned_scope(&[])),
+            !loop_states_cover_modulo_growth_scoped(
+                &prior,
+                &current,
+                pinned_scope(&[]),
+                &mut PeriodVerdicts::for_period(&[], &current, PlayerId(0))
+            ),
             "UNPINNED: an open per-opponent target choice is a free choice ⇒ reject"
         );
         let target_slot = churn_src_slot(&current, 0);
@@ -6409,7 +6961,8 @@ mod tests {
             loop_states_cover_modulo_growth_scoped(
                 &prior,
                 &current,
-                pinned_scope(std::slice::from_ref(&target_slot))
+                pinned_scope(std::slice::from_ref(&target_slot)),
+                &mut PeriodVerdicts::for_period(&[], &current, PlayerId(0))
             ),
             "PINNED: the offer published this slot ⇒ CR 732.2a specified choice ⇒ cover"
         );
@@ -6431,24 +6984,39 @@ mod tests {
             crate::game::resolution_prompt::ability_resolution_choice_freedom(
                 &c_may,
                 may_ability,
-                &mut ProbeBudget::new(PROBE_BUDGET)
+                &mut ProbeBudget::for_test(PROBE_BUDGET)
             ),
             crate::game::resolution_prompt::ResolutionChoiceFreedom::MayPrompt,
             "reach-guard: CR 603.5 `optional` is what makes this entry MayPrompt"
         );
         assert!(
-            !loop_states_cover_modulo_growth_scoped(&p_may, &c_may, pinned_scope(&[])),
+            !loop_states_cover_modulo_growth_scoped(
+                &p_may,
+                &c_may,
+                pinned_scope(&[]),
+                &mut PeriodVerdicts::for_period(&[], &c_may, PlayerId(0))
+            ),
             "UNPINNED: an optional trigger's take/decline is a free choice ⇒ reject"
         );
         let may_slots = [churn_src_slot(&c_may, 0), churn_src_slot(&c_may, 1)];
         assert!(
-            loop_states_cover_modulo_growth_scoped(&p_may, &c_may, pinned_scope(&may_slots)),
+            loop_states_cover_modulo_growth_scoped(
+                &p_may,
+                &c_may,
+                pinned_scope(&may_slots),
+                &mut PeriodVerdicts::for_period(&[], &c_may, PlayerId(0))
+            ),
             "PINNED: the published CR 603.5 gate specifies that choice ⇒ cover"
         );
         // The MayChoice point is load-bearing on its own: pinning only the target slot
         // leaves the resolution choice unspecified.
         assert!(
-            !loop_states_cover_modulo_growth_scoped(&p_may, &c_may, pinned_scope(&may_slots[..1])),
+            !loop_states_cover_modulo_growth_scoped(
+                &p_may,
+                &c_may,
+                pinned_scope(&may_slots[..1]),
+                &mut PeriodVerdicts::for_period(&[], &c_may, PlayerId(0))
+            ),
             "a pinned TARGET does not specify the CR 603.5 take/decline choice"
         );
 
@@ -6470,7 +7038,12 @@ mod tests {
             let slots = [churn_src_slot(&c6, 0), churn_src_slot(&c6, 1)];
             for pinned in [&slots[..0], &slots[..1], &slots[..]] {
                 assert!(
-                    !loop_states_cover_modulo_growth_scoped(&p6, &c6, pinned_scope(pinned)),
+                    !loop_states_cover_modulo_growth_scoped(
+                        &p6,
+                        &c6,
+                        pinned_scope(pinned),
+                        &mut PeriodVerdicts::for_period(&[], &c6, PlayerId(0))
+                    ),
                     "CR 701.34a proliferate is a resolution-time choice NO published slot \
                      specifies (optional={optional}, {} pinned slot(s))",
                     pinned.len()
@@ -6500,7 +7073,8 @@ mod tests {
             !loop_states_cover_modulo_growth_scoped(
                 &p_foreign,
                 &c_foreign,
-                pinned_scope(std::slice::from_ref(&target_slot))
+                pinned_scope(std::slice::from_ref(&target_slot)),
+                &mut PeriodVerdicts::for_period(&[], &c_foreign, PlayerId(0))
             ),
             "CR 732.2a precondition (c): P0's offer specifies none of P1's choices"
         );
@@ -6546,7 +7120,12 @@ mod tests {
                 let slot = churn_src_slot(&c5, 0);
                 for pinned in [&[][..], std::slice::from_ref(&slot)] {
                     assert!(
-                        !loop_states_cover_modulo_growth_scoped(&p5, &c5, pinned_scope(pinned)),
+                        !loop_states_cover_modulo_growth_scoped(
+                            &p5,
+                            &c5,
+                            pinned_scope(pinned),
+                            &mut PeriodVerdicts::for_period(&[], &c5, PlayerId(0))
+                        ),
                         "a published slot specifies ONE target; {label} is announcement-time \
                          ordering input no slot specifies ({} pinned)",
                         pinned.len()
@@ -6569,7 +7148,8 @@ mod tests {
                 loop_states_cover_modulo_growth_scoped(
                     &p_pend,
                     &c_pend,
-                    pinned_scope(std::slice::from_ref(&pend_slot))
+                    pinned_scope(std::slice::from_ref(&pend_slot)),
+                    &mut PeriodVerdicts::for_period(&[], &c_pend, PlayerId(0))
                 ),
                 "positive control: this entry's published slot IS otherwise matched"
             );
@@ -6582,7 +7162,8 @@ mod tests {
                 !loop_states_cover_modulo_growth_scoped(
                     &p_mid,
                     &c_mid,
-                    pinned_scope(std::slice::from_ref(&pend_slot))
+                    pinned_scope(std::slice::from_ref(&pend_slot)),
+                    &mut PeriodVerdicts::for_period(&[], &c_mid, PlayerId(0))
                 ),
                 "CR 603.3c: a mid-construction announcement is not specified by any \
                  published slot — the relief must not discharge item 3's firewall"
@@ -6598,7 +7179,8 @@ mod tests {
                 loop_states_cover_modulo_growth_scoped(
                     &p_other,
                     &c_other,
-                    pinned_scope(std::slice::from_ref(&pend_slot))
+                    pinned_scope(std::slice::from_ref(&pend_slot)),
+                    &mut PeriodVerdicts::for_period(&[], &c_other, PlayerId(0))
                 ),
                 "gate-(1) control: a `pending_trigger_entry` naming no live entry is not \
                  what rejects — CR 603.3c's firewall is entry-scoped"
@@ -6645,7 +7227,12 @@ mod tests {
             );
             let slots = [churn_src_slot(&c_life, 0), churn_src_slot(&c_life, 1)];
             assert!(
-                !loop_states_cover_modulo_growth_scoped(&p_life, &c_life, pinned_scope(&slots)),
+                !loop_states_cover_modulo_growth_scoped(
+                    &p_life,
+                    &c_life,
+                    pinned_scope(&slots),
+                    &mut PeriodVerdicts::for_period(&[], &c_life, PlayerId(0))
+                ),
                 "the discharged `may` leaves a FreeUnlessReplacements(LIFE) RESIDUAL that must \
                  re-arm the CR 616.1 guard — relief is not a `continue`"
             );
@@ -6665,7 +7252,8 @@ mod tests {
                 !loop_states_cover_modulo_growth_scoped(
                     p,
                     c,
-                    pinned_scope(std::slice::from_ref(&unrelated))
+                    pinned_scope(std::slice::from_ref(&unrelated)),
+                    &mut PeriodVerdicts::for_period(&[], c, PlayerId(0))
                 ),
                 "{label}: a pin on a DIFFERENT source must not relieve this entry"
             );
@@ -6684,7 +7272,8 @@ mod tests {
             !loop_states_cover_modulo_growth_scoped(
                 &prior,
                 &current,
-                pinned_scope(std::slice::from_ref(&stale))
+                pinned_scope(std::slice::from_ref(&stale)),
+                &mut PeriodVerdicts::for_period(&[], &current, PlayerId(0))
             ),
             "CR 400.7: a pin latched to a stale incarnation does not match the live source"
         );
@@ -8116,6 +8705,7 @@ mod tests {
             sole_driver: Some(PlayerId(0)),
             pinned: None,
             cast_card_ids: None,
+            period: None,
         };
 
         let (subject, observer) = build(AbilityKind::Spell);
@@ -8191,6 +8781,7 @@ mod tests {
             sole_driver: Some(PlayerId(0)),
             pinned: None,
             cast_card_ids: None,
+            period: None,
         };
 
         let (subject, observer) = build(Some(PlayerFilter::All));
@@ -9034,7 +9625,12 @@ mod tests {
             let plain = loop_states_cover_modulo_growth(prior, current);
             assert_eq!(
                 plain,
-                loop_states_cover_modulo_growth_scoped(prior, current, LoopWindowScope::unproven()),
+                loop_states_cover_modulo_growth_scoped(
+                    prior,
+                    current,
+                    LoopWindowScope::unproven(),
+                    &mut PeriodVerdicts::unproven(current)
+                ),
                 "loop_states_cover_modulo_growth must be its _scoped sibling at unproven()"
             );
             plain
@@ -10130,6 +10726,7 @@ mod tests {
                 sole_driver: None,
                 pinned: None,
                 cast_card_ids: Some(&never_cast),
+                period: None,
             };
             assert!(
                 !fire_time_conditions_read_projected_resource_scoped(&state, scope),
@@ -10152,6 +10749,7 @@ mod tests {
             sole_driver: None,
             pinned: None,
             cast_card_ids: Some(&never_cast),
+            period: None,
         };
         assert!(
             fire_time_conditions_read_projected_resource_scoped(&not_modify_cost, scope),
@@ -10187,6 +10785,7 @@ mod tests {
             sole_driver: None,
             pinned: None,
             cast_card_ids: Some(&recast),
+            period: None,
         };
         assert!(
             fire_time_conditions_read_projected_resource_scoped(&state, scope),
@@ -10202,6 +10801,7 @@ mod tests {
             sole_driver: None,
             pinned: None,
             cast_card_ids: Some(&other),
+            period: None,
         };
         assert!(
             !fire_time_conditions_read_projected_resource_scoped(&state, relieved_scope),
@@ -10459,6 +11059,7 @@ mod tests {
             sole_driver: None,
             pinned: None,
             cast_card_ids: Some(&cast),
+            period: None,
         };
         assert!(
             !fire_time_conditions_read_projected_resource_scoped(&state, scope),
@@ -10477,6 +11078,7 @@ mod tests {
             sole_driver: None,
             pinned: None,
             cast_card_ids: Some(&recast),
+            period: None,
         };
         assert!(
             fire_time_conditions_read_projected_resource_scoped(&state, recast_scope),
@@ -11163,7 +11765,7 @@ mod tests {
         // ── `sole_driver` — CR 117.1 ──
         let (pa, pb) = (base(), base());
         assert_eq!(
-            window_scope_from_cover_frames(&pa, &pb, None).sole_driver,
+            window_scope_from_cover_frames(&pa, &pb, None, None).sole_driver,
             Some(PlayerId(0)),
             "PAIRED POSITIVE: a homogeneous single-driver window proves CR 117.1's premise"
         );
@@ -11173,7 +11775,7 @@ mod tests {
         let mut pb_other = base();
         pb_other.last_loop_action_sequence = vec![ctx(1)];
         assert_eq!(
-            window_scope_from_cover_frames(&pa, &pb_other, None).sole_driver,
+            window_scope_from_cover_frames(&pa, &pb_other, None, None).sole_driver,
             None,
             "(s2) a two-controller window proves nothing about who holds priority"
         );
@@ -11182,7 +11784,7 @@ mod tests {
         let mut pa_mixed = base();
         pa_mixed.last_loop_action_sequence = vec![ctx(0), ctx(1)];
         assert_eq!(
-            window_scope_from_cover_frames(&pa_mixed, &pb, None).sole_driver,
+            window_scope_from_cover_frames(&pa_mixed, &pb, None, None).sole_driver,
             None,
             "(s2) an interleaved sequence is fail-closed"
         );
@@ -11191,14 +11793,14 @@ mod tests {
         let mut pb_empty = base();
         pb_empty.last_loop_action_sequence.clear();
         assert_eq!(
-            window_scope_from_cover_frames(&pa, &pb_empty, None).sole_driver,
+            window_scope_from_cover_frames(&pa, &pb_empty, None, None).sole_driver,
             None,
             "(s1) an empty driving sequence is NO PROOF, so it cannot relieve anything"
         );
 
         // ── `phase_invariant` — CR 500.1 / CR 506.1 / CR 500.8 ──
         assert_eq!(
-            window_scope_from_cover_frames(&pa, &pb, None).phase_invariant,
+            window_scope_from_cover_frames(&pa, &pb, None, None).phase_invariant,
             Some(Phase::PreCombatMain),
             "PAIRED POSITIVE: agreeing frames with no extra phase prove the window's phase"
         );
@@ -11215,7 +11817,7 @@ mod tests {
                 attacker_restriction_source: None,
             });
         assert_eq!(
-            window_scope_from_cover_frames(&pa, &pb_extra, None).phase_invariant,
+            window_scope_from_cover_frames(&pa, &pb_extra, None, None).phase_invariant,
             None,
             "(p3) CR 500.8: a pending extra phase breaks `equal phase ⇒ never left it`"
         );
@@ -11224,7 +11826,7 @@ mod tests {
         let mut pb_turn = base();
         pb_turn.turn_number = 14;
         assert_eq!(
-            window_scope_from_cover_frames(&pa, &pb_turn, None).phase_invariant,
+            window_scope_from_cover_frames(&pa, &pb_turn, None, None).phase_invariant,
             None,
             "(p1) frames from different turns bound nothing about one window's phase"
         );
@@ -11233,7 +11835,7 @@ mod tests {
         let mut pb_phase = base();
         pb_phase.phase = Phase::PostCombatMain;
         assert_eq!(
-            window_scope_from_cover_frames(&pa, &pb_phase, None).phase_invariant,
+            window_scope_from_cover_frames(&pa, &pb_phase, None, None).phase_invariant,
             None,
             "(p2) a window that crosses a phase boundary is not phase-invariant"
         );
@@ -11759,6 +12361,22 @@ mod tests {
         def
     }
 
+    /// The board is bound ONCE and handed to both the predicate and the container it is
+    /// asked through. That is not a style choice: `PeriodVerdicts::frame_ix` resolves a
+    /// frame by POINTER IDENTITY, so building the container from a second, equal-valued
+    /// `GameState` would be a frame the container does not hold and the predicate would
+    /// fail closed — which is exactly the production guard doing its job, and exactly the
+    /// vacuity a copy-pasted expression would introduce here.
+    fn specified_on(board: &GameState) -> bool {
+        stack_choices_are_all_specified(
+            board,
+            PlayerId(0),
+            &[],
+            None,
+            &mut PeriodVerdicts::for_period(&[], board, PlayerId(0)),
+        )
+    }
+
     /// CR 616.1 + CR 121.1: the draw verdict's environmental obligation is REAL (it can
     /// reject) and CLASS-SCOPED (it rejects only on its own event class).
     ///
@@ -11772,21 +12390,16 @@ mod tests {
         // (i) REACH-GUARD: a bare board with a mandatory draw on the stack PASSES. This
         // is the assertion that flips if `Effect::Draw` goes back to `MayPrompt`.
         assert!(
-            stack_choices_are_all_specified(
-                &with_replacements(draw_entry(10), &[]),
-                PlayerId(0),
-                &[]
-            ),
+            specified_on(&with_replacements(draw_entry(10), &[])),
             "a mandatory non-`up to` draw is starved: no replacement environment, no prompt"
         );
 
         // (ii) CR 702.52a dredge-class: a single OPTIONAL draw replacement prompts.
         assert!(
-            !stack_choices_are_all_specified(
-                &with_replacements(draw_entry(10), &[repl(ReplacementEvent::Draw, true)]),
-                PlayerId(0),
-                &[]
-            ),
+            !specified_on(&with_replacements(
+                draw_entry(10),
+                &[repl(ReplacementEvent::Draw, true)]
+            )),
             "an optional draw replacement is a genuine CR 608.2d resolution-time choice"
         );
 
@@ -11831,11 +12444,7 @@ mod tests {
             );
         }
         assert!(
-            !stack_choices_are_all_specified(
-                &with_replacements(draw_entry(10), &material_pair),
-                PlayerId(0),
-                &[]
-            ),
+            !specified_on(&with_replacements(draw_entry(10), &material_pair)),
             "CR 616.1: the affected player orders two competing mandatory replacements"
         );
 
@@ -11843,46 +12452,36 @@ mod tests {
         // Ageless Insight class) resolves deterministically — the guard is not a blanket
         // "any draw replacement rejects".
         assert!(
-            stack_choices_are_all_specified(
-                &with_replacements(draw_entry(10), &[repl(ReplacementEvent::Draw, false)]),
-                PlayerId(0),
-                &[]
-            ),
+            specified_on(&with_replacements(
+                draw_entry(10),
+                &[repl(ReplacementEvent::Draw, false)]
+            )),
             "a lone mandatory quantity-mod replacement applies without a prompt"
         );
 
         // (v) CLASS SCOPING, both directions. A LIFE replacement says nothing about a
         // DRAW-only stack and vice versa; an unparameterized guard would reject both.
         assert!(
-            stack_choices_are_all_specified(
-                &with_replacements(draw_entry(10), &[repl(ReplacementEvent::GainLife, true)]),
-                PlayerId(0),
-                &[]
-            ),
+            specified_on(&with_replacements(
+                draw_entry(10),
+                &[repl(ReplacementEvent::GainLife, true)]
+            )),
             "an optional LIFE replacement cannot prompt on a draw-only stack"
         );
         assert!(
-            stack_choices_are_all_specified(
-                &with_replacements(
-                    churn_entry(11, 0, lose_ability(1), None),
-                    &[repl(ReplacementEvent::Draw, true)]
-                ),
-                PlayerId(0),
-                &[]
-            ),
+            specified_on(&with_replacements(
+                churn_entry(11, 0, lose_ability(1), None),
+                &[repl(ReplacementEvent::Draw, true)]
+            )),
             "an optional DRAW replacement cannot prompt on a life-only stack"
         );
         // …and the same optional LIFE replacement DOES reject a life stack, proving the
         // arm above passes because of scoping and not because the def is inert.
         assert!(
-            !stack_choices_are_all_specified(
-                &with_replacements(
-                    churn_entry(11, 0, lose_ability(1), None),
-                    &[repl(ReplacementEvent::LoseLife, true)]
-                ),
-                PlayerId(0),
-                &[]
-            ),
+            !specified_on(&with_replacements(
+                churn_entry(11, 0, lose_ability(1), None),
+                &[repl(ReplacementEvent::LoseLife, true)]
+            )),
             "positive control: the life guard still rejects its own class"
         );
     }
@@ -11980,7 +12579,7 @@ mod tests {
         let freedom = stack_entry_resolution_choice_freedom(
             &state,
             &entry,
-            &mut ProbeBudget::new(PROBE_BUDGET),
+            &mut ProbeBudget::for_test(PROBE_BUDGET),
         );
         let ResolutionChoiceFreedom::FreeUnlessReplacements(derived) = freedom else {
             panic!("reach-guard: the probe must return Events(..) on this board, got {freedom:?}");
@@ -12037,8 +12636,11 @@ mod tests {
                 "reach-guard: the CR 603.4 re-check is what decides arm ({label})"
             );
 
-            let verdict =
-                stack_entry_resolution_choice_freedom(&s, &e, &mut ProbeBudget::new(PROBE_BUDGET));
+            let verdict = stack_entry_resolution_choice_freedom(
+                &s,
+                &e,
+                &mut ProbeBudget::for_test(PROBE_BUDGET),
+            );
             if binds {
                 assert!(
                     matches!(verdict, ResolutionChoiceFreedom::FreeUnlessReplacements(_)),
@@ -12093,8 +12695,11 @@ mod tests {
             let e = counter_entry(count);
             let mut s = counter_state.clone();
             s.stack.push_back(e.clone());
-            let verdict =
-                stack_entry_resolution_choice_freedom(&s, &e, &mut ProbeBudget::new(PROBE_BUDGET));
+            let verdict = stack_entry_resolution_choice_freedom(
+                &s,
+                &e,
+                &mut ProbeBudget::for_test(PROBE_BUDGET),
+            );
             let ResolutionChoiceFreedom::FreeUnlessReplacements(events) = verdict else {
                 panic!("reach-guard: count {count} must probe to Events(..), got {verdict:?}");
             };
@@ -12180,7 +12785,7 @@ mod tests {
             stack_entry_resolution_choice_freedom(
                 &zero_state,
                 &zero_entry,
-                &mut ProbeBudget::new(PROBE_BUDGET)
+                &mut ProbeBudget::for_test(PROBE_BUDGET)
             ),
             ResolutionChoiceFreedom::MayPrompt,
             "CR 732.2a: at zero the live pipeline draws no candidate (`count > 0`) and \
@@ -12199,7 +12804,7 @@ mod tests {
     /// only the charge AFTER that flips it.
     #[test]
     fn probe_budget_grants_exactly_its_cap_then_latches_the_denial() {
-        let mut budget = ProbeBudget::new(PROBE_BUDGET);
+        let mut budget = ProbeBudget::for_test(PROBE_BUDGET);
         for i in 0..PROBE_BUDGET {
             assert!(
                 budget.try_charge_one(),
@@ -12220,7 +12825,7 @@ mod tests {
         );
         // A zero-cap budget denies its FIRST charge — the shape a lowered cap
         // takes, and the reason exhaustion is fail-closed rather than silent.
-        let mut starved = ProbeBudget::new(0);
+        let mut starved = ProbeBudget::for_test(0);
         assert!(!starved.try_charge_one());
         assert!(starved.denied());
     }
@@ -12297,6 +12902,7 @@ mod tests {
                 slots,
             }),
             cast_card_ids: None,
+            period: None,
         }
     }
 
@@ -12347,10 +12953,16 @@ mod tests {
             "(a′) shape (B): no announcement choice, so no target slot"
         );
         let slots = vec![may.clone()];
-        let mut budget = ProbeBudget::new(PROBE_BUDGET);
+        // The relief reads the mint and the residual through the ONE door, so the row drives
+        // a real container bound to the same proposer the pins carry; `frame_ix` is the only
+        // `FrameIx` mint and its `None` would be a refusal, so the `expect` is a reach-guard.
+        let mut verdicts = PeriodVerdicts::for_period(&[], &state, PlayerId(0));
+        let f = verdicts
+            .frame_ix(&state)
+            .expect("(a′) reach-guard: the container holds the board the relief is asked about");
         assert!(
             matches!(
-                pinned_may_choice_relief(&state, &clean, u2_scope(&slots), &mut budget),
+                pinned_may_choice_relief(f, &clean, &mut verdicts, u2_scope(&slots)),
                 Some(ResolutionChoiceFreedom::FreeUnlessReplacements(_))
             ),
             "(a′) with the may pinned and no other axis, the residual classification is \
@@ -12377,9 +12989,8 @@ mod tests {
             "(a) reach-guard: the same slot is published, so the two arms differ ONLY in the \
              residual axis and the refusal below cannot come from the mint"
         );
-        let mut budget = ProbeBudget::new(PROBE_BUDGET);
         assert!(
-            pinned_may_choice_relief(&state, &gated, u2_scope(&slots), &mut budget).is_none(),
+            pinned_may_choice_relief(f, &gated, &mut verdicts, u2_scope(&slots)).is_none(),
             "(a) CR 118.12: an `unless_pay` is a SECOND resolution-time choice no published \
              pin specifies, so the residual re-classification still returns `MayPrompt` and \
              the entry gets no relief"
@@ -12509,7 +13120,13 @@ mod tests {
             );
             board.stack.push_back(entry);
             assert!(
-                !stack_choices_are_all_specified(&board, PlayerId(0), std::slice::from_ref(&may)),
+                !stack_choices_are_all_specified(
+                    &board,
+                    PlayerId(0),
+                    std::slice::from_ref(&may),
+                    None,
+                    &mut PeriodVerdicts::for_period(&[], &board, PlayerId(0))
+                ),
                 "{label}: CR 732.2a conjunct (6) refuses the offer — the effect sits in \
                  `effect_resolution_choice_freedom`'s fail-closed grouped arm, so a `may` \
                  slot minted through a state-reading branch can never reach a published offer"

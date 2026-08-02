@@ -7783,6 +7783,106 @@ fn dina_untargeted_drain_4p_offers_at_three_live_opponents() {
     );
 }
 
+/// R33 arm (d) — THE CORPUS'S ONE OFFERING BEAT CERTIFIES THROUGH BASIS B, AND THE FROZEN
+/// EXEMPTION IS THEREFORE WITHDRAWN THERE.
+///
+/// CR 732.2a. The row R33 (a)/(b)/(a′) prove at the constructor and the selection site; this
+/// arm proves it on the REAL board the engine actually offers on, because the plan's cost
+/// argument (the frozen subtraction, and the speed-up that rests on it) was measured at
+/// *dellian-shaped* beats and this is the beat the corpus *offers* at. Escalated to the lead
+/// and ruled on before this test was written; the figures are in the commit message.
+///
+/// MEASUREMENT, not re-assertion of a design: the certifying disjunct has no other surface.
+/// Both bases publish `frames_per_period`, so `LoopCertificate` discriminates in NEITHER
+/// direction — hence [`MintMeter::certification`].
+///
+/// FIDELITY OF THE OBSERVATION, which is this row's real risk. The production mint runs
+/// INSIDE the offering beat's `apply()`, from a `Priority` window the bridge has already
+/// consumed by the time the drive returns, so the beat's own meter is unreachable from a
+/// test. The mint is re-run here on the offer beat's state with that window restored, and
+/// the reconstruction is PROVEN faithful rather than assumed: it must (1) offer at all and
+/// (2) publish a `per_cycle` EQUAL to the one the production path wrote into `waiting_for`.
+/// A reconstruction that drifted would fail (1) or (2) before the basis assertion is reached.
+#[test]
+fn dina_offering_beat_certifies_through_basis_b_and_exempts_nothing() {
+    use engine::analysis::resource::PeriodCertification;
+    use engine::game::engine::{try_offer_bounded_cycle_shortcut_metered, ProbeCap};
+
+    let mut state = restore_dump(&gunzip_dump(include_bytes!(
+        "../fixtures/dina_conqueror_4p.json.gz"
+    )));
+    let beat = drive_to_bounded_offer(&mut state, 400)
+        .expect("CR 732.2a: the bounded offer must FIRE on this real 4p drain");
+    let (proposer, certificate, _) = bounded_offer_parts(&state);
+    let published = certificate
+        .per_cycle
+        .clone()
+        .expect("the bounded offer publishes a per-cycle signature");
+
+    // Restore the window the bridge consumed. Everything else the mint reads — the ring, the
+    // stack, the resources, `last_loop_action_sequence` — is the offer beat's own state.
+    let mut replay = state.clone();
+    replay.waiting_for = WaitingFor::Priority { player: proposer };
+    let (outcome, meter) =
+        try_offer_bounded_cycle_shortcut_metered(&replay, false, ProbeCap::Shipped);
+
+    // (1) reconstruction fidelity, part one
+    assert!(
+        outcome.is_ok(),
+        "REACH-GUARD: the replayed mint must reach the same OFFER the production path raised \
+         at beat {beat}; a refusal here means this row measures a different board than the \
+         engine did, and the basis assertion below would be about nothing. Got {outcome:?}, \
+         meter {meter:?}"
+    );
+    // (1) reconstruction fidelity, part two — the same certificate, not merely some offer
+    let WaitingFor::LoopShortcut {
+        certificate: replayed,
+        ..
+    } = outcome.expect("asserted Ok above")
+    else {
+        panic!("the bounded offer is a LoopShortcut window");
+    };
+    assert_eq!(
+        replayed.per_cycle.as_ref(),
+        Some(&published),
+        "REACH-GUARD: the replayed mint must publish the SAME per-cycle signature as the \
+         production offer at beat {beat}"
+    );
+
+    // (2) THE MEASURED AXIS. Basis A certified NOTHING corpus-wide (0 of 129 certifications
+    // across the three 4p dumps); this beat takes `ring_delta_signature`, which by its own
+    // doc consults no board predicate.
+    assert_eq!(
+        meter.certification,
+        Some(PeriodCertification::ResourceSignatureOnly),
+        "R33: the corpus's one offering beat (beat {beat}) certifies through BASIS B. If this \
+         ever reads `BoardCovered`, the frozen exemption became available at an offering beat \
+         and the plan's exempted-cost row must be re-derived before that is relied on"
+    );
+
+    // (3) THE CONSEQUENCE, which is the half that makes this arm about the exemption rather
+    // than about a label: under a non-`BoardCovered` certificate `frozen_ids` is empty, so
+    // conjunct (6) skips NOTHING and scans every non-exempt entry it is handed.
+    assert_eq!(
+        meter.conjunct6_frozen_skips, 0,
+        "R33: `ResourceSignatureOnly` supplies neither P2 nor P4, so the subtraction is \
+         withdrawn and conjunct (6) exempts nothing at this beat"
+    );
+    assert!(
+        meter.conjunct6_asks > 0,
+        "REACH-GUARD against a vacuous skip count: conjunct (6) must actually have RUN at \
+         this beat, else `frozen_skips == 0` is trivially true; meter {meter:?}"
+    );
+
+    // (4) THE BUDGET, re-derived from this very beat (R16(ii-a)). The offer fires WITH the
+    // cap binding, not because the cap stopped mattering.
+    assert!(
+        !meter.denied,
+        "R16(ii-a): the shipped cap must not starve the corpus's acceptance offer; measured \
+         demand at this beat is 13 charges. meter {meter:?}"
+    );
+}
+
 /// Drive a `GameScenario`-built board until the ENGINE writes a bounded offer, declining
 /// nothing and injecting nothing. Returns the beat, or `None` if the cap ran out. Reads
 /// `state.waiting_for` — the production Path D write — never an out-of-band predicate call.

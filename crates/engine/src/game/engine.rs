@@ -1053,13 +1053,104 @@ pub enum BoundedOfferRefusal {
 /// row asserting only the absence of an offer passes for the wrong reason as soon as an
 /// upstream conjunct starts refusing first (domination), and `BoundedOfferRefusal` is what
 /// lets such a row name the conjunct it is actually about.
+/// CR 732.2a: the capability token that gates the cap-parameterised
+/// [`crate::analysis::resource::PeriodVerdicts`] constructor.
+///
+/// The unit field is PRIVATE, so the tuple constructor is nameable only inside
+/// `game::engine` — the metered seam's own module. Any other site that tried to
+/// build a fresh arbitrary-cap verdict container, whose spend the mint's meter
+/// would never see, is E0603. Derive list pinned to `#[derive(Debug)]`: a derived
+/// constructor would re-open arbitrary caps crate-wide, which is the same
+/// strength as the defect this token closes.
+#[derive(Debug)]
+pub(crate) struct CapAuthority(());
+
+/// CR 732.2a: the CLOSED cap domain the metered seam accepts.
+///
+/// The seam is `pub` because rows outside this crate ride it, and it mints its
+/// own [`CapAuthority`] for whoever calls it — so no token mechanism can gate
+/// this route. It is gated at the VALUE instead: an arbitrary raise is
+/// unrepresentable, and every image is fail-closed. Resolution is the SEAM's,
+/// never the caller's.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProbeCap {
+    /// The shipped budget.
+    Shipped,
+    /// `min(n, PROBE_BUDGET)` — expresses every starvation arm and can never raise.
+    Lowered(u32),
+    /// Twice the board's own link count, derived from the `state` the seam
+    /// probes rather than chosen by the caller. At the seam no window has been
+    /// selected yet, so nothing is exempt and the whole current stack IS the
+    /// non-exempt population; the work is therefore proportional to the input
+    /// the caller itself supplied.
+    RaisedTwiceLinks,
+}
+
+/// CR 732.2a: the mint's meter SNAPSHOT, taken at seam exit.
+///
+/// `spent`/`denied` are the probe budget's; the three `conjunct*` counters are
+/// the verdict door's own, so an iteration claim has a surface to be asserted on
+/// rather than being inferred from charges (which are measurably not a proxy for
+/// iterations).
+#[derive(Debug, Clone, Copy)]
+pub struct MintMeter {
+    pub spent: u32,
+    pub denied: bool,
+    pub conjunct6_asks: u32,
+    pub conjunct6_frozen_skips: u32,
+    pub conjunct4_scans: u32,
+    /// CR 732.2a: WHICH certificate step 4/4b selected — `None` when the mint refused
+    /// before certification (steps 1/1b/2/2b, or no basis matched at all).
+    ///
+    /// It exists because the axis has NO other surface. Both bases now MEASURE
+    /// `frames_per_period`, so the published [`crate::analysis::loop_check::LoopCertificate`]
+    /// discriminates in neither direction (see `certified_bounded_cycle_offer`'s
+    /// attribution note), and the disjunct within basis A is invisible there entirely.
+    /// A row that must prove a real beat certified through a particular disjunct — the
+    /// frozen exemption is keyed to exactly one — would otherwise have no assert site.
+    pub certification: Option<crate::analysis::resource::PeriodCertification>,
+}
+
+/// The production entry point: delegates at the shipped cap and drops the meter,
+/// so the refusal contract and every existing caller are untouched.
 pub fn try_offer_bounded_cycle_shortcut(
     state: &GameState,
     mandatory: bool,
 ) -> Result<WaitingFor, BoundedOfferRefusal> {
-    use crate::analysis::decision_template::{DecisionPointKind, DecisionSlot, IterationCount};
-    use crate::analysis::resource::{PeriodicDelta, ResourceVector};
-    use crate::types::ability::TargetRef;
+    try_offer_bounded_cycle_shortcut_metered(state, mandatory, ProbeCap::Shipped).0
+}
+
+/// CR 732.2a: the OBSERVATION-AND-CAP seam — the same mint, with the per-mint
+/// probe cap supplied from the closed [`ProbeCap`] domain and the meter returned
+/// instead of dropped.
+///
+/// This is the only channel by which a cap other than the shipped one enters, and
+/// the only surface on which `spent` / `denied` / the conjunct counters are
+/// readable at all: the verdict container never escapes this function.
+pub fn try_offer_bounded_cycle_shortcut_metered(
+    state: &GameState,
+    mandatory: bool,
+    cap: ProbeCap,
+) -> (Result<WaitingFor, BoundedOfferRefusal>, MintMeter) {
+    let mut meter = MintMeter {
+        spent: 0,
+        denied: false,
+        conjunct6_asks: 0,
+        conjunct6_frozen_skips: 0,
+        conjunct4_scans: 0,
+        certification: None,
+    };
+    let outcome = bounded_cycle_offer(state, mandatory, cap, &mut meter);
+    (outcome, meter)
+}
+
+fn bounded_cycle_offer(
+    state: &GameState,
+    mandatory: bool,
+    cap: ProbeCap,
+    meter: &mut MintMeter,
+) -> Result<WaitingFor, BoundedOfferRefusal> {
+    use crate::analysis::resource::{PeriodVerdicts, PROBE_BUDGET};
 
     // (1) CR 732.2a: "the player with priority may suggest a shortcut."
     let WaitingFor::Priority { player: proposer } = state.waiting_for else {
@@ -1089,9 +1180,14 @@ pub fn try_offer_bounded_cycle_shortcut(
     if proposer != state.active_player {
         return Err(BoundedOfferRefusal::ProposerIsNotActivePlayer);
     }
-    // (3) The published per-iteration choices (5a's single authority).
-    let points = bounded_cycle_pin_slots(state, proposer);
-    let slots: Vec<DecisionSlot> = points.iter().map(|p| p.slot.clone()).collect();
+    // (2b) CR 732.2a: with fewer than two retained frames there is no window, hence no
+    // certificate is reachable at all — basis A needs `span >= 1` and basis B needs three
+    // frames. Refusing HERE, before anything is materialized or classified, is what makes
+    // "nothing spends before the ring gate" structural: the verdict container does not yet
+    // exist for a consumer to ask.
+    if state.loop_detect_ring.len() < 2 {
+        return Err(BoundedOfferRefusal::NoCertification);
+    }
 
     // (4) CERTIFICATION — two bases, first match wins, NEVER combined.
     //
@@ -1101,14 +1197,90 @@ pub fn try_offer_bounded_cycle_shortcut(
     // copy … the `On` arm stays VERBATIM (byte-identity gate)" — and retargeting the four
     // shipped walks would edit byte-identity-gated paths inside a feature commit. Newest
     // prior first: the most recent recurrence is the least extrapolation.
-    // CR 104.4b comparand half — every certification reader, unchanged in value from HEAD.
+    //
+    // TWO PARALLEL VECS OVER ONE INDEX SPACE. They are built from the same `VecDeque` in the
+    // same order, so `ring.len() == ring_live.len()` by construction and `span`, `[idx..]`
+    // and basis B's `n - 1 - k` are unchanged expressions on both.
+    // CR 104.4b comparand half — every certification reader, unchanged in value.
     let ring: Vec<&GameState> = state
         .loop_detect_ring
         .iter()
         .map(|f| &f.normalized)
         .collect();
+    // CR 732.2a evaluable half — the period-touch domain. A normalized frame zeroes
+    // `next_object_id` and strips trigger identity, so it is a comparand and never a board to
+    // evaluate an announcement or a resolution against.
+    let ring_live: Vec<&GameState> = state.loop_detect_ring.iter().map(|f| &f.live).collect();
+
+    // The per-mint verdict door, constructed immediately after the ring materialization and
+    // before anything asks it. It allocates an empty memo and a `u32` budget and classifies
+    // NOTHING; the seam mints its own capability token because it, not its caller, resolves
+    // the cap.
+    let cap_value = match cap {
+        ProbeCap::Shipped => PROBE_BUDGET,
+        ProbeCap::Lowered(n) => n.min(PROBE_BUDGET),
+        ProbeCap::RaisedTwiceLinks => 2 * state.stack.len() as u32,
+    };
+    let mut verdicts = PeriodVerdicts::for_period_with_cap(
+        &ring_live,
+        state,
+        proposer,
+        cap_value,
+        CapAuthority(()),
+    );
+
+    // ONE exit for the meter: everything that can ask the door lives below, and the snapshot
+    // is taken here rather than at each refusal so a future refusal arm cannot forget it.
+    // `certification` is the exception BY NECESSITY — it is not a counter the container
+    // accumulates but a choice made mid-walk, so it is written where it is decided and read
+    // back here through the same one exit.
+    let outcome = certified_bounded_cycle_offer(
+        state,
+        mandatory,
+        proposer,
+        &ring,
+        &ring_live,
+        &mut verdicts,
+        &mut meter.certification,
+    );
+    meter.spent = verdicts.spent();
+    meter.denied = verdicts.denied();
+    meter.conjunct6_asks = verdicts.conjunct6_asks();
+    meter.conjunct6_frozen_skips = verdicts.conjunct6_frozen_skips();
+    meter.conjunct4_scans = verdicts.conjunct4_scans();
+    outcome
+}
+
+/// CR 732.2a: certification (step 4/4b), the choice gate and the bound — everything that can
+/// ask the verdict door, split out so its caller owns exactly one meter snapshot.
+#[allow(clippy::too_many_arguments)]
+fn certified_bounded_cycle_offer<'a>(
+    state: &'a GameState,
+    mandatory: bool,
+    proposer: PlayerId,
+    ring: &[&'a GameState],
+    ring_live: &[&'a GameState],
+    verdicts: &mut crate::analysis::resource::PeriodVerdicts<'a>,
+    cert_out: &mut Option<crate::analysis::resource::PeriodCertification>,
+) -> Result<WaitingFor, BoundedOfferRefusal> {
+    use crate::analysis::decision_template::{
+        DecisionPoint, DecisionPointKind, DecisionSlot, IterationCount,
+    };
+    use crate::analysis::resource::{
+        certified_period_touch, PeriodCertification, PeriodTouch, PeriodicDelta, ResourceVector,
+    };
+    use crate::types::ability::TargetRef;
+
     let cur = ResourceVector::snapshot(state);
-    let basis_a = ring.iter().enumerate().rev().find_map(|(idx, &prior)| {
+    // Written as an explicit newest-first walk rather than `find_map` because the candidate
+    // body now threads `&mut verdicts` and carries an owned per-candidate `PeriodTouch` out.
+    let mut basis_a: Option<(
+        &GameState,
+        Vec<DecisionPoint>,
+        PeriodTouch<'_>,
+        PeriodicDelta,
+    )> = None;
+    for idx in (0..ring.len()).rev() {
         // The span, in RETAINED RING FRAMES, that this candidate pair covers.
         // `ring.last()` is the sample `pass_priority_once_with_pipeline` recorded at THIS
         // beat, before the bridge ran, so the newest frame is the current state and the
@@ -1120,32 +1292,80 @@ pub fn try_offer_bounded_cycle_shortcut(
         // now DELIMITS a committed cycle by this count, and a published `0` would mean
         // "one repetition spans no frames", which no drive can honour. Fail closed on the
         // degenerate pair rather than rely on a downstream conjunct to catch it.
+        //
+        // EVALUATED FIRST, before the window is built, touched or minted from — `span >= 1`
+        // is `window.len() >= 2` identically, so this guard is also what keeps a degenerate
+        // window out of the touch and the mint.
         let span = ring.len() - 1 - idx;
+        if span < 1 {
+            continue;
+        }
+        let prior = ring[idx];
+        let window = &ring_live[idx..];
+        // Built under `BoardCovered` unconditionally, because step 4 does not yet know which
+        // disjunct will match; step 4b keeps it or rebuilds it.
+        let touch_cover = certified_period_touch(window, state, PeriodCertification::BoardCovered);
+        // (3) The published per-iteration choices (5a's single authority), now enumerated
+        // over the CERTIFIED PERIOD's announced pairs rather than over the offer-beat stack.
+        let points = bounded_cycle_pin_slots_for_window(&touch_cover, proposer);
+        let slots: Vec<DecisionSlot> = points.iter().map(|p| p.slot.clone()).collect();
         let delta = ResourceVector::delta(&ResourceVector::snapshot(prior), &cur);
-        (span >= 1
-            && (crate::analysis::resource::loop_states_equal_modulo_resources(prior, state)
-                || crate::analysis::resource::loop_states_cover_modulo_growth_pinned(
-                    prior, state, proposer, &slots,
-                ))
-            && delta.net_progress_for(proposer))
-        .then(|| {
-            (
-                prior,
-                state,
-                PeriodicDelta {
-                    // MEASURED span, not the former hardcoded `1`. The walk is `.rev()`, so
-                    // `idx` is usually `len - 2` and the span is 1 — but it is 1 by
-                    // MEASUREMENT, not by assumption, and it is NOT always 1: the
-                    // `interactive_3p_subset_lethal_does_not_crown` fixture's repetition
-                    // spans TWO frames (a gain-life resolution then a lose-life one), and
-                    // under the old hardcode its accepted drive committed nothing at all.
-                    frames_per_period: span as u32,
-                    delta,
-                    victim_slot: Vec::new(),
-                },
-            )
-        })
-    });
+        // The existing disjunction, written as an `if / else if` that RECORDS the matching
+        // disjunct instead of discarding it. Semantics are byte-for-byte the `||` it
+        // replaces: the equality arm is still evaluated first and `_pinned` still runs only
+        // when it fails. The two disjuncts are mutually exclusive — equality compares the
+        // stack exactly (constant depth) while cover's item (2) forces strictly growing depth
+        // — so "which disjunct" is a total function with no both-matched case.
+        let cert = if crate::analysis::resource::loop_states_equal_modulo_resources(prior, state) {
+            Some(PeriodCertification::BoardEqualOnly)
+        } else if crate::analysis::resource::loop_states_cover_modulo_growth_pinned(
+            prior,
+            state,
+            proposer,
+            &slots,
+            &touch_cover,
+            verdicts,
+        ) {
+            Some(PeriodCertification::BoardCovered)
+        } else {
+            None
+        };
+        let Some(cert) = cert else {
+            continue;
+        };
+        if !delta.net_progress_for(proposer) {
+            continue;
+        }
+        // (4b) THE CERTIFIED TOUCH, keyed to the disjunct that actually matched. The cover
+        // disjunct supplies both premises the frozen subtraction rests on; the equality
+        // disjunct supplies only the depth one, so its period is rebuilt with the exemption
+        // withdrawn. `announced` is identical on both, so the mint is not re-derived.
+        let touch = match cert {
+            PeriodCertification::BoardCovered => touch_cover,
+            c => certified_period_touch(window, state, c),
+        };
+        // Recorded HERE and not at the `if / else if`: a candidate that certifies and then
+        // dies on `net_progress_for` is not the certificate the mint carries forward, and a
+        // meter that named it would attribute the offer to a pair the walk discarded.
+        *cert_out = Some(cert);
+        basis_a = Some((
+            prior,
+            points,
+            touch,
+            PeriodicDelta {
+                // MEASURED span, not the former hardcoded `1`. The walk is `.rev()`, so
+                // `idx` is usually `len - 2` and the span is 1 — but it is 1 by
+                // MEASUREMENT, not by assumption, and it is NOT always 1: the
+                // `interactive_3p_subset_lethal_does_not_crown` fixture's repetition
+                // spans TWO frames (a gain-life resolution then a lose-life one), and
+                // under the old hardcode its accepted drive committed nothing at all.
+                frames_per_period: span as u32,
+                delta,
+                victim_slot: Vec::new(),
+            },
+        ));
+        break;
+    }
     // Basis B consults NO board predicate: a period whose frame-deltas repeated twice in the
     // retained ring is a signature on its own. Its certifying pair is the ring frame one
     // period back and the ring's newest frame — the very pair `ring_delta_signature`
@@ -1185,20 +1405,35 @@ pub fn try_offer_bounded_cycle_shortcut(
     // fixture publishes.) The only sound attribution is a discriminating probe: force
     // `ring_delta_signature` to return `None` (basis B's sole entry point is the `None =>`
     // arm below) — the rows that survive are basis A, the rows that fail are basis B.
-    let (cert_prior, cert_current, mut periodic) = match basis_a {
+    let (cert_prior, points, touch, mut periodic) = match basis_a {
         Some(hit) => hit,
         None => {
             let (k, delta) = crate::analysis::resource::ring_delta_signature(state)
                 .ok_or(BoundedOfferRefusal::NoCertification)?;
             let n = ring.len();
+            let start = n
+                .checked_sub(1 + k as usize)
+                .ok_or(BoundedOfferRefusal::NoCertification)?;
+            let cert_prior = *ring
+                .get(start)
+                .ok_or(BoundedOfferRefusal::NoCertification)?;
+            // Basis B EXEMPTS NOTHING, and that is derived rather than cautious: its
+            // certificate consults no board predicate, so it supplies no premise that the
+            // period cannot SHRINK the stack — a stack draining from the top under a ticking
+            // monotone resource satisfies the delta signature and leaves a large frozen
+            // bottom prefix the drain will reach. `announced` is unchanged; only the
+            // subtraction is withdrawn.
+            let window = ring_live
+                .get(start..)
+                .ok_or(BoundedOfferRefusal::NoCertification)?;
+            let touch =
+                certified_period_touch(window, state, PeriodCertification::ResourceSignatureOnly);
+            *cert_out = Some(PeriodCertification::ResourceSignatureOnly);
+            let points = bounded_cycle_pin_slots_for_window(&touch, proposer);
             (
-                *ring
-                    .get(
-                        n.checked_sub(1 + k as usize)
-                            .ok_or(BoundedOfferRefusal::NoCertification)?,
-                    )
-                    .ok_or(BoundedOfferRefusal::NoCertification)?,
-                *ring.last().ok_or(BoundedOfferRefusal::NoCertification)?,
+                cert_prior,
+                points,
+                touch,
                 PeriodicDelta {
                     frames_per_period: k,
                     delta,
@@ -1240,7 +1475,14 @@ pub fn try_offer_bounded_cycle_shortcut(
     // population rather than overwritten with an unmeasured claim. Either way the conjunct's
     // JUSTIFICATION is unchanged: cover refuses on board facts, and this seam asks about
     // choices.
-    if !crate::analysis::resource::stack_choices_are_all_specified(state, proposer, &slots) {
+    let slots: Vec<DecisionSlot> = points.iter().map(|p| p.slot.clone()).collect();
+    if !crate::analysis::resource::stack_choices_are_all_specified(
+        state,
+        proposer,
+        &slots,
+        Some(&touch),
+        verdicts,
+    ) {
         return Err(BoundedOfferRefusal::UnspecifiedChoiceWindow);
     }
 
@@ -1293,7 +1535,9 @@ pub fn try_offer_bounded_cycle_shortcut(
 
     // (8) The certificate, with the two fields the bounded class states differently from
     // Path A's spelled out at the site rather than mutated after the fact.
-    let base = build_cert(cert_prior, cert_current, &periodic.delta, proposer);
+    // `cert_current` is the live `state` on both bases, exactly as before: `build_cert`'s only
+    // use of the pair is `board_delta`, a comparand read.
+    let base = build_cert(cert_prior, state, &periodic.delta, proposer);
     let certificate = crate::analysis::loop_check::LoopCertificate {
         per_cycle: Some(periodic),
         // CR 732.5: honest, and currently read by nothing in production — a loop nobody can
@@ -1501,7 +1745,8 @@ pub(crate) struct EntryPinSlots {
 /// `None` when it publishes none.
 ///
 /// SINGLE AUTHORITY, and that is the whole point of its existence: the MINT
-/// ([`bounded_cycle_pin_slots`]) maps it over `state.stack`, and the RELIEF
+/// ([`bounded_cycle_pin_slots_for_window`]) maps it over the certified period's announced
+/// pairs, of which `state.stack` is the zero-window degenerate case, and the RELIEF
 /// (`analysis::resource`'s CR 732.2a gate-(3)/(6) pin skip) calls it for one entry. Because
 /// both sides ask the same function, the relief predicate cannot be COARSER than the mint
 /// predicate — relieving a verdict the published pin does not specify is impossible by
@@ -1761,10 +2006,43 @@ pub fn bounded_cycle_pin_slots(
     state: &GameState,
     proposer: PlayerId,
 ) -> Vec<crate::analysis::decision_template::DecisionPoint> {
+    // The DEGENERATE one-frame case of the window enumerator: with no window frame there is
+    // no transition to observe, so `certified_period_touch`'s `window.is_empty()` branch seeds
+    // `announced` from `state.stack` — same authority, same set, same order, same dedup, hence
+    // byte-identical to the snapshot mint this used to be. The alias holds NO certificate, so
+    // it passes `ResourceSignatureOnly`: the type is never allowed to claim one its caller
+    // does not hold (and the empty-window branch yields `frozen_ids: ∅` on any value).
+    bounded_cycle_pin_slots_for_window(
+        &crate::analysis::resource::certified_period_touch(
+            &[],
+            state,
+            crate::analysis::resource::PeriodCertification::ResourceSignatureOnly,
+        ),
+        proposer,
+    )
+}
+
+/// CR 732.2a: the per-iteration choice slots ONE CERTIFIED PERIOD publishes for `proposer`.
+///
+/// Maps the single authority [`entry_publishes_pin_slots`] over `touch.announced`, with the
+/// same per-slot dedup [`bounded_cycle_pin_slots`] applies — each pair evaluated against ITS
+/// OWN carrying frame, which is the ring sample's LIVE half and never a `normalize_for_loop`
+/// product: a normalized frame would key the stored-auto-choice refusal on `ObjectId(0)` and
+/// would make `build_target_slots` take its `trigger_source: None` fall-through and publish a
+/// WIDER legal set than the live board admits.
+///
+/// It calls the RAW mint rather than the verdict door on purpose: routing it through the door
+/// would eagerly classify (and charge for) every announced pair at slot-enumeration time,
+/// which is exactly the pre-population pass this design removes. The relief side reads the
+/// CACHED mint through the door instead.
+pub(crate) fn bounded_cycle_pin_slots_for_window(
+    touch: &crate::analysis::resource::PeriodTouch<'_>,
+    proposer: PlayerId,
+) -> Vec<crate::analysis::decision_template::DecisionPoint> {
     use crate::analysis::decision_template::{DecisionPoint, DecisionPointKind};
     let mut points: Vec<DecisionPoint> = Vec::new();
-    for entry in &state.stack {
-        let Some(pins) = entry_publishes_pin_slots(state, entry, proposer) else {
+    for (frame, entry) in &touch.announced {
+        let Some(pins) = entry_publishes_pin_slots(frame, entry, proposer) else {
             continue;
         };
         // CR 601.2c: a `Targets` point only when the entry actually announces a choice.
@@ -13643,7 +13921,7 @@ mod stage2_injector_tests {
                 "game/effects/mod.rs:5973".to_string(),
                 "game/effects/mod.rs:8927".to_string(),
                 "game/effects/scoped_library_search.rs:452".to_string(),
-                "game/engine.rs:10155".to_string(),
+                "game/engine.rs:10433".to_string(),
             ],
             "the five production producers, NAMED: the CR 603.5 gate in `resolve_chain_body` \
              plus the two repeated-optional-payment drivers, the per-player acceptance cursor \
