@@ -26049,6 +26049,30 @@ pub(crate) fn each_target_filter_mut(effect: &mut Effect, f: &mut impl FnMut(&mu
     }
 }
 
+/// Replace the card-type predicate in a direct card selector while preserving
+/// a tracked-set provenance wrapper when it is the direct selector.
+///
+/// CR 608.2c: a "do the same for <type>" continuation repeats the antecedent
+/// instruction with a different card-type restriction. `TrackedSetFiltered`
+/// records a prior action's selected/revealed set, so only its nested predicate
+/// changes; replacing the wrapper would discard the "this way" provenance.
+fn replace_type_filters(filter: &mut TargetFilter, replacement: &[TypeFilter]) -> bool {
+    match filter {
+        TargetFilter::Typed(typed) => {
+            typed.type_filters = replacement.to_vec();
+            true
+        }
+        TargetFilter::TrackedSetFiltered { filter, .. } => {
+            let TargetFilter::Typed(typed) = filter.as_mut() else {
+                return false;
+            };
+            typed.type_filters = replacement.to_vec();
+            true
+        }
+        _ => false,
+    }
+}
+
 /// CR 608.2 + CR 107.2: Rewrite target-scoped `QuantityRef` variants to their
 /// controller-scoped equivalents across an ability tree. Under
 /// `player_scope: All` / `Opponent` / etc., the resolver rebinds
@@ -29532,6 +29556,44 @@ pub(crate) fn parse_effect_chain_ir(
                     .player_scope(Some(scope))
                     .push();
                 continue;
+            }
+
+            // CR 608.2c: "[then] do the same for <type> cards/permanents." —
+            // Estrid, the Masked: "Return all non-Aura enchantment cards … to
+            // the battlefield, then do the same for Aura cards." Clone the
+            // antecedent sibling effect and swap its type filter for the stated
+            // type (the same clone mechanic as the scoped fan-out above), so the
+            // repeated action lands on the sibling type without a new disposition
+            // or engine variant. Placed after the scoped/before the targeted
+            // forms; the three subjects are disjoint ("each …" / "for <type>" /
+            // "target opponent …").
+            if let Some(new_type_filters) =
+                sequence::try_parse_do_the_same_for_type(normalized_text)
+            {
+                let mut cloned = prev_effect;
+                // Retype every `Typed` target the antecedent exposes (Estrid's
+                // mass `ChangeZoneAll`). Only emit the clone when a substitution
+                // actually happened: an antecedent with no `Typed` target (an
+                // `Unimplemented` head, a bare player effect) must NOT be cloned
+                // verbatim — fall through to a documented strict-failure instead.
+                let mut swapped = false;
+                each_target_filter_mut(&mut cloned, &mut |tf| {
+                    swapped |= replace_type_filters(tf, &new_type_filters);
+                });
+                if swapped {
+                    builder
+                        .clause(
+                            normalized_text,
+                            parsed_clause(cloned),
+                            chunk.boundary_after,
+                            ClauseDisposition::Emit {
+                                followup: None,
+                                intrinsic: None,
+                            },
+                        )
+                        .push();
+                    continue;
+                }
             }
         }
 
