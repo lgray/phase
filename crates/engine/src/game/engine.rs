@@ -15354,4 +15354,207 @@ mod bounded_offer_conjunct_tests {
             per_cycle.frames_per_period
         );
     }
+
+    // ───────────────────────────────────────────────────────────────────────────────────
+    // The two CARRIER rows. Both are about WHICH object identifies a retained beat, an axis
+    // that has exactly one behavioural surface (`PeriodVerdicts::frame_ix`) and one source
+    // surface (this file), so each ships with one arm on each.
+    // ───────────────────────────────────────────────────────────────────────────────────
+
+    /// Symbol-anchored extent of a column-0 `fn` in THIS file, as `(head, end)` line indices —
+    /// the §6 R8 self-census extractor: signature line to the first column-0 `}`.
+    #[cfg(test)]
+    fn engine_fn_extent(lines: &[&str], signature: &str) -> (usize, usize) {
+        let head = lines
+            .iter()
+            .position(|l| l.starts_with(signature))
+            .unwrap_or_else(|| panic!("extractor found no column-0 `{signature}`"));
+        let end = lines[head..]
+            .iter()
+            .position(|l| *l == "}")
+            .map(|i| head + i)
+            .unwrap_or_else(|| panic!("`{signature}` has no column-0 closing brace"));
+        assert!(
+            end - head > 5,
+            "`{signature}` extent {head}-{end} is degenerate — the extractor is not keyed"
+        );
+        (head, end)
+    }
+
+    /// Code lines (comments excluded, per R8's ruling: a comment reads nothing) of an extent
+    /// that contain `needle`, as absolute line indices.
+    #[cfg(test)]
+    fn engine_code_hits(lines: &[&str], extent: (usize, usize), needle: &str) -> Vec<usize> {
+        (extent.0..=extent.1)
+            .filter(|i| !lines[*i].trim_start().starts_with("//"))
+            .filter(|i| lines[*i].contains(needle))
+            .collect()
+    }
+
+    /// `Arc::as_ptr` BEAT IDENTITY IS THE SAMPLE, NOT ONE OF ITS HALVES — the U0 ruling that
+    /// had no falsifier until `FrameIx` existed.
+    ///
+    /// CR 732.2a. U0 split each retained ring element into a CR 104.4b comparand
+    /// (`normalized`) and a CR 732.2a evaluable (`live`), and left `drive_one_shortcut_cycle`'s
+    /// ring-advance detector on `Arc::as_ptr` — the SAMPLE's allocation — with the ruling that
+    /// it must never be re-based onto a field address. U0 could not assert that: nothing at
+    /// that step distinguished the two halves as identities. U3's verdict door does.
+    ///
+    /// ARM 1, BEHAVIOURAL — the door's identity domain is the LIVE half and ONLY it.
+    /// [`crate::analysis::resource::PeriodVerdicts::frame_ix`] resolves by `std::ptr::eq`
+    /// against the very table `verdict` indexes, so a beat identified by the `normalized`
+    /// half is a DIFFERENT identity from the one every period-touch consumer keys on. The two
+    /// field addresses are asserted distinct first, which is what makes the choice load-bearing
+    /// rather than a distinction without a difference.
+    ///
+    /// ARM 2, STRUCTURAL — the detector still reads the sample. Two sites, both
+    /// `loop_detect_ring.back().map(std::sync::Arc::as_ptr)`, and NO raw-pointer field
+    /// address anywhere in the extent.
+    ///
+    /// REVERT-PROBE: re-base either site to `.map(|s| &s.normalized as *const _)` ⇒ arm 2's
+    /// site count goes 2 → 1 AND its `as *const` count goes 0 → 1 ⇒ FLIPS. (Arm 1 is
+    /// deliberately NOT reachable by that edit — it pins the property the edit would violate,
+    /// so the two arms partition "is the rule still true" from "is the code still obeying it".)
+    #[test]
+    fn arc_as_ptr_beat_identity_is_the_sample_not_one_of_its_halves() {
+        use crate::analysis::resource::PeriodVerdicts;
+
+        // ── ARM 1: behavioural ───────────────────────────────────────────────────────────
+        let state = ring_state(3, |frame, i| {
+            frame.turn_number += i as u32;
+        });
+        assert_eq!(
+            state.loop_detect_ring.len(),
+            3,
+            "REACH-GUARD: the ring must carry samples, else the universals below are vacuous"
+        );
+        // Built exactly as `bounded_cycle_offer` builds its `ring_live` — the CR 732.2a
+        // evaluable half. The binding is named differently ON PURPOSE: a verbatim copy of the
+        // production line makes the carrier revert-probe (a whole-line replace of that line)
+        // match twice and silently no-op, which is how the probe for the sibling row below
+        // failed to apply on its first run.
+        let evaluable: Vec<&GameState> = state.loop_detect_ring.iter().map(|f| &f.live).collect();
+        let verdicts =
+            PeriodVerdicts::for_period_with_cap(&evaluable, &state, P0, 0, super::CapAuthority(()));
+        for (i, sample) in state.loop_detect_ring.iter().enumerate() {
+            assert!(
+                !std::ptr::eq(&sample.live, &sample.normalized),
+                "sample {i}: the two halves must be DISTINCT addresses, else `beat identity \
+                 is the sample, not a half` is a distinction without a difference"
+            );
+            assert!(
+                verdicts.frame_ix(&sample.live).is_some(),
+                "sample {i}: the verdict door's frame table IS the live half — this is the \
+                 identity every period-touch consumer keys on"
+            );
+            assert!(
+                verdicts.frame_ix(&sample.normalized).is_none(),
+                "sample {i}: the comparand half is NOT in the door's domain. A beat identity \
+                 based on `&s.normalized` would therefore name an object no `FrameIx` can \
+                 ever resolve — that is the concrete harm the U0 ruling forbids"
+            );
+        }
+
+        // ── ARM 2: structural ────────────────────────────────────────────────────────────
+        let src = include_str!("engine.rs");
+        let lines: Vec<&str> = src.lines().collect();
+        let extent = engine_fn_extent(&lines, "fn drive_one_shortcut_cycle(");
+        // Needles ASSEMBLED at runtime so this test's own source cannot be counted by its own
+        // instrument.
+        let sample_identity = format!("loop_detect_ring.back().map(std::sync::Arc::{}ptr)", "as_");
+        let field_address = format!("as {}const", '*');
+        assert_eq!(
+            engine_code_hits(&lines, extent, &sample_identity).len(),
+            2,
+            "the ring-advance detector must read the SAMPLE's allocation at both its before \
+             and after sites, in {}-{}",
+            extent.0 + 1,
+            extent.1 + 1
+        );
+        assert_eq!(
+            engine_code_hits(&lines, extent, &field_address).len(),
+            0,
+            "no raw-pointer FIELD address may appear in the detector's extent — that is the \
+             re-basing the U0 ruling forbids"
+        );
+        // POSITIVE CONTROL against a dead grep, same extractor and same filter.
+        assert!(
+            !engine_code_hits(&lines, extent, "frames_this_cycle").is_empty(),
+            "the instrument must be able to find a token that IS there"
+        );
+        assert!(
+            engine_code_hits(&lines, extent, "certified_period_touch").is_empty(),
+            "…and must not find one that is not"
+        );
+    }
+
+    /// R27 (a2), STRUCTURAL HALF — THE PERIOD-TOUCH WINDOW IS CARRIED BY THE `live` HALF.
+    ///
+    /// CR 732.2a + CR 104.4b. The behavioural half
+    /// (`analysis::resource::tests::r27_a2_every_announced_pair_carries_an_unnormalized_evaluation_board`)
+    /// builds its own window, so it cannot flip on an edit to the MINT's carrier. This arm is
+    /// that edit's detector: `bounded_cycle_offer` builds exactly two ring vecs — the CR 104.4b
+    /// comparand from `&f.normalized` and the CR 732.2a evaluable from `&f.live` — and every
+    /// `certified_period_touch` window inside `certified_bounded_cycle_offer` is sliced from
+    /// the evaluable one.
+    ///
+    /// REVERT-PROBE: point `ring_live` at `&f.normalized` (rounds 13–33's carrier) ⇒ the
+    /// `&f.live` count goes 1 → 0 ⇒ FLIPS.
+    #[test]
+    fn the_period_touch_window_is_carried_by_the_live_half() {
+        let src = include_str!("engine.rs");
+        let lines: Vec<&str> = src.lines().collect();
+        let mint = engine_fn_extent(&lines, "fn bounded_cycle_offer(");
+        let live_needle = format!("&f.{}", "live");
+        let norm_needle = format!("&f.{}", "normalized");
+
+        let live_hits = engine_code_hits(&lines, mint, &live_needle);
+        let norm_hits = engine_code_hits(&lines, mint, &norm_needle);
+        assert_eq!(
+            live_hits.len(),
+            1,
+            "exactly ONE evaluable ring vec is built, in {}-{}",
+            mint.0 + 1,
+            mint.1 + 1
+        );
+        assert_eq!(norm_hits.len(), 1, "…and exactly one comparand ring vec");
+        assert!(
+            lines[live_hits[0]].contains("ring_live"),
+            "the evaluable half must be the one bound to `ring_live`; line {} reads `{}`",
+            live_hits[0] + 1,
+            lines[live_hits[0]].trim()
+        );
+
+        let certified = engine_fn_extent(&lines, "fn certified_bounded_cycle_offer<'a>(");
+        let touch_needle = format!("certified_period{}touch(", '_');
+        let touch_sites = engine_code_hits(&lines, certified, &touch_needle);
+        assert!(
+            touch_sites.len() >= 2,
+            "REACH-GUARD: the certification step must actually call the period touch; found \
+             {} sites",
+            touch_sites.len()
+        );
+        for site in &touch_sites {
+            assert!(
+                lines[*site].contains("window"),
+                "every period-touch call must be handed a WINDOW, never a raw ring; line {} \
+                 reads `{}`",
+                site + 1,
+                lines[*site].trim()
+            );
+        }
+        let window_bindings = engine_code_hits(&lines, certified, "let window");
+        assert!(
+            !window_bindings.is_empty(),
+            "REACH-GUARD: the windows must be bound inside this extent"
+        );
+        for binding in &window_bindings {
+            assert!(
+                lines[*binding].contains("ring_live"),
+                "every window is sliced from the EVALUABLE ring; line {} reads `{}`",
+                binding + 1,
+                lines[*binding].trim()
+            );
+        }
+    }
 }

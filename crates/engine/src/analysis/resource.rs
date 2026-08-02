@@ -5177,6 +5177,56 @@ mod tests {
             .count()
     }
 
+    /// The two TRACKED 4p dumps, as `(name, gzip)` pairs. F4
+    /// (`fantastic_four_bounded_loop_4p.json.gz`) is deliberately absent: it is untracked
+    /// until §5 U5, so a row keyed to it would not be reproducible from the repository.
+    const TRACKED_DUMPS: [(&str, &[u8]); 2] = [
+        (
+            "dina",
+            include_bytes!("../../tests/fixtures/dina_conqueror_4p.json.gz"),
+        ),
+        (
+            "dellian",
+            include_bytes!("../../tests/fixtures/dellian_emblem_conqueror_4p.json.gz"),
+        ),
+    ];
+
+    /// Drive one dump through `apply()` until `pred` accepts the board, returning the beat
+    /// index and that board.
+    ///
+    /// The beat is SEARCHED by its construction requirements, never hardcoded — a hardcoded
+    /// index is a fixture that drifts silently when the drive policy moves. `None` ⇒ no beat
+    /// within `max_beats` satisfied them, which every caller turns into a loud failure rather
+    /// than a vacuous pass.
+    fn drive_dump_until(
+        gz: &[u8],
+        max_beats: usize,
+        pred: impl Fn(&GameState) -> bool,
+    ) -> Option<(usize, GameState)> {
+        let mut state = dump_state(gz);
+        for beat in 0..max_beats {
+            if pred(&state) {
+                return Some((beat, state));
+            }
+            if dump_drive_one_beat(&mut state).is_err() {
+                return None;
+            }
+        }
+        None
+    }
+
+    /// The construction requirement shared by every row that needs a REAL certified window
+    /// carrying a non-empty observed-frozen prefix: a usable ring AND a newest candidate pair
+    /// (`span == 1`, the shape §3 D2's walk reaches first) whose common prefix is
+    /// index-stable.
+    fn has_frozen_window(state: &GameState) -> bool {
+        if state.loop_detect_ring.len() < 2 {
+            return false;
+        }
+        let live: Vec<&GameState> = state.loop_detect_ring.iter().map(|f| &f.live).collect();
+        frozen_lower_bound(&live[live.len() - 2..], state) > 0
+    }
+
     fn test_trigger_ref(state: &GameState, object_id: ObjectId) -> TriggerDefinitionRef {
         let object = &state.objects[&object_id];
         TriggerDefinitionRef {
@@ -13376,6 +13426,576 @@ mod tests {
              measured demand is far above it. spent={} denied={} cap={PROBE_BUDGET}",
             v_sig.spent(),
             v_sig.denied()
+        );
+    }
+
+    /// R21 (b) + (b-unproven) — THE EXEMPTION NARROWS CONJUNCT (6)'s POPULATION BY EXACTLY
+    /// THE FROZEN SET, AND "NO PROOF" NARROWS IT BY NOTHING.
+    ///
+    /// CR 732.2a + CR 608.1. Both TRACKED dumps, driven through `apply()` to the first beat
+    /// carrying a real certified window with a non-empty observed-frozen prefix.
+    ///
+    /// ⚠ THE PLAN'S FIGURES FOR THIS ROW ARE HEAD-ERA AND ARE RE-MEASURED HERE, NOT COPIED.
+    /// It expects *"`conjunct6_asks()` = 2–4, `conjunct6_frozen_skips()` = 152, their sum =
+    /// `current.stack.len()` = 154–156"*. Measured on the driven tree (`dellian` beat 14,
+    /// `ring=2 stack=154 announced=2 frozen=152`): `asks=4`, `skips=152`, **sum = 156**, and
+    /// `156 = announced + stack`, NOT `stack` — post-U3 the predicate's domain is
+    /// `touch.announced ∪ (stack \ frozen)`, so the announced pairs are asks the HEAD-era
+    /// figure could not include. The SUM IDENTITY is asserted in the corrected form; it is
+    /// what fails if a future edit exempts an entry without counting it, which a bare
+    /// `asks == 2..4` would not see. (`dina` beat 10: `stack=8 announced=3 frozen=5`,
+    /// `asks=6 skips=5`, sum `11 = 3 + 8`.)
+    ///
+    /// (b-unproven): the shipped meaning of NO PROOF is `touch == None`, and it must exempt
+    /// NOTHING — `skips == 0` on both dumps, and where the sweep completes, the ask count is
+    /// the UNCONDITIONED `current.stack`. Without this arm the exemption could be made
+    /// unconditional and nothing would fail.
+    ///
+    /// REVERT-PROBE: delete the `frozen_ids` skip from `stack_choices_are_all_specified`'s
+    /// current-stack loop ⇒ `skips` drops to 0 while `frozen_ids` stays non-empty ⇒ the
+    /// `skips == frozen_ids.len()` arm FLIPS on both dumps.
+    #[test]
+    fn r21_b_the_exemption_narrows_conjunct_six_by_exactly_the_frozen_set() {
+        // Set by whichever dump's UNPROVEN sweep runs to completion, so the population claim
+        // below is asserted against a COMPLETE count and never against a truncated one.
+        let mut unproven_population_witness: Option<(&str, usize, usize)> = None;
+
+        for (name, gz) in TRACKED_DUMPS {
+            let (beat, board) = drive_dump_until(gz, 80, has_frozen_window).unwrap_or_else(|| {
+                panic!(
+                    "REACH-GUARD [{name}]: no driven beat carried a ring >= 2 frames AND a \
+                     window with a non-empty observed-frozen prefix; every arm below would be \
+                     vacuous on such a beat"
+                )
+            });
+            let live: Vec<&GameState> = board.loop_detect_ring.iter().map(|f| &f.live).collect();
+            let window = &live[live.len() - 2..];
+            let proposer = board.active_player;
+            let cover = certified_period_touch(window, &board, PeriodCertification::BoardCovered);
+
+            // ── reach-guards: neither half of the domain may be empty ────────────────────
+            assert!(
+                !cover.frozen_ids.is_empty(),
+                "[{name}] beat {beat}: the exemption must have something to remove"
+            );
+            assert!(
+                !cover.announced.is_empty(),
+                "[{name}] beat {beat}: the announced half must be non-empty, else the sum \
+                 identity below degenerates into a statement about `current.stack` alone"
+            );
+            assert!(
+                cover.frozen_ids.len() < board.stack.len(),
+                "[{name}] beat {beat}: a fully-frozen stack would make `asks` zero and the \
+                 narrowing unobservable; frozen {} of {}",
+                cover.frozen_ids.len(),
+                board.stack.len()
+            );
+
+            let measure = |touch: Option<&PeriodTouch<'_>>| {
+                let mut v = PeriodVerdicts::for_period(&live, &board, proposer);
+                let r = stack_choices_are_all_specified(&board, proposer, &[], touch, &mut v);
+                (
+                    r,
+                    v.conjunct6_asks() as usize,
+                    v.conjunct6_frozen_skips() as usize,
+                    v.spent(),
+                    v.denied(),
+                )
+            };
+
+            // ── (b) the exempting certificate ────────────────────────────────────────────
+            let (r_cov, asks_cov, skips_cov, spent_cov, denied_cov) = measure(Some(&cover));
+            assert!(
+                r_cov,
+                "[{name}] beat {beat}: the exempted sweep must RUN TO COMPLETION, else every \
+                 count below is a truncation rather than a population. asks={asks_cov} \
+                 skips={skips_cov} spent={spent_cov} denied={denied_cov}"
+            );
+            assert_eq!(
+                skips_cov,
+                cover.frozen_ids.len(),
+                "[{name}] beat {beat}: conjunct (6) must skip EXACTLY the proven-frozen ids — \
+                 no more (an over-skip is the fail-open direction) and no fewer"
+            );
+            assert_eq!(
+                asks_cov + skips_cov,
+                cover.announced.len() + board.stack.len(),
+                "[{name}] beat {beat}: THE SUM IDENTITY. Every member of the derived domain \
+                 `announced ∪ current.stack` is either ASKED or COUNTED as exempt; an entry \
+                 exempted without being counted would land here. asks={asks_cov} \
+                 skips={skips_cov} announced={} stack={}",
+                cover.announced.len(),
+                board.stack.len()
+            );
+
+            // ── (b-unproven) NO PROOF exempts NOTHING ────────────────────────────────────
+            let (r_none, asks_none, skips_none, spent_none, denied_none) = measure(None);
+            assert_eq!(
+                skips_none, 0,
+                "[{name}] beat {beat}: (b-unproven) a caller that proved no period gets \
+                 byte-identical pre-change behaviour — the subtraction is not merely smaller, \
+                 it is WITHDRAWN. asks={asks_none} spent={spent_none} denied={denied_none}"
+            );
+            if r_none {
+                unproven_population_witness = Some((name, asks_none, board.stack.len()));
+            }
+            assert!(
+                skips_cov > 0,
+                "[{name}] beat {beat}: the two arms must actually DIFFER on this board"
+            );
+        }
+
+        let (name, asks_none, stack_len) = unproven_population_witness.expect(
+            "REACH-GUARD: neither dump's UNPROVEN sweep ran to completion, so the population \
+             claim below would be asserted against a budget-truncated count. The row FAILS \
+             rather than silently weakening to `skips == 0`",
+        );
+        assert_eq!(
+            asks_none, stack_len,
+            "[{name}] (b-unproven) POPULATION: with no period proof the resolution gate scans \
+             the UNCONDITIONED `current.stack`, element for element"
+        );
+    }
+
+    /// R21 (b-placement-S) — THE FROZEN SKIP IS READ AT EXACTLY ONE SITE, AND THAT SITE IS
+    /// BELOW ITEM (6)'s LOOP HEAD.
+    ///
+    /// CR 732.2a. §3 D2 step 3's replacement argument for the exemption is an ITEM-ORDERING
+    /// argument: items (2)/(4)/(5) are what establish the premises the skip consumes, and each
+    /// of them `return false`s strictly before it. Its sole precondition is that the skip lives
+    /// in item (6) and nowhere earlier — a source-level fact, asserted here rather than argued.
+    ///
+    /// This arm covers item (5) as well, and better than a scan count would: item (5) is inside
+    /// the extent, so a skip placed there raises the count to 2.
+    ///
+    /// COMMENT LINES ARE EXCLUDED, per R8's own ruling: a comment reads nothing, and counting
+    /// one would make the tripwire fire on prose. (The extent carries exactly one such line —
+    /// item (4)'s "`frozen_ids` is deliberately not read here".)
+    ///
+    /// REVERT-PROBE: add a `frozen_ids.contains(&e.id)` skip to item (4)'s closure ⇒ the read
+    /// count goes 1 → 2 ⇒ FLIPS.
+    #[test]
+    fn r21_b_placement_s_the_frozen_skip_is_read_once_and_only_below_item_six() {
+        let src = include_str!("resource.rs");
+        let lines: Vec<&str> = src.lines().collect();
+
+        // Symbol-anchored extent, the §6 R8 self-census discipline: column-0 signature line
+        // to the first column-0 `}`.
+        let extent = |signature: &str| -> (usize, usize) {
+            let head = lines
+                .iter()
+                .position(|l| l.starts_with(signature))
+                .unwrap_or_else(|| panic!("extractor found no column-0 `{signature}`"));
+            let end = lines[head..]
+                .iter()
+                .position(|l| *l == "}")
+                .map(|i| head + i)
+                .unwrap_or_else(|| panic!("`{signature}` has no column-0 closing brace"));
+            (head, end)
+        };
+        // Needles ASSEMBLED at runtime so this test's own source cannot be counted by its own
+        // instrument (R13's hardening, applied here by construction).
+        let frozen_token = format!("frozen{}ids", '_');
+        let scan_token = format!("note{}conjunct4{}scan", '_', '_');
+
+        let (head, end) = extent("pub(crate) fn loop_states_cover_modulo_growth_scoped");
+        assert!(
+            end - head > 100,
+            "the extractor must return the whole predicate, not a truncated span; got \
+             {head}-{end}"
+        );
+        let code: Vec<(usize, &str)> = (head..=end)
+            .map(|i| (i, lines[i]))
+            .filter(|(_, l)| !l.trim_start().starts_with("//"))
+            .collect();
+
+        let item6_head = code
+            .iter()
+            .find(|(_, l)| l.contains("for entry in &current.stack"))
+            .map(|(i, _)| *i)
+            .expect("item (6)'s loop head must be inside the extent");
+        let reads: Vec<usize> = code
+            .iter()
+            .filter(|(_, l)| l.contains(&frozen_token))
+            .map(|(i, _)| *i)
+            .collect();
+
+        assert_eq!(
+            reads.len(),
+            1,
+            "R21(b-placement-S): the frozen subtraction must be read at EXACTLY ONE site in \
+             {head}-{end}; a second read is a premise consumed before it is proved. Found at \
+             lines {:?} (1-based)",
+            reads.iter().map(|i| i + 1).collect::<Vec<_>>()
+        );
+        assert!(
+            reads[0] > item6_head,
+            "R21(b-placement-S): the one read (line {}) must sit BELOW item (6)'s loop head \
+             (line {}) — items (2)/(4)/(5) establish the premises it consumes and each \
+             returns strictly above it",
+            reads[0] + 1,
+            item6_head + 1
+        );
+
+        // POSITIVE CONTROL AGAINST A DEAD GREP, same extractor and same filter: a token known
+        // to be present in the SAME extent must be found, and one known to be absent must not.
+        // One instrument, two values, one input.
+        assert_eq!(
+            code.iter().filter(|(_, l)| l.contains(&scan_token)).count(),
+            1,
+            "the instrument must be able to find a token that IS there — item (4)'s scan \
+             notifier lives inside {head}-{end}"
+        );
+        assert_eq!(
+            code.iter()
+                .filter(|(_, l)| l.contains("ring_delta_signature"))
+                .count(),
+            0,
+            "…and must not find one that is not"
+        );
+    }
+
+    /// R21 (b-placement-B) — THE BEHAVIOURAL HALF, ON THE REAL DELLIAN WINDOW: ITEM (4) SCANS
+    /// THE UNEXEMPTED STACK WHILE CONJUNCT (6) SKIPS IT.
+    ///
+    /// CR 732.2a. The matched pair is on ONE board and ONE touch, one predicate apart, so the
+    /// difference is attributable to the placement and to nothing else.
+    ///
+    /// ⚠ THE PLAN'S STATED PAIR IS FALSIFIED BY MEASUREMENT AND IS RE-KEYED. It asks for
+    /// *"the mutated board is REFUSED … the unmutated board still OFFERS (B-pos, row D1's
+    /// beat)"*. Measured on the driven tree, the unmutated dellian beat-14 board does NOT
+    /// offer — the mint returns `NoCertification` (`spent=26 scans=36 cert=None`), because
+    /// item (4) already trips on a projected-resource reader at stack index 35 and basis B's
+    /// `ring_delta_signature` finds no signature at `ring=2`. A pair whose two arms both
+    /// refuse discriminates nothing. And no mutation is needed to make the point: the entry
+    /// item (4) trips on IS ITSELF a frozen one, so the unmutated board already witnesses
+    /// that item (4) does not consult the exemption.
+    ///
+    /// REVERT-PROBE: add a `frozen_ids` skip to item (4)'s closure ⇒ the scan can no longer
+    /// reach index 35 and `conjunct4_scans` collapses to at most the non-exempt population
+    /// (2 on this board) ⇒ FLIPS.
+    #[test]
+    fn r21_b_placement_b_item_four_scans_frozen_entries_that_conjunct_six_skips() {
+        let (beat, board) = drive_dump_until(TRACKED_DUMPS[1].1, 80, has_frozen_window)
+            .expect("REACH-GUARD: the dellian drive must reach a window with a frozen prefix");
+        let live: Vec<&GameState> = board.loop_detect_ring.iter().map(|f| &f.live).collect();
+        let window = &live[live.len() - 2..];
+        let prior = window[0];
+        let proposer = board.active_player;
+        let cover = certified_period_touch(window, &board, PeriodCertification::BoardCovered);
+        let non_exempt = board.stack.len() - cover.frozen_ids.len();
+        assert!(
+            cover.frozen_ids.len() > non_exempt,
+            "REACH-GUARD beat {beat}: the frozen prefix must DOMINATE the stack, else \
+             `scans > non_exempt` is satisfiable without ever touching a frozen entry; \
+             frozen {} non-exempt {non_exempt}",
+            cover.frozen_ids.len()
+        );
+
+        // ── ITEM (4): the scan population is the UNEXEMPTED current stack ────────────────
+        let mut v4 = PeriodVerdicts::for_period(&live, &board, proposer);
+        let covered =
+            loop_states_cover_modulo_growth_pinned(prior, &board, proposer, &[], &cover, &mut v4);
+        let scans = v4.conjunct4_scans() as usize;
+        assert!(
+            scans > non_exempt,
+            "R21(b-placement-B) beat {beat}: item (4) scanned {scans} entries, which must \
+             EXCEED the {non_exempt} non-exempt ones — a scan that consulted `frozen_ids` \
+             could never get past them"
+        );
+        assert!(
+            scans > 0 && scans < board.stack.len(),
+            "attribution: item (4)'s `.any()` must have SHORT-CIRCUITED inside the stack \
+             ({scans} of {}), which is what makes it the refuser rather than a later item",
+            board.stack.len()
+        );
+        assert!(
+            cover.frozen_ids.contains(&board.stack[scans - 1].id),
+            "R21(b-placement-B): the entry item (4) refused on (stack index {}) must itself \
+             be PROVEN FROZEN — that is the whole content of `the skip lives in item (6) and \
+             nowhere earlier`",
+            scans - 1
+        );
+        assert!(
+            !covered,
+            "attribution: with a projected-resource reader inside the scanned population the \
+             cover disjunct must fail; a `true` here would mean the scan found nothing and \
+             the index assertion above was about the wrong entry"
+        );
+        assert_eq!(
+            v4.conjunct6_frozen_skips(),
+            0,
+            "the cover predicate returned at item (4), so item (6) never ran and can have \
+             taken no exemption — the two counters below come from the OTHER arm"
+        );
+
+        // ── MATCHED PAIR: the SAME touch, at the gate the skip actually lives in ─────────
+        let mut v6 = PeriodVerdicts::for_period(&live, &board, proposer);
+        let specified =
+            stack_choices_are_all_specified(&board, proposer, &[], Some(&cover), &mut v6);
+        assert!(
+            specified,
+            "REACH-GUARD: the resolution gate must run to completion under the exempting \
+             certificate, else its skip count is a truncation"
+        );
+        assert_eq!(
+            v6.conjunct6_frozen_skips() as usize,
+            cover.frozen_ids.len(),
+            "R21(b-placement-B) matched pair: the SAME {} proven-frozen ids item (4) scanned \
+             are the ones the resolution gate exempts",
+            cover.frozen_ids.len()
+        );
+    }
+
+    /// R17 — ID FRESHNESS ON THE DRIVEN DUMPS, AND `normalize_for_loop` PRESERVES EVERY
+    /// `StackEntry.id`.
+    ///
+    /// CR 608.1 + CR 104.4b. The frozen-prefix exemption is the ONE place 5d makes the
+    /// resolution gate strictly NARROWER than HEAD, and its soundness rests on a fixture that
+    /// is structurally unconstructible: *a window whose prefix is identity-stable across every
+    /// sampled frame while an exempted entry DOES announce or resolve in the driven period*.
+    /// Both disjuncts die on one fact — an entry that RESOLVED inside the window has RETIRED
+    /// its `StackEntry.id` (ids come from the monotone `next_object_id`), and an entry that
+    /// ANNOUNCED inside the window was absent from the oldest window frame, which the
+    /// exemption requires presence in. The second is definitional; the first is the invariant
+    /// this row asserts, since a fixture cannot.
+    ///
+    /// ARM 3 is the cross-frame comparison's unstated dependency, stated: `certified_period_touch`
+    /// compares `StackEntry.id` across frames, and `normalize_for_loop`'s products still feed
+    /// `loop_states_equal` / `loop_states_cover_modulo_growth*` (CR 104.4b equality), so an id
+    /// rewrite inside a function whose stated job is zeroing volatile monotone fields is
+    /// exactly the plausible future regression.
+    ///
+    /// REVERT-PROBE (arm 3, EXECUTED IN-TEST as an instrument-liveness control): zero one id in
+    /// a constructed normalized clone ⇒ the comparison must report a mismatch. REVERT-PROBE
+    /// (arms 1/2): inject a synthetic re-push of a retired id into the observed sequence ⇒ the
+    /// revival assertion FLIPS.
+    ///
+    /// ⚠ SCOPE: "both dumps" is the two TRACKED dumps. F4 is untracked until §5 U5.
+    #[test]
+    fn r17_a_retired_stack_entry_id_never_returns_and_normalization_preserves_it() {
+        use std::collections::HashSet;
+
+        for (name, gz) in TRACKED_DUMPS {
+            let mut state = dump_state(gz);
+            let mut retired: HashSet<ObjectId> = HashSet::new();
+            let mut prev: HashSet<ObjectId> = HashSet::new();
+            let mut announcements = 0usize;
+            let mut resolutions = 0usize;
+            let mut revivals: Vec<(usize, ObjectId)> = Vec::new();
+            let mut normalization_checks = 0usize;
+            let mut beats = 0usize;
+
+            for beat in 0..40usize {
+                beats = beat;
+                let cur: HashSet<ObjectId> = state.stack.iter().map(|e| e.id).collect();
+                for id in cur.difference(&prev) {
+                    announcements += 1;
+                    if retired.contains(id) {
+                        revivals.push((beat, *id));
+                    }
+                }
+                for id in prev.difference(&cur) {
+                    resolutions += 1;
+                    retired.insert(*id);
+                }
+                prev = cur;
+
+                // ── ARM 3, on every beat carrying a stack ────────────────────────────────
+                if !state.stack.is_empty() {
+                    let ids =
+                        |s: &GameState| -> Vec<ObjectId> { s.stack.iter().map(|e| e.id).collect() };
+                    let before = ids(&state);
+                    let normalized = state.normalize_for_loop();
+                    assert_eq!(
+                        ids(&normalized),
+                        before,
+                        "[{name}] beat {beat}: ARM 3 — `normalize_for_loop` zeroes \
+                         `next_object_id` and clears trigger identity; rewriting a \
+                         `StackEntry.id` would break both `certified_period_touch`'s \
+                         cross-frame comparison and CR 104.4b equality"
+                    );
+                    // INSTRUMENT-LIVENESS CONTROL: the comparison must be able to SEE a
+                    // rewrite. Without it, `ids(..) == before` proves nothing about the
+                    // detector, only about this board.
+                    let mut rewritten = normalized;
+                    rewritten.stack[0].id = ObjectId(u64::MAX);
+                    assert_ne!(
+                        ids(&rewritten),
+                        before,
+                        "[{name}] beat {beat}: the arm-3 comparison must FLIP on a rewritten id"
+                    );
+                    normalization_checks += 1;
+                }
+
+                if announcements >= 3 && resolutions >= 3 && normalization_checks >= 3 {
+                    break;
+                }
+                if dump_drive_one_beat(&mut state).is_err() {
+                    break;
+                }
+            }
+
+            // ── PAIRED POSITIVE REACH-GUARD: the population is non-empty in BOTH directions
+            assert!(
+                announcements >= 3 && resolutions >= 3,
+                "[{name}] REACH-GUARD: the invariant must be checked over a population that \
+                 really announces AND really resolves, else it passes over nothing. \
+                 {announcements} announcements / {resolutions} resolutions in {beats} beats"
+            );
+            assert!(
+                normalization_checks >= 3,
+                "[{name}] REACH-GUARD: arm 3 must have run against a NON-EMPTY stack; \
+                 {normalization_checks} checks"
+            );
+            assert!(
+                revivals.is_empty(),
+                "[{name}] ARMS 1/2 — CR 608.1: an id that left the stack must never reappear \
+                 on it. `StackEntry.id` is drawn from the monotone `next_object_id`, whose \
+                 only two plain (non-`+= 1`) production assignments write THROWAWAY CLONES \
+                 (`effects/prepare.rs`'s simulated clone and `normalize_for_loop`'s comparand). \
+                 Revived: {revivals:?}"
+            );
+        }
+    }
+
+    /// R27 (a2) — THE SEAM: EVERY BOARD `certified_period_touch` HANDS THE CLASSIFIER IS AN
+    /// UN-NORMALIZED EVALUATION BOARD.
+    ///
+    /// CR 732.2a + CR 104.4b. Announcement and resolution are evaluated against the frame that
+    /// CARRIES the pair; a `normalize_for_loop` product zeroes `next_object_id`, so a
+    /// resolution evaluated against one allocates `ObjectId(0)` over a live object. The window
+    /// carrier is therefore the sample's `live` half, never its `normalized` half.
+    ///
+    /// The matched pair is the two halves of the SAME ring, one argument apart — the
+    /// `.normalized` arm is rounds 13–33's carrier, executed here as an instrument-liveness
+    /// control, so the `!= 0` assertion cannot be true for want of a board that could fail it.
+    ///
+    /// ⚠ WHAT THIS ARM DOES NOT COVER: the mint's own carrier CHOICE (`ring_live` in
+    /// `game::engine::bounded_cycle_offer`) is pinned structurally by
+    /// `game::engine`'s `the_period_touch_window_is_carried_by_the_live_half`, because a test
+    /// that builds its own window cannot flip on an edit to the mint's.
+    #[test]
+    fn r27_a2_every_announced_pair_carries_an_unnormalized_evaluation_board() {
+        for (name, gz) in TRACKED_DUMPS {
+            let (beat, board) = drive_dump_until(gz, 80, has_frozen_window).unwrap_or_else(|| {
+                panic!("REACH-GUARD [{name}]: no driven beat carried a usable window")
+            });
+            assert_ne!(
+                board.next_object_id, 0,
+                "[{name}] beat {beat}: the LIVE board's allocator cursor must be non-zero, \
+                 else the axis this row is keyed to cannot discriminate"
+            );
+
+            let live: Vec<&GameState> = board.loop_detect_ring.iter().map(|f| &f.live).collect();
+            let norm: Vec<&GameState> = board
+                .loop_detect_ring
+                .iter()
+                .map(|f| &f.normalized)
+                .collect();
+            let touch = certified_period_touch(
+                &live[live.len() - 2..],
+                &board,
+                PeriodCertification::BoardCovered,
+            );
+            assert!(
+                !touch.announced.is_empty(),
+                "[{name}] beat {beat}: REACH-GUARD — the announced half must be non-empty, \
+                 else the universal below quantifies over nothing"
+            );
+            assert!(
+                touch
+                    .announced
+                    .iter()
+                    .all(|(frame, _)| frame.next_object_id != 0),
+                "[{name}] beat {beat}: (a2) every carrying frame must be an EVALUATION board. \
+                 {} of {} announced pairs carry a zeroed allocator cursor",
+                touch
+                    .announced
+                    .iter()
+                    .filter(|(f, _)| f.next_object_id == 0)
+                    .count(),
+                touch.announced.len()
+            );
+
+            // ── INSTRUMENT-LIVENESS CONTROL: rounds 13–33's carrier, one argument apart ──
+            let control = certified_period_touch(
+                &norm[norm.len() - 2..],
+                &board,
+                PeriodCertification::BoardCovered,
+            );
+            assert_eq!(
+                control.announced.len(),
+                touch.announced.len(),
+                "[{name}] the control must observe the SAME announcements — normalization \
+                 preserves every `StackEntry.id` (R17 arm 3), so only the CARRIER differs"
+            );
+            assert!(
+                control
+                    .announced
+                    .iter()
+                    .filter(|(_, e)| board.stack.iter().all(|s| s.id != e.id))
+                    .all(|(frame, _)| frame.next_object_id == 0),
+                "[{name}] the control arm must really carry ZEROED boards for the pairs whose \
+                 carrying frame is a RING frame; if it did not, the (a2) assertion above \
+                 would be true of any board and would prove nothing"
+            );
+        }
+    }
+
+    /// R16 (ii-b) — THE MAX SPEND ACROSS MINTABLE BEATS SATURATES THE CAP, AND IT DOES SO
+    /// AWAY FROM THE BEAT THE CORPUS OFFERS ON.
+    ///
+    /// CR 732.2a. (ii-a)'s companion, and the reason the two are SPLIT: exhaustion at a
+    /// non-offering beat is a fail-closed refusal on a beat that was refusing anyway — the
+    /// budget's stall-bounding job — while exhaustion at an OFFERING beat is a starved
+    /// acceptance and a defect. This arm records the first half on a real driven board.
+    ///
+    /// MEASURED, not predicted: at dellian beat 14 (`ring=2 stack=154 frozen=152`) the mint
+    /// spends the FULL cap and refuses `NoCertification`; the corpus's one offering beat
+    /// (dina, integration row `r16_the_offering_beats_probe_demand_is_exactly_measured`)
+    /// spends 13 and is NOT denied. Same seam, same cap, opposite sides of the budget.
+    ///
+    /// REVERT-PROBE: raise `PROBE_BUDGET` above dellian's unexempted demand (measured 96–107
+    /// at these beats) ⇒ `denied` goes false ⇒ FLIPS. Lowering it cannot flip this arm, which
+    /// is exactly why the offering-beat row is a separate one.
+    #[test]
+    fn r16_ii_b_a_non_offering_mintable_beat_saturates_the_probe_budget() {
+        use crate::game::engine::{try_offer_bounded_cycle_shortcut_metered, ProbeCap};
+        use crate::types::game_state::WaitingFor;
+
+        let (beat, board) = drive_dump_until(TRACKED_DUMPS[1].1, 80, has_frozen_window)
+            .expect("REACH-GUARD: the dellian drive must reach a mintable beat");
+        let proposer = board.active_player;
+        let mut at_priority = board.clone();
+        at_priority.waiting_for = WaitingFor::Priority { player: proposer };
+        assert!(
+            at_priority.last_loop_action_sequence.is_empty()
+                && at_priority.loop_detect_ring.len() >= 2,
+            "REACH-GUARD beat {beat}: steps (1)/(1b)/(2)/(2b) must all pass, else the mint \
+             refuses above the classifier and spends nothing for a reason unrelated to cost"
+        );
+        assert!(
+            at_priority.stack.len() > PROBE_BUDGET as usize,
+            "REACH-GUARD beat {beat}: the beat must carry more entries than the cap can pay \
+             for, else saturation is not reachable at all; stack {} cap {PROBE_BUDGET}",
+            at_priority.stack.len()
+        );
+
+        let (outcome, meter) =
+            try_offer_bounded_cycle_shortcut_metered(&at_priority, false, ProbeCap::Shipped);
+        assert!(
+            outcome.is_err(),
+            "R16(ii-b): this beat must NOT offer — the whole point of the split is that \
+             saturation here is a refusal on a beat that was refusing anyway. Got {outcome:?}"
+        );
+        assert_eq!(
+            (meter.spent, meter.denied),
+            (PROBE_BUDGET, true),
+            "R16(ii-b) beat {beat}: the max observable spend at the shipped cap IS the cap, \
+             and the exhaustion is LATCHED so it can be attributed rather than inferred. \
+             meter {meter:?}, stack {}",
+            at_priority.stack.len()
         );
     }
 

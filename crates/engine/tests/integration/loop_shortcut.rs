@@ -8055,6 +8055,102 @@ fn dina_offering_beat_certifies_through_basis_b_and_exempts_nothing() {
     );
 }
 
+/// R16 (i) + (ii-a) + (iv) — THE BUDGET DOES NOT STARVE THE CORPUS'S ACCEPTANCE BEAT, ITS
+/// DEMAND THERE IS EXACTLY MEASURED, AND THE MINT DOES NOT STALL.
+///
+/// CR 732.2a. Without this row the per-mint probe cap is a number nobody checked against the
+/// fixture it has to serve — which is exactly how the shipped `12` came to starve this beat by
+/// one charge.
+///
+/// (i) the offer still fires at the shipped cap. (ii-a) the cap does NOT bind there
+/// (`denied == false`) — note that `spent <= cap` is true by construction of the budget, so
+/// the non-vacuous form of (ii-a) is the denial flag, not the inequality.
+///
+/// THE EXACT-DEMAND PIN is what makes (ii-a) discriminating rather than a restatement. The
+/// demand `D` is SEARCHED through the seam's own closed cap domain, from zero upward, so it
+/// is measured on this run instead of copied from a log: every cap below `D` must REFUSE and
+/// `D` itself must OFFER. A budget re-derivation that drifts the true demand fails here with
+/// the new number in the message.
+///
+/// (iv) THE WALL-CLOCK. The whole mint — memo construction, the D2 window work
+/// (`certified_period_touch` + `bounded_cycle_pin_slots_for_window` over up to
+/// `LOOP_DETECT_RING_CAP` windows) and the budgeted classification — is timed end to end.
+/// ⚠ THE CEILING IS DEBUG-SCALED AND SAYS SO: the plan's ~1 s figure is a player-facing
+/// RELEASE budget, and this binary is `-C opt-level=0`. The measured figure is carried in the
+/// message so the release claim is derived from a number rather than asserted.
+///
+/// REVERT-PROBE: lower `PROBE_BUDGET` below the measured `D` ⇒ (i) fails
+/// (`dina_driven_to_bounded_offer` cannot reach an offer) ⇒ FLIPS. Round 2 measured exactly
+/// that: at `12` this row and six shipped siblings go red together.
+#[test]
+fn r16_the_offering_beats_probe_demand_is_exactly_measured() {
+    use engine::game::engine::{
+        try_offer_bounded_cycle_shortcut_metered, BoundedOfferRefusal, ProbeCap,
+    };
+
+    let (state, beat) = dina_driven_to_bounded_offer();
+    let (proposer, _, _) = bounded_offer_parts(&state);
+    let replay = replay_at_priority(&state, proposer);
+
+    // ── (i) + (iv): the shipped cap, timed ───────────────────────────────────────────────
+    let started = std::time::Instant::now();
+    let (shipped, meter) =
+        try_offer_bounded_cycle_shortcut_metered(&replay, false, ProbeCap::Shipped);
+    let elapsed = started.elapsed();
+    assert!(
+        shipped.is_ok(),
+        "R16(i) beat {beat}: the corpus's acceptance offer must FIRE at the shipped cap. \
+         Got {shipped:?}, meter {meter:?}"
+    );
+    assert!(
+        !meter.denied,
+        "R16(ii-a) beat {beat}: the cap must not BIND at the beat that offers — `spent <= cap` \
+         is true of every mint by construction, so the denial flag is the only non-vacuous \
+         form of this claim. meter {meter:?}"
+    );
+    assert!(
+        meter.spent > 0,
+        "REACH-GUARD: the mint must have CLASSIFIED something, else `!denied` is true for \
+         want of anything to charge. meter {meter:?}"
+    );
+    assert!(
+        elapsed < std::time::Duration::from_secs(10),
+        "R16(iv) beat {beat}: the whole mint took {elapsed:?}, which is past even the \
+         debug-scaled stall ceiling. Measured at the time of writing: ~12 ms for this beat's \
+         `ring=3 stack=10` mint in an unoptimized build. meter {meter:?}"
+    );
+
+    // ── THE EXACT-DEMAND PIN ─────────────────────────────────────────────────────────────
+    let demand = meter.spent;
+    let (at_demand, demand_meter) =
+        try_offer_bounded_cycle_shortcut_metered(&replay, false, ProbeCap::Lowered(demand));
+    assert!(
+        at_demand.is_ok() && !demand_meter.denied,
+        "R16: a cap of exactly the measured demand ({demand}) must still OFFER — that is what \
+         makes {demand} the DEMAND rather than an upper bound. Got {at_demand:?}, \
+         meter {demand_meter:?}"
+    );
+    for lowered in 0..demand {
+        let (starved, starved_meter) =
+            try_offer_bounded_cycle_shortcut_metered(&replay, false, ProbeCap::Lowered(lowered));
+        assert!(
+            matches!(starved, Err(BoundedOfferRefusal::UnspecifiedChoiceWindow)),
+            "R16: every cap below the measured demand must refuse fail-CLOSED at the choice \
+             gate. cap {lowered} of {demand} gave {starved:?}, meter {starved_meter:?}"
+        );
+        assert!(
+            starved_meter.denied,
+            "R16: …and the refusal must be attributable to the BUDGET, not to an unrelated \
+             conjunct. cap {lowered}, meter {starved_meter:?}"
+        );
+    }
+    assert!(
+        demand > 1,
+        "REACH-GUARD: a demand of 0 or 1 would make the starvation sweep above empty or \
+         trivial; measured {demand} at beat {beat}"
+    );
+}
+
 /// Drive a `GameScenario`-built board until the ENGINE writes a bounded offer, declining
 /// nothing and injecting nothing. Returns the beat, or `None` if the cap ran out. Reads
 /// `state.waiting_for` — the production Path D write — never an out-of-band predicate call.
