@@ -17,7 +17,7 @@ use crate::game::{effects, replacement};
 use crate::types::ability::{
     Effect, QuantityExpr, RepeatContinuation, ResolvedAbility, TargetChoiceTiming,
 };
-use crate::types::game_state::GameState;
+use crate::types::game_state::{GameState, WaitingFor};
 use crate::types::proposed_event::ProposedEvent;
 
 use crate::analysis::resource::ProbeBudget;
@@ -118,7 +118,26 @@ pub(crate) fn probe_resolution(
     });
     // CR 732.2a: an unanswered prompt is a choice the certificate cannot
     // describe.
-    if std::mem::discriminant(&work.waiting_for) != std::mem::discriminant(&state.waiting_for) {
+    //
+    // KEYED ON "IS THERE A PROMPT AT ALL", not merely on "does it differ from the
+    // incoming variant". The struck form compared only `WaitingFor` DISCRIMINANTS: if
+    // the incoming board already carried a non-priority variant and the resolver parked
+    // a NEW prompt of that SAME variant, the discriminants matched and the resolution
+    // was reported CHOICE-FREE. That is fail-open in the one direction this function
+    // exists to close, and comparing against the incoming variant can never see it —
+    // the incoming variant is exactly what masks it.
+    //
+    // The incoming board is a RESOLUTION BOARD (see this function's contract above), so
+    // a non-priority `waiting_for` on entry is itself a reason to refuse rather than a
+    // baseline to compare against. The discriminant test is KEPT alongside, so a board
+    // that entered at priority and left at a different variant still refuses.
+    //
+    // Strictly stronger than the struck form on every input, so it can only ever cost
+    // COVERAGE (a missed offer), never soundness — the same direction as the
+    // budget-exceeded and empty-derivation arms around it.
+    if !matches!(work.waiting_for, WaitingFor::Priority { .. })
+        || std::mem::discriminant(&work.waiting_for) != std::mem::discriminant(&state.waiting_for)
+    {
         return ResolutionProbe::Prompted;
     }
     // FAIL-CLOSED on an empty set. Measured: every empty derivation observed was
@@ -928,6 +947,82 @@ mod tests {
     ///
     /// CONJUNCT 2 (the population gate) is asserted as a conjunct that FAILS the
     /// test, not promised in prose: the set of arms observed must equal all six.
+    /// CR 732.2a — a prompt already parked on the incoming board must REFUSE the probe,
+    /// even though the resolution leaves the variant unchanged.
+    ///
+    /// The struck guard compared only `WaitingFor` DISCRIMINANTS between the probed clone
+    /// and the incoming board. When the incoming board already carries a non-priority
+    /// variant, the two discriminants are equal for a resolution that re-parks the SAME
+    /// variant (and, in the reduced form asserted here, for one that simply leaves the
+    /// standing prompt in place) — so the probe reported CHOICE-FREE while an unanswered
+    /// choice sat on the board. Fail-open, in the one direction this function closes.
+    ///
+    /// MATCHED PAIR, which is what makes this non-vacuous:
+    /// * NEGATIVE arm — the same ability, same board, `waiting_for` parked at a real
+    ///   resolution-time prompt (`ReplacementChoice`, CR 616.1) ⇒ MUST be `Prompted`.
+    /// * POSITIVE arm — the same ability on the same board at `Priority` ⇒ MUST still
+    ///   reach `Events`. Without it, a probe that refused EVERYTHING would pass the
+    ///   negative arm, and the row would prove nothing.
+    ///
+    /// REVERT-PROBE (run, recorded): restore the guard to the bare
+    /// `discriminant(&work.waiting_for) != discriminant(&state.waiting_for)` ⇒ the
+    /// NEGATIVE arm FLIPS TO FAIL (the probe returns `Events`) while the POSITIVE arm
+    /// stays green — i.e. the new conjunct, not the old one, is what carries this row.
+    #[test]
+    fn a_prompt_standing_on_the_incoming_board_refuses_the_probe() {
+        let base = probe_board();
+        let parked = WaitingFor::ReplacementChoice {
+            player: PlayerId(0),
+            candidate_count: 2,
+            candidates: Vec::new(),
+        };
+        assert!(
+            !matches!(base.waiting_for, WaitingFor::ReplacementChoice { .. }),
+            "reach-guard: the parked variant must DIFFER from the board's own starting \
+             variant, or the negative arm could pass for the wrong reason"
+        );
+
+        let mut refused = 0usize;
+        for (name, a) in six_allow_listed_arms(&base) {
+            // POSITIVE — at priority, this arm is known to reach the recorder.
+            match probe_resolution(&base, &a, &mut budget()) {
+                ResolutionProbe::Events(events) => assert!(
+                    !events.is_empty(),
+                    "{name}: positive control must derive a non-empty event set"
+                ),
+                ResolutionProbe::Prompted => panic!(
+                    "{name}: POSITIVE CONTROL FAILED — this arm must still be probeable \
+                     from a priority board, otherwise the negative arm below is vacuous"
+                ),
+            }
+
+            // NEGATIVE — same ability, same board, a prompt already standing.
+            let mut stalled = base.clone();
+            stalled.waiting_for = parked.clone();
+            assert_eq!(
+                std::mem::discriminant(&stalled.waiting_for),
+                std::mem::discriminant(&parked),
+                "{name}: the resolution must not clear the standing prompt, or the \
+                 discriminants would differ and the struck guard would have caught it too \
+                 — which would make this row prove nothing about the new conjunct"
+            );
+            assert!(
+                matches!(
+                    probe_resolution(&stalled, &a, &mut budget()),
+                    ResolutionProbe::Prompted
+                ),
+                "{name}: an UNANSWERED prompt on the incoming board is a choice the \
+                 certificate cannot describe — the probe must refuse it, not read the \
+                 equal discriminants as `unchanged`"
+            );
+            refused += 1;
+        }
+        assert_eq!(
+            refused, 6,
+            "reach-guard: the row must range over all six allow-listed arms"
+        );
+    }
+
     #[test]
     fn derived_event_set_accounts_for_every_board_axis_on_all_six_allow_listed_arms() {
         let state = probe_board();
