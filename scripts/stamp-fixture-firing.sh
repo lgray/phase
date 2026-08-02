@@ -144,8 +144,60 @@ carrier_preservation_control() {
   return 1
 }
 
+# arm 6 — PRE-FLIGHT: a carrier whose stack entry has LEFT is pruned from what gets
+# written, and the pruned map actually reaches the fixture.
+#
+# This arm exists because the prune shipped BROKEN in the previous round. The scoping to
+# live ids was computed correctly into `$sf_existing`, but the write-back was gated on
+# `($sf | length) > 0` — "did we derive any NEW carriers" — so in the one case the prune
+# is FOR, a dump whose only change is that an entry left the stack, `$sf` was empty, the
+# assignment was skipped, and the stale key survived into the written fixture. The prune
+# was computed and then discarded.
+#
+# Every sub-arm below is keyed on a dump whose live carriers ALREADY exist, because that
+# is what forces `$sf` empty and reaches the gate. Arm 1's key-blind comparison cannot
+# see this and arm 5 does not construct a departed entry, which is how it got through.
+stale_carrier_control() {
+  local run pruned emptied untouched
+  run() {   # run <dump-json> — stamp it, print the resulting stack_trigger_firings
+    printf '%s' "$1" \
+      | jq -c -f <(printf '%s\n%s\n' "$(cat "$LIB")" \
+          'stamp_trigger_firing | (.gameState.stack_trigger_firings // null)') \
+        2>/dev/null || echo FAILED
+  }
+  local objs='"objects":{"7":{"base_trigger_definitions":[{"description":"D"}]}}'
+  local live='"stack":[{"id":9,"kind":{"type":"TriggeredAbility","data":{"source_id":7,"description":"D"}}}]'
+
+  # (a) THE REGRESSION ITSELF — entry 5 has left the stack, entry 9 is still on it and
+  #     already carries a canonical marker. `$sf` is empty here, which is the gate the
+  #     old form failed at. The stale key must be gone AND the live one must remain.
+  pruned="$(run "{\"gameState\":{$objs,$live,
+    \"stack_trigger_firings\":{\"9\":{\"Delayed\":null},\"5\":\"Ordinary\"}}}")"
+  # (b) EVERY carrier stale — the rebuilt map is `{}`, and `{}` must still be written.
+  #     A prune that only ever shrinks a non-empty map would pass (a) and fail here.
+  emptied="$(run "{\"gameState\":{$objs,\"stack\":[],
+    \"stack_trigger_firings\":{\"5\":\"Ordinary\"}}}")"
+  # (c) NEGATIVE CONTROL — nothing stale. The map must come through UNCHANGED, or (a)
+  #     and (b) would also be satisfied by a stamp that simply wipes the slot. This is
+  #     also the idempotence check: a re-run of an already-correct fixture writes nothing.
+  untouched="$(run "{\"gameState\":{$objs,$live,
+    \"stack_trigger_firings\":{\"9\":{\"Delayed\":null}}}}")"
+
+  if [ "$pruned" = '{"9":{"Delayed":null}}' ] \
+     && [ "$emptied" = '{}' ] \
+     && [ "$untouched" = '{"9":{"Delayed":null}}' ]; then
+    echo "CONTROL STALE_CARRIER_PRUNED=true pruned=$pruned all_stale=$emptied unchanged=$untouched"
+    return 0
+  fi
+  echo "CONTROL STALE_CARRIER_PRUNED=false pruned=$pruned all_stale=$emptied unchanged=$untouched" >&2
+  echo "  expected pruned={\"9\":{\"Delayed\":null}} all_stale={} unchanged={\"9\":{\"Delayed\":null}}" >&2
+  echo "  a departed stack entry's carrier is being carried forward — refusing to stamp" >&2
+  return 1
+}
+
 definition_shape_control || exit 1
 carrier_preservation_control || exit 1
+stale_carrier_control || exit 1
 
 rc=0
 for FIX in "$@"; do

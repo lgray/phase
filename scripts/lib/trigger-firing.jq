@@ -163,14 +163,32 @@ def stamp_trigger_firing:
          then .pending_trigger_firing =
                 _firing($objs; .pending_trigger.source_id; .pending_trigger.description)
          else . end)
+    # Assign whenever the REBUILT map differs from what is on the fixture — not merely
+    # when new carriers were derived. Gating on `($sf | length) > 0` dropped the prune
+    # above on the floor in exactly the case the prune exists for: a fixture whose only
+    # change is that an entry LEFT the stack derives no new carrier, so `$sf` is empty
+    # and the stale key survived into the written fixture. Comparing against the current
+    # map keeps this idempotent (a re-run writes nothing) and keeps it from touching
+    # trigger-free fixtures (an absent slot and a rebuilt `{}` compare equal under
+    # `// {}`), while still writing `{}` when every carrier the fixture had went stale.
     | (([ (.stack // [])[]
           | select(.kind.type == "TriggeredAbility")
-          | select(($sf_existing | has((.id|tostring))) | not)
-          | {key: (.id|tostring),
+          # BIND THE KEY FIRST. `$sf_existing | has((.id|tostring))` looks like it asks
+          # "is this entry already carried?", but jq evaluates a function argument against
+          # the INPUT of the pipe it sits in — here `$sf_existing`, not the stack entry.
+          # `.id` is absent on that object, so the argument was the literal string "null",
+          # `has` was ALWAYS false, and every live entry was re-derived and then allowed to
+          # override the canonical marker through `$sf_existing + $sf`. That silently
+          # rewrote `Delayed` to `Ordinary` — the CR 603.7a to CR 603.1 re-classification
+          # this file's header exists to refuse.
+          | (.id|tostring) as $k
+          | select(($sf_existing | has($k)) | not)
+          | {key: $k,
              value: _firing($objs; .kind.data.source_id; .kind.data.description)} ]
         | from_entries) as $sf
-       | if ($sf | length) > 0
-           then .stack_trigger_firings = ($sf_existing + $sf)
+       | ($sf_existing + $sf) as $sf_rebuilt
+       | if $sf_rebuilt != (.stack_trigger_firings // {})
+           then .stack_trigger_firings = $sf_rebuilt
            else . end)
     | (if ($rt != null and ($rt.kind.type? // "") == "TriggeredAbility"
            and (.resolving_trigger_firing // null) == null)

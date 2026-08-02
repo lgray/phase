@@ -167,10 +167,29 @@ transform() {   # transform <patched|unpatched>
 # truncated and a partial gzip stream written over it. The failure mode of a
 # fail-closed recipe was destruction of the very artifact it refused to rewrite.
 # `stamp-fixture-firing.sh` already had the right shape; this matches it.
+# SINGLE DEFINITION of the staging rule, because the previous code had three copies of
+# it and they drifted apart in the one way that mattered.
+#
+# The stage file MUST live in `dirname "$dest"`. `mv` is atomic only WITHIN a filesystem;
+# across a boundary it degrades to copy-then-unlink, and an interruption mid-copy leaves
+# `$dest` truncated — the exact destruction this staging exists to prevent. `mktemp -t`
+# resolves to `$TMPDIR` (`/tmp` here, a separate mount from the checkout: measured
+# `df --output=target` gives `/tmp` vs `/home`), so the previous form ADVERTISED atomicity
+# it could not deliver, and elsewhere depended silently on the operator's mount layout.
+#
+# The self-tests below call this too. They used to re-spell the recipe with their own
+# `mktemp -t`, which is why a self-test whose whole subject is atomicity could still pass
+# against a non-atomic production path: it was exercising its own copy, and its `$tmp` and
+# its destination happened to share a filesystem. A control that re-implements the thing
+# it controls is not a control.
+stage_path() {   # stage_path <destination> — a stage file on $destination's OWN filesystem
+  mktemp "$(dirname "$1")/.migrate-dump-stage-XXXXXX.json.gz"
+}
+
 regenerate() {   # regenerate <patched|unpatched> <destination>
   local mode="$1" dest="$2" staged
   mkdir -p "$(dirname "$dest")"
-  staged="$(mktemp -t migrate-dump-stage-XXXXXX.json.gz)"
+  staged="$(stage_path "$dest")"
   if ! unzip -p "$PRISTINE" | transform "$mode" | gzip -9 -n > "$staged"; then
     rm -f "$staged"
     echo "REGENERATION FAILED (fail-closed, $dest left untouched)" >&2
@@ -209,7 +228,7 @@ selftests() {
   set +e
   # Same staged-write discipline as `regenerate`; the point is that `$tmp/dest` is
   # never the redirection target, so an abort cannot reach it.
-  ( staged="$(mktemp -t migrate-dump-stage-XXXXXX.json.gz)"
+  ( staged="$(stage_path "$tmp/dest")"
     if ! transform patched < "$tmp/in.json" | gzip -9 -n > "$staged"; then
       rm -f "$staged"; exit 1
     fi
@@ -228,7 +247,7 @@ selftests() {
   # (a′) POSITIVE control — a SUCCEEDING run must actually replace the destination,
   # or (a) would pass simply because nothing ever writes.
   printf '%s\n' '{"gameState":{"turn_number":7}}' > "$tmp/ok.json"
-  ( staged="$(mktemp -t migrate-dump-stage-XXXXXX.json.gz)"
+  ( staged="$(stage_path "$tmp/dest")"
     transform patched < "$tmp/ok.json" | gzip -9 -n > "$staged"
     mv "$staged" "$tmp/dest" ) >/dev/null 2>&1
   if [ "$(sha256sum "$tmp/dest" | cut -d' ' -f1)" = "$sentinel" ]; then
