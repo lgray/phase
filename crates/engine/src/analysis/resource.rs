@@ -13366,4 +13366,756 @@ mod tests {
             v_sig.denied()
         );
     }
+
+    // ───────────────────────────────────────────────────────────────────────────────────
+    // §6 U3 ROWS — R14 / R19 / R29 / R31(completeness) / R32
+    // ───────────────────────────────────────────────────────────────────────────────────
+
+    /// Shape (A): a proposer-controlled triggered ability declaring exactly ONE mandatory
+    /// PLAYER target (CR 115.2 "target opponent"), with the announcement ALREADY MADE.
+    ///
+    /// The announcement is load-bearing, not decoration: `optional_cleared_classification`
+    /// resolves the ability on the board `resolve_top` would hand it, and an UNANNOUNCED
+    /// target derives no events at all, which `probe_resolution` classifies `Prompted`
+    /// (§6 R11). A shape-(A) fixture without announced targets therefore has residual
+    /// `MayPrompt` for every slot vector and R19's transition could never fire.
+    fn u3_shape_a_entry(src: ObjectId, id: u64) -> StackEntry {
+        use crate::types::ability::{
+            ControllerRef, Effect, QuantityExpr, ResolvedAbility, TargetFilter, TargetRef,
+            TypedFilter,
+        };
+        let mut ability = ResolvedAbility::new(
+            Effect::LoseLife {
+                amount: QuantityExpr::Fixed { value: 1 },
+                target: Some(TargetFilter::Typed(TypedFilter {
+                    type_filters: vec![],
+                    controller: Some(ControllerRef::Opponent),
+                    properties: vec![],
+                })),
+            },
+            vec![TargetRef::Player(PlayerId(1))],
+            src,
+            PlayerId(0),
+        );
+        ability.optional = true;
+        StackEntry {
+            id: ObjectId(id),
+            source_id: src,
+            controller: PlayerId(0),
+            kind: StackEntryKind::TriggeredAbility {
+                source_id: src,
+                ability: Box::new(ability),
+                condition: None,
+                trigger_event: None,
+                description: None,
+                source_name: String::new(),
+                subject_match_count: None,
+                die_result: None,
+            },
+        }
+    }
+
+    /// R14 — THE DEGENERATE WINDOW ANNOUNCES `current.stack`, ELEMENT FOR ELEMENT.
+    ///
+    /// CR 732.2a + CR 608.1. With NO window frame there is no transition to observe, so the
+    /// honest degenerate reading is *"every current entry may announce"* — which is exactly
+    /// what makes `bounded_cycle_pin_slots` a thin alias of the window enumerator rather
+    /// than a second authority.
+    ///
+    /// ⚠ THE COMPARISON IS AGAINST THE TEST'S OWN INPUT DATA, NEVER AGAINST A SECOND CALL OF
+    /// THE FUNCTION UNDER TEST. Rounds 5/6 wrote this row as
+    /// `bounded_cycle_pin_slots_for_window(&certified_period_touch(&[], state, ..), p)` vs
+    /// `bounded_cycle_pin_slots(state, p)` — post-U3 the same function body on both sides, so
+    /// the equality held by construction AND the stated revert-probe edited a dependency BOTH
+    /// sides call. Round 7's replacement (a HEAD-captured frozen point sequence) was struck in
+    /// turn: U2's shape-(B) mint publishes on beats HEAD refuses, and a per-beat sequence
+    /// embeds `ObjectId` literals that a fixture re-dump renumbers. The PROPERTY against a
+    /// CONSTRUCTED frame has neither failure mode.
+    ///
+    /// REVERT-PROBE that actually flips: restore round 4's `window.len() < 2 ⇒ announced`
+    /// EMPTY branch ⇒ `announced.len() == 0` while the constructed stack is non-empty ⇒ the
+    /// element-for-element equality fails on the LENGTH assertion alone, and the ≥1-point
+    /// reach-guard fails with it.
+    #[test]
+    fn r14_the_degenerate_window_announces_the_current_stack_element_for_element() {
+        use crate::game::engine::{bounded_cycle_pin_slots_for_window, entry_publishes_pin_slots};
+
+        let (mut state, src) = u2_relief_board();
+        // ≥2 entries, deliberately HETEROGENEOUS: the first publishes for P0, the second is
+        // controlled by P1 and the mint refuses it. `announced` must carry BOTH — the touch
+        // enumerates the period, the mint filters it — so an `announced` accidentally built
+        // from the mint's accepted set would fail the element-for-element equality.
+        let publishing = u2_shape_b_entry(src, 9140, u2_draw_effect(), |_| {});
+        let mut foreign = u2_shape_b_entry(src, 9141, u2_draw_effect(), |_| {});
+        foreign.controller = PlayerId(1);
+        state.stack.push_back(publishing);
+        state.stack.push_back(foreign);
+        assert!(
+            state.stack.len() >= 2,
+            "NON-DEGENERACY: a one-entry stack would make the ordering half of the claim \
+             untestable and an empty one would make the whole property vacuous"
+        );
+
+        let expected: Vec<(usize, ObjectId)> = state
+            .stack
+            .iter()
+            .enumerate()
+            .map(|(i, e)| (i, e.id))
+            .collect();
+
+        for cert in [
+            PeriodCertification::BoardCovered,
+            PeriodCertification::BoardEqualOnly,
+            PeriodCertification::ResourceSignatureOnly,
+        ] {
+            let touch = certified_period_touch(&[], &state, cert);
+            let observed: Vec<(usize, ObjectId)> = touch
+                .announced
+                .iter()
+                .enumerate()
+                .map(|(i, (_, e))| (i, e.id))
+                .collect();
+            assert_eq!(
+                observed, expected,
+                "{cert:?}: the degenerate window's announced pairs are `current.stack` \
+                 element for element, IN ORDER"
+            );
+            assert!(
+                touch
+                    .announced
+                    .iter()
+                    .all(|(frame, _)| std::ptr::eq(*frame, &state)),
+                "{cert:?}: every degenerate pair's carrying frame IS `current` — there is no \
+                 other frame for it to be"
+            );
+            assert!(
+                touch.frozen_ids.is_empty(),
+                "{cert:?}: with no window frame nothing is PROVEN frozen, on ANY certificate \
+                 value — the empty-window branch returns before the frozen walk"
+            );
+        }
+
+        // PAIRED POSITIVE REACH-GUARD, and it is what stops the property collapsing into a
+        // vacuous truth about a stack nothing publishes on.
+        let touch = certified_period_touch(&[], &state, PeriodCertification::ResourceSignatureOnly);
+        let points = bounded_cycle_pin_slots_for_window(&touch, PlayerId(0));
+        assert!(
+            !points.is_empty(),
+            "reach-guard: at least one constructed entry must be ACCEPTED by the mint, or the \
+             equality above would hold over a period the enumerator never publishes from"
+        );
+        assert!(
+            entry_publishes_pin_slots(&state, &state.stack[1], PlayerId(0)).is_none(),
+            "reach-guard, other direction: the P1-controlled entry is REFUSED by the mint yet \
+             still appears in `announced` — proof the touch is the period's enumeration and \
+             not the mint's accepted set"
+        );
+    }
+
+    /// R19 — THE CACHED VERDICT HOLDS NOTHING SLOTS-DERIVED.
+    ///
+    /// The named regression row for the branch NOT taken (key the memo on
+    /// `(StackEntry.id, slots)`). If that option's risk returns one layer over, this is what
+    /// loses.
+    ///
+    /// **(a) BEHAVIOURAL.** `state` and `entry` are held FIXED and only `slots` varies, over
+    /// FOUR cases — `{}`, `{target}`, `{may}`, `{target, may}`. The vector is SHAPE-DEPENDENT
+    /// and both shapes are asserted, because D3 re-expressed the gate as *"`may` pinned AND
+    /// (`target.is_none()` OR target pinned)"*:
+    /// * **(a-A) shape (A)** — targeted AND optional ⇒ `[None, None, None, Some(residual)]`.
+    /// * **(a-B) shape (B)** — may-only ⇒ `[None, None, Some(residual), Some(residual)]`.
+    ///
+    /// The `{may}` case is the one that DIFFERS between the shapes, and asserting BOTH is what
+    /// makes D3's `target.is_none()` disjunct load-bearing: with (a-A) alone, deleting that
+    /// disjunct changes nothing and the row cannot see it. The two SINGLETON cases are what
+    /// make both disjuncts load-bearing, which a 0/1/2-slot sweep could not do.
+    ///
+    /// **(b) STRUCTURAL.** `EntryVerdict` destructures EXHAUSTIVELY into
+    /// `{ published, primary, residual }`, all three produced by functions whose signatures
+    /// take NO slots, so a future slots-derived field is a COMPILE ERROR rather than a review
+    /// miss. ⚠ `..` IS FORBIDDEN ON THAT DESTRUCTURE. Adding e.g. `pub slots_digest: u64` to
+    /// `EntryVerdict` makes the line below **E0027**; rustc's own `help:` then suggests adding
+    /// `..`, which silently disarms the guard. THE E0027 IS THIS GUARD FIRING, NOT A COMPILE
+    /// ERROR TO FIX.
+    ///
+    /// REVERT-PROBE (a): collapse the design to an id-keyed cache of the RELIEF verdict —
+    /// i.e. adopt option 1's shape with an incomplete key — ⇒ every case returns the `{}`
+    /// verdict `None` ⇒ the fourth arm's `Some(residual)` assertion FLIPS TO FAIL. The paired
+    /// positive reach-guard is mandatory and is asserted: the last case must return `Some` on
+    /// the unmutated design, otherwise the leading `None`s pass over a relief that never
+    /// relieves anything.
+    #[test]
+    fn r19_the_relief_vector_varies_only_with_slots_and_the_cached_value_is_slots_free() {
+        use crate::game::engine::entry_publishes_pin_slots;
+        use crate::game::resolution_prompt::ResolutionChoiceFreedom;
+
+        let (mut state, src) = u2_relief_board();
+        // Two live opponents, so the shape-(A) announcement is a REAL choice rather than a
+        // forced one — the mint's own acceptance is what this row rides, not target scarcity.
+        let shape_a = u3_shape_a_entry(src, 9190);
+        let shape_b = u2_shape_b_entry(src, 9191, u2_draw_effect(), |_| {});
+        state.stack.push_back(shape_a.clone());
+        state.stack.push_back(shape_b.clone());
+
+        let pub_a = entry_publishes_pin_slots(&state, &shape_a, PlayerId(0))
+            .expect("(a-A) reach-guard: the shape-(A) fixture must reach the mint");
+        let target = pub_a
+            .target
+            .clone()
+            .expect("(a-A) reach-guard: shape (A) publishes its CR 601.2c announcement slot");
+        let may_a = pub_a
+            .may
+            .clone()
+            .expect("(a-A) reach-guard: shape (A) is optional, so it publishes its CR 603.5 gate");
+        let pub_b = entry_publishes_pin_slots(&state, &shape_b, PlayerId(0))
+            .expect("(a-B) reach-guard: the shape-(B) fixture must reach the mint");
+        assert!(
+            pub_b.target.is_none(),
+            "(a-B) reach-guard: shape (B) announces NOTHING, so it publishes no target slot — \
+             that `None` is exactly what the `{{may}}` case discriminates"
+        );
+        let may_b = pub_b
+            .may
+            .clone()
+            .expect("(a-B) reach-guard: shape (B) publishes its CR 603.5 gate");
+
+        let mut verdicts = PeriodVerdicts::for_period(&[], &state, PlayerId(0));
+        let f = verdicts
+            .frame_ix(&state)
+            .expect("reach-guard: the container holds the board the relief is asked about");
+
+        let relieved = |verdicts: &mut PeriodVerdicts<'_>,
+                        entry: &StackEntry,
+                        slots: &[DecisionSlot]|
+         -> bool {
+            matches!(
+                pinned_may_choice_relief(f, entry, verdicts, u2_scope(slots)),
+                Some(ResolutionChoiceFreedom::FreeUnlessReplacements(_))
+            )
+        };
+
+        // ── (a-A) shape (A): the gate needs BOTH slots ──────────────────────────────────
+        let vector_a = [
+            relieved(&mut verdicts, &shape_a, &[]),
+            relieved(&mut verdicts, &shape_a, std::slice::from_ref(&target)),
+            relieved(&mut verdicts, &shape_a, std::slice::from_ref(&may_a)),
+            relieved(&mut verdicts, &shape_a, &[target.clone(), may_a.clone()]),
+        ];
+        assert_eq!(
+            vector_a,
+            [false, false, false, true],
+            "(a-A) CR 603.5 + CR 601.2c: a targeted optional entry is relieved ONLY when both \
+             published slots are pinned. The two SINGLETON cases are what make both disjuncts \
+             of `may pinned AND (target.is_none() OR target pinned)` load-bearing"
+        );
+
+        // ── (a-B) shape (B): `target.is_none()` discharges the second conjunct outright ──
+        let vector_b = [
+            relieved(&mut verdicts, &shape_b, &[]),
+            relieved(&mut verdicts, &shape_b, std::slice::from_ref(&target)),
+            relieved(&mut verdicts, &shape_b, std::slice::from_ref(&may_b)),
+            relieved(&mut verdicts, &shape_b, &[target.clone(), may_b.clone()]),
+        ];
+        assert_eq!(
+            vector_b,
+            [false, false, true, true],
+            "(a-B) CR 601.2c: a may-only entry surfaces no announcement choice, so demanding a \
+             pinned target would refuse relief the mint's own schema fully describes. The \
+             `{{may}}` case is where the two shapes DIFFER — that difference is the whole \
+             reason D3's `target.is_none()` disjunct exists"
+        );
+
+        // ── (b) STRUCTURAL: the cached value is slots-free BY DESTRUCTURE ───────────────
+        // ⚠ NO `..`. A fourth field here is E0027 and the E0027 IS THIS GUARD FIRING.
+        let super::verdict_memo::EntryVerdict {
+            published,
+            primary,
+            residual,
+        } = verdicts.verdict(f, &shape_a);
+        assert!(
+            published.is_some() && matches!(primary, ResolutionChoiceFreedom::MayPrompt),
+            "(b) reach-guard: the destructured value must be the LIVE one this row's (a) arm \
+             consumed — a mint answer plus the CR 603.5 `MayPrompt` that makes relief the \
+             deciding layer"
+        );
+        assert!(
+            residual.is_some(),
+            "(b) reach-guard: the optional-cleared residual is computed BECAUSE a `may` slot \
+             is published — the field is not decorative"
+        );
+    }
+
+    /// R29 — THE CR 603.3c MID-CONSTRUCTION GUARD SURVIVES THE `FrameIx` REWRITE, AND IT
+    /// ANSWERS FROM THE CARRYING FRAME.
+    ///
+    /// Asserted AT THE RELIEF SEAM deliberately: an offer-level negative on this axis is
+    /// DOMINATED by conjunct (6)'s own refusals, and the relief has no upstream that can
+    /// satisfy it.
+    ///
+    /// * **(a) THE GUARD** — an entry the mint publishes a `target` slot for, that slot
+    ///   PINNED (so the mint half alone answers `true`), with the frame's
+    ///   `pending_trigger_entry = Some(entry.id)` ⇒ `false`.
+    /// * **(a′) MATCHED POSITIVE, byte-identical except the cursor** — `None` ⇒ `true`. This
+    ///   is the reach-guard: without it, (a) passes over a mint that published nothing.
+    /// * **(b) THE EQUALITY, NOT THE PRESENCE** — a cursor naming NO live entry
+    ///   (`ObjectId(u64::MAX)`) ⇒ still `true`, so the row pins `== Some(entry.id)` rather
+    ///   than "any cursor refuses". In-tree precedent for exactly this control on the sibling
+    ///   gate: `a_pinned_slot_skips_gate_three_and_six`'s gate-(1) control.
+    /// * **(c) WHICH BOARD** — the conjunct the 4-arg signature could not even express. The
+    ///   pair is driven from a RETAINED frame, then the two boards are CROSSED: (c1) carrying
+    ///   frame's cursor set, `current`'s clear ⇒ `false` (the carrying frame decides); (c2)
+    ///   carrying frame's cursor clear, `current`'s set ⇒ `true` (the live board does NOT
+    ///   decide for a retained pair). Byte-identical except which board holds the cursor.
+    ///
+    /// REVERT-PROBE (a)/(a′)/(b): delete
+    /// `if board.pending_trigger_entry == Some(entry.id) { return false; }` from
+    /// `entry_target_choice_is_pinned` — i.e. ship the round-35 4-arg signature, which makes
+    /// the statement unwritable — ⇒ (a) answers `true` ⇒ FLIPS, while (a′)/(b) stay green.
+    /// ⚠ That revert COMPILES, which is the whole reason this row exists: the fail-open
+    /// direction leaves no type error behind and `PeriodVerdicts.frames` is private, so an
+    /// executor who drops the board has no way to notice.
+    ///
+    /// REVERT-PROBE (c): pass the live `current` instead of the pair's carrying frame ⇒ (c1)
+    /// and (c2) BOTH FLIP, while (a)/(a′)/(b) stay green on the degenerate current-stack pair
+    /// where the two boards coincide.
+    #[test]
+    fn r29_the_cr_603_3c_cursor_is_read_from_the_pairs_carrying_frame() {
+        use crate::game::engine::entry_publishes_pin_slots;
+
+        let (mut frame, src) = u2_relief_board();
+        let entry = u3_shape_a_entry(src, 9290);
+        frame.stack.push_back(entry.clone());
+        let published = entry_publishes_pin_slots(&frame, &entry, PlayerId(0))
+            .expect("reach-guard: the fixture must reach the mint");
+        let target = published.target.clone().expect(
+            "reach-guard: the mint must publish a TARGET slot, or the guard below \
+                     would be refused by the `target.is_some()` conjunct instead",
+        );
+        let slots = vec![target];
+
+        // ── (a′) matched positive: no cursor ────────────────────────────────────────────
+        let mut clear = frame.clone();
+        clear.pending_trigger_entry = None;
+        {
+            let mut verdicts = PeriodVerdicts::for_period(&[], &clear, PlayerId(0));
+            let f = verdicts
+                .frame_ix(&clear)
+                .expect("container holds the board");
+            assert!(
+                entry_target_choice_is_pinned(&clear, f, &entry, &mut verdicts, u2_scope(&slots)),
+                "(a′) with the published slot pinned and no mid-construction cursor, the \
+                 announcement choice IS specified"
+            );
+        }
+
+        // ── (a) the guard: the cursor names THIS entry ──────────────────────────────────
+        let mut cursored = frame.clone();
+        cursored.pending_trigger_entry = Some(entry.id);
+        {
+            let mut verdicts = PeriodVerdicts::for_period(&[], &cursored, PlayerId(0));
+            let f = verdicts
+                .frame_ix(&cursored)
+                .expect("container holds the board");
+            assert!(
+                !entry_target_choice_is_pinned(
+                    &cursored,
+                    f,
+                    &entry,
+                    &mut verdicts,
+                    u2_scope(&slots)
+                ),
+                "(a) CR 603.3c: a mid-construction entry's announcement is not yet complete, \
+                 so no published slot can specify it — and this fact is a property of the \
+                 BOARD, which is why the mint (pure over `(stack, objects, proposer)`) cannot \
+                 carry it and the relief must"
+            );
+        }
+
+        // ── (b) EQUALITY, not presence ─────────────────────────────────────────────────
+        let mut foreign_cursor = frame.clone();
+        foreign_cursor.pending_trigger_entry = Some(ObjectId(u64::MAX));
+        {
+            let mut verdicts = PeriodVerdicts::for_period(&[], &foreign_cursor, PlayerId(0));
+            let f = verdicts
+                .frame_ix(&foreign_cursor)
+                .expect("container holds the board");
+            assert!(
+                entry_target_choice_is_pinned(
+                    &foreign_cursor,
+                    f,
+                    &entry,
+                    &mut verdicts,
+                    u2_scope(&slots)
+                ),
+                "(b) the guard is `== Some(entry.id)`, not `is_some()` — a cursor naming no \
+                 live entry refuses nothing"
+            );
+        }
+
+        // ── (c) WHICH BOARD, on a RETAINED pair ────────────────────────────────────────
+        // The container's frames are `[carrying, current]`, and `carrying` is NOT `current`,
+        // so the two boards can disagree — which is exactly the shape the degenerate
+        // current-stack pair cannot express.
+        let mut carrying = frame.clone();
+        let mut current = frame.clone();
+        current.stack.clear();
+
+        carrying.pending_trigger_entry = Some(entry.id);
+        current.pending_trigger_entry = None;
+        {
+            let ring = [&carrying];
+            let mut verdicts = PeriodVerdicts::for_period(&ring, &current, PlayerId(0));
+            let f = verdicts
+                .frame_ix(&carrying)
+                .expect("(c) reach-guard: the CARRYING frame is in the period");
+            assert_ne!(
+                verdicts.frame_ix(&carrying),
+                verdicts.frame_ix(&current),
+                "(c) reach-guard: the two boards must be DISTINCT frames, or (c1)/(c2) are \
+                 the same assertion twice"
+            );
+            assert!(
+                !entry_target_choice_is_pinned(
+                    &carrying,
+                    f,
+                    &entry,
+                    &mut verdicts,
+                    u2_scope(&slots)
+                ),
+                "(c1) the CARRYING frame decides: its cursor names this entry, so the \
+                 announcement is mid-construction on the board the announcement was made \
+                 against — regardless of what the live board says"
+            );
+        }
+
+        carrying.pending_trigger_entry = None;
+        current.pending_trigger_entry = Some(entry.id);
+        {
+            let ring = [&carrying];
+            let mut verdicts = PeriodVerdicts::for_period(&ring, &current, PlayerId(0));
+            let f = verdicts
+                .frame_ix(&carrying)
+                .expect("(c) reach-guard: the CARRYING frame is in the period");
+            assert!(
+                entry_target_choice_is_pinned(
+                    &carrying,
+                    f,
+                    &entry,
+                    &mut verdicts,
+                    u2_scope(&slots)
+                ),
+                "(c2) the LIVE board does not decide for a retained pair — byte-identical to \
+                 (c1) except which board holds the cursor"
+            );
+        }
+
+        // ── (c3) THE SAME CROSSING, AT THE PRODUCTION SEAM THAT WRITES THE ARGUMENT ─────
+        // (c1)/(c2) pin the PREDICATE's board-sensitivity, which is where the plan sites this
+        // row (an offer-level negative on this axis is dominated by conjunct (6)'s own
+        // refusals). But the argument the row is about is written in
+        // `stack_choices_are_all_specified`'s announcement loop, so the plan's stated
+        // revert-probe — "pass the live `current` instead of the pair's carrying frame" —
+        // needs a site that FLIPS. This arm is that site: the (c2) crossing driven end to
+        // end, where the correct argument CERTIFIES and the reverted one REFUSES.
+        //
+        // Both published slots are pinned here (the `may` too), so the entry also clears
+        // conjunct (6) and the `true` below is the whole predicate's answer, not one gate's.
+        {
+            let may = published
+                .may
+                .clone()
+                .expect("(c3) reach-guard: the fixture is optional, so it publishes a may gate");
+            let both = vec![slots[0].clone(), may];
+            let mut oldest = carrying.clone();
+            oldest.stack.clear();
+            let ring = [&oldest, &carrying];
+            let touch =
+                certified_period_touch(&ring, &current, PeriodCertification::ResourceSignatureOnly);
+            assert!(
+                touch
+                    .announced
+                    .iter()
+                    .any(|(frame, e)| std::ptr::eq(*frame, &carrying) && e.id == entry.id),
+                "(c3) reach-guard: the pair must arrive from the RETAINED frame — on a \
+                 current-stack pair the two boards coincide and the argument is untestable"
+            );
+            assert!(
+                current.pending_trigger_entry == Some(entry.id)
+                    && carrying.pending_trigger_entry.is_none(),
+                "(c3) reach-guard: the crossing must still be in place — `current` holds the \
+                 CR 603.3c cursor and the carrying frame does not"
+            );
+            let mut verdicts = PeriodVerdicts::for_period(&ring, &current, PlayerId(0));
+            assert!(
+                stack_choices_are_all_specified(
+                    &current,
+                    PlayerId(0),
+                    &both,
+                    Some(&touch),
+                    &mut verdicts
+                ),
+                "(c3) with both published slots pinned and the mid-construction cursor sitting \
+                 only on the LIVE board, the announcement loop must certify — because it asks \
+                 the CARRYING frame. Passing `current` there makes the cursor bite, the `||`'s \
+                 other disjunct is also false (two legal assignments on the frame), and this \
+                 assertion FLIPS"
+            );
+        }
+    }
+
+    /// R32 — THE ANNOUNCEMENT LOOP'S OR-DISJUNCT READS THE PAIR'S CARRYING FRAME, NEVER
+    /// `current`. Paired with R29, which pins the same discipline for the other disjunct:
+    /// the two halves of one `||` must not read two boards.
+    ///
+    /// `stack_entry_has_no_ordering_input`'s arity does NOT change under 5d, which is why
+    /// only a row can pin the decision — §7 held it under *"Reused verbatim"*. It is
+    /// board-sensitive: `state.pending_trigger_entry`, then `forced_unique_targeting` →
+    /// `build_target_slots` + `auto_select_targets_for_ability`, i.e. the verdict is a
+    /// function of the board's legal-target POPULATION.
+    ///
+    /// THE PAIR. A two-frame window whose announced entry declares a target with **two**
+    /// legal assignments on its CARRYING FRAME and **one** on `current` (a creature that left
+    /// the battlefield after the announcement).
+    /// * **(a) CORRECT BOARD** ⇒ `false` (two assignments ⇒ not forced), and with no pin
+    ///   published for that entry, `stack_choices_are_all_specified` ⇒ `false` — the
+    ///   fail-closed answer.
+    /// * **(b) THE FAIL-OPEN TWIN** ⇒ passing `current` sees ONE legal assignment ⇒ `true` ⇒
+    ///   the entry is RELIEVED and the offer can certify over an announcement choice that is
+    ///   not forced on the board where it is actually made.
+    /// * **(c) POSITIVE CONTROL that the instrument is keyed** — same window, an entry with
+    ///   one legal assignment on BOTH boards ⇒ both arms agree on `true`, so (a)/(b) differ
+    ///   BECAUSE OF THE BOARD and not because the fixture always disagrees.
+    ///
+    /// REVERT-PROBE: change `stack_entry_has_no_ordering_input(announced[i].0, entry)` to
+    /// `(state, entry)` in `stack_choices_are_all_specified`'s announcement loop ⇒ (b) is
+    /// what you get and (a)'s offer-level assertion FLIPS.
+    #[test]
+    fn r32_the_announcement_disjunct_reads_the_carrying_frame_not_the_live_board() {
+        use crate::game::scenario::GameScenario;
+        use crate::types::ability::{
+            Effect, QuantityExpr, ResolvedAbility, TargetFilter, TargetRef, TypeFilter, TypedFilter,
+        };
+
+        // One creature the announcement can still reach on `current`, one that leaves.
+        let mut carrying = GameScenario::new_n_player(2, 7).build().state().clone();
+        let stays = battlefield_creature(&mut carrying, 9320, 1);
+        let leaves = battlefield_creature(&mut carrying, 9321, 1);
+
+        let creature_entry = |id: u64, announced: Vec<TargetRef>| {
+            let ability = ResolvedAbility::new(
+                Effect::DealDamage {
+                    amount: QuantityExpr::Fixed { value: 1 },
+                    target: TargetFilter::Typed(TypedFilter {
+                        type_filters: vec![TypeFilter::Creature],
+                        controller: None,
+                        properties: vec![],
+                    }),
+                    damage_source: None,
+                    excess: None,
+                },
+                announced,
+                ObjectId(9320),
+                PlayerId(0),
+            );
+            StackEntry {
+                id: ObjectId(id),
+                source_id: ObjectId(9320),
+                controller: PlayerId(0),
+                kind: StackEntryKind::TriggeredAbility {
+                    source_id: ObjectId(9320),
+                    ability: Box::new(ability),
+                    condition: None,
+                    trigger_event: None,
+                    description: None,
+                    source_name: String::new(),
+                    subject_match_count: None,
+                    die_result: None,
+                },
+            }
+        };
+
+        let two_ways = creature_entry(9330, vec![TargetRef::Object(leaves)]);
+        carrying.stack.push_back(two_ways.clone());
+
+        // The window's oldest frame carries NO stack, so the entry ANNOUNCED inside it.
+        let mut oldest = carrying.clone();
+        oldest.stack.clear();
+        // `current`: the entry has resolved off the stack AND one legal target is gone.
+        let mut current = carrying.clone();
+        current.stack.clear();
+        current.objects.remove(&leaves);
+        current.battlefield.retain(|o| *o != leaves);
+
+        // ── reach-guards: the two boards really carry DIFFERENT legal populations ───────
+        assert_eq!(
+            carrying
+                .battlefield
+                .iter()
+                .filter(|o| carrying.objects.contains_key(o))
+                .count(),
+            2,
+            "reach-guard: the carrying frame must offer TWO legal assignments"
+        );
+        assert!(
+            current.objects.contains_key(&stays) && !current.objects.contains_key(&leaves),
+            "reach-guard: `current` must offer exactly ONE — the fail-open direction needs a \
+             target that is legal on the frame and gone from the live board"
+        );
+
+        // ── (a) / (b) THE MATCHED PAIR, one variable: which board ──────────────────────
+        assert!(
+            !stack_entry_has_no_ordering_input(&carrying, &two_ways),
+            "(a) CORRECT BOARD: two legal assignments on the carrying frame ⇒ the \
+             announcement choice is NOT forced ⇒ fail-closed"
+        );
+        assert!(
+            stack_entry_has_no_ordering_input(&current, &two_ways),
+            "(b) THE FAIL-OPEN TWIN: on the live board one target has gone, so the assignment \
+             LOOKS forced and the entry would be relieved — an offer certified over a choice \
+             that is not forced where it is actually made"
+        );
+
+        // ── (a) at the OFFER-LEVEL seam, which is where the argument is actually written ─
+        let ring = [&oldest, &carrying];
+        let touch =
+            certified_period_touch(&ring, &current, PeriodCertification::ResourceSignatureOnly);
+        assert!(
+            touch
+                .announced
+                .iter()
+                .any(|(frame, e)| std::ptr::eq(*frame, &carrying) && e.id == two_ways.id),
+            "reach-guard: the pair must arrive from the RETAINED frame, not from \
+             `current.stack` — on the degenerate pair the two boards coincide and the row \
+             would be untestable"
+        );
+        let mut verdicts = PeriodVerdicts::for_period(&ring, &current, PlayerId(0));
+        assert!(
+            !stack_choices_are_all_specified(
+                &current,
+                PlayerId(0),
+                &[],
+                Some(&touch),
+                &mut verdicts
+            ),
+            "(a) offer level: with no pin published for the entry, the announcement loop's \
+             `||` must refuse — and it can only refuse if its second disjunct read the \
+             CARRYING frame. Passing `current` there yields (b) and this assertion flips"
+        );
+
+        // ── (c) POSITIVE CONTROL: one legal assignment on BOTH boards ──────────────────
+        let mut solo_carrying = carrying.clone();
+        solo_carrying.objects.remove(&leaves);
+        solo_carrying.battlefield.retain(|o| *o != leaves);
+        let solo = creature_entry(9331, vec![TargetRef::Object(stays)]);
+        assert!(
+            stack_entry_has_no_ordering_input(&solo_carrying, &solo)
+                && stack_entry_has_no_ordering_input(&current, &solo),
+            "(c) the instrument is KEYED, not always-disagreeing: an entry with one legal \
+             assignment on both boards is answered identically on both"
+        );
+    }
+
+    /// R31 COMPLETENESS ARM (the U3 half of a row whose arms (a)/(a′)/(b) shipped in U2).
+    ///
+    /// U2's arms proved the closure on entries sitting on `current.stack`. This arm proves
+    /// the premise those arms silently rest on — *every minted pair is SCANNED* — for the
+    /// population U2 could not reach: a pair that ANNOUNCED inside the certified period and
+    /// has since left the stack. It ships here and not in U2 because its revert-probe names
+    /// `touch.announced`, which U3 creates: at U2 `stack_choices_are_all_specified` still
+    /// carried HEAD's 3-argument shape, so there was no `touch` to drop.
+    ///
+    /// Off-stack announced pairs are the MAJORITY population on both measured dumps
+    /// (`beats_offstack_nonzero` 157/161 F4, 19/23 dellian), so this is the common case, not
+    /// an edge one.
+    ///
+    /// THE BOARD: the entry carries `Effect::PayCost { payer: Controller }` — a member of
+    /// `effect_resolution_choice_freedom`'s fail-closed grouped arm, i.e. exactly U2 arm
+    /// (b)'s subject — announced on the retained carrying frame and ABSENT from
+    /// `current.stack`. Conjunct (6) must still refuse it.
+    ///
+    /// REVERT-PROBE: narrow the RESOLUTION loop back to `current.stack` only (drop the
+    /// `touch.announced` half of `pairs`) ⇒ the pair is never classified ⇒ the predicate
+    /// returns `true` ⇒ FLIPS. That is what makes "every minted pair is scanned" a MEASURED
+    /// premise rather than a stated one.
+    #[test]
+    fn r31_completeness_an_announced_off_stack_pair_is_still_scanned_by_conjunct_six() {
+        use crate::game::engine::entry_publishes_pin_slots;
+        use crate::types::ability::{AbilityCost, Effect, TargetFilter};
+
+        let (frame, src) = u2_relief_board();
+        let entry = u2_shape_b_entry(
+            src,
+            9310,
+            Effect::PayCost {
+                cost: AbilityCost::Mana {
+                    cost: crate::types::mana::ManaCost::Cost {
+                        shards: vec![],
+                        generic: 1,
+                    },
+                },
+                scale: None,
+                payer: TargetFilter::Controller,
+            },
+            |_| {},
+        );
+        let may = entry_publishes_pin_slots(&frame, &entry, PlayerId(0))
+            .expect("reach-guard: the fixture must reach the mint")
+            .may
+            .expect(
+                "reach-guard: it publishes its CR 603.5 gate, so the refusal below is the \
+                     RESIDUAL's and not the mint's",
+            );
+
+        // oldest ⇒ carrying ⇒ current: the entry announces on `carrying` and has RESOLVED
+        // OFF the stack by `current`.
+        let oldest = frame.clone();
+        let mut carrying = frame.clone();
+        carrying.stack.push_back(entry.clone());
+        let current = frame.clone();
+
+        let ring = [&oldest, &carrying];
+        let touch =
+            certified_period_touch(&ring, &current, PeriodCertification::ResourceSignatureOnly);
+
+        // ── reach-guards: the pair is reachable ONLY through `announced` ────────────────
+        assert!(
+            current.stack.is_empty(),
+            "reach-guard: with the entry still on `current.stack` this arm would be U2's \
+             arm (b) again and the completeness premise would go untested"
+        );
+        assert!(
+            touch
+                .announced
+                .iter()
+                .any(|(f, e)| std::ptr::eq(*f, &carrying) && e.id == entry.id),
+            "reach-guard: the window must actually MINT the pair, or the refusal below would \
+             be a refusal over an empty population"
+        );
+        assert!(
+            stack_entry_has_no_ordering_input(&carrying, &entry),
+            "reach-guard: shape (B) announces no choice, so the ANNOUNCEMENT loop passes and \
+             the refusal below is attributable to conjunct (6)"
+        );
+
+        let mut verdicts = PeriodVerdicts::for_period(&ring, &current, PlayerId(0));
+        assert!(
+            !stack_choices_are_all_specified(
+                &current,
+                PlayerId(0),
+                std::slice::from_ref(&may),
+                Some(&touch),
+                &mut verdicts
+            ),
+            "CR 732.2a: the described sequence is EVERY choice the shortcut makes, not the \
+             subset that happens to sit on the stack at the offer beat. A `PayCost` residual \
+             sits in the fail-closed grouped arm, so an announced-then-resolved pair must \
+             still refuse the offer"
+        );
+        assert!(
+            verdicts.conjunct6_asks() >= 1,
+            "attribution: conjunct (6) must have ASKED about the off-stack pair — a `false` \
+             with zero asks would be some other gate's refusal. asks={}",
+            verdicts.conjunct6_asks()
+        );
+    }
 }
