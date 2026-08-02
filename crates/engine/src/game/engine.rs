@@ -1867,7 +1867,9 @@ pub(crate) fn entry_publishes_pin_slots(
     //
     // (a) RECIPIENT. `optional_prompt_player` is THIS gate's own recipient authority —
     //     five of its branches route to a NON-controller and the last is EFFECT-AGNOSTIC
-    //     (CR 503.1a + CR 608.2d, the Braids / Conjurer Adept `scoped_player` class), so
+    //     (CR 503.1a + CR 608.2d, the `scoped_player` class whose printed member is Braids,
+    //     Conjurer Adept — "At the beginning of each player's upkeep, that player may put an
+    //     artifact, creature, or land card from their hand onto the battlefield."), so
     //     asking the same function the gate asks keeps THIS pair from drifting. Without
     //     it a proposer's pin can be spent as another seat's CR 603.5 choice.
     // (b) SECOND AUTHORITY. A stored "don't ask again" auto-choice ALREADY ANSWERS this
@@ -1960,7 +1962,12 @@ pub(crate) fn entry_publishes_pin_slots(
 /// authority for that slot set — the offer's cover call, its schema, the drive's cover call
 /// and the per-cycle `predictability_gate` all read the same list.
 ///
-/// PURE function of `(state.stack, state.objects, proposer)`. It deliberately does **not**
+/// A function of the BOARD, never of the PROMPT. NOT a purity claim over a three-field
+/// `(state.stack, state.objects, proposer)` surface — that would be false: the CR 603.5
+/// recipient conjunct in the body resolves a player through `optional_prompt_player` →
+/// `resolve_effect_player_ref`, which reaches ELEVEN distinct `GameState` fields (enumerated
+/// at that conjunct). What actually holds, and what the callers rely on, is the narrower
+/// PROMPT-independence: it deliberately does **not**
 /// read `state.waiting_for`, and it cannot: both production call sites run at
 /// `WaitingFor::Priority` (`interactive_loop_bridge`'s destructure, and the drive's
 /// `Priority{active}` settle arm), where no prompt and no materialized `legal_targets`
@@ -13740,9 +13747,17 @@ mod stage2_injector_tests {
     ///
     /// `target_choice_timing: Resolution` is what makes it shape (B), and it is the class's
     /// real rules shape rather than a test convenience: CR 601.2c announces only DECLARED
-    /// targets, so a per-player-upkeep "that player may put a +1/+1 counter on a creature
-    /// they control" (Braids / Conjurer Adept — CR 503.1a + CR 608.2d) chooses its subject
-    /// AT RESOLUTION and surfaces zero announcement slots. Measured on `u2_board`:
+    /// targets, so Braids, Conjurer Adept — "At the beginning of each player's upkeep, that
+    /// player may put an artifact, creature, or land card from their hand onto the
+    /// battlefield." (CR 503.1a + CR 608.2d; text verified against Scryfall) — chooses its
+    /// subject AT RESOLUTION and surfaces zero announcement slots.
+    ///
+    /// The `Effect::PutCounter` fixtures below are a SYNTHETIC STAND-IN, never Braids'
+    /// printed effect: they exercise the same CLASS (per-player-upkeep optional,
+    /// resolution-time subject, zero announcement slots) on an effect this mint's
+    /// allow-list admits. The recipient branch they ride is EFFECT-AGNOSTIC (see
+    /// `a_may_slot_is_minted_only_for_the_seat_the_cr_603_5_gate_will_ask`), which is what
+    /// makes the substitution sound rather than a convenience. Measured on `u2_board`:
     /// `build_target_slots` returns `Ok(0)` for every fixture below (each row asserts the
     /// consequence through its own matched positive), so each really reaches the shape-(B)
     /// arm rather than falling out at an upstream conjunct.
@@ -13799,7 +13814,10 @@ mod stage2_injector_tests {
     /// `entry.controller == proposer` bounds who OWNS the entry; it does not bound who the
     /// resolver ASKS. `optional_prompt_player`'s last branch is EFFECT-AGNOSTIC — it fires on
     /// `ability.scoped_player` plus a `ScopedPlayer`-scoped `target_filter()` (CR 503.1a +
-    /// CR 608.2d, the Braids / Conjurer Adept class) — so an allow-listed `PutCounter` reaches
+    /// CR 608.2d, the Braids, Conjurer Adept class — whose printed effect puts an artifact,
+    /// creature, or land card from hand onto the battlefield, NOT a counter; `PutCounter`
+    /// here is a synthetic stand-in for the class, which that branch admits precisely
+    /// BECAUSE it is effect-agnostic) — so an allow-listed `PutCounter` reaches
     /// it. Without the conjunct, P0's pin would be spendable as P1's CR 603.5 choice.
     ///
     /// MATCHED POSITIVE, on the same instrument and differing in exactly `scoped_player`: it
@@ -13890,6 +13908,18 @@ mod stage2_injector_tests {
     /// doc already names as where soundness over the other four producers is discharged; the
     /// `+2` are U4's own `#[cfg(test)]` fixtures. A new READER is the benign case — adjudicate
     /// it, do not relax the assert.
+    ///
+    /// ⚠ **RE-ADJUDICATED IN THE 5d LOW-FIX, NOT RELAXED.** One line NUMBER moved again,
+    /// `game/engine.rs:10493 ⇒ :10500`, on the same terms as U4's shift above. Cause: the
+    /// LOW-fix added a net **+7 DOC lines** above that producer (the mint's corrected
+    /// board-not-prompt contract, and the Braids, Conjurer Adept Oracle-text correction) —
+    /// comments only, not one executable line. The producer itself is BYTE-IDENTICAL (the
+    /// `return Ok(Some(WaitingFor::OptionalEffectChoice` head, diffed against `HEAD`), the
+    /// total stays **37** and the partition stays **5/7/25**, and the other four entries are
+    /// unchanged. The two companion asserts above run FIRST and both fired GREEN on the run
+    /// that caught this — which is the evidence that the SET did not move and only this
+    /// entry's coordinate did. A line-number-only shift is the benign case; a changed
+    /// producer set is not, and stays a counted event.
     #[test]
     fn the_cr_603_5_prompt_census_is_pinned_so_a_sixth_producer_is_a_counted_event() {
         /// Every `.rs` under the crate's `src`, and the `#[cfg(test)]`-attributed
@@ -13993,7 +14023,9 @@ mod stage2_injector_tests {
                 "game/effects/mod.rs:5973".to_string(),
                 "game/effects/mod.rs:8927".to_string(),
                 "game/effects/scoped_library_search.rs:452".to_string(),
-                "game/engine.rs:10493".to_string(),
+                // 5d LOW-fix: `:10493 ⇒ :10500`, a doc-only line shift (+7 comment lines
+                // above); producer byte-identical, total 37 and partition 5/7/25 untouched.
+                "game/engine.rs:10500".to_string(),
             ],
             "the five production producers, NAMED: the CR 603.5 gate in `resolve_chain_body` \
              plus the two repeated-optional-payment drivers, the per-player acceptance cursor \

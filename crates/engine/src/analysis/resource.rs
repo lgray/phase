@@ -1812,8 +1812,10 @@ fn window_scope_from_cover_frames<'a>(
 /// itself now refuses to publish on (`multi_target` / `distribution` /
 /// `target_constraints`). The fourth, `pending_trigger_entry` (CR 603.3c mid-construction),
 /// is a property of THIS state rather than of the offer's schema, so it is enforced HERE —
-/// the mint is documented pure over `(stack, objects, proposer)` and must not read a
-/// prompt-coupled field. That makes this predicate strictly NARROWER than the mint's, which
+/// the mint is documented a function of the BOARD, never of the PROMPT (it reads many
+/// `GameState` fields; what it must never read is a prompt-coupled one), and
+/// `pending_trigger_entry` is set exactly while a `TriggerTargetSelection` prompt is up.
+/// That makes this predicate strictly NARROWER than the mint's, which
 /// is the safe direction; the forbidden direction is coarser.
 ///
 /// Fail-closed in every branch: no published pins, a non-qualifying entry, a missing source
@@ -14458,9 +14460,9 @@ mod tests {
                     u2_scope(&slots)
                 ),
                 "(a) CR 603.3c: a mid-construction entry's announcement is not yet complete, \
-                 so no published slot can specify it — and this fact is a property of the \
-                 BOARD, which is why the mint (pure over `(stack, objects, proposer)`) cannot \
-                 carry it and the relief must"
+                 so no published slot can specify it — and `pending_trigger_entry` is set \
+                 exactly while a prompt is up, which is why the mint (a function of the \
+                 BOARD, never of the PROMPT) cannot carry it and the relief must"
             );
         }
 
