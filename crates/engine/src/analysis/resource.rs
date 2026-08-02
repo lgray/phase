@@ -12970,6 +12970,18 @@ mod tests {
         }
     }
 
+    /// [`u2_scope`] with the proposer as a PARAMETER — the seat whose offer published the pins,
+    /// which is not always the seat the consuming container is bound to (R22 conjunct (4)).
+    fn u3_scope_for(proposer: PlayerId, slots: &[DecisionSlot]) -> LoopWindowScope<'_> {
+        LoopWindowScope {
+            phase_invariant: None,
+            sole_driver: None,
+            pinned: Some(PinnedChoices { proposer, slots }),
+            cast_card_ids: None,
+            period: None,
+        }
+    }
+
     /// The `LoopWindowScope` an offer that published exactly `slots` hands the relief.
     fn u2_scope(slots: &[DecisionSlot]) -> LoopWindowScope<'_> {
         LoopWindowScope {
@@ -14116,6 +14128,370 @@ mod tests {
             "attribution: conjunct (6) must have ASKED about the off-stack pair — a `false` \
              with zero asks would be some other gate's refusal. asks={}",
             verdicts.conjunct6_asks()
+        );
+    }
+
+    /// R22's own NEGATIVE CONTROL — the VACUITY BOUNDARY, never coverage.
+    ///
+    /// At window offset zero the window-relative position EQUALS the absolute one
+    /// (`w_pos == abs ⟺ idx == 0`) and an id-only memo key serves the same frame it would
+    /// have computed anyway, so the shipped mint and BOTH reverts AGREE. Round 15's re-key
+    /// from two ring frames to three reproduced the diagnosed defect one parameter over
+    /// precisely because a "three-frame period" taken as the WHOLE ring plus `current` is
+    /// still `idx == 0`.
+    ///
+    /// This test is GREEN under every probe R22 runs. That measured agreement is the whole
+    /// point: it is what a fixture at this offset can prove, which is nothing.
+    #[test]
+    fn r22_control_at_window_offset_zero_the_two_key_arithmetics_agree() {
+        let (base, src) = u2_relief_board();
+        let entry = u2_shape_b_entry(src, 9221, u2_draw_effect(), |_| {});
+        let f1 = base.clone();
+        let mut f2 = base.clone();
+        f2.stack.push_back(entry.clone());
+        let mut current = base.clone();
+        current.stack.push_back(entry.clone());
+
+        let ring = [&f1, &f2];
+        let mut flat = PeriodVerdicts::for_period(&ring, &current, PlayerId(0));
+        let f = flat
+            .frame_ix(&f1)
+            .expect("the control's carrying frame is the FIRST — that is the whole defect");
+        // `FrameIx`'s field is private outside its module — deliberately, it is a token and not
+        // a number — so offset zero is asserted by ORDER: nothing in the table precedes it.
+        let ix2 = flat.frame_ix(&f2).expect("f2 is in the period");
+        let ixc = flat.frame_ix(&current).expect("current is in the period");
+        assert!(
+            f < ix2 && ix2 < ixc,
+            "the control is only a control AT offset zero: if the carrying frame stopped being \
+             the FIRST, the fixture drifted into the discriminating shape and this test would \
+             start claiming coverage it cannot support"
+        );
+        assert!(
+            flat.verdict(f, &entry).published.is_some(),
+            "at idx == 0 every key arithmetic agrees — measured, and reported as a boundary \
+             rather than as evidence"
+        );
+    }
+
+    /// R22 — THE VERDICT DOOR IS TOTAL, FRAME-CORRECT AND PROPOSER-CORRECT.
+    ///
+    /// The class row for the derived cache, and the ONLY row that can lose if a key-component
+    /// error returns. FIVE conjuncts.
+    ///
+    /// **(1) TOTALITY, STRUCTURAL.** `PeriodVerdicts::verdict(&mut self, f: FrameIx,
+    /// entry: &StackEntry) -> &EntryVerdict`. ⚠ AN `Option` RETURN, AN INDEXING OPERATOR, OR
+    /// ANY SIBLING `get(..)` ACCESSOR IS FORBIDDEN — a partial container has a MISS CONTRACT,
+    /// and a row asserting how a miss behaves asserts an unreachable state. Totality is scoped
+    /// honestly: it is total over every `FrameIx` THIS container minted, and MINTING
+    /// (`frame_ix`) is the membership question — conjunct (2′) is that half.
+    ///
+    /// **(2) FRAME-CORRECTNESS — THE PIN IS THE WINDOW OFFSET, NOT THE FRAME COUNT.** Round 15
+    /// re-keyed this two frames → three and reproduced the diagnosed defect one parameter over:
+    /// `w_pos == abs ⟺ idx == 0`, so a "three-frame period" built as the WHOLE ring plus
+    /// `current` is exactly as vacuous as the two-frame form it replaced. The construction
+    /// requirement is therefore `ring.len() >= 3` **AND** the candidate window starting at
+    /// `idx >= 1` — a STRICT SUFFIX of the ring plus `current` — and BOTH are carried as
+    /// EXECUTABLE reach-guards, not prose. The period is built so the SAME entry id classifies
+    /// DIFFERENTLY per frame (the source object is absent from the older frame, so the mint
+    /// answers `None` there and `Some` on the carrying frame), and the consumed verdict must be
+    /// the CARRYING frame's, never the window-relative position's.
+    ///
+    /// The `idx == 0` shape is RETAINED as this conjunct's own NEGATIVE CONTROL: there the
+    /// shipped mint and the window-relative revert AGREE, and that measured agreement is the
+    /// VACUITY BOUNDARY — it must never be reported as coverage.
+    ///
+    /// **(2′) MINT-IDENTITY.** Every announced pair of a real window resolves through
+    /// `frame_ix`, and a FOREIGN frame — a fresh clone, byte-equal in CONTENT — resolves to
+    /// `None` and the consumer REFUSES. Correctness by IDENTITY, which index arithmetic cannot
+    /// satisfy on any `idx > 0` candidate.
+    ///
+    /// **(3) CONTAINER/CURRENT AGREEMENT — a PRODUCTION guard, not a `debug_assert`.**
+    /// Consumers resolve their own `current` through `frame_ix`; a memo built over a DIFFERENT
+    /// frame set yields `None` ⇒ certification refuses.
+    ///
+    /// **(4) PROPOSER COMPLETENESS.** The effective key is `(proposer, FrameIx, ObjectId)` with
+    /// the first component constant per container: a `for_period(A)` container publishes for A
+    /// while an `unproven` container publishes NOTHING for the SAME (frame, entry) — and each
+    /// resolves that frame through its OWN `frame_ix`, because a `FrameIx` never crosses the
+    /// container that minted it. The relief's agreement guard is the second half: pins minted
+    /// for A consumed under a container bound to B get `None`.
+    ///
+    /// REVERT-PROBES (all three RUN, see the journal):
+    /// * **(1)/(2)** key the memo by `ObjectId` ALONE (drop the `FrameIx` component) ⇒ the
+    ///   id-keyed blindness returns, one entry gets ONE verdict across frames ⇒ (2) FLIPS while
+    ///   the `idx == 0` control stays green — which is exactly the vacuity boundary.
+    /// * **(2′)/(3)** make the `current` resolution UNCHECKED (return the last index without
+    ///   the `ptr::eq` test) ⇒ the foreign clone resolves and the mismatched memo certifies
+    ///   against the wrong frame set ⇒ (2′) and (3) FLIP.
+    /// * **(4)** hard-code the container's proposer ⇒ the `for_period(A)`-vs-`unproven` pair
+    ///   collapses to one answer ⇒ FLIPS.
+    #[test]
+    fn r22_the_verdict_door_is_total_frame_correct_and_proposer_correct() {
+        use crate::game::engine::entry_publishes_pin_slots;
+
+        let (base, src) = u2_relief_board();
+        let entry = u2_shape_b_entry(src, 9220, u2_draw_effect(), |_| {});
+
+        // The per-frame difference: the source object is GONE from the oldest frame, so the
+        // mint's `object_decision_source` conjunct answers `None` there and `Some` elsewhere.
+        // One entry id, two different verdicts — which is what an id-only key cannot express.
+        let mut f0 = base.clone();
+        f0.objects.remove(&src);
+        let f1 = base.clone();
+        // The entry ANNOUNCES at f2 — absent from the window's first frame, present after —
+        // which is what gives conjunct (2′) a real announced pair to quantify over.
+        let mut f2 = base.clone();
+        f2.stack.push_back(entry.clone());
+        let mut current = base.clone();
+        current.stack.push_back(entry.clone());
+
+        assert!(
+            entry_publishes_pin_slots(&f1, &entry, PlayerId(0)).is_some()
+                && entry_publishes_pin_slots(&f0, &entry, PlayerId(0)).is_none(),
+            "(2) reach-guard: the two frames must give the SAME entry id DIFFERENT mint \
+             answers, or the frame component of the key is unobservable and every assertion \
+             below is vacuous"
+        );
+
+        // ── (2) THE OPERATING POINT: ring >= 3 AND the window a STRICT suffix (idx >= 1) ────
+        let ring = [&f0, &f1, &f2];
+        let idx = 1usize;
+        assert!(
+            ring.len() >= 3,
+            "(2) construction requirement: fewer than three ring frames cannot carry a strict \
+             suffix, and the round-14 two-frame form was measured vacuous"
+        );
+        assert!(
+            idx >= 1,
+            "(2) construction requirement: at idx == 0 the window-relative position EQUALS the \
+             absolute one (`w_pos == abs ⟺ idx == 0`) and the revert cannot flip"
+        );
+        let window = &ring[idx..];
+
+        let mut verdicts = PeriodVerdicts::for_period(&ring, &current, PlayerId(0));
+        let ix0 = verdicts.frame_ix(&f0).expect("f0 is in the period");
+        let ix1 = verdicts.frame_ix(&f1).expect("f1 is in the period");
+        let ix2 = verdicts.frame_ix(&f2).expect("f2 is in the period");
+        let ixc = verdicts
+            .frame_ix(&current)
+            .expect("current is in the period");
+        assert!(
+            ix0 < ix1 && ix1 < ix2 && ix2 < ixc,
+            "(2) the frames table is ordered by IDENTITY, ring-then-current: {ix0:?} {ix1:?} \
+             {ix2:?} {ixc:?}"
+        );
+        assert_ne!(
+            ix1, ix0,
+            "(2) reach-guard `abs != w_pos`: the CARRYING frame f1 sits at absolute index 1 \
+             while window-relative arithmetic would place it at 0 (= f0). Equal indices here \
+             would mean the fixture drifted back to the vacuous idx == 0 shape"
+        );
+
+        // (1) TOTALITY + (2) FRAME-CORRECTNESS on one run: a pair that was never pre-computed
+        // returns a REAL verdict (the signature returns `&EntryVerdict`, never an `Option`),
+        // and the two frames answer DIFFERENTLY for one entry id.
+        assert!(
+            verdicts.verdict(ix1, &entry).published.is_some(),
+            "(2) the consumed verdict is the CARRYING frame's — f1 holds the source object, so \
+             the mint publishes"
+        );
+        assert!(
+            verdicts.verdict(ix0, &entry).published.is_none(),
+            "(2) …and the OLDER frame's answer is its own. Under window-relative arithmetic \
+             (or an id-only key) the carrying frame's cached `Some` would be served here"
+        );
+
+        // The idx == 0 negative control lives in its own test — see
+        // `r22_control_at_window_offset_zero_the_two_key_arithmetics_agree`, which must stay
+        // GREEN under this row's probes and must never be reported as coverage.
+
+        // ── (2′) MINT-IDENTITY: every announced pair resolves; a foreign CLONE does not ─────
+        let touch =
+            certified_period_touch(window, &current, PeriodCertification::ResourceSignatureOnly);
+        assert!(
+            !touch.announced.is_empty(),
+            "(2′) reach-guard: the window must actually announce something, or the loop below \
+             quantifies over nothing"
+        );
+        for (frame, pair_entry) in &touch.announced {
+            assert!(
+                verdicts.frame_ix(frame).is_some(),
+                "(2′) every announced pair's carrying frame is minted by `frame_ix` — entry {:?}",
+                pair_entry.id
+            );
+        }
+        let foreign = current.clone();
+        assert!(
+            verdicts.frame_ix(&foreign).is_none(),
+            "(2′) POINTER IDENTITY, NOT EQUALITY: a fresh clone is byte-equal in content and \
+             still outside the period, so it must not resolve. Index arithmetic cannot make \
+             this distinction at all"
+        );
+        // …and the CONSUMER refuses on it, fail-closed.
+        let foreign_touch = PeriodTouch {
+            announced: vec![(&foreign, &entry)],
+            frozen_ids: BTreeSet::new(),
+        };
+        let mut v_foreign = PeriodVerdicts::for_period(&ring, &current, PlayerId(0));
+        assert!(
+            !stack_choices_are_all_specified(
+                &current,
+                PlayerId(0),
+                &[],
+                Some(&foreign_touch),
+                &mut v_foreign
+            ),
+            "(2′) a frame outside this container's period costs a CERTIFICATE, never a wrong \
+             one — the consumer's let-else on `frame_ix(..)` returns `false` and that is the \
+             fail-closed arm"
+        );
+
+        // Conjuncts (3) and (4) are separate tests below, so each one's revert-probe is
+        // measured on its own assertion rather than shadowed by an earlier panic.
+    }
+
+    /// R22 conjunct (3) — CONTAINER/CURRENT AGREEMENT IS A **PRODUCTION** GUARD.
+    ///
+    /// A `debug_assert` here would be compiled out of release and the mismatch would then be
+    /// silent in exactly the build that ships. Asserted as a MATCHED PAIR: the positive proves
+    /// the board certifies at all (without it the negative passes over a board that refuses for
+    /// unrelated reasons), the negative differs ONLY in which frame set the memo was built over.
+    ///
+    /// REVERT-PROBE (RUN): make `frame_ix` resolve unchecked — fall back to the last index
+    /// instead of returning `None` — and the mismatched container certifies against the wrong
+    /// frame set ⇒ the negative FLIPS.
+    #[test]
+    fn r22_conjunct3_a_memo_over_a_different_frame_set_refuses_certification() {
+        use crate::game::engine::entry_publishes_pin_slots;
+
+        let (base, src) = u2_relief_board();
+        let entry = u2_shape_b_entry(src, 9222, u2_draw_effect(), |_| {});
+        let mut relieved_board = base.clone();
+        relieved_board.stack.push_back(entry.clone());
+        let may = entry_publishes_pin_slots(&relieved_board, &entry, PlayerId(0))
+            .expect("(3) reach-guard: the fixture reaches the mint")
+            .may
+            .expect("(3) reach-guard: it publishes its CR 603.5 gate");
+        let mut matched = PeriodVerdicts::for_period(&[], &relieved_board, PlayerId(0));
+        assert!(
+            stack_choices_are_all_specified(
+                &relieved_board,
+                PlayerId(0),
+                std::slice::from_ref(&may),
+                None,
+                &mut matched
+            ),
+            "(3) POSITIVE: a container that holds the caller's `current` certifies this board — \
+             without it the negative below would pass over a board that refuses anyway"
+        );
+        let other_current = base.clone();
+        let mut mismatched = PeriodVerdicts::for_period(&[], &other_current, PlayerId(0));
+        assert!(
+            !stack_choices_are_all_specified(
+                &relieved_board,
+                PlayerId(0),
+                std::slice::from_ref(&may),
+                None,
+                &mut mismatched
+            ),
+            "(3) NEGATIVE: a memo built over a DIFFERENT frame set yields `None` for the \
+             caller's `current`, so certification refuses. This is a PRODUCTION guard, not a \
+             `debug_assert` compiled out of release"
+        );
+    }
+
+    /// R22 conjunct (4) — THE EFFECTIVE KEY CARRIES THE CONTAINER'S PROPOSER.
+    ///
+    /// `(proposer, FrameIx, ObjectId)`, with the first component constant per container and
+    /// therefore held by the container rather than by the memo key. Both halves are asserted:
+    /// a `for_period(A)` container publishes where an `unproven` one publishes NOTHING for the
+    /// SAME (frame, entry) — each resolving that frame through its OWN `frame_ix`, because a
+    /// `FrameIx` never crosses the container that minted it — and the relief refuses pins
+    /// minted for A when the container is bound to B (CR 603.5: the cached `published` IS the
+    /// mint's answer for the CONTAINER's proposer).
+    ///
+    /// REVERT-PROBES (both RUN): hard-code the proposer inside `verdict` ⇒ the
+    /// `for_period(A)`-vs-`unproven` pair collapses to one answer ⇒ FLIPS. Delete
+    /// `pinned_may_choice_relief`'s agreement guard ⇒ B's container relieves A's pins ⇒ FLIPS.
+    #[test]
+    fn r22_conjunct4_the_effective_key_carries_the_containers_proposer() {
+        use crate::game::engine::entry_publishes_pin_slots;
+
+        let (base, src) = u2_relief_board();
+        let entry = u2_shape_b_entry(src, 9223, u2_draw_effect(), |_| {});
+        let mut relieved_board = base.clone();
+        relieved_board.stack.push_back(entry.clone());
+        let mut bound_to_a = PeriodVerdicts::for_period(&[], &relieved_board, PlayerId(0));
+        let fa = bound_to_a
+            .frame_ix(&relieved_board)
+            .expect("(4) the container holds the board");
+        assert!(
+            bound_to_a.verdict(fa, &entry).published.is_some(),
+            "(4) reach-guard, MANDATORY: the `Some` arm must fire, or the `None` below is \
+             satisfied by a board that publishes nothing to anyone"
+        );
+        let mut unproven_c = PeriodVerdicts::unproven(&relieved_board);
+        let fu = unproven_c.frame_ix(&relieved_board).expect(
+            "(4) each container resolves the frame through its OWN `frame_ix` — a \
+                     `FrameIx` never crosses the container that minted it",
+        );
+        assert!(
+            unproven_c.verdict(fu, &entry).published.is_none(),
+            "(4) an `unproven` container binds NO proposer, so nothing is published: that is \
+             the mint's own answer for 'no offer binds a proposer', not an invented one"
+        );
+        // ── The relief half: pins minted for A, container bound to B ────────────────────────
+        //
+        // ⚠ THE VACUITY THIS ARM HAD TO ESCAPE. Run against the P0-controlled `entry` above,
+        // this arm passes with the agreement guard DELETED — measured: probe P4 left it green.
+        // The mint's own `entry.controller != proposer` conjunct already answers `None` for B,
+        // so the negative was satisfied upstream of the guard it claimed to cover. The entry
+        // below is controlled by B, so B's container genuinely publishes and the guard is the
+        // ONLY thing left standing between A's pins and a relief minted for another seat.
+        let mut b_entry = u2_shape_b_entry(src, 9224, u2_draw_effect(), |a| {
+            a.controller = PlayerId(1);
+        });
+        b_entry.controller = PlayerId(1);
+        let mut b_board = base.clone();
+        b_board.stack.push_back(b_entry.clone());
+        let b_may = entry_publishes_pin_slots(&b_board, &b_entry, PlayerId(1))
+            .expect("(4) reach-guard: B's OWN entry reaches the mint under B")
+            .may
+            .expect("(4) reach-guard: and publishes its CR 603.5 gate under B");
+        let b_slots = std::slice::from_ref(&b_may);
+
+        let mut bound_to_b = PeriodVerdicts::for_period(&[], &b_board, PlayerId(1));
+        let fb = bound_to_b
+            .frame_ix(&b_board)
+            .expect("(4) B's container holds the board");
+        assert!(
+            pinned_may_choice_relief(
+                fb,
+                &b_entry,
+                &mut bound_to_b,
+                u3_scope_for(PlayerId(1), b_slots)
+            )
+            .is_some(),
+            "(4) POSITIVE REACH-GUARD: under B's OWN pins this entry IS relieved. Without this \
+             the negative below would be satisfied by an entry nobody can relieve"
+        );
+        let mut bound_to_b2 = PeriodVerdicts::for_period(&[], &b_board, PlayerId(1));
+        let fb2 = bound_to_b2
+            .frame_ix(&b_board)
+            .expect("(4) same board, fresh container so the memo cannot carry B's answer over");
+        assert!(
+            pinned_may_choice_relief(
+                fb2,
+                &b_entry,
+                &mut bound_to_b2,
+                u3_scope_for(PlayerId(0), b_slots)
+            )
+            .is_none(),
+            "(4) CR 603.5: pins minted by A's offer may never be spent against a verdict this \
+             container minted for B — the cached `published` IS the mint's answer for the \
+             CONTAINER's proposer, so consuming it under another seat's pins would relieve a \
+             choice that seat never described"
         );
     }
 }
