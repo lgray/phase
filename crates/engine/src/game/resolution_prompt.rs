@@ -999,13 +999,14 @@ mod tests {
             // NEGATIVE — same ability, same board, a prompt already standing.
             let mut stalled = base.clone();
             stalled.waiting_for = parked.clone();
-            assert_eq!(
-                std::mem::discriminant(&stalled.waiting_for),
-                std::mem::discriminant(&parked),
-                "{name}: the resolution must not clear the standing prompt, or the \
-                 discriminants would differ and the struck guard would have caught it too \
-                 — which would make this row prove nothing about the new conjunct"
-            );
+            // WHAT ESTABLISHES THE SAME-DISCRIMINANT CONDITION: the REVERT-PROBE, not an
+            // assertion here. Comparing `stalled.waiting_for` against `parked` at this
+            // point would compare a value to itself and prove nothing, and the probe's
+            // internal `work` board is not observable from outside `probe_resolution`.
+            // The probe supplies it empirically instead — under the struck guard this arm
+            // returns `Events` rather than `Prompted`, which can only happen when the two
+            // discriminants compared EQUAL, i.e. the resolution left the standing prompt
+            // in place. That is exactly the masking condition this row is about.
             assert!(
                 matches!(
                     probe_resolution(&stalled, &a, &mut budget()),

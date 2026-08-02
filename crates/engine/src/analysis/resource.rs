@@ -12529,6 +12529,7 @@ mod tests {
     /// * EMPTY ⇒ `false` (refuse). This is the arm the fix adds.
     /// * NON-EMPTY, no applicable replacement ⇒ `true` (discharge). Without it the row
     ///   would pass against a predicate that simply returned `false` always.
+    ///
     /// `MayPrompt ⇒ false` is asserted alongside so all three arms of the match are pinned.
     ///
     /// REVERT-PROBE (run, recorded): delete the `if events.is_empty() { return false; }`
