@@ -322,7 +322,12 @@ if [ "$CONTROL_MODE" -eq 1 ]; then
   [ -f "$OUT" ] || { echo "control mode needs an existing committed fixture at $OUT" >&2; exit 1; }
   PATCHED="$(mktemp -t migrate-dump-patched-XXXXXX.json.gz)"
   UNPATCHED="$(mktemp -t migrate-dump-unpatched-XXXXXX.json.gz)"
-  trap 'rm -f "$PATCHED" "$UNPATCHED"' EXIT
+  # COMPOSE, do not replace. `trap` is last-write-wins PER SIGNAL, so a bare
+  # `trap '...' EXIT` here would silently disarm the `cleanup_stage_files` EXIT handler
+  # installed above and leak a stage file on this path — the one path that regenerates
+  # twice. (INT/TERM keep their handler either way, which is what made the omission easy
+  # to miss: only the EXIT arm was disarmed.)
+  trap 'cleanup_stage_files; rm -f "$PATCHED" "$UNPATCHED"' EXIT
   regenerate patched   "$PATCHED"
   regenerate unpatched "$UNPATCHED"
 
@@ -391,8 +396,19 @@ if [ "$CONTROL_MODE" -eq 1 ]; then
   # That is the same vacuity arm 2 was corrected for — a control that cannot tell "the
   # stage landed" from "it was already there" certifies nothing. When the two sides
   # agree, this arm SKIPS LOUDLY as `n/a` rather than claiming a landing it cannot see.
-  alloc_sig() {   # alloc_sig <gz> — the stage-2b observable: carrier count + allocators
-    gzip -dc "$1" | jq -c -f <(printf '%s\n{c: trigger_carrier_count, t: (.gameState.next_delayed_trigger_token // 0), i: (.gameState.next_delayed_trigger_instance // 0)}\n' "$(cat "$FIRING_LIB")")
+  # The signature must be built from the fields stage 2b WRITES, not from the ones it
+  # reads. `trigger_carrier_count` counts the dump's NEED (pending_trigger, triggered
+  # stack entries, resolving_stack_entry) — inputs neither transform touches, so it is
+  # identical on both sides by construction and contributes nothing to the comparison.
+  # Keying on the STAMPED carriers is what makes the carrier half of this arm able to
+  # move at all; without it a disabled `stamp_trigger_firing` still reported a landing
+  # via the allocator terms alone.
+  alloc_sig() {   # alloc_sig <gz> — the stage-2b observable: stamped carriers + allocators
+    gzip -dc "$1" | jq -c '{p: .gameState.pending_trigger_firing,
+                            s: (.gameState.stack_trigger_firings // {} | length),
+                            r: .gameState.resolving_trigger_firing,
+                            t: (.gameState.next_delayed_trigger_token // 0),
+                            i: (.gameState.next_delayed_trigger_instance // 0)}'
   }
   STAGE2B_P="$(alloc_sig "$PATCHED")"
   STAGE2B_U="$(alloc_sig "$UNPATCHED")"
