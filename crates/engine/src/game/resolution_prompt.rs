@@ -232,11 +232,7 @@ fn effect_offers_choice(e: &Effect) -> bool {
             damage_source: _,
             excess: _,
         } => {
-            if quantity_offers_up_to_choice(amount) {
-                true
-            } else {
-                false
-            }
+            quantity_offers_up_to_choice(amount)
         }
         Effect::PutCounter {
             target: _,
@@ -259,22 +255,14 @@ fn effect_offers_choice(e: &Effect) -> bool {
             static_abilities: _,
             enter_with_counters: _,
         } => {
-            if quantity_offers_up_to_choice(count) {
-                true
-            } else {
-                false
-            }
+            quantity_offers_up_to_choice(count)
         }
         // HEAD's own arm shape, kept verbatim (single arm + inner `if`, no match
         // guard). CR 608.2d: an "up to N" draw is a resolution-time COUNT choice
         // the probe would ANSWER rather than surface, because the count is read,
         // not prompted, inside `draw::resolve`.
         Effect::Draw { count, target: _ } => {
-            if quantity_offers_up_to_choice(count) {
-                true
-            } else {
-                false
-            }
+            quantity_offers_up_to_choice(count)
         }
         // ---- everything else: fail-closed MayPrompt. HEAD's named list
         //      VERBATIM, minus the three variants promoted above
