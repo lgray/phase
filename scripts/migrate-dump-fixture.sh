@@ -121,23 +121,141 @@ GZIP_VERSION="$(gzip --version | head -1)"
 FIRING_LIB="$(dirname "${BASH_SOURCE[0]}")/lib/trigger-firing.jq"
 [ -f "$FIRING_LIB" ] || { echo "missing $FIRING_LIB" >&2; exit 1; }
 
-regenerate() {   # regenerate <patched|unpatched> <destination>
-  local mode="$1" dest="$2" filter='{gameState:.gameState}'
+# The final projection PRESERVES a non-`gameState` envelope instead of replacing it.
+#
+# `{gameState:.gameState}` is a REWRITE, not a projection, for any dump that is not
+# `gameState`-shaped: `.gameState` is null on those, so the whole document became
+# `{"gameState":null}` — the committed fixture destroyed and replaced by a one-key
+# husk. That contradicted the pass-through `trigger-firing.jq` already implements for
+# its own stages, and it is silent: the output is valid JSON, so nothing downstream
+# objects. Several fixtures in this corpus really do use the other envelope (top level
+# `turn_number`), which is why that guard exists in the first place.
+#
+# Keyed on PRESENCE, not on truthiness — a dump carrying an explicitly null
+# `gameState` is malformed and must not be quietly normalised into the husk shape.
+PROJECT='if (type == "object" and has("gameState")) then {gameState:.gameState} else . end'
+
+# Applies the recipe to stdin, writing to stdout. ONE definition of the transform, so
+# the migration, the control arms, and the self-tests cannot drift apart.
+transform() {   # transform <patched|unpatched>
+  local mode="$1" filter="$PROJECT"
   if [ "$mode" = patched ]; then
-    # The `effect_kind` stage applies only to a dump whose prompt actually
-    # carries `target_slots`. Several dumps in this corpus are paused at a beat
-    # with no target prompt at all; for them this stage is vacuously absent, and
-    # `--effect-kind` is inert. Guarding it (rather than letting `map` abort on
-    # null) is what lets ONE recipe cover the whole corpus — an unguarded
-    # `|=` here made the script usable only on the two dumps that happen to have
-    # a prompt, which is why the other four were never regenerable through it.
     filter="(if (.gameState.waiting_for.data.target_slots? // null) != null
                then .gameState.waiting_for.data.target_slots |= map(. + {effect_kind: \$k})
-               else . end) | stamp_trigger_firing | stamp_delayed_allocators | {gameState:.gameState}"
+               else . end) | stamp_trigger_firing | stamp_delayed_allocators | $PROJECT"
   fi
-  mkdir -p "$(dirname "$dest")"
-  unzip -p "$PRISTINE" | jq -c --arg k "$EFFECT_KIND" -f <(printf '%s\n%s\n' "$(cat "$FIRING_LIB")" "$filter") | gzip -9 -n > "$dest"
+  jq -c --arg k "$EFFECT_KIND" -f <(printf '%s\n%s\n' "$(cat "$FIRING_LIB")" "$filter")
 }
+
+# The `effect_kind` stage applies only to a dump whose prompt actually carries
+# `target_slots`. Several dumps in this corpus are paused at a beat with no target
+# prompt at all; for them this stage is vacuously absent, and `--effect-kind` is
+# inert. Guarding it (rather than letting `map` abort on null) is what lets ONE
+# recipe cover the whole corpus — an unguarded `|=` here made the script usable only
+# on the two dumps that happen to have a prompt, which is why the other four were
+# never regenerable through it.
+#
+# WRITES ATOMICALLY: stage to a temp file, `mv` only after the WHOLE pipeline
+# succeeded.
+#
+# The struck form redirected the pipeline straight into `$dest`. The shell creates
+# and TRUNCATES a redirection target before the first command in the pipeline runs,
+# and on the production path `$dest` is the committed fixture (`$OUT`). The recipe
+# aborts BY DESIGN — `_firing` raises `UNDETERMINED firing carrier` and
+# `stamp_delayed_allocators` raises `UNDETERMINED delayed-trigger allocators` — so
+# `set -e` / `pipefail` stopped the script only AFTER the fixture had already been
+# truncated and a partial gzip stream written over it. The failure mode of a
+# fail-closed recipe was destruction of the very artifact it refused to rewrite.
+# `stamp-fixture-firing.sh` already had the right shape; this matches it.
+regenerate() {   # regenerate <patched|unpatched> <destination>
+  local mode="$1" dest="$2" staged
+  mkdir -p "$(dirname "$dest")"
+  staged="$(mktemp -t migrate-dump-stage-XXXXXX.json.gz)"
+  if ! unzip -p "$PRISTINE" | transform "$mode" | gzip -9 -n > "$staged"; then
+    rm -f "$staged"
+    echo "REGENERATION FAILED (fail-closed, $dest left untouched)" >&2
+    return 1
+  fi
+  mv "$staged" "$dest"
+}
+
+# PRE-FLIGHT SELF-TESTS for the two properties that no corpus fixture can witness,
+# because both are about what happens to inputs this corpus does not contain.
+#
+# They run before anything is written, on synthetic inputs, through the SAME
+# `transform` the migration uses — a self-test that re-spelled the recipe would be
+# certifying its own copy.
+#
+#   (a) FAILURE  — when the recipe aborts, the destination must be left EXACTLY as it
+#                  was. Asserted byte-wise against a sentinel, because "the file still
+#                  exists" is not the claim; "the file is unchanged" is.
+#   (b) PASS-THROUGH — a non-`gameState` envelope must survive the projection
+#                  unchanged, not become `{"gameState":null}`.
+#
+# Each has a paired POSITIVE control, or it would pass against a transform that did
+# nothing at all.
+selftests() {
+  local tmp sentinel out rc
+  tmp="$(mktemp -d -t migrate-dump-selftest-XXXXXX)"
+
+  # (a) FAILURE leaves the destination untouched.
+  # `stamp_delayed_allocators` aborts by name on a dump with install roots it cannot
+  # collapse, which is the real abort shape, reached through the real recipe.
+  printf '%s' 'COMMITTED-FIXTURE-SENTINEL' > "$tmp/dest"
+  sentinel="$(sha256sum "$tmp/dest" | cut -d' ' -f1)"
+  printf '%s\n' '{"gameState":{"delayed_triggers":[],"next_delayed_trigger_token":0,
+                  "resolved_rules_journal":{"entries":[{"command":{"DelayedTriggerInstall":{}}}]}}}' \
+    > "$tmp/in.json"
+  set +e
+  # Same staged-write discipline as `regenerate`; the point is that `$tmp/dest` is
+  # never the redirection target, so an abort cannot reach it.
+  ( staged="$(mktemp -t migrate-dump-stage-XXXXXX.json.gz)"
+    if ! transform patched < "$tmp/in.json" | gzip -9 -n > "$staged"; then
+      rm -f "$staged"; exit 1
+    fi
+    mv "$staged" "$tmp/dest" ) >/dev/null 2>&1
+  rc=$?
+  set -e
+  if [ "$rc" -eq 0 ]; then
+    echo "SELFTEST ATOMIC_ON_FAILURE=inconclusive — the abort input did not abort; the row cannot certify atomicity" >&2
+    rm -rf "$tmp"; return 1
+  fi
+  if [ "$(sha256sum "$tmp/dest" | cut -d' ' -f1)" != "$sentinel" ]; then
+    echo "SELFTEST ATOMIC_ON_FAILURE=false — a failed regeneration modified its destination" >&2
+    rm -rf "$tmp"; return 1
+  fi
+
+  # (a′) POSITIVE control — a SUCCEEDING run must actually replace the destination,
+  # or (a) would pass simply because nothing ever writes.
+  printf '%s\n' '{"gameState":{"turn_number":7}}' > "$tmp/ok.json"
+  ( staged="$(mktemp -t migrate-dump-stage-XXXXXX.json.gz)"
+    transform patched < "$tmp/ok.json" | gzip -9 -n > "$staged"
+    mv "$staged" "$tmp/dest" ) >/dev/null 2>&1
+  if [ "$(sha256sum "$tmp/dest" | cut -d' ' -f1)" = "$sentinel" ]; then
+    echo "SELFTEST ATOMIC_ON_FAILURE=vacuous — a SUCCESSFUL run also left the destination unchanged" >&2
+    rm -rf "$tmp"; return 1
+  fi
+
+  # (b) PASS-THROUGH — the other envelope in this corpus (top level `turn_number`).
+  printf '%s\n' '{"turn_number":7,"players":[]}' > "$tmp/env.json"
+  out="$(transform patched < "$tmp/env.json")"
+  if [ "$(printf '%s' "$out" | jq -S -c .)" != "$(jq -S -c . "$tmp/env.json")" ]; then
+    echo "SELFTEST ENVELOPE_PRESERVED=false — a non-gameState dump was rewritten: $out" >&2
+    rm -rf "$tmp"; return 1
+  fi
+
+  # (b′) POSITIVE control — a `gameState` dump IS still projected, so (b) is not
+  # passing because the transform became a no-op for everything.
+  if [ "$(transform patched < "$tmp/ok.json" | jq -c 'has("gameState")')" != "true" ]; then
+    echo "SELFTEST ENVELOPE_PRESERVED=vacuous — the gameState projection stopped working" >&2
+    rm -rf "$tmp"; return 1
+  fi
+
+  echo "SELFTEST ATOMIC_ON_FAILURE=true ENVELOPE_PRESERVED=true (both with positive controls)"
+  rm -rf "$tmp"
+}
+
+selftests || exit 1
 
 if [ "$CONTROL_MODE" -eq 1 ]; then
   # 5. Control mode, TWO arms, both mandatory. Runnable by anyone, at any time,
@@ -178,14 +296,45 @@ if [ "$CONTROL_MODE" -eq 1 ]; then
       ;;
   esac
 
-  # ARM 2 — the patch reached target_slots. Compared as canonical CONTENT, not
-  # bytes: this arm asserts a DIFFERENCE, and a difference in compressed bytes
-  # alone would also be produced by gzip drift, which is not what it claims.
-  if [ "$(gzip -dc "$PATCHED" | jq -S -c .)" = "$(gzip -dc "$UNPATCHED" | jq -S -c .)" ]; then
-    echo "CONTROL PATCHED_DIFFERS=false — the jq filter matched nothing; arm 1 above would pass vacuously" >&2
+  # ARM 2 — the `effect_kind` patch reached `target_slots`.
+  #
+  # COMPARES THE `target_slots` PROJECTION, not the whole document.
+  #
+  # The struck form compared the two documents wholesale and required a difference.
+  # That inference died when stage 2b landed: the patched filter also runs
+  # `stamp_trigger_firing` and `stamp_delayed_allocators`, and the allocator stage
+  # rewrites `next_delayed_trigger_token` / `..._instance` on EVERY `gameState`-shaped
+  # dump in this corpus (measured: all six move from absent/0 to 1). The unpatched
+  # filter runs neither stage. So the documents differed unconditionally, including on
+  # the dumps that carry no target prompt at all — arm 2 reported `PATCHED_DIFFERS=true`
+  # while the `effect_kind` filter had matched NOTHING. That is precisely the vacuous
+  # pass this arm exists to prevent, so it was reporting the opposite of its claim.
+  #
+  # The no-prompt case is now NAMED rather than counted as a pass: it is a real and
+  # expected shape here, but arm 2 cannot certify the `effect_kind` stage from it, and
+  # saying so is the honest reading.
+  SLOTS_P="$(gzip -dc "$PATCHED"   | jq -S -c '[.gameState.waiting_for.data.target_slots[]?]')"
+  SLOTS_U="$(gzip -dc "$UNPATCHED" | jq -S -c '[.gameState.waiting_for.data.target_slots[]?]')"
+  if [ "$SLOTS_P" = "[]" ] && [ "$SLOTS_U" = "[]" ]; then
+    echo "CONTROL PATCHED_DIFFERS=n/a — this dump carries no target_slots, so the effect_kind stage is vacuously absent and arm 2 cannot certify it (arm 1 and the stage-2b arms still apply)"
+  elif [ "$SLOTS_P" = "$SLOTS_U" ]; then
+    echo "CONTROL PATCHED_DIFFERS=false — the effect_kind filter matched nothing; arm 1 above would pass vacuously" >&2
+    exit 1
+  else
+    echo "CONTROL PATCHED_DIFFERS=true stamped=$(gzip -dc "$PATCHED" | jq -c '[.gameState.waiting_for.data.target_slots[]?.effect_kind]') unpatched=$(gzip -dc "$UNPATCHED" | jq -c '[.gameState.waiting_for.data.target_slots[]?.effect_kind]')"
+  fi
+
+  # ARM 3 — stage 2b landed: the firing carriers and the allocators are present and
+  # canonical in the patched regeneration. This is what actually distinguishes patched
+  # from unpatched on a no-prompt dump, and arm 2 above deliberately no longer claims it.
+  if [ "$(gzip -dc "$PATCHED" | jq -c 'if (.gameState // null) == null then "n/a"
+                                       elif (((.gameState.next_delayed_trigger_token // 0) >= 1)
+                                         and ((.gameState.next_delayed_trigger_instance // 0) >= 1))
+                                       then "true" else "false" end')" = '"false"' ]; then
+    echo "CONTROL STAGE_2B_LANDED=false — the allocator repair did not reach the regeneration" >&2
     exit 1
   fi
-  echo "CONTROL PATCHED_DIFFERS=true stamped=$(gzip -dc "$PATCHED" | jq -c '[.gameState.waiting_for.data.target_slots[]?.effect_kind]') unpatched=$(gzip -dc "$UNPATCHED" | jq -c '[.gameState.waiting_for.data.target_slots[]?.effect_kind]')"
+  echo "CONTROL STAGE_2B_LANDED=true carriers=$(gzip -dc "$PATCHED" | jq -c -f <(printf '%s\ntrigger_carrier_count\n' "$(cat "$FIRING_LIB")")) alloc=$(gzip -dc "$PATCHED" | jq -c '{tok:.gameState.next_delayed_trigger_token, inst:.gameState.next_delayed_trigger_instance}')"
   exit 0
 fi
 
