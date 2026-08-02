@@ -31,10 +31,35 @@
 # `stack_trigger_firings` is keyed by the STACK ENTRY id — what
 # `validate_trigger_firing_coherence` looks up — not by the source id.
 
+# The two definition lists have DIFFERENT serialized shapes, and reading one field name
+# across both silently drops a whole list:
+#   `trigger_definitions`      is `Definitions<TriggerEntry>`, and `TriggerEntry` is
+#                              `{occurrence, definition}` — the text lives at
+#                              `.definition.description`
+#                              (`crates/engine/src/types/ability.rs`).
+#   `base_trigger_definitions` is `Arc<Vec<TriggerDefinition>>` — text at `.description`.
+#
+# MEASURED on the committed corpus: of the `trigger_definitions` entries, 0 expose a
+# DIRECT `.description` and 100% (145 / 165 / 132 on dellian / dina / witherbloom) nest it
+# under `.definition`. The struck form read `.description` on both lists, so every LIVE
+# entry collapsed to the `// ""` fallback and that list contributed nothing — all 172
+# carriers matched through `base_trigger_definitions` alone. "Every carrier resolved" was
+# therefore true but not evidence that this read was right.
+#
+# The gap is REACHABLE, not theoretical: `dellian_emblem_conqueror_4p` carries a GRANTED
+# trigger ("When ~ dies, you gain 1 life.") that is present in the live list and ABSENT
+# from the base list. A firing whose description existed only there would have aborted the
+# entire stamp with `UNDETERMINED firing carrier` on a fixture that is in fact classifiable.
+#
+# Read each entry by its OWN shape rather than assuming one: `.definition.description`
+# first, then `.description`. Empty strings are dropped so a shape this does not
+# understand cannot match a description that is itself empty — an unrecognised entry must
+# reach the `UNDETERMINED` abort, never satisfy a lookup by accident.
 def _defs($objs; $src):
   (($objs[($src|tostring)] // {})
    | (.trigger_definitions // []) + (.base_trigger_definitions // []))
-  | map(.description // "");
+  | map((.definition.description // .description) // "")
+  | map(select(. != ""));
 
 def _firing($objs; $src; $d):
   if ((_defs($objs; $src)) | index($d)) then "Ordinary"
@@ -79,8 +104,14 @@ def trigger_carrier_count:
 # case to the engine.
 def stamp_delayed_allocators:
   if (.gameState // null) == null then . else
+    # `.command` is only indexable when it is an OBJECT. serde writes an externally
+    # tagged UNIT variant as a bare JSON string, and `select(.command.X)` on a string
+    # aborts jq with `Cannot index string with "DelayedTriggerInstall"`. That is not a
+    # named abort: this file's contract is that an undetermined case aborts BY NAME, and
+    # a raw type error leaves the operator unable to tell a shape it does not understand
+    # from a real install root. Filter to objects first so the probe stays total.
     ([ (.gameState.resolved_rules_journal.entries // [])[]
-       | select(.command.DelayedTriggerInstall) ] | length) as $installs
+       | select((.command | objects | has("DelayedTriggerInstall")) // false) ] | length) as $installs
   | ((.gameState.delayed_triggers // []) | length) as $delayed
   | if ($installs > 0 or $delayed > 0)
     then error("UNDETERMINED delayed-trigger allocators: \($installs) install command(s), \($delayed) delayed trigger(s) — deriving the used-token set is engine logic, not jq's")
@@ -91,22 +122,58 @@ def stamp_delayed_allocators:
     end
   end;
 
+# DERIVES ONLY WHERE NO CARRIER EXISTS. Never rewrites one that is already there.
+#
+# The struck form assigned all three keys unconditionally, without reading them. That
+# made `stamp-fixture-firing.sh`'s header claim — in-place stamping "is additive and
+# cannot revert anything" — false for exactly these keys, and arm 1 cannot catch it
+# because it deletes all five stamped keys from both sides before comparing.
+#
+# The damage is silent and is the one inference this file exists to refuse. A fixture
+# already carrying a canonical `{"Delayed": {...}}` (a modern capture, or an
+# engine-side migration) has two ways to lose it:
+#   * the delayed trigger's description is absent from the source object's definitions,
+#     so `_firing` ABORTS the whole stamp on a fixture that was already correct; or
+#   * the description IS present there, so the carrier is silently rewritten to
+#     "Ordinary" — a CR 603.7a delayed firing re-classified as a CR 603.1 ordinary one,
+#     with no diagnostic. That is precisely the silent re-classification this file's
+#     header forbids.
+#
+# Deriving only into an ABSENT slot makes the "additive" claim true, and makes the whole
+# stamp idempotent: re-running it over already-stamped fixtures is now a no-op rather
+# than a re-derivation that has to agree with itself.
 def stamp_trigger_firing:
   if (.gameState // null) == null then . else
   .gameState.objects as $objs
   | (.gameState.resolving_stack_entry // .gameState.resolving_trigger) as $rt
+  # Existing carriers are preserved, but ONLY for stack entries that are still there.
+  # A key naming an entry that has left the stack is stale, and carrying it forward
+  # would inflate `stack_trigger_firings` past the number of triggered records — which
+  # is also the one shape that could defeat `stamp-fixture-firing.sh`'s arm 2, since
+  # that arm compares carrier TOTALS and a surplus here could cancel a deficit
+  # elsewhere. Scoping preservation to live entries keeps "preserve what is canonical"
+  # from becoming "accumulate whatever was there".
+  | ([ (.gameState.stack // [])[]
+       | select(.kind.type == "TriggeredAbility") | (.id|tostring) ]) as $live_ids
+  | ((.gameState.stack_trigger_firings // {})
+     | with_entries(select(.key as $k | $live_ids | index($k)))) as $sf_existing
   | .gameState |= (
-      (if (.pending_trigger // null) != null
+      (if ((.pending_trigger // null) != null
+           and (.pending_trigger_firing // null) == null)
          then .pending_trigger_firing =
                 _firing($objs; .pending_trigger.source_id; .pending_trigger.description)
          else . end)
     | (([ (.stack // [])[]
           | select(.kind.type == "TriggeredAbility")
+          | select(($sf_existing | has((.id|tostring))) | not)
           | {key: (.id|tostring),
              value: _firing($objs; .kind.data.source_id; .kind.data.description)} ]
         | from_entries) as $sf
-       | if ($sf | length) > 0 then .stack_trigger_firings = $sf else . end)
-    | (if ($rt != null and ($rt.kind.type? // "") == "TriggeredAbility")
+       | if ($sf | length) > 0
+           then .stack_trigger_firings = ($sf_existing + $sf)
+           else . end)
+    | (if ($rt != null and ($rt.kind.type? // "") == "TriggeredAbility"
+           and (.resolving_trigger_firing // null) == null)
          then .resolving_trigger_firing =
                 _firing($objs; $rt.kind.data.source_id; $rt.kind.data.description)
          else . end)

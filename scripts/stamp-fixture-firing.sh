@@ -11,8 +11,9 @@
 # fixture carries a LATER parser state than the 2026-07-22/25 capture. Rerunning
 # those from pristine would silently REVERT that. Stamping in place is additive
 # and cannot revert anything, and its arm-1 control is strictly stronger: the
-# stamped artifact minus the three new keys must be BYTE-IDENTICAL to what was
-# committed, which proves zero collateral change.
+# stamped artifact minus the five stamped keys (three firing carriers plus the
+# two delayed-trigger allocators — the exact `del()` list below) must be
+# BYTE-IDENTICAL to what was committed, which proves zero collateral change.
 #
 # The derivation is NOT re-spelled here — it is loaded from
 # scripts/lib/trigger-firing.jq, the same single definition
@@ -33,7 +34,7 @@
 #      engine's own coherence validator rejects. Stamping the repaired value on
 #      disk keeps the decoders in agreement WITHOUT weakening any assertion.
 #
-# ALL THREE control arms, and a one- or two-arm check passes vacuously:
+# ALL FIVE control arms, and a partial check passes vacuously:
 #   arm 1 => NO_COLLATERAL=true        stamped minus the 5 stamped keys is
 #            byte-identical to the committed fixture, so nothing else moved.
 #   arm 2 => CARRIERS_ADDED=true       every firing carrier the dump needs is
@@ -41,6 +42,15 @@
 #            difference: gzip/jq re-serialization alone changes bytes without
 #            stamping anything, which is the stale-artifact false pass.
 #   arm 3 => ALLOCATORS_CANONICAL=true both allocators exist and are >= 1.
+#   arm 4 => DEFINITION_SHAPES=true    a PRE-FLIGHT control, run once before any
+#            fixture is touched: the shipped `_defs` must read BOTH serialized
+#            definition shapes, and must still ABORT when a description is in
+#            neither. See `definition_shape_control` below.
+#   arm 5 => CARRIER_PRESERVED=true    a PRE-FLIGHT control: an existing canonical
+#            carrier must SURVIVE the stamp (the "additive" claim above, which arm 1
+#            structurally cannot check because it deletes those keys before
+#            comparing), while an absent one is still derived. See
+#            `carrier_preservation_control` below.
 
 set -euo pipefail
 
@@ -59,6 +69,83 @@ done
 # sides, so anything else that moved shows up as a collateral change.
 CARRIERS='del(.gameState.pending_trigger_firing, .gameState.stack_trigger_firings, .gameState.resolving_trigger_firing,
               .gameState.next_delayed_trigger_token, .gameState.next_delayed_trigger_instance)'
+
+# arm 4 — PRE-FLIGHT: does the shipped `_defs` actually read both serialized
+# definition shapes?
+#
+# The two lists do NOT serialize alike. `trigger_definitions` is
+# `Definitions<TriggerEntry>` and nests its text at `.definition.description`;
+# `base_trigger_definitions` is `Vec<TriggerDefinition>` and exposes
+# `.description` directly. A filter that reads one field name across both still
+# resolves every carrier in THIS corpus — measured, 172 of 172 — because the base
+# list happens to repeat the same descriptions. So "every carrier resolved" is NOT
+# evidence that both shapes are read, and no fixture-level arm can supply that
+# evidence. This one can: it asks the question directly, per shape.
+#
+# Three cases, and the NEGATIVE is what makes the positives non-vacuous — without
+# it a `_defs` that returned every string it could find would score green.
+definition_shape_control() {
+  local nested direct absent
+  # (a) description ONLY in the live list, nested under `.definition`.
+  nested="$(jq -n -c -f <(printf '%s\n%s\n' "$(cat "$LIB")" \
+    '_firing({"7":{"trigger_definitions":[{"definition":{"description":"D"}}]}}; 7; "D")') 2>/dev/null || echo FAILED)"
+  # (b) description ONLY in the base list, exposed directly.
+  direct="$(jq -n -c -f <(printf '%s\n%s\n' "$(cat "$LIB")" \
+    '_firing({"7":{"base_trigger_definitions":[{"description":"D"}]}}; 7; "D")') 2>/dev/null || echo FAILED)"
+  # (c) NEGATIVE CONTROL — present in neither shape MUST still abort by name.
+  if jq -n -c -f <(printf '%s\n%s\n' "$(cat "$LIB")" \
+    '_firing({"7":{"trigger_definitions":[{"definition":{"description":"OTHER"}}]}}; 7; "D")') >/dev/null 2>&1
+  then absent=RESOLVED; else absent=ABORTED; fi
+
+  if [ "$nested" = '"Ordinary"' ] && [ "$direct" = '"Ordinary"' ] && [ "$absent" = ABORTED ]; then
+    echo "CONTROL DEFINITION_SHAPES=true nested=$nested direct=$direct unknown=$absent"
+    return 0
+  fi
+  echo "CONTROL DEFINITION_SHAPES=false nested=$nested direct=$direct unknown=$absent" >&2
+  echo "  the derivation does not read both serialized definition shapes (or no longer" >&2
+  echo "  aborts on an unknown description) — refusing to stamp anything" >&2
+  return 1
+}
+
+# arm 5 — PRE-FLIGHT: stamping is genuinely ADDITIVE.
+#
+# The header above claims in-place stamping "cannot revert anything". Arm 1 cannot
+# check that claim for the five stamped keys, because it DELETES exactly those keys
+# from both sides before comparing — the one blind spot in an otherwise strong control.
+# So a carrier that was already canonical (a modern capture, or an engine-side
+# migration) could have been silently rewritten to "Ordinary", which is the CR 603.7a
+# to CR 603.1 re-classification `lib/trigger-firing.jq` exists to refuse.
+#
+# The NEGATIVE half is what makes it non-vacuous: an ABSENT carrier must still be
+# derived, or "preserved everything" would also describe a stamp that did nothing.
+carrier_preservation_control() {
+  local kept derived
+  # (a) An existing `Delayed` carrier survives, and is NOT rewritten to "Ordinary" —
+  #     note its description IS present in the object's definitions, so the struck
+  #     form would have overwritten it rather than aborting.
+  kept="$(printf '%s' '{"gameState":{"objects":{"7":{"base_trigger_definitions":[{"description":"D"}]}},
+                        "pending_trigger":{"source_id":7,"description":"D"},
+                        "pending_trigger_firing":{"Delayed":null}}}' \
+    | jq -c -f <(printf '%s\n%s\n' "$(cat "$LIB")" 'stamp_trigger_firing | .gameState.pending_trigger_firing') \
+      2>/dev/null || echo FAILED)"
+  # (b) NEGATIVE CONTROL — the SAME dump with the carrier removed must still derive one,
+  #     or "preserved" would also describe a stamp that stopped working entirely.
+  derived="$(printf '%s' '{"gameState":{"objects":{"7":{"base_trigger_definitions":[{"description":"D"}]}},
+                           "pending_trigger":{"source_id":7,"description":"D"}}}' \
+    | jq -c -f <(printf '%s\n%s\n' "$(cat "$LIB")" 'stamp_trigger_firing | .gameState.pending_trigger_firing') \
+      2>/dev/null || echo FAILED)"
+
+  if [ "$kept" = '{"Delayed":null}' ] && [ "$derived" = '"Ordinary"' ]; then
+    echo "CONTROL CARRIER_PRESERVED=true existing=$kept absent_is_derived=$derived"
+    return 0
+  fi
+  echo "CONTROL CARRIER_PRESERVED=false existing=$kept absent_is_derived=$derived" >&2
+  echo "  stamping is not additive (or stopped deriving absent carriers) — refusing to stamp" >&2
+  return 1
+}
+
+definition_shape_control || exit 1
+carrier_preservation_control || exit 1
 
 rc=0
 for FIX in "$@"; do
