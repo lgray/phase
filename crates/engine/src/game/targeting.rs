@@ -3658,8 +3658,17 @@ mod tests {
         state.players[1].is_eliminated = true;
         state.eliminated_players.push(PlayerId(1));
 
+        // EVERY negative below is PAIRED with a positive reach-guard. Without them a
+        // `find_legal_targets` that returned nothing at all — because it bailed before it
+        // ever evaluated player legality — would satisfy all three "must not contain"
+        // assertions and the row would certify an unreached code path.
         let player_targets =
             find_legal_targets(&state, &TargetFilter::Player, PlayerId(0), ObjectId(99));
+        assert!(
+            player_targets.contains(&TargetRef::Player(PlayerId(0))),
+            "reach-guard: the LIVING player must still be a legal `Player` target, or the \
+             exclusion below proves nothing about elimination"
+        );
         assert!(
             !player_targets.contains(&TargetRef::Player(PlayerId(1))),
             "eliminated player must not appear in legal targets"
@@ -3667,13 +3676,31 @@ mod tests {
 
         let any_targets = find_legal_targets(&state, &TargetFilter::Any, PlayerId(0), ObjectId(99));
         assert!(
+            any_targets.contains(&TargetRef::Player(PlayerId(0))),
+            "reach-guard: the LIVING player must still be reachable under `Any`"
+        );
+        assert!(
             !any_targets.contains(&TargetRef::Player(PlayerId(1))),
             "eliminated player must not appear under TargetFilter::Any either"
         );
 
+        // The opponent arm needs a THIRD seat. In the 2p fixture, eliminating P1 removes
+        // P0's only opponent, so "the eliminated opponent is absent" would hold for a
+        // filter that simply never yields players — the assertion would be vacuous by
+        // construction. A live opponent alongside the eliminated one is what makes the
+        // exclusion attributable to elimination.
+        use crate::types::format::FormatConfig;
+        let mut three = GameState::new(FormatConfig::standard(), 3, 42);
+        three.players[1].is_eliminated = true;
+        three.eliminated_players.push(PlayerId(1));
         let opponent_filter =
             TargetFilter::Typed(TypedFilter::default().controller(ControllerRef::Opponent));
-        let opp_targets = find_legal_targets(&state, &opponent_filter, PlayerId(0), ObjectId(99));
+        let opp_targets = find_legal_targets(&three, &opponent_filter, PlayerId(0), ObjectId(99));
+        assert!(
+            opp_targets.contains(&TargetRef::Player(PlayerId(2))),
+            "reach-guard: the LIVING opponent must match 'target opponent', or the \
+             exclusion below is vacuous — got {opp_targets:?}"
+        );
         assert!(
             !opp_targets.contains(&TargetRef::Player(PlayerId(1))),
             "eliminated opponent must not match 'target opponent'"

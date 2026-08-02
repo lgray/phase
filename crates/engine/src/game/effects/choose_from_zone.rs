@@ -1090,7 +1090,20 @@ fn resolve_chooser(state: &GameState, ability: &ResolvedAbility, chooser: Choose
                 return targeted_opponent;
             }
             // Fallback: first opponent in APNAP order (CR-correct for 2-player).
-            players::opponents(state, ability.controller)
+            //
+            // CR 115.10a + CR 608.2d: `choosable_opponents` — the SAME authority the
+            // multi-candidate prompt above consults — not the raw `opponents`. The two
+            // differ by `player_exists_for_choice`, i.e. by PHASED-OUT seats, since
+            // `opponents` filters only on `is_alive`. Routing the >= 2 path through the
+            // choice authority while leaving this < 2 path on the raw list made the two
+            // disagree about who is choosable, and it did so in the one case that gets
+            // NO prompt: a phased-out seat could be handed the choice instead of the
+            // only legal opponent, with nothing on screen to reveal it.
+            //
+            // Empty (every opponent phased out or gone) still degrades to the
+            // controller, which is the fail-closed direction and what CR 608.2d asks
+            // for — an impossible choice is not offered.
+            players::choosable_opponents(state, ability.controller)
                 .into_iter()
                 .next()
                 .unwrap_or(ability.controller)

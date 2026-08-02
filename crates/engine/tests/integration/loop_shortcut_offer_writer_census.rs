@@ -9,7 +9,7 @@
 //! number written into a plan cannot fire; this can.
 //!
 //! WHAT IT PINS, and why it is an INVARIANCE claim rather than a re-measurement:
-//! 22 production + 12 test sites across `crates/engine/src` and
+//! 22 production + 14 test sites across `crates/engine/src` and
 //! `crates/phase-ai/src`. A failure reads *"5d (or a successor) changed the
 //! offer-writer surface"*, not *"someone re-measured"*.
 //!
@@ -119,7 +119,11 @@ fn cfg_test_scoped_lines(src: &str) -> Vec<bool> {
 /// is not a code surface — it writes no offer and consumes none — so counting it
 /// would make the tripwire fire on prose and would force the pinned number to be
 /// re-measured by the very commit that ships the row. Excluding comment lines
-/// restores the plan's 22/12 exactly, INCLUDING its per-file production multiset.
+/// restores the plan's PRODUCTION count of 22 exactly, INCLUDING its per-file
+/// production multiset. (It does not restore the plan's original test-half count
+/// of 12: that half has since been adjudicated to 14, twice, and the assert below
+/// is the authority for the pair. Prose that repeats a number is prose that can go
+/// stale — this defers to the assert rather than restating it.)
 fn classify(src: &str, needle: &str, file: &str) -> Vec<Hit> {
     let scoped = cfg_test_scoped_lines(src);
     src.lines()
