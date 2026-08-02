@@ -185,6 +185,7 @@ mod export_runtime_canaries;
 mod exquisite_blood_routing;
 mod eyetwitch_learn_decline_lesson;
 mod fact_or_fiction_pile_separation;
+mod fantastic_four_bounded_loop;
 mod fateful_handoff_target_mana_value_draw;
 mod favor_of_the_mighty_greatest_mana_value_protection;
 mod felisa_fang_of_silverquill;

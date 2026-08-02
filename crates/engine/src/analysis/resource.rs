@@ -5177,9 +5177,18 @@ mod tests {
             .count()
     }
 
-    /// The two TRACKED 4p dumps, as `(name, gzip)` pairs. F4
-    /// (`fantastic_four_bounded_loop_4p.json.gz`) is deliberately absent: it is untracked
-    /// until §5 U5, so a row keyed to it would not be reproducible from the repository.
+    /// The two 4p dumps every row in this module drives with the GENERIC policy
+    /// ([`dump_drive_one_beat`]: pass at `Priority`, else the first legal non-terminal action),
+    /// as `(name, gzip)` pairs.
+    ///
+    /// `fantastic_four_bounded_loop_4p.json.gz` is now tracked too (5d U5), and is deliberately
+    /// NOT listed here: MEASURED, the generic policy never reaches its loop at all — that
+    /// helper's victim preference matches `GameAction::SelectTargets` while the F4 dump raises
+    /// `GameAction::ChooseTarget`, and its fallback answers Invisible Woman's CR 603.5 "may"
+    /// with whichever `DecideOptionalEffect` is enumerated first, which breaks the chain to
+    /// Mister Fantastic. Adding it here would add a dump on which these rows measure nothing.
+    /// Its rows live in `tests/integration/fantastic_four_bounded_loop.rs`, with the drive
+    /// policy that dump requires.
     const TRACKED_DUMPS: [(&str, &[u8]); 2] = [
         (
             "dina",
@@ -14045,6 +14054,98 @@ mod tests {
                 die_result: None,
             },
         }
+    }
+
+    /// §6 R7 — THE FROZEN PREFIX IS AN `(index, id)` IDENTITY, NOT A PRESENCE COUNT.
+    ///
+    /// CR 732.2a: `certified_period_touch` may exempt a `current.stack` entry from conjunct (6)
+    /// only when that entry sits at the SAME INDEX carrying the SAME `ObjectId` in every window
+    /// frame — i.e. it demonstrably did not participate in the observed period. A weaker test
+    /// ("something is at that index") would exempt an entry the period shifted underneath, and
+    /// a shifted entry is exactly one that DID move.
+    ///
+    /// This is the constructed unit R33/R21 do not cover: those rows measure the exemption on
+    /// the real dellian window, where every frame's prefix happens to be identity-stable, so
+    /// neither of them can separate the identity conjunct from a presence check.
+    ///
+    /// Arms, on ONE constructed 3-frame window (`[f0, f1, f2]` + `current`):
+    /// * **(a)** a stable `(index, id)` prefix of length 2 ⇒ `frozen_ids` contains exactly it;
+    /// * **(a′)** the reach-guard that makes (a) non-trivial: the stack's TAIL entry differs
+    ///   across the frames, so `frozen_ids` is a PROPER subset and "freeze everything" fails;
+    /// * **(b)** one frame's stack shifted by a single index (an extra entry pushed at the
+    ///   front) ⇒ the prefix ids are no longer at their own indices ⇒ NOTHING is frozen, even
+    ///   though every id is still PRESENT in that frame.
+    ///
+    /// REVERT-PROBE (RUN, see the journal): weaken the identity conjunct to a presence check
+    /// (`frame.stack.get(*index).is_some()`) ⇒ (b)'s frozen set becomes the whole prefix again
+    /// ⇒ (b) FAILS. (a)/(a′) stay green under that probe, which is what makes (b) the arm the
+    /// identity conjunct is answerable to.
+    #[test]
+    fn r7_the_frozen_prefix_is_an_index_id_identity_never_a_presence_count() {
+        let entry = |id: u64| churn_entry(id, 0, lose_ability(1), None);
+        // ids 7001/7002 are the STABLE prefix; the tail differs per frame so the frozen set is
+        // a proper subset and this row cannot be satisfied by "freeze the whole stack".
+        let frame_with_tail = |tail: u64| {
+            let mut s = GameState::new_two_player(20);
+            s.stack.push_back(entry(7001));
+            s.stack.push_back(entry(7002));
+            s.stack.push_back(entry(tail));
+            s
+        };
+        let (f0, f1, f2) = (
+            frame_with_tail(7010),
+            frame_with_tail(7011),
+            frame_with_tail(7012),
+        );
+        let current = frame_with_tail(7013);
+
+        // ── (a) + (a′) ──
+        let touch = certified_period_touch(
+            &[&f0, &f1, &f2],
+            &current,
+            PeriodCertification::BoardCovered,
+        );
+        let frozen: Vec<ObjectId> = touch.frozen_ids.iter().copied().collect();
+        assert_eq!(
+            frozen,
+            vec![ObjectId(7001), ObjectId(7002)],
+            "(a) CR 732.2a: exactly the entries holding the SAME id at the SAME index in every \
+             window frame are provably outside the observed period"
+        );
+        assert!(
+            frozen.len() < current.stack.len(),
+            "(a′) reach-guard: the frozen set must be a PROPER subset — a fixture whose whole \
+             stack froze could not tell the identity conjunct from `freeze everything`; \
+             stack {} vs frozen {}",
+            current.stack.len(),
+            frozen.len()
+        );
+
+        // ── (b) one frame shifted by a single index; every id is still PRESENT in it ──
+        let shifted = {
+            let mut s = f1.clone();
+            s.stack.push_front(entry(7099));
+            s
+        };
+        let shifted_ids: std::collections::BTreeSet<ObjectId> =
+            shifted.stack.iter().map(|e| e.id).collect();
+        assert!(
+            shifted_ids.contains(&ObjectId(7001)) && shifted_ids.contains(&ObjectId(7002)),
+            "(b) reach-guard: the shift must PRESERVE both prefix ids in that frame, otherwise \
+             a presence check would reject them too and the arms would not separate"
+        );
+        let shifted_touch = certified_period_touch(
+            &[&f0, &shifted, &f2],
+            &current,
+            PeriodCertification::BoardCovered,
+        );
+        assert!(
+            shifted_touch.frozen_ids.is_empty(),
+            "(b) CR 732.2a: a single index shift means the entry moved WITHIN the observed \
+             period, so no exemption is provable — presence at some index is not the property. \
+             got {:?}",
+            shifted_touch.frozen_ids
+        );
     }
 
     /// R14 — THE DEGENERATE WINDOW ANNOUNCES `current.stack`, ELEMENT FOR ELEMENT.
