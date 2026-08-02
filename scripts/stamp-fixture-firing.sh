@@ -195,9 +195,38 @@ stale_carrier_control() {
   return 1
 }
 
+# A valid envelope with NO `gameState` must reach the main loop's SKIP path.
+# `stamp_trigger_firing` / `stamp_delayed_allocators` both gate on `.gameState` and pass
+# such envelopes through untouched, so the stamper must ask nothing of them. The defect
+# this pins lived in the SHELL's `ALLOC_NEED` / arm-3 reads, not in the derivation, so
+# this control drives the REAL loop through a child invocation — a jq-only probe would
+# have stayed green while the script refused an unchanged, valid fixture.
+non_gamestate_control() {
+  [ -z "${STAMP_SELFTEST_CHILD:-}" ] || return 0   # inside the child: do not recurse
+  local d out crc
+  d="$(mktemp -d)" || return 1
+  printf '%s' '{"schemaVersion":3,"note":"a valid envelope carrying no gameState"}' \
+    | gzip -9 -n > "$d/no-gamestate.json.gz"
+  out="$(STAMP_SELFTEST_CHILD=1 "$0" "$d/no-gamestate.json.gz" 2>&1)"; crc=$?
+  rm -rf "$d"
+  # Assert the SKIP FIRED BY NAME. `rc=0` alone is not the claim: a loop that stamped
+  # nothing and fell through silently would also exit 0, which is a different behaviour
+  # wearing the same exit code.
+  if [ "$crc" -eq 0 ] && printf '%s\n' "$out" | grep -q '^SKIP  no-gamestate\.json\.gz'; then
+    echo "CONTROL NON_GAMESTATE_SKIPPED=true"
+    return 0
+  fi
+  echo "CONTROL NON_GAMESTATE_SKIPPED=false rc=$crc" >&2
+  printf '%s\n' "$out" | sed 's/^/    /' >&2
+  echo "  a gameState-less envelope must reach the SKIP path — the jq passes it through," >&2
+  echo "  so demanding an allocator repair here refuses an unchanged, valid fixture" >&2
+  return 1
+}
+
 definition_shape_control || exit 1
 carrier_preservation_control || exit 1
 stale_carrier_control || exit 1
+non_gamestate_control || exit 1
 
 rc=0
 for FIX in "$@"; do
@@ -226,7 +255,13 @@ for FIX in "$@"; do
   # The allocator repair is a SEPARATE need from the firing carriers: a dump can
   # want one and not the other, so a dump with no triggered record is only truly
   # a no-op when its allocators are already at or above 1.
-  ALLOC_NEED="$(gzip -dc "$FIX" | jq -c 'if ((.gameState.next_delayed_trigger_token // 0) < 1)
+  # A `.gameState`-less envelope is passed through untouched by `stamp_delayed_allocators`
+  # (trigger-firing.jq gates on exactly this), so it NEEDS nothing. Without the guard
+  # `.gameState.next_delayed_trigger_token` is null, `// 0` makes it 0, `< 1` is true, and
+  # the script demands a repair the jq will never perform — which turned an unchanged,
+  # valid fixture into an arm-3 failure and made this general-purpose script refuse it.
+  ALLOC_NEED="$(gzip -dc "$FIX" | jq -c 'if (.gameState // null) == null then 0
+                                         elif ((.gameState.next_delayed_trigger_token // 0) < 1)
                                             or ((.gameState.next_delayed_trigger_instance // 0) < 1)
                                          then 1 else 0 end')"
   ALLOC_GOT="$(gzip -dc "$TMP" | jq -c '{tok: .gameState.next_delayed_trigger_token,
@@ -246,15 +281,18 @@ for FIX in "$@"; do
   # re-serialization alone can change bytes without stamping anything.
   if [ "$GOT" -eq "$NEED" ]; then ARM2=true; else ARM2=false; fi
   # arm 3 — the allocator repair landed. Both fields must exist and be >= 1;
-  # 0 is the value the engine's own coherence validator rejects.
-  if [ "$(gzip -dc "$TMP" | jq -c 'if ((.gameState.next_delayed_trigger_token // 0) >= 1)
-                                      and ((.gameState.next_delayed_trigger_instance // 0) >= 1)
-                                   then "true" else "false" end')" = '"true"' ]
-  then ARM3=true; else ARM3=false; fi
+  # 0 is the value the engine's own coherence validator rejects. Reports `n/a` on a
+  # `.gameState`-less envelope rather than `false`: there is no allocator to make
+  # canonical, so the arm has nothing to certify and must not read as a failure.
+  ARM3="$(gzip -dc "$TMP" | jq -r 'if (.gameState // null) == null then "n/a"
+                                   elif ((.gameState.next_delayed_trigger_token // 0) >= 1)
+                                    and ((.gameState.next_delayed_trigger_instance // 0) >= 1)
+                                   then "true" else "false" end')"
 
   echo "STAMP $(basename "$FIX") carriers=$SUMMARY needs=$NEED got=$GOT alloc_need=$ALLOC_NEED alloc=$ALLOC_GOT NO_COLLATERAL=$ARM1 CARRIERS_ADDED=$ARM2 ALLOCATORS_CANONICAL=$ARM3"
 
-  if [ "$ARM1" != true ] || [ "$ARM2" != true ] || [ "$ARM3" != true ]; then
+  # ARM3 is tri-valued (`true`/`false`/`n/a`); only an outright `false` is a failure.
+  if [ "$ARM1" != true ] || [ "$ARM2" != true ] || [ "$ARM3" = false ]; then
     echo "  control arms failed for $FIX — not writing" >&2
     rm -f "$TMP"; rc=1; continue
   fi

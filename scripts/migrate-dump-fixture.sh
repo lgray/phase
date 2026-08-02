@@ -186,16 +186,32 @@ stage_path() {   # stage_path <destination> — a stage file on $destination's O
   mktemp "$(dirname "$1")/.migrate-dump-stage-XXXXXX.json.gz"
 }
 
+# Stage files live BESIDE their destination (stage_path, for mv atomicity), and on the
+# production path that directory is the tracked `crates/engine/tests/fixtures/`. A signal
+# during the unzip|transform|gzip pipeline, or a failed `mv`, would otherwise strand a
+# `.migrate-dump-stage-XXXXXX.json.gz` inside version control. The trap covers what the
+# explicit `rm -f` cannot: death before the next statement runs.
+STAGE_FILES=""
+cleanup_stage_files() {
+  [ -n "$STAGE_FILES" ] || return 0
+  # shellcheck disable=SC2086 # deliberate word-splitting over the staged-path list
+  rm -f $STAGE_FILES
+  STAGE_FILES=""
+}
+trap cleanup_stage_files EXIT INT TERM
+
 regenerate() {   # regenerate <patched|unpatched> <destination>
   local mode="$1" dest="$2" staged
   mkdir -p "$(dirname "$dest")"
   staged="$(stage_path "$dest")"
+  STAGE_FILES="$STAGE_FILES $staged"
   if ! unzip -p "$PRISTINE" | transform "$mode" | gzip -9 -n > "$staged"; then
     rm -f "$staged"
     echo "REGENERATION FAILED (fail-closed, $dest left untouched)" >&2
     return 1
   fi
-  mv "$staged" "$dest"
+  # A failed `mv` leaves `$staged` in place; the trap reaps it on exit.
+  mv "$staged" "$dest" || return 1
 }
 
 # PRE-FLIGHT SELF-TESTS for the two properties that no corpus fixture can witness,
@@ -368,6 +384,18 @@ if [ "$CONTROL_MODE" -eq 1 ]; then
   # ARM 3 — stage 2b landed: the firing carriers and the allocators are present and
   # canonical in the patched regeneration. This is what actually distinguishes patched
   # from unpatched on a no-prompt dump, and arm 2 above deliberately no longer claims it.
+  #
+  # MUST COMPARE AGAINST THE UNPATCHED REGENERATION. Asserting only that the patched
+  # side is canonical is vacuous on any pristine dump that ALREADY carries allocators
+  # >= 1 and its carriers: the arm would report `true` while stage 2b changed nothing.
+  # That is the same vacuity arm 2 was corrected for — a control that cannot tell "the
+  # stage landed" from "it was already there" certifies nothing. When the two sides
+  # agree, this arm SKIPS LOUDLY as `n/a` rather than claiming a landing it cannot see.
+  alloc_sig() {   # alloc_sig <gz> — the stage-2b observable: carrier count + allocators
+    gzip -dc "$1" | jq -c -f <(printf '%s\n{c: trigger_carrier_count, t: (.gameState.next_delayed_trigger_token // 0), i: (.gameState.next_delayed_trigger_instance // 0)}\n' "$(cat "$FIRING_LIB")")
+  }
+  STAGE2B_P="$(alloc_sig "$PATCHED")"
+  STAGE2B_U="$(alloc_sig "$UNPATCHED")"
   if [ "$(gzip -dc "$PATCHED" | jq -c 'if (.gameState // null) == null then "n/a"
                                        elif (((.gameState.next_delayed_trigger_token // 0) >= 1)
                                          and ((.gameState.next_delayed_trigger_instance // 0) >= 1))
@@ -375,7 +403,11 @@ if [ "$CONTROL_MODE" -eq 1 ]; then
     echo "CONTROL STAGE_2B_LANDED=false — the allocator repair did not reach the regeneration" >&2
     exit 1
   fi
-  echo "CONTROL STAGE_2B_LANDED=true carriers=$(gzip -dc "$PATCHED" | jq -c -f <(printf '%s\ntrigger_carrier_count\n' "$(cat "$FIRING_LIB")")) alloc=$(gzip -dc "$PATCHED" | jq -c '{tok:.gameState.next_delayed_trigger_token, inst:.gameState.next_delayed_trigger_instance}')"
+  if [ "$STAGE2B_P" = "$STAGE2B_U" ]; then
+    echo "CONTROL STAGE_2B_LANDED=n/a — the unpatched regeneration already carries $STAGE2B_U, so this arm cannot certify that stage 2b did anything (it is NOT evidence the stage ran)"
+  else
+    echo "CONTROL STAGE_2B_LANDED=true patched=$STAGE2B_P unpatched=$STAGE2B_U"
+  fi
   exit 0
 fi
 
