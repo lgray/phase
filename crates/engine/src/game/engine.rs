@@ -14839,6 +14839,117 @@ mod bounded_offer_conjunct_tests {
         state
     }
 
+    /// R20 — RELIEF-PATH BUDGET STARVATION IS COVERAGE, NEVER SOUNDNESS.
+    ///
+    /// CR 732.2a. The named regression row for the branch NOT taken (hoist only the primary
+    /// and let the budget absorb the relief path). A board whose non-exempt stack carries more
+    /// in-scope chain LINKS than the cap can pay for must REFUSE — no certificate consumed, no
+    /// offer, no `WaitingFor::LoopShortcut` write — and the refusal must be attributable to
+    /// the budget rather than to any upstream conjunct.
+    ///
+    /// THE BOUND IS PER-LINK, NOT PER-ENTRY, which is why the last entry is CHAINED: the
+    /// classifier recurses into `sub_ability`, so an N-link chain charges up to N. A per-entry
+    /// regression passes a per-entry row and fails this one.
+    ///
+    /// THREE CONJUNCTS, because `spent == cap` alone proves consumption, not BINDINGNESS:
+    /// (i) the SAME board offers once the budget stops binding (`ProbeCap::RaisedTwiceLinks`,
+    /// board-derived so no arbitrary raise is representable) — a matched positive on the
+    /// constructed board, not on a proxy; (ii) at the shipped cap the refusal is
+    /// `UnspecifiedChoiceWindow` with `denied == true` at `spent == PROBE_BUDGET`; (iii) a
+    /// PRE-CHARGE refusal on the same board reads a clean meter, which is the control that
+    /// keeps `denied` meaningful.
+    ///
+    /// (ii)'s VARIANT is reachable only because this board's basis-A match comes from the
+    /// EQUALITY disjunct: the `||` short-circuits, the charging cover call never runs, and
+    /// exhaustion lands one gate later in `stack_choices_are_all_specified`. That precondition
+    /// is carried as an EXECUTABLE reach-guard, not as prose, so a fixture drift to the cover
+    /// path fails loudly instead of silently flipping the variant.
+    ///
+    /// REVERT-PROBE: delete `probe_resolution`'s `try_charge_one` arm ⇒ the exhausted budget
+    /// falls through to the clone-and-resolve ⇒ the over-budget board OFFERS ⇒ FLIPS.
+    #[test]
+    fn r20_an_over_budget_relief_path_refuses_instead_of_certifying() {
+        use crate::analysis::resource::{loop_states_equal_modulo_resources, PROBE_BUDGET};
+        use crate::game::engine::{try_offer_bounded_cycle_shortcut_metered, ProbeCap};
+
+        // One more entry than the cap can pay for, with the last one CHAINED so the population
+        // is links rather than entries.
+        let entries = PROBE_BUDGET as usize + 1;
+        let state = equality_ring_with_stack(entries, true);
+
+        // ── reach-guards, all three before any verdict ──────────────────────────────────
+        assert!(
+            state.loop_detect_ring.len() >= 2,
+            "REACH-GUARD: a ring-starved board refuses at the ring gate with a clean meter and \
+             this row would pass for the wrong reason"
+        );
+        assert_eq!(
+            state.stack.len(),
+            entries,
+            "REACH-GUARD: the non-exempt population must exceed the cap ({PROBE_BUDGET})"
+        );
+        let prior = &state.loop_detect_ring[state.loop_detect_ring.len() - 2].normalized;
+        assert!(
+            loop_states_equal_modulo_resources(prior, &state),
+            "REACH-GUARD (the (ii) precondition, executable rather than prose): this board must \
+             match basis A through the EQUALITY disjunct. On a cover-matched board the charging \
+             cover call exhausts FIRST and the refusal is `NoCertification` with the same meter"
+        );
+
+        // ── (i) THE SAME BOARD OFFERS once the budget stops binding ─────────────────────
+        let (raised, raised_meter) =
+            try_offer_bounded_cycle_shortcut_metered(&state, false, ProbeCap::RaisedTwiceLinks);
+        assert!(
+            raised.is_ok(),
+            "(i) with the cap raised to 2x the board's own link count the SAME board must \
+             certify and offer — this is what pins the budget as the binding refusal below, \
+             rather than some upstream conjunct. Got {raised:?}, meter {raised_meter:?}"
+        );
+        // Keyed to the POPULATION counter, not to `spent`, and deliberately: `spent` measures
+        // CHARGING, so a revert-probe that deletes the charge arm would abort this conjunct
+        // first and mask the flip belonging to (ii). `conjunct6_asks` measures what the gate
+        // actually examined, which is the evidence (i) is here to give.
+        assert!(
+            !raised_meter.denied && raised_meter.conjunct6_asks >= entries as u32,
+            "(i) the raised arm must have examined the whole non-exempt population without \
+             denial; meter {raised_meter:?}"
+        );
+
+        // ── (ii) AT THE SHIPPED CAP: refuse, exhausted, and no offer ────────────────────
+        let (refused, meter) =
+            try_offer_bounded_cycle_shortcut_metered(&state, false, ProbeCap::Shipped);
+        assert!(
+            matches!(refused, Err(BoundedOfferRefusal::UnspecifiedChoiceWindow)),
+            "(ii) exhaustion reads `Prompted`, so the step-6 predicate goes false and the \
+             refusal is an unspecified window. Got {refused:?}, meter {meter:?}"
+        );
+        assert!(
+            meter.denied && meter.spent == PROBE_BUDGET,
+            "(ii) the cap must be CONSUMED and the denial latched — that pair is the \
+             exhaustion witness the refusal variant alone cannot carry. meter {meter:?}"
+        );
+
+        // ── (iii) THE CLEAN-METER CONTROL, keyed to a PRE-CHARGE refusal on the SAME board ─
+        let mut not_at_priority = state.clone();
+        not_at_priority.waiting_for = WaitingFor::DiscardToHandSize {
+            player: P0,
+            count: 1,
+            cards: Vec::new(),
+        };
+        let (control, control_meter) =
+            try_offer_bounded_cycle_shortcut_metered(&not_at_priority, false, ProbeCap::Shipped);
+        assert!(
+            matches!(control, Err(BoundedOfferRefusal::NotAtPriority)),
+            "(iii) the control arm must refuse UPSTREAM of the first charge; got {control:?}"
+        );
+        assert!(
+            !control_meter.denied && control_meter.spent == 0,
+            "(iii) a pre-charge refusal reads a clean meter BY CONTROL-FLOW POSITION — without \
+             this control, `denied` would look like a property of refusals in general \
+             rather than of exhaustion. meter {control_meter:?}"
+        );
+    }
+
     /// R33 arm (a′2) — THE SELECTION SITE: AN EQUALITY-CERTIFIED CANDIDATE CARRIES NO FROZEN
     /// EXEMPTION, EVEN THOUGH ITS WINDOW HAS ONE AVAILABLE.
     ///
@@ -14863,67 +14974,8 @@ mod bounded_offer_conjunct_tests {
     fn r33_equality_certified_candidate_carries_no_frozen_exemption() {
         use crate::analysis::resource::{certified_period_touch, PeriodCertification};
         use crate::game::engine::{try_offer_bounded_cycle_shortcut_metered, ProbeCap};
-        use crate::types::ability::{Effect, QuantityExpr, ResolvedAbility};
-        use crate::types::game_state::{StackEntry, StackEntryKind};
-        use crate::types::identifiers::{CardId, ObjectId};
-        use crate::types::LoopDetectSample;
-        use std::sync::Arc;
 
-        let mut state = drain_ring(P1, 3);
-        let src = ObjectId(941);
-        let mut source = crate::game::game_object::GameObject::new(
-            src,
-            CardId(0),
-            P0,
-            "Frozen Ticker".to_string(),
-            crate::types::zones::Zone::Battlefield,
-        );
-        source.incarnation = 3;
-        // A MANDATORY, choice-free resolution: conjunct (6) must be able to accept it, so a
-        // refusal below is attributable to the exemption and not to an unspecified choice.
-        let entry = StackEntry {
-            id: ObjectId(951),
-            source_id: src,
-            controller: P0,
-            kind: StackEntryKind::TriggeredAbility {
-                source_id: src,
-                ability: Box::new(ResolvedAbility::new(
-                    Effect::LoseLife {
-                        amount: QuantityExpr::Fixed { value: 1 },
-                        target: None,
-                    },
-                    vec![],
-                    src,
-                    P0,
-                )),
-                condition: None,
-                trigger_event: None,
-                description: None,
-                source_name: String::new(),
-                subject_match_count: None,
-                die_result: None,
-            },
-        };
-        // Injected identically everywhere, so board equality is preserved and the entry sits
-        // at the SAME INDEX in every window frame — the frozen predicate's exact condition.
-        let inject = |g: &mut GameState| {
-            g.objects.insert(src, source.clone());
-            g.battlefield.push_back(src);
-            g.stack.push_back(entry.clone());
-        };
-        inject(&mut state);
-        let frames: std::collections::VecDeque<Arc<LoopDetectSample>> = state
-            .loop_detect_ring
-            .iter()
-            .map(|s| {
-                let mut normalized = s.normalized.clone();
-                let mut live = s.live.clone();
-                inject(&mut normalized);
-                inject(&mut live);
-                Arc::new(LoopDetectSample { normalized, live })
-            })
-            .collect();
-        state.loop_detect_ring = frames;
+        let state = equality_ring_with_stack(1, false);
 
         // REACH-GUARD 1: the exemption is genuinely AVAILABLE on this candidate's window —
         // otherwise "withdrawn" is indistinguishable from "there was nothing to withdraw".
@@ -15006,6 +15058,92 @@ mod bounded_offer_conjunct_tests {
                 .expect("seat exists");
             player.life += (frames - i) as i32;
         })
+    }
+
+    /// A [`drain_ring`] whose stack carries `links` in-scope chain links, seeded IDENTICALLY
+    /// into `current` and into both halves of every retained frame.
+    ///
+    /// Two properties come out of that one construction, which is why both rows share it:
+    /// board equality survives (so basis A matches on its FIRST disjunct), and every entry
+    /// sits at the SAME INDEX in every window frame (so the window carries a non-empty
+    /// observed-frozen set — the thing the certificate is allowed to subtract, or not).
+    ///
+    /// Each entry is a MANDATORY, choice-free `LoseLife`, so conjunct (6) can accept it and a
+    /// refusal is never attributable to an unspecified choice. `chained` gives the LAST entry
+    /// a `sub_ability`, which the classifier recurses into: that is what makes the budget a
+    /// per-LINK bound rather than a per-ENTRY one, and what a per-entry regression would miss.
+    fn equality_ring_with_stack(entries: usize, chained: bool) -> GameState {
+        use crate::types::ability::{Effect, QuantityExpr, ResolvedAbility};
+        use crate::types::game_state::{StackEntry, StackEntryKind};
+        use crate::types::identifiers::{CardId, ObjectId};
+        use crate::types::LoopDetectSample;
+        use std::sync::Arc;
+
+        let mut state = drain_ring(P1, 3);
+        let src = ObjectId(941);
+        let mut source = crate::game::game_object::GameObject::new(
+            src,
+            CardId(0),
+            P0,
+            "Frozen Ticker".to_string(),
+            crate::types::zones::Zone::Battlefield,
+        );
+        source.incarnation = 3;
+        let lose_one = || {
+            ResolvedAbility::new(
+                Effect::LoseLife {
+                    amount: QuantityExpr::Fixed { value: 1 },
+                    target: None,
+                },
+                vec![],
+                src,
+                P0,
+            )
+        };
+        let built: Vec<StackEntry> = (0..entries)
+            .map(|i| {
+                let mut ability = lose_one();
+                if chained && i + 1 == entries {
+                    ability.sub_ability = Some(Box::new(lose_one()));
+                }
+                StackEntry {
+                    id: ObjectId(951 + i as u64),
+                    source_id: src,
+                    controller: P0,
+                    kind: StackEntryKind::TriggeredAbility {
+                        source_id: src,
+                        ability: Box::new(ability),
+                        condition: None,
+                        trigger_event: None,
+                        description: None,
+                        source_name: String::new(),
+                        subject_match_count: None,
+                        die_result: None,
+                    },
+                }
+            })
+            .collect();
+        let inject = |g: &mut GameState| {
+            g.objects.insert(src, source.clone());
+            g.battlefield.push_back(src);
+            for e in &built {
+                g.stack.push_back(e.clone());
+            }
+        };
+        inject(&mut state);
+        let frames: std::collections::VecDeque<Arc<LoopDetectSample>> = state
+            .loop_detect_ring
+            .iter()
+            .map(|s| {
+                let mut normalized = s.normalized.clone();
+                let mut live = s.live.clone();
+                inject(&mut normalized);
+                inject(&mut live);
+                Arc::new(LoopDetectSample { normalized, live })
+            })
+            .collect();
+        state.loop_detect_ring = frames;
+        state
     }
 
     /// STEP (2) `ProposerIsNotActivePlayer`. CR 732.2a lets the player with priority propose;

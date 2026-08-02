@@ -7783,6 +7783,185 @@ fn dina_untargeted_drain_4p_offers_at_three_live_opponents() {
     );
 }
 
+/// The dina 4p drain DRIVEN through `apply()` to the beat the engine itself raises the
+/// bounded offer on, with that beat's index. Shared by every row that has to observe the
+/// mint at the ONE beat this corpus offers on.
+fn dina_driven_to_bounded_offer() -> (GameState, usize) {
+    let mut state = restore_dump(&gunzip_dump(include_bytes!(
+        "../fixtures/dina_conqueror_4p.json.gz"
+    )));
+    let beat = drive_to_bounded_offer(&mut state, 400).expect(
+        "CR 732.2a: the bounded offer must FIRE on this real 4p drain. BASE (no Path D) drove \
+         326 beats on this same dump and reached zero LoopShortcut beats, so a failure here is \
+         the offer never being raised, not a fixture accident.",
+    );
+    (state, beat)
+}
+
+/// Restore the `Priority` window the bridge consumed when it raised the offer, so the mint can
+/// be re-run on the offer beat's own board. Everything else the mint reads — the ring, the
+/// stack, the resources, `last_loop_action_sequence` — is untouched, and each caller proves
+/// the reconstruction faithful by requiring the SAME outcome the production path produced.
+fn replay_at_priority(state: &GameState, proposer: PlayerId) -> GameState {
+    let mut replay = state.clone();
+    replay.waiting_for = WaitingFor::Priority { player: proposer };
+    replay
+}
+
+/// R16 (v) — THE SEQUENCING PIN: NOTHING SPENDS BEFORE THE RING GATE, BECAUSE NOTHING ASKS.
+///
+/// CR 732.2a. At a ring-WARM-UP beat (`loop_detect_ring.len() < 2`) there is no window, hence
+/// no reachable certificate, so the mint must refuse at the ring-usability gate BEFORE the
+/// verdict door is asked anything. This is the property that keeps the frozen exemption's
+/// cost argument honest: at these beats the frozen set is empty and dellian's non-exempt
+/// population is 152–153 entries, i.e. exactly the unexempted full sweep the ring gate exists
+/// to keep off the critical path.
+///
+/// The property is STRUCTURAL, not an ordering the executor had to remember: the verdict
+/// container is constructed BELOW the gate, so at this beat there is nothing to ask.
+///
+/// ⚠ WHAT THIS ROW DOES **NOT** CATCH, stated because the plan's proposed revert-probe was
+/// analysed NOT to flip through this instrument. `MintMeter` is populated from the container
+/// AFTER `certified_bounded_cycle_offer` returns, and the ring gate is an EARLY RETURN above
+/// that snapshot — so an eager pass hoisted above the gate would spend a budget this meter
+/// never reads, and the all-zero reading below would survive it. The row therefore pins the
+/// OBSERVABLE part (the gate refuses with `NoCertification`, on a beat carrying a stack an
+/// eager pass would really pay for) while the structural part rests on the construction order
+/// in `bounded_cycle_offer`. Disclosed as a stop-and-return item rather than papered over with
+/// a probe that cannot fire.
+#[test]
+fn r16v_a_ring_warmup_beat_spends_nothing() {
+    use engine::game::engine::{
+        try_offer_bounded_cycle_shortcut_metered, BoundedOfferRefusal, ProbeCap,
+    };
+
+    let mut state = restore_dump(&gunzip_dump(include_bytes!(
+        "../fixtures/dellian_emblem_conqueror_4p.json.gz"
+    )));
+    // Find a beat that is AT PRIORITY (so steps 1/1b/2 pass and the ring gate is the first
+    // thing that can refuse) and still ring-starved. The dump ships with an empty ring, so
+    // this is reachable by construction; the search makes the row robust to drive drift.
+    let mut found = None;
+    for beat in 0..40usize {
+        if state.loop_detect_ring.len() < 2 {
+            if let WaitingFor::Priority { player } = state.waiting_for {
+                if player == state.active_player && state.last_loop_action_sequence.is_empty() {
+                    found = Some((beat, state.clone()));
+                    break;
+                }
+            }
+        }
+        if dump_drive_one_beat(&mut state, None).is_err() {
+            break;
+        }
+    }
+    let (beat, board) = found.expect(
+        "REACH-GUARD: no ring-starved beat at priority was reached, so this row would be \
+         asserting about a gate it never arrived at",
+    );
+    assert!(
+        board.stack.len() > 2,
+        "REACH-GUARD: the beat must carry a stack an eager pass would actually PAY for, else \
+         `spent == 0` is true for want of anything to classify; got {} entries at beat {beat}",
+        board.stack.len()
+    );
+
+    let (outcome, meter) =
+        try_offer_bounded_cycle_shortcut_metered(&board, false, ProbeCap::Shipped);
+    assert!(
+        matches!(outcome, Err(BoundedOfferRefusal::NoCertification)),
+        "a ring of {} frames reaches no window, so the refusal is the ring-usability gate's; \
+         got {outcome:?}",
+        board.loop_detect_ring.len()
+    );
+    assert_eq!(
+        (
+            meter.spent,
+            meter.denied,
+            meter.conjunct6_asks,
+            meter.conjunct4_scans
+        ),
+        (0, false, 0, 0),
+        "R16(v): the gate refuses BEFORE the verdict container can be asked anything — a \
+         non-zero counter here is an eager classification pass reintroduced above the ring \
+         gate. beat {beat}, meter {meter:?}"
+    );
+    assert!(
+        meter.certification.is_none(),
+        "no certificate is reachable at a ring-starved beat; meter {meter:?}"
+    );
+}
+
+/// R15 — A BUDGET-EXCEEDED MINT IS A REFUSAL, NEVER A STALL AND NEVER A CERTIFICATE.
+///
+/// CR 732.2a. This is the row that makes *"cost is a coverage knob, never a soundness knob"* a
+/// measurement instead of a sentence: with the per-mint cap forced to zero, the classifier can
+/// afford nothing, `probe_resolution` returns `Prompted`, and the offer is REFUSED — the mint
+/// does not fall through to a clone-and-resolve, and it does not hang.
+///
+/// The two arms are the SAME BOARD one argument apart — the real dina offer beat, replayed
+/// through the only cap channel the seam admits. The `Shipped` arm is the matched positive
+/// reach-guard: without it a starved refusal proves nothing, because a board that never offers
+/// refuses at zero budget too.
+///
+/// REVERT-PROBE: delete `probe_resolution`'s `try_charge_one` arm (`resolution_prompt.rs`) ⇒
+/// the exhausted budget falls through to the clone-and-resolve ⇒ the starved arm OFFERS ⇒
+/// FLIPS.
+#[test]
+fn r15_a_zero_probe_budget_refuses_the_bounded_offer() {
+    use engine::game::engine::{try_offer_bounded_cycle_shortcut_metered, ProbeCap};
+
+    let (state, beat) = dina_driven_to_bounded_offer();
+    let (proposer, _, _) = bounded_offer_parts(&state);
+    let replay = replay_at_priority(&state, proposer);
+
+    // MATCHED POSITIVE, first so a starved refusal below can never pass vacuously.
+    let (healthy, healthy_meter) =
+        try_offer_bounded_cycle_shortcut_metered(&replay, false, ProbeCap::Shipped);
+    assert!(
+        healthy.is_ok(),
+        "REACH-GUARD: at the shipped cap this beat must OFFER, else the starved arm is not \
+         keyed to the budget. beat {beat}, meter {healthy_meter:?}"
+    );
+    assert!(
+        !healthy_meter.denied,
+        "REACH-GUARD: the positive arm must not itself be exhausted; meter {healthy_meter:?}"
+    );
+
+    // THE ROW: the same board, the same beat, the cap forced to zero.
+    let (starved, meter) =
+        try_offer_bounded_cycle_shortcut_metered(&replay, false, ProbeCap::Lowered(0));
+    assert!(
+        starved.is_err(),
+        "CR 732.2a: an unaffordable probe degrades to honest-red — no certificate and no \
+         offer. Got {starved:?}, meter {meter:?}"
+    );
+    assert!(
+        meter.denied && meter.spent == 0,
+        "the refusal must be the BUDGET's: a zero cap denies the very first charge, so \
+         nothing is spent and the denial flag is what carries the cause. meter {meter:?}"
+    );
+    // WHERE the denial lands, MEASURED rather than assumed — and it is not the intuitive
+    // answer. Basis B consults NO board predicate, so it certifies for FREE even at a zero cap
+    // (`certification == Some(ResourceSignatureOnly)` at `spent == 0`); the first gate that
+    // must actually PAY is conjunct (6), which asks the door, is denied, and therefore reads
+    // `Prompted`. Exhaustion surfaces as an UNSPECIFIED WINDOW, not as a missing certificate.
+    assert!(
+        meter.conjunct6_asks > 0,
+        "REACH-GUARD: the starved mint must have REACHED the paying gate, else `denied` is \
+         about a charge nobody ever attempted. meter {meter:?}"
+    );
+    assert!(
+        matches!(
+            starved,
+            Err(engine::game::engine::BoundedOfferRefusal::UnspecifiedChoiceWindow)
+        ),
+        "an exhausted classifier reads `Prompted`, so the step-6 predicate goes false and the \
+         mint REFUSES — never a stall, never a certified offer. Got {starved:?}, \
+         meter {meter:?}"
+    );
+}
+
 /// R33 arm (d) — THE CORPUS'S ONE OFFERING BEAT CERTIFIES THROUGH BASIS B, AND THE FROZEN
 /// EXEMPTION IS THEREFORE WITHDRAWN THERE.
 ///
@@ -7808,21 +7987,14 @@ fn dina_offering_beat_certifies_through_basis_b_and_exempts_nothing() {
     use engine::analysis::resource::PeriodCertification;
     use engine::game::engine::{try_offer_bounded_cycle_shortcut_metered, ProbeCap};
 
-    let mut state = restore_dump(&gunzip_dump(include_bytes!(
-        "../fixtures/dina_conqueror_4p.json.gz"
-    )));
-    let beat = drive_to_bounded_offer(&mut state, 400)
-        .expect("CR 732.2a: the bounded offer must FIRE on this real 4p drain");
+    let (state, beat) = dina_driven_to_bounded_offer();
     let (proposer, certificate, _) = bounded_offer_parts(&state);
     let published = certificate
         .per_cycle
         .clone()
         .expect("the bounded offer publishes a per-cycle signature");
 
-    // Restore the window the bridge consumed. Everything else the mint reads — the ring, the
-    // stack, the resources, `last_loop_action_sequence` — is the offer beat's own state.
-    let mut replay = state.clone();
-    replay.waiting_for = WaitingFor::Priority { player: proposer };
+    let replay = replay_at_priority(&state, proposer);
     let (outcome, meter) =
         try_offer_bounded_cycle_shortcut_metered(&replay, false, ProbeCap::Shipped);
 
