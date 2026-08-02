@@ -475,8 +475,9 @@ pub enum TriggerKind {
 /// a beneficial (CR 732.2) loop.
 ///
 /// `Serialize`/`Deserialize` exist because a per-cycle delta rides
-/// [`PeriodicDelta`] on the `WaitingFor::LoopShortcut` wire. One field needs an
-/// adaptor to get there — see [`counter_key_pairs`].
+/// [`PeriodicDelta`] on the `WaitingFor::LoopShortcut` /
+/// `WaitingFor::RespondToShortcut` wire. Every map whose key is NOT string-like
+/// needs an adaptor to get there — see [`map_key_pairs`].
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ResourceVector {
     /// CR 106.1: floating mana by color, indexed `[W, U, B, R, G, C]` (see
@@ -484,21 +485,25 @@ pub struct ResourceVector {
     pub mana: [i64; 6],
 
     /// CR 119.1: per-player life total. **State-readable.**
+    #[serde(with = "map_key_pairs")]
     pub life: BTreeMap<PlayerId, i64>,
 
     /// CR 120.1: cumulative damage *dealt to* each player this analysis window.
     /// Damage is an event, not a stored total. **Event-fed** (left empty by
     /// `snapshot`).
+    #[serde(with = "map_key_pairs")]
     pub damage_dealt: BTreeMap<PlayerId, i64>,
 
     /// CR 401: per-player library size, as a signed delta-friendly count.
     /// Positive = larger library. Mill loops drive this negative.
     /// **State-readable** (absolute library size at snapshot time).
+    #[serde(with = "map_key_pairs")]
     pub library_delta: BTreeMap<PlayerId, i64>,
 
     /// CR 122.1 + CR 704.5c: poison counters keyed by VICTIM `PlayerId` (10 ⇒ that
     /// player loses). Per-victim so a multiplayer poison ∞ attributes the loss to the
     /// afflicted seat, not the loop's controller. **State-readable.**
+    #[serde(with = "map_key_pairs")]
     pub poison: BTreeMap<PlayerId, i64>,
 
     /// CR 111: tokens created this analysis window. **Event-fed.**
@@ -543,7 +548,7 @@ pub struct ResourceVector {
     /// CR 122.1: counters by `(kind, object class)`. Includes +1/+1, loyalty,
     /// and poison (poison/energy are keyed under [`ObjectClass::Player`]).
     /// **State-readable.**
-    #[serde(with = "counter_key_pairs")]
+    #[serde(with = "map_key_pairs")]
     pub counters: BTreeMap<(CounterClass, ObjectClass), i64>,
 
     /// Generic trigger/keyword-action firings by family (proliferate, magecraft,
@@ -551,35 +556,64 @@ pub struct ResourceVector {
     pub generic_triggers: BTreeMap<TriggerKind, i64>,
 }
 
-/// Serde adaptor for [`ResourceVector::counters`], whose key is the
-/// `(CounterClass, ObjectClass)` TUPLE. `serde_json` accepts only string-like map
-/// keys, and `crates/engine-wasm/src/lib.rs` PANICS on a serialization error, so an
-/// unadapted tuple key is a browser crash rather than a soft failure. Ride the wire as
-/// a pair SEQUENCE — the shape `ShortcutDecisionSchema.points` already uses.
+/// Serde adaptor for every [`ResourceVector`] map whose key is not string-like:
+/// [`ResourceVector::counters`] (a `(CounterClass, ObjectClass)` TUPLE key) and the four
+/// [`PlayerId`]-keyed maps. Ride the wire as a pair SEQUENCE — the shape
+/// `ShortcutDecisionSchema.points` already uses — so there is no map key to encode.
 ///
 /// Not reusing `types::game_state::tuple_key_map` (the repo's other adaptor, which
 /// stringifies instead): it is monomorphic over `HashMap<(ObjectId, usize), u32>`.
-/// The two sibling maps need no adaptor — `PlayerId` is a newtype over an integer and
-/// `TriggerKind` is a unit-variant enum, both of which `serde_json` accepts as keys.
-mod counter_key_pairs {
-    use super::{BTreeMap, CounterClass, ObjectClass};
+///
+/// ⚠ **THE `PlayerId` MAPS ARE NOT OPTIONAL, contrary to what this doc claimed before.**
+/// The struck form read "the two sibling maps need no adaptor — `PlayerId` is a newtype
+/// over an integer … which `serde_json` accepts as keys". That is true of `to_string` /
+/// `from_str` and of `to_value` / `from_value` in ISOLATION, which is why the direct
+/// `periodic_delta_survives_the_serde_json_wire` arm passed and gave false confidence —
+/// but it is FALSE on the production path, for a reason that is about the ENCLOSING type,
+/// not this one:
+///
+/// * `WaitingFor` is `#[serde(tag = "type", content = "data")]` (ADJACENTLY TAGGED), so
+///   its payload is buffered through serde's private `Content` before being handed to the
+///   variant. `Content` represents every map key as a STRING.
+/// * `PlayerId` is `#[serde(transparent)]` over `u8`, so it asks for a `u8` and gets a
+///   string ⇒ `invalid type: string "0", expected u8`.
+/// * `PersistedGameState::deserialize` funnels EVERY persisted decode through
+///   `serde_json::Value` and then `serde_json::from_value` — including the production
+///   WASM restore at `crates/engine-wasm/src/lib.rs`'s `from_str::<PersistedGameState>`.
+///   So a saved game whose `RespondToShortcut` proposal carried a populated `per_cycle`
+///   would fail to restore.
+///
+/// MEASURED, all four combinations, on `serde_json` 1.0.149: bare `BTreeMap<PlayerId, i64>`
+/// is `Ok` for `from_str`/`from_value` standalone and for `from_str` under an adjacently
+/// tagged enum, and `Err("invalid type: string \"0\", expected u8")` for `from_value` under
+/// one — the exact error text this repo had already recorded in
+/// `tests/integration/loop_shortcut.rs`. With this adaptor all four are `Ok`.
+///
+/// [`ResourceVector::generic_triggers`] deliberately keeps its bare map: `TriggerKind` is a
+/// unit-variant enum, so its key is genuinely a string and it was measured `Ok` through the
+/// same adjacently-tagged `from_value` path that breaks `PlayerId`.
+mod map_key_pairs {
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
+    use std::collections::BTreeMap;
 
-    pub(super) fn serialize<S: Serializer>(
-        map: &BTreeMap<(CounterClass, ObjectClass), i64>,
-        serializer: S,
-    ) -> Result<S::Ok, S::Error> {
+    pub(super) fn serialize<S, K, V>(map: &BTreeMap<K, V>, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+        K: Serialize + Ord,
+        V: Serialize,
+    {
         map.iter().collect::<Vec<_>>().serialize(serializer)
     }
 
-    pub(super) fn deserialize<'de, D: Deserializer<'de>>(
-        deserializer: D,
-    ) -> Result<BTreeMap<(CounterClass, ObjectClass), i64>, D::Error> {
-        Ok(
-            Vec::<((CounterClass, ObjectClass), i64)>::deserialize(deserializer)?
-                .into_iter()
-                .collect(),
-        )
+    pub(super) fn deserialize<'de, D, K, V>(deserializer: D) -> Result<BTreeMap<K, V>, D::Error>
+    where
+        D: Deserializer<'de>,
+        K: Deserialize<'de> + Ord,
+        V: Deserialize<'de>,
+    {
+        Ok(Vec::<(K, V)>::deserialize(deserializer)?
+            .into_iter()
+            .collect())
     }
 }
 
@@ -589,7 +623,7 @@ mod counter_key_pairs {
 ///
 /// The `Vec` victim term (rather than a `BTreeMap` keyed by [`DecisionSlot`]) is
 /// deliberate: a struct map key hits exactly the `serde_json` restriction
-/// [`counter_key_pairs`] exists for, and the single consumer
+/// [`map_key_pairs`] exists for, and the single consumer
 /// ([`ResourceVector::elimination_bounds`]) collects at its call site.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PeriodicDelta {
@@ -1279,8 +1313,28 @@ pub(crate) fn ring_delta_signature(state: &GameState) -> Option<(u32, ResourceVe
             continue;
         }
         let per_period = ResourceVector::delta(&snaps[frames - 1 - k], &snaps[frames - 1]);
-        // Smallest repeating period, so every longer one is a whole number of copies of
-        // this one — a zero here cannot become non-zero at a larger `k`.
+        // A cycle that moves no resource states no CR 704 threshold to bound, so it
+        // supplies no per-period magnitude and is refused.
+        //
+        // This is deliberately a WHOLE-SEARCH refusal, and the struck justification for
+        // it was WRONG. It read "smallest repeating period, so every longer one is a
+        // whole number of copies of this one — a zero here cannot become non-zero at a
+        // larger `k`". The repetition test above inspects only the most recent `2k`
+        // deltas, which does NOT establish that the whole ring is periodic with period
+        // `k`, so a larger `k'` need not be a multiple of `k` and its per-period delta
+        // can be non-zero. Counter-example over 8 frames (deltas `d1..d7`, oldest
+        // first): at `k = 1` the last two deltas are equal and zero, so this returns
+        // `None`; at `k' = 3` the test compares `[d1,d2,d3]` against `[d4,d5,d6]`, and
+        // `d5 = d6 = 0` forces `d2 = d3 = 0` while leaving `d4` unconstrained, so the
+        // `k' = 3` period is `d4 + d5 + d6 = d4`, which can be non-zero.
+        //
+        // The BEHAVIOUR is still the safe direction — refusing outright costs a missed
+        // offer, never a wrong one — so this is a comment defect, not a soundness
+        // defect. It is corrected rather than deleted because the false claim is the
+        // kind a later reader would lean on to justify widening the search while keeping
+        // the early return, or to replace the search with a single-`k` probe. If that
+        // missed class ever needs to certify, `continue` is sound here for the same
+        // reason the return is safe: each candidate `k` is validated independently.
         if per_period == ResourceVector::default() {
             return None;
         }
@@ -2097,13 +2151,23 @@ fn resolution_events_are_discharged(
     match verdict {
         ResolutionChoiceFreedom::MayPrompt => false,
         ResolutionChoiceFreedom::FreeUnlessReplacements(events) => {
-            // `events` came from the RESOLVER, never from a per-arm list, and is
-            // non-empty by construction — `probe_resolution` returns `Prompted`
-            // on an empty derivation, so `any()` can never discharge vacuously.
-            debug_assert!(
-                !events.is_empty(),
-                "empty derivations are MayPrompt, never FreeUnlessReplacements"
-            );
+            // CR 616.1: FAIL CLOSED ON AN EMPTY DERIVATION, IN EVERY BUILD.
+            //
+            // This was a `debug_assert!(!events.is_empty(), ..)` resting on the contract
+            // that `probe_resolution` returns `Prompted` for an empty derivation. That
+            // contract is real but it lives in ANOTHER module and is not enforceable from
+            // here — and `debug_assert!` compiles out of release, where `any()` over an
+            // empty slice is `false`, so `!any(..)` would return `true` and discharge the
+            // obligation having inspected NOTHING. Fail-open is the single direction this
+            // predicate exists to prevent.
+            //
+            // A REFUSAL, not a panic, is the right shape: every other seam in this module
+            // answers an unclassifiable input with "no certificate, no offer", and the
+            // refusal is what a test can pin. A `debug_assert!` here could not be covered
+            // at all — it aborts the very build tests run in.
+            if events.is_empty() {
+                return false;
+            }
             !events.iter().any(|ev| {
                 !crate::game::replacement::proposed_event_prompt_cause(
                     board,
@@ -12348,7 +12412,15 @@ mod tests {
     /// ARM (ii) ALONE WOULD PASS AGAINST A BROKEN MAP — an empty map serializes fine
     /// whatever its key type. Arm (i) is what discriminates, and both are asserted here.
     ///
-    /// REVERT-PROBES: drop `#[serde(with = "counter_key_pairs")]` from
+    /// ⚠ **THIS ROW IS NOT SUFFICIENT ON ITS OWN, and its green was once read as if it
+    /// were.** It uses `to_string`/`from_str` throughout, and that combination was measured
+    /// `Ok` even against an UNADAPTED `PlayerId`-keyed map. The production persistence path
+    /// degrades to `serde_json::Value` + `from_value` inside `PersistedGameState`, where
+    /// serde's `Content` buffering stringifies map keys and a `PlayerId` key breaks.
+    /// `a_populated_per_cycle_proposal_survives_the_production_persistence_boundary` is the
+    /// row that covers that; keep BOTH, they discriminate different failures.
+    ///
+    /// REVERT-PROBES: drop `#[serde(with = "map_key_pairs")]` from
     /// `ResourceVector.counters` ⇒ arm (i) and the payload arm both fail with "key must be a
     /// string"; change `PeriodicDelta.victim_slot` to a `BTreeMap<DecisionSlot, i64>` ⇒ same.
     /// MUST-NOT-FLIP: a `LoopShortcut` payload with `per_cycle: None` stays byte-identical
@@ -12441,6 +12513,180 @@ mod tests {
             !shipped_json.contains("per_cycle"),
             "an offer stating no per-period signature must be byte-identical to BASE; got \
              {shipped_json}"
+        );
+    }
+
+    /// CR 616.1 — an EMPTY derivation must not discharge the replacement obligation.
+    ///
+    /// `resolution_events_are_discharged` answers `FreeUnlessReplacements(events)` with
+    /// `!events.iter().any(..)`, and `any()` over an empty slice is `false`, so `!any(..)`
+    /// is `true`: an empty vector certified the entry having inspected NOTHING. The only
+    /// thing standing against that was a `debug_assert!`, which compiles out of release —
+    /// so the fail-open case was live in exactly the build that ships, and was untestable
+    /// besides (a `debug_assert!` aborts the build tests run in).
+    ///
+    /// MATCHED PAIR:
+    /// * EMPTY ⇒ `false` (refuse). This is the arm the fix adds.
+    /// * NON-EMPTY, no applicable replacement ⇒ `true` (discharge). Without it the row
+    ///   would pass against a predicate that simply returned `false` always.
+    /// `MayPrompt ⇒ false` is asserted alongside so all three arms of the match are pinned.
+    ///
+    /// REVERT-PROBE (run, recorded): delete the `if events.is_empty() { return false; }`
+    /// arm ⇒ the EMPTY case FLIPS TO `true` and this row FAILS, while the non-empty arms
+    /// stay green.
+    #[test]
+    fn an_empty_derivation_does_not_vacuously_discharge_the_cr_616_1_obligation() {
+        use crate::game::resolution_prompt::ResolutionChoiceFreedom;
+
+        let board = GameState::new_two_player(7);
+
+        assert!(
+            !resolution_events_are_discharged(
+                &board,
+                ResolutionChoiceFreedom::FreeUnlessReplacements(Vec::new())
+            ),
+            "an EMPTY derivation proves nothing about CR 616.1 replacements and must \
+             REFUSE — `!any()` over an empty slice is `true`, which is the fail-open \
+             direction this predicate exists to prevent"
+        );
+
+        // POSITIVE CONTROL — a real event on a board with no applicable replacement still
+        // discharges, so the refusal above is about EMPTINESS and not a blanket `false`.
+        let non_empty = vec![crate::types::proposed_event::ProposedEvent::LifeLoss {
+            player_id: PlayerId(0),
+            amount: 1,
+            applied: Default::default(),
+        }];
+        assert!(
+            crate::game::replacement::proposed_event_prompt_cause(
+                &board,
+                &non_empty[0],
+                crate::game::replacement::replacement_registry(),
+            )
+            .is_empty(),
+            "reach-guard: the control event must have NO applicable replacement on this \
+             board, or it would refuse for the wrong reason"
+        );
+        assert!(
+            resolution_events_are_discharged(
+                &board,
+                ResolutionChoiceFreedom::FreeUnlessReplacements(non_empty)
+            ),
+            "a NON-EMPTY derivation with no applicable replacement must still discharge"
+        );
+
+        // The third arm, pinned so the match stays exhaustively covered.
+        assert!(
+            !resolution_events_are_discharged(&board, ResolutionChoiceFreedom::MayPrompt),
+            "MayPrompt is never discharged"
+        );
+    }
+
+    /// CR 732.2a — the PRODUCTION persistence path for a proposal that carries a per-cycle
+    /// signature. The row above is NOT a substitute and its green was FALSE CONFIDENCE: it
+    /// round-trips with `to_string`/`from_str`, and that combination was measured `Ok` even
+    /// against the unadapted map. The failure needs the enclosing shape:
+    ///
+    /// * `WaitingFor` is `#[serde(tag = "type", content = "data")]`, so serde buffers the
+    ///   payload through its private `Content`, which stringifies every map KEY;
+    /// * `PlayerId` is `#[serde(transparent)]` over `u8`, so it then reads a string where it
+    ///   wants an integer;
+    /// * `PersistedGameState::deserialize` routes EVERY decode through `serde_json::Value`
+    ///   and `from_value` — including the production WASM restore, whose outer call is
+    ///   `from_str::<PersistedGameState>`. So `from_str` at the boundary does NOT save it.
+    ///
+    /// This row therefore drives `to_value`/`from_value` and the real
+    /// `PersistedGameState` boundary, with a POPULATED `PlayerId`-keyed map, which is the
+    /// only combination that discriminates.
+    ///
+    /// REVERT-PROBE (run, recorded): delete `#[serde(with = "map_key_pairs")]` from
+    /// `ResourceVector::life` ⇒ arms (i) and (ii) FAIL with
+    /// `invalid type: string "0", expected u8`, the exact text
+    /// `tests/integration/loop_shortcut.rs` had recorded as a standing limitation.
+    /// REACH-GUARD: the map is asserted non-empty before the round trip — an empty map
+    /// round-trips whatever its key type, so a populated one is what makes this row real.
+    #[test]
+    fn a_populated_per_cycle_proposal_survives_the_production_persistence_boundary() {
+        use crate::analysis::decision_template::IterationCount;
+        use crate::analysis::loop_check::{ShortcutProposal, WinKind};
+        use crate::types::game_state::{PersistedGameState, WaitingFor};
+
+        let mut delta = ResourceVector::default();
+        delta.life.insert(PlayerId(0), 3);
+        delta.life.insert(PlayerId(1), -3);
+        delta.damage_dealt.insert(PlayerId(1), 3);
+        delta.library_delta.insert(PlayerId(0), -1);
+        delta.poison.insert(PlayerId(1), 1);
+        delta
+            .counters
+            .insert((CounterClass::Plus1Plus1, ObjectClass::Creature), 2);
+        delta.generic_triggers.insert(TriggerKind::Proliferate, 4);
+        assert!(
+            !delta.life.is_empty()
+                && !delta.damage_dealt.is_empty()
+                && !delta.library_delta.is_empty()
+                && !delta.poison.is_empty(),
+            "reach-guard: all four `PlayerId`-keyed maps must be NON-EMPTY, or this row \
+             passes against a broken key type"
+        );
+        let proposal = ShortcutProposal {
+            proposer: PlayerId(0),
+            predicted_winner: Some(PlayerId(0)),
+            count: IterationCount::UntilLethal,
+            unbounded: vec![],
+            win_kind: WinKind::LethalDamage,
+            template: None,
+            per_cycle: Some(PeriodicDelta {
+                frames_per_period: 2,
+                delta,
+                victim_slot: vec![],
+            }),
+        };
+        let wait = WaitingFor::RespondToShortcut {
+            player: PlayerId(1),
+            remaining_players: vec![],
+            proposal: proposal.clone(),
+        };
+
+        // (i) The precise mechanism: adjacently-tagged `WaitingFor` through `Value`.
+        let value = serde_json::to_value(&wait).expect("the wait serializes");
+        assert_eq!(
+            serde_json::from_value::<WaitingFor>(value).expect(
+                "a populated per-cycle proposal must survive `from_value` — this is the \
+                 combination `Content` key-stringification breaks"
+            ),
+            wait
+        );
+
+        // (ii) The PRODUCTION boundary: whole state through `PersistedGameState`, both the
+        // outer API the WASM bridge uses (`from_str`) and the `Value` form it degrades to.
+        let mut state = GameState::new_two_player(7);
+        state.waiting_for = wait.clone();
+        let raw = serde_json::to_value(&state).expect("the state serializes");
+        let restored = serde_json::from_value::<PersistedGameState>(raw.clone())
+            .expect("decodes through the production persistence boundary")
+            .into_game_state();
+        assert_eq!(
+            restored.waiting_for, wait,
+            "the restored wait must carry the SAME per-cycle signature, not a dropped or \
+             emptied one"
+        );
+        let text = serde_json::to_string(&raw).expect("serializes to text");
+        let via_str = serde_json::from_str::<PersistedGameState>(&text)
+            .expect("and through the WASM bridge's own `from_str::<PersistedGameState>`")
+            .into_game_state();
+        assert_eq!(via_str.waiting_for, wait);
+
+        // (iii) MUST-NOT-FLIP: a proposal stating no signature stays absent from the wire.
+        let none = ShortcutProposal {
+            per_cycle: None,
+            ..proposal
+        };
+        let none_json = serde_json::to_string(&none).expect("serializes");
+        assert!(
+            !none_json.contains("per_cycle"),
+            "`skip_serializing_if` must keep a signature-free proposal byte-identical to \
+             BASE; got {none_json}"
         );
     }
 
