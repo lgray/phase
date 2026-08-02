@@ -206,7 +206,7 @@ fn offer_parts(
 /// point, `owner` and `count` supplied by the caller.
 ///
 /// This is the shape `handle_declare_shortcut` ACCEPTS (measured in
-/// [`u6_the_ais_only_declare_candidate_is_refused_while_the_accepted_shape_is_one_it_never_emits`]),
+/// [`u6_no_declaration_the_generator_can_emit_opens_the_window_while_the_accepted_shape_is_one_it_never_builds`]),
 /// so every row that needs either an accepted declaration or a one-axis hostile variant of one
 /// builds it here rather than re-deriving the mapping. Keyed off `schema.points` — never off a
 /// hard-coded slot — so a re-dump that renumbers objects, or a remedy that widens the announced
@@ -1137,32 +1137,43 @@ fn optional_entries(state: &GameState) -> usize {
 // ─────────────────────────────────────────────────────────────────────────────────────────
 
 /// §5 U6 (i) — MEASURED: at the real F4 bounded offer the engine's AI candidate generator
-/// emits exactly two actions, and NEITHER is a declaration the engine will accept.
+/// emits exactly ONE action, `DeclineShortcut`. It offers no declaration at all.
 ///
-/// The generator's `Fixed(max_iterations)` candidate exists precisely for bounded offers, but
-/// it is gated on `schema.points.is_empty()` — it carries `template: None`, and a published pin
-/// set fail-closes on that. F4 publishes one point, so the gate excludes it and the sole
-/// declare candidate is the `UntilLethal` one, which
-/// [`u6_the_ais_only_declare_candidate_is_refused_while_the_accepted_shape_is_one_it_never_emits`]
-/// measures the engine refusing.
+/// Both declare candidates are excluded, each by a different conjunct, and this board trips
+/// both at once:
+///
+/// * `UntilLethal` is gated on `!schema.is_bounded()`. CR 732.2a: a count-free declaration
+///   names no legal repetition number against an offer that narrowed the bound, and
+///   `handle_declare_shortcut` refuses it — measured in
+///   [`u6_no_declaration_the_generator_can_emit_opens_the_window_while_the_accepted_shape_is_one_it_never_builds`].
+/// * `Fixed(max_iterations)` is gated on `schema.points.is_empty()` — it carries
+///   `template: None`, and a published pin set fail-closes on that. F4 publishes one point.
+///
+/// So the AI declines because it has nothing else it can legally say, not because it emitted a
+/// declaration the engine then accepted-and-discarded.
 ///
 /// # Reach-guards (each excludes a way this could pass degenerately)
 ///
-/// * the offer is BOUNDED (`is_bounded()`, bound narrowed below the ceiling) — on an unbounded
-///   offer the `Fixed` candidate would be absent for a second, unrelated reason and the row
-///   would not be measuring the `points` gate;
-/// * `schema.points` is NON-empty — that is the conjunct under test;
-/// * `predicted_winner` is `None`, which is the fact that routes
-///   `phase_ai::policies::loop_shortcut::LoopShortcutPolicy` to its
-///   `(None, UntilLethal) => reject` arm (covered there by
-///   `declare_until_lethal_with_no_predicted_winner_is_rejected`). This row supplies the
-///   REACHABILITY that policy row cannot: a real board that carries exactly that pair.
+/// * the offer is BOUNDED (`is_bounded()`, bound narrowed below the ceiling) — that is the
+///   `UntilLethal` gate's conjunct; on an unbounded offer that candidate would be PRESENT, so
+///   without this guard the row could pass on a board where it was never at issue;
+/// * `schema.points` is NON-empty — that is the `Fixed` gate's conjunct, and symmetrically the
+///   row would otherwise pass on a board where `Fixed` was never at issue;
+/// * `predicted_winner` is `None`. Recorded as a measured property of this board, NOT as
+///   reachability for `phase_ai::policies::loop_shortcut::LoopShortcutPolicy`'s
+///   `(None, UntilLethal) => reject` arm: since the bounded gate landed, this generator can no
+///   longer put that pair in front of the policy from a bounded offer, and
+///   `declare_until_lethal_with_no_predicted_winner_is_rejected` covers the arm directly.
 ///
-/// REVERT-PROBE: drop the `schema.points.is_empty() &&` conjunct from the `LoopShortcut` arm of
-/// `ai_support/candidates.rs` ⇒ a third candidate (`Fixed(35)`, `template: None`) appears ⇒
-/// this row FLIPS on the exact-equality assertion.
+/// REVERT-PROBE — one per excluded candidate, because a single probe would leave the OTHER
+/// exclusion holding the assertion up and report a false pass:
+///
+/// * drop `!schema.is_bounded()` from the `UntilLethal` push in `ai_support/candidates.rs`
+///   ⇒ `DeclareShortcut { UntilLethal, None }` reappears ⇒ this row FLIPS on the equality;
+/// * drop `schema.points.is_empty() &&` from the `Fixed` push ⇒ `Fixed(max_iterations)`
+///   appears ⇒ this row FLIPS on the equality.
 #[test]
-fn u6_the_ai_candidate_set_at_the_f4_offer_is_untillethal_and_decline_only() {
+fn u6_the_ai_candidate_set_at_the_f4_offer_is_decline_only() {
     let mut state = load_f4();
     drive_f4_to_offer(&mut state, 400).expect("the bounded offer fires (see R1)");
     let (proposer, _certificate, schema) = offer_parts(&state);
@@ -1194,16 +1205,13 @@ fn u6_the_ai_candidate_set_at_the_f4_offer_is_untillethal_and_decline_only() {
     let actions = engine::ai_support::legal_actions(&state);
     assert_eq!(
         actions,
-        vec![
-            GameAction::DeclareShortcut {
-                count: IterationCount::UntilLethal,
-                template: None,
-            },
-            GameAction::DeclineShortcut,
-        ],
-        "MEASURED: exactly two candidates. No `Fixed` declaration (gated on \
-         `schema.points.is_empty()`, and this schema publishes {} point(s)) and no declaration \
-         carrying a template at all — so the AI cannot pin the point the offer DID publish",
+        vec![GameAction::DeclineShortcut],
+        "MEASURED: exactly one candidate. No `UntilLethal` declaration (gated on \
+         `!schema.is_bounded()`, and this offer narrowed its bound to {}), no `Fixed` \
+         declaration (gated on `schema.points.is_empty()`, and this schema publishes {} \
+         point(s)), and no declaration carrying a template at all — so the AI cannot pin the \
+         point the offer DID publish",
+        schema.max_iterations,
         schema.points.len()
     );
 
@@ -1243,7 +1251,7 @@ fn u6_the_ai_candidate_set_at_the_f4_offer_is_untillethal_and_decline_only() {
 ///
 /// | declaration | measured |
 /// |---|---|
-/// | `UntilLethal` + `None` — **the AI's own candidate** | REFUSED ⇒ `Priority` |
+/// | `UntilLethal` + `None` — **the shape the generator emitted before the bounded gate** | REFUSED ⇒ `Priority` |
 /// | `UntilLethal` + a conformant template | REFUSED ⇒ `Priority` (so the refusal is keyed on the COUNT, not on the pins) |
 /// | `Fixed(max)` + `None` | REFUSED ⇒ `Priority` (`template: None` against a non-empty schema fail-closes when `last_loop_action_sequence` is empty — measured empty here) |
 /// | `Fixed(max)` + a conformant template | **ACCEPTED** ⇒ the CR 732.2b APNAP window opens |
@@ -1257,9 +1265,15 @@ fn u6_the_ai_candidate_set_at_the_f4_offer_is_untillethal_and_decline_only() {
 /// Closing the generator gap would therefore ride the grant mechanism, which is why U6 reports
 /// the gap rather than building the candidate.
 ///
-/// REVERT-PROBES, both RUN, and the measured result CORRECTS the obvious prediction — the AI's
-/// own candidate is refused by TWO INDEPENDENT guards, so disabling either alone leaves it
-/// refused:
+/// The `UntilLethal` rows are what justifies the generator's `!schema.is_bounded()` gate
+/// ([`u6_the_ai_candidate_set_at_the_f4_offer_is_decline_only`]): the engine refuses that count
+/// against a narrowed bound on a real board, so emitting it was offering the search layer an
+/// action that is accepted-then-discarded. These rows keep measuring the ENGINE guard directly,
+/// which is the fact the generator gate depends on and must not be allowed to rot.
+///
+/// REVERT-PROBES, both RUN, and the measured result CORRECTS the obvious prediction — the
+/// count-free declaration is refused by TWO INDEPENDENT guards, so disabling either alone
+/// leaves it refused:
 ///
 /// * disable `IterationCount::UntilLethal if offer.schema.is_bounded()` in
 ///   `handle_declare_shortcut` ⇒ the *`UntilLethal` + conformant template* arm flips
@@ -1271,7 +1285,8 @@ fn u6_the_ai_candidate_set_at_the_f4_offer_is_untillethal_and_decline_only() {
 /// The row asserts both arms for exactly that reason: a single-guard probe would report the
 /// AI's candidate as still-refused and hide the change.
 #[test]
-fn u6_the_ais_only_declare_candidate_is_refused_while_the_accepted_shape_is_one_it_never_emits() {
+fn u6_no_declaration_the_generator_can_emit_opens_the_window_while_the_accepted_shape_is_one_it_never_builds(
+) {
     let mut state = load_f4();
     drive_f4_to_offer(&mut state, 400).expect("the bounded offer fires (see R1)");
     let (proposer, _certificate, schema) = offer_parts(&state);
@@ -1286,8 +1301,17 @@ fn u6_the_ais_only_declare_candidate_is_refused_while_the_accepted_shape_is_one_
         state.last_loop_action_sequence.len()
     );
 
-    // Every AI candidate, driven through the public boundary.
-    for action in engine::ai_support::legal_actions(&state) {
+    // Every AI candidate, driven through the public boundary. Since the bounded gate landed this
+    // set is `[DeclineShortcut]` alone, so on its own the loop is a WEAK statement — it is the
+    // four one-axis drives below that carry this row. Kept because it is the only assertion here
+    // that re-derives the candidate set from the generator rather than naming shapes by hand: a
+    // future generator change that reintroduces a declaration at this node has to survive it.
+    let candidates = engine::ai_support::legal_actions(&state);
+    assert!(
+        !candidates.is_empty(),
+        "positive control: an EMPTY candidate set would satisfy the loop below vacuously"
+    );
+    for action in candidates {
         let mut probe = state.clone();
         apply(&mut probe, proposer, action.clone()).expect("dispatched — refusal is a HANDBACK");
         assert!(

@@ -3037,12 +3037,14 @@ pub fn candidate_actions_broad_with_probe(
         // accepted at `Fixed(0)`). Clamp, or the generator's sole candidate is rejected by
         // the reducer's `amount > max` guard and the AI has no legal action at this prompt.
         //
-        // Unreachable for the AI *today* and deliberately kept correct anyway: the AI's own
-        // `WaitingFor::LoopShortcut` arm below only ever proposes `IterationCount::
-        // UntilLethal`, which routes to `apply_until_lethal_shortcut` and never reaches
-        // `materialize_fixed_shortcut` — the only path that registers a stash. So no
-        // AI-declared shortcut currently produces this prompt; a human-declared one in a
-        // mixed game, or a future bounded AI offer, does.
+        // AI-reachable since the bounded fast-forward landed, which is what stales the older
+        // "the arm below only ever proposes `UntilLethal`" note this replaces: the
+        // `WaitingFor::LoopShortcut` arm below also proposes `Fixed(max_iterations)` against a
+        // bounded offer that publishes no pins, and only a `Fixed` count routes through
+        // `materialize_fixed_shortcut` — the single path that registers the stash `turns.rs`
+        // turns into this prompt. `UntilLethal` still routes to `apply_until_lethal_shortcut`
+        // and never gets here; it is now also not offered against a bounded offer at all. A
+        // human-declared shortcut in a mixed game reaches this prompt too.
         WaitingFor::PayAmountChoice {
             player,
             resource: PayableResource::LoopCollapse { .. },
