@@ -214,8 +214,30 @@ regenerate() {   # regenerate <patched|unpatched> <destination>
 # Each has a paired POSITIVE control, or it would pass against a transform that did
 # nothing at all.
 selftests() {
-  local tmp sentinel out rc
+  local tmp sentinel out rc probe_stage
   tmp="$(mktemp -d -t migrate-dump-selftest-XXXXXX)"
+
+  # (a0) THE MECHANISM ITSELF: the stage file must be minted in the destination's OWN
+  # directory. Arms (a)/(a') below exercise the failure and success PATHS, and they pass
+  # under a non-atomic staging just as happily — their destination lives under
+  # `mktemp -d -t`, so a `stage_path` reverted to `mktemp -t` puts stage and destination
+  # on the same filesystem (measured: both device 50 here) and the `mv` is atomic BY
+  # ACCIDENT of where the test put its own files. That is a second, independent reason
+  # the original control could not fail on its subject, beyond the three-copies one:
+  # even one shared recipe would have been checked on a layout that cannot expose it.
+  #
+  # Compares DIRECTORIES, not devices. Device equality is the property that makes `mv`
+  # atomic, but it does NOT discriminate here: under a `-t` revert the stage lands in
+  # `/tmp` and this test's destination lives in a SUBDIRECTORY of `/tmp`, so the two
+  # still share a device and the check would pass. Same-directory is strictly stronger
+  # and is what actually flips.
+  probe_stage="$(stage_path "$tmp/dest")"
+  if [ "$(dirname "$probe_stage")" != "$(dirname "$tmp/dest")" ]; then
+    echo "SELFTEST STAGE_BESIDE_DEST=false — stage $(dirname "$probe_stage") vs dest $(dirname "$tmp/dest")" >&2
+    echo "  a cross-directory stage makes \`mv\` non-atomic whenever the two differ in filesystem" >&2
+    rm -f "$probe_stage"; rm -rf "$tmp"; return 1
+  fi
+  rm -f "$probe_stage"
 
   # (a) FAILURE leaves the destination untouched.
   # `stamp_delayed_allocators` aborts by name on a dump with install roots it cannot

@@ -1689,6 +1689,23 @@ fn optional_cleared_classification(
     };
     let mut without_may_gate = (**ability).clone();
     without_may_gate.optional = false;
+    // CR 732.2a: the same cheap-precondition-before-the-clone rule the primary
+    // classifier follows. This is the SIBLING site, and it had the identical shape:
+    // `frame.clone()` is a whole `GameState` copy, and a `may` trigger whose ability is
+    // rejected on a pure AST gate (a non-allow-listed effect, an `UpTo` count, a modal
+    // header) used to buy that copy plus a scope binding to reach a verdict that never
+    // looks at the board — once per ring frame.
+    //
+    // EQUIVALENCE, verified rather than assumed. Hoisting changes exactly one case:
+    // an entry whose scope would have FAILED to bind AND whose chain is gated now
+    // returns `Some(MayPrompt)` where it previously returned `None`. `residual` has
+    // exactly one reader (`optional_relief_for`), and it opens
+    // `match cached.residual.as_ref()?` with a `MayPrompt => None` arm — so `None` and
+    // `Some(MayPrompt)` produce the identical downstream result. Re-derived here by
+    // grepping every `.residual` read in this file: one, plus one comment.
+    if crate::game::resolution_prompt::chain_offers_choice(&without_may_gate) {
+        return Some(crate::game::resolution_prompt::ResolutionChoiceFreedom::MayPrompt);
+    }
     let mut board = frame.clone();
     board.stack.retain(|e| e.id != entry.id);
     if !crate::game::stack::bind_resolution_scope(&mut board, entry, None) {

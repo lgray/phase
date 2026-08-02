@@ -1648,16 +1648,24 @@ mod tests {
         //    That recursion still earns its place on COST — `analysis::resource` calls
         //    `chain_offers_choice` before cloning the board, where no probe has run yet
         //    — but the soundness there rests on the probe, not on this row.
-        for (label, attach) in [
+        for (label, attach, why) in [
             (
                 "sub_ability",
                 (&|a: &mut ResolvedAbility, branch: ResolvedAbility| {
                     a.sub_ability = Some(Box::new(branch))
                 }) as &dyn Fn(&mut ResolvedAbility, ResolvedAbility),
+                // REGRESSION GUARD ONLY — measured non-discriminating for the recursion:
+                // the root probe resolves the taken sub-ability and sees this prompt itself.
+                "the root probe also sees this one, so this row guards against regression \
+                 rather than proving the recursion",
             ),
-            ("else_ability", &|a, branch| {
-                a.else_ability = Some(Box::new(branch))
-            }),
+            (
+                "else_ability",
+                &|a, branch| a.else_ability = Some(Box::new(branch)),
+                // The discriminating half: this branch is never resolved on this board.
+                "the root probe never resolves this branch, so the AST recursion is the \
+                 ONLY thing that can see it",
+            ),
         ] {
             let mut branch = base.clone();
             branch.optional = true; // a gate that only the recursion can see
@@ -1666,8 +1674,7 @@ mod tests {
             assert_eq!(
                 ability_resolution_choice_freedom(&state, &with_branch, &mut budget()),
                 ResolutionChoiceFreedom::MayPrompt,
-                "a choice gate on `{label}` must reject the whole chain — the root probe \
-                 cannot see it, so the AST recursion is the only thing that can"
+                "a choice gate on `{label}` must reject the whole chain ({why})"
             );
 
             // NEGATIVE CONTROL for the pair above: the identical chain SHAPE with a
