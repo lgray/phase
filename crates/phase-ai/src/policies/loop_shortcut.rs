@@ -230,6 +230,23 @@ impl TacticalPolicy for LoopShortcutPolicy {
                     .with_fact("max_iterations", i64::from(schema.max_iterations)),
             ),
 
+            // CR 732.2a: a ZERO-repetition declaration is representable, and the engine treats
+            // it as legal — `a_zero_count_declaration_validates_over_an_empty_range_but_still_
+            // checks_cardinality` in `crates/engine/tests/integration/loop_shortcut.rs` pins
+            // exactly that — but it commits NO cycles while still spending the CR 732.2b
+            // response window. That is the same weak-domination shape the over-bound arm above
+            // and the `(None, UntilLethal)` arm reject: the outcome set is {no-op, minus a
+            // response window}, so declining weakly dominates it.
+            //
+            // Unreachable from today's generator (it emits only `Fixed(max_iterations)`, and
+            // the load seam refuses `max_iterations: 0`), so this reorders nothing that can
+            // occur now. It states the scoring arm's OWN precondition rather than leaving it
+            // to an invariant maintained a crate away: without it, the arm below hands a
+            // guaranteed no-op the CRITICAL band, i.e. ranks doing nothing as game-deciding.
+            (_, IterationCount::Fixed(0)) => PolicyVerdict::reject(PolicyReason::new(
+                "loop_shortcut_bounded_declare_zero_count",
+            )),
+
             // CR 732.2a: within the offered bound on a bounded offer ⇒ committed board
             // progress that eliminates nobody. Game-deciding ⇒ critical band, via the
             // auto-banding `PolicyVerdict::score` (NEVER `preference`, whose `debug_assert!`

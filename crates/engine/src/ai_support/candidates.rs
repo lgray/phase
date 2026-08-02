@@ -3235,14 +3235,31 @@ pub fn candidate_actions_broad_with_probe(
         WaitingFor::LoopShortcut {
             proposer, schema, ..
         } => {
-            let mut v = vec![candidate(
-                GameAction::DeclareShortcut {
-                    count: crate::analysis::decision_template::IterationCount::UntilLethal,
-                    template: None,
-                },
-                TacticalClass::Utility,
-                Some(*proposer),
-            )];
+            // CR 732.2a: `UntilLethal` names no count, so it is legal ONLY against an offer
+            // that narrowed no bound. `handle_declare_shortcut` rejects it outright against
+            // a bounded one (`IterationCount::UntilLethal if offer.schema.is_bounded()` =>
+            // `reject_shortcut_declaration`), and that reject is a SUCCESSFUL, fail-closed
+            // handback to priority — `Ok(result)`, not an `Err`. So an unconditional
+            // `UntilLethal` candidate did not merely waste a search node: it handed the
+            // simulation layer an action the engine ACCEPTS and then silently discards,
+            // i.e. an illegal quantity choice wearing the shape of a legal one, which the
+            // policy layer then has to know to score away.
+            //
+            // Emit only the quantity choices the offer can actually take. A bounded offer
+            // gets `Fixed(max_iterations)` below when its pin set permits a `template: None`
+            // declaration; where neither applies, `DeclineShortcut` really is the only legal
+            // answer at the node, and representing that honestly is the point.
+            let mut v = Vec::new();
+            if !schema.is_bounded() {
+                v.push(candidate(
+                    GameAction::DeclareShortcut {
+                        count: crate::analysis::decision_template::IterationCount::UntilLethal,
+                        template: None,
+                    },
+                    TacticalClass::Utility,
+                    Some(*proposer),
+                ));
+            }
             // CR 732.2a: a BOUNDED offer states a legal repetition count, and the declare
             // handler rejects `UntilLethal` against one outright — so without this candidate
             // the AI's only non-declining option at such a node is an answer the engine
