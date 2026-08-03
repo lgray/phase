@@ -15185,27 +15185,30 @@ mod stage2_injector_tests {
         assert_eq!(
             producers,
             vec![
-                // Rebase onto upstream #6842 (8121fd1c6): `:5896/:5973/:8927 ⇒
-                // :5918/:5995/:8949`, a uniform +22 shift from lines that commit adds ABOVE
-                // these three in the same file. Each producer re-read at its new coordinate
-                // and diffed against the pre-rebase tree: byte-identical.
-                "game/effects/mod.rs:5918".to_string(),
-                "game/effects/mod.rs:5995".to_string(),
-                // Merge of upstream #6955 (c9daf66e3): `:8949 ⇒ :8970`, +21 from that commit's
-                // 21 insertions ABOVE this producer in the same file — shift == insertion count
-                // exactly. The other two entries here did NOT move, which locates the insertion
-                // below them and is itself evidence the SET is unchanged. Producer re-read at the
-                // new coordinate: byte-identical by sha256 to the same line pre-merge.
+                // DRIFT LOG for these three, newest last. Every entry is pure line movement
+                // with the producer re-read and sha256-compared at its new coordinate; none has
+                // ever been a real sixth producer.
+                //   #6842 (8121fd1c6): `:5896/:5973/:8927 ⇒ :5918/:5995/:8949`, uniform +22.
+                //   #6933: `engine.rs :10640 ⇒ :11427` (that entry, below).
+                //   #6955 (c9daf66e3): `:8949 ⇒ :8970`, +21 == that commit's insertion count,
+                //     and the other two did NOT move, which located the insertion below them.
+                //   #6961 (2ead7aab1) + v0.44.0: `:5918/:5995/:8970 ⇒ :5996/:6073/:9048`,
+                //     uniform +78 above all three (whole-file delta +153/-15).
                 //
-                // NOTE ON THIS ROW'S FAILURE MODE. CI checks out `refs/pull/<n>/merge` — this
-                // branch merged with CURRENT `main` — so an upstream insertion above a producer
-                // reds this row in CI while it stays green locally, until the branch merges that
-                // upstream. That is the 4th such drift (#6842 +22, #6933 on `engine.rs`, now
-                // #6955 +21), every one pure line movement and none a real sixth producer. The
-                // pin is deliberately kept line-exact because that is what makes a NEW mint a
-                // counted event; a function+content-hash anchor would end the drift class while
-                // preserving that, and is filed as a follow-up rather than done here.
-                "game/effects/mod.rs:8970".to_string(),
+                // ⚠ THIS ROW FAILS IN CI BEFORE IT FAILS LOCALLY, and that is not a bug in the
+                // row. CI checks out `refs/pull/<n>/merge` — this branch merged with CURRENT
+                // `main` — so an upstream insertion above a producer reds it in CI while the
+                // branch tree stays green, until the branch merges that upstream. Diagnose by
+                // rebuilding the merge tree (`git merge-tree --write-tree HEAD upstream/main`)
+                // and comparing coordinates there, NOT by editing pins to match a local tree.
+                //
+                // Five drifts, all upstream, zero true positives. The pin stays line-exact
+                // because that is what makes a NEW mint a counted event; a function +
+                // content-hash anchor would end the drift class while keeping that property,
+                // and is offered as a follow-up rather than taken unannounced mid-review.
+                "game/effects/mod.rs:5996".to_string(),
+                "game/effects/mod.rs:6073".to_string(),
+                "game/effects/mod.rs:9048".to_string(),
                 // UNMOVED across the rebase, and that is itself evidence the SET did not
                 // move: a census that had gained or lost a producer would not leave this
                 // entry both byte-identical AND at the same coordinate.
