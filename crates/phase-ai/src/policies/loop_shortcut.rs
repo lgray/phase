@@ -315,23 +315,54 @@ impl TacticalPolicy for LoopShortcutPolicy {
 /// This is the inverse of `ResourceVector::elimination_bounds` (engine `analysis/resource.rs`),
 /// mirrored axis for axis and asked of ONE seat instead of narrowed over all of them:
 ///
-/// - **library**, CR 104.3c + CR 121.4 — reaching **0** is the threshold, not 1. A player does
-///   not lose when the library empties; they lose the next time they would draw from it. So an
-///   emptied library is a self-loss already committed, and `elimination_bounds` deliberately
-///   permits that terminal value (its `narrow(p.library.len(), drain)` lands exactly on 0).
 /// - **life**, CR 704.5a — reaching **0 or less** is the threshold.
 /// - **poison**, CR 704.5c — reaching **10 or more** is the threshold.
 ///
-/// Only movement TOWARD death counts: a positive library delta, a life gain, or a poison
-/// decrease yields no bound on that axis, which is why each rate is tested `> 0` before it is
-/// allowed to divide.
+/// **LIBRARY IS DELIBERATELY EXCLUDED, and that is the non-obvious part of this function.**
+/// CR 121.4: "A player who attempts to draw a card from a library with no cards in it loses the
+/// game the next time a player would receive priority." The loss attaches to the DRAW ATTEMPT,
+/// not to the library reaching zero — a player with an empty library and no draw ahead of them
+/// has not lost and may still win. Milling yourself to exactly zero is a legal, sometimes
+/// winning line (self-mill payoffs; `loop_check` classifies such a period as `Advantage`, and
+/// `elimination_bounds` intentionally permits the exactly-zero terminal value), so vetoing it
+/// would refuse a real strategy class. A certified period records per-cycle resource deltas; it
+/// cannot express "and then the proposer is forced to draw", so on today's evidence no
+/// library-based veto is sound. **Extension point:** if a future certificate can prove a forced
+/// post-zero draw, that is what would license adding the axis back — reconcile it against
+/// `loop_shortcut_declare_that_mills_the_proposer_to_exactly_zero_still_scores`.
+///
+/// **The principle is accumulation ≠ realization, and the engine already tests it.** The One Ring
+/// under the Kilo/Freed/Relic proliferate engine certifies an infinite burden-GROWTH loop as
+/// `WinKind::Advantage` — not a win — naming the unbounded burden counter axis
+/// (`analysis/corpus_tests.rs`, `one_ring_burden_growth_certificate`, with the 0-burden dead-loop
+/// control beside it and the driver doc at `analysis/corpus.rs`). The burden's lethality realizes
+/// only DOWNSTREAM, at the upkeep trigger, which is where CR 704.5a finally applies:
+/// `tests/integration/one_ring_burden_upkeep_lethal.rs` pairs
+/// `one_ring_burden_upkeep_kills_owner_p0_wins` with the sub-lethal control
+/// `one_ring_sublethal_burden_owner_survives_no_gameover`. The engine therefore refuses to treat
+/// in-loop accumulation of a doom resource as realized elimination. An emptying library is the
+/// same shape with mill in place of burden and the draw attempt in place of the upkeep trigger,
+/// so excluding it makes this policy consistent with the engine's own tested doctrine rather than
+/// stricter than it.
+///
+/// **That is also why life STAYS, and the line is principled rather than an ad-hoc keep/drop.**
+/// `per_cycle.delta.life` is IN-CYCLE realization: the drain happens inside the certified period
+/// and is state-based-checkable at cycle boundaries, so the certificate does prove the death it
+/// implies. The One Ring's life loss would only enter a certificate the same way if the upkeep
+/// trigger were inside the loop span. Both surviving axes are immediate state-based losses on
+/// state alone (CR 704), requiring no intervening action — which is exactly the property an empty
+/// library lacks.
+///
+/// Only movement TOWARD death counts: a life gain or a poison decrease yields no bound on that
+/// axis, which is why each rate is tested `> 0` before it is allowed to divide.
 ///
 /// Returns the MINIMUM across axes, so the caller compares one number against the declared
 /// count. `None` means "no axis kills the proposer at any n" — including the case where this
 /// offer carries no certified period at all. That last branch is unreachable for the bounded
 /// class (`certified_bounded_cycle_offer` mints `per_cycle: Some(periodic)`), and it is written
 /// as a plain `?` rather than an `expect` because a policy must never panic on a state shape;
-/// the reach-guard in `loop_shortcut_declare_that_decks_the_proposer_is_refused` is what proves
+/// the reach-guards in `loop_shortcut_declare_that_kills_the_proposer_on_life_is_refused` and
+/// `loop_shortcut_declare_that_mills_the_proposer_to_exactly_zero_still_scores` are what prove
 /// the `Some` path is the one actually exercised.
 fn cycles_to_proposer_elimination(
     state: &GameState,
@@ -354,10 +385,7 @@ fn cycles_to_proposer_elimination(
     };
 
     [
-        cycles(
-            player.library.len() as i64,
-            -per_cycle(&period.delta.library_delta),
-        ),
+        // No library term — see the CR 121.4 exclusion in this function's doc comment.
         cycles(i64::from(player.life), -per_cycle(&period.delta.life)),
         cycles(
             10 - i64::from(player.poison_counters),
@@ -656,23 +684,28 @@ mod tests {
         }
     }
 
-    /// CR 104.3c + CR 121.4 — the AI must not declare a bounded loop that runs its OWN library
-    /// to zero. `elimination_bounds` deliberately lets the proposer be the binding seat, and the
-    /// engine's only bounded candidate is `Fixed(max_iterations)`, so before this guard the
-    /// heuristic path declared a self-decking loop at the CRITICAL band.
+    /// CR 121.4 — running your OWN library to exactly zero is NOT a loss, and a bounded loop that
+    /// does it must still score. "A player who attempts to draw a card from a library with no
+    /// cards in it loses the game the next time a player would receive priority" — the loss
+    /// attaches to the DRAW ATTEMPT, not to the library reaching zero. A self-mill line that ends
+    /// at exactly zero with no draw in the cycle is legal, is a real strategy class (self-mill
+    /// payoffs, `loop_check` classifies it as `Advantage`), and can be the winning line.
     ///
-    /// THE `Fixed(9)` ROW IS THE DISCRIMINATOR, and it is what makes this test about the
-    /// THRESHOLD rather than about the mere presence of a proposer-negative axis. A "fix" that
-    /// rejected any period charging the proposer's library would satisfy the `Fixed(10)`
-    /// assertion and still be wrong — it would refuse profitable self-mill loops the proposer
-    /// survives. One cycle short of the bound leaves 3 cards, and that must still score.
+    /// WRITTEN BEFORE THE FIX AND OBSERVED FAILING, which is this row's revert-probe: against the
+    /// library-axis veto it read `loop_shortcut_declare_eliminates_proposer` and the `assert_eq!`
+    /// below reported that kind. Re-adding a library term to `cycles_to_proposer_elimination`
+    /// flips it back, so the row cannot silently lose its grip on the regression.
     ///
-    /// REVERT-PROBE: delete the `cycles_to_proposer_elimination` guard arm ⇒ `Fixed(10)` falls
-    /// through to the scoring arm and reads `loop_shortcut_bounded_declare_progress`, so the
-    /// first assertion FAILS while the `Fixed(9)` row stays green.
+    /// The certificate cannot represent a forced post-zero draw, so no library-based veto is
+    /// sound on today's evidence; if a future certificate proves a forced draw, that is the
+    /// extension point and this row is what it must be reconciled against.
+    ///
+    /// Same shape as the tested One Ring case (`one_ring_burden_upkeep_lethal.rs`): burden
+    /// accumulating in-loop is not the loss — the upkeep trigger that realizes it is. Here the
+    /// draw attempt plays the upkeep's role, per CR 121.4. Accumulation ≠ realization.
     #[test]
-    fn loop_shortcut_declare_that_decks_the_proposer_is_refused() {
-        // 30 cards, 3 milled from the proposer per cycle ⇒ empty at exactly 10 cycles.
+    fn loop_shortcut_declare_that_mills_the_proposer_to_exactly_zero_still_scores() {
+        // 30 cards, 3 of the proposer's own milled per cycle ⇒ EXACTLY zero at the 10th cycle.
         let mut state = bounded_offer_with_period(10, periodic(&[(P0, -3), (P1, -1)], &[]));
         stock_library(&mut state, P0, 30);
 
@@ -683,53 +716,81 @@ mod tests {
         );
         assert!(
             certificate_of(&state).per_cycle.is_some(),
-            "REACH-GUARD: `cycles_to_proposer_elimination` returns None on a certificate with \
-             no period, which would make every assertion below vacuous"
+            "REACH-GUARD: a certificate with no period makes every assertion below vacuous"
         );
         assert_eq!(state.players[P0.0 as usize].library.len(), 30);
-
-        let fatal = verdict_for(&state, &declare(IterationCount::Fixed(10)));
-        assert!(
-            matches!(fatal, PolicyVerdict::Reject { .. }),
-            "10 cycles empty the proposer's own library ⇒ a self-loss committed at the next \
-             draw (CR 104.3c); got {fatal:?}"
-        );
-        assert_eq!(kind_of(&fatal), "loop_shortcut_declare_eliminates_proposer");
-
-        let survivable = verdict_for(&state, &declare(IterationCount::Fixed(9)));
         assert_eq!(
-            kind_of(&survivable),
-            "loop_shortcut_bounded_declare_progress",
-            "9 cycles leave 3 cards — the guard must be quantitative, not a blanket refusal of \
-             any proposer-negative library axis"
+            state.players[P0.0 as usize].life, 20,
+            "REACH-GUARD: the proposer must be alive on the axes that DO kill (CR 704.5a life, \
+             CR 704.5c poison), or this row would pass for the wrong reason"
         );
-        assert!(delta_of(&survivable) > STRONG_MAX);
-    }
-
-    /// The CONTRAST that proves the guard reads the PROPOSER's seat and not merely "some seat
-    /// is being milled": identical schema, identical bound, identical declared count — the only
-    /// change is which player the drain names.
-    #[test]
-    fn loop_shortcut_declare_that_decks_only_an_opponent_still_scores() {
-        let mut state = bounded_offer_with_period(10, periodic(&[(P1, -3)], &[]));
-        stock_library(&mut state, P0, 30);
-        stock_library(&mut state, P1, 30);
 
         let v = verdict_for(&state, &declare(IterationCount::Fixed(10)));
         assert_eq!(
             kind_of(&v),
             "loop_shortcut_bounded_declare_progress",
-            "milling an OPPONENT to zero is the loop working as intended; got {v:?}"
+            "10 cycles put the proposer's library at exactly 0 with no draw — legal under \
+             CR 121.4, so the scoring arm owns it; got {v:?}"
         );
         assert!(delta_of(&v) > STRONG_MAX);
     }
 
-    /// The predicate is a MINIMUM across axes, not a library special case (CR 704.5a life).
-    /// Life 20 losing 2 per cycle ⇒ dead at 10; the same offer one cycle short still scores.
+    /// The CONTRAST that proves the guard reads the PROPOSER's seat and not merely "some seat is
+    /// being drained": identical schema, identical bound, identical declared count — the only
+    /// change is which player the life loss names. Re-based from the library axis onto life when
+    /// CR 121.4 removed library as an elimination axis; a library-drain contrast would now pass
+    /// for BOTH seats and discriminate nothing.
+    #[test]
+    fn loop_shortcut_declare_that_kills_only_an_opponent_still_scores() {
+        let state = bounded_offer_with_period(10, periodic(&[], &[(P1, -2)]));
+        assert_eq!(
+            state.players[P1.0 as usize].life, 20,
+            "REACH-GUARD: 10 cycles at -2 must actually reach 0 on the OPPONENT, or the contrast \
+             is vacuous"
+        );
+
+        let v = verdict_for(&state, &declare(IterationCount::Fixed(10)));
+        assert_eq!(
+            kind_of(&v),
+            "loop_shortcut_bounded_declare_progress",
+            "draining an OPPONENT to zero life is the loop working as intended; got {v:?}"
+        );
+        assert!(delta_of(&v) > STRONG_MAX);
+    }
+
+    /// CR 704.5a — the AI must not declare a bounded loop that runs its OWN life to 0 or less.
+    /// `elimination_bounds` deliberately lets the proposer be the binding seat, and the engine's
+    /// only bounded candidate is `Fixed(max_iterations)`, so before this guard the heuristic path
+    /// declared a self-killing loop at the CRITICAL band.
+    ///
+    /// THIS IS THE THRESHOLD DISCRIMINATOR, moved here from the library axis when CR 121.4 struck
+    /// library from `cycles_to_proposer_elimination`. Life is a true elimination axis: 0 or less
+    /// life is an immediate state-based loss on state alone, with no intervening action required
+    /// — unlike an empty library, which kills only at the next DRAW ATTEMPT.
+    ///
+    /// THE `Fixed(9)` ROW IS WHAT MAKES THIS A THRESHOLD TEST rather than a test that a
+    /// proposer-negative axis exists at all. A "fix" that rejected any period charging the
+    /// proposer's life would satisfy the `Fixed(10)` assertion and still be wrong — it would
+    /// refuse profitable loops the proposer survives. One cycle short leaves 2 life, and that
+    /// must still score.
+    ///
+    /// REVERT-PROBE: delete the `cycles_to_proposer_elimination` guard arm ⇒ `Fixed(10)` falls
+    /// through to the scoring arm and reads `loop_shortcut_bounded_declare_progress`, so the
+    /// first assertion FAILS while the `Fixed(9)` row stays green — the two rows fail
+    /// independently, which is what makes the pair discriminating rather than redundant.
     #[test]
     fn loop_shortcut_declare_that_kills_the_proposer_on_life_is_refused() {
         let state = bounded_offer_with_period(10, periodic(&[], &[(P0, -2)]));
         assert_eq!(state.players[P0.0 as usize].life, 20);
+        assert!(
+            schema_of(&state).is_bounded(),
+            "REACH-GUARD: the arm under test is bounded-only; max_iterations = {}",
+            schema_of(&state).max_iterations
+        );
+        assert!(
+            certificate_of(&state).per_cycle.is_some(),
+            "REACH-GUARD: a certificate with no period makes every assertion below vacuous"
+        );
 
         assert_eq!(
             kind_of(&verdict_for(&state, &declare(IterationCount::Fixed(10)))),
@@ -739,6 +800,43 @@ mod tests {
             kind_of(&verdict_for(&state, &declare(IterationCount::Fixed(9)))),
             "loop_shortcut_bounded_declare_progress",
             "9 cycles leave the proposer at 2 life — alive, so the scoring arm still owns it"
+        );
+    }
+
+    /// The predicate is a MINIMUM across the surviving axes, and poison is one of them
+    /// (CR 704.5c: ten or more poison counters is a loss). Life is left untouched here, so the
+    /// ONLY binding axis is poison — a min that silently dropped it would score this offer.
+    #[test]
+    fn loop_shortcut_declare_that_poisons_the_proposer_out_is_refused() {
+        let mut state = bounded_offer_with_period(10, periodic(&[], &[]));
+        match &mut state.waiting_for {
+            WaitingFor::LoopShortcut { certificate, .. } => {
+                let period = certificate
+                    .per_cycle
+                    .as_mut()
+                    .expect("bounded_offer_with_period always sets a period");
+                period.delta.poison = [(P0, 1)].into_iter().collect();
+            }
+            other => panic!("expected a LoopShortcut offer, got {other:?}"),
+        }
+        assert_eq!(
+            state.players[P0.0 as usize].poison_counters, 0,
+            "REACH-GUARD: 10 cycles at +1 poison must actually reach the CR 704.5c threshold"
+        );
+        assert_eq!(
+            state.players[P0.0 as usize].life, 20,
+            "REACH-GUARD: life must be untouched so poison is the ONLY binding axis"
+        );
+
+        assert_eq!(
+            kind_of(&verdict_for(&state, &declare(IterationCount::Fixed(10)))),
+            "loop_shortcut_declare_eliminates_proposer",
+            "10 cycles put the proposer at 10 poison — a CR 704.5c loss on state alone"
+        );
+        assert_eq!(
+            kind_of(&verdict_for(&state, &declare(IterationCount::Fixed(9)))),
+            "loop_shortcut_bounded_declare_progress",
+            "9 cycles leave the proposer at 9 poison — one short of lethal, so it still scores"
         );
     }
 
