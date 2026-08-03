@@ -118,28 +118,46 @@ definition_shape_control() {
 #
 # The NEGATIVE half is what makes it non-vacuous: an ABSENT carrier must still be
 # derived, or "preserved everything" would also describe a stamp that did nothing.
+#
+# VOCABULARY: these arms pin the LIVE `TriggerFiring` wire shapes
+# (`types/identifiers.rs`): `"Ordinary"`, `"LegacyDelayed"`,
+# `{"ReceiptEligible":{token,instance,source_id}}`, `"UnknownLegacy"`. They previously
+# pinned `{"Delayed":null}`, a shape upstream #6933 removed. jq is untyped, so those arms
+# stayed GREEN against a vocabulary the engine can no longer produce — a control passing
+# on input the subject cannot emit is not evidence about the subject.
 carrier_preservation_control() {
-  local kept derived
-  # (a) An existing `Delayed` carrier survives, and is NOT rewritten to "Ordinary" —
+  local kept receipt derived
+  local defs='"objects":{"7":{"base_trigger_definitions":[{"description":"D"}]}}'
+  local pend='"pending_trigger":{"source_id":7,"description":"D"}'
+  local firing='stamp_trigger_firing | .gameState.pending_trigger_firing'
+  # (a) An existing delayed carrier survives, and is NOT rewritten to "Ordinary" —
   #     note its description IS present in the object's definitions, so the struck
   #     form would have overwritten it rather than aborting.
-  kept="$(printf '%s' '{"gameState":{"objects":{"7":{"base_trigger_definitions":[{"description":"D"}]}},
-                        "pending_trigger":{"source_id":7,"description":"D"},
-                        "pending_trigger_firing":{"Delayed":null}}}' \
-    | jq -c -f <(printf '%s\n%s\n' "$(cat "$LIB")" 'stamp_trigger_firing | .gameState.pending_trigger_firing') \
+  kept="$(printf '%s' "{\"gameState\":{$defs,$pend,
+                        \"pending_trigger_firing\":\"LegacyDelayed\"}}" \
+    | jq -c -f <(printf '%s\n%s\n' "$(cat "$LIB")" "$firing") \
       2>/dev/null || echo FAILED)"
-  # (b) NEGATIVE CONTROL — the SAME dump with the carrier removed must still derive one,
+  # (b) The PAYLOAD-CARRYING variant survives with its payload intact. A preservation
+  #     rule written against the unit variants alone could drop `ReceiptEligible`'s
+  #     origin and still satisfy (a) — this is the arm that says the value, not just
+  #     the discriminant, comes through.
+  receipt="$(printf '%s' "{\"gameState\":{$defs,$pend,
+    \"pending_trigger_firing\":{\"ReceiptEligible\":{\"token\":3,\"instance\":4,\"source_id\":7}}}}" \
+    | jq -c -f <(printf '%s\n%s\n' "$(cat "$LIB")" "$firing") \
+      2>/dev/null || echo FAILED)"
+  # (c) NEGATIVE CONTROL — the SAME dump with the carrier removed must still derive one,
   #     or "preserved" would also describe a stamp that stopped working entirely.
-  derived="$(printf '%s' '{"gameState":{"objects":{"7":{"base_trigger_definitions":[{"description":"D"}]}},
-                           "pending_trigger":{"source_id":7,"description":"D"}}}' \
-    | jq -c -f <(printf '%s\n%s\n' "$(cat "$LIB")" 'stamp_trigger_firing | .gameState.pending_trigger_firing') \
+  derived="$(printf '%s' "{\"gameState\":{$defs,$pend}}" \
+    | jq -c -f <(printf '%s\n%s\n' "$(cat "$LIB")" "$firing") \
       2>/dev/null || echo FAILED)"
 
-  if [ "$kept" = '{"Delayed":null}' ] && [ "$derived" = '"Ordinary"' ]; then
-    echo "CONTROL CARRIER_PRESERVED=true existing=$kept absent_is_derived=$derived"
+  if [ "$kept" = '"LegacyDelayed"' ] \
+     && [ "$receipt" = '{"ReceiptEligible":{"token":3,"instance":4,"source_id":7}}' ] \
+     && [ "$derived" = '"Ordinary"' ]; then
+    echo "CONTROL CARRIER_PRESERVED=true existing=$kept receipt=$receipt absent_is_derived=$derived"
     return 0
   fi
-  echo "CONTROL CARRIER_PRESERVED=false existing=$kept absent_is_derived=$derived" >&2
+  echo "CONTROL CARRIER_PRESERVED=false existing=$kept receipt=$receipt absent_is_derived=$derived" >&2
   echo "  stamping is not additive (or stopped deriving absent carriers) — refusing to stamp" >&2
   return 1
 }
@@ -172,7 +190,7 @@ stale_carrier_control() {
   #     already carries a canonical marker. `$sf` is empty here, which is the gate the
   #     old form failed at. The stale key must be gone AND the live one must remain.
   pruned="$(run "{\"gameState\":{$objs,$live,
-    \"stack_trigger_firings\":{\"9\":{\"Delayed\":null},\"5\":\"Ordinary\"}}}")"
+    \"stack_trigger_firings\":{\"9\":\"LegacyDelayed\",\"5\":\"Ordinary\"}}}")"
   # (b) EVERY carrier stale — the rebuilt map is `{}`, and `{}` must still be written.
   #     A prune that only ever shrinks a non-empty map would pass (a) and fail here.
   emptied="$(run "{\"gameState\":{$objs,\"stack\":[],
@@ -181,16 +199,16 @@ stale_carrier_control() {
   #     and (b) would also be satisfied by a stamp that simply wipes the slot. This is
   #     also the idempotence check: a re-run of an already-correct fixture writes nothing.
   untouched="$(run "{\"gameState\":{$objs,$live,
-    \"stack_trigger_firings\":{\"9\":{\"Delayed\":null}}}}")"
+    \"stack_trigger_firings\":{\"9\":\"LegacyDelayed\"}}}")"
 
-  if [ "$pruned" = '{"9":{"Delayed":null}}' ] \
+  if [ "$pruned" = '{"9":"LegacyDelayed"}' ] \
      && [ "$emptied" = '{}' ] \
-     && [ "$untouched" = '{"9":{"Delayed":null}}' ]; then
+     && [ "$untouched" = '{"9":"LegacyDelayed"}' ]; then
     echo "CONTROL STALE_CARRIER_PRUNED=true pruned=$pruned all_stale=$emptied unchanged=$untouched"
     return 0
   fi
   echo "CONTROL STALE_CARRIER_PRUNED=false pruned=$pruned all_stale=$emptied unchanged=$untouched" >&2
-  echo "  expected pruned={\"9\":{\"Delayed\":null}} all_stale={} unchanged={\"9\":{\"Delayed\":null}}" >&2
+  echo "  expected pruned={\"9\":\"LegacyDelayed\"} all_stale={} unchanged={\"9\":\"LegacyDelayed\"}" >&2
   echo "  a departed stack entry's carrier is being carried forward — refusing to stamp" >&2
   return 1
 }
