@@ -230,7 +230,7 @@ fn the_loop_shortcut_offer_writer_surface_is_pinned_and_every_declare_site_valid
 
     assert_eq!(
         (production.len(), in_test.len()),
-        (22, 14),
+        (22, 16),
         "CR 732.2a OFFER-WRITER SURFACE CHANGED (not re-measured — this number is an \
          INVARIANCE pin over the whole 5d U-series).\n\
          The three CERTIFICATION-PATH writers are `reconcile_terminal_result` (object-growth \
@@ -243,11 +243,17 @@ fn the_loop_shortcut_offer_writer_surface_is_pinned_and_every_declare_site_valid
          certify without declaring or driving — §10 ruling condition (2), i.e. \
          answer-legality-at-certification becomes OWED WORK and the U-series stops. A new READ \
          site is the benign case; adjudicate, do not relax the assert.\n\
-         THE TEST HALF HAS BEEN ADJUDICATED TWICE (12 ⇒ 13, §6 R27 (b)'s schema read in \
+         THE TEST HALF HAS BEEN ADJUDICATED THREE TIMES (12 ⇒ 13, §6 R27 (b)'s schema read in \
          `engine/src/analysis/resource.rs`; 13 ⇒ 14, 5d U4's `u4_park_on_offer` fixture in \
          `engine/src/game/engine.rs`, which parks a constructed board on an offer so §6 R28 \
-         arm (b) can assert the DECLARE firewall refuses a hostile `template.owner`); if it \
-         moves again, name the new site here too rather than only moving the number.\n\
+         arm (b) can assert the DECLARE firewall refuses a hostile `template.owner`; 14 ⇒ 16, \
+         BOTH in `phase-ai/src/policies/loop_shortcut.rs`'s `#[cfg(test)]` module — \
+         `bounded_offer_with_period`, a builder minting an offer whose certificate carries a \
+         real `per_cycle` so the proposer-elimination arm can be driven, and `certificate_of`, \
+         a read accessor for the same rows. PRODUCTION STAYED AT 22 across that change, which \
+         is the half this pin exists to protect: the new policy arm READS the certificate and \
+         writes no offer); if it moves again, name the new site here too rather than only \
+         moving the number.\n\
          measured per-file production multiset: {multiset:?}\n\
          production: {production:?}\n\
          test: {in_test:?}"
