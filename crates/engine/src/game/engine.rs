@@ -15191,7 +15191,21 @@ mod stage2_injector_tests {
                 // and diffed against the pre-rebase tree: byte-identical.
                 "game/effects/mod.rs:5918".to_string(),
                 "game/effects/mod.rs:5995".to_string(),
-                "game/effects/mod.rs:8949".to_string(),
+                // Merge of upstream #6955 (c9daf66e3): `:8949 ⇒ :8970`, +21 from that commit's
+                // 21 insertions ABOVE this producer in the same file — shift == insertion count
+                // exactly. The other two entries here did NOT move, which locates the insertion
+                // below them and is itself evidence the SET is unchanged. Producer re-read at the
+                // new coordinate: byte-identical by sha256 to the same line pre-merge.
+                //
+                // NOTE ON THIS ROW'S FAILURE MODE. CI checks out `refs/pull/<n>/merge` — this
+                // branch merged with CURRENT `main` — so an upstream insertion above a producer
+                // reds this row in CI while it stays green locally, until the branch merges that
+                // upstream. That is the 4th such drift (#6842 +22, #6933 on `engine.rs`, now
+                // #6955 +21), every one pure line movement and none a real sixth producer. The
+                // pin is deliberately kept line-exact because that is what makes a NEW mint a
+                // counted event; a function+content-hash anchor would end the drift class while
+                // preserving that, and is filed as a follow-up rather than done here.
+                "game/effects/mod.rs:8970".to_string(),
                 // UNMOVED across the rebase, and that is itself evidence the SET did not
                 // move: a census that had gained or lost a producer would not leave this
                 // entry both byte-identical AND at the same coordinate.
