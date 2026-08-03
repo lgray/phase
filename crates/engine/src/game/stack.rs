@@ -1071,6 +1071,12 @@ pub fn resolve_top(state: &mut GameState, events: &mut Vec<GameEvent>) {
         return;
     }
 
+    // CR 603.4: the intervening-if recheck lives inside `bind_resolution_scope`; a `false`
+    // return means the condition failed and this entry resolves with no effect. The
+    // SETTLEMENT stays HERE, at the caller, and must never move into the helper:
+    // `analysis/resource.rs` calls `bind_resolution_scope` on CLONED PROBE BOARDS (five
+    // sites), where running terminal delayed-trigger disposition would mutate lifecycle
+    // state for a board that is only being measured.
     if !bind_resolution_scope(state, &entry, trigger_event_batch) {
         events.push(GameEvent::StackResolved {
             object_id: entry.id,

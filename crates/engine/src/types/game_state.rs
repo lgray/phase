@@ -8690,23 +8690,6 @@ fn delayed_trigger_install_command_mut(
         .as_object_mut()
 }
 
-fn delayed_trigger_payload_matches(
-    delayed: &serde_json::Value,
-    command_trigger: &serde_json::Value,
-) -> bool {
-    let mut delayed = delayed.clone();
-    let mut command_trigger = command_trigger.clone();
-    delayed
-        .as_object_mut()
-        .expect("delayed trigger was validated as an object")
-        .remove("provenance");
-    command_trigger
-        .as_object_mut()
-        .expect("command trigger was validated as an object")
-        .remove("provenance");
-    delayed == command_trigger
-}
-
 /// CR 732.2a: a shortcut proposal describes "a sequence of game choices ... that may be
 /// legally taken based on the current game state". A restored `LoopShortcut` OFFER whose
 /// bound is `0` can describe no such sequence — it admits only the empty one — so the
@@ -14984,6 +14967,12 @@ impl GameStateDecode {
         let mut state = Self::materialize_prepared(value)?;
         normalize_delayed_trigger_allocators(&mut state)?;
         validate_trigger_firing_coherence(&state)?;
+        // Both decode entry points guard, because they are genuinely two ingresses:
+        // `decode_persisted_resolution_state` above deserializes `ResolutionStateWire`
+        // itself and never routes through `decode`. Hosting the CR 732.2a bound check on
+        // only one of them leaves the other — the one a bare-`GameState` `impl Deserialize`
+        // reaches — able to revive a zero-bound offer.
+        reject_zero_bound_shortcut_offer(&state)?;
         #[cfg(debug_assertions)]
         debug_assert_runtime_resolution_invariants(&state);
         Ok(state)
