@@ -666,6 +666,21 @@ mod tests {
         }
     }
 
+    /// One repetition's whole-game delta on the POISON axis (CR 704.5c). Kept separate from
+    /// [`periodic`] so the common life/library rows stay two-argument, and so a poison row needs
+    /// no post-construction mutation of `waiting_for` — reaching into the offer to patch the
+    /// certificate would add an in-test hit to the CR 732.2a offer-writer census for no gain.
+    fn periodic_poison(poison: &[(PlayerId, i64)]) -> PeriodicDelta {
+        PeriodicDelta {
+            frames_per_period: 1,
+            delta: ResourceVector {
+                poison: poison.iter().copied().collect(),
+                ..Default::default()
+            },
+            victim_slot: vec![],
+        }
+    }
+
     fn stock_library(state: &mut GameState, player: PlayerId, cards: u64) {
         state.players[player.0 as usize].library = (0..cards).map(ObjectId).collect();
     }
@@ -808,17 +823,7 @@ mod tests {
     /// ONLY binding axis is poison — a min that silently dropped it would score this offer.
     #[test]
     fn loop_shortcut_declare_that_poisons_the_proposer_out_is_refused() {
-        let mut state = bounded_offer_with_period(10, periodic(&[], &[]));
-        match &mut state.waiting_for {
-            WaitingFor::LoopShortcut { certificate, .. } => {
-                let period = certificate
-                    .per_cycle
-                    .as_mut()
-                    .expect("bounded_offer_with_period always sets a period");
-                period.delta.poison = [(P0, 1)].into_iter().collect();
-            }
-            other => panic!("expected a LoopShortcut offer, got {other:?}"),
-        }
+        let state = bounded_offer_with_period(10, periodic_poison(&[(P0, 1)]));
         assert_eq!(
             state.players[P0.0 as usize].poison_counters, 0,
             "REACH-GUARD: 10 cycles at +1 poison must actually reach the CR 704.5c threshold"
