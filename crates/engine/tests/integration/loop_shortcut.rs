@@ -26,8 +26,7 @@ use engine::types::ability::{Effect, TargetRef};
 use engine::types::actions::GameAction;
 use engine::types::events::GameEvent;
 use engine::types::game_state::{
-    CastPaymentMode, GameState, LoopDetectionMode, PersistedGameState, StackEntryKind, WaitingFor,
-    YieldTarget,
+    CastPaymentMode, GameState, LoopDetectionMode, StackEntryKind, WaitingFor, YieldTarget,
 };
 use engine::types::identifiers::ObjectId;
 use engine::types::mana::{ManaColor, ManaCost, ManaCostShard, ManaType, ManaUnit};
@@ -5419,6 +5418,43 @@ fn a_wire_zero_shortcut_bound_fails_the_load_and_a_wire_five_does_not() {
         serde_json::from_value::<engine::types::game_state::PersistedGameState>(with_bound(5))
             .is_ok(),
         "a wire max_iterations of 5 is a legal bound and must still load"
+    );
+
+    // ── THE SECOND INGRESS ──────────────────────────────────────────────────────────
+    // CR 732.2a again, through the OTHER decode entry point. Upstream #6933 split the
+    // decode surface in two: `GameStateDecode::decode_persisted_resolution_state` (which
+    // the arms above reach) deserializes `ResolutionStateWire` itself and NEVER calls
+    // `GameStateDecode::decode`. A bare `GameState` decode routes through `decode` with
+    // `GameStateDecodeMode::DirectCurrentRaw` instead (see `impl Deserialize for
+    // GameState`), so hosting the bound guard on only one of them leaves this path able
+    // to revive exactly the corrupt offer the arms above refuse.
+    //
+    // REVERT-PROBE: delete the `reject_zero_bound_shortcut_offer` call in
+    // `GameStateDecode::decode` ONLY — leaving the one in
+    // `decode_persisted_resolution_state` — and every arm above still passes while this
+    // one flips to `Ok`. That single-site revert is why this row exists and why the
+    // arms above cannot stand in for it.
+    //
+    // REACH-GUARD FIRST: `DirectCurrentRaw` deliberately SKIPS the legacy migrations, so
+    // if this fixture could not decode bare at all, the `Err` below would prove nothing
+    // about the bound.
+    assert!(
+        serde_json::from_value::<GameState>(base.clone()).is_ok(),
+        "reach-guard: the unmutated fixture must decode through the bare-GameState \
+         ingress, or the zero-bound Err below is not attributable to the bound"
+    );
+
+    let bare_zero = serde_json::from_value::<GameState>(with_bound(0));
+    let bare_message = bare_zero
+        .expect_err("the bare-GameState ingress must refuse a wire max_iterations of 0 too")
+        .to_string();
+    assert!(
+        bare_message.contains("max_iterations 0"),
+        "the bare-ingress rejection must NAME the same invariant, got: {bare_message}"
+    );
+    assert!(
+        serde_json::from_value::<GameState>(with_bound(5)).is_ok(),
+        "a legal bound must still load through the bare-GameState ingress"
     );
 }
 
@@ -10842,15 +10878,30 @@ fn r28_c_a_restored_proposal_with_a_foreign_template_owner_is_refused_at_consump
             // under test does not read `per_cycle`, so nulling it costs the row nothing.
             proposal.per_cycle = None;
 
-            let raw = serde_json::to_value(runner.state()).expect("state serializes");
+            // The TRUSTED arm must carry a real resolution-wire envelope, not a bare
+            // `GameState` under a `"state"` key. Upstream #6933 made
+            // `resolution_state_version` a required discriminator and gave only the
+            // PersistedRaw ingress permission to stamp v1 onto a legacy payload; the
+            // TrustedEnvelope ingress deliberately stamps nothing, because a trusted
+            // snapshot is WRITTEN as a versioned envelope and must retain its declared
+            // compatibility mode. `GameState`'s derived `Serialize` emits no such field,
+            // so hand-wrapping it produced a payload the trusted path is right to refuse.
+            // Building through `ResolutionStateWire` is what `TrustedGameStateEnvelope`'s
+            // own `Serialize` does, so this arm now round-trips the shape production
+            // writes instead of one only this test ever constructed.
             let payload = if trusted {
-                serde_json::json!({ "state": raw })
+                let wire = engine::types::resolution::ResolutionStateWire::from_game_state(
+                    runner.state().clone(),
+                );
+                serde_json::json!({ "state": serde_json::to_value(wire).expect("wire serializes") })
             } else {
-                raw
+                serde_json::to_value(runner.state()).expect("state serializes")
             };
             let restored: GameState =
                 serde_json::from_value::<engine::types::game_state::PersistedGameState>(payload)
-                    .expect("decodes through the production boundary")
+                    .unwrap_or_else(|error| {
+                        panic!("{label}: decodes through the production boundary: {error}")
+                    })
                     .into_game_state();
 
             // (c″) — the wait and its tampered owner SURVIVE the decode. On the Raw branch the
