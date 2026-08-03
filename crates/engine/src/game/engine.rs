@@ -15205,7 +15205,18 @@ mod stage2_injector_tests {
                 // whole-file delta is also +51, so it adds nothing below). The OTHER FOUR
                 // entries did not move at all this time — a census that had gained or lost a
                 // producer could not leave four entries byte-identical AND in place.
-                "game/engine.rs:10640".to_string(),
+                //
+                // Fold of upstream #6933 (409956671, merged by the maintainer as d1a5270a4):
+                // `:10640 ⇒ :11427`, +787. engine.rs's whole-file delta over the same range is
+                // +1134, so 787 lands above this producer and 347 below — consistent with a
+                // file that grew around it rather than one that gained a mint. Identity
+                // re-established at the new coordinate rather than assumed: the line is
+                // byte-identical by sha256 to `ea1b0ac19:engine.rs:10640`, and it is still
+                // inside `begin_pending_trigger_target_selection` (fn opens at :11278), which
+                // is the producer this row NAMES below. The old coordinate now holds
+                // copy-target-slot code that mints nothing. The OTHER FOUR entries did not
+                // move, which is the same set-preservation evidence as the previous rebases.
+                "game/engine.rs:11427".to_string(),
             ],
             "the five production producers, NAMED: the CR 603.5 gate in `resolve_chain_body` \
              plus the two repeated-optional-payment drivers, the per-player acceptance cursor \
