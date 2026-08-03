@@ -5363,6 +5363,135 @@ fn migrated_dump_decodes_through_both_decoders_and_unmigrated_through_neither() 
 /// its call) ⇒ the `0` arm decodes `Ok` ⇒ FAILS. The wire-`5` arm is the anti-vacuity half:
 /// it proves the mutation instrument reaches the field and that the invariant refuses `0`
 /// specifically rather than refusing every mutated save.
+/// The SIBLING wire zero on the same offer: `PeriodicDelta::frames_per_period`.
+///
+/// `max_iterations` says how many repetitions a proposal commits; `frames_per_period` says what
+/// ONE repetition is. `drive_one_shortcut_cycle` closes a cycle on
+/// `frames_per_period.is_some_and(|k| frames_this_cycle >= k)`, and `frames_this_cycle` is a
+/// `u32` — so `k == 0` makes that disjunct a TAUTOLOGY, ending every "cycle" at the first
+/// active-player priority beat instead of at the certified CR 732.2a period.
+///
+/// THE PERIOD IS BUILT IN RUST AND SERIALIZED, not hand-written as JSON. `ResourceVector`'s
+/// per-player maps are keyed by `PlayerId` and need the wire adapter to cross the boundary, so a
+/// hand-authored object risks testing a shape production never emits — the failure mode this
+/// suite has hit before.
+///
+/// REVERT-PROBE: delete the `frames_per_period == 0` block in `reject_zero_bound_shortcut_offer`
+/// ⇒ the `0` arm decodes `Ok` ⇒ this row FAILS while
+/// `a_wire_zero_shortcut_bound_fails_the_load_and_a_wire_five_does_not` stays green, because the
+/// fixture omits `max_iterations` entirely and defaults it to `MAX_SHORTCUT_CYCLES`. The `2` arm
+/// is the anti-vacuity half: it proves the splice reaches the field and that the guard refuses
+/// `0` specifically rather than refusing every save carrying a period.
+#[test]
+fn a_wire_zero_frames_per_period_fails_the_load_and_a_wire_two_does_not() {
+    let json = gunzip_dump(include_bytes!(
+        "../fixtures/tenacity_exquisite_blood_4p.json.gz"
+    ));
+    let envelope: serde_json::Value =
+        serde_json::from_str(&json).expect("dump envelope parses as JSON");
+    let base = envelope["gameState"].clone();
+
+    assert_eq!(
+        base["waiting_for"]["type"].as_str(),
+        Some("LoopShortcut"),
+        "the invariant is scoped to the one variant that carries a LoopCertificate"
+    );
+    assert!(
+        base["waiting_for"]["data"]["certificate"]["per_cycle"].is_null(),
+        "the fixture carries no certified period, so the splice below CREATES it"
+    );
+
+    let with_frames = |frames: u32| {
+        let mut v = base.clone();
+        let period = engine::analysis::resource::PeriodicDelta {
+            frames_per_period: frames,
+            delta: Default::default(),
+            victim_slot: vec![],
+        };
+        v["waiting_for"]["data"]["certificate"]["per_cycle"] =
+            serde_json::to_value(&period).expect("a PeriodicDelta serializes");
+        assert_eq!(
+            v["waiting_for"]["data"]["certificate"]["per_cycle"]["frames_per_period"].as_u64(),
+            Some(u64::from(frames)),
+            "the splice must reach certificate.per_cycle.frames_per_period"
+        );
+        v
+    };
+
+    let message =
+        serde_json::from_value::<engine::types::game_state::PersistedGameState>(with_frames(0))
+            .expect_err("a wire frames_per_period of 0 must fail the load")
+            .to_string();
+    assert!(
+        message.contains("frames_per_period 0"),
+        "the rejection must NAME the invariant it enforces, and must not be the sibling \
+         max_iterations guard firing instead, got: {message}"
+    );
+
+    assert!(
+        serde_json::from_value::<engine::types::game_state::PersistedGameState>(with_frames(2))
+            .is_ok(),
+        "a wire frames_per_period of 2 is a legal certified span and must still load"
+    );
+
+    // ── THE SECOND WIRE HOST, AND THE ONE THE DRIVE ACTUALLY READS ──────────────────────
+    // `frames_per_period` is a `PeriodicDelta` field, not a `LoopCertificate` field, and
+    // `ShortcutProposal` carries its own `per_cycle`. `materialize_fixed_shortcut` feeds the
+    // drive from `proposal.per_cycle.as_ref().map(|pd| pd.frames_per_period)` — THIS host —
+    // never from the offer's certificate. A restored `RespondToShortcut` is reached without
+    // re-entering `LoopShortcut`, so guarding only the arms above would leave the consumed path
+    // open while looking complete.
+    //
+    // REVERT-PROBE: delete the `RespondToShortcut` block in `reject_zero_bound_shortcut_offer`
+    // ⇒ every arm above still passes and only this one flips to `Ok`.
+    let respond_with_frames = |frames: u32| {
+        let mut v = base.clone();
+        let waiting = engine::types::game_state::WaitingFor::RespondToShortcut {
+            player: engine::types::player::PlayerId(1),
+            remaining_players: vec![],
+            proposal: engine::analysis::loop_check::ShortcutProposal {
+                proposer: engine::types::player::PlayerId(0),
+                predicted_winner: None,
+                count: engine::analysis::decision_template::IterationCount::Fixed(3),
+                unbounded: vec![],
+                win_kind: engine::analysis::loop_check::WinKind::Advantage,
+                template: None,
+                per_cycle: Some(engine::analysis::resource::PeriodicDelta {
+                    frames_per_period: frames,
+                    delta: Default::default(),
+                    victim_slot: vec![],
+                }),
+            },
+        };
+        v["waiting_for"] = serde_json::to_value(&waiting).expect("a WaitingFor serializes");
+        assert_eq!(
+            v["waiting_for"]["data"]["proposal"]["per_cycle"]["frames_per_period"].as_u64(),
+            Some(u64::from(frames)),
+            "the splice must reach proposal.per_cycle.frames_per_period"
+        );
+        v
+    };
+
+    let message = serde_json::from_value::<engine::types::game_state::PersistedGameState>(
+        respond_with_frames(0),
+    )
+    .expect_err("a wire frames_per_period of 0 on the PROPOSAL must fail the load")
+    .to_string();
+    assert!(
+        message.contains("frames_per_period 0") && message.contains("RespondToShortcut"),
+        "the rejection must name BOTH the invariant and the host that carried it, so a reader \
+         can tell which of the two per_cycle sites fired, got: {message}"
+    );
+
+    assert!(
+        serde_json::from_value::<engine::types::game_state::PersistedGameState>(
+            respond_with_frames(2)
+        )
+        .is_ok(),
+        "a legal span on the proposal host must still load — anti-vacuity for the arm above"
+    );
+}
+
 #[test]
 fn a_wire_zero_shortcut_bound_fails_the_load_and_a_wire_five_does_not() {
     let json = gunzip_dump(include_bytes!(

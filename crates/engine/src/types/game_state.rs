@@ -8717,8 +8717,31 @@ fn delayed_trigger_install_command_mut(
 /// `MAX_SHORTCUT_CYCLES` mean "unbounded", a legitimate state; and an ABSENT wire key
 /// decodes to `MAX_SHORTCUT_CYCLES` through `#[serde(default = "default_max_iterations")]`,
 /// so every legacy save predating the field is untouched.
+/// CR 732.2a: a certified period spanning ZERO frames is not a period.
+///
+/// Single authority for the field so both wire hosts enforce identically — the offer's
+/// `LoopCertificate::per_cycle` and the proposal's `ShortcutProposal::per_cycle` are different
+/// structs carrying the same `PeriodicDelta`, and only the second is what the drive reads.
+fn reject_zero_frames_per_period(
+    period: &Option<crate::analysis::resource::PeriodicDelta>,
+    host: &str,
+) -> Result<(), String> {
+    if period.as_ref().is_some_and(|pd| pd.frames_per_period == 0) {
+        return Err(format!(
+            "persisted {host} states frames_per_period 0, which delimits every committed cycle \
+             at the first priority beat rather than at the certified CR 732.2a period"
+        ));
+    }
+    Ok(())
+}
+
 fn reject_zero_bound_shortcut_offer(state: &GameState) -> Result<(), String> {
-    if let WaitingFor::LoopShortcut { schema, .. } = &state.waiting_for {
+    if let WaitingFor::LoopShortcut {
+        schema,
+        certificate,
+        ..
+    } = &state.waiting_for
+    {
         if schema.max_iterations == 0 {
             return Err(
                 "persisted LoopShortcut offer states max_iterations 0, which CR 732.2a admits \
@@ -8726,6 +8749,37 @@ fn reject_zero_bound_shortcut_offer(state: &GameState) -> Result<(), String> {
                     .to_string(),
             );
         }
+        // The SIBLING wire zero. `max_iterations` says how many repetitions there are;
+        // `frames_per_period` says what one repetition IS, and a wire-supplied 0 corrupts the
+        // second question exactly as a 0 bound corrupts the first.
+        //
+        // ⚠ THIS CALL COVERS ONE OF THE FIELD'S TWO HOSTS. `frames_per_period` rides
+        // `PeriodicDelta`, which hangs off BOTH `LoopCertificate` (here) and `ShortcutProposal`
+        // (the `RespondToShortcut` arm below) — and the second is the one the drive reads. Neither
+        // call is complete alone; `reject_zero_frames_per_period` is the shared authority so the
+        // two can never drift apart.
+        //
+        // Mechanism, not a symmetry argument: `drive_one_shortcut_cycle` delimits a committed
+        // cycle with `frames_per_period.is_some_and(|k| frames_this_cycle >= k)`
+        // (`game/engine.rs`). `frames_this_cycle` is a `u32`, so `>= 0` is a TAUTOLOGY — that
+        // disjunct fires at the first active-player priority beat, collapsing the cycle boundary
+        // to one beat instead of the certified span, and every per-cycle conformance check then
+        // measures a truncated cycle against a whole-period delta.
+        //
+        // Production never mints 0 — both certification bases derive it measured (`span as u32`
+        // on basis A, `k` on basis B) — which is exactly why a 0 arriving on the wire is a
+        // corrupted or hand-edited save rather than a live shape.
+        reject_zero_frames_per_period(&certificate.per_cycle, "LoopShortcut offer")?;
+    }
+    // THE SECOND WIRE HOST FOR THE SAME FIELD, and the one the drive actually reads.
+    // `frames_per_period` is not a `LoopCertificate` field — it lives on `PeriodicDelta`, and
+    // `ShortcutProposal` carries its own `per_cycle` too. `materialize_fixed_shortcut` feeds
+    // `drive_one_shortcut_cycle` from `proposal.per_cycle.as_ref().map(|pd| pd.frames_per_period)`
+    // (`game/engine.rs`), i.e. from THIS host, not from the offer's certificate. Guarding only
+    // the offer would leave the consumed path open — the restored `RespondToShortcut` state is
+    // reached without ever re-entering `LoopShortcut`.
+    if let WaitingFor::RespondToShortcut { proposal, .. } = &state.waiting_for {
+        reject_zero_frames_per_period(&proposal.per_cycle, "RespondToShortcut proposal")?;
     }
     Ok(())
 }
