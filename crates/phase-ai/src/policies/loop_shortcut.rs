@@ -177,6 +177,32 @@ impl TacticalPolicy for LoopShortcutPolicy {
                 PolicyVerdict::reject(PolicyReason::new("loop_shortcut_untillethal_cannot_crown"))
             }
 
+            // CR 732.2a: a ZERO-repetition declaration is representable, and the engine treats
+            // it as legal — `a_zero_count_declaration_validates_over_an_empty_range_but_still_
+            // checks_cardinality` in `crates/engine/tests/integration/loop_shortcut.rs` pins
+            // exactly that — but it commits NO cycles while still spending the CR 732.2b
+            // response window. That is the same weak-domination shape the over-bound arm below
+            // and the `(None, UntilLethal)` arm above reject: the outcome set is {no-op, minus a
+            // response window}, so declining weakly dominates it.
+            //
+            // ⚠ ORDER IS LOAD-BEARING: this arm MUST precede the `!schema.is_bounded() => na()`
+            // arm below. `Fixed(0)` matches that guard too, so with the arms the other way round
+            // a zero-count declare on an UNBOUNDED offer scored NEUTRAL rather than rejected —
+            // and the domination argument above does not depend on boundedness at all. A
+            // declaration that commits nothing spends the CR 732.2b window whether or not the
+            // offer carries a bound, so the two schema shapes must reach the same verdict.
+            // `loop_shortcut_unbounded_declare_rejects_zero_count` is the regression for the
+            // unbounded half specifically, and it goes RED via `na()` if this arm is moved back
+            // below.
+            //
+            // Not reachable from today's generator either way (it emits only
+            // `Fixed(max_iterations)`, and the load seam refuses `max_iterations: 0`), so no
+            // scoring that can occur today is reordered. The arm states the scoring arm's OWN
+            // precondition rather than leaving it to an invariant maintained a crate away.
+            (_, IterationCount::Fixed(0)) => PolicyVerdict::reject(PolicyReason::new(
+                "loop_shortcut_bounded_declare_zero_count",
+            )),
+
             // CR 732.2a "a loop that repeats a specified number of times". The verdict splits
             // on whether the OFFER states a real CR 704 bound, because the domination argument
             // below is valid only when it does.
@@ -229,23 +255,6 @@ impl TacticalPolicy for LoopShortcutPolicy {
                     .with_fact("declared", i64::from(*n))
                     .with_fact("max_iterations", i64::from(schema.max_iterations)),
             ),
-
-            // CR 732.2a: a ZERO-repetition declaration is representable, and the engine treats
-            // it as legal — `a_zero_count_declaration_validates_over_an_empty_range_but_still_
-            // checks_cardinality` in `crates/engine/tests/integration/loop_shortcut.rs` pins
-            // exactly that — but it commits NO cycles while still spending the CR 732.2b
-            // response window. That is the same weak-domination shape the over-bound arm above
-            // and the `(None, UntilLethal)` arm reject: the outcome set is {no-op, minus a
-            // response window}, so declining weakly dominates it.
-            //
-            // Unreachable from today's generator (it emits only `Fixed(max_iterations)`, and
-            // the load seam refuses `max_iterations: 0`), so this reorders nothing that can
-            // occur now. It states the scoring arm's OWN precondition rather than leaving it
-            // to an invariant maintained a crate away: without it, the arm below hands a
-            // guaranteed no-op the CRITICAL band, i.e. ranks doing nothing as game-deciding.
-            (_, IterationCount::Fixed(0)) => PolicyVerdict::reject(PolicyReason::new(
-                "loop_shortcut_bounded_declare_zero_count",
-            )),
 
             // CR 732.2a: within the offered bound on a bounded offer ⇒ committed board
             // progress that eliminates nobody. Game-deciding ⇒ critical band, via the
@@ -587,6 +596,62 @@ mod tests {
              dominated by declining, got {v:?}"
         );
         assert_eq!(kind_of(&v), "loop_shortcut_bounded_declare_zero_count");
+    }
+
+    /// CR 732.2a — the UNBOUNDED half of the same arm, which the row above structurally cannot
+    /// see because it asserts a bounded schema as its reach-guard.
+    ///
+    /// The defect this pins was real and measured: with `(_, Fixed(0))` sitting BELOW
+    /// `(_, Fixed(_)) if !schema.is_bounded() => na()`, a zero-count declare on an unbounded
+    /// offer matched the `na()` guard first and scored NEUTRAL. The domination argument does
+    /// not depend on boundedness — a declaration committing no cycles spends the CR 732.2b
+    /// response window either way — so the two schema shapes must reach the same verdict.
+    ///
+    /// Driven across every `predicted_winner` because the arm binds `_` on that axis; if the
+    /// reorder had accidentally been written as a winner-specific arm, only one of these three
+    /// would pass.
+    ///
+    /// THE `Fixed(4)` CONTRAST IS LOAD-BEARING, not decoration. A "fix" that deleted the
+    /// `!is_bounded() => na()` arm outright would satisfy the reject assertions above while
+    /// silently re-scoping every unbounded `Fixed(n)` into the bounded scoring path. Asserting
+    /// that a NON-zero count on the SAME state is still neutral is what distinguishes "the zero
+    /// arm now precedes the neutral arm" from "the neutral arm is gone".
+    ///
+    /// REVERT-PROBE: move the `(_, IterationCount::Fixed(0))` arm back below the
+    /// `!schema.is_bounded()` arm ⇒ `Fixed(0)` reaches `na()` ⇒ this row reads `"loop_shortcut_na"`
+    /// with delta `0.0` and FAILS, while every bounded row stays green.
+    ///
+    /// On the reason string: it still reads `..._bounded_declare_zero_count` although the arm
+    /// now covers both schema shapes. Left as-is deliberately — a `PolicyReason` kind is a
+    /// stable identifier that AI-gate baselines key on, so renaming it is a separate change
+    /// with its own blast radius, not a drive-by.
+    #[test]
+    fn loop_shortcut_unbounded_declare_rejects_zero_count() {
+        for predicted_winner in [None, Some(P0), Some(P1)] {
+            let state = offer_state(predicted_winner);
+            assert!(
+                !schema_of(&state).is_bounded(),
+                "REACH-GUARD: this row is about the UNBOUNDED schema — the bounded row above \
+                 already covers the other half; measured max_iterations {}",
+                schema_of(&state).max_iterations
+            );
+            let zero = verdict_for(&state, &declare(IterationCount::Fixed(0)));
+            assert!(
+                matches!(zero, PolicyVerdict::Reject { .. }),
+                "a zero-cycle declare commits nothing while spending the CR 732.2b window \
+                 whether or not the offer is bounded (winner {predicted_winner:?}), got {zero:?}"
+            );
+            assert_eq!(kind_of(&zero), "loop_shortcut_bounded_declare_zero_count");
+
+            let nonzero = verdict_for(&state, &declare(IterationCount::Fixed(4)));
+            assert_eq!(
+                kind_of(&nonzero),
+                "loop_shortcut_na",
+                "the neutral arm must survive the reorder — only ZERO is pulled ahead of it \
+                 (winner {predicted_winner:?})"
+            );
+            assert_eq!(delta_of(&nonzero), 0.0);
+        }
     }
 
     /// CR 732.2a — the `na()` branch asserted DIRECTLY rather than inferred from which arm
