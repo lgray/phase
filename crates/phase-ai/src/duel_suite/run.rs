@@ -1,9 +1,11 @@
 //! Suite runner — executes every registered `MatchupSpec` and emits a
 //! structured JSON report.
 //!
-//! Deterministic-core results are a pure function of `(binary, spec, seed)`.
-//! Wall-clock fields are retained in `SuiteReport` for operator visibility but
-//! are excluded from [`SuiteReport::deterministic_core`].
+//! Deterministic-core results are a function of `(binary, spec, seed)` **modulo
+//! the run-to-run caveats catalogued at the top of [`super::perf`]** — do not read
+//! this as byte-stability across repeated runs. Wall-clock fields are retained in
+//! `SuiteReport` for operator visibility but are excluded from
+//! [`SuiteReport::deterministic_core`].
 
 use std::collections::{HashMap, HashSet};
 use std::io::BufWriter;
@@ -408,6 +410,38 @@ fn finalize_report(
     Ok(report)
 }
 
+/// Wall-clock `HH:MM:SS` in UTC for progress lines.
+///
+/// The suite has no date dependency (`phase-ai/Cargo.toml` pulls neither `chrono`
+/// nor `time`), and a bare elapsed counter is useless once a CI job is killed —
+/// the operator needs to line the last emitted game up against the job's own
+/// timeline. Seconds-of-day arithmetic is enough for that and cannot drift.
+/// Diagnostics only: never parsed, never compared, never part of a verdict.
+fn utc_hms() -> String {
+    let secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+        % 86_400;
+    format!(
+        "{:02}:{:02}:{:02}",
+        secs / 3600,
+        (secs % 3600) / 60,
+        secs % 60
+    )
+}
+
+/// Progress-line label for a finished game's winner. `None` is a draw *or* an
+/// aborted game — [`run_single_matchup`] prints a distinct `aborted:` line on the
+/// panic path, so the two stay distinguishable in a killed run's tail.
+fn winner_label(winner: Option<PlayerId>) -> &'static str {
+    match winner {
+        Some(PlayerId(0)) => "p0",
+        Some(_) => "p1",
+        None => "draw",
+    }
+}
+
 fn run_single_matchup(
     db: &CardDatabase,
     spec: &MatchupSpec,
@@ -430,6 +464,13 @@ fn run_single_matchup(
     for game_idx in 0..options.games_per_matchup {
         let seed = matchup_seed.wrapping_add(game_idx as u64);
         let start = Instant::now();
+        eprintln!(
+            "{ts} [{id}] game {n}/{total} seed={seed} start",
+            ts = utc_hms(),
+            id = spec.id,
+            n = game_idx + 1,
+            total = options.games_per_matchup,
+        );
         let (winner, turns) = if harvest_sink.is_some() {
             // Harvester declared OUTSIDE catch_unwind. The observe closure's `&mut`
             // borrow ends when the closure returns; `finish(winner)` then runs
@@ -466,7 +507,16 @@ fn run_single_matchup(
                 }
             }
         };
-        total_duration_ms += start.elapsed().as_millis();
+        let elapsed_ms = start.elapsed().as_millis();
+        eprintln!(
+            "{ts} [{id}] game {n}/{total} seed={seed} done winner={winner} turns={turns} {elapsed_ms}ms",
+            ts = utc_hms(),
+            id = spec.id,
+            n = game_idx + 1,
+            total = options.games_per_matchup,
+            winner = winner_label(winner),
+        );
+        total_duration_ms += elapsed_ms;
         total_turns += turns as u64;
         games.push(GameResult {
             seed,
@@ -628,9 +678,14 @@ fn run_game_observed(
 /// actions have been taken (checked at `run_ai_actions` batch boundaries, so the
 /// realized count may overshoot the cap within a batch — identical semantics to
 /// the historical `run_game` body, which capped at `MAX_TOTAL_ACTIONS`). The
-/// result `(winner, turn_number)` is a pure function of
-/// `(binary, payload, seed, difficulty, action_cap)`; no wall-clock or thread
-/// scheduling influences it.
+/// result `(winner, turn_number)` is a function of
+/// `(binary, payload, seed, difficulty, action_cap)` and nothing this function
+/// itself reads — but it is NOT wall-clock-free further down. `projection.rs`'s
+/// `TIME_CAP` (`projection.rs:110`, 15 ms) is not gated on measurement mode and is
+/// reached at `AiDifficulty::Medium` through `EvasionRemovalPriorityPolicy`'s
+/// `velocity_score`, so a faster or slower host can change which creature the AI
+/// targets. See the run-to-run caveats at the top of [`super::perf`]; this is a
+/// second source alongside #4878.
 pub(crate) fn drive_game(
     payload: &DeckPayload,
     seed: u64,
