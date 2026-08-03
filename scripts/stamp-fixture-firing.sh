@@ -223,15 +223,61 @@ non_gamestate_control() {
   return 1
 }
 
+# The staged file MUST be minted in the destination's OWN directory. This script
+# rewrites its fixtures IN PLACE, and those fixtures are TRACKED, so a stage on a
+# different filesystem makes the final `mv` a copy-then-unlink and an interruption
+# truncates a committed fixture — the worst failure mode either fixture script has.
+# Measured here: `mktemp -t` resolves to /tmp (device 50) while the fixture directory
+# is on /home (device 47), so the two genuinely differ. Same recipe, same fix, and the
+# same helper shape as `migrate-dump-fixture.sh` — the sibling this was missed on.
+stage_beside() {   # stage_beside <destination>
+  mktemp "$(dirname "$1")/.stamp-firing-stage-XXXXXX.json.gz"
+}
+# Registered stage files are reaped on EXIT/INT/TERM: the explicit `rm -f "$TMP"` calls
+# below cannot cover death before the next statement runs, and debris would land in the
+# tracked fixture directory.
+STAGE_FILES=""
+cleanup_stage_files() {
+  [ -n "$STAGE_FILES" ] || return 0
+  # shellcheck disable=SC2086 # deliberate word-splitting over the staged-path list
+  rm -f $STAGE_FILES
+  STAGE_FILES=""
+}
+trap cleanup_stage_files EXIT INT TERM
+
+# The staging mechanism itself: the stage file must be minted in the destination's OWN
+# directory, or the in-place `mv` is not atomic and an interrupted run truncates a
+# TRACKED fixture. Compares DIRECTORIES, not devices — device equality is the property
+# that makes `mv` atomic but it does NOT discriminate here, because a `-t` revert puts
+# the stage in /tmp and any test destination under /tmp shares its device. That trap
+# already cost `migrate-dump-fixture.sh` a self-test that could not fail on its subject.
+stage_locality_control() {
+  local d probe
+  d="$(mktemp -d)" || return 1
+  : > "$d/dest.json.gz"
+  probe="$(stage_beside "$d/dest.json.gz")"
+  if [ "$(dirname "$probe")" != "$(dirname "$d/dest.json.gz")" ]; then
+    echo "CONTROL STAGE_BESIDE_DEST=false — stage $(dirname "$probe") vs dest $(dirname "$d/dest.json.gz")" >&2
+    echo "  a cross-directory stage makes the in-place mv non-atomic; an interrupted run" >&2
+    echo "  would truncate a tracked fixture" >&2
+    rm -f "$probe"; rm -rf "$d"; return 1
+  fi
+  rm -f "$probe"; rm -rf "$d"
+  echo "CONTROL STAGE_BESIDE_DEST=true"
+  return 0
+}
+
 definition_shape_control || exit 1
 carrier_preservation_control || exit 1
 stale_carrier_control || exit 1
 non_gamestate_control || exit 1
+stage_locality_control || exit 1
 
 rc=0
 for FIX in "$@"; do
   [ -f "$FIX" ] || { echo "no such fixture: $FIX" >&2; rc=1; continue; }
-  TMP="$(mktemp -t stamp-firing-XXXXXX.json.gz)"
+  TMP="$(stage_beside "$FIX")"
+  STAGE_FILES="$STAGE_FILES $TMP"
   # `-f` with the lib prepended keeps ONE definition of the derivation.
   if ! gzip -dc "$FIX" \
       | jq -c -f <(printf '%s\nstamp_trigger_firing | stamp_delayed_allocators\n' "$(cat "$LIB")") \

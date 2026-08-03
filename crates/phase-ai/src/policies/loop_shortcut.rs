@@ -559,6 +559,36 @@ mod tests {
         );
     }
 
+    /// CR 732.2a — the ZERO-count arm asserted directly. A `Fixed(0)` declaration commits no
+    /// cycles while still spending the CR 732.2b response window, so declining weakly
+    /// dominates it and it must be rejected rather than scored.
+    ///
+    /// The arm previously carried no row at all: the suite covered `Fixed(4)` and `Fixed(11)`
+    /// bounded and `Fixed(4)` unbounded, so deleting the `Fixed(0)` arm left every test green
+    /// and it carried zero regression protection.
+    ///
+    /// REVERT-PROBE: delete the `(_, IterationCount::Fixed(0))` arm ⇒ `Fixed(0)` falls through
+    /// to the in-bound progress arm ⇒ this row reads `Score` /
+    /// `"loop_shortcut_bounded_declare_progress"` and FAILS on both assertions.
+    #[test]
+    fn loop_shortcut_bounded_declare_rejects_zero_count() {
+        let state = bounded_offer_state(10);
+        // REACH-GUARD: the zero arm sits BELOW the `!is_bounded() => na()` branch, so on an
+        // unbounded schema this row would measure the neutral branch instead and pass for the
+        // wrong reason.
+        assert!(
+            schema_of(&state).is_bounded(),
+            "reach-guard: the zero arm is only reachable on a BOUNDED schema"
+        );
+        let v = verdict_for(&state, &declare(IterationCount::Fixed(0)));
+        assert!(
+            matches!(v, PolicyVerdict::Reject { .. }),
+            "a zero-cycle declare commits nothing while spending the response window ⇒ weakly \
+             dominated by declining, got {v:?}"
+        );
+        assert_eq!(kind_of(&v), "loop_shortcut_bounded_declare_zero_count");
+    }
+
     /// CR 732.2a — the `na()` branch asserted DIRECTLY rather than inferred from which arm
     /// happened to be reached. This row and the one above assert OPPOSITE outcomes for the
     /// SAME `Fixed(n)`, discriminated by ONE field of the schema: a constant-`na()`
