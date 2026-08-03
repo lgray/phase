@@ -278,6 +278,17 @@ for FIX in "$@"; do
   [ -f "$FIX" ] || { echo "no such fixture: $FIX" >&2; rc=1; continue; }
   TMP="$(stage_beside "$FIX")"
   STAGE_FILES="$STAGE_FILES $TMP"
+  # CALL-SITE guard, and it is NOT redundant with `stage_locality_control` above. That
+  # control proves the HELPER returns a beside-destination path; it says nothing about
+  # whether this line still calls the helper. Measured: revert ONLY this binding to
+  # `mktemp -t`, leaving `stage_beside` intact, and the control still prints
+  # STAGE_BESIDE_DEST=true while the run writes with its stage in /tmp — the original
+  # defect fully restored, past a green control. A property must be asserted where the
+  # value is BOUND, not only where it is produced.
+  if [ "$(dirname "$TMP")" != "$(dirname "$FIX")" ]; then
+    echo "stage not beside destination: $TMP vs $FIX — mv would not be atomic" >&2
+    rm -f "$TMP"; rc=1; continue
+  fi
   # `-f` with the lib prepended keeps ONE definition of the derivation.
   if ! gzip -dc "$FIX" \
       | jq -c -f <(printf '%s\nstamp_trigger_firing | stamp_delayed_allocators\n' "$(cat "$LIB")") \

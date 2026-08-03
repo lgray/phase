@@ -205,6 +205,16 @@ regenerate() {   # regenerate <patched|unpatched> <destination>
   mkdir -p "$(dirname "$dest")"
   staged="$(stage_path "$dest")"
   STAGE_FILES="$STAGE_FILES $staged"
+  # CALL-SITE guard. The a0 self-test proves `stage_path` RETURNS a beside-destination
+  # path; it cannot see whether this line still calls it. Reverting only this binding to
+  # `mktemp -t` leaves the helper and the self-test intact and green while restoring the
+  # non-atomic write — the same blind spot the sibling stamper carries, fixed at both
+  # sites so the class is closed rather than one instance of it.
+  if [ "$(dirname "$staged")" != "$(dirname "$dest")" ]; then
+    echo "stage not beside destination: $staged vs $dest — mv would not be atomic" >&2
+    rm -f "$staged"
+    return 1
+  fi
   if ! unzip -p "$PRISTINE" | transform "$mode" | gzip -9 -n > "$staged"; then
     rm -f "$staged"
     echo "REGENERATION FAILED (fail-closed, $dest left untouched)" >&2
