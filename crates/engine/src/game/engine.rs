@@ -3273,6 +3273,33 @@ enum CycleOutcome {
     Abort,
 }
 
+/// CR 732.2a: THE FRAME DELIMITER — one published repetition is `k` retained ring frames.
+///
+/// The SINGLE AUTHORITY for "has the published period elapsed?". `drive_one_shortcut_cycle`
+/// has to answer that question in two arms — the active-player settle arm and the
+/// forced-window ANSWER arm — and both arms are places a frame can be recorded now that
+/// `apply_action` carries a second sampling site. Two inline copies of
+/// `frames_per_period.is_some_and(|k| frames_this_cycle >= k)` would be two places to get the
+/// comparison wrong, in a predicate whose `>=` vs `==` and whose `None` arm are both
+/// load-bearing (see `published_period_elapsed_is_total_over_the_axes_that_delimit_a_cycle`).
+///
+/// `None` ⇒ NEVER elapsed. An offer whose producer states no per-period signature publishes
+/// no frame count, and a drive must not invent one: such a cycle is delimited by board
+/// recurrence alone, exactly as it was before this delimiter existed. That is the fail-closed
+/// direction — a `true` here ends a cycle, and ending one early commits a FRACTION of the
+/// published delta, which is the conditional action CR 732.2a forbids outright.
+///
+/// `>=`, not `==`: a single beat may retain more than one frame, and a cycle that overshot `k`
+/// has still elapsed. An `==` would drive past its own boundary and only stop at the beat cap.
+///
+/// Beat-kind agnostic BY CONSTRUCTION — it reads only the counter the ring itself advanced, so
+/// it is valid at every beat where a frame can be recorded. The two board-recurrence predicates
+/// are deliberately NOT folded in: `GameState::normalize_for_loop`'s contract rests on
+/// `waiting_for` being `Priority` at the sample point, so they stay in the settle arm.
+fn published_period_elapsed(frames_this_cycle: u32, frames_per_period: Option<u32>) -> bool {
+    frames_per_period.is_some_and(|k| frames_this_cycle >= k)
+}
+
 /// PR-7 Combo-UI Stage 2: drive ONE whole cycle of a confirmed loop shortcut on a fresh clone
 /// of `committed`, seeded to the canonical settle beat (`Priority{active_player}`, the same
 /// beat the detector ring samples). Recurrence is detected against `boundary` (normalized).
@@ -3298,12 +3325,17 @@ enum CycleOutcome {
 /// the beat cap (`Abort`, committing zero cycles) or by crossing lethal, and the declared `n`
 /// is inert: `Fixed(1)` and `Fixed(3)` produce byte-identical boards.
 ///
-/// The frame count is the same quantity `frames_per_period` names, measured the same way: the
-/// single `record_loop_detect_sample` call site lives in `pass_priority_once_with_pipeline`,
-/// which is the very function this loop steps, so a driven beat samples the ring under exactly
-/// the gates an observed beat does. A new frame is detected by `Arc` identity of the ring's
-/// back rather than by length, because the ring evicts at `LOOP_DETECT_RING_CAP` and a length
-/// delta reads 0 once it is full.
+/// The frame count is the same quantity `frames_per_period` names, measured the same way: this
+/// loop steps `pass_priority_once_with_pipeline` and answers its prompts through
+/// `apply_action`, which are exactly the two functions the OBSERVED drive samples the ring in,
+/// so a driven beat samples under exactly the gates an observed beat does. ⚠ THAT IS TWO
+/// SAMPLING SITES, NOT ONE — the note that stood here named only the settle sampler, and the
+/// forced-window ANSWER site falsifies it. Which is why the frame counter is advanced in the
+/// ANSWER arm too: a period whose extra frames are recorded at answer beats would otherwise
+/// never reach `k`, and `frames_per_period` would be unreachable exactly on the boards the
+/// widening was for. A new frame is detected by `Arc` identity of the ring's back rather than
+/// by length, because the ring evicts at `LOOP_DETECT_RING_CAP` and a length delta reads 0
+/// once it is full.
 fn drive_one_shortcut_cycle(
     committed: &GameState,
     boundary: &GameState,
@@ -3356,7 +3388,7 @@ fn drive_one_shortcut_cycle(
                 let norm = work.normalize_for_loop();
                 if crate::analysis::resource::loop_states_equal_modulo_resources(boundary, &norm)
                     || crate::analysis::resource::loop_states_cover_modulo_growth(boundary, &norm)
-                    || frames_per_period.is_some_and(|k| frames_this_cycle >= k)
+                    || published_period_elapsed(frames_this_cycle, frames_per_period)
                 {
                     return CycleOutcome::Recurred {
                         state: Box::new(work),
@@ -3375,7 +3407,20 @@ fn drive_one_shortcut_cycle(
             Ok(other) => {
                 ev.append(&mut beat_events);
                 match inject_pinned_answer(&mut work, template, iteration, &other) {
-                    Ok(()) => continue,
+                    Ok(()) => {
+                        let ring_back_after =
+                            work.loop_detect_ring.back().map(std::sync::Arc::as_ptr);
+                        if ring_back_after.is_some() && ring_back_after != ring_back_before {
+                            frames_this_cycle += 1;
+                        }
+                        if published_period_elapsed(frames_this_cycle, frames_per_period) {
+                            return CycleOutcome::Recurred {
+                                state: Box::new(work),
+                                events: ev,
+                            };
+                        }
+                        continue;
+                    }
                     Err(RecastAbort) => return CycleOutcome::Abort,
                 }
             }
@@ -17352,5 +17397,120 @@ mod bounded_offer_conjunct_tests {
                 lines[*binding].trim()
             );
         }
+    }
+
+    // ───────────────────────────────────────────────────────────────────────────────────
+    // N1 — the period boundary has ONE authority, and every frame-recording arm asks it.
+    // ───────────────────────────────────────────────────────────────────────────────────
+
+    /// N1, BEHAVIOURAL HALF — `published_period_elapsed` is TOTAL over the two axes that
+    /// delimit a cycle, and each of its three interesting answers is asserted.
+    ///
+    /// CR 732.2a. This is the anti-vacuity control for the structural half below: a census
+    /// proving the two arms call ONE function says nothing if that function is wrong, and the
+    /// two properties a caller depends on — `None` never elapses, `>=` and not `==` — are
+    /// invisible at the call sites.
+    ///
+    /// * **`None` ⇒ never.** An offer whose producer states no per-period signature publishes
+    ///   no frame count. Inventing one would end the cycle after an arbitrary number of frames
+    ///   and commit a FRACTION of the published delta — the conditional action CR 732.2a
+    ///   forbids. Fail-closed means "keep driving until the board recurs", not "stop early".
+    /// * **`Some(k)` with fewer frames ⇒ not yet.** The row asserts `k - 1` explicitly, so an
+    ///   off-by-one that closed a 2-frame period after 1 frame FLIPS here.
+    /// * **`Some(k)` with `k` or MORE ⇒ elapsed.** A single beat may retain more than one
+    ///   frame, so a strict `==` would drive past its own boundary and end at the beat cap
+    ///   instead. `k + 1` is the arm that discriminates `>=` from `==`.
+    ///
+    /// REVERT-PROBE: change `is_some_and` to `is_none_or` ⇒ the `None` rows FLIP. Change `>=`
+    /// to `==` ⇒ the `k + 1` row FLIPS. Change `>=` to `>` ⇒ the exact-`k` row FLIPS.
+    #[test]
+    fn published_period_elapsed_is_total_over_the_axes_that_delimit_a_cycle() {
+        use super::published_period_elapsed;
+
+        // (frames_this_cycle, frames_per_period) -> elapsed
+        let table: [((u32, Option<u32>), bool); 8] = [
+            ((0, None), false),
+            ((1, None), false),
+            ((7, None), false),
+            ((0, Some(1)), false),
+            ((1, Some(1)), true),
+            ((1, Some(2)), false),
+            ((2, Some(2)), true),
+            ((3, Some(2)), true),
+        ];
+        let measured: Vec<((u32, Option<u32>), bool)> = table
+            .iter()
+            .map(|&(input, _)| (input, published_period_elapsed(input.0, input.1)))
+            .collect();
+        assert_eq!(
+            measured,
+            table.to_vec(),
+            "CR 732.2a: an UNPUBLISHED period never elapses by frame count ({{None}} rows), a \
+             period is not over before its k-th frame, and one that overshot k IS over — the \
+             three properties `drive_one_shortcut_cycle`'s two arms depend on and neither \
+             call site can state"
+        );
+    }
+
+    /// N1, STRUCTURAL HALF — ONE authority for the period boundary, ASKED BY BOTH ARMS.
+    ///
+    /// CR 732.2a. `drive_one_shortcut_cycle` can record a ring frame in two places now that
+    /// `apply_action` carries the forced-window ANSWER sampling site: the active-player settle
+    /// arm and the injector arm. Both must advance the frame counter and both must ask the
+    /// same delimiter, or the published `frames_per_period` is unreachable on exactly the
+    /// boards the widening was for and the drive can only end at its runaway beat cap.
+    ///
+    /// The census is EXTENT-SCOPED (`engine_fn_extent` + `engine_code_hits`, the same
+    /// machinery the two carrier rows and the CR 603.5 census use) and comment lines are
+    /// excluded, so it cannot count its own prose.
+    ///
+    /// REVERT-PROBE: drop the injector arm's counter advance ⇒ `frames_this_cycle += 1` goes
+    /// 2 → 1 ⇒ FLIPS. Re-inline `frames_per_period.is_some_and(|k| frames_this_cycle >= k)` at
+    /// either arm ⇒ the raw-comparison count goes 0 → 1 ⇒ FLIPS.
+    #[test]
+    fn the_period_delimiter_has_one_authority_and_both_frame_recording_arms_ask_it() {
+        let src = include_str!("engine.rs");
+        let lines: Vec<&str> = src.lines().collect();
+        let drive = engine_fn_extent(&lines, "fn drive_one_shortcut_cycle(");
+
+        let delimiter = format!("published_period{}elapsed(", '_');
+        let asks = engine_code_hits(&lines, drive, &delimiter);
+        assert_eq!(
+            asks.len(),
+            2,
+            "the settle arm and the injector arm must EACH ask the delimiter, in {}-{}; found \
+             {:?} (1-based)",
+            drive.0 + 1,
+            drive.1 + 1,
+            asks.iter().map(|i| i + 1).collect::<Vec<_>>()
+        );
+        let advances = engine_code_hits(&lines, drive, "frames_this_cycle += 1");
+        assert_eq!(
+            advances.len(),
+            2,
+            "…and each of those two arms must ADVANCE the counter first, else one arm asks a \
+             question the other's bookkeeping answers; found {:?} (1-based)",
+            advances.iter().map(|i| i + 1).collect::<Vec<_>>()
+        );
+        let raw = engine_code_hits(&lines, drive, "frames_this_cycle >=");
+        assert!(
+            raw.is_empty(),
+            "the comparison itself lives in the authority and NOWHERE in this extent — an \
+             inlined copy is the second place to get `>=` and the `None` arm wrong; found \
+             {:?} (1-based)",
+            raw.iter().map(|i| i + 1).collect::<Vec<_>>()
+        );
+
+        // POSITIVE CONTROL against a dead grep, same extractor and same filter: one token
+        // known present in this extent, one known absent. The `raw.is_empty()` assertion above
+        // is a ZERO census and needs an instrument proven able to return non-zero.
+        assert!(
+            !engine_code_hits(&lines, drive, "frames_this_cycle").is_empty(),
+            "the instrument must be able to find a token that IS there"
+        );
+        assert!(
+            engine_code_hits(&lines, drive, "certified_period_touch").is_empty(),
+            "…and must not find one that is not"
+        );
     }
 }
