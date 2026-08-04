@@ -293,11 +293,21 @@ mod verdict_memo {
                     .and_then(|p| crate::game::engine::entry_publishes_pin_slots(frame, entry, p));
                 let primary =
                     super::stack_entry_resolution_choice_freedom(frame, entry, &mut self.budget);
-                let residual = match published.as_ref().and_then(|p| p.may.as_ref()) {
-                    Some(_) => {
-                        super::optional_cleared_classification(frame, entry, &mut self.budget)
-                    }
-                    None => None,
+                // TWO bases need the optional-cleared re-classification, and they are
+                // MUTUALLY EXCLUSIVE by construction: `entry_publishes_pin_slots` guard (b)
+                // withholds the `may` slot exactly when a stored auto-choice already answers
+                // the CR 603.5 gate, so an auto-answered entry publishes NOTHING and would
+                // otherwise carry `residual: None` — the structural reason gate (6) could not
+                // relieve it. Computing the residual on the auto basis too is what makes
+                // `auto_may_choice_relief` able to read the same memo the pin relief reads.
+                let residual = if published.as_ref().and_then(|p| p.may.as_ref()).is_some()
+                    || matches!(
+                        super::auto_may_answer_for(frame, entry),
+                        Some(crate::types::game_state::AutoMayChoice::Accept)
+                    ) {
+                    super::optional_cleared_classification(frame, entry, &mut self.budget)
+                } else {
+                    None
                 };
                 self.memo.insert(
                     key,
@@ -1994,6 +2004,70 @@ fn pinned_may_choice_relief(
     }
 }
 
+/// CR 603.5: is this entry's optional trigger ALREADY ANSWERED by a stored "don't ask
+/// again" auto-choice — and with which answer?
+///
+/// ADOPTION C. This used to re-derive the CR 603.5 gate's conjunct set here, which made it a
+/// THIRD copy: it asked the three repeat-shape predicates and the recipient authority
+/// directly, and — measured — it OMITTED both `optional_for` and the feasibility probe, so it
+/// called a may "answered" on two ability shapes where the gate never reads the store at all.
+/// It now delegates the whole question to `effects::stored_may_answer`, the consumer half of
+/// the one authority `resolve_chain_body`'s own branch and the mint's guard (b) both take.
+///
+/// NOT keyed to the proposer, and that survives the adoption: the gate asks whoever
+/// `optional_prompt_player` names, and a stored answer specifies that choice regardless of
+/// whose it is — a per-iteration window that never opens is specified for every seat at once
+/// (CR 732.2a).
+///
+/// `None` ⇒ no up-front gate opens, or it will PROMPT, or the ability carries no
+/// `may_trigger_origin` for a preference to key on. All are unspecified windows, which is the
+/// fail-closed direction.
+fn auto_may_answer_for(
+    frame: &GameState,
+    entry: &StackEntry,
+) -> Option<crate::types::game_state::AutoMayChoice> {
+    let StackEntryKind::TriggeredAbility { ability, .. } = &entry.kind else {
+        return None;
+    };
+    crate::game::effects::stored_may_answer(frame, ability)
+}
+
+/// CR 732.2a + CR 603.5: relief basis ONE for gate (6)'s `MayPrompt` — the may this entry
+/// announces is answered by a stored auto-choice, so the shortcut opens no window there.
+///
+/// The SIBLING of [`pinned_may_choice_relief`] and deliberately its identical shape: both
+/// discharge exactly the `ability.optional` axis and both hand back the SAME
+/// optional-cleared residual for the caller to go on gating, because a specified `may`
+/// says nothing about the CR 616.1 replacement surface of the events it then proposes.
+/// The five OTHER reasons `ability_resolution_choice_freedom` returns `MayPrompt` — an
+/// `unless_pay`, a resolution-time target chooser, a modal header, a controller-choice
+/// repeat, a CR 701.34a proliferate sub-ability — keep returning `MayPrompt` as the
+/// residual and get no relief here, exactly as they get none from a pin.
+///
+/// ONLY `Accept` IS RELIEVED, and the asymmetry is not caution — it is what the residual
+/// MEANS. `optional_cleared_classification` re-classifies the ability as if it RESOLVED
+/// with its gate discharged, which is what a stored `Accept` produces. A stored `Decline`
+/// is equally prompt-free but produces the opposite board, so that residual would be a
+/// claim about events the shortcut never proposes. (It also cannot arise in a certified
+/// period: a declined `may` contributes none of the per-cycle delta the ring recurrence
+/// was built from.)
+fn auto_may_choice_relief(
+    frame: &GameState,
+    f: FrameIx,
+    entry: &StackEntry,
+    verdicts: &mut PeriodVerdicts<'_>,
+) -> Option<crate::game::resolution_prompt::ResolutionChoiceFreedom> {
+    use crate::game::resolution_prompt::ResolutionChoiceFreedom;
+    use crate::types::game_state::AutoMayChoice;
+    if !matches!(auto_may_answer_for(frame, entry)?, AutoMayChoice::Accept) {
+        return None;
+    }
+    match verdicts.verdict(f, entry).residual.as_ref()? {
+        ResolutionChoiceFreedom::MayPrompt => None,
+        residual @ ResolutionChoiceFreedom::FreeUnlessReplacements(_) => Some(residual.clone()),
+    }
+}
+
 /// Karp–Miller-style ω-acceleration (Karp–Miller 1969; Finkel et al. 2021), sound
 /// GIVEN the in-loop transition relation — the WHOLE beat: top-of-stack resolution
 /// (CR 608.1) with its resolution-time payments (CR 605.3a / CR 608.2g), trigger
@@ -2143,7 +2217,16 @@ pub(crate) fn stack_choices_are_all_specified<'a>(
         let primary = verdicts.verdict(f, entry).primary.clone();
         let verdict = match primary {
             crate::game::resolution_prompt::ResolutionChoiceFreedom::MayPrompt => {
-                match pinned_may_choice_relief(f, entry, verdicts, scope) {
+                // CR 603.5: TWO bases can specify a `may`, and they are mutually exclusive
+                // by construction — the mint's guard (b) publishes a `MayChoice` slot only
+                // for a may that has NO stored auto-choice, and withholds it for one that
+                // does. Asking the auto basis first is therefore an ordering of disjoint
+                // cases, not a precedence. An auto-answered may is the MOST determined a
+                // per-iteration choice can be; reading its slotless mint as "unspecified"
+                // was the defect.
+                let relief = auto_may_choice_relief(frame, f, entry, verdicts)
+                    .or_else(|| pinned_may_choice_relief(f, entry, verdicts, scope));
+                match relief {
                     Some(residual) => residual,
                     None => return false,
                 }
@@ -16162,6 +16245,419 @@ mod tests {
             (1, Some(PeriodCertification::BoardEqualOnly)),
             "(b) ATTRIBUTION: the refusal is step (6)'s on the announced pair — certification \
              matched and conjunct (6) ran exactly once — not an earlier conjunct's"
+        );
+    }
+
+    // ───────────────────────────────────────────────────────────────────────────────────
+    // F2 / N0 / A5 — one CR 603.5 authority, its two consumers, and the stored answer.
+    // ───────────────────────────────────────────────────────────────────────────────────
+
+    /// A5 / N0 — **A STORED `Accept` RELIEVES GATE (6). A STORED `Decline` DOES NOT.**
+    ///
+    /// CR 603.5 + CR 732.2a. The matched pair `r27_b` is one field short of: same board, same
+    /// key, ONE value different. It is the whole content of the auto-choice relief basis, and
+    /// it is the arm the user's own MODE1 board rides on — that capture carries a stored
+    /// "always take", so guard (b) withholds the pin slot and the ONLY thing that can specify
+    /// the window is this relief.
+    ///
+    /// | stored | pin published | gate (6) | offer |
+    /// |---|---|---|---|
+    /// | `Accept` | NO (guard (b) withholds it) | relieved by the AUTO basis | **OFFERS** |
+    /// | `Decline` | NO (same withholding) | not relieved | **`UnspecifiedChoiceWindow`** |
+    ///
+    /// THE ASYMMETRY IS NOT CAUTION, it is what the residual MEANS.
+    /// `optional_cleared_classification` re-classifies the ability as if it RESOLVED with its
+    /// gate discharged, which is what a stored `Accept` produces. A stored `Decline` is equally
+    /// prompt-free but produces the OPPOSITE board, so relieving it would hand the certificate
+    /// a claim about events the shortcut never proposes.
+    ///
+    /// The `Accept` arm is also the anti-vacuity control for the `Decline` arm: without it
+    /// "Decline refuses" is indistinguishable from a relief that never fires at all.
+    ///
+    /// REVERT-PROBE: delete the `auto_may_choice_relief` disjunct from gate (6) ⇒ the `Accept`
+    /// arm stops offering ⇒ FLIPS. TRIVIALIZE-PROBE: relieve on ANY stored answer (drop the
+    /// `matches!(.., Accept)` conjunct) ⇒ the `Decline` arm starts offering ⇒ FLIPS.
+    #[test]
+    fn a5_a_stored_accept_relieves_gate_six_and_a_stored_decline_does_not() {
+        use crate::game::engine::{
+            entry_publishes_pin_slots, try_offer_bounded_cycle_shortcut_metered,
+            BoundedOfferRefusal, ProbeCap,
+        };
+        use crate::types::ability::{
+            Effect, QuantityExpr, ResolvedAbility, TargetFilter, TriggerBaseSetInstanceRef,
+            TriggerDefinitionOccurrenceRef, TriggerDefinitionRef,
+        };
+        use crate::types::game_state::{AutoMayChoice, MayTriggerAutoChoiceKey, MayTriggerOrigin};
+        use crate::types::identifiers::ObjectIncarnationRef;
+
+        const SRC: ObjectId = ObjectId(940);
+        const ENTRY: u64 = 954;
+        let origin = MayTriggerOrigin::Definition {
+            definition_ref: TriggerDefinitionRef {
+                source: ObjectIncarnationRef::of(SRC, 3),
+                occurrence: TriggerDefinitionOccurrenceRef::Printed {
+                    base_set: TriggerBaseSetInstanceRef::INITIAL,
+                    printed_index: 0,
+                },
+            },
+        };
+        let key = MayTriggerAutoChoiceKey {
+            player: PlayerId(0),
+            source_id: SRC,
+            origin: origin.clone(),
+        };
+        let announce = {
+            let origin = origin.clone();
+            move |frame: &mut GameState| {
+                let mut ability = ResolvedAbility::new(
+                    Effect::Draw {
+                        count: QuantityExpr::Fixed { value: 1 },
+                        target: TargetFilter::Controller,
+                    },
+                    vec![],
+                    SRC,
+                    PlayerId(0),
+                );
+                ability.optional = true;
+                ability.may_trigger_origin = Some(origin.clone());
+                frame
+                    .stack
+                    .push_back(announced_trigger_entry(ENTRY, SRC, ability, None));
+            }
+        };
+        let board = |stored: AutoMayChoice| {
+            let key = key.clone();
+            ring_announcing_on_its_newest_sample(
+                move |s| {
+                    announcing_ring_source(s, SRC.0);
+                    s.set_may_trigger_auto_choice(key.clone(), stored);
+                },
+                announce.clone(),
+            )
+        };
+
+        for stored in [AutoMayChoice::Accept, AutoMayChoice::Decline] {
+            let state = board(stored);
+            let frame = announced_from_retained_sample(&state, ENTRY);
+            // REACH-GUARD, on BOTH arms: the record is readable on the CARRYING frame under
+            // the key the authority builds, and guard (b) therefore withholds the pin. Without
+            // this the `Accept` arm could be offering through the ORDINARY pin basis, which
+            // would make the whole row about something else.
+            assert_eq!(
+                frame.may_trigger_auto_choice(&key),
+                Some(stored),
+                "REACH-GUARD [{stored:?}]: the stored answer must be readable on the carrying \
+                 frame, not only on `current`"
+            );
+            let entry = frame.stack.back().expect("the announced entry").clone();
+            assert!(
+                entry_publishes_pin_slots(frame, &entry, PlayerId(0))
+                    .is_none_or(|slots| slots.may.is_none()),
+                "REACH-GUARD [{stored:?}]: guard (b) must WITHHOLD the `MayChoice` slot for an \
+                 already-answered gate, so the auto basis is the only thing that can specify \
+                 this window"
+            );
+
+            let (outcome, meter) =
+                try_offer_bounded_cycle_shortcut_metered(&state, false, ProbeCap::Shipped);
+            match stored {
+                AutoMayChoice::Accept => assert!(
+                    outcome.is_ok(),
+                    "CR 603.5: a stored `Accept` makes the per-iteration window the MOST \
+                     determined a choice can be — it never opens — so gate (6) is specified \
+                     and the offer stands. got {outcome:?}, meter {meter:?}"
+                ),
+                AutoMayChoice::Decline => assert_eq!(
+                    outcome,
+                    Err(BoundedOfferRefusal::UnspecifiedChoiceWindow),
+                    "CR 732.2a: a stored `Decline` is equally prompt-free but produces the \
+                     OPPOSITE board, so the optional-cleared residual would describe events \
+                     the shortcut never proposes. Fail closed. meter {meter:?}"
+                ),
+            }
+        }
+    }
+
+    /// F2a — **ONE AUTHORITY, AND THE TWO ABILITY SHAPES THE THIRD COPY GOT WRONG.**
+    ///
+    /// CR 603.5 + CR 608.2d + CR 101.4. Before adoption, three places answered *"does this
+    /// ability open one up-front optional gate?"*: production's own branch in
+    /// `resolve_chain_body`, the mint's guard (b), and this module's `auto_may_answer_for`.
+    /// The latter two asked the same four predicates and OMITTED two conjuncts production has
+    /// — `optional_for` and the CR 608.2d feasibility probe — so on two ability shapes they
+    /// called a may "already answered" where production never reads the store at all.
+    ///
+    /// This row is that divergence, asserted at the authority. Every arm seeds a stored
+    /// `Accept` under exactly the key the old copy would have built, so an omitted conjunct
+    /// shows up as a WRONG ANSWER rather than as an absent one.
+    ///
+    /// | arm | one field different | gate | `stored_may_answer` |
+    /// |---|---|---|---|
+    /// | (P) plain optional | — | `Some` | `Some(Accept)` |
+    /// | (O) `optional_for: AnyOpponent` | CR 608.2d fan-out | `None` | **`None`** |
+    /// | (I) infeasible `RemoveCounter` | zero matching counters | `None` | **`None`** |
+    /// | (I-pos) the SAME `RemoveCounter`, feasible | one counter on the source | `Some` | `Some(Accept)` |
+    ///
+    /// (I-pos) is what keys (I) to FEASIBILITY rather than to the effect discriminant: the two
+    /// boards differ only in whether the source carries a `+1/+1` counter. (P) is the paired
+    /// positive for (O).
+    ///
+    /// It is also the row that EXERCISES `OptionalFeasibility::Probe` on both of its outcomes
+    /// — `stored_may_answer` passes `Probe`, so (I) and (I-pos) run the real probe and take
+    /// opposite branches. Without them the variant would be constructed but never decisive.
+    ///
+    /// REVERT-PROBE: delete `optional_for.is_some() ⇒ None` from the authority ⇒ (O) FLIPS.
+    /// Delete the feasibility conjunct ⇒ (I) FLIPS. Neither touches (P) or (I-pos).
+    #[test]
+    fn f2a_the_upfront_gate_authority_answers_the_two_shapes_the_third_copy_omitted() {
+        use crate::game::effects::{stored_may_answer, upfront_optional_gate, OptionalFeasibility};
+        use crate::types::ability::{
+            Effect, OpponentMayScope, QuantityExpr, ResolvedAbility, TargetFilter,
+            TriggerBaseSetInstanceRef, TriggerDefinitionOccurrenceRef, TriggerDefinitionRef,
+        };
+        use crate::types::counter::CounterType;
+        use crate::types::game_state::{AutoMayChoice, MayTriggerAutoChoiceKey, MayTriggerOrigin};
+        use crate::types::identifiers::ObjectIncarnationRef;
+
+        let src = ObjectId(CHURN_SRC);
+        let origin = MayTriggerOrigin::Definition {
+            definition_ref: TriggerDefinitionRef {
+                source: ObjectIncarnationRef::of(src, 0),
+                occurrence: TriggerDefinitionOccurrenceRef::Printed {
+                    base_set: TriggerBaseSetInstanceRef::INITIAL,
+                    printed_index: 0,
+                },
+            },
+        };
+        // The key the OLD copy built: `optional_prompt_player` (P0 here) + source + origin.
+        // Seeded on every arm, so an omitted conjunct is a wrong answer and not a missing one.
+        let key = MayTriggerAutoChoiceKey {
+            player: PlayerId(0),
+            source_id: src,
+            origin: origin.clone(),
+        };
+        let board = |counters: u32| {
+            let mut state = drain_state(4);
+            state.set_may_trigger_auto_choice(key.clone(), AutoMayChoice::Accept);
+            if counters > 0 {
+                state
+                    .objects
+                    .get_mut(&src)
+                    .expect("drain_state seats the churn source")
+                    .counters
+                    .insert(CounterType::Plus1Plus1, counters);
+            }
+            state
+        };
+        let optional_ability = |effect: Effect| {
+            let mut ability = ResolvedAbility::new(effect, vec![], src, PlayerId(0));
+            ability.optional = true;
+            ability.may_trigger_origin = Some(origin.clone());
+            ability
+        };
+        let draw = || {
+            optional_ability(Effect::Draw {
+                count: QuantityExpr::Fixed { value: 1 },
+                target: TargetFilter::Controller,
+            })
+        };
+        let remove_counter = || {
+            // `SelfRef` is CR 608.2c's printed-name anaphor: it resolves to the source
+            // object, so the feasibility probe reads THAT object's counters and the two
+            // boards below differ in exactly one field.
+            optional_ability(Effect::RemoveCounter {
+                counter_type: Some(CounterType::Plus1Plus1),
+                count: QuantityExpr::Fixed { value: 1 },
+                target: TargetFilter::SelfRef,
+            })
+        };
+
+        let plain = board(0);
+        assert!(
+            upfront_optional_gate(&plain, &draw(), OptionalFeasibility::Probe).is_some(),
+            "(P) MATCHED POSITIVE, asserted first: a plain optional ability DOES open one \
+             up-front gate. Without it every `None` below could be a broken authority"
+        );
+        assert_eq!(
+            stored_may_answer(&plain, &draw()),
+            Some(AutoMayChoice::Accept),
+            "(P) …and the stored preference answers it"
+        );
+
+        let mut fanned = draw();
+        fanned.optional_for = Some(OpponentMayScope::AnyOpponent);
+        assert!(
+            upfront_optional_gate(&plain, &fanned, OptionalFeasibility::Probe).is_none(),
+            "(O) CR 608.2d + CR 101.4: an `optional_for` ability opens an APNAP CASCADE of up \
+             to one window PER LIVING PLAYER, not one up-front gate — production returns at \
+             the fan-out before the gate is reached at all"
+        );
+        assert_eq!(
+            stored_may_answer(&plain, &fanned),
+            None,
+            "(O) THE DIVERGENCE: the store holds an `Accept` under exactly the key the third \
+             copy built, and the answer is still `None`, because the gate that preference \
+             would answer never opens"
+        );
+
+        assert!(
+            upfront_optional_gate(&plain, &remove_counter(), OptionalFeasibility::Probe).is_none(),
+            "(I) CR 608.2d: \"a player can't choose an impossible option\" — with zero matching \
+             counters the optional removal opens no window"
+        );
+        assert_eq!(
+            stored_may_answer(&plain, &remove_counter()),
+            None,
+            "(I) THE SECOND DIVERGENCE, on the same seeded store"
+        );
+
+        let stocked = board(1);
+        assert!(
+            upfront_optional_gate(&stocked, &remove_counter(), OptionalFeasibility::Probe)
+                .is_some(),
+            "(I-pos) THE FEASIBILITY CONTROL: the SAME ability on a board one counter \
+             different DOES open its gate. This is what keys (I) to feasibility rather than \
+             to the effect discriminant — and it is the arm that proves \
+             `OptionalFeasibility::Probe` reaches a decision, not merely a construction"
+        );
+        assert_eq!(
+            stored_may_answer(&stocked, &remove_counter()),
+            Some(AutoMayChoice::Accept),
+            "(I-pos) …and the same stored preference now answers it"
+        );
+
+        // `Known` is the mode production uses, and it must OVERRIDE the probe rather than
+        // re-run it — otherwise adoption A would pay the clone twice on every resolve.
+        assert!(
+            upfront_optional_gate(&stocked, &remove_counter(), OptionalFeasibility::Known(true))
+                .is_none(),
+            "`Known(true)` suppresses the gate on a board the probe would call FEASIBLE, so \
+             the caller's already-computed answer is what is used"
+        );
+        assert!(
+            upfront_optional_gate(&plain, &remove_counter(), OptionalFeasibility::Known(false))
+                .is_some(),
+            "…and `Known(false)` admits it on a board the probe would call INFEASIBLE. The \
+             pair proves the probe is not re-run under `Known`"
+        );
+    }
+
+    /// F2b — **GUARD (b) WITHHOLDS A PIN THE CR 603.5 GATE CAN NEVER SPEND.**
+    ///
+    /// CR 732.2a + CR 608.2d. The mint publishes a `MayChoice` slot so a declaration can pin
+    /// the ONE up-front window an entry opens. Before adoption it minted that slot for two
+    /// shapes that open no such window: an `optional_for` fan-out (an APNAP cascade of up to
+    /// one window per living player — one slot standing for N prompts is exactly the
+    /// cardinality defect group (c) already argues against) and an infeasible optional (a pin
+    /// the gate can never spend, invisible even to a fail-closed inject arm).
+    ///
+    /// THE FIXTURE IS UNSEEDED ON PURPOSE. Every arm carries `may_trigger_origin: None`, so
+    /// guard (b)'s store conjunct is vacuously true on both the old predicate and the new one
+    /// and the ONLY thing that can move `may` is `optional_for` / feasibility. A SEEDED variant
+    /// is explicitly rejected: a stored answer makes the store conjunct false on every arm,
+    /// `may` is `None` for the stored-answer reason throughout, and the axis under test cannot
+    /// move at all.
+    ///
+    /// | arm | one field different | published `may` |
+    /// |---|---|---|
+    /// | (P) plain optional drain | — | **`Some`** |
+    /// | (O) `optional_for: AnyOpponent` | CR 608.2d fan-out | **`None`** |
+    /// | (I) infeasible optional `RemoveCounter` | zero matching counters | **`None`** |
+    /// | (I-pos) the SAME entry, feasible | one counter on the source | **`Some`** |
+    ///
+    /// Direction: strictly FEWER offers, never more.
+    ///
+    /// REVERT-PROBE: delete `optional_for.is_some() ⇒ None` from the authority ⇒ (O) publishes
+    /// ⇒ FLIPS. Delete the feasibility conjunct ⇒ (I) publishes ⇒ FLIPS. (P) and (I-pos) are
+    /// the paired positives that keep both negatives out of "the mint publishes nothing".
+    #[test]
+    fn f2b_guard_b_withholds_a_pin_the_cr_603_5_gate_can_never_spend() {
+        use crate::game::engine::entry_publishes_pin_slots;
+        use crate::types::ability::{
+            Effect, OpponentMayScope, QuantityExpr, ResolvedAbility, TargetFilter,
+        };
+        use crate::types::counter::CounterType;
+
+        let src = ObjectId(CHURN_SRC);
+        let board = |counters: u32| {
+            let mut state = drain_state(4);
+            if counters > 0 {
+                state
+                    .objects
+                    .get_mut(&src)
+                    .expect("drain_state seats the churn source")
+                    .counters
+                    .insert(CounterType::Plus1Plus1, counters);
+            }
+            state
+        };
+        let published_may = |state: &GameState, entry: &StackEntry| -> bool {
+            // REACH-GUARD baked into the reader: the entry must carry NO stored preference, so
+            // guard (b)'s store conjunct cannot be what moves the answer.
+            assert!(
+                entry
+                    .ability()
+                    .is_some_and(|a| a.may_trigger_origin.is_none()),
+                "UNSEEDED FIXTURE: an arm with a `may_trigger_origin` could be answered by the \
+                 store conjunct and the axis under test would be dominated"
+            );
+            entry_publishes_pin_slots(state, entry, PlayerId(0))
+                .is_some_and(|slots| slots.may.is_some())
+        };
+
+        let plain = board(0);
+        let p_entry = optional_drain(20);
+        assert!(
+            published_may(&plain, &p_entry),
+            "(P) MATCHED POSITIVE, asserted first: a plain optional drain publishes its \
+             CR 603.5 gate. Without it every withholding below is indistinguishable from a \
+             mint that publishes nothing"
+        );
+
+        let o_entry = {
+            let mut ability = p_entry
+                .ability()
+                .expect("the drain is a triggered ability")
+                .clone();
+            ability.optional_for = Some(OpponentMayScope::AnyOpponent);
+            churn_entry(21, 0, ability, None)
+        };
+        assert!(
+            !published_may(&plain, &o_entry),
+            "(O) CR 608.2d + CR 101.4 + CR 732.2a: a fan-out `may` is not ONE window — it is \
+             an APNAP cascade of up to one window per living player, and a shortcut must \
+             describe THE sequence of choices. One published slot cannot stand for N prompts"
+        );
+
+        let remove_counter_entry = |id: u64| {
+            // Shape (B), may-only: no declared target, so `build_target_slots` surfaces
+            // nothing and the entry publishes its CR 603.5 gate alone.
+            let mut ability = ResolvedAbility::new(
+                Effect::RemoveCounter {
+                    // CR 608.2c `SelfRef`: the probe reads the SOURCE's counters, which is
+                    // the one field (I) and (I-pos) differ in.
+                    counter_type: Some(CounterType::Plus1Plus1),
+                    count: QuantityExpr::Fixed { value: 1 },
+                    target: TargetFilter::SelfRef,
+                },
+                vec![],
+                src,
+                PlayerId(0),
+            );
+            ability.optional = true;
+            churn_entry(id, 0, ability, None)
+        };
+        assert!(
+            !published_may(&plain, &remove_counter_entry(22)),
+            "(I) CR 608.2d: an infeasible optional opens no window at all, so a slot minted \
+             for it is a pin the gate can never spend — invisible even to a fail-closed \
+             inject arm, which is why the mint has to refuse it here"
+        );
+        assert!(
+            published_may(&board(1), &remove_counter_entry(23)),
+            "(I-pos) THE FEASIBILITY CONTROL: the byte-identical entry on a board one counter \
+             different DOES publish. (I) is therefore about feasibility and not about the \
+             effect discriminant or the shape-(B) route"
         );
     }
 

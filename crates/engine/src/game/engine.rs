@@ -2594,7 +2594,11 @@ pub(crate) fn entry_publishes_pin_slots(
     // it does NOT bound who the resolver ASKS, nor WHETHER it asks, nor HOW MANY TIMES.
     // Three mint-time conjunct groups, all FAIL-CLOSED pre-filters on the ONE gate a
     // `MayChoice` pin is for — the CR 603.5 gate inside `resolve_chain_body`
-    // (`effects/mod.rs`, the `if ability.optional && !has_kind_driven_repeat(..)` block).
+    // (`effects/mod.rs`). ⚠ GROUPS (a) AND (c) ARE NO LONGER RESTATED HERE: they, plus the
+    // `optional_for` and feasibility conjuncts this mint used to OMIT, now live in
+    // `effects::upfront_optional_gate`, which is the same function production's own branch
+    // takes. The prose below stays because it records WHY each group is load-bearing; the
+    // code below asks the authority for all of them at once.
     // THIS IS THE ONE PLACE `may` IS MINTED, so the guards cover shape (A) and shape (B)
     // together rather than being restated per shape. Soundness over the OTHER FOUR
     // production producers of `WaitingFor::OptionalEffectChoice` is NOT claimed here; it is
@@ -2621,21 +2625,31 @@ pub(crate) fn entry_publishes_pin_slots(
     //     `Draw` / `Token` of that shape would otherwise mint ONE slot for N prompts. Ask
     //     production's own three predicates rather than re-deriving them here, which is
     //     the same authority-sharing rule (a) follows.
-    let may = (ability.optional
-        && crate::game::effects::optional_prompt_player(state, ability) == proposer
-        && !crate::game::effects::has_kind_driven_repeat(ability)
-        && !crate::game::effects::has_member_driven_repeat_after_hydration(state, ability)
-        && !crate::game::effects::is_repeated_optional_payment(ability)
-        && ability.may_trigger_origin.as_ref().is_none_or(|origin| {
-            state
-                .may_trigger_auto_choice(&crate::types::game_state::MayTriggerAutoChoiceKey {
-                    player: proposer,
-                    source_id: ability.source_id,
-                    origin: origin.clone(),
-                })
-                .is_none()
-        }))
-    .then(|| DecisionSlot {
+    // ADOPTION B. All four groups are `effects::upfront_optional_gate`'s, asked of the ONE
+    // function `resolve_chain_body`'s own branch is, so the mint and the gate cannot drift.
+    // `Probe` is the right feasibility mode here for two reasons: this caller has NOT run the
+    // probe (production's `Known` value belongs to a resolve that is not happening yet), and
+    // the authority evaluates it LAST, so the clone-bearing `CastFromZone` arm is reached only
+    // for `optional ∧ ¬optional_for ∧ ¬repeat` entries.
+    //
+    // BEHAVIOUR CHANGE, and it is rules-correct in the fail-closed direction: this now
+    // withholds the slot for an `optional_for` ability (CR 608.2d + CR 101.4 — a fan-out is an
+    // APNAP cascade of up to one window PER LIVING PLAYER, and one published slot standing for
+    // N prompts is the cardinality defect group (c) already argues against) and for an
+    // infeasible optional (which opens no window at all, so a slot for it is a pin the gate
+    // can never spend). Direction: strictly FEWER offers, never more.
+    let may = crate::game::effects::upfront_optional_gate(
+        state,
+        ability,
+        crate::game::effects::OptionalFeasibility::Probe,
+    )
+    .filter(|gate| gate.prompt_player == proposer)
+    .filter(|gate| {
+        gate.key
+            .as_ref()
+            .is_none_or(|key| state.may_trigger_auto_choice(key).is_none())
+    })
+    .map(|_| DecisionSlot {
         source: source.clone(),
         index: 1,
     });
@@ -17511,6 +17525,187 @@ mod bounded_offer_conjunct_tests {
         assert!(
             engine_code_hits(&lines, drive, "certified_period_touch").is_empty(),
             "…and must not find one that is not"
+        );
+    }
+
+    /// F2c — **NO FOURTH COPY OF THE CR 603.5 CONJUNCT SET IS BUILT OUT OF THESE FIVE
+    /// PREDICATES, AND EVERY SURVIVING PRODUCTION CALLER IS INSIDE `game/effects/`.**
+    ///
+    /// CR 603.5 + CR 608.2c + CR 608.2d + CR 603.12a. Three places used to answer *"does this
+    /// ability open ONE up-front optional gate?"* — production's own branch, the mint's guard
+    /// (b), and `analysis::resource::auto_may_answer_for` — and the latter two omitted
+    /// conjuncts the first has. After adoption, `effects::upfront_optional_gate` is the only
+    /// place the set is assembled, and the census is what keeps it that way.
+    ///
+    /// MEASURED counts, not derived ones. The plan's derivation predicted `2 / 2 / 2 / 1 / 2`
+    /// and the tree measures `2 / 2 / 2 / 1 / 2`; if these ever disagree the MEASURED value is
+    /// what belongs here.
+    ///
+    /// | predicate | production sites | where |
+    /// |---|---|---|
+    /// | `has_kind_driven_repeat` | 2 | `upfront_optional_gate` + `repeat_for_outermost_with_scope_or_unless` |
+    /// | `has_member_driven_repeat_after_hydration` | 2 | `upfront_optional_gate` + `resolve_chain_body`'s driver guard |
+    /// | `is_repeated_optional_payment` | 2 | `upfront_optional_gate` + `resolve_chain_body`'s driver dispatch |
+    /// | `optional_prompt_player` | 1 | `upfront_optional_gate` only |
+    /// | `optional_effect_is_infeasible` | 2 | `upfront_optional_gate` + `resolve_chain_body`'s `CastFromZone` decline |
+    ///
+    /// **THE THREE NON-AUTHORITY SITES ARE NOT COPIES, AND FOLDING THEM IN WOULD BE WRONG.**
+    /// They consume these predicates to decide WHICH DRIVER RUNS — whether a counted repeat
+    /// has to wrap scoped/unless-pay instructions (CR 608.2c), which repeat driver takes the
+    /// ability, and the CR 603.12a repeated-payment dispatch that fires *because* the up-front
+    /// gate suppressed itself. That is a different question from "does one up-front window
+    /// open", and it is asked after the gate has already declined.
+    ///
+    /// **HONEST GUARANTEE.** This enforces that no fourth copy is built OUT OF THESE FIVE
+    /// PREDICATES. A copy that re-derives the same conjunct from `ability.repeat_for` (or from
+    /// `optional_for`, or from the effect discriminant) inline is NOT caught, and no census
+    /// over these five tokens can catch it — `has_kind_driven_repeat` is itself exactly such a
+    /// re-derivation.
+    ///
+    /// The zero-outside-`game/effects/` assertion carries its own POSITIVE CONTROL, because a
+    /// zero census with a dead instrument is indistinguishable from a passing one.
+    ///
+    /// REVERT-PROBE: re-introduce any one predicate call in `analysis/resource.rs` or in
+    /// `entry_publishes_pin_slots` ⇒ that predicate's count rises AND the outside-set becomes
+    /// non-empty ⇒ FLIPS on two independent assertions.
+    #[test]
+    fn f2c_the_cr_603_5_conjunct_set_has_one_production_assembler() {
+        /// Every `.rs` under the crate's `src`. A whole file whose stem ends `_tests` is
+        /// test-only (its parent declares it under `#[cfg(test)]`).
+        fn rs_files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+            for entry in std::fs::read_dir(dir).expect("readable source dir") {
+                let path = entry.expect("readable dir entry").path();
+                if path.is_dir() {
+                    rs_files(&path, out);
+                } else if path.extension().is_some_and(|e| e == "rs") {
+                    out.push(path);
+                }
+            }
+        }
+        /// The `#[cfg(test)]`-attributed column-0 `mod … {` … column-0 `}` spans, so the
+        /// census cannot count its own harness. Same shape as the CR 603.5 prompt census.
+        fn cfg_test_spans(lines: &[&str]) -> Vec<(usize, usize)> {
+            let mut spans = Vec::new();
+            let mut i = 0;
+            while i < lines.len() {
+                if lines[i].trim() == "#[cfg(test)]" {
+                    let mut j = i + 1;
+                    while j < lines.len()
+                        && (lines[j].trim_start().starts_with("#[") || lines[j].trim().is_empty())
+                    {
+                        j += 1;
+                    }
+                    let is_mod = j < lines.len()
+                        && lines[j].starts_with(['m', 'p'])
+                        && lines[j].contains("mod ")
+                        && lines[j].trim_end().ends_with('{');
+                    if is_mod {
+                        let mut k = j + 1;
+                        while k < lines.len() && lines[k] != "}" {
+                            k += 1;
+                        }
+                        spans.push((j, k));
+                        i = k;
+                    }
+                }
+                i += 1;
+            }
+            spans
+        }
+
+        // ASSEMBLED needles, so this row's own source cannot be counted by its own instrument.
+        let predicates: [(String, usize); 5] = [
+            (format!("has_kind_driven{}repeat(", '_'), 2),
+            (format!("has_member_driven_repeat_after{}hydration(", '_'), 2),
+            (format!("is_repeated_optional{}payment(", '_'), 2),
+            (format!("optional_prompt{}player(", '_'), 1),
+            (format!("optional_effect_is{}infeasible(", '_'), 2),
+        ];
+
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut files = Vec::new();
+        rs_files(&root, &mut files);
+        files.sort();
+        assert!(files.len() > 100, "reach-guard: the walker found the crate");
+
+        let mut sites: Vec<(usize, String)> = Vec::new();
+        let mut control_hits = 0usize;
+        for path in &files {
+            let text = std::fs::read_to_string(path).expect("readable source file");
+            let lines: Vec<&str> = text.lines().collect();
+            let spans = cfg_test_spans(&lines);
+            let rel = path
+                .strip_prefix(&root)
+                .expect("under src")
+                .display()
+                .to_string();
+            let test_file = rel.trim_end_matches(".rs").ends_with("_tests");
+            for (n, line) in lines.iter().enumerate() {
+                if line.trim_start().starts_with("//") {
+                    continue;
+                }
+                if test_file || spans.iter().any(|(a, b)| (*a..=*b).contains(&n)) {
+                    continue;
+                }
+                // POSITIVE CONTROL for the zero census below: a token that IS present in
+                // production, counted by this very walker under this very filter.
+                if line.contains("fn resolve_chain_body(") {
+                    control_hits += 1;
+                }
+                for (i, (needle, _)) in predicates.iter().enumerate() {
+                    // The DEFINITION is not a call site.
+                    if line.contains(needle) && !line.contains(&format!("fn {needle}")) {
+                        sites.push((i, format!("{rel}:{}", n + 1)));
+                    }
+                }
+            }
+        }
+
+        assert_eq!(
+            control_hits, 1,
+            "POSITIVE CONTROL: the walker+filter must find `fn resolve_chain_body(` exactly \
+             once in production source. A zero below is only meaningful with a live instrument"
+        );
+
+        let counted: Vec<(String, usize)> = predicates
+            .iter()
+            .enumerate()
+            .map(|(i, (needle, _))| {
+                (
+                    needle.clone(),
+                    sites.iter().filter(|(j, _)| *j == i).count(),
+                )
+            })
+            .collect();
+        let expected: Vec<(String, usize)> = predicates
+            .iter()
+            .map(|(needle, want)| (needle.clone(), *want))
+            .collect();
+        assert_eq!(
+            counted,
+            expected,
+            "the CR 603.5 conjunct set gained or lost a production consumer. The surviving \
+             non-authority sites are `repeat_for_outermost_with_scope_or_unless` (does a \
+             counted repeat wrap scoped/unless-pay instructions), `resolve_chain_body`'s \
+             repeat-driver guard and its CR 603.12a driver dispatch, and \
+             `resolve_chain_body`'s `CastFromZone` decline probe — every one of them selects a \
+             DRIVER rather than opening an up-front window, so a NEW site is a decision to \
+             adjudicate here and not a number to move.\nsites={sites:#?}"
+        );
+
+        let outside: Vec<&String> = sites
+            .iter()
+            .filter(|(_, site)| !site.starts_with("game/effects/"))
+            .map(|(_, site)| site)
+            .collect();
+        assert!(
+            outside.is_empty(),
+            "SINGLE ASSEMBLER: every production consumer of these five predicates lives in \
+             `game/effects/`, next to the authority that assembles them. A caller in another \
+             module is by construction re-deriving the gate's conjunct set from outside it — \
+             which is exactly what `analysis::resource::auto_may_answer_for` and \
+             `engine::entry_publishes_pin_slots` used to do, each with a DIFFERENT omission. \
+             Found {outside:#?}"
         );
     }
 }
