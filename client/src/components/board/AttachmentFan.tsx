@@ -164,16 +164,35 @@ export function AttachmentFan() {
       const verdict = resolveObjectActivation(
         collectObjectActions(store.legalActionsByObject, id),
         store.gameState?.objects[id],
-        affordances.manaTappableObjectIds.has(id),
+        affordances,
+        id,
       );
-      if (verdict.kind === "none") return;
-      // MUST precede opening the modal: the fan is a `fixed inset-0 z-[120]`
-      // backdrop with an `onClick={close}` catcher and DialogHost anchors at z-40,
-      // so a fan left mounted would both paint over and swallow clicks for the
-      // modal it just opened.
-      close();
-      if (verdict.kind === "dispatch") void dispatchAction(verdict.action).catch(notifyFailure);
-      else setPendingAbilityChoice({ objectId: id, actions: verdict.actions });
+      // `close()` MUST precede opening the modal: the fan is a `fixed inset-0
+      // z-[120]` backdrop with an `onClick={close}` catcher and DialogHost anchors
+      // at z-40, so a fan left mounted would both paint over and swallow clicks for
+      // the modal it just opened. It stays inside the two acting arms because
+      // `kind: "none"` must leave the fan exactly as it was.
+      switch (verdict.kind) {
+        case "dispatch":
+          close();
+          void dispatchAction(verdict.action).catch(notifyFailure);
+          return;
+        case "choose":
+          close();
+          setPendingAbilityChoice({ objectId: id, actions: verdict.actions });
+          return;
+        case "none":
+          // Reachable only through the render→click staleness window: the ring was
+          // painted from a bucket this click no longer sees. Doing nothing (and
+          // leaving the fan open) is correct.
+          return;
+        default: {
+          // CLAUDE.md "exhaustive match without wildcard fallbacks": a new
+          // ObjectActivation variant is a compile error here, never a silent drop.
+          const _exhaustive: never = verdict;
+          return _exhaustive;
+        }
+      }
     },
     [
       affordances,

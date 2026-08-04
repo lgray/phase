@@ -1454,9 +1454,16 @@ describe("PermanentCard", () => {
       mana_cost: { type: "NoCost" },
       color: [],
       base_color: [],
+      // `is_mana_ability` is the engine-derived key (CR 605.1a) that BOTH
+      // `deriveActivationAffordances` and `resolveObjectActivation` classify
+      // with, so in production the affordance sets and the resolver's partition
+      // can never disagree. This fixture asserts the mana-only affordance pair
+      // below, so the abilities must carry the flag that produces it; without it
+      // the fixture describes a state the engine cannot emit.
       abilities: [
         {
           kind: "Activated",
+          is_mana_ability: true,
           cost: { type: "Tap" },
           description: "{T}: Add {C}.",
           effect: {
@@ -1466,6 +1473,7 @@ describe("PermanentCard", () => {
         },
         {
           kind: "Activated",
+          is_mana_ability: true,
           cost: {
             type: "Composite",
             costs: [

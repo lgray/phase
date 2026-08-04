@@ -693,12 +693,28 @@ export const PermanentCard = memo(function PermanentCard({
       const verdict = resolveObjectActivation(
         collectObjectActions(store.legalActionsByObject, objectId),
         store.gameState?.objects[objectId],
-        canTapForMana,
+        { activatableObjectIds, manaTappableObjectIds },
+        objectId,
       );
-      if (verdict.kind === "dispatch") {
-        dispatchAction(verdict.action);
-      } else if (verdict.kind === "choose") {
-        setPendingAbilityChoice({ objectId, actions: verdict.actions });
+      switch (verdict.kind) {
+        case "dispatch":
+          dispatchAction(verdict.action);
+          return;
+        case "choose":
+          setPendingAbilityChoice({ objectId, actions: verdict.actions });
+          return;
+        case "none":
+          // Reachable only through the render→click staleness window: the ring
+          // was painted from a bucket this click no longer sees. Doing nothing
+          // is correct — and, as before, this branch does NOT fall through to
+          // select/inspect, because the chain already committed to it.
+          return;
+        default: {
+          // CLAUDE.md "exhaustive match without wildcard fallbacks": a new
+          // ObjectActivation variant is a compile error here, never a silent drop.
+          const _exhaustive: never = verdict;
+          return _exhaustive;
+        }
       }
     } else if (isUndoableTap) {
       dispatchAction({ type: "UntapLandForMana", data: { object_id: objectId } });

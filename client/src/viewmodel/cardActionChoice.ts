@@ -211,11 +211,18 @@ export type ObjectActivation =
  * non-mana alike — goes through resolveSingleActionDispatch (#506). CR 113.3b
  * keyword activations (Crew/Station/Equip/Saddle) are surfaced alongside activated
  * abilities. The merged order is [abilities, keywords, mana].
+ *
+ * Takes the WHOLE `ActivationAffordances` pair rather than a loose boolean per
+ * ring: each ring is dropped by the same authority that painted it, so a caller
+ * cannot hand this function half of its own gate. An earlier signature took only
+ * the mana bit, which merged the non-mana partition unconditionally and let a
+ * cost-payment prompt offer an activation the board itself refuses.
  */
 export function resolveObjectActivation(
   actions: GameAction[],
   object: GameObject | undefined,
-  canTapForMana: boolean,
+  affordances: ActivationAffordances,
+  objectId: ObjectId,
 ): ObjectActivation {
   const abilityActions: GameAction[] = [];
   const manaActions: GameAction[] = [];
@@ -230,8 +237,18 @@ export function resolveObjectActivation(
     }
   }
 
-  const merged: GameAction[] = [...abilityActions, ...keywordActions];
-  if (canTapForMana) merged.push(...manaActions);
+  const merged: GameAction[] = [];
+  // CR 113.3b: an activated ability that isn't a mana ability may be activated
+  // only when its controller has priority. `activatableObjectIds` is populated
+  // for exactly that state, so a cost-payment prompt (ManaPayment /
+  // UnlessPayment / UnlessPaymentChooseCost) drops the non-mana partition
+  // instead of offering an activation the engine would refuse.
+  if (affordances.activatableObjectIds.has(objectId)) {
+    merged.push(...abilityActions, ...keywordActions);
+  }
+  // CR 605.1a: mana abilities are additionally offered during those payment
+  // states, whose `apply` arms accept a mana activation.
+  if (affordances.manaTappableObjectIds.has(objectId)) merged.push(...manaActions);
   if (merged.length === 0) return { kind: "none" };
 
   const auto = resolveSingleActionDispatch(merged, object);

@@ -56,6 +56,8 @@ vi.mock("../../../hooks/useCardImage.ts", () => ({
 }));
 
 const EMBLEM_ID = 700;
+/** A SECOND emblem that groups with EMBLEM_ID — the non-representative member. */
+const SIBLING_EMBLEM_ID = 701;
 
 /** CR 114.4 + CR 602.1: an emblem can carry an activated ability. */
 const EMBLEM_ABILITY_0: GameAction = {
@@ -67,9 +69,11 @@ const EMBLEM_ABILITY_1: GameAction = {
   data: { source_id: EMBLEM_ID, ability_index: 1 },
 };
 
-function makeEmblem(options: { controller?: number; abilities?: unknown[] } = {}): GameObject {
+function makeEmblem(
+  options: { controller?: number; abilities?: unknown[]; id?: number } = {},
+): GameObject {
   return buildGameObject({
-    id: EMBLEM_ID,
+    id: options.id ?? EMBLEM_ID,
     card_id: 7000,
     zone: "Command",
     owner: options.controller ?? 0,
@@ -211,6 +215,166 @@ describe("CommandZone emblem chip activation gate", () => {
       objectId: EMBLEM_ID,
       actions: [EMBLEM_ABILITY_0, EMBLEM_ABILITY_1],
     });
+    expect(dispatchAction).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * GROUPED-EMBLEM ACTIVATION IDENTITY.
+ *
+ * Maintainer review (matthewevans, CHANGES_REQUESTED, 2026-08-04) `[MED]
+ * Grouped emblem actions can make legal nonrepresentative emblems unreachable`,
+ * independently reported by CodeRabbit as `Preserve activation identity for
+ * every grouped emblem`. CR 114.1: each emblem is its own object and
+ * `legalActionsByObject` is keyed by exact object id, so a chip that asked the
+ * activation authority about `representative.id` alone rendered inert whenever
+ * the engine had published the action against a sibling — the command-zone UI
+ * could hide a legal action.
+ *
+ * The grouping itself is unchanged (display stacking by `source | description`,
+ * CR 114); what changed is WHICH id the same authority is asked about.
+ */
+describe("CommandZone grouped-emblem activation identity", () => {
+  beforeEach(() => {
+    vi.mocked(dispatchAction).mockReset();
+    vi.mocked(dispatchAction).mockResolvedValue(undefined);
+  });
+
+  afterEach(() => {
+    cleanup();
+    useUiStore.setState({ pendingAbilityChoice: null });
+  });
+
+  function abilityAction(sourceId: number, abilityIndex = 0): GameAction {
+    return { type: "ActivateAbility", data: { source_id: sourceId, ability_index: abilityIndex } };
+  }
+
+  /**
+   * Two emblems that GROUP: no `emblem_source`, identical granted text, so the
+   * key `source | description` collides and `CommandZone` renders exactly one
+   * chip. `command_zone` order fixes EMBLEM_ID as the representative and
+   * SIBLING_EMBLEM_ID as the non-representative member.
+   */
+  function seedGroupedPair(legalActionsByObject: Record<string, GameAction[]>) {
+    const representative = makeEmblem({ id: EMBLEM_ID });
+    const sibling = makeEmblem({ id: SIBLING_EMBLEM_ID });
+    const waitingFor = buildPriorityWaitingFor();
+    useGameStore.setState({
+      gameMode: "local",
+      gameState: buildGameState({
+        players: buildPlayers([0, 1]),
+        objects: buildObjectMap(representative, sibling),
+        battlefield: [],
+        exile: [],
+        stack: [],
+        command_zone: [EMBLEM_ID, SIBLING_EMBLEM_ID],
+        waiting_for: waitingFor,
+      }),
+      waitingFor,
+      legalActions: [],
+      legalActionsByObject,
+      viewerInteraction: null,
+    });
+    useUiStore.setState({ pendingAbilityChoice: null });
+    return render(<CommandZone playerId={0} />);
+  }
+
+  /** Structural precondition every row below depends on: the two emblems really
+   *  did collapse into ONE chip carrying a ×2 badge. Without this, a row could
+   *  pass because the sibling rendered its own separate chip. */
+  function expectOneChipOfTwo() {
+    expect(screen.getAllByTestId("emblem-card")).toHaveLength(1);
+    expect(screen.getByText("×2")).toBeInTheDocument();
+  }
+
+  // THE discriminating row both reviewers asked for.
+  //
+  // MEASURED (drop side): restoring the representative-only derivation
+  //   (`isActivatable` from `emblem.id`, `handleActivate` resolving on
+  //   `emblem.id`) flips this row with
+  //   `AssertionError: expected false to be true // Object.is equality`
+  //   on `chipIsActivatable()` — the group renders inert and the legal action
+  //   is unreachable. The chooser row below flips in the same arm with
+  //   `AssertionError: expected null to deeply equal { objectId: 701, actions:
+  //   [ …(2) ] }`.
+  // MEASURED (trivialize side): replacing the affordance-driven `find` with
+  //   "always the last member" fails five rows — the two controls below, the
+  //   negative control, and the timing/seat rows in the describe above.
+  it("reaches an action published against a non-representative group member", () => {
+    const action = abilityAction(SIBLING_EMBLEM_ID);
+    seedGroupedPair({ [String(SIBLING_EMBLEM_ID)]: [action] });
+
+    expectOneChipOfTwo();
+    expect(chipIsActivatable()).toBe(true);
+
+    fireEvent.click(screen.getByTestId("emblem-card"));
+
+    expect(dispatchAction).toHaveBeenCalledTimes(1);
+    // The SIBLING's own action, dispatched under the sibling's own id.
+    expect(dispatchAction).toHaveBeenCalledWith(action);
+  });
+
+  // The dispatch axis is not the only one the maintainer named: the pending
+  // choice must also carry the member's EXACT id, or the chooser would resolve
+  // against an object the engine never offered.
+  it("opens the chooser against the non-representative member's own id", () => {
+    const first = abilityAction(SIBLING_EMBLEM_ID, 0);
+    const second = abilityAction(SIBLING_EMBLEM_ID, 1);
+    seedGroupedPair({ [String(SIBLING_EMBLEM_ID)]: [first, second] });
+
+    expectOneChipOfTwo();
+    fireEvent.click(screen.getByTestId("emblem-card"));
+
+    expect(useUiStore.getState().pendingAbilityChoice).toEqual({
+      objectId: SIBLING_EMBLEM_ID,
+      actions: [first, second],
+    });
+    expect(dispatchAction).not.toHaveBeenCalled();
+  });
+
+  // CONTROL — the representative-live case must keep working, so the row above
+  // cannot pass by "the chip now always picks the last member".
+  it("still reaches an action published against the representative member", () => {
+    const action = abilityAction(EMBLEM_ID);
+    seedGroupedPair({ [String(EMBLEM_ID)]: [action] });
+
+    expectOneChipOfTwo();
+    expect(chipIsActivatable()).toBe(true);
+
+    fireEvent.click(screen.getByTestId("emblem-card"));
+
+    expect(dispatchAction).toHaveBeenCalledTimes(1);
+    expect(dispatchAction).toHaveBeenCalledWith(action);
+  });
+
+  // CONTROL — every member live: ONE chip is ONE click, so exactly one dispatch
+  // (the first member in command-zone order), and the display count is intact.
+  it("dispatches exactly once when every group member is live", () => {
+    const representativeAction = abilityAction(EMBLEM_ID);
+    const siblingAction = abilityAction(SIBLING_EMBLEM_ID);
+    seedGroupedPair({
+      [String(EMBLEM_ID)]: [representativeAction],
+      [String(SIBLING_EMBLEM_ID)]: [siblingAction],
+    });
+
+    expectOneChipOfTwo();
+    fireEvent.click(screen.getByTestId("emblem-card"));
+
+    expect(dispatchAction).toHaveBeenCalledTimes(1);
+    expect(dispatchAction).toHaveBeenCalledWith(representativeAction);
+    expect(useUiStore.getState().pendingAbilityChoice).toBeNull();
+  });
+
+  // NEGATIVE CONTROL — no member live: inert. Its reach guard is the first row
+  // above, which shows this same fixture DOES light up when a member is offered.
+  it("stays inert when no group member has a legal action", () => {
+    seedGroupedPair({});
+
+    expectOneChipOfTwo();
+    expect(chipIsActivatable()).toBe(false);
+    expect(screen.queryByRole("button")).toBeNull();
+
+    fireEvent.click(screen.getByTestId("emblem-card"));
     expect(dispatchAction).not.toHaveBeenCalled();
   });
 });

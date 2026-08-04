@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { GameAction, GameObject, WaitingFor } from "../../adapter/types.ts";
+import type { ActivationAffordances, ObjectActivation } from "../cardActionChoice.ts";
 import {
   collectObjectActions,
   deriveActivationAffordances,
@@ -496,6 +497,27 @@ function sorted(ids: Set<number>): number[] {
   return [...ids].sort((a, b) => a - b);
 }
 
+/**
+ * Calls the activation authority the way a consumer does: the object's own id
+ * drives BOTH the affordance lookup and the resolver argument.
+ *
+ * Every row declares both rings. The resolver's earlier signature carried only
+ * the mana half, so the non-mana partition was merged unconditionally and a
+ * cost-payment prompt offered activations the board itself refuses; rows that
+ * pass `activate: false` are the ones that fail against that signature.
+ */
+function resolveFor(
+  actions: GameAction[],
+  object: GameObject,
+  open: { activate: boolean; mana: boolean },
+): ObjectActivation {
+  const affordances: ActivationAffordances = {
+    activatableObjectIds: new Set(open.activate ? [object.id] : []),
+    manaTappableObjectIds: new Set(open.mana ? [object.id] : []),
+  };
+  return resolveObjectActivation(actions, object, affordances, object.id);
+}
+
 describe("deriveActivationAffordances", () => {
   // Two buckets the engine publishes: an Aura with two non-mana activations and
   // a land with a mana tap. Contents are asserted, never sizes — a size assert
@@ -596,14 +618,14 @@ describe("resolveObjectActivation", () => {
   // so no always-mutant can be visible on this row and it is counted as
   // drop-side coverage only. Its consumer-side pair is the V25 module.
   it("returns none for an empty bucket instead of opening an empty modal", () => {
-    expect(resolveObjectActivation([], freedFromTheReal(), false)).toEqual({ kind: "none" });
+    expect(resolveFor([], freedFromTheReal(), { activate: true, mana: false })).toEqual({ kind: "none" });
   });
 
   // POINTER: sweep row `C10 mana-only canTap=F`, also DROP-ONLY. Dropping the
   // mana action when the mana ring is closed must yield `none`, not a modal
   // offering an action the player cannot pay with.
   it("returns none when the only action is mana and the mana ring is closed", () => {
-    expect(resolveObjectActivation([tapLandAction(500)], island(), false)).toEqual({
+    expect(resolveFor([tapLandAction(500)], island(), { activate: true, mana: false })).toEqual({
       kind: "none",
     });
   });
@@ -620,7 +642,7 @@ describe("resolveObjectActivation", () => {
         { is_mana_ability: true, consumes_source: true, effect: { type: "Mana" } },
       ],
     });
-    expect(resolveObjectActivation([MANA_ABILITY], object, true)).toEqual({
+    expect(resolveFor([MANA_ABILITY], object, { activate: true, mana: true })).toEqual({
       kind: "choose",
       actions: [MANA_ABILITY],
     });
@@ -630,24 +652,24 @@ describe("resolveObjectActivation", () => {
   // modal". POINTER: sweep row `C4b`; PAIR-ONLY per §7.1 (its always-side
   // mutant is `alwaysChoose`; no drop-the-fix mutant is visible on it).
   it("still auto-dispatches a lone non-consuming mana ability", () => {
-    expect(resolveObjectActivation([MANA_ABILITY], freedFromTheReal(), true)).toEqual({
+    expect(resolveFor([MANA_ABILITY], freedFromTheReal(), { activate: true, mana: true })).toEqual({
       kind: "dispatch",
       action: MANA_ABILITY,
     });
   });
 
-  // V19 (CR 605.1a) — the mana/non-mana partition is driven by canTapForMana.
+  // V19 (CR 605.1a) — the mana/non-mana partition is driven by the mana ring.
   // POINTER: sweep rows `C6 mana+nonmana canTap=T` / `C8 mana+nonmana canTap=F`,
   // mutant `M2`.
   it("merges mana actions after the non-mana ones only when the mana ring is open", () => {
     const object = freedFromTheReal();
-    expect(resolveObjectActivation([FREED_TAP, MANA_ABILITY], object, true)).toEqual({
+    expect(resolveFor([FREED_TAP, MANA_ABILITY], object, { activate: true, mana: true })).toEqual({
       kind: "choose",
       actions: [FREED_TAP, MANA_ABILITY],
     });
-    // canTapForMana=false drops the mana action entirely, leaving a lone benign
+    // A closed mana ring drops the mana action entirely, leaving a lone benign
     // non-mana action — which auto-dispatches.
-    expect(resolveObjectActivation([FREED_TAP, MANA_ABILITY], object, false)).toEqual({
+    expect(resolveFor([FREED_TAP, MANA_ABILITY], object, { activate: true, mana: false })).toEqual({
       kind: "dispatch",
       action: FREED_TAP,
     });
@@ -660,8 +682,8 @@ describe("resolveObjectActivation", () => {
   it("classifies TapLandForMana and TapForConvoke by action type", () => {
     const land = island();
     const tapLand = tapLandAction(500);
-    expect(resolveObjectActivation([tapLand], land, false)).toEqual({ kind: "none" });
-    expect(resolveObjectActivation([tapLand], land, true)).toEqual({
+    expect(resolveFor([tapLand], land, { activate: true, mana: false })).toEqual({ kind: "none" });
+    expect(resolveFor([tapLand], land, { activate: true, mana: true })).toEqual({
       kind: "dispatch",
       action: tapLand,
     });
@@ -670,14 +692,14 @@ describe("resolveObjectActivation", () => {
       type: "TapForConvoke",
       data: { object_id: 500, mana_type: "Blue" },
     };
-    expect(resolveObjectActivation([convoke], land, false)).toEqual({ kind: "none" });
+    expect(resolveFor([convoke], land, { activate: true, mana: false })).toEqual({ kind: "none" });
   });
 
   // V19c (CR 113.3b) — the `keywords` partition arm is load-bearing: an Equip
   // is neither mana nor `ActivateAbility`, so without that arm it vanishes from
   // the merged list. POINTER: sweep row `C11 lone Equip`, mutant `M1`.
   it("surfaces a keyword activation that is neither mana nor ActivateAbility", () => {
-    expect(resolveObjectActivation([EQUIP_ACTION], freedFromTheReal(), false)).toEqual({
+    expect(resolveFor([EQUIP_ACTION], freedFromTheReal(), { activate: true, mana: false })).toEqual({
       kind: "dispatch",
       action: EQUIP_ACTION,
     });
@@ -688,7 +710,7 @@ describe("resolveObjectActivation", () => {
   // `allReverse`. Order is asserted, so "any two actions" fails.
   it("keeps [ability, keyword] order in a mixed bucket", () => {
     expect(
-      resolveObjectActivation([FREED_TAP, EQUIP_ACTION], freedFromTheReal(), false),
+      resolveFor([FREED_TAP, EQUIP_ACTION], freedFromTheReal(), { activate: true, mana: false }),
     ).toEqual({ kind: "choose", actions: [FREED_TAP, EQUIP_ACTION] });
   });
 
@@ -696,7 +718,7 @@ describe("resolveObjectActivation", () => {
   // `C14 Equip+mana canTap=T`, mutants `M1` AND `M2`.
   it("orders [keyword, mana] when both partitions fire", () => {
     expect(
-      resolveObjectActivation([MANA_ABILITY, EQUIP_ACTION], freedFromTheReal(), true),
+      resolveFor([MANA_ABILITY, EQUIP_ACTION], freedFromTheReal(), { activate: true, mana: true }),
     ).toEqual({ kind: "choose", actions: [EQUIP_ACTION, MANA_ABILITY] });
   });
 
@@ -704,7 +726,7 @@ describe("resolveObjectActivation", () => {
   // lone prepared copy is offered explicitly instead of firing on one click.
   // POINTER: sweep row `C15 lone CastPreparedCopy`, mutants `M1` + `noGate506`.
   it("offers a lone CastPreparedCopy through the modal rather than auto-casting", () => {
-    expect(resolveObjectActivation([PREPARED_COPY], freedFromTheReal(), false)).toEqual({
+    expect(resolveFor([PREPARED_COPY], freedFromTheReal(), { activate: true, mana: false })).toEqual({
       kind: "choose",
       actions: [PREPARED_COPY],
     });
@@ -716,7 +738,7 @@ describe("resolveObjectActivation", () => {
   // `rawBucket` / `allReverse`.
   it("deliberately reorders a mana-first bucket to [non-mana, mana]", () => {
     const rawBucket: GameAction[] = [MANA_ABILITY, FREED_TAP];
-    expect(resolveObjectActivation(rawBucket, freedFromTheReal(), true)).toEqual({
+    expect(resolveFor(rawBucket, freedFromTheReal(), { activate: true, mana: true })).toEqual({
       kind: "choose",
       actions: [FREED_TAP, MANA_ABILITY],
     });
@@ -730,7 +752,74 @@ describe("resolveObjectActivation", () => {
   // both, in engine order.
   it("offers both of an Aura's activated abilities in engine order", () => {
     expect(
-      resolveObjectActivation([FREED_TAP, FREED_UNTAP], freedFromTheReal(), false),
+      resolveFor([FREED_TAP, FREED_UNTAP], freedFromTheReal(), { activate: true, mana: false }),
     ).toEqual({ kind: "choose", actions: [FREED_TAP, FREED_UNTAP] });
+  });
+
+  // ------------------------------------------------------------------------
+  // The non-mana ring is a GATE, not decoration (CR 113.3b).
+  //
+  // MEASURED (two-sided, this PR). DROP side — restoring the unconditional
+  // merge the previous 3-argument signature had (`if (true)` in place of the
+  // ring test) fails the three rows below; the first flips with
+  // `AssertionError: expected { kind: 'choose', …(1) } to deeply equal
+  // { kind: 'none' }` — the exact `[P4 ManaPayment] verdict=choose[NON-mana,
+  // mana]` the review measured, byte-identical to the `[P4 Priority]` verdict
+  // at a state where `deriveActivationAffordances` had already closed the
+  // non-mana ring. ALWAYS side — forcing the ring closed (`if (false)`) fails
+  // ten rows, including every positive control below.
+  // ------------------------------------------------------------------------
+  it("drops the non-mana partition when the activation ring is closed", () => {
+    const aura = freedFromTheReal();
+    // A cost-payment prompt: `deriveActivationAffordances` opens the mana ring
+    // only. The two non-mana abilities must not be offered.
+    expect(resolveFor([FREED_TAP, FREED_UNTAP], aura, { activate: false, mana: true })).toEqual({
+      kind: "none",
+    });
+    // …and neither ring open is `none` too — the object is simply not offered.
+    expect(resolveFor([FREED_TAP, FREED_UNTAP], aura, { activate: false, mana: false })).toEqual({
+      kind: "none",
+    });
+    // POSITIVE CONTROL (reach guard): the identical bucket with the non-mana
+    // ring OPEN is offered, so the two assertions above cannot pass by "this
+    // fixture is never offered".
+    expect(resolveFor([FREED_TAP, FREED_UNTAP], aura, { activate: true, mana: true })).toEqual({
+      kind: "choose",
+      actions: [FREED_TAP, FREED_UNTAP],
+    });
+  });
+
+  // The mixed bucket at a cost-payment prompt — the shape the review measured.
+  // Only the mana action survives, and being alone and benign it auto-fires
+  // instead of opening a modal that offers a non-mana activation.
+  it("offers only the mana action at a cost-payment prompt", () => {
+    const aura = freedFromTheReal();
+    expect(
+      resolveFor([FREED_TAP, MANA_ABILITY, EQUIP_ACTION], aura, { activate: false, mana: true }),
+    ).toEqual({ kind: "dispatch", action: MANA_ABILITY });
+    // Positive control: with the non-mana ring open the same bucket offers all
+    // three, in `[ability, keyword, mana]` order.
+    expect(
+      resolveFor([FREED_TAP, MANA_ABILITY, EQUIP_ACTION], aura, { activate: true, mana: true }),
+    ).toEqual({ kind: "choose", actions: [FREED_TAP, EQUIP_ACTION, MANA_ABILITY] });
+  });
+
+  // HOSTILE FIXTURE — membership is keyed by the id passed in, never by "the
+  // set is non-empty". Calls the real 4-argument signature directly (not via
+  // `resolveFor`), with both rings populated for a DIFFERENT object.
+  it("reads both rings by object id, not by set emptiness", () => {
+    const aura = freedFromTheReal();
+    const otherId = aura.id + 1;
+    const affordances: ActivationAffordances = {
+      activatableObjectIds: new Set([otherId]),
+      manaTappableObjectIds: new Set([otherId]),
+    };
+    expect(
+      resolveObjectActivation([FREED_TAP, MANA_ABILITY], aura, affordances, aura.id),
+    ).toEqual({ kind: "none" });
+    // Positive control: the same non-empty sets, queried for the id they name.
+    expect(
+      resolveObjectActivation([FREED_TAP, MANA_ABILITY], aura, affordances, otherId),
+    ).toEqual({ kind: "choose", actions: [FREED_TAP, MANA_ABILITY] });
   });
 });

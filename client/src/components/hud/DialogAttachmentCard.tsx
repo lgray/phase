@@ -141,17 +141,28 @@ export function DialogAttachmentCard({ objectId, widthPx, onDismiss }: Props) {
       // exactly as before — the board must be reachable for whatever the
       // activation asks next (Equip → `EquipTarget`), and the multi-ability
       // picker floats independently above this dialog.
-      const verdict = resolveObjectActivation(
-        objectActions,
-        obj,
-        affordances.manaTappableObjectIds.has(objectId),
-      );
-      if (verdict.kind === "dispatch") {
-        dispatchAction(verdict.action);
-        onDismiss?.();
-      } else if (verdict.kind === "choose") {
-        setPendingAbilityChoice({ objectId, actions: verdict.actions });
-        onDismiss?.();
+      const verdict = resolveObjectActivation(objectActions, obj, affordances, objectId);
+      switch (verdict.kind) {
+        case "dispatch":
+          dispatchAction(verdict.action);
+          onDismiss?.();
+          return;
+        case "choose":
+          setPendingAbilityChoice({ objectId, actions: verdict.actions });
+          onDismiss?.();
+          return;
+        case "none":
+          // Reachable only through the render→click staleness window: the cyan
+          // ring was painted from a bucket this click no longer sees. Doing
+          // nothing — and NOT dismissing — is correct, and is what the old
+          // if/else chain did.
+          return;
+        default: {
+          // CLAUDE.md "exhaustive match without wildcard fallbacks": a new
+          // ObjectActivation variant is a compile error here, never a silent drop.
+          const _exhaustive: never = verdict;
+          return _exhaustive;
+        }
       }
     }
   };
