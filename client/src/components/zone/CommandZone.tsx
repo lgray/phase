@@ -5,11 +5,13 @@ import type { GameObject, PlayerId } from "../../adapter/types.ts";
 import { dispatchAction } from "../../game/dispatch.ts";
 import { useCardImage } from "../../hooks/useCardImage.ts";
 import { useIsCompactHeight } from "../../hooks/useIsCompactHeight.ts";
+import { useCanActForWaitingState } from "../../hooks/usePlayerId.ts";
 import { useGameStore } from "../../stores/gameStore.ts";
 import { useUiStore } from "../../stores/uiStore.ts";
 import {
   collectObjectActions,
-  resolveSingleActionDispatch,
+  deriveActivationAffordances,
+  resolveObjectActivation,
 } from "../../viewmodel/cardActionChoice.ts";
 import { RichLabel } from "../mana/RichLabel.tsx";
 import { GameplayTooltip } from "../ui/GameplayTooltip.tsx";
@@ -129,25 +131,36 @@ function EmblemCard({ group, label }: { group: GroupedEmblem; label: string }) {
   // no client-side legality inference. Static/triggered emblems never report
   // actions here, so they stay display-only as before.
   const legalActionsByObject = useGameStore((s) => s.legalActionsByObject);
+  const waitingFor = useGameStore((s) => s.waitingFor);
+  const objects = useGameStore((s) => s.gameState?.objects);
+  const canActForWaitingState = useCanActForWaitingState();
   const setPendingAbilityChoice = useUiStore((s) => s.setPendingAbilityChoice);
-  const emblemActions = useMemo(
-    () => collectObjectActions(legalActionsByObject, emblem.id),
-    [legalActionsByObject, emblem.id],
+  // THE single authority. `emblemActions.length > 0` had NEITHER a WaitingFor
+  // gate nor a seat gate, so an opponent's chip was clickable from this viewer's
+  // seat (D4); membership in the shared sets closes both at once.
+  const affordances = useMemo(
+    () =>
+      deriveActivationAffordances(waitingFor, canActForWaitingState, legalActionsByObject, objects),
+    [waitingFor, canActForWaitingState, legalActionsByObject, objects],
   );
-  const isActivatable = emblemActions.length > 0;
+  const isActivatable =
+    affordances.activatableObjectIds.has(emblem.id)
+    || affordances.manaTappableObjectIds.has(emblem.id);
 
   const handleActivate = useCallback(() => {
-    if (emblemActions.length === 0) return;
-    // Reuse the shared single-authority dispatch helper (issue #506): a
-    // card-consuming ability surfaces the confirmation modal; otherwise the
-    // lone action auto-fires, kicking off the engine's X / discard prompts.
-    const auto = resolveSingleActionDispatch(emblemActions, emblem);
-    if (auto) {
-      dispatchAction(auto);
-    } else {
-      setPendingAbilityChoice({ objectId: emblem.id, actions: emblemActions });
+    // #506 stays where it always was — inside the authority. The bucket is read
+    // at click, so this chip keeps no per-render projection of its own.
+    const verdict = resolveObjectActivation(
+      collectObjectActions(useGameStore.getState().legalActionsByObject, emblem.id),
+      emblem,
+      affordances.manaTappableObjectIds.has(emblem.id),
+    );
+    if (verdict.kind === "dispatch") {
+      dispatchAction(verdict.action);
+    } else if (verdict.kind === "choose") {
+      setPendingAbilityChoice({ objectId: emblem.id, actions: verdict.actions });
     }
-  }, [emblemActions, emblem, setPendingAbilityChoice]);
+  }, [affordances, emblem, setPendingAbilityChoice]);
 
   return (
     <div
