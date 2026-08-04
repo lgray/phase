@@ -1981,6 +1981,37 @@ fn bounded_cycle_offer(
     outcome
 }
 
+/// CR 732.2a: THE candidate walk — newest-first over `idx`, one item per candidate pair,
+/// `span = live.len() - 1 - idx` in RETAINED RING FRAMES, `span >= 1`.
+///
+/// PRODUCTION'S walk, exposed so its test-side consumers CONSUME it instead of imitating it. A
+/// row that hard-codes `&live[live.len() - 2..]` is asserting `span == 1` without saying so,
+/// and reads a HALF PERIOD the moment the sampling rate moves — which is exactly what the
+/// answer-beat sampler did to two of them.
+///
+/// A span of 0 is the pair `state` against its own snapshot. It is already refused by
+/// `net_progress_for` on the resulting zero delta in every production trajectory, but it is
+/// refused HERE too, explicitly: `materialize_fixed_shortcut` DELIMITS a committed cycle by
+/// this count, and a published `0` would mean "one repetition spans no frames", which no drive
+/// can honour. Filtered BEFORE the window is yielded — `span >= 1` is `window.len() >= 2`
+/// identically — so a degenerate window never reaches a touch or a mint.
+///
+/// TWO LIFETIMES, not one. `certified_bounded_cycle_offer` carries a `PeriodTouch<'a>` OUT of
+/// the loop, so the ELEMENT lifetime must survive independently of the borrow of the slice;
+/// that is what `certified_period_touch(window: &[&'a GameState], current: &'a GameState) ->
+/// PeriodTouch<'a>` already requires.
+pub(crate) fn candidate_windows<'w, 'a>(
+    ring_live: &'w [&'a GameState],
+) -> impl Iterator<Item = (usize, u32, &'w [&'a GameState])> + 'w {
+    (0..ring_live.len())
+        .rev()
+        .map(move |idx| {
+            let span = (ring_live.len() - 1 - idx) as u32;
+            (idx, span, &ring_live[idx..])
+        })
+        .filter(|&(_, span, _)| span >= 1)
+}
+
 /// CR 732.2a: certification (step 4/4b), the choice gate and the bound — everything that can
 /// ask the verdict door, split out so its caller owns exactly one meter snapshot.
 #[allow(clippy::too_many_arguments)]
@@ -2010,28 +2041,13 @@ fn certified_bounded_cycle_offer<'a>(
         PeriodTouch<'_>,
         PeriodicDelta,
     )> = None;
-    for idx in (0..ring.len()).rev() {
-        // The span, in RETAINED RING FRAMES, that this candidate pair covers.
-        // `ring.last()` is the sample `pass_priority_once_with_pipeline` recorded at THIS
-        // beat, before the bridge ran, so the newest frame is the current state and the
-        // span from `ring[idx]` is `len - 1 - idx`.
-        //
-        // A span of 0 is the pair `state` against its own snapshot. It is already refused
-        // by `net_progress_for` on the resulting zero delta in every production
-        // trajectory, but it is refused HERE too, explicitly: `materialize_fixed_shortcut`
-        // now DELIMITS a committed cycle by this count, and a published `0` would mean
-        // "one repetition spans no frames", which no drive can honour. Fail closed on the
-        // degenerate pair rather than rely on a downstream conjunct to catch it.
-        //
-        // EVALUATED FIRST, before the window is built, touched or minted from — `span >= 1`
-        // is `window.len() >= 2` identically, so this guard is also what keeps a degenerate
-        // window out of the touch and the mint.
-        let span = ring.len() - 1 - idx;
-        if span < 1 {
-            continue;
-        }
+    // The walk itself — its ORDER, its span arithmetic and its degenerate-pair filter — lives
+    // in `candidate_windows`, so the rows that need production's candidates take THE SAME
+    // iterator rather than a copy of it. `ring` and `ring_live` are the two halves of the same
+    // frames and therefore the same length, so indexing the comparand by the walk's `idx` is
+    // the pairing it always was.
+    for (idx, span, window) in candidate_windows(ring_live) {
         let prior = ring[idx];
-        let window = &ring_live[idx..];
         // Built under `BoardCovered` unconditionally, because step 4 does not yet know which
         // disjunct will match; step 4b keeps it or rebuilds it.
         let touch_cover = certified_period_touch(window, state, PeriodCertification::BoardCovered);
@@ -2089,7 +2105,7 @@ fn certified_bounded_cycle_offer<'a>(
                 // `interactive_3p_subset_lethal_does_not_crown` fixture's repetition
                 // spans TWO frames (a gain-life resolution then a lose-life one), and
                 // under the old hardcode its accepted drive committed nothing at all.
-                frames_per_period: span as u32,
+                frames_per_period: span,
                 delta,
                 victim_slot: Vec::new(),
             },
@@ -15343,7 +15359,13 @@ mod stage2_injector_tests {
                 // `begin_pending_trigger_target_selection` (fn now opens at :11271, itself −7).
                 // The OTHER FOUR entries live in `game/effects/`, which this unit does not
                 // touch at all, and did not move — the same set-preservation evidence.
-                "game/engine.rs:11420".to_string(),
+                //
+                // THIS PR (C4's answer-beat sampler + C5's `candidate_windows` extraction), ON
+                // TOP OF UPSTREAM'S `:11420`: both insertions land in `engine.rs` ABOVE this
+                // producer and neither is a prompt. The coordinate below is re-derived from the
+                // row's OWN failure output at this base, with the line re-read and
+                // sha256-compared there and the enclosing function re-checked.
+                "game/engine.rs:11515".to_string(),
             ],
             "the five production producers, NAMED: the CR 603.5 gate in `resolve_chain_body` \
              plus the two repeated-optional-payment drivers, the per-player acceptance cursor \
@@ -15357,9 +15379,19 @@ mod stage2_injector_tests {
         let effects_src = std::fs::read_to_string(root.join("game/effects/mod.rs"))
             .expect("readable effects module");
         let authority = format!("{}_prompt_player", "optional");
+        // CODE LINES ONLY. A whole-file `matches()` also counted PROSE, and this PR's C1 adds a
+        // doc link to the authority in `upfront_optional_gate`'s comment — a mention that is
+        // neither a definition nor a call. Excluding `//` lines makes the instrument STRICTLY
+        // MORE specific to the thing it names (a second CALL) rather than less: the pinned
+        // count is unchanged at 2, and a real second call still trips it because a call cannot
+        // live on a comment line.
+        let authority_code_hits = effects_src
+            .lines()
+            .filter(|l| !l.trim_start().starts_with("//"))
+            .filter(|l| l.contains(&authority))
+            .count();
         assert_eq!(
-            effects_src.matches(&authority).count(),
-            2,
+            authority_code_hits, 2,
             "one definition + exactly one call — the CR 603.5 gate's `let prompt_player = ..`. \
              A second call inside `effects/mod.rs` means a second producer started consulting \
              the authority and this row's partition needs re-deriving"
@@ -17398,17 +17430,38 @@ mod bounded_offer_conjunct_tests {
                 lines[*site].trim()
             );
         }
-        let window_bindings = engine_code_hits(&lines, certified, "let window");
-        assert!(
-            !window_bindings.is_empty(),
-            "REACH-GUARD: the windows must be bound inside this extent"
+        // F-4: after `candidate_windows` was extracted, basis A's carrier decision lives at the
+        // CALL SITE, not in a `let window`. A `!is_empty()` reach-guard tolerated losing half
+        // the subject (2 producers -> 1) IN SILENCE — MEASURED: the pin still passed with one
+        // producer gone. And the obvious repair, widening the extent over `fn
+        // candidate_windows`, is VACUOUS — also MEASURED: `ring_live` is the walk's own
+        // PARAMETER NAME, so it reads identically whatever the caller passes, including under
+        // the DROP mutant that hands the walk the CR 104.4b comparand. Both producers are
+        // therefore pinned by EXACT COUNT, and each must name the evaluable ring on the line
+        // that chooses it.
+        let walk_calls = engine_code_hits(&lines, certified, "candidate_windows(");
+        assert_eq!(
+            walk_calls.len(),
+            1,
+            "basis A takes its window from EXACTLY ONE `candidate_windows` call; found {}",
+            walk_calls.len()
         );
-        for binding in &window_bindings {
+        let window_bindings = engine_code_hits(&lines, certified, "let window");
+        assert_eq!(
+            window_bindings.len(),
+            1,
+            "basis B binds EXACTLY ONE window directly; found {}. Together with the walk call \
+             that is the TWO producers this pin covers — a count that DROPS is a producer that \
+             left the extent, which is exactly what an extraction does silently",
+            window_bindings.len()
+        );
+        for producer in walk_calls.iter().chain(window_bindings.iter()) {
             assert!(
-                lines[*binding].contains("ring_live"),
-                "every window is sliced from the EVALUABLE ring; line {} reads `{}`",
-                binding + 1,
-                lines[*binding].trim()
+                lines[*producer].contains("ring_live"),
+                "every period-touch window is sliced from the EVALUABLE ring (CR 732.2a), never \
+                 the CR 104.4b comparand; line {} reads `{}`",
+                producer + 1,
+                lines[*producer].trim()
             );
         }
     }
@@ -17616,7 +17669,10 @@ mod bounded_offer_conjunct_tests {
         // ASSEMBLED needles, so this row's own source cannot be counted by its own instrument.
         let predicates: [(String, usize); 5] = [
             (format!("has_kind_driven{}repeat(", '_'), 2),
-            (format!("has_member_driven_repeat_after{}hydration(", '_'), 2),
+            (
+                format!("has_member_driven_repeat_after{}hydration(", '_'),
+                2,
+            ),
             (format!("is_repeated_optional{}payment(", '_'), 2),
             (format!("optional_prompt{}player(", '_'), 1),
             (format!("optional_effect_is{}infeasible(", '_'), 2),
@@ -17682,8 +17738,7 @@ mod bounded_offer_conjunct_tests {
             .map(|(needle, want)| (needle.clone(), *want))
             .collect();
         assert_eq!(
-            counted,
-            expected,
+            counted, expected,
             "the CR 603.5 conjunct set gained or lost a production consumer. The surviving \
              non-authority sites are `repeat_for_outermost_with_scope_or_unless` (does a \
              counted repeat wrap scoped/unless-pay instructions), `resolve_chain_body`'s \

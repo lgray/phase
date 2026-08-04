@@ -5428,10 +5428,58 @@ mod tests {
         None
     }
 
+    /// PRODUCTION'S OWN CANDIDATE WALK, CONSUMED rather than imitated: this asks
+    /// [`crate::game::engine::candidate_windows`] — the very iterator
+    /// `certified_bounded_cycle_offer` walks — so the ORDER (newest-first), the span
+    /// arithmetic and the degenerate-pair filter are production's by construction. Returns
+    /// the first `idx` whose window drives item (4) AT ALL, with that window's certified
+    /// touch and its measured span.
+    ///
+    /// CR 732.2a: `frames_per_period` is a MEASURED span, so a row that hard-codes
+    /// `&live[live.len() - 2..]` is asserting `span == 1` without saying so — and reads a
+    /// HALF PERIOD the moment the sampling rate moves. It moved: the answer-beat sampler
+    /// retains a frame at forced-window ANSWER beats as well, which halves the newest
+    /// adjacent pair on the dellian dump.
+    ///
+    /// **PRECONDITION, NOT CONCLUSION.** `conjunct4_scans() > 0` says items (1)/(2)/(3)
+    /// passed on SOME production-shaped window so item (4) RAN; it admits `scans ∈ {1, 2}`,
+    /// which FAILS the caller's `scans > non_exempt` assertion. The search can therefore land
+    /// on a beat whose assertion fails — that is what keeps the caller non-vacuous.
+    ///
+    /// One FRESH container per candidate: the counter is cumulative, so a shared container
+    /// (which is what production carries) would make `> 0` unattributable after the first
+    /// candidate that scans.
+    fn newest_item4_window<'a>(
+        live: &[&'a GameState],
+        current: &'a GameState,
+        proposer: PlayerId,
+    ) -> Option<(usize, PeriodTouch<'a>, u32)> {
+        for (idx, span, window) in crate::game::engine::candidate_windows(live) {
+            let touch = certified_period_touch(window, current, PeriodCertification::BoardCovered);
+            let mut verdicts = PeriodVerdicts::for_period(live, current, proposer);
+            let _ = loop_states_cover_modulo_growth_pinned(
+                window[0],
+                current,
+                proposer,
+                &[],
+                &touch,
+                &mut verdicts,
+            );
+            if verdicts.conjunct4_scans() > 0 {
+                return Some((idx, touch, span));
+            }
+        }
+        None
+    }
+
     /// The construction requirement shared by every row that needs a REAL certified window
     /// carrying a non-empty observed-frozen prefix: a usable ring AND a newest candidate pair
     /// (`span == 1`, the shape §3 D2's walk reaches first) whose common prefix is
     /// index-stable.
+    ///
+    /// ⚠ THIS PREDICATE HARD-CODES `span == 1`. It stays for rows whose span-1 window is
+    /// AUTHORED (constructed rings) and for the ring-existence reach-guards; the real-dump
+    /// item-(4) rows use [`newest_item4_window`] instead.
     fn has_frozen_window(state: &GameState) -> bool {
         if state.loop_detect_ring.len() < 2 {
             return false;
@@ -14067,18 +14115,32 @@ mod tests {
     /// item (4) trips on IS ITSELF a frozen one, so the unmutated board already witnesses
     /// that item (4) does not consult the exemption.
     ///
+    /// ⚠ THE WINDOW IS PRODUCTION'S, NOT `len - 2`. The old selection asserted `span == 1`
+    /// silently, and the answer-beat sampler halved the newest adjacent pair on this dump:
+    /// MEASURED, a span-1 window scans **0** entries at every beat 0..79, while production's
+    /// first item-(4) candidate is **span 2** and scans 36. Both the search and the window now
+    /// come from [`newest_item4_window`], i.e. from `game::engine::candidate_windows`.
+    ///
     /// REVERT-PROBE: add a `frozen_ids` skip to item (4)'s closure ⇒ the scan can no longer
     /// reach index 35 and `conjunct4_scans` collapses to at most the non-exempt population
-    /// (2 on this board) ⇒ FLIPS.
+    /// (2 on this board) ⇒ FLIPS **while the search still succeeds and lands on the same
+    /// beat** — which is what proves the search is a precondition and not the assertion.
     #[test]
     fn r21_b_placement_b_item_four_scans_frozen_entries_that_conjunct_six_skips() {
-        let (beat, board) = drive_dump_until(TRACKED_DUMPS[1].1, 80, has_frozen_window)
-            .expect("REACH-GUARD: the dellian drive must reach a window with a frozen prefix");
+        let (beat, board) = drive_dump_until(TRACKED_DUMPS[1].1, 80, |s| {
+            let live: Vec<&GameState> = s.loop_detect_ring.iter().map(|f| &f.live).collect();
+            newest_item4_window(&live, s, s.active_player).is_some()
+        })
+        .expect(
+            "REACH-GUARD: the dellian drive must reach a beat whose production candidate window \
+             runs item (4) at all",
+        );
         let live: Vec<&GameState> = board.loop_detect_ring.iter().map(|f| &f.live).collect();
-        let window = &live[live.len() - 2..];
-        let prior = window[0];
         let proposer = board.active_player;
-        let cover = certified_period_touch(window, &board, PeriodCertification::BoardCovered);
+        let (idx, cover, span) = newest_item4_window(&live, &board, proposer)
+            .expect("the search predicate accepted this very board one line ago");
+        let window = &live[idx..];
+        let prior = window[0];
         let non_exempt = board.stack.len() - cover.frozen_ids.len();
         assert!(
             cover.frozen_ids.len() > non_exempt,
@@ -14095,9 +14157,9 @@ mod tests {
         let scans = v4.conjunct4_scans() as usize;
         assert!(
             scans > non_exempt,
-            "R21(b-placement-B) beat {beat}: item (4) scanned {scans} entries, which must \
-             EXCEED the {non_exempt} non-exempt ones — a scan that consulted `frozen_ids` \
-             could never get past them"
+            "R21(b-placement-B) beat {beat} (window idx {idx}, span {span}): item (4) scanned \
+             {scans} entries, which must EXCEED the {non_exempt} non-exempt ones — a scan that \
+             consulted `frozen_ids` could never get past them"
         );
         assert!(
             scans > 0 && scans < board.stack.len(),
@@ -14129,10 +14191,20 @@ mod tests {
         let mut v6 = PeriodVerdicts::for_period(&live, &board, proposer);
         let specified =
             stack_choices_are_all_specified(&board, proposer, &[], Some(&cover), &mut v6);
+        // The guard states what it actually needs: a gate that ASKED must have COMPLETED, and no
+        // answer was denied. MEASURED on production's own span-2 window the gate returns false
+        // with `denied=false` and `conjunct6_asks=0` — a structural refusal at a pre-ask
+        // conjunct, AFTER taking every one of the frozen skips. The exemption's COMPLETENESS is
+        // checked by the verbatim equality below, not here. (A truncation of the skip count is
+        // not a reachable failure mode: `note_conjunct6_frozen_skip`'s loop has no break and no
+        // early return — the gate's `return false`s live in the NEXT loop, which runs only after
+        // the counting loop has finished.)
         assert!(
-            specified,
-            "REACH-GUARD: the resolution gate must run to completion under the exempting \
-             certificate, else its skip count is a truncation"
+            !v6.denied() && specified == (v6.conjunct6_asks() > 0),
+            "REACH-GUARD: no answer may be denied, and a gate that ASKED must have completed. \
+             specified={specified} denied={} asks={}",
+            v6.denied(),
+            v6.conjunct6_asks()
         );
         assert_eq!(
             v6.conjunct6_frozen_skips() as usize,
@@ -14352,19 +14424,50 @@ mod tests {
     /// (dina, integration row `r16_the_offering_beats_probe_demand_is_exactly_measured`)
     /// spends 13 and is NOT denied. Same seam, same cap, opposite sides of the budget.
     ///
+    /// ⚠ THE SEARCH IS THE ROW'S OWN CONSTRUCTION REQUIREMENT, NOT `has_frozen_window`. "Mintable"
+    /// means the walk reached the METERED CLASSIFIER, i.e. `meter.spent > 0`. The old predicate
+    /// asserted `span == 1` on the newest pair and landed on the first ring-bearing beat, where
+    /// the mint spends 0 and never reaches the classifier at all. `meter.denied` was REJECTED as
+    /// a search predicate: `denied` can only latch after exhaustion, so `denied ⇒ spent == cap`
+    /// and the assertion would assert itself.
+    ///
     /// REVERT-PROBE: raise `PROBE_BUDGET` above dellian's unexempted demand (measured 96–107
     /// at these beats) ⇒ `denied` goes false ⇒ FLIPS. Lowering it cannot flip this arm, which
-    /// is exactly why the offering-beat row is a separate one.
+    /// is exactly why the offering-beat row is a separate one. **That revert-probe is SHIPPED
+    /// IN-ROW as a positive control** ([`ProbeCap::RaisedTwiceLinks`], the same board, one
+    /// argument apart): the meter provably returns `(x, false)` here, so `(cap, true)` is a
+    /// verdict about the SHIPPED cap and not a property of the instrument. Self-checking — if
+    /// the raised cap were still insufficient, `!raised.denied` fails loudly.
     #[test]
     fn r16_ii_b_a_non_offering_mintable_beat_saturates_the_probe_budget() {
         use crate::game::engine::{try_offer_bounded_cycle_shortcut_metered, ProbeCap};
         use crate::types::game_state::WaitingFor;
 
-        let (beat, board) = drive_dump_until(TRACKED_DUMPS[1].1, 80, has_frozen_window)
-            .expect("REACH-GUARD: the dellian drive must reach a mintable beat");
-        let proposer = board.active_player;
-        let mut at_priority = board.clone();
-        at_priority.waiting_for = WaitingFor::Priority { player: proposer };
+        /// The row's board construction, shared by the SEARCH and the measurement so the beat
+        /// the search accepted is byte-identically the beat the assertions read.
+        fn at_priority_of(s: &GameState) -> GameState {
+            let mut at_priority = s.clone();
+            at_priority.waiting_for = WaitingFor::Priority {
+                player: s.active_player,
+            };
+            at_priority
+        }
+
+        let (beat, board) = drive_dump_until(TRACKED_DUMPS[1].1, 80, |s| {
+            let (_, meter) = try_offer_bounded_cycle_shortcut_metered(
+                &at_priority_of(s),
+                false,
+                ProbeCap::Shipped,
+            );
+            meter.spent > 0
+        })
+        .expect("REACH-GUARD: the dellian drive must reach a beat the metered classifier runs on");
+        assert!(
+            beat > 0,
+            "ANTI-VACUITY: the search must have REJECTED at least one beat, else `spent > 0` is \
+             a tautology satisfied by beat 0 rather than a filter"
+        );
+        let at_priority = at_priority_of(&board);
         assert!(
             at_priority.last_loop_action_sequence.is_empty()
                 && at_priority.loop_detect_ring.len() >= 2,
@@ -14391,6 +14494,23 @@ mod tests {
             "R16(ii-b) beat {beat}: the max observable spend at the shipped cap IS the cap, \
              and the exhaustion is LATCHED so it can be attributed rather than inferred. \
              meter {meter:?}, stack {}",
+            at_priority.stack.len()
+        );
+
+        // ── ANTI-VACUITY: `spent > 0` does NOT imply saturation, proven ON THIS BOARD ───────
+        // The row's own revert-probe, shipped. One argument apart from the measurement above:
+        // same board, same seam, a cap of twice the board's link count.
+        let (_, raised) = try_offer_bounded_cycle_shortcut_metered(
+            &at_priority,
+            false,
+            ProbeCap::RaisedTwiceLinks,
+        );
+        assert!(
+            raised.spent > PROBE_BUDGET && !raised.denied,
+            "POSITIVE CONTROL: at a cap of twice the link count the SAME board must spend past \
+             the shipped cap WITHOUT latching exhaustion — otherwise `(cap, true)` above is a \
+             property of the instrument rather than a verdict about the shipped cap. \
+             raised {raised:?}, shipped cap {PROBE_BUDGET}, stack {}",
             at_priority.stack.len()
         );
     }
@@ -15844,9 +15964,12 @@ mod tests {
                         src,
                         PlayerId(0),
                     );
-                    frame
-                        .stack
-                        .push_back(announced_trigger_entry(announced_id, src, ability, None));
+                    frame.stack.push_back(announced_trigger_entry(
+                        announced_id,
+                        src,
+                        ability,
+                        None,
+                    ));
                 },
             );
             if where_def.is_some() && !in_frames {
@@ -16529,8 +16652,12 @@ mod tests {
         // `Known` is the mode production uses, and it must OVERRIDE the probe rather than
         // re-run it — otherwise adoption A would pay the clone twice on every resolve.
         assert!(
-            upfront_optional_gate(&stocked, &remove_counter(), OptionalFeasibility::Known(true))
-                .is_none(),
+            upfront_optional_gate(
+                &stocked,
+                &remove_counter(),
+                OptionalFeasibility::Known(true)
+            )
+            .is_none(),
             "`Known(true)` suppresses the gate on a board the probe would call FEASIBLE, so \
              the caller's already-computed answer is what is used"
         );
