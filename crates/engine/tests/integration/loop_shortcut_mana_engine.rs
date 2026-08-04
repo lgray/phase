@@ -806,22 +806,32 @@ fn cond_a_nontargeted_opponent_depletion_noops_at_exhaustion_not_abort() {
     );
 }
 
-/// R6a-2 (FAIL-CLOSED DISCRIMINATOR for the CR 732.2c ∞-badge filter). A mana engine
-/// registers NO deferred materialization — `current_period_fodder` finds no fodder,
-/// `current_period_counter_growth` / `current_period_life_growth` are empty — so nothing
-/// will ever collapse its `Mana(_)` axis at the CR 500.5 boundary. It is therefore still
-/// genuinely unbounded within the phase (`refill_infinite_mana` holds the pool at
-/// `INFINITE_MANA_PER_TYPE`) and MUST keep rendering its `∞` row on the wire.
+/// R6a-2, RECLASSIFIED under option (B): a CHANNEL-LIVENESS row, no longer a discriminator.
+/// A mana engine registers NO deferred materialization — `current_period_fodder` finds no
+/// fodder, `current_period_counter_growth` / `current_period_life_growth` are empty — so
+/// nothing will ever collapse its `Mana(_)` axis at the CR 500.5 boundary. It is genuinely
+/// unbounded within the phase (`refill_infinite_mana` holds the pool at
+/// `INFINITE_MANA_PER_TYPE`) and MUST keep rendering its `∞` row on the wire. That claim is
+/// true, user-visible and revert-detectable (RP-6 below) — it is simply no longer the thing
+/// that distinguishes candidate implementations, because option (B) projects EVERY ∞ row.
 ///
-/// The 12 shipped rows in this file are the must-NOT-flip control set; THIS is the new
-/// discriminator. It is the fail-closed half of the R6a filter: R6a-1 proves a scheduled
-/// axis hides, this proves an UNscheduled one does not.
+/// WHY THE "TAG MUST BE EMPTY HERE" RE-ANCHOR IS NOT ADDED: it would be VACUOUS on this rig.
+/// Reach-guard (2) below already asserts `pending_unbounded_materialization` is EMPTY, and an
+/// empty stash makes the tag empty for the CORRECT implementation as well as for every wrong
+/// one (labellability-keyed, count-keyed — `pending_materialization_count` is empty here too,
+/// asserted by the sibling `mana_engine_accept_records_no_collapse_bound` — and
+/// `from_resource_axis(Mana(_))` is `None` anyway). The tag discrimination therefore lives on
+/// rigs with non-Mana axes: `loop_shortcut::unregistered_axis_still_renders_its_infinity_badge`
+/// (post-clear tag emptiness) and `scheduled_drive_still_renders_the_already_spendable_mana_badge`
+/// below, whose ONE stash names both a `Mana(_)` and a deferred `Life(P0)`.
 ///
-/// REVERT-PROBE (RUN): key the `derive_views` filter on the ACCEPTED COUNT
-/// (`state.pending_materialization_count.contains_key(&controller)`) instead of on the
-/// axis set `scheduled_collapse_axes` returns — the count-keyed filter is written at every
-/// `Fixed(n)` accept including this one, so the `Mana(_)` row vanishes ⇒ this row FAILS
-/// while R6a-1 and the 12/12 control set stay green.
+/// REVERT-PROBE (RP-6, RUN): append `views.unbounded_resources.clear();` at the END of
+/// `derive_views` (re-kill the row channel unconditionally) ⇒ this row FAILS while the ∞ PILE
+/// assertion in `loop_shortcut::scheduled_collapse_still_renders_the_unbounded_badge_tagged`
+/// stays green — a different channel.
+///
+/// The `shared_card_db()` guard below is DORMANT in a normal checkout: `integration_cards.json`
+/// is tracked, so it only fires in a checkout without the card-data pipeline.
 #[test]
 fn mana_engine_accept_still_renders_its_infinity_badge() {
     let Some(db) = shared_card_db() else { return };
@@ -1000,21 +1010,23 @@ fn mana_engine_accept_records_no_collapse_bound() {
     );
 }
 
-/// R6a FIX-ROUND-3 (CR 732.2c + CR 500.5). MEASURED DEFECT in the ∞-badge hide-set: the
-/// `PersistentAxisMaterialization::DriveSequence` arm of `scheduled_collapse_axes` extends the
-/// hide-set with the loop's WHOLE axis set (`collapsed_axes` == `proposal.unbounded`), so a
-/// scheduled drive covering a `Mana(_)` axis suppressed that axis' `∞` row on the wire.
+/// R6a FIX-ROUND-3 (CR 732.2c + CR 500.5), now the MULTI-AUTHORITY row for the scheduled-collapse
+/// TAG. The `PersistentAxisMaterialization::DriveSequence` arm of `scheduled_collapse_axes`
+/// returns the loop's WHOLE axis set (`collapsed_axes` == `proposal.unbounded`), so ONE stash
+/// here names TWO axes: an already-materialized `Mana(Colorless)` and a deferred `Life(P0)`. The
+/// tag must attach to exactly one of them.
 ///
-/// That is the wrong side of the class rule. `Tokens` / `Counters` / `Life` each name a
-/// DEFERRED materialization — the growth is not on the board until the boundary applies it, so
-/// rendering `∞` for them is the lie R6a exists to kill. Mana is ALREADY MATERIALIZED at accept:
+/// That distinction is the class rule. `Tokens` / `Counters` / `Life` each name a DEFERRED
+/// materialization — the growth is not on the board until the boundary applies it, so they are
+/// exactly what "scheduled collapse" means. Mana is ALREADY MATERIALIZED at accept:
 /// `mana_payment::refill_infinite_mana` re-tops the flagged pool to `INFINITE_MANA_PER_TYPE` off
 /// `unbounded_resources` (the STORE, which the projection deliberately never filters) after every
 /// action, so throughout the accept→boundary window the player can really spend an unbounded
-/// pool while the HUD showed no `∞` — an internally inconsistent HUD, the inverse of an "∞ Life"
-/// badge beside a finite life total. CR 500.5 is what legitimately ends the badge: the step/phase
-/// end drains the pool and `turns::drain_pending_phase_transition_progress` clears the axis
-/// (covered by `combo_infinite_pile`'s E4 mana axis-clear row, not re-proved here).
+/// pool. Tagging it "scheduled collapse" would mislabel a live pool. CR 500.5 is what ends the
+/// mana badge: the step/phase end drains the pool and
+/// `turns::drain_pending_phase_transition_progress` clears the axis (covered by
+/// `combo_infinite_pile`'s E4 mana axis-clear row, not re-proved here) — NOT a materialization,
+/// which is the documented under-report in `DerivedViews::scheduled_collapse`'s scope limit.
 ///
 /// HONEST SCOPE. Everything except one write is real: real cards through the real parser, a real
 /// two-beat Basalt+Power period, a real `DeclareShortcut`/`RespondToShortcut` accept that marks
@@ -1028,11 +1040,12 @@ fn mana_engine_accept_records_no_collapse_bound() {
 /// `proposal.unbounded.clone()` that production writes. Same graft technique as
 /// `combo_infinite_pile::real_4p_observed_drive_sequence_replays_captured_period_n_times`.
 ///
-/// REVERT-PROBE (RUN): delete the `axes.retain(|a| !matches!(a, ResourceAxis::Mana(_)))` in
-/// `derive_views`' hide-set ⇒ (5) FAILS — the `Mana(Colorless)` row vanishes from the wire while
-/// the pool is still being refilled. (6) is the paired positive control that keeps the probe
-/// honest: the genuinely deferred `Life(P0)` axis in the SAME stash MUST stay hidden, so a
-/// blanket "disable the filter" is not a passing alternative.
+/// REVERT-PROBE (RP-3, RUN): delete the `axes.retain(|a| !matches!(a, ResourceAxis::Mana(_)))`
+/// that builds `scheduled_axes` in `derive_views` ⇒ (6b)'s negative FAILS — the already-spendable
+/// `Mana(Colorless)` axis gets tagged "scheduled collapse" while its pool is still being refilled.
+/// (6b)'s positive (`Life(P0)` IS tagged) is the paired control that keeps the probe honest: a
+/// blanket "tag nothing" is not a passing alternative. The retain is the SOLE cause of the
+/// mana/deferred distinction.
 #[test]
 fn scheduled_drive_still_renders_the_already_spendable_mana_badge() {
     use engine::types::game_state::PersistentAxisMaterialization;
@@ -1141,21 +1154,33 @@ fn scheduled_drive_still_renders_the_already_spendable_mana_badge() {
     );
 
     for viewer in [None, Some(P0), Some(P1)] {
-        let rows = engine::game::derived_views::derive_views(state, viewer).unbounded_resources;
-        let axes: Vec<ResourceAxis> = rows.iter().map(|r| r.axis).collect();
-        // (5) DISCRIMINATOR — the already-materialized mana axis keeps its ∞ row on the WIRE.
+        let views = engine::game::derived_views::derive_views(state, viewer);
+        let axes: Vec<ResourceAxis> = views.unbounded_resources.iter().map(|r| r.axis).collect();
+        // (5) the already-materialized mana axis keeps its ∞ row on the WIRE.
         assert!(
             axes.contains(&ResourceAxis::Mana(ManaType::Colorless)),
             "CR 732.2c/CR 500.5: mana is already in the pool and still being refilled, so a \
              merely-scheduled drive must NOT hide its ∞ row (viewer {viewer:?}), got {axes:?}"
         );
-        // (6) POSITIVE CONTROL, SAME STATE — the genuinely deferred axis in the SAME
-        // `DriveSequence` is still hidden. Proves (5) is a targeted carve-out, not a disabled
-        // filter.
+        // (6) under option (B) the DEFERRED axis of the same `DriveSequence` also keeps its ∞ row
+        // — nothing has been applied yet, so both rows project. The mana/deferred distinction the
+        // `axes.retain(!Mana(_))` draws now lives in the TAG below, not in the row set.
         assert!(
-            !axes.contains(&ResourceAxis::Life(P0)),
-            "CR 732.2c: the deferred Life axis of the same scheduled drive stays hidden (viewer \
-             {viewer:?}), got {axes:?}"
+            axes.contains(&ResourceAxis::Life(P0)),
+            "CR 732.2c: the deferred Life axis of the same scheduled drive still projects its ∞ \
+             row while the collapse is merely scheduled (viewer {viewer:?}), got {axes:?}"
+        );
+        // (6b) DISCRIMINATOR — the tag separates the two axes of the SAME stash: the deferred one
+        // is tagged, the already-materialized one is not.
+        let tagged: Vec<ResourceAxis> = views.scheduled_collapse.iter().map(|r| r.axis).collect();
+        assert!(
+            tagged.contains(&ResourceAxis::Life(P0)),
+            "the DEFERRED axis of the scheduled drive is TAGGED, got {tagged:?}"
+        );
+        assert!(
+            !tagged.contains(&ResourceAxis::Mana(ManaType::Colorless)),
+            "…and the ALREADY-MATERIALIZED mana axis of the SAME stash is NOT — this is where the \
+             `axes.retain(!Mana(_))` earns its keep, got {tagged:?}"
         );
     }
 

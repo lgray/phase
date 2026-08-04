@@ -150,6 +150,8 @@ fn drive_all_accept_n(state: &mut GameState, n: u32) {
 
 #[test]
 fn real_4p_object_growth_accept_writes_infinite_pile() {
+    use engine::analysis::resource::ResourceAxis;
+
     let mut state: GameState = serde_json::from_str(&OFFER_STATE)
         .expect("the real 4p offer dump must deserialize into the current GameState");
 
@@ -220,36 +222,83 @@ fn real_4p_object_growth_accept_writes_infinite_pile() {
 
     // (2) DERIVED — derive_views projects the pile (battlefield-filtered, public board state).
     //
-    // R6a (CR 732.2c): this accept ALSO scheduled a finite `TokensCreated` collapse, and a
-    // scheduled axis is already bounded — so the ∞ group must be hidden on the WIRE in
-    // lockstep with its resource badge. Filter the PROJECTION, never the store: the store
-    // assertions above and the round-trip below are unchanged and still pass.
-    assert!(
-        derive_views(&state, Some(P0)).unbounded_pile.is_empty(),
-        "CR 732.2c: a scheduled finite collapse hides the ∞ group (the store keeps it)"
-    );
-    // Non-vacuity + the ORIGINAL claim, retained: with nothing scheduled the projection is
-    // still exactly the battlefield-filtered pile set.
+    // CR 732.2c (option B): this accept ALSO scheduled a finite `TokensCreated` collapse, but the
+    // growth is DEFERRED to the CR 500.5 boundary — no token has been minted and N is not chosen —
+    // so the ∞ pile stays PROJECTED while the collapse is merely scheduled, and is TAGGED in
+    // `scheduled_collapse` instead of being hidden. The scheduling does not change the pile set,
+    // which is why the same `oracle` comparison now runs directly on the real post-accept state.
     //
-    // NOT A SYNTHETIC STATE — "pile present, stash absent" is engine-reachable, and this is
-    // the production sequence that reaches it (cited so the next auditor need not re-derive
-    // it): accept an object-growth loop → the CR 500.5 boundary prompt → `SubmitPayAmount` →
-    // the handler's `take_pending_materialization` (`game::engine_resolution_choices`) empties
-    // the stash FIRST → the `Tokens` mint then PAUSES on an optional token-doubling
-    // replacement (CR 616.1) → the pause path calls `clear_collapsed_materializations(player,
-    // &collapsed)` with `collapsed` NOT containing the still-paused `Tokens` item ⇒ pile and
-    // ∞ axes preserved, stash already gone. NOT A CLAIM — ASSERTED, in
-    // `combo_infinite_pile::med_tokens_boundary_mint_pause_preserves_replacement_choice`, whose
-    // closing two assertions drive that exact sequence and check
-    // `pending_unbounded_materialization[P0]` ABSENT while `derive_views(..).unbounded_pile` is
-    // non-empty. That test is this arm's production-reachability evidence.
-    let mut unscheduled = state.clone();
-    unscheduled.pending_unbounded_materialization.clear();
-    let derived = derive_views(&unscheduled, Some(P0));
+    // REVERT-PROBE (RP-1): restore the `collapse_scheduled(controller, &TokensCreated) { continue; }`
+    // guard in `derive_views`' pile loop ⇒ THIS `assert_eq!` fails with an empty `left` while the
+    // store assertions (1)/(i)/(ii)/(iii) above stay green.
+    let derived = derive_views(&state, Some(P0));
     let derived_set: BTreeSet<ObjectId> = derived.unbounded_pile.iter().copied().collect();
+
+    // CR 732.2c cross-seam pin, PART 1 — compute + (optionally) REGENERATE. Provenance: every
+    // key/value below is ENGINE-EMITTED (`serde_json::to_value(&derive_views(..))`). The four ∞ keys
+    // are lifted BY NAME from the real serialized DerivedViews so unrelated derived-view churn
+    // cannot move this golden, while the field names and value encodings — the part the TS mirror
+    // must match — stay engine-authored.
+    //
+    // The WRITE deliberately precedes every ∞ assertion in this fn, and the drift COMPARE
+    // deliberately follows them: a revert probe that reds one of those assertions must still be
+    // able to regenerate the client goldens with `UPDATE_WIRE_GOLDEN=1`, or the client-side half of
+    // that probe (RP-1b, RP-2) is unreachable. An assert panic aborts the test.
+    //
+    // DETERMINISM: `unbounded_counters` is a std `HashMap` (derived_views.rs), but
+    // `serde_json::Map` is BTreeMap-backed (serde_json has no `preserve_order` feature in this
+    // workspace — see Cargo.lock), so `to_value` re-sorts every map key. Measured byte-identical
+    // across independent test processes. No normalization needed.
+    let wire = serde_json::to_value(&derived).expect("derived views serialize");
+    let golden: serde_json::Map<String, serde_json::Value> = [
+        "unbounded_pile",
+        "unbounded_resources",
+        "unbounded_counters",
+        "scheduled_collapse",
+    ]
+    .into_iter()
+    .filter_map(|k| wire.get(k).map(|v| (k.to_string(), v.clone())))
+    .collect();
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../client/src/test/fixtures/unbounded-token-wire.json"
+    );
+    if std::env::var_os("UPDATE_WIRE_GOLDEN").is_some() {
+        // `client/src/test/fixtures/` may not exist yet; `fs::write` does not create parents.
+        std::fs::create_dir_all(
+            std::path::Path::new(path)
+                .parent()
+                .expect("golden has a parent"),
+        )
+        .expect("create the client wire-golden directory");
+        std::fs::write(
+            path,
+            format!("{}\n", serde_json::to_string_pretty(&golden).unwrap()),
+        )
+        .expect("write the wire golden");
+    }
+
     assert_eq!(
         derived_set, oracle,
         "derive_views().unbounded_pile must equal the pile set (battlefield-filtered)"
+    );
+
+    // CR 732.2c cross-seam pin, PART 2 — the drift COMPARE (see PART 1 for why it sits here).
+    let committed: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(path).expect("committed wire golden"))
+            .unwrap();
+    assert_eq!(
+        serde_json::Value::Object(golden),
+        committed,
+        "the client's wire golden drifted from engine output — re-run with UPDATE_WIRE_GOLDEN=1"
+    );
+
+    assert!(
+        derived
+            .scheduled_collapse
+            .iter()
+            .any(|r| r.player == P0 && r.axis == ResourceAxis::TokensCreated),
+        "CR 732.2c: the pile is projected AND its TokensCreated axis is tagged scheduled"
     );
 
     // (3) ROUND-TRIP — the pile survives serialize → deserialize (the "reloaded post-accept
@@ -261,20 +310,11 @@ fn real_4p_object_growth_accept_writes_infinite_pile() {
         Some(&oracle),
         "the ∞ pile survives a serde round-trip (post-fix saves reload it)"
     );
-    // R6a (CR 732.2c): the stash round-trips too, so the reloaded state's collapse is still
-    // SCHEDULED and its ∞ group stays hidden on the WIRE — same gate, same authority.
-    assert!(
-        derive_views(&reloaded, Some(P0)).unbounded_pile.is_empty(),
-        "CR 732.2c: the reloaded scheduled collapse still hides the ∞ group"
-    );
-    // Same engine-reachable "pile present, stash absent" shape as above — see the
-    // `SubmitPayAmount` → `take_pending_materialization` → CR 616.1 mint-pause →
-    // `clear_collapsed_materializations` sequence cited at (2).
-    let mut reloaded_unscheduled = reloaded.clone();
-    reloaded_unscheduled
-        .pending_unbounded_materialization
-        .clear();
-    let reloaded_set: BTreeSet<ObjectId> = derive_views(&reloaded_unscheduled, Some(P0))
+    // CR 732.2c (option B): the stash round-trips too, so the reloaded state's collapse is still
+    // SCHEDULED — and the ∞ pile stays PROJECTED while it is. The scheduling does not change the
+    // pile set, which is why the same `oracle` comparison now runs directly on the real reloaded
+    // post-accept state instead of on a stash-cleared clone.
+    let reloaded_set: BTreeSet<ObjectId> = derive_views(&reloaded, Some(P0))
         .unbounded_pile
         .iter()
         .copied()
@@ -625,22 +665,12 @@ fn build_fresh_4p_cast_offer_accept_writes_infinite_pile() {
 
     // (2) DERIVED — derive_views projects the pile.
     //
-    // R6a (CR 732.2c): the accept also scheduled a finite `TokensCreated` collapse ⇒ the ∞
-    // group is hidden on the WIRE while it is scheduled. Store unchanged (see the round-trip).
-    assert!(
-        derive_views(runner.state(), Some(P0))
-            .unbounded_pile
-            .is_empty(),
-        "CR 732.2c: a scheduled finite collapse hides the ∞ group (the store keeps it)"
-    );
-    // Non-vacuity + the ORIGINAL claim, retained. "Pile present, stash absent" is
-    // engine-reachable, not synthetic — the `SubmitPayAmount` → `take_pending_materialization`
-    // → CR 616.1 mint-pause → `clear_collapsed_materializations` sequence cited in
-    // `real_4p_object_growth_accept_writes_infinite_pile`, ASSERTED by
-    // `med_tokens_boundary_mint_pause_preserves_replacement_choice`'s closing two assertions.
-    let mut unscheduled = runner.state().clone();
-    unscheduled.pending_unbounded_materialization.clear();
-    let derived_set: BTreeSet<ObjectId> = derive_views(&unscheduled, Some(P0))
+    // CR 732.2c (option B): the accept also scheduled a finite `TokensCreated` collapse, but that
+    // growth is DEFERRED to the CR 500.5 boundary, so the ∞ pile stays PROJECTED while it is
+    // merely scheduled (and is TAGGED in `scheduled_collapse`). The scheduling does not change the
+    // pile set, which is why the same `oracle` comparison now runs directly on the real
+    // post-accept state.
+    let derived_set: BTreeSet<ObjectId> = derive_views(runner.state(), Some(P0))
         .unbounded_pile
         .iter()
         .copied()
@@ -1448,22 +1478,12 @@ fn real_4p_one_shot_bootstrap_seeds_tapped_infinite_pile_and_w_plus_1_untapped()
 
     // derive_views projects the pile; it survives a serde round-trip.
     //
-    // R6a (CR 732.2c): the accept also scheduled a finite `TokensCreated` collapse ⇒ the ∞
-    // group is hidden on the WIRE while it is scheduled. Store unchanged (round-trip below).
-    assert!(
-        derive_views(runner.state(), Some(P0))
-            .unbounded_pile
-            .is_empty(),
-        "CR 732.2c: a scheduled finite collapse hides the ∞ group (the store keeps it)"
-    );
-    // Non-vacuity + the ORIGINAL claim, retained. "Pile present, stash absent" is
-    // engine-reachable, not synthetic — the `SubmitPayAmount` → `take_pending_materialization`
-    // → CR 616.1 mint-pause → `clear_collapsed_materializations` sequence cited in
-    // `real_4p_object_growth_accept_writes_infinite_pile`, ASSERTED by
-    // `med_tokens_boundary_mint_pause_preserves_replacement_choice`'s closing two assertions.
-    let mut unscheduled = runner.state().clone();
-    unscheduled.pending_unbounded_materialization.clear();
-    let derived_set: BTreeSet<ObjectId> = derive_views(&unscheduled, Some(P0))
+    // CR 732.2c (option B): the accept also scheduled a finite `TokensCreated` collapse, but that
+    // growth is DEFERRED to the CR 500.5 boundary, so the ∞ pile stays PROJECTED while it is
+    // merely scheduled (and is TAGGED in `scheduled_collapse`). The scheduling does not change the
+    // pile set, which is why the same `oracle` comparison now runs directly on the real
+    // post-accept state.
+    let derived_set: BTreeSet<ObjectId> = derive_views(runner.state(), Some(P0))
         .unbounded_pile
         .iter()
         .copied()

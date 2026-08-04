@@ -379,6 +379,25 @@ pub struct DerivedViews {
     /// omitted) when no counter-growth loop is active — the dominant case.
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub unbounded_counters: HashMap<ObjectId, Vec<CounterType>>,
+
+    /// CR 732.2c: the `(attributed player, axis)` pairs whose DEFERRED unbounded growth has an
+    /// accepted-but-not-yet-applied finite collapse waiting at the next CR 500.5 boundary. A TAG,
+    /// NOT a filter: `unbounded_resources` / `unbounded_pile` / `unbounded_counters` above stay
+    /// projected while scheduled, and this names which of them the boundary will cash out. Same
+    /// single authority (`GameState::scheduled_collapse_axes`) and the same `attribution_player`
+    /// keying as `unbounded_resources`, so a row joins its tag by exact `(player, axis)` equality.
+    ///
+    /// SCOPE LIMIT — read this before using it as "which ∞ rows stop being ∞". `Mana(_)` axes are
+    /// deliberately ABSENT: mana is already materialized and spendable (`refill_infinite_mana`
+    /// re-tops the pool off the store), so tagging it would mislabel a live pool. A mana ∞ *does*
+    /// end — at the CR 500.5 step/phase end, via `turns::drain_pending_phase_transition_progress`,
+    /// NOT via a materialization — so this field UNDER-REPORTS that case by design. It answers the
+    /// narrower question: which ∞ rows name growth that is DEFERRED and will be cashed out by a
+    /// registered materialization at the boundary.
+    ///
+    /// Empty (and omitted) whenever nothing is scheduled — the dominant case.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub scheduled_collapse: Vec<UnboundedResourceView>,
 }
 
 /// Serialize-only wrapper: the WASM getter passes `&GameState` by reference
@@ -793,40 +812,46 @@ pub fn derive_views(state: &GameState, viewer: Option<PlayerId>) -> DerivedViews
     views.turn_order = turn_order;
     views.viewer_turn_number = viewer_turn_number;
 
-    // CR 732.2c: once every player accepted the shortcut it IS taken, at the finite N the
-    // proposal named — so an axis with a scheduled collapse is already BOUNDED and must not
-    // render `∞` anywhere beside the finite totals it is growing. ONE authority
-    // (`GameState::scheduled_collapse_axes`), THREE consumers below: the per-axis resource
-    // badge rows, the ∞ object pile, and the ∞ counter pills. The gate is computed here,
-    // once per controller, precisely so no surface can re-derive it and drift — a HUD that
-    // hides the resource badge while a card group still shows ∞ is internally inconsistent.
+    // CR 732.2c (docs/MagicCompRules.txt:6394) says that once the last player has accepted, the
+    // shortcut IS taken and the game advances to the ending point the proposal named. THIS ENGINE
+    // DEFERS that: the growth is not applied at accept, it is parked until the next CR 500.5
+    // boundary (docs/MagicCompRules.txt:2122), where `turns.rs:540-591` asks the controller to
+    // CHOOSE N in `[0, recorded bound]`. `turns.rs:553-556` documents that deferral in its own
+    // words as an engine tolerance no CR licenses.
     //
-    // Filter the PROJECTION, never the store: `unbounded_resources` +
-    // `unbounded_loop_enablers` stay in CR 104.4b / CR 110.1 lockstep until the CR 500.5
-    // boundary applies the growth, which is what keeps `zones::apply_zone_exit_cleanup`'s
-    // defuse armed in the meantime.
+    // So across accept -> boundary the game has NOT advanced, N is NOT determined, and no growth
+    // is on the board: what is there is still a certified-unbounded loop with no materialized
+    // bound. The projection therefore KEEPS the `∞` on every surface and TAGS it scheduled rather
+    // than hiding it. During that window the badge is load-bearing board-state information; hiding
+    // it erases the loop's identity from the display while the loop is still the truth of the
+    // board.
     //
-    // FAIL-CLOSED: only axes a registered materialization really collapses are hidden, so an
-    // unregistered ∞ axis (a mana engine registers none) still renders.
+    // ONE authority (`GameState::scheduled_collapse_axes`), now exactly ONE consumer here: the
+    // `scheduled_collapse` tag below. The per-axis resource badge rows, the ∞ object pile and the
+    // ∞ counter pills are UNFILTERED — they read their own stores and no longer consult this set
+    // at all. (`clear_collapsed_materializations` is the authority's other caller, unchanged.)
     //
-    // CLASS RULE for the hide-set: hide only axes whose growth is still DEFERRED; never hide an
-    // axis that is ALREADY MATERIALIZED and spendable right now. `Tokens` / `Counters` / `Life`
-    // are deferred by construction — the growth is not on the board until the boundary applies
-    // it — so an `∞` for them is exactly the lie this gate kills. A `DriveSequence` is the one
-    // item that does NOT name a deferral: its `collapsed_axes` is `proposal.unbounded`, i.e.
-    // EVERY axis of the whole loop, and a `Mana(_)` among them is live *now* —
-    // `mana_payment::refill_infinite_mana` tops that controller's pool back to
+    // The `Mana(_)` `retain` is preserved and REPURPOSED from hide-filter to tag-filter: it now
+    // means "tag only DEFERRED growth". `Tokens` / `Counters` / `Life` are deferred by
+    // construction — the growth is not on the board until the boundary applies it. A `Mana(_)` is
+    // not: `mana_payment::refill_infinite_mana` tops that controller's pool back to
     // `INFINITE_MANA_PER_TYPE` off the STORE (which this projection deliberately never touches)
-    // after every action. Hiding it would show no `∞` beside a pool that keeps refilling: the
-    // same internally-inconsistent HUD as an `∞ Life` badge on a finite life total, inverted.
-    // CR 500.5: `turns::drain_pending_phase_transition_progress` clears the mana axis when the
-    // step/phase ends, and THAT is what legitimately ends the badge — not this projection.
+    // after every action, so that pool is live and spendable right now and tagging it "scheduled
+    // collapse" would mislabel it. SCOPE LIMIT: a mana ∞ does end — at the CR 500.5 step/phase
+    // end, via `turns::drain_pending_phase_transition_progress`, NOT via a materialization — so
+    // this tag deliberately UNDER-REPORTS "which ∞ rows will stop being ∞". It answers the
+    // narrower question: which ∞ rows name growth that is DEFERRED and will be cashed out by a
+    // registered materialization at the boundary. Widen this `retain` only for an axis that gains
+    // the same already-materialized property.
     //
-    // `Mana(_)` is today's only already-materialized axis: census of production readers of
-    // `GameState::unbounded_resources` (`refill_infinite_mana`, the CR 500.5 clear in `turns`,
-    // and this projection) shows it is the only axis any reader turns back into a spendable
-    // resource. Widen this `retain` only for an axis that gains the same property.
-    let scheduled_collapse: BTreeMap<PlayerId, BTreeSet<ResourceAxis>> = state
+    // The store is still never filtered: `unbounded_resources` + `unbounded_loop_enablers` stay in
+    // CR 104.4b / CR 110.1 lockstep until the CR 500.5 boundary applies the growth, which is what
+    // keeps `zones::apply_zone_exit_cleanup`'s defuse armed in the meantime.
+    //
+    // `clear_collapsed_materializations` reads this SAME authority and is UNCHANGED: it still
+    // removes each collapsed axis at the boundary, and that is what legitimately ends both the ∞
+    // rows and this tag.
+    let scheduled_axes: BTreeMap<PlayerId, BTreeSet<ResourceAxis>> = state
         .pending_unbounded_materialization
         .iter()
         .map(|(&controller, items)| {
@@ -835,22 +860,28 @@ pub fn derive_views(state: &GameState, viewer: Option<PlayerId>) -> DerivedViews
             (controller, axes)
         })
         .collect();
-    let collapse_scheduled = |controller: PlayerId, axis: &ResourceAxis| -> bool {
-        scheduled_collapse
-            .get(&controller)
-            .is_some_and(|axes| axes.contains(axis))
-    };
+
+    // CR 732.2c: the tag itself — ONE straight projection of the authority above, keyed by the
+    // SAME `attribution_player` the ∞ rows use so a row and its tag join by exact equality.
+    for (&controller, axes) in &scheduled_axes {
+        for &axis in axes {
+            views.scheduled_collapse.push(UnboundedResourceView {
+                player: attribution_player(axis, controller),
+                axis,
+            });
+        }
+    }
 
     // CR 732.2a: project every unbounded-resource loop into per-(player, axis)
     // `∞` HUD rows. Runs in every format (placed BEFORE the Commander
     // short-circuit below) and stays empty (field omitted) when no loop is
     // active — the dominant case. The engine owns attribution
     // (`attribution_player`); the frontend only formats each axis to a family.
+    //
+    // CR 732.2c: NOT filtered — see the doctrine block above; scheduled axes are TAGGED in
+    // `scheduled_collapse`.
     for (&controller, axes) in &state.unbounded_resources {
         for &axis in axes {
-            if collapse_scheduled(controller, &axis) {
-                continue;
-            }
             views.unbounded_resources.push(UnboundedResourceView {
                 player: attribution_player(axis, controller),
                 axis,
@@ -863,14 +894,9 @@ pub fn derive_views(state: &GameState, viewer: Option<PlayerId>) -> DerivedViews
     // left the battlefield (stale member). Public board state (no viewer filtering);
     // the frontend renders `∞` on any group whose members are all pile members.
     //
-    // CR 732.2c: same gate, same authority as the badge rows above. The pile IS the
-    // `TokensCreated` axis — `clear_collapsed_materializations` drops it on exactly that
-    // axis collapsing — so once that axis has a scheduled finite mint the group must stop
-    // rendering ∞ in lockstep with its resource badge.
-    for (&controller, ids) in &state.unbounded_loop_pile {
-        if collapse_scheduled(controller, &ResourceAxis::TokensCreated) {
-            continue;
-        }
+    // CR 732.2c: NOT filtered — see the doctrine block above; scheduled axes are TAGGED in
+    // `scheduled_collapse`.
+    for ids in state.unbounded_loop_pile.values() {
         for id in ids {
             if state.battlefield.contains(id) {
                 views.unbounded_pile.push(*id);
@@ -885,20 +911,11 @@ pub fn derive_views(state: &GameState, viewer: Option<PlayerId>) -> DerivedViews
     // `unbounded_pile`; the frontend renders `∞` (not `×N`) on any counter pill whose
     // type is in this set. Runs in every format (BEFORE the Commander short-circuit).
     //
-    // CR 732.2c: same gate, same authority. A pill's axis is derived by the SHARED
-    // `(object, counter) -> ResourceAxis` mapping the collapse itself uses
-    // (`collapsed_counter_axis`), so a pill can never disagree with the badge it mirrors.
-    // The class lookup is LIVE by design here: this loop only emits pills for bearers still
-    // on the battlefield, so the object is present and its class is current.
-    for (&controller, targets) in &state.unbounded_counter_targets {
+    // CR 732.2c: NOT filtered — see the doctrine block above; scheduled axes are TAGGED in
+    // `scheduled_collapse`.
+    for targets in state.unbounded_counter_targets.values() {
         for (id, ct) in targets {
             if !state.battlefield.contains(id) {
-                continue;
-            }
-            if collapse_scheduled(
-                controller,
-                &crate::types::game_state::collapsed_counter_axis(state, *id, ct),
-            ) {
                 continue;
             }
             views

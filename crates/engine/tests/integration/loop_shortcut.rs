@@ -7141,30 +7141,40 @@ fn r6a_drive_to_boundary(state: &mut GameState) {
     panic!("r6a_drive_to_boundary: no phase boundary within 64 passes");
 }
 
-/// R6a-1 (PRIMARY). MEASURED DEFECT: accepting the Witherbloom/Sprout loop writes
-/// `unbounded_resources = {P0: [Life(0), TokensCreated]}` and that mark survives to the
-/// CR 500.5 boundary, so the HUD renders an "∞ Life" badge beside P0's *finite*, growing
-/// life total. CR 732.2c: once the last player accepted, the shortcut IS taken at the
-/// named `Fixed(N)` — the growth is bounded, so no `∞` row may render for a scheduled axis.
+/// R6a-1 (PRIMARY), INVERTED to option (B). Accepting the Witherbloom/Sprout loop writes
+/// `unbounded_resources = {P0: [Life(0), TokensCreated]}` plus a non-empty ∞ pile, and
+/// registers a finite collapse. CR 732.2c says the shortcut IS taken at the accepted N — but
+/// THIS ENGINE DEFERS the growth to the CR 500.5 boundary (`turns.rs:540-591`, self-documented
+/// as an engine tolerance at `turns.rs:553-556`), where the controller still has to CHOOSE N.
+/// Across accept → boundary nothing has been applied and N is not determined: the board still
+/// holds a certified-unbounded loop, so the projection KEEPS every `∞` surface and TAGS the
+/// scheduled axes in `DerivedViews::scheduled_collapse` instead of hiding them.
 ///
-/// FILTER THE PROJECTION, NEVER THE STORE. The store must still carry the mark (it is what
-/// CR 104.4b / CR 110.1 lockstep and `zones::apply_zone_exit_cleanup`'s defuse read until
-/// the boundary applies the growth), so this row asserts BOTH halves.
+/// TAG, NEVER HIDE — and never filter the store either. The store must still carry the mark
+/// (CR 104.4b / CR 110.1 lockstep and `zones::apply_zone_exit_cleanup`'s defuse read it until
+/// the boundary applies the growth), so this row asserts store AND wire.
 ///
-/// §15 NON-VACUITY: the emptiness assertion is paired with the store's NON-emptiness and a
-/// non-empty `unbounded_loop_pile` — the same `state` the projection reads is measurably
-/// populated, so the instrument demonstrably CAN report a row. Emptiness is asserted on the
-/// WIRE (`derive_views`), never on `state`.
+/// NON-VACUITY: every wire assertion here is a NON-emptiness paired with the store's own
+/// non-emptiness at (1), so a projection that returned nothing fails immediately; and the
+/// post-drop emptiness discriminator lives out-of-loop in
+/// `unregistered_axis_still_renders_its_infinity_badge`, on the same rig.
 ///
-/// REVERT-PROBES (both RUN, both observed to fail):
-/// ⓐ delete the `if scheduled.contains(&axis) { continue; }` filter in `derive_views`
-///    ⇒ the `Life(0)` and `TokensCreated` rows render ⇒ assertion (3) FAILS.
-/// ⓑ make `GameState::scheduled_collapse_axes` return an empty set ⇒ (3) FAILS the same
-///    way AND `clear_collapsed_materializations` stops removing at the boundary — which is
-///    what proves the projection and the collapse share ONE authority rather than two
-///    copies of the same match.
+/// ASSERTION ORDER inside the viewer loop is PILE FIRST, then rows: RP-1 (pile guard) and
+/// RP-1d (row guard) each panic on their own line, so whichever comes first hides the other.
+/// Pile-first buys RP-1d an in-test rows→pile control; the rows control RP-1 loses here is
+/// supplied out-of-loop by `unregistered_axis_still_renders_its_infinity_badge`, whose
+/// pre-clear rows assertion is green under RP-1 and red under RP-1d.
+///
+/// REVERT-PROBES (RUN):
+/// ⓐ RP-1 — restore `if collapse_scheduled(controller, &TokensCreated) { continue; }` in
+///    `derive_views`' pile loop ⇒ the PILE assertion below FAILS; the rows assertion is
+///    unreached here and is controlled out-of-loop (above).
+/// ⓑ RP-1d — restore `if collapse_scheduled(controller, &axis) { continue; }` in the resource
+///    row loop ⇒ the ROWS assertion below FAILS while the PILE assertion above it passes.
+/// ⓒ RP-2 — delete the `scheduled_collapse` tag loop in `derive_views` ⇒ the tag assertion
+///    below FAILS (and both wire goldens drift).
 #[test]
-fn scheduled_collapse_renders_no_unbounded_badge() {
+fn scheduled_collapse_still_renders_the_unbounded_badge_tagged() {
     let mut state = r6a_offer_state();
 
     // (0) reach-guard: the real cast reached the CR 732.2a offer.
@@ -7220,25 +7230,30 @@ fn scheduled_collapse_renders_no_unbounded_badge() {
         "every marked axis on this board is scheduled; marked={marked:?} scheduled={scheduled:?}"
     );
 
-    // (3) DISCRIMINATOR — on the WIRE, for EVERY viewer (and the spectator view), no ∞ row.
-    // ALL THREE ∞ surfaces share the one authority, so the HUD can never hide a resource badge
-    // while a card group still renders ∞. The PER-SURFACE positive rows live on their own real
-    // fixtures — `combo_infinite_pile::real_4p_object_growth_accept_writes_infinite_pile` (pile)
-    // and `kilo_live_offer_from_real_dump::kilo_accept_marks_pentad_charge_as_unbounded_display_
+    // (3) DISCRIMINATOR — on the WIRE, for EVERY viewer (and the spectator view), the ∞ pile and
+    // both ∞ rows still project, and both scheduled axes carry the tag. ALL THREE ∞ surfaces read
+    // the one authority, so the HUD can never show a card group's ∞ while hiding its resource
+    // badge. The PER-SURFACE positive rows live on their own real fixtures —
+    // `combo_infinite_pile::real_4p_object_growth_accept_writes_infinite_pile` (pile) and
+    // `kilo_live_offer_from_real_dump::kilo_accept_marks_pentad_charge_as_unbounded_display_
     // target` (counter pills) — so a regression on ONE surface stays visible even though this
-    // row flips on all of them at once.
+    // row covers pile + rows at once.
     for viewer in [None, Some(P0), Some(P1), Some(P2), Some(PlayerId(3))] {
         let views = engine::game::derived_views::derive_views(&state, viewer);
         assert!(
-            views.unbounded_resources.is_empty(),
-            "CR 732.2c: a scheduled finite collapse must render NO ∞ row (viewer {viewer:?}), \
-             got {:?}",
-            views.unbounded_resources
+            !views.unbounded_pile.is_empty(),
+            "CR 732.2c: the scheduled collapse still projects the ∞ pile (viewer {viewer:?})"
         );
+        let axes: Vec<ResourceAxis> = views.unbounded_resources.iter().map(|r| r.axis).collect();
         assert!(
-            views.unbounded_pile.is_empty(),
-            "CR 732.2c: ...and no ∞ card group beside it (viewer {viewer:?}), got {:?}",
-            views.unbounded_pile
+            axes.contains(&ResourceAxis::Life(P0)) && axes.contains(&ResourceAxis::TokensCreated),
+            "CR 732.2c: ...and both ∞ rows beside it (viewer {viewer:?}), got {axes:?}"
+        );
+        let tagged: Vec<ResourceAxis> = views.scheduled_collapse.iter().map(|r| r.axis).collect();
+        assert!(
+            tagged.contains(&ResourceAxis::Life(P0))
+                && tagged.contains(&ResourceAxis::TokensCreated),
+            "CR 732.2c: ...and both axes are TAGGED scheduled (viewer {viewer:?}), got {tagged:?}"
         );
     }
 
@@ -7246,23 +7261,22 @@ fn scheduled_collapse_renders_no_unbounded_badge() {
     // WASM `wrap_filtered` getter go through `derive_filtered_views`, which CALLS
     // `derive_views(filtered_state, viewer)` and then overrides only
     // `unique_authorized_submitter` and `blocker_assignment_pairs`. It WRAPS; it does not
-    // bypass. So gating in `derive_views` alone could not have leaked ∞ to the broadcast
-    // path — there is no other producer of these three fields, and this row costs zero
-    // production code.
+    // bypass. So `derive_views` alone decides what the broadcast path shows — there is no other
+    // producer of these three fields, and this row costs zero production code.
     //
     // What it DOES guard is the INPUT: `filter_state_for_viewer` is a clone-and-redact with
-    // ZERO `unbounded` references today, so it passes `pending_unbounded_materialization`
-    // through unredacted and the gate sees the same stash the hot-seat viewer does. If a
-    // future redaction ever drops that stash from the filtered clone, the gate goes silently
-    // INERT on the broadcast path only — filtered viewers get the ∞ rows back while the local
-    // viewer does not. That is the regression this row catches.
+    // ZERO `unbounded` references today, so a filtered viewer sees the same ∞ surfaces the
+    // hot-seat viewer does. If a future redaction ever dropped the ∞ stores or the stash from the
+    // filtered clone, the broadcast path alone would go dark — remote players would lose the ∞
+    // pile and rows (and their scheduled tag) while the local viewer kept them. That asymmetry is
+    // the regression this row catches.
     for viewer in [P0, P1, P2, PlayerId(3)] {
         let filtered = engine::game::visibility::filter_state_for_viewer(&state, viewer);
         let views =
             engine::game::derived_views::derive_filtered_views(&state, &filtered, Some(viewer));
         assert!(
-            views.unbounded_resources.is_empty() && views.unbounded_pile.is_empty(),
-            "CR 732.2c: the viewer-FILTERED broadcast path hides the same rows (viewer \
+            !views.unbounded_resources.is_empty() && !views.unbounded_pile.is_empty(),
+            "CR 732.2c: the viewer-FILTERED broadcast path projects the same rows (viewer \
              {viewer:?}), got {:?} / {:?}",
             views.unbounded_resources,
             views.unbounded_pile
@@ -7282,19 +7296,38 @@ fn scheduled_collapse_renders_no_unbounded_badge() {
     );
 }
 
-/// R6a-3 (FAIL-CLOSED). An ∞ axis the accept marked but NO registered materialization
-/// collapses must keep rendering its badge — the filter is keyed on what is actually
-/// scheduled, never on what is merely *labellable*.
+/// R6a-3 (FAIL-CLOSED), under option (B). Two jobs, on ONE rig:
 ///
-/// This is the row that kills the lazy-but-unsound filter: `LoopCollapseAxis`
-/// `from_resource_axis` maps `TokensCreated` / `Counter(..)` / `Life(..)` to a label, so
-/// building the hide-set from "does this axis have a collapse label" is a one-liner that
-/// passes R6a-1 and silently hides an axis nothing will ever collapse.
+/// 1. POSITIVE CONTROL for the whole change — while the stash is present, a scheduled collapse
+///    still PROJECTS its ∞ rows and the tag names exactly the axes the CR 500.5 boundary will
+///    cash out. This is the load-bearing rows control: it is green under the pile-guard probe
+///    (RP-1) and red under the row-guard probe (RP-1d), i.e. it discriminates in BOTH
+///    directions, which is what lets the sibling test above assert pile-first.
+/// 2. DISCRIMINATOR — after dropping the registrations, an ∞ axis that is merely *labellable*
+///    must carry NO scheduled tag. `LoopCollapseAxis::from_resource_axis` maps `TokensCreated` /
+///    `Counter(..)` / `Life(..)` to a label, so keying the tag on "does this axis have a collapse
+///    label" is a one-liner that passes every other row in this file and mislabels an axis
+///    nothing will ever collapse.
 ///
-/// REVERT-PROBE (RUN): build the projection filter from
-/// `LoopCollapseAxis::from_resource_axis(axis).is_some()` instead of from
-/// `scheduled_collapse_axes` ⇒ this row's `TokensCreated` badge vanishes ⇒ FAILS, while
-/// R6a-1 still passes.
+/// REVERT-PROBE (RP-4, RUN): build the tag by iterating **`state.unbounded_resources`** (which
+/// survives the `.clear()`) and keeping axes matching
+/// `matches!(axis, ResourceAxis::TokensCreated | ResourceAxis::Counter(..) | ResourceAxis::Life(_))`
+/// — a *transcription* of `LoopCollapseAxis::from_resource_axis`'s three `Some` arms
+/// (`types/game_state.rs:11133/11136/11137`), inlined because that fn is a bare module-private
+/// `fn` (`:11131`) and `game::derived_views` is a sibling module, so calling it is
+/// `error[E0624]: associated function from_resource_axis is private`. Do not widen its
+/// visibility. ⇒ the post-clear tag becomes 2-element ⇒ the emptiness assertion below FAILS while
+/// the pre-clear positive control stays green. A probe that iterates the already-CLEARED stash
+/// would be vacuous — this wording is load-bearing.
+///
+/// REVERT-PROBE (RP-5, RUN): key the tag on `state.pending_materialization_count`
+/// (`types/game_state.rs:13793`) instead of on the stash. That map is NOT cleared by clearing
+/// `pending_unbounded_materialization`, and this is a stash-bearing `Fixed(200)` accept, so the
+/// post-clear tag stays populated ⇒ the same emptiness assertion FAILS.
+///
+/// The two closing `contains` assertions are a REACH-ECHO, not a discriminator: they pin that the
+/// ∞ store survives the clear (which is what makes the tag-emptiness above meaningful). They no
+/// longer discriminate any candidate implementation on their own.
 #[test]
 fn unregistered_axis_still_renders_its_infinity_badge() {
     let mut state = r6a_offer_state();
@@ -7316,15 +7349,34 @@ fn unregistered_axis_still_renders_its_infinity_badge() {
         marked.contains(&ResourceAxis::TokensCreated) && marked.contains(&ResourceAxis::Life(P0)),
         "reach-guard: both labellable axes are marked, got {marked:?}"
     );
-    // Positive control on the SAME state, BEFORE the drop: with the stash present the rows
-    // are hidden, so the flip below is attributable to the missing registration alone.
+    // POSITIVE CONTROL on the SAME state, BEFORE the drop. CR 732.2c: while the collapse is
+    // SCHEDULED the ∞ rows stay projected (the user-facing doctrine) and the tag names exactly the
+    // axes the CR 500.5 boundary will cash out. This pair is what makes the post-drop TAG-EMPTINESS
+    // below attributable to the missing registration alone.
+    let scheduled_views = engine::game::derived_views::derive_views(&state, None);
+    let tagged: Vec<ResourceAxis> = scheduled_views
+        .scheduled_collapse
+        .iter()
+        .map(|r| r.axis)
+        .collect();
     assert!(
-        engine::game::derived_views::derive_views(&state, None)
-            .unbounded_resources
-            .is_empty(),
-        "control: with the stash present the scheduled rows are hidden"
+        !scheduled_views.unbounded_resources.is_empty(),
+        "CR 732.2c: a scheduled collapse still PROJECTS its ∞ rows (option B), got {:?}",
+        scheduled_views.unbounded_resources
+    );
+    assert!(
+        tagged.contains(&ResourceAxis::TokensCreated) && tagged.contains(&ResourceAxis::Life(P0)),
+        "both registered axes are TAGGED scheduled while the stash is present, got {tagged:?}"
     );
     state.pending_unbounded_materialization.clear();
+
+    assert!(
+        engine::game::derived_views::derive_views(&state, None)
+            .scheduled_collapse
+            .is_empty(),
+        "FAIL-CLOSED: the tag is keyed on the REGISTRATION, not on labellability or on the accept — \
+         with the stash dropped, two still-labellable ∞ axes must carry NO scheduled tag"
+    );
 
     let rows = engine::game::derived_views::derive_views(&state, None).unbounded_resources;
     let axes: Vec<ResourceAxis> = rows.iter().map(|r| r.axis).collect();

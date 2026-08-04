@@ -1,0 +1,122 @@
+/**
+ * CR 732.2c cross-seam pin. Both JSON files are ENGINE-EMITTED by
+ * `combo_infinite_pile::real_4p_object_growth_accept_writes_infinite_pile` and
+ * `kilo_live_offer_from_real_dump::kilo_accept_marks_pentad_charge_as_unbounded_display_target`,
+ * each driving a REAL 4-player dump through the REAL APNAP accept. Regenerate with
+ * `UPDATE_WIRE_GOLDEN=1 cargo test -p phase-engine --test integration <fn>`. Never hand-edit them.
+ * Every existing client test that touches these channels hand-writes its own `derived` block, so
+ * this file is the only place the engine's wire shape and the client's readers meet.
+ * The `unbounded_pile → Set` hop is performed here rather than by `gameStateView.ts`, because
+ * driving that function would require committing a whole `GameState`; the ids, the field name and
+ * the value encoding — the parts that actually differ across the language boundary — are
+ * engine-authored.
+ */
+import { renderHook } from "@testing-library/react";
+import { describe, expect, it } from "vitest";
+
+import type { DerivedViews, GameObject, ObjectId, ResourceAxis } from "../../adapter/types";
+import { familyOf } from "../../components/hud/HudBadges";
+import { useUnboundedCounterTypes } from "../../hooks/useUnboundedCounterTypes";
+import { buildGameObject } from "../../test/factories/gameObjectFactory";
+import { buildGameState } from "../../test/factories/gameStateFactory";
+import counterWire from "../../test/fixtures/unbounded-counter-wire.json";
+import tokenWire from "../../test/fixtures/unbounded-token-wire.json";
+import { setGameStoreForTest } from "../../test/helpers/gameStoreHelpers";
+import { groupByName } from "../battlefieldProps";
+
+const saproling = (id: ObjectId, tapped: boolean): GameObject =>
+  buildGameObject({ id, name: "Saproling", tapped, card_id: 0, controller: 0, owner: 0 });
+
+describe("unbounded ∞ wire seam (engine-emitted goldens)", () => {
+  // RESIDUAL: this closes the ID/shape half only — the TS-side `GameObject`s are factory-built, so
+  // the test cannot see an engine/client group-PARTITION mismatch, and `isUnboundedPile`'s
+  // `members.every(...)` (`battlefieldProps.ts`) degrades such a mismatch silently to `×N` rather
+  // than failing, which is exactly the user's symptom class.
+
+  it("emits populated ∞ channels and omits the empty ones", () => {
+    // (1) reach-guard: the engine emitted a populated pile, so the group assertions below are
+    // not run against an empty set.
+    expect(tokenWire.unbounded_pile).toEqual([402, 403, 404, 407]);
+    // (2) reach-guard + the two counter seam facts: the map key is a JSON STRING, and
+    // `CounterType` serializes FLAT ("charge", not {"Generic":"charge"}). A regressed Serialize
+    // would silently blank every ∞ pill.
+    expect(counterWire.unbounded_counters).toEqual({ "405": ["charge"] });
+    // (3) omit-when-empty, engine-attested in BOTH directions.
+    expect("unbounded_pile" in counterWire).toBe(false);
+    expect("unbounded_counters" in tokenWire).toBe(false);
+  });
+
+  it("drives the real groupByName pile predicate off engine ids", () => {
+    const unboundedPileIds: ReadonlySet<ObjectId> = new Set(tokenWire.unbounded_pile);
+    const objects: GameObject[] = [
+      ...[402, 403, 404, 407].map((id) => saproling(id, true)),
+      ...[406, 408, 409, 410].map((id) => saproling(id, false)),
+      buildGameObject({
+        id: 401,
+        name: "Witherbloom, the Balancer",
+        tapped: true,
+        card_id: 9001,
+        controller: 0,
+        owner: 0,
+      }),
+    ];
+
+    const groups = groupByName(objects, new Set(), unboundedPileIds);
+    const groupOf = (id: ObjectId) => {
+      const group = groups.find((g) => g.ids.includes(id));
+      expect(group, `no group contains ${id}`).toBeDefined();
+      return group!;
+    };
+
+    // NEGATIVES FIRST, POSITIVE LAST — deliberate. A failing `expect` throws and skips the rest of
+    // the `it`, and the regression class this file exists to catch (the engine stops emitting the
+    // pile) reds the POSITIVE. Asserting the negatives first keeps them observable as the paired
+    // control in that same run instead of being skipped by the positive's throw.
+    //
+    // (5) paired NEGATIVE from the SAME groupByName call: same name, differs only on `tapped`.
+    expect(groupOf(406).ids).toEqual([406, 408, 409, 410]);
+    expect(groupOf(406).isUnboundedPile).toBe(false);
+    // (6) free third negative: tapped, but not a pile member — so it is not "everything tapped".
+    expect(groupOf(401).isUnboundedPile).toBe(false);
+    // (4) paired POSITIVE: the tapped Saprolings the engine named.
+    expect(groupOf(402).ids).toEqual([402, 403, 404, 407]);
+    expect(groupOf(402).isUnboundedPile).toBe(true);
+  });
+
+  it("decodes both externally-tagged axis shapes through the real familyOf", () => {
+    // (7) unit variant — a bare string on the wire.
+    expect(familyOf(tokenWire.unbounded_resources[0].axis as ResourceAxis)).toBe("tokens");
+    // (8) data variant — a single-key object on the wire.
+    expect(
+      familyOf(counterWire.unbounded_resources[0].axis as unknown as ResourceAxis),
+    ).toBe("counters");
+    // (9) redundant reinforcement, kept as documentation of intent: it cannot fail unless (7) or
+    // (8) already has.
+    expect(familyOf(tokenWire.unbounded_resources[0].axis as ResourceAxis)).not.toBe(
+      familyOf(counterWire.unbounded_resources[0].axis as unknown as ResourceAxis),
+    );
+  });
+
+  it("feeds the real useUnboundedCounterTypes hook from the engine wire", () => {
+    setGameStoreForTest({
+      gameState: buildGameState({ derived: counterWire as unknown as DerivedViews }),
+    });
+    // (10) paired POSITIVE through the real zustand selector.
+    expect(renderHook(() => useUnboundedCounterTypes(405)).result.current).toEqual(["charge"]);
+    // (11) paired NEGATIVE: 404 is on the same battlefield and carries no ∞ mark.
+    expect(renderHook(() => useUnboundedCounterTypes(404)).result.current).toEqual([]);
+  });
+
+  // 12 and 13 are separate `it`s so that a tag regression reds BOTH families independently — in
+  // one `it` the first `expect` throws and the second family is never measured.
+  it("carries the scheduled-collapse tag on the unit-variant family", () => {
+    // (12) THE DOCTRINE: the ∞ badge ships WHILE a finite collapse is merely scheduled, and the
+    // tag names which rows the CR 500.5 boundary will cash out.
+    expect(tokenWire.scheduled_collapse).toEqual([{ axis: "TokensCreated", player: 0 }]);
+  });
+
+  it("carries the scheduled-collapse tag on the data-variant family", () => {
+    // (13) …and the same tag on the counter family.
+    expect(counterWire.scheduled_collapse[0].axis).toEqual({ Counter: ["Other", "Other"] });
+  });
+});

@@ -3526,17 +3526,19 @@ pub enum PersistentAxisMaterialization {
 
 /// CR 732.2a: the `unbounded_resources` axis a counter of `ct` on `obj_id` backs — mirrors
 /// `ResourceVector::snapshot`'s `(CounterClass, ObjectClass)` keying. SINGLE mapping from a
-/// counter target to its axis, shared by `scheduled_collapse_axes`,
-/// `clear_collapsed_materializations`' surviving-target guard, and the ∞ counter-pill
-/// projection in `game::derived_views`.
+/// counter target to its axis, with exactly three production call sites, all in this file:
+/// `scheduled_collapse_axes`, and `clear_collapsed_materializations`' surviving-target guard
+/// (twice). The ∞ counter-pill projection in `game::derived_views` is NOT one of them — it
+/// projects the battlefield-surviving entries of `unbounded_counter_targets` directly and
+/// never maps them to an axis.
 ///
 /// LIVE RE-DERIVATION — DELIBERATE DISPLAY-ONLY TOLERANCE. The class is read from the
 /// object as it stands NOW, not snapshotted at accept. `state.objects` retains an object
 /// across an ordinary zone change, so the `Other` fallback is reached only when the bearer
 /// truly stopped existing, or when its printed types changed under CR 400.7. In that window
-/// the derived axis becomes `Counter(_, Other)`, which is not the axis `unbounded_resources`
-/// holds ⇒ the pill/badge is NOT hidden and the `∞` renders for a collapse that is still
-/// scheduled.
+/// the derived axis becomes `Counter(_, Other)`, which joins no axis `unbounded_resources`
+/// holds ⇒ the row keeps rendering `∞` but loses its `scheduled_collapse` tag, and the
+/// boundary's removal finds nothing to take away. Nothing is ever hidden by the miss.
 ///
 /// CENSUS (`grep -rn 'objects.remove' crates/`, `#[cfg(test)]` bodies excluded) — FOUR
 /// production removes, not one. Cease-to-exist (`zones::…replay_resolved_object_cease`,
@@ -3552,19 +3554,17 @@ pub enum PersistentAxisMaterialization {
 /// Two further removes operate on DISCARDED COMPARISON CLONES, never live state
 /// (`game::engine::normalize_recast_frame`, `analysis::resource`'s frame projection).
 ///
-/// REACHABILITY BY CONSUMER (the fallback is not uniformly live):
-///   • the ∞ counter-PILL projection in `game::derived_views` — UNREACHABLE. That loop
-///     `continue`s on `!state.battlefield.contains(id)` before calling this, and every
-///     production remove above deletes from the zone set before `objects` (or never touches
-///     a battlefield permanent at all), so a battlefield id is present in `state.objects`.
-///   • `scheduled_collapse_axes` (both its `derived_views` hide-set caller and its
-///     `clear_collapsed_materializations` caller) and that function's surviving-target guard
-///     — LIVE, and byte-identical to the pre-extraction nested `counter_axis` helper they
-///     already used. The hide-set case is exactly the fail-open described above.
+/// REACHABILITY BY CONSUMER — with the pill projection no longer mapping to an axis, both
+/// remaining consumers are LIVE, and byte-identical to the pre-extraction nested
+/// `counter_axis` helper they already used:
+///   • `scheduled_collapse_axes` — read by `derive_views` to build the `scheduled_collapse`
+///     TAG and by `clear_collapsed_materializations` to pick removals. Exactly the fail-open
+///     described above: an untagged `∞` row, and a removal that finds nothing.
+///   • `clear_collapsed_materializations`' own surviving-target guard.
 ///
 /// That fail-open polarity is the SAME one this phase mandates everywhere else (an axis
-/// with no registration renders ∞): it can only ever show an extra ∞ for at most the
-/// accept→CR-500.5-boundary window, never hide a real one. A snapshot would have to add a
+/// with no registration renders ∞): it can only ever leave an ∞ standing — untagged, or one
+/// boundary longer than it should — never hide a real one. A snapshot would have to add a
 /// serde field to `CounterGrowth` — a saved-game surface change across every construction
 /// site — to buy a strictly-display improvement, so it is not taken. Removing a non-present
 /// axis stays a harmless no-op, and `clear_collapsed_materializations`' surviving-target
@@ -19821,24 +19821,31 @@ impl GameState {
     /// CR 732.2a: the exact `ResourceAxis` set a deferred materialization stash will
     /// collapse at the next CR 500.5 boundary. SINGLE AUTHORITY, with exactly two callers:
     /// - `clear_collapsed_materializations` REMOVES these axes once the growth was applied;
-    /// - `game::derived_views::derive_views` HIDES their `∞` HUD rows while the collapse is
-    ///   merely SCHEDULED. CR 732.2c fixes the finite N at accept, so the axis is already
-    ///   bounded — rendering `∞ Life` beside a finite, growing life total is a lie.
+    /// - `game::derived_views::derive_views` TAGS them into `DerivedViews::scheduled_collapse`
+    ///   while the collapse is merely SCHEDULED. A TAG, NOT A FILTER: the `∞` HUD rows, the ∞
+    ///   object pile and the ∞ counter pills all stay projected. CR 732.2c says the shortcut is
+    ///   taken at accept, but this engine DEFERS the growth to the next CR 500.5 boundary, so
+    ///   across accept→boundary nothing has been applied and N is not chosen yet — what is on
+    ///   the board is still a certified-unbounded loop, the `∞` is load-bearing board state,
+    ///   and this set only names which of those badges the boundary will cash out.
     ///
     /// Returns the axes UNFILTERED, including any `Mana(_)` a `DriveSequence` names, because the
     /// `clear_collapsed_materializations` caller MUST remove that axis at the boundary. The
-    /// `derive_views` caller drops `Mana(_)` from its hide-set on the way out: mana is already
-    /// materialized in the pool (`mana_payment::refill_infinite_mana` re-tops it off this very
-    /// store until CR 500.5 empties it), so it is the one axis that must keep rendering `∞`
-    /// while a collapse is merely scheduled. See the class rule at that call site.
+    /// `derive_views` caller drops `Mana(_)` on the way out so its tag means "DEFERRED growth
+    /// only": mana is already materialized in the pool (`mana_payment::refill_infinite_mana`
+    /// re-tops it off this very store until CR 500.5 empties it), so tagging that live,
+    /// spendable pool "scheduled collapse" would mislabel it. The tag therefore deliberately
+    /// UNDER-REPORTS mana, whose `∞` does end — at the CR 500.5 step/phase end rather than by a
+    /// materialization. See the class rule at that call site.
     ///
-    /// Hiding in the PROJECTION rather than removing from the store is load-bearing:
+    /// Tagging in the PROJECTION rather than removing from the store is load-bearing:
     /// the store keeps `unbounded_resources` and `unbounded_loop_enablers` in CR 104.4b /
     /// CR 110.1 lockstep, which is what `zones::apply_zone_exit_cleanup` reads to defuse a
     /// capability whose enabler leaves between accept and boundary.
     ///
     /// FAIL-CLOSED: only an axis some REGISTERED item actually collapses is returned, so an
-    /// ∞ axis with no registration (a mana engine registers nothing) keeps its badge.
+    /// ∞ axis with no registration (a mana engine registers nothing) is neither tagged here nor
+    /// removed at the boundary — it keeps its badge.
     /// EXHAUSTIVE over `PersistentAxisMaterialization` (no wildcard) — a future variant
     /// build-breaks here instead of silently leaking a stale `∞`.
     pub fn scheduled_collapse_axes(
@@ -19910,7 +19917,7 @@ impl GameState {
     ) {
         // --- Phase 1 (reads): what to remove ---
         // The axis set comes from the SHARED authority the ∞-row projection also reads, so
-        // "hidden while scheduled" and "removed once applied" can never disagree.
+        // "tagged while scheduled" and "removed once applied" can never disagree.
         let mut axes_to_remove = self.scheduled_collapse_axes(collapsed);
         // The token pile drops exactly when the token axis collapses — true for a batched
         // `Tokens` item and for a `DriveSequence` that names `TokensCreated`.
