@@ -47,6 +47,7 @@
 //! "may"; with Reed published there is nothing left to abort on.
 
 use engine::analysis::decision_template::{DecisionKind, DecisionPointKind, IterationCount};
+use engine::analysis::resource::ResourceVector;
 use engine::game::engine::apply;
 use engine::types::ability::{ReplacementMode, TargetRef};
 use engine::types::actions::GameAction;
@@ -1769,11 +1770,28 @@ fn published_point_names(state: &GameState) -> Vec<(String, &'static str)> {
 /// Drive one user capture to its offer, declare a CONFORMANT `Fixed(n)`, have every living
 /// opponent Accept, and measure what the grant actually committed.
 ///
-/// The life and library axes are asserted EXACTLY and the expectation is DERIVED FROM THE
-/// OFFER'S OWN published `per_cycle.delta` — `n` repetitions of the signature the certificate
-/// itself carries — so no repetition rate is hard-coded and a re-dump flows through unedited.
-/// The counter and token axes are event-fed (`ResourceVector::snapshot` leaves them at zero),
-/// so they are returned for the caller's `n`-scaling arm instead.
+/// The life, library and COUNTER axes are asserted EXACTLY and every expectation is DERIVED
+/// FROM THE OFFER'S OWN published `per_cycle.delta` — `n` repetitions of the signature the
+/// certificate itself carries — so no repetition rate is hard-coded and a re-dump flows
+/// through unedited. Each of the three carries an ANTI-VACUITY guard on the published rate,
+/// because `x == rate * n` is satisfied by any `x` when `rate` is zero.
+///
+/// ⚠ THE COUNTER AXIS WAS WEAKENED FOR A REASON THAT WAS FALSE. The note here used to say the
+/// counter axis is event-fed and left at zero by `ResourceVector::snapshot`. MEASURED, the
+/// published vector carries `counters: {(Plus1Plus1, Creature): 2}` — non-zero, and
+/// state-readable (`snapshot` walks the battlefield for it). The real obstacle was the
+/// ACCESSOR: [`commit_axes`] reads ONE named object's counters (The Thing) while the published
+/// key `(CounterClass, ObjectClass)` is an AGGREGATE over every battlefield object of that
+/// class, so the two are not comparable quantities. Asserted here against the aggregate
+/// accessor the certificate is minted from, and still returned for the caller's per-object
+/// `n`-scaling arm. MEASURED on both captures: aggregate `(Plus1Plus1, Creature)` moves `2`
+/// at `n = 1` and `6` at `n = 3`, i.e. exactly `2n`, which is the assertion this note's false
+/// predecessor had waved off as underivable.
+///
+/// The TOKEN axis genuinely cannot be asserted against the certificate: `tokens_created` IS
+/// event-fed, and the published vector carries `tokens_created: 0` on both captures, so an
+/// exact expectation derived from it would be the vacuous `0 == 0 * n`. It keeps the
+/// `n`-scaling arm alone.
 ///
 /// Returns `(offer beat, published points, Thing-counter delta, token delta)`.
 fn accept_a_fixed_grant(
@@ -1798,6 +1816,7 @@ fn accept_a_fixed_grant(
     );
     let points = published_point_names(&state);
     let before = commit_axes(&state);
+    let before_rv = ResourceVector::snapshot(&state);
 
     let template = f4_pin_template(&schema, proposer, n);
     apply(
@@ -1823,6 +1842,30 @@ fn accept_a_fixed_grant(
     );
 
     let after = commit_axes(&state);
+    let measured = ResourceVector::delta(&before_rv, &ResourceVector::snapshot(&state));
+    // ── ANTI-VACUITY on the published RATES (F3) ─────────────────────────────────────────
+    // Every equality below has the shape `moved == rate * n`, which an all-zero certificate
+    // satisfies with a board that never moved. The counters/tokens half already guards this
+    // in `assert_axis_scales`; these are the life and library halves' matching guards.
+    assert!(
+        per_cycle.delta.life.values().any(|&rate| rate != 0),
+        "[{label} n={n}] ANTI-VACUITY: the published per-cycle LIFE delta must move some \
+         seat, else every life equality below is `0 == 0 * {n}` and asserts nothing. \
+         published life = {:?}",
+        per_cycle.delta.life
+    );
+    assert!(
+        per_cycle
+            .delta
+            .library_delta
+            .values()
+            .any(|&rate| rate != 0),
+        "[{label} n={n}] ANTI-VACUITY: the published per-cycle LIBRARY delta must move some \
+         seat, else every library equality below is `0 == 0 * {n}` and asserts nothing. \
+         published library = {:?}",
+        per_cycle.delta.library_delta
+    );
+
     for (i, player) in state.players.iter().enumerate() {
         let life_rate = per_cycle.delta.life.get(&player.id).copied().unwrap_or(0);
         assert_eq!(
@@ -1852,6 +1895,40 @@ fn accept_a_fixed_grant(
             after.1
         );
     }
+    // ── THE COUNTER AXIS, EXACTLY (F4) ───────────────────────────────────────────────────
+    // CR 122.1 + CR 732.2a. Against the AGGREGATE accessor the certificate is minted from,
+    // not against `commit_axes`'s single named object — that mismatch, not "the axis is
+    // event-fed", is why this assertion was previously only a scaling arm.
+    assert!(
+        per_cycle.delta.counters.values().any(|&rate| rate != 0),
+        "[{label} n={n}] ANTI-VACUITY: the published per-cycle COUNTER delta must be \
+         non-zero, else the equality below is `0 == 0 * {n}`. published = {:?}",
+        per_cycle.delta.counters
+    );
+    for (key, rate) in &per_cycle.delta.counters {
+        assert_eq!(
+            measured.counters.get(key).copied().unwrap_or(0),
+            rate * i64::from(n),
+            "[{label} n={n}] CR 732.2a: the {key:?} counter axis must move by EXACTLY {n} \
+             repetitions of the offer's own published per-cycle rate ({rate}). \
+             measured = {:?}",
+            measured.counters
+        );
+    }
+    // Nothing may move on a counter axis the certificate never published: a commit that
+    // pumped an unpublished counter class would satisfy every equality above and still be a
+    // cycle the offer did not describe.
+    for (key, moved) in &measured.counters {
+        if *moved != 0 {
+            assert!(
+                per_cycle.delta.counters.contains_key(key),
+                "[{label} n={n}] CR 732.2a: {key:?} moved by {moved} but is absent from the \
+                 published per-cycle signature {:?}",
+                per_cycle.delta.counters
+            );
+        }
+    }
+
     assert!(
         matches!(state.waiting_for, WaitingFor::Priority { .. }),
         "[{label} n={n}] CR 732.2a: a taken shortcut's ending point is a place where a player \

@@ -3406,9 +3406,11 @@ fn drive_one_shortcut_cycle(
             }
             // Active-player settle beat: cycle complete iff the board recurred (constant-depth
             // equal-modulo-resources OR ω-covering growth) or the published period's worth of
-            // ring frames has elapsed. This is the ONLY beat kind the ring samples at (the
-            // sampler's own gate is `Priority{player == active_player}`), so the frame counter
-            // is advanced here and nowhere else.
+            // ring frames has elapsed. NOT the only beat kind the ring samples at — the
+            // forced-window ANSWER arm below reaches `apply_action`'s second sampling site, so
+            // it advances the same counter. Both arms key the advance on the ring's BACK
+            // ALLOCATION actually changing rather than on the beat kind, which is what keeps
+            // the drive's frame count equal to the mint's on either path.
             Ok(WaitingFor::Priority { player }) if player == work.active_player => {
                 ev.append(&mut beat_events);
                 let ring_back_after = work.loop_detect_ring.back().map(std::sync::Arc::as_ptr);
@@ -11145,9 +11147,41 @@ fn apply_action(
             skip_deferred_trigger_drain,
         )?;
         // CR 732.2a: the SECOND sampling site — a stack entry announced while a player
-        // answers a FORCED pre-priority window. Same conjuncts as the sampler in
-        // `pass_priority_once_with_pipeline`, plus the window flag captured before the
-        // reducer consumed it.
+        // answers a FORCED pre-priority window.
+        //
+        // NOT "the settle sampler's conjuncts PLUS the window flag". The two sets are the
+        // same SIZE, one member apart: `answering_forced_window` (captured before the
+        // reducer consumed the window) REPLACES the settle sampler's `resolved_this_beat`.
+        // Everything else is shared — `!in_simulation_probe()`, `samples()`,
+        // `!stack.is_empty()`, the non-shrinking `len >= before`, and
+        // `Priority{active_player}`.
+        //
+        // The settle sampler's `else { ring.clear() }` has NO counterpart here, and that is
+        // deliberate: this site is not a settle verdict on the beat, it is an additive
+        // observation of entries a forced window announced, so a miss must leave the
+        // accumulation alone rather than wipe it. CONSEQUENCE, accepted: a forced-window
+        // answer that resolves nothing but leaves the stack non-shrinking records a frame
+        // whose stack duplicates its predecessor's. That costs one ring slot and a zero
+        // frame-delta; it cannot manufacture a period, because `ring_delta_signature` refuses
+        // a zero smallest-period delta outright, and it cannot desynchronize the count,
+        // because MINT AND DRIVE ARE SYMMETRIC — `drive_one_shortcut_cycle` answers its
+        // prompts through `inject_pinned_answer`, whose arms all dispatch `apply_action`, so
+        // the drive walks this very branch and advances `frames_this_cycle` on it.
+        //
+        // ⚠ LATENT ORDERING ASYMMETRY, DELIBERATELY NOT FIXED. This records BEFORE the
+        // `state.waiting_for = wf` two lines below, while the settle sampler records AFTER
+        // its `sync_waiting_for` — so a frame minted here carries the PRE-pipeline
+        // `waiting_for`/`priority_player` pair while a settle frame carries the synced one.
+        // `impl PartialEq for GameState` compares both fields and `normalize_for_loop`
+        // neutralizes neither, so a heterogeneous ring would break `ring_delta_signature`'s
+        // turn-position conjunct. MEASURED, it is latent and not live: a
+        // `debug_assert_eq!` census on both fields at this position reported 0 failures
+        // across 18,486 lib rows and 4,487 integration rows, and a `debug_assert!(false)`
+        // positive control at the same position DID fire on the A1 board, proving the census
+        // instrument was live rather than unreached. Reordering the record past
+        // `sync_waiting_for` would be a BEHAVIOURAL change (it moves what every ring frame
+        // minted here contains) made for a non-live defect, and it would invalidate the
+        // measured battery this branch's rows are keyed to. Comment, not code.
         if answering_forced_window
             && !in_simulation_probe()
             && state.loop_detection.samples()
@@ -15365,7 +15399,20 @@ mod stage2_injector_tests {
                 // producer and neither is a prompt. The coordinate below is re-derived from the
                 // row's OWN failure output at this base, with the line re-read and
                 // sha256-compared there and the enclosing function re-checked.
-                "game/engine.rs:11515".to_string(),
+                //
+                // THIS PR (the ACCEPT-WITH-FIXES doc round), ON TOP OF `:11515`: `⇒ :11549`,
+                // +34. LOCAL, not upstream, so the CI-vs-local diagnosis in the header does
+                // not apply. engine.rs's ENTIRE delta this round is two COMMENT hunks, and
+                // both sit above this producer: `@@ -3409,3 +3409,5 @@` in
+                // `drive_one_shortcut_cycle` (+2) and `@@ -11148,3 +11150,35 @@` in
+                // `apply_action` (+32) — 2 + 32 = 34, the whole shift, with nothing below.
+                // A comment round cannot mint a prompt, and the census agrees: total 37 and
+                // partition 5/7/25 are untouched and the other four entries did not move.
+                // Identity re-established rather than assumed: line :11549 is byte-identical
+                // by sha256 (`8a544e878d3e77fb…5cc7d63`) to `c7b18c3c7:engine.rs:11515`, and
+                // it is still inside `begin_pending_trigger_target_selection`, which moved by
+                // the same +34 (opens :11366 ⇒ :11400).
+                "game/engine.rs:11549".to_string(),
             ],
             "the five production producers, NAMED: the CR 603.5 gate in `resolve_chain_body` \
              plus the two repeated-optional-payment drivers, the per-player acceptance cursor \

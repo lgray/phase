@@ -648,9 +648,16 @@ pub struct PeriodicDelta {
     /// count. It has to, for the class [`ring_delta_signature`] certifies: that basis proves
     /// a periodic DELTA, not a recurring board, so the drive's board-recurrence predicates are
     /// false at every settle beat and `Fixed(n)`'s `n` would otherwise be structurally inert.
-    /// The count is measured the same way it is minted — the engine's single
-    /// `record_loop_detect_sample` call site is inside `pass_priority_once_with_pipeline`,
-    /// which is the function the drive steps.
+    /// The count is measured the same way it is minted, and that now takes TWO sites to
+    /// state: `record_loop_detect_sample` is called from the settle sampler in
+    /// `game::engine::pass_priority_once_with_pipeline` AND from the forced-window answer
+    /// site in `game::engine::apply_action`. `drive_one_shortcut_cycle` covers both — it
+    /// steps `pass_priority_once_with_pipeline` on its priority beats and answers every other
+    /// prompt through `inject_pinned_answer`, whose three arms all dispatch `apply_action`.
+    /// The drive advances `frames_this_cycle` in BOTH arms (each keyed on the ring's back
+    /// allocation actually changing), so mint and measure stay one-to-one. Before the second
+    /// site existed this doc claimed a single call site; that premise is dead, and the
+    /// count would silently read a HALF period if only one of the two arms counted.
     ///
     /// Named for its unit on purpose: `game::engine::shortcut_drive_period` maps a
     /// TEMPLATE to a repeat count, which is a different quantity in the same subsystem.
@@ -1302,8 +1309,11 @@ fn map_delta<K: Ord + Copy>(
 /// that moves no resource states no CR 704 threshold to bound. A certifying window that is
 /// not TURN-POSITION invariant ⇒ `None` (the CR 703.1 conjunct below). Reading the RING only
 /// — never the live `state` — keeps the compared frames homogeneous: every ring frame is a
-/// `normalize_for_loop` snapshot taken at `WaitingFor::Priority{active_player}`
-/// (`game::engine`'s sole `record_loop_detect_sample` call site), while the live state is not
+/// `normalize_for_loop` snapshot taken at `WaitingFor::Priority{active_player}`. That holds
+/// across BOTH of `game::engine`'s `record_loop_detect_sample` sites (the settle sampler in
+/// `pass_priority_once_with_pipeline` and the forced-window answer site in `apply_action`),
+/// because the two gate on the same `wf` conjunct — the homogeneity argument no longer rests
+/// on there being one site, it rests on that shared conjunct. Meanwhile the live state is not
 /// normalized. It does not consult a board predicate, but it DOES require the frames it
 /// compares to be homogeneous in turn position, which is what "homogeneous" above now means
 /// in full.
@@ -5477,9 +5487,18 @@ mod tests {
     /// (`span == 1`, the shape §3 D2's walk reaches first) whose common prefix is
     /// index-stable.
     ///
-    /// ⚠ THIS PREDICATE HARD-CODES `span == 1`. It stays for rows whose span-1 window is
-    /// AUTHORED (constructed rings) and for the ring-existence reach-guards; the real-dump
-    /// item-(4) rows use [`newest_item4_window`] instead.
+    /// ⚠ THIS PREDICATE HARD-CODES `span == 1`, and the residual that leaves is SMALLER IN
+    /// COUNT AND LARGER IN KIND than "four authored-ring rows" claimed. MEASURED: exactly TWO
+    /// call sites remain — `r21_b_the_exemption_narrows_conjunct_six_by_exactly_the_frozen_set`
+    /// and `r27_a2_every_announced_pair_carries_an_unnormalized_evaluation_board` — and
+    /// NEITHER is an authored ring. Both drive the REAL `TRACKED_DUMPS` through
+    /// `drive_dump_until`, so both are exposed to the answer-beat sampler that can halve the
+    /// newest adjacent pair (the hazard [`newest_item4_window`] exists for). They stay
+    /// because both fail LOUD rather than silently on a half period: each panics from
+    /// `drive_dump_until`'s reach-guard if no beat qualifies, and each then asserts its own
+    /// domain non-empty (`frozen_ids`/`announced` in the first, `announced` in the second),
+    /// so a degenerate window aborts the row instead of passing it. The real-dump item-(4)
+    /// rows, which have no such loud floor, use [`newest_item4_window`] instead.
     fn has_frozen_window(state: &GameState) -> bool {
         if state.loop_detect_ring.len() < 2 {
             return false;
