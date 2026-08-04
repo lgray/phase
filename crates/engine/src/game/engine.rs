@@ -11164,9 +11164,9 @@ fn apply_action(
         // whose stack duplicates its predecessor's. That costs one ring slot and a zero
         // frame-delta; it cannot manufacture a period, because `ring_delta_signature` refuses
         // a zero smallest-period delta outright, and it cannot desynchronize the count,
-        // because MINT AND DRIVE ARE SYMMETRIC — `drive_one_shortcut_cycle` answers its
-        // prompts through `inject_pinned_answer`, whose arms all dispatch `apply_action`, so
-        // the drive walks this very branch and advances `frames_this_cycle` on it.
+        // because MINT AND DRIVE ARE SYMMETRIC — `drive_one_shortcut_cycle` answers its prompts
+        // through `inject_pinned_answer`: three of its FOUR arms dispatch `apply_action` and walk
+        // this very branch, advancing `frames_this_cycle`; the fourth `Err`s before any advance.
         //
         // ⚠ LATENT ORDERING ASYMMETRY, DELIBERATELY NOT FIXED. This records BEFORE the
         // `state.waiting_for = wf` two lines below, while the settle sampler records AFTER

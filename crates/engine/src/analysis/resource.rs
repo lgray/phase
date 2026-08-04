@@ -653,11 +653,19 @@ pub struct PeriodicDelta {
     /// `game::engine::pass_priority_once_with_pipeline` AND from the forced-window answer
     /// site in `game::engine::apply_action`. `drive_one_shortcut_cycle` covers both — it
     /// steps `pass_priority_once_with_pipeline` on its priority beats and answers every other
-    /// prompt through `inject_pinned_answer`, whose three arms all dispatch `apply_action`.
-    /// The drive advances `frames_this_cycle` in BOTH arms (each keyed on the ring's back
-    /// allocation actually changing), so mint and measure stay one-to-one. Before the second
-    /// site existed this doc claimed a single call site; that premise is dead, and the
-    /// count would silently read a HALF period if only one of the two arms counted.
+    /// prompt through `inject_pinned_answer`. Of its FOUR arms, three end in `apply_action`
+    /// (`OrderTriggers`, `TriggerTargetSelection`, `OptionalEffectChoice`) and the fourth is
+    /// `_ => Err(RecastAbort)`, which returns before any frame advance — as do the early `Err`
+    /// exits inside the two template arms. So every path that returns `Ok` HAS dispatched
+    /// `apply_action`, and every path that does not aborts the drive rather than advancing it
+    /// uncounted.
+    ///
+    /// The drive advances `frames_this_cycle` in BOTH of ITS OWN arms — the active-player
+    /// `Priority` arm and the `inject_pinned_answer` arm, not to be confused with the four
+    /// above — each keyed on the ring's back allocation actually changing, so mint and measure
+    /// stay one-to-one. Before the second site existed this doc claimed a single call site;
+    /// that premise is dead, and the count would silently read a HALF period if only one of
+    /// the drive's two arms counted.
     ///
     /// Named for its unit on purpose: `game::engine::shortcut_drive_period` maps a
     /// TEMPLATE to a repeat count, which is a different quantity in the same subsystem.
@@ -5493,12 +5501,27 @@ mod tests {
     /// and `r27_a2_every_announced_pair_carries_an_unnormalized_evaluation_board` — and
     /// NEITHER is an authored ring. Both drive the REAL `TRACKED_DUMPS` through
     /// `drive_dump_until`, so both are exposed to the answer-beat sampler that can halve the
-    /// newest adjacent pair (the hazard [`newest_item4_window`] exists for). They stay
-    /// because both fail LOUD rather than silently on a half period: each panics from
-    /// `drive_dump_until`'s reach-guard if no beat qualifies, and each then asserts its own
-    /// domain non-empty (`frozen_ids`/`announced` in the first, `announced` in the second),
-    /// so a degenerate window aborts the row instead of passing it. The real-dump item-(4)
-    /// rows, which have no such loud floor, use [`newest_item4_window`] instead.
+    /// newest adjacent pair (the hazard [`newest_item4_window`] exists for). They stay because
+    /// at the beat this predicate SELECTS the hardcode is EXACT — not because a half period
+    /// would fail loudly, which it would not.
+    ///
+    /// MEASURED at the beat `drive_dump_until(gz, 80, has_frozen_window)` returns: `dina` beat
+    /// 6, `ring = 2`; `dellian` beat 5, `ring = 2`; and `candidate_windows` yields exactly ONE
+    /// candidate on each — `idx = 0`, `span = 1`, window length 2. With a two-frame ring
+    /// `&live[live.len() - 2..]` IS the whole ring, so there is no half period to read here.
+    ///
+    /// ⚠ THE REASON THAT STOOD HERE — *"both fail LOUD rather than silently on a half period …
+    /// each then asserts its own domain non-empty"* — IS UNPROVEN AND WRONG, and is replaced
+    /// rather than softened. The loud floors are real but do not cover this hazard: a half
+    /// period is a NON-degenerate window with non-empty domains, so neither
+    /// `drive_dump_until`'s reach-guard nor either row's domain-non-empty assertion
+    /// (`frozen_ids`/`announced` in the first, `announced` in the second) would fire on one,
+    /// and both rows' claims (a set-narrowing identity; a universal over announced pairs) are
+    /// span-INDEPENDENT, so on a half period they would PASS. The residual is therefore "exact
+    /// today, SILENT the day the sampling rate grows this ring past two frames" — a smaller
+    /// hazard than the old text claimed to have closed, and an honest one. The real-dump
+    /// item-(4) rows, which have no such measured guarantee, use [`newest_item4_window`]
+    /// instead.
     fn has_frozen_window(state: &GameState) -> bool {
         if state.loop_detect_ring.len() < 2 {
             return false;
@@ -10707,14 +10730,26 @@ mod tests {
     }
 
     /// PR-7 Phase 5b (PA-2A(e)) — CR 704.5a: the MAX-vs-SUM fork in `victim_slot`'s magnitude
-    /// derivation, which is otherwise UNTESTED and whose wrong answer surfaces in playtesting
-    /// as a wrong elimination bound rather than as a failure.
+    /// derivation, whose wrong answer surfaces in playtesting as a wrong elimination bound
+    /// rather than as a failure.
     ///
-    /// WHY IT NEEDS ITS OWN ROW: `victim_slot` is EMPTY on every trajectory that offers today
-    /// — dina, the ≥3p life drain and the F4 predicate all publish `points == 0` — so in
-    /// production `worst_seat_life_loss` is evaluated only where its value is collected into
-    /// an empty `Vec` and dropped. No fixture reaches the fork. Stated as a coverage hole in
-    /// the PR body; 5d's targeted class is its first production-path consumer.
+    /// WHY IT NEEDS ITS OWN ROW. ⚠ THE REASON THAT STOOD HERE — *"`victim_slot` is EMPTY on
+    /// every trajectory that offers today … all publish `points == 0` … no fixture reaches the
+    /// fork"* — IS FALSIFIED, and is replaced rather than softened: once the answer-beat
+    /// sampling site in `apply_action` announces the entries a FORCED pre-priority window puts
+    /// on the stack, a CR 608.2b `Targets` declaration is announced like any other, so on the
+    /// F4 boards `points` carries Torch's `Targets` point and `victim_slot` is NON-EMPTY. This
+    /// value is therefore no longer collected into an empty `Vec` and dropped — it reaches
+    /// `elimination_bounds` in production, `r1_the_bounded_offer_fires_on_the_real_f4_dump`
+    /// re-derives the published bound with a non-zero declared term, and
+    /// `b5f_the_declared_term_can_suppress_an_otherwise_legal_offer` measures it flipping a live
+    /// offer to `NoNarrowedLegalCount`.
+    ///
+    /// What those real-dump rows do NOT cover is THIS fork. Both take the magnitude off the
+    /// offer's own published `per_cycle.victim_slot`, so they track whatever the derivation
+    /// returns instead of discriminating between derivations — swap `max` for `sum` and their
+    /// expectations move with it. The max-vs-sum discrimination below is still this row's alone,
+    /// and that, not an absent production consumer, is why it stays.
     ///
     /// O4 DERIVE conformance — all THREE legs, not one:
     /// 1. **DERIVED, never compared to a literal.** `m` is bound from the return value and

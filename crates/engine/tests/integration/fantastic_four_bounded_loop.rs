@@ -445,24 +445,39 @@ fn panic_message(payload: &Box<dyn std::any::Any + Send>) -> String {
 /// `apply()`, and its `max_iterations` equals the bound re-derived by this row from the
 /// offer-beat board.
 ///
-/// **STATUS: PARTIAL — pending the (A)/(B) ruling.** §6 R1 as planned also expected the offer to
-/// publish three decision points and to be TAKEABLE (commit ≥ 1 cycle). Measured on this tree it
-/// publishes ONE point and commits ZERO cycles (see `r1b` and `r2` for the pinned measurements,
-/// and the module header for the mechanism). This row therefore ships the half of R1 that the
-/// measurement supports — the offer fires, and its bound arithmetic is correct — and pins the
-/// other half AS MEASURED rather than asserting the falsified prediction. R2a/R2b/R3/R4/R5 and
-/// the interruptibility pair stay unwritten until the ruling lands.
+/// **STATUS: §6 R1's other half is now MEASURED TRUE, in two sibling rows.** R1 as planned also
+/// expected the offer to publish three decision points and to be TAKEABLE (commit ≥ 1 cycle).
+/// ⚠ THE NOTE THAT STOOD HERE — *"measured on this tree it publishes ONE point and commits ZERO
+/// cycles (see `r1b` and `r2`)"* — IS FALSIFIED by this branch's own rows, and is replaced
+/// rather than softened:
+///
+/// * [`r1b_the_published_point_set_is_exactly_what_the_retained_window_announces`] pins
+///   **THREE** points — `[Sue MayChoice, Reed MayChoice, Torch Targets]` — not one;
+/// * [`r2a_an_accepted_declaration_commits_exactly_n_cycles_because_reeds_may_is_announced`]
+///   commits **exactly `n`**, run at `n = 1` and `n = 3` so the two outcomes are
+///   distinguishable — not zero;
+/// * the row that measured zero was `r2_an_accepted_declaration_commits_zero_cycles_…`, and it
+///   NO LONGER EXISTS. This branch RENAMED it to `r2a_…` once the answer-beat sampler announced
+///   the frame Reed's entry sits on, which removed the unannounced `may` the zero-commit was
+///   fail-closing on. Any surviving cross-reference to `r2` resolves to nothing.
+///
+/// This row keeps the half it always owned — the offer fires, and its bound arithmetic is
+/// correct. `r2b`/`r3`/`r4`/`r5` and the interruptibility pair are still unwritten: no `fn r2b_`,
+/// `fn r3_`, `fn r4_` or `fn r5_` row exists in this file.
 ///
 /// # What the assertion is bound to, and why it is not `f(x) == f(x)`
 ///
 /// The expectation is computed HERE from (i) each living seat's life and library on the
 /// offer-beat board and (ii) the per-period delta the ENGINE published on the certificate — it
-/// never calls `elimination_bounds`, which is the function under test. Per §6 R1's ROUND-38
-/// (F3) ruling the row is anchored to the **in-tree MAX form** (`resource.rs`
-/// `observed_life_loss.max(declared_life_magnitude)` under the `declarable_victims` guard);
-/// the additive per-victim form is a tracked follow-up (R1-fu), not a prerequisite. Measured on
-/// this board `victim_slot` is EMPTY (see `r5`'s handback in the module header), so the two
-/// forms coincide here and the row states which one it assumes.
+/// never calls `elimination_bounds`, which is the function under test. ⚠ THE ANCHOR THAT STOOD
+/// HERE — *"anchored to the in-tree MAX form … the additive per-victim form is a tracked
+/// follow-up (R1-fu), not a prerequisite … measured on this board `victim_slot` is EMPTY, so the
+/// two forms coincide"* — IS FALSIFIED ON BOTH CLAUSES. The in-tree form IS the additive one
+/// (`resource.rs` `observed_life_loss.max(0) + declared_life_magnitude` under the
+/// `declarable_victims` guard), and `victim_slot` is NON-EMPTY on this board, so the two forms
+/// do NOT coincide here — which is why this row's own assertion message states the additive form
+/// it assumes, and names what actually remains tracked as F1: the additive form OVER-CHARGES
+/// wherever a published slot IS the observed drain.
 ///
 /// # Reach-guards (each excludes a way this could pass degenerately)
 ///
@@ -589,26 +604,30 @@ fn r1_the_bounded_offer_fires_on_the_real_f4_dump() {
     );
 }
 
-/// §6 R1, SECOND HALF — **a MEASURED CORRECTION to the plan, pinned so it cannot drift
-/// silently. STATUS: PARTIAL — this row pins the CURRENT truth of the published point set, not
-/// the planned one, pending the (A)/(B) ruling.**
+/// §6 R1, SECOND HALF — the published point set, pinned so it cannot drift silently.
 ///
 /// R1 as written expects `points ≡ {Targets(403 Torch), MayChoice(401 Reed),
-/// MayChoice(402 Sue)}`. That expectation is a HEAD-era SNAPSHOT-mint reading (§2: *"returns 1
-/// point when 403 is up"*), and it does not survive U3's WINDOW mint. Measured on this tree:
+/// MayChoice(402 Sue)}`. ⚠ THE MEASUREMENT THAT STOOD HERE — *"the `403` / `401` entries only
+/// ever sit on the stack across a `TriggerTargetSelection` / `OptionalEffectChoice` window …
+/// so `403` and `401` are never announced … therefore `bounded_cycle_pin_slots_for_window`
+/// publishes exactly ONE point — Sue's `MayChoice`"* — IS FALSIFIED BY THIS ROW'S OWN BODY, and
+/// is replaced rather than softened. Measured on this tree now:
 ///
-/// * the retained ring frames on this board alternate strictly between the `404` and `402`
-///   stack entries — the CR 732.2a sampler fires only at `Priority { player == active_player }`
-///   after a non-shrinking resolution, and the `403` / `401` entries only ever sit on the stack
-///   across a `TriggerTargetSelection` / `OptionalEffectChoice` window;
-/// * `certified_period_touch`'s `announced` set is exactly "entries in a frame's stack absent
-///   from the previous frame's", so `403` and `401` are never announced;
-/// * therefore `bounded_cycle_pin_slots_for_window` publishes exactly ONE point — Sue's
-///   `MayChoice`.
+/// * ALL FOUR cycle sources are retained on some sample's stack — the `framed_sources` census
+///   below asserts `{Thing, Sue, Torch, Reed}` exactly, and states `Torch`/`Reed` as its own
+///   conjunct because they are the load-bearing half;
+/// * `403` and `401` do still resolve ACROSS a forced pre-priority window, but the answer-beat
+///   sampling site in `apply_action` records a frame at the beat that window is ANSWERED — so
+///   `certified_period_touch`'s `announced` set, still exactly "entries in a frame's stack
+///   absent from the previous frame's", now contains them;
+/// * therefore `bounded_cycle_pin_slots_for_window` publishes all THREE points, and R1's
+///   planned expectation is MET rather than corrected.
 ///
 /// The row asserts the MEASUREMENT, with the sources named, and the frame census as its own
-/// reach-guard. **If a future change widens the announced set this row FAILS LOUDLY and must be
-/// re-keyed — which is the point: R2a/R2b/R3/R5 become writable at exactly that moment.**
+/// reach-guard. **If a future change NARROWS the announced set again this row FAILS LOUDLY** —
+/// which is what it is for: that shrink is exactly the regression
+/// [`r2a_an_accepted_declaration_commits_exactly_n_cycles_because_reeds_may_is_announced`],
+/// written on the strength of Reed being published, would otherwise silently lose.
 #[test]
 fn r1b_the_published_point_set_is_exactly_what_the_retained_window_announces() {
     let mut state = load_f4();
@@ -1288,11 +1307,14 @@ fn optional_entries(state: &GameState) -> usize {
 // `handle_declare_shortcut` does with each member of it.
 //
 // ⚠ MEASURED SCOPE. §5 U6 as planned expects a declare candidate "whose template pins all
-// three F4 slots (or declines)". F4 publishes ONE point, not three (see `r1b`), and the
-// measured answer to the underlying question is the second branch: the AI DECLINES, because
-// the only declaration it can emit is one the engine refuses outright. These rows pin that,
-// name the two independent reasons, and pin the accepted shape the generator never emits —
-// they do not assert the planned prediction.
+// three F4 slots (or declines)". F4 does publish all THREE slots — `r1b` pins
+// `[Sue MayChoice, Reed MayChoice, Torch Targets]` — and the measured answer is still the
+// SECOND branch: the AI DECLINES, because the only declaration it can emit is one the engine
+// refuses outright. The generator builds no pinning template at ALL (its only `Fixed` candidate
+// carries `template: None`), so a published set of three is exactly as unreachable for it as a
+// set of one would have been — the count is not what excludes it, its emptiness gate is. These
+// rows pin that, name the two independent reasons, and pin the accepted shape the generator
+// never emits — they do not assert the planned prediction.
 // ─────────────────────────────────────────────────────────────────────────────────────────
 
 /// §5 U6 (i) — MEASURED: at the real F4 bounded offer the engine's AI candidate generator
@@ -1306,7 +1328,8 @@ fn optional_entries(state: &GameState) -> usize {
 ///   `handle_declare_shortcut` refuses it — measured in
 ///   [`u6_no_declaration_the_generator_can_emit_opens_the_window_while_the_accepted_shape_is_one_it_never_builds`].
 /// * `Fixed(max_iterations)` is gated on `schema.points.is_empty()` — it carries
-///   `template: None`, and a published pin set fail-closes on that. F4 publishes one point.
+///   `template: None`, and a published pin set fail-closes on that. F4 publishes THREE points
+///   (`r1b`), so the gate is closed with room to spare; ONE would already have closed it.
 ///
 /// So the AI declines because it has nothing else it can legally say, not because it emitted a
 /// declaration the engine then accepted-and-discarded.
