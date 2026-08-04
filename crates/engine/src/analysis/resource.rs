@@ -1041,10 +1041,17 @@ impl ResourceVector {
     /// Life GAINS contribute nothing (`(-n).max(0)`), so a proposer gaining 5 while three
     /// opponents lose 1, 2 and 3 yields 3 — never 5, and never 6.
     ///
-    /// Extracted from `game::engine::try_offer_bounded_cycle_shortcut` so the max-vs-sum
-    /// fork has a callable seam: `victim_slot` is empty on every trajectory that offers
-    /// today, so this expression's value is dropped in production and no fixture reaches
-    /// it. `worst_seat_life_loss_is_the_max_seat_never_the_sum` is its only discriminator.
+    /// Extracted from `game::engine::try_offer_bounded_cycle_shortcut` so the max-vs-sum fork
+    /// has a callable seam. ⚠ THE NOTE THAT STOOD HERE — *"`victim_slot` is empty on every
+    /// trajectory that offers today … no fixture reaches it"* — IS FALSIFIED, and is replaced
+    /// rather than softened: once the answer-beat sampling site in `apply_action` announces
+    /// the entries a FORCED pre-priority window puts on the stack, a CR 608.2b `Targets`
+    /// declaration is announced like any other and `victim_slot` is NON-EMPTY on the F4
+    /// boards. `worst_seat_life_loss_is_the_max_seat_never_the_sum` is therefore no longer the
+    /// only discriminator: the real-dump rows re-derive this value through
+    /// `elimination_bounds` (`r1_the_bounded_offer_fires_on_the_real_f4_dump`), and
+    /// `b5f_the_declared_term_can_suppress_an_otherwise_legal_offer` measures it flipping a
+    /// live offer to `NoNarrowedLegalCount`.
     pub(crate) fn worst_seat_life_loss(&self) -> i64 {
         self.life.values().map(|&n| (-n).max(0)).max().unwrap_or(0)
     }

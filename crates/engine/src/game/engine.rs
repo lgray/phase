@@ -2238,9 +2238,14 @@ fn certified_bounded_cycle_offer<'a>(
     // CR 704.5a: what ONE repetition charges to whichever seat a slot's pin names. The
     // max-vs-sum reasoning, the gain clamp and the fail-closed direction live on the
     // function; `elimination_bounds` then sums the published slots per declarable victim.
-    // Extracted rather than inlined so the fork has a callable seam — `victim_slot` is empty
-    // on every trajectory that offers today, so this value is dropped in production and only
-    // `worst_seat_life_loss_is_the_max_seat_never_the_sum` discriminates max from sum.
+    // Extracted rather than inlined so the fork has a callable seam. ⚠ THE "`victim_slot` IS
+    // EMPTY ON EVERY TRAJECTORY THAT OFFERS TODAY" NOTE THAT STOOD HERE IS FALSIFIED, and is
+    // replaced rather than softened: the answer-beat sampling site in `apply_action` announces
+    // the entries a FORCED pre-priority window puts on the stack, and a CR 608.2b `Targets`
+    // declaration is exactly the shape that resolves across one. On the F4 boards `points` now
+    // carries Torch's `Targets` point, so this value is NOT dropped — it reaches
+    // `elimination_bounds` in production and `r1_the_bounded_offer_fires_on_the_real_f4_dump`
+    // re-derives the published bound with a non-zero declared term.
     let worst_seat_life_loss: i64 = periodic.delta.worst_seat_life_loss();
     periodic.victim_slot = points
         .iter()
@@ -6743,10 +6748,12 @@ fn apply_action(
     // so an action-keyed list could not have expressed the class correctly at all.
     // `PassPriority` keeps its own action-side exemption because it is answered at a
     // `Priority` window, which is deliberately NOT in the forced class.
+    let answering_forced_window = state.waiting_for.is_forced_cascade_window();
+    let stack_len_before_action = state.stack.len();
     if !matches!(
         action,
         GameAction::PassPriority | GameAction::OrderTriggers { .. }
-    ) && !state.waiting_for.is_forced_cascade_window()
+    ) && !answering_forced_window
     {
         state.loop_detect_ring.clear();
     }
@@ -11062,6 +11069,19 @@ fn apply_action(
             triggers_processed_inline,
             skip_deferred_trigger_drain,
         )?;
+        // CR 732.2a: the SECOND sampling site — a stack entry announced while a player
+        // answers a FORCED pre-priority window. Same conjuncts as the sampler in
+        // `pass_priority_once_with_pipeline`, plus the window flag captured before the
+        // reducer consumed it.
+        if answering_forced_window
+            && !in_simulation_probe()
+            && state.loop_detection.samples()
+            && !state.stack.is_empty()
+            && state.stack.len() >= stack_len_before_action
+            && matches!(wf, WaitingFor::Priority { player } if player == state.active_player)
+        {
+            state.record_loop_detect_sample();
+        }
         state.waiting_for = wf.clone();
         return Ok(ActionResult {
             events,
@@ -17239,9 +17259,11 @@ mod bounded_offer_conjunct_tests {
         let field_address = format!("as {}const", '*');
         assert_eq!(
             engine_code_hits(&lines, extent, &sample_identity).len(),
-            2,
-            "the ring-advance detector must read the SAMPLE's allocation at both its before \
-             and after sites, in {}-{}",
+            3,
+            "the ring-advance detector must read the SAMPLE's allocation at EVERY one of its \
+             sites — the shared per-beat `before` read plus an `after` read in each arm that \
+             can advance the ring (the active-player settle arm and the forced-window ANSWER \
+             arm), in {}-{}",
             extent.0 + 1,
             extent.1 + 1
         );

@@ -84,10 +84,8 @@ fn gunzip(gz: &[u8]) -> String {
 /// The dump was captured with the detector OFF; every row here is about the CR 732.2a
 /// interactive offer, so the mode is set to `Interactive` at load — the same thing the user's
 /// own toggle does.
-fn load_f4() -> GameState {
-    let json = gunzip(include_bytes!(
-        "../fixtures/fantastic_four_bounded_loop_4p.json.gz"
-    ));
+fn load_dump(gz: &[u8]) -> GameState {
+    let json = gunzip(gz);
     let envelope: serde_json::Value =
         serde_json::from_str(&json).expect("dump envelope parses as JSON");
     let mut state = serde_json::from_value::<PersistedGameState>(envelope["gameState"].clone())
@@ -95,6 +93,26 @@ fn load_f4() -> GameState {
         .into_game_state();
     state.loop_detection = engine::types::game_state::LoopDetectionMode::Interactive;
     state
+}
+
+fn load_f4() -> GameState {
+    load_dump(include_bytes!(
+        "../fixtures/fantastic_four_bounded_loop_4p.json.gz"
+    ))
+}
+
+/// **MODE1** — the user's own 2026-08-03 capture of the board that raised NO offer at all
+/// (`fastastic-four-no-offer-phase5.zip`, `game-state-turn-5-…19-09-15-030Z.json`), derived by
+/// `jq -c '{gameState}' … | gzip -9 -n` (860,451 B; the raw envelope is 20.5 MB, of which
+/// `turnCheckpoints` alone is 16.4 MB and no loader reads it).
+///
+/// Its distinguishing field is `may_trigger_auto_choices`: it carries the user's stored
+/// "always take" for Sue's CR 603.5 `may`, so guard (b) withholds that pin slot and gate (6)
+/// can only be discharged by the CR 603.5 auto-answer relief.
+fn load_mode1() -> GameState {
+    load_dump(include_bytes!(
+        "../fixtures/f4_user_mode1_no_offer_4p.json.gz"
+    ))
 }
 
 /// R18 / §3 D6 TARGET A — resolve a fixture object by CARD NAME, never by literal `ObjectId`.
@@ -1424,4 +1442,155 @@ fn u6_the_declare_owner_firewall_holds_on_the_real_f4_offer() {
          CR 800.4a manual handback. `handle_declare_shortcut` pushes no events on either path, \
          so the event counts are exact rather than wildcards"
     );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────────────────
+// B5f — the DECLARED term is load-bearing on a real board, in both directions
+// ─────────────────────────────────────────────────────────────────────────────────────────
+
+/// §4 B5f — **`elimination_bounds`'s `declared_life_magnitude` can suppress an offer that is
+/// otherwise legal, and the suppression is measured ONE LIFE POINT WIDE on the user's own
+/// board.**
+///
+/// CR 704.5a (a seat at 0 or less life has lost) + CR 732.2a (a shortcut describes a
+/// PREDICTABLE sequence, so a repetition that could eliminate a seat mid-proposal is not
+/// describable). Once the answer-beat sampling site announces Torch's CR 608.2b `Targets`
+/// entry, `victim_slot` is non-empty and every declarable victim is charged
+/// `observed.max(0) + S` rather than `observed` alone. On MODE1 that is `1 + 1 = 2`, so P1's
+/// headroom must be at least 2 for a single legal repetition to exist.
+///
+/// ARM (α), the matched positive: P1 seeded at **7** and at **6** — headroom 3 and 2 at the
+/// offer beat — both OFFER, with `max_iterations == 1`.
+/// ARM (β), the typed refusal: P1 seeded at **5** and at **4** — headroom 1 and 0 — the drive
+/// reaches the SAME beat and raises NO window, and the typed verdict on that very board is
+/// `NoNarrowedLegalCount`. Asserted BY REASON, never as a bare absence: a row that only
+/// observes "no offer" stops testing its own conjunct the moment an earlier one refuses first.
+///
+/// The two arms are **one life point apart** (6 offers, 5 refuses), which is what makes the
+/// row about the divisor and not about the board.
+///
+/// REVERT-PROBE (DROP): delete `declared_life_magnitude` from `elimination_bounds`'s additive
+/// form ⇒ the divisor falls 2 → 1 ⇒ headroom 1 at P1=5 yields `1 / 1 == 1` ⇒ (β) OFFERS ⇒
+/// FLIPS. REVERT-PROBE (TRIVIALIZE): make the term unconditional (charge it to every seat, not
+/// only to declarable victims) ⇒ P0/P2/P3 are charged 0 + 1 with 39 headroom, which does not
+/// narrow below 1, so (α) survives — and the arm that flips is the reach-guard below, which
+/// asserts P1 is the ONLY declarable victim on this board.
+#[test]
+fn b5f_the_declared_term_can_suppress_an_otherwise_legal_offer() {
+    use engine::game::engine::{
+        try_offer_bounded_cycle_shortcut_metered, BoundedOfferRefusal, ProbeCap,
+    };
+
+    /// The MODE1 board with P1's life REPLACED. Every other field — including the stored
+    /// auto-choice guard (b) reads — is the user's own capture, so the only axis that moves
+    /// between the arms below is the headroom `elimination_bounds` divides.
+    fn seeded(life: i32) -> GameState {
+        let mut state = load_mode1();
+        let p1 = state
+            .players
+            .iter_mut()
+            .find(|p| p.id == P1)
+            .expect("MODE1 is a 4-player board");
+        p1.life = life;
+        state
+    }
+
+    // ── ARM (α) — the matched positive, asserted FIRST ──────────────────────────────────
+    let mut alpha = seeded(7);
+    let alpha_beat = drive_f4_to_offer(&mut alpha, 400).expect(
+        "REACH-GUARD (α): MODE1 with P1 at 7 must raise the bounded offer, else every \
+         refusal below is asserted over a board that was refusing anyway",
+    );
+    let (proposer, certificate, schema) = offer_parts(&alpha);
+    let per_cycle = certificate
+        .per_cycle
+        .clone()
+        .expect("a bounded offer publishes its per-period signature");
+
+    // ── REACH-GUARD: the DECLARED term is what this row is about, so it must be non-zero,
+    //    and P1 must be the only seat it is charged to. ──
+    let declared: i64 = per_cycle
+        .victim_slot
+        .iter()
+        .map(|(_, m)| *m)
+        .filter(|m| *m > 0)
+        .sum();
+    assert!(
+        declared > 0,
+        "REACH-GUARD: `victim_slot` must publish a strictly positive magnitude, else the \
+         additive term is 0 and (β) below would be about the observed drain alone; \
+         victim_slot = {:?}",
+        per_cycle.victim_slot
+    );
+    let declarable: std::collections::BTreeSet<PlayerId> = schema
+        .points
+        .iter()
+        .filter_map(|p| match &p.kind {
+            DecisionPointKind::Targets { legal_targets, .. } => Some(legal_targets),
+            _ => None,
+        })
+        .flatten()
+        .filter_map(|t| match t {
+            TargetRef::Player(p) => Some(*p),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        declarable.contains(&P1),
+        "REACH-GUARD: P1 — the seat this row starves — must be a DECLARABLE victim of the \
+         published `Targets` slot, or the extra term is never charged to it; declarable = \
+         {declarable:?}"
+    );
+    let observed_p1 = -per_cycle.delta.life.get(&P1).copied().unwrap_or(0);
+    let life_at_offer = alpha
+        .players
+        .iter()
+        .find(|p| p.id == P1)
+        .expect("P1 is seated")
+        .life as i64;
+    assert_eq!(
+        i64::from(schema.max_iterations),
+        (life_at_offer - 1) / (observed_p1.max(0) + declared),
+        "(α) CR 704.5a: the published bound is P1's headroom divided by the ADDITIVE \
+         magnitude — observed {observed_p1} plus declared {declared} — at P1 life \
+         {life_at_offer}. Under the `max` form this divisor would be \
+         {} and the bound would be {}",
+        observed_p1.max(declared),
+        (life_at_offer - 1) / observed_p1.max(declared).max(1)
+    );
+    assert_eq!(
+        schema.max_iterations, 1,
+        "(α) the seeded headroom admits exactly ONE legal repetition; a larger bound would \
+         mean (β) is one point further away than this row claims"
+    );
+
+    let mut alpha6 = seeded(6);
+    assert_eq!(
+        drive_f4_to_offer(&mut alpha6, 400),
+        Some(alpha_beat),
+        "(α) the SECOND positive, one point down: P1 at 6 still offers, at the same beat. \
+         This is the arm (β) is one life point away from"
+    );
+
+    // ── ARM (β) — the TYPED refusal, on the same beat the positive offered at ───────────
+    for life in [5, 4] {
+        let mut beta = seeded(life);
+        assert_eq!(
+            drive_f4_to_offer(&mut beta, alpha_beat + 1),
+            None,
+            "(β) P1 at {life}: no window may be raised through beat {alpha_beat} — the beat \
+             the (α) arms both offered at"
+        );
+        let at_priority = replay_at_priority(&beta, proposer);
+        let (outcome, meter) =
+            try_offer_bounded_cycle_shortcut_metered(&at_priority, false, ProbeCap::Shipped);
+        assert!(
+            matches!(outcome, Err(BoundedOfferRefusal::NoNarrowedLegalCount)),
+            "(β) P1 at {life}: the refusal must be TYPED at the elimination bound — \
+             `observed {observed_p1} + declared {declared}` exceeds P1's remaining headroom, \
+             so no legal repetition count exists (CR 704.5a + CR 732.2a). A different variant \
+             here means an EARLIER conjunct refused and this row stopped testing its own. \
+             got {outcome:?}, meter {meter:?}"
+        );
+    }
 }
