@@ -15339,6 +15339,38 @@ mod stage2_injector_tests {
                 //     their new coordinates AND still inside the same enclosing functions
                 //     (`drive_sequential_repeated_optional_payment` ×2, `resolve_chain_body`),
                 //     which is stronger evidence than the coordinate alone.
+                //   THIS PR, REBASED ONTO UPSTREAM `b654513cb` (#6996, #6999, #6998, #7001,
+                //     #6997, #6946): `:6065/:6142/:9324 ⇒ :6175/:6252/:9456`. The three pins
+                //     it replaces were UPSTREAM's own literals, correct for the upstream tree
+                //     — verified by re-deriving them at `b654513cb`, where all three sit
+                //     exactly there — so this shift is THIS BRANCH's commits replayed on top,
+                //     i.e. LOCAL, and the CI-vs-local diagnosis in the header does not apply.
+                //     The shift is NOT UNIFORM (`+110/+110/+132`), and that asymmetry is the
+                //     measurement rather than a puzzle: `git diff -U0 b654513cb HEAD` on this
+                //     file has exactly four hunks. `@@ -5957,0 +5958,110 @@` — C1's
+                //     `upfront_optional_gate` authority plus `OptionalFeasibility` — lands
+                //     above ALL THREE producers and is the whole `+110`. The third producer
+                //     takes a further `+22` from two hunks INSIDE `resolve_chain_body` and
+                //     above its own gate: `@@ -9207,0 +9318,7 @@` (the `optional_for` fan-out
+                //     coupling note) and `@@ -9281,6 +9398,21 @@` (adoption A — the inline
+                //     conjunct chain replaced by the `upfront_optional_gate` call and its
+                //     `debug_assert!`); the fourth hunk is net `0`. Whole-file delta is also
+                //     `+132`, so nothing was added below the third producer, and predicted
+                //     `6065+110`, `6142+110`, `9324+132` equal the observed coordinates
+                //     exactly. Identity re-established, not assumed: each producer at its new
+                //     coordinate is sha256-identical to `b654513cb:effects/mod.rs` at its old
+                //     one (`9869a19f…9b43a2`, `2bc316e3…e861185`, `3134c156…2aeeb66`)
+                //     and to the pre-rebase tip `117baa6a1` at
+                //     `:6109/:6186/:9183`, AND each is still inside the enclosing function
+                //     this row NAMES — `drive_sequential_repeated_optional_payment`,
+                //     `resolve_repeated_optional_payment_choice`, `resolve_chain_body`. The
+                //     diff instrument discriminates: in the NEW tree the three OLD coordinates
+                //     hold a `may_trigger_auto_choice` lookup, a blank line, and a bare `//`,
+                //     none of which mints anything. Set preservation: the two asserts above
+                //     this one ran FIRST and both fired GREEN on the run that caught this —
+                //     total still **37**, partition still **5/7/25** — and the other two
+                //     entries (`scoped_library_search.rs:452`, `engine.rs:11549`) did not move
+                //     at all, both re-read and sha256-confirmed in place.
                 //
                 // ⚠ THIS ROW FAILS IN CI BEFORE IT FAILS LOCALLY, and that is not a bug in the
                 // row. CI checks out `refs/pull/<n>/merge` — this branch merged with CURRENT
@@ -15351,9 +15383,9 @@ mod stage2_injector_tests {
                 // because that is what makes a NEW mint a counted event; a function +
                 // content-hash anchor would end the drift class while keeping that property,
                 // and is offered as a follow-up rather than taken unannounced mid-review.
-                "game/effects/mod.rs:6065".to_string(),
-                "game/effects/mod.rs:6142".to_string(),
-                "game/effects/mod.rs:9324".to_string(),
+                "game/effects/mod.rs:6175".to_string(),
+                "game/effects/mod.rs:6252".to_string(),
+                "game/effects/mod.rs:9456".to_string(),
                 // UNMOVED across the rebase, and that is itself evidence the SET did not
                 // move: a census that had gained or lost a producer would not leave this
                 // entry both byte-identical AND at the same coordinate.
@@ -15412,6 +15444,19 @@ mod stage2_injector_tests {
                 // by sha256 (`8a544e878d3e77fb…5cc7d63`) to `c7b18c3c7:engine.rs:11515`, and
                 // it is still inside `begin_pending_trigger_target_selection`, which moved by
                 // the same +34 (opens :11366 ⇒ :11400).
+                //
+                // REBASE ONTO UPSTREAM `b654513cb`: re-derived rather than carried over, and
+                // **UNMOVED** at `:11549`. Upstream's six commits contribute a net ZERO above
+                // this producer, measured on both sides of the rebase: it sits at `:11420` in
+                // the OLD base `dcb8f3808` and at `:11420` in the NEW base `b654513cb`, so
+                // this branch's own `+95` (C4/C5) and `+34` (the doc round) still land it on
+                // `:11549`. That an entry can stay put while three others move by `+110`/`+132`
+                // is the set-preservation evidence for this rebase: a gained or lost producer
+                // could not leave this one byte-identical AND in place. Identity re-checked at
+                // the unchanged coordinate rather than presumed from the unchanged number:
+                // sha256 `a6d7f2f9d1e15de5…5cb032`, matching `117baa6a1:engine.rs:11549`, and
+                // still inside `begin_pending_trigger_target_selection` (opens :11400 here,
+                // :11271 at `b654513cb`).
                 "game/engine.rs:11549".to_string(),
             ],
             "the five production producers, NAMED: the CR 603.5 gate in `resolve_chain_body` \
