@@ -1337,6 +1337,75 @@ pub fn move_to_zone(
     });
 }
 
+/// CR 400.7 + CR 608.2i + CR 603.6a: record AND emit the battlefield entry of an object that came
+/// into existence on the battlefield — a zone change with NO origin zone (`from: None`): a created
+/// token (CR 111.1), a copy token (CR 707.2), an Incubator, or a conjured card. The `Some(from)`
+/// counterpart is the emit at the end of `move_to_zone`.
+///
+/// Routes through [`crate::game::restrictions::record_zone_change`] — the single authority that
+/// assigns this turn's zone-change index and performs the CR 608.2i battlefield-entry bookkeeping —
+/// then writes the assigned index back onto the record it emits.
+///
+/// Callers must NOT also call `restrictions::record_battlefield_entry` (`record_zone_change` does
+/// it; a second call double-counts `battlefield_entries_this_turn`) and must NOT also push onto
+/// `state.zone_changes_this_turn` (that would write a duplicate CR 400.7 row).
+///
+/// WHY record and emit are ONE call: `GameObject::snapshot_for_zone_change` leaves
+/// `turn_zone_change_index` at its `0` placeholder for the recorder to overwrite. The CR 603.2c
+/// batched zone-change replay guard (`triggers.rs::batched_zone_change_already_collected`) dedups
+/// on `(definition_ref, turn_zone_change_index)` read off the EVENT, and
+/// `Ability::self_ref_own_departure_successor` (`types/ability.rs`) uses that same index as a
+/// SUBSCRIPT into `state.zone_changes_this_turn`, then requires the row it lands on to carry the
+/// same `trigger_source_context().identity.reference` as the event's own record. An entry that
+/// emits without recording therefore ships index `0`, aliases onto occurrence `0`, and both
+/// consumers read a row belonging to a different object. Splitting the two halves is what made
+/// that defect writable at SIX call sites (measured on `4b34e5465`: `conjure.rs`, `counters.rs` x2,
+/// `gift_delivery.rs`, `token_copy.rs` x2); fusing them removes the seam a seventh would be written
+/// through.
+///
+/// Tripwired — not proved impossible — by
+/// `crates/engine/tests/integration/battlefield_entry_authority_census.rs`, a source-text census
+/// whose ceilings are documented in its own module header.
+///
+/// Returns the recorded row with its assigned index. `None` when the object is gone, in which case
+/// NOTHING is recorded and NOTHING is emitted.
+///
+/// THE `None` ARM IS NOT A SILENT NO-OP AT EVERY CALLER, and an earlier revision of this paragraph
+/// said it was — it named `gift_delivery.rs` and `token_copy.rs`, which are callers of
+/// [`crate::game::effects::token::push_committed_token_entry_events`] ONE LEVEL UP, not of this
+/// function. (That sentence is correct about ITS subject: of that emitter's eight callers, exactly
+/// those two `.expect(…)` its return.) Measured over this function's four direct callers with
+/// `rg -n 'record_and_emit_entry_from_no_zone\(' crates/engine/src`:
+///
+/// * `effects/conjure.rs:218` — `.expect("conjured object was just created")`: PANICS on `None`.
+/// * `effects/incubate.rs:123` — `.expect("incubator token was just created")`: PANICS on `None`.
+/// * `effects/token.rs:1881` — `if record.is_some()`, which is how
+///   `push_committed_token_entry_events` gates its `GameEvent::TokenCreated` emit. This is the
+///   object-existence predicate the token-creation ledger triple agrees on.
+/// * `effects/counters.rs:530` — statement position, discards.
+///
+/// So `None` is inert on exactly ONE of the four routes. The two `.expect` callers keep their
+/// pre-existing "just created" panic deliberately: each creates its object inside the same call, so
+/// `None` there is an engine invariant violation rather than a reachable game state.
+pub(crate) fn record_and_emit_entry_from_no_zone(
+    state: &mut GameState,
+    object_id: ObjectId,
+    events: &mut Vec<GameEvent>,
+) -> Option<crate::types::game_state::ZoneChangeRecord> {
+    let mut record = state
+        .objects
+        .get(&object_id)
+        .map(|obj| obj.snapshot_for_zone_change(object_id, None, Zone::Battlefield))?;
+    record.turn_zone_change_index = super::restrictions::record_zone_change(state, record.clone());
+    events.push(GameEvent::ZoneChanged {
+        object_id,
+        from: None,
+        to: Zone::Battlefield,
+        record: Box::new(record.clone()),
+    });
+    Some(record)
+}
+
 /// CR 601.2 + CR 733.1: Restore an object while reversing an incomplete action.
 /// This intentionally uses the raw mover rather than the replacement-consulting
 /// pipeline: an undone action does not apply replacement effects, but preserves
@@ -2065,9 +2134,14 @@ pub(crate) fn apply_battlefield_entry_controller_override(
         .expect("resolved controller override must have a live journal cause");
 }
 
-/// Retags the CR 400.7 zone-change and CR 403.3 battlefield-entry snapshots at
+/// Retags the CR 400.7 zone-change and CR 608.2i battlefield-entry snapshots at
 /// the exact recorded positions. Shared by the resolve-time authority and the
 /// replay applier so both install the same retag.
+///
+/// CR 608.2i, not CR 403.3: `battlefield_entries_this_turn` is an entry-time
+/// characteristics snapshot kept so later effects can look back at a previous
+/// game state. CR 403.3 ("Permanents exist only on the battlefield") is
+/// definitional and describes no such record.
 fn retag_battlefield_entry_snapshots(
     state: &mut GameState,
     zone_change_index: Option<usize>,
