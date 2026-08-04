@@ -2150,7 +2150,14 @@ pub(crate) fn stack_choices_are_all_specified<'a>(
             }
             free => free,
         };
-        if !resolution_events_are_discharged(frame, verdict) {
+        if !resolution_events_are_discharged(frame, verdict.clone()) {
+            return false;
+        }
+        // CR 616.1 + CR 732.2a: the CANDIDATE-AUTHORITY half is a claim about the FUTURE —
+        // the shortcut's remaining repetitions resolve under the board that exists NOW, so a
+        // replacement definition that entered play after this frame was captured is invisible
+        // to the frame-side discharge above. Fail-closed second discharge against `state`.
+        if !std::ptr::eq(*frame, state) && !resolution_events_are_discharged(state, verdict) {
             return false;
         }
     }
@@ -15673,6 +15680,195 @@ mod tests {
              the live board would leave every arm below passing for the degenerate reason"
         );
         frame
+    }
+
+    // ───────────────────────────────────────────────────────────────────────────────────
+    // N3 — the CR 616.1 obligation is discharged against the LIVE board as well as the
+    // carrying frame, because the shortcut's remaining repetitions resolve under the board
+    // that exists NOW.
+    // ───────────────────────────────────────────────────────────────────────────────────
+
+    /// An OPTIONAL (or mandatory) `Draw` replacement definition, of exactly the shape
+    /// `find_applicable_replacements` draws for a `ProposedEvent::Draw`.
+    fn n3_draw_replacement(optional: bool) -> crate::types::ability::ReplacementDefinition {
+        use crate::types::ability::{
+            DrawReplacementScope, QuantityModification, ReplacementDefinition, ReplacementMode,
+        };
+        use crate::types::replacements::ReplacementEvent;
+        let mut def = ReplacementDefinition::new(ReplacementEvent::Draw);
+        if optional {
+            def.mode = ReplacementMode::Optional { decline: None };
+        }
+        // CR 121.2: a Draw definition must declare its stage or the pipeline debug-asserts.
+        def.draw_scope = Some(DrawReplacementScope::IndividualDraw);
+        def.quantity_modification = Some(QuantityModification::Plus { value: 1 });
+        def
+    }
+
+    /// N3 — **A REPLACEMENT THAT ENTERED PLAY AFTER THE FRAME WAS CAPTURED STILL REFUSES.**
+    ///
+    /// CR 616.1 + CR 732.2a. Conjunct (6) classifies each announced entry on its CARRYING
+    /// FRAME, which is a retained ring sample and therefore a board from the PAST. Discharging
+    /// the resulting `FreeUnlessReplacements` obligation against that frame alone answers the
+    /// wrong question: the shortcut is a claim about the FUTURE, and every remaining repetition
+    /// resolves under the board that exists NOW. A definition that entered the battlefield
+    /// after the sample was taken is invisible to the frame-side discharge — and it is exactly
+    /// the CR 616.1 resolution-time choice CR 732.2a forbids a described sequence from
+    /// containing.
+    ///
+    /// The fixture makes the two boards differ in EXACTLY that field: every ring frame is
+    /// cloned before the definition is installed, so the def exists on `state` and nowhere
+    /// else. `announced_from_retained_sample` is the reach-guard that the pair really is
+    /// carried by a frame that is not `current` — without it every arm here would be about the
+    /// first discharge.
+    ///
+    /// | arm | where the def lives | mode | gate |
+    /// |---|---|---|---|
+    /// | (pos) | nowhere | — | **specified** |
+    /// | (live) | live board only | OPTIONAL | **refused** |
+    /// | (live-mandatory) | live board only | mandatory | **specified** |
+    /// | (both) | every frame AND live | OPTIONAL | **refused** |
+    ///
+    /// (live-mandatory) is what keys (live) to OPTIONALITY rather than to "a definition
+    /// exists"; (both) proves the frame-side discharge is still doing its own job, so (live)
+    /// is a strictly ADDED refusal and not a relocated one.
+    ///
+    /// REVERT-PROBE: delete the second `resolution_events_are_discharged(state, ..)` call ⇒
+    /// arm (live) certifies ⇒ FLIPS, while (pos), (live-mandatory) and (both) are unmoved.
+    #[test]
+    fn n3_a_replacement_installed_after_the_frame_was_captured_refuses_certification() {
+        let announced_id = 9310u64;
+        let build = |where_def: Option<(bool, bool)>| -> GameState {
+            // `where_def = Some((in_frames, optional))`.
+            let in_frames = where_def.is_some_and(|(f, _)| f);
+            let optional = where_def.is_some_and(|(_, o)| o);
+            let mut state = ring_announcing_on_its_newest_sample(
+                |st| {
+                    let src = announcing_ring_source(st, 931);
+                    if in_frames {
+                        st.objects
+                            .get_mut(&src)
+                            .expect("just inserted")
+                            .replacement_definitions
+                            .push(n3_draw_replacement(optional));
+                    }
+                },
+                |frame| {
+                    let src = ObjectId(931);
+                    let ability = crate::types::ability::ResolvedAbility::new(
+                        u2_draw_effect(),
+                        vec![],
+                        src,
+                        PlayerId(0),
+                    );
+                    frame
+                        .stack
+                        .push_back(announced_trigger_entry(announced_id, src, ability, None));
+                },
+            );
+            if where_def.is_some() && !in_frames {
+                state
+                    .objects
+                    .get_mut(&ObjectId(931))
+                    .expect("the announcing source is on the live board too")
+                    .replacement_definitions
+                    .push(n3_draw_replacement(optional));
+            }
+            state
+        };
+
+        let gate = |state: &GameState| -> bool {
+            // REACH-GUARD, run on every arm: the pair is carried by a retained frame that is
+            // NOT `current`, so the second discharge is reachable at all.
+            announced_from_retained_sample(state, announced_id);
+            let ring: Vec<&GameState> = state.loop_detect_ring.iter().map(|f| &f.live).collect();
+            let cover = certified_period_touch(
+                &ring[ring.len() - 2..],
+                state,
+                PeriodCertification::BoardEqualOnly,
+            );
+            let mut verdicts = PeriodVerdicts::for_period(&ring, state, PlayerId(0));
+            stack_choices_are_all_specified(state, PlayerId(0), &[], Some(&cover), &mut verdicts)
+        };
+
+        assert!(
+            gate(&build(None)),
+            "(pos) MATCHED POSITIVE, asserted first: with no replacement definition anywhere \
+             the announced mandatory draw is choice-free and the period certifies. Without \
+             this arm every refusal below could belong to an unrelated conjunct"
+        );
+        assert!(
+            !gate(&build(Some((false, true)))),
+            "(live) CR 616.1 + CR 732.2a: an OPTIONAL definition that exists on the LIVE board \
+             and on no retained frame is a real resolution-time choice for every remaining \
+             repetition. The frame-side discharge cannot see it — this is the arm the second \
+             discharge exists for"
+        );
+        assert!(
+            gate(&build(Some((false, false)))),
+            "(live-mandatory) the SAME live-only definition, MANDATORY, opens no choice and the \
+             period still certifies. Without this arm (live) would be keyed to `a definition \
+             exists` rather than to OPTIONALITY"
+        );
+        assert!(
+            !gate(&build(Some((true, true)))),
+            "(both) the definition present in every frame AND live still refuses — the \
+             frame-side discharge keeps doing its own job, so (live) is an ADDED refusal and \
+             not a relocated one"
+        );
+    }
+
+    /// N3, the `ptr::eq` short-circuit — **SKIPPING THE SECOND DISCHARGE WHEN THE CARRYING
+    /// FRAME *IS* THE LIVE BOARD COSTS NOTHING.**
+    ///
+    /// CR 616.1. The second discharge is guarded by `!std::ptr::eq(*frame, state)`, which is a
+    /// de-duplication and not a hole: when the announced pair is carried by `current` itself
+    /// the FIRST discharge already ran against that very board. This row exhibits that arm —
+    /// an entry on `current`'s own stack, no ring at all — and shows the optional definition is
+    /// still refused, on the same board shape where the guard suppresses the second call.
+    ///
+    /// Paired with a positive on the identical board one field apart (the mandatory mode), so
+    /// the refusal is attributable to the definition rather than to the `frames: &[]` shape.
+    #[test]
+    fn n3_b_a_live_carried_pair_is_still_discharged_by_the_first_call() {
+        let board = |optional: Option<bool>| -> GameState {
+            let (mut state, src) = u2_relief_board();
+            let entry = u2_shape_b_entry(src, 9311, u2_draw_effect(), |ability| {
+                // MANDATORY: an optional ability classifies `MayPrompt` and never reaches the
+                // discharge at all, which would make both arms below vacuous.
+                ability.optional = false;
+            });
+            if let Some(optional) = optional {
+                state
+                    .objects
+                    .get_mut(&src)
+                    .expect("u2's source is on the battlefield")
+                    .replacement_definitions
+                    .push(n3_draw_replacement(optional));
+            }
+            state.stack.push_back(entry);
+            state
+        };
+        let gate = |state: &GameState| -> bool {
+            let mut verdicts = PeriodVerdicts::for_period(&[], state, PlayerId(0));
+            stack_choices_are_all_specified(state, PlayerId(0), &[], None, &mut verdicts)
+        };
+
+        assert!(
+            gate(&board(None)),
+            "REACH-GUARD: with no definition the live-carried entry certifies, so the arms \
+             below are about the definition and not about the `frames: &[]` shape"
+        );
+        assert!(
+            gate(&board(Some(false))),
+            "a MANDATORY definition opens no CR 616.1 choice — the paired positive"
+        );
+        assert!(
+            !gate(&board(Some(true))),
+            "an OPTIONAL definition on a LIVE-CARRIED pair is still refused by the FIRST \
+             discharge, which is why the second one is guarded by `ptr::eq` rather than \
+             unconditional: the guard removes a duplicate call, never a refusal"
+        );
     }
 
     /// R27 (a3) — THE BEHAVIOUR: A RETAINED SAMPLE DERIVES THE SAME EVENT SET THE LIVE BOARD

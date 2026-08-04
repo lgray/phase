@@ -745,7 +745,14 @@ fn r23_5_reach_no_may_beat_of_the_f4_drive_carries_a_construction_cursor() {
 ///
 /// # What the row asserts
 ///
-/// On the offer-beat board, ONE CR 614.1a replacement definition that the resolver's OWN
+/// CR ANCHORS, CORRECTED: this row cited **CR 614.1a** for the choice. `614.1a` is
+/// "effects that use the word *instead*" — a sub-rule, and not the one that makes an
+/// optional replacement a choice. **CR 614.1** is the DEFINITION (replacement effects watch
+/// for an event and replace it) and **CR 732.2a** is the LOAD-BEARING half: a shortcut
+/// "can't include conditional actions, where the outcome of a game event determines the next
+/// action a player takes". CR 616.1 stays where it belongs — the two-or-more ORDERING branch.
+///
+/// On the offer-beat board, ONE CR 614.1 replacement definition that the resolver's OWN
 /// derivation draws turns the OFFER into `UnspecifiedChoiceWindow`; six definitions the
 /// resolver's derivation does NOT draw leave the offer standing. That contrast IS the claim:
 /// the obligation is **event-derived**, read off what the resolution proposes through
@@ -772,8 +779,9 @@ fn r23_5_reach_no_may_beat_of_the_f4_drive_carries_a_construction_cursor() {
 ///
 /// * **(pos)** the UNMODIFIED offer-beat board OFFERS through the metered seam — asserted
 ///   FIRST, so every refusal below is attributable to the definition and not to the replay.
-/// * **(a)** one OPTIONAL `AddCounter` definition ⇒ `UnspecifiedChoiceWindow` (CR 614.1a: an
-///   optional replacement is a genuine resolution-time choice ⇒ the period is not choice-free).
+/// * **(a)** one OPTIONAL `AddCounter` definition ⇒ `UnspecifiedChoiceWindow` (CR 732.2a +
+///   CR 614.1: an optional replacement is a genuine resolution-time choice, and a described
+///   sequence may not contain one ⇒ the period is not choice-free).
 /// * **(a′)** the SAME definition, MANDATORY ⇒ still OFFERS. CR 616.1: a lone quantity
 ///   modification commutes with nothing, so there is no ordering choice to make. This is what
 ///   keeps (a) keyed to OPTIONALITY rather than to "a definition exists".
@@ -804,7 +812,7 @@ fn r23_5_reach_no_may_beat_of_the_f4_drive_carries_a_construction_cursor() {
 /// optional replacement — and a MANDATORY entry publishes no `may`, so
 /// `pinned_may_choice_relief` returns `None` and conjunct (6) refuses there. Disable that
 /// detection and the entry classifies `FreeUnlessReplacements([AddCounter])`, whereupon the
-/// CR 614.1a discharge conjunct refuses instead. Defence in depth is the property; a row that
+/// CR 732.2a + CR 614.1 discharge conjunct refuses instead. Defence in depth is the property; a row that
 /// flipped on either single edit would have been asserting over only one of the two.
 ///
 /// ⚠ §6 R9's stated probe (*"swap `proposed_event_prompt_cause` back to a def-scan over
@@ -891,7 +899,7 @@ fn r9_the_offer_refuses_on_a_derived_replacement_obligation_not_on_a_definition_
             a_out,
             Err(engine::game::engine::BoundedOfferRefusal::UnspecifiedChoiceWindow)
         ),
-        "(a) CR 614.1a + CR 732.2a: an OPTIONAL replacement candidate applicable to an \
+        "(a) CR 732.2a + CR 614.1: an OPTIONAL replacement candidate applicable to an \
          ANNOUNCED entry's DERIVED event is a real resolution-time choice, so the period is \
          not choice-free and the offer must be refused. got {a_out:?}, meter {a_meter:?}"
     );
