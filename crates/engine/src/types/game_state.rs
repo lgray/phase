@@ -3537,8 +3537,8 @@ pub enum PersistentAxisMaterialization {
 /// across an ordinary zone change, so the `Other` fallback is reached only when the bearer
 /// truly stopped existing, or when its printed types changed under CR 400.7. In that window
 /// the derived axis becomes `Counter(_, Other)`, which joins no axis `unbounded_resources`
-/// holds ⇒ the row keeps rendering `∞` but loses its `scheduled_collapse` tag, and the
-/// boundary's removal finds nothing to take away. Nothing is ever hidden by the miss.
+/// holds ⇒ the boundary's removal finds nothing to take away and the row keeps rendering `∞`
+/// one boundary longer than it should. Nothing is ever hidden by the miss.
 ///
 /// CENSUS (`grep -rn 'objects.remove' crates/`, `#[cfg(test)]` bodies excluded) — FOUR
 /// production removes, not one. Cease-to-exist (`zones::…replay_resolved_object_cease`,
@@ -3557,14 +3557,13 @@ pub enum PersistentAxisMaterialization {
 /// REACHABILITY BY CONSUMER — with the pill projection no longer mapping to an axis, both
 /// remaining consumers are LIVE, and byte-identical to the pre-extraction nested
 /// `counter_axis` helper they already used:
-///   • `scheduled_collapse_axes` — read by `derive_views` to build the `scheduled_collapse`
-///     TAG and by `clear_collapsed_materializations` to pick removals. Exactly the fail-open
-///     described above: an untagged `∞` row, and a removal that finds nothing.
+///   • `scheduled_collapse_axes` — read by `clear_collapsed_materializations` to pick the
+///     removals. Exactly the fail-open described above: a removal that finds nothing.
 ///   • `clear_collapsed_materializations`' own surviving-target guard.
 ///
 /// That fail-open polarity is the SAME one this phase mandates everywhere else (an axis
-/// with no registration renders ∞): it can only ever leave an ∞ standing — untagged, or one
-/// boundary longer than it should — never hide a real one. A snapshot would have to add a
+/// with no registration renders ∞): it can only ever leave an ∞ standing one boundary longer
+/// than it should — never hide a real one. A snapshot would have to add a
 /// serde field to `CounterGrowth` — a saved-game surface change across every construction
 /// site — to buy a strictly-display improvement, so it is not taken. Removing a non-present
 /// axis stays a harmless no-op, and `clear_collapsed_materializations`' surviving-target
@@ -19819,33 +19818,32 @@ impl GameState {
     }
 
     /// CR 732.2a: the exact `ResourceAxis` set a deferred materialization stash will
-    /// collapse at the next CR 500.5 boundary. SINGLE AUTHORITY, with exactly two callers:
-    /// - `clear_collapsed_materializations` REMOVES these axes once the growth was applied;
-    /// - `game::derived_views::derive_views` TAGS them into `DerivedViews::scheduled_collapse`
-    ///   while the collapse is merely SCHEDULED. A TAG, NOT A FILTER: the `∞` HUD rows, the ∞
-    ///   object pile and the ∞ counter pills all stay projected. CR 732.2c says the shortcut is
-    ///   taken at accept, but this engine DEFERS the growth to the next CR 500.5 boundary, so
-    ///   across accept→boundary nothing has been applied and N is not chosen yet — what is on
-    ///   the board is still a certified-unbounded loop, the `∞` is load-bearing board state,
-    ///   and this set only names which of those badges the boundary will cash out.
+    /// collapse at the next CR 500.5 boundary. SINGLE AUTHORITY with ONE production caller,
+    /// `clear_collapsed_materializations`, which REMOVES these axes once the growth was applied.
+    ///
+    /// NOT a display filter, and deliberately not read by `game::derived_views`. This stash is the
+    /// engine's DEFERRAL of an accepted shortcut's results — an engine deviation, pre-existing and
+    /// deliberate, that no CR licenses. The count itself is already fixed at accept
+    /// (`pending_materialization_count`); what is deferred is putting the growth on the board.
+    /// While it is pending, the `∞` HUD rows, the ∞ object pile and the ∞ counter pills all keep
+    /// projecting, because the marks and their enablers are still live. This set says nothing
+    /// about them — it names what the boundary will REMOVE, not what the display may show.
     ///
     /// Returns the axes UNFILTERED, including any `Mana(_)` a `DriveSequence` names, because the
-    /// `clear_collapsed_materializations` caller MUST remove that axis at the boundary. The
-    /// `derive_views` caller drops `Mana(_)` on the way out so its tag means "DEFERRED growth
-    /// only": mana is already materialized in the pool (`mana_payment::refill_infinite_mana`
-    /// re-tops it off this very store until CR 500.5 empties it), so tagging that live,
-    /// spendable pool "scheduled collapse" would mislabel it. The tag therefore deliberately
-    /// UNDER-REPORTS mana, whose `∞` does end — at the CR 500.5 step/phase end rather than by a
-    /// materialization. See the class rule at that call site.
+    /// caller MUST remove that axis at the boundary. Note the two axis classes end their `∞` by
+    /// different routes: `Tokens` / `Counters` / `Life` are DEFERRED and end here, when the
+    /// boundary applies the growth; a `Mana(_)` is already materialized in the pool
+    /// (`mana_payment::refill_infinite_mana` re-tops it off this very store) and its `∞` ends at
+    /// the CR 500.5 step/phase end instead.
     ///
-    /// Tagging in the PROJECTION rather than removing from the store is load-bearing:
+    /// Removing at the boundary rather than filtering the store meanwhile is load-bearing:
     /// the store keeps `unbounded_resources` and `unbounded_loop_enablers` in CR 104.4b /
     /// CR 110.1 lockstep, which is what `zones::apply_zone_exit_cleanup` reads to defuse a
     /// capability whose enabler leaves between accept and boundary.
     ///
     /// FAIL-CLOSED: only an axis some REGISTERED item actually collapses is returned, so an
-    /// ∞ axis with no registration (a mana engine registers nothing) is neither tagged here nor
-    /// removed at the boundary — it keeps its badge.
+    /// ∞ axis with no registration (a mana engine registers nothing) is never removed here —
+    /// it keeps its badge until CR 500.5 ends it.
     /// EXHAUSTIVE over `PersistentAxisMaterialization` (no wildcard) — a future variant
     /// build-breaks here instead of silently leaking a stale `∞`.
     pub fn scheduled_collapse_axes(
@@ -19916,8 +19914,8 @@ impl GameState {
         collapsed: &[PersistentAxisMaterialization],
     ) {
         // --- Phase 1 (reads): what to remove ---
-        // The axis set comes from the SHARED authority the ∞-row projection also reads, so
-        // "tagged while scheduled" and "removed once applied" can never disagree.
+        // The axis set comes from `scheduled_collapse_axes`, so "what a stash schedules" and
+        // "what is removed once applied" are one match, never two copies of it.
         let mut axes_to_remove = self.scheduled_collapse_axes(collapsed);
         // The token pile drops exactly when the token axis collapses — true for a batched
         // `Tokens` item and for a `DriveSequence` that names `TokensCreated`.

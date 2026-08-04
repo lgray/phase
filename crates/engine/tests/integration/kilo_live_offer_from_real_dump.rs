@@ -19,7 +19,6 @@
 //! The `kilo_reinjected_pinless_history_suppresses_offer` test is the matched-pair proof that the
 //! migration is load-bearing (re-injecting the stale prefix flips the offer OFF).
 
-use engine::analysis::resource::ResourceAxis;
 use engine::game::engine::apply;
 use engine::types::ability::TargetRef;
 use engine::types::actions::GameAction;
@@ -435,19 +434,20 @@ fn kilo_accept_marks_pentad_charge_as_unbounded_display_target() {
         "display-only: Pentad's REAL charge count is unchanged by the ∞ mark (CR 701.34a)"
     );
 
-    // (3) CR 732.2c — THE PER-SURFACE COUNTER-PILL ROW, on a REAL production fixture. The accept
-    // registers an observed-growth `DriveSequence` naming the charge-counter axis, but the growth
-    // is DEFERRED to the CR 500.5 boundary, so the pill stays ∞ and carries a scheduled TAG.
-    // Filter nothing: (2) above (the store write) is unchanged and still passes.
+    // (3) THE PER-SURFACE COUNTER-PILL ROW, on a REAL production fixture. The accept registers an
+    // observed-growth `DriveSequence` naming the charge-counter axis, but the engine DEFERS
+    // applying it to the CR 500.5 boundary — an engine deviation, pre-existing and deliberate. The
+    // real charge count is unchanged (asserted just above) and the ∞ mark is live, so the pill
+    // stays ∞ throughout that window. Filter nothing: (2) above is unchanged and still passes.
     //
     // REVERT-PROBE (RP-1c, RUN): restore the `collapse_scheduled(..)` guard in `derive_views`'
     // counter-pill loop ⇒ THIS `assert_eq!` fails (`left: None`) while (2) above and the pile
     // and row channels stay green.
     let views = derive_views(&state, None);
 
-    // CR 732.2c cross-seam pin, PART 1 — compute + (optionally) REGENERATE. Provenance: every
-    // key/value below is ENGINE-EMITTED (`serde_json::to_value(&derive_views(..))`). The four ∞ keys
-    // are lifted BY NAME from the real serialized DerivedViews so unrelated derived-view churn
+    // Cross-seam wire pin, PART 1 — compute + (optionally) REGENERATE. Provenance: every
+    // key/value below is ENGINE-EMITTED (`serde_json::to_value(&derive_views(..))`). The three ∞
+    // keys are lifted BY NAME from the real serialized DerivedViews so unrelated derived-view churn
     // cannot move this golden, while the field names and value encodings — the part the TS mirror
     // must match — stay engine-authored.
     //
@@ -465,7 +465,6 @@ fn kilo_accept_marks_pentad_charge_as_unbounded_display_target() {
         "unbounded_pile",
         "unbounded_resources",
         "unbounded_counters",
-        "scheduled_collapse",
     ]
     .into_iter()
     .filter_map(|k| wire.get(k).map(|v| (k.to_string(), v.clone())))
@@ -492,10 +491,10 @@ fn kilo_accept_marks_pentad_charge_as_unbounded_display_target() {
     assert_eq!(
         views.unbounded_counters.get(&PENTAD),
         Some(&vec![charge.clone()]),
-        "CR 732.2c: the ∞ charge pill stays projected while the collapse is merely SCHEDULED"
+        "the ∞ charge pill stays projected while the collapse is merely SCHEDULED"
     );
 
-    // CR 732.2c cross-seam pin, PART 2 — the drift COMPARE (see PART 1 for why it sits here).
+    // Cross-seam wire pin, PART 2 — the drift COMPARE (see PART 1 for why it sits here).
     let committed: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(path).expect("committed wire golden"))
             .unwrap();
@@ -503,15 +502,6 @@ fn kilo_accept_marks_pentad_charge_as_unbounded_display_target() {
         serde_json::Value::Object(golden),
         committed,
         "the client's wire golden drifted from engine output — re-run with UPDATE_WIRE_GOLDEN=1"
-    );
-
-    assert!(
-        views
-            .scheduled_collapse
-            .iter()
-            .any(|r| r.player == P0 && matches!(r.axis, ResourceAxis::Counter(..))),
-        "…and the counter axis is TAGGED scheduled, got {:?}",
-        views.scheduled_collapse
     );
 
     // (4) WIRE ROUND-TRIP (FLIPS on revert): the populated channel serializes, is present on

@@ -2846,6 +2846,12 @@ export interface DerivedViews {
    * of every unbounded-resource loop. Empty/omitted when no loop is active. The
    * FE maps each axis to a display family and never re-derives attribution.
    * Mirrors `engine::game::derived_views::DerivedViews::unbounded_resources`.
+   *
+   * This channel and its two siblings below stay POPULATED after all players accept a
+   * shortcut, until the engine applies the growth at the next CR 500.5 boundary. Deferring
+   * the application across that window is an engine deviation, pre-existing and deliberate.
+   * What matters to the FE is only that the mark and its enablers are still live there, so
+   * `∞` is current engine state, not a stale mark. Render it.
    */
   unbounded_resources?: UnboundedResourceView[];
   /**
@@ -2867,21 +2873,6 @@ export interface DerivedViews {
    * `engine::game::derived_views::DerivedViews::unbounded_counters`.
    */
   unbounded_counters?: Record<string, string[]>;
-  /**
-   * CR 732.2c: the `(engine-attributed player, axis)` pairs whose DEFERRED unbounded growth has an
-   * accepted-but-not-yet-applied finite collapse waiting at the next CR 500.5 boundary. A TAG, not
-   * a filter — `unbounded_resources` / `unbounded_pile` / `unbounded_counters` stay populated while
-   * scheduled and still render `∞`. Join a row to its tag by exact `(player, axis)` equality.
-   *
-   * SCOPE LIMIT: `Mana` axes are deliberately absent (already spendable), so this UNDER-REPORTS
-   * "which ∞ rows will stop being ∞" — a mana ∞ ends at the CR 500.5 step/phase end rather than via
-   * a materialization. It answers the narrower question: which ∞ rows name DEFERRED growth a
-   * registered materialization will cash out at the boundary.
-   *
-   * Empty/omitted when nothing is scheduled. Mirrors
-   * `engine::game::derived_views::DerivedViews::scheduled_collapse`.
-   */
-  scheduled_collapse?: UnboundedResourceView[];
 }
 
 /** Mirrors `engine::types::game_state::NextSpellModifier` (serde tag="type"). */

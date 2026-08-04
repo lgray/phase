@@ -1,11 +1,16 @@
 /**
- * CR 732.2c cross-seam pin. Both JSON files are ENGINE-EMITTED by
+ * ∞-channel cross-seam pin. Both JSON files are ENGINE-EMITTED by
  * `combo_infinite_pile::real_4p_object_growth_accept_writes_infinite_pile` and
  * `kilo_live_offer_from_real_dump::kilo_accept_marks_pentad_charge_as_unbounded_display_target`,
  * each driving a REAL 4-player dump through the REAL APNAP accept. Regenerate with
  * `UPDATE_WIRE_GOLDEN=1 cargo test -p phase-engine --test integration <fn>`. Never hand-edit them.
  * Every existing client test that touches these channels hand-writes its own `derived` block, so
  * this file is the only place the engine's wire shape and the client's readers meet.
+ * Both goldens are captured AFTER the accept, while a finite collapse is merely SCHEDULED — the
+ * engine defers APPLYING the growth to the next CR 500.5 boundary (an engine deviation,
+ * pre-existing and deliberate), and the marks stay live through that window, so the ∞ channels are
+ * still populated. If the engine went back to hiding them there, both goldens would regenerate
+ * empty and every assertion below would red.
  * The `unbounded_pile → Set` hop is performed here rather than by `gameStateView.ts`, because
  * driving that function would require committing a whole `GameState`; the ids, the field name and
  * the value encoding — the parts that actually differ across the language boundary — are
@@ -105,18 +110,5 @@ describe("unbounded ∞ wire seam (engine-emitted goldens)", () => {
     expect(renderHook(() => useUnboundedCounterTypes(405)).result.current).toEqual(["charge"]);
     // (11) paired NEGATIVE: 404 is on the same battlefield and carries no ∞ mark.
     expect(renderHook(() => useUnboundedCounterTypes(404)).result.current).toEqual([]);
-  });
-
-  // 12 and 13 are separate `it`s so that a tag regression reds BOTH families independently — in
-  // one `it` the first `expect` throws and the second family is never measured.
-  it("carries the scheduled-collapse tag on the unit-variant family", () => {
-    // (12) THE DOCTRINE: the ∞ badge ships WHILE a finite collapse is merely scheduled, and the
-    // tag names which rows the CR 500.5 boundary will cash out.
-    expect(tokenWire.scheduled_collapse).toEqual([{ axis: "TokensCreated", player: 0 }]);
-  });
-
-  it("carries the scheduled-collapse tag on the data-variant family", () => {
-    // (13) …and the same tag on the counter family.
-    expect(counterWire.scheduled_collapse[0].axis).toEqual({ Counter: ["Other", "Other"] });
   });
 });
