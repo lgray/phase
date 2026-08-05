@@ -56,12 +56,15 @@ export function ChooseXValueUI() {
 
   useEffect(() => {
     if (isChooseX) setRaw(String(defaultValue));
+    // `pendingCast?.object_id` keys the reset on prompt IDENTITY, not just its window: a
+    // successor ChooseXValue for a DIFFERENT spell with the same [min, max] would otherwise
+    // leave `raw` holding the X chosen for the previous spell.
     // `max` is a dependency even though it does not appear in the body: re-entering ChooseXValue
     // with a NARROWER max but an unchanged min leaves `defaultValue` identical, so without it the
     // effect would not fire and a now-out-of-range entry would persist with no way to self-heal.
     // Both sibling prompts already key their reset on the full window (PayAmountChoiceUI on
     // [min, max], AssistPaymentUI on [max]); this closes that asymmetry.
-  }, [isChooseX, defaultValue, max]);
+  }, [isChooseX, defaultValue, max, pendingCast?.object_id]);
 
   const handleCommit = useCallback(() => {
     // Sanitization gate: an out-of-range X is REJECTED, not clamped. Typing 99 under max=5

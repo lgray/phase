@@ -69,6 +69,36 @@ describe("AssistPaymentUI", () => {
     expect(screen.getByLabelText("Decrease amount")).toBeDisabled();
   });
 
+  // `max_generic` is held CONSTANT so the caster is the only changing dep: keyed on the bound
+  // alone the effect would not fire, and the amount chosen for the previous assist prompt would
+  // carry into this one. Residual, disclosed in the source: a successor with the SAME caster and
+  // bound is still indistinguishable — this wire type carries no prompt identity, and inventing
+  // one in the display layer would be the wrong fix.
+  it("AP/successor: a same-bound prompt for a different caster resets the entry", () => {
+    const promptFor = (caster: number) =>
+      buildAssistPaymentWaitingFor({ data: { caster, chosen: 0, max_generic: 4 } });
+
+    const first = promptFor(1);
+    setGameStoreForTest({
+      gameState: createGameState({ waiting_for: first }),
+      waitingFor: first,
+    });
+
+    const { rerender } = render(<AssistPaymentUI />);
+    const box = screen.getByLabelText("Assist: Pay Generic Mana");
+    fireEvent.change(box, { target: { value: "3" } });
+    expect(box).toHaveValue("3");
+
+    const successor = promptFor(2);
+    setGameStoreForTest({
+      gameState: createGameState({ waiting_for: successor }),
+      waitingFor: successor,
+    });
+    rerender(<AssistPaymentUI />);
+
+    expect(screen.getByLabelText("Assist: Pay Generic Mana")).toHaveValue("0");
+  });
+
   it("dispatches CommitAssistPayment with the selected value", () => {
     const dispatch = vi.fn().mockResolvedValue([]);
     const waitingFor = assistPaymentWaitingFor(4);

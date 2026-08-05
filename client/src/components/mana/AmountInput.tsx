@@ -99,7 +99,13 @@ export function AmountInput({
             tone: "neutral",
             size: "xs",
             disabled: decDisabled,
-            className: "h-9 w-9 px-0 text-base",
+            // The 36px visual box is kept (every other small square control in this client is
+            // `h-9 w-9`), and the TOUCH target is widened to 44px with the codebase's existing
+            // hit-area idiom (`ManualManaToggle`): a transparent `::before` at `-inset-1` adds
+            // 4px per side. These steppers are the only non-typing recovery path out of an
+            // invalid entry, so they are exactly the control a coarse pointer needs most.
+            className:
+              "relative h-9 w-9 px-0 text-base before:absolute before:-inset-1 before:content-['']",
           })}
         >
           −
@@ -151,7 +157,13 @@ export function AmountInput({
             tone: "neutral",
             size: "xs",
             disabled: incDisabled,
-            className: "h-9 w-9 px-0 text-base",
+            // The 36px visual box is kept (every other small square control in this client is
+            // `h-9 w-9`), and the TOUCH target is widened to 44px with the codebase's existing
+            // hit-area idiom (`ManualManaToggle`): a transparent `::before` at `-inset-1` adds
+            // 4px per side. These steppers are the only non-typing recovery path out of an
+            // invalid entry, so they are exactly the control a coarse pointer needs most.
+            className:
+              "relative h-9 w-9 px-0 text-base before:absolute before:-inset-1 before:content-['']",
           })}
         >
           +

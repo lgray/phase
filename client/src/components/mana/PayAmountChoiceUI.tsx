@@ -18,11 +18,14 @@ export function PayAmountChoiceUI() {
   const data = isPayAmount ? waitingFor.data : null;
   const min = data?.min ?? 0;
   const max = data?.max ?? 0;
+  // Prompt identity, not just bounds — a successor prompt with the same window would otherwise
+  // leave `raw` holding the amount chosen for the PREVIOUS prompt.
+  const sourceId = data?.source_id ?? null;
   const [raw, setRaw] = useState(String(min));
 
   useEffect(() => {
     if (isPayAmount) setRaw(String(min));
-  }, [isPayAmount, min, max]);
+  }, [isPayAmount, min, max, sourceId]);
 
   const amount = parseAmount(raw, min, max);
 

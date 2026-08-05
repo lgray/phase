@@ -208,6 +208,40 @@ describe("PayAmountChoiceUI — sanitized amount entry", () => {
     expect(dispatch).not.toHaveBeenCalled();
   });
 
+  // Reset is keyed on prompt IDENTITY, not just its window. Keyed on [min, max] alone the effect
+  // would not fire for a successor prompt with the same bounds, and the previous decision would
+  // carry into it. `min`/`max` are held CONSTANT here so `source_id` is the only changing dep —
+  // the one shape in which the identity dependency is observable.
+  it("T10/successor: a same-window prompt from a DIFFERENT source resets the entry", () => {
+    const promptFrom = (sourceId: number) =>
+      buildPayAmountChoiceWaitingFor({
+        data: {
+          player: 0,
+          resource: { type: "Counters" },
+          min: 0,
+          max: 10,
+          source_id: sourceId,
+        },
+      });
+
+    const { rerender } = renderPrompt(promptFrom(1));
+    type("7");
+    expect(screen.getByLabelText(BOX)).toHaveValue("7");
+
+    const successor = promptFrom(2);
+    setGameStoreForTest({
+      gameState: buildGameState({
+        waiting_for: successor,
+        active_player: 0,
+        turn_decision_controller: 0,
+      }),
+      waitingFor: successor,
+    });
+    rerender(<PayAmountChoiceUI />);
+
+    expect(screen.getByLabelText(BOX)).toHaveValue("0");
+  });
+
   it("T6a/enter-valid: Enter submits a valid entry", () => {
     const { dispatch } = renderPrompt(loopCollapseWaitingFor("Tokens"));
     type("42");

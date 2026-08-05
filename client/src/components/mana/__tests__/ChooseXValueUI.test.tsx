@@ -330,6 +330,48 @@ describe("ChooseXValueUI", () => {
     ).toBeInTheDocument();
   });
 
+  // Companion to the `max` row above, for the other identity axis: the window is held CONSTANT
+  // and only the SPELL changes, so `pending_cast.object_id` is the sole changing dep. Keyed on
+  // bounds alone, the X chosen for the previous spell would carry into the next one.
+  it("resets when a same-window ChooseXValue arrives for a different spell", () => {
+    const promptFor = (objectId: number) =>
+      buildChooseXValueWaitingFor({
+        data: {
+          player: 0,
+          max: 10,
+          min: 0,
+          pending_cast: buildPendingCast({
+            object_id: objectId,
+            card_id: 1,
+            cost: { type: "Cost", shards: ["X", "G"], generic: 0 },
+          }),
+        },
+      });
+
+    const first = promptFor(42);
+    setGameStoreForTest({
+      gameState: createGameState({ waiting_for: first }),
+      waitingFor: first,
+    });
+
+    const { rerender } = render(<ChooseXValueUI />);
+    fireEvent.change(screen.getByLabelText("Enter X value"), {
+      target: { value: "7" },
+    });
+    expect(
+      screen.getByRole("button", { name: "Confirm X = 7" }),
+    ).toBeInTheDocument();
+
+    const successor = promptFor(43);
+    setGameStoreForTest({
+      gameState: createGameState({ waiting_for: successor }),
+      waitingFor: successor,
+    });
+    rerender(<ChooseXValueUI />);
+
+    expect(screen.getByLabelText("Enter X value")).toHaveValue("0");
+  });
+
   it("renders nothing for impossible min greater than max bounds", () => {
     const waitingFor = chooseXWaitingFor(0, 1);
 
