@@ -38,10 +38,24 @@ pub struct CompareRow {
     pub baseline: Option<MatchupResult>,
     pub current: Option<MatchupResult>,
     pub delta_p0_pp: Option<f32>,
+    /// `current.avg_turns - baseline.avg_turns`. Carried on the row, not only inside a reason
+    /// string: the verdict chain is first-match-wins, so whichever arm fires suppresses every
+    /// other arm's message. Every axis the chain can decide on therefore gets a column of its
+    /// own, and this was the last one without.
+    pub avg_turn_delta: Option<f64>,
+    /// `Some((baseline, current))` when the matchup's own suite verdict changed, `None` when it
+    /// held. The third axis this chain decides on, and like the other two it needs a surface of
+    /// its own — a row that fails on paired outcomes prints only that reason.
+    pub suite_status_shift: Option<(SuiteStatus, SuiteStatus)>,
     pub flipped_w_to_l: usize,
     pub flipped_l_to_w: usize,
+    /// `Some(_) → None` — games that stopped resolving. See `PairedSeedShift`.
+    pub decisive_to_draw: usize,
+    /// `None → Some(_)` — games that started resolving.
+    pub draw_to_decisive: usize,
     pub unchanged: usize,
     pub sign_test_p: Option<f64>,
+    pub draw_sign_test_p: Option<f64>,
     pub status: CompareStatus,
     pub reason: Option<String>,
 }
@@ -159,10 +173,15 @@ fn classify_row(
             baseline: Some(b.clone()),
             current: None,
             delta_p0_pp: None,
+            avg_turn_delta: None,
+            suite_status_shift: None,
             flipped_w_to_l: 0,
             flipped_l_to_w: 0,
+            decisive_to_draw: 0,
+            draw_to_decisive: 0,
             unchanged: 0,
             sign_test_p: None,
+            draw_sign_test_p: None,
             status: CompareStatus::Removed,
             reason: Some("matchup removed from current report".to_string()),
         },
@@ -183,10 +202,15 @@ fn classify_row(
                 baseline: None,
                 current: Some(c.clone()),
                 delta_p0_pp: None,
+                avg_turn_delta: None,
+                suite_status_shift: None,
                 flipped_w_to_l: 0,
                 flipped_l_to_w: 0,
+                decisive_to_draw: 0,
+                draw_to_decisive: 0,
                 unchanged: 0,
                 sign_test_p: None,
+                draw_sign_test_p: None,
                 status,
                 reason,
             }
@@ -198,6 +222,34 @@ fn classify_row(
             let paired = paired_seed_shift(b, c);
             let avg_turn_delta = c.avg_turns - b.avg_turns;
 
+            // TIER ORDER IS LOAD-BEARING. Two earlier drafts of this comment overclaimed what it
+            // buys — the first said "no input that reaches Fail or Warn today can change verdict"
+            // (false: Warn escalates), the second said "nothing with a flat draw axis changes
+            // verdict" (false once the status axis landed in the same commit). Both were caught by
+            // review running the claim through the compiled base. So, by construction and stated
+            // to its exact edge:
+            //
+            //   1. Nothing that reaches Fail today changes verdict. The W/L Fail arm is still
+            //      first and its counters are byte-identical to before, so it wins every input it
+            //      used to win.
+            //   2. A row whose draw counters are EQUAL and where NEITHER report's status is
+            //      `Fail` takes precisely the pre-change path. That is the full precondition, not
+            //      a draw-axis-only one: every new guard below needs either unequal draw counters
+            //      or a `Fail` on one side, so with both absent none can fire. This is what keeps
+            //      identity comparisons and every unaffected regression bit-for-bit unchanged.
+            //   3. A W/L *Warn* DOES escalate to Fail — via the draw Fail arm when the draw axis
+            //      is significantly negative, and via the status Fail arm when the matchup newly
+            //      fails its own suite check. Both escalations are intended: those are the
+            //      failures this gate exists to catch, and suppressing either because the win/loss
+            //      axis also wobbled insignificantly would reintroduce the same blindness one case
+            //      narrower. Pinned by `draw_regression_escalates_an_insignificant_win_loss_warn`
+            //      and `status_regression_escalates_an_insignificant_win_loss_warn` — one per
+            //      escalating arm, because a claim about an arm that no test exercises is how the
+            //      first two drafts of this comment stayed wrong.
+            //
+            // Do not reorder to group same-axis arms together: moving either Fail arm below the
+            // W/L Warn arm silently demotes its clause-3 escalation back to Warn. Both reorders
+            // are covered by the two tests named above.
             let (status, reason) = if paired.flipped_w_to_l > paired.flipped_l_to_w
                 && paired.sign_test_p.is_some_and(|p| p < 0.05)
             {
@@ -210,6 +262,41 @@ fn classify_row(
                         paired.sign_test_p.unwrap_or(1.0),
                     )),
                 )
+            } else if paired.decisive_to_draw > paired.draw_to_decisive
+                && paired.draw_sign_test_p.is_some_and(|p| p < 0.05)
+            {
+                // Games that used to resolve stopped resolving: the signature of a stalled or
+                // looping AI. Asymmetric BY CONSTRUCTION — this arm requires decisive→draw to
+                // dominate, so the improvement direction can never reach Fail through it.
+                (
+                    CompareStatus::Fail,
+                    Some(format!(
+                        "paired draw regression: decisive→draw={} draw→decisive={} sign-test p={:.4}",
+                        paired.decisive_to_draw,
+                        paired.draw_to_decisive,
+                        paired.draw_sign_test_p.unwrap_or(1.0),
+                    )),
+                )
+            } else if b.status != SuiteStatus::Fail && c.status == SuiteStatus::Fail {
+                // The matchup newly fails its OWN suite check (mirror imbalance, expectation
+                // violation). Without this arm the comparison read the paired game outcomes and
+                // nothing else, so a run could carry `status: "Fail"` on an existing matchup and
+                // still exit 0 — measured on `.ab/noC-1.json`, whose enchantress-mirror row is
+                // `status: "Fail"` while its compare section reported `0 FAIL, 0 WARN, 3 PASS`.
+                //
+                // Keyed on `Fail` specifically, not on any status change, because `Fail` is the
+                // only status this file already acts on: the new-matchup arm above matches
+                // `SuiteStatus::Fail` and treats `Pass`/`Open` alike. Same authority, same
+                // vocabulary, extended from new matchups to existing ones.
+                (
+                    CompareStatus::Fail,
+                    Some(format!(
+                        "matchup status regressed {:?} → {:?}: {}",
+                        b.status,
+                        c.status,
+                        c.fail_reason.as_deref().unwrap_or("no reason"),
+                    )),
+                )
             } else if paired.flipped_w_to_l != paired.flipped_l_to_w {
                 (
                     CompareStatus::Warn,
@@ -220,6 +307,49 @@ fn classify_row(
                         paired.sign_test_p.unwrap_or(1.0),
                     )),
                 )
+            } else if paired.decisive_to_draw != paired.draw_to_decisive {
+                // Any imbalance on the draw axis is reported, in either direction. The improvement
+                // direction (draw→decisive dominating) lands HERE and never above: a comparator
+                // that stayed silent about games that started resolving would be hiding a
+                // behavior change, which is the same reason the win/loss tier warns on L→W too.
+                (
+                    CompareStatus::Warn,
+                    Some(format!(
+                        "paired draw shift: decisive→draw={} draw→decisive={} sign-test p={:.4}",
+                        paired.decisive_to_draw,
+                        paired.draw_to_decisive,
+                        paired.draw_sign_test_p.unwrap_or(1.0),
+                    )),
+                )
+            } else if b.status == SuiteStatus::Fail {
+                // The baseline already recorded this matchup as failing. One arm, two messages,
+                // rather than two sibling arms: the axis is `b.status == Fail` and `c.status` is
+                // the parameter.
+                //
+                // Neither case can reach Fail — the arm above requires the regression direction —
+                // but neither may be silent either:
+                //   * Recovery is a behavior change, and a comparator that hid it would be as
+                //     wrong as one that hid a regression (the same reason the W/L tier warns on
+                //     L→W and the draw tier warns on draw→decisive).
+                //   * STILL failing is reported every run rather than passing quietly. Review
+                //     showed this is reachable, not theoretical: `--refresh-baseline` writes the
+                //     current report verbatim with no `any_fail` check, so one refresh from a
+                //     failing run would otherwise make that matchup exit 0 forever.
+                //
+                // It is a Warn and not a Fail deliberately: the exit code answers "did this change
+                // make things worse", and the baseline — however it got that way — already
+                // sanctions this state. Making a baseline-sanctioned failure red is a policy call
+                // about whether a baseline may bless a failure at all, which belongs with the
+                // `--refresh-baseline` guard in `bin/ai_gate.rs`, not here.
+                let reason = if c.status == SuiteStatus::Fail {
+                    format!(
+                        "matchup still failing (baseline also Fail): {}",
+                        c.fail_reason.as_deref().unwrap_or("no reason")
+                    )
+                } else {
+                    format!("matchup status recovered {:?} → {:?}", b.status, c.status)
+                };
+                (CompareStatus::Warn, Some(reason))
             } else if matches!(c.expected, Expected::Mirror { .. })
                 && avg_turn_delta.abs() > MIRROR_AVG_TURN_WARN_DELTA
             {
@@ -237,10 +367,15 @@ fn classify_row(
                 baseline: Some(b.clone()),
                 current: Some(c.clone()),
                 delta_p0_pp: Some(delta_pp),
+                avg_turn_delta: Some(avg_turn_delta),
+                suite_status_shift: (b.status != c.status).then_some((b.status, c.status)),
                 flipped_w_to_l: paired.flipped_w_to_l,
                 flipped_l_to_w: paired.flipped_l_to_w,
+                decisive_to_draw: paired.decisive_to_draw,
+                draw_to_decisive: paired.draw_to_decisive,
                 unchanged: paired.unchanged,
                 sign_test_p: paired.sign_test_p,
+                draw_sign_test_p: paired.draw_sign_test_p,
                 status,
                 reason,
             }
@@ -251,8 +386,15 @@ fn classify_row(
 struct PairedSeedShift {
     flipped_w_to_l: usize,
     flipped_l_to_w: usize,
+    /// `Some(_) → None`: a game that used to resolve no longer does. The regression signal —
+    /// the signature of a stalled or looping AI.
+    decisive_to_draw: usize,
+    /// `None → Some(_)`: a game that used to stall now resolves. The improvement signal.
+    draw_to_decisive: usize,
     unchanged: usize,
     sign_test_p: Option<f64>,
+    /// Sign test on the draw axis, computed exactly like `sign_test_p` is on the win/loss axis.
+    draw_sign_test_p: Option<f64>,
 }
 
 fn paired_seed_shift(baseline: &MatchupResult, current: &MatchupResult) -> PairedSeedShift {
@@ -260,16 +402,28 @@ fn paired_seed_shift(baseline: &MatchupResult, current: &MatchupResult) -> Paire
         current.games.iter().map(|game| (game.seed, game)).collect();
     let mut flipped_w_to_l = 0;
     let mut flipped_l_to_w = 0;
+    let mut decisive_to_draw = 0;
+    let mut draw_to_decisive = 0;
     let mut unchanged = 0;
 
     for baseline_game in &baseline.games {
         let Some(current_game) = current_by_seed.get(&baseline_game.seed) else {
             continue;
         };
+        // EXHAUSTIVE, no `_` fallback. The wildcard this replaces is how the decisive→draw class
+        // became invisible: it swept `Some(_) → None` into `unchanged`, so a matchup could lose
+        // most of its winners and the comparison would report no movement at all. Listing every
+        // shape means a future `winner` representation breaks the build instead of silently
+        // rejoining `unchanged`.
         match (baseline_game.winner, current_game.winner) {
             (Some(0), Some(1)) => flipped_w_to_l += 1,
             (Some(1), Some(0)) => flipped_l_to_w += 1,
-            _ => unchanged += 1,
+            (Some(_), None) => decisive_to_draw += 1,
+            (None, Some(_)) => draw_to_decisive += 1,
+            // Same winner, or drawn on both sides. Non-0/1 seat pairs land here as they always
+            // have — the duel suite is two-player, and changing that classification is out of
+            // this change's scope.
+            (Some(_), Some(_)) | (None, None) => unchanged += 1,
         }
     }
 
@@ -277,11 +431,18 @@ fn paired_seed_shift(baseline: &MatchupResult, current: &MatchupResult) -> Paire
     let sign_test_p =
         (flips > 0).then(|| sign_test_mid_p_upper_tail(flips, flipped_w_to_l.max(flipped_l_to_w)));
 
+    let draw_flips = decisive_to_draw + draw_to_decisive;
+    let draw_sign_test_p = (draw_flips > 0)
+        .then(|| sign_test_mid_p_upper_tail(draw_flips, decisive_to_draw.max(draw_to_decisive)));
+
     PairedSeedShift {
         flipped_w_to_l,
         flipped_l_to_w,
+        decisive_to_draw,
+        draw_to_decisive,
         unchanged,
         sign_test_p,
+        draw_sign_test_p,
     }
 }
 
@@ -320,11 +481,48 @@ fn status_str(s: CompareStatus) -> &'static str {
     }
 }
 
-/// Render a markdown table of the comparison to stdout + emit a summary line.
-pub fn print_markdown(report: &CompareReport) {
-    println!();
-    println!("| matchup | exercises | baseline p0% | current p0% | flips W→L | flips L→W | sign p | status |");
-    println!("|---------|-----------|--------------|-------------|-----------|-----------|--------|--------|");
+/// The column headers, in order. Named once so tests can assert that every axis the verdict chain
+/// decides on has a surface here — see `COLUMNS` usage in `render_markdown` and the invariant below.
+const COLUMNS: &[&str] = &[
+    "matchup",
+    "exercises",
+    "baseline p0%",
+    "current p0%",
+    "flips W→L",
+    "flips L→W",
+    "sign p",
+    "dec→draw",
+    "draw→dec",
+    "draw sign p",
+    "Δ avg turns",
+    "suite status",
+    "status",
+];
+
+/// Build the markdown table as a string.
+///
+/// INVARIANT: every axis the verdict chain can decide on has a column here. The chain is
+/// first-match-wins, so whichever arm fires suppresses every other arm's reason string — a row that
+/// warns on the win/loss axis printed only the W/L reason and hid its draw movement, and a row that
+/// warns on the draw axis hid its mirror avg-turn drift the same way. Columns are the only surface
+/// that survives that suppression, so each axis owns one: W/L flips + sign p, draw counters + draw
+/// sign p, avg-turn delta, and suite status. **Adding a verdict arm means adding a column.**
+///
+/// Separated from `print_markdown` so that invariant is enforced by tests rather than asserted in a
+/// comment: `markdown_has_a_column_for_every_verdict_axis` and `markdown_rows_are_rectangular` read
+/// this string. When it was inlined in a `println!`, both new columns could be deleted with the
+/// whole suite still green.
+fn render_markdown(report: &CompareReport) -> String {
+    let mut out = String::new();
+    out.push_str(&format!("| {} |\n", COLUMNS.join(" | ")));
+    out.push_str(&format!(
+        "|{}|\n",
+        COLUMNS
+            .iter()
+            .map(|c| "-".repeat(c.chars().count() + 2))
+            .collect::<Vec<_>>()
+            .join("|")
+    ));
     for row in &report.rows {
         let exercises: Vec<String> = row.exercises.iter().map(|f| format!("{f:?}")).collect();
         let baseline_cell = match &row.baseline {
@@ -339,23 +537,58 @@ pub fn print_markdown(report: &CompareReport) {
             Some(p) => format!("{p:.4}"),
             None => "—".to_string(),
         };
-        println!(
-            "| {} | {} | {} | {} | {} | {} | {} | {} |",
-            row.matchup_id,
+        let draw_sign_p_cell = match row.draw_sign_test_p {
+            Some(p) => format!("{p:.4}"),
+            None => "—".to_string(),
+        };
+        let avg_turn_cell = match row.avg_turn_delta {
+            Some(d) => format!("{d:+.1}"),
+            None => "—".to_string(),
+        };
+        // Falls back to the CURRENT status when nothing shifted, so the column is populated on
+        // every row that has a current report — including new matchups, whose verdict is decided
+        // from `c.status` but which have no shift to show. A blank cell under a status-decided
+        // verdict would break the invariant above.
+        let suite_status_cell = match (row.suite_status_shift, row.current.as_ref()) {
+            (Some((before, after)), _) => format!("{before:?}→{after:?}"),
+            (None, Some(c)) => format!("{:?}", c.status),
+            (None, None) => "—".to_string(),
+        };
+        let cells = [
+            row.matchup_id.clone(),
             exercises.join(", "),
             baseline_cell,
             current_cell,
-            row.flipped_w_to_l,
-            row.flipped_l_to_w,
+            row.flipped_w_to_l.to_string(),
+            row.flipped_l_to_w.to_string(),
             sign_p_cell,
-            status_str(row.status),
-        );
+            row.decisive_to_draw.to_string(),
+            row.draw_to_decisive.to_string(),
+            draw_sign_p_cell,
+            avg_turn_cell,
+            suite_status_cell,
+            status_str(row.status).to_string(),
+        ];
+        debug_assert_eq!(cells.len(), COLUMNS.len());
+        out.push_str(&format!("| {} |\n", cells.join(" | ")));
         if let Some(reason) = &row.reason {
             if !matches!(row.status, CompareStatus::Pass) {
-                println!("|  ↳ _{reason}_ | | | | | | | |");
+                // Reason spans one labelled cell plus blanks for the rest, so the row stays
+                // rectangular no matter how many columns the table has.
+                out.push_str(&format!(
+                    "|  ↳ _{reason}_ |{}\n",
+                    " |".repeat(COLUMNS.len() - 1)
+                ));
             }
         }
     }
+    out
+}
+
+/// Render the comparison table to stdout + emit a summary line.
+pub fn print_markdown(report: &CompareReport) {
+    println!();
+    print!("{}", render_markdown(report));
 
     let mut pass = 0usize;
     let mut warn = 0usize;
@@ -427,6 +660,982 @@ mod tests {
         }
     }
 
+    /// Build a matchup from explicit `(seed, winner, turns)` rows, so a fixture can carry a
+    /// REAL recorded run instead of the synthetic win/loss ladder `mk_result` generates.
+    fn mk_result_from_games(id: &str, rows: &[(u64, Option<u8>, u32)]) -> MatchupResult {
+        let games: Vec<GameResult> = rows
+            .iter()
+            .map(|(seed, winner, turns)| GameResult {
+                seed: *seed,
+                winner: *winner,
+                turns: *turns,
+            })
+            .collect();
+        let p0_wins = games.iter().filter(|g| g.winner == Some(0)).count();
+        let p1_wins = games.iter().filter(|g| g.winner == Some(1)).count();
+        let draws = games.iter().filter(|g| g.winner.is_none()).count();
+        MatchupResult {
+            matchup_id: id.into(),
+            exercises: vec![FeatureKind::AggroPressure],
+            p0_label: "A".into(),
+            p1_label: "B".into(),
+            expected: Expected::Mirror { tolerance: 0.15 },
+            p0_wins,
+            p1_wins,
+            draws,
+            games,
+            total_turns: 0,
+            total_duration_ms: 0,
+            avg_turns: 10.0,
+            avg_duration_ms: 1000.0,
+            status: SuiteStatus::Pass,
+            fail_reason: None,
+            attribution: None,
+        }
+    }
+
+    /// **P2 — the paired-seed shift is blind to decisive→draw.**
+    ///
+    /// HISTORICAL, not synthetic. These ten rows are the committed `suite-baseline.json`'s
+    /// `enchantress-mirror` games paired by seed against a real recorded gate run
+    /// (`.ab/noC-1.json`, the A+B+D leg of #6969). Eight of the ten stopped having a winner —
+    /// baseline 4 p0 / 6 p1 / 0 draws became 1 / 1 / **8**.
+    ///
+    /// `paired_seed_shift` only recognizes `Some(0)→Some(1)` and `Some(1)→Some(0)`; every
+    /// `Some(_)→None` falls into the `_` arm and is tallied as UNCHANGED. So `flips == 0`,
+    /// `sign_test_p == None`, and the comparison PASSES a matchup in which 80% of the games
+    /// stopped resolving. That is the exact signature of a stalled or looping AI, and a branch
+    /// that drew every game would pass this gate.
+    #[test]
+    fn paired_seed_shift_counts_decisive_to_draw_as_a_shift() {
+        let baseline = mk_result_from_games(
+            "enchantress-mirror",
+            &[
+                (10593729, Some(1), 10),
+                (10593730, Some(0), 18),
+                (10593731, Some(1), 12),
+                (10593732, Some(1), 14),
+                (10593733, Some(1), 11),
+                (10593734, Some(0), 15),
+                (10593735, Some(0), 15),
+                (10593736, Some(0), 14),
+                (10593737, Some(1), 18),
+                (10593738, Some(1), 19),
+            ],
+        );
+        let current = mk_result_from_games(
+            "enchantress-mirror",
+            &[
+                (10593729, None, 8),
+                (10593730, None, 12),
+                (10593731, Some(1), 12),
+                (10593732, None, 11),
+                (10593733, None, 9),
+                (10593734, None, 12),
+                (10593735, Some(0), 15),
+                (10593736, None, 13),
+                (10593737, None, 17),
+                (10593738, None, 9),
+            ],
+        );
+
+        // PREMISE: the fixture really carries the shift it claims (8 lost winners, 2 kept).
+        assert_eq!(
+            baseline.draws, 0,
+            "premise: the baseline matchup had no draws"
+        );
+        assert_eq!(current.draws, 8, "premise: the recorded run drew 8 of 10");
+
+        let shift = paired_seed_shift(&baseline, &current);
+
+        // Before this change these eight landed in a `_ => unchanged` arm and `unchanged` read 10.
+        assert_eq!(
+            shift.unchanged, 2,
+            "eight games stopped having a winner; they are a SHIFT, not 'unchanged'"
+        );
+        assert_eq!(
+            (shift.decisive_to_draw, shift.draw_to_decisive),
+            (8, 0),
+            "the shift is eight decisive→draw, none back"
+        );
+        // The W/L axis is genuinely silent here, and that is CORRECT — no game changed which
+        // player won. Pinned so the fix is read as adding a second axis, not as repairing the
+        // first: a fix that started reporting W→L flips for these rows would be wrong.
+        assert_eq!(
+            (shift.flipped_w_to_l, shift.flipped_l_to_w),
+            (0, 0),
+            "PIN: no directional win/loss flip occurred; the shift is entirely decisive→draw"
+        );
+    }
+
+    /// The end-to-end consequence: the matchup must NOT pass.
+    ///
+    /// This is the claim that matters to a reviewer — not that a private counter is wrong, but
+    /// that `cargo ai-gate`'s comparison reported no problem for a run in which 8 of 10 games
+    /// stopped resolving. Both matchups are marked `Pass` in their own right (the suite-status
+    /// half is a separate check), so this row isolates the COMPARISON's verdict.
+    ///
+    /// Measured before the fix: `CompareStatus::Pass`.
+    #[test]
+    fn compare_fails_a_matchup_that_lost_eight_of_ten_winners() {
+        let rows_before: &[(u64, Option<u8>, u32)] = &[
+            (10593729, Some(1), 10),
+            (10593730, Some(0), 18),
+            (10593731, Some(1), 12),
+            (10593732, Some(1), 14),
+            (10593733, Some(1), 11),
+            (10593734, Some(0), 15),
+            (10593735, Some(0), 15),
+            (10593736, Some(0), 14),
+            (10593737, Some(1), 18),
+            (10593738, Some(1), 19),
+        ];
+        let rows_after: &[(u64, Option<u8>, u32)] = &[
+            (10593729, None, 8),
+            (10593730, None, 12),
+            (10593731, Some(1), 12),
+            (10593732, None, 11),
+            (10593733, None, 9),
+            (10593734, None, 12),
+            (10593735, Some(0), 15),
+            (10593736, None, 13),
+            (10593737, None, 17),
+            (10593738, None, 9),
+        ];
+        let baseline = mk_report(vec![mk_result_from_games(
+            "enchantress-mirror",
+            rows_before,
+        )]);
+        let current = mk_report(vec![mk_result_from_games("enchantress-mirror", rows_after)]);
+
+        let result = compare(&baseline, &current, &CompareOptions).unwrap();
+        assert_eq!(result.rows.len(), 1, "premise: exactly one paired matchup");
+
+        // n=8, k=8 ⇒ mid-p = 1/512 ≈ 0.00195 < 0.05, so this reaches Fail, not merely Warn.
+        assert_eq!(
+            result.rows[0].status,
+            CompareStatus::Fail,
+            "8 of 10 games stopped having a winner — the comparison must not report Pass; reason={:?}",
+            result.rows[0].reason
+        );
+        // The counters and their ORDER are pinned, not just the word "draw": transposing them in
+        // the reason string would report the recorded incident as an improvement.
+        assert!(
+            result.rows[0]
+                .reason
+                .as_deref()
+                .is_some_and(|r| r.contains("decisive→draw=8 draw→decisive=0")),
+            "reason={:?}",
+            result.rows[0].reason
+        );
+        assert!(result.any_fail(), "the compare exit code must reflect it");
+    }
+
+    /// TRIVIALIZE control. A fix that failed on ANY draw-axis movement, ignoring direction and
+    /// significance, would pass every other test in this module — including both demonstration
+    /// rows — and would be wrong. Games that STARTED resolving are an improvement.
+    ///
+    /// Same magnitude as the regression row (8 of 10), opposite direction. Must be Warn: reported
+    /// because any imbalance is worth surfacing, never Fail.
+    #[test]
+    fn draw_to_decisive_improvement_warns_but_never_fails() {
+        let stalled: &[(u64, Option<u8>, u32)] = &[
+            (1, None, 8),
+            (2, None, 12),
+            (3, Some(1), 12),
+            (4, None, 11),
+            (5, None, 9),
+            (6, None, 12),
+            (7, Some(0), 15),
+            (8, None, 13),
+            (9, None, 17),
+            (10, None, 9),
+        ];
+        let resolving: &[(u64, Option<u8>, u32)] = &[
+            (1, Some(1), 10),
+            (2, Some(0), 18),
+            (3, Some(1), 12),
+            (4, Some(1), 14),
+            (5, Some(1), 11),
+            (6, Some(0), 15),
+            (7, Some(0), 15),
+            (8, Some(0), 14),
+            (9, Some(1), 18),
+            (10, Some(1), 19),
+        ];
+        let baseline = mk_report(vec![mk_result_from_games("enchantress-mirror", stalled)]);
+        let current = mk_report(vec![mk_result_from_games("enchantress-mirror", resolving)]);
+
+        let result = compare(&baseline, &current, &CompareOptions).unwrap();
+        assert_eq!(
+            result.rows[0].draw_to_decisive, 8,
+            "premise: this fixture really is the improvement direction"
+        );
+        assert_eq!(
+            result.rows[0].decisive_to_draw, 0,
+            "premise: nothing regressed on the draw axis"
+        );
+        // The statistic is computed on `max(decisive_to_draw, draw_to_decisive)`, so it must read
+        // the DOMINANT direction whichever one that is. Replacing the `max` with `decisive_to_draw`
+        // leaves the verdict correct (the Fail arm's dominance guard protects it) but prints
+        // 0.9980 instead of 0.0020 in the reason string and the `draw sign p` column.
+        assert!(
+            result.rows[0].draw_sign_test_p.is_some_and(|p| p < 0.05),
+            "the reported statistic must describe the 8-0 shift, not its complement; got {:?}",
+            result.rows[0].draw_sign_test_p
+        );
+        assert_eq!(
+            result.rows[0].status,
+            CompareStatus::Warn,
+            "improvement is reported, never failed; reason={:?}",
+            result.rows[0].reason
+        );
+        assert!(!result.any_fail(), "an improvement must not fail the gate");
+    }
+
+    /// **The escalation the tier order actually produces.** An independent review measured this
+    /// input against both the pre-change and post-change comparator and found the earlier
+    /// "no input that reaches Fail or Warn today can change verdict" claim FALSE: the draw Fail
+    /// arm sits above the W/L Warn arm, so a Warn escalates to Fail.
+    ///
+    /// The escalation is intended — 8 of 11 games ceasing to resolve is the failure this gate
+    /// exists to catch, and suppressing it because the win/loss axis also wobbled insignificantly
+    /// would reintroduce the same blindness one case narrower. It is pinned here because the
+    /// claim that it *couldn't* happen was the reason it went untested.
+    ///
+    /// The two premise asserts below are what make this a proof of escalation without compiling
+    /// the old code: `sign_test_p > 0.05` means the W/L Fail arm cannot fire, and
+    /// `flipped_w_to_l != flipped_l_to_w` means the old chain fell to the W/L Warn arm. Warn
+    /// before, Fail now.
+    #[test]
+    fn draw_regression_escalates_an_insignificant_win_loss_warn() {
+        let before: &[(u64, Option<u8>, u32)] = &[
+            (1, Some(0), 10),
+            (2, Some(0), 10),
+            (3, Some(0), 10),
+            (4, Some(1), 10),
+            (5, Some(1), 10),
+            (6, Some(1), 10),
+            (7, Some(1), 10),
+            (8, Some(1), 10),
+            (9, Some(1), 10),
+            (10, Some(1), 10),
+            (11, Some(1), 10),
+        ];
+        let after: &[(u64, Option<u8>, u32)] = &[
+            (1, Some(1), 10),
+            (2, Some(1), 10),
+            (3, Some(1), 10),
+            (4, None, 10),
+            (5, None, 10),
+            (6, None, 10),
+            (7, None, 10),
+            (8, None, 10),
+            (9, None, 10),
+            (10, None, 10),
+            (11, None, 10),
+        ];
+        let baseline = mk_report(vec![mk_result_from_games("m", before)]);
+        let current = mk_report(vec![mk_result_from_games("m", after)]);
+        let row = &compare(&baseline, &current, &CompareOptions).unwrap().rows[0];
+
+        // PREMISE 1: the W/L Fail arm cannot be what fired — 3 flips one way is p=0.0625.
+        assert_eq!((row.flipped_w_to_l, row.flipped_l_to_w), (3, 0));
+        assert!(
+            row.sign_test_p.is_some_and(|p| p > 0.05),
+            "premise: the win/loss axis is INSIGNIFICANT, so the W/L Fail arm is out; got {:?}",
+            row.sign_test_p
+        );
+        // PREMISE 2: the old chain therefore reached the W/L Warn arm (`w2l != l2w`).
+        assert_ne!(
+            row.flipped_w_to_l, row.flipped_l_to_w,
+            "premise: this input used to land on the win/loss Warn arm"
+        );
+
+        assert_eq!(
+            row.status,
+            CompareStatus::Fail,
+            "a significant draw regression escalates a W/L Warn to Fail; reason={:?}",
+            row.reason
+        );
+        assert!(
+            row.reason.as_deref().is_some_and(|r| r.contains("draw")),
+            "the draw arm won, not the W/L Warn arm below it; reason={:?}",
+            row.reason
+        );
+    }
+
+    /// First-match-wins means a firing arm suppresses every other arm's reason string. Here the
+    /// draw Warn arm shadows the mirror avg-turn Warn arm: same status, different message, and
+    /// the drift magnitude would vanish entirely if the row did not carry it.
+    ///
+    /// That is why `avg_turn_delta` is a field and a column rather than only a reason string —
+    /// the same argument that put the draw counters in the table.
+    #[test]
+    fn mirror_drift_magnitude_survives_a_shadowing_reason() {
+        let before: &[(u64, Option<u8>, u32)] = &[
+            (1, Some(0), 10),
+            (2, Some(1), 10),
+            (3, Some(0), 10),
+            (4, Some(1), 10),
+        ];
+        let after: &[(u64, Option<u8>, u32)] = &[
+            (1, Some(0), 10),
+            (2, Some(1), 10),
+            (3, Some(0), 10),
+            (4, None, 22),
+        ];
+        let baseline = mk_report(vec![mk_result_from_games("mirror", before)]);
+        let mut current_result = mk_result_from_games("mirror", after);
+        current_result.avg_turns = 16.0; // baseline is 10.0 → +6.0, past MIRROR_AVG_TURN_WARN_DELTA
+        let current = mk_report(vec![current_result]);
+        let row = &compare(&baseline, &current, &CompareOptions).unwrap().rows[0];
+
+        // PREMISE: the mirror avg-turn arm WOULD have fired — it is genuinely shadowed, not absent.
+        assert!(matches!(
+            row.current.as_ref().unwrap().expected,
+            Expected::Mirror { .. }
+        ));
+        assert_eq!(row.avg_turn_delta, Some(6.0));
+        assert!(
+            row.avg_turn_delta.unwrap().abs() > MIRROR_AVG_TURN_WARN_DELTA,
+            "premise: the drift is past the warn threshold"
+        );
+        // PREMISE: one game stopped resolving, but not significantly (n=1 ⇒ p=0.25).
+        assert_eq!((row.decisive_to_draw, row.draw_to_decisive), (1, 0));
+        assert!(row.draw_sign_test_p.is_some_and(|p| p > 0.05));
+
+        assert_eq!(row.status, CompareStatus::Warn);
+        assert!(
+            row.reason
+                .as_deref()
+                .is_some_and(|r| r.contains("decisive→draw=1 draw→decisive=0")),
+            "the draw arm shadows the avg-turn arm's message, with its counters in order; reason={:?}",
+            row.reason
+        );
+        assert!(
+            !row.reason.as_deref().unwrap().contains("avg-turn"),
+            "premise of this test: the avg-turn message really is suppressed"
+        );
+    }
+
+    /// The no-draw-shift control: with the draw counters equal, both draw guards (`>` and `!=`)
+    /// are false and the chain falls through as it did before this change.
+    ///
+    /// Scope, stated precisely because an earlier version of this doc overclaimed: the fixture is
+    /// an identity comparison, so ALL axes are flat, and it therefore pins only the draw guards'
+    /// inertness — not the full precondition of invariant 2, and not the tier order, which
+    /// `draw_regression_escalates_an_insignificant_win_loss_warn` pins.
+    #[test]
+    fn compare_without_draw_shift_is_unaffected() {
+        let rows: &[(u64, Option<u8>, u32)] = &[
+            (1, Some(0), 10),
+            (2, Some(0), 11),
+            (3, Some(1), 12),
+            (4, Some(1), 13),
+        ];
+        let report = mk_report(vec![mk_result_from_games("red-mirror", rows)]);
+        let result = compare(&report, &report, &CompareOptions).unwrap();
+
+        assert_eq!(
+            (
+                result.rows[0].decisive_to_draw,
+                result.rows[0].draw_to_decisive
+            ),
+            (0, 0),
+            "premise: the draw axis is flat, so the new tiers must be inert"
+        );
+        assert_eq!(result.rows[0].draw_sign_test_p, None);
+        assert_eq!(result.rows[0].status, CompareStatus::Pass);
+        assert!(!result.any_fail());
+    }
+
+    /// **The status axis, isolated.** An existing matchup that newly fails its OWN suite check
+    /// must fail the comparison. Before this arm existed, `classify_row`'s paired branch read the
+    /// game outcomes and nothing else, so a run could carry `status: "Fail"` on an existing
+    /// matchup and still exit 0.
+    ///
+    /// Every outcome axis is held FLAT here (premise-asserted below), so the status axis is the
+    /// only thing that can produce a verdict — which is what makes this the drop-mutant's target.
+    #[test]
+    fn status_regression_to_fail_flags_a_matchup_with_unchanged_outcomes() {
+        let games: &[(u64, Option<u8>, u32)] = &[
+            (1, Some(0), 10),
+            (2, Some(1), 10),
+            (3, Some(0), 10),
+            (4, Some(1), 10),
+        ];
+        let baseline = mk_report(vec![mk_result_from_games("enchantress-mirror", games)]);
+        let mut failing = mk_result_from_games("enchantress-mirror", games);
+        failing.status = SuiteStatus::Fail;
+        // Verbatim from `.ab/noC-1.json`'s enchantress-mirror row.
+        failing.fail_reason =
+            Some("mirror imbalance: p0=0.10, Wilson 95% CI [0.02, 0.40] excludes 0.50".into());
+        let current = mk_report(vec![failing]);
+        let row = &compare(&baseline, &current, &CompareOptions).unwrap().rows[0];
+
+        // PREMISE: every outcome axis is flat, so nothing above the status arm can fire.
+        assert_eq!((row.flipped_w_to_l, row.flipped_l_to_w), (0, 0));
+        assert_eq!((row.decisive_to_draw, row.draw_to_decisive), (0, 0));
+        assert_eq!(row.avg_turn_delta, Some(0.0));
+        assert_eq!(
+            row.suite_status_shift,
+            Some((SuiteStatus::Pass, SuiteStatus::Fail))
+        );
+
+        assert_eq!(
+            row.status,
+            CompareStatus::Fail,
+            "a matchup that started failing its own suite check must fail the comparison; reason={:?}",
+            row.reason
+        );
+        assert!(
+            row.reason
+                .as_deref()
+                .is_some_and(|r| r.contains("Pass → Fail") && r.contains("mirror imbalance")),
+            "the reason names the shift AND carries the matchup's own fail_reason; got {:?}",
+            row.reason
+        );
+    }
+
+    /// **The recorded incident, whole — and it had TWO independent holes.**
+    ///
+    /// This is `.ab/noC-1.json`'s `enchantress-mirror` row as recorded: the eight games that
+    /// stopped resolving AND `status: "Fail"` with its Wilson-CI reason. The run's compare section
+    /// nonetheless printed `0 FAIL, 0 WARN, 3 PASS`, because neither the draw axis nor the suite
+    /// status axis existed in the comparison. Both are asserted present so a future edit that
+    /// closes one and reopens the other cannot pass this row.
+    ///
+    /// The reason string is the draw one: the draw Fail arm sits above the status Fail arm, so the
+    /// more specific outcome diagnosis wins. The status hole is still visible on the row via
+    /// `suite_status_shift` — which is exactly why every axis carries a field and a column instead
+    /// of relying on the first-match-wins reason.
+    #[test]
+    fn noc1_enchantress_row_carries_both_holes() {
+        let before: &[(u64, Option<u8>, u32)] = &[
+            (10593729, Some(1), 10),
+            (10593730, Some(0), 18),
+            (10593731, Some(1), 12),
+            (10593732, Some(1), 14),
+            (10593733, Some(1), 11),
+            (10593734, Some(0), 15),
+            (10593735, Some(0), 15),
+            (10593736, Some(0), 14),
+            (10593737, Some(1), 18),
+            (10593738, Some(1), 19),
+        ];
+        let after: &[(u64, Option<u8>, u32)] = &[
+            (10593729, None, 8),
+            (10593730, None, 12),
+            (10593731, Some(1), 12),
+            (10593732, None, 11),
+            (10593733, None, 9),
+            (10593734, None, 12),
+            (10593735, Some(0), 15),
+            (10593736, None, 13),
+            (10593737, None, 17),
+            (10593738, None, 9),
+        ];
+        let baseline = mk_report(vec![mk_result_from_games("enchantress-mirror", before)]);
+        let mut recorded = mk_result_from_games("enchantress-mirror", after);
+        recorded.status = SuiteStatus::Fail;
+        recorded.fail_reason =
+            Some("mirror imbalance: p0=0.10, Wilson 95% CI [0.02, 0.40] excludes 0.50".into());
+        let current = mk_report(vec![recorded]);
+        let report = compare(&baseline, &current, &CompareOptions).unwrap();
+        let row = &report.rows[0];
+
+        // HOLE 1: eight games stopped resolving.
+        assert_eq!((row.decisive_to_draw, row.draw_to_decisive), (8, 0));
+        // HOLE 2: the matchup failed its own suite check.
+        assert_eq!(
+            row.suite_status_shift,
+            Some((SuiteStatus::Pass, SuiteStatus::Fail))
+        );
+
+        assert_eq!(row.status, CompareStatus::Fail);
+        assert!(report.any_fail(), "the recorded run must not exit 0");
+        assert!(
+            row.reason.as_deref().is_some_and(|r| r.contains("draw")),
+            "the outcome diagnosis is the more specific one and wins; reason={:?}",
+            row.reason
+        );
+    }
+
+    /// Status-axis asymmetry, same shape as the draw axis: a matchup that STOPPED failing is an
+    /// improvement. It is reported, because a comparator silent about it would hide a behavior
+    /// change — but it can never Fail, since the Fail arm requires the regression direction.
+    #[test]
+    fn status_recovery_warns_but_never_fails() {
+        let games: &[(u64, Option<u8>, u32)] = &[
+            (1, Some(0), 10),
+            (2, Some(1), 10),
+            (3, Some(0), 10),
+            (4, Some(1), 10),
+        ];
+        let mut was_failing = mk_result_from_games("enchantress-mirror", games);
+        was_failing.status = SuiteStatus::Fail;
+        was_failing.fail_reason = Some("mirror imbalance".into());
+        let baseline = mk_report(vec![was_failing]);
+        let current = mk_report(vec![mk_result_from_games("enchantress-mirror", games)]);
+        let report = compare(&baseline, &current, &CompareOptions).unwrap();
+        let row = &report.rows[0];
+
+        assert_eq!(
+            row.suite_status_shift,
+            Some((SuiteStatus::Fail, SuiteStatus::Pass)),
+            "premise: this fixture really is the recovery direction"
+        );
+        assert_eq!(
+            row.status,
+            CompareStatus::Warn,
+            "recovery is reported, never failed; reason={:?}",
+            row.reason
+        );
+        // The merged arm's two branches share a status, so only the message distinguishes them.
+        // Without this the recovery branch had no output assertion at all and could be emptied.
+        assert!(
+            row.reason
+                .as_deref()
+                .is_some_and(|r| r.contains("recovered") && r.contains("Fail → Pass")),
+            "reason={:?}",
+            row.reason
+        );
+        assert!(!report.any_fail(), "an improvement must not fail the gate");
+
+        // Second branch case: `Fail → Open` is also recovery. Keying the still-failing branch on
+        // `c.status != Pass` instead of `== Fail` would mislabel this row as still failing, and
+        // the `Fail → Pass` case above cannot tell the two keyings apart.
+        let mut was_failing = mk_result_from_games("enchantress-mirror", games);
+        was_failing.status = SuiteStatus::Fail;
+        let mut now_open = mk_result_from_games("enchantress-mirror", games);
+        now_open.status = SuiteStatus::Open;
+        let report = compare(
+            &mk_report(vec![was_failing]),
+            &mk_report(vec![now_open]),
+            &CompareOptions,
+        )
+        .unwrap();
+        assert!(
+            report.rows[0]
+                .reason
+                .as_deref()
+                .is_some_and(|r| r.contains("recovered") && r.contains("Fail → Open")),
+            "reason={:?}",
+            report.rows[0].reason
+        );
+    }
+
+    /// The status analogue of `draw_regression_escalates_an_insignificant_win_loss_warn`, and it
+    /// exists because round 2 of review showed the status Fail arm's placement was UNPINNED:
+    /// moving it below the W/L Warn arm left the whole suite green. The concrete consequence —
+    /// measured — was `any_fail() == false` on a matchup that newly fails its own suite check.
+    ///
+    /// Same premise structure: the W/L axis is insignificant (p=0.0625) so the W/L Fail arm cannot
+    /// fire, and `w2l != l2w` so the pre-change chain landed on the W/L Warn arm. Warn before,
+    /// Fail now.
+    #[test]
+    fn status_regression_escalates_an_insignificant_win_loss_warn() {
+        let before: &[(u64, Option<u8>, u32)] = &[
+            (1, Some(0), 10),
+            (2, Some(0), 10),
+            (3, Some(0), 10),
+            (4, Some(1), 10),
+            (5, Some(1), 10),
+            (6, Some(1), 10),
+            (7, Some(1), 10),
+            (8, Some(1), 10),
+            (9, Some(1), 10),
+            (10, Some(1), 10),
+            (11, Some(1), 10),
+        ];
+        let after: &[(u64, Option<u8>, u32)] = &[
+            (1, Some(1), 10),
+            (2, Some(1), 10),
+            (3, Some(1), 10),
+            (4, Some(1), 10),
+            (5, Some(1), 10),
+            (6, Some(1), 10),
+            (7, Some(1), 10),
+            (8, Some(1), 10),
+            (9, Some(1), 10),
+            (10, Some(1), 10),
+            (11, Some(1), 10),
+        ];
+        let baseline = mk_report(vec![mk_result_from_games("m", before)]);
+        let mut failing = mk_result_from_games("m", after);
+        failing.status = SuiteStatus::Fail;
+        failing.fail_reason = Some("mirror imbalance".into());
+        let report = compare(&baseline, &mk_report(vec![failing]), &CompareOptions).unwrap();
+        let row = &report.rows[0];
+
+        // PREMISE: the W/L axis is insignificant, so the W/L Fail arm is out...
+        assert_eq!((row.flipped_w_to_l, row.flipped_l_to_w), (3, 0));
+        assert!(row.sign_test_p.is_some_and(|p| p > 0.05));
+        // ...and the draw axis is flat, so neither draw arm can fire either.
+        assert_eq!((row.decisive_to_draw, row.draw_to_decisive), (0, 0));
+
+        assert_eq!(
+            row.status,
+            CompareStatus::Fail,
+            "a matchup that newly fails its own check escalates a W/L Warn to Fail; reason={:?}",
+            row.reason
+        );
+        assert!(report.any_fail(), "and the gate must exit non-zero");
+        assert!(
+            row.reason
+                .as_deref()
+                .is_some_and(|r| r.contains("status regressed")),
+            "the status arm won, not the W/L Warn arm below it; reason={:?}",
+            row.reason
+        );
+    }
+
+    /// A matchup that was ALREADY failing in the baseline and is still failing is reported every
+    /// run, not passed over in silence.
+    ///
+    /// Reachable, not theoretical: `--refresh-baseline` writes the current report verbatim with no
+    /// `any_fail` check, so a single refresh from a failing run would otherwise make that matchup
+    /// exit 0 forever. Warn rather than Fail is deliberate — see the arm's comment.
+    #[test]
+    fn a_matchup_still_failing_is_reported_every_run() {
+        let games: &[(u64, Option<u8>, u32)] = &[(1, Some(0), 10), (2, Some(1), 10)];
+        let mut was_failing = mk_result_from_games("m", games);
+        was_failing.status = SuiteStatus::Fail;
+        was_failing.fail_reason = Some("mirror imbalance".into());
+        let mut still_failing = mk_result_from_games("m", games);
+        still_failing.status = SuiteStatus::Fail;
+        still_failing.fail_reason = Some("mirror imbalance".into());
+        let report = compare(
+            &mk_report(vec![was_failing]),
+            &mk_report(vec![still_failing]),
+            &CompareOptions,
+        )
+        .unwrap();
+        let row = &report.rows[0];
+
+        // PREMISE: the status did not shift, and every outcome axis is flat — so a chain that
+        // only looked at transitions and outcomes would have nothing at all to say here.
+        assert_eq!(row.suite_status_shift, None);
+        assert_eq!((row.flipped_w_to_l, row.flipped_l_to_w), (0, 0));
+        assert_eq!((row.decisive_to_draw, row.draw_to_decisive), (0, 0));
+
+        assert_eq!(row.status, CompareStatus::Warn);
+        assert!(
+            row.reason
+                .as_deref()
+                .is_some_and(|r| r.contains("still failing")),
+            "reason={:?}",
+            row.reason
+        );
+        assert!(
+            !report.any_fail(),
+            "reported, but not red: the baseline already sanctions this state"
+        );
+    }
+
+    /// The column invariant, enforced instead of asserted in a comment. Round 2 of review measured
+    /// that both new columns could be deleted with the entire suite still green, because the table
+    /// was built inline in `println!` and nothing read it.
+    ///
+    /// One column per axis the verdict chain can decide on: win/loss, draw, avg-turn, suite status.
+    #[test]
+    fn markdown_has_a_column_for_every_verdict_axis() {
+        for axis in [
+            "flips W→L",
+            "flips L→W",
+            "sign p",
+            "dec→draw",
+            "draw→dec",
+            "draw sign p",
+            "Δ avg turns",
+            "suite status",
+        ] {
+            assert!(
+                COLUMNS.contains(&axis),
+                "the chain can decide a verdict on {axis} but the table has no column for it"
+            );
+        }
+        let report = mk_report(vec![mk_result("red-mirror", 5, 10, SuiteStatus::Pass)]);
+        let rendered = render_markdown(&compare(&report, &report, &CompareOptions).unwrap());
+        let header = rendered.lines().next().unwrap();
+        // Exact cell equality, not `contains`. The mutation this catches is on the RENDERED header
+        // line: drop its last cell and a containment loop still passes, because the surviving
+        // "suite status" cell CONTAINS the string "status". Measured — that variant went from
+        // killing 1 test to killing 2.
+        //
+        // Scope, stated because the two mutations are easy to conflate: against a mutation of
+        // `COLUMNS` itself this assertion is tautological, since the header is generated from
+        // `COLUMNS`. That variant is caught anyway, by the `debug_assert_eq!` on cell count in
+        // `render_markdown` and by the rectangularity test.
+        let header_cells: Vec<&str> = header
+            .split('|')
+            .map(str::trim)
+            .filter(|c| !c.is_empty())
+            .collect();
+        assert_eq!(header_cells, COLUMNS, "header cells drifted from COLUMNS");
+
+        // `status_str`'s `Pass` arm is the last rendered arm of that 5-variant cluster with no
+        // assertion binding it — WARN, FAIL, NEW and REMOVED are each pinned by a cell assertion
+        // elsewhere, and mutating `Pass => "PASS"` survived the whole suite. This fixture is an
+        // identity comparison, so it is the only one that renders a Pass row.
+        assert_eq!(cell(&rendered, "red-mirror", "status"), "PASS");
+    }
+
+    /// Read the cell under a named column, so an assertion binds a column to the field it renders
+    /// rather than to a position. Splitting `| a | b |` yields a leading empty segment, hence +1.
+    fn cell<'a>(rendered: &'a str, matchup_id: &str, column: &str) -> &'a str {
+        let index = COLUMNS
+            .iter()
+            .position(|c| *c == column)
+            .unwrap_or_else(|| panic!("no column named {column}"));
+        let line = rendered
+            .lines()
+            .find(|l| l.starts_with(&format!("| {matchup_id} |")))
+            .unwrap_or_else(|| panic!("no row for {matchup_id} in:\n{rendered}"));
+        line.split('|').nth(index + 1).unwrap().trim()
+    }
+
+    /// **Every column carries the value it claims to.** Round 3 of review measured that the table
+    /// was pinned by header *label* only: freezing the `Δ avg turns` cell to a constant, and
+    /// swapping the `dec→draw` / `draw→dec` cells so the recorded incident would print its counters
+    /// backwards, both survived the entire suite. A column that renders the wrong number defeats
+    /// the invariant exactly as thoroughly as a missing one, since columns are the only surface
+    /// that survives first-match-wins reason suppression.
+    ///
+    /// The fixture gives every numeric axis a DISTINCT value (2, 3, 4, 1, and two different
+    /// p-values), so no pair of cells can be transposed without changing the rendered text.
+    #[test]
+    fn markdown_cells_carry_their_own_column_values() {
+        let before: &[(u64, Option<u8>, u32)] = &[
+            (1, Some(0), 10),
+            (2, Some(0), 10),
+            (3, Some(1), 10),
+            (4, Some(1), 10),
+            (5, Some(1), 10),
+            (6, Some(0), 10),
+            (7, Some(0), 10),
+            (8, Some(1), 10),
+            (9, Some(1), 10),
+            (10, None, 10),
+            (11, Some(0), 10),
+        ];
+        let after: &[(u64, Option<u8>, u32)] = &[
+            (1, Some(1), 10),
+            (2, Some(1), 10),
+            (3, Some(0), 10),
+            (4, Some(0), 10),
+            (5, Some(0), 10),
+            (6, None, 10),
+            (7, None, 10),
+            (8, None, 10),
+            (9, None, 10),
+            (10, Some(0), 10),
+            (11, Some(0), 10),
+            // Present only in the current report. `paired_seed_shift` walks the BASELINE games and
+            // skips unmatched seeds, so this moves the win rate without touching a flip counter —
+            // which is what makes the two p0% cells differ while the four counters stay distinct.
+            (12, Some(0), 10),
+        ];
+        let baseline = mk_report(vec![mk_result_from_games("distinct", before)]);
+        let mut current_result = mk_result_from_games("distinct", after);
+        current_result.avg_turns = 16.0; // baseline 10.0 → +6.0
+        let report = compare(&baseline, &mk_report(vec![current_result]), &CompareOptions).unwrap();
+        let row = &report.rows[0];
+
+        // PREMISE: the four counters really are pairwise distinct, so a transposition must show.
+        assert_eq!(
+            (
+                row.flipped_w_to_l,
+                row.flipped_l_to_w,
+                row.decisive_to_draw,
+                row.draw_to_decisive
+            ),
+            (2, 3, 4, 1)
+        );
+        // PREMISE: the two win-rate cells DIFFER. They rendered identical `45%` in the first
+        // version of this test, so swapping them survived — the premise has to be asserted, not
+        // assumed, or "no pair of cells can be transposed" is false for the pair nobody checked.
+        assert_ne!(
+            winrate(row.baseline.as_ref().unwrap()),
+            winrate(row.current.as_ref().unwrap())
+        );
+
+        let rendered = render_markdown(&report);
+        assert_eq!(cell(&rendered, "distinct", "exercises"), "AggroPressure");
+        assert_eq!(cell(&rendered, "distinct", "baseline p0%"), "45%");
+        assert_eq!(cell(&rendered, "distinct", "current p0%"), "50%");
+        assert_eq!(cell(&rendered, "distinct", "flips W→L"), "2");
+        assert_eq!(cell(&rendered, "distinct", "flips L→W"), "3");
+        assert_eq!(cell(&rendered, "distinct", "dec→draw"), "4");
+        assert_eq!(cell(&rendered, "distinct", "draw→dec"), "1");
+        assert_eq!(cell(&rendered, "distinct", "sign p"), "0.3438");
+        assert_eq!(cell(&rendered, "distinct", "draw sign p"), "0.1094");
+        assert_eq!(cell(&rendered, "distinct", "Δ avg turns"), "+6.0");
+        assert_eq!(cell(&rendered, "distinct", "suite status"), "Pass");
+        assert_eq!(cell(&rendered, "distinct", "status"), "WARN");
+    }
+
+    /// The `suite status` column's SHIFT branch — the one the status axis exists to surface — was
+    /// rendered by no test: replacing it with a constant survived the whole suite, because every
+    /// other rendered fixture has `suite_status_shift == None`. Round 3's finding, one column over.
+    #[test]
+    fn markdown_renders_a_suite_status_shift() {
+        let games: &[(u64, Option<u8>, u32)] = &[(1, Some(0), 10), (2, Some(1), 10)];
+        let baseline = mk_report(vec![mk_result_from_games("shifted", games)]);
+        let mut failing = mk_result_from_games("shifted", games);
+        failing.status = SuiteStatus::Fail;
+        failing.fail_reason = Some("mirror imbalance".into());
+        let report = compare(&baseline, &mk_report(vec![failing]), &CompareOptions).unwrap();
+
+        // PREMISE: this row really carries a shift, so the fallback branch is not what renders it.
+        assert_eq!(
+            report.rows[0].suite_status_shift,
+            Some((SuiteStatus::Pass, SuiteStatus::Fail))
+        );
+        let rendered = render_markdown(&report);
+        assert_eq!(cell(&rendered, "shifted", "suite status"), "Pass→Fail");
+        assert_eq!(cell(&rendered, "shifted", "status"), "FAIL");
+    }
+
+    /// Every emitted row — header, separator, data, and the reason continuation — must have the
+    /// same cell count, or the table renders broken in the nightly drift issue that
+    /// `.github/workflows/ai-gate.yml` posts. Exercises all four row shapes at once: a paired row
+    /// that warns (so its reason continuation is emitted), a New row, and a Removed row.
+    #[test]
+    fn markdown_rows_are_rectangular() {
+        let paired_before: &[(u64, Option<u8>, u32)] = &[(1, Some(0), 10), (2, Some(1), 10)];
+        let paired_after: &[(u64, Option<u8>, u32)] = &[(1, Some(1), 10), (2, Some(1), 10)];
+        let baseline = mk_report(vec![
+            mk_result_from_games("paired", paired_before),
+            mk_result_from_games("removed", paired_before),
+        ]);
+        let current = mk_report(vec![
+            mk_result_from_games("paired", paired_after),
+            mk_result_from_games("brand-new", paired_after),
+        ]);
+        let report = compare(&baseline, &current, &CompareOptions).unwrap();
+        let rendered = render_markdown(&report);
+
+        // PREMISE: all four row shapes really are present, otherwise this measures less than it
+        // claims to.
+        assert!(
+            rendered.contains("|  ↳ _"),
+            "no reason continuation emitted"
+        );
+        assert!(rendered.contains("| NEW |"), "no New row emitted");
+        assert!(rendered.contains("| REMOVED |"), "no Removed row emitted");
+
+        // A New row's verdict is decided FROM its suite status, so that column must carry a value
+        // even though there is no shift to show. It read `—` until review measured it.
+        let new_row = rendered.lines().find(|l| l.contains("| NEW |")).unwrap();
+        assert!(
+            new_row.contains("| Pass | NEW |"),
+            "a status-decided verdict must not print a blank status cell: {new_row}"
+        );
+
+        // The `—` fallbacks are what New and Removed rows print in the paired-only columns, and
+        // every one of them survived a fully green suite until review measured it. A New row has no
+        // baseline to compare against; a Removed row has no current report at all.
+        //
+        // All six sites are listed deliberately. The first pass at this pinned five and missed
+        // `draw sign p` — which is the fallback the real gate renders on every row today, since a
+        // matchup with a flat draw axis has no statistic to report. Sweeping a defect by recipe
+        // means sweeping ALL of its sites; a partial sweep reads as complete.
+        assert_eq!(cell(&rendered, "brand-new", "baseline p0%"), "—");
+        assert_eq!(cell(&rendered, "brand-new", "sign p"), "—");
+        assert_eq!(cell(&rendered, "brand-new", "draw sign p"), "—");
+        assert_eq!(cell(&rendered, "brand-new", "Δ avg turns"), "—");
+        assert_eq!(cell(&rendered, "removed", "current p0%"), "—");
+        assert_eq!(cell(&rendered, "removed", "suite status"), "—");
+        assert_eq!(
+            cell(&rendered, "removed", "status"),
+            "REMOVED",
+            "and the Removed row still reaches its own verdict"
+        );
+
+        // The separator is GENERATED from the header widths, so its validity is not free: an empty
+        // fill still has the right pipe count but renders the whole table as one paragraph in the
+        // issue body. Measured: `"-".repeat(0)` survives a pipe-count-only check.
+        //
+        // Indexed rather than filtered on purpose. The obvious spelling —
+        // `.split('|').filter(|s| !s.is_empty())` — is VACUOUS against exactly the mutation this
+        // is here to catch: with empty fills every segment is empty, the filter drops all of them,
+        // and the loop body never runs. Measured that too, while fixing this.
+        let separator = rendered.lines().nth(1).unwrap();
+        let segments: Vec<&str> = separator.split('|').collect();
+        assert_eq!(
+            segments.len(),
+            COLUMNS.len() + 2,
+            "separator is not bounded by pipes with one segment per column: {separator}"
+        );
+        for segment in &segments[1..=COLUMNS.len()] {
+            assert!(
+                segment.len() >= 3 && segment.chars().all(|c| c == '-'),
+                "separator segment {segment:?} is not a valid markdown rule: {separator}"
+            );
+        }
+
+        let expected = COLUMNS.len() + 1; // n cells ⇒ n+1 pipes
+        for line in rendered.lines() {
+            assert_eq!(
+                line.matches('|').count(),
+                expected,
+                "row has the wrong cell count: {line}"
+            );
+        }
+    }
+
+    /// The mirror avg-turn arm is guarded on `Expected::Mirror`, and every other fixture in this
+    /// module is a mirror — so deleting that guard survived the whole suite. A `Triangle` matchup
+    /// has no symmetry expectation, and a turn-count drift is not a finding for it.
+    ///
+    /// Pre-existing arm, pinned here because this change reorders around it: the new draw and
+    /// status Warn arms sit directly above it.
+    #[test]
+    fn avg_turn_drift_is_only_a_finding_for_mirrors() {
+        let games: &[(u64, Option<u8>, u32)] = &[(1, Some(0), 10), (2, Some(1), 10)];
+        let mut base = mk_result_from_games("triangle", games);
+        base.expected = Expected::Triangle {
+            p0_winrate_min: 0.4,
+            p0_winrate_max: 0.6,
+        };
+        let mut drifted = mk_result_from_games("triangle", games);
+        drifted.expected = Expected::Triangle {
+            p0_winrate_min: 0.4,
+            p0_winrate_max: 0.6,
+        };
+        drifted.avg_turns = 20.0; // +10.0, far past MIRROR_AVG_TURN_WARN_DELTA
+
+        let report = compare(
+            &mk_report(vec![base]),
+            &mk_report(vec![drifted]),
+            &CompareOptions,
+        )
+        .unwrap();
+
+        // PREMISE: the drift really is past the threshold, so only the Mirror guard suppresses it.
+        assert_eq!(report.rows[0].avg_turn_delta, Some(10.0));
+        assert!(report.rows[0].avg_turn_delta.unwrap() > MIRROR_AVG_TURN_WARN_DELTA);
+        // PREMISE: nothing else could produce a verdict here.
+        assert_eq!(
+            (
+                report.rows[0].flipped_w_to_l,
+                report.rows[0].flipped_l_to_w,
+                report.rows[0].decisive_to_draw,
+                report.rows[0].draw_to_decisive
+            ),
+            (0, 0, 0, 0)
+        );
+
+        assert_eq!(
+            report.rows[0].status,
+            CompareStatus::Pass,
+            "a non-mirror matchup has no symmetry expectation to drift from; reason={:?}",
+            report.rows[0].reason
+        );
+    }
+
     #[test]
     fn compare_identity_is_pass() {
         let report = mk_report(vec![mk_result("red-mirror", 5, 10, SuiteStatus::Pass)]);
@@ -443,11 +1652,17 @@ mod tests {
         let result = compare(&baseline, &current, &CompareOptions).unwrap();
         assert!(result.any_fail());
         assert_eq!(result.rows[0].status, CompareStatus::Fail);
-        assert!(result.rows[0]
-            .reason
-            .as_ref()
-            .unwrap()
-            .contains("paired regression"));
+        // The counters and their ORDER, not just the phrase: transposing the two format args here
+        // printed `W→L=0 L→W=10` for this very fixture — a regression reported as an improvement —
+        // and survived the whole suite until review measured it.
+        assert!(
+            result.rows[0]
+                .reason
+                .as_deref()
+                .is_some_and(|r| r.contains("paired regression: W→L=10 L→W=0")),
+            "reason={:?}",
+            result.rows[0].reason
+        );
     }
 
     #[test]
@@ -466,6 +1681,15 @@ mod tests {
         let result = compare(&baseline, &current, &CompareOptions).unwrap();
         assert!(!result.any_fail());
         assert_eq!(result.rows[0].status, CompareStatus::Warn);
+        // Same in-order pin on the win/loss Warn reason as on its Fail sibling above.
+        assert!(
+            result.rows[0]
+                .reason
+                .as_deref()
+                .is_some_and(|r| r.contains("paired shift: W→L=0 L→W=2")),
+            "reason={:?}",
+            result.rows[0].reason
+        );
     }
 
     #[test]
