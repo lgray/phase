@@ -11168,20 +11168,21 @@ fn apply_action(
         // through `inject_pinned_answer`: three of its FOUR arms dispatch `apply_action` and walk
         // this very branch, advancing `frames_this_cycle`; the fourth `Err`s before any advance.
         //
-        // ⚠ LATENT ORDERING ASYMMETRY, DELIBERATELY NOT FIXED. This records BEFORE the
-        // `state.waiting_for = wf` two lines below, while the settle sampler records AFTER
-        // its `sync_waiting_for` — so a frame minted here carries the PRE-pipeline
-        // `waiting_for`/`priority_player` pair while a settle frame carries the synced one.
-        // `impl PartialEq for GameState` compares both fields and `normalize_for_loop`
-        // neutralizes neither, so a heterogeneous ring would break `ring_delta_signature`'s
-        // turn-position conjunct. MEASURED, it is latent and not live: a
-        // `debug_assert_eq!` census on both fields at this position reported 0 failures
-        // across 18,486 lib rows and 4,487 integration rows, and a `debug_assert!(false)`
-        // positive control at the same position DID fire on the A1 board, proving the census
-        // instrument was live rather than unreached. Reordering the record past
-        // `sync_waiting_for` would be a BEHAVIOURAL change (it moves what every ring frame
-        // minted here contains) made for a non-live defect, and it would invalidate the
-        // measured battery this branch's rows are keyed to. Comment, not code.
+        // ORDERING, NOW SYNCHRONIZED (maintainer call on PR #7005; previously carried here
+        // as a documented latent asymmetry). `game::public_state::sync_waiting_for` is the
+        // canonical synchronizer — it installs `wf`, runs the legacy-attach normalization,
+        // and recomputes `priority_player` through `turn_control`'s authorized-submitter
+        // resolver — and it now runs BEFORE the record, exactly as the settle sampler in
+        // `pass_priority_once_with_pipeline` does. So a frame minted here carries the same
+        // `waiting_for`/`priority_player` pair a settle frame carries, and that homogeneity
+        // is load-bearing: `impl PartialEq for GameState` compares both fields and
+        // `normalize_for_loop` neutralizes neither, so a mixed ring would break
+        // `ring_delta_signature`'s turn-position conjunct. BLAST RADIUS IS THE RING ONLY —
+        // `apply_action_boundary` re-syncs the returned `wf` before the result leaves the
+        // engine, so the settled state is unchanged. MEASURED before the reorder: a
+        // `debug_assert_eq!` census on both fields reported 0 divergences over 18,486 lib +
+        // 4,487 integration rows, so this replaces a coincidence with a guarantee.
+        sync_waiting_for(state, &wf);
         if answering_forced_window
             && !in_simulation_probe()
             && state.loop_detection.samples()
@@ -11191,7 +11192,6 @@ fn apply_action(
         {
             state.record_loop_detect_sample();
         }
-        state.waiting_for = wf.clone();
         return Ok(ActionResult {
             events,
             waiting_for: wf,

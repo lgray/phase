@@ -11156,3 +11156,202 @@ fn ai1_the_bounded_declare_candidate_withdraws_when_the_offer_publishes_a_pin() 
          is what makes the pair one axis apart"
     );
 }
+
+// ───── PR #7005 maintainer item: the answer-beat sampler records the SYNCHRONIZED window ─────
+
+/// CR 732.2a. `game::engine::apply_action`'s forced-window ANSWER sampler (the site gated on
+/// `answering_forced_window`) called `record_loop_detect_sample` BEFORE installing the
+/// pipeline's returned `wf`, while the settle sampler in `pass_priority_once_with_pipeline`
+/// records AFTER its `sync_waiting_for`. A frame minted at the answer site therefore carried
+/// the PRE-pipeline `waiting_for`/`priority_player` pair and a settle frame carried the synced
+/// one. That is a detection hazard, not cosmetics: `impl PartialEq for GameState` compares both
+/// fields and `normalize_for_loop` neutralizes neither, so a heterogeneous ring breaks
+/// `analysis::resource::ring_delta_signature`'s turn-position conjunct. The fix routes `wf`
+/// through `game::public_state::sync_waiting_for` — the canonical synchronizer, which also
+/// recomputes `priority_player` via `turn_control::authorized_submitter_for_player` — before
+/// the record, so both producers mint the same shape.
+///
+/// FIXTURE: the tracked `dina_conqueror_4p` dump, driven through the production `apply()` path,
+/// so every frame asserted below was minted by `record_loop_detect_sample` itself rather than
+/// staged by the test.
+///
+/// SITE ATTRIBUTION IS EXACT, not assumed. The answer site's own gate conjunct is
+/// `state.waiting_for.is_forced_cascade_window()` read BEFORE the action; the settle sampler is
+/// reachable only from `pass_priority_once_with_pipeline`, i.e. from a `Priority` window, which
+/// `is_forced_cascade_window` deliberately excludes. So "the pre-beat window was forced AND the
+/// ring grew" names the answer site and nothing else. MEASURED on this drive: 2 answer-beat
+/// mints (beats 5 and 14), 3 settle mints, offer at beat 19 over a 5-frame ring.
+///
+/// ⚠ WHAT THIS ROW DOES **NOT** CATCH, stated rather than implied. A PURE REVERT of the reorder
+/// leaves all three arms GREEN, and that is a measurement rather than an oversight: a
+/// `debug_assert_eq!` census on both fields at that position reported 0 divergences over 18,486
+/// lib + 4,487 integration rows, so no fixture in the corpus reaches the divergence. The row is
+/// consequently the STANDING pin — it fires the first time a beat does diverge — and its
+/// instrument is proved live by MUTANTS at the sampler instead of by the revert:
+/// * `state.priority_player = PlayerId(3);` after the sync ⇒ arm (2) FAILS at the first mint.
+/// * `state.waiting_for = WaitingFor::GameOver { winner: None };` after the sync ⇒ arm (1)
+///   FAILS at the first mint (arm (2) still passes, so the two arms are separately live).
+///
+/// Arm (3) is the BLAST-RADIUS pin: the certificate is byte-exact under the pure revert, which
+/// is what makes "this reorder does not perturb detection" a measurement.
+#[test]
+fn answer_beat_frames_carry_the_synced_window_and_the_offer_certificate_is_exact() {
+    use engine::analysis::resource::{PeriodicDelta, ResourceVector};
+
+    let mut state = restore_dump(&gunzip_dump(include_bytes!(
+        "../fixtures/dina_conqueror_4p.json.gz"
+    )));
+
+    // ── REACH-GUARDS. Without these every assertion below is vacuous.
+    assert!(
+        state.loop_detection.samples(),
+        "reach-guard: a non-sampling mode never populates the ring, so neither a frame nor an \
+         offer could exist; got {:?}",
+        state.loop_detection
+    );
+    assert_eq!(
+        state.loop_detect_ring.len(),
+        0,
+        "reach-guard: the dump ships with an EMPTY ring — every frame asserted below was \
+         accumulated by THIS drive through the production producer, not restored from the dump"
+    );
+
+    let pin = engine_live_opponents(&state, P0).first().copied();
+    let mut answer_mints = 0usize;
+    let mut settle_mints = 0usize;
+    let mut offer_beat = None;
+    for beat in 0..400usize {
+        if matches!(
+            state.waiting_for,
+            WaitingFor::LoopShortcut {
+                predicted_winner: None,
+                ..
+            }
+        ) {
+            offer_beat = Some(beat);
+            break;
+        }
+        let answered_forced_window = state.waiting_for.is_forced_cascade_window();
+        let before = state.loop_detect_ring.len();
+        if dump_drive_one_beat(&mut state, pin).is_err() {
+            break;
+        }
+        if state.loop_detect_ring.len() == before {
+            continue;
+        }
+        if !answered_forced_window {
+            settle_mints += 1;
+            continue;
+        }
+        answer_mints += 1;
+        let frame = &state
+            .loop_detect_ring
+            .back()
+            .expect("the ring just grew, so it has a back element")
+            .live;
+        // ── (2) ITS PRIORITY PLAYER. Asserted FIRST so a mutation that touches only
+        // `priority_player` is caught by its own arm instead of being masked by arm (1).
+        assert_eq!(
+            frame.priority_player, frame.active_player,
+            "beat {beat}: `sync_waiting_for` recomputes `priority_player` from the window it \
+             installs, so an answer-beat frame must carry the post-sync submitter for the \
+             returned `Priority{{active_player}}` window, not whatever the pre-pipeline window \
+             left behind"
+        );
+        // ── (1) THE NEWEST SAMPLED STATE: the window the action RETURNS, never the forced one
+        // it answered.
+        assert_eq!(
+            frame.waiting_for,
+            WaitingFor::Priority {
+                player: frame.active_player
+            },
+            "beat {beat}: the sampler's own gate requires the RETURNED `wf` to be \
+             `Priority{{active_player}}`, so recording before the sync is the only way the \
+             frame can carry a different window — and `impl PartialEq for GameState` compares it"
+        );
+    }
+
+    assert!(
+        answer_mints > 0,
+        "reach-guard: the drive must mint at least one frame at the FORCED-WINDOW ANSWER site, \
+         else arms (1)/(2) never ran and this row passes vacuously; got answer={answer_mints} \
+         settle={settle_mints}"
+    );
+    let offer_beat = offer_beat.expect(
+        "reach-guard: the bounded offer must FIRE on this real 4p drain, else arm (3) asserts \
+         about a certificate that was never published",
+    );
+
+    // ── (3) THE RESULTING CERTIFICATE, EXACT. The destructure is EXHAUSTIVE on purpose: a new
+    // `LoopCertificate` field cannot slip past this pin unstated.
+    let (proposer, certificate, _schema) = bounded_offer_parts(&state);
+    assert_eq!(
+        proposer, P0,
+        "the offer beat {offer_beat} publishes the drain's controller as proposer"
+    );
+    let LoopCertificate {
+        unbounded,
+        win_kind,
+        mandatory,
+        residual_board_delta,
+        per_cycle,
+    } = certificate;
+    assert_eq!(
+        *unbounded,
+        vec![
+            ResourceAxis::Life(P0),
+            ResourceAxis::Life(P1),
+            ResourceAxis::Life(P2),
+            ResourceAxis::Life(P3),
+        ],
+        "CR 119.3: the Dina/Conqueror drain moves EVERY seat's life each period — the three \
+         opponents down and the controller up — so all four axes are unbounded"
+    );
+    assert_eq!(
+        *win_kind,
+        WinKind::LethalDamage,
+        "CR 704.5a: opponents reach 0 life"
+    );
+    assert!(
+        !*mandatory,
+        "CR 732.2a: the interactive offer exists only for an OPTIONAL loop"
+    );
+    assert_eq!(
+        *residual_board_delta,
+        BoardDelta::default(),
+        "CR 110.1: this cycle recycles its board exactly, so there is no non-recycled remainder"
+    );
+    let Some(PeriodicDelta {
+        frames_per_period,
+        delta,
+        victim_slot,
+    }) = per_cycle
+    else {
+        panic!(
+            "the bounded producer is the one that NARROWS the CR 704 bound, so it publishes \
+                a per-period signature; got None"
+        )
+    };
+    assert_eq!(
+        *frames_per_period, 2,
+        "one repetition spans two retained ring frames on this board — the gain-life \
+         resolution and the lose-life one"
+    );
+    assert!(
+        victim_slot.is_empty(),
+        "no decision slot is attributed a per-period life swing on this untargeted drain; \
+         got {victim_slot:?}"
+    );
+    let mut expected_delta = ResourceVector::default();
+    expected_delta.life.insert(P0, 1);
+    expected_delta.life.insert(P1, -1);
+    expected_delta.life.insert(P2, -1);
+    expected_delta.life.insert(P3, -1);
+    assert_eq!(
+        *delta, expected_delta,
+        "EXACT per-period signature: +1 to the controller, -1 to each opponent, and every \
+         other axis at rest. A ring whose frames disagreed on `waiting_for`/`priority_player` \
+         could not produce this signature at all, because `ring_delta_signature` compares the \
+         frames with `impl PartialEq for GameState`"
+    );
+}
