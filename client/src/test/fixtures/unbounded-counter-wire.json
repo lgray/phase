@@ -1,4 +1,15 @@
 {
+  "scheduled_collapse": [
+    {
+      "axis": {
+        "Counter": [
+          "Other",
+          "Other"
+        ]
+      },
+      "player": 0
+    }
+  ],
   "unbounded_counters": {
     "405": [
       "charge"

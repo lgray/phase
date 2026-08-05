@@ -2887,6 +2887,37 @@ export interface DerivedViews {
    * `engine::game::derived_views::DerivedViews::unbounded_counters`.
    */
   unbounded_counters?: Record<string, string[]>;
+  /**
+   * The `(engine-attributed player, axis)` pairs whose unbounded growth has an accepted but
+   * not-yet-applied finite collapse waiting at the next step/phase end, where the controller is
+   * prompted to name N. It names a PENDING COLLAPSE — the accepted stash — not a per-row
+   * annotation of `unbounded_resources`. The two channels answer different questions: the tag
+   * answers "what will the boundary cash out?", the row answers "does this ∞ still have live
+   * board backing?".
+   *
+   * A TAGGED ROW MAY BE ABSENT. The engine drops an object-growth row whose entire registered
+   * backing set has left the battlefield, while the accepted stash and its bound survive — so
+   * the boundary still cashes that axis out and the tag still names it. An orphan tag is
+   * CORRECT, not a bug. Join a row to its tag by exact `(player, axis)` equality; consumers
+   * iterate ROWS, so an orphan tag renders nothing.
+   *
+   * The accept→boundary window is an engine deviation, pre-existing and deliberate, licensed by
+   * no CR. CR 732.2c governs only the CEILING (the accepted count bounds the collapse). CR 500.5
+   * names the timing landmark and governs the mana-pool drain there; it does not license cashing
+   * out the deferred growth at that moment.
+   *
+   * SCOPE LIMIT: `Mana` axes are deliberately absent (already spendable; drained at the
+   * step/phase end rather than cashed out by a materialization), so this UNDER-REPORTS "which ∞
+   * rows will stop being ∞".
+   *
+   * KEYING LIMIT: `(player, axis)`-keyed, while `unbounded_pile` / `unbounded_counters` are
+   * ObjectId-keyed and carry no axis on the wire — so during the window a tagged HUD row can
+   * read `∞→N` while the same loop's token group and counter pill still read plain `∞`.
+   *
+   * Empty/omitted when nothing is scheduled. Mirrors
+   * `engine::game::derived_views::DerivedViews::scheduled_collapse`.
+   */
+  scheduled_collapse?: UnboundedResourceView[];
 }
 
 /** Mirrors `engine::types::game_state::NextSpellModifier` (serde tag="type"). */

@@ -1,4 +1,10 @@
 {
+  "scheduled_collapse": [
+    {
+      "axis": "TokensCreated",
+      "player": 0
+    }
+  ],
   "unbounded_pile": [
     402,
     403,

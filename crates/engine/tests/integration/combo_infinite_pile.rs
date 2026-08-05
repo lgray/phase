@@ -252,6 +252,7 @@ fn real_4p_object_growth_accept_writes_infinite_pile() {
         "unbounded_pile",
         "unbounded_resources",
         "unbounded_counters",
+        "scheduled_collapse",
     ]
     .into_iter()
     .filter_map(|k| wire.get(k).map(|v| (k.to_string(), v.clone())))

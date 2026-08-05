@@ -1172,6 +1172,38 @@ fn scheduled_drive_still_renders_the_already_spendable_mana_badge() {
             "the deferred Life axis of the same scheduled drive still projects its ∞ \
              row while the collapse is merely scheduled (viewer {viewer:?}), got {axes:?}"
         );
+
+        // (8) R4 — the `scheduled_collapse` TAG's documented `Mana(_)` scope limit is
+        // FALSIFIABLE, not dead code: (4) above proves the collapse authority names BOTH axes on
+        // this exact stash, so the tag's omission below can only come from the projection's own
+        // `Mana(_)` guard.
+        let views = engine::game::derived_views::derive_views(state, viewer);
+        // PINNED CO-OBSERVATION (§7), asserted BEFORE the tag axis so every probe arm reaches it:
+        // the ∞ ROW for the dropped mana axis is still projected — the scope limit under-reports
+        // the TAG and must never reach the badge. A `Mana(_)` axis registers no board backing, so
+        // `object_growth_backing` returns `None` for it and the row loop's liveness guard cannot
+        // drop it either; the only thing that could move this pin is the tag's scope limit
+        // leaking into the row loop.
+        assert!(
+            views
+                .unbounded_resources
+                .iter()
+                .any(|r| matches!(r.axis, ResourceAxis::Mana(_))),
+            "R4/pin: the mana ∞ row survives while its tag is omitted (viewer {viewer:?}), \
+             got {:?}",
+            views.unbounded_resources
+        );
+        let tagged: Vec<ResourceAxis> = views.scheduled_collapse.iter().map(|r| r.axis).collect();
+        assert!(
+            !tagged.iter().any(|a| matches!(a, ResourceAxis::Mana(_))),
+            "R4/omit: the documented Mana(_) scope limit drops the mana axis from the tag \
+             (viewer {viewer:?}), got {tagged:?}"
+        );
+        assert!(
+            tagged.contains(&ResourceAxis::Life(P0)),
+            "R4/keep: a non-mana axis in the SAME stash is still tagged (viewer {viewer:?}), \
+             got {tagged:?}"
+        );
     }
 
     // (7) THE STORE IS UNTOUCHED — the projection read, it did not mutate. The boundary

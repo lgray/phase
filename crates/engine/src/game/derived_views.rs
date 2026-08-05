@@ -390,6 +390,55 @@ pub struct DerivedViews {
     /// omitted) when no counter-growth loop is active — the dominant case.
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub unbounded_counters: HashMap<ObjectId, Vec<CounterType>>,
+
+    /// The `(engine-attributed player, axis)` pairs whose unbounded growth has an accepted but
+    /// not-yet-applied finite collapse waiting at the next step/phase end, where the controller
+    /// is prompted to name N. What it names is a PENDING COLLAPSE — the accepted stash — not a
+    /// per-row annotation of `unbounded_resources`, and the two channels answer different
+    /// questions: the tag answers "what will the boundary cash out?", the row answers "does this
+    /// `∞` still have live board backing?".
+    ///
+    /// A TAGGED ROW MAY THEREFORE BE ABSENT. `derive_views` drops an object-growth row whose
+    /// ENTIRE registered backing set has left the battlefield ([`object_growth_backing`]), while
+    /// the stash and its CR 732.2c bound survive untouched — so the boundary still cashes that
+    /// axis out and the tag must still name it. An ORPHAN TAG (an axis named here with no row
+    /// above) is CORRECT, not a bug; it is witnessed by
+    /// `combo_infinite_pile::object_growth_infinity_row_dies_with_its_last_pile_member`, whose
+    /// subject arm drops the `TokensCreated` row through the production `zones::move_to_zone`
+    /// chokepoint and asserts in the same arm that the stash, its bound, and the
+    /// `GameState::unbounded_resources` mark all survive. Gating this tag on that same backing
+    /// check would make the field UNDER-REPORT a live pending collapse, which is the opposite of
+    /// what it is for. Join a row to its tag by exact `(player, axis)` equality — same single
+    /// authority (`GameState::scheduled_collapse_axes`) and the same `attribution_player` keying
+    /// as `unbounded_resources` — and note that a consumer iterating ROWS renders nothing for an
+    /// orphan tag, which is the intended display.
+    ///
+    /// THE WINDOW IS AN ENGINE DEVIATION, pre-existing and deliberate, licensed by no CR — see
+    /// the block above `derive_views`' ∞ projections, which this field does not restate. What
+    /// CR 732.2c governs is the CEILING: the shortcut is taken at the count every player
+    /// accepted, so the collapse may not exceed it (`game::turns` reads the recorded bound into
+    /// the prompt's `max`, and `SubmitPayAmount` rejects an over-collapse). This projection does
+    /// not read CR 732.2c and does not filter anything by it.
+    ///
+    /// SCOPE LIMIT — read this before using it as "which ∞ rows stop being ∞". `Mana(_)` axes
+    /// are deliberately ABSENT: mana is already materialized and spendable
+    /// (`mana_payment::refill_infinite_mana` re-tops the pool off the store), so tagging it would
+    /// mislabel a live pool. A mana ∞ does end — at the step/phase end, via
+    /// `turns::drain_pending_phase_transition_progress`, which is the ONE thing here CR 500.5
+    /// genuinely governs (unspent mana empties); the deferred token/life/counter growth is cashed
+    /// out at that same landmark by engine choice, which CR 500.5 does not license. This field
+    /// therefore UNDER-REPORTS the mana case by design, and answers the narrower question: which
+    /// axes name growth a registered materialization will cash out at the boundary.
+    ///
+    /// KEYING LIMIT, so no reader mistakes it for complete coverage: this tag is
+    /// `(player, axis)`-keyed, while `unbounded_pile` and `unbounded_counters` are `ObjectId`-
+    /// keyed. The engine holds and performs those joins (`clear_collapsed_materializations`), but
+    /// they are not on the wire, so during the window a tagged HUD row can read `∞→N` while the
+    /// same loop's token group and counter pill still read plain `∞`.
+    ///
+    /// Empty (and omitted) whenever nothing is scheduled — the dominant case.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub scheduled_collapse: Vec<UnboundedResourceView>,
 }
 
 /// Serialize-only wrapper: the WASM getter passes `&GameState` by reference
@@ -931,9 +980,12 @@ pub fn derive_views(state: &GameState, viewer: Option<PlayerId>) -> DerivedViews
     // materialized `Mana(_)` axis that `mana_payment::refill_infinite_mana` keeps topping back up,
     // i.e. it hid a badge beside a pool the player can visibly keep spending.
     //
-    // The three loops below therefore read only the `∞` stores and the LIVE battlefield; none
-    // consults `GameState::scheduled_collapse_axes` (whose sole production caller is
-    // `clear_collapsed_materializations`). This sentence used to read "only their own stores",
+    // The three `∞` SURFACE loops below therefore read only the `∞` stores and the LIVE
+    // battlefield; none consults `GameState::scheduled_collapse_axes`. The `scheduled_collapse`
+    // TAG loop is the deliberate exception and the only reader of that authority here — it
+    // projects the schedule instead of a surface, so it filters no surface and no surface reads
+    // it. (`clear_collapsed_materializations` used to be that fn's sole production caller; it is
+    // now one of two.) This sentence used to read "only their own stores",
     // which the row guard below falsified the moment it was added: `object_growth_backing`
     // deliberately cross-reads the pile and counter-target stores, because whether a ROW is still
     // live is a question about those backing sets, not about its own. Corrected here rather than
@@ -965,6 +1017,31 @@ pub fn derive_views(state: &GameState, viewer: Option<PlayerId>) -> DerivedViews
                 continue;
             }
             views.unbounded_resources.push(UnboundedResourceView {
+                player: attribution_player(axis, controller),
+                axis,
+            });
+        }
+    }
+
+    // The TAG — one straight projection of the single authority
+    // (`GameState::scheduled_collapse_axes`), keyed by the SAME `attribution_player` the ∞ rows
+    // above use, so a row and its tag join by exact `(player, axis)` equality. It reads the
+    // accepted STASH and nothing else: deliberately NOT `object_growth_backing`, which is the
+    // row loop's live-board question. A stash whose backing has left the battlefield loses its
+    // row above and KEEPS its tag here, because the boundary will still cash that axis out —
+    // see the field's rustdoc for why that orphan is correct rather than a leak. Deterministic
+    // without a sort: `pending_unbounded_materialization` is a BTreeMap and
+    // `scheduled_collapse_axes` returns a BTreeSet, so the goldens are reproducible.
+    //
+    // `Mana(_)` is dropped per the field's documented scope limit: that pool is already
+    // materialized and is drained at the step/phase end (CR 500.5's actual subject), not cashed
+    // out by a materialization.
+    for (&controller, items) in &state.pending_unbounded_materialization {
+        for axis in state.scheduled_collapse_axes(items) {
+            if matches!(axis, ResourceAxis::Mana(_)) {
+                continue;
+            }
+            views.scheduled_collapse.push(UnboundedResourceView {
                 player: attribution_player(axis, controller),
                 axis,
             });

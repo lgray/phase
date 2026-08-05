@@ -7436,6 +7436,42 @@ fn scheduled_collapse_still_renders_the_unbounded_badge() {
             "the viewer-FILTERED broadcast path must project the FULL ∞ pile membership \
              (viewer {viewer:?})"
         );
+
+        // PINNED CO-OBSERVATION (§7), asserted BEFORE the tag axis so every probe arm reaches it:
+        // *tagging* must not filter the ∞ rows. Rows CAN be dropped — `object_growth_backing`
+        // drops one whose entire registered backing set has left the battlefield — but that is an
+        // unrelated, board-liveness reason. This fixture keeps its whole backing intact (every
+        // stored pile member is still on the battlefield, pinned by `expected_pile` above), which
+        // is what makes this pin meaningful rather than accidental: the only thing that could move
+        // it here is the tag loop reaching into the row loop.
+        assert!(
+            views
+                .unbounded_resources
+                .iter()
+                .any(|r| r.axis == ResourceAxis::TokensCreated),
+            "R2/pin: tagging must not filter the ∞ rows (viewer {viewer:?}), got {:?}",
+            views.unbounded_resources
+        );
+        // R2 — the `scheduled_collapse` TAG survives the viewer-filtered broadcast path too.
+        let tagged: Vec<ResourceAxis> = views.scheduled_collapse.iter().map(|r| r.axis).collect();
+        assert!(
+            tagged.contains(&ResourceAxis::Life(P0))
+                && tagged.contains(&ResourceAxis::TokensCreated),
+            "R2/filtered: the filtered broadcast path tags both scheduled axes (viewer \
+             {viewer:?}), got {tagged:?}"
+        );
+        // R1 — the tag survives serialize→deserialize, and a populated tag is EMITTED.
+        let json = serde_json::to_string(&views).expect("serialize");
+        let back: engine::game::derived_views::DerivedViews =
+            serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(
+            back.scheduled_collapse, views.scheduled_collapse,
+            "R1/roundtrip: the tag survives serialize→deserialize (viewer {viewer:?})"
+        );
+        assert!(
+            json.contains("scheduled_collapse"),
+            "R1/emitted: a populated tag is EMITTED, not skipped (viewer {viewer:?})"
+        );
     }
 
     // (4) THE STORE IS UNTOUCHED — the projection read, it did not mutate.
@@ -7629,9 +7665,40 @@ fn unregistered_axis_still_renders_its_infinity_badge() {
         "a merely-SCHEDULED collapse still projects both ∞ rows, got {scheduled_axes:?}"
     );
 
+    // R3 PRE-CLEAR positive control — without it the post-clear emptiness below is VACUOUS
+    // (it is green under the DROP mutant; see §7 RP-E1/RP-E2).
+    {
+        let v = engine::game::derived_views::derive_views(&state, None);
+        let j = serde_json::to_string(&v).unwrap();
+        assert!(
+            !v.scheduled_collapse.is_empty() && j.contains("scheduled_collapse"),
+            "R3/pre-clear: a registered materialization populates the tag AND emits the key, \
+             got {:?}",
+            v.scheduled_collapse
+        );
+    }
+
     // ARM 2: drop the registrations, keep the marks — an ∞ axis that is collapsible-LABELLED but
     // has nothing scheduled to collapse it.
     state.pending_unbounded_materialization.clear();
+
+    // R3 — with nothing scheduled the tag is empty, the key is OMITTED from the wire, and an
+    // engine-emitted view that omits it deserializes back to an empty tag.
+    {
+        let v = engine::game::derived_views::derive_views(&state, None);
+        let j = serde_json::to_string(&v).unwrap();
+        assert!(
+            v.scheduled_collapse.is_empty() && !j.contains("scheduled_collapse"),
+            "R3/post-clear: with nothing scheduled the tag is empty and the key is omitted, \
+             got {:?}",
+            v.scheduled_collapse
+        );
+        let back: engine::game::derived_views::DerivedViews = serde_json::from_str(&j).unwrap();
+        assert!(
+            back.scheduled_collapse.is_empty(),
+            "R3/default: an engine-emitted view that OMITS the field deserializes to an empty tag"
+        );
+    }
 
     let rows = engine::game::derived_views::derive_views(&state, None).unbounded_resources;
     let axes: Vec<ResourceAxis> = rows.iter().map(|r| r.axis).collect();
