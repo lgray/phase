@@ -1,19 +1,19 @@
-//! LIVE-CAPTURE PROBES — env-gated arms that drive a USER'S OWN dump through the production
-//! `apply()` beat policy and report where the CR 732.2a bounded offer does or does not appear.
+//! USER-CAPTURE ROWS — the user's own 4-player Dina / Bloodthirsty Conqueror capture, driven
+//! through the production `apply()` beat policy, asserting where the CR 732.2a bounded offer does
+//! and does not appear.
 //!
-//! **These are DIAGNOSTIC arms, not acceptance rows.** Each is inert (returns immediately, and
-//! says so) unless its env var names a dump on disk, because the captures they read are not
-//! tracked in this repo — they are user bug-report attachments. What they buy is that the capture
-//! which FOUND a defect stays re-runnable against the tree that fixed it, instead of decaying into
-//! a screenshot in a journal.
+//! **These are TRACKED acceptance rows and run on every CI run.** They were env-gated diagnostics
+//! over an untracked bug-report attachment until that capture was derived into
+//! `fixtures/dina_conqueror_phase5_no_offer_4p.json.gz` by the lane's recipe —
+//! `jq -c '{gameState}' <dump> | gzip -9 -n`, `-n` so the archive carries no timestamp and is
+//! byte-reproducible. Regenerating it requires re-gzipping the same way. No env var gates anything
+//! here: the headline result — the offer firing on the user's own board with a FOREIGN driving
+//! period live in state — is reproducible by anyone who can run the suite.
 //!
-//! Landed so far: the Dina / Bloodthirsty Conqueror arms (`DINA_DUMP`). The F4 lane's arms live on
-//! the `probe/f4-no-offer` branch and are not tracked here.
+//! # The capture (2026-08-03T19-29-36-888Z) — what it measured
 //!
-//! # The Dina capture (2026-08-03T19-29-36-888Z) — what it measured
-//!
-//! A MANDATORY gain/drain trigger chain with no per-iteration choices. The board carries a
-//! length-1 `last_loop_action_sequence`:
+//! A MANDATORY gain/drain trigger chain with no per-iteration choices, at `Priority{1}`, turn 5,
+//! life `[48, 31, 36, 36]`. Its distinguishing field is a length-1 `last_loop_action_sequence`:
 //!
 //! ```text
 //! [{ action: Activate { source_id: 268, ability_index: 1 }, controller: 2, pins: [] }]
@@ -22,17 +22,29 @@
 //! 268 is Currency Converter, controlled by an OPPONENT — an activation unrelated to the drain.
 //! Before the seat-relative fix, conjunct (1b) refused the bounded offer on ANY non-empty sequence
 //! (it was named `DrivingSequenceNotEmpty` then, `ProposerHasDrivingPeriod` now), so that one
-//! foreign step suppressed the proposer's offer for the rest of the game.
+//! foreign step suppressed the proposer's offer for the rest of the game. The already-tracked
+//! `dina_conqueror_4p.json.gz` is a DIFFERENT capture of the same deck (life `[46, 37, 33, 38]`,
+//! no recorded period) and cannot stand in for it.
+//!
+//! # Why tracking the dump is not by itself enough
 //!
 //! `GameState::migrate_transient_loop_sequence` CLEARS the field at every load that is not a
-//! shortcut window, so an in-process replay can never reproduce the live state unless the record
-//! is put back. **That asymmetry is the whole point of the pair below**: ARM D1 is what every
-//! in-process test sees, ARM D2 is what the running game actually held, and they differ in
-//! exactly one field.
+//! shortcut window, so `into_game_state()` wipes the one field this file is about no matter where
+//! the bytes came from — tracking alone would give ARM D1 twice. ARM D2 therefore reads the field
+//! back out of the fixture's OWN serialized JSON and puts it back: the dump's own bytes, not a
+//! synthesized step. **That asymmetry is the whole point of the pair below**: ARM D1 is what every
+//! in-process test sees, ARM D2 is what the running game actually held, and they differ in exactly
+//! one field.
 
 use engine::game::engine::apply;
 use engine::types::actions::GameAction;
 use engine::types::game_state::{GameState, PersistedGameState, WaitingFor};
+use engine::types::player::PlayerId;
+
+/// The user's capture, `{gameState}`-only and gzipped. Provenance:
+/// `dina-conqueror-phase5-no-offer.zip` / `game-state-turn-5-2026-08-03T19-29-36-888Z.json`.
+const DINA_PHASE5_GZ: &[u8] =
+    include_bytes!("../fixtures/dina_conqueror_phase5_no_offer_4p.json.gz");
 
 fn wf_label(w: &WaitingFor) -> String {
     match w {
@@ -58,16 +70,59 @@ fn mint_verdict(state: &GameState) -> String {
     }
 }
 
-fn load_dina_raw() -> Option<(GameState, serde_json::Value)> {
-    let path = std::env::var("DINA_DUMP").ok()?;
-    let json = std::fs::read_to_string(&path).expect("dina dump readable");
+/// The board as PRODUCTION loads it, paired with the driving period the capture actually
+/// serialized — which the load migration has by then already dropped from the board.
+///
+/// Decodes AS `PersistedGameState` rather than as a bare `GameState`: only the former runs the
+/// production restore chokepoint (`reject_legacy_raw_prompt_authority`,
+/// `decode_persisted_resolution_state`, `migrate_transient_loop_sequence`) that both the server's
+/// `from_persisted` and WASM's `decode_restored_game_state` funnel through. The dump was captured
+/// with the detector OFF and every row here is about the CR 732.2a interactive offer, so the mode
+/// is set at load — the same thing the user's own toggle does.
+fn load_dina_raw() -> (GameState, serde_json::Value) {
+    use std::io::Read;
+    let mut json = String::new();
+    flate2::read::GzDecoder::new(DINA_PHASE5_GZ)
+        .read_to_string(&mut json)
+        .expect("fixture .json.gz must inflate to UTF-8 JSON");
     let envelope: serde_json::Value = serde_json::from_str(&json).expect("dina dump parses");
     let mut state = serde_json::from_value::<PersistedGameState>(envelope["gameState"].clone())
         .expect("dina gameState decodes through the production decoder")
         .into_game_state();
     state.loop_detection = engine::types::game_state::LoopDetectionMode::Interactive;
     let raw_seq = envelope["gameState"]["last_loop_action_sequence"].clone();
-    Some((state, raw_seq))
+    (state, raw_seq)
+}
+
+/// Mirror of `GameState::loop_period_controller`, which is `pub(crate)` and therefore unreachable
+/// from an integration test: the seat every recorded step shares, or `None` for a heterogeneous
+/// run (which every routing site fail-closes on).
+fn period_controller(state: &GameState) -> Option<PlayerId> {
+    let owner = state.last_loop_action_sequence.first()?.controller;
+    state
+        .last_loop_action_sequence
+        .iter()
+        .all(|step| step.controller == owner)
+        .then_some(owner)
+}
+
+/// One driven beat's mint census entry, in the ISOLATED form.
+///
+/// `live` is the verdict on the board as driven; `cleared` is the verdict the SAME board returns
+/// with `last_loop_action_sequence` emptied and nothing else touched. The mint runs (1b) BEFORE
+/// (2), so a `live` refusal reported against (1b) is EVIDENCE about (1b) only where `cleared`
+/// differs from it — otherwise a later conjunct refuses at that frame anyway and the attribution
+/// is dominated. The round-2 census published a residual (1b) figure without this second column,
+/// and the figure did not mean what it said.
+struct MintFrame {
+    beat: u32,
+    /// The seat proposing at this frame; `None` when the frame is not a `Priority` beat, in which
+    /// case no seat proposes and neither classification below applies.
+    proposer: Option<PlayerId>,
+    /// The recorded period belongs to THIS frame's proposer — the one shape (1b) exists to refuse.
+    own: bool,
+    live: String,
+    cleared: String,
 }
 
 /// Generic mandatory-chain beat: pass at `Priority`, otherwise take the first legal action.
@@ -104,9 +159,32 @@ fn dina_drive_one_beat(state: &mut GameState) -> Result<String, String> {
         .map_err(|e| format!("apply err ({action:?}): {e:?}"))
 }
 
+/// The ISOLATED census entry for the board as it stands after one driven beat.
+fn mint_frame(state: &GameState, beat: u32) -> MintFrame {
+    let proposer = match state.waiting_for {
+        WaitingFor::Priority { player } => Some(player),
+        _ => None,
+    };
+    let mut cleared_board = state.clone();
+    cleared_board.last_loop_action_sequence.clear();
+    MintFrame {
+        beat,
+        proposer,
+        own: proposer.is_some() && period_controller(state) == proposer,
+        live: mint_verdict(state),
+        cleared: mint_verdict(&cleared_board),
+    }
+}
+
 /// Drives IN PLACE (`&mut`), so the caller can inspect the board the drive stopped on — the
 /// offer's proposer, the ring depth, the surviving driving sequence — instead of only the beat.
-fn dina_drive_and_report(state: &mut GameState, label: &str, beats: u32) -> Option<u32> {
+///
+/// Returns the beat the drive stopped on and the per-beat ISOLATED mint census.
+fn dina_drive_and_report(
+    state: &mut GameState,
+    label: &str,
+    beats: u32,
+) -> (Option<u32>, Vec<MintFrame>) {
     eprintln!(
         "[{label}] START turn={} active={} wf={} stack={} ring={} seq={} life={:?}",
         state.turn_number,
@@ -118,6 +196,7 @@ fn dina_drive_and_report(state: &mut GameState, label: &str, beats: u32) -> Opti
         state.players.iter().map(|p| p.life).collect::<Vec<_>>(),
     );
     let mut fired = None;
+    let mut census: Vec<MintFrame> = vec![];
     for beat in 0..beats {
         if matches!(
             state.waiting_for,
@@ -131,6 +210,13 @@ fn dina_drive_and_report(state: &mut GameState, label: &str, beats: u32) -> Opti
         match dina_drive_one_beat(state) {
             Ok(act) => {
                 let after_priority = matches!(state.waiting_for, WaitingFor::Priority { .. });
+                // Same frame selection the published census used, so the two are comparable.
+                let verdicts = (after_priority || at_priority).then(|| {
+                    let frame = mint_frame(state, beat);
+                    let rendered = format!("{}/cleared={}", frame.live, frame.cleared);
+                    census.push(frame);
+                    rendered
+                });
                 eprintln!(
                     "[{label}] beat {beat:3} {before:>26} -> {:<26} stack={} ring={} seq={} life={:?} mint={} act={}",
                     wf_label(&state.waiting_for),
@@ -138,11 +224,7 @@ fn dina_drive_and_report(state: &mut GameState, label: &str, beats: u32) -> Opti
                     state.loop_detect_ring.len(),
                     state.last_loop_action_sequence.len(),
                     state.players.iter().map(|p| p.life).collect::<Vec<_>>(),
-                    if after_priority || at_priority {
-                        mint_verdict(state)
-                    } else {
-                        "-".to_string()
-                    },
+                    verdicts.unwrap_or_else(|| "-".to_string()),
                     &act.chars().take(40).collect::<String>()
                 );
             }
@@ -159,7 +241,38 @@ fn dina_drive_and_report(state: &mut GameState, label: &str, beats: u32) -> Opti
         state.last_loop_action_sequence.len(),
         state.players.iter().map(|p| p.life).collect::<Vec<_>>(),
     );
-    fired
+    report_census(label, &census);
+    (fired, census)
+}
+
+/// The census, reduced and printed in the ISOLATED form: every (1b) refusal is split into the ones
+/// that were the SOLE reason this frame raised no offer and the ones a later conjunct refused at
+/// anyway. Only the first count is evidence about (1b); the second is dominated and proves nothing
+/// about the conjunct it is attributed to.
+fn report_census(label: &str, census: &[MintFrame]) {
+    let mut tally: std::collections::BTreeMap<(&str, &str), usize> = Default::default();
+    for f in census {
+        *tally
+            .entry((f.live.as_str(), f.cleared.as_str()))
+            .or_default() += 1;
+    }
+    for ((live, cleared), n) in &tally {
+        eprintln!("[{label}] CENSUS {n:3} x mint={live} cleared={cleared}");
+    }
+    let one_b = |load_bearing: bool| {
+        census
+            .iter()
+            .filter(|f| {
+                f.live == "ProposerHasDrivingPeriod" && (f.cleared == "OFFER") == load_bearing
+            })
+            .count()
+    };
+    eprintln!(
+        "[{label}] CENSUS step-(1b) refusals: {} LOAD-BEARING (the cleared twin would have \
+         OFFERED) + {} DOMINATED (a later conjunct refuses that frame anyway)",
+        one_b(true),
+        one_b(false),
+    );
 }
 
 /// (beat the offer fired at, ring depth, life vector) — the axes the two arms are compared on.
@@ -171,16 +284,23 @@ fn offer_signature(state: &GameState, fired: Option<u32>) -> (Option<u32>, usize
     )
 }
 
-/// ARM D1 — the dump as PRODUCTION loads it: `migrate_transient_loop_sequence` has already
+/// ARM D1 — the capture as PRODUCTION loads it: `migrate_transient_loop_sequence` has already
 /// dropped the driving sequence, so this is the state every in-process test would see. This is
 /// the CONTROL: the offer this board raises with the field cleared is the one ARM D2 must match.
+///
+/// It also pins the load migration itself against this fixture — the fixture SERIALIZES a period
+/// (asserted here from its own JSON) and the loaded board does not carry it. That is what makes
+/// ARM D2's re-injection a restoration rather than an invention.
 #[test]
-fn probe_dina_as_loaded() {
-    let Some((state, raw_seq)) = load_dina_raw() else {
-        eprintln!("DINA_DUMP unset — probe skipped");
-        return;
-    };
+fn the_user_captures_offer_is_reached_with_its_driving_period_cleared() {
+    let (state, raw_seq) = load_dina_raw();
     eprintln!("[DINA-LOADED] raw serialized sequence = {raw_seq}");
+    assert_eq!(
+        raw_seq.as_array().map(|a| a.len()),
+        Some(1),
+        "REACH-GUARD: the tracked fixture must still SERIALIZE the capture's own single recorded \
+         step, else ARM D2 has nothing of the user's to put back; got {raw_seq}"
+    );
     assert!(
         state.last_loop_action_sequence.is_empty(),
         "reach-guard: the production restore hook must have DROPPED the sequence at load"
@@ -191,12 +311,47 @@ fn probe_dina_as_loaded() {
          cannot apply here)"
     );
     let mut state = state;
-    let fired = dina_drive_and_report(&mut state, "DINA-LOADED", 140);
+    let (fired, _) = dina_drive_and_report(&mut state, "DINA-LOADED", 140);
     eprintln!("[DINA-LOADED] fired={fired:?}");
     assert!(
         fired.is_some(),
         "REACH-GUARD: the field-cleared control must reach the offer, else ARM D2 has nothing \
          to be identical TO and the pair proves nothing"
+    );
+
+    // WHICH SITES THIS FIXTURE CAN AND CANNOT HOST, asserted rather than claimed in prose
+    // elsewhere. `handle_declare_shortcut`'s `template: None` arm (site F) sits under
+    // `if !offer.schema.points.is_empty()`, and the `UntilLethal` drive (site D) is reachable only
+    // through an offer that states NO narrowed bound. This capture's offer publishes neither, so it
+    // can host neither site — which is why those two rows ride other fixtures. Pinning it here
+    // means a future capture that DOES publish points reds this line instead of silently making
+    // the sibling rows' scope claims stale.
+    let WaitingFor::LoopShortcut {
+        predicted_winner,
+        schema,
+        ..
+    } = &state.waiting_for
+    else {
+        panic!(
+            "`fired` is Some, so the drive stopped on the offer; got {:?}",
+            state.waiting_for
+        )
+    };
+    assert_eq!(
+        predicted_winner, &None,
+        "this capture reaches the BOUNDED mint (CR 732.2a), not Path A's crowned offer — the \
+         whole file is about the bounded mint's step (1b)"
+    );
+    assert!(
+        schema.points.is_empty(),
+        "SCOPE: this capture's offer publishes no per-iteration choice point, so site F is \
+         STRUCTURALLY unreachable from it; got {:?}",
+        schema.points
+    );
+    assert!(
+        schema.is_bounded(),
+        "SCOPE: a bounded offer is exactly what makes `handle_declare_shortcut` reject \
+         `UntilLethal`, so site D is unreachable from this capture too"
     );
 }
 
@@ -214,12 +369,33 @@ fn probe_dina_as_loaded() {
 /// The comparison is against ARM D1 re-driven HERE rather than against transcribed numbers: a
 /// hardcoded beat/life tuple would decay into a fixture the next drive-policy change reds for a
 /// reason that has nothing to do with this defect.
+///
+/// **THE PER-FRAME BAR, which the endpoint equality above cannot state.** Two seats propose over
+/// this drive, so the recorded period is FOREIGN at some frames and the proposer's OWN at others,
+/// and the two shapes carry opposite obligations (CR 732.2a). Each is asserted against the same
+/// frame's CLEARED twin — the identical board with only `last_loop_action_sequence` emptied — so
+/// no assertion rests on a refusal an earlier or later conjunct would have produced anyway:
+/// * FOREIGN frames: the live verdict must EQUAL the cleared verdict. The period changes nothing,
+///   which is inertness stated frame by frame rather than only at the endpoint.
+/// * OWN frames: the live verdict must be `ProposerHasDrivingPeriod`. That is the load-bearing
+///   half of the guard, and it is asserted HERE rather than inferred from a residual count.
+///
+/// **TWO-SIDED CONTROL, PER ASSERTION** — each direction flips a DIFFERENT named assertion:
+/// * **DROP** the seat test in (1b) (restore `!last_loop_action_sequence.is_empty()`) ⇒ every
+///   FOREIGN frame answers `ProposerHasDrivingPeriod` while its cleared twin does not ⇒ the
+///   FOREIGN-INERTNESS assertion fails (and so does the endpoint fix bar, which stops firing).
+/// * **TRIVIALIZE** (1b) to never refuse ⇒ OWN frames answer `ProposerIsNotActivePlayer` ⇒ the
+///   OWN-PERIOD assertion fails while FOREIGN-INERTNESS still passes.
+///
+/// ⚠ **WHAT THE CENSUS IS NOT EVIDENCE FOR.** Round 2 published the residual `ProposerHasDrivingPeriod`
+/// count as the guard "working as designed". `report_census` now splits that count by its cleared
+/// twin, and on this board every one of those frames is DOMINATED — the proposer there is also not
+/// the active player, so conjunct (2) refuses the same frame with the field empty. The residual
+/// count is therefore not evidence about (1b); the OWN-PERIOD assertion below and the `ⓑ`/`ⓔ` arms
+/// of `a_foreign_driving_period_neither_refuses_nor_recertifies_a_bounded_offer` are.
 #[test]
-fn probe_dina_with_live_sequence() {
-    let Some((mut state, raw_seq)) = load_dina_raw() else {
-        eprintln!("DINA_DUMP unset — probe skipped");
-        return;
-    };
+fn the_user_captures_offer_is_reached_with_its_own_foreign_period_live() {
+    let (mut state, raw_seq) = load_dina_raw();
     state.last_loop_action_sequence =
         serde_json::from_value(raw_seq.clone()).expect("the dump's own sequence re-parses");
     assert_eq!(
@@ -230,13 +406,13 @@ fn probe_dina_with_live_sequence() {
     let foreign = state.last_loop_action_sequence[0].controller;
     eprintln!("[DINA-LIVE] re-injected {raw_seq}");
 
-    let fired = dina_drive_and_report(&mut state, "DINA-LIVE", 140);
+    let (fired, census) = dina_drive_and_report(&mut state, "DINA-LIVE", 140);
     eprintln!("[DINA-LIVE] fired={fired:?}");
 
     // The CONTROL, re-driven in this process: same board, the one field cleared.
-    let (mut control, _) = load_dina_raw().expect("the dump is still readable");
+    let (mut control, _) = load_dina_raw();
     control.last_loop_action_sequence.clear();
-    let control_fired = dina_drive_and_report(&mut control, "DINA-CONTROL", 140);
+    let (control_fired, _) = dina_drive_and_report(&mut control, "DINA-CONTROL", 140);
 
     // IN-ROW REACH-GUARD, not inherited from ARM D1's: the equality below compares this arm to a
     // control re-driven HERE, so on a board where NEITHER side reaches an offer both sides are
@@ -249,6 +425,64 @@ fn probe_dina_with_live_sequence() {
          the fix bar below compares two absences and passes vacuously"
     );
 
+    // ── THE PER-FRAME BAR, asserted BEFORE the endpoint one on purpose: it is the finer
+    //    instrument, and under the DROP mutant the endpoint bar would otherwise panic first and
+    //    leave FOREIGN-INERTNESS unobserved. Reach-guards first: both frame shapes must actually
+    //    occur, and the instrument must demonstrably be able to answer more than one way. ──
+    let (own, foreign_frames): (Vec<&MintFrame>, Vec<&MintFrame>) = census
+        .iter()
+        .filter(|f| f.proposer.is_some())
+        .partition(|f| f.own);
+    let distinct: std::collections::BTreeSet<&str> =
+        census.iter().map(|f| f.live.as_str()).collect();
+    assert!(
+        distinct.len() >= 2,
+        "REACH-GUARD: a mint that answered one constant across the whole drive would satisfy both \
+         assertions below without discriminating anything; got {distinct:?}"
+    );
+    assert!(
+        !foreign_frames.is_empty(),
+        "REACH-GUARD: no beat had a seat OTHER than {foreign:?} proposing, so FOREIGN-INERTNESS \
+         below quantifies over an empty set and passes having measured nothing"
+    );
+    assert!(
+        !own.is_empty(),
+        "REACH-GUARD: no beat had {foreign:?} — the seat that recorded the period — proposing, so \
+         the OWN-PERIOD assertion below quantifies over an empty set. This board reaches both \
+         shapes; if it stops doing so the arm must move, not soften"
+    );
+
+    let diverged: Vec<_> = foreign_frames
+        .iter()
+        .filter(|f| f.live != f.cleared)
+        .map(|f| (f.beat, f.proposer, f.live.as_str(), f.cleared.as_str()))
+        .collect();
+    assert!(
+        diverged.is_empty(),
+        "CR 732.2a FOREIGN-INERTNESS, per frame: at every beat where the recorded period belongs \
+         to a seat OTHER than the proposer, the mint must return exactly what it returns with the \
+         field empty — a period recorded by another seat describes no sequence this proposer can \
+         take, so it may not change their verdict. {} of {} foreign frames diverged: {diverged:?}",
+        diverged.len(),
+        foreign_frames.len()
+    );
+
+    let leaked: Vec<_> = own
+        .iter()
+        .filter(|f| f.live != "ProposerHasDrivingPeriod")
+        .map(|f| (f.beat, f.proposer, f.live.as_str(), f.cleared.as_str()))
+        .collect();
+    assert!(
+        leaked.is_empty(),
+        "CR 732.2a OWN-PERIOD: at every beat where the recorded period is the PROPOSER'S OWN, \
+         step (1b) must refuse — an offer minted there would be accepted and routed to the \
+         object-growth materializer, committing ZERO bounded cycles. {} of {} own frames did not: \
+         {leaked:?}",
+        leaked.len(),
+        own.len()
+    );
+
+    // ── THE ENDPOINT BAR: the whole trajectory, not one frame. ──
     let (proposer, control_proposer) = (offer_proposer(&state), offer_proposer(&control));
     assert_ne!(
         Some(foreign),
