@@ -99,6 +99,39 @@ describe("AssistPaymentUI", () => {
     expect(screen.getByLabelText("Assist: Pay Generic Mana")).toHaveValue("0");
   });
 
+  // The seat axis for assist: same caster, same bound, different payer. Uses the CR 723.1a shape
+  // (local seat 0 stays `turn_decision_controller` while the semantic player moves) so one client
+  // renders both prompts in a row — otherwise the panel hides and the row would be vacuous.
+  it("AP/successor-seat: a same-caster prompt for a different PAYER resets the entry", () => {
+    const promptFor = (chosen: number) =>
+      buildAssistPaymentWaitingFor({ data: { caster: 1, chosen, max_generic: 4 } });
+
+    const seat = (waitingFor: WaitingFor, active: number) => {
+      setGameStoreForTest({
+        gameState: createGameState({
+          waiting_for: waitingFor,
+          active_player: active,
+          turn_decision_controller: 0,
+        }),
+        waitingFor,
+      });
+    };
+
+    const first = promptFor(0);
+    seat(first, 0);
+    const { rerender } = render(<AssistPaymentUI />);
+    fireEvent.change(screen.getByLabelText("Assist: Pay Generic Mana"), {
+      target: { value: "3" },
+    });
+    expect(screen.getByLabelText("Assist: Pay Generic Mana")).toHaveValue("3");
+
+    const second = promptFor(1);
+    seat(second, 1);
+    rerender(<AssistPaymentUI />);
+
+    expect(screen.getByLabelText("Assist: Pay Generic Mana")).toHaveValue("0");
+  });
+
   it("dispatches CommitAssistPayment with the selected value", () => {
     const dispatch = vi.fn().mockResolvedValue([]);
     const waitingFor = assistPaymentWaitingFor(4);

@@ -20,12 +20,19 @@ export function PayAmountChoiceUI() {
   const max = data?.max ?? 0;
   // Prompt identity, not just bounds — a successor prompt with the same window would otherwise
   // leave `raw` holding the amount chosen for the PREVIOUS prompt.
+  // `player` as well as `source_id`: the engine PROVABLY emits consecutive PayAmountChoice states
+  // with a constant `source_id` and a changing `player` — `effects/pay.rs` drives
+  // `PlayerFilter::All` and its own test asserts prompt 1 `player=0` then prompt 2 `player=1` with
+  // no intervening `WaitingFor`. On the life arm, two seats at equal life produce successive
+  // prompts whose `min`, `max` AND `source_id` are all identical, so `source_id` alone would not
+  // fire and the second seat would inherit the first seat's typed amount.
   const sourceId = data?.source_id ?? null;
+  const promptPlayer = data?.player ?? null;
   const [raw, setRaw] = useState(String(min));
 
   useEffect(() => {
     if (isPayAmount) setRaw(String(min));
-  }, [isPayAmount, min, max, sourceId]);
+  }, [isPayAmount, min, max, sourceId, promptPlayer]);
 
   const amount = parseAmount(raw, min, max);
 

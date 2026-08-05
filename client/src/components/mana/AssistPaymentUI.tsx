@@ -24,15 +24,16 @@ export function AssistPaymentUI() {
   const max = isAssistPayment ? waitingFor.data.max_generic : 0;
   // Prompt identity, not just bounds: a successor prompt with the SAME max would otherwise leave
   // `raw` holding the previous decision, letting the player submit an amount they chose for a
-  // different prompt. `caster` is the only identity this wire type carries. See the note in
-  // `AmountInput` — a same-caster/same-max successor is still indistinguishable here, and closing
-  // that needs a prompt identity from the engine rather than a guess in the display layer.
+  // different prompt. BOTH seats are keyed on, not just `caster` — `chosen` is the seat actually
+  // being asked to pay, so one caster polling two different players in succession changes only
+  // `chosen`, and keying on `caster` alone would not fire.
   const caster = isAssistPayment ? waitingFor.data.caster : null;
+  const chosen = isAssistPayment ? waitingFor.data.chosen : null;
   const [raw, setRaw] = useState("0");
 
   useEffect(() => {
     if (isAssistPayment) setRaw("0");
-  }, [isAssistPayment, max, caster]);
+  }, [isAssistPayment, max, caster, chosen]);
 
   // CR 702.132a: "the player you chose may pay for any amount of the generic mana in the
   // spell's total cost" — the variant's domain is 0..max_generic. This is NOT a

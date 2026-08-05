@@ -99,13 +99,15 @@ export function AmountInput({
             tone: "neutral",
             size: "xs",
             disabled: decDisabled,
-            // The 36px visual box is kept (every other small square control in this client is
-            // `h-9 w-9`), and the TOUCH target is widened to 44px with the codebase's existing
-            // hit-area idiom (`ManualManaToggle`): a transparent `::before` at `-inset-1` adds
-            // 4px per side. These steppers are the only non-typing recovery path out of an
-            // invalid entry, so they are exactly the control a coarse pointer needs most.
-            className:
-              "relative h-9 w-9 px-0 text-base before:absolute before:-inset-1 before:content-['']",
+            // 44px REAL size, not a 36px box with an expanded `::before`. The pseudo-element
+            // trick (as in `board/ManualManaToggle`) measured 42px here, not 44: `gameButtonClass`
+            // adds `border`, and an absolutely positioned pseudo resolves against its ancestor's
+            // PADDING box (36 − 2×1 = 34), so `-inset-1` yields 34 + 8. It works in
+            // `ManualManaToggle` only because that control uses `ring-1`, which adds no layout
+            // border. A size that must be derived to be checked is a size that will silently
+            // regress; these steppers are the only non-typing recovery path out of an invalid
+            // entry, so they get the boring, directly-readable 44px.
+            className: "h-11 w-11 px-0 text-base",
           })}
         >
           −
@@ -141,8 +143,11 @@ export function AmountInput({
           // natively; a text box announces nothing, so the range hint is permanently associated
           // and the error message is appended to it while invalid.
           aria-describedby={amount === null ? `${hintId} ${errorId}` : hintId}
-          // `w-24` not `w-20`: four digits must fit for the 1000 case.
-          className={`h-9 w-24 rounded-lg border bg-gray-950/80 px-2 text-center font-mono text-base font-semibold shadow-inner outline-none transition focus:ring-2 ${
+          // `w-24` not `w-20`: four digits must fit for the 1000 case. `h-11` (44px) because this
+          // is the PRIMARY tap target of the control — fixing only the steppers would leave the
+          // main one short. The `::before` idiom cannot be used here regardless: `<input>` is a
+          // replaced element and renders no pseudo-elements.
+          className={`h-11 w-24 rounded-lg border bg-gray-950/80 px-2 text-center font-mono text-base font-semibold shadow-inner outline-none transition focus:ring-2 ${
             amount === null
               ? "border-red-400/60 text-red-200 focus:ring-red-400/30"
               : "border-cyan-400/30 text-cyan-100 focus:ring-cyan-400/30"
@@ -157,13 +162,15 @@ export function AmountInput({
             tone: "neutral",
             size: "xs",
             disabled: incDisabled,
-            // The 36px visual box is kept (every other small square control in this client is
-            // `h-9 w-9`), and the TOUCH target is widened to 44px with the codebase's existing
-            // hit-area idiom (`ManualManaToggle`): a transparent `::before` at `-inset-1` adds
-            // 4px per side. These steppers are the only non-typing recovery path out of an
-            // invalid entry, so they are exactly the control a coarse pointer needs most.
-            className:
-              "relative h-9 w-9 px-0 text-base before:absolute before:-inset-1 before:content-['']",
+            // 44px REAL size, not a 36px box with an expanded `::before`. The pseudo-element
+            // trick (as in `board/ManualManaToggle`) measured 42px here, not 44: `gameButtonClass`
+            // adds `border`, and an absolutely positioned pseudo resolves against its ancestor's
+            // PADDING box (36 − 2×1 = 34), so `-inset-1` yields 34 + 8. It works in
+            // `ManualManaToggle` only because that control uses `ring-1`, which adds no layout
+            // border. A size that must be derived to be checked is a size that will silently
+            // regress; these steppers are the only non-typing recovery path out of an invalid
+            // entry, so they get the boring, directly-readable 44px.
+            className: "h-11 w-11 px-0 text-base",
           })}
         >
           +

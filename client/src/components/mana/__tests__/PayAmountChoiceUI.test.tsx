@@ -242,6 +242,51 @@ describe("PayAmountChoiceUI — sanitized amount entry", () => {
     expect(screen.getByLabelText(BOX)).toHaveValue("0");
   });
 
+  // The seat axis, which `source_id` alone does NOT cover. `effects/pay.rs` drives
+  // `PlayerFilter::All` and its own test asserts consecutive PayAmountChoice states with a
+  // constant source and `player` 0 then 1; on the life arm two seats at equal life make `min`,
+  // `max` and `source_id` all identical, so the seat is the only thing that changes.
+  it("T11/successor-seat: a same-source prompt for a DIFFERENT seat resets the entry", () => {
+    const promptFor = (player: number) =>
+      buildPayAmountChoiceWaitingFor({
+        data: {
+          player,
+          resource: { type: "Counters" },
+          min: 0,
+          max: 10,
+          source_id: 9,
+        },
+      });
+
+    // CR 723.1a control is what makes this reachable in ONE client: the local seat (0) stays the
+    // `turn_decision_controller` while the prompt's semantic player moves to seat 1, so
+    // `useCanActForWaitingState` (usePlayerId.ts:95) keeps rendering and the same client answers
+    // both prompts in a row. Setting the controller to 1 as well would hide the panel and make
+    // this row vacuous — it fails that way, which is how the shape was pinned.
+    const seat = (waitingFor: WaitingFor, player: number) => {
+      setGameStoreForTest({
+        gameState: buildGameState({
+          waiting_for: waitingFor,
+          active_player: player,
+          turn_decision_controller: 0,
+        }),
+        waitingFor,
+      });
+    };
+
+    const first = promptFor(0);
+    seat(first, 0);
+    const { rerender } = render(<PayAmountChoiceUI />);
+    type("7");
+    expect(screen.getByLabelText(BOX)).toHaveValue("7");
+
+    const second = promptFor(1);
+    seat(second, 1);
+    rerender(<PayAmountChoiceUI />);
+
+    expect(screen.getByLabelText(BOX)).toHaveValue("0");
+  });
+
   it("T6a/enter-valid: Enter submits a valid entry", () => {
     const { dispatch } = renderPrompt(loopCollapseWaitingFor("Tokens"));
     type("42");
