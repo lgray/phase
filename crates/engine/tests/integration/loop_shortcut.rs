@@ -11309,11 +11309,7 @@ fn answer_beat_frames_carry_the_synced_window_and_the_offer_certificate_is_exact
         // Frames minted and then evicted WITHIN one beat are absent here by construction —
         // they are gone from the ring. "Every frame this beat added that the ring still holds"
         // is exactly the set the arms below claim, and exactly the set any consumer can read.
-        let minted: Vec<_> = state
-            .loop_detect_ring
-            .iter()
-            .filter(|f| !before.iter().any(|b| std::sync::Arc::ptr_eq(b, f)))
-            .collect();
+        let (minted, _) = ring_membership_delta(&before, &state.loop_detect_ring);
         if minted.is_empty() {
             continue;
         }
@@ -11500,9 +11496,9 @@ fn answer_beat_frames_carry_the_synced_window_and_the_offer_certificate_is_exact
 
 // ───── #7023 maintainer item: a beat's minted frames are a MEMBERSHIP set, not a length delta ─────
 
-/// `(minted, dropped)` for one beat, by `Arc` IDENTITY: frames the ring gained, and pre-beat
-/// frames it lost. Generic over the sample type so the ring's private element type is never
-/// named here.
+/// `(minted_frames, dropped)` for one beat, by `Arc` IDENTITY: frames the ring gained, and
+/// pre-beat frames it lost. Generic over the sample type so the ring's private element type is
+/// never named here.
 ///
 /// `before` must be a slice of `Arc` CLONES held across the beat, not of raw addresses.
 /// `GameState::record_loop_detect_sample` calls `pop_front()` — which DROPS the evicted
@@ -11511,14 +11507,14 @@ fn answer_beat_frames_carry_the_synced_window_and_the_offer_certificate_is_exact
 /// genuinely new frame would then read as an old one. A retained strong reference makes every
 /// snapshotted address un-reusable for the whole beat, so `ptr_eq` is exact by construction
 /// rather than by luck.
-fn ring_membership_delta<T>(
+fn ring_membership_delta<'a, T>(
     before: &[std::sync::Arc<T>],
-    after: &std::collections::VecDeque<std::sync::Arc<T>>,
-) -> (usize, usize) {
+    after: &'a std::collections::VecDeque<std::sync::Arc<T>>,
+) -> (Vec<&'a std::sync::Arc<T>>, usize) {
     let minted = after
         .iter()
         .filter(|f| !before.iter().any(|b| std::sync::Arc::ptr_eq(b, f)))
-        .count();
+        .collect();
     let dropped = before
         .iter()
         .filter(|b| !after.iter().any(|f| std::sync::Arc::ptr_eq(b, f)))
@@ -11598,7 +11594,8 @@ fn an_evicting_beat_mints_without_growing_the_ring() {
         }
         beats_run = beat + 1;
         max_ring = max_ring.max(state.loop_detect_ring.len());
-        let (minted, dropped) = ring_membership_delta(&before, &state.loop_detect_ring);
+        let (minted_frames, dropped) = ring_membership_delta(&before, &state.loop_detect_ring);
+        let minted = minted_frames.len();
         if dropped == 0 || state.loop_detect_ring.len() < before.len() {
             continue;
         }
@@ -11663,10 +11660,10 @@ fn an_evicting_beat_mints_without_growing_the_ring() {
 /// one "Resolve All" press at the first `Priority` window carrying 2 accumulated frames puts it
 /// on this route at beat 6.
 ///
-/// SEARCH PREDICATE STRUCTURAL, ASSERTION THE CONSEQUENCE: the witness is the first beat that
-/// lost EVERY pre-beat frame — a statement about membership alone — and the assertion is what
-/// the beat minted and what it left behind. The threshold of 2 accumulated frames is not
-/// cosmetic: below it a wiped ring and a merely-evicted one are indistinguishable by membership.
+/// SEARCH PREDICATE STRUCTURAL, ASSERTION THE CONSEQUENCE: the witness is the dispatched
+/// `SetAutoPass` beat that lost EVERY pre-beat frame, and the assertion is what the beat minted
+/// and what it left behind. The threshold of 2 accumulated frames is not cosmetic: below it a
+/// wiped ring and a merely-evicted one are indistinguishable by membership.
 #[test]
 fn a_clearing_beat_rebuilds_the_ring_inside_the_same_beat() {
     let mut state = restore_dump(&gunzip_dump(include_bytes!(
@@ -11690,10 +11687,9 @@ fn a_clearing_beat_rebuilds_the_ring_inside_the_same_beat() {
         }
         let before: Vec<_> = state.loop_detect_ring.iter().cloned().collect();
         max_ring = max_ring.max(before.len());
-        let outcome = if !fired
-            && before.len() >= 2
-            && matches!(state.waiting_for, WaitingFor::Priority { .. })
-        {
+        let dispatched_here =
+            !fired && before.len() >= 2 && matches!(state.waiting_for, WaitingFor::Priority { .. });
+        let outcome = if dispatched_here {
             fired = true;
             let who = state
                 .waiting_for
@@ -11715,8 +11711,9 @@ fn a_clearing_beat_rebuilds_the_ring_inside_the_same_beat() {
             break;
         }
         beats_run = beat + 1;
-        let (minted, dropped) = ring_membership_delta(&before, &state.loop_detect_ring);
-        if before.is_empty() || dropped != before.len() {
+        let (minted_frames, dropped) = ring_membership_delta(&before, &state.loop_detect_ring);
+        let minted = minted_frames.len();
+        if !dispatched_here || before.is_empty() || dropped != before.len() {
             continue;
         }
         clearing = Some((
