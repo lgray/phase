@@ -1880,22 +1880,15 @@ fn window_scope_from_cover_frames<'a>(
         && pb.extra_phases.is_empty())
     .then_some(pa.phase);
 
-    // (s1) BOTH sequences non-empty — the `(Some, Some)` arm; (s2) one controller
-    // across BOTH sequences.
-    let sole_driver = match (
-        pa.last_loop_action_sequence.first(),
-        pb.last_loop_action_sequence.first(),
-    ) {
-        (Some(first), Some(_)) => {
-            let driver = first.controller;
-            pa.last_loop_action_sequence
-                .iter()
-                .chain(pb.last_loop_action_sequence.iter())
-                .all(|ctx| ctx.controller == driver)
-                .then_some(driver)
-        }
-        _ => None,
-    };
+    // (s1) BOTH sequences non-empty; (s2) one controller across BOTH sequences. Both conjuncts
+    // are exactly [`GameState::loop_period_controller`] applied per frame — "whose period is
+    // this", the single authority every routing site reads — with the two answers required to
+    // agree. Stating it that way rather than re-deriving `first().controller` + `all()` here is
+    // the point of hoisting that authority: a two-frame twin of the same question cannot drift
+    // from the one-frame form it duplicates.
+    let sole_driver = pa
+        .loop_period_controller()
+        .filter(|driver| pb.loop_period_controller() == Some(*driver));
 
     LoopWindowScope {
         phase_invariant,
@@ -11451,10 +11444,15 @@ mod tests {
     /// activate decide which conditioned self-cost static gets relieved for THIS proposer.
     ///
     /// THREE-WAY AND EACH ARM IS LOAD-BEARING, so no constant implementation passes:
-    /// * `None` (the proposer-less 2-arg entry) ⇒ unscoped, byte-identical to pre-fix. A
-    ///   `is_some`-instead-of-`is_some_and` implementation returns `None` here and FAILS (1) —
-    ///   this is the arm that protects `loop_check`'s object-growth detection covers.
-    /// * `Some(owner)` ⇒ proof. An always-`None` implementation FAILS (2).
+    /// * `None` (the proposer-less 2-arg entry) ⇒ unscoped, byte-identical to pre-fix. Dropping
+    ///   the `Option` guard — the UNCONDITIONAL-MATCH form `if state.loop_period_controller() !=
+    ///   proposer { return None; }` — refuses the unbound container and FAILS (1); this is the arm
+    ///   that protects `loop_check`'s object-growth detection covers. (MEASURED, and it corrects
+    ///   this row's own earlier claim: the `is_some`-instead-of-`is_some_and` swap does NOT fail
+    ///   (1) — with `proposer == None` it never returns early — it fails (2), by refusing the
+    ///   seat that DID record the period.)
+    /// * `Some(owner)` ⇒ proof. An always-`None` implementation FAILS (2), as does the `is_some`
+    ///   swap above.
     /// * `Some(other)` ⇒ no proof. The pre-fix unscoped implementation FAILS (3).
     ///
     /// (4) pins the fail-closed homogeneity clause: a two-seat run is nobody's period, so it is

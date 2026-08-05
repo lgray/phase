@@ -8494,14 +8494,14 @@ fn drive_scenario_to_bounded_offer(runner: &mut GameRunner, cap: usize) -> Optio
 /// `a_cycle_that_does_not_match_the_published_period_is_dropped`,
 /// `declared_count_above_the_offered_bound_is_handed_back`,
 /// `until_lethal_against_a_bounded_offer_is_rejected`,
-/// `a_nonempty_action_sequence_mints_no_bounded_offer`.
+/// `a_proposers_own_driving_period_mints_no_bounded_offer`.
 ///
 /// FIXTURE PROVENANCE of those eleven, RE-COUNTED in fix round 5 over the whole set rather
 /// than asserted of one row (an earlier revision annotated dina alone as "the real 4p dump",
 /// which reads as an exclusivity it does not have). SIX load the real `dina_conqueror_4p`
 /// 4-player capture from `tests/fixtures`, through the same gunzip → restore loader:
 /// `dina_untargeted_drain_4p_offers_at_three_live_opponents`,
-/// `a_nonempty_action_sequence_mints_no_bounded_offer`,
+/// `a_proposers_own_driving_period_mints_no_bounded_offer`,
 /// `declared_count_above_the_offered_bound_is_handed_back`,
 /// `until_lethal_against_a_bounded_offer_is_rejected`,
 /// `bounded_fixed_count_commits_exactly_n_periods` (which loops that dump AND two
@@ -8866,26 +8866,34 @@ fn multiplayer_pure_life_drain_offers_at_three_and_four_players() {
     }
 }
 
-/// PR-7 Phase 5b (G1) — the bounded offer must FORBID a non-empty `last_loop_action_sequence`.
+/// PR-7 Phase 5b (G1) — the bounded offer must FORBID a driving period of the PROPOSER'S OWN.
 ///
 /// PAIRED ARMS ON ONE CERTIFYING STATE, differing in exactly one field, asserting opposite
 /// outcomes — so no constant implementation passes.
 ///
+/// ⚠ THE NAME THIS ROW USED TO CARRY (`a_proposers_own_driving_period_mints_no_bounded_offer`)
+/// ASSERTED A GENERAL PROPERTY THAT IS FALSE AT THIS TREE. Step (1b) is seat-relative: a
+/// non-empty sequence recorded by ANOTHER seat mints the offer, which is what
+/// [`a_foreign_driving_period_neither_refuses_nor_recertifies_a_bounded_offer`] directly below
+/// asserts. The row kept passing only because arm ⓑ happens to use `controller: proposer` — so
+/// the file presented two adjacent rows whose names claimed contradictory general properties.
+/// Renamed rather than annotated: the name is what a reader takes the row's contract to be.
+///
 /// WHY THE GUARD IS LOAD-BEARING (measured, not hypothetical): `materialize_fixed_shortcut`
-/// EARLY-RETURNS into `materialize_object_growth_shortcut` when the sequence is non-empty,
-/// and the bounded drain path begins strictly below that return. An offer minted with a
-/// non-empty sequence would be accepted and routed to the object-growth materializer,
-/// committing ZERO bounded cycles — the guard converts that silent misroute into an
-/// observable refusal. The two conjuncts are NOT disjoint in the tree: the bridge's own gate
-/// needs a non-empty STACK, and an on-stack `ActivateAbility` appends to the sequence once a
-/// mana activation has armed a period.
+/// EARLY-RETURNS into `materialize_object_growth_shortcut` when the recorded period is the
+/// accepting proposal's proposer's own, and the bounded drain path begins strictly below that
+/// return. An offer minted while THIS proposer's period is accumulating would be accepted and
+/// routed to the object-growth materializer, committing ZERO bounded cycles — the guard converts
+/// that silent misroute into an observable refusal. The two conjuncts are NOT disjoint in the
+/// tree: the bridge's own gate needs a non-empty STACK, and an on-stack `ActivateAbility` appends
+/// to the sequence once a mana activation has armed a period.
 ///
 /// REVERT-PROBE: delete step (1b) ⇒ arm ⓑ returns `Ok(..)` ⇒ FAILS. The refusal is asserted
-/// BY REASON (`DrivingSequenceNotEmpty`), not merely as "no offer": an assertion that only
+/// BY REASON (`ProposerHasDrivingPeriod`), not merely as "no offer": an assertion that only
 /// observed absence would keep passing if some EARLIER conjunct started refusing first, which
 /// is the domination trap.
 #[test]
-fn a_nonempty_action_sequence_mints_no_bounded_offer() {
+fn a_proposers_own_driving_period_mints_no_bounded_offer() {
     use engine::game::engine::{try_offer_bounded_cycle_shortcut, BoundedOfferRefusal};
     use engine::types::game_state::{BuybackUsage, LoopAction, LoopActionContext};
 
@@ -8926,7 +8934,7 @@ fn a_nonempty_action_sequence_mints_no_bounded_offer() {
     }];
     assert_eq!(
         try_offer_bounded_cycle_shortcut(&state, false),
-        Err(BoundedOfferRefusal::DrivingSequenceNotEmpty),
+        Err(BoundedOfferRefusal::ProposerHasDrivingPeriod),
         "CR 732.2a: a bounded offer minted with a driving sequence would be routed to the \
          object-growth materializer and commit zero bounded cycles"
     );
@@ -8951,10 +8959,10 @@ fn a_nonempty_action_sequence_mints_no_bounded_offer() {
 /// | arm | sequence | expected |
 /// |---|---|---|
 /// | ⓐ | empty | `Ok` — REACH-GUARD, and the neutrality reference |
-/// | ⓑ | proposer's, any card | `Err(DrivingSequenceNotEmpty)` — must-not-flip |
+/// | ⓑ | proposer's, any card | `Err(ProposerHasDrivingPeriod)` — must-not-flip |
 /// | ⓒ | opponent's, any card | `Ok` — **the fix** |
 /// | ⓓ | opponent's, Mortality Spear | `Ok` — card-identity independence |
-/// | ⓔ | proposer's, Mortality Spear | `Err(DrivingSequenceNotEmpty)` — must-not-flip |
+/// | ⓔ | proposer's, Mortality Spear | `Err(ProposerHasDrivingPeriod)` — must-not-flip |
 ///
 /// Refusals are asserted BY REASON, never as bare absence: an assertion that only observed "no
 /// offer" would keep passing if some EARLIER conjunct started refusing first (the domination trap
@@ -8962,7 +8970,7 @@ fn a_nonempty_action_sequence_mints_no_bounded_offer() {
 ///
 /// TWO-SIDED CONTROL ON (1b), PER ASSERTION — no constant implementation passes:
 /// * **DROP** the proposer comparison (restore `!is_empty()`) ⇒ ⓒ and ⓓ return
-///   `Err(DrivingSequenceNotEmpty)` ⇒ THOSE assertions fail, while ⓑ/ⓔ still pass.
+///   `Err(ProposerHasDrivingPeriod)` ⇒ THOSE assertions fail, while ⓑ/ⓔ still pass.
 /// * **TRIVIALIZE** it constant-refuse (`loop_period_controller().is_some()`) ⇒ ⓒ/ⓓ fail as above.
 ///   TRIVIALIZE it constant-admit (never refuse) ⇒ ⓑ and ⓔ return `Ok` ⇒ **those** assertions
 ///   fail instead. Each direction flips a DIFFERENT named assertion.
@@ -9069,13 +9077,13 @@ fn a_foreign_driving_period_neither_refuses_nor_recertifies_a_bounded_offer() {
     // guard (1b) — the silent-misroute prevention — is untouched by the fix. ──
     assert_eq!(
         mint(vec![step(proposer, any_card)]).0,
-        Err(BoundedOfferRefusal::DrivingSequenceNotEmpty),
+        Err(BoundedOfferRefusal::ProposerHasDrivingPeriod),
         "ⓑ CR 732.2a: the proposer's OWN accumulating period would route an accepted proposal \
          to the object-growth materializer and commit zero bounded cycles"
     );
     assert_eq!(
         mint(vec![step(proposer, spear)]).0,
-        Err(BoundedOfferRefusal::DrivingSequenceNotEmpty),
+        Err(BoundedOfferRefusal::ProposerHasDrivingPeriod),
         "ⓔ the refusal is keyed on WHOSE period it is, not on which card the step names"
     );
 
@@ -9547,7 +9555,7 @@ fn bounded_fixed_count_commits_exactly_n_periods() {
 /// whose `waiting_for` is not a shortcut window, so every dump-driven row in this file begins
 /// from a cleared field. The whole accept-side dispatch on that field is therefore untested — the
 /// blindness is in the FIXTURE PIPELINE, not in the rows. The answer is injection into a tracked
-/// fixture (as `a_nonempty_action_sequence_mints_no_bounded_offer` already does), not a new
+/// fixture (as `a_proposers_own_driving_period_mints_no_bounded_offer` already does), not a new
 /// tracked dump.
 ///
 /// **WHY THIS IS THE ACCEPT SEAM AND NOT THE MINT SEAM.** The mint arms establish that a foreign
@@ -9655,6 +9663,130 @@ fn an_accepted_bounded_grant_drains_even_with_a_foreign_period_in_state() {
             per_cycle.delta.life
         );
     }
+}
+
+/// ITEM 2 ROUND 2 (CR 732.2a) — the DECLINE seam: one seat's decline may discard only its OWN
+/// recorded period, never another seat's.
+///
+/// **A SHAPE THE PRE-FIX TREE COULD NOT EXPRESS, which is why no existing row can supply it.**
+/// While step (1b) refused on mere non-emptiness, no `WaitingFor::LoopShortcut` could coexist with
+/// a period belonging to anyone but its proposer — the object-growth producer mints only for the
+/// period's own controller, and the bounded producer minted only with the field empty. So
+/// `handle_decline_shortcut`'s unconditional `last_loop_action_sequence.clear()` was, by
+/// construction, only ever able to clear the decliner's own. The seat-relative (1b) makes the
+/// two-seat state reachable, and `DeclineShortcut` dispatches from ANY `LoopShortcut` — it is the
+/// AI's only action at a bounded offer — so an unconditional clear became one seat's decline
+/// wiping another seat's accumulating period, suppressing THAT seat's offer until it re-armed.
+///
+/// **THE TWO ARMS, on one real driven bounded offer, differing ONLY in the injected period's
+/// controller** — so no constant implementation passes:
+///
+/// | arm | injected period | assertion |
+/// |---|---|---|
+/// | FOREIGN | an opponent's | SURVIVES the decline (**the fix**) |
+/// | OWN | the proposer's | CLEARED by the decline (must-not-flip: the load-bearing Seam-2 suppressor) |
+///
+/// **TWO-SIDED CONTROL, PER ASSERTION — each direction flips a DIFFERENT named assertion:**
+/// * **DROP** the ownership test (restore the unconditional
+///   `state.last_loop_action_sequence.clear()`) ⇒ the FOREIGN arm's survival assertion FAILS,
+///   while OWN still passes.
+/// * **TRIVIALIZE** it to never clear (delete the clear, or gate it on
+///   `loop_period_controller().is_none()`) ⇒ the OWN arm's clear assertion FAILS, while FOREIGN
+///   still passes.
+///
+/// The decline is driven through the production `apply()` reducer, not by calling the handler, so
+/// the post-return reconcile runs too: the OWN arm therefore also proves the clear still suppresses
+/// re-offer within the same `apply()` (a re-nag would leave `waiting_for` on a `LoopShortcut`), and
+/// the FOREIGN arm proves leaving a foreign period in place does not resurrect one.
+#[test]
+fn declining_a_shortcut_discards_only_the_decliners_own_driving_period() {
+    use engine::types::game_state::{BuybackUsage, LoopAction, LoopActionContext};
+
+    // One real driven bounded offer, re-derived per arm so neither arm inherits the other's board.
+    let offer_state = || {
+        let mut state = restore_dump(&gunzip_dump(include_bytes!(
+            "../fixtures/dina_conqueror_4p.json.gz"
+        )));
+        drive_to_bounded_offer(&mut state, 400)
+            .expect("the bounded offer must fire; see the acceptance row");
+        state
+    };
+    let period_of = |controller: PlayerId, state: &GameState| {
+        vec![LoopActionContext {
+            card_id: state
+                .objects
+                .values()
+                .next()
+                .map(|o| o.card_id)
+                .expect("the dump has objects"),
+            controller,
+            action: LoopAction::Recast {
+                from_zone: engine::types::zones::Zone::Hand,
+                uses_buyback: BuybackUsage::NotUsed,
+            },
+            convoke: None,
+            pins: vec![],
+        }]
+    };
+
+    // ── FOREIGN: seat B's period is mid-accumulation when seat A declines ──
+    let mut state = offer_state();
+    let (proposer, _, _) = bounded_offer_parts(&state);
+    let opp = *engine_live_opponents(&state, proposer)
+        .first()
+        .expect("REACH-GUARD: the foreign period needs a living opponent to belong to");
+    assert_ne!(
+        opp, proposer,
+        "REACH-GUARD: a period injected for the PROPOSER would be the OWN arm, and this arm \
+         would assert the opposite of what it means to"
+    );
+    state.last_loop_action_sequence = period_of(opp, &state);
+    assert_eq!(
+        state.last_loop_action_sequence.len(),
+        1,
+        "REACH-GUARD: the arm is vacuous unless a period is actually accumulating when the \
+         decline lands — nothing survives an empty field"
+    );
+
+    apply(&mut state, proposer, GameAction::DeclineShortcut)
+        .expect("the proposer may always decline their own offer (CR 732.2a)");
+    assert_eq!(
+        state
+            .last_loop_action_sequence
+            .iter()
+            .map(|s| s.controller)
+            .collect::<Vec<_>>(),
+        vec![opp],
+        "CR 732.2a: {proposer:?} declining their own offer must leave {opp:?}'s accumulating \
+         period intact — a recorded period is evidence about the seat that recorded it, and \
+         discarding it here suppresses THAT seat's own offer until it re-arms"
+    );
+
+    // ── OWN: the must-not-flip half. The Seam-2 suppressor is load-bearing for the decliner. ──
+    let mut state = offer_state();
+    let (proposer, _, _) = bounded_offer_parts(&state);
+    state.last_loop_action_sequence = period_of(proposer, &state);
+    assert_eq!(
+        state.last_loop_action_sequence.len(),
+        1,
+        "REACH-GUARD: the arm is vacuous unless a period is actually accumulating when the \
+         decline lands — an already-empty field is cleared by doing nothing"
+    );
+
+    apply(&mut state, proposer, GameAction::DeclineShortcut)
+        .expect("the proposer may always decline their own offer (CR 732.2a)");
+    assert!(
+        state.last_loop_action_sequence.is_empty(),
+        "CR 732.2a: the decliner's OWN period must still be discarded — without it the \
+         post-return reconcile re-fires `try_offer_object_growth_shortcut` inside this same \
+         `apply()` and re-nags the offer just declined. seq = {:?}",
+        state.last_loop_action_sequence
+    );
+    assert!(
+        matches!(state.waiting_for, WaitingFor::Priority { .. }),
+        "and the declined offer must not have been re-raised within the same `apply()`; got {:?}",
+        state.waiting_for
+    );
 }
 
 /// FIX ROUND 2 (MED-2) — the same `n × δ` property on a certification-basis **A** offer, at
