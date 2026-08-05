@@ -8878,13 +8878,25 @@ impl GameState {
     /// captured inside an object-growth shortcut proposal/response window
     /// (`WaitingFor::LoopShortcut` / `RespondToShortcut`), where the pending accept→materialize
     /// resolution still re-derives the ∞ pile from it (`current_period_fodder`). In every
-    /// other loaded state the only consumer is the live detection re-drive
-    /// (`try_offer_object_growth_shortcut`), which requires `Priority` + an empty stack and is only
-    /// HARMED by a stale loaded prefix (it re-drives from a pinless `seq[0]` and aborts — the Kilo
-    /// bug), so dropping is strictly safe. Called from `PersistedGameState::into_game_state`, the
-    /// single production restore chokepoint for both the server (`GameSession::from_persisted`) and
-    /// WASM (`decode_restored_game_state`) paths. Applies only at the load boundary, never during
-    /// live play (where a populated sequence at `Priority` is the legitimate detection signal).
+    /// other loaded state the field is a ROUTING SIGNAL with several consumers — the live detection
+    /// re-drive (`try_offer_object_growth_shortcut`), the bounded mint's step (1b), the
+    /// `materialize_fixed_shortcut` and `apply_until_lethal_shortcut` drive dispatches, and
+    /// `handle_declare_shortcut`'s `template: None` arm. Dropping is still safe, but for a
+    /// different reason than the one recorded here before: all five ask the SAME question
+    /// ([`GameState::loop_period_controller`]) and every one of them fails CLOSED on `None`, so a
+    /// cleared field routes to the drain/manual path and never to a pin-consuming drive with
+    /// nothing to re-derive from. (It is also true that a stale loaded prefix only HARMS the
+    /// re-drive, which re-drives from a pinless `seq[0]` and aborts — the Kilo bug.)
+    ///
+    /// ⚠ THE PRIOR REVISION OF THIS DOC CLAIMED the re-drive was "the only consumer". That was
+    /// FALSE — the other four are not re-drives — and the false premise is precisely why the
+    /// routing signal went un-audited against its own consumer. The conclusion survives; the
+    /// reason above replaces it.
+    ///
+    /// Called from `PersistedGameState::into_game_state`, the single production restore chokepoint
+    /// for both the server (`GameSession::from_persisted`) and WASM (`decode_restored_game_state`)
+    /// paths. Applies only at the load boundary, never during live play (where a populated sequence
+    /// at `Priority` is the legitimate detection signal).
     pub fn migrate_transient_loop_sequence(&mut self) {
         if !matches!(
             self.waiting_for,
@@ -8892,6 +8904,31 @@ impl GameState {
         ) {
             self.last_loop_action_sequence.clear();
         }
+    }
+
+    /// CR 732.2a: the seat whose driving period `last_loop_action_sequence` currently records.
+    ///
+    /// CR 732.2a lets "the player with priority … suggest a shortcut by describing a sequence of
+    /// game choices, for all players, that may be legally taken based on the current game state
+    /// and the predictable results of the sequence of choices" — so a recorded period is evidence
+    /// about ONE seat's predictable continuation and describes nothing another seat can take.
+    /// `None` when no period is accumulating, or when the recorded steps do not all belong to one
+    /// seat (fail-closed: a heterogeneous run is nobody's loop).
+    ///
+    /// This is the SAME whole-period test `try_offer_object_growth_shortcut` applies to its own
+    /// admission, hoisted into one authority so the routing signal and the consumer it routes to
+    /// cannot disagree. Every routing site reads `loop_period_controller() == Some(proposer)`,
+    /// which is exactly "the object-growth route is live for this seat"; each fails closed on
+    /// `None`.
+    ///
+    /// The homogeneity clause is a backstop, not a live case: `accumulate_loop_action_step` clears
+    /// the sequence on a controller change, so a heterogeneous run should be unreachable in play.
+    pub(crate) fn loop_period_controller(&self) -> Option<PlayerId> {
+        let owner = self.last_loop_action_sequence.first()?.controller;
+        self.last_loop_action_sequence
+            .iter()
+            .all(|step| step.controller == owner)
+            .then_some(owner)
     }
 }
 
