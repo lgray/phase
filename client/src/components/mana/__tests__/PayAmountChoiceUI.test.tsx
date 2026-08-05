@@ -242,10 +242,15 @@ describe("PayAmountChoiceUI — sanitized amount entry", () => {
     expect(screen.getByLabelText(BOX)).toHaveValue("0");
   });
 
-  // The seat axis, which `source_id` alone does NOT cover. `effects/pay.rs` drives
-  // `PlayerFilter::All` and its own test asserts consecutive PayAmountChoice states with a
-  // constant source and `player` 0 then 1; on the life arm two seats at equal life make `min`,
-  // `max` and `source_id` all identical, so the seat is the only thing that changes.
+  // The seat axis, which `source_id` alone does NOT cover. The reachable case is the LoopCollapse
+  // arm in `game/turns.rs` — the same prompt `loopCollapseWaitingFor` models here — which mints one
+  // prompt per controller in APNAP order with `min: 0`, `accumulated: 0`, `source_id: ObjectId(0)`
+  // and `pending_mana_ability: None` written as LITERALS. Only `max` and the collapse axis derive
+  // from state, so two controllers with equal counts on the same axis differ in `player` alone.
+  // (An earlier version cited an equal-life case on `effects/pay.rs` instead. That test does show
+  // consecutive prompts with a constant source and `player` 0 then 1 — but `max` and `accumulated`
+  // move there too, so `[min, max]` alone would already have fired and it proves nothing about
+  // `source_id` being insufficient. Same correction as in the component.)
   it("T11/successor-seat: a same-source prompt for a DIFFERENT seat resets the entry", () => {
     const promptFor = (player: number) =>
       buildPayAmountChoiceWaitingFor({

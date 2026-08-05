@@ -318,9 +318,12 @@ describe("AmountInput — rendered contract", () => {
   });
 
   // ponytail: no `min > 0` hint row here. A review asked for one on the premise that the branch
-  // was uncovered; MEASURED, both legs are already dominated, so the row would detect nothing.
+  // was uncovered; MEASURED, both legs are already dominated, so the row would detect nothing NEW.
   // Collapsing the ternary to the max-only string reds `ChooseXValueUI`'s "min 1 / max 10";
   // collapsing it to the two-sided string reds three rows (this file's A11Y/associate equality on
   // "max 5", the assist suite's "max 4", and a ChooseXValue row) because each asserts the hint's
-  // FULL text, not a substring. A candidate row asserting both legs failed to add a fourth.
+  // FULL text, not a substring. A candidate row asserting both legs does red alongside them — it
+  // is the two mutants' set of DETECTIONS it fails to grow, not their failure count. That is the
+  // definition of dominated, and it is why the row is absent: it would report coverage it is not
+  // supplying. Both mutants are one-line and re-runnable if you want to check the claim.
 });

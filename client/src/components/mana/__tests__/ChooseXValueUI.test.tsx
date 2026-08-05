@@ -292,8 +292,10 @@ describe("ChooseXValueUI", () => {
   // The test ABOVE cannot discriminate the reset's `max` dependency: it narrows min 1 → 2 as
   // well, so `defaultValue` changes and the effect fires either way. This row holds min CONSTANT,
   // which is the only shape in which a reset keyed on `defaultValue` alone is observably wrong.
-  // Both sibling prompts already key on the full window (PayAmountChoiceUI [min, max],
-  // AssistPaymentUI [max]) — this closes that asymmetry.
+  // Both sibling prompts already key on their full window plus their own identity fields — this
+  // closes that asymmetry. (This named the two dep arrays until the commit that added the seat
+  // fields made the enumeration wrong; it names the shape now, for the same reason the component's
+  // copy of this note does.)
   it("resets an entry stranded above a narrowed max when min is unchanged", () => {
     const dispatch = vi.fn().mockResolvedValue([]);
     const waitingFor = chooseXWaitingFor(10, 0);
