@@ -81,9 +81,14 @@ export function AssistPaymentUI() {
                 disabled: amount === null,
               })}
             >
-              {(amount ?? 0) === 0
-                ? t("assist.payment.decline")
-                : t("assist.payment.commit", { value: amount })}
+              {/* `(amount ?? 0) === 0` collapsed "invalid entry" into "declining to pay", so an
+                  over-max entry labelled the button "Pay nothing" — the OPPOSITE of the pending
+                  intent. Declining is amount === 0 exactly; null is no decision yet. */}
+              {amount === null
+                ? t("mana.confirmAmount")
+                : amount === 0
+                  ? t("assist.payment.decline")
+                  : t("assist.payment.commit", { value: amount })}
             </button>
           </div>
         </div>

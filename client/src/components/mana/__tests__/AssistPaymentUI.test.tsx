@@ -156,7 +156,14 @@ describe("AssistPaymentUI", () => {
       target: { value: "5" },
     });
 
-    expect(screen.getByRole("button", { name: "Pay nothing" })).toBeDisabled();
+    // "Pay nothing" here was the OPPOSITE of the pending intent: the player typed 5, and
+    // `(amount ?? 0) === 0` collapsed the invalid entry into the decline label. Declining is
+    // amount === 0 exactly (pinned separately above); an invalid entry names no amount at all.
+    expect(screen.getByRole("button", { name: "Confirm" })).toBeDisabled();
+    // DOMINATED by the assertion above, labelled rather than deleted. MEASURED on the sibling
+    // prompt: removing the null-guard reds only the Enter row, and a click here cannot help
+    // because React does not dispatch `onClick` to a disabled `button` (a React-level
+    // suppression, not a property of the test environment). AP/enter discriminates.
     expect(dispatch).not.toHaveBeenCalled();
   });
 });

@@ -578,6 +578,7 @@
     "amountOutOfRange": "Digite um número inteiro entre {{min}} e {{max}}",
     "decreaseAmount": "Diminuir a quantia",
     "increaseAmount": "Aumentar a quantia",
+    "confirmAmount": "Confirmar",
     "confirmX": "Confirmar X = {{value}}",
     "payMana": "Pagar Custo de Mana",
     "convokeHint": "Vire criaturas para ajudar a pagar.",

@@ -578,6 +578,7 @@
     "amountOutOfRange": "Wpisz liczbę całkowitą od {{min}} do {{max}}",
     "decreaseAmount": "Zmniejsz kwotę",
     "increaseAmount": "Zwiększ kwotę",
+    "confirmAmount": "Potwierdź",
     "confirmX": "Potwierdź X = {{value}}",
     "payMana": "Zapłać koszt many",
     "convokeHint": "Obróć stwory, aby pomóc zapłacić.",

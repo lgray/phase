@@ -142,14 +142,16 @@ describe("ChooseXValueUI", () => {
     const input = screen.getByLabelText("Enter X value") as HTMLInputElement;
     fireEvent.change(input, { target: { value: "99" } });
     expect(input.value).toBe("99");
-    expect(screen.getByRole("button", { name: /^Confirm X/ })).toBeDisabled();
+    // The label carries NO value while the entry is invalid. `/^Confirm X/` would also match
+    // "Confirm X = 2" — an X the caster never typed — so the neutral verb is asserted exactly.
+    expect(screen.getByRole("button", { name: "Confirm" })).toBeDisabled();
     expect(
       screen.getByText("Enter a whole number between 2 and 5"),
     ).toBeInTheDocument();
 
     fireEvent.change(input, { target: { value: "0" } });
     expect(input.value).toBe("0");
-    expect(screen.getByRole("button", { name: /^Confirm X/ })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Confirm" })).toBeDisabled();
     expect(
       screen.getByText("Enter a whole number between 2 and 5"),
     ).toBeInTheDocument();
@@ -161,6 +163,30 @@ describe("ChooseXValueUI", () => {
     // Pins that the deleted onBlur reset does not mutate the entry.
     fireEvent.blur(input);
     expect(input.value).toBe("0");
+  });
+
+  // The cost preview displays the CHOSEN X. While the entry is invalid there is no chosen X, so
+  // the previous `amount ?? min` fallback rendered the mana cost of a value the caster never
+  // typed — the display-side twin of the commit guard.
+  it("hides the pending cost preview while the entry is invalid", () => {
+    const waitingFor = chooseXWaitingFor(5, 2);
+
+    setGameStoreForTest({
+      gameState: createGameState({ waiting_for: waitingFor }),
+      waitingFor,
+    });
+
+    render(<ChooseXValueUI />);
+
+    // Paired positive: without this half, a component that never rendered pips at all would
+    // satisfy the negative below.
+    expect(screen.getAllByAltText("G").length).toBeGreaterThan(0);
+
+    fireEvent.change(screen.getByLabelText("Enter X value"), {
+      target: { value: "99" },
+    });
+
+    expect(screen.queryByAltText("G")).not.toBeInTheDocument();
   });
 
   // DELIBERATE BEHAVIOUR CHANGE (binding ruling D2): the intermediate "1" no longer reads as
@@ -181,7 +207,7 @@ describe("ChooseXValueUI", () => {
     const input = screen.getByLabelText("Enter X value") as HTMLInputElement;
     fireEvent.change(input, { target: { value: "1" } });
     expect(input.value).toBe("1");
-    expect(screen.getByRole("button", { name: /^Confirm X/ })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Confirm" })).toBeDisabled();
 
     fireEvent.change(input, { target: { value: "15" } });
     expect(input.value).toBe("15");
@@ -261,6 +287,47 @@ describe("ChooseXValueUI", () => {
     rerender(<ChooseXValueUI />);
 
     expect(screen.getByRole("button", { name: "Confirm X = 2" })).toBeInTheDocument();
+  });
+
+  // The test ABOVE cannot discriminate the reset's `max` dependency: it narrows min 1 → 2 as
+  // well, so `defaultValue` changes and the effect fires either way. This row holds min CONSTANT,
+  // which is the only shape in which a reset keyed on `defaultValue` alone is observably wrong.
+  // Both sibling prompts already key on the full window (PayAmountChoiceUI [min, max],
+  // AssistPaymentUI [max]) — this closes that asymmetry.
+  it("resets an entry stranded above a narrowed max when min is unchanged", () => {
+    const dispatch = vi.fn().mockResolvedValue([]);
+    const waitingFor = chooseXWaitingFor(10, 0);
+
+    setGameStoreForTest({
+      gameState: createGameState({ waiting_for: waitingFor }),
+      waitingFor,
+      dispatch,
+    });
+
+    const { rerender } = render(<ChooseXValueUI />);
+
+    fireEvent.change(screen.getByLabelText("Enter X value"), {
+      target: { value: "7" },
+    });
+    expect(
+      screen.getByRole("button", { name: "Confirm X = 7" }),
+    ).toBeInTheDocument();
+
+    // Same min (0), narrower max (10 → 4). Without `max` in the dep array the entry stays "7",
+    // which is now permanently refused with no reset to recover it.
+    const nextWaitingFor = chooseXWaitingFor(4, 0);
+    setGameStoreForTest({
+      gameState: createGameState({ waiting_for: nextWaitingFor }),
+      waitingFor: nextWaitingFor,
+      dispatch,
+    });
+
+    rerender(<ChooseXValueUI />);
+
+    expect(screen.getByLabelText("Enter X value")).toHaveValue("0");
+    expect(
+      screen.getByRole("button", { name: "Confirm X = 0" }),
+    ).toBeInTheDocument();
   });
 
   it("renders nothing for impossible min greater than max bounds", () => {

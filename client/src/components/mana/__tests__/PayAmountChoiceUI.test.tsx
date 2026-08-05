@@ -144,7 +144,16 @@ describe("PayAmountChoiceUI — sanitized amount entry", () => {
     type("1001");
 
     expect(screen.getByLabelText(BOX)).toHaveValue("1001");
-    expect(screen.getByRole("button", { name: /create/i })).toBeDisabled();
+    // Name pinned to the neutral verb: "Create 0 tokens" here would state an amount the player
+    // never typed, and `/create/i` would match it.
+    expect(screen.getByRole("button", { name: "Confirm" })).toBeDisabled();
+    // DOMINATED by the assertion above — labelled, per this file's convention, so it is not
+    // mistaken for a probe of `handleCommit`'s null-guard. MEASURED: deleting
+    // `if (amount === null) return;` reds ONLY T6b, and adding a click here does not change
+    // that, because React does not dispatch `onClick` to a disabled `button` at all. That
+    // suppression is React-level, not environment-level (this suite runs happy-dom), so
+    // switching the test environment would not change the calculus. Enter (T6b) bypasses
+    // `disabled` and is the only route on which that guard is observable.
     expect(dispatch).not.toHaveBeenCalled();
   });
 
@@ -165,10 +174,11 @@ describe("PayAmountChoiceUI — sanitized amount entry", () => {
     );
     type("3");
 
-    expect(screen.getByRole("button", { name: /^Pay /i })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Confirm" })).toBeDisabled();
     expect(
       screen.getByText("Enter a whole number between 5 and 1000"),
     ).toBeInTheDocument();
+    // DOMINATED — see T2. The discriminating row for the null-guard is T6b.
     expect(dispatch).not.toHaveBeenCalled();
   });
 
@@ -180,7 +190,8 @@ describe("PayAmountChoiceUI — sanitized amount entry", () => {
       const { dispatch } = renderPrompt(loopCollapseWaitingFor("Tokens"));
       type(raw);
 
-      expect(screen.getByRole("button", { name: /create/i })).toBeDisabled();
+      expect(screen.getByRole("button", { name: "Confirm" })).toBeDisabled();
+      // DOMINATED — see T2. The discriminating row for the null-guard is T6b.
       expect(dispatch).not.toHaveBeenCalled();
     },
   );
@@ -190,9 +201,10 @@ describe("PayAmountChoiceUI — sanitized amount entry", () => {
     type("377");
     type("");
 
-    const commit = screen.getByRole("button", { name: /create/i });
-    expect(commit).toBeDisabled();
-    fireEvent.click(commit);
+    expect(screen.getByRole("button", { name: "Confirm" })).toBeDisabled();
+    // The click that used to sit here was inert — React does not dispatch `onClick` to a
+    // disabled `button` — and implied coverage this row does not have. DOMINATED; T6b
+    // discriminates. See T2.
     expect(dispatch).not.toHaveBeenCalled();
   });
 
@@ -231,7 +243,7 @@ describe("PayAmountChoiceUI — sanitized amount entry", () => {
     );
 
     type("8");
-    expect(screen.getByRole("button", { name: /create/i })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Confirm" })).toBeDisabled();
 
     type("7");
     const commit = screen.getByRole("button", { name: /create 7 tokens/i });

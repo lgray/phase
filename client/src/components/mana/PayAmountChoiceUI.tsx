@@ -111,18 +111,22 @@ export function PayAmountChoiceUI() {
                 disabled: amount === null,
               })}
             >
-              {loopCollapseAxis
-                ? // `count` drives i18next pluralization for the Tokens axis
-                  // (loopCollapseAmountTokens_one/_other); the ×N-framed
-                  // Counters/Life/Mixed keys keep reading `value`.
-                  t(`mana.loopCollapseAmount${loopCollapseAxis}`, {
-                    value: amount ?? min,
-                    count: amount ?? min,
-                  })
-                : t("mana.payAmount", {
-                    value: amount ?? min,
-                    resource: resourceLabel,
-                  })}
+              {/* No valid amount ⇒ name the action without a value. `amount ?? min` here would
+                  label the button "Create 0 tokens" while the player has 1001 typed. */}
+              {amount === null
+                ? t("mana.confirmAmount")
+                : loopCollapseAxis
+                  ? // `count` drives i18next pluralization for the Tokens axis
+                    // (loopCollapseAmountTokens_one/_other); the ×N-framed
+                    // Counters/Life/Mixed keys keep reading `value`.
+                    t(`mana.loopCollapseAmount${loopCollapseAxis}`, {
+                      value: amount,
+                      count: amount,
+                    })
+                  : t("mana.payAmount", {
+                      value: amount,
+                      resource: resourceLabel,
+                    })}
             </button>
           </div>
         </div>

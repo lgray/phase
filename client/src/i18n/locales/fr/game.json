@@ -578,6 +578,7 @@
     "amountOutOfRange": "Entrez un nombre entier entre {{min}} et {{max}}",
     "decreaseAmount": "Diminuer la quantité",
     "increaseAmount": "Augmenter la quantité",
+    "confirmAmount": "Confirmer",
     "confirmX": "Confirmer X = {{value}}",
     "payMana": "Payer le coût de mana",
     "convokeHint": "Engagez des créatures pour aider à payer.",

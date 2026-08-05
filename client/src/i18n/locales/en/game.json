@@ -617,6 +617,7 @@
     "amountOutOfRange": "Enter a whole number between {{min}} and {{max}}",
     "decreaseAmount": "Decrease amount",
     "increaseAmount": "Increase amount",
+    "confirmAmount": "Confirm",
     "confirmX": "Confirm X = {{value}}",
     "payMana": "Pay Mana Cost",
     "convokeHint": "Tap creatures to help pay.",

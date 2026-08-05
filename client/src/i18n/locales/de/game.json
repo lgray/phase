@@ -578,6 +578,7 @@
     "amountOutOfRange": "Gib eine ganze Zahl zwischen {{min}} und {{max}} ein",
     "decreaseAmount": "Menge verringern",
     "increaseAmount": "Menge erhöhen",
+    "confirmAmount": "Bestätigen",
     "confirmX": "X = {{value}} bestätigen",
     "payMana": "Manakosten bezahlen",
     "convokeHint": "Tappe Kreaturen, um die Bezahlung zu unterstützen.",

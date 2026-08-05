@@ -74,8 +74,19 @@ export function AmountInput({
   //   only on a legacy-iOS report.
   // ponytail: the null-guard lives once, in the caller's handleCommit — a second guard in
   //   onKeyDown would make it unobservable.
-  // ponytail: no role="spinbutton" — zero in-repo precedent, and it forces aria-valuenow/min/max
-  //   upkeep.
+  // role="spinbutton" IS carried, reversing an earlier note here that claimed no in-repo
+  // precedent and unwanted aria-value* upkeep. Both premises were wrong: `ManaCurve.tsx` already
+  // uses aria-valuenow, and the three controls this box replaced announced their value NATIVELY
+  // (`type="range"` ⇒ role slider, `type="number"` ⇒ role spinbutton). Dropping to a bare
+  // `type="text"` therefore made the ACCEPTED amount inaudible — pressing +/− or the arrow keys
+  // mutated a value nothing exposed. The role is descriptive rather than decorative because the
+  // box implements the pattern's CORE keyboard interaction (ArrowUp/ArrowDown step, clamped to
+  // the window) — not the full APG list. Home/End (jump to min/max) are deliberately NOT
+  // remapped: the host is a real editable text field where they carry load-bearing caret
+  // semantics, and native `<input type="number">` — whose implicit role is already spinbutton —
+  // does not remap them either.
+  // `aria-valuenow` uses the VALIDATED amount, so it is absent while the entry is out of range
+  // rather than contradicting aria-valuemin/max; `aria-invalid` carries that state instead.
   return (
     <div className="mb-4 px-2">
       <div className="flex items-center justify-center gap-2">
@@ -115,6 +126,10 @@ export function AmountInput({
             }
           }}
           aria-label={labels.input}
+          role="spinbutton"
+          aria-valuenow={amount ?? undefined}
+          aria-valuemin={min}
+          aria-valuemax={max}
           aria-invalid={amount === null}
           // The window is ANNOUNCED, not merely displayed. `type="range"` announced min/max/now
           // natively; a text box announces nothing, so the range hint is permanently associated
@@ -146,11 +161,23 @@ export function AmountInput({
         </span>
       </div>
 
-      {amount === null && (
-        <p id={errorId} className="mt-2 text-center text-xs text-red-300">
-          {t("mana.amountOutOfRange", { min, max })}
-        </p>
-      )}
+      {/* PERMANENTLY MOUNTED, and a live region — both properties are load-bearing.
+          `aria-invalid`/`aria-describedby` are resolved by a screen reader when focus ARRIVES at
+          the box, but here they flip while focus is already inside it, so association alone
+          announces nothing: the player would have to tab away and back to learn the entry was
+          refused. Mounting the node INTO a live region is equally unreliable (regions announce
+          MUTATIONS of existing content), so the region pre-exists and only its text changes.
+          `role="status"` (polite) rather than "alert": the entry is being corrected mid-typing
+          and must not interrupt what is already being read. `min-h-4` reserves the line so
+          recovering from an invalid entry does not shift the panel under the pointer. */}
+      <p
+        id={errorId}
+        role="status"
+        aria-live="polite"
+        className="mt-2 min-h-4 text-center text-xs text-red-300"
+      >
+        {amount === null ? t("mana.amountOutOfRange", { min, max }) : ""}
+      </p>
     </div>
   );
 }

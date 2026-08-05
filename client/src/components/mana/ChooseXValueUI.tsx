@@ -12,8 +12,10 @@ import { ManaSymbol } from "./ManaSymbol.tsx";
 /**
  * Overlay for the `WaitingFor::ChooseXValue` state.
  *
- * CR 107.1b + CR 601.2f: X must be chosen as part of determining total cost,
- * before mana is paid. The engine computes the upper bound (`max`) from the
+ * CR 107.3a + CR 601.2b: the controller of the spell chooses and announces X as part of
+ * casting it; CR 601.2f then locks in the total cost that X feeds, so the value must be
+ * settled before mana is paid. CR 107.1b (a negative number can't be chosen) is why the
+ * lower bound is never below 0. The engine computes the upper bound (`max`) from the
  * player's pool + untapped free-to-tap producers; this component is a pure
  * display layer that dispatches the caster's chosen value via `ChooseX`.
  */
@@ -37,11 +39,15 @@ export function ChooseXValueUI() {
 
   const pendingCostShards = useMemo(() => {
     if (!pendingCast) return null;
-    const previewCost = xCostPreviews?.find(([x]) => x === (amount ?? min))?.[1];
+    // While the entry is invalid there is no chosen X, so there is no cost to preview. Falling
+    // back to `min` here would render the mana cost of an X the caster never typed — the same
+    // defect on the display side that the commit guard below fixes on the dispatch side.
+    if (amount === null) return null;
+    const previewCost = xCostPreviews?.find(([x]) => x === amount)?.[1];
     const cost = previewCost ?? pendingCast.cost;
     const shards = manaCostToShards(cost);
     return shards.length > 0 ? shards : null;
-  }, [pendingCast, xCostPreviews, amount, min]);
+  }, [pendingCast, xCostPreviews, amount]);
 
   const cardName = useMemo(() => {
     if (!gameState || !pendingCast) return null;
@@ -50,11 +56,17 @@ export function ChooseXValueUI() {
 
   useEffect(() => {
     if (isChooseX) setRaw(String(defaultValue));
-  }, [isChooseX, defaultValue]);
+    // `max` is a dependency even though it does not appear in the body: re-entering ChooseXValue
+    // with a NARROWER max but an unchanged min leaves `defaultValue` identical, so without it the
+    // effect would not fire and a now-out-of-range entry would persist with no way to self-heal.
+    // Both sibling prompts already key their reset on the full window (PayAmountChoiceUI on
+    // [min, max], AssistPaymentUI on [max]); this closes that asymmetry.
+  }, [isChooseX, defaultValue, max]);
 
   const handleCommit = useCallback(() => {
     // Sanitization gate: an out-of-range X is REJECTED, not clamped. Typing 99 under max=5
-    // used to silently cast for 5 — a value the caster never chose (CR 601.2f).
+    // used to silently cast for 5 — a value the caster never chose. CR 107.3a: the controller
+    // "chooses and announces the value of X"; CR 601.2f governs total cost, not that choice.
     if (amount === null) return;
     dispatch({
       type: "ChooseX",
@@ -66,8 +78,8 @@ export function ChooseXValueUI() {
     dispatch({ type: "CancelCast" });
   }, [dispatch]);
 
-  // CR 601.2f: X is chosen by the caster; opponents observe via the stack
-  // ghost entry, not an interactive panel.
+  // CR 107.3a: X is chosen and announced by the spell's controller, so only that player gets
+  // this panel; opponents observe via the stack ghost entry, not an interactive panel.
   if (!isChooseX || !canAct || !hasValidBounds) return null;
 
   return (
@@ -121,7 +133,11 @@ export function ChooseXValueUI() {
                 disabled: amount === null,
               })}
             >
-              {t("mana.confirmX", { value: amount ?? min })}
+              {/* No chosen X yet ⇒ name the action without a value. `amount ?? min` here would
+                  label the button "Confirm X = <min>" while the player has 99 typed. */}
+              {amount === null
+                ? t("mana.confirmAmount")
+                : t("mana.confirmX", { value: amount })}
             </button>
             <button
               onClick={handleCancel}

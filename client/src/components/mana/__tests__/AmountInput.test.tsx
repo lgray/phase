@@ -121,6 +121,87 @@ describe("AmountInput — rendered contract", () => {
     expect(document.getElementById(validIds[0])?.textContent).toBe("max 5");
   });
 
+  // A11Y/value: the three controls this box replaced announced their value natively
+  // (`type="range"` ⇒ slider, `type="number"` ⇒ spinbutton). A bare `type="text"` announces
+  // nothing, so stepping with +/− or the arrow keys would mutate a value exposed by NOTHING —
+  // the live region below carries only the refusal, never the accepted amount.
+  it("A11Y/value: the accepted amount is exposed, and withheld while out of range", () => {
+    const { rerender } = render(
+      <AmountInput
+        raw="3"
+        onRawChange={vi.fn()}
+        min={0}
+        max={5}
+        onSubmit={vi.fn()}
+        labels={LABELS}
+      />,
+    );
+
+    const box = screen.getByLabelText("Enter amount");
+    expect(box).toHaveAttribute("role", "spinbutton");
+    expect(box).toHaveAttribute("aria-valuenow", "3");
+    expect(box).toHaveAttribute("aria-valuemin", "0");
+    expect(box).toHaveAttribute("aria-valuemax", "5");
+
+    // Out of range: the value is WITHHELD rather than reported, so a screen reader is never told
+    // a valuenow that contradicts valuemax. `aria-invalid` carries that state instead.
+    rerender(
+      <AmountInput
+        raw="9"
+        onRawChange={vi.fn()}
+        min={0}
+        max={5}
+        onSubmit={vi.fn()}
+        labels={LABELS}
+      />,
+    );
+    const invalidBox = screen.getByLabelText("Enter amount");
+    expect(invalidBox).not.toHaveAttribute("aria-valuenow");
+    expect(invalidBox).toHaveAttribute("aria-invalid", "true");
+  });
+
+  // A11Y/live-region: the refusal must be ANNOUNCED, not merely associated. `aria-describedby`
+  // is resolved by a screen reader when focus ARRIVES at the box, but the message appears while
+  // focus is already inside it — so association alone is silent, and the player would have to tab
+  // away and back to learn the entry was refused. The region must therefore PRE-EXIST its message
+  // and only mutate its text; inserting the region (or inserting a node into one) is not
+  // reliably announced.
+  it("A11Y/live-region: the validation copy lives in a polite region that pre-exists it", () => {
+    const { rerender } = render(
+      <AmountInput
+        raw="3"
+        onRawChange={vi.fn()}
+        min={0}
+        max={5}
+        onSubmit={vi.fn()}
+        labels={LABELS}
+      />,
+    );
+
+    // VALID first. This is the half that reds under a conditional mount, where the node does not
+    // exist until the entry goes invalid.
+    const region = document.querySelector('[role="status"]');
+    expect(region).not.toBeNull();
+    expect(region).toHaveAttribute("aria-live", "polite");
+    expect(region).toBeEmptyDOMElement();
+
+    rerender(
+      <AmountInput
+        raw="9"
+        onRawChange={vi.fn()}
+        min={0}
+        max={5}
+        onSubmit={vi.fn()}
+        labels={LABELS}
+      />,
+    );
+
+    // The SAME node, with mutated text — that identity is the property that makes it audible.
+    // A different node here would mean the message was inserted rather than announced.
+    expect(document.querySelector('[role="status"]')).toBe(region);
+    expect(region).toHaveTextContent("Enter a whole number between 0 and 5");
+  });
+
   it("A11Y/arrows: ArrowUp/ArrowDown step and clamp to the window", () => {
     const onRawChange = vi.fn();
     const { rerender } = render(
