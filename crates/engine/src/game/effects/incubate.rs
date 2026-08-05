@@ -115,6 +115,11 @@ pub fn resolve(
     // `zones::record_and_emit_entry_from_no_zone` — the single `from: None → Battlefield`
     // authority, which assigns this turn's zone-change index through
     // `restrictions::record_zone_change` and writes it back onto the record it emits.
+    // That one call writes BOTH ledgers, which is why both rules are cited here: the CR 400.7
+    // zone-change row (whose length IS the index allocator) and — because `to_zone` is
+    // `Battlefield` — the CR 608.2i battlefield-entry row, via `record_battlefield_entry`. The
+    // latter is the look-back journal that a permanent which has since left still counts in, so
+    // re-recording either ledger at this call site would double-count it.
     // `snapshot_for_zone_change` leaves that index at its `0` placeholder, and the batched
     // zone-change replay guard (`triggers.rs`) dedups on `(definition_ref, turn_zone_change_index)`
     // read off the EVENT, so an unrouted record aliases this Incubator onto occurrence `0` and a
