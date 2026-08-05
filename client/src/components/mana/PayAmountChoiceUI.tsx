@@ -20,12 +20,20 @@ export function PayAmountChoiceUI() {
   const max = data?.max ?? 0;
   // Prompt identity, not just bounds — a successor prompt with the same window would otherwise
   // leave `raw` holding the amount chosen for the PREVIOUS prompt.
-  // `player` as well as `source_id`: the engine PROVABLY emits consecutive PayAmountChoice states
-  // with a constant `source_id` and a changing `player` — `effects/pay.rs` drives
-  // `PlayerFilter::All` and its own test asserts prompt 1 `player=0` then prompt 2 `player=1` with
-  // no intervening `WaitingFor`. On the life arm, two seats at equal life produce successive
-  // prompts whose `min`, `max` AND `source_id` are all identical, so `source_id` alone would not
-  // fire and the second seat would inherit the first seat's typed amount.
+  // `player` as well as `source_id`: the engine emits consecutive PayAmountChoice states with a
+  // constant `source_id` and a changing `player`. `effects/pay.rs` drives `PlayerFilter::All` and
+  // its own test asserts prompt 1 `player=0` then prompt 2 `player=1` with no intervening
+  // `WaitingFor` — but there `max` and `accumulated` move too, so that case alone does not show
+  // `source_id` is insufficient.
+  // The case that does is the LoopCollapse arm in `game/turns.rs`, which is the prompt this
+  // component's own tests model: it mints one prompt per controller in APNAP order with
+  // `min: 0`, `accumulated: 0`, `source_id: ObjectId(0)` and `pending_mana_ability: None` all
+  // written as LITERALS — constant by construction, not conditional on board state. Only `max`
+  // (the controller's pending count) and the `LoopCollapse` axis vary, so two controllers with
+  // equal counts on the same axis produce successive prompts differing in `player` alone, and
+  // keying on `source_id` would leave the second controller holding the first one's typed amount.
+  // An earlier version of this note asserted an equal-life case on the pay arm instead; that path
+  // was never demonstrated, and this one is read straight off the field initializers.
   const sourceId = data?.source_id ?? null;
   const promptPlayer = data?.player ?? null;
   const [raw, setRaw] = useState(String(min));
