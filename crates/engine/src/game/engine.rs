@@ -3094,7 +3094,7 @@ fn apply_until_lethal_shortcut(
         match drive_loop_sequence_iteration(&mut w, &seq, 0, &expected_defs) {
             Ok(()) => w,
             Err(RecastAbort) => {
-                return until_lethal_fallback(state, result, committed);
+                return until_lethal_fallback(state, result, committed, proposal.proposer);
             }
         }
     } else {
@@ -3140,12 +3140,12 @@ fn apply_until_lethal_shortcut(
                         };
                         result.waiting_for = state.waiting_for.clone();
                     } else {
-                        until_lethal_fallback(state, result, committed);
+                        until_lethal_fallback(state, result, committed, proposal.proposer);
                     }
                     return;
                 }
                 CycleOutcome::Abort => {
-                    return until_lethal_fallback(state, result, committed);
+                    return until_lethal_fallback(state, result, committed, proposal.proposer);
                 }
             }
         }
@@ -3173,12 +3173,12 @@ fn apply_until_lethal_shortcut(
                     &fallers,
                 )
             {
-                until_lethal_fallback(state, result, committed);
+                until_lethal_fallback(state, result, committed, proposal.proposer);
             } else {
                 crown_until_lethal(state, result, proposal, winner);
             }
         }
-        _ => until_lethal_fallback(state, result, committed),
+        _ => until_lethal_fallback(state, result, committed, proposal.proposer),
     }
 }
 
@@ -3227,16 +3227,34 @@ fn crown_until_lethal(
 /// loop-detect ring so this same `apply()` does not instantly re-offer the (now-declined)
 /// loop; a later beat re-detects genuinely. Mirrors the `materialize_fixed_shortcut` abort
 /// tail.
-fn until_lethal_fallback(state: &mut GameState, result: &mut ActionResult, committed: GameState) {
+///
+/// THE SEQUENCE CLEAR IS OWNERSHIP-SCOPED (CR 732.2a) — the same authority, and for the same
+/// reason, as `handle_decline_shortcut`'s. `*state = committed` restores the PRE-DRIVE board,
+/// which since the bounded mint's step (1b) went seat-relative can carry a period belonging to a
+/// seat other than this proposal's proposer; an unconditional clear then destroyed that seat's
+/// accumulating period as a side effect of somebody else's aborted drive. Scoping costs the
+/// suppression below nothing, because `try_offer_object_growth_shortcut` returns `None` for every
+/// period that is not the priority holder's — so the only period whose survival could re-fire the
+/// offer this fallback is walking away from is the proposer's own, which this branch still clears.
+fn until_lethal_fallback(
+    state: &mut GameState,
+    result: &mut ActionResult,
+    committed: GameState,
+    proposer: PlayerId,
+) {
     *state = committed;
     // CR 732.2c: a declined shortcut must not instantly re-offer the SAME loop in this same
     // `apply()`. Clear both re-offer signals: the drain offer's `loop_detect_ring` AND the
     // object-growth offer's `last_loop_action_sequence` routing signal (a non-drain object-growth
     // loop, e.g. an AI-declared UntilLethal on an inert Advantage recast, would otherwise
     // re-fire `try_offer_object_growth_shortcut` on the next reconcile and livelock). A later
-    // real re-cast re-captures the sequence and re-detects genuinely.
+    // real re-cast re-captures the sequence and re-detects genuinely. The ring is a board-wide
+    // sampler with no seat semantics, so it clears unconditionally; the period is evidence about
+    // the seat that recorded it, so only the proposer's own is theirs to discard.
     state.loop_detect_ring.clear();
-    state.last_loop_action_sequence.clear();
+    if state.loop_period_controller() == Some(proposer) {
+        state.last_loop_action_sequence.clear();
+    }
     priority::reset_priority(state);
     state.waiting_for = WaitingFor::Priority {
         player: living_priority_seat(state),

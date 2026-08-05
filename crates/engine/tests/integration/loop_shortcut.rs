@@ -562,6 +562,128 @@ fn interactive_3p_optional_cascade_apnap_accept_win() {
     );
 }
 
+/// SITE D (CR 732.2a) — the `UntilLethal` drive dispatch: a FOREIGN driving period in state must
+/// not divert an accepted Path-A grant into the object-growth drive.
+///
+/// **WHY THIS ROW EXISTS NOW AND DID NOT BEFORE.** Site D was reported row-less on the ground that
+/// no fixture reaches it with a foreign period. That was a statement about what boards ARRIVE
+/// carrying one, not about reachability: `migrate_transient_loop_sequence` clears the field at
+/// every load, so no dump-driven row can start from one, and the answer here is the same one the
+/// mint and accept rows use — inject into a board the engine itself drove to its offer.
+///
+/// **WHY THIS SCENARIO AND NOT A CAPTURE.** Site D is only reachable through a proposal whose count
+/// is `UntilLethal`, and `handle_declare_shortcut` rejects `UntilLethal` against any offer that
+/// narrowed its bound. Every tracked capture in this repo reaches the BOUNDED mint (asserted on the
+/// Dina capture by `the_user_captures_offer_is_reached_with_its_driving_period_cleared`), so the
+/// only route in is a Path-A offer — which is exactly what
+/// [`interactive_3p_optional_cascade_apnap_accept_win`] directly above raises. This row is that row
+/// plus one injected field, so any divergence attributes to the field alone.
+///
+/// **THE HAZARD.** Under a merely-non-empty test, `apply_until_lethal_shortcut` would take its
+/// object-growth branch and drive the FOREIGN seat's recorded period, measuring that seat's delta
+/// as if it were this proposal's. CR 732.2a binds a shortcut to the sequence its proposer can
+/// predictably take, and another seat's independent activation is not among them. Pre-existing and
+/// independent of the (1b) fix — Path A never read the sequence — but reachable, and fixed through
+/// the same authority.
+///
+/// **TWO-SIDED CONTROL** (both measured; each direction breaks a DIFFERENT row):
+/// * **DROP** the seat test (restore `!committed.last_loop_action_sequence.is_empty()`) ⇒ this row
+///   ends at `Priority { player: P0 }` instead of `GameOver { winner: Some(P0) }` — the drive
+///   fell into `until_lethal_fallback` — and the injected period is wiped to length 0 by that
+///   fallback's unconditional clear. BOTH assertions below flip.
+/// * **TRIVIALIZE** to a constant `true` (always drive the recorded period) ⇒
+///   `interactive_3p_optional_cascade_apnap_accept_win` above panics inside the engine at
+///   `seq[0]`, because an EMPTY sequence has no step to drive. So no constant implementation of
+///   this dispatch passes the pair.
+///
+/// ⚠ **A REALIZED NEGATIVE, recorded rather than hidden.** The complementary constant —
+/// `false`, i.e. always take the drain branch — was measured against the WHOLE integration suite
+/// at this tree (`cargo test -p phase-engine --test integration`, one unit = one libtest row) and
+/// **4564 rows passed, 0 failed**. Site D's own-period branch is therefore asserted by no row
+/// in this tree, which is a pre-existing coverage gap this change neither creates nor closes: the
+/// object-growth `UntilLethal` rows (`object_growth_advantage_untillethal_no_crown`) reach the
+/// same `Priority` handback down either branch, because `until_lethal_fallback` rolls the board
+/// back to `committed` and the two routes become observationally identical.
+#[test]
+fn an_accepted_until_lethal_grant_drains_even_with_a_foreign_period_in_state() {
+    use engine::types::game_state::{BuybackUsage, LoopAction, LoopActionContext};
+
+    let (mut runner, kickoff) = setup_3p_optional_cascade(LoopDetectionMode::Interactive);
+    let _ = runner.cast(kickoff).resolve();
+    let (_events, wf) = drive_collect(&mut runner, 500);
+    let WaitingFor::LoopShortcut {
+        proposer,
+        predicted_winner,
+        ..
+    } = wf.clone()
+    else {
+        panic!("REACH-GUARD: every assertion below needs the engine's own offer, got {wf:?}");
+    };
+    assert_eq!(
+        predicted_winner,
+        Some(P0),
+        "REACH-GUARD: site D is reachable only through a Path-A offer — a bounded one rejects \
+         `UntilLethal` at the declare seam and this row would measure that rejection instead"
+    );
+
+    runner
+        .act(GameAction::DeclareShortcut {
+            count: IterationCount::UntilLethal,
+            template: None,
+        })
+        .expect("the proposer declares UntilLethal on the Path-A offer");
+
+    // THE INJECTION: an opponent's own recorded period, sitting in state at the moment the last
+    // acceptance hands the proposal to `apply_until_lethal_shortcut`.
+    let opp = runner
+        .state()
+        .players
+        .iter()
+        .map(|p| p.id)
+        .find(|p| *p != proposer)
+        .expect("REACH-GUARD: the foreign period needs a second seat to belong to");
+    let card_id = runner
+        .state()
+        .objects
+        .values()
+        .next()
+        .map(|o| o.card_id)
+        .expect("the scenario has objects");
+    runner.state_mut().last_loop_action_sequence = vec![LoopActionContext {
+        card_id,
+        controller: opp,
+        action: LoopAction::Recast {
+            from_zone: engine::types::zones::Zone::Hand,
+            uses_buyback: BuybackUsage::NotUsed,
+        },
+        convoke: None,
+        pins: vec![],
+    }];
+    assert_ne!(
+        opp, proposer,
+        "REACH-GUARD: a period injected for the PROPOSER would be the legitimate object-growth \
+         route, and this row would assert the opposite of what it means to"
+    );
+
+    accept_all_opponents(&mut runner);
+
+    assert_eq!(
+        runner.state().waiting_for,
+        WaitingFor::GameOver { winner: Some(P0) },
+        "CR 732.2a SITE D: an opponent's recorded activation describes no sequence this proposer \
+         can take, so the accepted `UntilLethal` grant must still drive the DRAIN it was certified \
+         on. A `Priority` handback here is the defect: the drive took the object-growth branch and \
+         measured the wrong seat's period"
+    );
+    assert_eq!(
+        runner.state().last_loop_action_sequence.len(),
+        1,
+        "and the foreign period is still THERE — the crown was reached with it in state. Under the \
+         DROP mutant this reads 0, because `until_lethal_fallback` clears the field \
+         unconditionally, so a wrongly-routed drive also destroys the other seat's period"
+    );
+}
+
 /// CR 732.2a: a shortcut belongs to the player with priority, not necessarily the player
 /// whose loop will win. P1 starts the proven P0-controlled drain by making P0 gain life on
 /// P1's turn, so the live bridge must offer P1 the choice while retaining P0 as the measured
@@ -9786,6 +9908,138 @@ fn declining_a_shortcut_discards_only_the_decliners_own_driving_period() {
         matches!(state.waiting_for, WaitingFor::Priority { .. }),
         "and the declined offer must not have been re-raised within the same `apply()`; got {:?}",
         state.waiting_for
+    );
+}
+
+/// CR 732.2a — the SECOND unconditional cross-seat clear in the teardown family:
+/// `until_lethal_fallback`. An aborted `UntilLethal` drive discards only the PROPOSER'S own period.
+///
+/// **WHY THIS ROW EXISTS NOW.** Round 2 found this site and refused it on a reachability argument
+/// that ended in "no fixture reaches it". That was a fact about the fixture corpus, not about the
+/// engine: `until_lethal_fallback` starts with `*state = committed`, restoring the PRE-DRIVE board
+/// — and since step (1b) went seat-relative, that board can carry another seat's period. MEASURED
+/// on the shipped tree before the guard landed: with a foreign period injected at the accept, the
+/// sprout-swarm `UntilLethal` drive aborts, the fallback runs, and the foreign seat's period comes
+/// back length 0. Same defect, same seam family, same one-line authority as
+/// [`declining_a_shortcut_discards_only_the_decliners_own_driving_period`] above.
+///
+/// **WHY THE OBJECT-GROWTH FIXTURE.** The fallback is reached only when the drive refuses to crown.
+/// `object_growth_advantage_untillethal_no_crown` is the tree's own proof that this board does
+/// exactly that (an inert Advantage token loop has no faller), so both arms below are the shipped
+/// abort path with one field changed — not a synthesized failure.
+///
+/// | arm | injected period | assertion |
+/// |---|---|---|
+/// | FOREIGN | an opponent's | SURVIVES the aborted drive (**the fix**) |
+/// | OWN | the proposer's | CLEARED by it (must-not-flip: the anti-livelock suppressor the doc names) |
+///
+/// **TWO-SIDED CONTROL, PER ASSERTION — each direction flips a DIFFERENT named assertion:**
+/// * **DROP** the ownership test (restore the unconditional `last_loop_action_sequence.clear()`)
+///   ⇒ the FOREIGN arm's survival assertion FAILS, while OWN still passes.
+/// * **TRIVIALIZE** it to never clear ⇒ the OWN arm's clear assertion FAILS, while FOREIGN passes.
+#[test]
+fn an_aborted_until_lethal_drive_discards_only_the_proposers_own_driving_period() {
+    use engine::types::game_state::{BuybackUsage, LoopAction, LoopActionContext};
+
+    // The shipped abort path, re-derived per arm: cast the recast, take the object-growth offer,
+    // declare `UntilLethal` (the AI's hardcoded shape), and let every opponent accept.
+    let offer_state = || {
+        let (mut runner, sprout, fodder) = sprout_swarm_scenario(4);
+        let _ = runner
+            .cast(sprout)
+            .accept_optional()
+            .convoke_with(&[fodder[0]])
+            .commit()
+            .resolve();
+        let WaitingFor::LoopShortcut { proposer, .. } = runner.state().waiting_for.clone() else {
+            panic!(
+                "REACH-GUARD: the object-growth cast must OFFER, got {:?}",
+                runner.state().waiting_for
+            )
+        };
+        runner
+            .act(GameAction::DeclareShortcut {
+                count: IterationCount::UntilLethal,
+                template: None,
+            })
+            .expect("the proposer declares UntilLethal on its own object-growth offer");
+        (runner, proposer)
+    };
+    let period_of = |controller: PlayerId, runner: &GameRunner| {
+        vec![LoopActionContext {
+            card_id: runner
+                .state()
+                .objects
+                .values()
+                .next()
+                .map(|o| o.card_id)
+                .expect("the scenario has objects"),
+            controller,
+            action: LoopAction::Recast {
+                from_zone: engine::types::zones::Zone::Hand,
+                uses_buyback: BuybackUsage::NotUsed,
+            },
+            convoke: None,
+            pins: vec![],
+        }]
+    };
+
+    // ── FOREIGN: seat B's period is mid-accumulation when seat A's drive aborts ──
+    let (mut runner, proposer) = offer_state();
+    let opp = runner
+        .state()
+        .players
+        .iter()
+        .map(|p| p.id)
+        .find(|p| *p != proposer)
+        .expect("REACH-GUARD: the foreign period needs a second seat to belong to");
+    runner.state_mut().last_loop_action_sequence = period_of(opp, &runner);
+    accept_all_opponents(&mut runner);
+    assert!(
+        !matches!(runner.state().waiting_for, WaitingFor::GameOver { .. }),
+        "REACH-GUARD: this row is about the FALLBACK, so the drive must refuse to crown — a \
+         crowned drive never reaches the clear and the assertion below would be vacuous; got {:?}",
+        runner.state().waiting_for
+    );
+    assert_eq!(
+        runner
+            .state()
+            .last_loop_action_sequence
+            .iter()
+            .map(|s| s.controller)
+            .collect::<Vec<_>>(),
+        vec![opp],
+        "CR 732.2a: {proposer:?}'s aborted drive must leave {opp:?}'s accumulating period intact. \
+         `until_lethal_fallback` rolls the board back to the pre-drive `committed` state, which \
+         carries that period, and an unconditional clear then destroys it as a side effect of \
+         somebody else's abort"
+    );
+
+    // ── OWN: the must-not-flip half. The clear is the anti-livelock suppressor for the proposer. ──
+    let (mut runner, proposer) = offer_state();
+    assert_eq!(
+        runner
+            .state()
+            .last_loop_action_sequence
+            .iter()
+            .map(|s| s.controller)
+            .collect::<Vec<_>>(),
+        vec![proposer],
+        "REACH-GUARD: the real recast must have armed the PROPOSER'S own period, else this arm \
+         tests an empty field that is cleared by doing nothing"
+    );
+    accept_all_opponents(&mut runner);
+    assert!(
+        runner.state().last_loop_action_sequence.is_empty(),
+        "CR 732.2a: the proposer's OWN period must still be discarded — without it the reconcile \
+         re-fires `try_offer_object_growth_shortcut` on the loop just abandoned and livelocks. \
+         seq = {:?}",
+        runner.state().last_loop_action_sequence
+    );
+    assert!(
+        matches!(runner.state().waiting_for, WaitingFor::Priority { .. }),
+        "and the abandoned offer must not have been re-raised; got {:?}",
+        runner.state().waiting_for
     );
 }
 
