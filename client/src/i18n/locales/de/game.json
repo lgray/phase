@@ -570,11 +570,9 @@
   "mana": {
     "free": "Gratis",
     "chooseXTitle": "Wähle einen Wert für X",
-    "chooseXAria": "X-Wert wählen",
     "chooseXInputAria": "X-Wert eingeben",
     "decreaseX": "X-Wert verringern",
     "increaseX": "X-Wert erhöhen",
-    "xEquals": "X = {{value}}",
     "minMax": "min {{min}} / max {{max}}",
     "maxOnly": "max {{max}}",
     "amountOutOfRange": "Gib eine ganze Zahl zwischen {{min}} und {{max}} ein",

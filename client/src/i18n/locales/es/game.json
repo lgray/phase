@@ -570,11 +570,9 @@
   "mana": {
     "free": "Gratis",
     "chooseXTitle": "Elige un valor para X",
-    "chooseXAria": "Elegir el valor de X",
     "chooseXInputAria": "Introducir el valor de X",
     "decreaseX": "Disminuir el valor de X",
     "increaseX": "Aumentar el valor de X",
-    "xEquals": "X = {{value}}",
     "minMax": "mín. {{min}} / máx. {{max}}",
     "maxOnly": "máx. {{max}}",
     "amountOutOfRange": "Introduce un número entero entre {{min}} y {{max}}",

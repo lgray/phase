@@ -609,11 +609,9 @@
   "mana": {
     "free": "Free",
     "chooseXTitle": "Choose a value for X",
-    "chooseXAria": "Choose X value",
     "chooseXInputAria": "Enter X value",
     "decreaseX": "Decrease X value",
     "increaseX": "Increase X value",
-    "xEquals": "X = {{value}}",
     "minMax": "min {{min}} / max {{max}}",
     "maxOnly": "max {{max}}",
     "amountOutOfRange": "Enter a whole number between {{min}} and {{max}}",

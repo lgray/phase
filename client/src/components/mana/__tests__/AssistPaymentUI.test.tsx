@@ -51,7 +51,9 @@ describe("AssistPaymentUI", () => {
     expect(container).toBeEmptyDOMElement();
   });
 
-  it("clamps the slider to [0, max] and defaults to 0", () => {
+  // REWRITE: the `getByRole("slider")` subject no longer exists. The engine's [0, max]
+  // window is now shown by the shared hint rather than by the control's native min/max.
+  it("defaults to 0 and shows the engine [0, max] window", () => {
     const waitingFor = assistPaymentWaitingFor(4);
     setGameStoreForTest({
       gameState: createGameState({ waiting_for: waitingFor }),
@@ -60,10 +62,11 @@ describe("AssistPaymentUI", () => {
 
     render(<AssistPaymentUI />);
 
-    const slider = screen.getByRole("slider") as HTMLInputElement;
-    expect(slider.min).toBe("0");
-    expect(slider.max).toBe("4");
-    expect(slider.value).toBe("0");
+    // The box keeps the slider's accessible name byte-for-byte.
+    expect(screen.getByLabelText("Assist: Pay Generic Mana")).toHaveValue("0");
+    expect(screen.getByText("max 4")).toBeInTheDocument();
+    // At the 0 default the lower bound is already reached.
+    expect(screen.getByLabelText("Decrease amount")).toBeDisabled();
   });
 
   it("dispatches CommitAssistPayment with the selected value", () => {
@@ -77,8 +80,12 @@ describe("AssistPaymentUI", () => {
 
     render(<AssistPaymentUI />);
 
-    fireEvent.change(screen.getByRole("slider"), { target: { value: "3" } });
-    fireEvent.click(screen.getByRole("button"));
+    // Name-filtered: the panel now has 3 buttons, so a bare getByRole("button") throws
+    // "Found multiple elements".
+    fireEvent.change(screen.getByLabelText("Assist: Pay Generic Mana"), {
+      target: { value: "3" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Pay 3" }));
 
     expect(dispatch).toHaveBeenCalledWith({
       type: "CommitAssistPayment",
@@ -97,11 +104,59 @@ describe("AssistPaymentUI", () => {
 
     render(<AssistPaymentUI />);
 
-    fireEvent.click(screen.getByRole("button"));
+    fireEvent.click(screen.getByRole("button", { name: "Pay nothing" }));
 
     expect(dispatch).toHaveBeenCalledWith({
       type: "CommitAssistPayment",
       data: { generic: 0 },
     });
+  });
+
+  // Enter bypasses the button's `disabled` attribute entirely, so this is the ONLY route on
+  // which `handleCommit`'s null-guard is observable. Matched pair: the negative alone would
+  // be satisfied by a component that never dispatches at all.
+  it("AP/enter: Enter submits a valid amount and refuses to coerce one above max_generic", () => {
+    const dispatch = vi.fn().mockResolvedValue([]);
+    const waitingFor = assistPaymentWaitingFor(4);
+    setGameStoreForTest({
+      gameState: createGameState({ waiting_for: waitingFor }),
+      waitingFor,
+      dispatch,
+    });
+
+    render(<AssistPaymentUI />);
+
+    const box = screen.getByLabelText("Assist: Pay Generic Mana");
+    fireEvent.change(box, { target: { value: "5" } });
+    fireEvent.keyDown(box, { key: "Enter" });
+    expect(dispatch).not.toHaveBeenCalled();
+
+    fireEvent.change(box, { target: { value: "3" } });
+    fireEvent.keyDown(box, { key: "Enter" });
+    expect(dispatch).toHaveBeenCalledWith({
+      type: "CommitAssistPayment",
+      data: { generic: 3 },
+    });
+  });
+
+  // The assist domain is 0..max_generic (CR 702.132a), and the engine's own
+  // `number_projection` synthesizes `min: 0`. An entry above max must not reach the engine.
+  it("AP/above-max: an entry over max_generic cannot be committed", () => {
+    const dispatch = vi.fn().mockResolvedValue([]);
+    const waitingFor = assistPaymentWaitingFor(4);
+    setGameStoreForTest({
+      gameState: createGameState({ waiting_for: waitingFor }),
+      waitingFor,
+      dispatch,
+    });
+
+    render(<AssistPaymentUI />);
+
+    fireEvent.change(screen.getByLabelText("Assist: Pay Generic Mana"), {
+      target: { value: "5" },
+    });
+
+    expect(screen.getByRole("button", { name: "Pay nothing" })).toBeDisabled();
+    expect(dispatch).not.toHaveBeenCalled();
   });
 });
