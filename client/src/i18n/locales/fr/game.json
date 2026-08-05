@@ -482,6 +482,7 @@
     "pendingCheaper": "Le prochain sort coûte {{amount}} de moins",
     "companion": "Compagnon",
     "unboundedTooltip": "{{resource}} illimité (∞)",
+    "unboundedScheduledTooltip": "{{resource}} illimité (∞) — réduction en attente ; vous choisirez combien",
     "unboundedManaPoolMarker": "Mana illimité (∞)",
     "unboundedMana": "mana",
     "unboundedLife": "points de vie",

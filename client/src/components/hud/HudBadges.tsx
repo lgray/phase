@@ -13,6 +13,7 @@ import type {
   PlayerStatusView,
   ResourceAxis,
   ResourceAxisTag,
+  UnboundedResourceView,
 } from "../../adapter/types.ts";
 import { useGameStore } from "../../stores/gameStore.ts";
 import { getKeywordDisplayText } from "../../viewmodel/keywordProps.ts";
@@ -389,6 +390,13 @@ export type ResourceAxisFamily =
   | "turns"
   | "triggers";
 
+/** One `∞` badge's worth of state: the display family, and whether the engine has an
+ *  accepted-but-unapplied collapse waiting for it at the next step/phase end. */
+export interface UnboundedFamilyView {
+  family: ResourceAxisFamily;
+  scheduled: boolean;
+}
+
 // Externally-tagged `ResourceAxis`: unit variants are bare strings, data/tuple
 // variants are single-key objects. The tag is the string itself or its only key.
 const axisTag = (axis: ResourceAxis): ResourceAxisTag =>
@@ -421,6 +429,37 @@ const UNBOUNDED_FAMILY: Record<ResourceAxisTag, ResourceAxisFamily> = {
 export const familyOf = (axis: ResourceAxis): ResourceAxisFamily =>
   UNBOUNDED_FAMILY[axisTag(axis)];
 
+/**
+ * Collapse the engine's per-axis ∞ rows to one entry per display family, carrying the engine's
+ * scheduled tag through. Presentation formatting only: the engine owns axis identity, attribution
+ * and which axes are scheduled — this decides nothing. A family badge stands for several axes, so
+ * it is scheduled iff ANY member axis is.
+ *
+ * Driven by ROWS, never by the tag. The engine's tag names a pending collapse, and it can name an
+ * axis whose ∞ row the engine has already dropped (that loop's board backing left play while the
+ * accepted collapse survives). Such an orphan tag correctly renders nothing.
+ *
+ * JSON.stringify, not `===`: `ResourceAxis` is EXTERNALLY TAGGED — unit variants arrive as bare
+ * strings ("TokensCreated") but data variants arrive as objects ({"Counter":["Other","Other"]},
+ * MEASURED in the committed counter golden), and reference equality never matches two structurally
+ * equal objects. Both sides come from the same serde emission in the same `DerivedViews`, so key
+ * order is stable. `axisTag` is deliberately NOT reused as the key: it returns only the variant
+ * tag, so two different `Counter(..)` axes would collide and the join would over-report.
+ */
+export function unboundedFamilyViews(
+  rows: UnboundedResourceView[],
+  scheduled: UnboundedResourceView[],
+): UnboundedFamilyView[] {
+  const scheduledKeys = new Set(scheduled.map((s) => JSON.stringify(s.axis)));
+  const families = new Map<ResourceAxisFamily, boolean>();
+  for (const row of rows) {
+    const family = familyOf(row.axis);
+    const isScheduled = scheduledKeys.has(JSON.stringify(row.axis));
+    families.set(family, (families.get(family) ?? false) || isScheduled);
+  }
+  return [...families].map(([family, s]) => ({ family, scheduled: s }));
+}
+
 const UNBOUNDED_FAMILY_GLYPH: Record<ResourceAxisFamily, string> = {
   mana: "💎",
   life: "❤",
@@ -451,14 +490,30 @@ const UNBOUNDED_FAMILY_LABEL_KEY: Record<ResourceAxisFamily, string> = {
 
 /**
  * CR 732.2a: an `∞` badge for one unbounded-resource display family. Rendered
- * once per distinct family per player (the caller de-dups via a `Set`). The
- * engine decides which families are present and on which HUD; this badge only
- * formats the family to a glyph + label.
+ * once per distinct family per player (the HUD callers de-dup via
+ * `unboundedFamilyViews`; `LoopShortcutModal` still de-dups a bare axis list
+ * with a `Set`). The engine decides which families are present, which are
+ * scheduled to collapse, and on which HUD; this badge only formats the family
+ * to a glyph + label.
  */
-export function UnboundedBadge({ family }: { family: ResourceAxisFamily }) {
+// `scheduled` is OPTIONAL and defaults to false so a caller with no tag in hand renders today's
+// badge unchanged. `LoopShortcutModal`'s FamilyBadges is exactly that caller and stays that way on
+// purpose: it renders at OFFER time, before any player has accepted, so nothing can be scheduled.
+export function UnboundedBadge({
+  family,
+  scheduled = false,
+}: {
+  family: ResourceAxisFamily;
+  scheduled?: boolean;
+}) {
   const { t } = useTranslation("game");
   const resource = t(UNBOUNDED_FAMILY_LABEL_KEY[family]);
-  const title = t("badges.unboundedTooltip", { resource });
+  // A scheduled collapse is an accepted-but-unapplied bound: the player will be asked to name N at
+  // the next step/phase end. The window itself is an engine deviation, not a rules state — this
+  // only reports what the engine says is pending.
+  const title = scheduled
+    ? t("badges.unboundedScheduledTooltip", { resource })
+    : t("badges.unboundedTooltip", { resource });
   return (
     <BadgeTip text={title}>
       <span
@@ -470,7 +525,7 @@ export function UnboundedBadge({ family }: { family: ResourceAxisFamily }) {
           aria-hidden
           className="absolute inset-0 rounded-full bg-[radial-gradient(circle_at_30%_24%,rgba(255,255,255,0.85)_0_9%,transparent_11%),linear-gradient(135deg,#fae8ff_0%,#d946ef_42%,#701a75_100%)]"
         />
-        <span className="relative drop-shadow-[0_1px_1px_rgba(0,0,0,0.5)]">∞</span>
+        <span className="relative drop-shadow-[0_1px_1px_rgba(0,0,0,0.5)]">{scheduled ? "∞→N" : "∞"}</span>
         <span aria-hidden className="relative text-[10px] leading-none drop-shadow-[0_1px_1px_rgba(0,0,0,0.5)]">
           {UNBOUNDED_FAMILY_GLYPH[family]}
         </span>

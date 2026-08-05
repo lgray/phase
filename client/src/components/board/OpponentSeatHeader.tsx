@@ -14,12 +14,12 @@ import {
   ConditionBadge,
   CounterBadge,
   DungeonBadge,
-  familyOf,
   InitiativeBadge,
   MonarchBadge,
   PendingSpellBadge,
   StatusBadge,
   UnboundedBadge,
+  unboundedFamilyViews,
 } from "../hud/HudBadges.tsx";
 import { AvatarHoverPreview } from "../hud/AvatarHoverPreview.tsx";
 import { EnchantmentsBadge } from "../hud/EnchantmentsBadge.tsx";
@@ -220,8 +220,8 @@ export function OpponentSeatHeader({ playerId, compact = false, onKickPlayer }: 
                 condition={condition}
               />
             ))}
-            {[...new Set(designations.unboundedResources.map((resource) => familyOf(resource.axis)))].map(
-              (family) => <UnboundedBadge key={family} family={family} />,
+            {unboundedFamilyViews(designations.unboundedResources, designations.scheduledCollapse).map(
+              (u) => <UnboundedBadge key={u.family} family={u.family} scheduled={u.scheduled} />,
             )}
             {isPhasedOut ? <StatusBadge label={t("player.phasedOut")} tone="neutral" /> : null}
             {player.companion ? <StatusBadge label={t("badges.companion")} /> : null}

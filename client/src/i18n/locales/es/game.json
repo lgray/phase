@@ -482,6 +482,7 @@
     "pendingCheaper": "El próximo hechizo cuesta {{amount}} menos",
     "companion": "Compañero",
     "unboundedTooltip": "{{resource}} ilimitado (∞)",
+    "unboundedScheduledTooltip": "{{resource}} ilimitado (∞) — colapso pendiente; elegirás cuántos",
     "unboundedManaPoolMarker": "Maná ilimitado (∞)",
     "unboundedMana": "maná",
     "unboundedLife": "vidas",

@@ -35,6 +35,11 @@ export interface PlayerDesignations {
   /** CR 732.2a: engine-attributed unbounded-resource (`∞`) rows for this player.
    *  Shared empty array when none, so the memoized result stays stable. */
   unboundedResources: UnboundedResourceView[];
+  /** Engine-tagged `(player, axis)` rows whose ∞ growth has an accepted-but-unapplied collapse
+   *  waiting at the next step/phase end. Raw engine channel, per-player filtered exactly like
+   *  `unboundedResources` — this hook joins nothing and infers nothing. A tag whose row the
+   *  engine has dropped (its board backing left play) stays here and simply matches no row. */
+  scheduledCollapse: UnboundedResourceView[];
   hasAny: boolean;
 }
 
@@ -65,6 +70,7 @@ const EMPTY: PlayerDesignations = {
   pendingSpellModifiers: NO_MODIFIERS,
   pendingSpellReductions: NO_REDUCTIONS,
   unboundedResources: NO_UNBOUNDED,
+  scheduledCollapse: NO_UNBOUNDED,
   hasAny: false,
 };
 
@@ -110,6 +116,13 @@ export function usePlayerDesignations(playerId: PlayerId): PlayerDesignations {
       playerId,
       NO_UNBOUNDED,
     );
+    const scheduledCollapse = forPlayer(
+      gs.derived?.scheduled_collapse,
+      playerId,
+      NO_UNBOUNDED,
+    );
+    // `hasAny` deliberately does NOT read `scheduledCollapse`: the tag only decorates a rendered
+    // ∞ badge, and a tag with no matching row renders nothing.
     const hasAny =
       isMonarch
       || hasInitiative
@@ -135,6 +148,7 @@ export function usePlayerDesignations(playerId: PlayerId): PlayerDesignations {
       pendingSpellModifiers,
       pendingSpellReductions,
       unboundedResources,
+      scheduledCollapse,
       hasAny,
     };
   }, [gameState, playerId]);
