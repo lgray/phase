@@ -19739,7 +19739,8 @@ impl GameState {
         entry.extend(axes.iter().copied());
     }
 
-    /// CR 104.4b / CR 110.1: single write authority for `unbounded_loop_enablers` —
+    /// Single write authority for `unbounded_loop_enablers` (an engine bookkeeping map; no CR
+    /// mandates it) —
     /// only the Interactive B5 bridge arm (`interactive_loop_bridge` Path C) calls
     /// this. Overwrites (idempotent re-registration each re-detection beat with the
     /// same stable board). A no-op for an empty set (nothing to defuse on later).
@@ -19837,9 +19838,10 @@ impl GameState {
     /// the CR 500.5 step/phase end instead.
     ///
     /// Removing at the boundary rather than filtering the store meanwhile is load-bearing:
-    /// the store keeps `unbounded_resources` and `unbounded_loop_enablers` in CR 104.4b /
-    /// CR 110.1 lockstep, which is what `zones::apply_zone_exit_cleanup` reads to defuse a
-    /// capability whose enabler leaves between accept and boundary.
+    /// the store keeps `unbounded_resources` and `unbounded_loop_enablers` in lockstep — an
+    /// ENGINE-STATE invariant required by no CR, held for exactly one consumer:
+    /// `zones::apply_zone_exit_cleanup` reads the enabler map to defuse a capability whose
+    /// enabler leaves between accept and boundary.
     ///
     /// FAIL-CLOSED: only an axis some REGISTERED item actually collapses is returned, so an
     /// ∞ axis with no registration (a mana engine registers nothing) is never removed here —
@@ -19904,7 +19906,7 @@ impl GameState {
     /// `DriveSequence` CAN name one (its `collapsed_axes` is the loop's whole `proposal.unbounded`
     /// set) and then removing it here is correct — that loop's mana really did end with it.
     /// Drops `unbounded_resources[controller]`
-    /// (and its `unbounded_loop_enablers` entry in CR 104.4b/CR 110.1 lockstep, mirroring
+    /// (and its `unbounded_loop_enablers` entry in engine-state lockstep, mirroring
     /// `clear_unbounded_mana_loop`) only when its axis set becomes empty. Always removes
     /// the whole `pending_unbounded_materialization` list (owned by `take_` at the submit
     /// site). Leaves `clear_unbounded_mana_loop` / `clear_unbounded_loop` untouched.
@@ -19976,7 +19978,7 @@ impl GameState {
             axes.retain(|a| !axes_to_remove.contains(a));
             if axes.is_empty() {
                 self.unbounded_resources.remove(&controller);
-                self.unbounded_loop_enablers.remove(&controller); // CR 104.4b / CR 110.1 lockstep
+                self.unbounded_loop_enablers.remove(&controller); // engine-state lockstep
             }
         }
         self.pending_unbounded_materialization.remove(&controller);
@@ -19986,7 +19988,8 @@ impl GameState {
     /// CR 500.5 + CR 106.4: end a loop-backed ∞-mana capability at a step/phase boundary — an
     /// AXIS-SCOPED clear, not the whole-player `clear_unbounded_loop`. Removes every
     /// `ResourceAxis::Mana(_)` axis from `unbounded_resources`. If that empties the player's axis
-    /// set, drop the player key AND its `unbounded_loop_enablers` entry IN LOCKSTEP (CR 104.4b / CR 110.1):
+    /// set, drop the player key AND its `unbounded_loop_enablers` entry IN LOCKSTEP (an engine-state
+    /// invariant, not a rules requirement):
     /// enablers track the PRESENCE of any unbounded axis, and the `zones.rs` defuse hook
     /// (`apply_zone_exit_cleanup`, `:534`–`:544`) whole-clears a controller's capability when ANY
     /// enabler leaves. Leaving enablers orphaned (no backing axis) is a landmine — a later
@@ -20001,7 +20004,7 @@ impl GameState {
             axes.retain(|a| !matches!(a, ResourceAxis::Mana(_)));
             if axes.is_empty() {
                 self.unbounded_resources.remove(&controller);
-                self.unbounded_loop_enablers.remove(&controller); // CR 104.4b / CR 110.1 lockstep-iff-empty
+                self.unbounded_loop_enablers.remove(&controller); // engine-state lockstep-iff-empty
             }
         }
     }

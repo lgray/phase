@@ -7153,7 +7153,7 @@ fn r6a_drive_to_boundary(state: &mut GameState) {
 /// mark the store still carries, which is what the BASE gate used it for.
 ///
 /// NEVER HIDE — and never filter the store either. The store must still carry the mark
-/// (CR 104.4b / CR 110.1 lockstep and `zones::apply_zone_exit_cleanup`'s defuse read it until
+/// (the engine-state enabler lockstep and `zones::apply_zone_exit_cleanup`'s defuse read it until
 /// the boundary applies the growth), so this row asserts store AND wire.
 ///
 /// NON-VACUITY: every wire assertion here is a NON-emptiness paired with the store's own
@@ -7279,7 +7279,7 @@ fn scheduled_collapse_still_renders_the_unbounded_badge() {
     assert_eq!(
         state.unbounded_resources.get(&P0),
         Some(&marked),
-        "the ∞ store must survive the projection (CR 104.4b / CR 110.1 lockstep + the \
+        "the ∞ store must survive the projection (the engine-state enabler lockstep + the \
          zone-exit defuse still need it until the boundary)"
     );
     assert!(

@@ -1182,6 +1182,6 @@ fn scheduled_drive_still_renders_the_already_spendable_mana_badge() {
             .get(&P0)
             .map(|a| a.iter().copied().collect::<Vec<_>>()),
         Some(collapsed_axes),
-        "the ∞ store survives the projection (CR 104.4b / CR 110.1 lockstep)"
+        "the ∞ store survives the projection (engine-state enabler lockstep)"
     );
 }

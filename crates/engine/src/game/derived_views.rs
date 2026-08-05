@@ -809,7 +809,12 @@ pub fn derive_views(state: &GameState, viewer: Option<PlayerId>) -> DerivedViews
     //    not EXCEED it. `turns.rs`' `max:` reads the recorded bound for exactly that reason and
     //    `SubmitPayAmount` rejects an over-collapse. That is a CEILING on the collapse; it says
     //    nothing about what the display may show, and this projection does not read it.
-    //  • CR 500.5 — the boundary where the deferred growth is applied.
+    //  • CR 500.5 — the TIMING LANDMARK only: it defines the step/phase end, at which
+    //    until-end-of-step effects expire and unspent mana empties. That mana drain is the one
+    //    thing here CR 500.5 genuinely governs (`turns::drain_pending_phase_transition_progress`,
+    //    and it is why a `Mana(_)` ∞ ends there). It does NOT license CASHING OUT the deferred
+    //    token/life/counter growth at that moment — the engine chose that landmark, and that
+    //    choice is part of the same uncited deviation described above.
     //
     // WHY `∞` IS RIGHT HERE IS AN ENGINE-STATE ARGUMENT, NOT A RULES ONE. Throughout the window the
     // enablers are still on the battlefield and `unbounded_resources` + `unbounded_loop_enablers`
@@ -826,9 +831,10 @@ pub fn derive_views(state: &GameState, viewer: Option<PlayerId>) -> DerivedViews
     // The three loops below therefore read only their own stores; none consults
     // `GameState::scheduled_collapse_axes` (whose sole production caller is
     // `clear_collapsed_materializations`). The stores are not filtered either:
-    // `unbounded_resources` + `unbounded_loop_enablers` stay in CR 104.4b / CR 110.1 lockstep
-    // until the boundary applies the growth, which is what keeps `zones::apply_zone_exit_cleanup`'s
-    // defuse armed in the meantime.
+    // `unbounded_resources` + `unbounded_loop_enablers` are held in lockstep until the boundary
+    // applies the growth. That lockstep is an ENGINE-STATE invariant, required by no CR — it exists
+    // for exactly one consumer: `zones::apply_zone_exit_cleanup` reads the enabler map to defuse a
+    // capability whose enabler leaves, so a desynced store would leave that defuse unarmed.
     //
     // What ends each `∞` is the boundary, never this projection:
     // `clear_collapsed_materializations` drops the collapsed axes once the growth is applied, and
