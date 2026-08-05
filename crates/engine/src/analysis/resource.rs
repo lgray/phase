@@ -1325,6 +1325,15 @@ fn map_delta<K: Ord + Copy>(
 /// normalized. It does not consult a board predicate, but it DOES require the frames it
 /// compares to be homogeneous in turn position, which is what "homogeneous" above now means
 /// in full.
+///
+/// ⚠ SCOPE OF THAT REQUIREMENT — what this function READS, versus where the frames' sameness
+/// comes from. It reads exactly two things: `ResourceVector::snapshot(&f.normalized)` and
+/// `window_scope_from_cover_frames(..).phase_invariant`, and `phase_invariant` is
+/// `turn_number` + `phase` + `extra_phases.is_empty()`. The sampler gate that mints the frames
+/// also makes them homogeneous in `waiting_for`/`priority_player`, but THIS function never
+/// looks at those two — basis A does, via `loop_states_equal_modulo_resources` ⇒
+/// `loop_states_equal` ⇒ `impl PartialEq for GameState`. Do not cite `ring_delta_signature` as
+/// the consumer of either field.
 pub(crate) fn ring_delta_signature(state: &GameState) -> Option<(u32, ResourceVector)> {
     let frames = state.loop_detect_ring.len();
     // 2k + 1 with k >= 1.

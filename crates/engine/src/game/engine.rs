@@ -1921,11 +1921,12 @@ fn bounded_cycle_offer(
 
     // (4) CERTIFICATION — two bases, first match wins, NEVER combined.
     //
-    // Basis A is a fifth copy of the ring `find_map` scan (`:481` the `On` reconcile, `:668`
-    // Path B, `:710` Path C, `:808` `find_live_loop_winner`). Recorded, not hidden: the repo
-    // already made this call at `find_live_loop_winner`'s own doc — "a deliberate, isolated
-    // copy … the `On` arm stays VERBATIM (byte-identity gate)" — and retargeting the four
-    // shipped walks would edit byte-identity-gated paths inside a feature commit. Newest
+    // Basis A is a fifth copy of the ring `find_map` scan. The other four are NAMED, not
+    // numbered — the `On` reconcile, Path B, Path C, `find_live_loop_winner` — because the
+    // coordinates that stood here had ROTTED onto unrelated code. Grep the symbols. Recorded,
+    // not hidden: `find_live_loop_winner`'s own doc already made this call — "a deliberate,
+    // isolated copy … the `On` arm stays VERBATIM (byte-identity gate)" — and retargeting the
+    // four shipped walks would edit byte-identity-gated paths inside a feature commit. Newest
     // prior first: the most recent recurrence is the least extrapolation.
     //
     // TWO PARALLEL VECS OVER ONE INDEX SPACE. They are built from the same `VecDeque` in the
@@ -11174,14 +11175,47 @@ fn apply_action(
         // and recomputes `priority_player` through `turn_control`'s authorized-submitter
         // resolver — and it now runs BEFORE the record, exactly as the settle sampler in
         // `pass_priority_once_with_pipeline` does. So a frame minted here carries the same
-        // `waiting_for`/`priority_player` pair a settle frame carries, and that homogeneity
-        // is load-bearing: `impl PartialEq for GameState` compares both fields and
-        // `normalize_for_loop` neutralizes neither, so a mixed ring would break
-        // `ring_delta_signature`'s turn-position conjunct. BLAST RADIUS IS THE RING ONLY —
-        // `apply_action_boundary` re-syncs the returned `wf` before the result leaves the
-        // engine, so the settled state is unchanged. MEASURED before the reorder: a
-        // `debug_assert_eq!` census on both fields reported 0 divergences over 18,486 lib +
-        // 4,487 integration rows, so this replaces a coincidence with a guarantee.
+        // `waiting_for`/`priority_player` pair a settle frame carries.
+        //
+        // WHICH CONSUMER THAT HOMOGENEITY IS FOR — and it is NOT `ring_delta_signature`. The
+        // claim shipped in `f144bb374` ("a heterogeneous ring breaks `ring_delta_signature`'s
+        // turn-position conjunct, because `impl PartialEq for GameState` compares both
+        // fields") is FALSE at source: that function's body reads only
+        // `ResourceVector::snapshot(&f.normalized)` and
+        // `window_scope_from_cover_frames(..).phase_invariant`, and `phase_invariant` is
+        // `turn_number` + `phase` + `extra_phases.is_empty()`. Neither field is in it.
+        //
+        // The consumer that DOES read them is BASIS A — the ring scans that call
+        // `analysis::resource::loop_states_equal_modulo_resources(prior, state)` with `prior`
+        // a ring frame's `normalized` half and `state` the LIVE board. That chains to
+        // `types::game_state::loop_states_equal` ⇒ `impl PartialEq for GameState`, which
+        // compares BOTH `waiting_for` and `priority_player`, and neither `normalize_for_loop`
+        // nor `project_out_resources` neutralizes either. An answer-beat frame carrying an
+        // un-synced pair therefore compares UNEQUAL against a live board that has been
+        // synced, and basis A silently misses the recurrence the frame was minted to certify.
+        //
+        // BLAST RADIUS. Nothing this leaves in `state` survives to a consumer unrecomputed:
+        // `finish_action_boundary` runs the SAME `sync_waiting_for` over `result.waiting_for`
+        // (`:1171`) and copies the outcome back into the result (`:1189`), and the reorder
+        // never changes `ActionResult.waiting_for` itself. That is an argument about
+        // RE-DERIVATION, not reachability, because `apply_action_boundary` is not the only
+        // route: `inject_pinned_answer`'s three dispatches and `drive_loop_action_iteration`'s
+        // ten reach `apply_action` directly, and
+        // `apply_interaction_pre_reconciliation_for_life_safety` returns `raw.result` without
+        // ever calling `finish_action_boundary` (`apply_action_boundary_core`'s own comment at
+        // `:1119` records it). All three drive a CLONE — `drive_one_shortcut_cycle`'s `work`,
+        // the drive's `clone`, `preview_candidate_life_safety`'s `preview` — never the settled
+        // board. MEASURED pre-reorder by an instrumented `debug_assert_eq!` census over the
+        // full lib + integration corpus (per-site counts in `f144bb374`'s message; one unit =
+        // one `record_loop_detect_sample` invocation): 0 at EITHER sampler where the sync
+        // changed either field, so this replaces a coincidence with a guarantee.
+        //
+        // ONE CONSEQUENCE OF USING THE SYNCHRONIZER RATHER THAN A RAW CLONE:
+        // `normalize_legacy_attach_waiting_for` can now edit `state.waiting_for` on this
+        // path, so it may differ from the returned `ActionResult.waiting_for`, where the raw
+        // clone made the two exactly equal. Benign — the boundary re-normalizes at `:1171`
+        // and copies back at `:1189`, and `inject_pinned_answer` fails closed on every prompt
+        // kind it has no pin producer for.
         sync_waiting_for(state, &wf);
         if answering_forced_window
             && !in_simulation_probe()
@@ -15457,7 +15491,27 @@ mod stage2_injector_tests {
                 // sha256 `a6d7f2f9d1e15de5…5cb032`, matching `117baa6a1:engine.rs:11549`, and
                 // still inside `begin_pending_trigger_target_selection` (opens :11400 here,
                 // :11271 at `b654513cb`).
-                "game/engine.rs:11549".to_string(),
+                //
+                // THIS PR (the basis-A prose correction), ON TOP OF `a6d1a0e62`: `:11549 ⇒
+                // :11583`, +34. LOCAL, not upstream — the CI-vs-local diagnosis in the header
+                // does not apply. engine.rs's entire delta this round is THREE COMMENT HUNKS
+                // and nothing else. Two sit ABOVE this producer — `@@ -1924,5 +1924,6 @@` in
+                // `bounded_cycle_offer` (+1: the rotted `:481/:668/:710/:808` sibling-scan
+                // coordinates replaced by symbol names) and `@@ -11177,8 +11178,41 @@` in
+                // `apply_action` (+33) — summing to +34, and 11549 + 34 = 11583 exactly. The
+                // third is THIS drift entry, below the producer, which therefore cannot move
+                // it (its own size is deliberately not arithmetic here — a self-counting
+                // entry restates itself every edit). A comment round cannot mint a prompt,
+                // and the census agrees — the two asserts above this one fired GREEN on the
+                // run that caught this (total still 37, partition still 5/7/25) and the other
+                // four entries did not move (`effects/` is untouched by this commit;
+                // `scoped_library_search.rs:452` re-read and sha256-confirmed in place).
+                // Identity re-established rather than assumed: line :11583 is byte-identical
+                // by sha256 (`8a544e878d3e77fb…`, the SAME prefix this log recorded for
+                // `:11549`) to `a6d1a0e62:engine.rs:11549`, and it is still inside
+                // `begin_pending_trigger_target_selection`, which moved by the same +34
+                // (opens :11400 ⇒ :11434).
+                "game/engine.rs:11583".to_string(),
             ],
             "the five production producers, NAMED: the CR 603.5 gate in `resolve_chain_body` \
              plus the two repeated-optional-payment drivers, the per-player acceptance cursor \
