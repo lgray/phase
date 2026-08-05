@@ -134,7 +134,7 @@ export function PlayerHud() {
                 condition={condition}
               />
             ))}
-            {unboundedFamilyViews(designations.unboundedResources, designations.scheduledCollapse).map(
+            {unboundedFamilyViews(designations.unboundedResources).map(
               (u) => (
                 <UnboundedBadge key={u.family} family={u.family} scheduled={u.scheduled} />
               ),

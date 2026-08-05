@@ -1718,6 +1718,27 @@ fn object_growth_infinity_row_dies_with_its_last_pile_member() {
          TokensCreated ∞ row must be dropped, got {subject_rows:?}"
     );
 
+    // ORPHAN TAG, asserted rather than inferred. Three doc blocks cite THIS test by name as the
+    // witness that "a tagged row may be absent — an orphan tag is CORRECT". Without the next
+    // assertion that citation is hollow: the doctrine would rest on the inference "the stash
+    // survives, therefore the tag survives", whose middle step — that `scheduled_collapse_axes`
+    // actually yields `TokensCreated` for THIS stash — is checked nowhere. A tag loop that
+    // stopped emitting the axis, or a `scheduled_collapse_axes` that classified this stash
+    // differently, would leave the whole suite green while the shipped contract quietly became
+    // false. Paired with the row assertion directly above, this is the only place the row/tag
+    // divergence is pinned on real engine state rather than composed props.
+    let subject_tags: Vec<ResourceAxis> = derive_views(&subject, Some(P0))
+        .scheduled_collapse
+        .iter()
+        .map(|t| t.axis)
+        .collect();
+    assert!(
+        subject_tags.contains(&ResourceAxis::TokensCreated),
+        "THE assertion (subject, tag half): the accepted collapse must still be TAGGED after its \
+         whole pile left — the row is gone, but the boundary still cashes this axis out \
+         (CR 732.2c), got {subject_tags:?}"
+    );
+
     // SCOPE: only the BACKED axis is dropped — the wire is exactly the marked set minus
     // `TokensCreated`, so a guard that hid MORE than the unbacked axis fails here. Stated
     // honestly: this rig marks few axes, so this row is weak on its own. The load-bearing

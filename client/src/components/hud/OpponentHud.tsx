@@ -321,10 +321,7 @@ export function OpponentHud({
               {opponentRadCounters > 0 ? <CounterBadge kind="rad" value={opponentRadCounters} /> : null}
               {opponentExperienceCounters > 0 ? <CounterBadge kind="experience" value={opponentExperienceCounters} /> : null}
               {opponentSpeed > 0 ? <CounterBadge kind="speed" value={opponentSpeed} /> : null}
-              {unboundedFamilyViews(
-                opponentDesignations.unboundedResources,
-                opponentDesignations.scheduledCollapse,
-              ).map((u) => (
+              {unboundedFamilyViews(opponentDesignations.unboundedResources).map((u) => (
                 <UnboundedBadge key={u.family} family={u.family} scheduled={u.scheduled} />
               ))}
               {opponentCompanion ? <StatusBadge label={t("badges.companion")} /> : null}
@@ -779,7 +776,7 @@ function OpponentTab({
       {radCounters > 0 ? <CounterBadge kind="rad" value={radCounters} /> : null}
       {experienceCounters > 0 ? <CounterBadge kind="experience" value={experienceCounters} /> : null}
       {speed > 0 ? <CounterBadge kind="speed" value={speed} /> : null}
-      {unboundedFamilyViews(designations.unboundedResources, designations.scheduledCollapse).map((u) => (
+      {unboundedFamilyViews(designations.unboundedResources).map((u) => (
         <UnboundedBadge key={u.family} family={u.family} scheduled={u.scheduled} />
       ))}
       {isOnline && <ConnectionDotInline disconnected={isDisconnected} />}

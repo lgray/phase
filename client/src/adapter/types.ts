@@ -2631,6 +2631,21 @@ export type ResourceAxisTag =
 export interface UnboundedResourceView {
   player: PlayerId;
   axis: ResourceAxis;
+  /**
+   * Engine-computed: this axis has an accepted-but-unapplied collapse, so render `∞→N` rather
+   * than a bare `∞`. Omitted (⇒ `undefined`) when false, so test for truthiness, not presence.
+   *
+   * Do NOT reconstruct this by joining `unbounded_resources` against `scheduled_collapse`. Both
+   * channels are keyed by the engine's ATTRIBUTION player, which for `Life`/`DamageDealt`/
+   * `LibraryDelta`/`Poison` axes is the *victim*, not the loop that produced the growth — so two
+   * controllers draining one victim collide under the same `(player, axis)` key and such a join
+   * marks the wrong controller's row. The engine computes this on the controller key, which is
+   * the only place that identity still exists. This field is that answer.
+   *
+   * Meaningful on `unbounded_resources`. Entries in `scheduled_collapse` leave it unset —
+   * membership in that channel already IS the scheduled fact.
+   */
+  scheduled?: boolean;
 }
 
 /** Mirrors `engine::analysis::loop_check::WinKind` (unit variants → bare strings). */
@@ -2864,8 +2879,16 @@ export interface DerivedViews {
    * This channel and its two siblings below stay POPULATED after all players accept a
    * shortcut, until the engine applies the growth at the next CR 500.5 boundary. Deferring
    * the application across that window is an engine deviation, pre-existing and deliberate.
-   * What matters to the FE is only that the mark and its enablers are still live there, so
-   * `∞` is current engine state, not a stale mark. Render it.
+   * What matters to the FE is only that the mark is still live there, so `∞` is current engine
+   * state, not a stale mark. Render it.
+   *
+   * ONE EXCEPTION, stated here because it otherwise contradicts the `scheduled_collapse` block
+   * below: "stays populated" is about the ACCEPT, not about the board. A TOKEN-axis row is still
+   * dropped if its entire registered pile leaves the battlefield during that window — the engine
+   * will not render an `∞` beside an already-empty pile. Counter-axis rows are not dropped that
+   * way (the engine has no per-axis backing authority for them yet), so do not generalize the
+   * exception. Either way the accepted collapse itself is never cancelled: the row may vanish, the
+   * boundary still cashes the axis out, and `scheduled_collapse` still names it.
    */
   unbounded_resources?: UnboundedResourceView[];
   /**
@@ -2895,11 +2918,20 @@ export interface DerivedViews {
    * answers "what will the boundary cash out?", the row answers "does this ∞ still have live
    * board backing?".
    *
-   * A TAGGED ROW MAY BE ABSENT. The engine drops an object-growth row whose entire registered
-   * backing set has left the battlefield, while the accepted stash and its bound survive — so
-   * the boundary still cashes that axis out and the tag still names it. An orphan tag is
-   * CORRECT, not a bug. Join a row to its tag by exact `(player, axis)` equality; consumers
-   * iterate ROWS, so an orphan tag renders nothing.
+   * A TAGGED ROW MAY BE ABSENT. The engine drops a TOKEN-axis row whose entire registered pile
+   * has left the battlefield, while the accepted stash and its bound survive — so the boundary
+   * still cashes that axis out and the tag still names it. An orphan tag is CORRECT, not a bug.
+   * Join a row to its tag by exact `(player, axis)` equality; consumers iterate ROWS, so an
+   * orphan tag renders nothing.
+   *
+   * Scoped to the token axis deliberately — "object-growth row" would over-promise. Counter
+   * growth is object growth too, but the engine has no per-axis backing authority for counter
+   * axes yet, so this mechanism cannot orphan a counter tag. (A counter tag can orphan by an
+   * unrelated route: the engine re-derives a counter target's axis from its bearer's current
+   * characteristics, so that axis can change and stop matching its row — but only for a bearer
+   * whose live class is creature/planeswalker/battle, since every other bearer already derives
+   * the same "other" class while alive.) Nothing on the FE side changes when the engine gains
+   * that authority; this paragraph just narrows further.
    *
    * The accept→boundary window is an engine deviation, pre-existing and deliberate, licensed by
    * no CR. CR 732.2c governs only the CEILING (the accepted count bounds the collapse). CR 500.5

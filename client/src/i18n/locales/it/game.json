@@ -5,7 +5,13 @@
     "cantActivateDuring": "Non può essere attivata ora",
     "prohibited": "L'attivazione di questa abilità è proibita"
   },
-  "manaSourceSelection": { "title": "Scegli una fonte di mana", "description": "Questa abilità di mana richiede di sacrificare un permanente.", "sacrifice": "Sacrifica", "back": "Torna al pagamento del mana", "unknownSource": "Fonte di mana" },
+  "manaSourceSelection": {
+    "title": "Scegli una fonte di mana",
+    "description": "Questa abilità di mana richiede di sacrificare un permanente.",
+    "sacrifice": "Sacrifica",
+    "back": "Torna al pagamento del mana",
+    "unknownSource": "Fonte di mana"
+  },
   "comboShortcut": {
     "declareTitle": "Loop Shortcut",
     "declareSubtitle": "You control a loop with a determined outcome. Take the shortcut to resolve it.",
@@ -482,7 +488,8 @@
     "pendingCheaper": "La prossima magia costa {{amount}} in meno",
     "companion": "Compagno",
     "unboundedTooltip": "{{resource}} illimitato (∞)",
-    "unboundedScheduledTooltip": "{{resource}} illimitato (∞) — collasso in sospeso; sceglierai quanti",
+    "unboundedScheduledTooltip": "{{resource}} illimitato (∞) — collasso in sospeso; verrà scelta una quantità finita",
+    "unboundedScheduledGlyph": "∞→N",
     "unboundedManaPoolMarker": "Mana illimitato (∞)",
     "unboundedMana": "mana",
     "unboundedLife": "punti vita",

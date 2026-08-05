@@ -14,7 +14,8 @@
   "unbounded_resources": [
     {
       "axis": "TokensCreated",
-      "player": 0
+      "player": 0,
+      "scheduled": true
     }
   ]
 }

@@ -162,10 +162,34 @@ pub struct PlayerStatusView {
 /// controller): a payload-keyed axis (`Life(p)`/`DamageDealt(p)`/`LibraryDelta(p)`)
 /// routes to the player it names (the drain/mill victim or the lifegain/self-mill
 /// beneficiary), while aggregate axes route to the loop's controller.
+///
+/// NOT ALWAYS RENDERED: [`DerivedViews::scheduled_collapse`] reuses this type for the
+/// accepted-collapse contract, and an entry there may name an axis with no row above it (an
+/// orphan tag), which draws nothing. "One rendered row" describes this type's use in
+/// [`DerivedViews::unbounded_resources`] only.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UnboundedResourceView {
     pub player: PlayerId,
     pub axis: ResourceAxis,
+    /// Derived DISPLAY state: this axis has an accepted-but-unapplied collapse, so the badge
+    /// renders bounded (`∞→N`) rather than bare `∞`.
+    ///
+    /// Computed HERE, at the producing CONTROLLER key, and never by joining the two channels
+    /// downstream. That is not a style preference — a downstream join is measurably wrong.
+    /// Both channels key on [`attribution_player`], so a victim-attributed axis
+    /// (`Life(p)`/`DamageDealt(p)`/`LibraryDelta(p)`/`Poison(p)`) names its VICTIM; two
+    /// controllers draining the same victim then emit a row from one and a tag from the other
+    /// sharing the key `(victim, Life(victim))`, and any `(player, axis)` join marks the wrong
+    /// controller's row scheduled. The controller key is not recoverable after attribution, so
+    /// only the producing loop can answer this. Witnessed by
+    /// `two_controllers_draining_one_victim_do_not_cross_schedule`.
+    ///
+    /// [`DerivedViews::scheduled_collapse`] remains the authority for the CR 732.2c contract
+    /// (which collapse is accepted, and its bound); this flag is only its display shadow on a
+    /// row. Entries in the tag channel leave it `false` — membership there already IS the fact —
+    /// so it is omitted from their wire form entirely.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub scheduled: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -364,6 +388,12 @@ pub struct DerivedViews {
     /// engine decides both the axis identity and the player attribution
     /// ([`attribution_player`]); the frontend only formats each axis to a display
     /// family. Empty (and omitted) in the dominant case where no loop is active.
+    ///
+    /// NOT a straight projection of the mark: a TOKEN-axis row is withheld when its entire
+    /// registered pile has left the battlefield ([`object_growth_backing`]), so this can carry
+    /// FEWER axes than `GameState::unbounded_resources` marks. The mark, the accepted stash, and
+    /// [`Self::scheduled_collapse`] are all unaffected by that — it is a display decision, never
+    /// a cancellation of agreed growth (CR 732.2c).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub unbounded_resources: Vec<UnboundedResourceView>,
 
@@ -398,14 +428,30 @@ pub struct DerivedViews {
     /// questions: the tag answers "what will the boundary cash out?", the row answers "does this
     /// `∞` still have live board backing?".
     ///
-    /// A TAGGED ROW MAY THEREFORE BE ABSENT. `derive_views` drops an object-growth row whose
-    /// ENTIRE registered backing set has left the battlefield ([`object_growth_backing`]), while
-    /// the stash and its CR 732.2c bound survive untouched — so the boundary still cashes that
-    /// axis out and the tag must still name it. An ORPHAN TAG (an axis named here with no row
-    /// above) is CORRECT, not a bug; it is witnessed by
-    /// `combo_infinite_pile::object_growth_infinity_row_dies_with_its_last_pile_member`, whose
-    /// subject arm drops the `TokensCreated` row through the production `zones::move_to_zone`
-    /// chokepoint and asserts in the same arm that the stash, its bound, and the
+    /// A TAGGED ROW MAY THEREFORE BE ABSENT. `derive_views` drops a TOKEN-AXIS row whose ENTIRE
+    /// registered pile has left the battlefield ([`object_growth_backing`]), while the stash and
+    /// its CR 732.2c bound survive untouched — so the boundary still cashes that axis out and the
+    /// tag must still name it. An ORPHAN TAG (an axis named here with no row above) is CORRECT,
+    /// not a bug.
+    ///
+    /// SCOPED TO THE TOKEN AXIS ON PURPOSE, because "object growth" would over-promise: counter
+    /// growth is object growth too, but [`object_growth_backing`] returns `None` for every
+    /// `ResourceAxis::Counter(..)` (a controller-keyed store cannot answer a per-axis question —
+    /// see that function's GRANULARITY note), so this mechanism cannot orphan a counter tag.
+    ///
+    /// A counter tag can orphan by an unrelated route, stated with its precondition because the
+    /// unconditional version is false: `collapsed_counter_axis` re-derives a pair's axis from the
+    /// bearer's CURRENT characteristics, so the derived `ObjectClass` can change out from under a
+    /// marked axis and stop joining its row. That requires a bearer whose live class is
+    /// Creature/Planeswalker/Battle — every other bearer already derives `Other` while alive
+    /// (`analysis::resource::object_class`), so losing it changes nothing. The change of
+    /// characteristics is CR 400.7 when the bearer changed zones; a token that simply stopped
+    /// existing is CR 111.7 / CR 704.5d.
+    ///
+    /// Witnessed by `combo_infinite_pile::object_growth_infinity_row_dies_with_its_last_pile_member`,
+    /// whose subject arm drops the `TokensCreated` row through the production `zones::move_to_zone`
+    /// chokepoint and then asserts, in that same arm, both halves of the divergence: the tag still
+    /// names `TokensCreated` while the row is gone, and the stash, its bound, and the
     /// `GameState::unbounded_resources` mark all survive. Gating this tag on that same backing
     /// check would make the field UNDER-REPORT a live pending collapse, which is the opposite of
     /// what it is for. Join a row to its tag by exact `(player, axis)` equality — same single
@@ -1009,6 +1055,16 @@ pub fn derive_views(state: &GameState, viewer: Option<PlayerId>) -> DerivedViews
     // active — the dominant case. The engine owns attribution
     // (`attribution_player`); the frontend only formats each axis to a family.
     for (&controller, axes) in &state.unbounded_resources {
+        // CR 732.2c: which axes THIS controller has an accepted collapse for. Resolved once per
+        // controller, on the controller key, BEFORE attribution rewrites `player` — that ordering
+        // is the whole point. After `attribution_player` runs, a victim-attributed axis no longer
+        // carries the identity of the loop that produced it, so no downstream consumer (engine or
+        // frontend) can answer this correctly; two controllers draining one victim would collide.
+        let scheduled_axes = state
+            .pending_unbounded_materialization
+            .get(&controller)
+            .map(|items| state.scheduled_collapse_axes(items))
+            .unwrap_or_default();
         for &axis in axes {
             // CR 732.2a + CR 110.1: an object-growth ∞ whose ENTIRE registered display set
             // has left the battlefield has no live board backing left — drop the row rather
@@ -1021,6 +1077,7 @@ pub fn derive_views(state: &GameState, viewer: Option<PlayerId>) -> DerivedViews
             views.unbounded_resources.push(UnboundedResourceView {
                 player: attribution_player(axis, controller),
                 axis,
+                scheduled: scheduled_axes.contains(&axis),
             });
         }
     }
@@ -1046,6 +1103,10 @@ pub fn derive_views(state: &GameState, viewer: Option<PlayerId>) -> DerivedViews
             views.scheduled_collapse.push(UnboundedResourceView {
                 player: attribution_player(axis, controller),
                 axis,
+                // Left false deliberately: membership in THIS channel already is the
+                // scheduled fact, so setting it would be a redundant second encoding. It is
+                // `skip_serializing_if`-omitted, so the tag channel's wire form is unchanged.
+                scheduled: false,
             });
         }
     }
@@ -3740,6 +3801,87 @@ mod tests {
     /// genuine `{DamageDealt(P1), Life(P1)}` cert — both on the victim P1, never a
     /// controller `Life(P0)`.
     ///
+    /// Two controllers draining the SAME victim: each keeps its own `scheduled` answer.
+    ///
+    /// This is the shape that makes `UnboundedResourceView::scheduled` an engine field rather
+    /// than a downstream join. Both rows are attributed to the victim (CR 119.3 — a life axis
+    /// belongs on the HUD of the player whose life total moves), so on the wire they are two rows
+    /// with an IDENTICAL `(player, axis)` key that must nonetheless disagree about `scheduled`.
+    /// Any consumer joining `unbounded_resources` against `scheduled_collapse` by `(player, axis)`
+    /// — which is what the frontend used to do — cannot represent that: it sees one tag matching
+    /// both rows and marks P0's row scheduled off P1's accepted stash. Only the row loop, which
+    /// still has the producing controller in hand before `attribution_player` erases it, can
+    /// answer per-controller.
+    ///
+    /// MUTATION THAT REDS THIS: compute `scheduled` by testing the axis against the union of every
+    /// controller's scheduled set (the `(player, axis)` join) instead of `controller`'s own — then
+    /// both rows come back `true` and the `{false, true}` assertion fails. Dropping the field's
+    /// computation entirely (always `false`) reds it from the other side, so the assertion is
+    /// two-sided rather than merely non-empty.
+    #[test]
+    fn two_controllers_draining_one_victim_do_not_cross_schedule() {
+        use crate::types::game_state::PersistentAxisMaterialization;
+
+        let mut state = GameState::new(FormatConfig::commander(), 3, 42);
+        let (p0, p1, victim) = (PlayerId(0), PlayerId(1), PlayerId(2));
+        let axis = ResourceAxis::Life(victim);
+
+        // Both controllers run their own drain loop on the same victim.
+        state.mark_unbounded_loop(p0, &[axis]);
+        state.mark_unbounded_loop(p1, &[axis]);
+        // Only P1's collapse has been accepted.
+        state.register_pending_materialization(
+            p1,
+            PersistentAxisMaterialization::Life {
+                player: victim,
+                per_cycle_delta: 1,
+            },
+        );
+
+        let views = derive_views(&state, Some(victim));
+        let rows: Vec<&UnboundedResourceView> = views
+            .unbounded_resources
+            .iter()
+            .filter(|r| r.axis == axis)
+            .collect();
+
+        // REACH GUARD: both loops really reached the wire, and both landed on the victim's HUD.
+        // Without this, the `{false, true}` assertion below could be satisfied by a single row
+        // plus a phantom, or by rows that never got attributed to the victim at all.
+        assert_eq!(
+            rows.len(),
+            2,
+            "reach: both controllers' drain loops must project a row, got {rows:?}"
+        );
+        assert!(
+            rows.iter().all(|r| r.player == victim),
+            "reach: a life axis attributes to the victim (CR 119.3), got {rows:?}"
+        );
+
+        // THE assertion: exactly one row is scheduled. Compared as a multiset because the two rows
+        // are indistinguishable by their wire key — `scheduled` is the ONLY field that separates
+        // them, which is precisely why a key-based join cannot reproduce it.
+        let mut flags: Vec<bool> = rows.iter().map(|r| r.scheduled).collect();
+        flags.sort_unstable();
+        assert_eq!(
+            flags,
+            vec![false, true],
+            "exactly one of the two same-keyed rows is scheduled — P1 accepted a collapse, P0 did \
+             not; got {rows:?}"
+        );
+
+        // The tag channel still carries the contract, and carries it ONCE (P1's accepted stash).
+        // This is what keeps the row flag honest as a display shadow rather than a second source:
+        // if the tag loop and the row flag ever disagreed on how many collapses are accepted, one
+        // of them is wrong.
+        let tags: Vec<ResourceAxis> = views.scheduled_collapse.iter().map(|t| t.axis).collect();
+        assert_eq!(
+            tags,
+            vec![axis],
+            "the accepted-collapse contract names this axis exactly once, got {tags:?}"
+        );
+    }
+
     /// REVERT-PROBE: delete the `derive_views` projection loop → `unbounded_resources`
     /// is empty → both `contains` assertions fail. Without the `mark_unbounded_loop`
     /// call the projection is also empty.
@@ -3766,6 +3908,7 @@ mod tests {
             views.unbounded_resources.contains(&UnboundedResourceView {
                 player: PlayerId(1),
                 axis: ResourceAxis::DamageDealt(PlayerId(1)),
+                scheduled: false,
             }),
             "opponent-burn ∞ damage must land on the victim P1's HUD"
         );
@@ -3773,6 +3916,7 @@ mod tests {
             views.unbounded_resources.contains(&UnboundedResourceView {
                 player: PlayerId(1),
                 axis: ResourceAxis::Life(PlayerId(1)),
+                scheduled: false,
             }),
             "opponent-drain ∞ life must land on the victim P1's HUD"
         );
@@ -3814,6 +3958,7 @@ mod tests {
             views.unbounded_resources.contains(&UnboundedResourceView {
                 player: PlayerId(1),
                 axis: ResourceAxis::DamageDealt(PlayerId(1)),
+                scheduled: false,
             }),
             "damage ∞ belongs to the victim P1, not the controller"
         );
@@ -3821,6 +3966,7 @@ mod tests {
             views.unbounded_resources.contains(&UnboundedResourceView {
                 player: PlayerId(1),
                 axis: ResourceAxis::Life(PlayerId(1)),
+                scheduled: false,
             }),
             "drain ∞ belongs to the victim P1, not the controller"
         );
@@ -3850,6 +3996,7 @@ mod tests {
             views.unbounded_resources.contains(&UnboundedResourceView {
                 player: PlayerId(0),
                 axis: ResourceAxis::TokensCreated,
+                scheduled: false,
             }),
             "a non-mana unbounded axis must still project an ∞ row on its controller"
         );

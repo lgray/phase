@@ -53,22 +53,37 @@ describe("unbounded ∞ wire seam (engine-emitted goldens)", () => {
     // the accept while a finite collapse is merely SCHEDULED, so both carry a populated tag.
     expect(tokenWire.scheduled_collapse).toEqual([{ axis: "TokensCreated", player: 0 }]);
     // (5) the tag on the second family — pins the externally-tagged `ResourceAxis` encoding
-    // across the language boundary: a data variant is a single-key OBJECT, not a bare string,
-    // which is why `unboundedFamilyViews` keys its join by structural equality.
+    // across the language boundary: a data variant is a single-key OBJECT, not a bare string.
     expect(counterWire.scheduled_collapse[0].axis).toEqual({ Counter: ["Other", "Other"] });
-    // (6) JOIN row: every tagged `(player, axis)` matches some `unbounded_resources` row by exact
-    // equality — the contract the HUD join relies on. Asserted on THESE goldens, where the whole
-    // registered backing is still on the battlefield. It is NOT a general engine invariant: a row
-    // whose entire backing set has left the battlefield is dropped while its tag survives (the
-    // boundary still cashes that axis out), which is why the consumer iterates ROWS and an orphan
-    // tag renders nothing. Engine-side witness:
+    // (6) THE TWO ENGINE ANSWERS AGREE. `scheduled_collapse` (the accepted-collapse contract) and
+    // each row's `scheduled` flag (its display shadow) are computed by different loops over
+    // different state, so this cross-checks one against the other: every tagged axis has a row
+    // flagged scheduled, and no row is flagged without a tag naming it.
+    //
+    // The client no longer performs this join — it reads `row.scheduled`, because a
+    // `(player, axis)` join is not even expressible for two controllers draining one victim (both
+    // rows share the key). This assertion is a WIRE-CONSISTENCY check on the engine's two outputs,
+    // not a reconstruction of the flag.
+    //
+    // Asserted on THESE goldens, where the whole registered backing is still on the battlefield.
+    // NOT a general invariant in the tag→row direction: a token-axis row whose entire pile has left
+    // is dropped while its tag survives (the boundary still cashes that axis out), leaving an
+    // orphan tag that correctly renders nothing. Engine-side witness:
     // `combo_infinite_pile::object_growth_infinity_row_dies_with_its_last_pile_member`.
-    const everyTagJoinsARow = (tags: unknown[], rows: unknown[]): boolean => {
-      const rowKeys = new Set(rows.map((r) => JSON.stringify(r)));
-      return tags.length > 0 && tags.every((tag) => rowKeys.has(JSON.stringify(tag)));
+    const agrees = (wire: { scheduled_collapse: { axis: unknown; player: number }[]; unbounded_resources: { axis: unknown; player: number; scheduled?: boolean }[] }): boolean => {
+      const tagKeys = new Set(wire.scheduled_collapse.map((t) => JSON.stringify([t.player, t.axis])));
+      const flaggedKeys = new Set(
+        wire.unbounded_resources.filter((r) => r.scheduled).map((r) => JSON.stringify([r.player, r.axis])),
+      );
+      return (
+        tagKeys.size > 0 &&
+        flaggedKeys.size > 0 &&
+        [...tagKeys].every((k) => flaggedKeys.has(k)) &&
+        [...flaggedKeys].every((k) => tagKeys.has(k))
+      );
     };
-    expect(everyTagJoinsARow(tokenWire.scheduled_collapse, tokenWire.unbounded_resources)).toBe(true);
-    expect(everyTagJoinsARow(counterWire.scheduled_collapse, counterWire.unbounded_resources)).toBe(true);
+    expect(agrees(tokenWire as never)).toBe(true);
+    expect(agrees(counterWire as never)).toBe(true);
   });
 
   it("drives the real groupByName pile predicate off engine ids", () => {

@@ -220,7 +220,7 @@ export function OpponentSeatHeader({ playerId, compact = false, onKickPlayer }: 
                 condition={condition}
               />
             ))}
-            {unboundedFamilyViews(designations.unboundedResources, designations.scheduledCollapse).map(
+            {unboundedFamilyViews(designations.unboundedResources).map(
               (u) => <UnboundedBadge key={u.family} family={u.family} scheduled={u.scheduled} />,
             )}
             {isPhasedOut ? <StatusBadge label={t("player.phasedOut")} tone="neutral" /> : null}

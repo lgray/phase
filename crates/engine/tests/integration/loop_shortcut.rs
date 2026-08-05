@@ -7439,8 +7439,9 @@ fn scheduled_collapse_still_renders_the_unbounded_badge() {
 
         // PINNED CO-OBSERVATION (§7), asserted BEFORE the tag axis so every probe arm reaches it:
         // *tagging* must not filter the ∞ rows. Rows CAN be dropped — `object_growth_backing`
-        // drops one whose entire registered backing set has left the battlefield — but that is an
-        // unrelated, board-liveness reason. This fixture keeps its whole backing intact (every
+        // drops a TOKEN-axis row whose entire registered pile has left the battlefield (counter
+        // axes have no per-axis backing authority yet, so they are never dropped this way) — but
+        // that is an unrelated, board-liveness reason. This fixture keeps its whole backing intact (every
         // stored pile member is still on the battlefield, pinned by `expected_pile` above), which
         // is what makes this pin meaningful rather than accidental: the only thing that could move
         // it here is the tag loop reaching into the row loop.

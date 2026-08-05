@@ -430,39 +430,41 @@ export const familyOf = (axis: ResourceAxis): ResourceAxisFamily =>
   UNBOUNDED_FAMILY[axisTag(axis)];
 
 /**
- * Collapse the engine's per-axis ∞ rows to one entry per display family, carrying the engine's
- * scheduled tag through. Presentation formatting only: the engine owns axis identity, attribution
- * and which axes are scheduled — this decides nothing. A family badge stands for several axes, so
- * it is scheduled iff ANY member axis is.
+ * Collapse the engine's per-axis ∞ rows to one entry per display family, carrying each row's
+ * engine-computed `scheduled` flag through. Presentation formatting only: the engine owns axis
+ * identity, attribution, and which axes are scheduled — this decides nothing.
  *
- * Driven by ROWS, never by the tag. The engine's tag names a pending collapse, and it can name an
- * axis whose ∞ row the engine has already dropped (that loop's board backing left play while the
- * accepted collapse survives). Such an orphan tag correctly renders nothing.
+ * READS `row.scheduled`; it does NOT join the two channels. There used to be a
+ * `(player, axis)` join against `scheduled_collapse` here, and it was wrong: both channels key on
+ * the engine's ATTRIBUTION player, so a victim-attributed axis (`Life(p)` and friends) names its
+ * victim rather than the loop that produced it. Two controllers draining one victim then emit a
+ * row from one and a tag from the other under the same key, and the join marked the wrong
+ * controller's row scheduled. The controller identity needed to disambiguate does not exist on
+ * this side of the wire, so the join moved into the engine's row loop, where it does. A join is a
+ * computation over game state, which per `CLAUDE.md` was never the display layer's to perform.
  *
- * JSON.stringify, not `===`: `ResourceAxis` is EXTERNALLY TAGGED — unit variants arrive as bare
- * strings ("TokensCreated") but data variants arrive as objects ({"Counter":["Other","Other"]},
- * MEASURED in the committed counter golden), and reference equality never matches two structurally
- * equal objects. Both sides come from the same serde emission in the same `DerivedViews`, so key
- * order is stable. `axisTag` is deliberately NOT reused as the key: it returns only the variant
- * tag, so two different `Counter(..)` axes would collide and the join would over-report.
+ * `scheduled_collapse` is still the authority for the accepted-collapse contract and its bound;
+ * this component just doesn't reconstruct it. An orphan tag (an axis tagged with no row) renders
+ * nothing, which remains correct — rows drive the display.
  */
-export function unboundedFamilyViews(
-  rows: UnboundedResourceView[],
-  scheduled: UnboundedResourceView[],
-): UnboundedFamilyView[] {
-  // Keyed on (player, axis), not axis alone. Every production caller today passes both arrays
-  // from one `usePlayerDesignations(playerId)`, whose `forPlayer` has already filtered both on
-  // `entry.player === playerId` — so axis-only was equivalent AT THOSE CALL SITES. It was not
-  // equivalent as a contract: given unfiltered inputs, a tag for seat 1 marked seat 0's badge
-  // scheduled. Three docs already specified `(player, axis)` equality; the code did not implement
-  // it. Fixed in the code rather than by weakening the docs, because the next caller that forgets
-  // to pre-filter gets the right answer instead of a silent cross-seat badge.
-  const scheduledKeys = new Set(scheduled.map((s) => JSON.stringify([s.player, s.axis])));
+export function unboundedFamilyViews(rows: UnboundedResourceView[]): UnboundedFamilyView[] {
   const families = new Map<ResourceAxisFamily, boolean>();
   for (const row of rows) {
     const family = familyOf(row.axis);
-    const isScheduled = scheduledKeys.has(JSON.stringify([row.player, row.axis]));
-    families.set(family, (families.get(family) ?? false) || isScheduled);
+    // A family is scheduled iff ANY member axis is, so this fold OVER-reports: it never marks a
+    // family with no scheduled axis in it, but one scheduled axis can cover an unscheduled
+    // sibling. Reachable rather than theoretical — `familyOf` maps both `Counter` and `Poison` to
+    // "counters" (and six tags to "triggers"), and one accepted proposal has been measured
+    // carrying two distinct `Counter(..)` axes. So a seat with a scheduled counter axis and an
+    // unscheduled poison axis sees one `∞→N` spanning both.
+    //
+    // Deliberate, and the OPPOSITE direction from the wire's KEYING LIMIT (which under-reports) —
+    // worth stating since the two are documented a few files apart. Over-reporting is preferred
+    // here because a family badge is a single glyph: under-reporting would render a bare `∞` for a
+    // collapse the table has already accepted, hiding a commitment, while over-reporting asserts
+    // "something in this family is about to be bounded", which is true. Per-axis badges are the
+    // alternative, and that is a display redesign rather than a change to this fold.
+    families.set(family, (families.get(family) ?? false) || row.scheduled === true);
   }
   return [...families].map(([family, s]) => ({ family, scheduled: s }));
 }
@@ -515,9 +517,14 @@ export function UnboundedBadge({
 }) {
   const { t } = useTranslation("game");
   const resource = t(UNBOUNDED_FAMILY_LABEL_KEY[family]);
-  // A scheduled collapse is an accepted-but-unapplied bound: the player will be asked to name N at
-  // the next step/phase end. The window itself is an engine deviation, not a rules state — this
-  // only reports what the engine says is pending.
+  // A scheduled collapse is an accepted-but-unapplied bound, and N is named at the next step/phase
+  // end by the loop's CONTROLLER — who is not necessarily the seat this badge sits on. The row is
+  // keyed by the engine's attribution player, which for `Life`/`DamageDealt`/`LibraryDelta`/
+  // `Poison` axes is the victim, and the badge also renders on opponent HUDs. So the copy stays in
+  // the passive voice: a second-person promise here would be addressed to the wrong seat in both
+  // cases. Emitting the prompted seat is the engine's to add, and is owned by the follow-on PR.
+  // The window itself is an engine deviation, not a rules state — this only reports what the
+  // engine says is pending.
   const title = scheduled
     ? t("badges.unboundedScheduledTooltip", { resource })
     : t("badges.unboundedTooltip", { resource });
@@ -532,7 +539,12 @@ export function UnboundedBadge({
           aria-hidden
           className="absolute inset-0 rounded-full bg-[radial-gradient(circle_at_30%_24%,rgba(255,255,255,0.85)_0_9%,transparent_11%),linear-gradient(135deg,#fae8ff_0%,#d946ef_42%,#701a75_100%)]"
         />
-        <span className="relative drop-shadow-[0_1px_1px_rgba(0,0,0,0.5)]">{scheduled ? "∞→N" : "∞"}</span>
+        {/* `∞` alone is a universal symbol, but the bounded form is frontend-authored copy — the
+            "N" is a letter standing for "some number", which is language-dependent. Localized for
+            the same reason its tooltip is. */}
+        <span className="relative drop-shadow-[0_1px_1px_rgba(0,0,0,0.5)]">
+          {scheduled ? t("badges.unboundedScheduledGlyph") : "∞"}
+        </span>
         <span aria-hidden className="relative text-[10px] leading-none drop-shadow-[0_1px_1px_rgba(0,0,0,0.5)]">
           {UNBOUNDED_FAMILY_GLYPH[family]}
         </span>
