@@ -450,11 +450,18 @@ export function unboundedFamilyViews(
   rows: UnboundedResourceView[],
   scheduled: UnboundedResourceView[],
 ): UnboundedFamilyView[] {
-  const scheduledKeys = new Set(scheduled.map((s) => JSON.stringify(s.axis)));
+  // Keyed on (player, axis), not axis alone. Every production caller today passes both arrays
+  // from one `usePlayerDesignations(playerId)`, whose `forPlayer` has already filtered both on
+  // `entry.player === playerId` — so axis-only was equivalent AT THOSE CALL SITES. It was not
+  // equivalent as a contract: given unfiltered inputs, a tag for seat 1 marked seat 0's badge
+  // scheduled. Three docs already specified `(player, axis)` equality; the code did not implement
+  // it. Fixed in the code rather than by weakening the docs, because the next caller that forgets
+  // to pre-filter gets the right answer instead of a silent cross-seat badge.
+  const scheduledKeys = new Set(scheduled.map((s) => JSON.stringify([s.player, s.axis])));
   const families = new Map<ResourceAxisFamily, boolean>();
   for (const row of rows) {
     const family = familyOf(row.axis);
-    const isScheduled = scheduledKeys.has(JSON.stringify(row.axis));
+    const isScheduled = scheduledKeys.has(JSON.stringify([row.player, row.axis]));
     families.set(family, (families.get(family) ?? false) || isScheduled);
   }
   return [...families].map(([family, s]) => ({ family, scheduled: s }));

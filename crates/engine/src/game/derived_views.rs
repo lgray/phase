@@ -924,7 +924,9 @@ pub fn derive_views(state: &GameState, viewer: Option<PlayerId>) -> DerivedViews
     views.turn_order = turn_order;
     views.viewer_turn_number = viewer_turn_number;
 
-    // WHY THE THREE ∞ CHANNELS BELOW ARE UNCONDITIONAL — the accept→boundary window.
+    // WHY THE THREE ∞ SURFACE CHANNELS BELOW ARE UNCONDITIONAL — the accept→boundary window.
+    // (The `scheduled_collapse` TAG loop also sits below this header and is also unconditional,
+    // but it is not a SURFACE — it projects the schedule, and filters no surface.)
     //
     // THE WINDOW IS AN ENGINE DEVIATION, PRE-EXISTING AND DELIBERATE — NOT A RULES ENTITLEMENT, and
     // no CR is cited as licensing it. CR 732.2c has the shortcut taken the moment the last player

@@ -44,6 +44,24 @@ describe("unboundedFamilyViews", () => {
     expect(views.find((v) => v.family === "counters")?.scheduled).toBe(true);
   });
 
+  // U3 above holds every row at the default seat, so it passes identically whether the join keys
+  // on `axis` or on `(player, axis)` — it never discriminated the "(player, axis)" half of its own
+  // name. This row does. Review found the code keyed on axis ALONE while three separate docs
+  // specified `(player, axis)`, so an unfiltered tag for seat 1 marked seat 0's badge scheduled.
+  // Not reachable through today's callers — all four pre-filter by seat via
+  // `usePlayerDesignations` — which is precisely why it belongs at the function's own level and
+  // not at the hook's: an unreachable-today contract violation is still what the fifth caller
+  // walks into. Reverting the key to `JSON.stringify(s.axis)` reds this row alone.
+  it("U3c/seat: a tag for ANOTHER seat must not schedule this seat's badge", () => {
+    const views = unboundedFamilyViews([row(TOKENS, 0)], [row(TOKENS, 1)]);
+    expect(views).toEqual([{ family: "tokens", scheduled: false }]);
+
+    // Matched pair — same axis, SAME seat, so the seat is the only thing that differs between the
+    // two halves. Without this, a join that never schedules anything satisfies the assertion above.
+    const same = unboundedFamilyViews([row(TOKENS, 1)], [row(TOKENS, 1)]);
+    expect(same).toEqual([{ family: "tokens", scheduled: true }]);
+  });
+
   it("U3b/structural: matches a data-variant axis structurally, not by reference", () => {
     // COMPOSED — object-shaped axis on BOTH sides, built as two DISTINCT objects so a `===`
     // join can never match them. The committed counter golden really does carry

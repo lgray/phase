@@ -3558,7 +3558,10 @@ pub enum PersistentAxisMaterialization {
 /// remaining consumers are LIVE, and byte-identical to the pre-extraction nested
 /// `counter_axis` helper they already used:
 ///   • `scheduled_collapse_axes` — read by `clear_collapsed_materializations` to pick the
-///     removals. Exactly the fail-open described above: a removal that finds nothing.
+///     removals, AND by `derive_views`' tag loop to project `DerivedViews::scheduled_collapse`.
+///     Exactly the fail-open described above: a removal that finds nothing, and a tag that joins
+///     no row. The orphan tag renders plain `∞` rather than `∞→N`, so the polarity is unchanged —
+///     nothing is hidden, one affordance is merely not offered.
 ///   • `clear_collapsed_materializations`' own surviving-target guard.
 ///
 /// That fail-open polarity is the SAME one this phase mandates everywhere else (an axis
@@ -19905,10 +19908,16 @@ impl GameState {
     }
 
     /// CR 732.2a: the exact `ResourceAxis` set a deferred materialization stash will
-    /// collapse at the next CR 500.5 boundary. SINGLE AUTHORITY with ONE production caller,
-    /// `clear_collapsed_materializations`, which REMOVES these axes once the growth was applied.
+    /// collapse at the next CR 500.5 boundary. SINGLE AUTHORITY with TWO production callers:
+    /// `clear_collapsed_materializations`, which REMOVES these axes once the growth was applied,
+    /// and `game::derived_views`' tag loop, which PROJECTS them as `DerivedViews::scheduled_collapse`.
     ///
-    /// NOT a display filter, and deliberately not read by `game::derived_views`. This stash is the
+    /// NOT a display FILTER. `derive_views` reads this to emit a tag, but no `∞` surface is
+    /// filtered by it — the surfaces are gated on their own stores and on live battlefield
+    /// membership, never on this set. (This doc previously said "ONE production caller" and
+    /// "deliberately not read by `game::derived_views`"; the commit that added the tag loop
+    /// falsified both and corrected the mirror sentence in `derived_views` but not this one — the
+    /// doc a future caller reads first.) This stash is the
     /// engine's DEFERRAL of an accepted shortcut's results — an engine deviation, pre-existing and
     /// deliberate, that no CR licenses. The count itself is already fixed at accept
     /// (`pending_materialization_count`); what is deferred is putting the growth on the board.
