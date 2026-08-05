@@ -163,12 +163,26 @@ pub fn compare(
     // reports derive their seeds the same way and play them under the same AI, so the two
     // inputs that define what a seed means are checked before any row is classified.
     //
-    // `games_per_matchup` is deliberately NOT here. It changes how MANY seeds exist, not
-    // what a seed means, so the samples that do pair are still comparable — and the nightly
-    // job runs `--games 100` against a `games_per_matchup: 10` baseline today, so erroring
-    // would break a live workflow instead of informing it. That difference is surfaced as
-    // the unpaired counters below, which is the honest treatment: it was previously
-    // discarded in silence.
+    // `games_per_matchup` IS here, and the reasoning that kept it out is recorded because it
+    // was wrong in an instructive way. It changes how MANY seeds exist rather than what a seed
+    // means, so the samples that do pair really are comparable — from which an earlier draft
+    // concluded that counting the unpaired remainder (the `unpaired_*` columns below) was the
+    // honest treatment, and that erroring would break a live nightly that runs `--games 100`
+    // against a `games_per_matchup: 10` baseline.
+    //
+    // The error in that is one layer downstream of the comparator. A `Warn` leaves `any_fail`
+    // false, so the gate exits 0, so the nightly step SUCCEEDS, and the step that publishes the
+    // report is guarded by `if: steps.gate.outcome == 'failure'`. The counters were therefore
+    // written to a file nobody reads: a green run that compared a tenth of its sample and said
+    // so only where nothing was listening. Producing a diagnostic is not surfacing it. A gate
+    // whose verdict covers 10% of the evidence must not be able to return Pass, so this is an
+    // incompatibility, and the diagnostics survive it — `render_error_markdown` puts the two
+    // values on stdout, which is what the workflow captures as the report body, so the failure
+    // opens a drift issue that says exactly which knob to turn.
+    //
+    // The columns stay. A mismatch of this field is now refused, but two reports built at the
+    // same `games_per_matchup` can still fail to pair — a crashed matchup, a filter change —
+    // and that remainder is still counted rather than skipped.
     //
     // `card_data_hash` is also not here: the committed baseline's hash matches no card-data
     // present on any current checkout, so gating it would fail every run immediately. The
@@ -186,6 +200,13 @@ pub fn compare(
             field: "difficulty",
             baseline: baseline.difficulty.clone(),
             current: current.difficulty.clone(),
+        });
+    }
+    if baseline.games_per_matchup != current.games_per_matchup {
+        return Err(CompareError::WorkloadMismatch {
+            field: "games_per_matchup",
+            baseline: baseline.games_per_matchup.to_string(),
+            current: current.games_per_matchup.to_string(),
         });
     }
 
@@ -738,14 +759,19 @@ fn render_markdown(report: &CompareReport) -> String {
 /// Applied uniformly rather than only to the fields that look risky today: deciding per field
 /// means re-deciding every time a field is added, and one of those decisions will be wrong.
 fn md_cell(text: &str) -> String {
-    text.replace('|', "\\|").replace(['\n', '\r'], " ")
+    // ORDER IS LOAD-BEARING: backslashes first, then pipes. The reverse — which this function
+    // did until review caught it — turns the input `\|` into `\\|`, and a markdown parser
+    // reads that as an escaped backslash followed by a LIVE separator, so the very input that
+    // looks pre-escaped is the one that breaks the row. Escaping backslashes first makes every
+    // backslash run even before any `\|` is introduced, so no emitted `|` can ever be preceded
+    // by an odd run.
+    text.replace('\\', "\\\\")
+        .replace('|', "\\|")
+        .replace(['\n', '\r'], " ")
 }
 
-/// Render the comparison table to stdout + emit a summary line.
-pub fn print_markdown(report: &CompareReport) {
-    println!();
-    print!("{}", render_markdown(report));
-
+/// Everything a successful comparison writes to stdout: the table, plus the counts line.
+fn render_stdout(report: &CompareReport) -> String {
     let mut pass = 0usize;
     let mut warn = 0usize;
     let mut fail = 0usize;
@@ -760,7 +786,56 @@ pub fn print_markdown(report: &CompareReport) {
             CompareStatus::Removed => removed += 1,
         }
     }
-    println!("\ncompare: {fail} FAIL, {warn} WARN, {pass} PASS, {new} NEW, {removed} REMOVED");
+    format!(
+        "\n{}\ncompare: {fail} FAIL, {warn} WARN, {pass} PASS, {new} NEW, {removed} REMOVED\n",
+        render_markdown(report)
+    )
+}
+
+/// Render the comparison table to stdout + emit a summary line.
+pub fn print_markdown(report: &CompareReport) {
+    print!("{}", render_stdout(report));
+}
+
+/// The report body for a comparison that could not be made at all.
+///
+/// A refused comparison is the case most likely to be read by someone who did not run it: the
+/// nightly captures stdout into `target/ai-gate-report.md` and posts it as a drift issue, and it
+/// posts nothing when that file is empty. Writing the refusal only to stderr would therefore turn
+/// a hard, correct refusal into "AI gate failed without a drift report" — a red job with no
+/// statement of what is wrong. The remedy is named per field, because the reader of the issue is
+/// the person who has to choose between re-recording the baseline and changing the workload.
+pub fn render_error_markdown(err: &CompareError) -> String {
+    let remedy = match err {
+        CompareError::WorkloadMismatch { field, .. } => format!(
+            "The two reports were produced under different `{field}`, so their seeds do not \
+             denote the same games and no verdict can be built by pairing them. Either re-record \
+             the baseline under the current workload (`cargo ai-gate --refresh-baseline` with the \
+             same flags this run used) or run the gate under the baseline's workload. This is not \
+             drift: nothing was measured."
+        ),
+        CompareError::SchemaMismatch { .. } => "The baseline predates the current report format. \
+             Re-record it with `cargo ai-gate --refresh-baseline`."
+            .to_string(),
+        CompareError::Io(_) | CompareError::Parse(_) => {
+            "The baseline could not be read. Check the path and the file's contents.".to_string()
+        }
+    };
+    format!("## AI gate: comparison refused\n\n**{err}**\n\n{remedy}\n")
+}
+
+/// What the gate prints on stdout and what it exits with, decided together.
+///
+/// These two are one decision, not two: the nightly opens its drift issue only when the exit is
+/// non-zero, and aborts with "failed without a drift report" when stdout was empty, so a change
+/// that satisfies either alone silently disables the other. Returning both from one function is
+/// what lets a test bind the pair — `main` only prints and exits.
+pub fn gate_verdict(comparison: &Result<CompareReport, CompareError>) -> (String, i32) {
+    match comparison {
+        Ok(report) if report.any_fail() => (render_stdout(report), 1),
+        Ok(report) => (render_stdout(report), 0),
+        Err(err) => (render_error_markdown(err), 2),
+    }
 }
 
 #[cfg(test)]
@@ -1555,18 +1630,13 @@ mod tests {
         line.split('|').nth(index + 1).unwrap().trim()
     }
 
-    /// **Every column carries the value it claims to.** Round 3 of review measured that the table
-    /// was pinned by header *label* only: freezing the `Δ avg turns` cell to a constant, and
-    /// swapping the `dec→draw` / `draw→dec` cells so the recorded incident would print its counters
-    /// backwards, both survived the entire suite. A column that renders the wrong number defeats
-    /// the invariant exactly as thoroughly as a missing one, since columns are the only surface
-    /// that survives first-match-wins reason suppression.
+    /// Only `unpaired_baseline` moves: every seed that pairs is UNCHANGED, so every other axis
+    /// reads zero. Before this arm existed such a row scored zero on everything and returned
+    /// Pass while half its samples went unexamined.
     ///
-    /// The fixture gives every numeric axis a DISTINCT value (2, 3, 4, 1, and two different
-    /// p-values), so no pair of cells can be transposed without changing the rendered text.
-    /// Condition: only `unpaired_baseline` moves. Every paired seed is UNCHANGED, so every
-    /// other axis reads zero — before this arm existed the row scored zero on everything and
-    /// returned Pass while half its samples went unexamined.
+    /// (The two paragraphs that stood here were copied from
+    /// `markdown_cells_carry_their_own_column_values` and described that test's distinct-value
+    /// fixture, which this one does not have — every counter here is deliberately zero.)
     #[test]
     fn an_unmatched_baseline_sample_warns_instead_of_passing() {
         let before: &[(u64, Option<u8>, u32)] = &[
@@ -1727,11 +1797,17 @@ mod tests {
         assert_eq!(report.rows.len(), 1);
     }
 
-    /// `games_per_matchup` differing must NOT error: the nightly runs `--games 100` against a
-    /// 10-game baseline, so erroring would break a live workflow. The samples that pair are
-    /// still comparable, and the ones that do not are surfaced as unpaired counts instead.
+    /// A differing `games_per_matchup` is refused, and this test is the inversion of one that
+    /// asserted the opposite. The samples that pair really are comparable, which is why the
+    /// earlier version counted the remainder and Warned — but a Warn keeps `any_fail` false, the
+    /// gate exits 0, and the nightly publishes its report only on a non-zero exit. The counters
+    /// existed and were never read. A verdict drawn from a tenth of the sample must not be able
+    /// to come back Pass.
+    ///
+    /// The two assertions below are the pair that makes this a fix rather than a trade: the row
+    /// count pins that no verdict is produced, and the body pins that the diagnostics survive.
     #[test]
-    fn a_different_games_per_matchup_is_reported_not_refused() {
+    fn a_different_games_per_matchup_is_refused_with_its_diagnostics_intact() {
         let before: &[(u64, Option<u8>, u32)] = &[(1, Some(0), 10)];
         let after: &[(u64, Option<u8>, u32)] = &[(1, Some(0), 10), (2, Some(0), 10)];
         let mut baseline = mk_report(vec![mk_result_from_games("n", before)]);
@@ -1739,10 +1815,69 @@ mod tests {
         baseline.games_per_matchup = 1;
         current.games_per_matchup = 2;
 
-        let report = compare(&baseline, &current, &CompareOptions).expect("must not refuse");
-        assert_eq!(report.rows[0].unpaired_current, 1);
-        assert_eq!(report.rows[0].status, CompareStatus::Warn);
-        assert!(!report.any_fail());
+        // PREMISE: the two fields that already gated are equal, so the refusal below can only
+        // come from the new one.
+        assert_eq!(baseline.base_seed, current.base_seed);
+        assert_eq!(baseline.difficulty, current.difficulty);
+
+        let err = compare(&baseline, &current, &CompareOptions).expect_err("must refuse");
+        assert!(
+            matches!(&err, CompareError::WorkloadMismatch { field, .. } if *field == "games_per_matchup"),
+            "unexpected error: {err:?}"
+        );
+
+        // Both values reach the reader, so the drift issue says which knob to turn.
+        let body = render_error_markdown(&err);
+        assert!(body.contains("games_per_matchup"), "{body}");
+        assert!(body.contains("baseline=1"), "{body}");
+        assert!(body.contains("current=2"), "{body}");
+        assert!(body.contains("--refresh-baseline"), "{body}");
+    }
+
+    /// The workflow's two conditions for posting a drift issue, asserted together on the refusal
+    /// path: a non-zero exit (`if: steps.gate.outcome == 'failure'`) AND a non-empty stdout body
+    /// (`if [ ! -s target/ai-gate-report.md ]; then ... exit 1`). Pinning one alone cannot see
+    /// the failure this change exists to prevent — the pre-change behaviour satisfied neither on
+    /// a mismatched workload, and printing the refusal to stderr alone would satisfy only the
+    /// first, producing a red job whose issue body is empty.
+    #[test]
+    fn a_refused_comparison_exits_nonzero_and_still_writes_a_report_body() {
+        let mut baseline = mk_report(vec![mk_result("n", 5, 10, SuiteStatus::Pass)]);
+        let current = mk_report(vec![mk_result("n", 5, 10, SuiteStatus::Pass)]);
+        baseline.games_per_matchup = 99;
+
+        let (body, code) = gate_verdict(&compare(&baseline, &current, &CompareOptions));
+        assert_eq!(code, 2, "a refusal must fail the gate step");
+        assert!(!body.trim().is_empty(), "the report body must not be empty");
+        assert!(body.contains("games_per_matchup"), "{body}");
+    }
+
+    /// Control arm for the test above: `gate_verdict` must not be a constant. An implementation
+    /// returning `(something, 2)` for everything would satisfy the refusal assertions completely
+    /// while breaking every green run, so the three outcomes are pinned to three distinct codes
+    /// — and each carries a body, because the nightly aborts on an empty report file whatever
+    /// the exit code was.
+    #[test]
+    fn gate_verdict_maps_each_outcome_to_its_own_exit_code() {
+        let clean = mk_report(vec![mk_result("n", 5, 10, SuiteStatus::Pass)]);
+        let (pass_body, pass_code) = gate_verdict(&compare(&clean, &clean, &CompareOptions));
+        assert_eq!(pass_code, 0);
+        assert!(pass_body.contains("compare: 0 FAIL"), "{pass_body}");
+
+        // A matchup that regressed into Fail: a comparison that succeeded and found drift.
+        let regressed = mk_report(vec![mk_result("n", 5, 10, SuiteStatus::Fail)]);
+        let comparison = compare(&clean, &regressed, &CompareOptions);
+        // PREMISE: this really is the drift path, not another refusal.
+        assert!(comparison.as_ref().expect("must compare").any_fail());
+        let (fail_body, fail_code) = gate_verdict(&comparison);
+        assert_eq!(fail_code, 1);
+        assert!(fail_body.contains("| n |"), "{fail_body}");
+
+        let mut incomparable = clean.clone();
+        incomparable.schema_version += 1;
+        let (err_body, err_code) = gate_verdict(&compare(&incomparable, &clean, &CompareOptions));
+        assert_eq!(err_code, 2);
+        assert!(err_body.contains("schema_version"), "{err_body}");
     }
 
     #[test]
@@ -1849,6 +1984,69 @@ mod tests {
     /// same cell count, or the table renders broken in the nightly drift issue that
     /// `.github/workflows/ai-gate.yml` posts. Exercises all four row shapes at once: a paired row
     /// that warns (so its reason continuation is emitted), a New row, and a Removed row.
+    /// Count the `|` characters a markdown parser would treat as cell boundaries.
+    ///
+    /// A pipe is a separator iff the run of backslashes immediately before it has EVEN length:
+    /// each pair is one literal backslash, and an odd leftover escapes the pipe. The obvious
+    /// "is the previous character a backslash" test is what this replaces — it is right for `\|`
+    /// and wrong for `\\|`, which is a literal backslash followed by a LIVE separator, and being
+    /// wrong in exactly that direction it would call a broken encoder green.
+    fn md_separator_count(line: &str) -> usize {
+        line.char_indices()
+            .filter(|(i, c)| {
+                *c == '|' && line[..*i].chars().rev().take_while(|p| *p == '\\').count() % 2 == 0
+            })
+            .count()
+    }
+
+    /// The escape order inside `md_cell`, pinned from the outside. Escaping pipes before
+    /// backslashes turns the input `\|` into `\\|` — an escaped backslash followed by a live
+    /// separator — so the one input that already looks escaped is the one that breaks the row.
+    /// `fail_reason` is free-form text from a JSON report, so a backslash is reachable input.
+    ///
+    /// Both parities are exercised, because an encoder can be wrong in either direction: `\|`
+    /// (odd run, must stay content) and `\\|` (even run, a real separator that must be escaped
+    /// into the cell). A fixture carrying only one of them cannot distinguish the two.
+    #[test]
+    fn a_backslash_before_a_pipe_cannot_smuggle_a_separator() {
+        let reason = r"odd \| even \\| tail";
+        let baseline = mk_report(vec![mk_result("m", 5, 10, SuiteStatus::Pass)]);
+        let mut current = mk_report(vec![mk_result("m", 5, 10, SuiteStatus::Fail)]);
+        current.results[0].fail_reason = Some(reason.to_string());
+
+        let report = compare(&baseline, &current, &CompareOptions).unwrap();
+        let rendered = render_markdown(&report);
+
+        // PREMISE: the reason really was rendered, so the row below exists.
+        assert!(rendered.contains("tail"), "reason must render:\n{rendered}");
+
+        let widths: Vec<usize> = rendered
+            .lines()
+            .filter(|l| l.starts_with('|'))
+            .map(md_separator_count)
+            .collect();
+        assert!(widths.len() >= 3, "expected a reason row: {widths:?}");
+        assert!(
+            widths.iter().all(|w| *w == widths[0]),
+            "a backslash run changed the column count: {widths:?}\n{rendered}"
+        );
+
+        // CONTROL: the previous implementation, inlined, on this same input. Without this the
+        // assertion above could be passing for a reason unrelated to the escape order.
+        let pipes_first = |t: &str| t.replace('|', r"\|").replace(['\n', '\r'], " ");
+        let old_row = format!("|  ↳ _{}_ |", pipes_first(reason));
+        let new_row = format!("|  ↳ _{}_ |", md_cell(reason));
+        assert_eq!(
+            md_separator_count(&new_row),
+            2,
+            "the fixed encoder must emit exactly the two boundaries this row owns: {new_row}"
+        );
+        assert!(
+            md_separator_count(&old_row) > 2,
+            "fixture is not discriminating — the old encoder must leak a separator: {old_row}"
+        );
+    }
+
     /// Reachability arm for `md_cell`. `markdown_rows_are_rectangular` asserted the property
     /// this test is named for, but every one of its fixtures was pipe-free — so it passed for
     /// a reason unrelated to the hazard and gave false confidence about exactly the invariant
@@ -1875,18 +2073,10 @@ mod tests {
 
         // Every row — header, separator, data, and the reason continuation — must have the
         // same cell count. An unescaped pipe shows up here as a longer row.
-        // Count SEPARATORS the way a markdown parser does — a `|` preceded by a backslash is
-        // cell content, not a boundary. Splitting on the raw character cannot tell the escape
-        // from the hazard, so it would report this test green against a broken encoder.
-        let separators = |line: &str| {
-            line.char_indices()
-                .filter(|(i, c)| *c == '|' && (*i == 0 || !line[..*i].ends_with('\\')))
-                .count()
-        };
         let widths: Vec<usize> = rendered
             .lines()
             .filter(|l| l.starts_with('|'))
-            .map(separators)
+            .map(md_separator_count)
             .collect();
         assert!(widths.len() >= 4, "expected a reason row too: {widths:?}");
         assert!(

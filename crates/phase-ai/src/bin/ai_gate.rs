@@ -11,7 +11,9 @@ use std::process::Command;
 
 use engine::database::CardDatabase;
 use phase_ai::config::AiDifficulty;
-use phase_ai::duel_suite::compare::{compare, load_report, print_markdown, CompareOptions};
+use phase_ai::duel_suite::compare::{
+    compare, gate_verdict, load_report, print_markdown, CompareOptions,
+};
 use phase_ai::duel_suite::run::{run_suite, SuiteOptions, SuiteReport};
 
 const DEFAULT_BASELINE: &str = "crates/phase-ai/baselines/suite-baseline.json";
@@ -99,16 +101,17 @@ fn main() {
         }
     };
 
-    let report = match compare(&baseline, &current, &CompareOptions) {
-        Ok(report) => report,
-        Err(err) => {
-            eprintln!("compare failed: {err}");
-            std::process::exit(2);
-        }
-    };
-    print_markdown(&report);
-    if report.any_fail() {
-        std::process::exit(1);
+    // stdout carries the report body — the nightly redirects it into the file it posts as a
+    // drift issue — so a refusal has to be printed there too, not only to stderr. `gate_verdict`
+    // owns both halves so the pair is testable; `main` prints and exits.
+    let comparison = compare(&baseline, &current, &CompareOptions);
+    if let Err(err) = &comparison {
+        eprintln!("compare failed: {err}");
+    }
+    let (body, code) = gate_verdict(&comparison);
+    print!("{body}");
+    if code != 0 {
+        std::process::exit(code);
     }
 }
 
