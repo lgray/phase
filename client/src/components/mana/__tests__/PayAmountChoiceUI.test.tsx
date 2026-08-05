@@ -1,8 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 
 import type { LoopCollapseAxis, WaitingFor } from "../../../adapter/types";
-import { buildGameState } from "../../../test/factories/gameStateFactory.ts";
+import {
+  buildGameState,
+  buildPayAmountChoiceWaitingFor,
+} from "../../../test/factories/gameStateFactory.ts";
 import { setGameStoreForTest } from "../../../test/helpers/gameStoreHelpers.ts";
 import { useGameStore } from "../../../stores/gameStore";
 import { PayAmountChoiceUI } from "../PayAmountChoiceUI.tsx";
@@ -10,17 +13,16 @@ import { PayAmountChoiceUI } from "../PayAmountChoiceUI.tsx";
 // CR 732.2a: the LoopCollapse prompt must name the axis the loop collapses. The
 // counter/life labels are iteration-framed (×N), never a raw token count.
 function loopCollapseWaitingFor(axis: LoopCollapseAxis, min = 0): WaitingFor {
-  return {
-    type: "PayAmountChoice",
+  return buildPayAmountChoiceWaitingFor({
     data: {
       player: 0,
       resource: { type: "LoopCollapse", data: { axis } },
-      // The stepper initializes `value` to `min`, so `min` pins the rendered count.
+      // The box initializes `raw` to `String(min)`, so `min` pins the rendered count.
       min,
       max: 1000,
       source_id: 0,
     },
-  };
+  });
 }
 
 // player 0 == local PLAYER_ID, and turn_decision_controller/active_player are the
@@ -85,5 +87,196 @@ describe("PayAmountChoiceUI — LoopCollapse axis label", () => {
     expect(
       screen.getByRole("button", { name: /create 2 tokens$/i }),
     ).toBeInTheDocument();
+  });
+});
+
+const BOX = "Choose amount to pay";
+
+/**
+ * Seed exactly as `renderWithAxis` does — player 0 == the local seat, with
+ * `active_player`/`turn_decision_controller` on that seat — so
+ * `useCanActForWaitingState` is true and no query below passes VACUOUSLY.
+ */
+function renderPrompt(waitingFor: WaitingFor) {
+  const seeded = setGameStoreForTest({
+    gameState: buildGameState({
+      waiting_for: waitingFor,
+      active_player: 0,
+      turn_decision_controller: 0,
+    }),
+    waitingFor,
+  });
+  return { ...seeded, ...render(<PayAmountChoiceUI />) };
+}
+
+function type(value: string) {
+  fireEvent.change(screen.getByLabelText(BOX), { target: { value } });
+}
+
+describe("PayAmountChoiceUI — sanitized amount entry", () => {
+  beforeEach(() => {
+    useGameStore.getState().reset();
+  });
+
+  afterEach(() => {
+    cleanup();
+  });
+
+  it("T1/reach: a valid entry enables commit and dispatches exactly what was typed", () => {
+    const { dispatch } = renderPrompt(loopCollapseWaitingFor("Tokens"));
+
+    // Positive control for every negative below: the harness reaches a rendered,
+    // enabled, dispatch-firing control.
+    expect(screen.getByLabelText(BOX)).toBeInTheDocument();
+    type("377");
+
+    const commit = screen.getByRole("button", { name: /create 377 tokens/i });
+    expect(commit).not.toBeDisabled();
+    fireEvent.click(commit);
+    expect(dispatch).toHaveBeenCalledWith({
+      type: "SubmitPayAmount",
+      data: { amount: 377 },
+    });
+  });
+
+  it("T2/above-max: an entry over the engine max cannot be committed", () => {
+    const { dispatch } = renderPrompt(loopCollapseWaitingFor("Tokens"));
+    type("1001");
+
+    expect(screen.getByLabelText(BOX)).toHaveValue("1001");
+    expect(screen.getByRole("button", { name: /create/i })).toBeDisabled();
+    expect(dispatch).not.toHaveBeenCalled();
+  });
+
+  it("T3/below-min: an entry under the engine min cannot be committed", () => {
+    // Provenance honesty: `min > 0` is NOT currently reachable in production — every
+    // PayAmountChoice mint site hardcodes `min: 0`. This is a prop-contract test on the
+    // wire type, not a live-state repro.
+    const { dispatch } = renderPrompt(
+      buildPayAmountChoiceWaitingFor({
+        data: {
+          player: 0,
+          resource: { type: "Counters" },
+          min: 5,
+          max: 1000,
+          source_id: 0,
+        },
+      }),
+    );
+    type("3");
+
+    expect(screen.getByRole("button", { name: /^Pay /i })).toBeDisabled();
+    expect(
+      screen.getByText("Enter a whole number between 5 and 1000"),
+    ).toBeInTheDocument();
+    expect(dispatch).not.toHaveBeenCalled();
+  });
+
+  // `min` is PINNED at 0 here: at min=5 the "+2" member becomes DOMINATED by the range
+  // conjunct and stops discriminating the digit guard.
+  it.each(["", " 7 ", "1.5", "1e3", "+2", "0x10"])(
+    "T4/non-numeric: %j never reaches the engine",
+    (raw) => {
+      const { dispatch } = renderPrompt(loopCollapseWaitingFor("Tokens"));
+      type(raw);
+
+      expect(screen.getByRole("button", { name: /create/i })).toBeDisabled();
+      expect(dispatch).not.toHaveBeenCalled();
+    },
+  );
+
+  it("T5/cleared: clearing a valid entry cannot submit the 0 the player never typed", () => {
+    const { dispatch } = renderPrompt(loopCollapseWaitingFor("Tokens"));
+    type("377");
+    type("");
+
+    const commit = screen.getByRole("button", { name: /create/i });
+    expect(commit).toBeDisabled();
+    fireEvent.click(commit);
+    expect(dispatch).not.toHaveBeenCalled();
+  });
+
+  it("T6a/enter-valid: Enter submits a valid entry", () => {
+    const { dispatch } = renderPrompt(loopCollapseWaitingFor("Tokens"));
+    type("42");
+    fireEvent.keyDown(screen.getByLabelText(BOX), { key: "Enter" });
+
+    expect(dispatch).toHaveBeenCalledWith({
+      type: "SubmitPayAmount",
+      data: { amount: 42 },
+    });
+  });
+
+  it("T6b/enter-invalid: Enter does NOT coerce an out-of-range entry", () => {
+    const { dispatch } = renderPrompt(loopCollapseWaitingFor("Tokens"));
+    type("1001");
+    fireEvent.keyDown(screen.getByLabelText(BOX), { key: "Enter" });
+
+    expect(dispatch).not.toHaveBeenCalled();
+  });
+
+  it("T7/engine-bound: the window comes from the engine, not a client constant", () => {
+    // Hostile multi-authority fixture: max=7, not the LoopCollapse 1000. Runnable proof
+    // that no client-side ceiling exists.
+    const { dispatch } = renderPrompt(
+      buildPayAmountChoiceWaitingFor({
+        data: {
+          player: 0,
+          resource: { type: "LoopCollapse", data: { axis: "Tokens" } },
+          min: 0,
+          max: 7,
+          source_id: 0,
+        },
+      }),
+    );
+
+    type("8");
+    expect(screen.getByRole("button", { name: /create/i })).toBeDisabled();
+
+    type("7");
+    const commit = screen.getByRole("button", { name: /create 7 tokens/i });
+    expect(commit).not.toBeDisabled();
+    fireEvent.click(commit);
+    expect(dispatch).toHaveBeenCalledWith({
+      type: "SubmitPayAmount",
+      data: { amount: 7 },
+    });
+  });
+
+  it("T8/seat-gate: the prompt renders only for the seat the engine addressed", () => {
+    // Rendering the component directly bypasses GamePage's outer gate, so the component's
+    // own `!data || !canAct` guard is genuinely the expression under test.
+    const { container } = renderPrompt(
+      buildPayAmountChoiceWaitingFor({
+        data: {
+          player: 1,
+          resource: { type: "LoopCollapse", data: { axis: "Tokens" } },
+          min: 0,
+          max: 1000,
+          source_id: 0,
+        },
+      }),
+    );
+    expect(container).toBeEmptyDOMElement();
+
+    // PINNED POSITIVE, same test: the emptiness above is satisfiable by a constant
+    // `return null`, so the identical prompt on the LOCAL seat must render the box.
+    cleanup();
+    renderPrompt(loopCollapseWaitingFor("Tokens"));
+    expect(screen.getByLabelText(BOX)).toBeInTheDocument();
+  });
+
+  it("T9/zero: 0 is a legal amount and commits (the truthiness-bug class)", () => {
+    const { dispatch } = renderPrompt(loopCollapseWaitingFor("Tokens"));
+
+    // `raw` is "0" at mount (min = 0), so this asserts the mounted state directly.
+    expect(screen.getByLabelText(BOX)).toHaveValue("0");
+    const commit = screen.getByRole("button", { name: /create 0 tokens/i });
+    expect(commit).not.toBeDisabled();
+    fireEvent.click(commit);
+    expect(dispatch).toHaveBeenCalledWith({
+      type: "SubmitPayAmount",
+      data: { amount: 0 },
+    });
   });
 });

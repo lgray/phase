@@ -5,6 +5,7 @@ import { useTranslation } from "react-i18next";
 import { useCanActForWaitingState } from "../../hooks/usePlayerId.ts";
 import { useGameStore } from "../../stores/gameStore.ts";
 import { gameButtonClass } from "../ui/buttonStyles.ts";
+import { AmountInput, parseAmount } from "./AmountInput.tsx";
 
 export function PayAmountChoiceUI() {
   const { t } = useTranslation("game");
@@ -17,11 +18,13 @@ export function PayAmountChoiceUI() {
   const data = isPayAmount ? waitingFor.data : null;
   const min = data?.min ?? 0;
   const max = data?.max ?? 0;
-  const [value, setValue] = useState(min);
+  const [raw, setRaw] = useState(String(min));
 
   useEffect(() => {
-    if (isPayAmount) setValue(min);
+    if (isPayAmount) setRaw(String(min));
   }, [isPayAmount, min, max]);
+
+  const amount = parseAmount(raw, min, max);
 
   const sourceName = useMemo(() => {
     if (!gameState || !data) return null;
@@ -55,8 +58,12 @@ export function PayAmountChoiceUI() {
     data?.resource.type === "LoopCollapse" ? data.resource.data.axis : null;
 
   const handleCommit = useCallback(() => {
-    dispatch({ type: "SubmitPayAmount", data: { amount: value } });
-  }, [dispatch, value]);
+    // Sanitization gate: an unparsed/out-of-range entry never reaches the engine.
+    // `amount === null`, NOT `!amount` — 0 is a legal amount on every PayAmountChoice minting
+    // site (all six hardcode `min: 0`).
+    if (amount === null) return;
+    dispatch({ type: "SubmitPayAmount", data: { amount } });
+  }, [dispatch, amount]);
 
   if (!data || !canAct) return null;
 
@@ -81,40 +88,41 @@ export function PayAmountChoiceUI() {
             )}
           </h3>
 
-          <div className="mb-4 px-2">
-            <label className="flex items-center gap-3 text-sm text-gray-200">
-              <span className="shrink-0 font-mono text-base text-cyan-300">
-                {t("mana.xEquals", { value })}
-              </span>
-              <input
-                type="range"
-                min={min}
-                max={max}
-                value={value}
-                onChange={(e) => setValue(Number(e.target.value))}
-                className="h-2 w-full cursor-pointer appearance-none rounded-full bg-gray-700 accent-cyan-500"
-                aria-label={t("mana.chooseAmountAria")}
-              />
-              <span className="shrink-0 text-xs text-gray-500">
-                {t("mana.maxOnly", { max })}
-              </span>
-            </label>
-          </div>
+          <AmountInput
+            raw={raw}
+            onRawChange={setRaw}
+            min={min}
+            max={max}
+            onSubmit={handleCommit}
+            labels={{
+              input: t("mana.chooseAmountAria"),
+              decrease: t("mana.decreaseAmount"),
+              increase: t("mana.increaseAmount"),
+            }}
+          />
 
           <div className="flex justify-center">
             <button
               onClick={handleCommit}
-              className={gameButtonClass({ tone: "emerald", size: "md" })}
+              disabled={amount === null}
+              className={gameButtonClass({
+                tone: "emerald",
+                size: "md",
+                disabled: amount === null,
+              })}
             >
               {loopCollapseAxis
                 ? // `count` drives i18next pluralization for the Tokens axis
                   // (loopCollapseAmountTokens_one/_other); the ×N-framed
                   // Counters/Life/Mixed keys keep reading `value`.
                   t(`mana.loopCollapseAmount${loopCollapseAxis}`, {
-                    value,
-                    count: value,
+                    value: amount ?? min,
+                    count: amount ?? min,
                   })
-                : t("mana.payAmount", { value, resource: resourceLabel })}
+                : t("mana.payAmount", {
+                    value: amount ?? min,
+                    resource: resourceLabel,
+                  })}
             </button>
           </div>
         </div>
