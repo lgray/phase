@@ -688,8 +688,8 @@ fn render_markdown(report: &CompareReport) -> String {
             (None, None) => "—".to_string(),
         };
         let cells = [
-            row.matchup_id.clone(),
-            exercises.join(", "),
+            md_cell(&row.matchup_id),
+            md_cell(&exercises.join(", ")),
             baseline_cell,
             current_cell,
             row.flipped_w_to_l.to_string(),
@@ -711,13 +711,29 @@ fn render_markdown(report: &CompareReport) -> String {
                 // Reason spans one labelled cell plus blanks for the rest, so the row stays
                 // rectangular no matter how many columns the table has.
                 out.push_str(&format!(
-                    "|  ↳ _{reason}_ |{}\n",
+                    "|  ↳ _{}_ |{}\n",
+                    md_cell(reason),
                     " |".repeat(COLUMNS.len() - 1)
                 ));
             }
         }
     }
     out
+}
+
+/// Encode a report-provided string for one markdown table cell.
+///
+/// Every cell below that originates in a report rather than in this file goes through here.
+/// Report fields are free-form and arrive from JSON — `fail_reason` is whatever the suite
+/// wrote, and `ai_duel compare` will read whatever file it is handed — so a `|` silently adds
+/// a column to that row and a newline ends the row early. Either way the table stops being
+/// rectangular exactly when a matchup is already failing, which is the moment the diagnostics
+/// are actually read.
+///
+/// Applied uniformly rather than only to the fields that look risky today: deciding per field
+/// means re-deciding every time a field is added, and one of those decisions will be wrong.
+fn md_cell(text: &str) -> String {
+    text.replace('|', "\\|").replace(['\n', '\r'], " ")
 }
 
 /// Render the comparison table to stdout + emit a summary line.
@@ -1825,6 +1841,52 @@ mod tests {
     /// same cell count, or the table renders broken in the nightly drift issue that
     /// `.github/workflows/ai-gate.yml` posts. Exercises all four row shapes at once: a paired row
     /// that warns (so its reason continuation is emitted), a New row, and a Removed row.
+    /// Reachability arm for `md_cell`. `markdown_rows_are_rectangular` asserted the property
+    /// this test is named for, but every one of its fixtures was pipe-free — so it passed for
+    /// a reason unrelated to the hazard and gave false confidence about exactly the invariant
+    /// it claimed. A `fail_reason` is free-form text from a report, and `ai_duel compare`
+    /// reads whatever file it is handed, so a pipe is reachable input, not a hypothetical.
+    #[test]
+    fn report_supplied_pipes_cannot_add_columns() {
+        let mut baseline = mk_report(vec![mk_result("m|id", 5, 10, SuiteStatus::Pass)]);
+        let mut current = mk_report(vec![mk_result("m|id", 5, 10, SuiteStatus::Fail)]);
+        baseline.results[0].matchup_id = "m|id".into();
+        current.results[0].matchup_id = "m|id".into();
+        current.results[0].fail_reason =
+            Some("imbalance: p0=0.10 | CI [0.02, 0.40] | excludes 0.50".into());
+
+        let report = compare(&baseline, &current, &CompareOptions).unwrap();
+        let rendered = render_markdown(&report);
+
+        // PREMISE: the row really did render a reason carrying pipes, so this is not vacuous.
+        assert!(
+            rendered.contains("excludes 0.50"),
+            "reason must be rendered:\n{rendered}"
+        );
+        assert_eq!(report.rows[0].status, CompareStatus::Fail);
+
+        // Every row — header, separator, data, and the reason continuation — must have the
+        // same cell count. An unescaped pipe shows up here as a longer row.
+        // Count SEPARATORS the way a markdown parser does — a `|` preceded by a backslash is
+        // cell content, not a boundary. Splitting on the raw character cannot tell the escape
+        // from the hazard, so it would report this test green against a broken encoder.
+        let separators = |line: &str| {
+            line.char_indices()
+                .filter(|(i, c)| *c == '|' && (*i == 0 || !line[..*i].ends_with('\\')))
+                .count()
+        };
+        let widths: Vec<usize> = rendered
+            .lines()
+            .filter(|l| l.starts_with('|'))
+            .map(separators)
+            .collect();
+        assert!(widths.len() >= 4, "expected a reason row too: {widths:?}");
+        assert!(
+            widths.iter().all(|w| *w == widths[0]),
+            "pipes changed the column count: {widths:?}\n{rendered}"
+        );
+    }
+
     #[test]
     fn markdown_rows_are_rectangular() {
         let paired_before: &[(u64, Option<u8>, u32)] = &[(1, Some(0), 10), (2, Some(1), 10)];
