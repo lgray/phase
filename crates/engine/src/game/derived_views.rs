@@ -1113,16 +1113,32 @@ fn attribution_player(axis: ResourceAxis, controller: PlayerId) -> PlayerId {
 /// `state.battlefield.contains` test at MEMBER level; this is its SET-level closure, so all
 /// three read the same board in the same frame and none can be staler than another.
 ///
-/// GRANULARITY, stated because the freshness guarantee above does not imply it: the backing
-/// stores are keyed by CONTROLLER, not by axis (`unbounded_counter_targets` is
-/// `BTreeMap<PlayerId, BTreeSet<(ObjectId, CounterType)>>`). So if one controller carries two
-/// counter axes and only axis A's targets leave, `any(...)` is still true and A's ROW survives
-/// while A's per-object pill is already gone. That is deliberate for now, and it errs in the
-/// safe direction — it over-KEEPS a badge, never over-drops one. Making it axis-precise via
-/// `collapsed_counter_axis` is NOT a free tightening: a counter loop's certified axis is
-/// object-agnostic (see `materialize_object_growth_shortcut`), so the marked-axis space may not
-/// coincide with that mapping and a naive equality filter would drop the row entirely. It needs
-/// a counter-growth fixture measuring the two spaces agree before anyone tries it.
+/// GRANULARITY — the rule that decides which axes may consult a backing store at all:
+///
+/// > A CONTROLLER-keyed backing store can answer an AXIS-scoped question if and only if the
+/// > axis is a UNIT variant.
+///
+/// `TokensCreated` is a unit variant, so a controller can hold at most one of it and
+/// `unbounded_loop_pile[controller]` IS that axis' backing — a bijection, no granularity is
+/// assumed that the store does not have. `Counter(CounterClass, ObjectClass)` is a DATA
+/// variant: `mark_unbounded_loop` unions arbitrarily many per controller (`entry.extend`), so a
+/// controller-keyed store is strictly coarser than the axis, and it returns `None` here.
+///
+/// An earlier revision of this function did read `unbounded_counter_targets` for `Counter(..)`,
+/// and its doc claimed the error direction was safe — "over-KEEPS a badge, never over-drops
+/// one". That was FALSE, and measured so: one accepted proposal can carry both
+/// `Counter(Plus1Plus1, Creature)` (`analysis::corpus`'s `ResourceFamily::Counters`) and the
+/// display channel's object-agnostic `Counter(Other, Other)`, while only the latter's targets
+/// are ever registered — so when those targets left the battlefield the guard dropped EVERY
+/// counter row, including the one whose backing it had never consulted.
+///
+/// Re-keying the store by `(controller, ResourceAxis)` would not fix it. The targets are
+/// axis-blind at the DERIVATION, not just at the key: `register_unbounded_counter_targets` is
+/// fed by `game::engine::current_period_counter_targets` →
+/// `analysis::resource::grown_generic_counter_targets`, which takes no axis argument and
+/// returns one undifferentiated `Generic`-only set for the whole proposal. A per-axis key would
+/// assert a scope nothing derives. Revoking a counter row needs an axis-scoped authority to
+/// exist first; until one does, this refuses rather than guesses.
 ///
 /// Read-only: recomputed from live state on every `derive_views` call, nothing is stored,
 /// so nothing can go stale. Deliberately not a `clear_unbounded_loop` from the zone-exit
@@ -1143,16 +1159,16 @@ fn object_growth_backing(
             .unbounded_loop_pile
             .get(&controller)
             .map(|pile| pile.iter().any(|id| state.battlefield.contains(id))),
-        // CR 701.34a: the per-object Generic counter targets the loop proliferates each
-        // cycle are the counter axis' registered backing.
-        ResourceAxis::Counter(..) => state
-            .unbounded_counter_targets
-            .get(&controller)
-            .map(|targets| targets.iter().any(|(id, _)| state.battlefield.contains(id))),
         // No registered board backing exists for these axes — no live authority to consult,
         // badge unchanged. Exhaustive on purpose: a future ResourceAxis variant must decide
-        // which side it lands on rather than silently defaulting to "unbacked".
-        ResourceAxis::Mana(_)
+        // which side it lands on rather than silently defaulting to "unbacked"; the
+        // unit-variant rule in this function's doc is the criterion for choosing.
+        //
+        // `Counter(..)` is here rather than reading `unbounded_counter_targets` because that
+        // store cannot answer a per-axis question — see the GRANULARITY note above. Witnessed
+        // by `counter_rows_are_not_revoked_by_a_controller_keyed_backing_set`.
+        ResourceAxis::Counter(..)
+        | ResourceAxis::Mana(_)
         | ResourceAxis::Life(_)
         | ResourceAxis::DamageDealt(_)
         | ResourceAxis::LibraryDelta(_)
@@ -1714,28 +1730,36 @@ mod tests {
         );
     }
 
-    /// The `Counter(..)` arm of [`object_growth_backing`] shipped with no runtime witness: no
-    /// fixture exists in which a counter-growth loop's registered targets ALL leave the
-    /// battlefield, so that arm was exercised only by the compiler's exhaustiveness check while
-    /// its sibling `TokensCreated` arm carried every behavioural test. An arm nothing runs is an
-    /// arm nothing can catch a regression in. The helper is a pure predicate over live state, so
-    /// the arm is witnessed directly here rather than by standing up a whole certified loop —
-    /// the building-block level the repo's testing rule asks for.
+    /// A controller-keyed backing store can answer an axis-scoped question only when the axis is
+    /// a UNIT variant. `TokensCreated` is one — at most one per controller, so
+    /// `unbounded_loop_pile[controller]` IS that axis' backing. `Counter(CounterClass,
+    /// ObjectClass)` is not: `mark_unbounded_loop` unions arbitrary axes for one controller, and
+    /// the backing derivation (`current_period_counter_targets` → `grown_generic_counter_targets`)
+    /// accepts NO axis — it diffs every shared object's growable `Generic` counters and returns
+    /// ONE undifferentiated set for the whole proposal.
     ///
-    /// Matched pair on ONE assertion (is the Counter row on the wire?): the control leaves a
-    /// registered target on the battlefield, the subject moves the only one to the graveyard.
-    /// Collapsing the arm to `None` reds the SUBJECT; collapsing it to `Some(false)` reds the
-    /// CONTROL — so neither arm can pass for the wrong reason.
+    /// So the controller-keyed `Some(false)` this PR first shipped revoked EVERY counter row at
+    /// once, including axes whose backing was never in that set: a certified proposal can carry
+    /// both `Counter(Plus1Plus1, Creature)` (`analysis::corpus`'s `ResourceFamily::Counters`) and
+    /// the display channel's object-agnostic `Counter(Other, Other)`, while only the latter's
+    /// Generic targets are ever registered. That is an over-DROP — the opposite of the
+    /// "conservative, over-keeps only" claim the first revision shipped with.
+    ///
+    /// Two-sided on ONE assertion (are both rows on the wire?): restoring the controller-keyed
+    /// `Some(false)` arm reds the SUBJECT — both rows vanish, including the axis whose backing was
+    /// never consulted. The CONTROL runs FIRST as the non-vacuity anchor: it proves this wire can
+    /// carry two counter rows at all, which a "rows survived" assertion alone cannot establish.
     #[test]
-    fn counter_axis_infinity_row_dies_with_its_last_registered_target() {
+    fn counter_rows_are_not_revoked_by_a_controller_keyed_backing_set() {
         use crate::analysis::resource::{CounterClass, ObjectClass, ResourceAxis};
         use crate::game::zones::move_to_zone;
         use crate::types::counter::CounterType;
         use crate::types::events::GameEvent;
 
-        // CR 122.1a: a +1/+1 counter on a creature — a concrete instance of the object-agnostic
-        // axis a counter-growth certificate marks.
-        let axis = ResourceAxis::Counter(CounterClass::Plus1Plus1, ObjectClass::Creature);
+        // The two axes one accepted counter-growth proposal can carry at once. Only the
+        // object-agnostic one is the display channel's, and only ITS targets get registered.
+        let plus1_axis = ResourceAxis::Counter(CounterClass::Plus1Plus1, ObjectClass::Creature);
+        let generic_axis = ResourceAxis::Counter(CounterClass::Other, ObjectClass::Other);
 
         let build = || {
             let mut state = GameState::new_two_player(42);
@@ -1743,10 +1767,12 @@ mod tests {
                 &mut state,
                 CardId(1),
                 PlayerId(0),
-                "Counter target".to_string(),
+                "Pentad Prism".to_string(),
                 Zone::Battlefield,
             );
-            state.mark_unbounded_loop(PlayerId(0), &[axis]);
+            state.mark_unbounded_loop(PlayerId(0), &[plus1_axis, generic_axis]);
+            // CR 701.34a: the registered backing is the GENERIC channel's, derived axis-blind.
+            // Nothing here backs `plus1_axis` — that is the whole point.
             state.register_unbounded_counter_targets(
                 PlayerId(0),
                 vec![(target, CounterType::Generic("charge".to_string()))],
@@ -1762,27 +1788,27 @@ mod tests {
                 .collect()
         };
 
-        // CONTROL runs FIRST so it doubles as the non-vacuity anchor: it proves this wire can
-        // carry the row at all, which a "row absent" assertion alone would never establish.
+        // CONTROL first — the reach anchor: both marked axes reach the wire.
         let (control, _kept) = build();
+        let control_rows = rows(&control);
         assert!(
-            rows(&control).contains(&axis),
-            "THE assertion (control): a registered target still on the battlefield keeps the ∞ row, got {:?}",
-            rows(&control)
+            control_rows.contains(&plus1_axis) && control_rows.contains(&generic_axis),
+            "THE assertion (control): both marked counter axes reach the wire, got {control_rows:?}"
         );
 
-        // SUBJECT: the only registered target leaves ⇒ the backing set is empty ⇒ row dropped.
+        // SUBJECT: the only registered (Generic) target leaves the battlefield.
         let (mut subject, target) = build();
         let mut events: Vec<GameEvent> = Vec::new();
         move_to_zone(&mut subject, target, Zone::Graveyard, &mut events);
         assert!(
             !subject.battlefield.contains(&target),
-            "precondition: the target really left the battlefield"
+            "precondition: the registered target really left the battlefield"
         );
+        let subject_rows = rows(&subject);
         assert!(
-            !rows(&subject).contains(&axis),
-            "THE assertion (subject): with every registered target gone the ∞ row must be dropped, got {:?}",
-            rows(&subject)
+            subject_rows.contains(&plus1_axis) && subject_rows.contains(&generic_axis),
+            "THE assertion (subject): a controller-keyed backing set must not revoke ANY counter \
+             row — least of all `plus1_axis`, whose backing was never registered, got {subject_rows:?}"
         );
     }
 
