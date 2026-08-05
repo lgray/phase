@@ -465,7 +465,6 @@ fn kilo_accept_marks_pentad_charge_as_unbounded_display_target() {
         "unbounded_pile",
         "unbounded_resources",
         "unbounded_counters",
-        "scheduled_collapse",
     ]
     .into_iter()
     .filter_map(|k| wire.get(k).map(|v| (k.to_string(), v.clone())))

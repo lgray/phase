@@ -7437,41 +7437,41 @@ fn scheduled_collapse_still_renders_the_unbounded_badge() {
              (viewer {viewer:?})"
         );
 
-        // PINNED CO-OBSERVATION (§7), asserted BEFORE the tag axis so every probe arm reaches it:
-        // *tagging* must not filter the ∞ rows. Rows CAN be dropped — `object_growth_backing`
-        // drops a TOKEN-axis row whose entire registered pile has left the battlefield (counter
-        // axes have no per-axis backing authority yet, so they are never dropped this way) — but
-        // that is an unrelated, board-liveness reason. This fixture keeps its whole backing intact (every
-        // stored pile member is still on the battlefield, pinned by `expected_pile` above), which
-        // is what makes this pin meaningful rather than accidental: the only thing that could move
-        // it here is the tag loop reaching into the row loop.
+        // NOTE ON WHAT COVERS "flagging must not FILTER rows": the `got_axes == expected_axes`
+        // assertion above is exact-set equality against every marked axis, so it already fails if
+        // the scheduled flag ever suppressed a row. A separate "a TokensCreated row exists" pin
+        // used to sit here and was strictly subsumed by it — no mutation could red the pin without
+        // first reding the equality — so it is gone rather than left as decoration. (Rows CAN be
+        // dropped, by `object_growth_backing`, for a TOKEN axis whose whole registered pile left
+        // the battlefield; this fixture keeps its backing intact, pinned by `expected_pile`.)
+        //
+        // R2 — the SCHEDULED FLAG survives the viewer-filtered broadcast path. Read off the rows,
+        // because the flag is the only projection of the schedule on the wire.
+        let flagged: Vec<ResourceAxis> = views
+            .unbounded_resources
+            .iter()
+            .filter(|r| r.scheduled)
+            .map(|r| r.axis)
+            .collect();
         assert!(
-            views
-                .unbounded_resources
-                .iter()
-                .any(|r| r.axis == ResourceAxis::TokensCreated),
-            "R2/pin: tagging must not filter the ∞ rows (viewer {viewer:?}), got {:?}",
-            views.unbounded_resources
+            flagged.contains(&ResourceAxis::Life(P0))
+                && flagged.contains(&ResourceAxis::TokensCreated),
+            "R2/filtered: the filtered broadcast path flags both scheduled axes (viewer \
+             {viewer:?}), got {flagged:?}"
         );
-        // R2 — the `scheduled_collapse` TAG survives the viewer-filtered broadcast path too.
-        let tagged: Vec<ResourceAxis> = views.scheduled_collapse.iter().map(|r| r.axis).collect();
-        assert!(
-            tagged.contains(&ResourceAxis::Life(P0))
-                && tagged.contains(&ResourceAxis::TokensCreated),
-            "R2/filtered: the filtered broadcast path tags both scheduled axes (viewer \
-             {viewer:?}), got {tagged:?}"
-        );
-        // R1 — the tag survives serialize→deserialize, and a populated tag is EMITTED.
+        // R1 — the flag survives serialize→deserialize, and a SET flag is EMITTED. `scheduled` is
+        // `skip_serializing_if = "is_false"`, so the emission half is what catches a flag that is
+        // computed correctly and then silently dropped on the wire.
         let json = serde_json::to_string(&views).expect("serialize");
         let back: engine::game::derived_views::DerivedViews =
             serde_json::from_str(&json).expect("deserialize");
         assert_eq!(
-            back.scheduled_collapse, views.scheduled_collapse,
-            "R1/roundtrip: the tag survives serialize→deserialize (viewer {viewer:?})"
+            back.unbounded_resources, views.unbounded_resources,
+            "R1/roundtrip: the scheduled flag survives serialize→deserialize (viewer {viewer:?})"
         );
         assert!(
-            json.contains("scheduled_collapse"),
-            "R1/emitted: a populated tag is EMITTED, not skipped (viewer {viewer:?})"
+            json.contains("\"scheduled\":true"),
+            "R1/emitted: a SET scheduled flag is EMITTED, not skipped (viewer {viewer:?})"
         );
     }
 
@@ -7666,16 +7666,15 @@ fn unregistered_axis_still_renders_its_infinity_badge() {
         "a merely-SCHEDULED collapse still projects both ∞ rows, got {scheduled_axes:?}"
     );
 
-    // R3 PRE-CLEAR positive control — without it the post-clear emptiness below is VACUOUS
-    // (it is green under the DROP mutant; see §7 RP-E1/RP-E2).
+    // R3 PRE-CLEAR positive control — without it the post-clear "nothing flagged" below is
+    // VACUOUS (it is green under the DROP mutant; see §7 RP-E1/RP-E2).
     {
         let v = engine::game::derived_views::derive_views(&state, None);
         let j = serde_json::to_string(&v).unwrap();
         assert!(
-            !v.scheduled_collapse.is_empty() && j.contains("scheduled_collapse"),
-            "R3/pre-clear: a registered materialization populates the tag AND emits the key, \
-             got {:?}",
-            v.scheduled_collapse
+            v.unbounded_resources.iter().any(|r| r.scheduled) && j.contains("\"scheduled\":true"),
+            "R3/pre-clear: a registered materialization FLAGS a row AND emits the flag, got {:?}",
+            v.unbounded_resources
         );
     }
 
@@ -7683,21 +7682,26 @@ fn unregistered_axis_still_renders_its_infinity_badge() {
     // has nothing scheduled to collapse it.
     state.pending_unbounded_materialization.clear();
 
-    // R3 — with nothing scheduled the tag is empty, the key is OMITTED from the wire, and an
-    // engine-emitted view that omits it deserializes back to an empty tag.
+    // R3 — with nothing scheduled NO row is flagged, the field is OMITTED from the wire
+    // (`skip_serializing_if = "is_false"`), and an engine-emitted view that omits it
+    // deserializes back to `false` rather than to a missing-field error.
     {
         let v = engine::game::derived_views::derive_views(&state, None);
         let j = serde_json::to_string(&v).unwrap();
         assert!(
-            v.scheduled_collapse.is_empty() && !j.contains("scheduled_collapse"),
-            "R3/post-clear: with nothing scheduled the tag is empty and the key is omitted, \
+            !v.unbounded_resources.iter().any(|r| r.scheduled) && !j.contains("\"scheduled\""),
+            "R3/post-clear: with nothing scheduled no row is flagged and the key is omitted, \
              got {:?}",
-            v.scheduled_collapse
+            v.unbounded_resources
         );
         let back: engine::game::derived_views::DerivedViews = serde_json::from_str(&j).unwrap();
         assert!(
-            back.scheduled_collapse.is_empty(),
-            "R3/default: an engine-emitted view that OMITS the field deserializes to an empty tag"
+            !back.unbounded_resources.iter().any(|r| r.scheduled),
+            "R3/default: an engine-emitted view that OMITS the flag deserializes to unscheduled"
+        );
+        assert!(
+            !back.unbounded_resources.is_empty(),
+            "R3/default reach: …and it still carries the rows, so the line above is not vacuous"
         );
     }
 

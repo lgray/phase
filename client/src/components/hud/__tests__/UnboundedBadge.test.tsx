@@ -2,11 +2,10 @@
  * The scheduled-collapse ∞ badge: `unboundedFamilyViews` (the pure family dedup + tag join) and
  * the rendered `UnboundedBadge` it feeds.
  *
- * DATA SOURCE IS LABELLED PER ROW. The two engine-emitted goldens
- * (`unbounded-token-wire.json`, `unbounded-counter-wire.json`) each carry exactly ONE axis, one
- * player-0 row and a matching `scheduled_collapse`, so only the two GOLDEN-DRIVEN rows below can
- * come from them; every multi-axis, cross-player or rows-empty case is COMPOSED against the
- * exported prop contract and says so.
+ * DATA SOURCE IS LABELLED PER ROW. `unbounded-token-wire.json` is the only golden imported here;
+ * it carries exactly ONE axis on one scheduled player-0 row, so only the two GOLDEN-DRIVEN rows
+ * below can come from it. Every multi-axis, cross-player or rows-empty case is COMPOSED against
+ * the exported prop contract and says so.
  */
 import { act } from "react";
 import { cleanup, render, screen } from "@testing-library/react";
@@ -129,8 +128,8 @@ describe("UnboundedBadge + usePlayerDesignations", () => {
   };
 
   it("U1/scheduled: renders ∞→N and the scheduled tooltip from the engine golden", () => {
-    // GOLDEN-DRIVEN — `scheduled_collapse` and `unbounded_resources` are both read out of the
-    // regenerated engine golden, never authored here.
+    // GOLDEN-DRIVEN — the row and its `scheduled` flag are both read out of the regenerated
+    // engine golden, never authored here.
     seed(tokenWire as unknown as DerivedViews);
     expect(screen.getAllByLabelText(/Unbounded/)).toHaveLength(1);
     const badge = screen.getByLabelText(SCHEDULED_TOKENS);
@@ -141,10 +140,10 @@ describe("UnboundedBadge + usePlayerDesignations", () => {
   it("U2/unscheduled: the same golden with the ROW flag cleared renders plain ∞", () => {
     // GOLDEN-DRIVEN, matched negative — identical rows, `scheduled` cleared on the ROW.
     //
-    // Clearing the row is the only thing that unschedules the badge: stripping
-    // `scheduled_collapse` instead leaves it rendering `∞→N`, because the tag channel is the
-    // accepted-collapse contract, not the render input. Asserting against a stripped tag would
-    // only pass if the display re-derived the flag from it — the join this component must not have.
+    // Clearing the flag on the row is the ONLY thing that unschedules the badge, because the row
+    // is the only place the wire carries the answer. The engine's accepted-collapse contract lives
+    // in `pending_unbounded_materialization` and is deliberately not mirrored to the client, so
+    // there is nothing else this test could strip.
     const wire = tokenWire as unknown as DerivedViews;
     const untagged = {
       ...wire,

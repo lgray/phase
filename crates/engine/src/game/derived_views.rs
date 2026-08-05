@@ -162,11 +162,6 @@ pub struct PlayerStatusView {
 /// controller): a payload-keyed axis (`Life(p)`/`DamageDealt(p)`/`LibraryDelta(p)`)
 /// routes to the player it names (the drain/mill victim or the lifegain/self-mill
 /// beneficiary), while aggregate axes route to the loop's controller.
-///
-/// NOT ALWAYS RENDERED: [`DerivedViews::scheduled_collapse`] reuses this type for the
-/// accepted-collapse contract, and an entry there may name an axis with no row above it (an
-/// orphan tag), which draws nothing. "One rendered row" describes this type's use in
-/// [`DerivedViews::unbounded_resources`] only.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UnboundedResourceView {
     pub player: PlayerId,
@@ -192,10 +187,10 @@ pub struct UnboundedResourceView {
     /// real in the data and latent in the display; it becomes visible the moment anything renders
     /// per-axis. Stated rather than left as an implied rendering bug.
     ///
-    /// [`DerivedViews::scheduled_collapse`] remains the authority for the CR 732.2c contract
-    /// (which collapse is accepted, and its bound); this flag is only its display shadow on a
-    /// row. Entries in the tag channel leave it `false` — membership there already IS the fact —
-    /// so it is omitted from their wire form entirely.
+    /// NOT the authority for the CR 732.2c contract — `GameState::pending_unbounded_materialization`
+    /// is, and it is what the boundary reads to cash the collapse out. This flag is only that
+    /// contract's display shadow, and it is deliberately the ONLY projection of it on the wire: a
+    /// second channel mirroring the stash would be a contract with no reader.
     #[serde(default, skip_serializing_if = "is_false")]
     pub scheduled: bool,
 }
@@ -399,9 +394,12 @@ pub struct DerivedViews {
     ///
     /// NOT a straight projection of the mark: a TOKEN-axis row is withheld when its entire
     /// registered pile has left the battlefield ([`object_growth_backing`]), so this can carry
-    /// FEWER axes than `GameState::unbounded_resources` marks. The mark, the accepted stash, and
-    /// [`Self::scheduled_collapse`] are all unaffected by that — it is a display decision, never
-    /// a cancellation of agreed growth (CR 732.2c).
+    /// FEWER axes than `GameState::unbounded_resources` marks. The mark and the accepted stash
+    /// are both unaffected by that — it is a display decision, never a cancellation of agreed
+    /// growth (CR 732.2c). A withheld row therefore does NOT mean the collapse was cancelled;
+    /// `pending_unbounded_materialization` still carries it and the boundary still applies it,
+    /// which `combo_infinite_pile::object_growth_infinity_row_dies_with_its_last_pile_member`
+    /// asserts at the store level.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub unbounded_resources: Vec<UnboundedResourceView>,
 
@@ -428,80 +426,6 @@ pub struct DerivedViews {
     /// omitted) when no counter-growth loop is active — the dominant case.
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub unbounded_counters: HashMap<ObjectId, Vec<CounterType>>,
-
-    /// The `(engine-attributed player, axis)` pairs whose unbounded growth has an accepted but
-    /// not-yet-applied finite collapse waiting at the next step/phase end, where the controller
-    /// is prompted to name N. What it names is a PENDING COLLAPSE — the accepted stash — not a
-    /// per-row annotation of `unbounded_resources`, and the two channels answer different
-    /// questions: the tag answers "what will the boundary cash out?", the row answers "does this
-    /// `∞` still have live board backing?".
-    ///
-    /// A TAGGED ROW MAY THEREFORE BE ABSENT. `derive_views` drops a TOKEN-AXIS row whose ENTIRE
-    /// registered pile has left the battlefield ([`object_growth_backing`]), while the stash and
-    /// its CR 732.2c bound survive untouched — so the boundary still cashes that axis out and the
-    /// tag must still name it. An ORPHAN TAG (an axis named here with no row above) is CORRECT,
-    /// not a bug.
-    ///
-    /// SCOPED TO THE TOKEN AXIS ON PURPOSE, because "object growth" would over-promise: counter
-    /// growth is object growth too, but [`object_growth_backing`] returns `None` for every
-    /// `ResourceAxis::Counter(..)` (a controller-keyed store cannot answer a per-axis question —
-    /// see that function's GRANULARITY note), so this mechanism cannot orphan a counter tag.
-    ///
-    /// A counter tag can orphan by an unrelated route, stated with its precondition because the
-    /// unconditional version is false: `collapsed_counter_axis` re-derives a pair's axis from the
-    /// bearer's CURRENT characteristics, so the derived `ObjectClass` can change out from under a
-    /// marked axis and stop joining its row. That requires a bearer whose live class is
-    /// Creature/Planeswalker/Battle — every other bearer already derives `Other` while alive
-    /// (`analysis::resource::object_class`), so losing it changes nothing. The change of
-    /// characteristics is CR 400.7 when the bearer changed zones; a token that simply stopped
-    /// existing is CR 111.7 / CR 704.5d.
-    ///
-    /// Witnessed by `combo_infinite_pile::object_growth_infinity_row_dies_with_its_last_pile_member`,
-    /// whose subject arm drops the `TokensCreated` row through the production `zones::move_to_zone`
-    /// chokepoint and then asserts, in that same arm, both halves of the divergence: the tag still
-    /// names `TokensCreated` while the row is gone, and the stash, its bound, and the
-    /// `GameState::unbounded_resources` mark all survive. Gating this tag on that same backing
-    /// check would make the field UNDER-REPORT a live pending collapse, which is the opposite of
-    /// what it is for. Join a row to its tag by exact `(player, axis)` equality — same single
-    /// authority (`GameState::scheduled_collapse_axes`) and the same `attribution_player` keying
-    /// as `unbounded_resources` — and note that a consumer iterating ROWS renders nothing for an
-    /// orphan tag, which is the intended display.
-    ///
-    /// THE WINDOW IS AN ENGINE DEVIATION, pre-existing and deliberate, licensed by no CR — see
-    /// the block above `derive_views`' ∞ projections, which this field does not restate. What
-    /// CR 732.2c governs is the CEILING: the shortcut is taken at the count every player
-    /// accepted, so the collapse may not exceed it (`game::turns` reads the recorded bound into
-    /// the prompt's `max`, and `SubmitPayAmount` rejects an over-collapse). This projection does
-    /// not read CR 732.2c and does not filter anything by it.
-    ///
-    /// SCOPE LIMIT — read this before using it as "which ∞ rows stop being ∞". `Mana(_)` axes
-    /// are deliberately ABSENT: mana is already materialized and spendable
-    /// (`mana_payment::refill_infinite_mana` re-tops the pool off the store), so the accepted
-    /// count bounds nothing the player can spend, and tagging it would announce a ceiling a live
-    /// pool never had. A mana ∞ does end — at the step/phase end, via
-    /// `turns::drain_pending_phase_transition_progress`, which is the ONE thing here CR 500.5
-    /// genuinely governs (unspent mana empties); the deferred token/life/counter growth is cashed
-    /// out at that same landmark by engine choice, which CR 500.5 does not license.
-    ///
-    /// Do NOT read that limit as "no materialization touches mana" — a `DriveSequence` names the
-    /// loop's whole `proposal.unbounded` set, so `clear_collapsed_materializations` really does
-    /// drop the `Mana(_)` axis when that collapse applies. The exclusion is about what the badge
-    /// would promise, not about which code path clears the axis. This field therefore
-    /// UNDER-REPORTS the mana case by design.
-    ///
-    /// `scheduled_display_axes` is the single authority for that limit, shared with
-    /// `UnboundedResourceView::scheduled` — the two channels cannot disagree about which axes are
-    /// scheduled, and a test pins both directions on a `Mana(_)` axis.
-    ///
-    /// KEYING LIMIT, so no reader mistakes it for complete coverage: this tag is
-    /// `(player, axis)`-keyed, while `unbounded_pile` and `unbounded_counters` are `ObjectId`-
-    /// keyed. The engine holds and performs those joins (`clear_collapsed_materializations`), but
-    /// they are not on the wire, so during the window a tagged HUD row can read `∞→N` while the
-    /// same loop's token group and counter pill still read plain `∞`.
-    ///
-    /// Empty (and omitted) whenever nothing is scheduled — the dominant case.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub scheduled_collapse: Vec<UnboundedResourceView>,
 }
 
 /// Serialize-only wrapper: the WASM getter passes `&GameState` by reference
@@ -988,8 +912,6 @@ pub fn derive_views(state: &GameState, viewer: Option<PlayerId>) -> DerivedViews
     views.viewer_turn_number = viewer_turn_number;
 
     // WHY THE THREE ∞ SURFACE CHANNELS BELOW ARE UNCONDITIONAL — the accept→boundary window.
-    // (The `scheduled_collapse` TAG loop also sits below this header and is also unconditional,
-    // but it is not a SURFACE — it projects the schedule, and filters no surface.)
     //
     // THE WINDOW IS AN ENGINE DEVIATION, PRE-EXISTING AND DELIBERATE — NOT A RULES ENTITLEMENT, and
     // no CR is cited as licensing it. CR 732.2c has the shortcut taken the moment the last player
@@ -1048,16 +970,14 @@ pub fn derive_views(state: &GameState, viewer: Option<PlayerId>) -> DerivedViews
     // NO SURFACE IS FILTERED BY THE SCHEDULE — that, and only that, is the invariant here. Which
     // rows/groups/pills EXIST is decided by the `∞` stores and the LIVE battlefield alone; nothing
     // below hides a surface because a collapse is scheduled. The schedule is read to ANNOTATE, not
-    // to filter: the row loop calls `scheduled_display_axes` for each row's `scheduled` flag, and
-    // the tag loop calls it to project the schedule itself. Both are additive.
+    // to filter: the row loop calls `scheduled_display_axes` to set each row's `scheduled` flag,
+    // and that is additive.
     //
-    // Say it that way because the absolute version ("no surface reads it") was true when the tag
-    // loop was the only reader and became false the moment the row flag moved into the engine —
-    // a stale claim introduced by the commit that exists to fix stale claims is the one defect
-    // this change cannot afford, and it was introduced here anyway before a review caught it.
-    // (`GameState::scheduled_collapse_axes` has two production callers:
-    // `clear_collapsed_materializations` and `scheduled_display_axes`, the latter serving both
-    // loops below.) The same sentence previously read "only their own stores",
+    // Phrased as an invariant rather than a census of readers, because the census version has gone
+    // stale three times running — "no surface reads it" (falsified when the flag moved into the
+    // row loop), then a reference to a tag loop (falsified when that channel was removed). Naming
+    // WHO reads the schedule creates a claim that every future consumer can break; naming what the
+    // schedule may not DO does not. The same sentence previously read "only their own stores",
     // which the row guard below falsified the moment it was added: `object_growth_backing`
     // deliberately cross-reads the pile and counter-target stores, because whether a ROW is still
     // live is a question about those backing sets, not about its own. That makes twice this one
@@ -1101,38 +1021,6 @@ pub fn derive_views(state: &GameState, viewer: Option<PlayerId>) -> DerivedViews
                 scheduled: scheduled_axes.contains(&axis),
             });
         }
-    }
-
-    // The TAG — one straight projection of `scheduled_display_axes`, the SAME authority the row
-    // flag above reads (see its rustdoc for the `Mana(_)` scope limit and why writing that rule
-    // twice is what this call shape prevents), keyed by the SAME `attribution_player` the ∞ rows
-    // above use, so a row and its tag join by exact `(player, axis)` equality. It reads the
-    // accepted STASH and nothing else: deliberately NOT `object_growth_backing`, which is the
-    // row loop's live-board question. A stash whose backing has left the battlefield loses its
-    // row above and KEEPS its tag here, because the boundary will still cash that axis out —
-    // see the field's rustdoc for why that orphan is correct rather than a leak. Deterministic
-    // without a sort: `pending_unbounded_materialization` is a BTreeMap and
-    // `scheduled_display_axes` returns a BTreeSet, so the goldens are reproducible.
-    //
-    // DE-DUPLICATED because the field is documented as a set of pairs and consumers are told to
-    // join on exact `(player, axis)` equality: attribution collapses victim-attributed axes onto
-    // the victim, so two controllers each holding an accepted `Life(victim)` collapse would
-    // otherwise push that pair twice — the same aliasing the row flag exists to survive.
-    let mut tagged: BTreeSet<(PlayerId, ResourceAxis)> = BTreeSet::new();
-    for &controller in state.pending_unbounded_materialization.keys() {
-        for axis in scheduled_display_axes(state, controller) {
-            tagged.insert((attribution_player(axis, controller), axis));
-        }
-    }
-    for (player, axis) in tagged {
-        views.scheduled_collapse.push(UnboundedResourceView {
-            player,
-            axis,
-            // Left false deliberately: membership in THIS channel already is the
-            // scheduled fact, so setting it would be a redundant second encoding. It is
-            // `skip_serializing_if`-omitted, so the tag channel's wire form is unchanged.
-            scheduled: false,
-        });
     }
 
     // CR 732.2a / CR 110.1: project the accepted object-growth loop's ∞ pile — the
@@ -1300,11 +1188,11 @@ fn turn_order_views(
 /// CR 732.2c: the axes `controller` has an accepted-but-unapplied collapse for, as the HUD
 /// should announce them.
 ///
-/// SINGLE AUTHORITY for both consumers — the per-row `scheduled` flag and the
-/// `scheduled_collapse` tag channel. They are computed by different loops over different state
-/// and MUST NOT disagree: a row flagged with no tag naming it renders `∞→N` for a collapse the
-/// tag contract says is not scheduled. The SCOPE LIMIT below is exactly the kind of rule that
-/// drifts when it is written twice, and it did — the guard originally lived only in the tag loop.
+/// Named rather than inlined into its one caller because the SCOPE LIMIT below is a rule, not a
+/// line of the row loop, and it has already proved it drifts when written twice: an earlier cut of
+/// this change had a second consumer (a `scheduled_collapse` tag channel, since removed for having
+/// no reader) and the guard lived in that consumer alone, so mana rows shipped flagged while the
+/// tag omitted them. Any future second consumer calls THIS, and inherits the limit.
 ///
 /// SCOPE LIMIT — `Mana(_)` is excluded. This is about what the badge would TELL the player, not
 /// about which code path ends the axis, and it is scoped to THE WINDOW THE BADGE RENDERS IN
@@ -1319,6 +1207,20 @@ fn turn_order_views(
 /// ACROSS the boundary it is not unconditional, and the sentence above is deliberately not written
 /// as if it were: a `DriveSequence` collapse replays the captured sequence `N` times after that
 /// empty, so the post-collapse pool genuinely is bounded by `N`. The badge is gone by then.
+///
+/// A DIFFERENT OVER-PROMISE THIS LIMIT DOES NOT COVER, disclosed rather than left for a reader to
+/// discover: `Counters` and `Life` axes can be flagged here and then NOT collapse. The boundary
+/// re-runs the observed-growth firewall (`engine_resolution_choices`) and DECLINES the batched
+/// apply if a counter/life observer (Heliod, Corpsejack) appeared during the accept→boundary
+/// window — the axis stays `∞`, nothing is applied, and the badge's "a finite amount will be
+/// chosen" was wrong. Reachable in exactly the window the badge renders in, and witnessed by
+/// `combo_infinite_pile::real_4p_counter_observer_drift_in_window_declines_batched_counter_but_still_mints_tokens`.
+///
+/// It is NOT fixable at flag time: the observer can appear after this projection ran, so no value
+/// computed here can be right for the whole window. The honest reading of `scheduled` is therefore
+/// "a collapse is SCHEDULED for this axis", never "this growth is guaranteed to land". `Mana(_)`
+/// is excluded above because its promise is false the moment it is made; this one can only become
+/// false later, which is a different defect and belongs to whatever makes the decline visible.
 ///
 /// Note this exclusion is also NOT "no materialization touches mana": a `DriveSequence` names the
 /// loop's whole `proposal.unbounded` set, so `clear_collapsed_materializations` really does drop
@@ -1345,9 +1247,10 @@ fn scheduled_display_axes(state: &GameState, controller: PlayerId) -> BTreeSet<R
 ///
 /// A payload-keyed axis names the player it acts on, so the badge follows the
 /// payload, NOT permanent control:
-/// - CR 704.5a: `Life(p)` — a drain drives an opponent's life down (the win
-///   condition is the afflicted player reaching 0 life) and lifegain raises the
-///   controller's own; either way the badge belongs on `p`'s HUD.
+/// - CR 119.3 + CR 704.5a: `Life(p)` — CR 119.3 makes `p` the player whose life total the
+///   effect adjusts, and CR 704.5a is why that matters (the afflicted player reaching 0 life
+///   loses). A drain drives an opponent's total down and lifegain raises the controller's own;
+///   either way the badge belongs on `p`'s HUD.
 /// - CR 120: `DamageDealt(p)` — damage accrues to the player it is dealt to, so an
 ///   opponent-burn loop shows `∞` on the victim's HUD.
 /// - CR 704.5b: `LibraryDelta(p)` — a mill drives an opponent's library toward the
@@ -3869,11 +3772,11 @@ mod tests {
     /// Two controllers draining the SAME victim: each keeps its own `scheduled` answer.
     ///
     /// This is the shape that makes `UnboundedResourceView::scheduled` an engine field rather
-    /// than a downstream join. Both rows are attributed to the victim (CR 119.3 — a life axis
-    /// belongs on the HUD of the player whose life total moves), so on the wire they are two rows
+    /// than a downstream join. Both rows are attributed to the victim (CR 119.3 + CR 704.5a, the
+    /// same pair `attribution_player` cites for this decision), so on the wire they are two rows
     /// with an IDENTICAL `(player, axis)` key that must nonetheless disagree about `scheduled`.
-    /// Any consumer joining `unbounded_resources` against `scheduled_collapse` by `(player, axis)`
-    /// — which is what the frontend used to do — cannot represent that: it sees one tag matching
+    /// Any consumer joining those rows against a separate `(player, axis)`-keyed schedule channel
+    /// — which is what the frontend used to do — cannot represent that: it sees one entry matching
     /// both rows and marks P0's row scheduled off P1's accepted stash. Only the row loop, which
     /// still has the producing controller in hand before `attribution_player` erases it, can
     /// answer per-controller.
@@ -3920,7 +3823,7 @@ mod tests {
         );
         assert!(
             rows.iter().all(|r| r.player == victim),
-            "reach: a life axis attributes to the victim (CR 119.3), got {rows:?}"
+            "reach: a life axis attributes to the victim (CR 119.3 + CR 704.5a), got {rows:?}"
         );
 
         // THE assertion: exactly one row is scheduled. Compared as a multiset because the two rows
@@ -3935,15 +3838,21 @@ mod tests {
              not; got {rows:?}"
         );
 
-        // The tag channel still carries the contract, and carries it ONCE (P1's accepted stash).
-        // This is what keeps the row flag honest as a display shadow rather than a second source:
-        // if the tag loop and the row flag ever disagreed on how many collapses are accepted, one
-        // of them is wrong.
-        let tags: Vec<ResourceAxis> = views.scheduled_collapse.iter().map(|t| t.axis).collect();
+        // CROSS-CHECK AGAINST THE CONTRACT'S OWN AUTHORITY, not against a second wire channel.
+        // `pending_unbounded_materialization` is what the boundary reads to cash the collapse out,
+        // so it — not the projection — decides how many accepted collapses exist. Asserting the
+        // flag against it is what keeps the flag a display shadow rather than a second source of
+        // truth: exactly one controller accepted, and it is the one whose row came back `true`.
+        let accepted: Vec<PlayerId> = state
+            .pending_unbounded_materialization
+            .iter()
+            .filter(|(_, items)| state.scheduled_collapse_axes(items).contains(&axis))
+            .map(|(pid, _)| *pid)
+            .collect();
         assert_eq!(
-            tags,
-            vec![axis],
-            "the accepted-collapse contract names this axis exactly once, got {tags:?}"
+            accepted,
+            vec![p1],
+            "the accepted-collapse contract names exactly P1 for this axis, got {accepted:?}"
         );
     }
 

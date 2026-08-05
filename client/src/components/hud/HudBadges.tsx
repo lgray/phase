@@ -434,18 +434,18 @@ export const familyOf = (axis: ResourceAxis): ResourceAxisFamily =>
  * engine-computed `scheduled` flag through. Presentation formatting only: the engine owns axis
  * identity, attribution, and which axes are scheduled — this decides nothing.
  *
- * READS `row.scheduled`, and deliberately does NOT join `scheduled_collapse` to reconstruct it.
- * A join is a computation over game state, which per `CLAUDE.md` is never the display layer's to
- * perform — that alone settles it. It is also not well-defined: both channels key on the engine's
- * ATTRIBUTION player, so a victim-attributed axis (`Life(p)` and friends) names its victim rather
- * than the loop that produced it, and two controllers draining one victim emit a row from one and
- * a tag from the other under the identical key. The engine answers it on the controller key,
- * before attribution rewrites it. (That collision does not currently change what RENDERS — the
- * fold below is per-family and a key collision implies the same family — so this is a latent
- * divergence, not a fixed rendering bug.)
+ * READS `row.scheduled`, which is the engine's answer and the only one on the wire. Re-deriving
+ * it here from any `(player, axis)`-keyed channel would be a computation over game state, which
+ * per `CLAUDE.md` is never the display layer's to perform — and it would also be wrong: such a
+ * key names the engine's ATTRIBUTION player, so a victim-attributed axis (`Life(p)` and friends)
+ * names its victim rather than the loop that produced it, and two controllers draining one victim
+ * become indistinguishable. The engine answers on the controller key, before attribution rewrites
+ * it. (That collision would not currently change what RENDERS — the fold below is per-family and
+ * a key collision implies the same family — so it is a latent divergence, not a fixed bug.)
  *
- * `scheduled_collapse` remains the authority for the accepted-collapse contract; rows drive the
- * display, so an orphan tag (an axis tagged with no row) correctly renders nothing.
+ * `GameState::pending_unbounded_materialization` remains the authority for the accepted-collapse
+ * contract; this flag is only its display shadow, and a row that the engine withholds simply
+ * renders nothing while the collapse still lands at the boundary.
  */
 export function unboundedFamilyViews(rows: UnboundedResourceView[]): UnboundedFamilyView[] {
   const families = new Map<ResourceAxisFamily, boolean>();
@@ -453,12 +453,14 @@ export function unboundedFamilyViews(rows: UnboundedResourceView[]): UnboundedFa
     const family = familyOf(row.axis);
     // A family is scheduled iff ANY member axis is, so this fold OVER-reports: it never marks a
     // family with no scheduled axis in it, but one scheduled axis can cover an unscheduled
-    // sibling. Reachable rather than theoretical, and structurally so: `familyOf` maps both
-    // `Counter` and `Poison` to "counters" (and six tags to "triggers"), while
-    // `scheduled_collapse_axes` inserts one axis per counter growth in a stash, so a multi-growth
-    // accept names several distinct `Counter(..)` axes from one proposal. A seat with a scheduled
-    // counter axis and an unscheduled poison axis therefore sees one `∞→N` spanning both — pinned
-    // by U3c, which composes exactly that pair.
+    // sibling. Structurally reachable for the Counter/Counter case: `familyOf` maps every
+    // `Counter(..)` to "counters" (and six tags to "triggers"), while `scheduled_collapse_axes`
+    // inserts one axis per counter growth in a stash, so one multi-growth accept names several
+    // distinct `Counter(..)` axes — that is the pair U6 asserts. U3c composes the sharper
+    // Counter/Poison pair, which is the same fold behaviour but additionally needs the counter
+    // loop's CONTROLLER to be the VICTIM of a poison ∞ (`Counter` attributes to the controller,
+    // `Poison` to the victim); that combination is not claimed to be reachable, only that IF it
+    // arises the fold paints both.
     //
     // Deliberate, and the OPPOSITE direction from the wire's KEYING LIMIT (which under-reports) —
     // worth stating since the two are documented a few files apart. Over-reporting is preferred

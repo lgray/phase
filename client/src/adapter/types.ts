@@ -2635,19 +2635,19 @@ export interface UnboundedResourceView {
    * Engine-computed: this axis has an accepted-but-unapplied collapse, so render `∞→N` rather
    * than a bare `∞`. Omitted (⇒ `undefined`) when false, so test for truthiness, not presence.
    *
-   * Do NOT reconstruct this by joining `unbounded_resources` against `scheduled_collapse`. Both
-   * channels are keyed by the engine's ATTRIBUTION player, which for `Life`/`DamageDealt`/
+   * This is the ONLY projection of the accepted collapse on the wire, and deliberately so. An
+   * earlier cut also shipped a `(player, axis)`-keyed tag channel; it was removed for having no
+   * reader, and re-deriving this flag from such a channel is not merely redundant but wrong. Any
+   * such channel keys by the engine's ATTRIBUTION player, which for `Life`/`DamageDealt`/
    * `LibraryDelta`/`Poison` axes is the *victim*, not the loop that produced the growth — so two
-   * controllers draining one victim collide under the same `(player, axis)` key and such a join
-   * marks the wrong controller's row. The engine computes this on the controller key, which is
-   * the only place that identity still exists. This field is that answer.
+   * controllers draining one victim collide under the same key and the join marks the wrong
+   * controller's row. The engine computes this on the controller key, the only place that
+   * identity still exists.
    *
    * That collision does not currently change what renders — the badge folds rows to families, and
    * a key collision implies the same family — so this is a latent divergence in the data rather
    * than a rendering bug that was fixed. It becomes visible the moment anything renders per-axis.
    *
-   * Meaningful on `unbounded_resources`. Entries in `scheduled_collapse` leave it unset —
-   * membership in that channel already IS the scheduled fact.
    */
   scheduled?: boolean;
 }
@@ -2886,13 +2886,13 @@ export interface DerivedViews {
    * What matters to the FE is only that the mark is still live there, so `∞` is current engine
    * state, not a stale mark. Render it.
    *
-   * ONE EXCEPTION, stated here because it otherwise contradicts the `scheduled_collapse` block
-   * below: "stays populated" is about the ACCEPT, not about the board. A TOKEN-axis row is still
-   * dropped if its entire registered pile leaves the battlefield during that window — the engine
-   * will not render an `∞` beside an already-empty pile. Counter-axis rows are not dropped that
-   * way (the engine has no per-axis backing authority for them yet), so do not generalize the
-   * exception. Either way the accepted collapse itself is never cancelled: the row may vanish, the
-   * boundary still cashes the axis out, and `scheduled_collapse` still names it.
+   * ONE EXCEPTION: "stays populated" is about the ACCEPT, not about the board. A TOKEN-axis row
+   * is still dropped if its entire registered pile leaves the battlefield during that window —
+   * the engine will not render an `∞` beside an already-empty pile. Counter-axis rows are not
+   * dropped that way (the engine has no per-axis backing authority for them yet), so do not
+   * generalize the exception. Either way the accepted collapse itself is never cancelled: the row
+   * may vanish and the boundary still cashes the axis out. Do not infer a cancellation from a
+   * disappearing row — the FE is not told about the collapse except through `scheduled` below.
    */
   unbounded_resources?: UnboundedResourceView[];
   /**
@@ -2914,49 +2914,6 @@ export interface DerivedViews {
    * `engine::game::derived_views::DerivedViews::unbounded_counters`.
    */
   unbounded_counters?: Record<string, string[]>;
-  /**
-   * The `(engine-attributed player, axis)` pairs whose unbounded growth has an accepted but
-   * not-yet-applied finite collapse waiting at the next step/phase end, where the controller is
-   * prompted to name N. It names a PENDING COLLAPSE — the accepted stash — not a per-row
-   * annotation of `unbounded_resources`. The two channels answer different questions: the tag
-   * answers "what will the boundary cash out?", the row answers "does this ∞ still have live
-   * board backing?".
-   *
-   * A TAGGED ROW MAY BE ABSENT. The engine drops a TOKEN-axis row whose entire registered pile
-   * has left the battlefield, while the accepted stash and its bound survive — so the boundary
-   * still cashes that axis out and the tag still names it. An orphan tag is CORRECT, not a bug.
-   * Join a row to its tag by exact `(player, axis)` equality; consumers iterate ROWS, so an
-   * orphan tag renders nothing.
-   *
-   * Scoped to the token axis deliberately — "object-growth row" would over-promise. Counter
-   * growth is object growth too, but the engine has no per-axis backing authority for counter
-   * axes yet, so this mechanism cannot orphan a counter tag. (A counter tag can orphan by an
-   * unrelated route: the engine re-derives a counter target's axis from its bearer's current
-   * characteristics, so that axis can change and stop matching its row — but only for a bearer
-   * whose live class is creature/planeswalker/battle, since every other bearer already derives
-   * the same "other" class while alive.) Nothing on the FE side changes when the engine gains
-   * that authority; this paragraph just narrows further.
-   *
-   * The accept→boundary window is an engine deviation, pre-existing and deliberate, licensed by
-   * no CR. CR 732.2c governs only the CEILING (the accepted count bounds the collapse). CR 500.5
-   * names the timing landmark and governs the mana-pool drain there; it does not license cashing
-   * out the deferred growth at that moment.
-   *
-   * SCOPE LIMIT: `Mana` axes are deliberately absent — the pool is already spendable and the
-   * accepted count bounds nothing the player can spend, so a tag would announce a ceiling that
-   * pool never had. This UNDER-REPORTS "which ∞ rows will stop being ∞", and it is NOT a claim
-   * that no materialization touches mana (a `DriveSequence` collapse does clear the axis). The
-   * engine applies the same limit to `UnboundedResourceView.scheduled`, from one authority, so
-   * the two never disagree.
-   *
-   * KEYING LIMIT: `(player, axis)`-keyed, while `unbounded_pile` / `unbounded_counters` are
-   * ObjectId-keyed and carry no axis on the wire — so during the window a tagged HUD row can
-   * read `∞→N` while the same loop's token group and counter pill still read plain `∞`.
-   *
-   * Empty/omitted when nothing is scheduled. Mirrors
-   * `engine::game::derived_views::DerivedViews::scheduled_collapse`.
-   */
-  scheduled_collapse?: UnboundedResourceView[];
 }
 
 /** Mirrors `engine::types::game_state::NextSpellModifier` (serde tag="type"). */

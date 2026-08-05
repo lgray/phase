@@ -110,9 +110,8 @@ export function usePlayerDesignations(playerId: PlayerId): PlayerDesignations {
       playerId,
       NO_UNBOUNDED,
     );
-    // `derived.scheduled_collapse` is deliberately NOT surfaced here: the engine already
-    // answers the scheduled question on each row (`UnboundedResourceView.scheduled`), so a
-    // second per-seat copy of the tag channel would be a display-layer join with no consumer.
+    // The scheduled question is answered per row by the engine (`UnboundedResourceView.scheduled`),
+    // so `unboundedResources` already carries it and there is nothing further to filter per seat.
     const hasAny =
       isMonarch
       || hasInitiative

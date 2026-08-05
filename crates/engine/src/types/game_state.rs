@@ -3558,11 +3558,10 @@ pub enum PersistentAxisMaterialization {
 /// remaining consumers are LIVE, and byte-identical to the pre-extraction nested
 /// `counter_axis` helper they already used:
 ///   • `scheduled_collapse_axes` — read by `clear_collapsed_materializations` to pick the
-///     removals, AND by `derive_views` (through `scheduled_display_axes`) to flag each `∞` row
-///     and to project `DerivedViews::scheduled_collapse`. Exactly the fail-open described above:
-///     a removal that finds nothing, and an axis that flags no row. An unflagged row renders
-///     plain `∞` rather than `∞→N`, so the polarity is unchanged — nothing is hidden, one
-///     affordance is merely not offered.
+///     removals, AND by `derive_views` (through `scheduled_display_axes`) to flag each `∞` row.
+///     Exactly the fail-open described above: a removal that finds nothing, and an axis that
+///     flags no row. An unflagged row renders plain `∞` rather than `∞→N`, so the polarity is
+///     unchanged — nothing is hidden, one affordance is merely not offered.
 ///   • `clear_collapsed_materializations`' own surviving-target guard.
 ///
 /// That fail-open polarity is the SAME one this phase mandates everywhere else (an axis
@@ -19911,18 +19910,17 @@ impl GameState {
     /// CR 732.2a: the exact `ResourceAxis` set a deferred materialization stash will
     /// collapse at the next CR 500.5 boundary. SINGLE AUTHORITY with TWO production callers:
     /// `clear_collapsed_materializations`, which REMOVES these axes once the growth was applied,
-    /// and `game::derived_views::scheduled_display_axes`, which serves BOTH of that module's
-    /// readers: each `∞` row's `scheduled` flag and the `DerivedViews::scheduled_collapse` tag.
+    /// and `game::derived_views::scheduled_display_axes`, which flags each `∞` row's `scheduled`
+    /// field.
     ///
-    /// NOT a display FILTER. `derive_views` reads this to ANNOTATE — a flag on a row, and a tag
-    /// channel — but no `∞` surface is filtered by it. Which surfaces exist is gated on their own
-    /// stores and on live battlefield membership, never on this set. (This doc has now been stale
-    /// twice: it once said "ONE production caller" and "deliberately not read by
-    /// `game::derived_views`", which the tag loop falsified; then it said the `derive_views`
-    /// caller was "the tag loop", which the row flag falsified. Each time the mirror sentence in
-    /// `derived_views` was updated and this one — the doc a future caller reads first — was not.
-    /// Hence the phrasing above names the FUNCTION, not the loop, so a third consumer inside
-    /// `derived_views` cannot make it stale a third time.) This stash is the
+    /// NOT a display FILTER. `derive_views` reads this to ANNOTATE a row, never to decide whether
+    /// the row exists. Which surfaces exist is gated on their own stores and on live battlefield
+    /// membership, never on this set. (This doc has been stale twice — it once said "ONE
+    /// production caller" and "deliberately not read by `game::derived_views`"; then it named a
+    /// since-removed tag loop as the caller. Each time the mirror sentence in `derived_views` was
+    /// updated and this one — the doc a future caller reads first — was not. Hence it now names
+    /// the FUNCTION, not the consumer, so adding a consumer inside `derived_views` cannot make it
+    /// stale again.) This stash is the
     /// engine's DEFERRAL of an accepted shortcut's results — an engine deviation, pre-existing and
     /// deliberate, that no CR licenses. The count itself is already fixed at accept
     /// (`pending_materialization_count`); what is deferred is putting the growth on the board.

@@ -1173,63 +1173,37 @@ fn scheduled_drive_still_renders_the_already_spendable_mana_badge() {
              row while the collapse is merely scheduled (viewer {viewer:?}), got {axes:?}"
         );
 
-        // (8) R4 — the `scheduled_collapse` TAG's documented `Mana(_)` scope limit is
-        // FALSIFIABLE, not dead code: (4) above proves the collapse authority names BOTH axes on
-        // this exact stash, so the tag's omission below can only come from the projection's own
-        // `Mana(_)` guard.
-        let views = engine::game::derived_views::derive_views(state, viewer);
-        // PINNED CO-OBSERVATION (§7), asserted BEFORE the tag axis so every probe arm reaches it:
-        // the ∞ ROW for the dropped mana axis is still projected — the scope limit under-reports
-        // the TAG and must never reach the badge. A `Mana(_)` axis registers no board backing, so
-        // `object_growth_backing` returns `None` for it and the row loop's liveness guard cannot
-        // drop it either; the only thing that could move this pin is the tag's scope limit
-        // leaking into the row loop.
-        assert!(
-            views
-                .unbounded_resources
-                .iter()
-                .any(|r| matches!(r.axis, ResourceAxis::Mana(_))),
-            "R4/pin: the mana ∞ row survives while its tag is omitted (viewer {viewer:?}), \
-             got {:?}",
-            views.unbounded_resources
-        );
-        let tagged: Vec<ResourceAxis> = views.scheduled_collapse.iter().map(|r| r.axis).collect();
-        assert!(
-            !tagged.iter().any(|a| matches!(a, ResourceAxis::Mana(_))),
-            "R4/omit: the documented Mana(_) scope limit drops the mana axis from the tag \
-             (viewer {viewer:?}), got {tagged:?}"
-        );
-        assert!(
-            tagged.contains(&ResourceAxis::Life(P0)),
-            "R4/keep: a non-mana axis in the SAME stash is still tagged (viewer {viewer:?}), \
-             got {tagged:?}"
-        );
+        // (8) R4 — the documented `Mana(_)` scope limit is FALSIFIABLE, not dead code: (4) above
+        // proves the collapse authority names BOTH axes on this exact stash, so the mana axis
+        // going unflagged below can only come from the projection's own guard. Assertion (5)
+        // already pins that the mana ROW still exists, so the scope limit governing the AFFORDANCE
+        // rather than row EXISTENCE is covered there; a duplicate pin here would be subsumed by it
+        // and by the same `derive_views` output, so this reuses `rows` instead of recomputing.
 
-        // (9) R4/agree — the ROW FLAG obeys the same scope limit as the TAG.
+        // (9) R4/agree — the ROW FLAG obeys the `Mana(_)` scope limit.
         //
-        // MEASURED DEFECT this pins: the limit originally lived only in the tag loop, so on this
-        // exact state the mana row shipped `scheduled: true` while no tag named it. The HUD folds
-        // that flag into the "mana" family and renders `∞→N` with a "collapse pending; a finite
-        // amount will be chosen" tooltip — beside a pool `refill_infinite_mana` is still topping
-        // up, and beside `ManaPoolSummary`'s plain `∞` for the same pool in the same frame. The
-        // whole suite was green over it: every other `scheduled` assertion in the repo sits on a
-        // non-mana axis, so nothing chose between that behaviour and its opposite.
+        // MEASURED DEFECT this pins: the limit once lived in a separate tag channel's loop and not
+        // in the row loop, so on this exact state the mana row shipped `scheduled: true`. The HUD
+        // folds that flag into the "mana" family and renders `∞→N` with a "collapse pending; a
+        // finite amount will be chosen" tooltip — beside a pool `refill_infinite_mana` is still
+        // topping up, and beside `ManaPoolSummary`'s plain `∞` for the same pool in the same
+        // frame. The whole suite was green over it: every other `scheduled` assertion in the repo
+        // sits on a non-mana axis, so nothing chose between that behaviour and its opposite. The
+        // tag channel is gone; this assertion is what keeps its scope limit honest.
         //
         // TWO-SIDED on purpose. The `Life(P0)` half is the matched positive, from the SAME stash
         // and the SAME `derive_views` call: without it, `scheduled: false` everywhere satisfies
         // the mana half, and this row would pass against a flag that can never be set.
         let flag_of = |want: ResourceAxis| {
-            views
-                .unbounded_resources
-                .iter()
+            rows.iter()
                 .find(|r| r.axis == want)
                 .unwrap_or_else(|| panic!("R4/agree reach: no {want:?} row (viewer {viewer:?})"))
                 .scheduled
         };
         assert!(
             !flag_of(ResourceAxis::Mana(ManaType::Colorless)),
-            "R4/agree: the mana row must not be flagged scheduled — the tag omits it at R4/omit, \
-             and the accepted count bounds nothing the player can spend (viewer {viewer:?})"
+            "R4/agree: the mana row must not be flagged scheduled — the accepted count bounds \
+             nothing the player can spend (viewer {viewer:?})"
         );
         assert!(
             flag_of(ResourceAxis::Life(P0)),
