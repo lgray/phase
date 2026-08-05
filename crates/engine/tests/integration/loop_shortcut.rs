@@ -9539,6 +9539,124 @@ fn bounded_fixed_count_commits_exactly_n_periods() {
     }
 }
 
+/// ITEM 2 (CR 732.2a) — the ACCEPT side: a foreign driving period in state must not divert an
+/// accepted bounded grant into the object-growth materializer.
+///
+/// **WHY NO ROW HAS EVER STARTED FROM A BOARD CARRYING ONE.**
+/// `GameState::migrate_transient_loop_sequence` clears `last_loop_action_sequence` at every load
+/// whose `waiting_for` is not a shortcut window, so every dump-driven row in this file begins
+/// from a cleared field. The whole accept-side dispatch on that field is therefore untested — the
+/// blindness is in the FIXTURE PIPELINE, not in the rows. The answer is injection into a tracked
+/// fixture (as `a_nonempty_action_sequence_mints_no_bounded_offer` already does), not a new
+/// tracked dump.
+///
+/// **WHY THIS IS THE ACCEPT SEAM AND NOT THE MINT SEAM.** The mint arms establish that a foreign
+/// period no longer REFUSES the offer. That relaxation is only safe if the thing subsequently
+/// accepted still routes to the DRAIN materializer: `materialize_fixed_shortcut` early-returns
+/// into `materialize_object_growth_shortcut` on its routing test, and the bounded drain path
+/// begins strictly below that return. A mint-seam row cannot see which side of it the accept
+/// lands on.
+///
+/// **SITE F IS NOT ON THIS PATH, and that is asserted rather than assumed** — dina's bounded offer
+/// publishes an EMPTY point set, so `handle_declare_shortcut`'s
+/// `if !offer.schema.points.is_empty()` block is skipped whole and the `template: None`
+/// declaration this row makes never reaches the declare-seam arm. Site F's own row lives on the
+/// F4 fixture for exactly the complementary reason.
+///
+/// **THE PROPERTY**: the committed life delta is exactly `n ×` the published per-period delta —
+/// i.e. the drain materializer ran. Positive control on the same fixture and same helper:
+/// [`bounded_fixed_count_commits_exactly_n_periods`], whose reach-guards (non-zero δ, ≥ 2 seats
+/// moving, bound ≥ 3) are repeated here because without them `n × δ` is satisfied by a drive that
+/// committed nothing.
+///
+/// **TWO-SIDED CONTROL:**
+/// * **DROP** the proposer test at the materialize dispatch (restore `!is_empty()`) ⇒ the accept
+///   early-returns into `materialize_object_growth_shortcut` and commits ZERO ⇒ `n × δ` fails for
+///   every seat with a non-zero rate.
+/// * **TRIVIALIZE** it to always take the drain path ⇒ a genuine object-growth accept commits
+///   nothing, which the object-growth siblings of the positive control catch.
+#[test]
+fn an_accepted_bounded_grant_drains_even_with_a_foreign_period_in_state() {
+    use engine::types::game_state::{BuybackUsage, LoopAction, LoopActionContext};
+
+    const N: u32 = 3;
+
+    let mut state = restore_dump(&gunzip_dump(include_bytes!(
+        "../fixtures/dina_conqueror_4p.json.gz"
+    )));
+    drive_to_bounded_offer(&mut state, 400)
+        .expect("the bounded offer must fire; see the acceptance row");
+
+    let (proposer, _, schema) = bounded_offer_parts(&state);
+    assert!(
+        schema.points.is_empty(),
+        "REACH-GUARD / SCOPE: this row isolates the MATERIALIZE dispatch. A non-empty point set \
+         would drag `handle_declare_shortcut`'s declare-seam arm into the same measurement and \
+         the outcome would no longer attribute to one site; got {:?}",
+        schema.points
+    );
+    let opp = *engine_live_opponents(&state, proposer)
+        .first()
+        .expect("REACH-GUARD: the foreign period needs a living opponent to belong to");
+
+    // THE INJECTION the load migration hides from every dump-driven row: an opponent's own
+    // recorded period, sitting in state at the moment the grant is accepted.
+    state.last_loop_action_sequence = vec![LoopActionContext {
+        card_id: state
+            .objects
+            .values()
+            .next()
+            .map(|o| o.card_id)
+            .expect("the dump has objects"),
+        controller: opp,
+        action: LoopAction::Recast {
+            from_zone: engine::types::zones::Zone::Hand,
+            uses_buyback: BuybackUsage::NotUsed,
+        },
+        convoke: None,
+        pins: vec![],
+    }];
+    assert_ne!(
+        opp, proposer,
+        "REACH-GUARD: a period injected for the PROPOSER would be the legitimate object-growth \
+         route, and this row would assert the opposite of what it means to"
+    );
+
+    let (committed, per_cycle, bound) = accept_bounded_fixed(&mut state, N);
+
+    // ── reach-guards: without these `n × δ` holds degenerately for a drive that did nothing ──
+    assert!(
+        per_cycle.delta != engine::analysis::resource::ResourceVector::default(),
+        "a zero-delta period makes `n × δ` zero for every `n`, so the equality below would hold \
+         for a drive that committed nothing — which is the exact failure mode this row exists to \
+         catch"
+    );
+    assert!(
+        per_cycle.delta.life.values().filter(|v| **v != 0).count() >= 2,
+        "fewer than two seats with a non-zero life term is a 2-player shape; got {:?}",
+        per_cycle.delta.life
+    );
+    assert!(
+        bound >= N,
+        "`n = {N}` must be WITHIN the offered bound, else the declaration is handed back and \
+         this row silently tests the rejection arm; bound = {bound}"
+    );
+
+    // ── THE PROPERTY: the DRAIN materializer ran, not the object-growth one ──
+    for (seat, delta) in &committed {
+        assert_eq!(
+            *delta,
+            i64::from(N) * per_cycle.delta.life.get(seat).copied().unwrap_or(0),
+            "CR 732.2a: with a FOREIGN period in state the accepted grant must still commit \
+             exactly `n` copies of the published per-period delta ({:?}). A zero here is the \
+             object-growth misroute: `materialize_fixed_shortcut` early-returned into \
+             `materialize_object_growth_shortcut`, which commits no bounded cycles at all. \
+             {seat:?} committed {committed:?}",
+            per_cycle.delta.life
+        );
+    }
+}
+
 /// FIX ROUND 2 (MED-2) — the same `n × δ` property on a certification-basis **A** offer, at
 /// DRIVE level. The row above covers basis **B** on all three of its fixtures; every basis-A
 /// claim in this lane rested on ONE published-number assertion until this row.
