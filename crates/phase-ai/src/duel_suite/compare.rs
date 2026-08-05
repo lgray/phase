@@ -859,6 +859,20 @@ pub fn gate_verdict(comparison: &Result<CompareReport, CompareError>) -> (String
     }
 }
 
+/// Write the gate's stdout body and return the process exit code.
+///
+/// Every binary that compares two suite reports ends in these same two statements, and review
+/// pointed out that a unit test on `gate_verdict` cannot see them: a `main` that printed to
+/// stderr, or exited 0 on a refusal, would revert the whole fix with the suite green. Both
+/// halves live here so that surface is one shared function instead of one copy per binary —
+/// and `tests/gate_cli.rs` drives it through a real process, so the pairing is bound at the
+/// boundary CI actually redirects, not just at the library call below it.
+pub fn emit_gate_verdict(comparison: &Result<CompareReport, CompareError>) -> i32 {
+    let (body, code) = gate_verdict(comparison);
+    print!("{body}");
+    code
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

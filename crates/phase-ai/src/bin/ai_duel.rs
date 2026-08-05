@@ -20,8 +20,7 @@ use engine::types::player::PlayerId;
 use phase_ai::auto_play::run_ai_actions;
 use phase_ai::config::{create_config_for_players, AiDifficulty, Platform};
 use phase_ai::duel_suite::compare::{
-    compare as compare_reports, load_report, print_markdown as print_compare_markdown,
-    CompareOptions,
+    compare as compare_reports, emit_gate_verdict, load_report, CompareOptions,
 };
 use phase_ai::duel_suite::run::{resolve_matchup, run_suite, AttributionMode, SuiteOptions};
 use phase_ai::duel_suite::{all_matchups, find_matchup};
@@ -707,7 +706,8 @@ fn print_usage() {
     eprintln!("Compare mode (CI regression gate):");
     eprintln!("  compare BASELINE CURRENT   Diff two suite reports");
     eprintln!("  reports paired-seed flips and a binomial sign-test p-value");
-    eprintln!("  Exit code 0 if no regressions; 1 if any matchup FAILs.");
+    eprintln!("  Exit code 0 if no regressions; 1 if any matchup FAILs; 2 if the two");
+    eprintln!("  reports cannot be compared at all (the refusal is printed to stdout).");
 }
 
 /// Parse `compare` subcommand arguments and run the comparison. Returns the
@@ -743,19 +743,17 @@ fn run_compare(args: &[String]) -> i32 {
         }
     };
 
-    let report = match compare_reports(&baseline, &current, &CompareOptions) {
-        Ok(r) => r,
-        Err(e) => {
-            eprintln!("Compare failed: {e}");
-            return 2;
-        }
-    };
-    print_compare_markdown(&report);
-    if report.any_fail() {
-        1
-    } else {
-        0
+    // Third caller of the same two statements, and it had the same defect: a refusal spoke
+    // only to stderr, so anything redirecting this command's stdout got an empty file and no
+    // statement of what failed. Routed through the shared emitter rather than repaired in
+    // place — `tests/gate_cli.rs` drives THIS binary, because it is the only one of the three
+    // that needs no card database, so the contract is bound at a real process boundary for
+    // milliseconds instead of a full suite run.
+    let comparison = compare_reports(&baseline, &current, &CompareOptions);
+    if let Err(e) = &comparison {
+        eprintln!("Compare failed: {e}");
     }
+    emit_gate_verdict(&comparison)
 }
 
 fn list_matchups() {

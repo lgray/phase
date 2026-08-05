@@ -12,7 +12,7 @@ use std::process::Command;
 use engine::database::CardDatabase;
 use phase_ai::config::AiDifficulty;
 use phase_ai::duel_suite::compare::{
-    compare, gate_verdict, load_report, print_markdown, render_error_markdown, CompareOptions,
+    compare, emit_gate_verdict, load_report, print_markdown, render_error_markdown, CompareOptions,
 };
 use phase_ai::duel_suite::run::{run_suite, SuiteOptions, SuiteReport};
 
@@ -114,8 +114,7 @@ fn main() {
     if let Err(err) = &comparison {
         eprintln!("compare failed: {err}");
     }
-    let (body, code) = gate_verdict(&comparison);
-    print!("{body}");
+    let code = emit_gate_verdict(&comparison);
     if code != 0 {
         std::process::exit(code);
     }
