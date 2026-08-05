@@ -95,6 +95,47 @@ fn main() {
     // the run's report. No workflow passes `--refresh-baseline`, so nothing in CI depends on
     // the old behaviour.
     let staging = args.refresh_baseline.then(|| staging_path(&args.baseline));
+    // RESERVE the staging path before the suite can write a byte to it.
+    //
+    // Third route to the same destruction, and the only one no argument check could ever catch:
+    // this path is derived internally, so `same_file` never sees it — it compares `--baseline`
+    // against `--current-output`, and the staging file is neither. `write_report` opens it with
+    // `File::create`, which FOLLOWS a symlink to its target and SHARES a hard link's inode, so an
+    // entry already sitting there truncates whatever it points at, before any refresh guard runs.
+    // Measured on the binary before this reservation existed: with a symlink pre-placed at the
+    // staging path, the refresh reported success and the baseline's bytes were gone.
+    //
+    // `create_new` is the whole fix, and it is deliberately a reservation rather than a check.
+    // Testing the path first and opening it second leaves the window between them, which is the
+    // same class of bug one layer down; `O_CREAT|O_EXCL` fails on ANY existing entry — regular
+    // file, hard link, live or dangling symlink — in one atomic step. What the suite then
+    // truncates is a regular file this process just created, with a link count of one.
+    if let Some(path) = &staging {
+        if let Some(parent) = path.parent() {
+            if let Err(err) = std::fs::create_dir_all(parent) {
+                eprintln!("failed to create {}: {err}", parent.display());
+                std::process::exit(2);
+            }
+        }
+        if let Err(err) = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(path)
+        {
+            // Refusing rather than reusing is the point. The path is derived, so anything already
+            // there was not put there by this run, and a leftover from a killed run is exactly
+            // the artefact the refusal paths below delete. Naming it and stopping is better than
+            // writing through something whose provenance is unknown.
+            eprintln!(
+                "failed to reserve the staging file {}: {err}\n\
+                 if a previous run was interrupted, remove that file and retry; if it is a \
+                 symlink or hard link, it would have been written straight through into whatever \
+                 it points at",
+                path.display()
+            );
+            std::process::exit(2);
+        }
+    }
     options.output_path = staging
         .clone()
         .unwrap_or_else(|| args.current_output.clone());
@@ -132,6 +173,9 @@ fn main() {
             None
         }
         Err(err) => {
+            // Every exit after the reservation has to release it, or a refused run leaves a file
+            // that blocks the next refresh — turning one diagnosable failure into two.
+            release_staging(&staging);
             // Same reasoning as the compare refusal below: the nightly posts stdout, so a
             // read failure that spoke only to stderr produced a red job whose issue body was
             // the suite table and no statement of what went wrong. This is also the only
@@ -146,6 +190,7 @@ fn main() {
     let current = match run_suite(&db, &options) {
         Ok(report) => report,
         Err(err) => {
+            release_staging(&staging);
             eprintln!("suite run failed: {err}");
             std::process::exit(1);
         }
@@ -369,6 +414,17 @@ fn same_file(a: &Path, b: &Path) -> bool {
     match (resolved(a), resolved(b)) {
         (Some(x), Some(y)) => x == y,
         _ => false,
+    }
+}
+
+/// Release a reserved staging file, if this run reserved one.
+///
+/// A no-op on the compare path, where `staging` is `None`. Errors are ignored deliberately: this
+/// only ever runs on a path that is already exiting with a diagnosis of its own, and a failure to
+/// remove a scratch file is not worth displacing that diagnosis.
+fn release_staging(staging: &Option<PathBuf>) {
+    if let Some(path) = staging {
+        let _ = std::fs::remove_file(path);
     }
 }
 

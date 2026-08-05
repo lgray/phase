@@ -215,6 +215,27 @@ fn a_gameless_refresh_is_refused_by_the_block_and_leaves_the_baseline_untouched(
         "a refused refresh must not leave {} behind",
         staging.display()
     );
+    // The consequence of leaving it, asserted rather than inferred: the staging path is now
+    // RESERVED with `create_new`, so a leftover does not merely look like an artefact — it blocks
+    // every later refresh. One refused run must not poison the next.
+    let (next_code, next_stderr) = run(&[
+        "--refresh-baseline",
+        "--data-root",
+        &data_arg,
+        "--baseline",
+        &baseline.display().to_string(),
+        "--current-output",
+        &dir.join("current2.json").display().to_string(),
+        "--suite-filter",
+        "red-mirror",
+        "--games",
+        "1",
+    ]);
+    assert_eq!(
+        next_code,
+        Some(0),
+        "a refused refresh must not block the next one; stderr:\n{next_stderr}"
+    );
     std::fs::remove_dir_all(&dir).ok();
 }
 
@@ -476,6 +497,72 @@ fn two_existing_but_different_files_are_not_aliases() {
         "expected the run to proceed to the card database; stderr:\n{stderr}"
     );
     std::fs::remove_dir_all(&dir).ok();
+}
+
+/// The third route to the same destruction, and the one no argument check can see: the staging
+/// path the process derives for ITSELF.
+///
+/// `staging_path` is deterministic — `<baseline>.staging.json` — and `write_report` opens it with
+/// `File::create` before any refresh guard runs. So an entry already sitting at that path is
+/// followed (symlink) or shared (hard link), and the baseline is truncated by a write nobody
+/// passed on the command line. `same_file` cannot help: it compares `--baseline` against
+/// `--current-output`, and the staging path is neither.
+///
+/// Both alias kinds are exercised because they fail differently — `File::create` FOLLOWS a
+/// symlink to its target, while a hard link IS the target — and a fix that reserved the path
+/// against only one of them would leave the other live.
+#[cfg(unix)]
+#[test]
+fn a_pre_existing_staging_alias_cannot_truncate_the_baseline() {
+    for kind in ["symlink", "hardlink"] {
+        let dir = scratch(&format!("staging-{kind}"));
+        let data_arg = empty_card_db(&dir);
+        let baseline = record_baseline(&dir, &data_arg, "suite-baseline.json");
+        let trusted = std::fs::read_to_string(&baseline).expect("read baseline");
+        let staging = baseline.with_file_name("suite-baseline.json.staging.json");
+        if kind == "symlink" {
+            std::os::unix::fs::symlink(&baseline, &staging).expect("symlink");
+        } else {
+            std::fs::hard_link(&baseline, &staging).expect("hard link");
+        }
+
+        // PREMISE: the alias really points at the baseline, so a write through it would land on
+        // the file under test. Without this the fixture could be inert and the test vacuous.
+        assert_eq!(
+            std::fs::read_to_string(&staging).expect("read through alias"),
+            trusted,
+            "{kind}: the staging alias must resolve to the baseline"
+        );
+
+        // A refresh that would otherwise be ACCEPTED — the destructive case, because an accepted
+        // run is the one that goes on to rename over the baseline.
+        let (code, stderr) = run(&[
+            "--refresh-baseline",
+            "--data-root",
+            &data_arg,
+            "--baseline",
+            &baseline.display().to_string(),
+            "--current-output",
+            &dir.join("current.json").display().to_string(),
+            "--suite-filter",
+            "red-mirror",
+            "--games",
+            "1",
+        ]);
+
+        assert_ne!(
+            code,
+            Some(0),
+            "{kind}: a run that cannot reserve its staging file must not report success; \
+             stderr:\n{stderr}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&baseline).expect("read baseline"),
+            trusted,
+            "{kind}: the baseline was truncated through the staging alias"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
 }
 
 /// Control arm. Every assertion above is satisfied by a binary that refuses everything, which
