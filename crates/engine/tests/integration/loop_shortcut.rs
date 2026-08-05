@@ -26,7 +26,8 @@ use engine::types::ability::{Effect, TargetRef};
 use engine::types::actions::GameAction;
 use engine::types::events::GameEvent;
 use engine::types::game_state::{
-    CastPaymentMode, GameState, LoopDetectionMode, StackEntryKind, WaitingFor, YieldTarget,
+    AutoPassRequest, CastPaymentMode, GameState, LoopDetectionMode, StackEntryKind, WaitingFor,
+    YieldTarget,
 };
 use engine::types::identifiers::ObjectId;
 use engine::types::mana::{ManaColor, ManaCost, ManaCostShard, ManaType, ManaUnit};
@@ -11203,15 +11204,22 @@ fn ai1_the_bounded_declare_candidate_withdraws_when_the_offer_publishes_a_pin() 
 /// non-shrinking stack, and `Priority{player == active_player}`), so it is a REACH signal and
 /// never an attribution.
 ///
-/// The row therefore asserts arms (1) and (2) over EVERY frame a beat added
-/// (`loop_detect_ring.iter().rev().take(grew)`), which makes attribution irrelevant rather than
-/// sharper: both samplers gate their record on `Priority{player == active_player}` and both
-/// record after their own `sync_waiting_for`, so a frame that fails either arm is a real defect
-/// whichever site minted it. What survives of the mint accounting is narrow and stated as such:
-/// `Arc`-identity detection so an evicting push at `LOOP_DETECT_RING_CAP` cannot masquerade as
-/// "no mint", and `grew >= 1` so a beat whose length did not grow fails closed instead of
-/// mis-sizing the slice. MEASURED on this drive: 2 forced-window minting beats (5, 14), 3
-/// non-forced ones (0, 9, 18), every beat `grew == 1`, offer at beat 19 over a 5-frame ring.
+/// The row therefore asserts arms (1) and (2) over EVERY frame a beat MINTED, which makes
+/// attribution irrelevant rather than sharper: both samplers gate their record on
+/// `Priority{player == active_player}` and both record after their own `sync_waiting_for`, so a
+/// frame that fails either arm is a real defect whichever site minted it. The minted set is the
+/// ring's pre-beat/post-beat `Arc`-identity MEMBERSHIP DIFFERENCE. No scalar is derived from the
+/// ring's length, and the length-delta accounting that stood here is deleted rather than
+/// sharpened — a scalar cannot name that set on either of the two production paths the loop body
+/// documents. MEASURED on this drive: 2 forced-window minting beats (5, 14), 3 non-forced ones
+/// (0, 9, 18), 5 frames minted and validated in total, offer at beat 19 over a 5-frame ring.
+///
+/// THIS FIXTURE REACHES NEITHER of the two paths that break a length delta, measured rather than
+/// assumed: 0 evicting beats and 0 clear-and-rebuild beats over the drive, max ring 5 against a
+/// capacity of 16. Both are reached — and the deleted scalar shown wrong on each — by
+/// `an_evicting_beat_mints_without_growing_the_ring` and
+/// `a_clearing_beat_rebuilds_the_ring_inside_the_same_beat`, on boards driven through the same
+/// production `apply()`.
 ///
 /// ⚠ WHAT THIS ROW DOES **NOT** CATCH, stated rather than implied. A PURE REVERT of the reorder
 /// leaves all three arms GREEN, and that is a measurement rather than an oversight: an
@@ -11257,6 +11265,7 @@ fn answer_beat_frames_carry_the_synced_window_and_the_offer_certificate_is_exact
     let pin = engine_live_opponents(&state, P0).first().copied();
     let mut answer_mints = 0usize;
     let mut settle_mints = 0usize;
+    let mut frames_validated = 0usize;
     let mut offer_beat = None;
     for beat in 0..400usize {
         if matches!(
@@ -11270,46 +11279,51 @@ fn answer_beat_frames_carry_the_synced_window_and_the_offer_certificate_is_exact
             break;
         }
         let answered_forced_window = state.waiting_for.is_forced_cascade_window();
-        let before = state.loop_detect_ring.len();
-        // A MINT IS DETECTED BY `Arc` IDENTITY OF THE RING'S BACK, NOT BY A LENGTH DELTA.
-        // `record_loop_detect_sample` pops the front before pushing once the ring is at
-        // `LOOP_DETECT_RING_CAP`, so a full ring mints WITHOUT growing and a length-only
-        // detector reads that as "no mint" — the beat would take the `continue` below and
-        // `answer_mints` would silently under-count the set this row claims to have checked.
-        // `game::engine::drive_one_shortcut_cycle` uses identity here for exactly this reason;
-        // this is that instrument, not a second one. Identity also makes the ring's capacity
-        // irrelevant to the row, which is why no literal cap is transcribed here (the const is
-        // private to `types::game_state`, so a transcribed copy could only rot).
-        let back_before = state.loop_detect_ring.back().map(std::sync::Arc::as_ptr);
+        // THE BEAT'S MINTED SET IS A MEMBERSHIP DIFFERENCE. Nothing about the ring's LENGTH,
+        // and nothing about its `back()`, can name it — both are unsound against production:
+        //
+        // * `GameState::record_loop_detect_sample` pops the front before pushing once the ring
+        //   is at `LOOP_DETECT_RING_CAP`, so an evicting push mints while the length stays
+        //   EQUAL. A `back()`-changed + `after - before` detector reads that as a mint of size
+        //   zero and fails on a legitimate beat.
+        // * `apply_action` clears the ring at its top for any non-`PassPriority`,
+        //   non-`OrderTriggers` action answering a non-forced window, and the settle sampler in
+        //   `pass_priority_once_with_pipeline` mints LATER in the same beat. Net growth is then
+        //   `minted - cleared`, which is smaller than `minted` — a `take(net)` silently skips
+        //   frames the row claims to have checked.
+        //
+        // The full pre-beat membership covers append, eviction and clear-and-rebuild uniformly,
+        // and it makes the ring's capacity irrelevant to the row (no literal cap is transcribed
+        // here; the const is private to `types::game_state`, so a copy could only rot).
+        //
+        // The snapshot holds `Arc` CLONES, not raw addresses, and that is load-bearing rather
+        // than incidental: `pop_front` DROPS the evicted `Arc` before `Arc::new` allocates the
+        // replacement, so an address-keyed snapshot can be aliased by the allocator handing the
+        // freed block straight back, and a genuinely new frame would then read as an old one.
+        // A retained strong reference makes every snapshotted address un-reusable for the whole
+        // beat, so `Arc::ptr_eq` is exact by construction instead of by luck.
+        let before: Vec<_> = state.loop_detect_ring.iter().cloned().collect();
         if dump_drive_one_beat(&mut state, pin).is_err() {
             break;
         }
-        // `is_some() &&` is the production instrument's guard, kept rather than trimmed: the
-        // settle sampler's `else` arm calls `loop_detect_ring.clear()`, so `back()` can go to
-        // `None` within a beat. Without it, `None != Some(..)` falls through to a `usize`
-        // subtraction that panics with "attempt to subtract with overflow" instead of this
-        // row's own explanation. A cleared ring minted nothing, so the beat is skipped.
-        let back_after = state.loop_detect_ring.back().map(std::sync::Arc::as_ptr);
-        if back_after.is_none() || back_after == back_before {
+        // Frames minted and then evicted WITHIN one beat are absent here by construction —
+        // they are gone from the ring. "Every frame this beat added that the ring still holds"
+        // is exactly the set the arms below claim, and exactly the set any consumer can read.
+        let minted: Vec<_> = state
+            .loop_detect_ring
+            .iter()
+            .filter(|f| !before.iter().any(|b| std::sync::Arc::ptr_eq(b, f)))
+            .collect();
+        if minted.is_empty() {
             continue;
         }
-        let after_len = state.loop_detect_ring.len();
-        let grew = after_len.saturating_sub(before);
-        assert!(
-            grew >= 1,
-            "beat {beat}: the ring's back changed but its length did not grow ({before} -> \
-             {after_len}). Either the ring is AT CAPACITY and evicting, or it was CLEARED and \
-             re-pushed inside the beat (the settle sampler's `else` arm does exactly that). \
-             Either way `grew` cannot say how many frames THIS beat added, so the arms below \
-             would inspect the wrong set. Fail closed rather than report a number this \
-             instrument cannot support"
-        );
+        frames_validated += minted.len();
         if answered_forced_window {
             answer_mints += 1;
         } else {
-            settle_mints += grew;
+            settle_mints += minted.len();
         }
-        // BOTH ARMS RUN OVER EVERY FRAME THIS BEAT ADDED, which is what makes site attribution
+        // BOTH ARMS RUN OVER EVERY FRAME THIS BEAT MINTED, which is what makes site attribution
         // stop mattering — and the row deliberately does NOT try to attribute.
         //
         // `answered_forced_window` is `is_forced_cascade_window()` read BEFORE the beat, i.e.
@@ -11318,16 +11332,14 @@ fn answer_beat_frames_carry_the_synced_window_and_the_offer_certificate_is_exact
         // non-shrinking stack, and `Priority{player == active_player}`. One beat here is one
         // `apply()`, which reaches the SETTLE sampler after `apply_action` returns. So a beat
         // that answers a forced window resolving the LAST stack entry gates the answer site
-        // off (`!stack.is_empty()` false) while the refill cascade mints a settle frame:
-        // `grew == 1`, `answer_mints` increments, and a `back()`-only check would inspect a
-        // settle frame while claiming an answer frame. `grew == 1` rules out the DOUBLE-MINT
-        // beat and nothing more — it was never evidence about WHICH sampler minted.
+        // off (`!stack.is_empty()` false) while the refill cascade mints a settle frame, and
+        // `answer_mints` increments over a frame the SETTLE site produced.
         //
-        // Iterating the added frames removes the question instead of sharpening it. Both
+        // Iterating the minted frames removes the question instead of sharpening it. Both
         // samplers gate their record on `Priority{player == active_player}` and both record
         // after their `sync_waiting_for`, so both arms hold for EITHER site's frame; a frame
         // that fails one is a real defect no matter which sampler produced it.
-        for sample in state.loop_detect_ring.iter().rev().take(grew) {
+        for sample in minted {
             let frame = &sample.live;
             // ── (2) ITS PRIORITY PLAYER. Asserted FIRST so a mutation that touches only
             // `priority_player` is caught by its own arm instead of being masked by arm (1).
@@ -11385,10 +11397,24 @@ fn answer_beat_frames_carry_the_synced_window_and_the_offer_certificate_is_exact
     );
     assert!(
         settle_mints > 0,
-        "reach-guard for the WIDENING: arms (1)/(2) now run over every frame a beat added, \
+        "reach-guard for the WIDENING: arms (1)/(2) now run over every frame a beat minted, \
          from either sampler, so the drive must also mint at a non-forced (settle) beat — \
          otherwise the settle-frame coverage this row claims is untested. got \
          answer={answer_mints} settle={settle_mints}"
+    );
+    let ring_at_offer = state.loop_detect_ring.len();
+    assert_eq!(
+        frames_validated, ring_at_offer,
+        "reach-guard on the MEMBERSHIP DIFFERENCE ITSELF, which is what makes 'every frame the \
+         beat minted' a measurement instead of a claim: every frame the offer's ring holds must \
+         have reached arms (1)/(2) as a member of some beat's minted set. A detector that \
+         silently returned the EMPTY set on a minting beat — exactly what a length delta returns \
+         at capacity — leaves frames in the ring that no arm ever read, and that lands here as \
+         validated {frames_validated} against ring {ring_at_offer}. Equality rather than `>=` \
+         because \
+         this drive neither evicts nor clears (measured: max ring 5 against a capacity of 16, 0 \
+         evicting and 0 clearing beats), so a frame counted but no longer present is equally a \
+         defect on THIS board"
     );
     let offer_beat = offer_beat.expect(
         "reach-guard: the bounded offer must FIRE on this real 4p drain, else arm (3) asserts \
@@ -11469,5 +11495,258 @@ fn answer_beat_frames_carry_the_synced_window_and_the_offer_certificate_is_exact
          for the reorder, not a restatement of arms (1)/(2). The frame homogeneity those two \
          arms pin is basis A's concern (`loop_states_equal_modulo_resources` ⇒ \
          `impl PartialEq for GameState`)"
+    );
+}
+
+// ───── #7023 maintainer item: a beat's minted frames are a MEMBERSHIP set, not a length delta ─────
+
+/// `(minted, dropped)` for one beat, by `Arc` IDENTITY: frames the ring gained, and pre-beat
+/// frames it lost. Generic over the sample type so the ring's private element type is never
+/// named here.
+///
+/// `before` must be a slice of `Arc` CLONES held across the beat, not of raw addresses.
+/// `GameState::record_loop_detect_sample` calls `pop_front()` — which DROPS the evicted
+/// allocation — before `Arc::new` claims a new one of identical layout, so an address-keyed
+/// snapshot can be aliased by the allocator handing the freed block straight back, and a
+/// genuinely new frame would then read as an old one. A retained strong reference makes every
+/// snapshotted address un-reusable for the whole beat, so `ptr_eq` is exact by construction
+/// rather than by luck.
+fn ring_membership_delta<T>(
+    before: &[std::sync::Arc<T>],
+    after: &std::collections::VecDeque<std::sync::Arc<T>>,
+) -> (usize, usize) {
+    let minted = after
+        .iter()
+        .filter(|f| !before.iter().any(|b| std::sync::Arc::ptr_eq(b, f)))
+        .count();
+    let dropped = before
+        .iter()
+        .filter(|b| !after.iter().any(|f| std::sync::Arc::ptr_eq(b, f)))
+        .count();
+    (minted, dropped)
+}
+
+/// `dump_drive_one_beat`'s policy with its `Priority` arm taken directly. That policy is
+/// unconditionally "pass" at a `Priority` window, so routing through the enumerator costs a full
+/// per-viewer candidate scan — on the 152-entry `dellian` stack, the dominant cost of a long
+/// drive — only to find the `PassPriority` the policy already chose. `apply` performs the real
+/// legality check itself (`game::priority::pass_priority_legality`), so nothing is skipped but
+/// the enumeration. Every other window still goes through the shared driver unchanged.
+fn drive_one_beat_passing_fast(state: &mut GameState, pin: Option<PlayerId>) -> Result<(), String> {
+    if let WaitingFor::Priority { player } = state.waiting_for {
+        return apply(state, player, GameAction::PassPriority)
+            .map(|_| ())
+            .map_err(|e| format!("pass err: {e:?}"));
+    }
+    dump_drive_one_beat(state, pin).map(|_| ())
+}
+
+/// CR 732.2a. ROUTE ⓔ — EVICTION AT `LOOP_DETECT_RING_CAP`: a beat that MINTS WITHOUT GROWING.
+///
+/// `answer_beat_frames_carry_the_synced_window_and_the_offer_certificate_is_exact` reads a beat's
+/// minted frames as the `loop_detect_ring`'s pre/post `Arc`-identity MEMBERSHIP DIFFERENCE. It
+/// previously read them as `rev().take(after_len - before_len)` off a changed `back()`, and this
+/// row plus its ⓒ sibling are the reachability half of the #7023 review that replaced that: the
+/// scalar is wrong on two production routes, and the `dina_conqueror_4p` drive that row performs
+/// reaches NEITHER — measured on it: max ring 5 against a capacity of 16, 0 evicting beats, 0
+/// clearing beats. Correcting a detector against routes no fixture reaches would re-open the
+/// evidential hole the correction exists to close, so each route gets a board.
+///
+/// THE MECHANISM. `GameState::record_loop_detect_sample` calls `pop_front()` and THEN
+/// `push_back()` once the ring is at `LOOP_DETECT_RING_CAP`. One frame leaves, one arrives: the
+/// back changes, the LENGTH DOES NOT. Net growth is 0 on a beat that minted 1, so
+/// `rev().take(net)` inspects nothing and the deleted `assert!(grew >= 1, ..)` — labelled "fail
+/// closed" in-tree — failed the test on an ordinary drain beat rather than on an anomaly. That
+/// label was wrong about which side of the line the beat is on, and it went with the code.
+///
+/// FIXTURE: the tracked `dellian_emblem_conqueror_4p` dump, driven through production `apply()`,
+/// so the ring that reaches capacity is this drive's own accumulation through
+/// `record_loop_detect_sample`. MEASURED: first evicting beat at 72 (ring 16 -> 16, minted 1,
+/// dropped 1), three more inside the first 90.
+///
+/// THE SEARCH PREDICATE IS STRUCTURAL AND THE ASSERTION IS THE CONSEQUENCE, never the reverse:
+/// the witness is the first beat that LOST a pre-beat frame without the ring shrinking — pure
+/// membership plus an ordering, saying nothing about minting — and the assertion is then what
+/// the beat minted and what its length did. A witness selected on "minted while the length stood
+/// still" would have carried its own conclusion into the arm that claims to test it.
+///
+/// This row does NOT re-assert the answer-beat row's frame invariants (the synced
+/// `waiting_for`/`priority_player` pair). Its subject is the DETECTOR, not the frames.
+#[test]
+fn an_evicting_beat_mints_without_growing_the_ring() {
+    let mut state = restore_dump(&gunzip_dump(include_bytes!(
+        "../fixtures/dellian_emblem_conqueror_4p.json.gz"
+    )));
+    assert_eq!(
+        state.loop_detect_ring.len(),
+        0,
+        "reach-guard: the dump ships with an EMPTY ring, so the capacity reached below is THIS \
+         drive's accumulation through the production sampler and not a restored ring"
+    );
+
+    let pin = engine_live_opponents(&state, P0).first().copied();
+    let mut max_ring = 0usize;
+    let mut beats_run = 0usize;
+    let mut evicting = None;
+    for beat in 0..120usize {
+        if matches!(state.waiting_for, WaitingFor::LoopShortcut { .. }) {
+            break;
+        }
+        let before: Vec<_> = state.loop_detect_ring.iter().cloned().collect();
+        if drive_one_beat_passing_fast(&mut state, pin).is_err() {
+            break;
+        }
+        beats_run = beat + 1;
+        max_ring = max_ring.max(state.loop_detect_ring.len());
+        let (minted, dropped) = ring_membership_delta(&before, &state.loop_detect_ring);
+        if dropped == 0 || state.loop_detect_ring.len() < before.len() {
+            continue;
+        }
+        evicting = Some((
+            beat,
+            before.len(),
+            state.loop_detect_ring.len(),
+            minted,
+            dropped,
+        ));
+        break;
+    }
+
+    let (beat, before_len, after_len, minted, dropped) = evicting.unwrap_or_else(|| {
+        panic!(
+            "reach-guard: no beat replaced a ring frame without shrinking the ring, so this \
+             drive never reached `LOOP_DETECT_RING_CAP` and the eviction route is untested — the \
+             state the `dina_conqueror_4p` drive is permanently in, and the reason this row \
+             exists on a different board. mode {:?}, max ring {max_ring} over {beats_run} beats",
+            state.loop_detection
+        )
+    });
+    assert_eq!(
+        (minted, after_len),
+        (1, before_len),
+        "beat {beat}: an evicting push is 1-for-1 — `record_loop_detect_sample` pops the front \
+         and THEN pushes at capacity — so this beat MINTED while its length stood still at \
+         {before_len}, dropping {dropped}. THE DELETED SCALAR ON THIS BEAT: \
+         `after_len - before_len` is 0, so `rev().take(grew)` inspects NOTHING while the beat \
+         minted a frame, and `assert!(grew >= 1)` fails the whole test on an ordinary drain \
+         beat. The membership difference reports the mint; no length delta can"
+    );
+}
+
+/// CR 732.2a. ROUTE ⓒ — CLEAR-AND-REBUILD INSIDE ONE BEAT: a beat that MINTS MORE THAN IT GROWS.
+///
+/// Sibling of `an_evicting_beat_mints_without_growing_the_ring`; the shared argument for why both
+/// routes need a board of their own is stated there.
+///
+/// THE MECHANISM. `game::engine::apply_action` clears the ring at its top for any action that is
+/// neither `PassPriority` nor `OrderTriggers` answering a non-forced window.
+/// `GameAction::SetAutoPass` at a `Priority` window is exactly that, and its own arm then calls
+/// `pass_priority_once_with_pipeline`, whose settle sampler mints — after which `apply`'s
+/// auto-pass loop can call it again inside the SAME beat. Net growth is therefore
+/// `minted - cleared`, strictly below `minted` whenever the ring was non-empty, so `take(net)`
+/// skips frames the answer-beat row claims to validate. MEASURED here: ring 2 -> 1, 2 dropped, 1
+/// minted, i.e. net 0 against a real mint — the same blindness route ⓔ produces, reached the
+/// other way, and the shallow-clear case (`0 < net < minted`) is the same defect with a smaller
+/// margin.
+///
+/// `SetAutoPass { UntilStackEmpty }` IS NOT A TEST HOOK. It is the exact payload the client's
+/// Arena-style "Resolve All" control dispatches (`client/src/game/dispatch.ts`), so this beat is
+/// a player pressing that button mid-cascade. It is absent from
+/// `ai_support::legal_actions_for_viewer`'s enumeration — `classify_flat_priority_action` files
+/// it with the preference-propagation actions — which is why the generic dump driver never picks
+/// it and why the route is dispatched by name here instead of being found by the driver's "first
+/// legal action" policy. Dispatching it by name changes nothing about the beat: it is one
+/// ordinary `apply()`, validated by the production reducer like any other.
+///
+/// FIXTURE: the tracked `dina_conqueror_4p` dump — the SAME board the answer-beat row drives, so
+/// the contrast is exact. Left to itself that drive never clears (measured: 0 clearing beats);
+/// one "Resolve All" press at the first `Priority` window carrying 2 accumulated frames puts it
+/// on this route at beat 6.
+///
+/// SEARCH PREDICATE STRUCTURAL, ASSERTION THE CONSEQUENCE: the witness is the first beat that
+/// lost EVERY pre-beat frame — a statement about membership alone — and the assertion is what
+/// the beat minted and what it left behind. The threshold of 2 accumulated frames is not
+/// cosmetic: below it a wiped ring and a merely-evicted one are indistinguishable by membership.
+#[test]
+fn a_clearing_beat_rebuilds_the_ring_inside_the_same_beat() {
+    let mut state = restore_dump(&gunzip_dump(include_bytes!(
+        "../fixtures/dina_conqueror_4p.json.gz"
+    )));
+    assert_eq!(
+        state.loop_detect_ring.len(),
+        0,
+        "reach-guard: the dump ships with an EMPTY ring, so the frames the clear below discards \
+         were accumulated by THIS drive through the production sampler"
+    );
+
+    let pin = engine_live_opponents(&state, P0).first().copied();
+    let mut fired = false;
+    let mut max_ring = 0usize;
+    let mut beats_run = 0usize;
+    let mut clearing = None;
+    for beat in 0..120usize {
+        if matches!(state.waiting_for, WaitingFor::LoopShortcut { .. }) {
+            break;
+        }
+        let before: Vec<_> = state.loop_detect_ring.iter().cloned().collect();
+        max_ring = max_ring.max(before.len());
+        let outcome = if !fired
+            && before.len() >= 2
+            && matches!(state.waiting_for, WaitingFor::Priority { .. })
+        {
+            fired = true;
+            let who = state
+                .waiting_for
+                .acting_player()
+                .expect("a `Priority` window names its actor");
+            apply(
+                &mut state,
+                who,
+                GameAction::SetAutoPass {
+                    mode: AutoPassRequest::UntilStackEmpty,
+                },
+            )
+            .map(|_| ())
+            .map_err(|e| format!("resolve-all err: {e:?}"))
+        } else {
+            drive_one_beat_passing_fast(&mut state, pin)
+        };
+        if outcome.is_err() {
+            break;
+        }
+        beats_run = beat + 1;
+        let (minted, dropped) = ring_membership_delta(&before, &state.loop_detect_ring);
+        if before.is_empty() || dropped != before.len() {
+            continue;
+        }
+        clearing = Some((
+            beat,
+            before.len(),
+            state.loop_detect_ring.len(),
+            minted,
+            dropped,
+        ));
+        break;
+    }
+
+    let (beat, before_len, after_len, minted, _dropped) = clearing.unwrap_or_else(|| {
+        panic!(
+            "reach-guard: no beat lost EVERY pre-beat ring frame, so `apply_action`'s \
+             top-of-beat clear never ran on an accumulated ring and the clear-and-rebuild route \
+             is untested. resolve-all dispatched={fired}, max ring {max_ring} over {beats_run} \
+             beats"
+        )
+    });
+    assert_eq!(
+        (minted, after_len),
+        (1, 1),
+        "beat {beat}: `apply_action` cleared all {before_len} accumulated frames at the top of \
+         this beat; a sampler must then have MINTED inside the SAME beat, leaving exactly one \
+         frame — a left of `(0, 0)` means the beat only cleared, which is a different route and \
+         proves nothing about the detector. THE DELETED SCALAR ON THE REBUILD BEAT: \
+         `after_len - before_len` saturates to 0 against a real mint, so `take(grew)` validates \
+         none of the frames the answer-beat row claims — and where the clear is shallower than \
+         the rebuild the scalar is positive but still short. Net growth is `minted - cleared`; \
+         it can never name `minted`"
     );
 }
