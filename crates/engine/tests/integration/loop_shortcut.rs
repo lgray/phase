@@ -11163,13 +11163,27 @@ fn ai1_the_bounded_declare_candidate_withdraws_when_the_offer_publishes_a_pin() 
 /// `answering_forced_window`) called `record_loop_detect_sample` BEFORE installing the
 /// pipeline's returned `wf`, while the settle sampler in `pass_priority_once_with_pipeline`
 /// records AFTER its `sync_waiting_for`. A frame minted at the answer site therefore carried
-/// the PRE-pipeline `waiting_for`/`priority_player` pair and a settle frame carried the synced
-/// one. That is a detection hazard, not cosmetics: `impl PartialEq for GameState` compares both
-/// fields and `normalize_for_loop` neutralizes neither, so a heterogeneous ring breaks
-/// `analysis::resource::ring_delta_signature`'s turn-position conjunct. The fix routes `wf`
-/// through `game::public_state::sync_waiting_for` — the canonical synchronizer, which also
-/// recomputes `priority_player` via `turn_control::authorized_submitter_for_player` — before
-/// the record, so both producers mint the same shape.
+/// the UN-SYNCED pair — whatever the reducer or `run_post_action_pipeline` last wrote straight
+/// into `state.waiting_for`, with `priority_player` never recomputed — while a settle frame
+/// carried the synced one. (NOT the "pre-pipeline" pair: the pipeline itself writes
+/// `state.waiting_for` at five sites inside `run_post_action_pipeline_from`.)
+///
+/// That is a detection hazard, not cosmetics — but the consumer is BASIS A, not
+/// `ring_delta_signature`. `f144bb374`'s message and the comments it shipped said a
+/// heterogeneous ring breaks `ring_delta_signature`'s turn-position conjunct "because
+/// `impl PartialEq for GameState` compares both fields"; that is false at source. That
+/// function reads only `ResourceVector::snapshot(&f.normalized)` and
+/// `window_scope_from_cover_frames(..).phase_invariant` (= `turn_number` + `phase` +
+/// `extra_phases.is_empty()`). The real sensitivity is the ring scans that call
+/// `analysis::resource::loop_states_equal_modulo_resources(prior, state)` with `prior` a ring
+/// frame's `normalized` half and `state` the live board: that chains to `loop_states_equal` ⇒
+/// `impl PartialEq for GameState`, which DOES compare `waiting_for` and `priority_player`, and
+/// neither `normalize_for_loop` nor `project_out_resources` neutralizes either — so an
+/// un-synced frame compares UNEQUAL against a synced live board and basis A misses the
+/// recurrence. The fix routes `wf` through `game::public_state::sync_waiting_for` — the
+/// canonical synchronizer, which also recomputes `priority_player` via
+/// `turn_control::authorized_submitter_for_player` — before the record, so both producers mint
+/// the same shape.
 ///
 /// FIXTURE: the tracked `dina_conqueror_4p` dump, driven through the production `apply()` path,
 /// so every frame asserted below was minted by `record_loop_detect_sample` itself rather than
@@ -11183,10 +11197,11 @@ fn ai1_the_bounded_declare_candidate_withdraws_when_the_offer_publishes_a_pin() 
 /// mints (beats 5 and 14), 3 settle mints, offer at beat 19 over a 5-frame ring.
 ///
 /// ⚠ WHAT THIS ROW DOES **NOT** CATCH, stated rather than implied. A PURE REVERT of the reorder
-/// leaves all three arms GREEN, and that is a measurement rather than an oversight: a
-/// `debug_assert_eq!` census on both fields at that position reported 0 divergences over 18,486
-/// lib + 4,487 integration rows, so no fixture in the corpus reaches the divergence. The row is
-/// consequently the STANDING pin — it fires the first time a beat does diverge — and its
+/// leaves all three arms GREEN, and that is a measurement rather than an oversight: an
+/// instrumented `debug_assert_eq!` census on both fields at that position, run on the
+/// pre-reorder tree over the full lib + integration corpus, reported 0 divergences (per-site
+/// counts in `f144bb374`'s message), so no fixture in the corpus reaches the divergence. The
+/// row is consequently the STANDING pin — it fires the first time a beat does diverge — and its
 /// instrument is proved live by MUTANTS at the sampler instead of by the revert:
 /// * `state.priority_player = PlayerId(3);` after the sync ⇒ arm (2) FAILS at the first mint.
 /// * `state.waiting_for = WaitingFor::GameOver { winner: None };` after the sync ⇒ arm (1)
@@ -11251,12 +11266,25 @@ fn answer_beat_frames_carry_the_synced_window_and_the_offer_certificate_is_exact
             .live;
         // ── (2) ITS PRIORITY PLAYER. Asserted FIRST so a mutation that touches only
         // `priority_player` is caught by its own arm instead of being masked by arm (1).
+        //
+        // The comparand is the AUTHORITY FUNCTION, not `frame.active_player`. `sync_waiting_for`
+        // sets `priority_player = turn_control::authorized_submitter_for_player(state,
+        // waiting_for.acting_player())`, which re-routes to a DIFFERENT seat whenever a
+        // turn-decision controller (Mindslaver) or a latched search-decision controller is in
+        // play. Pinning the seat itself would false-fail a correctly synced frame on any future
+        // turn-control fixture. The recomputation is not circular: neither
+        // `effective_authority_for_player` nor `search_decision_authority` reads
+        // `priority_player`, so a mutant that clobbers only that field still fails here.
+        let semantic_player = frame
+            .waiting_for
+            .acting_player()
+            .expect("the sampler's gate admits only `Priority{player}`, which has an actor");
         assert_eq!(
-            frame.priority_player, frame.active_player,
+            frame.priority_player,
+            engine::game::turn_control::authorized_submitter_for_player(frame, semantic_player),
             "beat {beat}: `sync_waiting_for` recomputes `priority_player` from the window it \
-             installs, so an answer-beat frame must carry the post-sync submitter for the \
-             returned `Priority{{active_player}}` window, not whatever the pre-pipeline window \
-             left behind"
+             installs, so an answer-beat frame must carry that window's AUTHORIZED SUBMITTER, \
+             not whatever the un-synced state left behind"
         );
         // ── (1) THE NEWEST SAMPLED STATE: the window the action RETURNS, never the forced one
         // it answered.
@@ -11350,8 +11378,11 @@ fn answer_beat_frames_carry_the_synced_window_and_the_offer_certificate_is_exact
     assert_eq!(
         *delta, expected_delta,
         "EXACT per-period signature: +1 to the controller, -1 to each opponent, and every \
-         other axis at rest. A ring whose frames disagreed on `waiting_for`/`priority_player` \
-         could not produce this signature at all, because `ring_delta_signature` compares the \
-         frames with `impl PartialEq for GameState`"
+         other axis at rest. `ring_delta_signature` is INSENSITIVE to \
+         `waiting_for`/`priority_player` — it reads resource snapshots plus \
+         `phase_invariant` (turn/phase/extra-phases) — so this arm is the blast-radius pin \
+         for the reorder, not a restatement of arms (1)/(2). The frame homogeneity those two \
+         arms pin is basis A's concern (`loop_states_equal_modulo_resources` ⇒ \
+         `impl PartialEq for GameState`)"
     );
 }
