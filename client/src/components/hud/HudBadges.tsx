@@ -434,18 +434,16 @@ export const familyOf = (axis: ResourceAxis): ResourceAxisFamily =>
  * engine-computed `scheduled` flag through. Presentation formatting only: the engine owns axis
  * identity, attribution, and which axes are scheduled — this decides nothing.
  *
- * READS `row.scheduled`; it does NOT join the two channels. There used to be a
- * `(player, axis)` join against `scheduled_collapse` here, and it was wrong: both channels key on
- * the engine's ATTRIBUTION player, so a victim-attributed axis (`Life(p)` and friends) names its
- * victim rather than the loop that produced it. Two controllers draining one victim then emit a
- * row from one and a tag from the other under the same key, and the join marked the wrong
- * controller's row scheduled. The controller identity needed to disambiguate does not exist on
- * this side of the wire, so the join moved into the engine's row loop, where it does. A join is a
- * computation over game state, which per `CLAUDE.md` was never the display layer's to perform.
+ * READS `row.scheduled`, and deliberately does NOT join `scheduled_collapse` to reconstruct it.
+ * Both channels key on the engine's ATTRIBUTION player, so a victim-attributed axis (`Life(p)` and
+ * friends) names its victim rather than the loop that produced it: two controllers draining one
+ * victim emit a row from one and a tag from the other under the identical key, and no join on this
+ * side of the wire can tell them apart. The engine answers it on the controller key, before
+ * attribution rewrites it. A join is also a computation over game state, which per `CLAUDE.md` is
+ * never the display layer's to perform.
  *
- * `scheduled_collapse` is still the authority for the accepted-collapse contract and its bound;
- * this component just doesn't reconstruct it. An orphan tag (an axis tagged with no row) renders
- * nothing, which remains correct — rows drive the display.
+ * `scheduled_collapse` remains the authority for the accepted-collapse contract; rows drive the
+ * display, so an orphan tag (an axis tagged with no row) correctly renders nothing.
  */
 export function unboundedFamilyViews(rows: UnboundedResourceView[]): UnboundedFamilyView[] {
   const families = new Map<ResourceAxisFamily, boolean>();
@@ -453,10 +451,12 @@ export function unboundedFamilyViews(rows: UnboundedResourceView[]): UnboundedFa
     const family = familyOf(row.axis);
     // A family is scheduled iff ANY member axis is, so this fold OVER-reports: it never marks a
     // family with no scheduled axis in it, but one scheduled axis can cover an unscheduled
-    // sibling. Reachable rather than theoretical — `familyOf` maps both `Counter` and `Poison` to
-    // "counters" (and six tags to "triggers"), and one accepted proposal has been measured
-    // carrying two distinct `Counter(..)` axes. So a seat with a scheduled counter axis and an
-    // unscheduled poison axis sees one `∞→N` spanning both.
+    // sibling. Reachable rather than theoretical, and structurally so: `familyOf` maps both
+    // `Counter` and `Poison` to "counters" (and six tags to "triggers"), while
+    // `scheduled_collapse_axes` inserts one axis per counter growth in a stash, so a multi-growth
+    // accept names several distinct `Counter(..)` axes from one proposal. A seat with a scheduled
+    // counter axis and an unscheduled poison axis therefore sees one `∞→N` spanning both — pinned
+    // by U3c, which composes exactly that pair.
     //
     // Deliberate, and the OPPOSITE direction from the wire's KEYING LIMIT (which under-reports) —
     // worth stating since the two are documented a few files apart. Over-reporting is preferred

@@ -1204,6 +1204,38 @@ fn scheduled_drive_still_renders_the_already_spendable_mana_badge() {
             "R4/keep: a non-mana axis in the SAME stash is still tagged (viewer {viewer:?}), \
              got {tagged:?}"
         );
+
+        // (9) R4/agree — the ROW FLAG obeys the same scope limit as the TAG.
+        //
+        // MEASURED DEFECT this pins: the limit originally lived only in the tag loop, so on this
+        // exact state the mana row shipped `scheduled: true` while no tag named it. The HUD folds
+        // that flag into the "mana" family and renders `∞→N` with a "collapse pending; a finite
+        // amount will be chosen" tooltip — beside a pool `refill_infinite_mana` is still topping
+        // up, and beside `ManaPoolSummary`'s plain `∞` for the same pool in the same frame. The
+        // whole suite was green over it: every other `scheduled` assertion in the repo sits on a
+        // non-mana axis, so nothing chose between that behaviour and its opposite.
+        //
+        // TWO-SIDED on purpose. The `Life(P0)` half is the matched positive, from the SAME stash
+        // and the SAME `derive_views` call: without it, `scheduled: false` everywhere satisfies
+        // the mana half, and this row would pass against a flag that can never be set.
+        let flag_of = |want: ResourceAxis| {
+            views
+                .unbounded_resources
+                .iter()
+                .find(|r| r.axis == want)
+                .unwrap_or_else(|| panic!("R4/agree reach: no {want:?} row (viewer {viewer:?})"))
+                .scheduled
+        };
+        assert!(
+            !flag_of(ResourceAxis::Mana(ManaType::Colorless)),
+            "R4/agree: the mana row must not be flagged scheduled — the tag omits it at R4/omit, \
+             and the accepted count bounds nothing the player can spend (viewer {viewer:?})"
+        );
+        assert!(
+            flag_of(ResourceAxis::Life(P0)),
+            "R4/agree positive: the deferred Life axis of the SAME stash IS flagged, so the mana \
+             assertion above is discriminating rather than vacuous (viewer {viewer:?})"
+        );
     }
 
     // (7) THE STORE IS UNTOUCHED — the projection read, it did not mutate. The boundary

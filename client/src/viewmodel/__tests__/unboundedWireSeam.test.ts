@@ -65,11 +65,19 @@ describe("unbounded ∞ wire seam (engine-emitted goldens)", () => {
     // rows share the key). This assertion is a WIRE-CONSISTENCY check on the engine's two outputs,
     // not a reconstruction of the flag.
     //
-    // Asserted on THESE goldens, where the whole registered backing is still on the battlefield.
-    // NOT a general invariant in the tag→row direction: a token-axis row whose entire pile has left
-    // is dropped while its tag survives (the boundary still cashes that axis out), leaving an
-    // orphan tag that correctly renders nothing. Engine-side witness:
-    // `combo_infinite_pile::object_growth_infinity_row_dies_with_its_last_pile_member`.
+    // THE TWO DIRECTIONS ARE NOT EQUALLY GENERAL, and this check cannot tell them apart — both
+    // goldens carry a single non-mana axis, so it is these goldens that are asserted, not a law:
+    //
+    // - row→tag ("no row is flagged without a tag naming it") IS general, but only because both
+    //   channels read the one `scheduled_display_axes` authority. It was NOT general while the
+    //   `Mana(_)` scope limit lived in the tag loop alone: a mana row shipped flagged with no tag.
+    //   Pinned engine-side, on a mana axis these goldens do not contain, by
+    //   `loop_shortcut_mana_engine::scheduled_drive_still_renders_the_already_spendable_mana_badge`
+    //   (R4/agree). If that authority is ever split in two again, that test reds, not this one.
+    // - tag→row is NOT general: a token-axis row whose entire pile has left is dropped while its
+    //   tag survives (the boundary still cashes that axis out), leaving an orphan tag that
+    //   correctly renders nothing. Witness:
+    //   `combo_infinite_pile::object_growth_infinity_row_dies_with_its_last_pile_member`.
     const agrees = (wire: { scheduled_collapse: { axis: unknown; player: number }[]; unbounded_resources: { axis: unknown; player: number; scheduled?: boolean }[] }): boolean => {
       const tagKeys = new Set(wire.scheduled_collapse.map((t) => JSON.stringify([t.player, t.axis])));
       const flaggedKeys = new Set(

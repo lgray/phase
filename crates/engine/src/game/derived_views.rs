@@ -468,13 +468,22 @@ pub struct DerivedViews {
     ///
     /// SCOPE LIMIT — read this before using it as "which ∞ rows stop being ∞". `Mana(_)` axes
     /// are deliberately ABSENT: mana is already materialized and spendable
-    /// (`mana_payment::refill_infinite_mana` re-tops the pool off the store), so tagging it would
-    /// mislabel a live pool. A mana ∞ does end — at the step/phase end, via
+    /// (`mana_payment::refill_infinite_mana` re-tops the pool off the store), so the accepted
+    /// count bounds nothing the player can spend, and tagging it would announce a ceiling a live
+    /// pool never had. A mana ∞ does end — at the step/phase end, via
     /// `turns::drain_pending_phase_transition_progress`, which is the ONE thing here CR 500.5
     /// genuinely governs (unspent mana empties); the deferred token/life/counter growth is cashed
-    /// out at that same landmark by engine choice, which CR 500.5 does not license. This field
-    /// therefore UNDER-REPORTS the mana case by design, and answers the narrower question: which
-    /// axes name growth a registered materialization will cash out at the boundary.
+    /// out at that same landmark by engine choice, which CR 500.5 does not license.
+    ///
+    /// Do NOT read that limit as "no materialization touches mana" — a `DriveSequence` names the
+    /// loop's whole `proposal.unbounded` set, so `clear_collapsed_materializations` really does
+    /// drop the `Mana(_)` axis when that collapse applies. The exclusion is about what the badge
+    /// would promise, not about which code path clears the axis. This field therefore
+    /// UNDER-REPORTS the mana case by design.
+    ///
+    /// `scheduled_display_axes` is the single authority for that limit, shared with
+    /// `UnboundedResourceView::scheduled` — the two channels cannot disagree about which axes are
+    /// scheduled, and a test pins both directions on a `Mana(_)` axis.
     ///
     /// KEYING LIMIT, so no reader mistakes it for complete coverage: this tag is
     /// `(player, axis)`-keyed, while `unbounded_pile` and `unbounded_counters` are `ObjectId`-
@@ -1060,11 +1069,7 @@ pub fn derive_views(state: &GameState, viewer: Option<PlayerId>) -> DerivedViews
         // is the whole point. After `attribution_player` runs, a victim-attributed axis no longer
         // carries the identity of the loop that produced it, so no downstream consumer (engine or
         // frontend) can answer this correctly; two controllers draining one victim would collide.
-        let scheduled_axes = state
-            .pending_unbounded_materialization
-            .get(&controller)
-            .map(|items| state.scheduled_collapse_axes(items))
-            .unwrap_or_default();
+        let scheduled_axes = scheduled_display_axes(state, controller);
         for &axis in axes {
             // CR 732.2a + CR 110.1: an object-growth ∞ whose ENTIRE registered display set
             // has left the battlefield has no live board backing left — drop the row rather
@@ -1082,33 +1087,36 @@ pub fn derive_views(state: &GameState, viewer: Option<PlayerId>) -> DerivedViews
         }
     }
 
-    // The TAG — one straight projection of the single authority
-    // (`GameState::scheduled_collapse_axes`), keyed by the SAME `attribution_player` the ∞ rows
+    // The TAG — one straight projection of `scheduled_display_axes`, the SAME authority the row
+    // flag above reads (see its rustdoc for the `Mana(_)` scope limit and why writing that rule
+    // twice is what this call shape prevents), keyed by the SAME `attribution_player` the ∞ rows
     // above use, so a row and its tag join by exact `(player, axis)` equality. It reads the
     // accepted STASH and nothing else: deliberately NOT `object_growth_backing`, which is the
     // row loop's live-board question. A stash whose backing has left the battlefield loses its
     // row above and KEEPS its tag here, because the boundary will still cash that axis out —
     // see the field's rustdoc for why that orphan is correct rather than a leak. Deterministic
     // without a sort: `pending_unbounded_materialization` is a BTreeMap and
-    // `scheduled_collapse_axes` returns a BTreeSet, so the goldens are reproducible.
+    // `scheduled_display_axes` returns a BTreeSet, so the goldens are reproducible.
     //
-    // `Mana(_)` is dropped per the field's documented scope limit: that pool is already
-    // materialized and is drained at the step/phase end (CR 500.5's actual subject), not cashed
-    // out by a materialization.
-    for (&controller, items) in &state.pending_unbounded_materialization {
-        for axis in state.scheduled_collapse_axes(items) {
-            if matches!(axis, ResourceAxis::Mana(_)) {
-                continue;
-            }
-            views.scheduled_collapse.push(UnboundedResourceView {
-                player: attribution_player(axis, controller),
-                axis,
-                // Left false deliberately: membership in THIS channel already is the
-                // scheduled fact, so setting it would be a redundant second encoding. It is
-                // `skip_serializing_if`-omitted, so the tag channel's wire form is unchanged.
-                scheduled: false,
-            });
+    // DE-DUPLICATED because the field is documented as a set of pairs and consumers are told to
+    // join on exact `(player, axis)` equality: attribution collapses victim-attributed axes onto
+    // the victim, so two controllers each holding an accepted `Life(victim)` collapse would
+    // otherwise push that pair twice — the same aliasing the row flag exists to survive.
+    let mut tagged: BTreeSet<(PlayerId, ResourceAxis)> = BTreeSet::new();
+    for &controller in state.pending_unbounded_materialization.keys() {
+        for axis in scheduled_display_axes(state, controller) {
+            tagged.insert((attribution_player(axis, controller), axis));
         }
+    }
+    for (player, axis) in tagged {
+        views.scheduled_collapse.push(UnboundedResourceView {
+            player,
+            axis,
+            // Left false deliberately: membership in THIS channel already is the
+            // scheduled fact, so setting it would be a redundant second encoding. It is
+            // `skip_serializing_if`-omitted, so the tag channel's wire form is unchanged.
+            scheduled: false,
+        });
     }
 
     // CR 732.2a / CR 110.1: project the accepted object-growth loop's ∞ pile — the
@@ -1271,6 +1279,39 @@ fn turn_order_views(
         .map(|slot| slot.turn_number);
 
     (turn_order, viewer_turn_number)
+}
+
+/// CR 732.2c: the axes `controller` has an accepted-but-unapplied collapse for, as the HUD
+/// should announce them.
+///
+/// SINGLE AUTHORITY for both consumers — the per-row `scheduled` flag and the
+/// `scheduled_collapse` tag channel. They are computed by different loops over different state
+/// and MUST NOT disagree: a row flagged with no tag naming it renders `∞→N` for a collapse the
+/// tag contract says is not scheduled. The SCOPE LIMIT below is exactly the kind of rule that
+/// drifts when it is written twice, and it did — the guard originally lived only in the tag loop.
+///
+/// SCOPE LIMIT — `Mana(_)` is excluded. This is about what the badge would TELL the player, not
+/// about which code path ends the axis:
+/// - The pool is ALREADY unbounded and spendable throughout the accept→boundary window
+///   (`mana_payment::refill_infinite_mana` re-tops it off the store after every action), so the
+///   chosen `N` does not bound what the player may spend. "A finite amount will be chosen" is
+///   simply false for this axis, while it is true for every deferred one.
+/// - CR 500.5 ends the badge at the step/phase end when the pool empties, on a schedule the
+///   accepted count does not move.
+///
+/// Note this exclusion is NOT "no materialization touches mana": a `DriveSequence` names the
+/// loop's whole `proposal.unbounded` set, so `clear_collapsed_materializations` really does drop
+/// the `Mana(_)` axis when that collapse applies. The badge still must not promise a bound the
+/// player's spendable pool never had.
+fn scheduled_display_axes(state: &GameState, controller: PlayerId) -> BTreeSet<ResourceAxis> {
+    state
+        .pending_unbounded_materialization
+        .get(&controller)
+        .map(|items| state.scheduled_collapse_axes(items))
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|axis| !matches!(axis, ResourceAxis::Mana(_)))
+        .collect()
 }
 
 /// CR 732.2a: which player's HUD a pumped `axis` belongs to, given the loop's

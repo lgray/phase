@@ -41,13 +41,13 @@ const row = (
 describe("unboundedFamilyViews", () => {
   // No store, no mount ⇒ no `beforeEach` reset and no `afterEach(cleanup)` needed here.
   //
-  // These rows used to test a client-side `(player, axis)` join against `scheduled_collapse`.
-  // That join is gone: both channels key on the engine's ATTRIBUTION player, so two controllers
-  // draining one victim produce identically-keyed rows that must still disagree about `scheduled`
-  // — unrepresentable by any key join. The engine now answers it on the controller key, and the
-  // discriminating fixture lives where the controller identity does:
+  // There is deliberately no join to test here. Both wire channels key on the engine's
+  // ATTRIBUTION player, so two controllers draining one victim produce identically-keyed rows that
+  // must still disagree about `scheduled` — unrepresentable by any client-side key join. The
+  // engine answers it on the controller key, and the discriminating fixture lives where the
+  // controller identity does:
   // `derived_views::tests::two_controllers_draining_one_victim_do_not_cross_schedule`.
-  // What remains testable here is only the family fold.
+  // What is testable here is the family fold over the engine's per-row answer.
 
   it("U3/fold: carries each row's engine flag onto its family", () => {
     // COMPOSED — neither golden carries two axes.
@@ -136,14 +136,12 @@ describe("UnboundedBadge + usePlayerDesignations", () => {
   });
 
   it("U2/unscheduled: the same golden with the ROW flag cleared renders plain ∞", () => {
-    // GOLDEN-DRIVEN, matched negative — identical rows, `scheduled` cleared on the row.
+    // GOLDEN-DRIVEN, matched negative — identical rows, `scheduled` cleared on the ROW.
     //
-    // This used to strip `scheduled_collapse` instead, and it caught its own obsolescence: after
-    // the flag moved into the engine's row loop, deleting the tag channel no longer unschedules
-    // anything, so the badge kept rendering `∞→N` and this row went red. That is the correct
-    // behaviour and the right failure — the ROW is what the display reads now, and the tag channel
-    // is the accepted-collapse contract rather than the render input. Keeping the old version
-    // passing would have required re-introducing the join this change exists to delete.
+    // Clearing the row is the only thing that unschedules the badge: stripping
+    // `scheduled_collapse` instead leaves it rendering `∞→N`, because the tag channel is the
+    // accepted-collapse contract, not the render input. Asserting against a stripped tag would
+    // only pass if the display re-derived the flag from it — the join this component must not have.
     const wire = tokenWire as unknown as DerivedViews;
     const untagged = {
       ...wire,
@@ -160,11 +158,10 @@ describe("UnboundedBadge + usePlayerDesignations", () => {
   it("U4/viewer: another seat's SCHEDULED row does not schedule this seat's badge", () => {
     // COMPOSED. Exercises the hook's per-player filter, which is why it stays render-level.
     //
-    // Rewritten when the flag moved into the engine. The previous version put an unscheduled row
-    // on seat 0 and a TAG on seat 1, but the tag channel no longer reaches the render path at all,
-    // so it had become vacuous — a component that never schedules anything satisfied it. The live
-    // hazard now is the per-seat filter: seat 1's row genuinely carries `scheduled: true`, so if
-    // `forPlayer` leaked it, seat 0 would render `∞→N` off another player's collapse.
+    // The hazard is the seat filter itself: seat 1's row genuinely carries `scheduled: true`, so if
+    // `forPlayer` leaked it, seat 0 would render `∞→N` off another player's collapse. Putting the
+    // flag on a TAG for seat 1 instead would be vacuous — the tag channel does not reach the
+    // render path, so a component that never schedules anything would satisfy it.
     seed({
       unbounded_resources: [row(TOKENS, 0), row(TOKENS, 1, true)],
     } as DerivedViews);

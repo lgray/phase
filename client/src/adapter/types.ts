@@ -2938,9 +2938,12 @@ export interface DerivedViews {
    * names the timing landmark and governs the mana-pool drain there; it does not license cashing
    * out the deferred growth at that moment.
    *
-   * SCOPE LIMIT: `Mana` axes are deliberately absent (already spendable; drained at the
-   * step/phase end rather than cashed out by a materialization), so this UNDER-REPORTS "which ∞
-   * rows will stop being ∞".
+   * SCOPE LIMIT: `Mana` axes are deliberately absent — the pool is already spendable and the
+   * accepted count bounds nothing the player can spend, so a tag would announce a ceiling that
+   * pool never had. This UNDER-REPORTS "which ∞ rows will stop being ∞", and it is NOT a claim
+   * that no materialization touches mana (a `DriveSequence` collapse does clear the axis). The
+   * engine applies the same limit to `UnboundedResourceView.scheduled`, from one authority, so
+   * the two never disagree.
    *
    * KEYING LIMIT: `(player, axis)`-keyed, while `unbounded_pile` / `unbounded_counters` are
    * ObjectId-keyed and carry no axis on the wire — so during the window a tagged HUD row can
