@@ -8932,6 +8932,182 @@ fn a_nonempty_action_sequence_mints_no_bounded_offer() {
     );
 }
 
+/// ITEM 2 (CR 732.2a) — a bounded offer is refused by the proposer's OWN driving period, and by
+/// NOBODY ELSE'S; and a foreign period is certification-NEUTRAL while it sits there.
+///
+/// THE BUG THIS ROW PINS. Step (1b) tested `!last_loop_action_sequence.is_empty()`, so a single
+/// opponent activation — a period this proposer can neither drive nor benefit from — refused their
+/// own certified bounded offer for the rest of the game. CR 732.2a defines a shortcut as "a
+/// sequence of game choices, for all players, that may be legally taken based on the current game
+/// state and the predictable results of the sequence of choices": another seat's independent
+/// activation describes no sequence THIS proposer can take, so it is no reason to refuse theirs.
+/// The routing signal was strictly coarser than the admission predicate of the consumer it routes
+/// to — `try_offer_object_growth_shortcut` already required every step to belong to the priority
+/// holder — so a foreign period could not produce an object-growth offer yet still refused the
+/// bounded one. Both now read `GameState::loop_period_controller`.
+///
+/// FIVE ARMS ON ONE CERTIFYING STATE, differing ONLY in `last_loop_action_sequence`:
+///
+/// | arm | sequence | expected |
+/// |---|---|---|
+/// | ⓐ | empty | `Ok` — REACH-GUARD, and the neutrality reference |
+/// | ⓑ | proposer's, any card | `Err(DrivingSequenceNotEmpty)` — must-not-flip |
+/// | ⓒ | opponent's, any card | `Ok` — **the fix** |
+/// | ⓓ | opponent's, Mortality Spear | `Ok` — card-identity independence |
+/// | ⓔ | proposer's, Mortality Spear | `Err(DrivingSequenceNotEmpty)` — must-not-flip |
+///
+/// Refusals are asserted BY REASON, never as bare absence: an assertion that only observed "no
+/// offer" would keep passing if some EARLIER conjunct started refusing first (the domination trap
+/// `BoundedOfferRefusal` exists for).
+///
+/// TWO-SIDED CONTROL ON (1b), PER ASSERTION — no constant implementation passes:
+/// * **DROP** the proposer comparison (restore `!is_empty()`) ⇒ ⓒ and ⓓ return
+///   `Err(DrivingSequenceNotEmpty)` ⇒ THOSE assertions fail, while ⓑ/ⓔ still pass.
+/// * **TRIVIALIZE** it constant-refuse (`loop_period_controller().is_some()`) ⇒ ⓒ/ⓓ fail as above.
+///   TRIVIALIZE it constant-admit (never refuse) ⇒ ⓑ and ⓔ return `Ok` ⇒ **those** assertions
+///   fail instead. Each direction flips a DIFFERENT named assertion.
+///
+/// CERTIFICATION NEUTRALITY (site E) is folded onto the same arms because it needs the same
+/// expensive drive, and reported through the metered seam so the certifying BASIS is observable
+/// rather than just `Ok`/`Err`. ⓒ and ⓓ must publish the same `PeriodCertification` and the same
+/// `per_cycle.frames_per_period` as ⓐ. ⓒ and ⓓ differ ONLY in the foreign step's `card_id`, so any
+/// basis difference between them can arise ONLY from `window_cast_card_ids` feeding gate (5)'s
+/// `scope.cast_card_ids` — that pair is itself the discriminator for which mechanism carries the
+/// change.
+/// * **DROP** the proposer test from `window_cast_card_ids` ⇒ ⓒ certifies `BoardCovered` while
+///   ⓐ/ⓓ certify `ResourceSignatureOnly` ⇒ the equality assertion FAILS. That is the harm in one
+///   line: an OPPONENT'S choice of which card to activate would select which soundness relief
+///   applies to THIS proposer's certification.
+/// * **TRIVIALIZE** it to `None` unconditionally ⇒ relief is stripped from the proposer-less 2-arg
+///   entry the object-growth detection covers use ⇒ `analysis::resource`'s X4-5 arm (1) fails.
+///   (That is why the scoping is `is_some_and`, not `is_some`.)
+#[test]
+fn a_foreign_driving_period_neither_refuses_nor_recertifies_a_bounded_offer() {
+    use engine::game::engine::{
+        try_offer_bounded_cycle_shortcut_metered, BoundedOfferRefusal, ProbeCap,
+    };
+    use engine::types::game_state::{BuybackUsage, LoopAction, LoopActionContext};
+
+    let mut state = restore_dump(&gunzip_dump(include_bytes!(
+        "../fixtures/dina_conqueror_4p.json.gz"
+    )));
+    drive_to_bounded_offer(&mut state, 400)
+        .expect("the paired arms need a state that PROVABLY certifies; see the acceptance row");
+
+    // The offer beat's `waiting_for` IS the offer, so rewind that one field to the Priority beat
+    // the offer was raised at — the mint's own entry condition.
+    let (proposer, _, _) = bounded_offer_parts(&state);
+    state.waiting_for = WaitingFor::Priority { player: proposer };
+    let opp = *engine_live_opponents(&state, proposer)
+        .first()
+        .expect("REACH-GUARD: the foreign arms need a living opponent to attribute a period to");
+
+    // The X4 subject: a conditioned `ModifyCost`/`SelfRef` static sitting in a zone this window
+    // never casts from. Its gate-(5) relief is precisely what an unscoped cast-set read would let
+    // an opponent switch on. Looked up BY NAME so the row cannot silently degrade into ⓒ==ⓓ if the
+    // fixture's ids ever move.
+    let spear = state
+        .objects
+        .values()
+        .find(|o| o.name == "Mortality Spear")
+        .map(|o| o.card_id)
+        .expect("REACH-GUARD: dump-D ships Mortality Spear; ⓒ-vs-ⓓ is vacuous without it");
+    let any_card = state
+        .objects
+        .values()
+        .map(|o| o.card_id)
+        .find(|id| *id != spear)
+        .expect("REACH-GUARD: ⓒ and ⓓ must differ in card identity");
+
+    let step = |controller: PlayerId, card_id| LoopActionContext {
+        card_id,
+        controller,
+        action: LoopAction::Recast {
+            from_zone: engine::types::zones::Zone::Hand,
+            uses_buyback: BuybackUsage::NotUsed,
+        },
+        convoke: None,
+        pins: vec![],
+    };
+    // One state, one field reassigned per arm — nothing else differs between arms.
+    let mint = |seq: Vec<LoopActionContext>| {
+        let mut probe = state.clone();
+        probe.last_loop_action_sequence = seq;
+        let (outcome, meter) =
+            try_offer_bounded_cycle_shortcut_metered(&probe, false, ProbeCap::Shipped);
+        let signature = outcome.as_ref().ok().map(|wf| match wf {
+            WaitingFor::LoopShortcut { certificate, .. } => {
+                certificate
+                    .per_cycle
+                    .as_ref()
+                    .expect(
+                        "a bounded offer publishes the per-period signature its bound was \
+                             divided by",
+                    )
+                    .frames_per_period
+            }
+            other => panic!("expected a bounded LoopShortcut offer, got {other:?}"),
+        });
+        (outcome, meter.certification, signature)
+    };
+
+    // ── ⓐ REACH-GUARD: the SAME state certifies with no sequence at all. Every arm below is
+    // vacuous without this, and it is also the reference ⓒ/ⓓ are compared against. ──
+    let (empty, empty_basis, empty_k) = mint(vec![]);
+    assert!(
+        empty.is_ok(),
+        "REACH-GUARD: ⓑ–ⓔ are vacuous unless this same state certifies with an empty \
+         sequence; got {empty:?}"
+    );
+    assert!(
+        empty_basis.is_some() && empty_k.is_some(),
+        "REACH-GUARD: the neutrality assertions compare a BASIS and a period length, so the \
+         control must publish both; got {empty_basis:?} / {empty_k:?}"
+    );
+
+    // ── ⓑ / ⓔ the proposer's OWN period still refuses, on either card. The load-bearing half of
+    // guard (1b) — the silent-misroute prevention — is untouched by the fix. ──
+    assert_eq!(
+        mint(vec![step(proposer, any_card)]).0,
+        Err(BoundedOfferRefusal::DrivingSequenceNotEmpty),
+        "ⓑ CR 732.2a: the proposer's OWN accumulating period would route an accepted proposal \
+         to the object-growth materializer and commit zero bounded cycles"
+    );
+    assert_eq!(
+        mint(vec![step(proposer, spear)]).0,
+        Err(BoundedOfferRefusal::DrivingSequenceNotEmpty),
+        "ⓔ the refusal is keyed on WHOSE period it is, not on which card the step names"
+    );
+
+    // ── ⓒ / ⓓ THE FIX: a foreign period neither refuses nor moves the certification. ──
+    let (c, c_basis, c_k) = mint(vec![step(opp, any_card)]);
+    assert!(
+        c.is_ok(),
+        "ⓒ CR 732.2a: an OPPONENT'S independent activation describes no sequence this proposer \
+         can take, so it must not refuse their own certified bounded offer; got {c:?}"
+    );
+    let (d, d_basis, d_k) = mint(vec![step(opp, spear)]);
+    assert!(
+        d.is_ok(),
+        "ⓓ the admission is keyed on WHOSE period it is, not on which card the foreign step \
+         names; got {d:?}"
+    );
+
+    assert_eq!(
+        (c_basis, c_k),
+        (empty_basis, empty_k),
+        "ⓒ vs ⓐ — CR 732.2a certification NEUTRALITY: a foreign period must leave the \
+         proposer's certification exactly where the empty-sequence control puts it"
+    );
+    assert_eq!(
+        (d_basis, d_k),
+        (empty_basis, empty_k),
+        "ⓓ vs ⓐ — and neutrality must not depend on WHICH card the opponent activated. ⓒ and ⓓ \
+         differ only in `card_id`, so a split here could come only from gate (5)'s \
+         `scope.cast_card_ids` — i.e. an opponent selecting this proposer's soundness relief"
+    );
+}
+
 /// PR-7 Phase 5b — a declared count ABOVE the offered bound is handed back fail-closed.
 ///
 /// **TEST-ONLY ROW, ZERO NEW PRODUCTION CODE.** The guard already ships
