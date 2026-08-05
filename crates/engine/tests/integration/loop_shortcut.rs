@@ -11196,6 +11196,14 @@ fn ai1_the_bounded_declare_candidate_withdraws_when_the_offer_publishes_a_pin() 
 /// ring grew" names the answer site and nothing else. MEASURED on this drive: 2 answer-beat
 /// mints (beats 5 and 14), 3 settle mints, offer at beat 19 over a 5-frame ring.
 ///
+/// Both halves of that attribution are now ENFORCED in the loop rather than left to today's
+/// fixture, because a standing pin that rests on a measurement goes vacuous the moment the
+/// measurement changes. A mint is detected by `Arc` identity of the ring's back, so an
+/// evicting push at `LOOP_DETECT_RING_CAP` cannot masquerade as "no mint" and shrink the set
+/// `answer_mints` claims to cover; and an answer beat must mint EXACTLY ONE frame, because a
+/// beat that reaches both samplers leaves `back()` holding the SETTLE frame and arms (1)/(2)
+/// would then pass while inspecting a frame the reorder never touched.
+///
 /// ⚠ WHAT THIS ROW DOES **NOT** CATCH, stated rather than implied. A PURE REVERT of the reorder
 /// leaves all three arms GREEN, and that is a measurement rather than an oversight: an
 /// instrumented `debug_assert_eq!` census on both fields at that position, run on the
@@ -11203,9 +11211,15 @@ fn ai1_the_bounded_declare_candidate_withdraws_when_the_offer_publishes_a_pin() 
 /// counts in `f144bb374`'s message), so no fixture in the corpus reaches the divergence. The
 /// row is consequently the STANDING pin — it fires the first time a beat does diverge — and its
 /// instrument is proved live by MUTANTS at the sampler instead of by the revert:
-/// * `state.priority_player = PlayerId(3);` after the sync ⇒ arm (2) FAILS at the first mint.
+/// * `state.priority_player = PlayerId(3);` after the sync ⇒ arm (2) FAILS at the first mint
+///   (beat 5), `PlayerId(3)` vs `PlayerId(0)`, with arm (2)'s own message; arm (1) is never
+///   reached.
 /// * `state.waiting_for = WaitingFor::GameOver { winner: None };` after the sync ⇒ arm (1)
-///   FAILS at the first mint (arm (2) still passes, so the two arms are separately live).
+///   FAILS at the same beat, `GameOver { winner: None }` vs `Priority { player: PlayerId(0) }`,
+///   with arm (1)'s own message. Arm (2) is SKIPPED there rather than passed — `GameOver` has
+///   no acting player — which is exactly why arm (2) is an `if let` and not an unwrap: an
+///   unwrap would panic on the `None` and replace arm (1)'s explanation with its own. Each
+///   mutant is answered by a DIFFERENT arm, which is what "separately live" means.
 ///
 /// Arm (3) is the BLAST-RADIUS pin: the certificate is byte-exact under the pure revert, which
 /// is what makes "this reorder does not perturb detection" a measurement.
@@ -11248,16 +11262,48 @@ fn answer_beat_frames_carry_the_synced_window_and_the_offer_certificate_is_exact
         }
         let answered_forced_window = state.waiting_for.is_forced_cascade_window();
         let before = state.loop_detect_ring.len();
+        // A MINT IS DETECTED BY `Arc` IDENTITY OF THE RING'S BACK, NOT BY A LENGTH DELTA.
+        // `record_loop_detect_sample` pops the front before pushing once the ring is at
+        // `LOOP_DETECT_RING_CAP`, so a full ring mints WITHOUT growing and a length-only
+        // detector reads that as "no mint" — the beat would take the `continue` below and
+        // `answer_mints` would silently under-count the set this row claims to have checked.
+        // `game::engine::drive_one_shortcut_cycle` uses identity here for exactly this reason;
+        // this is that instrument, not a second one. Identity also makes the ring's capacity
+        // irrelevant to the row, which is why no literal cap is transcribed here (the const is
+        // private to `types::game_state`, so a transcribed copy could only rot).
+        let back_before = state.loop_detect_ring.back().map(std::sync::Arc::as_ptr);
         if dump_drive_one_beat(&mut state, pin).is_err() {
             break;
         }
-        if state.loop_detect_ring.len() == before {
+        if state.loop_detect_ring.back().map(std::sync::Arc::as_ptr) == back_before {
             continue;
         }
+        let grew = state.loop_detect_ring.len() - before;
+        assert!(
+            grew >= 1,
+            "beat {beat}: the ring's back changed while its length did not, which means the \
+             ring is AT CAPACITY and evicting. `grew` can no longer attribute frames to a \
+             sampling site, so every count below would be measuring a smaller set than it \
+             names. Fail closed rather than report a number this instrument cannot support"
+        );
         if !answered_forced_window {
-            settle_mints += 1;
+            settle_mints += grew;
             continue;
         }
+        // ATTRIBUTION, ENFORCED RATHER THAN OBSERVED. A single beat can reach BOTH samplers —
+        // `apply_action`'s forced-window answer site and then the settle site in
+        // `pass_priority_once_with_pipeline` — in which case the ring grows by 2 and `back()`
+        // is the SETTLE frame. Arms (1) and (2) would then pass while inspecting a frame the
+        // reorder never touched, i.e. this standing pin would go quietly vacuous. `grew == 1`
+        // is the property that makes `back()` the answer-beat frame; nothing else here asserts
+        // it, and "measured as 1 on today's fixture" is not what a standing pin rests on.
+        assert_eq!(
+            grew, 1,
+            "beat {beat}: this beat answered a forced window AND minted {grew} frames, so \
+             `back()` is not necessarily the answer-site frame — arms (1)/(2) below would be \
+             inspecting whichever sampler recorded LAST. Attribute per site before asserting \
+             on a frame; do not relax this to `>= 1`"
+        );
         answer_mints += 1;
         let frame = &state
             .loop_detect_ring
@@ -11275,17 +11321,23 @@ fn answer_beat_frames_carry_the_synced_window_and_the_offer_certificate_is_exact
         // turn-control fixture. The recomputation is not circular: neither
         // `effective_authority_for_player` nor `search_decision_authority` reads
         // `priority_player`, so a mutant that clobbers only that field still fails here.
-        let semantic_player = frame
-            .waiting_for
-            .acting_player()
-            .expect("the sampler's gate admits only `Priority{player}`, which has an actor");
-        assert_eq!(
-            frame.priority_player,
-            engine::game::turn_control::authorized_submitter_for_player(frame, semantic_player),
-            "beat {beat}: `sync_waiting_for` recomputes `priority_player` from the window it \
-             installs, so an answer-beat frame must carry that window's AUTHORIZED SUBMITTER, \
-             not whatever the un-synced state left behind"
-        );
+        //
+        // `if let` rather than `expect`, and the difference is MEASURED: an `expect` here
+        // pre-empts arm (1). A window with no acting player (`GameOver`) is precisely what
+        // arm (1) exists to catch, so panicking on the `None` before reaching it replaces
+        // arm (1)'s explanation with an unwrap message and destroys the arms' separation —
+        // the `waiting_for = GameOver` mutant died on the unwrap instead of on arm (1). The
+        // pair stays TOTAL, so this skip opens no hole: either arm (2) runs, or the window
+        // had no actor and arm (1) below fails on that same frame.
+        if let Some(semantic_player) = frame.waiting_for.acting_player() {
+            assert_eq!(
+                frame.priority_player,
+                engine::game::turn_control::authorized_submitter_for_player(frame, semantic_player),
+                "beat {beat}: `sync_waiting_for` recomputes `priority_player` from the window \
+                 it installs, so an answer-beat frame must carry that window's AUTHORIZED \
+                 SUBMITTER, not whatever the un-synced state left behind"
+            );
+        }
         // ── (1) THE NEWEST SAMPLED STATE: the window the action RETURNS, never the forced one
         // it answered.
         assert_eq!(
