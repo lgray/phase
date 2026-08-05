@@ -11178,7 +11178,7 @@ fn apply_action(
         // `waiting_for`/`priority_player` pair a settle frame carries.
         //
         // WHICH CONSUMER THAT HOMOGENEITY IS FOR — and it is NOT `ring_delta_signature`. The
-        // claim shipped in `f144bb374` ("a heterogeneous ring breaks `ring_delta_signature`'s
+        // claim #7005's first commit shipped ("a heterogeneous ring breaks `ring_delta_signature`'s
         // turn-position conjunct, because `impl PartialEq for GameState` compares both
         // fields") is FALSE at source: that function's body reads only
         // `ResourceVector::snapshot(&f.normalized)` and
@@ -11206,7 +11206,7 @@ fn apply_action(
         // `:1119` records it). All three drive a CLONE — `drive_one_shortcut_cycle`'s `work`,
         // the drive's `clone`, `preview_candidate_life_safety`'s `preview` — never the settled
         // board. MEASURED pre-reorder by an instrumented `debug_assert_eq!` census over the
-        // full lib + integration corpus (per-site counts in `f144bb374`'s message; one unit =
+        // full lib + integration corpus (per-site counts in PR #7005's history; one unit =
         // one `record_loop_detect_sample` invocation): 0 at EITHER sampler where the sync
         // changed either field, so this replaces a coincidence with a guarantee.
         //
