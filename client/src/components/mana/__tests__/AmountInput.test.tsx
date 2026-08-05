@@ -280,4 +280,47 @@ describe("AmountInput — rendered contract", () => {
     fireEvent.click(screen.getByLabelText("Increase amount"));
     expect(onRawChange).toHaveBeenLastCalledWith("1000");
   });
+
+  // The Enter route at the BUILDING-BLOCK level. The caller suites (T6b, AP/enter) assert only
+  // that an invalid entry never reaches the engine — and that is satisfied EQUALLY by "onSubmit
+  // was never called" and by "onSubmit was called and the caller's guard rejected it". Nothing
+  // separated those two until this row, which is what turns the `onSubmit` prop comment ("MUST
+  // itself reject an invalid amount — AmountInput deliberately does not re-guard") from an
+  // assertion in prose into one the suite checks. The second half is the discriminating half:
+  // re-adding a guard here is exactly the change the comment forbids, and it reds only this row.
+  it("enter: Enter calls onSubmit, and calls it EVEN when the entry is out of range", () => {
+    const onSubmit = vi.fn();
+    const { rerender } = render(
+      <AmountInput
+        raw="3"
+        onRawChange={vi.fn()}
+        min={0}
+        max={5}
+        onSubmit={onSubmit}
+        labels={LABELS}
+      />,
+    );
+    fireEvent.keyDown(screen.getByLabelText("Enter amount"), { key: "Enter" });
+    expect(onSubmit).toHaveBeenCalledTimes(1);
+
+    rerender(
+      <AmountInput
+        raw="9"
+        onRawChange={vi.fn()}
+        min={0}
+        max={5}
+        onSubmit={onSubmit}
+        labels={LABELS}
+      />,
+    );
+    fireEvent.keyDown(screen.getByLabelText("Enter amount"), { key: "Enter" });
+    expect(onSubmit).toHaveBeenCalledTimes(2);
+  });
+
+  // ponytail: no `min > 0` hint row here. A review asked for one on the premise that the branch
+  // was uncovered; MEASURED, both legs are already dominated, so the row would detect nothing.
+  // Collapsing the ternary to the max-only string reds `ChooseXValueUI`'s "min 1 / max 10";
+  // collapsing it to the two-sided string reds three rows (this file's A11Y/associate equality on
+  // "max 5", the assist suite's "max 4", and a ChooseXValue row) because each asserts the hint's
+  // FULL text, not a substring. A candidate row asserting both legs failed to add a fourth.
 });
