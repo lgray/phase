@@ -124,6 +124,59 @@ fn a_refused_comparison_exits_nonzero_and_writes_its_reason_to_stdout() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// A report that cannot be READ must refuse on the same terms as one that cannot be COMPARED.
+///
+/// Review found these two arms returned 2 after an `eprintln!` alone, so the workflow's redirected
+/// stdout stayed empty and its "failed without a drift report" abort fired instead of the refusal
+/// being posted. Both inputs are covered because they are separate arms in the source — a fix
+/// applied to one and not the other is exactly the shape of defect this file exists to catch.
+///
+/// Missing and malformed are both exercised because they take different `CompareError` variants
+/// (`Io` vs `Parse`) to the same renderer, and a remedy keyed on only one of them would leave the
+/// other with an empty body.
+#[test]
+fn an_unreadable_report_still_publishes_a_refusal_body() {
+    for (case, make_bad) in [("missing", false), ("malformed", true)] {
+        for bad_side in ["baseline", "current"] {
+            let dir = tempdir(&format!("unreadable-{case}-{bad_side}"));
+            let good = write(&dir, "good.json", &report_json(10));
+            let bad = dir.join(format!("{bad_side}-bad.json"));
+            if make_bad {
+                std::fs::write(&bad, "{ this is not a suite report").expect("write malformed");
+            }
+            // PREMISE: the "missing" case really is missing, or it would be testing nothing.
+            assert_eq!(bad.exists(), make_bad, "fixture for {case}/{bad_side}");
+
+            let (baseline, current) = if bad_side == "baseline" {
+                (bad.clone(), good.clone())
+            } else {
+                (good.clone(), bad.clone())
+            };
+            let (code, stdout, stderr) = run(&baseline, &current);
+
+            assert_eq!(code, 2, "{case}/{bad_side} must exit 2; stderr:\n{stderr}");
+            assert!(
+                stdout.contains("Gate: comparison refused"),
+                "{case}/{bad_side} must publish a refusal body on STDOUT, not stderr; \
+                 stdout was {} bytes:\n{stdout}",
+                stdout.len()
+            );
+            // The body must say more than the header — an envelope with no remedy is the same
+            // empty-file problem wearing a title.
+            assert!(
+                stdout.contains("could not be read"),
+                "{case}/{bad_side} body must carry the remedy; stdout:\n{stdout}"
+            );
+            // The side is what makes it actionable, and it lives on stderr by design.
+            assert!(
+                stderr.contains(bad_side),
+                "{case}/{bad_side} stderr must name which report failed; stderr:\n{stderr}"
+            );
+            std::fs::remove_dir_all(&dir).ok();
+        }
+    }
+}
+
 /// Control arm. Without it every assertion above is satisfied by a binary that refuses
 /// everything, which would be a worse regression than the one being fixed.
 #[test]

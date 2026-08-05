@@ -20,7 +20,8 @@ use engine::types::player::PlayerId;
 use phase_ai::auto_play::run_ai_actions;
 use phase_ai::config::{create_config_for_players, AiDifficulty, Platform};
 use phase_ai::duel_suite::compare::{
-    compare as compare_reports, emit_gate_verdict, load_report, CompareOptions,
+    compare as compare_reports, emit_gate_verdict, load_report, render_error_markdown,
+    CompareOptions,
 };
 use phase_ai::duel_suite::run::{resolve_matchup, run_suite, AttributionMode, SuiteOptions};
 use phase_ai::duel_suite::{all_matchups, find_matchup};
@@ -728,10 +729,21 @@ fn run_compare(args: &[String]) -> i32 {
         }
     }
 
+    // A report that cannot be READ is refused on the same terms as one that cannot be COMPARED.
+    // Review found these two arms spoke only to stderr while every other refusal on this path
+    // publishes a stdout body, so a caller redirecting stdout — which is the only way this
+    // command is used in CI — got an empty file and no statement of what failed. That is the
+    // same defect this PR fixed twice already, at `compare`'s error arm and in `ai-perf-gate`;
+    // these were the last two instances of it on the gate's report contract.
+    //
+    // The path stays on stderr because `CompareError` carries the cause but not the file, and a
+    // refusal that says "I/O error" without naming which of two inputs it was reading is not
+    // actionable.
     let baseline = match load_report(&baseline_path) {
         Ok(r) => r,
         Err(e) => {
             eprintln!("Failed to load baseline {}: {e}", baseline_path.display());
+            print!("{}", render_error_markdown(&e));
             return 2;
         }
     };
@@ -739,6 +751,7 @@ fn run_compare(args: &[String]) -> i32 {
         Ok(r) => r,
         Err(e) => {
             eprintln!("Failed to load current {}: {e}", current_path.display());
+            print!("{}", render_error_markdown(&e));
             return 2;
         }
     };

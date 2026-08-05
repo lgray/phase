@@ -836,9 +836,12 @@ pub fn render_error_markdown(err: &CompareError) -> String {
         CompareError::SchemaMismatch { .. } => "The baseline predates the current report format. \
              Re-record it with `cargo ai-gate --refresh-baseline`."
             .to_string(),
+        // "report", not "baseline": `ai-duel compare` now renders this arm for a failure on
+        // EITHER input, so naming the baseline would send the reader to the wrong file half the
+        // time. The side and the exact path are on stderr, where they are known.
         CompareError::Io(_) | CompareError::Parse(_) => {
-            "The baseline could not be read. Check the path, and that the file is the JSON a \
-             previous `--refresh-baseline` wrote."
+            "The report could not be read. Check the path named on stderr, and that the file is \
+             the JSON a previous `--refresh-baseline` wrote."
                 .to_string()
         }
     };
