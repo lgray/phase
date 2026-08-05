@@ -817,10 +817,26 @@ pub fn derive_views(state: &GameState, viewer: Option<PlayerId>) -> DerivedViews
     //    choice is part of the same uncited deviation described above.
     //
     // WHY `∞` IS RIGHT HERE IS AN ENGINE-STATE ARGUMENT, NOT A RULES ONE. Throughout the window the
-    // enablers are still on the battlefield and `unbounded_resources` + `unbounded_loop_enablers`
-    // are deliberately held in lockstep (below), so the controller really does still hold a set of
-    // actions that could be repeated indefinitely — a CR-732.1b-SHAPED capability, which is the
-    // same sense the rest of this crate cites CR 732.1b in. `∞` renders that live mark honestly.
+    // loop's enabling permanents are still on the battlefield and `unbounded_resources` still
+    // carries the mark, so the controller really does still hold a set of actions that could be
+    // repeated indefinitely — a CR-732.1b-SHAPED capability, which is the same sense the rest of
+    // this crate cites CR 732.1b in. `∞` renders that live mark honestly.
+    //
+    // WHAT THIS PROJECTION DOES **NOT** CLAIM: that the mark is REVOCABLE for this class. The
+    // zone-exit defuse (`zones::apply_zone_exit_cleanup`) is gated on a NON-EMPTY
+    // `unbounded_loop_enablers`, and the only production writer of that map is the Interactive
+    // Path-C arm (`engine.rs`'s `register_unbounded_loop_enablers` call).
+    // `materialize_object_growth_shortcut` never registers enablers, so for the OBJECT-GROWTH class
+    // — which is exactly the token and counter families this projection displays — the defuse gate
+    // never matches and is INERT. `engine_resolution_choices.rs` documents that gap in those words
+    // and tracks it as a pre-existing deferred follow-up; it is not introduced here.
+    //
+    // CONSEQUENCE, STATED RATHER THAN BURIED: because that defuse is inert for this class, an
+    // enabler leaving the battlefield between accept and boundary leaves a STALE `∞` in the store,
+    // and this projection now RENDERS it where the previous gate happened to HIDE it. That is a
+    // pre-existing engine gap being SURFACED by a display fix, not a new defect — but it is a real
+    // user-visible consequence of unhiding, and it is the reason the enabler-registration follow-up
+    // matters. What actually ends the mark for this class is the boundary, below.
     //
     // And hiding it is strictly worse on display coherence, which is what the old "the badge is a
     // lie" comment was really about. The BASE gate filtered the PROJECTION while the STORE still
@@ -830,11 +846,11 @@ pub fn derive_views(state: &GameState, viewer: Option<PlayerId>) -> DerivedViews
     //
     // The three loops below therefore read only their own stores; none consults
     // `GameState::scheduled_collapse_axes` (whose sole production caller is
-    // `clear_collapsed_materializations`). The stores are not filtered either:
-    // `unbounded_resources` + `unbounded_loop_enablers` are held in lockstep until the boundary
-    // applies the growth. That lockstep is an ENGINE-STATE invariant, required by no CR — it exists
-    // for exactly one consumer: `zones::apply_zone_exit_cleanup` reads the enabler map to defuse a
-    // capability whose enabler leaves, so a desynced store would leave that defuse unarmed.
+    // `clear_collapsed_materializations`). The stores are not filtered either: `unbounded_resources`
+    // keeps the mark until the boundary applies the growth. (`unbounded_loop_enablers` is held in
+    // lockstep with it as an ENGINE-STATE invariant required by no CR — but see the inertness note
+    // above: for the object-growth class that map is EMPTY, so the lockstep is vacuously satisfied
+    // here and is load-bearing only for the Interactive Path-C class that populates it.)
     //
     // What ends each `∞` is the boundary, never this projection:
     // `clear_collapsed_materializations` drops the collapsed axes once the growth is applied, and

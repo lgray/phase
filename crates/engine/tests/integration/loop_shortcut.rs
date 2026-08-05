@@ -7182,6 +7182,11 @@ fn scheduled_collapse_still_renders_the_unbounded_badge() {
         state.waiting_for
     );
 
+    // BASELINE, captured BEFORE the accept so the unmaterialized claim below is falsifiable.
+    // A `life > 0` assertion would also pass AFTER materialization (200 accepted gains would leave
+    // life well above 0), so it could not distinguish the state this test exists to pin.
+    let life_before = state.players.iter().find(|p| p.id == P0).unwrap().life;
+
     r6a_declare_and_accept_all(&mut state, P0, 200);
 
     // (1) POSITIVE CONTROL — the accept really marked the ∞ axes in the STORE. Without
@@ -7208,12 +7213,16 @@ fn scheduled_collapse_still_renders_the_unbounded_badge() {
         1,
         "exactly one controller has a scheduled collapse"
     );
-    // The growth is UNMATERIALIZED: the accepted count has not been applied, so P0's life is still
-    // a concrete number. The ∞ row beside it reports the live loop mark, not the current total.
+    // The growth is UNMATERIALIZED: the accepted count has not been applied, so P0's life is
+    // EXACTLY what it was before the accept. The ∞ row beside it reports the live loop mark, not
+    // the current total. Asserting EQUALITY against the pre-accept baseline (not `> 0`) is what
+    // makes this row discriminating: a premature materialization of the accepted 200 Life(P0)
+    // gains moves this number and reds the row, whereas `life > 0` survives it.
     let life = state.players.iter().find(|p| p.id == P0).unwrap().life;
-    assert!(
-        life > 0,
-        "the ∞-badged axis still shows an unmaterialized, finite life total, got {life}"
+    assert_eq!(
+        life, life_before,
+        "the ∞-badged Life(P0) axis must be UNMATERIALIZED at this point — life must equal its \
+         pre-accept baseline, got {life} vs {life_before}"
     );
 
     // (2) FAIL-CLOSED CONTROL, in the SAME state: every ∞ axis the accept scheduled is
@@ -7262,16 +7271,39 @@ fn scheduled_collapse_still_renders_the_unbounded_badge() {
     // hot-seat viewer does. If a future redaction ever dropped the ∞ stores from the filtered
     // clone, the broadcast path alone would go dark — remote players would lose the ∞ pile and
     // rows while the local viewer kept them. That asymmetry is the regression this row catches.
+    // EXACT MEMBERSHIP, not non-emptiness. A non-empty check passes a PARTIAL projection that
+    // drops one of the two axes or loses pile members, which is precisely the regression described
+    // above. These rows pin the SET and the FULL membership, both compared against the store so the
+    // expectation cannot drift away from what the accept actually wrote.
+    let expected_axes: std::collections::BTreeSet<ResourceAxis> = marked.iter().copied().collect();
+    let expected_pile: std::collections::BTreeSet<ObjectId> = state
+        .unbounded_loop_pile
+        .values()
+        .flat_map(|ids| ids.iter().copied())
+        .collect();
+    assert!(
+        expected_axes.len() >= 2 && !expected_pile.is_empty(),
+        "control: the expectations themselves must be non-trivial, got {expected_axes:?} / \
+         {} pile members",
+        expected_pile.len()
+    );
     for viewer in [P0, P1, P2, PlayerId(3)] {
         let filtered = engine::game::visibility::filter_state_for_viewer(&state, viewer);
         let views =
             engine::game::derived_views::derive_filtered_views(&state, &filtered, Some(viewer));
-        assert!(
-            !views.unbounded_resources.is_empty() && !views.unbounded_pile.is_empty(),
-            "the viewer-FILTERED broadcast path projects the same rows (viewer \
-             {viewer:?}), got {:?} / {:?}",
-            views.unbounded_resources,
-            views.unbounded_pile
+        let got_axes: std::collections::BTreeSet<ResourceAxis> =
+            views.unbounded_resources.iter().map(|r| r.axis).collect();
+        assert_eq!(
+            got_axes, expected_axes,
+            "the viewer-FILTERED broadcast path must project EVERY marked ∞ axis, not merely some \
+             (viewer {viewer:?})"
+        );
+        let got_pile: std::collections::BTreeSet<ObjectId> =
+            views.unbounded_pile.iter().copied().collect();
+        assert_eq!(
+            got_pile, expected_pile,
+            "the viewer-FILTERED broadcast path must project the FULL ∞ pile membership \
+             (viewer {viewer:?})"
         );
     }
 
