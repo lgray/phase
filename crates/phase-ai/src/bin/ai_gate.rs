@@ -74,6 +74,53 @@ fn main() {
     };
 
     if args.refresh_baseline {
+        // A baseline is what every later run is judged against, so refreshing from a run
+        // that failed its own `Expected` check blesses that failure permanently: the next
+        // run compares equal to it and exits 0 forever, and the gate goes quiet about a
+        // matchup that is still broken. Refuse. A matchup that genuinely has no verdict
+        // yet says so with `Expected::Open` in the suite definition — that is the place
+        // to express it, not a red baseline.
+        //
+        // ORDER MATTERS, and this one is strictly better on every input. The two conditions
+        // are not exclusive: `failed_result` builds a matchup with an empty `games` vector
+        // AND `SuiteStatus::Fail`, so a run whose deck payloads all failed to load satisfies
+        // both. Reporting the failures names each matchup and its `setup error: …`; reporting
+        // gamelessness first would replace that with a sentence about seeds. Nothing is lost
+        // by checking failures first, because a run that is merely gameless — a
+        // `--suite-filter` matching nothing — has no failing matchups to report.
+        let failing: Vec<_> = current.failing_matchups().collect();
+        if !failing.is_empty() {
+            eprintln!(
+                "refusing to refresh {}: {} matchup(s) failed their own suite check",
+                args.baseline.display(),
+                failing.len()
+            );
+            for result in failing {
+                eprintln!(
+                    "  {}: {}",
+                    result.matchup_id,
+                    result
+                        .fail_reason
+                        .as_deref()
+                        .unwrap_or("no reason recorded")
+                );
+            }
+            eprintln!(
+                "fix the regression, or declare the matchup `Expected::Open` if it has no verdict yet"
+            );
+            std::process::exit(1);
+        }
+        // A run that measured nothing is unfit for the same reason a red one is, reached from
+        // the other side: comparison pairs by seed, so a gameless baseline scores zero on the
+        // outcome axes forever and the drift signal dies quietly. Reached by a `--suite-filter`
+        // that selects no matchups; `--games 0` is refused earlier, at parse time.
+        if current.recorded_games() == 0 {
+            eprintln!(
+                "refusing to refresh {}: the run recorded no games, so every later comparison would score zero",
+                args.baseline.display()
+            );
+            std::process::exit(1);
+        }
         if args.baseline.exists() {
             match load_report(&args.baseline)
                 .and_then(|baseline| compare(&baseline, &current, &CompareOptions))
@@ -145,9 +192,14 @@ fn parse_args() -> Result<Args, String> {
                 current_output = next_path(&mut iter, "--current-output")?;
             }
             "--games" => {
-                games = next_value(&mut iter, "--games")?
-                    .parse()
-                    .map_err(|_| "--games must be a positive integer".to_string())?;
+                // `usize` alone accepts 0, which the error string already promised it would
+                // not. A zero-game run classifies every matchup `Open` and produces a
+                // baseline that can never detect drift, so reject it here rather than
+                // burning a whole suite run to refuse it later.
+                games = match next_value(&mut iter, "--games")?.parse() {
+                    Ok(0) | Err(_) => return Err("--games must be a positive integer".to_string()),
+                    Ok(value) => value,
+                };
             }
             "--seed" => {
                 seed = next_value(&mut iter, "--seed")?
