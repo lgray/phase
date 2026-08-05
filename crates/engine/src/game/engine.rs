@@ -2643,10 +2643,10 @@ pub(crate) fn entry_publishes_pin_slots(
     //     the same authority-sharing rule (a) follows.
     // ADOPTION B. All four groups are `effects::upfront_optional_gate`'s, asked of the ONE
     // function `resolve_chain_body`'s own branch is, so the mint and the gate cannot drift.
-    // `Probe` is the right feasibility mode here for two reasons: this caller has NOT run the
-    // probe (production's `Known` value belongs to a resolve that is not happening yet), and
-    // the authority evaluates it LAST, so the clone-bearing `CastFromZone` arm is reached only
-    // for `optional ∧ ¬optional_for ∧ ¬repeat` entries.
+    // `Probe` is the right mode here: this caller has NOT run the probe (production's `Known`
+    // belongs to a resolve that is not happening yet) and the authority evaluates it LAST, so the
+    // clone-bearing `CastFromZone` arm needs `optional ∧ ¬optional_for ∧ ¬repeat`. MEASURED on a
+    // full `--test integration` run: 16402 mints ⇒ 4573 probes ⇒ 0 arm entries (59 via `Known`).
     //
     // BEHAVIOUR CHANGE, and it is rules-correct in the fail-closed direction: this now
     // withholds the slot for an `optional_for` ability (CR 608.2d + CR 101.4 — a fan-out is an

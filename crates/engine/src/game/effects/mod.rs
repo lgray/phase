@@ -6003,7 +6003,7 @@ pub(crate) enum OptionalFeasibility {
 /// certification ASKS at the verdict door, and putting wall-clock cost on the same counter
 /// would re-base every metered row's pinned spend and make neither number readable.
 pub(crate) struct UpfrontOptionalGate {
-    /// CR 117.3a: whoever [`optional_prompt_player`] names — NOT necessarily the controller.
+    /// CR 608.2d: [`optional_prompt_player`] names who ANNOUNCES it — not always the controller.
     pub prompt_player: PlayerId,
     /// `None` ⇒ the ability carries no `may_trigger_origin`, so no stored preference can key
     /// on it. That is not the same as "no preference stored": it is "no key exists".
@@ -6643,8 +6643,8 @@ pub(crate) fn resolve_player_for_context_ref(
     ability.controller
 }
 
-/// CR 117.3a: Determine which player receives the "may" prompt for an optional
-/// effect. Most optional effects go to the caster (CR 608.2d). Subject-anchored
+/// CR 608.2d: Determine which player ANNOUNCES the choice — receives the "may"
+/// prompt — for an optional effect. Most go to the caster. Subject-anchored
 /// optional effects — "its controller may search their library" (Assassin's
 /// Trophy, Path to Exile, Ghost Quarter, Oblation, …) — route the prompt to the
 /// acting subject (the target permanent's controller). This mirrors the

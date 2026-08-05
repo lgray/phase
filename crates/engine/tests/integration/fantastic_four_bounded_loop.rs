@@ -726,7 +726,15 @@ fn r2a_an_accepted_declaration_commits_exactly_n_cycles_because_reeds_may_is_ann
         let mut state = load_f4();
         let reed = resolve_by_name(&state, REED);
         drive_f4_to_offer(&mut state, 400).expect("the bounded offer fires (see R1)");
-        let (proposer, _certificate, schema) = offer_parts(&state);
+        let (proposer, certificate, schema) = offer_parts(&state);
+        // The row's failure message CLAIMS the published per-cycle delta, so the assertion
+        // has to READ it. This binding used to be `_certificate` and the expectation two
+        // literal `1`s — a re-dump that changed the rate reddened the row for a reason that
+        // has nothing to do with the property under test.
+        let per_cycle = certificate
+            .per_cycle
+            .clone()
+            .expect("a bounded offer publishes its per-period signature");
         let schema = schema.clone();
 
         assert!(
@@ -742,6 +750,9 @@ fn r2a_an_accepted_declaration_commits_exactly_n_cycles_because_reeds_may_is_ann
 
         let life_before: Vec<i64> = state.players.iter().map(|p| p.life as i64).collect();
         let libs_before: Vec<usize> = state.players.iter().map(|p| p.library.len()).collect();
+        // Seat ids read POSITIONALLY, from the same order the two vectors above index, so the
+        // published rate looked up below belongs to the seat whose movement is measured.
+        let seats: Vec<PlayerId> = state.players.iter().map(|p| p.id).collect();
 
         apply(
             &mut state,
@@ -774,16 +785,37 @@ fn r2a_an_accepted_declaration_commits_exactly_n_cycles_because_reeds_may_is_ann
 
         let life_after: Vec<i64> = state.players.iter().map(|p| p.life as i64).collect();
         let libs_after: Vec<usize> = state.players.iter().map(|p| p.library.len()).collect();
+        // Both axes are measured as LOSSES (`before - after`), so the published signed rates
+        // are negated to match. `libs_*` are `usize`: cast EACH side before subtracting, or a
+        // library that fails to shrink — the exact zero-commit regression this row guards —
+        // aborts on an arithmetic overflow instead of printing the diagnostic below.
+        let life_rate = -per_cycle.delta.life.get(&seats[1]).copied().unwrap_or(0);
+        let lib_rate = -per_cycle
+            .delta
+            .library_delta
+            .get(&seats[0])
+            .copied()
+            .unwrap_or(0);
+        assert!(
+            life_rate > 0 && lib_rate > 0,
+            "n={n}: ANTI-VACUITY — both published per-cycle rates must be strictly positive, \
+             else the equality below degenerates to `0 == 0 * {n}` and asserts nothing. \
+             published life={:?} library={:?}",
+            per_cycle.delta.life,
+            per_cycle.delta.library_delta
+        );
         assert_eq!(
             (
                 life_before[1] - life_after[1],
-                (libs_before[0] - libs_after[0]) as i64
+                libs_before[0] as i64 - libs_after[0] as i64
             ),
-            (i64::from(n), i64::from(n)),
+            (life_rate * i64::from(n), lib_rate * i64::from(n)),
             "n={n}: CR 732.2a — the accepted shortcut commits EXACTLY n repetitions of the \
-             published per-cycle delta (P1 loses 1 life and P0's library loses 1 card per \
-             repetition). life {life_before:?} -> {life_after:?}, libs {libs_before:?} -> \
-             {libs_after:?}"
+             published per-cycle delta ({:?} loses {life_rate} life and {:?}'s library loses \
+             {lib_rate} card(s) per repetition). life {life_before:?} -> {life_after:?}, libs \
+             {libs_before:?} -> {libs_after:?}",
+            seats[1],
+            seats[0]
         );
         assert!(
             matches!(state.waiting_for, WaitingFor::Priority { .. }),
@@ -1777,7 +1809,18 @@ fn published_point_names(state: &GameState) -> Vec<(String, &'static str)> {
                     .objects
                     .get(source_id)
                     .map(|o| o.name.clone())
-                    .unwrap_or_else(|| format!("obj{}", source_id.0)),
+                    // NOT a synthetic `obj<id>`: every caller compares this string against the
+                    // SUE / REED / TORCH constants, so an unresolvable source would read as
+                    // "not that card" and silently SATISFY the by-name ABSENCE assertions this
+                    // helper feeds (m1's owner-firewall row). Same class of failure as the
+                    // `other =>` arm below, so the same treatment.
+                    .unwrap_or_else(|| {
+                        panic!(
+                            "a published point names {source_id:?}, absent from `objects` — an \
+                             unresolvable name would silently satisfy the by-name ABSENCE \
+                             assertions this helper feeds"
+                        )
+                    }),
                 other => panic!("unexpected decision source {other:?}"),
             };
             let kind = match &p.kind {
@@ -1788,6 +1831,32 @@ fn published_point_names(state: &GameState) -> Vec<(String, &'static str)> {
             (source, kind)
         })
         .collect()
+}
+
+/// THE GUARD ABOVE MUST BE ABLE TO FIRE. A guard that cannot is worse than none: it reads as
+/// protection while the hole it names stays open, which is the exact defect the synthetic
+/// `obj<id>` fallback was. Drive the real capture to its offer, then delete the first
+/// published point's source object — the one state the fallback used to paper over — and
+/// require the typed panic. `expected` is a substring match, so a panic from any OTHER cause
+/// (an empty point set, a non-`ThisObject` source) fails this row instead of passing it.
+#[test]
+#[should_panic(expected = "absent from `objects`")]
+fn published_point_names_panics_when_a_points_source_is_absent() {
+    let mut state = load_f4();
+    drive_f4_to_offer(&mut state, 400).expect("the bounded offer fires (see R1)");
+    let (_, _, schema) = offer_parts(&state);
+    let source_id = match &schema
+        .points
+        .first()
+        .expect("the offer publishes at least one point")
+        .slot
+        .source
+    {
+        engine::types::game_state::YieldTarget::ThisObject { source_id, .. } => *source_id,
+        other => panic!("unexpected decision source {other:?}"),
+    };
+    state.objects.remove(&source_id);
+    published_point_names(&state);
 }
 
 /// Drive one user capture to its offer, declare a CONFORMANT `Fixed(n)`, have every living
