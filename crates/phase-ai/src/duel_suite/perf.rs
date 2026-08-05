@@ -74,6 +74,7 @@ use engine::game::perf_counters::{self, PerfCounterSnapshot};
 use serde::{Deserialize, Serialize};
 
 use crate::config::AiDifficulty;
+use crate::duel_suite::refusal_markdown;
 
 use super::find_matchup;
 use super::run::{drive_game, resolve_matchup};
@@ -711,6 +712,40 @@ fn verdict_str(v: CounterVerdict) -> &'static str {
     }
 }
 
+/// The report body for a perf comparison that could not be made at all.
+///
+/// This gate has the failure the duel-suite gate only looked like it had. Nothing in
+/// `bin/ai_perf_gate.rs` writes to stdout before `compare` — every diagnostic on the way
+/// there is `eprintln!` — so a refusal that reached only stderr left
+/// `target/ai-perf-gate-report.md` at zero bytes, and `.github/workflows/ai-gate.yml`
+/// answers an empty report by aborting with "Decision-cost perf gate failed without a
+/// drift report" and posting no issue at all. The refusal was produced and then thrown
+/// away. Sharing `refusal_markdown` with the duel-suite gate so the two cannot drift.
+pub fn render_error_markdown(err: &PerfCompareError) -> String {
+    let remedy = match err {
+        PerfCompareError::WorkloadMismatch {
+            field,
+            baseline,
+            current,
+        } => format!(
+            "The samples were taken under different `{field}` (`{baseline}` vs `{current}`), so \
+             their counters describe different runs and any comparison would be a false verdict. \
+             Either re-record the baseline under the current workload \
+             (`cargo ai-perf-gate --refresh-baseline`) — checking first that every other \
+             invocation reading this baseline uses that workload too — or run the gate under the \
+             baseline's workload. Nothing was measured, so this is not a perf regression."
+        ),
+        PerfCompareError::SchemaMismatch { .. } => "The baseline predates the current report \
+             format. Bump `schema_version` and re-record it with \
+             `cargo ai-perf-gate --refresh-baseline`."
+            .to_string(),
+        PerfCompareError::Io(_) | PerfCompareError::Parse(_) => "The baseline could not be read. \
+             Check the path, and that the file is the JSON a previous `--refresh-baseline` wrote."
+            .to_string(),
+    };
+    refusal_markdown(err, &remedy)
+}
+
 /// Render the comparison as a markdown table to stdout; diagnostics (hash-delta
 /// annotation, removed-field warning) go to stderr so a redirected stdout report
 /// stays a clean table.
@@ -1042,6 +1077,59 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    /// Every refusal this gate can produce must carry a non-empty report body naming what
+    /// happened, because the workflow posts stdout and aborts on an empty file — so a refusal
+    /// that reaches only stderr posts nothing at all. Asserted over EVERY variant by
+    /// construction rather than over the one that is easiest to build: a variant added later
+    /// with no remedy would otherwise ship silently.
+    ///
+    /// The `assert_ne!` against the bare `Display` is the discriminating half. Without it a
+    /// `render_error_markdown` that just forwarded the error string would pass every other
+    /// assertion here, and that implementation is precisely the one that loses the remedy.
+    #[test]
+    fn every_refusal_renders_a_body_that_says_more_than_the_error_line() {
+        let io = PerfCompareError::Io(std::io::Error::other("disk"));
+        let parse = PerfCompareError::Parse(serde_json::from_str::<PerfReport>("{").unwrap_err());
+        let schema = PerfCompareError::SchemaMismatch {
+            baseline: 1,
+            current: 2,
+        };
+        let workload = PerfCompareError::WorkloadMismatch {
+            field: "action_cap",
+            baseline: "10".to_string(),
+            current: "20".to_string(),
+        };
+
+        for err in [&io, &parse, &schema, &workload] {
+            let body = render_error_markdown(err);
+            assert!(!body.trim().is_empty(), "empty body for {err:?}");
+            assert!(
+                body.contains("## Gate: comparison refused"),
+                "missing heading for {err:?}: {body}"
+            );
+            assert!(
+                body.contains(&err.to_string()),
+                "body must carry the error itself for {err:?}: {body}"
+            );
+            assert_ne!(
+                body.trim(),
+                err.to_string().trim(),
+                "body must add a remedy, not echo the error, for {err:?}"
+            );
+        }
+
+        // The workload arm is the reachable one in CI, so its two values and both directions
+        // of remedy are pinned rather than left to the loop's generic assertions.
+        let body = render_error_markdown(&workload);
+        assert!(body.contains("action_cap"), "{body}");
+        assert!(body.contains("`10`") && body.contains("`20`"), "{body}");
+        assert!(body.contains("--refresh-baseline"), "{body}");
+        assert!(
+            body.contains("run the gate under the baseline's workload"),
+            "{body}"
+        );
     }
 
     // Matrix 7: adapter totality — a distinct non-zero value per field yields one

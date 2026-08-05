@@ -12,7 +12,7 @@ use std::process::Command;
 use engine::database::CardDatabase;
 use phase_ai::config::AiDifficulty;
 use phase_ai::duel_suite::compare::{
-    compare, gate_verdict, load_report, print_markdown, CompareOptions,
+    compare, gate_verdict, load_report, print_markdown, render_error_markdown, CompareOptions,
 };
 use phase_ai::duel_suite::run::{run_suite, SuiteOptions, SuiteReport};
 
@@ -96,7 +96,13 @@ fn main() {
     let baseline = match load_report(&args.baseline) {
         Ok(report) => report,
         Err(err) => {
+            // Same reasoning as the compare refusal below: the nightly posts stdout, so a
+            // read failure that spoke only to stderr produced a red job whose issue body was
+            // the suite table and no statement of what went wrong. This is also the only
+            // caller that can reach `render_error_markdown`'s I/O arm — `compare` does no
+            // I/O, so before this the arm existed and was unreachable.
             eprintln!("failed to load baseline {}: {err}", args.baseline.display());
+            print!("{}", render_error_markdown(&err));
             std::process::exit(2);
         }
     };

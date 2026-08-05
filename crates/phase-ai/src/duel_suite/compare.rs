@@ -9,7 +9,7 @@ use std::collections::{BTreeMap, HashSet};
 use std::path::Path;
 
 use super::run::{GameResult, MatchupResult, SuiteReport, SuiteStatus};
-use super::{Expected, FeatureKind};
+use super::{refusal_markdown, Expected, FeatureKind};
 
 const MIRROR_AVG_TURN_WARN_DELTA: f64 = 3.0;
 
@@ -800,28 +800,49 @@ pub fn print_markdown(report: &CompareReport) {
 /// The report body for a comparison that could not be made at all.
 ///
 /// A refused comparison is the case most likely to be read by someone who did not run it: the
-/// nightly captures stdout into `target/ai-gate-report.md` and posts it as a drift issue, and it
-/// posts nothing when that file is empty. Writing the refusal only to stderr would therefore turn
-/// a hard, correct refusal into "AI gate failed without a drift report" — a red job with no
-/// statement of what is wrong. The remedy is named per field, because the reader of the issue is
-/// the person who has to choose between re-recording the baseline and changing the workload.
+/// nightly captures stdout into `target/ai-gate-report.md` and posts it as a drift issue.
+///
+/// The reason is NOT that stderr-only would leave that file empty. Review measured the opposite:
+/// `run_suite` prints the suite's own table to stdout before the baseline is ever loaded
+/// (`run.rs`, `print_markdown_table`), so on this path the file always has content and the
+/// workflow's empty-file abort is unreachable. What a stderr-only refusal actually produces is
+/// worse to read than an empty file: a red job whose issue body is a table of PASSing matchups
+/// and no statement of what failed. (An earlier draft of this comment asserted the empty-file
+/// story, which was false here — though it is true of `ai-perf-gate`, whose refusal path this
+/// commit fixes for exactly that reason.)
 pub fn render_error_markdown(err: &CompareError) -> String {
     let remedy = match err {
-        CompareError::WorkloadMismatch { field, .. } => format!(
+        CompareError::WorkloadMismatch {
+            field,
+            baseline,
+            current,
+        } => format!(
             "The two reports were produced under different `{field}`, so their seeds do not \
-             denote the same games and no verdict can be built by pairing them. Either re-record \
-             the baseline under the current workload (`cargo ai-gate --refresh-baseline` with the \
-             same flags this run used) or run the gate under the baseline's workload. This is not \
-             drift: nothing was measured."
+             denote the same games and no verdict can be built by pairing them. This is not \
+             drift: nothing was measured.\n\n\
+             Two remedies. Pick the workload this gate should measure at, then make EVERY \
+             invocation that reads this baseline use it — the baseline file is shared, so \
+             re-recording it to suit one job starts failing this same check in every other job \
+             that compares against it at a different workload.\n\n\
+             1. **Move the baseline to `{current}`** — re-record it under the workload this run \
+             used (`cargo ai-gate --refresh-baseline` with this run's flags), AND align every \
+             other invocation that compares against it.\n\
+             2. **Move this run to `{baseline}`** — invoke the gate under the workload the \
+             baseline was recorded at (for `games_per_matchup`, the `--games` flag). Touches \
+             nothing else.\n\n\
+             Until one of them is done this gate fails every run, by design: a verdict built \
+             from a fraction of the sample is not a verdict."
         ),
         CompareError::SchemaMismatch { .. } => "The baseline predates the current report format. \
              Re-record it with `cargo ai-gate --refresh-baseline`."
             .to_string(),
         CompareError::Io(_) | CompareError::Parse(_) => {
-            "The baseline could not be read. Check the path and the file's contents.".to_string()
+            "The baseline could not be read. Check the path, and that the file is the JSON a \
+             previous `--refresh-baseline` wrote."
+                .to_string()
         }
     };
-    format!("## AI gate: comparison refused\n\n**{err}**\n\n{remedy}\n")
+    refusal_markdown(err, &remedy)
 }
 
 /// What the gate prints on stdout and what it exits with, decided together.
@@ -1831,7 +1852,68 @@ mod tests {
         assert!(body.contains("games_per_matchup"), "{body}");
         assert!(body.contains("baseline=1"), "{body}");
         assert!(body.contains("current=2"), "{body}");
-        assert!(body.contains("--refresh-baseline"), "{body}");
+
+        // BOTH remedies, named with their concrete target values. One-remedy text reads as
+        // "you must re-record", which is the more expensive of the two and not always the
+        // one the reader wants — and a reader who believes it is the only option will take
+        // it. Each direction is asserted through the value it moves TO, so a text that names
+        // both remedies but transposes their targets fails here.
+        assert!(
+            body.contains("--refresh-baseline"),
+            "refresh remedy missing: {body}"
+        );
+        assert!(body.contains("--games"), "re-run remedy missing: {body}");
+        assert!(
+            body.contains("Move the baseline to `2`"),
+            "remedy 1 must target the CURRENT workload: {body}"
+        );
+        assert!(
+            body.contains("Move this run to `1`"),
+            "remedy 2 must target the BASELINE workload: {body}"
+        );
+    }
+
+    /// Every refusal variant renders a body, including the two `compare` itself cannot produce.
+    ///
+    /// `Io` and `Parse` are reachable only through `load_report`, which `bin/ai_gate.rs` calls
+    /// before `compare` — review found that arm was written and unreachable, because the caller
+    /// that could hit it was still failing to stderr alone. That caller is now wired to this
+    /// function, and this test covers the arm regardless of which caller reaches it.
+    ///
+    /// The `assert_ne!` against the bare `Display` is the discriminating half: an implementation
+    /// that forwarded the error string would satisfy every other assertion here while losing the
+    /// remedy, and losing the remedy is the whole failure mode.
+    #[test]
+    fn every_refusal_renders_a_body_that_says_more_than_the_error_line() {
+        let io = CompareError::Io(std::io::Error::other("disk"));
+        let parse = CompareError::Parse(serde_json::from_str::<SuiteReport>("{").unwrap_err());
+        let schema = CompareError::SchemaMismatch {
+            baseline: 1,
+            current: 2,
+        };
+        let workload = CompareError::WorkloadMismatch {
+            field: "games_per_matchup",
+            baseline: "10".to_string(),
+            current: "100".to_string(),
+        };
+
+        for err in [&io, &parse, &schema, &workload] {
+            let body = render_error_markdown(err);
+            assert!(!body.trim().is_empty(), "empty body for {err:?}");
+            assert!(
+                body.contains("## Gate: comparison refused"),
+                "missing heading for {err:?}: {body}"
+            );
+            assert!(
+                body.contains(&err.to_string()),
+                "body must carry the error itself for {err:?}: {body}"
+            );
+            assert_ne!(
+                body.trim(),
+                err.to_string().trim(),
+                "body must add a remedy, not echo the error, for {err:?}"
+            );
+        }
     }
 
     /// The workflow's two conditions for posting a drift issue, asserted together on the refusal
@@ -1862,7 +1944,14 @@ mod tests {
         let clean = mk_report(vec![mk_result("n", 5, 10, SuiteStatus::Pass)]);
         let (pass_body, pass_code) = gate_verdict(&compare(&clean, &clean, &CompareOptions));
         assert_eq!(pass_code, 0);
-        assert!(pass_body.contains("compare: 0 FAIL"), "{pass_body}");
+        // The WHOLE line, not `contains("compare: 0 FAIL")`. Four of five counters are zero on
+        // this fixture, so the substring form is invariant under transposing pass/warn, under
+        // zeroing every counter, and under deleting the tally loop outright — measured, all
+        // three still contain it. A count that is only ever asserted at zero is not asserted.
+        assert!(
+            pass_body.contains("compare: 0 FAIL, 0 WARN, 1 PASS, 0 NEW, 0 REMOVED"),
+            "{pass_body}"
+        );
 
         // A matchup that regressed into Fail: a comparison that succeeded and found drift.
         let regressed = mk_report(vec![mk_result("n", 5, 10, SuiteStatus::Fail)]);
@@ -1873,11 +1962,35 @@ mod tests {
         assert_eq!(fail_code, 1);
         assert!(fail_body.contains("| n |"), "{fail_body}");
 
+        // A tally with two DISTINCT non-zero counters, so no pair of counters can be
+        // transposed without changing the rendered line. `1 PASS` and `2 NEW` are different
+        // numbers in different slots; the single-row fixture above cannot see that.
+        let mut widened = clean.clone();
+        widened
+            .results
+            .push(mk_result("fresh-a", 5, 10, SuiteStatus::Pass));
+        widened
+            .results
+            .push(mk_result("fresh-b", 5, 10, SuiteStatus::Pass));
+        let (mixed_body, mixed_code) = gate_verdict(&compare(&clean, &widened, &CompareOptions));
+        assert_eq!(mixed_code, 0);
+        assert!(
+            mixed_body.contains("compare: 0 FAIL, 0 WARN, 1 PASS, 2 NEW, 0 REMOVED"),
+            "{mixed_body}"
+        );
+
         let mut incomparable = clean.clone();
         incomparable.schema_version += 1;
         let (err_body, err_code) = gate_verdict(&compare(&incomparable, &clean, &CompareOptions));
         assert_eq!(err_code, 2);
+        // `schema_version` comes from the Display impl, so it does NOT pin the remedy text or
+        // the heading. Both are asserted separately or they can be emptied in silence.
         assert!(err_body.contains("schema_version"), "{err_body}");
+        assert!(
+            err_body.contains("## Gate: comparison refused"),
+            "{err_body}"
+        );
+        assert!(err_body.contains("--refresh-baseline"), "{err_body}");
     }
 
     #[test]
@@ -1980,10 +2093,6 @@ mod tests {
         assert_eq!(cell(&rendered, "shifted", "status"), "FAIL");
     }
 
-    /// Every emitted row — header, separator, data, and the reason continuation — must have the
-    /// same cell count, or the table renders broken in the nightly drift issue that
-    /// `.github/workflows/ai-gate.yml` posts. Exercises all four row shapes at once: a paired row
-    /// that warns (so its reason continuation is emitted), a New row, and a Removed row.
     /// Count the `|` characters a markdown parser would treat as cell boundaries.
     ///
     /// A pipe is a separator iff the run of backslashes immediately before it has EVEN length:
@@ -2045,6 +2154,36 @@ mod tests {
             md_separator_count(&old_row) > 2,
             "fixture is not discriminating — the old encoder must leak a separator: {old_row}"
         );
+
+        // Trailing backslashes, asserted on the ENCODER rather than on row width, and the
+        // distinction is the point. Cells are joined with `" | "`, so a trailing backslash is
+        // separated from the boundary by a space and the row stays rectangular under BOTH
+        // encoders — a width assertion here would pass for a reason unrelated to the bug.
+        // The property that does separate them is that an emitted cell never ends in an ODD
+        // backslash run, since the very next character the renderer writes is a separator's
+        // neighbourhood. Runs 0..=4 cover both parities and the boundary case of none.
+        for run in 0..=4usize {
+            let input = format!("tail{}", "\\".repeat(run));
+            let encoded = md_cell(&input);
+            let trailing = encoded.chars().rev().take_while(|c| *c == '\\').count();
+            assert_eq!(
+                trailing % 2,
+                0,
+                "run of {run} must encode to an even trailing run, got {trailing}: {encoded:?}"
+            );
+            // CONTROL: the previous encoder leaves odd runs odd, so this loop is discriminating
+            // for every odd `run` rather than trivially true.
+            let old_trailing = pipes_first(&input)
+                .chars()
+                .rev()
+                .take_while(|c| *c == '\\')
+                .count();
+            assert_eq!(
+                old_trailing % 2,
+                run % 2,
+                "control drifted — the old encoder must preserve run parity: {input:?}"
+            );
+        }
     }
 
     /// Reachability arm for `md_cell`. `markdown_rows_are_rectangular` asserted the property
@@ -2085,6 +2224,10 @@ mod tests {
         );
     }
 
+    /// Every emitted row — header, separator, data, and the reason continuation — must have the
+    /// same cell count, or the table renders broken in the nightly drift issue that
+    /// `.github/workflows/ai-gate.yml` posts. Exercises all four row shapes at once: a paired row
+    /// that warns (so its reason continuation is emitted), a New row, and a Removed row.
     #[test]
     fn markdown_rows_are_rectangular() {
         let paired_before: &[(u64, Option<u8>, u32)] = &[(1, Some(0), 10), (2, Some(1), 10)];
