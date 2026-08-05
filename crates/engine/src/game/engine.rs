@@ -1749,9 +1749,13 @@ fn build_cert(
 pub enum BoundedOfferRefusal {
     /// (1) Not a `WaitingFor::Priority` beat, so nobody may suggest a shortcut.
     NotAtPriority,
-    /// (1b) A non-empty `last_loop_action_sequence` routes an accepted proposal to the
-    /// object-growth materializer, which commits zero bounded cycles.
-    DrivingSequenceNotEmpty,
+    /// (1b) A driving period belonging to the PROPOSER'S OWN seat is accumulating, which routes
+    /// an accepted proposal to the object-growth materializer — it would commit zero bounded
+    /// cycles. Another seat's period is not a reason to refuse (CR 732.2a): it describes no
+    /// sequence this proposer can take, and `try_offer_object_growth_shortcut` will not admit it
+    /// either. Named for the state that refuses, not for a non-emptiness test the conjunct
+    /// stopped applying when it went seat-relative.
+    ProposerHasDrivingPeriod,
     /// (2) The priority holder is not the active player the ring sampler gates on.
     ProposerIsNotActivePlayer,
     /// (4) Neither certification basis matched.
@@ -1781,8 +1785,10 @@ pub enum BoundedOfferRefusal {
 /// * `predicted_winner: None` — this seam never calls `live_mandatory_loop_winner`, so it
 ///   neither consults nor weakens the CR 104.2a crown gate (`loop_check.rs`'s
 ///   `nonfallers.len() != 1`); it routes around it.
-/// * an EMPTY `last_loop_action_sequence` (step 1b) — the object-growth producer's class is
+/// * no driving period of the PROPOSER'S OWN (step 1b) — the object-growth producer's class is
 ///   the complement, and `materialize_fixed_shortcut` dispatches on that same discriminant.
+///   Seat-relative, not merely non-empty: a period recorded by another seat admits no
+///   object-growth offer either, so it is not the complement of anything (CR 732.2a).
 ///
 /// Returns the offer to write, or the FIRST conjunct that refused. Pure: it reads `state` and
 /// writes nothing. The refusal is typed rather than a bare `None` because nine fail-closed
@@ -1916,7 +1922,7 @@ fn bounded_cycle_offer(
     // (CR 732.3's fragmented-loop rule is NOT what this guard ever enforced — the engine
     // implements no CR 732.3 gate anywhere; see the contrast note under step (2).)
     if state.loop_period_controller() == Some(proposer) {
-        return Err(BoundedOfferRefusal::DrivingSequenceNotEmpty);
+        return Err(BoundedOfferRefusal::ProposerHasDrivingPeriod);
     }
     // (2) The ring sampler gates on `Priority{active_player}`, so requiring the proposer to
     // BE the active player is what establishes they held priority at every sampled frame.
@@ -5330,16 +5336,31 @@ fn handle_declare_shortcut(
 ///   the ring (re-clearing would special-case `DeclineShortcut` to distrust an engine-wide
 ///   invariant). The interactive e2e's "no re-offer" assertion guards this end-to-end: a future
 ///   regression excluding `DeclineShortcut` from that allowlist would fail it loudly.
-/// - Object-growth (Seam 2, gated by `!last_loop_action_sequence.is_empty()`): the deliberate-action
-///   clear does NOT touch `last_loop_action_sequence`, so `state.last_loop_action_sequence.clear()` here
-///   is the genuinely load-bearing suppressor — without it the post-return reconcile re-fires
-///   `try_offer_object_growth_shortcut` within this same `apply()`.
+/// - Object-growth (Seam 2, gated by `loop_period_controller() == Some(caster)` — the whole-period
+///   admission test, NOT mere non-emptiness): the deliberate-action clear does NOT touch
+///   `last_loop_action_sequence`, so clearing it here is the genuinely load-bearing suppressor —
+///   without it the post-return reconcile re-fires `try_offer_object_growth_shortcut` within this
+///   same `apply()`.
+///
+/// THE SEAM-2 CLEAR IS OWNERSHIP-SCOPED (CR 732.2a). Once the bounded mint's step (1b) went
+/// seat-relative, a `WaitingFor::LoopShortcut` can coexist with a period belonging to a DIFFERENT
+/// seat — and `DeclineShortcut` dispatches from any `LoopShortcut`, so an unconditional clear would
+/// let one seat's decline wipe another seat's accumulating period and suppress THAT seat's own
+/// offer until it re-armed. A recorded period is evidence about the seat that recorded it, so only
+/// the decliner's own is theirs to discard. Scoping costs the suppression NOTHING, and the reason
+/// is `try_offer_object_growth_shortcut`'s own admission test rather than an argument about who
+/// receives priority next: that producer returns `None` for every period that is not the priority
+/// holder's, so the only period whose survival could re-fire it is the one this branch still
+/// clears. A period left in place is one no reconcile in this `apply()` can turn back into an
+/// offer for anybody.
 ///
 /// A genuine re-recurrence or a fresh re-cast re-arms the offer naturally. Proposer-only
 /// authorization is enforced upstream by `check_actor_authorization`
-/// (`WaitingFor::acting_player` == `LoopShortcut.proposer`), so offer fields are unused here.
+/// (`WaitingFor::acting_player` == `LoopShortcut.proposer`), so the offer's other fields are
+/// unused here; `proposer` is threaded in solely as the ownership comparand above.
 fn handle_decline_shortcut(
     state: &mut GameState,
+    proposer: PlayerId,
     events: &mut Vec<GameEvent>,
 ) -> Result<ActionResult, EngineError> {
     let mut result = ActionResult {
@@ -5348,8 +5369,11 @@ fn handle_decline_shortcut(
         log_entries: vec![],
     };
     // Seam 1 (loop_detect_ring) is already invalidated by apply_action's deliberate-action
-    // ring-clear (engine.rs:3006-3011) — see doc. Only Seam 2 is the handler's gap:
-    state.last_loop_action_sequence.clear(); // Seam 2: load-bearing object-growth offer-gate clear (CR 732.2a)
+    // ring-clear (engine.rs:3006-3011) — see doc. Only Seam 2 is the handler's gap, and only
+    // for the decliner's OWN period (CR 732.2a):
+    if state.loop_period_controller() == Some(proposer) {
+        state.last_loop_action_sequence.clear();
+    }
     priority::reset_priority(state);
     state.waiting_for = WaitingFor::Priority {
         player: living_priority_seat(state),
@@ -8458,10 +8482,11 @@ fn apply_action(
             );
         }
         // CR 732.2a: the proposer DECLINES the offered shortcut (suggesting is optional).
-        // Proposer-only authorization is enforced upstream by `check_actor_authorization`, so
-        // `proposer`/`certificate`/`schema` are unused here (`..`).
-        (WaitingFor::LoopShortcut { .. }, GameAction::DeclineShortcut) => {
-            return handle_decline_shortcut(state, &mut events);
+        // Proposer-only authorization is enforced upstream by `check_actor_authorization`;
+        // `certificate`/`schema` stay unused (`..`), but `proposer` is threaded because the
+        // handler's Seam-2 suppression clear is OWNERSHIP-SCOPED to that seat.
+        (WaitingFor::LoopShortcut { proposer, .. }, GameAction::DeclineShortcut) => {
+            return handle_decline_shortcut(state, *proposer, &mut events);
         }
         // The finite pre-cast protocol is intentionally isolated from the
         // legacy generic loop-shortcut handlers above.
@@ -16876,7 +16901,8 @@ mod kilo_interruptibility_tests {
 ///
 /// The reviewer measured all three by disabling them on the PRE-ROW tree: step (2)
 /// `ProposerIsNotActivePlayer` and step (5) `AdvantageOnlyCycle` could each be deleted with the
-/// whole suite still green, and only `DrivingSequenceNotEmpty` was asserted by name anywhere.
+/// whole suite still green, and only step (1b) (then `DrivingSequenceNotEmpty`, now
+/// `ProposerHasDrivingPeriod`) was asserted by name anywhere.
 /// A conjunct no row can name is a conjunct nobody notices losing.
 ///
 /// ⚠ The pass COUNT that used to appear here ("4167 passed / 0 failed") is deleted rather than

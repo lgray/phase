@@ -8878,20 +8878,26 @@ impl GameState {
     /// captured inside an object-growth shortcut proposal/response window
     /// (`WaitingFor::LoopShortcut` / `RespondToShortcut`), where the pending accept→materialize
     /// resolution still re-derives the ∞ pile from it (`current_period_fodder`). In every
-    /// other loaded state the field is a ROUTING SIGNAL with several consumers — the live detection
-    /// re-drive (`try_offer_object_growth_shortcut`), the bounded mint's step (1b), the
-    /// `materialize_fixed_shortcut` and `apply_until_lethal_shortcut` drive dispatches, and
-    /// `handle_declare_shortcut`'s `template: None` arm. Dropping is still safe, but for a
-    /// different reason than the one recorded here before: all five ask the SAME question
-    /// ([`GameState::loop_period_controller`]) and every one of them fails CLOSED on `None`, so a
-    /// cleared field routes to the drain/manual path and never to a pin-consuming drive with
-    /// nothing to re-derive from. (It is also true that a stale loaded prefix only HARMS the
-    /// re-drive, which re-drives from a pinless `seq[0]` and aborts — the Kilo bug.)
+    /// other loaded state the field is a ROUTING SIGNAL with SEVEN consumers — the live detection
+    /// re-drive (`try_offer_object_growth_shortcut`), its own empty-stack bridge precondition, the
+    /// bounded mint's step (1b), the `materialize_fixed_shortcut` and `apply_until_lethal_shortcut`
+    /// drive dispatches, `handle_declare_shortcut`'s `template: None` arm, and the certification
+    /// window's cast-set scoping (`analysis::resource::window_cast_card_ids`). Dropping is still
+    /// safe, but for a different reason than the one recorded here before: all seven ask the SAME
+    /// question ([`GameState::loop_period_controller`]) and every one of them fails CLOSED on
+    /// `None`, so a cleared field routes to the drain/manual path, grants no soundness relief, and
+    /// never reaches a pin-consuming drive with nothing to re-derive from. (It is also true that a
+    /// stale loaded prefix only HARMS the re-drive, which re-drives from a pinless `seq[0]` and
+    /// aborts — the Kilo bug.)
     ///
     /// ⚠ THE PRIOR REVISION OF THIS DOC CLAIMED the re-drive was "the only consumer". That was
-    /// FALSE — the other four are not re-drives — and the false premise is precisely why the
-    /// routing signal went un-audited against its own consumer. The conclusion survives; the
-    /// reason above replaces it.
+    /// FALSE — the other six are not re-drives — and the false premise is precisely why the
+    /// routing signal went un-audited against its own consumer. The revision after it named five
+    /// and missed the bridge precondition and the cast-set scoping, i.e. it corrected an
+    /// undercount with a smaller one. The count above is the enumerated call set of
+    /// `loop_period_controller` outside `#[cfg(test)]`; the conclusion survives either way.
+    /// (`handle_decline_shortcut` also reads the accessor, but as a WRITER — it scopes its own
+    /// clear — so it is not a consumer of the routing signal and is deliberately not counted.)
     ///
     /// Called from `PersistedGameState::into_game_state`, the single production restore chokepoint
     /// for both the server (`GameSession::from_persisted`) and WASM (`decode_restored_game_state`)

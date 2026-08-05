@@ -20,9 +20,9 @@
 //! ```
 //!
 //! 268 is Currency Converter, controlled by an OPPONENT — an activation unrelated to the drain.
-//! Before the seat-relative fix, conjunct (1b) `DrivingSequenceNotEmpty` refused the bounded offer
-//! on ANY non-empty sequence, so that one foreign step suppressed the proposer's offer for the
-//! rest of the game.
+//! Before the seat-relative fix, conjunct (1b) refused the bounded offer on ANY non-empty sequence
+//! (it was named `DrivingSequenceNotEmpty` then, `ProposerHasDrivingPeriod` now), so that one
+//! foreign step suppressed the proposer's offer for the rest of the game.
 //!
 //! `GameState::migrate_transient_loop_sequence` CLEARS the field at every load that is not a
 //! shortcut window, so an in-process replay can never reproduce the live state unless the record
@@ -206,7 +206,7 @@ fn probe_dina_as_loaded() {
 /// **THE FIX BAR, on the user's own capture.** The recorded step is
 /// `Activate { source_id: 268 }` controlled by PlayerId(2) — an OPPONENT'S activation, unrelated
 /// to the drain. Before the seat-relative (1b) this board answered `Priority(2)` for all 140
-/// beats with a `DrivingSequenceNotEmpty` census; after it, the drive must reach the SAME offer
+/// beats with a step-(1b) refusal census; after it, the drive must reach the SAME offer
 /// the field-cleared control reaches, at the same beat, with the same ring depth and the same
 /// life vector — while the foreign step is still sitting in state (`seq` stays at 1). That is
 /// "a foreign period is inert", measured end-to-end rather than argued.
@@ -237,6 +237,17 @@ fn probe_dina_with_live_sequence() {
     let (mut control, _) = load_dina_raw().expect("the dump is still readable");
     control.last_loop_action_sequence.clear();
     let control_fired = dina_drive_and_report(&mut control, "DINA-CONTROL", 140);
+
+    // IN-ROW REACH-GUARD, not inherited from ARM D1's: the equality below compares this arm to a
+    // control re-driven HERE, so on a board where NEITHER side reaches an offer both sides are
+    // `(None, (None, ring, life))` and the assertion passes having measured nothing. ARM D1's own
+    // guard cannot cover that — a `#[test]` that is skipped, filtered, or reds independently
+    // leaves this row still "green". The control must PROVABLY reach the offer in this process.
+    assert!(
+        control_fired.is_some(),
+        "REACH-GUARD: the field-cleared control re-driven in THIS row must reach the offer, else \
+         the fix bar below compares two absences and passes vacuously"
+    );
 
     let (proposer, control_proposer) = (offer_proposer(&state), offer_proposer(&control));
     assert_ne!(
