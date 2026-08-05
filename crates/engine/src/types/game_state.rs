@@ -23442,12 +23442,21 @@ mod tests {
         );
     }
 
-    /// PR-7 Phase 4c (B5 defuse): `clear_unbounded_loop` must remove ALL THREE
-    /// `unbounded_resources` / `unbounded_loop_enablers` / `unbounded_loop_pile`
-    /// maps for the controller in lockstep — the `zones.rs` defuse hook relies on
-    /// a single call revoking the whole capability.
+    /// PR-7 Phase 4c (B5 defuse): `clear_unbounded_loop` must remove ALL SIX per-controller
+    /// maps in lockstep — `unbounded_resources` / `unbounded_loop_enablers` /
+    /// `unbounded_loop_pile` / `unbounded_counter_targets` /
+    /// `pending_unbounded_materialization` / `pending_materialization_count`. The `zones.rs`
+    /// defuse hook relies on a single call revoking the whole capability.
+    ///
+    /// The last two are why this call is NOT a display clear and must never be wired to an
+    /// object-growth mark: dropping the stash and its CR 732.2c bound cancels growth every
+    /// player already accepted. Anything that only wants to stop RENDERING an ∞ belongs at
+    /// the projection (`derived_views::object_growth_backing`), not here.
+    ///
+    /// (Renamed from `..._removes_both_maps_in_lockstep`: the old name said TWO and the old
+    /// body asserted THREE, while the function has cleared six since the stash landed.)
     #[test]
-    fn clear_unbounded_loop_removes_both_maps_in_lockstep() {
+    fn clear_unbounded_loop_removes_all_six_maps_in_lockstep() {
         let mut state = GameState::new_two_player(7);
         state.mark_unbounded_loop(
             PlayerId(0),
@@ -23455,9 +23464,28 @@ mod tests {
         );
         state.register_unbounded_loop_enablers(PlayerId(0), BTreeSet::from([ObjectId(1)]));
         state.register_unbounded_loop_pile(PlayerId(0), BTreeSet::from([ObjectId(1)]));
+        state.register_unbounded_counter_targets(
+            PlayerId(0),
+            vec![(ObjectId(1), CounterType::Generic("charge".to_string()))],
+        );
+        state.register_pending_materialization(
+            PlayerId(0),
+            PersistentAxisMaterialization::Life {
+                player: PlayerId(0),
+                per_cycle_delta: 1,
+            },
+        );
+        state.pending_materialization_count.insert(PlayerId(0), 7);
         assert!(state.unbounded_resources.contains_key(&PlayerId(0)));
         assert!(state.unbounded_loop_enablers.contains_key(&PlayerId(0)));
         assert!(state.unbounded_loop_pile.contains_key(&PlayerId(0)));
+        assert!(state.unbounded_counter_targets.contains_key(&PlayerId(0)));
+        assert!(state
+            .pending_unbounded_materialization
+            .contains_key(&PlayerId(0)));
+        assert!(state
+            .pending_materialization_count
+            .contains_key(&PlayerId(0)));
 
         state.clear_unbounded_loop(PlayerId(0));
 
@@ -23472,6 +23500,22 @@ mod tests {
         assert!(
             !state.unbounded_loop_pile.contains_key(&PlayerId(0)),
             "clear_unbounded_loop must remove the unbounded_loop_pile entry"
+        );
+        assert!(
+            !state.unbounded_counter_targets.contains_key(&PlayerId(0)),
+            "clear_unbounded_loop must remove the unbounded_counter_targets entry"
+        );
+        assert!(
+            !state
+                .pending_unbounded_materialization
+                .contains_key(&PlayerId(0)),
+            "clear_unbounded_loop must remove the accepted-collapse stash entry"
+        );
+        assert!(
+            !state
+                .pending_materialization_count
+                .contains_key(&PlayerId(0)),
+            "clear_unbounded_loop must remove the CR 732.2c accepted-count bound"
         );
     }
 

@@ -2409,13 +2409,17 @@ pub(super) fn handle_resolution_choice(
                     //       ∞-gated, so a fresh manual re-loop re-offers and re-registers a stash; and
                     //   (b) debug toggle-off — `clear_unbounded_loop` via `engine_debug.rs:417`.
                     // NOTE: the enabler-departure clear (`clear_unbounded_loop` from
-                    // `zones.rs:544-554`) is INERT for this object-growth ∞-mark class, because
-                    // `materialize_object_growth_shortcut` (engine.rs) never calls
-                    // `register_unbounded_loop_enablers` (only the Interactive Path-C arm at
-                    // engine.rs:682 does), so `zones.rs`'s `unbounded_loop_enablers.contains(id)`
-                    // gate never matches an object-growth mark. Registering enablers for the
-                    // object-growth path is a PRE-EXISTING, broader gap (deferred follow-up F2), not
-                    // introduced by this declined-axis handling.
+                    // `zones::apply_zone_exit_cleanup`) is INERT for this object-growth ∞-mark
+                    // class, because `materialize_object_growth_shortcut` (engine.rs) never calls
+                    // `register_unbounded_loop_enablers` (only the Interactive Path-C arm does), so
+                    // `zones.rs`'s `unbounded_loop_enablers.contains(id)` gate never matches an
+                    // object-growth mark. It STAYS inert deliberately: `clear_unbounded_loop` drops
+                    // SIX maps including `pending_unbounded_materialization`, so registering
+                    // enablers here would let one departing token cancel the collapse the table
+                    // unanimously accepted (CR 732.2c: the shortcut is taken at the last accept).
+                    // The DISPLAY half of follow-up F2 is instead covered live at the projection by
+                    // `derived_views::object_growth_backing`, which drops an ∞ row whose entire
+                    // registered display set has left the battlefield without touching the stash.
                     state.clear_collapsed_materializations(player, &collapsed);
                     // Continue the boundary fixpoint (§7): re-draining either prompts the
                     // next APNAP player with a stash or restores Priority now.

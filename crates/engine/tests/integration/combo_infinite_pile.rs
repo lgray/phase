@@ -1548,6 +1548,219 @@ fn real_4p_one_shot_bootstrap_seeds_tapped_infinite_pile_and_w_plus_1_untapped()
     );
 }
 
+/// The one-shot-bootstrap rig driven to the ACCEPTED state: the real buyback+convoke Sprout
+/// Swarm cast (convoking the one-shot Witherbloom for the {G}) → CR 732.2a offer → APNAP
+/// accept of `Fixed(5)`. The two setup mutations are the same rules-neutral ones
+/// `real_4p_one_shot_bootstrap_seeds_tapped_infinite_pile_and_w_plus_1_untapped` documents in
+/// full (untap 405 so ZERO tapped fodder exists; Green-first Witherbloom so
+/// `GameRunner::convoke_with` picks a colour the engine already pip-matches).
+///
+/// This rig is chosen for the ∞-row backing arms below because its accept-time seed makes the
+/// pile provably ONE object, so "the last backing member leaves" is a single `move_to_zone`.
+fn one_shot_bootstrap_accepted_state() -> GameState {
+    let mut state: GameState = serde_json::from_str(&UNTAPPED_PRECAST_STATE)
+        .expect("the real untapped-precast 4p dump must deserialize into the current GameState");
+    state
+        .objects
+        .get_mut(&ObjectId(405))
+        .expect("fixture carries Saproling 405")
+        .tapped = false;
+    {
+        let w = state
+            .objects
+            .get_mut(&ObjectId(401))
+            .expect("fixture carries Witherbloom 401");
+        w.color = vec![ManaColor::Green, ManaColor::Black];
+        w.base_color = vec![ManaColor::Green, ManaColor::Black];
+    }
+    let mut runner = GameRunner::from_state(state);
+    let outcome = runner
+        .cast(ObjectId(402))
+        .accept_optional()
+        .convoke_with(&[ObjectId(401)])
+        .commit()
+        .resolve();
+    assert!(
+        matches!(
+            outcome.final_waiting_for(),
+            WaitingFor::LoopShortcut { proposer, .. } if *proposer == P0
+        ),
+        "rig reach-guard: the convoked recast must surface P0's CR 732.2a offer, got {:?}",
+        outcome.final_waiting_for()
+    );
+    drive_all_accept_n(runner.state_mut(), 5);
+    runner.state().clone()
+}
+
+/// MED-1 (CR 732.2a + CR 110.1): an object-growth `∞` ROW dies with its registered backing.
+///
+/// ONE rig, TWO arms, THE SAME assertion — `derive_views(..).unbounded_resources` contains
+/// `ResourceAxis::TokensCreated`:
+///
+/// | arm (in run order) | what leaves the battlefield       | THE assertion |
+/// |--------------------|-----------------------------------|---------------|
+/// | control            | a non-pile untapped Saproling     | **present**   |
+/// | subject            | the pile's ONLY member (the seed) | **absent**    |
+///
+/// The control is the matched pair, not a second scenario: same fixture, same cast, same
+/// accept, same `move_to_zone` chokepoint, differing only in WHICH object departs. That is
+/// what makes the subject arm's absence attributable to the backing check rather than to the
+/// zone move. It runs FIRST on purpose — see the comment at that arm.
+///
+/// MUTATIONS (two-sided, RUN):
+/// - **DROP** the `object_growth_backing(..) == Some(false)` guard in `derive_views`' resource
+///   row loop ⇒ the SUBJECT arm reds ("…must be dropped, got [TokensCreated]" — the pre-fix
+///   behaviour: an ∞ row beside an already-empty ∞ pile); the control stays green, and no
+///   other test in the loop/∞ blast radius moves (1 failure / 164).
+/// - **TRIVIALIZE** that guard to an unconditional `continue` ⇒ the CONTROL arm reds ("…must
+///   persist, got []"); the subject arm's own assertions still pass. Collateral is 7 further
+///   ∞-row-presence tests (8 failed / 156 passed), which is correct: hiding every row breaks
+///   every test that asserts one is shown.
+/// - Third probe, for the `Some(false)`/`None` asymmetry the helper's doc comment claims:
+///   return `Some(false)` from `object_growth_backing`'s never-registered arm ⇒ 4 tests red,
+///   including both `loop_shortcut_mana_engine` badge tests. The `None` branch is load-bearing,
+///   not decorative.
+///
+/// The store guards below are the anti-"register enablers instead" tripwire: routing this
+/// through `zones`' defuse would call `clear_unbounded_loop`, which also wipes
+/// `pending_unbounded_materialization` and its CR 732.2c bound — i.e. one dying token would
+/// cancel the collapse the whole table accepted. These rows go red the moment that happens.
+#[test]
+fn object_growth_infinity_row_dies_with_its_last_pile_member() {
+    use engine::analysis::resource::ResourceAxis;
+    use engine::game::zones::move_to_zone;
+    use engine::types::events::GameEvent;
+
+    let base = one_shot_bootstrap_accepted_state();
+
+    // ── REACH GUARDS: the accepted state really carries the row and a one-member backing set.
+    // Without these, the subject arm's "absent" could pass on a state that never had a row.
+    assert_eq!(
+        base.unbounded_resources.len(),
+        1,
+        "reach-guard: exactly one controller carries ∞ marks on this rig"
+    );
+    let marked = base
+        .unbounded_resources
+        .get(&P0)
+        .expect("the accept marks P0's ∞ axes")
+        .clone();
+    assert!(
+        marked.contains(&ResourceAxis::TokensCreated),
+        "reach-guard: the object-growth accept marks TokensCreated, got {marked:?}"
+    );
+    let pile = base
+        .unbounded_loop_pile
+        .get(&P0)
+        .expect("the object-growth accept registers a ∞ pile")
+        .clone();
+    assert_eq!(
+        pile.len(),
+        1,
+        "reach-guard: this rig's seeded pile is exactly ONE object, so a single departure \
+         empties the whole backing set"
+    );
+    let seed_id = *pile.iter().next().unwrap();
+    assert!(
+        base.battlefield.contains(&seed_id),
+        "reach-guard: the pile member is on the battlefield at accept"
+    );
+
+    let rows = |state: &GameState| -> Vec<ResourceAxis> {
+        derive_views(state, Some(P0))
+            .unbounded_resources
+            .iter()
+            .map(|r| r.axis)
+            .collect()
+    };
+
+    // ── CONTROL FIRST (matched pair, and the wire-level non-vacuity anchor for the subject
+    // arm below): same rig, same `move_to_zone` chokepoint — but the object that leaves is NOT
+    // in the pile, so the backing survives and the row must PERSIST. Deliberately ordered
+    // BEFORE the subject: an equivalent "row present on the untouched base state" guard would
+    // panic first under the TRIVIALIZE mutation and MASK this arm, leaving the pair one-sided.
+    let mut control = base.clone();
+    let bystander = *p0_untapped_saprolings(&control)
+        .iter()
+        .next()
+        .expect("the W+1 untapped remainder supplies a non-pile bystander");
+    assert_ne!(
+        bystander, seed_id,
+        "control precondition: the departing object is NOT a pile member"
+    );
+    let mut events: Vec<GameEvent> = Vec::new();
+    move_to_zone(&mut control, bystander, Zone::Graveyard, &mut events);
+    assert!(
+        !control.battlefield.contains(&bystander),
+        "the control's departure really happened"
+    );
+    let control_rows = rows(&control);
+    assert!(
+        control_rows.contains(&ResourceAxis::TokensCreated),
+        "THE assertion (control): the registered pile still has a live member, so the ∞ row \
+         must persist, got {control_rows:?}"
+    );
+
+    // ── SUBJECT: the last (only) backing member leaves through the real production
+    // chokepoint `zones::move_to_zone`, not by hand-editing the pile.
+    let mut subject = base.clone();
+    let mut events: Vec<GameEvent> = Vec::new();
+    move_to_zone(&mut subject, seed_id, Zone::Graveyard, &mut events);
+    assert!(
+        !subject.battlefield.contains(&seed_id),
+        "the departure really happened (CR 110.1: it stopped being a permanent)"
+    );
+    let subject_rows = rows(&subject);
+    assert!(
+        !subject_rows.contains(&ResourceAxis::TokensCreated),
+        "THE assertion (subject): with its ENTIRE registered pile off the battlefield the \
+         TokensCreated ∞ row must be dropped, got {subject_rows:?}"
+    );
+
+    // SCOPE: only the BACKED axis is dropped — the wire is exactly the marked set minus
+    // `TokensCreated`, so a guard that hid MORE than the unbacked axis fails here. Stated
+    // honestly: this rig marks few axes, so this row is weak on its own. The load-bearing
+    // control for the `None` (never-registered ⇒ badge unchanged) branch is
+    // `loop_shortcut_mana_engine::mana_engine_accept_still_renders_its_infinity_badge`, which
+    // reds if `object_growth_backing`'s catch-all arm returns `Some(false)` instead of `None`.
+    let expected_after: BTreeSet<ResourceAxis> = marked
+        .iter()
+        .copied()
+        .filter(|axis| *axis != ResourceAxis::TokensCreated)
+        .collect();
+    assert_eq!(
+        subject_rows.iter().copied().collect::<BTreeSet<_>>(),
+        expected_after,
+        "scope: exactly the backed axis leaves the wire; every unbacked axis keeps its ∞"
+    );
+
+    // STORE: a DISPLAY revocation only. Nothing here may touch the accepted-collapse stash,
+    // the mark, or the pile — the boundary and the zone-exit defuse still read all three.
+    assert!(
+        subject.pending_unbounded_materialization.contains_key(&P0),
+        "the accepted-collapse stash must SURVIVE — dropping a row may not cancel growth the \
+         table already unanimously accepted (CR 732.2c)"
+    );
+    assert!(
+        subject.pending_materialization_count.contains_key(&P0),
+        "…and so must its CR 732.2c accepted-count bound"
+    );
+    assert!(
+        subject
+            .unbounded_loop_pile
+            .get(&P0)
+            .is_some_and(|p| p.contains(&seed_id)),
+        "the STORE is not filtered: it still carries the departed member"
+    );
+    assert!(
+        subject
+            .unbounded_resources
+            .get(&P0)
+            .is_some_and(|axes| axes.contains(&ResourceAxis::TokensCreated)),
+        "the MARK survives too; only the projection stops rendering it"
+    );
+}
+
 /// T-NEW-2 (REVISION 2 — the BLOCKER-1 discriminator): a convoke=None UNTAPPED-growth loop must
 /// NOT seed. Build-fresh Sprout Swarm with Convoke STRIPPED and `mana_cost = base_mana_cost = {1}`
 /// so Witherbloom's affinity for creatures fully covers base{1}+buyback{3}={4} with {0} mana and

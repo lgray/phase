@@ -832,11 +832,16 @@ pub fn derive_views(state: &GameState, viewer: Option<PlayerId>) -> DerivedViews
     // and tracks it as a pre-existing deferred follow-up; it is not introduced here.
     //
     // CONSEQUENCE, STATED RATHER THAN BURIED: because that defuse is inert for this class, an
-    // enabler leaving the battlefield between accept and boundary leaves a STALE `∞` in the store,
-    // and this projection now RENDERS it where the previous gate happened to HIDE it. That is a
-    // pre-existing engine gap being SURFACED by a display fix, not a new defect — but it is a real
-    // user-visible consequence of unhiding, and it is the reason the enabler-registration follow-up
-    // matters. What actually ends the mark for this class is the boundary, below.
+    // enabler leaving the battlefield between accept and boundary leaves a STALE `∞` in the STORE.
+    // The store is deliberately NOT filtered (the defuse and the boundary both read it), so the
+    // live-authority check lives HERE, at the projection: `object_growth_backing` drops a row whose
+    // whole registered display set has left the battlefield, exactly as the pile and counter loops
+    // already drop individual departed members. That is a DISPLAY revocation only — it never
+    // touches `pending_unbounded_materialization`, so the growth the table accepted still lands.
+    // Registering enablers instead would route this through `clear_unbounded_loop`, a SIX-map wipe
+    // that also destroys the accepted collapse stash and its CR 732.2c bound; see
+    // `types::game_state::clear_unbounded_loop`. What ends the MARK for this class is still the
+    // boundary, below.
     //
     // And hiding it is strictly worse on display coherence, which is what the old "the badge is a
     // lie" comment was really about. The BASE gate filtered the PROJECTION while the STORE still
@@ -864,6 +869,14 @@ pub fn derive_views(state: &GameState, viewer: Option<PlayerId>) -> DerivedViews
     // (`attribution_player`); the frontend only formats each axis to a family.
     for (&controller, axes) in &state.unbounded_resources {
         for &axis in axes {
+            // CR 732.2a + CR 110.1: an object-growth ∞ whose ENTIRE registered display set
+            // has left the battlefield has no live board backing left — drop the row rather
+            // than render an ∞ beside an already-empty ∞ pile. `None` (never registered a
+            // backing set, e.g. a mana engine) keeps the badge; see `object_growth_backing`
+            // for why that asymmetry is typed rather than collapsed into a bool.
+            if object_growth_backing(state, controller, axis) == Some(false) {
+                continue;
+            }
             views.unbounded_resources.push(UnboundedResourceView {
                 player: attribution_player(axis, controller),
                 axis,
@@ -1072,6 +1085,72 @@ fn attribution_player(axis: ResourceAxis, controller: PlayerId) -> PlayerId {
         | ResourceAxis::EtbTriggers
         | ResourceAxis::LtbTriggers
         | ResourceAxis::SacTriggers => controller,
+    }
+}
+
+/// CR 732.2a: whether the object-growth `∞` display set the accept registered for `axis`
+/// still has LIVE authority — i.e. at least one registered member is still on the
+/// battlefield (CR 110.1: a permanent stops being one as it moves to another zone).
+///
+/// The `Option` is the whole point, and the two negative answers are NOT the same thing:
+///
+/// - `Some(false)` = the axis HAS a registered board backing and every member of it has
+///   left the battlefield. The `∞` has no live authority behind it ⇒ **drop the row**,
+///   rather than render an `∞` badge beside an already-empty `∞` pile.
+/// - `None` = the axis NEVER registered a backing set. A mana engine registers no pile at
+///   all, and an untapped-growth loop's pile seed is a no-op on an empty set
+///   (`register_unbounded_loop_pile` early-returns). There is no live authority to consult
+///   ⇒ **badge unchanged**. Collapsing this into a `bool` would silently hide every
+///   unbacked `∞`, which is the opposite of the intended fix.
+///
+/// This is the SINGLE authority for "is this object-growth display set still on the board".
+/// The pile and counter-target loops in `derive_views` apply the same
+/// `state.battlefield.contains` test at MEMBER level; this is its SET-level closure, so the
+/// row, the pile and the counter pill can never disagree about the same board.
+///
+/// Read-only: recomputed from live state on every `derive_views` call, nothing is stored,
+/// so nothing can go stale. Deliberately not a `clear_unbounded_loop` from the zone-exit
+/// defuse — that call drops six maps including `pending_unbounded_materialization` and its
+/// CR 732.2c bound, i.e. it would cancel growth the table has already unanimously accepted
+/// ("the shortcut is taken" the moment the last player accepts). Revoking the BADGE is a
+/// display decision; revoking the agreed GROWTH is not ours to make here.
+fn object_growth_backing(
+    state: &GameState,
+    controller: PlayerId,
+    axis: ResourceAxis,
+) -> Option<bool> {
+    match axis {
+        // The ∞ pile IS the registered backing set for the token axis
+        // (`register_unbounded_loop_pile`, written at accept by
+        // `materialize_object_growth_shortcut`).
+        ResourceAxis::TokensCreated => state
+            .unbounded_loop_pile
+            .get(&controller)
+            .map(|pile| pile.iter().any(|id| state.battlefield.contains(id))),
+        // CR 701.34a: the per-object Generic counter targets the loop proliferates each
+        // cycle are the counter axis' registered backing.
+        ResourceAxis::Counter(..) => state
+            .unbounded_counter_targets
+            .get(&controller)
+            .map(|targets| targets.iter().any(|(id, _)| state.battlefield.contains(id))),
+        // No registered board backing exists for these axes — no live authority to consult,
+        // badge unchanged. Exhaustive on purpose: a future ResourceAxis variant must decide
+        // which side it lands on rather than silently defaulting to "unbacked".
+        ResourceAxis::Mana(_)
+        | ResourceAxis::Life(_)
+        | ResourceAxis::DamageDealt(_)
+        | ResourceAxis::LibraryDelta(_)
+        | ResourceAxis::Poison(_)
+        | ResourceAxis::Trigger(_)
+        | ResourceAxis::CardsDrawn
+        | ResourceAxis::Casts
+        | ResourceAxis::LandfallTriggers
+        | ResourceAxis::CombatPhases
+        | ResourceAxis::ExtraTurns
+        | ResourceAxis::DeathTriggers
+        | ResourceAxis::EtbTriggers
+        | ResourceAxis::LtbTriggers
+        | ResourceAxis::SacTriggers => None,
     }
 }
 

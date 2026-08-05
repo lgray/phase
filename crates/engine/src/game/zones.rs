@@ -561,8 +561,8 @@ pub(crate) fn apply_zone_exit_cleanup(
         // enabled (every-enabler: `interactive_loop_bridge` Path C). Gated on a
         // non-empty enabler map so Off/On games (which never populate it — only the
         // Interactive B5 arm does) pay nothing and stay byte-identical. Whole-
-        // capability clear per controller whose enabler set contains this object
-        // (`clear_unbounded_loop` removes BOTH maps in lockstep).
+        // capability clear per controller whose enabler set contains this object:
+        // `clear_unbounded_loop` drops SIX maps, incl. the accepted-collapse stash.
         if !state.unbounded_loop_enablers.is_empty() {
             let revoked: Vec<PlayerId> = state
                 .unbounded_loop_enablers
