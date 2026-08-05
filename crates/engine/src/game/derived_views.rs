@@ -1698,6 +1698,78 @@ mod tests {
         );
     }
 
+    /// The `Counter(..)` arm of [`object_growth_backing`] shipped with no runtime witness: no
+    /// fixture exists in which a counter-growth loop's registered targets ALL leave the
+    /// battlefield, so that arm was exercised only by the compiler's exhaustiveness check while
+    /// its sibling `TokensCreated` arm carried every behavioural test. An arm nothing runs is an
+    /// arm nothing can catch a regression in. The helper is a pure predicate over live state, so
+    /// the arm is witnessed directly here rather than by standing up a whole certified loop —
+    /// the building-block level the repo's testing rule asks for.
+    ///
+    /// Matched pair on ONE assertion (is the Counter row on the wire?): the control leaves a
+    /// registered target on the battlefield, the subject moves the only one to the graveyard.
+    /// Collapsing the arm to `None` reds the SUBJECT; collapsing it to `Some(false)` reds the
+    /// CONTROL — so neither arm can pass for the wrong reason.
+    #[test]
+    fn counter_axis_infinity_row_dies_with_its_last_registered_target() {
+        use crate::analysis::resource::{CounterClass, ObjectClass, ResourceAxis};
+        use crate::game::zones::move_to_zone;
+        use crate::types::counter::CounterType;
+        use crate::types::events::GameEvent;
+
+        // CR 122.1a: a +1/+1 counter on a creature — a concrete instance of the object-agnostic
+        // axis a counter-growth certificate marks.
+        let axis = ResourceAxis::Counter(CounterClass::Plus1Plus1, ObjectClass::Creature);
+
+        let build = || {
+            let mut state = GameState::new_two_player(42);
+            let target = create_object(
+                &mut state,
+                CardId(1),
+                PlayerId(0),
+                "Counter target".to_string(),
+                Zone::Battlefield,
+            );
+            state.mark_unbounded_loop(PlayerId(0), &[axis]);
+            state.register_unbounded_counter_targets(
+                PlayerId(0),
+                vec![(target, CounterType::Generic("charge".to_string()))],
+            );
+            (state, target)
+        };
+
+        let rows = |state: &GameState| -> Vec<ResourceAxis> {
+            derive_views(state, Some(PlayerId(0)))
+                .unbounded_resources
+                .iter()
+                .map(|r| r.axis)
+                .collect()
+        };
+
+        // CONTROL runs FIRST so it doubles as the non-vacuity anchor: it proves this wire can
+        // carry the row at all, which a "row absent" assertion alone would never establish.
+        let (control, _kept) = build();
+        assert!(
+            rows(&control).contains(&axis),
+            "THE assertion (control): a registered target still on the battlefield keeps the ∞ row, got {:?}",
+            rows(&control)
+        );
+
+        // SUBJECT: the only registered target leaves ⇒ the backing set is empty ⇒ row dropped.
+        let (mut subject, target) = build();
+        let mut events: Vec<GameEvent> = Vec::new();
+        move_to_zone(&mut subject, target, Zone::Graveyard, &mut events);
+        assert!(
+            !subject.battlefield.contains(&target),
+            "precondition: the target really left the battlefield"
+        );
+        assert!(
+            !rows(&subject).contains(&axis),
+            "THE assertion (subject): with every registered target gone the ∞ row must be dropped, got {:?}",
+            rows(&subject)
+        );
+    }
+
     #[test]
     fn blocker_assignment_pairs_are_sorted_and_exclude_stale_objects() {
         let mut state = GameState::new_two_player(42);
