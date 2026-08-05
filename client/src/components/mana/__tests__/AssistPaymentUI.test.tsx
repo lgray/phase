@@ -71,9 +71,9 @@ describe("AssistPaymentUI", () => {
 
   // `max_generic` is held CONSTANT so the caster is the only changing dep: keyed on the bound
   // alone the effect would not fire, and the amount chosen for the previous assist prompt would
-  // carry into this one. Residual, disclosed in the source: a successor with the SAME caster and
-  // bound is still indistinguishable — this wire type carries no prompt identity, and inventing
-  // one in the display layer would be the wrong fix.
+  // carry into this one. The PAYER axis is covered separately by AP/successor-seat below — an
+  // earlier version of this note claimed a same-caster successor was indistinguishable, which
+  // `chosen` disproves.
   it("AP/successor: a same-bound prompt for a different caster resets the entry", () => {
     const promptFor = (caster: number) =>
       buildAssistPaymentWaitingFor({ data: { caster, chosen: 0, max_generic: 4 } });
@@ -99,9 +99,10 @@ describe("AssistPaymentUI", () => {
     expect(screen.getByLabelText("Assist: Pay Generic Mana")).toHaveValue("0");
   });
 
-  // The seat axis for assist: same caster, same bound, different payer. Uses the CR 723.1a shape
-  // (local seat 0 stays `turn_decision_controller` while the semantic player moves) so one client
-  // renders both prompts in a row — otherwise the panel hides and the row would be vacuous.
+  // The seat axis for assist: same caster, same bound, different payer. Uses the CR 723.5 +
+  // CR 723.3 control shape (the local seat stays `turn_decision_controller` while the semantic
+  // player moves) so one client renders both prompts in a row — otherwise the panel hides and
+  // the row would be vacuous, which is how the shape was pinned.
   it("AP/successor-seat: a same-caster prompt for a different PAYER resets the entry", () => {
     const promptFor = (chosen: number) =>
       buildAssistPaymentWaitingFor({ data: { caster: 1, chosen, max_generic: 4 } });

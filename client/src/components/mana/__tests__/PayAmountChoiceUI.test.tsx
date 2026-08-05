@@ -258,11 +258,13 @@ describe("PayAmountChoiceUI — sanitized amount entry", () => {
         },
       });
 
-    // CR 723.1a control is what makes this reachable in ONE client: the local seat (0) stays the
-    // `turn_decision_controller` while the prompt's semantic player moves to seat 1, so
-    // `useCanActForWaitingState` (usePlayerId.ts:95) keeps rendering and the same client answers
-    // both prompts in a row. Setting the controller to 1 as well would hide the panel and make
-    // this row vacuous — it fails that way, which is how the shape was pinned.
+    // CR 723.5 ("while controlling another player, a player makes all choices and decisions the
+    // controlled player is allowed to make") + CR 723.3 ("a player who's being controlled during
+    // their turn is still the active player") — which together are why the local seat (0) stays
+    // `turn_decision_controller` while the prompt's semantic player moves to seat 1. That is what
+    // keeps `useCanActForWaitingState` (usePlayerId.ts:95) true, so ONE client answers both
+    // prompts in a row. Setting the controller to 1 as well hides the panel and makes this row
+    // vacuous — it fails that way, which is how the shape was pinned rather than guessed.
     const seat = (waitingFor: WaitingFor, player: number) => {
       setGameStoreForTest({
         gameState: buildGameState({

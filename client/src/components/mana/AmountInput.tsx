@@ -107,7 +107,10 @@ export function AmountInput({
             // border. A size that must be derived to be checked is a size that will silently
             // regress; these steppers are the only non-typing recovery path out of an invalid
             // entry, so they get the boring, directly-readable 44px.
-            className: "h-11 w-11 px-0 text-base",
+            // No `px-0`: `SIZE_CLASSES.xs` emits `px-2.5` later in the compiled sheet and wins,
+            // so a `px-0` here would read as load-bearing while doing nothing. `w-11` pins the
+            // border box at 44px regardless of padding (border-box sizing).
+            className: "h-11 w-11 text-base",
           })}
         >
           −
@@ -170,7 +173,10 @@ export function AmountInput({
             // border. A size that must be derived to be checked is a size that will silently
             // regress; these steppers are the only non-typing recovery path out of an invalid
             // entry, so they get the boring, directly-readable 44px.
-            className: "h-11 w-11 px-0 text-base",
+            // No `px-0`: `SIZE_CLASSES.xs` emits `px-2.5` later in the compiled sheet and wins,
+            // so a `px-0` here would read as load-bearing while doing nothing. `w-11` pins the
+            // border box at 44px regardless of padding (border-box sizing).
+            className: "h-11 w-11 text-base",
           })}
         >
           +
