@@ -933,7 +933,19 @@ fn top_level_fn_headers(src: &str) -> Result<Vec<(usize, String)>, String> {
                 n + 1
             ));
         }
-        let name = tokens[at + 1]
+        // A column-0 header whose LAST token is the bare `fn` puts the name on the next line,
+        // breaking the one-line-header assumption documented above. Route it through `Err` — a
+        // raw index here would abort the census with an out-of-bounds panic, i.e. the wrong
+        // failure mode for what is really an unhandled header shape.
+        let Some(name_token) = tokens.get(at + 1) else {
+            return Err(format!(
+                "line {}: column-0 header ends at the bare `fn` token, so the function name is \
+                 not on this line. The census resolves a hit's enclosing function by that name, \
+                 and cannot do so here. Re-check the single-line-header assumption above.",
+                n + 1
+            ));
+        };
+        let name = name_token
             .split(['(', '<'])
             .next()
             .unwrap_or_default()
@@ -941,6 +953,39 @@ fn top_level_fn_headers(src: &str) -> Result<Vec<(usize, String)>, String> {
         out.push((n + 1, name));
     }
     Ok(out)
+}
+
+/// A column-0 header ending at the bare `fn` token is reported, not panicked on.
+///
+/// NON-VACUITY: both fixtures carry a prefix that IS in `FN_PREFIX_ALLOW_SET` (`""` and `"pub "`),
+/// so they clear the unrecognised-prefix `Err` above and actually reach the name-token read. A
+/// fixture with an unknown prefix would return `Err` from the earlier arm and assert nothing here.
+/// DISCRIMINATION is two-sided: dropping the `tokens.get(at + 1)` guard makes arm 1 panic with an
+/// index-out-of-bounds instead of returning `Err`, and trivialising the function to always return
+/// `Err` fails arm 2. No current `crates/engine/src` line has this shape (measured: zero), so this
+/// pins the failure MODE of an unhandled header shape rather than a live occurrence.
+#[test]
+fn bare_trailing_fn_header_is_an_error_not_a_panic() {
+    // Arm 1 — the shape CodeRabbit flagged: name is not on the header line.
+    for src in ["fn", "pub fn", "fn\npub fn real_one() {}"] {
+        let err = top_level_fn_headers(src)
+            .expect_err("a header ending at the bare `fn` token must be reported as `Err`");
+        assert!(
+            err.contains("bare `fn` token"),
+            "error must name the unhandled header shape, got: {err}"
+        );
+    }
+
+    // Arm 2 — the happy path still resolves names, so arm 1 cannot be satisfied by a
+    // blanket `Err`.
+    let headers =
+        top_level_fn_headers("pub fn alpha(x: u8) {}\nfn beta<T>() {}\n    fn nested() {}")
+            .expect("well-formed single-line headers must parse");
+    assert_eq!(
+        headers,
+        vec![(1, "alpha".to_string()), (2, "beta".to_string())],
+        "indented `fn` is not a column-0 header and must not be collected"
+    );
 }
 
 /// The enclosing top-level `fn` of `line`: the LATEST collected header at or before it.
