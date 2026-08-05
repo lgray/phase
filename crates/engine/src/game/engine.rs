@@ -15626,7 +15626,32 @@ mod stage2_injector_tests {
                 // `:11549`) to `a6d1a0e62:engine.rs:11549`, and it is still inside
                 // `begin_pending_trigger_target_selection`, which moved by the same +34
                 // (opens :11400 ⇒ :11434).
-                "game/engine.rs:11583".to_string(),
+                //
+                // ITEM 2 (`loop_period_controller`), REBASED ONTO `fa5fbdfd7`: `:11583 ⇒ :11696`.
+                // The three predecessor entries above were written against bases that are now
+                // history, and the rebase resolved a conflict in THIS array on every one of this
+                // branch's three commits — so the pin was NOT carried from either side of those
+                // conflicts. It was re-derived at the rebased tip, which is the only tree the
+                // assertion runs against.
+                //
+                // LOCATED BY CONTENT, NOT BY ARITHMETIC. Hashing every line in the file that
+                // opens this producer's prompt yields exactly ONE whose sha256 is
+                // `8a544e878d3e77fb` — `:11696`. (The producer's own text is deliberately NOT
+                // quoted in this comment: a prose copy of it would make the locating grep match
+                // twice, and a census that finds its instrument's own documentation is the
+                // stale-coordinate failure wearing a different hat.) A sum-of-hunks figure
+                // would have been the wrong instrument here regardless: three-way conflict
+                // resolution is not a line-shift, so `+113` is a description of where the
+                // producer landed, never the evidence that it is the same producer. Uniqueness of
+                // the hash IS that evidence, and it is what a stale-coordinate defect (the exact
+                // failure this census exists to catch) cannot survive.
+                //
+                // Still inside `begin_pending_trigger_target_selection` (opens `:11547`).
+                // SET PRESERVATION: `git diff --stat upstream/main...HEAD` on
+                // `effects/mod.rs` and `effects/scoped_library_search.rs` is EMPTY, so
+                // `:6175/:6252/:9456/:452` could not have moved and stand re-read in place.
+                // Total still **5**.
+                "game/engine.rs:11696".to_string(),
             ],
             "the five production producers, NAMED: the CR 603.5 gate in `resolve_chain_body` \
              plus the two repeated-optional-payment drivers, the per-player acceptance cursor \
