@@ -453,14 +453,18 @@ export function unboundedFamilyViews(rows: UnboundedResourceView[]): UnboundedFa
     const family = familyOf(row.axis);
     // A family is scheduled iff ANY member axis is, so this fold OVER-reports: it never marks a
     // family with no scheduled axis in it, but one scheduled axis can cover an unscheduled
-    // sibling. Structurally reachable for the Counter/Counter case: `familyOf` maps every
-    // `Counter(..)` to "counters" (and six tags to "triggers"), while `scheduled_collapse_axes`
-    // inserts one axis per counter growth in a stash, so one multi-growth accept names several
-    // distinct `Counter(..)` axes — that is the pair U6 asserts. U3c composes the sharper
-    // Counter/Poison pair, which is the same fold behaviour but additionally needs the counter
-    // loop's CONTROLLER to be the VICTIM of a poison ∞ (`Counter` attributes to the controller,
-    // `Poison` to the victim); that combination is not claimed to be reachable, only that IF it
-    // arises the fold paints both.
+    // sibling. `familyOf` maps every `Counter(..)` and every `Poison(..)` to "counters" (and six
+    // tags to "triggers"), so one family can hold axes with different schedules.
+    //
+    // WHAT WOULD MAKE IT REACHABLE — stated as the open question it is, because the tempting
+    // argument proves the wrong side. "One accept names several `Counter(..)` axes" gives several
+    // SCHEDULED axes, under which every row in the family is flagged and there is no over-report
+    // at all. The over-report needs a marked-but-UNSCHEDULED sibling in the same family: two loops
+    // on one controller with only one accepted, or `collapsed_counter_axis` recomputing a bearer's
+    // `ObjectClass` from live state and landing on a different axis than the one marked. Neither
+    // is asserted here to occur. U6 and U3c pin the fold's BEHAVIOUR on composed rows — if such a
+    // pair arises, one scheduled axis paints its whole family — which is the contract this comment
+    // is about; how the pair arises is not.
     //
     // Deliberate, and the OPPOSITE direction from the wire's KEYING LIMIT (which under-reports) —
     // worth stating since the two are documented a few files apart. Over-reporting is preferred

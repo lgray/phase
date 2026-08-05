@@ -187,6 +187,15 @@ pub struct UnboundedResourceView {
     /// real in the data and latent in the display; it becomes visible the moment anything renders
     /// per-axis. Stated rather than left as an implied rendering bug.
     ///
+    /// SAME-FRAME ASYMMETRY, disclosed because a reader will see it on screen: only this HUD row
+    /// carries the flag. `unbounded_pile` (card groups) and `unbounded_counters` (counter pills)
+    /// have no `scheduled` projection, so during the accept→boundary window one loop can show
+    /// `∞→N` on the badge and a plain `∞` on its own token group and counter pill in the SAME
+    /// frame. Unlike the `Mana(_)` case that is not a false promise — the collapse really is
+    /// scheduled for that axis — it is just not announced on every surface. Those channels are
+    /// `ObjectId`-keyed while this one is `(player, axis)`-keyed, and the engine does not put that
+    /// join on the wire, which is why the flag stops here.
+    ///
     /// NOT the authority for the CR 732.2c contract — `GameState::pending_unbounded_materialization`
     /// is, and it is what the boundary reads to cash the collapse out. This flag is only that
     /// contract's display shadow, and it is deliberately the ONLY projection of it on the wire: a
@@ -973,17 +982,17 @@ pub fn derive_views(state: &GameState, viewer: Option<PlayerId>) -> DerivedViews
     // to filter: the row loop calls `scheduled_display_axes` to set each row's `scheduled` flag,
     // and that is additive.
     //
-    // Phrased as an invariant rather than a census of readers, because the census version has gone
-    // stale three times running — "no surface reads it" (falsified when the flag moved into the
-    // row loop), then a reference to a tag loop (falsified when that channel was removed). Naming
-    // WHO reads the schedule creates a claim that every future consumer can break; naming what the
-    // schedule may not DO does not. The same sentence previously read "only their own stores",
-    // which the row guard below falsified the moment it was added: `object_growth_backing`
-    // deliberately cross-reads the pile and counter-target stores, because whether a ROW is still
-    // live is a question about those backing sets, not about its own. That makes twice this one
-    // paragraph has outlived a change to the code beneath it — the reason it is now phrased as an
-    // invariant ("no surface is FILTERED") rather than a census of who reads what. The stores are
-    // not filtered either:
+    // Phrased as an invariant rather than a census of readers, because the census version has now
+    // outlived the code beneath it THREE times:
+    //   1. "the surface loops read only their own stores" — falsified by `object_growth_backing`,
+    //      which deliberately cross-reads the pile and counter-target stores, because whether a
+    //      ROW is still live is a question about those backing sets, not about its own.
+    //   2. "no surface reads `scheduled_collapse_axes`" — falsified when the `scheduled` flag
+    //      moved into the row loop.
+    //   3. "…and the tag loop projects the schedule" — falsified when that channel was removed
+    //      for having no consumer.
+    // Naming WHO reads the schedule is a claim every future consumer can break; naming what the
+    // schedule may not DO is not. The stores are not filtered either:
     // `unbounded_resources` keeps the mark until the boundary applies the growth. (`unbounded_loop_enablers` is held in
     // lockstep with it as an ENGINE-STATE invariant required by no CR — but see the inertness note
     // above: for the object-growth class that map is EMPTY, so the lockstep is vacuously satisfied
@@ -3762,13 +3771,6 @@ mod tests {
         assert_eq!(attribution_player(ResourceAxis::TokensCreated, p0), p0);
     }
 
-    /// PR-6 test 1: a REAL opponent-burn certificate's axes project into victim-HUD
-    /// rows. The axis set is derived via the SAME authority `detect_loop` uses
-    /// (`ResourceVector::unbounded_axes_for`) from the delta a damage pinger loop
-    /// produces (positive damage to P1, P1's life driven negative), so it is the
-    /// genuine `{DamageDealt(P1), Life(P1)}` cert — both on the victim P1, never a
-    /// controller `Life(P0)`.
-    ///
     /// Two controllers draining the SAME victim: each keeps its own `scheduled` answer.
     ///
     /// This is the shape that makes `UnboundedResourceView::scheduled` an engine field rather
@@ -3856,6 +3858,13 @@ mod tests {
         );
     }
 
+    /// PR-6 test 1: a REAL opponent-burn certificate's axes project into victim-HUD
+    /// rows. The axis set is derived via the SAME authority `detect_loop` uses
+    /// (`ResourceVector::unbounded_axes_for`) from the delta a damage pinger loop
+    /// produces (positive damage to P1, P1's life driven negative), so it is the
+    /// genuine `{DamageDealt(P1), Life(P1)}` cert — both on the victim P1, never a
+    /// controller `Life(P0)`.
+    ///
     /// REVERT-PROBE: delete the `derive_views` projection loop → `unbounded_resources`
     /// is empty → both `contains` assertions fail. Without the `mark_unbounded_loop`
     /// call the projection is also empty.

@@ -50,10 +50,10 @@ describe("unbounded ∞ wire seam (engine-emitted goldens)", () => {
     expect("unbounded_pile" in counterWire).toBe(false);
     expect("unbounded_counters" in tokenWire).toBe(false);
     // (4) the SCHEDULED FLAG, engine-emitted. Both goldens are captured after the accept while a
-    // finite collapse is merely SCHEDULED, so in both the flagged row is the one carrying `∞`.
-    // This is the only projection of the accepted collapse on the wire — there is deliberately no
-    // second `(player, axis)`-keyed channel to cross-check it against, so what this pins is the
-    // ENCODING and the omit-when-false behaviour, not an agreement between two engine outputs.
+    // finite collapse is merely SCHEDULED, so the single row each carries is flagged. This is the
+    // only projection of the accepted collapse on the wire — there is deliberately no second
+    // `(player, axis)`-keyed channel to cross-check it against, so what this pins is the wire
+    // ENCODING, not an agreement between two engine outputs.
     expect(tokenWire.unbounded_resources).toEqual([
       { axis: "TokensCreated", player: 0, scheduled: true },
     ]);

@@ -77,18 +77,15 @@ describe("unboundedFamilyViews", () => {
   });
 
   it("U5/rows-drive: no ∞ rows ⇒ no views", () => {
-    // ENGINE-REACHABLE, not a mere prop contract: `derive_views` drops a TOKEN-axis ∞ row whose
-    // entire registered pile has left the battlefield while the accepted collapse stash survives,
-    // because the boundary still cashes that axis out. (Token axis specifically: the engine has no
-    // per-axis backing authority for counter axes yet.) So rows-empty is a state the engine really
-    // produces, through the `zones::move_to_zone` chokepoint —
-    // `combo_infinite_pile::object_growth_infinity_row_dies_with_its_last_pile_member` asserts it.
+    // Rows-empty is the DOMINANT case, not an exotic one: `PlayerHud` calls this unconditionally
+    // and the hook returns the shared empty array whenever no loop is active. That alone earns the
+    // row; no engine reachability argument is needed.
     //
-    // SCOPE OF WHAT THIS PINS, stated because the obvious claim is not available: this function
-    // takes no tag argument, so NO input to it can distinguish "an orphan tag renders nothing"
-    // from any other tag behaviour. That property follows from the call sites iterating rows, not
-    // from anything assertable here. What this row pins is narrower and real — no rows in, no
-    // families out.
+    // (`derive_views` can also drop an individual TOKEN-axis row whose entire registered pile has
+    // left the battlefield while the accepted stash survives — see
+    // `combo_infinite_pile::object_growth_infinity_row_dies_with_its_last_pile_member`. That test
+    // asserts a row is DROPPED, not that the projection is empty, so it is cited here as the
+    // neighbouring behaviour it is rather than as this row's witness.)
     expect(unboundedFamilyViews([])).toEqual([]);
     // PINNED POSITIVE, in the same `it`: without it a constant `return []` satisfies the row.
     const present = unboundedFamilyViews([row(TOKENS, 0, true)]);

@@ -2648,6 +2648,10 @@ export interface UnboundedResourceView {
    * a key collision implies the same family — so this is a latent divergence in the data rather
    * than a rendering bug that was fixed. It becomes visible the moment anything renders per-axis.
    *
+   * NOT a guarantee that the growth lands. `Counters`/`Life` axes can be flagged and then decline
+   * to collapse, if a counter/life observer appears between the accept and the boundary — the
+   * engine leaves those axes `∞` and applies nothing. Read this as "a collapse is scheduled",
+   * never "this will resolve".
    */
   scheduled?: boolean;
 }

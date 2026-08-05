@@ -7667,7 +7667,8 @@ fn unregistered_axis_still_renders_its_infinity_badge() {
     );
 
     // R3 PRE-CLEAR positive control — without it the post-clear "nothing flagged" below is
-    // VACUOUS (it is green under the DROP mutant; see §7 RP-E1/RP-E2).
+    // VACUOUS: a mutant that never sets the flag at all satisfies the post-clear assertion, so the
+    // pair only discriminates because this arm proves the flag CAN be set on this same state.
     {
         let v = engine::game::derived_views::derive_views(&state, None);
         let j = serde_json::to_string(&v).unwrap();
