@@ -11169,7 +11169,7 @@ fn ai1_the_bounded_declare_candidate_withdraws_when_the_offer_publishes_a_pin() 
 /// `state.waiting_for` at five sites inside `run_post_action_pipeline_from`.)
 ///
 /// That is a detection hazard, not cosmetics — but the consumer is BASIS A, not
-/// `ring_delta_signature`. `f144bb374`'s message and the comments it shipped said a
+/// `ring_delta_signature`. PR #7005's first commit and the comments it shipped said a
 /// heterogeneous ring breaks `ring_delta_signature`'s turn-position conjunct "because
 /// `impl PartialEq for GameState` compares both fields"; that is false at source. That
 /// function reads only `ResourceVector::snapshot(&f.normalized)` and
@@ -11189,26 +11189,35 @@ fn ai1_the_bounded_declare_candidate_withdraws_when_the_offer_publishes_a_pin() 
 /// so every frame asserted below was minted by `record_loop_detect_sample` itself rather than
 /// staged by the test.
 ///
-/// SITE ATTRIBUTION IS EXACT, not assumed. The answer site's own gate conjunct is
-/// `state.waiting_for.is_forced_cascade_window()` read BEFORE the action; the settle sampler is
-/// reachable only from `pass_priority_once_with_pipeline`, i.e. from a `Priority` window, which
-/// `is_forced_cascade_window` deliberately excludes. So "the pre-beat window was forced AND the
-/// ring grew" names the answer site and nothing else. MEASURED on this drive: 2 answer-beat
-/// mints (beats 5 and 14), 3 settle mints, offer at beat 19 over a 5-frame ring.
+/// SITE ATTRIBUTION IS DELIBERATELY NOT ATTEMPTED, and the paragraph that stood here claiming
+/// it was "exact" was WRONG. It argued that because the settle sampler is reached only from
+/// `pass_priority_once_with_pipeline` — i.e. from a `Priority` window, which
+/// `is_forced_cascade_window` excludes — "the pre-beat window was forced AND the ring grew"
+/// names the answer site and nothing else. That conflates the window BEFORE the beat with the
+/// window at the settle sampler's own moment. One beat here is one `apply()`, which reaches the
+/// settle sampler AFTER `apply_action` returns, so a beat whose pre-beat window was forced can
+/// perfectly well mint at the SETTLE site — e.g. when answering it resolves the last stack
+/// entry, gating the answer site off on `!stack.is_empty()` while the refill cascade settles.
+/// `answered_forced_window` is ONE conjunct of the production answer-site gate (which also
+/// demands `!in_simulation_probe()`, `loop_detection.samples()`, `!stack.is_empty()`, a
+/// non-shrinking stack, and `Priority{player == active_player}`), so it is a REACH signal and
+/// never an attribution.
 ///
-/// Both halves of that attribution are now ENFORCED in the loop rather than left to today's
-/// fixture, because a standing pin that rests on a measurement goes vacuous the moment the
-/// measurement changes. A mint is detected by `Arc` identity of the ring's back, so an
-/// evicting push at `LOOP_DETECT_RING_CAP` cannot masquerade as "no mint" and shrink the set
-/// `answer_mints` claims to cover; and an answer beat must mint EXACTLY ONE frame, because a
-/// beat that reaches both samplers leaves `back()` holding the SETTLE frame and arms (1)/(2)
-/// would then pass while inspecting a frame the reorder never touched.
+/// The row therefore asserts arms (1) and (2) over EVERY frame a beat added
+/// (`loop_detect_ring.iter().rev().take(grew)`), which makes attribution irrelevant rather than
+/// sharper: both samplers gate their record on `Priority{player == active_player}` and both
+/// record after their own `sync_waiting_for`, so a frame that fails either arm is a real defect
+/// whichever site minted it. What survives of the mint accounting is narrow and stated as such:
+/// `Arc`-identity detection so an evicting push at `LOOP_DETECT_RING_CAP` cannot masquerade as
+/// "no mint", and `grew >= 1` so a beat whose length did not grow fails closed instead of
+/// mis-sizing the slice. MEASURED on this drive: 2 forced-window minting beats (5, 14), 3
+/// non-forced ones (0, 9, 18), every beat `grew == 1`, offer at beat 19 over a 5-frame ring.
 ///
 /// ⚠ WHAT THIS ROW DOES **NOT** CATCH, stated rather than implied. A PURE REVERT of the reorder
 /// leaves all three arms GREEN, and that is a measurement rather than an oversight: an
 /// instrumented `debug_assert_eq!` census on both fields at that position, run on the
 /// pre-reorder tree over the full lib + integration corpus, reported 0 divergences (per-site
-/// counts in `f144bb374`'s message), so no fixture in the corpus reaches the divergence. The
+/// counts in PR #7005's history), so no fixture in the corpus reaches the divergence. The
 /// row is consequently the STANDING pin — it fires the first time a beat does diverge — and its
 /// instrument is proved live by MUTANTS at the sampler instead of by the revert:
 /// * `state.priority_player = PlayerId(3);` after the sync ⇒ arm (2) FAILS at the first mint
@@ -11275,87 +11284,111 @@ fn answer_beat_frames_carry_the_synced_window_and_the_offer_certificate_is_exact
         if dump_drive_one_beat(&mut state, pin).is_err() {
             break;
         }
-        if state.loop_detect_ring.back().map(std::sync::Arc::as_ptr) == back_before {
+        // `is_some() &&` is the production instrument's guard, kept rather than trimmed: the
+        // settle sampler's `else` arm calls `loop_detect_ring.clear()`, so `back()` can go to
+        // `None` within a beat. Without it, `None != Some(..)` falls through to a `usize`
+        // subtraction that panics with "attempt to subtract with overflow" instead of this
+        // row's own explanation. A cleared ring minted nothing, so the beat is skipped.
+        let back_after = state.loop_detect_ring.back().map(std::sync::Arc::as_ptr);
+        if back_after.is_none() || back_after == back_before {
             continue;
         }
-        let grew = state.loop_detect_ring.len() - before;
+        let after_len = state.loop_detect_ring.len();
+        let grew = after_len.saturating_sub(before);
         assert!(
             grew >= 1,
-            "beat {beat}: the ring's back changed while its length did not, which means the \
-             ring is AT CAPACITY and evicting. `grew` can no longer attribute frames to a \
-             sampling site, so every count below would be measuring a smaller set than it \
-             names. Fail closed rather than report a number this instrument cannot support"
+            "beat {beat}: the ring's back changed but its length did not grow ({before} -> \
+             {after_len}). Either the ring is AT CAPACITY and evicting, or it was CLEARED and \
+             re-pushed inside the beat (the settle sampler's `else` arm does exactly that). \
+             Either way `grew` cannot say how many frames THIS beat added, so the arms below \
+             would inspect the wrong set. Fail closed rather than report a number this \
+             instrument cannot support"
         );
-        if !answered_forced_window {
+        if answered_forced_window {
+            answer_mints += 1;
+        } else {
             settle_mints += grew;
-            continue;
         }
-        // ATTRIBUTION, ENFORCED RATHER THAN OBSERVED. A single beat can reach BOTH samplers —
-        // `apply_action`'s forced-window answer site and then the settle site in
-        // `pass_priority_once_with_pipeline` — in which case the ring grows by 2 and `back()`
-        // is the SETTLE frame. Arms (1) and (2) would then pass while inspecting a frame the
-        // reorder never touched, i.e. this standing pin would go quietly vacuous. `grew == 1`
-        // is the property that makes `back()` the answer-beat frame; nothing else here asserts
-        // it, and "measured as 1 on today's fixture" is not what a standing pin rests on.
-        assert_eq!(
-            grew, 1,
-            "beat {beat}: this beat answered a forced window AND minted {grew} frames, so \
-             `back()` is not necessarily the answer-site frame — arms (1)/(2) below would be \
-             inspecting whichever sampler recorded LAST. Attribute per site before asserting \
-             on a frame; do not relax this to `>= 1`"
-        );
-        answer_mints += 1;
-        let frame = &state
-            .loop_detect_ring
-            .back()
-            .expect("the ring just grew, so it has a back element")
-            .live;
-        // ── (2) ITS PRIORITY PLAYER. Asserted FIRST so a mutation that touches only
-        // `priority_player` is caught by its own arm instead of being masked by arm (1).
+        // BOTH ARMS RUN OVER EVERY FRAME THIS BEAT ADDED, which is what makes site attribution
+        // stop mattering — and the row deliberately does NOT try to attribute.
         //
-        // The comparand is the AUTHORITY FUNCTION, not `frame.active_player`. `sync_waiting_for`
-        // sets `priority_player = turn_control::authorized_submitter_for_player(state,
-        // waiting_for.acting_player())`, which re-routes to a DIFFERENT seat whenever a
-        // turn-decision controller (Mindslaver) or a latched search-decision controller is in
-        // play. Pinning the seat itself would false-fail a correctly synced frame on any future
-        // turn-control fixture. The recomputation is not circular: neither
-        // `effective_authority_for_player` nor `search_decision_authority` reads
-        // `priority_player`, so a mutant that clobbers only that field still fails here.
+        // `answered_forced_window` is `is_forced_cascade_window()` read BEFORE the beat, i.e.
+        // strictly ONE conjunct of the production answer-site gate; that gate also demands
+        // `!in_simulation_probe()`, `loop_detection.samples()`, `!stack.is_empty()`, a
+        // non-shrinking stack, and `Priority{player == active_player}`. One beat here is one
+        // `apply()`, which reaches the SETTLE sampler after `apply_action` returns. So a beat
+        // that answers a forced window resolving the LAST stack entry gates the answer site
+        // off (`!stack.is_empty()` false) while the refill cascade mints a settle frame:
+        // `grew == 1`, `answer_mints` increments, and a `back()`-only check would inspect a
+        // settle frame while claiming an answer frame. `grew == 1` rules out the DOUBLE-MINT
+        // beat and nothing more — it was never evidence about WHICH sampler minted.
         //
-        // `if let` rather than `expect`, and the difference is MEASURED: an `expect` here
-        // pre-empts arm (1). A window with no acting player (`GameOver`) is precisely what
-        // arm (1) exists to catch, so panicking on the `None` before reaching it replaces
-        // arm (1)'s explanation with an unwrap message and destroys the arms' separation —
-        // the `waiting_for = GameOver` mutant died on the unwrap instead of on arm (1). The
-        // pair stays TOTAL, so this skip opens no hole: either arm (2) runs, or the window
-        // had no actor and arm (1) below fails on that same frame.
-        if let Some(semantic_player) = frame.waiting_for.acting_player() {
-            assert_eq!(
-                frame.priority_player,
-                engine::game::turn_control::authorized_submitter_for_player(frame, semantic_player),
-                "beat {beat}: `sync_waiting_for` recomputes `priority_player` from the window \
+        // Iterating the added frames removes the question instead of sharpening it. Both
+        // samplers gate their record on `Priority{player == active_player}` and both record
+        // after their `sync_waiting_for`, so both arms hold for EITHER site's frame; a frame
+        // that fails one is a real defect no matter which sampler produced it.
+        for sample in state.loop_detect_ring.iter().rev().take(grew) {
+            let frame = &sample.live;
+            // ── (2) ITS PRIORITY PLAYER. Asserted FIRST so a mutation that touches only
+            // `priority_player` is caught by its own arm instead of being masked by arm (1).
+            //
+            // The comparand is the AUTHORITY FUNCTION, not `frame.active_player`. `sync_waiting_for`
+            // sets `priority_player = turn_control::authorized_submitter_for_player(state,
+            // waiting_for.acting_player())`, which re-routes to a DIFFERENT seat whenever a
+            // turn-decision controller (Mindslaver) or a latched search-decision controller is in
+            // play. Pinning the seat itself would false-fail a correctly synced frame on any future
+            // turn-control fixture. The recomputation is not circular: neither
+            // `effective_authority_for_player` nor `search_decision_authority` reads
+            // `priority_player`, so a mutant that clobbers only that field still fails here.
+            //
+            // `if let` rather than `expect`, and the difference is MEASURED: an `expect` here
+            // pre-empts arm (1). A window with no acting player (`GameOver`) is precisely what
+            // arm (1) exists to catch, so panicking on the `None` before reaching it replaces
+            // arm (1)'s explanation with an unwrap message and destroys the arms' separation —
+            // the `waiting_for = GameOver` mutant died on the unwrap instead of on arm (1). The
+            // pair stays TOTAL, so this skip opens no hole: either arm (2) runs, or the window
+            // had no actor and arm (1) below fails on that same frame.
+            if let Some(semantic_player) = frame.waiting_for.acting_player() {
+                assert_eq!(
+                    frame.priority_player,
+                    engine::game::turn_control::authorized_submitter_for_player(
+                        frame,
+                        semantic_player
+                    ),
+                    "beat {beat}: `sync_waiting_for` recomputes `priority_player` from the window \
                  it installs, so an answer-beat frame must carry that window's AUTHORIZED \
                  SUBMITTER, not whatever the un-synced state left behind"
-            );
-        }
-        // ── (1) THE NEWEST SAMPLED STATE: the window the action RETURNS, never the forced one
-        // it answered.
-        assert_eq!(
-            frame.waiting_for,
-            WaitingFor::Priority {
-                player: frame.active_player
-            },
-            "beat {beat}: the sampler's own gate requires the RETURNED `wf` to be \
+                );
+            }
+            // ── (1) THE NEWEST SAMPLED STATE: the window the action RETURNS, never the forced one
+            // it answered.
+            assert_eq!(
+                frame.waiting_for,
+                WaitingFor::Priority {
+                    player: frame.active_player
+                },
+                "beat {beat}: the sampler's own gate requires the RETURNED `wf` to be \
              `Priority{{active_player}}`, so recording before the sync is the only way the \
              frame can carry a different window — and `impl PartialEq for GameState` compares it"
-        );
+            );
+        }
     }
 
     assert!(
         answer_mints > 0,
-        "reach-guard: the drive must mint at least one frame at the FORCED-WINDOW ANSWER site, \
-         else arms (1)/(2) never ran and this row passes vacuously; got answer={answer_mints} \
-         settle={settle_mints}"
+        "reach-guard: the drive must reach at least one MINTING beat whose pre-beat window was \
+         FORCED, else the answer-site path this row exists for was never exercised and it \
+         passes vacuously. Stated exactly: this counts beats whose PRE-beat window satisfied \
+         `is_forced_cascade_window()`, which is ONE conjunct of the production answer-site \
+         gate, so it is a reach guard and NOT proof that the answer sampler is what minted; \
+         got answer={answer_mints} settle={settle_mints}"
+    );
+    assert!(
+        settle_mints > 0,
+        "reach-guard for the WIDENING: arms (1)/(2) now run over every frame a beat added, \
+         from either sampler, so the drive must also mint at a non-forced (settle) beat — \
+         otherwise the settle-frame coverage this row claims is untested. got \
+         answer={answer_mints} settle={settle_mints}"
     );
     let offer_beat = offer_beat.expect(
         "reach-guard: the bounded offer must FIRE on this real 4p drain, else arm (3) asserts \
