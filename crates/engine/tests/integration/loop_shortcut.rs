@@ -8993,13 +8993,11 @@ fn multiplayer_pure_life_drain_offers_at_three_and_four_players() {
 /// PAIRED ARMS ON ONE CERTIFYING STATE, differing in exactly one field, asserting opposite
 /// outcomes — so no constant implementation passes.
 ///
-/// ⚠ THE NAME THIS ROW USED TO CARRY (`a_proposers_own_driving_period_mints_no_bounded_offer`)
-/// ASSERTED A GENERAL PROPERTY THAT IS FALSE AT THIS TREE. Step (1b) is seat-relative: a
-/// non-empty sequence recorded by ANOTHER seat mints the offer, which is what
+/// The retained name states arm ⓑ's contract: the bounded offer must not mint when the recorded
+/// period belongs to its proposer. Step (1b) is seat-relative: a non-empty sequence recorded by
+/// ANOTHER seat mints the offer, which is what
 /// [`a_foreign_driving_period_neither_refuses_nor_recertifies_a_bounded_offer`] directly below
-/// asserts. The row kept passing only because arm ⓑ happens to use `controller: proposer` — so
-/// the file presented two adjacent rows whose names claimed contradictory general properties.
-/// Renamed rather than annotated: the name is what a reader takes the row's contract to be.
+/// asserts.
 ///
 /// WHY THE GUARD IS LOAD-BEARING (measured, not hypothetical): `materialize_fixed_shortcut`
 /// EARLY-RETURNS into `materialize_object_growth_shortcut` when the recorded period is the

@@ -106,6 +106,17 @@ fn period_controller(state: &GameState) -> Option<PlayerId> {
         .then_some(owner)
 }
 
+/// How the recorded period relates to this frame's proposer.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PeriodRelation {
+    /// The period is this proposer's own, so step (1b) must refuse.
+    Own,
+    /// The period belongs to another seat, so it must not affect this proposer.
+    Foreign,
+    /// There is no uniformly owned period, or this is not a proposing frame.
+    AbsentOrHeterogeneous,
+}
+
 /// One driven beat's mint census entry, in the ISOLATED form.
 ///
 /// `live` is the verdict on the board as driven; `cleared` is the verdict the SAME board returns
@@ -119,8 +130,7 @@ struct MintFrame {
     /// The seat proposing at this frame; `None` when the frame is not a `Priority` beat, in which
     /// case no seat proposes and neither classification below applies.
     proposer: Option<PlayerId>,
-    /// The recorded period belongs to THIS frame's proposer — the one shape (1b) exists to refuse.
-    own: bool,
+    relation: PeriodRelation,
     live: String,
     cleared: String,
 }
@@ -167,10 +177,15 @@ fn mint_frame(state: &GameState, beat: u32) -> MintFrame {
     };
     let mut cleared_board = state.clone();
     cleared_board.last_loop_action_sequence.clear();
+    let relation = match (proposer, period_controller(state)) {
+        (Some(proposer), Some(controller)) if controller == proposer => PeriodRelation::Own,
+        (Some(_), Some(_)) => PeriodRelation::Foreign,
+        _ => PeriodRelation::AbsentOrHeterogeneous,
+    };
     MintFrame {
         beat,
         proposer,
-        own: proposer.is_some() && period_controller(state) == proposer,
+        relation,
         live: mint_verdict(state),
         cleared: mint_verdict(&cleared_board),
     }
@@ -432,7 +447,8 @@ fn the_user_captures_offer_is_reached_with_its_own_foreign_period_live() {
     let (own, foreign_frames): (Vec<&MintFrame>, Vec<&MintFrame>) = census
         .iter()
         .filter(|f| f.proposer.is_some())
-        .partition(|f| f.own);
+        .filter(|f| f.relation != PeriodRelation::AbsentOrHeterogeneous)
+        .partition(|f| f.relation == PeriodRelation::Own);
     let distinct: std::collections::BTreeSet<&str> =
         census.iter().map(|f| f.live.as_str()).collect();
     assert!(
