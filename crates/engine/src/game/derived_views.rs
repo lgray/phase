@@ -849,10 +849,15 @@ pub fn derive_views(state: &GameState, viewer: Option<PlayerId>) -> DerivedViews
     // materialized `Mana(_)` axis that `mana_payment::refill_infinite_mana` keeps topping back up,
     // i.e. it hid a badge beside a pool the player can visibly keep spending.
     //
-    // The three loops below therefore read only their own stores; none consults
-    // `GameState::scheduled_collapse_axes` (whose sole production caller is
-    // `clear_collapsed_materializations`). The stores are not filtered either: `unbounded_resources`
-    // keeps the mark until the boundary applies the growth. (`unbounded_loop_enablers` is held in
+    // The three loops below therefore read only the `∞` stores and the LIVE battlefield; none
+    // consults `GameState::scheduled_collapse_axes` (whose sole production caller is
+    // `clear_collapsed_materializations`). This sentence used to read "only their own stores",
+    // which the row guard below falsified the moment it was added: `object_growth_backing`
+    // deliberately cross-reads the pile and counter-target stores, because whether a ROW is still
+    // live is a question about those backing sets, not about its own. Corrected here rather than
+    // left standing — a stale claim introduced by the commit that exists to fix stale claims is
+    // the one defect this change cannot afford. The stores are not filtered either:
+    // `unbounded_resources` keeps the mark until the boundary applies the growth. (`unbounded_loop_enablers` is held in
     // lockstep with it as an ENGINE-STATE invariant required by no CR — but see the inertness note
     // above: for the object-growth class that map is EMPTY, so the lockstep is vacuously satisfied
     // here and is load-bearing only for the Interactive Path-C class that populates it.)
@@ -1105,8 +1110,19 @@ fn attribution_player(axis: ResourceAxis, controller: PlayerId) -> PlayerId {
 ///
 /// This is the SINGLE authority for "is this object-growth display set still on the board".
 /// The pile and counter-target loops in `derive_views` apply the same
-/// `state.battlefield.contains` test at MEMBER level; this is its SET-level closure, so the
-/// row, the pile and the counter pill can never disagree about the same board.
+/// `state.battlefield.contains` test at MEMBER level; this is its SET-level closure, so all
+/// three read the same board in the same frame and none can be staler than another.
+///
+/// GRANULARITY, stated because the freshness guarantee above does not imply it: the backing
+/// stores are keyed by CONTROLLER, not by axis (`unbounded_counter_targets` is
+/// `BTreeMap<PlayerId, BTreeSet<(ObjectId, CounterType)>>`). So if one controller carries two
+/// counter axes and only axis A's targets leave, `any(...)` is still true and A's ROW survives
+/// while A's per-object pill is already gone. That is deliberate for now, and it errs in the
+/// safe direction — it over-KEEPS a badge, never over-drops one. Making it axis-precise via
+/// `collapsed_counter_axis` is NOT a free tightening: a counter loop's certified axis is
+/// object-agnostic (see `materialize_object_growth_shortcut`), so the marked-axis space may not
+/// coincide with that mapping and a naive equality filter would drop the row entirely. It needs
+/// a counter-growth fixture measuring the two spaces agree before anyone tries it.
 ///
 /// Read-only: recomputed from live state on every `derive_views` call, nothing is stored,
 /// so nothing can go stale. Deliberately not a `clear_unbounded_loop` from the zone-exit
