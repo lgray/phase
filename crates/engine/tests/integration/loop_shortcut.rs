@@ -7276,10 +7276,18 @@ fn scheduled_collapse_still_renders_the_unbounded_badge() {
     // above. These rows pin the SET and the FULL membership, both compared against the store so the
     // expectation cannot drift away from what the accept actually wrote.
     let expected_axes: std::collections::BTreeSet<ResourceAxis> = marked.iter().copied().collect();
+    // CR 110.1: the projection emits only pile members still ON THE BATTLEFIELD, so the oracle
+    // must model that filter. A legitimately stale STORED id (the store is deliberately
+    // unfiltered) is the projection being RIGHT, not a regression — without this filter the
+    // equality below would indict the correct behaviour. On this fixture every stored member is
+    // still on the battlefield here, so the filter is a no-op TODAY: it is latent correctness,
+    // and `stale_pile_member_is_omitted_from_the_wire_but_kept_in_the_store` below is the case
+    // that actually makes the stale/live distinction bite.
     let expected_pile: std::collections::BTreeSet<ObjectId> = state
         .unbounded_loop_pile
         .values()
         .flat_map(|ids| ids.iter().copied())
+        .filter(|id| state.battlefield.contains(id))
         .collect();
     assert!(
         expected_axes.len() >= 2 && !expected_pile.is_empty(),
@@ -7317,6 +7325,121 @@ fn scheduled_collapse_still_renders_the_unbounded_badge() {
     assert!(
         !state.unbounded_loop_pile.is_empty(),
         "the ∞ pile must survive the projection too"
+    );
+}
+
+/// MED-2 (CR 732.2a + CR 110.1): a pile member that has LEFT the battlefield is omitted from
+/// the WIRE while the STORE keeps it. Sibling of the oracle filter added to
+/// `scheduled_collapse_still_renders_the_unbounded_badge` above, which is a no-op on that
+/// fixture (nothing is stale there) — this test is what makes the distinction bite.
+///
+/// The store/wire split is the whole contract: `unbounded_loop_pile` must stay unfiltered
+/// because the boundary collapse and `zones::apply_zone_exit_cleanup`'s defuse both read it,
+/// so the liveness filter has to live in the projection.
+///
+/// MUTATIONS (RUN, measured over the 164-test loop/∞ blast radius):
+/// - Delete `if state.battlefield.contains(id)` from `derive_views`' pile loop ⇒ row (1) reds
+///   here ("the wire omits the stale member (viewer None)") and NOTHING else moves — 1 failed
+///   / 163 passed. That zero collateral is the finding, not a footnote: before this test, the
+///   pile loop's liveness filter had no runnable guard at all. In particular the oracle filter
+///   added to `scheduled_collapse_still_renders_the_unbounded_badge` stays GREEN under this
+///   mutation, because no member is stale on that fixture — the filter there is latent
+///   correctness, and THIS test is what makes the distinction bite.
+/// - "Fix" it by pruning the STORE instead of the wire (drop the departing id from
+///   `unbounded_loop_pile` in `zones::apply_zone_exit_cleanup`) ⇒ rows (1), (2) and (4) go
+///   GREEN and only row (3) reds. Row (3) is the discriminator against that wrong fix.
+#[test]
+fn stale_pile_member_is_omitted_from_the_wire_but_kept_in_the_store() {
+    use engine::game::zones::move_to_zone;
+    use engine::types::zones::Zone;
+    use std::collections::BTreeSet;
+
+    let mut state = r6a_offer_state();
+    assert!(
+        matches!(state.waiting_for, WaitingFor::LoopShortcut { proposer, .. } if proposer == P0),
+        "reach-guard: at the offer, got {:?}",
+        state.waiting_for
+    );
+    r6a_declare_and_accept_all(&mut state, P0, 200);
+
+    let stored: BTreeSet<ObjectId> = state
+        .unbounded_loop_pile
+        .get(&P0)
+        .expect("the object-growth accept registers a ∞ pile")
+        .clone();
+    assert!(
+        stored.len() >= 2,
+        "reach-guard: this rig's pile has >= 2 members, so removing ONE leaves a non-empty \
+         wire — the case is about a STALE member, not about the whole backing set dying \
+         (that is `object_growth_infinity_row_dies_with_its_last_pile_member`), got {}",
+        stored.len()
+    );
+    assert!(
+        stored.iter().all(|id| state.battlefield.contains(id)),
+        "reach-guard: BEFORE the departure every stored member is on the battlefield, so the \
+         wire/store divergence below is caused by the departure and nothing else"
+    );
+
+    let departed = *stored.iter().next().unwrap();
+    let mut events: Vec<GameEvent> = Vec::new();
+    move_to_zone(&mut state, departed, Zone::Graveyard, &mut events);
+    assert!(
+        !state.battlefield.contains(&departed),
+        "the departure really happened (CR 110.1: it stopped being a permanent)"
+    );
+
+    // (3) THE STORE IS NOT FILTERED. This is the discriminator against a "fix" that prunes
+    //     `unbounded_loop_pile` itself: that mutation satisfies (1), (2) and (4) and reds only
+    //     this row. The store must survive because the boundary collapse and the zone-exit
+    //     defuse both read it.
+    assert!(
+        state
+            .unbounded_loop_pile
+            .get(&P0)
+            .is_some_and(|pile| pile.contains(&departed)),
+        "(3) the STORE must still carry the departed member — only the wire filters"
+    );
+
+    let expected: BTreeSet<ObjectId> = stored
+        .iter()
+        .copied()
+        .filter(|id| state.battlefield.contains(id))
+        .collect();
+    assert_eq!(
+        expected.len(),
+        stored.len() - 1,
+        "control: exactly ONE stored member became stale"
+    );
+
+    for viewer in [None, Some(P0), Some(P1), Some(P2), Some(PlayerId(3))] {
+        let views = engine::game::derived_views::derive_views(&state, viewer);
+        let wire: BTreeSet<ObjectId> = views.unbounded_pile.iter().copied().collect();
+        assert!(
+            !wire.contains(&departed),
+            "(1) the wire omits the stale member (viewer {viewer:?})"
+        );
+        assert_eq!(
+            wire, expected,
+            "(2) EXACT membership: the wire is stored ∩ battlefield, so a projection that \
+             dropped EXTRA members fails here too (viewer {viewer:?})"
+        );
+        assert_eq!(
+            views.unbounded_pile.len(),
+            stored.len() - 1,
+            "(4) exactly one member is lost between store and wire (viewer {viewer:?})"
+        );
+    }
+
+    // The ROW survives: the rest of the pile still backs the axis. This is the `Some(true)`
+    // arm of `derived_views::object_growth_backing` — a partial departure is not a revocation.
+    let axes: Vec<ResourceAxis> = engine::game::derived_views::derive_views(&state, None)
+        .unbounded_resources
+        .iter()
+        .map(|row| row.axis)
+        .collect();
+    assert!(
+        axes.contains(&ResourceAxis::TokensCreated),
+        "one stale member leaves live backing behind, so the ∞ row persists, got {axes:?}"
     );
 }
 
