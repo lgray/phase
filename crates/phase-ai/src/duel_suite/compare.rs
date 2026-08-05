@@ -54,6 +54,12 @@ pub struct CompareRow {
     /// `None → Some(_)` — games that started resolving.
     pub draw_to_decisive: usize,
     pub unchanged: usize,
+    /// Baseline samples the comparison could not examine, and current samples it never
+    /// visited. Carried on the row for the same reason every other axis is: the verdict
+    /// chain is first-match-wins, so whichever arm fires suppresses every other arm's
+    /// message, and a column is the only surface that survives that suppression.
+    pub unpaired_baseline: usize,
+    pub unpaired_current: usize,
     pub sign_test_p: Option<f64>,
     pub draw_sign_test_p: Option<f64>,
     pub status: CompareStatus,
@@ -79,7 +85,20 @@ impl CompareReport {
 pub enum CompareError {
     Io(std::io::Error),
     Parse(serde_json::Error),
-    SchemaMismatch { baseline: u32, current: u32 },
+    SchemaMismatch {
+        baseline: u32,
+        current: u32,
+    },
+    /// A configuration that defines what a seed *means* differs between the reports, so
+    /// pairing by seed number would compare two unrelated games and call the difference
+    /// drift. One parameterized variant rather than a sibling per field, mirroring
+    /// `PerfCompareError::WorkloadMismatch`, which already solves this for the perf
+    /// comparator.
+    WorkloadMismatch {
+        field: &'static str,
+        baseline: String,
+        current: String,
+    },
 }
 
 impl std::fmt::Display for CompareError {
@@ -90,6 +109,15 @@ impl std::fmt::Display for CompareError {
             CompareError::SchemaMismatch { baseline, current } => write!(
                 f,
                 "schema_version mismatch: baseline={baseline} current={current}"
+            ),
+            CompareError::WorkloadMismatch {
+                field,
+                baseline,
+                current,
+            } => write!(
+                f,
+                "{field} mismatch: baseline={baseline} current={current} — \
+                 the reports describe different workloads and cannot be paired by seed"
             ),
         }
     }
@@ -128,6 +156,36 @@ pub fn compare(
         return Err(CompareError::SchemaMismatch {
             baseline: baseline.schema_version,
             current: current.schema_version,
+        });
+    }
+
+    // Everything below pairs games by seed NUMBER. That is only meaningful while both
+    // reports derive their seeds the same way and play them under the same AI, so the two
+    // inputs that define what a seed means are checked before any row is classified.
+    //
+    // `games_per_matchup` is deliberately NOT here. It changes how MANY seeds exist, not
+    // what a seed means, so the samples that do pair are still comparable — and the nightly
+    // job runs `--games 100` against a `games_per_matchup: 10` baseline today, so erroring
+    // would break a live workflow instead of informing it. That difference is surfaced as
+    // the unpaired counters below, which is the honest treatment: it was previously
+    // discarded in silence.
+    //
+    // `card_data_hash` is also not here: the committed baseline's hash matches no card-data
+    // present on any current checkout, so gating it would fail every run immediately. The
+    // perf comparator reaches the same conclusion — it carries card-data hashes as
+    // informational report fields rather than as a guard.
+    if baseline.base_seed != current.base_seed {
+        return Err(CompareError::WorkloadMismatch {
+            field: "base_seed",
+            baseline: baseline.base_seed.to_string(),
+            current: current.base_seed.to_string(),
+        });
+    }
+    if baseline.difficulty != current.difficulty {
+        return Err(CompareError::WorkloadMismatch {
+            field: "difficulty",
+            baseline: baseline.difficulty.clone(),
+            current: current.difficulty.clone(),
         });
     }
 
@@ -180,6 +238,8 @@ fn classify_row(
             decisive_to_draw: 0,
             draw_to_decisive: 0,
             unchanged: 0,
+            unpaired_baseline: 0,
+            unpaired_current: 0,
             sign_test_p: None,
             draw_sign_test_p: None,
             status: CompareStatus::Removed,
@@ -209,6 +269,8 @@ fn classify_row(
                 decisive_to_draw: 0,
                 draw_to_decisive: 0,
                 unchanged: 0,
+                unpaired_baseline: 0,
+                unpaired_current: 0,
                 sign_test_p: None,
                 draw_sign_test_p: None,
                 status,
@@ -222,21 +284,31 @@ fn classify_row(
             let paired = paired_seed_shift(b, c);
             let avg_turn_delta = c.avg_turns - b.avg_turns;
 
-            // TIER ORDER IS LOAD-BEARING. Two earlier drafts of this comment overclaimed what it
-            // buys — the first said "no input that reaches Fail or Warn today can change verdict"
-            // (false: Warn escalates), the second said "nothing with a flat draw axis changes
-            // verdict" (false once the status axis landed in the same commit). Both were caught by
-            // review running the claim through the compiled base. So, by construction and stated
-            // to its exact edge:
+            // TIER ORDER IS LOAD-BEARING. THREE earlier drafts of this comment overclaimed what
+            // it buys — "no input that reaches Fail or Warn today can change verdict" (false:
+            // Warn escalates), "nothing with a flat draw axis changes verdict" (false once the
+            // status axis landed in the same commit), and clause 2 as previously written (false
+            // once the unpaired axis landed, because its precondition named only the axes that
+            // existed when it was written). Every one was caught by review running the claim
+            // through the compiled base. The failure mode is always identical: a precondition
+            // enumerated over today's axes, silently falsified by tomorrow's. So — stated to its
+            // exact edge, and explicitly scoped to the axes that exist NOW:
             //
-            //   1. Nothing that reaches Fail today changes verdict. The W/L Fail arm is still
-            //      first and its counters are byte-identical to before, so it wins every input it
-            //      used to win.
-            //   2. A row whose draw counters are EQUAL and where NEITHER report's status is
-            //      `Fail` takes precisely the pre-change path. That is the full precondition, not
-            //      a draw-axis-only one: every new guard below needs either unequal draw counters
-            //      or a `Fail` on one side, so with both absent none can fire. This is what keeps
-            //      identity comparisons and every unaffected regression bit-for-bit unchanged.
+            //   0. Every claim below presupposes two COMPARABLE reports. `compare` rejects a
+            //      mismatched `base_seed` or `difficulty` with `WorkloadMismatch` before any row
+            //      is classified, so such a pair now yields no verdict at all — INCLUDING pairs
+            //      that would previously have produced a Fail. That is intended, not a
+            //      regression: a verdict built by pairing seed numbers across two different
+            //      workloads was never meaningful, it merely looked like one.
+            //   1. Given comparable reports, nothing that reaches Fail today changes verdict. The
+            //      W/L Fail arm is still first and its counters are byte-identical to before, so
+            //      it wins every input it used to win.
+            //   2. A row whose draw counters are EQUAL, whose seed sets match EXACTLY, and where
+            //      NEITHER report's status is `Fail` takes precisely the pre-change path. All
+            //      three conjuncts are required, one per guard added since: every new arm below
+            //      needs unequal draw counters, or a `Fail` on one side, or an unmatched seed, so
+            //      with all three absent none can fire. This is what keeps identity comparisons
+            //      and every unaffected regression bit-for-bit unchanged.
             //   3. A W/L *Warn* DOES escalate to Fail — via the draw Fail arm when the draw axis
             //      is significantly negative, and via the status Fail arm when the matchup newly
             //      fails its own suite check. Both escalations are intended: those are the
@@ -246,6 +318,12 @@ fn classify_row(
             //      and `status_regression_escalates_an_insignificant_win_loss_warn` — one per
             //      escalating arm, because a claim about an arm that no test exercises is how the
             //      first two drafts of this comment stayed wrong.
+            //   4. A row that previously Passed with unmatched seeds now Warns. This is the
+            //      false-green the unpaired arm exists to close: two reports sharing no seeds at
+            //      all scored zero on every counter and passed. Pinned per direction —
+            //      `an_unmatched_baseline_sample_warns_instead_of_passing` and
+            //      `an_extra_current_sample_warns_instead_of_passing` — because one fixture
+            //      covering both directions would let either direction rot unnoticed.
             //
             // Do not reorder to group same-axis arms together: moving either Fail arm below the
             // W/L Warn arm silently demotes its clause-3 escalation back to Warn. Both reorders
@@ -357,6 +435,28 @@ fn classify_row(
                     CompareStatus::Warn,
                     Some(format!("mirror avg-turn drift {avg_turn_delta:+.1} turns")),
                 )
+            } else if paired.unpaired_baseline > 0 || paired.unpaired_current > 0 {
+                // LAST of the Warn arms, and the position is deliberate in both directions.
+                //
+                // Not higher: every arm above reports measured drift, which is what the gate
+                // exists to find. This one reports reduced COVERAGE — it says the other
+                // numbers rest on fewer samples than the reports contain, not that anything
+                // regressed. The nightly runs `--games 100` against a 10-game baseline, so
+                // this condition is true on every row every night; ranking it above the drift
+                // arms would replace every real headline with a coverage notice.
+                //
+                // Not absent: without it, two reports sharing no seeds at all produce zero on
+                // every counter and return Pass, which is the false-green this arm exists to
+                // close. Both counters share one arm because the remedy is identical — align
+                // the workloads — and splitting them would be two siblings differing only in
+                // a direction label, with the direction already carried by its own column.
+                (
+                    CompareStatus::Warn,
+                    Some(format!(
+                        "incomplete pairing: {} baseline sample(s) unmatched, {} current sample(s) never compared",
+                        paired.unpaired_baseline, paired.unpaired_current,
+                    )),
+                )
             } else {
                 (CompareStatus::Pass, None)
             };
@@ -374,6 +474,8 @@ fn classify_row(
                 decisive_to_draw: paired.decisive_to_draw,
                 draw_to_decisive: paired.draw_to_decisive,
                 unchanged: paired.unchanged,
+                unpaired_baseline: paired.unpaired_baseline,
+                unpaired_current: paired.unpaired_current,
                 sign_test_p: paired.sign_test_p,
                 draw_sign_test_p: paired.draw_sign_test_p,
                 status,
@@ -392,6 +494,15 @@ struct PairedSeedShift {
     /// `None → Some(_)`: a game that used to stall now resolves. The improvement signal.
     draw_to_decisive: usize,
     unchanged: usize,
+    /// Baseline games whose seed is absent from the current report — samples the comparison
+    /// could not examine. Previously a bare `continue`: the sample vanished and every
+    /// counter below stayed silent about it, so a pair of reports sharing no seeds at all
+    /// scored zero on every axis and returned Pass.
+    unpaired_baseline: usize,
+    /// Current games whose seed is absent from the baseline. Pairing walks the baseline, so
+    /// these were never visited at all — a strictly larger current run could add any number
+    /// of losses and no counter would move.
+    unpaired_current: usize,
     sign_test_p: Option<f64>,
     /// Sign test on the draw axis, computed exactly like `sign_test_p` is on the win/loss axis.
     draw_sign_test_p: Option<f64>,
@@ -405,11 +516,23 @@ fn paired_seed_shift(baseline: &MatchupResult, current: &MatchupResult) -> Paire
     let mut decisive_to_draw = 0;
     let mut draw_to_decisive = 0;
     let mut unchanged = 0;
+    let mut unpaired_baseline = 0;
+
+    // Seeds present on both sides. Counting the intersection lets the current-side leftover
+    // be derived by subtraction instead of walked a second time, and it stays correct if a
+    // report ever repeats a seed (`current_by_seed` keeps one entry per seed, so deriving
+    // from `games.len()` alone would undercount).
+    let mut paired = 0usize;
 
     for baseline_game in &baseline.games {
         let Some(current_game) = current_by_seed.get(&baseline_game.seed) else {
+            // NOT a bare `continue` any more. A skipped sample is a sample the comparison
+            // could not examine, and staying silent about it is how a partial comparison
+            // reported Pass with every counter at zero.
+            unpaired_baseline += 1;
             continue;
         };
+        paired += 1;
         // EXHAUSTIVE, no `_` fallback. The wildcard this replaces is how the decisive→draw class
         // became invisible: it swept `Some(_) → None` into `unchanged`, so a matchup could lose
         // most of its winners and the comparison would report no movement at all. Listing every
@@ -435,12 +558,20 @@ fn paired_seed_shift(baseline: &MatchupResult, current: &MatchupResult) -> Paire
     let draw_sign_test_p = (draw_flips > 0)
         .then(|| sign_test_mid_p_upper_tail(draw_flips, decisive_to_draw.max(draw_to_decisive)));
 
+    // Current games never visited by the loop above, because pairing walks the baseline.
+    // `current_by_seed` is deduplicated by seed, so this is the count of distinct current
+    // seeds the baseline does not contain — saturating because a repeated baseline seed can
+    // push `paired` above the map's length without meaning anything went uncompared.
+    let unpaired_current = current_by_seed.len().saturating_sub(paired);
+
     PairedSeedShift {
         flipped_w_to_l,
         flipped_l_to_w,
         decisive_to_draw,
         draw_to_decisive,
         unchanged,
+        unpaired_baseline,
+        unpaired_current,
         sign_test_p,
         draw_sign_test_p,
     }
@@ -494,6 +625,8 @@ const COLUMNS: &[&str] = &[
     "dec→draw",
     "draw→dec",
     "draw sign p",
+    "unpaired base",
+    "unpaired cur",
     "Δ avg turns",
     "suite status",
     "status",
@@ -565,6 +698,8 @@ fn render_markdown(report: &CompareReport) -> String {
             row.decisive_to_draw.to_string(),
             row.draw_to_decisive.to_string(),
             draw_sign_p_cell,
+            row.unpaired_baseline.to_string(),
+            row.unpaired_current.to_string(),
             avg_turn_cell,
             suite_status_cell,
             status_str(row.status).to_string(),
@@ -1405,6 +1540,187 @@ mod tests {
     ///
     /// The fixture gives every numeric axis a DISTINCT value (2, 3, 4, 1, and two different
     /// p-values), so no pair of cells can be transposed without changing the rendered text.
+    /// Condition: only `unpaired_baseline` moves. Every paired seed is UNCHANGED, so every
+    /// other axis reads zero — before this arm existed the row scored zero on everything and
+    /// returned Pass while half its samples went unexamined.
+    #[test]
+    fn an_unmatched_baseline_sample_warns_instead_of_passing() {
+        let before: &[(u64, Option<u8>, u32)] = &[
+            (1, Some(0), 10),
+            (2, Some(1), 10),
+            (3, Some(0), 10),
+            (4, Some(1), 10),
+        ];
+        // Seeds 3 and 4 never ran in current. The two that DID pair are identical.
+        let after: &[(u64, Option<u8>, u32)] = &[(1, Some(0), 10), (2, Some(1), 10)];
+
+        let report = compare(
+            &mk_report(vec![mk_result_from_games("partial", before)]),
+            &mk_report(vec![mk_result_from_games("partial", after)]),
+            &CompareOptions,
+        )
+        .unwrap();
+        let row = &report.rows[0];
+
+        // PREMISE: every other axis really is flat, so the verdict below can only come from
+        // the unpaired arm. Without this the test would pass even if some other arm fired.
+        assert_eq!(
+            (
+                row.flipped_w_to_l,
+                row.flipped_l_to_w,
+                row.decisive_to_draw,
+                row.draw_to_decisive
+            ),
+            (0, 0, 0, 0)
+        );
+        assert_eq!((row.unpaired_baseline, row.unpaired_current), (2, 0));
+        assert_eq!(row.status, CompareStatus::Warn);
+        assert!(!report.any_fail());
+
+        let rendered = render_markdown(&report);
+        assert_eq!(cell(&rendered, "partial", "unpaired base"), "2");
+        assert_eq!(cell(&rendered, "partial", "unpaired cur"), "0");
+        assert_eq!(cell(&rendered, "partial", "status"), "WARN");
+    }
+
+    /// The other direction, and the one no counter could ever have seen: pairing walks the
+    /// BASELINE, so extra current samples were not skipped — they were never visited. A
+    /// current run could add any number of losses here and every counter would stay zero.
+    #[test]
+    fn an_extra_current_sample_warns_instead_of_passing() {
+        let before: &[(u64, Option<u8>, u32)] = &[(1, Some(0), 10), (2, Some(1), 10)];
+        let after: &[(u64, Option<u8>, u32)] = &[
+            (1, Some(0), 10),
+            (2, Some(1), 10),
+            (3, Some(1), 10),
+            (4, Some(1), 10),
+        ];
+
+        let report = compare(
+            &mk_report(vec![mk_result_from_games("extra", before)]),
+            &mk_report(vec![mk_result_from_games("extra", after)]),
+            &CompareOptions,
+        )
+        .unwrap();
+        let row = &report.rows[0];
+
+        assert_eq!(
+            (
+                row.flipped_w_to_l,
+                row.flipped_l_to_w,
+                row.decisive_to_draw,
+                row.draw_to_decisive
+            ),
+            (0, 0, 0, 0)
+        );
+        // Mirrored against the test above: this one must be (0, 2), not (2, 0). A single
+        // fixture covering "some unpaired sample exists" would pass with the two counters
+        // swapped, which is the transposition defect this PR already had to fix once.
+        assert_eq!((row.unpaired_baseline, row.unpaired_current), (0, 2));
+        assert_eq!(row.status, CompareStatus::Warn);
+        assert!(!report.any_fail());
+
+        let rendered = render_markdown(&report);
+        assert_eq!(cell(&rendered, "extra", "unpaired base"), "0");
+        assert_eq!(cell(&rendered, "extra", "unpaired cur"), "2");
+    }
+
+    /// The arm is LAST, so a row with real drift keeps the drift headline and reports the
+    /// coverage gap through its columns. This pins the tier position: promoting the unpaired
+    /// arm above the W/L arm would replace this reason string and flip this test.
+    #[test]
+    fn an_unpaired_sample_does_not_shadow_a_real_drift_reason() {
+        let before: &[(u64, Option<u8>, u32)] = &[
+            (1, Some(0), 10),
+            (2, Some(0), 10),
+            (3, Some(0), 10),
+            (4, Some(0), 10),
+        ];
+        let after: &[(u64, Option<u8>, u32)] = &[
+            (1, Some(1), 10),
+            (2, Some(1), 10),
+            (3, Some(1), 10),
+            (5, Some(1), 10),
+        ];
+
+        let report = compare(
+            &mk_report(vec![mk_result_from_games("both", before)]),
+            &mk_report(vec![mk_result_from_games("both", after)]),
+            &CompareOptions,
+        )
+        .unwrap();
+        let row = &report.rows[0];
+
+        assert_eq!((row.unpaired_baseline, row.unpaired_current), (1, 1));
+        assert!(
+            row.reason.as_deref().unwrap().starts_with("paired"),
+            "drift reason must survive; got {:?}",
+            row.reason
+        );
+        // ...and the coverage gap is still visible, because columns outlive suppression.
+        let rendered = render_markdown(&report);
+        assert_eq!(cell(&rendered, "both", "unpaired base"), "1");
+        assert_eq!(cell(&rendered, "both", "unpaired cur"), "1");
+    }
+
+    #[test]
+    fn a_different_base_seed_is_refused_rather_than_compared() {
+        let mut baseline = mk_report(vec![mk_result("m", 5, 10, SuiteStatus::Pass)]);
+        let mut current = mk_report(vec![mk_result("m", 5, 10, SuiteStatus::Pass)]);
+        baseline.base_seed = 1;
+        current.base_seed = 2;
+
+        let err = compare(&baseline, &current, &CompareOptions).unwrap_err();
+        assert!(
+            matches!(&err, CompareError::WorkloadMismatch { field, .. } if *field == "base_seed"),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn a_different_difficulty_is_refused_rather_than_compared() {
+        let baseline = mk_report(vec![mk_result("m", 5, 10, SuiteStatus::Pass)]);
+        let mut current = mk_report(vec![mk_result("m", 5, 10, SuiteStatus::Pass)]);
+        current.difficulty = "cEDH".into();
+
+        let err = compare(&baseline, &current, &CompareOptions).unwrap_err();
+        assert!(
+            matches!(&err, CompareError::WorkloadMismatch { field, .. } if *field == "difficulty"),
+            "got {err:?}"
+        );
+    }
+
+    /// The control arm for both guards above. Without it, a mutant that made `compare` reject
+    /// EVERY pair would satisfy the two mismatch tests and nothing would notice.
+    #[test]
+    fn matching_workloads_are_compared_normally() {
+        let baseline = mk_report(vec![mk_result("m", 5, 10, SuiteStatus::Pass)]);
+        let current = mk_report(vec![mk_result("m", 5, 10, SuiteStatus::Pass)]);
+
+        assert_eq!(baseline.base_seed, current.base_seed);
+        assert_eq!(baseline.difficulty, current.difficulty);
+        let report = compare(&baseline, &current, &CompareOptions).expect("must compare");
+        assert_eq!(report.rows.len(), 1);
+    }
+
+    /// `games_per_matchup` differing must NOT error: the nightly runs `--games 100` against a
+    /// 10-game baseline, so erroring would break a live workflow. The samples that pair are
+    /// still comparable, and the ones that do not are surfaced as unpaired counts instead.
+    #[test]
+    fn a_different_games_per_matchup_is_reported_not_refused() {
+        let before: &[(u64, Option<u8>, u32)] = &[(1, Some(0), 10)];
+        let after: &[(u64, Option<u8>, u32)] = &[(1, Some(0), 10), (2, Some(0), 10)];
+        let mut baseline = mk_report(vec![mk_result_from_games("n", before)]);
+        let mut current = mk_report(vec![mk_result_from_games("n", after)]);
+        baseline.games_per_matchup = 1;
+        current.games_per_matchup = 2;
+
+        let report = compare(&baseline, &current, &CompareOptions).expect("must not refuse");
+        assert_eq!(report.rows[0].unpaired_current, 1);
+        assert_eq!(report.rows[0].status, CompareStatus::Warn);
+        assert!(!report.any_fail());
+    }
+
     #[test]
     fn markdown_cells_carry_their_own_column_values() {
         let before: &[(u64, Option<u8>, u32)] = &[
@@ -1415,7 +1731,12 @@ mod tests {
             (5, Some(1), 10),
             (6, Some(0), 10),
             (7, Some(0), 10),
-            (8, Some(1), 10),
+            // p0 win, and still `Some(_) → None` in `after`, so this separates the two win-rate
+            // cells WITHOUT touching any of the four counters. Earlier this test made the rates
+            // differ by giving `after` an extra seed absent from `before` and leaning on
+            // `paired_seed_shift` skipping it in silence. That skip is now counted and warned on,
+            // so the fixture is re-derived to stand on matched seed sets instead of on a hole.
+            (8, Some(0), 10),
             (9, Some(1), 10),
             (10, None, 10),
             (11, Some(0), 10),
@@ -1432,10 +1753,6 @@ mod tests {
             (9, None, 10),
             (10, Some(0), 10),
             (11, Some(0), 10),
-            // Present only in the current report. `paired_seed_shift` walks the BASELINE games and
-            // skips unmatched seeds, so this moves the win rate without touching a flip counter —
-            // which is what makes the two p0% cells differ while the four counters stay distinct.
-            (12, Some(0), 10),
         ];
         let baseline = mk_report(vec![mk_result_from_games("distinct", before)]);
         let mut current_result = mk_result_from_games("distinct", after);
@@ -1460,11 +1777,17 @@ mod tests {
             winrate(row.baseline.as_ref().unwrap()),
             winrate(row.current.as_ref().unwrap())
         );
+        // PREMISE: and it achieves that on MATCHED seed sets, so this test measures the
+        // transposition property alone. If a future edit reintroduces an unmatched seed here, the
+        // row would also start carrying the unpaired axis and this fixture would quietly become
+        // two tests wearing one name.
+        assert_eq!((row.unpaired_baseline, row.unpaired_current), (0, 0));
 
         let rendered = render_markdown(&report);
         assert_eq!(cell(&rendered, "distinct", "exercises"), "AggroPressure");
-        assert_eq!(cell(&rendered, "distinct", "baseline p0%"), "45%");
-        assert_eq!(cell(&rendered, "distinct", "current p0%"), "50%");
+        // 6/11 vs 5/11 — separated by the seed-8 outcome, not by an uncompared sample.
+        assert_eq!(cell(&rendered, "distinct", "baseline p0%"), "55%");
+        assert_eq!(cell(&rendered, "distinct", "current p0%"), "45%");
         assert_eq!(cell(&rendered, "distinct", "flips W→L"), "2");
         assert_eq!(cell(&rendered, "distinct", "flips L→W"), "3");
         assert_eq!(cell(&rendered, "distinct", "dec→draw"), "4");
