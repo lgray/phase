@@ -410,9 +410,14 @@ fn classify_row(
                 //     wrong as one that hid a regression (the same reason the W/L tier warns on
                 //     L→W and the draw tier warns on draw→decisive).
                 //   * STILL failing is reported every run rather than passing quietly. Review
-                //     showed this is reachable, not theoretical: `--refresh-baseline` writes the
-                //     current report verbatim with no `any_fail` check, so one refresh from a
-                //     failing run would otherwise make that matchup exit 0 forever.
+                //     showed this is reachable, not theoretical: nothing revalidates a committed
+                //     baseline when it is loaded, so a baseline that already sanctions a failure
+                //     keeps sanctioning it, and that matchup exits 0 forever. (The wording is
+                //     deliberately about the baseline rather than about `--refresh-baseline`
+                //     writing without a verdict check: that WAS the mechanism, and #7029 adds the
+                //     missing check, so naming it here would make this comment false the day that
+                //     lands. Reachability does not depend on it — a baseline blessed before the
+                //     guard, or hand-edited, is unaffected by any guard on the write path.)
                 //
                 // It is a Warn and not a Fail deliberately: the exit code answers "did this change
                 // make things worse", and the baseline — however it got that way — already
@@ -1445,9 +1450,12 @@ mod tests {
     /// A matchup that was ALREADY failing in the baseline and is still failing is reported every
     /// run, not passed over in silence.
     ///
-    /// Reachable, not theoretical: `--refresh-baseline` writes the current report verbatim with no
-    /// `any_fail` check, so a single refresh from a failing run would otherwise make that matchup
-    /// exit 0 forever. Warn rather than Fail is deliberate — see the arm's comment.
+    /// Reachable, not theoretical, and durably so: nothing revalidates a committed baseline on
+    /// load, so a baseline that already sanctions a failure keeps sanctioning it regardless of
+    /// what guards the write path. (#7029 adds the missing verdict check to `--refresh-baseline`;
+    /// this row stays reachable through baselines blessed before it, or hand-edited.)
+    ///
+    /// Warn rather than Fail is deliberate — see the arm's comment.
     #[test]
     fn a_matchup_still_failing_is_reported_every_run() {
         let games: &[(u64, Option<u8>, u32)] = &[(1, Some(0), 10), (2, Some(1), 10)];
