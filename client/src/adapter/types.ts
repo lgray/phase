@@ -2642,6 +2642,10 @@ export interface UnboundedResourceView {
    * marks the wrong controller's row. The engine computes this on the controller key, which is
    * the only place that identity still exists. This field is that answer.
    *
+   * That collision does not currently change what renders — the badge folds rows to families, and
+   * a key collision implies the same family — so this is a latent divergence in the data rather
+   * than a rendering bug that was fixed. It becomes visible the moment anything renders per-axis.
+   *
    * Meaningful on `unbounded_resources`. Entries in `scheduled_collapse` leave it unset —
    * membership in that channel already IS the scheduled fact.
    */

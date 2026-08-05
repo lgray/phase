@@ -79,14 +79,17 @@ describe("unboundedFamilyViews", () => {
 
   it("U5/rows-drive: no ∞ rows ⇒ no views", () => {
     // ENGINE-REACHABLE, not a mere prop contract: `derive_views` drops a TOKEN-axis ∞ row whose
-    // entire registered pile has left the battlefield while the accepted collapse stash — and
-    // therefore its `scheduled_collapse` tag — survives, because the boundary still cashes that
-    // axis out. (Token axis specifically: the engine has no per-axis backing authority for counter
-    // axes yet, so this mechanism cannot orphan a counter tag.) Produced through the production
-    // `zones::move_to_zone` chokepoint and witnessed by
-    // `combo_infinite_pile::object_growth_infinity_row_dies_with_its_last_pile_member`, whose
-    // subject arm asserts both halves — tag present, row absent. This row pins the display
-    // consequence: an orphan tag renders nothing.
+    // entire registered pile has left the battlefield while the accepted collapse stash survives,
+    // because the boundary still cashes that axis out. (Token axis specifically: the engine has no
+    // per-axis backing authority for counter axes yet.) So rows-empty is a state the engine really
+    // produces, through the `zones::move_to_zone` chokepoint —
+    // `combo_infinite_pile::object_growth_infinity_row_dies_with_its_last_pile_member` asserts it.
+    //
+    // SCOPE OF WHAT THIS PINS, stated because the obvious claim is not available: this function
+    // takes no tag argument, so NO input to it can distinguish "an orphan tag renders nothing"
+    // from any other tag behaviour. That property follows from the call sites iterating rows, not
+    // from anything assertable here. What this row pins is narrower and real — no rows in, no
+    // families out.
     expect(unboundedFamilyViews([])).toEqual([]);
     // PINNED POSITIVE, in the same `it`: without it a constant `return []` satisfies the row.
     const present = unboundedFamilyViews([row(TOKENS, 0, true)]);

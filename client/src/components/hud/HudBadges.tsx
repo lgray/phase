@@ -435,12 +435,14 @@ export const familyOf = (axis: ResourceAxis): ResourceAxisFamily =>
  * identity, attribution, and which axes are scheduled — this decides nothing.
  *
  * READS `row.scheduled`, and deliberately does NOT join `scheduled_collapse` to reconstruct it.
- * Both channels key on the engine's ATTRIBUTION player, so a victim-attributed axis (`Life(p)` and
- * friends) names its victim rather than the loop that produced it: two controllers draining one
- * victim emit a row from one and a tag from the other under the identical key, and no join on this
- * side of the wire can tell them apart. The engine answers it on the controller key, before
- * attribution rewrites it. A join is also a computation over game state, which per `CLAUDE.md` is
- * never the display layer's to perform.
+ * A join is a computation over game state, which per `CLAUDE.md` is never the display layer's to
+ * perform — that alone settles it. It is also not well-defined: both channels key on the engine's
+ * ATTRIBUTION player, so a victim-attributed axis (`Life(p)` and friends) names its victim rather
+ * than the loop that produced it, and two controllers draining one victim emit a row from one and
+ * a tag from the other under the identical key. The engine answers it on the controller key,
+ * before attribution rewrites it. (That collision does not currently change what RENDERS — the
+ * fold below is per-family and a key collision implies the same family — so this is a latent
+ * divergence, not a fixed rendering bug.)
  *
  * `scheduled_collapse` remains the authority for the accepted-collapse contract; rows drive the
  * display, so an orphan tag (an axis tagged with no row) correctly renders nothing.

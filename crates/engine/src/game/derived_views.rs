@@ -175,14 +175,22 @@ pub struct UnboundedResourceView {
     /// renders bounded (`∞→N`) rather than bare `∞`.
     ///
     /// Computed HERE, at the producing CONTROLLER key, and never by joining the two channels
-    /// downstream. That is not a style preference — a downstream join is measurably wrong.
-    /// Both channels key on [`attribution_player`], so a victim-attributed axis
-    /// (`Life(p)`/`DamageDealt(p)`/`LibraryDelta(p)`/`Poison(p)`) names its VICTIM; two
-    /// controllers draining the same victim then emit a row from one and a tag from the other
-    /// sharing the key `(victim, Life(victim))`, and any `(player, axis)` join marks the wrong
-    /// controller's row scheduled. The controller key is not recoverable after attribution, so
-    /// only the producing loop can answer this. Witnessed by
+    /// downstream. The primary reason is layering — a join is a computation over game state, which
+    /// the display layer does not perform (see `CLAUDE.md`). The supporting reason is that the
+    /// join is not even well-defined: both channels key on [`attribution_player`], so a
+    /// victim-attributed axis (`Life(p)`/`DamageDealt(p)`/`LibraryDelta(p)`/`Poison(p)`) names its
+    /// VICTIM; two controllers draining the same victim emit a row from one and a tag from the
+    /// other sharing the key `(victim, Life(victim))`, and any `(player, axis)` join marks the
+    /// wrong controller's row scheduled. The controller key is not recoverable after attribution,
+    /// so only the producing loop can answer it. Witnessed at ROW granularity by
     /// `two_controllers_draining_one_victim_do_not_cross_schedule`.
+    ///
+    /// HONEST BOUND ON THAT WITNESS: no current consumer has row granularity, so the mis-marked
+    /// row does not currently RENDER differently. `unboundedFamilyViews` folds rows to families
+    /// with OR, and a key collision implies the same player and axis — hence the same family — so
+    /// the wrongly-marked row is always OR'd against the correctly-marked one. The divergence is
+    /// real in the data and latent in the display; it becomes visible the moment anything renders
+    /// per-axis. Stated rather than left as an implied rendering bug.
     ///
     /// [`DerivedViews::scheduled_collapse`] remains the authority for the CR 732.2c contract
     /// (which collapse is accepted, and its bound); this flag is only its display shadow on a
@@ -1037,17 +1045,25 @@ pub fn derive_views(state: &GameState, viewer: Option<PlayerId>) -> DerivedViews
     // materialized `Mana(_)` axis that `mana_payment::refill_infinite_mana` keeps topping back up,
     // i.e. it hid a badge beside a pool the player can visibly keep spending.
     //
-    // The three `∞` SURFACE loops below therefore read only the `∞` stores and the LIVE
-    // battlefield; none consults `GameState::scheduled_collapse_axes`. The `scheduled_collapse`
-    // TAG loop is the deliberate exception and the only reader of that authority here — it
-    // projects the schedule instead of a surface, so it filters no surface and no surface reads
-    // it. (`clear_collapsed_materializations` used to be that fn's sole production caller; it is
-    // now one of two.) This sentence used to read "only their own stores",
+    // NO SURFACE IS FILTERED BY THE SCHEDULE — that, and only that, is the invariant here. Which
+    // rows/groups/pills EXIST is decided by the `∞` stores and the LIVE battlefield alone; nothing
+    // below hides a surface because a collapse is scheduled. The schedule is read to ANNOTATE, not
+    // to filter: the row loop calls `scheduled_display_axes` for each row's `scheduled` flag, and
+    // the tag loop calls it to project the schedule itself. Both are additive.
+    //
+    // Say it that way because the absolute version ("no surface reads it") was true when the tag
+    // loop was the only reader and became false the moment the row flag moved into the engine —
+    // a stale claim introduced by the commit that exists to fix stale claims is the one defect
+    // this change cannot afford, and it was introduced here anyway before a review caught it.
+    // (`GameState::scheduled_collapse_axes` has two production callers:
+    // `clear_collapsed_materializations` and `scheduled_display_axes`, the latter serving both
+    // loops below.) The same sentence previously read "only their own stores",
     // which the row guard below falsified the moment it was added: `object_growth_backing`
     // deliberately cross-reads the pile and counter-target stores, because whether a ROW is still
-    // live is a question about those backing sets, not about its own. Corrected here rather than
-    // left standing — a stale claim introduced by the commit that exists to fix stale claims is
-    // the one defect this change cannot afford. The stores are not filtered either:
+    // live is a question about those backing sets, not about its own. That makes twice this one
+    // paragraph has outlived a change to the code beneath it — the reason it is now phrased as an
+    // invariant ("no surface is FILTERED") rather than a census of who reads what. The stores are
+    // not filtered either:
     // `unbounded_resources` keeps the mark until the boundary applies the growth. (`unbounded_loop_enablers` is held in
     // lockstep with it as an ENGINE-STATE invariant required by no CR — but see the inertness note
     // above: for the object-growth class that map is EMPTY, so the lockstep is vacuously satisfied
@@ -1291,18 +1307,26 @@ fn turn_order_views(
 /// drifts when it is written twice, and it did — the guard originally lived only in the tag loop.
 ///
 /// SCOPE LIMIT — `Mana(_)` is excluded. This is about what the badge would TELL the player, not
-/// about which code path ends the axis:
-/// - The pool is ALREADY unbounded and spendable throughout the accept→boundary window
-///   (`mana_payment::refill_infinite_mana` re-tops it off the store after every action), so the
-///   chosen `N` does not bound what the player may spend. "A finite amount will be chosen" is
-///   simply false for this axis, while it is true for every deferred one.
+/// about which code path ends the axis, and it is scoped to THE WINDOW THE BADGE RENDERS IN
+/// (accept → CR 500.5 boundary). Inside that window:
+/// - The pool is already unbounded and spendable — `mana_payment::refill_infinite_mana` re-tops it
+///   off the store after every action — so the chosen `N` does not bound what the player may
+///   spend. "A finite amount will be chosen" is false for this axis while it is true for every
+///   deferred one, and the badge is only on screen here.
 /// - CR 500.5 ends the badge at the step/phase end when the pool empties, on a schedule the
 ///   accepted count does not move.
 ///
-/// Note this exclusion is NOT "no materialization touches mana": a `DriveSequence` names the
+/// ACROSS the boundary it is not unconditional, and the sentence above is deliberately not written
+/// as if it were: a `DriveSequence` collapse replays the captured sequence `N` times after that
+/// empty, so the post-collapse pool genuinely is bounded by `N`. The badge is gone by then.
+///
+/// Note this exclusion is also NOT "no materialization touches mana": a `DriveSequence` names the
 /// loop's whole `proposal.unbounded` set, so `clear_collapsed_materializations` really does drop
-/// the `Mana(_)` axis when that collapse applies. The badge still must not promise a bound the
-/// player's spendable pool never had.
+/// the `Mana(_)` axis when that collapse applies. (On the production path that drop is usually a
+/// no-op, because `turns::drain_pending_phase_transition_progress` has already removed the mana
+/// axis at CR 500.5 before the prompt that reaches it; it stays live for `debug_infinite_mana`
+/// seats, which that clear excludes.) The badge still must not promise a bound the player's
+/// spendable pool never had.
 fn scheduled_display_axes(state: &GameState, controller: PlayerId) -> BTreeSet<ResourceAxis> {
     state
         .pending_unbounded_materialization
