@@ -9881,6 +9881,12 @@ fn declining_a_shortcut_discards_only_the_decliners_own_driving_period() {
          period intact — a recorded period is evidence about the seat that recorded it, and \
          discarding it here suppresses THAT seat's own offer until it re-arms"
     );
+    assert!(
+        matches!(state.waiting_for, WaitingFor::Priority { .. }),
+        "CR 732.2a: preserving {opp:?}'s foreign period must not re-offer {proposer:?}'s declined \
+         shortcut within the same `apply()`; got {:?}",
+        state.waiting_for
+    );
 
     // ── OWN: the must-not-flip half. The Seam-2 suppressor is load-bearing for the decliner. ──
     let mut state = offer_state();
