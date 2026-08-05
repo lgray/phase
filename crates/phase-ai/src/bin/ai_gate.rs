@@ -4,13 +4,15 @@
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
+use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use engine::database::CardDatabase;
 use phase_ai::config::AiDifficulty;
 use phase_ai::duel_suite::compare::{
-    compare, emit_gate_verdict, load_report, print_markdown, render_error_markdown, CompareOptions,
+    compare, emit_gate_verdict, load_report, print_markdown, render_error_markdown, CompareError,
+    CompareOptions,
 };
 use phase_ai::duel_suite::run::{run_suite, SuiteOptions};
 
@@ -102,20 +104,31 @@ fn main() {
 
     // Read the baseline BEFORE the suite runs, and keep it in memory.
     //
-    // This is the root-cause half of the aliasing fix, and it is what the argument check above
-    // cannot give: reading first makes the comparison independent of ANYTHING the suite writes,
-    // including aliases this process cannot detect from paths at all — a hard link resolves to
-    // a different name and the same inode, so `same_file` calls it distinct while a write to
-    // one truncates the other. Order does not care how the alias was constructed.
+    // This is the root-cause half of the aliasing fix. The check above now recognises hard links
+    // too, so it is no longer the case that an alias can slip past it — but the two guards answer
+    // different questions and only one of them survives being wrong. `same_file` enumerates the
+    // ways two names can mean one file, and any such enumeration is a claim about the filesystem
+    // that a future filesystem can falsify. Reading first makes the COMPARISON independent of
+    // anything the suite writes, whatever the check missed. It cannot save the bytes — only
+    // refusing does that — so this is defence in depth, not a substitute.
     //
     // It also fails a missing or corrupt baseline in a second instead of after a full suite run,
     // which is the difference between a typo costing nothing and costing a hundred games.
     let baseline = match load_report(&args.baseline) {
         Ok(report) => Some(report),
-        // On a refresh there may be no baseline yet, and that is the normal first-run case.
-        Err(_) if args.refresh_baseline && !args.baseline.exists() => None,
-        Err(err) if args.refresh_baseline => {
-            eprintln!("could not read the old baseline for comparison: {err}");
+        // ABSENT is the only error a refresh may proceed through, and the narrowness is the
+        // point. Review found the earlier `Err(_) if refresh_baseline` arm logged every failure
+        // and carried on to `run_suite`, which then renamed the staged report over the file — so
+        // a baseline that was corrupt, truncated, or unreadable was DESTROYED rather than kept
+        // for diagnosis, and the replacement was established from an unexamined prior state.
+        // "I could not read it" is not evidence that it was worthless.
+        //
+        // Matched on `ErrorKind::NotFound` rather than `!args.baseline.exists()`: the old form
+        // asked a second, later question of the filesystem and answered the wrong one under a
+        // permission error, where the file exists but `exists()` reports false.
+        Err(CompareError::Io(err))
+            if args.refresh_baseline && err.kind() == ErrorKind::NotFound =>
+        {
             None
         }
         Err(err) => {
@@ -321,18 +334,28 @@ fn path_str(path: &Path) -> &str {
     path.to_str().unwrap_or("")
 }
 
-/// Whether two paths designate the same file, including through symlinks and `..`.
+/// Whether two paths designate the same file, including through symlinks, `..`, and hard links.
 ///
-/// `canonicalize` is the authority when a path exists, because it is the only thing that
-/// resolves symlinks — a plain string or `absolute()` comparison calls `baselines/x.json` and a
-/// symlink pointing at it different files, and then the write lands on the baseline anyway. The
-/// current-output side usually does NOT exist yet, so it falls back to canonicalizing the parent
-/// directory (which has to be real for the write to land) and rejoining the file name.
+/// Two layers, because they answer different questions and the cheap one is not sufficient.
+///
+/// **Identity first.** When both paths exist, `(dev, ino)` is the only thing that sees a hard
+/// link: `canonicalize` faithfully preserves two distinct names for one inode, so a path
+/// comparison calls them different files while `File::create` on either truncates both
+/// (`duel_suite::run::write_report`). Review found this and it is not hypothetical — it is the
+/// one alias a check on argument strings can never catch, and the destructive one.
+///
+/// **Paths second.** The current-output side usually does NOT exist yet, so there is no inode to
+/// compare; that case falls back to `canonicalize`, which still resolves symlinks and `..`, on
+/// the parent directory (which has to be real for the write to land) with the file name rejoined.
 ///
 /// Returns false when neither resolution is possible, which is the right default: an
 /// unresolvable path cannot be shown to alias, and refusing to run on a path we cannot inspect
 /// would break invocations that are fine.
 fn same_file(a: &Path, b: &Path) -> bool {
+    // Both sides exist => filesystem identity is decisive, and it subsumes the path check.
+    if let Some(identical) = same_inode(a, b) {
+        return identical;
+    }
     fn resolved(path: &Path) -> Option<PathBuf> {
         if let Ok(canonical) = std::fs::canonicalize(path) {
             return Some(canonical);
@@ -347,6 +370,27 @@ fn same_file(a: &Path, b: &Path) -> bool {
         (Some(x), Some(y)) => x == y,
         _ => false,
     }
+}
+
+/// `Some(true)` when both paths exist and name one inode, `Some(false)` when both exist and do
+/// not, `None` when the question cannot be answered — either side missing, or a platform with no
+/// inode concept, both of which leave the decision to the path-based fallback.
+///
+/// Split out rather than inlined so the `cfg` seam is one function with one contract, instead of
+/// a conditional block inside a predicate whose meaning would then differ per platform.
+#[cfg(unix)]
+fn same_inode(a: &Path, b: &Path) -> Option<bool> {
+    use std::os::unix::fs::MetadataExt;
+    let (a, b) = (std::fs::metadata(a).ok()?, std::fs::metadata(b).ok()?);
+    Some(a.dev() == b.dev() && a.ino() == b.ino())
+}
+
+/// Non-Unix has no portable inode, so identity is unanswerable and the path check stands alone.
+/// The gate is a developer/CI tool that runs on Linux; this arm exists so the crate still builds
+/// elsewhere, not because the weaker guarantee is considered acceptable there.
+#[cfg(not(unix))]
+fn same_inode(_a: &Path, _b: &Path) -> Option<bool> {
+    None
 }
 
 /// Where a refresh run stages its report before it earns the right to be the baseline.

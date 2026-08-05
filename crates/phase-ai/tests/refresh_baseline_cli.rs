@@ -10,15 +10,19 @@
 //! satisfied by a broken implementation: exiting non-zero while having clobbered the file is the
 //! bug itself, and leaving the file alone while exiting 0 would bless the run.
 //!
-//! These run the real CLI and deliberately never reach the card database — the argument check
-//! under test rejects before any of that — so they cost milliseconds and add no card-data load
-//! for `scripts/check-test-card-data-load.sh` to object to.
+//! These run the real CLI. The aliasing tests are rejected at the argument check and never reach
+//! the card database at all. The ones that must run the suite to reach what they test supply
+//! their own database — the literal `{}`, which `CardDatabase::from_export` accepts as an empty
+//! map because it deserialises a map of name→entry. Nothing here loads the ~90 MB export, so the
+//! file stays in the millisecond range and adds no per-test parse.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-/// Not a valid suite report, and that is deliberate: these tests must fail if the binary gets
-/// far enough to parse it, because getting that far means it also ran the suite.
+/// Not a valid suite report, and that is deliberate: a test using this as the baseline must fail
+/// if the binary ever parses it, because parsing it means it got further than the check under
+/// test. Usable only where the refusal precedes the baseline read — since the malformed-baseline
+/// fix, a refresh that reaches `load_report` refuses on this rather than running the suite.
 const SENTINEL: &str = r#"{"this":"is the trusted baseline, byte for byte"}"#;
 
 fn scratch(tag: &str) -> PathBuf {
@@ -30,6 +34,45 @@ fn scratch(tag: &str) -> PathBuf {
 fn seed_baseline(dir: &Path) -> PathBuf {
     let path = dir.join("suite-baseline.json");
     std::fs::write(&path, SENTINEL).expect("seed baseline");
+    path
+}
+
+/// A valid, empty card database: the export deserialises a map from card name to entry, so `{}`
+/// is a legal database with no cards. Returns the `--data-root` argument.
+fn empty_card_db(dir: &Path) -> String {
+    let root = dir.join("cards");
+    std::fs::create_dir_all(&root).expect("create data root");
+    std::fs::write(root.join("card-data.json"), "{}").expect("write card data");
+    root.display().to_string()
+}
+
+/// Record a real, parseable baseline by running the binary once.
+///
+/// Tests whose subject lies PAST the baseline read can no longer use `SENTINEL`: a refresh now
+/// refuses an existing baseline it cannot parse, so an invalid fixture would stop the run before
+/// it reached the thing under test — and would do so while still satisfying a naive
+/// "bytes unchanged" assertion. Recording a real one costs about two milliseconds, because an
+/// empty card database still yields one degenerate but playable matchup.
+fn record_baseline(dir: &Path, data_arg: &str, name: &str) -> PathBuf {
+    let path = dir.join(name);
+    let (code, stderr) = run(&[
+        "--refresh-baseline",
+        "--data-root",
+        data_arg,
+        "--baseline",
+        &path.display().to_string(),
+        "--current-output",
+        &dir.join("record-current.json").display().to_string(),
+        "--suite-filter",
+        "red-mirror",
+        "--games",
+        "1",
+    ]);
+    assert_eq!(
+        code,
+        Some(0),
+        "recording a baseline failed; stderr:\n{stderr}"
+    );
     path
 }
 
@@ -112,6 +155,325 @@ fn an_aliased_comparison_is_refused_before_the_baseline_can_be_overwritten() {
     assert!(
         stderr.contains("same file"),
         "the refusal must be about aliasing, not something later; stderr:\n{stderr}"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// The refusal block itself, executed.
+///
+/// An earlier round disclosed this as uncovered: the two predicates behind the refusal were unit
+/// tested, but the block that acts on them lived in a binary no test ran, so deleting or
+/// inverting it left the suite green. Reaching it looked like it needed a card database and a
+/// real suite run — minutes of CI for a local-only command.
+///
+/// It does not. `CardDatabase::from_export` deserialises a map, so `{}` is a VALID empty
+/// database, and a `--suite-filter` matching nothing selects no matchups, builds no decks and
+/// plays no games. The run therefore reaches `recorded_games() == 0` and refuses, in about five
+/// milliseconds, with no card data on disk.
+///
+/// The exit code is asserted as exactly 1 rather than merely non-zero, and that is what makes
+/// this test see the block instead of an early death: argument and database failures exit 2, so
+/// a mutant that stops the binary before the suite runs changes 1 to 2 and fails here.
+#[test]
+fn a_gameless_refresh_is_refused_by_the_block_and_leaves_the_baseline_untouched() {
+    let dir = scratch("gameless");
+    let data_arg = empty_card_db(&dir);
+    let baseline = record_baseline(&dir, &data_arg, "suite-baseline.json");
+    let trusted = std::fs::read_to_string(&baseline).expect("read baseline");
+
+    let (code, stderr) = run(&[
+        "--refresh-baseline",
+        "--data-root",
+        &data_arg,
+        "--baseline",
+        &baseline.display().to_string(),
+        "--current-output",
+        &dir.join("current.json").display().to_string(),
+        "--suite-filter",
+        "no-such-matchup",
+    ]);
+
+    assert_eq!(
+        code,
+        Some(1),
+        "expected the refusal block's exit 1, not an earlier failure; stderr:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("recorded no games"),
+        "the refusal must be the gameless one; stderr:\n{stderr}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&baseline).expect("read baseline"),
+        trusted,
+        "a refused refresh must leave the baseline byte-identical"
+    );
+    // The staging file is an implementation detail of the transaction, but a leftover one is an
+    // artefact someone later mistakes for a real baseline.
+    let staging = baseline.with_file_name("suite-baseline.json.staging.json");
+    assert!(
+        !staging.exists(),
+        "a refused refresh must not leave {} behind",
+        staging.display()
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// The other side of the transaction: an ACCEPTED refresh must actually promote the staged
+/// report over the old baseline.
+///
+/// Without this, "a refused run leaves the baseline alone" is satisfied by a binary that never
+/// writes a baseline at all — measured: deleting the promotion entirely left every other test in
+/// this file green. The two directions have to be asserted together or the guard is
+/// indistinguishable from a break.
+///
+/// Reachable at the same near-zero cost as the refusal tests, for a reason worth recording: an
+/// empty card database still yields a playable (degenerate) matchup, so a single game completes
+/// in about two milliseconds and the run is accepted. The baseline written here is meaningless
+/// as a baseline — that is fine, because what is under test is the file transaction, not the
+/// contents.
+#[test]
+fn an_accepted_refresh_promotes_the_staged_report_over_the_old_baseline() {
+    let dir = scratch("accept");
+    let data_arg = empty_card_db(&dir);
+    let baseline = record_baseline(&dir, &data_arg, "suite-baseline.json");
+    // Mark the recorded baseline so "was it replaced?" is answered by content, not by mtime.
+    // A marked-but-valid file is required: an invalid one is now refused before the suite runs.
+    let mut old: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&baseline).expect("read baseline"))
+            .expect("baseline is JSON");
+    old["git_sha"] = serde_json::json!("OLD-BASELINE-MARKER");
+    let marked = serde_json::to_string(&old).expect("serialize baseline");
+    std::fs::write(&baseline, &marked).expect("write baseline");
+
+    let (code, stderr) = run(&[
+        "--refresh-baseline",
+        "--data-root",
+        &data_arg,
+        "--baseline",
+        &baseline.display().to_string(),
+        "--current-output",
+        &dir.join("current.json").display().to_string(),
+        "--suite-filter",
+        "red-mirror",
+        "--games",
+        "1",
+    ]);
+
+    assert_eq!(
+        code,
+        Some(0),
+        "an accepted refresh must succeed; stderr:\n{stderr}"
+    );
+    let written = std::fs::read_to_string(&baseline).expect("read baseline");
+    assert_ne!(
+        written, marked,
+        "the accepted run was never promoted over the old baseline"
+    );
+    // PREMISE: what landed is the run's report, not any other file the process might have
+    // written — so "changed" cannot pass by truncation or by a stray write.
+    let report: serde_json::Value = serde_json::from_str(&written).expect("baseline is JSON");
+    assert_eq!(report["games_per_matchup"], 1);
+    assert_eq!(report["results"][0]["matchup_id"], "red-mirror");
+    assert_eq!(
+        report["results"][0]["games"].as_array().map(Vec::len),
+        Some(1),
+        "the promoted baseline must carry the game that was played"
+    );
+    let staging = baseline.with_file_name("suite-baseline.json.staging.json");
+    assert!(
+        !staging.exists(),
+        "staging must not survive a successful refresh"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// The alias no path comparison can see: one inode, two names.
+///
+/// `canonicalize` faithfully resolves a hard link to its own name, so the pre-fix path check
+/// called these distinct and let the run proceed — and `write_report` opens `--current-output`
+/// with `File::create`, which truncates the shared inode. Reading the baseline before the suite
+/// runs saves the *verdict* from being computed against the run's own output, but it does not
+/// save the *bytes*; only refusing does. Both halves are asserted here for that reason.
+///
+/// Compare mode rather than refresh, because it is the quieter half: refresh at least prints a
+/// refusal, while compare would have gone on to report no drift and exit 0 against a baseline it
+/// had just destroyed.
+#[test]
+fn a_hard_linked_output_is_refused_and_the_baseline_survives() {
+    let dir = scratch("hardlink");
+    let baseline = seed_baseline(&dir);
+    let link = dir.join("current-link.json");
+    std::fs::hard_link(&baseline, &link).expect("hard link");
+
+    // PREMISE: the fixture really is one file under two names. Without this the test would still
+    // pass on a platform or filesystem that silently copied instead, having proven nothing.
+    assert_ne!(
+        std::fs::canonicalize(&baseline).expect("canonicalize baseline"),
+        std::fs::canonicalize(&link).expect("canonicalize link"),
+        "a hard link must present two distinct paths, or this test is not about hard links"
+    );
+
+    let (code, stderr) = run(&[
+        "--baseline",
+        &baseline.display().to_string(),
+        "--current-output",
+        &link.display().to_string(),
+    ]);
+
+    assert_eq!(
+        code,
+        Some(2),
+        "a hard-linked output must be refused at the argument check; stderr:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("same file"),
+        "the refusal must name the aliasing; stderr:\n{stderr}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&baseline).expect("read baseline"),
+        SENTINEL,
+        "the baseline was truncated through its hard link"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// A baseline that exists but cannot be parsed must stop the refresh, not be overwritten by it.
+///
+/// The earlier code logged every read failure and carried on, so the run continued to `run_suite`
+/// and renamed its staged report over the file. That destroys the evidence needed to work out WHY
+/// the baseline was unreadable, and establishes the replacement from an unexamined prior state.
+///
+/// The exit code is asserted as exactly 2, which is what separates this from the gameless
+/// refusal's 1: the point is that the run stops BEFORE the suite, not that it stops eventually.
+/// A mutant that let the run proceed and refused later would leave the bytes intact on this
+/// fixture too, and the code is the only assertion that tells the two apart.
+#[test]
+fn a_malformed_existing_baseline_is_not_replaced_by_a_refresh() {
+    let dir = scratch("malformed");
+    let data_arg = empty_card_db(&dir);
+    let baseline = seed_baseline(&dir);
+
+    let (code, stderr) = run(&[
+        "--refresh-baseline",
+        "--data-root",
+        &data_arg,
+        "--baseline",
+        &baseline.display().to_string(),
+        "--current-output",
+        &dir.join("current.json").display().to_string(),
+        "--suite-filter",
+        "red-mirror",
+        "--games",
+        "1",
+    ]);
+
+    assert_eq!(
+        code,
+        Some(2),
+        "a malformed baseline must stop the run before the suite; stderr:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("failed to load baseline"),
+        "the refusal must name the baseline load; stderr:\n{stderr}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&baseline).expect("read baseline"),
+        SENTINEL,
+        "an unreadable baseline must be preserved for diagnosis, not overwritten"
+    );
+    let staging = baseline.with_file_name("suite-baseline.json.staging.json");
+    assert!(
+        !staging.exists(),
+        "a refused refresh must not leave {} behind",
+        staging.display()
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// The other side of that refusal: a MISSING baseline is the ordinary first-refresh case and must
+/// still be allowed through.
+///
+/// Without this, narrowing the accepted error to `NotFound` is indistinguishable from refusing
+/// every unreadable baseline including the absent one — which would make the first refresh on a
+/// fresh checkout impossible. Measured: this is the arm that fails if the `NotFound` guard is
+/// dropped in the refusing direction.
+#[test]
+fn a_missing_baseline_is_still_the_first_refresh_case() {
+    let dir = scratch("firstrun");
+    let data_arg = empty_card_db(&dir);
+    let baseline = dir.join("does-not-exist-yet.json");
+    assert!(!baseline.exists(), "fixture must start with no baseline");
+
+    let (code, stderr) = run(&[
+        "--refresh-baseline",
+        "--data-root",
+        &data_arg,
+        "--baseline",
+        &baseline.display().to_string(),
+        "--current-output",
+        &dir.join("current.json").display().to_string(),
+        "--suite-filter",
+        "red-mirror",
+        "--games",
+        "1",
+    ]);
+
+    assert_eq!(
+        code,
+        Some(0),
+        "a first refresh with no baseline must succeed; stderr:\n{stderr}"
+    );
+    assert!(
+        baseline.exists(),
+        "the first refresh must create the baseline"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// Control arm for the identity check specifically: two files that BOTH exist and are genuinely
+/// different must not be called aliases.
+///
+/// `distinct_paths_are_not_treated_as_aliases` does not cover this — its output path does not
+/// exist, so `same_inode` returns `None` and the path fallback answers. This is the only case
+/// that reaches the inode comparison and expects `Some(false)`, so without it an implementation
+/// that reported every existing pair as identical would pass the whole file while refusing every
+/// real invocation of the gate.
+///
+/// Known gap, stated rather than implied: this does not pin the `dev` half of `(dev, ino)`. A
+/// mutant comparing only `ino` survives every test here, because killing it needs two files on
+/// different filesystems whose inode numbers collide, and inode allocation is not controllable
+/// enough to construct that deterministically. The `dev` term is kept on correctness grounds —
+/// dropping it can only ever produce a false ALIAS report, whose consequence is a refused run
+/// rather than a destroyed baseline, so the unpinned direction is the safe one.
+#[test]
+fn two_existing_but_different_files_are_not_aliases() {
+    let dir = scratch("distinct-existing");
+    let baseline = seed_baseline(&dir);
+    let current = dir.join("current.json");
+    std::fs::write(&current, "{}").expect("seed current");
+
+    // PREMISE: both really exist, so the run reaches the inode comparison rather than the
+    // path fallback this test is not about.
+    assert!(baseline.exists() && current.exists());
+
+    let (_code, stderr) = run(&[
+        "--baseline",
+        &baseline.display().to_string(),
+        "--current-output",
+        &current.display().to_string(),
+        "--data-root",
+        &dir.join("no-such-data-root").display().to_string(),
+    ]);
+
+    assert!(
+        !stderr.contains("same file"),
+        "two distinct existing files must not be called aliases; stderr:\n{stderr}"
+    );
+    // PREMISE: the run proceeded past the argument check, so the assertion above is about
+    // aliasing rather than about the process dying even earlier.
+    assert!(
+        stderr.contains("failed to load card database"),
+        "expected the run to proceed to the card database; stderr:\n{stderr}"
     );
     std::fs::remove_dir_all(&dir).ok();
 }
