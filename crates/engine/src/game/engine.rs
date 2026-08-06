@@ -1606,15 +1606,18 @@ fn interactive_loop_bridge(state: &mut GameState, result: &mut ActionResult) {
             //     arm is never even reached.
             //   - life↓ (self-burn): life is a Consumed axis (`ResourceVector::components`),
             //     so `is_net_progress` (conjunct 2) returns false on any net-negative life
-            //     (resource.rs ~:409, over all players) before conjunct 3 runs.
+            //     (`ResourceVector::is_net_progress`'s `Component::Consumed if value < 0`
+            //     arm, over all players) before conjunct 3 runs.
             //   - poison↑ (self-poison): `classify_win_kind` (conjunct 4) maps poison>0 to
             //     `WinKind::PoisonLoss`, not `Advantage`, so the `== Advantage` conjunct
             //     rejects it.
-            // CONTRAST — the Path-B DRAW gate (:512-516 = recurrence + is_net_progress +
-            // has_no_loss_axis, with NO `== Advantage` backstop) is DIFFERENT: there
+            // CONTRAST — the Path-B DRAW gate (the EARLIER draw arm in this same
+            // `interactive_loop_bridge`: recurrence + is_net_progress + has_no_loss_axis, and it is
+            // the arm carrying NO `classify_win_kind` / `== Advantage` conjunct) is DIFFERENT: there
             // `has_no_loss_axis` is the SOLE loss-axis veto and is LOAD-BEARING BY
             // CONSTRUCTION — it MUST NOT be removed. A poison loop reaching Path B satisfies
-            // recurrence (poison is projected out at resource.rs:1995) AND is_net_progress
+            // recurrence (poison is projected out by `projected_player_axes`, which destructures
+            // `poison_counters` out of the compared image) AND is_net_progress
             // (poison is a Gained axis, which cannot make is_net_progress false), so without
             // this conjunct such a loop would be WRONGLY certified a CR 732.4 draw. (Path C's
             // poison redundancy comes ENTIRELY from its extra `== Advantage` conjunct, which
@@ -1625,7 +1628,8 @@ fn interactive_loop_bridge(state: &mut GameState, result: &mut ActionResult) {
             // delta at the gate → it draws as a benign lifegain loop and never exercises
             // has_no_loss_axis's poison veto. No constructible fixture carries poison>0 to the
             // Path-B gate (the 2-trigger form clears `loop_detect_ring` on its OrderTriggers
-            // beats at engine.rs:1307; the single-compound-trigger form drops the poison at
+            // beats, in `apply_action`'s `PassPriority | OrderTriggers { .. }` ring-clear arm;
+            // the single-compound-trigger form drops the poison at
             // parse). The runtime discriminator is therefore WAIVED as measured-unsatisfiable;
             // this in-code load-bearing-by-construction proof is the substitute. See the
             // `interactive_recurring_poison_is_not_drawn` Path-B behavioral test.
@@ -4747,9 +4751,14 @@ fn try_offer_object_growth_shortcut(
     // separately stops the count STRICTLY SHORT of every CR 704 loss threshold, because a
     // mid-sequence death would make the remaining declared choices unmakeable — itself a
     // conditional action and an illegal proposal. Consequence for the display layer: a family the
-    // engine cannot certify as an unconditional collapse is never proposed as one, which is what
-    // `FamilyCollapseState`'s non-`Committed` variants render. Those variants are NOT a
-    // conditional shortcut proposal — they are the absence of a proposal this gate would pass.
+    // engine cannot certify as an unconditional collapse is never proposed as one, so
+    // `FamilyCollapseState::{Unscheduled, Mixed}` render the ABSENCE of a proposal this gate would
+    // pass — never a conditional proposal, which this gate does not emit. `Scheduled(Conditional)`
+    // is a DIFFERENT claim: that proposal PASSED this gate, and only its boundary materialization
+    // can still decline or park (see `CollapseCertainty` and
+    // `engine_resolution_choices::materialization_certainty`). Certainty is a property of the
+    // boundary, not of the proposal's unconditionality — `FamilyCollapseState` has no `Committed`
+    // variant of its own; `Committed` belongs to `CollapseCertainty`.
     //
     // A driving ability whose body bears an auto-resolved
     // coin flip (CR 705.1) / die roll (CR 706.1a) / random selection (CR 701.9a/b) has more
