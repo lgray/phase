@@ -1,3 +1,4 @@
+// engine-citation-gate: symbol anchors only
 //! P7 v3 (CR 732.2a): capture + drive a MULTI-ACTION mana-engine loop.
 //!
 //! Real-card acceptance: **Basalt Monolith + Power Artifact** — the canonical 2-card infinite-mana

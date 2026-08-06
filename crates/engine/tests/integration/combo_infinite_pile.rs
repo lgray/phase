@@ -1,3 +1,4 @@
+// engine-citation-gate: symbol anchors only
 //! DESIGN STEP 4 (CR 732.2a ∞-pile display) — REAL 4-player game acceptance test.
 //!
 //! Loads the user's ACTUAL live 4-player Commander game state (the turn-2 dump), captured at
@@ -2525,11 +2526,12 @@ fn loop_collapse_axis_from_materializations_maps_each_shape() {
 /// the paused `pending_copy_token_resolution` instead of advancing the phase / overwriting
 /// `waiting_for = Priority`.
 ///
-/// DELIBERATELY FIREWALL-UNREACHABLE: the offer firewall (`drive_loop_action_iteration`'s
-/// exhaustive fail-closed `_ => Err(RecastAbort)`, engine.rs:1871-1873) guarantees a certified
-/// shortcut's per-cycle fodder mint cannot pause, so this state cannot arise in real play. The test
-/// constructs it directly — installing an OPTIONAL token-creation replacement (CR 616.1 single
-/// optional candidate → `replace_event` returns `NeedsChoice`, replacement.rs:8191-8214) on a P0
+/// DELIBERATELY FIREWALL-UNREACHABLE: the offer firewall (`game/engine.rs`'s
+/// `drive_loop_action_iteration`, whose exhaustive fail-closed `_ => Err(RecastAbort)` arm has no
+/// replacement-/target-choice branch) guarantees a certified shortcut's per-cycle fodder mint cannot
+/// pause, so this state cannot arise in real play. The test constructs it directly — installing an
+/// OPTIONAL token-creation replacement (CR 616.1 single optional candidate → `replace_event` returns
+/// `NeedsChoice` from `game/replacement.rs`'s `replacement_is_optional` single-candidate branch) on a P0
 /// battlefield object AFTER accept — to exercise the defensive guard. (Two IDENTICAL replacements
 /// would be immaterially ordered and auto-resolve with NO pause, making the test vacuous; a single
 /// MANDATORY replacement applies without a pause — hence a single OPTIONAL candidate.)
@@ -2893,7 +2895,8 @@ fn low3_activate_and_settle(runner: &mut GameRunner, source: ObjectId, ability_i
 /// (kilo_live_offer_from_real_dump.rs); this closes the UNOBSERVED batched gap.
 ///
 /// CONSTRUCTION (self-contained, no dump): a synthetic creature with an off-stack mana ability
-/// (CR 605.3b — the only activation class that SEEDS a loop period, engine.rs:4141-4173), plus a
+/// (CR 605.3b — the only activation class that SEEDS a loop period; `game/engine.rs`'s `apply_action`
+/// opens the period on that off-stack activation), plus a
 /// free gain-life and a free untap. Ordered [mana, gain-life, untap] so the 2-step prefix leaves
 /// the creature TAPPED — the offer's re-drive can't re-tap it, aborting any premature pure-mana
 /// offer and forcing the life beat into the certified 3-step period. No `LifeChanged` trigger /

@@ -1,3 +1,4 @@
+// engine-citation-gate: symbol anchors only
 //! FIX-1 + FIX-2 + FIX-3 (CR 732.2a) acceptance — the Kilo, Apogee Mind + Freed from the Real +
 //! Relic of Legends + Pentad Prism proliferate loop, driven from the REAL 4-player playtest dump
 //! that failed to offer the ∞-charge shortcut.

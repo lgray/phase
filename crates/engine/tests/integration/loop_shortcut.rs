@@ -1,3 +1,4 @@
+// engine-citation-gate: symbol anchors only
 //! PR-7 Phase 3 — interactive loop-shortcut protocol + APNAP response window.
 //!
 //! Covers the CR 732.2a/b/c live-detect bridge, `LoopDetectionMode::Interactive`, the
@@ -1024,7 +1025,7 @@ fn declare_and_respond_authorization() {
 
     // RIDER-2 — CR 732.2a decline authorization (fresh runner: the flow above consumed the
     // offer). `DeclineShortcut` is a normal protocol action dispatched via the
-    // `(waiting_for, action)` match; `check_actor_authorization` (engine.rs:225) runs BEFORE
+    // `(waiting_for, action)` match; `game/engine.rs`'s `check_actor_authorization` runs BEFORE
     // `apply_action` and keys on `WaitingFor::LoopShortcut.acting_player` == the proposer.
     // Unlike `Concede`/`Debug`, `DeclineShortcut` is NOT on any pre-match early-return
     // allowlist, so a wrong actor is rejected with the SPECIFIC `WrongPlayer` — proving the
@@ -2389,8 +2390,9 @@ const POISON_RIDER: &str = "Whenever you gain life, each opponent gets a poison 
 ///
 /// MEASURED reachability (this 2-trigger fixture does NOT reach the Path-B bridge): the two
 /// simultaneous triggers per lifegain event open OrderTriggers beats, and every non-
-/// `Priority{active_player}` beat CLEARS `loop_detect_ring` (engine.rs:1307). So the ring
-/// never accumulates, the `!ring.is_empty()` bridge gate (engine.rs:338) never passes, and
+/// `Priority{active_player}` beat CLEARS `loop_detect_ring` (`game/engine.rs`'s
+/// `pass_priority_once_with_pipeline` sample-or-clear arm). So the ring never accumulates, the
+/// `!ring.is_empty()` bridge gate in `reconcile_terminal_result` never passes, and
 /// `interactive_loop_bridge` is never entered (measured: 0 bridge invocations). The loop
 /// instead resolves via the CR 704.5c 10-poison SBA to GameOver{Some(P0)} (both opponents
 /// reach 10 poison and are eliminated). It therefore does NOT exercise the Path-B
@@ -2413,17 +2415,20 @@ fn setup_3p_poison_draw(mode: LoopDetectionMode) -> (GameRunner, ObjectId) {
 
 /// Path-B DRAW-GATE behavioral test (two halves):
 ///   - CONTROL (`setup_3p_draw`, pure lifegain, no poison) is a POSITIVE test that the Path-B
-///     draw gate CERTIFIES a benign no-loss loop: it draws `GameOver{None}` via engine.rs:517
-///     (measured P0 life 22, cycle ~2; and neutering :517 makes this control STOP drawing —
-///     confirmed the draw originates AT that gate, not the strict :1507 detector).
+///     draw gate CERTIFIES a benign no-loss loop: it draws `GameOver{None}` via
+///     `interactive_loop_bridge`'s `has_no_loss_axis` draw arm — the one that pushes
+///     `GameEvent::GameOver { winner: None }` (measured P0 life 22, cycle ~2; and neutering that
+///     arm makes this control STOP drawing — confirmed the draw originates AT that gate, not at
+///     the stricter arm of the same fn, which additionally requires
+///     `classify_win_kind(..) == WinKind::Advantage` and emits no `GameOver` at all).
 ///   - VARIANT (`setup_3p_poison_draw`, IDENTICAL + a poison-rider creature) locks that a
 ///     poison-accruing loop is NOT wrongly drawn: it resolves via the CR 704.5c 10-poison SBA
 ///     to `GameOver{Some(P0)}` (measured P0 life 30, poisons [0,10,10], both opponents
 ///     eliminated).
 ///
 /// SCOPE (measured — do NOT overclaim): this does NOT isolate `has_no_loss_axis`'s Path-B
-/// conjunct. That conjunct IS load-bearing BY CONSTRUCTION (it is the SOLE loss-axis veto at
-/// :512-516, which has NO `== Advantage` backstop — a poison loop that reached the gate would
+/// conjunct. That conjunct IS load-bearing BY CONSTRUCTION (it is the SOLE loss-axis veto in that
+/// draw arm, which has NO `== Advantage` backstop — a poison loop that reached the gate would
 /// be wrongly drawn without it), but it is currently NOT runtime-discriminable, so there is NO
 /// claim here that deleting it flips the variant. MEASURED: deleting `has_no_loss_axis` from
 /// Path B leaves the variant terminal `GameOver{Some(P0)}` UNCHANGED — because the variant
@@ -2432,7 +2437,8 @@ fn setup_3p_poison_draw(mode: LoopDetectionMode) -> (GameRunner, ObjectId) {
 /// drop removes the poison conjunct (card-build keeps only `GainLife`), so poison is 0 in the
 /// loop delta at the gate → it draws as a benign lifegain loop and never exercises
 /// has_no_loss_axis's poison veto. No constructible fixture carries poison>0 to the Path-B gate
-/// (the 2-trigger form clears `loop_detect_ring` on its OrderTriggers beats at engine.rs:1307;
+/// (the 2-trigger form clears `loop_detect_ring` on its OrderTriggers beats, in
+/// `pass_priority_once_with_pipeline`'s sample-or-clear arm;
 /// the single-compound-trigger form drops the poison at parse). So the Path-B veto is proven
 /// load-bearing IN CODE and its runtime discriminator is WAIVED pending the poison-drop parser
 /// fix.
@@ -4353,7 +4359,7 @@ fn loop_shortcut_serializes_schema_under_data() {
 }
 
 /// T-concede-winner — the `predicted_winner` conjunct of the `apply_confirmed_shortcut` liveness
-/// guard (`engine.rs:864-878`). The latched PREDICTED WINNER (not the proposer) concedes DURING the
+/// guard (in `game/engine.rs`). The latched PREDICTED WINNER (not the proposer) concedes DURING the
 /// open CR 732.2b APNAP window. `GameAction::Concede` bypasses the `WaitingFor` dispatch, so the
 /// offer survives with a departed winner latched in `proposal.predicted_winner`. On the last living
 /// opponent's Accept, the guard must REFUSE to act on the stale proposal (CR 104.3a: the winner has
@@ -5139,7 +5145,7 @@ fn foreign_mana_ability_still_vetoes() {
 ///
 /// This is also the closure for the §I `ActivationRestriction` composition hazard at
 /// the offer level: the firewall never reads `activation_restrictions`
-/// (`ability_scan.rs:4238` destructures it as `_`), so a row keyed on that field would
+/// (`game/ability_scan.rs`'s `ability_definition_axes` destructures it as `_`), so a row keyed on that field would
 /// be dominated. This row instead asserts the property the revert-probes actually flip.
 ///
 /// REVERT-PROBE: widen X1's relief from the per-ability test to the whole object (skip
@@ -5808,7 +5814,8 @@ fn two_site_retention_survives_a_prompt_and_its_answer() {
 
     let pin = engine_live_opponents(&state, P0).first().copied();
 
-    // (i) the `:3457` sampler half: a forced pre-priority window observed with an
+    // (i) the `pass_priority_once_with_pipeline` sampler half (its `is_forced_cascade_window`
+    //     clear arm): a forced pre-priority window observed with an
     //     ALREADY-ACCUMULATED ring (>= 2 frames, so a single fresh sample cannot explain it).
     let mut prompt_ring: Option<usize> = None;
     // (ii) the `apply_action` half: the ring across the ANSWER to such a window, with the
@@ -7630,9 +7637,9 @@ fn stale_pile_member_is_omitted_from_the_wire_but_kept_in_the_store() {
 ///
 /// REVERT-PROBE (RP-4, RUN): hide rows matching
 /// `matches!(axis, ResourceAxis::TokensCreated | ResourceAxis::Counter(..) | ResourceAxis::Life(_))`
-/// — a *transcription* of `LoopCollapseAxis::from_resource_axis`'s three `Some` arms
-/// (`types/game_state.rs:11133/11136/11137`), inlined because that fn is a bare module-private
-/// `fn` (`:11131`) and `game::derived_views` is a sibling module, so calling it is
+/// — a *transcription* of the three `Some` arms of `LoopCollapseAxis::from_resource_axis`
+/// (`types/game_state.rs`), inlined because that fn is declared as a bare module-private
+/// `fn` and `game::derived_views` is a sibling module, so calling it is
 /// `error[E0624]: associated function from_resource_axis is private`. Do not widen its
 /// visibility. ⇒ BOTH arms FAIL, and arm 2 is the one that is unreachable by any stash-keyed
 /// probe, because the stash is already gone when it runs.

@@ -1,3 +1,4 @@
+// engine-citation-gate: symbol anchors only
 //! Engine-authored presentation projections over `GameState`.
 //!
 //! These "derived views" are computed just-in-time at serialization
@@ -170,9 +171,9 @@ pub struct UnboundedResourceView {
 }
 
 /// The display family an unbounded [`ResourceAxis`] groups into. No CR governs a display
-/// grouping (cf. `game/filter.rs:1970`).
+/// grouping (cf. `game/filter.rs`'s `context_free_prop_matches_face` Kleene `AnyOf` arm).
 ///
-/// NOT `analysis::corpus::ResourceFamily` (`corpus.rs:67`) — different module, lossy
+/// NOT `analysis::corpus::ResourceFamily` — different module, lossy
 /// family→representative-axis map, no total inverse, no `Poison`→counters variant.
 ///
 /// `rename_all` so the wire strings ARE the client's family literals — one type, no mirror map.
@@ -205,7 +206,8 @@ pub enum CollapseCertainty {
 
 impl CollapseCertainty {
     /// `Conditional` wins: a family is only as certain as its least certain member. No CR governs
-    /// this — it is a meet over a display promise, not a rules behavior (cf. `game/filter.rs:1970`).
+    /// this — it is a meet over a display promise, not a rules behavior (cf. `game/filter.rs`'s
+    /// `context_free_prop_matches_face` Kleene `AnyOf` arm).
     fn weaker(self, other: Self) -> Self {
         match (self, other) {
             (Self::Committed, Self::Committed) => Self::Committed,
@@ -216,10 +218,10 @@ impl CollapseCertainty {
 
 /// This family's collapse coverage. `Scheduled` is the display of the ENGINE's deferral stash
 /// (`GameState::pending_unbounded_materialization`) — an engine deviation, pre-existing and
-/// deliberate, that no CR licenses (`types/game_state.rs:19911-19914`, and this file's
-/// `THE WINDOW IS AN ENGINE DEVIATION` block). It is NOT the display shadow of CR 732.2c: under
-/// that rule the growth would already have been applied at accept and there would be nothing to
-/// schedule. `Mixed` is a join result — no CR governs it either.
+/// deliberate, that no CR licenses (`types/game_state.rs`'s `scheduled_collapse_axes` doc, and this
+/// file's `THE WINDOW IS AN ENGINE DEVIATION` block). It is NOT the display shadow of CR 732.2c:
+/// under that rule the growth would already have been applied at accept and there would be nothing
+/// to schedule. `Mixed` is a join result — no CR governs it either.
 ///
 /// `Unscheduled` is the one variant a CR describes, and only in the SHAPED sense the rest of this
 /// crate uses (this file's `IS AN ENGINE-STATE ARGUMENT, NOT A RULES ONE` block): CR 732.1b's
@@ -227,7 +229,7 @@ impl CollapseCertainty {
 /// with nothing staged is exactly that — a legal, ordinary game state, pre-proposal. The rule's
 /// PERMISSION clause is not what is cited and is never authority for engine conduct.
 ///
-/// NOTE — distinct from `LoopCollapseAxis::Mixed` (`game_state.rs:11176`), which means "the stash
+/// NOTE — distinct from `types/game_state.rs`'s `LoopCollapseAxis::Mixed`, which means "the stash
 /// spans ≥2 axis KINDS" and only labels the finite-count prompt.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", content = "data")]
@@ -247,7 +249,7 @@ impl FamilyCollapseState {
     /// `two_controllers_draining_one_victim_do_not_cross_schedule`.
     ///
     /// No CR governs this — it is a join over a display projection, not a rules behavior
-    /// (cf. `game/filter.rs:1970`).
+    /// (cf. `game/filter.rs`'s `context_free_prop_matches_face` Kleene `AnyOf` arm).
     fn merge(self, other: Self) -> Self {
         match (self, other) {
             (Self::Mixed, _) | (_, Self::Mixed) => Self::Mixed,
@@ -280,9 +282,10 @@ impl FamilyCollapseState {
 /// `GameState::pending_unbounded_materialization` remains THE authority for the accepted-collapse
 /// contract, and it is what the boundary reads to cash the collapse out. It is the engine's
 /// DEFERRAL of an accepted shortcut's results — an engine deviation, pre-existing and deliberate,
-/// that no CR licenses (`types/game_state.rs:19911-19914`) — NOT "the CR 732.2c contract"; under
-/// that rule the growth would already be on the board. A second channel mirroring the stash is no
-/// longer "a contract with no reader", which it genuinely was when that objection was written:
+/// that no CR licenses (`types/game_state.rs`'s `scheduled_collapse_axes` doc) — NOT "the CR 732.2c
+/// contract"; under that rule the growth would already be on the board. A second channel mirroring
+/// the stash is no longer "a contract with no reader", which it genuinely was when that objection
+/// was written:
 /// THIS is the reader — `usePlayerDesignations` → `UnboundedBadge`, pinned on the wire by
 /// `unbounded-declined-wire.json`.
 ///

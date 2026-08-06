@@ -1,3 +1,4 @@
+// engine-citation-gate: symbol anchors only
 use std::collections::HashMap;
 
 use crate::types::ability::{
@@ -1228,8 +1229,9 @@ fn append_vote_ballot_and_advance(
 /// be on the board and there would be no boundary re-check to license. This engine instead parks at
 /// priority with the count recorded and its results UNAPPLIED, and settles them at the next
 /// step/phase end. That deferral is pre-existing and deliberate, and the tree admits it in three
-/// places: `game/turns.rs:553-556`, `game/derived_views.rs`'s
-/// `THE WINDOW IS AN ENGINE DEVIATION` block, and `types/game_state.rs:19911-19914`. Everything in
+/// places: `game/turns.rs`'s `ENGINE TOLERANCE, NOT A RULES ENTITLEMENT` block,
+/// `game/derived_views.rs`'s `THE WINDOW IS AN ENGINE DEVIATION` block, and
+/// `types/game_state.rs`'s `scheduled_collapse_axes` doc. Everything in
 /// this loop is engine conduct inside that window.
 ///
 /// CR 732.2a, DESCRIPTIVELY ONLY — it is what the re-check re-evaluates, not what permits it. Its
@@ -1260,7 +1262,7 @@ impl ObservedGrowth {
 /// A way the boundary finishes a stashed item WITHOUT applying it — leaving the axis ∞ with no
 /// finite amount reaching it. NO CR GOVERNS THIS ENUM: it is a census of THIS engine loop's own
 /// control flow inside the deviation window described on [`ObservedGrowth`], not a rules behavior
-/// (cf. `game/filter.rs:1970`).
+/// (cf. `game/filter.rs`'s `context_free_prop_matches_face` Kleene `AnyOf` arm).
 ///
 /// MEASURED CENSUS of the loop below, not a guess. THE COUNTING UNIT IS THE CONTROL-FLOW STATEMENT
 /// (`continue` / `return` / the single `collapsed.push`), because that is the unit an edit adds one
@@ -1277,6 +1279,9 @@ impl ObservedGrowth {
 /// So: 3 of the 4 statements are non-push, and 2 of those 3 are holds.
 /// `boundary_hold_census_matches_the_apply_loop` re-derives all three numbers from this file's own
 /// source text, so an added or removed exit reds it instead of silently invalidating this paragraph.
+/// Today's loop happens to use only `continue` and `return`, but the census counts `break` and `?`
+/// as well — the earlier detector did not, and a `break` skips the push for its item AND every
+/// later one, which is the failure this whole enum exists to make impossible.
 ///
 /// This is the badge's question. [`boundary_declines`] answers a strictly narrower one, and a
 /// promise derived from it alone is FALSE for `Tokens`, whose only hold is a pause.
@@ -1297,11 +1302,14 @@ impl ObservedGrowth {
 /// rule as a license inverts the annotation's meaning.
 ///
 /// "NO CR GOVERNS THIS" IS A SAFE, CORRECT, FINAL VERDICT. Reaching for the next closest-sounding
-/// rule is the error, not the fix. In-tree precedent: `game/filter.rs:1970`, `game/turns.rs:553-556`,
-/// `game/derived_views.rs`'s `THE WINDOW IS AN ENGINE DEVIATION` block, and
-/// `types/game_state.rs:19911-19914`.
+/// rule is the error, not the fix. In-tree precedent: `game/filter.rs`'s
+/// `context_free_prop_matches_face` Kleene `AnyOf` arm, `game/turns.rs`'s
+/// `ENGINE TOLERANCE, NOT A RULES ENTITLEMENT` block, `game/derived_views.rs`'s
+/// `THE WINDOW IS AN ENGINE DEVIATION` block, and `types/game_state.rs`'s
+/// `scheduled_collapse_axes` doc.
 ///
-/// DO NOT COPY A CITATION SET FROM ONE SITE TO ANOTHER. The parser (`oracle_replacement.rs:8503`)
+/// DO NOT COPY A CITATION SET FROM ONE SITE TO ANOTHER. The parser
+/// (`parse_optional_token_substitution_choice` in `oracle_replacement.rs`)
 /// answers "what does this card's text create?"; this boundary answers "why does this mint pause?"
 /// Same card, different questions, different rules.
 ///
@@ -1313,15 +1321,26 @@ impl ObservedGrowth {
 /// antecedent is false by construction. Definitional and continuously-applying rules are
 /// site-portable; source-scoped rules are site-local.
 ///
-/// CITE BY SYMBOL OR BY HEADING TEXT, NEVER BY LINE — INCLUDING for prose blocks in files the
-/// change itself edits. The earlier form of this rule carved out exactly that case ("the edit
-/// re-derives them"), and the carve-out is what broke: this change moved `derived_views.rs`'s
-/// deviation block ~120 lines and shipped five citations pointing at unrelated code, which read as
-/// "the no-CR precedent does not exist". Re-anchoring to the NEW line numbers reloads the same gun
-/// for the next edit above them, so the anchor is the block's heading text instead — greppable, and
-/// it moves WITH the block. A line reference survives only where the cited file is untouched by the
-/// change AND was re-read at edit time: `game/turns.rs:553-556`, `types/game_state.rs:19911-19914`,
-/// `game/filter.rs:1970`, all re-verified this round.
+/// CITE BY SYMBOL OR BY HEADING TEXT, NEVER BY LINE. No survivor list, no exemption for a cited
+/// file the change happens not to touch.
+///
+/// The rule has now failed twice, each time through its own carve-out. The first form exempted
+/// files the edit itself re-derives; this change then moved `derived_views.rs`'s deviation block
+/// ~120 lines and shipped five citations pointing at unrelated code, which read as "the no-CR
+/// precedent does not exist". The second form exempted a cited file *untouched by the change* and
+/// named three survivors — but that makes staleness depend on WHO edits rather than on whether the
+/// anchor can drift, and every survivor sat in a high-churn file (`replacement.rs` is 9000+ lines)
+/// where the next unrelated edit above it reloads the same gun. A carve-out that keeps needing to
+/// be renegotiated is the class, not an exception to it.
+///
+/// So there are none. Every citation in the enrolled files names a symbol or a greppable heading,
+/// both of which move WITH the code they point at. Every target converted cleanly — no cited
+/// location needed a heading added to it — so no carve-out language was needed either.
+///
+/// ENFORCED, NOT REQUESTED: `subsystem_citations_are_symbol_anchored` discovers its population by
+/// an opt-in marker comment and reds on any surviving line anchor. The rule used to be prose that
+/// only a reviewer could apply, which is how it shipped false twice. Read that test's doc for the
+/// residual hole it deliberately does not claim.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum BoundaryHold {
     /// An observer of the growing class appeared accept→boundary, so the batched single-application
@@ -1353,23 +1372,27 @@ pub(crate) enum BoundaryHold {
     /// engine's deferral window, not during any spell or ability resolution. Under CR 732.2c the
     /// growth would already have been applied at accept and there would be no boundary mint at all —
     /// so 732.2c is the rule this DEVIATES FROM, not the rule that authorizes the sentinel. See
-    /// [`ObservedGrowth`] and `types/game_state.rs:19911-19914`.
+    /// [`ObservedGrowth`] and `types/game_state.rs`'s `scheduled_collapse_axes` doc.
     ///
-    /// TWO ingresses, both parking on the one `active_copy_token()` guard:
-    ///   • `token_copy.rs:332-336` `NeedsChoice` — from ONE optional candidate
-    ///     (`replacement.rs:9212-9241`; CR 614.1a "instead", e.g. Jinnie Fay, Jetmir's Second)
-    ///     or from ≥2 materially-ordered candidates (`replacement.rs:9257-9281`; CR 616.1, whose text
+    /// TWO ingresses, both parking on the one `active_copy_token()` guard. Each names the arm of
+    /// `token_copy.rs`'s `replace_event` match that produces it:
+    ///   • the `ReplacementResult::NeedsChoice` arm — from ONE optional candidate
+    ///     (`replacement.rs`'s `replacement_is_optional` single-candidate branch; CR 614.1a
+    ///     "instead", e.g. Jinnie Fay, Jetmir's Second) or from ≥2 materially-ordered candidates
+    ///     (`replacement.rs`'s `replacement_ordering_is_material` branch; CR 616.1, whose text
     ///     is scoped to "two or more" and so covers ONLY that ingress);
-    ///   • `token_copy.rs:320-325` `apply_create_token_after_replacement == false`.
-    /// NOT a hold: `ReplacementResult::Prevented` (`token_copy.rs:331`) mints zero tokens but does not
+    ///   • the `Execute` arm's `apply_create_token_after_replacement == false` early return.
+    /// NOT a hold: the `ReplacementResult::Prevented` arm mints zero tokens but does not
     /// park, so the arm reaches its push — see [`materialization_certainty`].
     ///
     /// TWO RULES THAT DO NOT APPLY HERE:
     ///   • CR 608.2d — "if an effect OF A SPELL OR ABILITY offers any choices"; at a source-less mint
     ///     that antecedent is false by construction. It is correct at the PARSER
-    ///     (`oracle_replacement.rs:8503`) and is deliberately not imported.
+    ///     (`parse_optional_token_substitution_choice` in `oracle_replacement.rs`) and is
+    ///     deliberately not imported.
     ///   • CR 614.16 — "if an EFFECT would create one or more tokens"; the parsed tag is
-    ///     "if YOU would create" (`oracle_replacement.rs:8524`).
+    ///     "if YOU would create" — that parser's literal
+    ///     `tag("if you would create one or more tokens, ")`.
     CopyTokenPause,
 }
 
@@ -2510,7 +2533,7 @@ pub(super) fn handle_resolution_choice(
                                 // stash is only registered under `if let Some(profile)` in
                                 // `materialize_object_growth_shortcut` (engine.rs), whose
                                 // `current_period_fodder` derives the profile from
-                                // `derived_fodder_class` (engine.rs:1991-2005), which returns `None`
+                                // `derived_fodder_class` (`game/engine.rs`), which returns `None`
                                 // unless EXACTLY one new battlefield object appeared per period
                                 // (`let id = new_ids.next()?; if new_ids.next().is_some() { None }`).
                                 // A k>1 period (two+ new objects/cycle) fails that gate ⇒ no `Tokens`
@@ -2549,10 +2572,9 @@ pub(super) fn handle_resolution_choice(
                                 // cannot bind this mint, which happens later: a replacement
                                 // effect installed AFTER the accept reaches this pause, and
                                 // `med_tokens_boundary_mint_pause_preserves_replacement_choice`
-                                // drives exactly that. Both ingresses come out of `replace_event`
-                                // (token_copy.rs:318): `NeedsChoice` (token_copy.rs:332-336) and
-                                // `apply_create_token_after_replacement == false`
-                                // (token_copy.rs:320-325).
+                                // drives exactly that. Both ingresses come out of `token_copy.rs`'s
+                                // `replace_event` match: its `NeedsChoice` arm, and its `Execute`
+                                // arm's `apply_create_token_after_replacement == false` return.
                                 //
                                 // CR 614.1 + CR 614.1a: an "instead" replacement is a replacement
                                 // effect, and replacement effects "apply continuously as events
@@ -2636,7 +2658,9 @@ pub(super) fn handle_resolution_choice(
                         }
                         // The SINGLE push. Reaching here means the growth applied; every other
                         // outcome is a labelled `BoundaryHold` above. `possible_hold` is exactly
-                        // the set of arms that can skip this line.
+                        // the set of arms that can skip this line. "Single" is asserted, not just
+                        // asked for: `boundary_apply_loop_region` panics on a second push, because
+                        // the exit census reads the text between the sort and the FIRST push.
                         collapsed.push(item.clone());
                     }
                     // CR 732.2a: cash out ONLY the axes actually collapsed (axis-scoped) —
@@ -2654,9 +2678,10 @@ pub(super) fn handle_resolution_choice(
                     // real), with game totals correct (the declined axis was not applied — no double
                     // count). It is retired by exactly TWO LIVE paths:
                     //   (a) a later GENUINE re-detection re-collapsing it — the empty-stack offer
-                    //       hook `try_offer_object_growth_shortcut` (engine.rs:472), which is NOT
-                    //       ∞-gated, so a fresh manual re-loop re-offers and re-registers a stash; and
-                    //   (b) debug toggle-off — `clear_unbounded_loop` via `engine_debug.rs:417`.
+                    //       hook `try_offer_object_growth_shortcut` (in `game/engine.rs`), which is
+                    //       NOT ∞-gated, so a fresh manual re-loop re-offers and re-registers a
+                    //       stash; and
+                    //   (b) debug toggle-off — `engine_debug.rs`'s `clear_unbounded_loop` call.
                     // NOTE: the enabler-departure clear (`clear_unbounded_loop` from
                     // `zones::apply_zone_exit_cleanup`) is INERT for this object-growth ∞-mark
                     // class, because `materialize_object_growth_shortcut` (engine.rs) never calls
@@ -3249,9 +3274,9 @@ pub(super) fn handle_resolution_choice(
                 // `validate_dig_selection` below requires every kept id to be in
                 // `selectable_cards` while this gate demands more ids than it
                 // holds — softlocking every controller. Matches the clamp the
-                // candidate enumerator (`ai_support/candidates.rs:1185`) and
-                // `cheap_reject_candidate` (`ai_support/mod.rs:702`) already
-                // apply.
+                // candidate enumerator (`ai_support/candidates.rs`'s
+                // `WaitingFor::DigChoice` arm) and `cheap_reject_candidate`'s own
+                // `WaitingFor::DigChoice` arm already apply.
                 let required = keep_count.min(selectable_cards.len());
                 if kept.len() != required {
                     return Err(EngineError::InvalidAction(format!(
@@ -10072,11 +10097,152 @@ mod tests {
             .find(OPEN)
             .map(|at| at + sort)
             .expect("the boundary apply loop opener");
+        // SINGLE-PUSH INVARIANT, IN CODE. `close` takes the FIRST push after the opener, so a push
+        // inserted higher in the body silently truncates the region and drops every exit below it
+        // from the census below — defeating it without failing it. The invariant used to be stated
+        // only in prose on the push itself.
+        assert_eq!(
+            production.matches(CLOSE).count(),
+            1,
+            "the boundary apply loop must contain exactly one `collapsed.push(item.clone());`; a \
+             second one silently narrows the census region instead of failing it"
+        );
         let close = production[open..]
             .find(CLOSE)
             .map(|at| at + open)
             .expect("the single collapsed.push");
         &production[sort..close]
+    }
+
+    /// The citation rule on [`BoundaryHold`] shipped false twice as prose, each time through a
+    /// carve-out only a reviewer could apply. This is the executable form.
+    ///
+    /// MEASURED, not feared: at `BASE_SHA` this file already carried five line anchors, and four of
+    /// them pointed at unrelated code — `derived_fodder_class` was cited ~2500 lines from where it
+    /// lives, `try_offer_object_growth_shortcut` ~4200. Each was accurate when it was written.
+    /// That is the whole argument for symbol anchors, and it is why the rule needed a gate rather
+    /// than a stricter sentence.
+    ///
+    /// POPULATION IS DISCOVERED, NOT LISTED. The guard walks the crate and enforces on every file
+    /// carrying the opt-in marker comment, so a seventh file joining the class is covered the
+    /// moment it opts in, and a hardcoded list cannot drift out of sync with the class it names.
+    /// A whole-crate sweep was measured and rejected as out of scope, not as unnecessary:
+    /// `crates/engine/src` carries 216 such anchors across 61 files (`game/engine.rs` alone 29),
+    /// ~20x this change. Regenerate that census with:
+    ///
+    /// ```text
+    /// grep -rnoP '[A-Za-z0-9_./-]*[A-Za-z0-9_-]\.rs:[0-9]' crates/engine/src | wc -l
+    /// ```
+    ///
+    /// THE RESIDUAL HOLE, NAMED: a file that adds line-anchored citations WITHOUT the marker is not
+    /// covered — opting in is voluntary. This gate keeps the enrolled class honest; it does not
+    /// claim the 61 files that never enrolled. Closing that hole means enrolling them, not widening
+    /// this assertion.
+    ///
+    /// Two anchor forms are caught, because both shipped here: the named `<file>.rs:<line>` and the
+    /// bare `:<line>` back-reference used once the file has been named earlier in the same block.
+    /// A symbol-keyed sweep cannot see the bare form, which is exactly how the first pass
+    /// undercounted; sweep by pattern, never from a previous census.
+    ///
+    /// Production text only, where a file has an inline test module: a test module necessarily
+    /// writes such anchors into its own prose and messages.
+    #[test]
+    fn subsystem_citations_are_symbol_anchored() {
+        const MARKER: &str = "engine-citation-gate: symbol anchors only";
+        const TEST_MOD: &str = "#[cfg(test)]\nmod tests {";
+        // Enrolment floor. Not a list — a non-vacuity guard, so a broken walk or a renamed marker
+        // reds instead of passing on an empty population. Raise it when a file joins.
+        const ENROLLED_FLOOR: usize = 6;
+
+        // `CR 732.2a` has no colon; `std::vec` no digit; `field:1` and `{"Life":1}` have a name or
+        // a quote before the colon. A bare back-reference is recognized only after whitespace, a
+        // backtick or `(`, which is how every one of them was actually written.
+        fn line_anchored(line: &str) -> bool {
+            line.match_indices(':')
+                .filter(|(at, _)| line[at + 1..].starts_with(|c: char| c.is_ascii_digit()))
+                .any(|(at, _)| match line[..at].chars().next_back() {
+                    Some(c) if c.is_alphanumeric() || c == '_' => line[..at]
+                        .rsplit(|c: char| !(c.is_alphanumeric() || "._-/".contains(c)))
+                        .next()
+                        .is_some_and(|word| word.contains('.')),
+                    Some(' ' | '\t' | '`' | '(') => true,
+                    _ => false,
+                })
+        }
+
+        fn rs_files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+            let Ok(entries) = std::fs::read_dir(dir) else {
+                return;
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    rs_files(&path, out);
+                } else if path.extension().is_some_and(|x| x == "rs") {
+                    out.push(path);
+                }
+            }
+        }
+
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let mut files = Vec::new();
+        rs_files(&root.join("src"), &mut files);
+        rs_files(&root.join("tests"), &mut files);
+        files.sort();
+
+        let mut enrolled = 0usize;
+        let mut offenders: Vec<String> = Vec::new();
+        for path in &files {
+            let Ok(src) = std::fs::read_to_string(path) else {
+                continue;
+            };
+            if !src.contains(MARKER) {
+                continue;
+            }
+            enrolled += 1;
+            let production = src.find(TEST_MOD).map_or(src.as_str(), |at| &src[..at]);
+            for (n, line) in production.lines().enumerate() {
+                if line_anchored(line) {
+                    offenders.push(format!(
+                        "{} line {} — {}",
+                        path.display(),
+                        n + 1,
+                        line.trim()
+                    ));
+                }
+            }
+        }
+
+        assert!(
+            enrolled >= ENROLLED_FLOOR,
+            "the citation gate found only {enrolled} enrolled files; it must find at least \
+             {ENROLLED_FLOOR}. A gate that discovers nothing passes vacuously — check the marker \
+             comment and the crate walk before lowering this floor"
+        );
+        assert!(
+            offenders.is_empty(),
+            "an enrolled file cites by line, which the rule on `BoundaryHold` forbids: an unrelated \
+             edit above the target silently repoints the citation, and four such citations were \
+             already stale when this gate was written. Name the symbol or a greppable heading \
+             instead.\n{}",
+            offenders.join("\n")
+        );
+    }
+
+    /// Whole-word occurrences of `keyword` in already-comment-stripped code. Bare `str::matches`
+    /// counts `should_continue;` and `breakfast`, so a census built on it moves under a rename —
+    /// and a census a rename can move is one people learn to silence.
+    fn count_exit_keyword(code: &str, keyword: &str) -> usize {
+        let is_ident = |c: char| c.is_alphanumeric() || c == '_';
+        code.match_indices(keyword)
+            .filter(|(at, _)| {
+                code[..*at].chars().next_back().is_none_or(|c| !is_ident(c))
+                    && code[at + keyword.len()..]
+                        .chars()
+                        .next()
+                        .is_none_or(|c| !is_ident(c))
+            })
+            .count()
     }
 
     /// B-1: `possible_hold` is the boundary apply loop's own non-push-exit census, so it must
@@ -10088,9 +10254,15 @@ mod tests {
     ///   (b) `DriveSequence => Some(BoundaryHold::ObservedGrowth)` ⇒ the only `Committed` kind
     ///       flips ⇒ RED.
     ///   (c) a third `BoundaryHold` variant claimed by no kind ⇒ the completeness assertion reds.
-    ///   (d) ADD any item-level non-push exit to the loop ⇒ the exit-axis assertion reds.
+    ///   (d) ADD any item-level non-push exit to the loop ⇒ the exit-axis assertion reds. All four
+    ///       exit forms are counted — `continue`, `return`, `break`, `?`. The first two alone were
+    ///       not enough: a `break` skips the push for its item AND every later one, which is the
+    ///       MED-2 shape this census exists to catch, and it went uncounted.
     ///   (e) REMOVE one (e.g. delete the `boundary_declines` guard) ⇒ it reds the other way.
     ///   (f) drop the `items.sort_by_key(..)` ⇒ `boundary_apply_loop_region` panics ⇒ RED.
+    ///   (g) ADD a second `collapsed.push(item.clone());` ⇒ the single-push assertion in
+    ///       `boundary_apply_loop_region` panics ⇒ RED. Without it a push inserted higher in the
+    ///       body truncates the census region and drops the exits below it, silently.
     #[test]
     fn boundary_hold_census_matches_the_apply_loop() {
         use crate::game::derived_views::CollapseCertainty;
@@ -10156,11 +10328,29 @@ mod tests {
             .filter(|line| !line.starts_with("//"))
             .collect::<Vec<_>>()
             .join("\n");
-        let continues = code.matches("continue;").count();
-        let returns = code.matches("return ").count();
+        // The counters read raw text, and a string literal is not a comment, so one carrying the
+        // word `break` (or a `?`) would be counted as control flow — a red no reader could act on.
+        // There are none in the loop today; keep it that way, or teach the counters to skip them.
+        assert!(
+            !code.contains('"'),
+            "the boundary apply loop must carry no string literal — the exit census counts raw text"
+        );
+        // Whole-word so an identifier ending in a keyword cannot inflate the count.
+        let continues = count_exit_keyword(&code, "continue");
+        let returns = count_exit_keyword(&code, "return");
+        // `break` and `?` are exits the earlier `matches("continue;")` / `matches("return ")` pair
+        // could not see, which made claim (d) above false: a `break` skips the push for THIS item
+        // and every later one — the exact MED-2 shape — and `foo()?` leaves the function outright.
+        // Not hypothetical vocabulary: `possible_hold`'s own doc describes
+        // `drive_persistent_axis_collapse` as one that `break`s to commit a successful prefix.
+        let breaks = count_exit_keyword(&code, "break");
+        // Deliberately crude: `?Sized` or `'?'` would OVER-count, and over-counting reds (a human
+        // re-derives the census) while under-counting ships MED-2. The two directions are not
+        // symmetric, so the cheap matcher is the safe one.
+        let tries = code.matches('?').count();
         assert_eq!(
-            (continues, returns),
-            (2, 1),
+            (continues, returns, breaks, tries),
+            (2, 1, 0, 0),
             "the boundary apply loop's control-flow census moved. Re-derive it, then update \
              `possible_hold`, `BoundaryHold`, and this test together — an item-level exit that \
              `possible_hold` does not know about makes the badge promise a collapse that never \
@@ -10175,7 +10365,7 @@ mod tests {
         // rather than letting the safe case train anyone to ignore it.
         const INNER_PER_GROWTH_SKIPS: usize = 1;
         assert_eq!(
-            continues + returns - INNER_PER_GROWTH_SKIPS,
+            continues + returns + breaks + tries - INNER_PER_GROWTH_SKIPS,
             BoundaryHold::ALL.len(),
             "every item-level non-push exit in the loop must be a labelled BoundaryHold, and every \
              BoundaryHold must be one of those exits"
