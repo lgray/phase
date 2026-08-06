@@ -204,7 +204,8 @@ pub enum CollapseCertainty {
 }
 
 impl CollapseCertainty {
-    /// `Conditional` wins: a family is only as certain as its least certain member.
+    /// `Conditional` wins: a family is only as certain as its least certain member. No CR governs
+    /// this — it is a meet over a display promise, not a rules behavior (cf. `game/filter.rs:1970`).
     fn weaker(self, other: Self) -> Self {
         match (self, other) {
             (Self::Committed, Self::Committed) => Self::Committed,
@@ -215,16 +216,16 @@ impl CollapseCertainty {
 
 /// This family's collapse coverage. `Scheduled` is the display of the ENGINE's deferral stash
 /// (`GameState::pending_unbounded_materialization`) — an engine deviation, pre-existing and
-/// deliberate, that no CR licenses (`types/game_state.rs:19911-19914`,
-/// `game/derived_views.rs:923-944`). It is NOT the display shadow of CR 732.2c: under that rule the
-/// growth would already have been applied at accept and there would be nothing to schedule.
-/// `Mixed` is a join result — no CR governs it either.
+/// deliberate, that no CR licenses (`types/game_state.rs:19911-19914`, and this file's
+/// `THE WINDOW IS AN ENGINE DEVIATION` block). It is NOT the display shadow of CR 732.2c: under
+/// that rule the growth would already have been applied at accept and there would be nothing to
+/// schedule. `Mixed` is a join result — no CR governs it either.
 ///
 /// `Unscheduled` is the one variant a CR describes, and only in the SHAPED sense the rest of this
-/// crate uses (see `derived_views.rs:946-950`): CR 732.1b's antecedent is a state "in which a set of
-/// actions could be repeated indefinitely", and an ∞ axis with nothing staged is exactly that — a
-/// legal, ordinary game state, pre-proposal. The rule's PERMISSION clause is not what is cited and
-/// is never authority for engine conduct.
+/// crate uses (this file's `IS AN ENGINE-STATE ARGUMENT, NOT A RULES ONE` block): CR 732.1b's
+/// antecedent is a state "in which a set of actions could be repeated indefinitely", and an ∞ axis
+/// with nothing staged is exactly that — a legal, ordinary game state, pre-proposal. The rule's
+/// PERMISSION clause is not what is cited and is never authority for engine conduct.
 ///
 /// NOTE — distinct from `LoopCollapseAxis::Mixed` (`game_state.rs:11176`), which means "the stash
 /// spans ≥2 axis KINDS" and only labels the finite-count prompt.
@@ -244,6 +245,9 @@ impl FamilyCollapseState {
     /// `Mixed` is REPRESENTABLE, so a mixed family renders a bare `∞` instead of a wrong `∞→N`.
     /// Witnessed by `mixed_family_is_not_scheduled` and
     /// `two_controllers_draining_one_victim_do_not_cross_schedule`.
+    ///
+    /// No CR governs this — it is a join over a display projection, not a rules behavior
+    /// (cf. `game/filter.rs:1970`).
     fn merge(self, other: Self) -> Self {
         match (self, other) {
             (Self::Mixed, _) | (_, Self::Mixed) => Self::Mixed,
@@ -281,6 +285,25 @@ impl FamilyCollapseState {
 /// longer "a contract with no reader", which it genuinely was when that objection was written:
 /// THIS is the reader — `usePlayerDesignations` → `UnboundedBadge`, pinned on the wire by
 /// `unbounded-declined-wire.json`.
+///
+/// SAME-FRAME ASYMMETRY — UNCHANGED AND LIVE. Carried forward from the `scheduled` flag this
+/// channel replaced, because retyping the flag as [`FamilyCollapseState`] did not answer the
+/// objection, and a reader still sees it on screen. Only THIS channel carries a collapse state.
+/// `unbounded_pile` (card groups) and `unbounded_counters` (counter pills) are `ObjectId`-keyed and
+/// carry no collapse projection at all, so during the accept→boundary window one loop can show
+/// `∞→N` on the badge and a plain `∞` on its own token group and counter pill in the SAME frame.
+/// Witnessed rather than asserted:
+/// `kilo_live_offer_from_real_dump::kilo_accept_marks_pentad_charge_as_unbounded_display_target`
+/// pins `unbounded_counters[Pentad] == [charge]` — a bare `∞` pill — in the exact frame whose
+/// golden family state is `Scheduled(Committed)`.
+///
+/// THE ANSWER, not a disclosure: this is not the `Mana(_)` false-promise case. The collapse really
+/// IS scheduled for that axis, so the quiet surfaces under-announce; none of them promises a bound
+/// it will not keep. Announcing it on the object-keyed channels would require a
+/// `(player, family)` → `ObjectId` join that the engine does not put on the wire, and computing
+/// that join downstream is precisely the display-layer computation this channel exists to remove
+/// (see `CLAUDE.md`). `Mana(_)` is different in kind — its promise is false the moment it is made —
+/// and it is handled by exclusion upstream at `scheduled_display_axes`, not by this asymmetry.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UnboundedFamilyView {
     pub player: PlayerId,

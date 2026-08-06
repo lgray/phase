@@ -448,7 +448,8 @@ fn kilo_accept_marks_pentad_charge_as_unbounded_display_target() {
     // wire pin below (PART 1). This asserts the input FRAME, never `views`: if the stash shape is
     // wrong the golden would be minted from the wrong frame, so it must abort BEFORE the write. It
     // can never be the assertion a revert probe reds — `derive_views(&GameState, ..)` takes an
-    // IMMUTABLE borrow (derived_views.rs:716), so no change to it can move
+    // IMMUTABLE borrow (cited by signature, not by line: this change moves `derived_views.rs`
+    // wholesale, so a line anchor into it goes stale on its own edit), so no change to it can move
     // `pending_unbounded_materialization`.
     assert!(
         matches!(

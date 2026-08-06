@@ -2548,7 +2548,8 @@ fn setup_2p_optional_drain_poison(mode: LoopDetectionMode) -> (GameRunner, Objec
 ///   • the `"you gain N life and each opponent gets a poison counter"` compound DROPS the poison
 ///     conjunct at parse (keeps only `GainLife`), so poison never reaches the delta.
 /// Both are pre-existing sampler/parser limitations, independent of this change (see
-/// `interactive_recurring_poison_is_not_drawn` above, loop_shortcut.rs:1191-1239). The novel
+/// `interactive_recurring_poison_is_not_drawn` above — by symbol; the line range that used to
+/// follow it pointed at unrelated code even before this change moved it). The novel
 /// per-victim classify/faller logic is proven by the `loop_check.rs` unit tests
 /// (`live_winner_names_poison_faller`, `detects_poison_loop_as_poison_loss`, the refuse cases);
 /// this test adds the missing END-TO-END proof that the re-keyed axis reaches a live cert.

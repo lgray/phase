@@ -1,10 +1,11 @@
 import { act } from "react";
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
+import type { GameState } from "../../../adapter/types.ts";
 import { useGameStore } from "../../../stores/gameStore.ts";
 import { useMultiplayerStore } from "../../../stores/multiplayerStore.ts";
-import { buildGameState } from "../../../test/factories/gameStateFactory.ts";
+import { buildGameState, buildPlayers } from "../../../test/factories/gameStateFactory.ts";
 import { PlayerHud } from "../PlayerHud.tsx";
 
 describe("PlayerHud designations", () => {
@@ -235,5 +236,75 @@ describe("PlayerHud designations", () => {
     // `derived_views::tests::two_mana_axes_fold_to_one_family_row`; migrating it IS the evidence
     // that the fold left the display layer. What remains here is the render-level consequence:
     // the engine hands down one row per family, so the HUD renders one badge per row.
+  });
+
+  // The mana-pool `∞` marker is a SECOND ∞ surface — rendered by `ManaPoolSummary` beside the pool
+  // pills, not in the badge strip. It used to answer "is mana unbounded?" by running the client's
+  // `familyOf` mirror over `derived.unbounded_resources`: a family derivation in the display layer,
+  // which is exactly what `ResourceAxis`'s own doc claimed the frontend never does.
+  //
+  // These two cases DELIBERATELY put the channels in conflict. On the wire they never disagree
+  // (`derive_views` emits both from one loop over `unbounded_resources`), so an AGREEING fixture
+  // cannot tell which channel is the authority — it goes green either way. Disagreement is the only
+  // shape that discriminates, and it discriminates in both directions.
+  describe("Unbounded mana pool marker (∞)", () => {
+    const withPool = (derived: GameState["derived"]) =>
+      buildGameState({
+        players: buildPlayers([
+          {
+            id: 0,
+            mana_pool: {
+              mana: [{ color: "Blue", source_id: 1, pip_id: 1, snow: false, restrictions: [] }],
+            },
+          },
+          { id: 1 },
+        ]),
+        derived,
+      });
+
+    // The badge-strip badge for the `mana` family carries the SAME aria-label as this marker, so
+    // an unscoped query matches both (measured: `getByLabelText` found two elements). Every
+    // assertion below is scoped to the pool row, and the throw is the reach-guard — a null query
+    // inside a row that never rendered would be vacuous, and `ManaPoolSummary` returns `null`
+    // outright on an empty pool.
+    const manaPoolRow = (): HTMLElement => {
+      const row = document.querySelector<HTMLElement>("[data-mana-pool-summary]");
+      if (!row) throw new Error("the mana pool row did not render; the assertion would be vacuous");
+      return row;
+    };
+
+    it("follows the engine's family channel, not the axis list", () => {
+      act(() => {
+        // Engine says: no mana family unbounded. The axis list says the opposite.
+        useGameStore.setState({
+          gameState: withPool({
+            unbounded_resources: [{ player: 0, axis: { Mana: "Blue" } }],
+            unbounded_families: [],
+          }),
+        });
+      });
+      render(<PlayerHud />);
+      // REVERT-PROBE (negative direction): restore
+      // `unboundedResources.some((u) => familyOf(u.axis) === "mana")` ⇒ the marker appears ⇒ this
+      // fails. NOT vacuous: the sibling below renders the marker from this same pool, so absence
+      // here is the channel choice, not an unreachable render.
+      expect(within(manaPoolRow()).queryByLabelText("Unbounded mana (∞)")).toBeNull();
+    });
+
+    it("renders from the family channel alone, with no unbounded axis row", () => {
+      act(() => {
+        // Engine says: mana family unbounded. The axis list is empty.
+        useGameStore.setState({
+          gameState: withPool({
+            unbounded_resources: [],
+            unbounded_families: [{ player: 0, family: "mana", state: { type: "Unscheduled" } }],
+          }),
+        });
+      });
+      render(<PlayerHud />);
+      // REVERT-PROBE (positive direction): the old `familyOf` derivation over an EMPTY
+      // `unbounded_resources` yields `false` ⇒ the marker is absent ⇒ this fails.
+      expect(within(manaPoolRow()).getByLabelText("Unbounded mana (∞)")).toBeInTheDocument();
+    });
   });
 });

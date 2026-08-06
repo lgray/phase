@@ -1228,8 +1228,9 @@ fn append_vote_ballot_and_advance(
 /// be on the board and there would be no boundary re-check to license. This engine instead parks at
 /// priority with the count recorded and its results UNAPPLIED, and settles them at the next
 /// step/phase end. That deferral is pre-existing and deliberate, and the tree admits it in three
-/// places: `game/turns.rs:553-556`, `game/derived_views.rs:923-944`,
-/// `types/game_state.rs:19911-19914`. Everything in this loop is engine conduct inside that window.
+/// places: `game/turns.rs:553-556`, `game/derived_views.rs`'s
+/// `THE WINDOW IS AN ENGINE DEVIATION` block, and `types/game_state.rs:19911-19914`. Everything in
+/// this loop is engine conduct inside that window.
 ///
 /// CR 732.2a, DESCRIPTIVELY ONLY — it is what the re-check re-evaluates, not what permits it. Its
 /// antecedent is "at any point in the game, THE PLAYER WITH PRIORITY MAY SUGGEST a shortcut … that
@@ -1261,12 +1262,21 @@ impl ObservedGrowth {
 /// control flow inside the deviation window described on [`ObservedGrowth`], not a rules behavior
 /// (cf. `game/filter.rs:1970`).
 ///
-/// MEASURED CENSUS of the loop below, not a guess: the body has exactly FOUR control-flow exits;
-/// three are non-push and each is labelled with one of these variants. The fourth
-/// (`!state.battlefield.contains(&g.object)`, CR 400.7 — an object that changes zones becomes a new
-/// object, so the stale id is skipped) is an INNER per-growth skip whose ITEM still reaches the
-/// single push — it is NOT a hold, and mistaking it for one is the reading error this doc exists to
-/// prevent.
+/// MEASURED CENSUS of the loop below, not a guess. THE COUNTING UNIT IS THE CONTROL-FLOW STATEMENT
+/// (`continue` / `return` / the single `collapsed.push`), because that is the unit an edit adds one
+/// of; counting "kinds of exit" instead is what made the earlier version of this paragraph fail to
+/// sum. The loop body has exactly FOUR, and they decompose 1 + 2 + 1 = 4:
+///   • 1 PUSH — `collapsed.push(item.clone())`, the single apply-succeeded exit.
+///   • 2 ITEM-LEVEL NON-PUSH — the `boundary_declines` `continue` ([`BoundaryHold::ObservedGrowth`])
+///     and the `active_copy_token()` `return` ([`BoundaryHold::CopyTokenPause`]). These two, and
+///     only these two, are what [`possible_hold`] enumerates: 2 statements, 2 variants.
+///   • 1 INNER PER-GROWTH SKIP — `!state.battlefield.contains(&g.object)` (CR 400.7: an object that
+///     changes zones becomes a new object, so the stale id is skipped). It is a `continue` on the
+///     INNER `for g in growths` loop, so its ITEM still reaches the push. It is NOT a hold, and
+///     mistaking it for one is the reading error this doc exists to prevent.
+/// So: 3 of the 4 statements are non-push, and 2 of those 3 are holds.
+/// `boundary_hold_census_matches_the_apply_loop` re-derives all three numbers from this file's own
+/// source text, so an added or removed exit reds it instead of silently invalidating this paragraph.
 ///
 /// This is the badge's question. [`boundary_declines`] answers a strictly narrower one, and a
 /// promise derived from it alone is FALSE for `Tokens`, whose only hold is a pause.
@@ -1288,7 +1298,8 @@ impl ObservedGrowth {
 ///
 /// "NO CR GOVERNS THIS" IS A SAFE, CORRECT, FINAL VERDICT. Reaching for the next closest-sounding
 /// rule is the error, not the fix. In-tree precedent: `game/filter.rs:1970`, `game/turns.rs:553-556`,
-/// `game/derived_views.rs:923-944`, `types/game_state.rs:19911-19914`.
+/// `game/derived_views.rs`'s `THE WINDOW IS AN ENGINE DEVIATION` block, and
+/// `types/game_state.rs:19911-19914`.
 ///
 /// DO NOT COPY A CITATION SET FROM ONE SITE TO ANOTHER. The parser (`oracle_replacement.rs:8503`)
 /// answers "what does this card's text create?"; this boundary answers "why does this mint pause?"
@@ -1302,9 +1313,15 @@ impl ObservedGrowth {
 /// antecedent is false by construction. Definitional and continuously-applying rules are
 /// site-portable; source-scoped rules are site-local.
 ///
-/// CITE BY SYMBOL, NEVER BY LINE, for any file whose line numbers this change cannot re-verify at
-/// edit time. Anchors into files the change does edit, and paragraph anchors within this file, stay
-/// as line references because the edit re-derives them.
+/// CITE BY SYMBOL OR BY HEADING TEXT, NEVER BY LINE — INCLUDING for prose blocks in files the
+/// change itself edits. The earlier form of this rule carved out exactly that case ("the edit
+/// re-derives them"), and the carve-out is what broke: this change moved `derived_views.rs`'s
+/// deviation block ~120 lines and shipped five citations pointing at unrelated code, which read as
+/// "the no-CR precedent does not exist". Re-anchoring to the NEW line numbers reloads the same gun
+/// for the next edit above them, so the anchor is the block's heading text instead — greppable, and
+/// it moves WITH the block. A line reference survives only where the cited file is untouched by the
+/// change AND was re-read at edit time: `game/turns.rs:553-556`, `types/game_state.rs:19911-19914`,
+/// `game/filter.rs:1970`, all re-verified this round.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum BoundaryHold {
     /// An observer of the growing class appeared accept→boundary, so the batched single-application
@@ -1316,8 +1333,9 @@ pub(crate) enum BoundaryHold {
     /// application of it. Three rules that look close and are not:
     ///   • NOT CR 732.1b — its antecedent describes a live repeatable state and its permission is
     ///     live PRE-proposal. This code is post-accept and post-N-named. The crate cites 732.1b only
-    ///     "SHAPED", for the live ∞ capability mark (`derived_views.rs:946-950`); it is used that way
-    ///     on `FamilyCollapseState::Unscheduled` and nowhere else.
+    ///     "SHAPED", for the live ∞ capability mark (`derived_views.rs`'s
+    ///     `IS AN ENGINE-STATE ARGUMENT, NOT A RULES ONE` block); it is used that way on
+    ///     `FamilyCollapseState::Unscheduled` and nowhere else.
     ///   • NOT CR 732.2b — "each OTHER player … may accept or shorten" is a player action by a
     ///     non-proposer. This decline is the ENGINE's, and the measured drift case has the proposer
     ///     himself casting the observer.
@@ -10012,6 +10030,55 @@ mod tests {
         })
     }
 
+    /// The boundary apply loop's own source region, sliced out of this file at compile time.
+    ///
+    /// WHY SOURCE TEXT. `possible_hold`'s wildcard-free `match` is compiler-enforced on the
+    /// `PersistentAxisMaterialization` VARIANT axis, but nothing in the type system binds it to the
+    /// loop's EXIT axis. Without this slice the census below compares `possible_hold` against a
+    /// hand-transcribed `vec![..]` — i.e. against itself — so adding an item-level non-push exit
+    /// reachable by `DriveSequence` would leave `possible_hold` still reporting
+    /// `DriveSequence => None ⇒ Committed` and the badge would silently resume promising `∞→N` for
+    /// a collapse that never lands. That is MED-2 recurring, invisibly. Reading engine source with
+    /// `include_str!` is the in-house technique for exactly this
+    /// (`tests/integration/cr_annotations.rs`); it does not recurse, so a file may read itself.
+    ///
+    /// THE REGION STARTS AT THE SORT, NOT AT THE `for`. The Tokens-last ordering is the reason the
+    /// `CopyTokenPause` `return` cannot strand a still-unapplied non-`Tokens` item — which is the
+    /// other way `DriveSequence => Committed` becomes a lie — so dropping it must red this test too.
+    ///
+    /// Panics rather than degrading into a file-wide scan if any anchor moves.
+    fn boundary_apply_loop_region() -> &'static str {
+        const SRC: &str = include_str!("engine_resolution_choices.rs");
+        const TEST_MOD: &str = "#[cfg(test)]\nmod tests {";
+        const SORT: &str =
+            "items.sort_by_key(|i| matches!(i, PersistentAxisMaterialization::Tokens(_)))";
+        const OPEN: &str = "for item in &items {";
+        const CLOSE: &str = "collapsed.push(item.clone());";
+
+        // PRODUCTION ONLY. The three anchors below are also `const` string literals in THIS module,
+        // so an un-truncated search silently falls through to the test's own source when an anchor
+        // is deleted from the loop: the `Tokens`-last drop probe reported `(0, 0)` — red, but for
+        // the wrong reason, with a `possible_hold` message pointing at a mutation that was really a
+        // missing sort. Truncating first makes a deleted anchor a named panic instead.
+        let production = SRC
+            .find(TEST_MOD)
+            .map(|at| &SRC[..at])
+            .expect("this file's inline test module header");
+
+        let sort = production
+            .find(SORT)
+            .expect("the Tokens-last stash ordering that keeps the pause from stranding items");
+        let open = production[sort..]
+            .find(OPEN)
+            .map(|at| at + sort)
+            .expect("the boundary apply loop opener");
+        let close = production[open..]
+            .find(CLOSE)
+            .map(|at| at + open)
+            .expect("the single collapsed.push");
+        &production[sort..close]
+    }
+
     /// B-1: `possible_hold` is the boundary apply loop's own non-push-exit census, so it must
     /// agree with that loop kind-for-kind, and every `BoundaryHold` variant must be claimed by
     /// at least one kind.
@@ -10021,6 +10088,9 @@ mod tests {
     ///   (b) `DriveSequence => Some(BoundaryHold::ObservedGrowth)` ⇒ the only `Committed` kind
     ///       flips ⇒ RED.
     ///   (c) a third `BoundaryHold` variant claimed by no kind ⇒ the completeness assertion reds.
+    ///   (d) ADD any item-level non-push exit to the loop ⇒ the exit-axis assertion reds.
+    ///   (e) REMOVE one (e.g. delete the `boundary_declines` guard) ⇒ it reds the other way.
+    ///   (f) drop the `items.sort_by_key(..)` ⇒ `boundary_apply_loop_region` panics ⇒ RED.
     #[test]
     fn boundary_hold_census_matches_the_apply_loop() {
         use crate::game::derived_views::CollapseCertainty;
@@ -10073,6 +10143,42 @@ mod tests {
             claimed,
             BoundaryHold::ALL.to_vec(),
             "every BoundaryHold variant must be claimed by at least one materialization kind"
+        );
+
+        // EXIT-AXIS BINDING — the half the two assertions above cannot supply, because they compare
+        // `possible_hold` against a transcription of itself. Counting unit and decomposition are the
+        // ones stated on `BoundaryHold`: 4 control-flow statements = 1 push + 2 item-level non-push
+        // + 1 inner per-growth skip. Comment lines are stripped so prose ABOUT `continue`/`return`
+        // cannot inflate the count.
+        let code: String = boundary_apply_loop_region()
+            .lines()
+            .map(str::trim_start)
+            .filter(|line| !line.starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let continues = code.matches("continue;").count();
+        let returns = code.matches("return ").count();
+        assert_eq!(
+            (continues, returns),
+            (2, 1),
+            "the boundary apply loop's control-flow census moved. Re-derive it, then update \
+             `possible_hold`, `BoundaryHold`, and this test together — an item-level exit that \
+             `possible_hold` does not know about makes the badge promise a collapse that never \
+             lands (MED-2)"
+        );
+
+        // The inner `for g in growths` stale-id skip (CR 400.7) is the ONE non-push statement whose
+        // ITEM still reaches the push, so it is subtracted rather than mapped to a variant. What is
+        // left must be exactly the hold set. Adding an item-level exit raises the left side without
+        // raising the right; removing one lowers it. Deliberately blind to WHICH kind of statement
+        // was added — a new inner skip reds this too, which forces a human to re-derive the census
+        // rather than letting the safe case train anyone to ignore it.
+        const INNER_PER_GROWTH_SKIPS: usize = 1;
+        assert_eq!(
+            continues + returns - INNER_PER_GROWTH_SKIPS,
+            BoundaryHold::ALL.len(),
+            "every item-level non-push exit in the loop must be a labelled BoundaryHold, and every \
+             BoundaryHold must be one of those exits"
         );
     }
 }

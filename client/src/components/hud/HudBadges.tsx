@@ -403,11 +403,13 @@ export const UNBOUNDED_FAMILY_FOR_TEST: Record<ResourceAxisTag, UnboundedFamily>
   Poison: "counters",
 };
 
-/** Map an engine-provided `ResourceAxis` to its display family. The badge no longer uses this —
- *  the engine publishes each seat's families on `unbounded_families`. It survives for the two
- *  callers that hold a bare axis list and no family channel (`LoopShortcutModal`'s offer-time
- *  badges, `ManaPoolSummary`'s mana check), and this table is pinned tag-by-tag against the
- *  engine's `family_of` by the `unbounded-family-tags.json` golden, so the two cannot diverge. */
+/** Map an engine-provided `ResourceAxis` to its display family. No STATE surface uses this — the
+ *  engine publishes each seat's families on `unbounded_families`, and both the HUD badge and
+ *  `ManaPoolSummary`'s mana marker read that channel. It survives for the ONE caller holding a
+ *  bare axis list with no family channel to read: `LoopShortcutModal`'s PRE-accept offer badges,
+ *  where nothing is marked unbounded yet so the engine has published nothing. This table is pinned
+ *  tag-by-tag against the engine's `family_of` by the `unbounded-family-tags.json` golden, so the
+ *  mirror cannot drift from the authority. */
 export const familyOf = (axis: ResourceAxis): UnboundedFamily =>
   UNBOUNDED_FAMILY_FOR_TEST[axisTag(axis)];
 
