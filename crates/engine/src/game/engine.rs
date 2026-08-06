@@ -15773,10 +15773,33 @@ mod stage2_injector_tests {
                 // `684335b0a:game/engine.rs:11712`
                 // (`8a544e878d3e77fb80391b95af8f74059540d5ce4ad6fb83559f364df5cc7d63`); that
                 // text occurs exactly ONCE in the file, so the coordinate is unambiguous; and
-                // it is still inside `apply_retarget` on both sides. The round is comment-only,
-                // so no `waiting_for = ` or `Ok(Some(` line was added or removed anywhere and
-                // the total stays 37 with the partition 5/7/25.
-                "game/engine.rs:11763".to_string(),
+                // it is still inside `begin_pending_trigger_target_selection` on both sides.
+                // (That enclosing-function name is a CORRECTION: this row previously said
+                // `apply_retarget`, which is the function ABOVE it — `apply_retarget` ends where
+                // `begin_pending_trigger_target_selection` begins, and the producer sits inside
+                // the latter, as this assertion's own message has always said. The coordinate,
+                // the `+51`, and the digest were unaffected; only the named function was wrong.)
+                // The round is comment-only, so no `waiting_for = ` or `Ok(Some(` line was added
+                // or removed anywhere and the total stays 37 with the partition 5/7/25.
+                //
+                // CR 732 FIX ROUND (same branch, review response): `:11763 ⇒ :11783`, `+20`, and
+                // again ONLY this entry moved — the other four live in `effects/` and
+                // `scoped_library_search.rs`, which this comment-only round does not touch. The
+                // `+20` decomposes over exactly five hunks, ALL above the producer: four
+                // one-line growths in `interactive_loop_bridge` converting the redundancy
+                // proof's four wrong line citations to symbol anchors (`+1` each), plus
+                // `@@ -4750,3 +4754,19 @@` in `try_offer_object_growth_shortcut` (`+16`) for the
+                // `FamilyCollapseState` correction and the lemma closure that follows it.
+                // Predicted `11763+20` equals the observed coordinate exactly. Identity
+                // re-established, not assumed: the line at `:11783` is sha256-identical to
+                // `684335b0a:game/engine.rs:11712` and to `2b20aa73a:game/engine.rs:11763`
+                // (`8a544e878d3e77fb80391b95af8f74059540d5ce4ad6fb83559f364df5cc7d63`); the text
+                // occurs exactly ONCE in the file; and it is still inside
+                // `begin_pending_trigger_target_selection`. Worth recording WHY this drift was
+                // caught late: the round that introduced it shipped while GitHub Actions was in
+                // a major outage, so CI could not answer, and a comment-only diff reads as
+                // incapable of moving a line pin right up until it does.
+                "game/engine.rs:11783".to_string(),
             ],
             "the five production producers, NAMED: the CR 603.5 gate in `resolve_chain_body` \
              plus the two repeated-optional-payment drivers, the per-player acceptance cursor \
