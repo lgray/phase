@@ -533,8 +533,11 @@ fn kilo_accept_marks_pentad_charge_as_unbounded_display_target() {
         views.unbounded_families.iter().any(|f| f.player == P0
             && f.family == UnboundedFamily::Counters
             && f.state == FamilyCollapseState::Scheduled(CollapseCertainty::Committed)),
-        "the real kilo accept's single DriveSequence yields the ONLY Committed family in the \
-         suite — this is the ∞→N matched positive the FE tests read out of \
+        "the real kilo accept's single DriveSequence yields a Committed family on a REAL \
+         production dump — that is this witness's distinct property, NOT uniqueness: two other \
+         Committed witnesses exist on synthetic boards (combo_infinite_pile's grafted \
+         DriveSequence for Tokens, loop_shortcut_mana_engine's R4/agree Life), and neither is \
+         redundant with this one. This is the ∞→N matched positive the FE tests read out of \
          unbounded-counter-wire.json; it sits AFTER the WRITE so a mutation that reds it can \
          still regenerate the golden (M1-e(c), M2-d(b) depend on that). got={:?}",
         views.unbounded_families
