@@ -32,7 +32,9 @@ use engine::database::card_db::CardDatabase;
 use engine::game::deck_loading::{
     create_object_from_card_face, load_and_hydrate_decks, resolve_deck_list, DeckList,
 };
-use engine::game::derived_views::derive_views;
+use engine::game::derived_views::{
+    derive_views, CollapseCertainty, FamilyCollapseState, UnboundedFamily,
+};
 use engine::game::engine::{apply, start_game};
 use engine::game::layers::{flush_layers, mark_layers_full};
 use engine::game::scenario::{GameRunner, GameScenario};
@@ -252,6 +254,7 @@ fn real_4p_object_growth_accept_writes_infinite_pile() {
         "unbounded_pile",
         "unbounded_resources",
         "unbounded_counters",
+        "unbounded_families",
     ]
     .into_iter()
     .filter_map(|k| wire.get(k).map(|v| (k.to_string(), v.clone())))
@@ -817,6 +820,24 @@ fn real_4p_observed_drive_sequence_replays_captured_period_n_times() {
             sequence: seq,
             collapsed_axes: collapsed_axes.clone(),
         },
+    );
+
+    // W2 — THE CERTAINTY-VS-FAMILY DISCRIMINATOR. This stash is a `DriveSequence`, the one
+    // materialization kind with NO non-push exit, so its `tokens` family is `Committed` — while
+    // `unbounded-token-wire.json`, whose SAME `tokens` family comes from a BATCHED `Tokens` stash,
+    // is `Conditional`. Same family, same seat, opposite certainty: the badge is deciding on the
+    // stash KIND, not on the axis it names.
+    let tokens_state = derive_views(&state, None)
+        .unbounded_families
+        .into_iter()
+        .find(|f| f.player == P0 && f.family == UnboundedFamily::Tokens)
+        .map(|f| f.state);
+    assert_eq!(
+        tokens_state,
+        Some(FamilyCollapseState::Scheduled(CollapseCertainty::Committed)),
+        "a DriveSequence replays real cycles and cannot park, so its tokens family is Committed \
+         (∞→N) — contrast the batched Tokens stash behind unbounded-token-wire.json, which is \
+         Conditional (∞→?)"
     );
 
     drive_priority_to_next_boundary(&mut state);
@@ -1944,10 +1965,11 @@ fn build_fresh_convoke_none_untapped_growth_does_not_seed_tapped_pile() {
 /// REVERT-PROBE (discriminating):
 ///  - delete the `PersistentAxisMaterialization::Counters` submit arm ⇒ the +1/+1 counter is
 ///    unchanged ⇒ assertion (1) FLIPS.
-///  - replace the per-axis `counter_observed_now` with the coarse OR (`counter_observed || life`)
-///    ⇒ the counter is wrongly declined ⇒ assertion (1) FLIPS. Axis-specificity is load-bearing.
-///  - delete the `life_observed_now` re-check ⇒ the observed life wrongly batches (+15) ⇒
-///    assertion (2) FLIPS.
+///  - collapse `ObservedGrowth`'s two fields into one coarse OR (`counter || life`), so
+///    `boundary_declines` answers the same way for both axes ⇒ the counter is wrongly declined ⇒
+///    assertion (1) FLIPS. Axis-specificity is load-bearing.
+///  - make `boundary_declines` return `false` for `PersistentAxisMaterialization::Life` ⇒ the
+///    observed life wrongly batches (+15) ⇒ assertion (2) FLIPS.
 ///
 /// The token mint (assertion 3) is the positive reach-guard proving the submit ran past any
 /// short-circuit; no assertion is vacuous.
@@ -2047,7 +2069,8 @@ fn real_4p_boundary_collapse_batches_unobserved_counter_and_declines_observed_li
             .unbounded_resources
             .get(&P0)
             .is_some_and(|a| a.contains(&ResourceAxis::Life(P0))),
-        "the declined life axis stays ∞-marked for manual play (CR 732.2a / CR 732.2b)"
+        "the declined life axis stays ∞-marked for manual play (ENGINE DEVIATION — no CR licenses \
+         the decline; see BoundaryHold::ObservedGrowth)"
     );
     assert!(
         !state
@@ -2071,7 +2094,9 @@ fn real_4p_boundary_collapse_batches_unobserved_counter_and_declines_observed_li
 /// boundary. Because the batched `apply_counter_addition` bypasses the counter doubler pipeline, a
 /// lump N×δ apply would mis-honor a newly-present observer. The submit handler RE-CHECKS the
 /// firewall per-axis and DECLINES the batched COUNTER collapse when an observer appeared, leaving
-/// the ∞ axis for manual play (CR 732.2a / CR 732.2b never force a shortcut) — unambiguously sound.
+/// the ∞ axis for manual play — unambiguously sound. NO CR LICENSES THAT DECLINE: it is engine
+/// conduct inside the deferral window, and its rules frame lives on
+/// `engine_resolution_choices::BoundaryHold::ObservedGrowth`.
 ///
 /// MATCHED PAIR with `real_4p_boundary_collapse_batches_unobserved_counter_and_declines_observed_life`
 /// (no counter observer ⇒ the counter batches 5×2): the SAME grafted +1/+1 counter loop, WITH a
@@ -2079,9 +2104,13 @@ fn real_4p_boundary_collapse_batches_unobserved_counter_and_declines_observed_li
 /// (counter unchanged, axis stays ∞). MEASURED: this fixture's post-accept
 /// `counter_growth_is_observed == false`, so WITHOUT the graft the counter batches — the graft is
 /// LOAD-BEARING (the drift, not an incidental board observer, flips the outcome). REVERT-PROBE
-/// (discriminating): delete the `counter_observed_now` re-check ⇒ the batched counter wrongly grows
-/// (+10) and the axis clears ⇒ assertion (1) FLIPS. The token mint (assertion 2) is the positive
-/// reach-guard proving the submit ran past the short-circuit.
+/// (discriminating): delete the `if boundary_declines(item, observed) { continue; }` line ⇒ the
+/// batched counter wrongly grows (+10) and the axis clears ⇒ assertion (1) FLIPS. The token mint
+/// (assertion 2) is the positive reach-guard proving the submit ran past the short-circuit.
+///
+/// This fn is ALSO the `unbounded-declined-wire.json` golden emitter. Its write ordering is
+/// load-bearing — see the ordering rule at the wire pin below (PART 1), and the general statement
+/// of it in `kilo_live_offer_from_real_dump.rs`.
 #[test]
 fn real_4p_counter_observer_drift_in_window_declines_batched_counter_but_still_mints_tokens() {
     use engine::analysis::resource::{CounterClass, ObjectClass, ResourceAxis};
@@ -2135,6 +2164,11 @@ fn real_4p_counter_observer_drift_in_window_declines_batched_counter_but_still_m
         .unwrap()
         .trigger_definitions = vec![TriggerDefinition::new(TriggerMode::CounterAdded)].into();
 
+    // PRE-BOUNDARY CAPTURE — a local, deliberately NOT an assertion. `derive_views` takes
+    // `&GameState`, so this cannot move the stash. Its assertion (M2-a) sits BELOW the golden
+    // WRITE: see the ordering rule at the wire pin, PART 1.
+    let pre_boundary_families = derive_views(&state, None).unbounded_families;
+
     drive_priority_to_next_boundary(&mut state);
     assert!(
         matches!(
@@ -2149,6 +2183,64 @@ fn real_4p_counter_observer_drift_in_window_declines_batched_counter_but_still_m
     let saps_before = p0_saproling_ids(&state);
     apply(&mut state, P0, GameAction::SubmitPayAmount { amount: 5 })
         .expect("P0 submits the loop-collapse count");
+
+    // Cross-seam wire pin, PART 1 — compute + (optionally) REGENERATE `unbounded-declined-wire.json`,
+    // the POST-DECLINE frame the client's badge test reads. Only the two keys the FE test consumes
+    // are lifted, so unrelated derived-view churn cannot move this golden. The WRITE precedes M2-a
+    // and M2-b below deliberately: an assert panic aborts the test, so an assertion placed above
+    // the write would make the client-side half of its own revert probe unreachable.
+    let views = derive_views(&state, None);
+    let wire = serde_json::to_value(&views).expect("derived views serialize");
+    let golden: serde_json::Map<String, serde_json::Value> =
+        ["unbounded_resources", "unbounded_families"]
+            .into_iter()
+            .filter_map(|k| wire.get(k).map(|v| (k.to_string(), v.clone())))
+            .collect();
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../client/src/test/fixtures/unbounded-declined-wire.json"
+    );
+    if std::env::var_os("UPDATE_WIRE_GOLDEN").is_some() {
+        std::fs::create_dir_all(
+            std::path::Path::new(path)
+                .parent()
+                .expect("golden has a parent"),
+        )
+        .expect("create the client wire-golden directory");
+        std::fs::write(
+            path,
+            format!("{}\n", serde_json::to_string_pretty(&golden).unwrap()),
+        )
+        .expect("write the wire golden");
+    }
+
+    // M2-a — the accept→boundary window, read off the PRE-BOUNDARY capture. THE MED-2 ENGINE
+    // DISCRIMINATOR: while the collapse is merely staged the badge must already say the promise is
+    // conditional, because this very fixture is the case where it will not be kept.
+    // MUTATION: `Counters => None` in `possible_hold` ⇒ `Scheduled(Committed)` ⇒ RED.
+    // This sits AFTER the WRITE so a mutation that reds it can still regenerate the golden —
+    // M2-d(b) depends on that.
+    assert!(
+        pre_boundary_families.iter().any(|f| f.player == P0
+            && f.family == UnboundedFamily::Counters
+            && f.state == FamilyCollapseState::Scheduled(CollapseCertainty::Conditional)),
+        "in the accept→boundary window the counters family is Scheduled(Conditional) — a batched \
+         Counters collapse can still be declined, so ∞→? not ∞→N; got {pre_boundary_families:?}"
+    );
+
+    // M2-b — the POST-decline frame. The axis is still ∞ (assertion (1) below pins the store) but
+    // the stash is gone, so the badge stops promising anything at all.
+    // MUTATION: make `scheduled_display_axes` read `unbounded_resources` instead of the stash ⇒
+    // the declined family stays `Scheduled` ⇒ RED here AND in the regenerated golden.
+    // Also AFTER the WRITE, for the same reason.
+    assert!(
+        views.unbounded_families.iter().any(|f| f.player == P0
+            && f.family == UnboundedFamily::Counters
+            && f.state == FamilyCollapseState::Unscheduled),
+        "after the decline the counters axis is still ∞ but nothing is staged, so its family is \
+         Unscheduled and the badge renders a bare ∞; got {:?}",
+        views.unbounded_families
+    );
 
     // (1) DISCRIMINATOR: the batched counter collapse is DECLINED (an observer appeared in the
     //     window) — +1/+1 UNCHANGED, and the counter ∞ axis stays MARKED for manual play.
@@ -2172,7 +2264,8 @@ fn real_4p_counter_observer_drift_in_window_declines_batched_counter_but_still_m
                 CounterClass::Plus1Plus1,
                 ObjectClass::Creature
             ))),
-        "the declined counter axis stays ∞-marked for manual play (CR 732.2a / CR 732.2b)"
+        "the declined counter axis stays ∞-marked for manual play (ENGINE DEVIATION — no CR \
+         licenses the decline; see BoundaryHold::ObservedGrowth)"
     );
     // (2) POSITIVE reach-guard: the Tokens axis STILL mints N (tokens honor observers via real ETB
     //     events, so they always proceed) — proves the submit ran and the negative is non-vacuous.
@@ -2180,6 +2273,17 @@ fn real_4p_counter_observer_drift_in_window_declines_batched_counter_but_still_m
         p0_saproling_ids(&state).len(),
         saps_before.len() + 5,
         "the token axis still mints 5 (only the observer-drifted counter axis is declined)"
+    );
+
+    // Cross-seam wire pin, PART 2 — the drift COMPARE (see PART 1 for why it sits here).
+    let committed: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(path).expect("committed wire golden"))
+            .unwrap();
+    assert_eq!(
+        serde_json::Value::Object(golden),
+        committed,
+        "the client's declined wire golden drifted from engine output — re-run with \
+         UPDATE_WIRE_GOLDEN=1"
     );
 }
 
@@ -2501,6 +2605,22 @@ fn med_tokens_boundary_mint_pause_preserves_replacement_choice() {
             .is_some_and(|p| !p.is_empty()),
         "pre-submit reach-guard: the accepted token loop has a non-empty ∞ pile"
     );
+    // M2-c — THE EXACT FRAME WHERE THE OLD BADGE LIED. At this pre-submit frame the loop really is
+    // scheduled, and the old row flag made the HUD promise "a finite amount will be chosen". This
+    // very test then proves that the mint parks and NOTHING is chosen. `Conditional` is what makes
+    // the badge honest here.
+    // MUTATION: `Tokens => None` in `possible_hold` ⇒ this reports Scheduled(Committed) ⇒ RED.
+    assert!(
+        derive_views(&state, None)
+            .unbounded_families
+            .iter()
+            .any(|f| f.player == P0
+                && f.family == UnboundedFamily::Tokens
+                && f.state == FamilyCollapseState::Scheduled(CollapseCertainty::Conditional)),
+        "pre-submit: an accepted Tokens collapse is Scheduled(Conditional) — its boundary mint can \
+         park on a replacement choice, which is exactly what happens below; got {:?}",
+        derive_views(&state, None).unbounded_families
+    );
 
     apply(&mut state, P0, GameAction::SubmitPayAmount { amount: 3 })
         .expect("P0 submits the finite token loop-collapse count");
@@ -2538,6 +2658,22 @@ fn med_tokens_boundary_mint_pause_preserves_replacement_choice() {
             .get(&P0)
             .is_some_and(|p| !p.is_empty()),
         "REVERT-FLIP: the paused mint must preserve the ∞ token pile, not drop it"
+    );
+    // M2-c, post-pause — the badge stops promising. This stands alone as a WRONG-AUTHORITY
+    // detector (a badge reading `unbounded_resources` instead of the stash would still say
+    // `Scheduled` here); it is deliberately NOT an argument that `Tokens` is `Committed`.
+    // `take_pending_materialization` removes the WHOLE controller list, so a declined `Counters`
+    // axis reports `Unscheduled` at this point identically — the symmetry is the point.
+    assert!(
+        derive_views(&state, None)
+            .unbounded_families
+            .iter()
+            .any(|f| f.player == P0
+                && f.family == UnboundedFamily::Tokens
+                && f.state == FamilyCollapseState::Unscheduled),
+        "post-pause: the axis is still ∞ but the stash is gone, so the tokens family promises \
+         nothing; got {:?}",
+        derive_views(&state, None).unbounded_families
     );
 
     // PRODUCTION-REACHABILITY ANCHOR for the "pile present, stash absent" shape. Several R6a

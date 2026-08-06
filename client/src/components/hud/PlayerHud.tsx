@@ -14,7 +14,7 @@ import { UndoButton } from "../board/UndoButton.tsx";
 import { LifeTotal } from "../controls/LifeTotal.tsx";
 import { ManaPoolSummary } from "./ManaPoolSummary.tsx";
 import { PhaseIndicatorLeft, PhaseIndicatorRight } from "../controls/PhaseStopBar.tsx";
-import { CityBlessingBadge, ConditionBadge, CounterBadge, DungeonBadge, InitiativeBadge, MonarchBadge, PendingSpellBadge, RingBenefitsBadge, StatusBadge, UnboundedBadge, unboundedFamilyViews } from "./HudBadges.tsx";
+import { CityBlessingBadge, ConditionBadge, CounterBadge, DungeonBadge, InitiativeBadge, MonarchBadge, PendingSpellBadge, RingBenefitsBadge, StatusBadge, UnboundedBadge } from "./HudBadges.tsx";
 import { EnchantmentsBadge } from "./EnchantmentsBadge.tsx";
 import { HudPlate } from "./HudPlate.tsx";
 import { NextUpBadge } from "./NextUpBadge.tsx";
@@ -134,9 +134,9 @@ export function PlayerHud() {
                 condition={condition}
               />
             ))}
-            {unboundedFamilyViews(designations.unboundedResources).map(
+            {designations.unboundedFamilies.map(
               (u) => (
-                <UnboundedBadge key={u.family} family={u.family} scheduled={u.scheduled} />
+                <UnboundedBadge key={u.family} family={u.family} state={u.state} />
               ),
             )}
           </>

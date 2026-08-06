@@ -20,6 +20,7 @@ use engine::analysis::decision_template::{
 };
 use engine::analysis::loop_check::{LoopCertificate, ShortcutProposal, ShortcutResponse, WinKind};
 use engine::analysis::resource::{loop_states_equal_modulo_resources, BoardDelta, ResourceAxis};
+use engine::game::derived_views::{FamilyCollapseState, UnboundedFamily};
 use engine::game::engine::{apply, EngineError};
 use engine::game::scenario::{GameRunner, GameScenario};
 use engine::types::ability::{Effect, TargetRef};
@@ -7445,33 +7446,37 @@ fn scheduled_collapse_still_renders_the_unbounded_badge() {
         // dropped, by `object_growth_backing`, for a TOKEN axis whose whole registered pile left
         // the battlefield; this fixture keeps its backing intact, pinned by `expected_pile`.)
         //
-        // R2 — the SCHEDULED FLAG survives the viewer-filtered broadcast path. Read off the rows,
-        // because the flag is the only projection of the schedule on the wire.
-        let flagged: Vec<ResourceAxis> = views
-            .unbounded_resources
+        // R2 — the SCHEDULE survives the viewer-filtered broadcast path. Read off
+        // `unbounded_families`, the channel that replaced the per-row `scheduled` flag; the
+        // certainty CLASS is pinned elsewhere (B-1, W2, M2-a/M2-c), what matters here is that a
+        // scheduled family reaches every viewer.
+        let scheduled_families: Vec<UnboundedFamily> = views
+            .unbounded_families
             .iter()
-            .filter(|r| r.scheduled)
-            .map(|r| r.axis)
+            .filter(|f| matches!(f.state, FamilyCollapseState::Scheduled(_)))
+            .map(|f| f.family)
             .collect();
         assert!(
-            flagged.contains(&ResourceAxis::Life(P0))
-                && flagged.contains(&ResourceAxis::TokensCreated),
-            "R2/filtered: the filtered broadcast path flags both scheduled axes (viewer \
-             {viewer:?}), got {flagged:?}"
+            scheduled_families.contains(&UnboundedFamily::Life)
+                && scheduled_families.contains(&UnboundedFamily::Tokens),
+            "R2/filtered: the filtered broadcast path reports both scheduled families (viewer \
+             {viewer:?}), got {:?}",
+            views.unbounded_families
         );
-        // R1 — the flag survives serialize→deserialize, and a SET flag is EMITTED. `scheduled` is
-        // `skip_serializing_if = "is_false"`, so the emission half is what catches a flag that is
-        // computed correctly and then silently dropped on the wire.
+        // R1 — the channel survives serialize→deserialize, and a POPULATED channel is EMITTED.
+        // `unbounded_families` is `skip_serializing_if = "Vec::is_empty"`, so the emission half is
+        // what catches a state that is computed correctly and then silently dropped on the wire.
         let json = serde_json::to_string(&views).expect("serialize");
         let back: engine::game::derived_views::DerivedViews =
             serde_json::from_str(&json).expect("deserialize");
         assert_eq!(
-            back.unbounded_resources, views.unbounded_resources,
-            "R1/roundtrip: the scheduled flag survives serialize→deserialize (viewer {viewer:?})"
+            back.unbounded_families, views.unbounded_families,
+            "R1/roundtrip: the family collapse states survive serialize→deserialize (viewer \
+             {viewer:?})"
         );
         assert!(
-            json.contains("\"scheduled\":true"),
-            "R1/emitted: a SET scheduled flag is EMITTED, not skipped (viewer {viewer:?})"
+            json.contains("\"unbounded_families\"") && json.contains("\"Scheduled\""),
+            "R1/emitted: a populated family channel is EMITTED, not skipped (viewer {viewer:?})"
         );
     }
 
@@ -7666,16 +7671,20 @@ fn unregistered_axis_still_renders_its_infinity_badge() {
         "a merely-SCHEDULED collapse still projects both ∞ rows, got {scheduled_axes:?}"
     );
 
-    // R3 PRE-CLEAR positive control — without it the post-clear "nothing flagged" below is
-    // VACUOUS: a mutant that never sets the flag at all satisfies the post-clear assertion, so the
-    // pair only discriminates because this arm proves the flag CAN be set on this same state.
+    // R3 PRE-CLEAR positive control — without it the post-clear "every family Unscheduled" below
+    // is VACUOUS: a mutant that never reports a schedule at all satisfies the post-clear
+    // assertion, so the pair only discriminates because this arm proves a schedule CAN be reported
+    // on this same state.
     {
         let v = engine::game::derived_views::derive_views(&state, None);
         let j = serde_json::to_string(&v).unwrap();
         assert!(
-            v.unbounded_resources.iter().any(|r| r.scheduled) && j.contains("\"scheduled\":true"),
-            "R3/pre-clear: a registered materialization FLAGS a row AND emits the flag, got {:?}",
-            v.unbounded_resources
+            v.unbounded_families
+                .iter()
+                .any(|f| matches!(f.state, FamilyCollapseState::Scheduled(_)))
+                && j.contains("\"Scheduled\""),
+            "R3/pre-clear: a registered materialization SCHEDULES a family AND emits it, got {:?}",
+            v.unbounded_families
         );
     }
 
@@ -7683,22 +7692,30 @@ fn unregistered_axis_still_renders_its_infinity_badge() {
     // has nothing scheduled to collapse it.
     state.pending_unbounded_materialization.clear();
 
-    // R3 — with nothing scheduled NO row is flagged, the field is OMITTED from the wire
-    // (`skip_serializing_if = "is_false"`), and an engine-emitted view that omits it
-    // deserializes back to `false` rather than to a missing-field error.
+    // R3 — with nothing scheduled EVERY family is `Unscheduled`, which is deliberately NOT the
+    // same as "the channel disappears": the ∞ badges are still on screen, they just promise
+    // nothing. The rows must therefore still be there, and the `Scheduled` encoding must be gone
+    // from the wire entirely.
     {
         let v = engine::game::derived_views::derive_views(&state, None);
         let j = serde_json::to_string(&v).unwrap();
         assert!(
-            !v.unbounded_resources.iter().any(|r| r.scheduled) && !j.contains("\"scheduled\""),
-            "R3/post-clear: with nothing scheduled no row is flagged and the key is omitted, \
-             got {:?}",
-            v.unbounded_resources
+            !v.unbounded_families.is_empty()
+                && v.unbounded_families
+                    .iter()
+                    .all(|f| f.state == FamilyCollapseState::Unscheduled),
+            "R3/post-clear: with nothing scheduled every family is Unscheduled — and the channel \
+             is still populated, so this is not vacuous; got {:?}",
+            v.unbounded_families
+        );
+        assert!(
+            !j.contains("\"Scheduled\""),
+            "R3/post-clear: no Scheduled state reaches the wire, got {j}"
         );
         let back: engine::game::derived_views::DerivedViews = serde_json::from_str(&j).unwrap();
-        assert!(
-            !back.unbounded_resources.iter().any(|r| r.scheduled),
-            "R3/default: an engine-emitted view that OMITS the flag deserializes to unscheduled"
+        assert_eq!(
+            back.unbounded_families, v.unbounded_families,
+            "R3/default: the Unscheduled channel round-trips unchanged"
         );
         assert!(
             !back.unbounded_resources.is_empty(),

@@ -18,7 +18,7 @@ import { getOpponentIds, isOneOnOne, resolveFocusedOpponent } from "../../viewmo
 import { LifeTotal } from "../controls/LifeTotal.tsx";
 import { ManaPoolSummary } from "./ManaPoolSummary.tsx";
 import { ScoreBadge } from "../draft/ScoreBadge.tsx";
-import { CityBlessingBadge, CounterBadge, DungeonBadge, InitiativeBadge, MonarchBadge, StatusBadge, UnboundedBadge, unboundedFamilyViews } from "./HudBadges.tsx";
+import { CityBlessingBadge, CounterBadge, DungeonBadge, InitiativeBadge, MonarchBadge, StatusBadge, UnboundedBadge } from "./HudBadges.tsx";
 import { AurasHoverPreview } from "./AurasHoverPreview.tsx";
 import { AvatarHoverPreview } from "./AvatarHoverPreview.tsx";
 import { BattlefieldPeekPopover } from "./BattlefieldPeekPopover.tsx";
@@ -321,8 +321,8 @@ export function OpponentHud({
               {opponentRadCounters > 0 ? <CounterBadge kind="rad" value={opponentRadCounters} /> : null}
               {opponentExperienceCounters > 0 ? <CounterBadge kind="experience" value={opponentExperienceCounters} /> : null}
               {opponentSpeed > 0 ? <CounterBadge kind="speed" value={opponentSpeed} /> : null}
-              {unboundedFamilyViews(opponentDesignations.unboundedResources).map((u) => (
-                <UnboundedBadge key={u.family} family={u.family} scheduled={u.scheduled} />
+              {opponentDesignations.unboundedFamilies.map((u) => (
+                <UnboundedBadge key={u.family} family={u.family} state={u.state} />
               ))}
               {opponentCompanion ? <StatusBadge label={t("badges.companion")} /> : null}
               {isOnline ? <ConnectionDotInline disconnected={isDisconnected} /> : null}
@@ -776,8 +776,8 @@ function OpponentTab({
       {radCounters > 0 ? <CounterBadge kind="rad" value={radCounters} /> : null}
       {experienceCounters > 0 ? <CounterBadge kind="experience" value={experienceCounters} /> : null}
       {speed > 0 ? <CounterBadge kind="speed" value={speed} /> : null}
-      {unboundedFamilyViews(designations.unboundedResources).map((u) => (
-        <UnboundedBadge key={u.family} family={u.family} scheduled={u.scheduled} />
+      {designations.unboundedFamilies.map((u) => (
+        <UnboundedBadge key={u.family} family={u.family} state={u.state} />
       ))}
       {isOnline && <ConnectionDotInline disconnected={isDisconnected} />}
       {onKick && !isEliminated && (

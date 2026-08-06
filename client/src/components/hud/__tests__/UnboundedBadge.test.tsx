@@ -1,111 +1,49 @@
 /**
- * The scheduled-collapse ∞ badge: `unboundedFamilyViews` (the pure family dedup + tag join) and
- * the rendered `UnboundedBadge` it feeds.
+ * The ∞ badge and the engine-owned collapse state behind it.
  *
- * DATA SOURCE IS LABELLED PER ROW. `unbounded-token-wire.json` is the only golden imported here;
- * it carries exactly ONE axis on one scheduled player-0 row, so only the two GOLDEN-DRIVEN rows
- * below can come from it. Every multi-axis, cross-player or rows-empty case is COMPOSED against
- * the exported prop contract and says so.
+ * DATA SOURCE IS LABELLED PER ROW. Three engine goldens are imported here and each carries
+ * exactly one `unbounded_families` row on player 0:
+ *   - `unbounded-token-wire.json`    → `tokens`,  `Scheduled(Conditional)` ⇒ `∞→?`
+ *   - `unbounded-counter-wire.json`  → `counters`, `Scheduled(Committed)`  ⇒ `∞→N`
+ *   - `unbounded-declined-wire.json` → `counters`, `Unscheduled`           ⇒ bare `∞`
+ * Every multi-family, cross-player or empty case is COMPOSED against the exported prop contract
+ * and says so.
+ *
+ * The family FOLD is no longer here to test: the engine computes it, on the loop's producing
+ * controller key, which does not survive onto the wire. Its join laws live in
+ * `derived_views::tests::family_collapse_state_merge_is_a_join` (was U6) and its multi-controller
+ * discriminator in `two_controllers_draining_one_victim_do_not_cross_schedule`.
  */
 import { act } from "react";
 import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import type { DerivedViews, UnboundedResourceView } from "../../../adapter/types.ts";
+import type { DerivedViews, UnboundedFamilyView } from "../../../adapter/types.ts";
 import { useGameStore } from "../../../stores/gameStore.ts";
 import { useMultiplayerStore } from "../../../stores/multiplayerStore.ts";
 import { buildGameState } from "../../../test/factories/gameStateFactory.ts";
+import counterWire from "../../../test/fixtures/unbounded-counter-wire.json";
+import declinedWire from "../../../test/fixtures/unbounded-declined-wire.json";
 import tokenWire from "../../../test/fixtures/unbounded-token-wire.json";
 import { PlayerHud } from "../PlayerHud.tsx";
-import { unboundedFamilyViews } from "../HudBadges.tsx";
 
 const PLAIN_TOKENS = "Unbounded tokens (∞)";
 // Passive voice on purpose: the badge renders on opponent HUDs, and a victim-attributed axis puts
 // it on the victim's seat while the loop's CONTROLLER is the one prompted to name N — so any
 // second-person phrasing here is addressed to the wrong player.
-const SCHEDULED_TOKENS = "Unbounded tokens (∞) — collapse pending; a finite amount will be chosen";
+const COMMITTED_COUNTERS =
+  "Unbounded counters (∞) — collapse pending; a finite amount will be chosen";
+const CONDITIONAL_TOKENS = "Unbounded tokens (∞) — collapse pending; this may stay unbounded";
+const MIXED_COUNTERS =
+  "Unbounded counters (∞) — part of this group has a pending collapse; part remains unbounded";
+const PLAIN_COUNTERS = "Unbounded counters (∞)";
 
-// COMPOSED axis literals. `ResourceAxis` is externally tagged: unit variants are bare strings,
-// data variants are single-key objects — both shapes appear below on purpose.
-const TOKENS = "TokensCreated" as UnboundedResourceView["axis"];
-const CHARGE = { Counter: ["Other", "Other"] } as unknown as UnboundedResourceView["axis"];
-const BURDEN = { Counter: ["Other", "Generic"] } as unknown as UnboundedResourceView["axis"];
-const POISON = { Poison: 0 } as unknown as UnboundedResourceView["axis"];
-const row = (
-  axis: UnboundedResourceView["axis"],
+// COMPOSED family rows, for the cases no single golden frame produces.
+const fam = (
+  family: UnboundedFamilyView["family"],
+  state: UnboundedFamilyView["state"],
   player = 0,
-  scheduled?: boolean,
-): UnboundedResourceView => ({ player, axis, ...(scheduled === undefined ? {} : { scheduled }) });
-
-describe("unboundedFamilyViews", () => {
-  // No store, no mount ⇒ no `beforeEach` reset and no `afterEach(cleanup)` needed here.
-  //
-  // There is deliberately no join to test here. Both wire channels key on the engine's
-  // ATTRIBUTION player, so two controllers draining one victim produce identically-keyed rows that
-  // must still disagree about `scheduled` — unrepresentable by any client-side key join. The
-  // engine answers it on the controller key, and the discriminating fixture lives where the
-  // controller identity does:
-  // `derived_views::tests::two_controllers_draining_one_victim_do_not_cross_schedule`.
-  // What is testable here is the family fold over the engine's per-row answer.
-
-  it("U3/fold: carries each row's engine flag onto its family", () => {
-    // COMPOSED — neither golden carries two axes.
-    const views = unboundedFamilyViews([row(TOKENS), row(CHARGE, 0, true)]);
-    expect(views).toHaveLength(2);
-    expect(views.find((v) => v.family === "tokens")?.scheduled).toBe(false);
-    expect(views.find((v) => v.family === "counters")?.scheduled).toBe(true);
-  });
-
-  it("U3b/absent: an omitted `scheduled` is falsy, not scheduled", () => {
-    // The engine omits the field when false (`skip_serializing_if`), so it arrives `undefined`.
-    // A truthiness bug here would render `∞→N` for every unscheduled loop on the board — the
-    // single most visible way this badge could lie. Matched positive prevents a constant `false`.
-    expect(unboundedFamilyViews([row(TOKENS)])).toEqual([{ family: "tokens", scheduled: false }]);
-    expect(unboundedFamilyViews([row(TOKENS, 0, true)])).toEqual([
-      { family: "tokens", scheduled: true },
-    ]);
-  });
-
-  it("U3c/over-report: one scheduled axis marks its whole family, including a different axis", () => {
-    // The documented over-report, asserted rather than only described. `Counter` and `Poison` both
-    // map to the "counters" family, so a scheduled counter axis paints an unscheduled poison axis
-    // — a genuinely different axis, not another `Counter(..)`. This pins the CHOSEN direction of
-    // imprecision: if the fold were ever tightened to "iff ALL", this row reds and the doc comment
-    // above `families.set` must change with it.
-    const views = unboundedFamilyViews([row(CHARGE, 0, true), row(POISON)]);
-    expect(views).toEqual([{ family: "counters", scheduled: true }]);
-  });
-
-  it("U5/rows-drive: no ∞ rows ⇒ no views", () => {
-    // Rows-empty is the DOMINANT case, not an exotic one: `PlayerHud` calls this unconditionally
-    // and the hook returns the shared empty array whenever no loop is active. That alone earns the
-    // row; no engine reachability argument is needed.
-    //
-    // (`derive_views` can also drop an individual TOKEN-axis row whose entire registered pile has
-    // left the battlefield while the accepted stash survives — see
-    // `combo_infinite_pile::object_growth_infinity_row_dies_with_its_last_pile_member`. That test
-    // asserts a row is DROPPED, not that the projection is empty, so it is cited here as the
-    // neighbouring behaviour it is rather than as this row's witness.)
-    expect(unboundedFamilyViews([])).toEqual([]);
-    // PINNED POSITIVE, in the same `it`: without it a constant `return []` satisfies the row.
-    const present = unboundedFamilyViews([row(TOKENS, 0, true)]);
-    expect(present).toHaveLength(1);
-    expect(present[0].family).toBe("tokens");
-    expect(present[0].scheduled).toBe(true);
-  });
-
-  it("U6/fold: a family is scheduled iff ANY member axis is, in either row order", () => {
-    // COMPOSED — two distinct `Counter(..)` axes in one family, only one scheduled. A last-wins
-    // fold gets one order right and the other wrong, which is why both are asserted.
-    for (const rows of [
-      [row(CHARGE, 0, true), row(BURDEN)],
-      [row(BURDEN), row(CHARGE, 0, true)],
-    ]) {
-      const views = unboundedFamilyViews(rows);
-      expect(views).toEqual([{ family: "counters", scheduled: true }]);
-    }
-  });
-});
+): UnboundedFamilyView => ({ player, family, state });
 
 describe("UnboundedBadge + usePlayerDesignations", () => {
   beforeEach(() => {
@@ -124,57 +62,119 @@ describe("UnboundedBadge + usePlayerDesignations", () => {
     render(<PlayerHud />);
   };
 
-  it("U1/scheduled: renders ∞→N and the scheduled tooltip from the engine golden", () => {
-    // GOLDEN-DRIVEN — the row and its `scheduled` flag are both read out of the regenerated
-    // engine golden, never authored here.
+  it("U1/M2-d: the token golden's CONDITIONAL collapse renders ∞→?, and the counter golden's COMMITTED one renders ∞→N", () => {
+    // GOLDEN-DRIVEN, both halves — the family and its state are read out of regenerated engine
+    // goldens, never authored here. The pair IS the discriminator: same badge component, two real
+    // engine frames, two different glyphs. A component that mapped every `Scheduled` to the
+    // scheduled glyph passes the second half and fails the first; one that never renders `∞→N`
+    // fails the second.
     seed(tokenWire as unknown as DerivedViews);
     expect(screen.getAllByLabelText(/Unbounded/)).toHaveLength(1);
-    const badge = screen.getByLabelText(SCHEDULED_TOKENS);
-    expect(badge).toBeInTheDocument();
-    expect(badge.textContent).toContain("∞→N");
+    const conditional = screen.getByLabelText(CONDITIONAL_TOKENS);
+    expect(conditional).toBeInTheDocument();
+    expect(conditional.textContent).toContain("∞→?");
+    expect(conditional.textContent).not.toContain("∞→N");
+
+    // MATCHED POSITIVE, from the REAL kilo dump's `DriveSequence` accept — the only Committed
+    // frame in the suite.
+    cleanup();
+    seed(counterWire as unknown as DerivedViews);
+    const committed = screen.getByLabelText(COMMITTED_COUNTERS);
+    expect(committed).toBeInTheDocument();
+    expect(committed.textContent).toContain("∞→N");
   });
 
-  it("U2/unscheduled: the same golden with the ROW flag cleared renders plain ∞", () => {
-    // GOLDEN-DRIVEN, matched negative — identical rows, `scheduled` cleared on the ROW.
+  it("U2/M2-d: the DECLINED golden renders a bare ∞ — the badge stops promising", () => {
+    // GOLDEN-DRIVEN. This frame is the engine's post-decline output: the axis is still ∞ but the
+    // stash is gone. It is the regression this whole change exists for — the old badge kept
+    // promising `∞→N` here.
     //
-    // Clearing the flag on the row is the ONLY thing that unschedules the badge, because the row
-    // is the only place the wire carries the answer. The engine's accepted-collapse contract lives
-    // in `pending_unbounded_materialization` and is deliberately not mirrored to the client, so
-    // there is nothing else this test could strip.
-    const wire = tokenWire as unknown as DerivedViews;
-    const untagged = {
-      ...wire,
-      unbounded_resources: (wire.unbounded_resources ?? []).map(({ scheduled: _s, ...r }) => r),
-    };
-    seed(untagged);
+    // MUTATION COVERAGE: an engine change that makes `scheduled_display_axes` read
+    // `unbounded_resources` instead of the stash regenerates this golden as `Scheduled` and reds
+    // the `not.toContain("∞→")` line below.
+    seed(declinedWire as unknown as DerivedViews);
     expect(screen.getAllByLabelText(/Unbounded/)).toHaveLength(1);
-    const badge = screen.getByLabelText(PLAIN_TOKENS);
+    const badge = screen.getByLabelText(PLAIN_COUNTERS);
     expect(badge).toBeInTheDocument();
     expect(badge.textContent).toContain("∞");
-    expect(badge.textContent).not.toContain("∞→N");
+    expect(badge.textContent).not.toContain("∞→");
   });
 
-  it("U4/viewer: another seat's SCHEDULED row does not schedule this seat's badge", () => {
+  it("U3/families: the engine's rows are rendered one badge per family, unmodified", () => {
+    // COMPOSED — no single golden frame carries two families. The point of the row is that the FE
+    // performs no fold at all now: two engine rows in, two badges out, each with its own state.
+    seed({
+      unbounded_families: [
+        fam("tokens", { type: "Scheduled", data: "Conditional" }),
+        fam("counters", { type: "Scheduled", data: "Committed" }),
+      ],
+    } as DerivedViews);
+    expect(screen.getAllByLabelText(/Unbounded/)).toHaveLength(2);
+    expect(screen.getByLabelText(CONDITIONAL_TOKENS).textContent).toContain("∞→?");
+    expect(screen.getByLabelText(COMMITTED_COUNTERS).textContent).toContain("∞→N");
+  });
+
+  it("U3b/absent: no family channel ⇒ no badge, and the same frame with one ⇒ a badge", () => {
+    // The dominant case: no loop is active, so the engine omits the field entirely.
+    seed({ unbounded_families: [] } as unknown as DerivedViews);
+    expect(screen.queryByLabelText(/Unbounded/)).toBeNull();
+
+    // MATCHED POSITIVE in the same `it`: without it a HUD that never renders the badge at all
+    // satisfies the assertion above.
+    cleanup();
+    seed({ unbounded_families: [fam("tokens", { type: "Unscheduled" })] } as DerivedViews);
+    expect(screen.getByLabelText(PLAIN_TOKENS)).toBeInTheDocument();
+  });
+
+  it("M1-e/Mixed: a mixed family renders a bare ∞ — never ∞→N, never ∞→?", () => {
+    // COMPOSED for the `Mixed` frame (its engine reachability is proven by
+    // `derived_views::tests::mixed_family_is_not_scheduled` and
+    // `two_controllers_draining_one_victim_do_not_cross_schedule`), and GOLDEN-DRIVEN for the
+    // matched positive.
+    //
+    // WHY IT FLIPPED FROM THE OLD TEST. This used to be U3c, which asserted the OPPOSITE: the
+    // client folded a family with one scheduled and one unscheduled axis to `scheduled: true` and
+    // rendered `∞→N` — an over-report the old comment documented and defended, because a boolean
+    // could not say anything else. `Mixed` is representable now, so the honest answer is available
+    // and this is it.
+    seed({ unbounded_families: [fam("counters", { type: "Mixed" })] } as DerivedViews);
+    const mixed = screen.getByLabelText(MIXED_COUNTERS);
+    expect(mixed).toBeInTheDocument();
+    expect(mixed.textContent).toContain("∞");
+    expect(mixed.textContent).not.toContain("∞→");
+
+    // MATCHED POSITIVE from the REAL kilo golden: the badge CAN render `∞→N`, so the negatives
+    // above are not satisfied by a component that renders a bare `∞` for everything.
+    cleanup();
+    seed(counterWire as unknown as DerivedViews);
+    expect(screen.getByLabelText(COMMITTED_COUNTERS).textContent).toContain("∞→N");
+  });
+
+  it("U4/viewer: another seat's SCHEDULED family does not schedule this seat's badge", () => {
     // COMPOSED. Exercises the hook's per-player filter, which is why it stays render-level.
     //
-    // The hazard is the seat filter itself: seat 1's row genuinely carries `scheduled: true`, so if
-    // `forPlayer` leaked it, seat 0 would render `∞→N` off another player's collapse. Putting the
-    // flag on a TAG for seat 1 instead would be vacuous — the tag channel does not reach the
-    // render path, so a component that never schedules anything would satisfy it.
+    // The hazard is the seat filter itself: seat 1's row genuinely carries a schedule, so if
+    // `forPlayer` leaked it, seat 0 would render a bound off another player's collapse.
     seed({
-      unbounded_resources: [row(TOKENS, 0), row(TOKENS, 1, true)],
+      unbounded_families: [
+        fam("tokens", { type: "Unscheduled" }, 0),
+        fam("tokens", { type: "Scheduled", data: "Committed" }, 1),
+      ],
     } as DerivedViews);
     expect(screen.getAllByLabelText(/Unbounded/)).toHaveLength(1);
     expect(screen.getByLabelText(PLAIN_TOKENS)).toBeInTheDocument();
-    expect(screen.queryByLabelText(SCHEDULED_TOKENS)).toBeNull();
+    expect(screen.queryByLabelText(/collapse pending/)).toBeNull();
 
-    // MATCHED POSITIVE — same shape, flag on THIS seat. Without it the assertions above pass
-    // against a badge that can never render `∞→N`, and the filter would be untested in the
+    // MATCHED POSITIVE — same shape, schedule on THIS seat. Without it the assertions above pass
+    // against a badge that can never render a bound, and the filter would be untested in the
     // direction that matters.
     cleanup();
     seed({
-      unbounded_resources: [row(TOKENS, 0, true), row(TOKENS, 1)],
+      unbounded_families: [
+        fam("tokens", { type: "Scheduled", data: "Committed" }, 0),
+        fam("tokens", { type: "Unscheduled" }, 1),
+      ],
     } as DerivedViews);
-    expect(screen.getByLabelText(SCHEDULED_TOKENS)).toBeInTheDocument();
+    expect(screen.getByLabelText(/collapse pending; a finite amount will be chosen/)).toBeInTheDocument();
   });
 });

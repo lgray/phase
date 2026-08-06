@@ -2579,8 +2579,9 @@ export type TriggerKind = "Proliferate" | "Magecraft" | "Constellation" | "Landf
  * One unbounded-resource axis a CR 732.2a net-progress loop pumps. Mirrors
  * `engine::analysis::resource::ResourceAxis` (serde externally-tagged: unit
  * variants serialize as bare strings, data variants as a single-key object,
- * tuple variants as an array). The frontend only formats each axis to a display
- * family — it never derives which axes are unbounded or decides attribution.
+ * tuple variants as an array). The engine owns the display family each axis
+ * groups into as well (`unbounded_families`) — the frontend derives neither the
+ * family, nor which axes are unbounded, nor attribution.
  */
 export type ResourceAxis =
   | { Mana: ManaType }
@@ -2626,34 +2627,67 @@ export type ResourceAxisTag =
 /**
  * One `∞` HUD row. Mirrors `engine::game::derived_views::UnboundedResourceView`.
  * `player` is the engine-decided HUD attribution (NOT necessarily the loop
- * controller); `axis` is the engine-provided identity the FE maps to a family.
+ * controller); `axis` is the engine-provided identity, and its display family
+ * and collapse state arrive separately on `unbounded_families`.
  */
 export interface UnboundedResourceView {
   player: PlayerId;
   axis: ResourceAxis;
-  /**
-   * Engine-computed: this axis has an accepted-but-unapplied collapse, so render `∞→N` rather
-   * than a bare `∞`. Omitted (⇒ `undefined`) when false, so test for truthiness, not presence.
-   *
-   * This is the ONLY projection of the accepted collapse on the wire, and deliberately so. An
-   * earlier cut also shipped a `(player, axis)`-keyed tag channel; it was removed for having no
-   * reader, and re-deriving this flag from such a channel is not merely redundant but wrong. Any
-   * such channel keys by the engine's ATTRIBUTION player, which for `Life`/`DamageDealt`/
-   * `LibraryDelta`/`Poison` axes is the *victim*, not the loop that produced the growth — so two
-   * controllers draining one victim collide under the same key and the join marks the wrong
-   * controller's row. The engine computes this on the controller key, the only place that
-   * identity still exists.
-   *
-   * That collision does not currently change what renders — the badge folds rows to families, and
-   * a key collision implies the same family — so this is a latent divergence in the data rather
-   * than a rendering bug that was fixed. It becomes visible the moment anything renders per-axis.
-   *
-   * NOT a guarantee that the growth lands. `Counters`/`Life` axes can be flagged and then decline
-   * to collapse, if a counter/life observer appears between the accept and the boundary — the
-   * engine leaves those axes `∞` and applies nothing. Read this as "a collapse is scheduled",
-   * never "this will resolve".
-   */
-  scheduled?: boolean;
+}
+
+/** The display family an unbounded axis groups into. Mirrors
+ *  `engine::game::derived_views::UnboundedFamily` (`rename_all = "lowercase"`), so these
+ *  literals ARE the wire strings. Pinned tag-by-tag against the engine by
+ *  `unbounded-family-tags.json`. */
+export type UnboundedFamily =
+  | "mana"
+  | "life"
+  | "damage"
+  | "mill"
+  | "counters"
+  | "tokens"
+  | "cards"
+  | "casts"
+  | "combats"
+  | "turns"
+  | "triggers";
+
+/** Whether the boundary can still fail to apply a scheduled collapse. Mirrors
+ *  `engine::game::derived_views::CollapseCertainty`. `Conditional` means the collapse may be
+ *  declined or may park, and the axis then stays unbounded. */
+export type CollapseCertainty = "Committed" | "Conditional";
+
+/**
+ * One display family's collapse coverage. Mirrors
+ * `engine::game::derived_views::FamilyCollapseState` (serde `tag`/`content`).
+ * `Mixed` means the family holds both a scheduled and an unscheduled axis; a single glyph
+ * cannot say two things, so it says the weaker one.
+ */
+export type FamilyCollapseState =
+  | { type: "Unscheduled" }
+  | { type: "Mixed" }
+  | { type: "Scheduled"; data: CollapseCertainty };
+
+/**
+ * One `∞` badge's engine-owned state, keyed per seat and per display family. Mirrors
+ * `engine::game::derived_views::UnboundedFamilyView`.
+ *
+ * THE FE NEVER RE-DERIVES THIS, and could not: the engine resolves it on the loop's PRODUCING
+ * CONTROLLER key, before attribution rewrites `player`. The row channel keys by the ATTRIBUTION
+ * player, which for `Life`/`DamageDealt`/`LibraryDelta`/`Poison` axes is the *victim*, not the loop
+ * that produced the growth — so two controllers draining one victim collide under the same key and
+ * any join marks the wrong controller. The controller identity does not survive onto the wire, so
+ * only the engine can answer.
+ *
+ * `state` is NOT a guarantee that the growth lands, and that is typed rather than disclosed:
+ * `Scheduled(Conditional)` is exactly the case where a `Counters`/`Life` axis can be declined (a
+ * counter/life observer appeared between accept and boundary) or a `Tokens` mint can park, leaving
+ * the axis unbounded with nothing applied. Only `Scheduled(Committed)` promises a bound.
+ */
+export interface UnboundedFamilyView {
+  player: PlayerId;
+  family: UnboundedFamily;
+  state: FamilyCollapseState;
 }
 
 /** Mirrors `engine::analysis::loop_check::WinKind` (unit variants → bare strings). */
@@ -2881,7 +2915,8 @@ export interface DerivedViews {
   /**
    * CR 732.2a: `∞` HUD rows — one per (engine-attributed player, pumped axis)
    * of every unbounded-resource loop. Empty/omitted when no loop is active. The
-   * FE maps each axis to a display family and never re-derives attribution.
+   * engine also owns the display family and its collapse state, published as
+   * `unbounded_families` below; the FE re-derives neither.
    * Mirrors `engine::game::derived_views::DerivedViews::unbounded_resources`.
    *
    * This channel and its two siblings below stay POPULATED after all players accept a
@@ -2896,9 +2931,17 @@ export interface DerivedViews {
    * dropped that way (the engine has no per-axis backing authority for them yet), so do not
    * generalize the exception. Either way the accepted collapse itself is never cancelled: the row
    * may vanish and the boundary still cashes the axis out. Do not infer a cancellation from a
-   * disappearing row — the FE is not told about the collapse except through `scheduled` below.
+   * disappearing row — a row's disappearance says nothing about the collapse. What the FE IS told
+   * about the collapse arrives on `unbounded_families` below, and only there.
    */
   unbounded_resources?: UnboundedResourceView[];
+  /**
+   * The engine-owned per-seat, per-display-family collapse state behind each `∞` badge — one row
+   * per `(attributed player, family)` actually rendered. Empty/omitted whenever
+   * `unbounded_resources` is. Mirrors
+   * `engine::game::derived_views::DerivedViews::unbounded_families`.
+   */
+  unbounded_families?: UnboundedFamilyView[];
   /**
    * CR 732.2a / CR 110.1: battlefield object IDs forming an accepted object-growth
    * loop's "∞ pile" (the winning controller's tapped fodder-class members). Engine-

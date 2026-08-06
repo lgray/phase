@@ -1221,6 +1221,196 @@ fn append_vote_ballot_and_advance(
     }
 }
 
+/// ENGINE DEVIATION, NOT A RULES ENTITLEMENT — the accept→boundary re-check.
+///
+/// NO CR LICENSES THIS. Under CR 732.2c the shortcut "is taken" the moment the last player accepts
+/// and the game advances to the ending point with all its choices taken, so the growth would already
+/// be on the board and there would be no boundary re-check to license. This engine instead parks at
+/// priority with the count recorded and its results UNAPPLIED, and settles them at the next
+/// step/phase end. That deferral is pre-existing and deliberate, and the tree admits it in three
+/// places: `game/turns.rs:553-556`, `game/derived_views.rs:923-944`,
+/// `types/game_state.rs:19911-19914`. Everything in this loop is engine conduct inside that window.
+///
+/// CR 732.2a, DESCRIPTIVELY ONLY — it is what the re-check re-evaluates, not what permits it. Its
+/// antecedent is "at any point in the game, THE PLAYER WITH PRIORITY MAY SUGGEST a shortcut … that
+/// may be legally taken based on the current game state and THE PREDICTABLE RESULTS of the sequence
+/// of choices": subject = the proposing player, moment = suggestion. It is a legality condition on a
+/// PROPOSAL and has no continuing-validity form. The two firewalls this boundary re-calls are
+/// `analysis::resource::counter_growth_is_observed` and `analysis::resource::life_growth_is_observed`
+/// — named by symbol, never by line. Re-running their condition here is part of the deviation above,
+/// not an application of the rule.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct ObservedGrowth {
+    pub(crate) counter: bool,
+    pub(crate) life: bool,
+}
+
+impl ObservedGrowth {
+    /// Evaluated ONCE before the boundary's apply loop, at the same hoist point as the two calls it
+    /// replaces. The firewalls scan the board/stack, not the stash, so they need no sequence.
+    pub(crate) fn at_boundary(state: &GameState) -> Self {
+        Self {
+            counter: crate::analysis::resource::counter_growth_is_observed(state),
+            life: crate::analysis::resource::life_growth_is_observed(state),
+        }
+    }
+}
+
+/// A way the boundary finishes a stashed item WITHOUT applying it — leaving the axis ∞ with no
+/// finite amount reaching it. NO CR GOVERNS THIS ENUM: it is a census of THIS engine loop's own
+/// control flow inside the deviation window described on [`ObservedGrowth`], not a rules behavior
+/// (cf. `game/filter.rs:1970`).
+///
+/// MEASURED CENSUS of the loop below, not a guess: the body has exactly FOUR control-flow exits;
+/// three are non-push and each is labelled with one of these variants. The fourth
+/// (`!state.battlefield.contains(&g.object)`, CR 400.7 — an object that changes zones becomes a new
+/// object, so the stale id is skipped) is an INNER per-growth skip whose ITEM still reaches the
+/// single push — it is NOT a hold, and mistaking it for one is the reading error this doc exists to
+/// prevent.
+///
+/// This is the badge's question. [`boundary_declines`] answers a strictly narrower one, and a
+/// promise derived from it alone is FALSE for `Tokens`, whose only hold is a pause.
+///
+/// # The citation gate for this subsystem
+///
+/// STEP (0) IS NOT ONE OF FOUR — IT RUNS FIRST AND CAN END THE SEARCH. Before citing any rule for
+/// code in this subsystem, grep it for existing deviation admissions
+/// (`no CR licenses|no CR governs|ENGINE DEVIATION`). If the code already says no CR licenses this
+/// window, then the search for a rule is itself the category error — every rule you find will be
+/// one the window deviates from, not one that authorizes it. Only if step (0) finds no admission do
+/// the remaining steps apply: (1) EXISTENCE — grep the rule number in `docs/MagicCompRules.txt`;
+/// (2) CONTENT, ON BOTH ANTECEDENT AXES — *subject* (who or what the antecedent is about; does it
+/// describe this code's actual matched text or predicate?) and *time* (an antecedent fixes a moment;
+/// a permission granted at proposal time does not travel past acceptance, and a legality condition
+/// on a proposal does not become a continuing-validity condition); (3) NORMATIVE DIRECTION — is this
+/// rule the one the code *applies*, or the one the code *deviates from*? Citing the deviated-from
+/// rule as a license inverts the annotation's meaning.
+///
+/// "NO CR GOVERNS THIS" IS A SAFE, CORRECT, FINAL VERDICT. Reaching for the next closest-sounding
+/// rule is the error, not the fix. In-tree precedent: `game/filter.rs:1970`, `game/turns.rs:553-556`,
+/// `game/derived_views.rs:923-944`, `types/game_state.rs:19911-19914`.
+///
+/// DO NOT COPY A CITATION SET FROM ONE SITE TO ANOTHER. The parser (`oracle_replacement.rs:8503`)
+/// answers "what does this card's text create?"; this boundary answers "why does this mint pause?"
+/// Same card, different questions, different rules.
+///
+/// CR 614.1 / CR 614.1a TRAVEL TO THE BOUNDARY WHERE CR 608.2d CANNOT, because 614.1 is
+/// EVENT-SCOPED IN THE PERMISSIVE DIRECTION — "replacement effects apply continuously as events
+/// happen—they aren't locked in ahead of time" — and 614.1a is DEFINITIONAL, classifying what a
+/// replacement effect *is*, so it holds wherever such an effect exists. CR 608.2d is SOURCE-SCOPED
+/// — "if an effect OF A SPELL OR ABILITY offers any choices" — and at a source-less mint its
+/// antecedent is false by construction. Definitional and continuously-applying rules are
+/// site-portable; source-scoped rules are site-local.
+///
+/// CITE BY SYMBOL, NEVER BY LINE, for any file whose line numbers this change cannot re-verify at
+/// edit time. Anchors into files the change does edit, and paragraph anchors within this file, stay
+/// as line references because the edit re-derives them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum BoundaryHold {
+    /// An observer of the growing class appeared accept→boundary, so the batched single-application
+    /// would no longer match the sequence's own result, and the engine declines it: `continue`, no
+    /// push, ∞ left for manual play. Runtime gate: [`boundary_declines`].
+    ///
+    /// NOT LICENSED BY ANY CR — see [`ObservedGrowth`]. Under CR 732.2c the growth would already
+    /// have been applied at accept; declining here is a DEVIATION from that rule, never an
+    /// application of it. Three rules that look close and are not:
+    ///   • NOT CR 732.1b — its antecedent describes a live repeatable state and its permission is
+    ///     live PRE-proposal. This code is post-accept and post-N-named. The crate cites 732.1b only
+    ///     "SHAPED", for the live ∞ capability mark (`derived_views.rs:946-950`); it is used that way
+    ///     on `FamilyCollapseState::Unscheduled` and nowhere else.
+    ///   • NOT CR 732.2b — "each OTHER player … may accept or shorten" is a player action by a
+    ///     non-proposer. This decline is the ENGINE's, and the measured drift case has the proposer
+    ///     himself casting the observer.
+    ///   • NOT CR 732.2a as authority — see [`ObservedGrowth`]; it is the condition re-evaluated,
+    ///     not the permission to re-evaluate it.
+    ObservedGrowth,
+    /// CR 614.1 + CR 614.1a: the fodder mint parked on a replacement choice, so the arm returns
+    /// through its pause transaction before the push — zero tokens minted, no finite amount chosen,
+    /// axis stays ∞. CR 614.1 is why an "instead" replacement still applies here: replacement effects
+    /// "apply continuously as events happen—they aren't locked in ahead of time" and "watch for a
+    /// particular event", and "you would create one or more tokens" is exactly the event this mint is.
+    /// CR 614.1a supplies only the CLASSIFICATION — that an "instead" effect is a replacement effect.
+    ///
+    /// WHY THE MINT IS SOURCE-LESS (the `ObjectId(0)` sentinel below): because it happens inside the
+    /// engine's deferral window, not during any spell or ability resolution. Under CR 732.2c the
+    /// growth would already have been applied at accept and there would be no boundary mint at all —
+    /// so 732.2c is the rule this DEVIATES FROM, not the rule that authorizes the sentinel. See
+    /// [`ObservedGrowth`] and `types/game_state.rs:19911-19914`.
+    ///
+    /// TWO ingresses, both parking on the one `active_copy_token()` guard:
+    ///   • `token_copy.rs:332-336` `NeedsChoice` — from ONE optional candidate
+    ///     (`replacement.rs:9212-9241`; CR 614.1a "instead", e.g. Jinnie Fay, Jetmir's Second)
+    ///     or from ≥2 materially-ordered candidates (`replacement.rs:9257-9281`; CR 616.1, whose text
+    ///     is scoped to "two or more" and so covers ONLY that ingress);
+    ///   • `token_copy.rs:320-325` `apply_create_token_after_replacement == false`.
+    /// NOT a hold: `ReplacementResult::Prevented` (`token_copy.rs:331`) mints zero tokens but does not
+    /// park, so the arm reaches its push — see [`materialization_certainty`].
+    ///
+    /// TWO RULES THAT DO NOT APPLY HERE:
+    ///   • CR 608.2d — "if an effect OF A SPELL OR ABILITY offers any choices"; at a source-less mint
+    ///     that antecedent is false by construction. It is correct at the PARSER
+    ///     (`oracle_replacement.rs:8503`) and is deliberately not imported.
+    ///   • CR 614.16 — "if an EFFECT would create one or more tokens"; the parsed tag is
+    ///     "if YOU would create" (`oracle_replacement.rs:8524`).
+    CopyTokenPause,
+}
+
+impl BoundaryHold {
+    /// The full variant set. Production code never enumerates holds — it branches on
+    /// [`boundary_declines`] and on the one `active_copy_token()` guard — so this exists purely
+    /// for the completeness half of `boundary_hold_census_matches_the_apply_loop`, which is what
+    /// keeps a variant no kind can reach from being added.
+    #[cfg(test)]
+    pub(crate) const ALL: [BoundaryHold; 2] = [Self::ObservedGrowth, Self::CopyTokenPause];
+}
+
+/// The hold this item's KIND can take, independent of live state. `None` => the arm reaches the
+/// single `collapsed.push` unconditionally. No CR governs this — it is the control-flow census
+/// described on [`BoundaryHold`].
+pub(crate) fn possible_hold(item: &PersistentAxisMaterialization) -> Option<BoundaryHold> {
+    match item {
+        PersistentAxisMaterialization::Tokens(_) => Some(BoundaryHold::CopyTokenPause),
+        PersistentAxisMaterialization::Counters(_) | PersistentAxisMaterialization::Life { .. } => {
+            Some(BoundaryHold::ObservedGrowth)
+        }
+        // No non-push exit: `drive_persistent_axis_collapse` holds a `SimulationProbeGuard` so it
+        // cannot park, and `break`s to commit the successful prefix on a failed cycle — the arm
+        // always reaches the push.
+        PersistentAxisMaterialization::DriveSequence { .. } => None,
+    }
+}
+
+/// What the HUD may promise. `Conditional` iff the kind has a hold. No CR governs this — it is a
+/// display promise derived from the census above, not a rules behavior.
+///
+/// APPLIED-BUT-NULLIFIED is deliberately `Committed`: a `Counters` item whose bearers all left
+/// (CR 400.7, the inner stale-id skip), a `Prevented` mint, and a `DriveSequence` committing k<N all
+/// PUSH, so the ∞ genuinely ends. The shipped copy promises "a finite amount will be chosen", not a
+/// quantity.
+pub(crate) fn materialization_certainty(
+    item: &PersistentAxisMaterialization,
+) -> crate::game::derived_views::CollapseCertainty {
+    match possible_hold(item) {
+        Some(_) => crate::game::derived_views::CollapseCertainty::Conditional,
+        None => crate::game::derived_views::CollapseCertainty::Committed,
+    }
+}
+
+/// THE boundary's decline gate — the runtime half of [`BoundaryHold::ObservedGrowth`], and its rules
+/// frame (no CR licenses it) is stated there. SINGLE AUTHORITY: the loop branches on this instead of
+/// per-arm `if *_observed_now`.
+pub(crate) fn boundary_declines(
+    item: &PersistentAxisMaterialization,
+    observed: ObservedGrowth,
+) -> bool {
+    match item {
+        PersistentAxisMaterialization::Tokens(_)
+        | PersistentAxisMaterialization::DriveSequence { .. } => false,
+        PersistentAxisMaterialization::Counters(_) => observed.counter,
+        PersistentAxisMaterialization::Life { .. } => observed.life,
+    }
+}
+
 pub(super) fn handle_resolution_choice(
     state: &mut GameState,
     waiting_for: WaitingFor,
@@ -2273,19 +2463,24 @@ pub(super) fn handle_resolution_choice(
                     // doubler pipeline. Re-check NOW (the firewall scans the board/stack, not
                     // the stash, so it needs no sequence): if an observer appeared, DECLINE
                     // the batched `Counters`/`Life` apply and leave those ∞ axes marked for
-                    // manual play (CR 732.2a / CR 732.2b never force a shortcut) —
-                    // unambiguously sound (never a wrong count). `Tokens` (N real ETB events)
-                    // and `DriveSequence` (N-cycle real replay) honor observers regardless
-                    // and always proceed. Only the ACTUALLY-applied items are cleared, so a
-                    // declined axis stays ∞.
+                    // manual play — unambiguously sound (never a wrong count). `Tokens` (N real
+                    // ETB events) and `DriveSequence` (N-cycle real replay) honor observers
+                    // regardless and always proceed. Only the ACTUALLY-applied items are
+                    // cleared, so a declined axis stays ∞.
                     // AXIS-SPECIFIC re-check: an observer of the counter class must not veto a
-                    // batched LIFE gain and vice-versa. Each axis re-runs its own firewall.
-                    let counter_observed_now =
-                        crate::analysis::resource::counter_growth_is_observed(state);
-                    let life_observed_now =
-                        crate::analysis::resource::life_growth_is_observed(state);
+                    // batched LIFE gain and vice-versa. Each axis re-runs its own firewall —
+                    // which is why `ObservedGrowth` carries both answers separately.
+                    // NO CR LICENSES THIS RE-CHECK: it is engine conduct inside the deferral
+                    // window. The rules frame lives on `ObservedGrowth::at_boundary` and
+                    // `BoundaryHold::ObservedGrowth`; do not re-derive one here.
+                    let observed = ObservedGrowth::at_boundary(state);
                     let mut collapsed: Vec<PersistentAxisMaterialization> = Vec::new();
                     for item in &items {
+                        // The ONE decline decision — `BoundaryHold::ObservedGrowth` (see its doc
+                        // for why no CR licenses it).
+                        if boundary_declines(item, observed) {
+                            continue;
+                        }
                         match item {
                             PersistentAxisMaterialization::Tokens(profile) => {
                                 // CR 707.2 (+ CR 111.10): mint N tapped copy-tokens of the
@@ -2329,38 +2524,53 @@ pub(super) fn handle_resolution_choice(
                                     ObjectId(0),
                                     events,
                                 );
-                                // CR 732.2a defense-in-depth: the offer firewall (the exhaustive
-                                // fail-closed `_ => Err(RecastAbort)` in `drive_loop_action_iteration`,
-                                // engine.rs:1871-1873, has no replacement-/target-choice arm)
-                                // guarantees a certified shortcut's per-cycle fodder mint cannot
-                                // pause, so this mint is unreachable-paused today. The boundary copies
-                                // the SAME fodder class (CR 707.2), so a mint that would pause implies
-                                // a certification that would have aborted. If that invariant ever
-                                // weakens, DO NOT advance the phase / mark the axis collapsed /
+                                // DEFENSE-IN-DEPTH AT ACCEPT ONLY. The offer firewall — the
+                                // exhaustive fail-closed `_ => Err(RecastAbort)` in
+                                // `drive_loop_action_iteration` (cited by symbol; it has no
+                                // replacement-/target-choice arm) — runs at CERTIFICATION. It
+                                // cannot bind this mint, which happens later: a replacement
+                                // effect installed AFTER the accept reaches this pause, and
+                                // `med_tokens_boundary_mint_pause_preserves_replacement_choice`
+                                // drives exactly that. Both ingresses come out of `replace_event`
+                                // (token_copy.rs:318): `NeedsChoice` (token_copy.rs:332-336) and
+                                // `apply_create_token_after_replacement == false`
+                                // (token_copy.rs:320-325).
+                                //
+                                // CR 614.1 + CR 614.1a: an "instead" replacement is a replacement
+                                // effect, and replacement effects "apply continuously as events
+                                // happen—they aren't locked in ahead of time", so one installed
+                                // after accept still watches this mint event. CR 616.1 covers only
+                                // the ≥2-candidate ordering ingress ("if two or more replacement
+                                // and/or prevention effects are attempting to modify …").
+                                //
+                                // CR 732.2c is named here ONLY as the rule this window DEVIATES
+                                // FROM: under it the growth would already have been applied at
+                                // accept and there would be no boundary mint to pause. See
+                                // `BoundaryHold::CopyTokenPause`.
+                                //
+                                // So: DO NOT advance the phase / mark the axis collapsed /
                                 // overwrite the replacement `waiting_for`: preserve the paused
-                                // copy-resolution and hand the replacement choice back (CR 732.2b
-                                // leaves the ∞ axes for manual play; game totals stay correct because
-                                // the ∞ marks are not cleared). No `debug_assert!` — the defensive
-                                // test deliberately drives this pause, which a debug_assert would panic.
+                                // copy-resolution and hand the replacement choice back (game totals
+                                // stay correct because the ∞ marks are not cleared). No
+                                // `debug_assert!` — the defensive test deliberately drives this
+                                // pause, which a debug_assert would panic.
+                                // BoundaryHold::CopyTokenPause
                                 if state.active_copy_token().is_some() {
                                     // CR 732.2a pause-safe transaction: cash out the axes already
                                     // applied THIS pass (a mixed stash, Edit 1 puts Tokens last) so
                                     // no finite-applied Counters/Life axis is left with a stale ∞
                                     // mark. The still-paused Tokens axis is NOT in `collapsed`, so
-                                    // its ∞ axis/pile is preserved for manual play (CR 732.2b never
-                                    // forces a shortcut). Do NOT drain the phase — the mint is
-                                    // mid-flight.
+                                    // its ∞ axis/pile is preserved for manual play (ENGINE
+                                    // DEVIATION — no CR licenses leaving it ∞; see
+                                    // `BoundaryHold::CopyTokenPause`). Do NOT drain the phase — the
+                                    // mint is mid-flight.
                                     state.clear_collapsed_materializations(player, &collapsed);
                                     return Ok(ResolutionChoiceOutcome::WaitingFor(
                                         state.waiting_for.clone(),
                                     ));
                                 }
-                                collapsed.push(item.clone());
                             }
                             PersistentAxisMaterialization::Counters(growths) => {
-                                if counter_observed_now {
-                                    continue; // decline (finding #4): leave the ∞ axis for manual play
-                                }
                                 for g in growths {
                                     // CR 400.7: a permanent that left the battlefield
                                     // accept→boundary is skipped (its object id is stale).
@@ -2379,15 +2589,11 @@ pub(super) fn handle_resolution_choice(
                                         events,
                                     );
                                 }
-                                collapsed.push(item.clone());
                             }
                             PersistentAxisMaterialization::Life {
                                 player: p,
                                 per_cycle_delta,
                             } => {
-                                if life_observed_now {
-                                    continue; // decline (finding #4): leave the ∞ axis for manual play
-                                }
                                 // CR 119.3 single life authority; SOUND only because the
                                 // firewall rejected any life-gain replacement/observer
                                 // (`apply_life_gain` re-runs the replacement pipeline, so a
@@ -2398,7 +2604,6 @@ pub(super) fn handle_resolution_choice(
                                     per_cycle_delta.saturating_mul(amount),
                                     events,
                                 );
-                                collapsed.push(item.clone());
                             }
                             PersistentAxisMaterialization::DriveSequence {
                                 sequence,
@@ -2409,16 +2614,20 @@ pub(super) fn handle_resolution_choice(
                                 crate::game::engine::drive_persistent_axis_collapse(
                                     state, sequence, amount,
                                 );
-                                collapsed.push(item.clone());
                             }
                         }
+                        // The SINGLE push. Reaching here means the growth applied; every other
+                        // outcome is a labelled `BoundaryHold` above. `possible_hold` is exactly
+                        // the set of arms that can skip this line.
+                        collapsed.push(item.clone());
                     }
                     // CR 732.2a: cash out ONLY the axes actually collapsed (axis-scoped) —
                     // end their ∞ status + stash + pile, PRESERVING any coexisting axis (a
                     // debug infinite-mana capability, or a finding-#4-declined axis). The ∞
                     // display collapses to an ordinary ×N for the collapsed axes (§9).
                     //
-                    // FINDING #4 DECLINED-AXIS ∞ LIFECYCLE (CR 732.2b): a declined `Counters`/`Life`
+                    // FINDING #4 DECLINED-AXIS ∞ LIFECYCLE (ENGINE DEVIATION — no CR licenses the
+                    // decline; see BoundaryHold::ObservedGrowth): a declined `Counters`/`Life`
                     // axis (`continue`d above without `collapsed.push`) is absent from `collapsed`,
                     // so `clear_collapsed_materializations` — which iterates ONLY `collapsed`
                     // (game_state.rs) — never removes its `unbounded_resources` /
@@ -9780,6 +9989,90 @@ mod tests {
             state.objects.get(&eligible).map(|obj| obj.zone),
             Some(Zone::Graveyard),
             "zero-choice must leave eligible cards unmoved"
+        );
+    }
+
+    /// Minimal 1/1 `CopiableValues` for the `Tokens` stash kind — only the VARIANT is under
+    /// test here, never the profile contents.
+    fn boundary_census_token_profile() -> Box<crate::types::ability::CopiableValues> {
+        Box::new(crate::types::ability::CopiableValues {
+            name: "Saproling".to_string(),
+            mana_cost: crate::types::mana::ManaCost::default(),
+            color: vec![],
+            card_types: crate::types::card_type::CardType::default(),
+            power: Some(1),
+            toughness: Some(1),
+            loyalty: None,
+            printed_loyalty: None,
+            keywords: vec![],
+            abilities: std::sync::Arc::default(),
+            trigger_definitions: std::sync::Arc::default(),
+            replacement_definitions: std::sync::Arc::default(),
+            static_definitions: std::sync::Arc::default(),
+        })
+    }
+
+    /// B-1: `possible_hold` is the boundary apply loop's own non-push-exit census, so it must
+    /// agree with that loop kind-for-kind, and every `BoundaryHold` variant must be claimed by
+    /// at least one kind.
+    ///
+    /// REVERT-PROBE (matched positive AND negative in this one test):
+    ///   (a) `Tokens => None` ⇒ the `Tokens` hold/certainty assertions flip ⇒ RED.
+    ///   (b) `DriveSequence => Some(BoundaryHold::ObservedGrowth)` ⇒ the only `Committed` kind
+    ///       flips ⇒ RED.
+    ///   (c) a third `BoundaryHold` variant claimed by no kind ⇒ the completeness assertion reds.
+    #[test]
+    fn boundary_hold_census_matches_the_apply_loop() {
+        use crate::game::derived_views::CollapseCertainty;
+
+        let kinds = [
+            PersistentAxisMaterialization::Tokens(boundary_census_token_profile()),
+            PersistentAxisMaterialization::Counters(vec![]),
+            PersistentAxisMaterialization::Life {
+                player: PlayerId(0),
+                per_cycle_delta: 2,
+            },
+            PersistentAxisMaterialization::DriveSequence {
+                sequence: vec![],
+                collapsed_axes: vec![],
+            },
+        ];
+
+        let holds: Vec<Option<BoundaryHold>> = kinds.iter().map(possible_hold).collect();
+        assert_eq!(
+            holds,
+            vec![
+                Some(BoundaryHold::CopyTokenPause),
+                Some(BoundaryHold::ObservedGrowth),
+                Some(BoundaryHold::ObservedGrowth),
+                None,
+            ],
+            "possible_hold must mirror the boundary loop's three non-push exits: the Tokens \
+             pause, and the Counters/Life observer declines. DriveSequence has none."
+        );
+
+        let certainties: Vec<CollapseCertainty> =
+            kinds.iter().map(materialization_certainty).collect();
+        assert_eq!(
+            certainties,
+            vec![
+                CollapseCertainty::Conditional,
+                CollapseCertainty::Conditional,
+                CollapseCertainty::Conditional,
+                CollapseCertainty::Committed,
+            ],
+            "certainty is Conditional iff the kind has a hold — DriveSequence is the only \
+             Committed kind, which is why ∞→N is reserved for it"
+        );
+
+        // COMPLETENESS: no BoundaryHold variant may exist that no kind can reach.
+        let mut claimed: Vec<BoundaryHold> = holds.into_iter().flatten().collect();
+        claimed.sort();
+        claimed.dedup();
+        assert_eq!(
+            claimed,
+            BoundaryHold::ALL.to_vec(),
+            "every BoundaryHold variant must be claimed by at least one materialization kind"
         );
     }
 }

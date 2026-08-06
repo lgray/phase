@@ -184,18 +184,23 @@ describe("PlayerHud designations", () => {
   });
 
   // CR 732.2a: the `∞` HUD badge is driven ONLY by the engine projection
-  // `derived.unbounded_resources` — the FE never derives which axes are unbounded.
+  // `derived.unbounded_families` — the FE derives neither which axes are unbounded, nor the
+  // family they group into, nor whether a collapse is coming.
   describe("Unbounded resources (∞)", () => {
-    it("renders an ∞ badge for the local player's engine-attributed axis", () => {
+    it("renders an ∞ badge for the local player's engine-attributed family", () => {
       act(() => {
         useGameStore.setState({
           gameState: buildGameState({
-            derived: { unbounded_resources: [{ player: 0, axis: "TokensCreated" }] },
+            derived: {
+              unbounded_families: [
+                { player: 0, family: "tokens", state: { type: "Unscheduled" } },
+              ],
+            },
           }),
         });
       });
       render(<PlayerHud />);
-      // REVERT-PROBE: stop reading `derived.unbounded_resources` (or remove the
+      // REVERT-PROBE: stop reading `derived.unbounded_families` (or remove the
       // PlayerHud map) → the badge is absent → this assertion fails.
       expect(screen.getByLabelText("Unbounded tokens (∞)")).toBeInTheDocument();
     });
@@ -203,41 +208,32 @@ describe("PlayerHud designations", () => {
     it("does not render when there are no unbounded resources", () => {
       act(() => {
         useGameStore.setState({
-          gameState: buildGameState({ derived: { unbounded_resources: [] } }),
+          gameState: buildGameState({ derived: { unbounded_families: [] } }),
         });
       });
       render(<PlayerHud />);
       expect(screen.queryByLabelText(/Unbounded/)).toBeNull();
     });
 
-    it("does not render when only an opponent has an unbounded axis", () => {
-      act(() => {
-        useGameStore.setState({
-          gameState: buildGameState({
-            derived: { unbounded_resources: [{ player: 1, axis: "TokensCreated" }] },
-          }),
-        });
-      });
-      render(<PlayerHud />);
-      expect(screen.queryByLabelText(/Unbounded/)).toBeNull();
-    });
-
-    it("collapses multiple axes of the same family into one badge", () => {
+    it("does not render when only an opponent has an unbounded family", () => {
       act(() => {
         useGameStore.setState({
           gameState: buildGameState({
             derived: {
-              unbounded_resources: [
-                { player: 0, axis: { Mana: "Red" } },
-                { player: 0, axis: { Mana: "Blue" } },
+              unbounded_families: [
+                { player: 1, family: "tokens", state: { type: "Unscheduled" } },
               ],
             },
           }),
         });
       });
       render(<PlayerHud />);
-      // Six Mana(color) rows would collapse the same way: one mana family badge.
-      expect(screen.getAllByLabelText("Unbounded mana (∞)")).toHaveLength(1);
+      expect(screen.queryByLabelText(/Unbounded/)).toBeNull();
     });
+
+    // The "two mana axes collapse to one badge" case MOVED TO THE ENGINE as
+    // `derived_views::tests::two_mana_axes_fold_to_one_family_row`; migrating it IS the evidence
+    // that the fold left the display layer. What remains here is the render-level consequence:
+    // the engine hands down one row per family, so the HUD renders one badge per row.
   });
 });

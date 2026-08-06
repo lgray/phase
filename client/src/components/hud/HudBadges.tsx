@@ -6,6 +6,7 @@ import { ManaFontIcon } from "../icons/ManaFontIcon.tsx";
 import { GameplayTooltip } from "../ui/GameplayTooltip.tsx";
 import type {
   DungeonId,
+  FamilyCollapseState,
   NextSpellModifier,
   PendingNextSpellModifier,
   PendingSpellCostReduction,
@@ -13,7 +14,7 @@ import type {
   PlayerStatusView,
   ResourceAxis,
   ResourceAxisTag,
-  UnboundedResourceView,
+  UnboundedFamily,
 } from "../../adapter/types.ts";
 import { useGameStore } from "../../stores/gameStore.ts";
 import { getKeywordDisplayText } from "../../viewmodel/keywordProps.ts";
@@ -374,37 +375,15 @@ export function ConditionBadge({ condition }: { condition: PlayerStatusView }) {
   );
 }
 
-// CR 732.2a: the display families an unbounded `ResourceAxis` maps to. Pure
-// presentation grouping — the engine owns axis identity and attribution; the FE
-// only collapses the per-axis rows into one badge per family.
-export type ResourceAxisFamily =
-  | "mana"
-  | "life"
-  | "damage"
-  | "mill"
-  | "counters"
-  | "tokens"
-  | "cards"
-  | "casts"
-  | "combats"
-  | "turns"
-  | "triggers";
-
-/** One `∞` badge's worth of state: the display family, and whether the engine has an
- *  accepted-but-unapplied collapse waiting for it at the next step/phase end. */
-export interface UnboundedFamilyView {
-  family: ResourceAxisFamily;
-  scheduled: boolean;
-}
-
 // Externally-tagged `ResourceAxis`: unit variants are bare strings, data/tuple
 // variants are single-key objects. The tag is the string itself or its only key.
 const axisTag = (axis: ResourceAxis): ResourceAxisTag =>
   typeof axis === "string" ? axis : (Object.keys(axis)[0] as ResourceAxisTag);
 
 // Exhaustive `Record<ResourceAxisTag, …>` so a new engine axis tag forces a
-// compile-time update here (the TS drift guard).
-const UNBOUNDED_FAMILY: Record<ResourceAxisTag, ResourceAxisFamily> = {
+// compile-time update here (the TS drift guard). Pinned VALUE-BY-VALUE against the engine's
+// `family_of` by `unbounded-family-tags.json`, which is why it is exported for that test.
+export const UNBOUNDED_FAMILY_FOR_TEST: Record<ResourceAxisTag, UnboundedFamily> = {
   Mana: "mana",
   Life: "life",
   DamageDealt: "damage",
@@ -424,60 +403,15 @@ const UNBOUNDED_FAMILY: Record<ResourceAxisTag, ResourceAxisFamily> = {
   Poison: "counters",
 };
 
-/** Map an engine-provided `ResourceAxis` to its display family. Presentation
- *  formatting only — never decides attribution or which axes are unbounded. */
-export const familyOf = (axis: ResourceAxis): ResourceAxisFamily =>
-  UNBOUNDED_FAMILY[axisTag(axis)];
+/** Map an engine-provided `ResourceAxis` to its display family. The badge no longer uses this —
+ *  the engine publishes each seat's families on `unbounded_families`. It survives for the two
+ *  callers that hold a bare axis list and no family channel (`LoopShortcutModal`'s offer-time
+ *  badges, `ManaPoolSummary`'s mana check), and this table is pinned tag-by-tag against the
+ *  engine's `family_of` by the `unbounded-family-tags.json` golden, so the two cannot diverge. */
+export const familyOf = (axis: ResourceAxis): UnboundedFamily =>
+  UNBOUNDED_FAMILY_FOR_TEST[axisTag(axis)];
 
-/**
- * Collapse the engine's per-axis ∞ rows to one entry per display family, carrying each row's
- * engine-computed `scheduled` flag through. Presentation formatting only: the engine owns axis
- * identity, attribution, and which axes are scheduled — this decides nothing.
- *
- * READS `row.scheduled`, which is the engine's answer and the only one on the wire. Re-deriving
- * it here from any `(player, axis)`-keyed channel would be a computation over game state, which
- * per `CLAUDE.md` is never the display layer's to perform — and it would also be wrong: such a
- * key names the engine's ATTRIBUTION player, so a victim-attributed axis (`Life(p)` and friends)
- * names its victim rather than the loop that produced it, and two controllers draining one victim
- * become indistinguishable. The engine answers on the controller key, before attribution rewrites
- * it. (That collision would not currently change what RENDERS — the fold below is per-family and
- * a key collision implies the same family — so it is a latent divergence, not a fixed bug.)
- *
- * `GameState::pending_unbounded_materialization` remains the authority for the accepted-collapse
- * contract; this flag is only its display shadow, and a row that the engine withholds simply
- * renders nothing while the collapse still lands at the boundary.
- */
-export function unboundedFamilyViews(rows: UnboundedResourceView[]): UnboundedFamilyView[] {
-  const families = new Map<ResourceAxisFamily, boolean>();
-  for (const row of rows) {
-    const family = familyOf(row.axis);
-    // A family is scheduled iff ANY member axis is, so this fold OVER-reports: it never marks a
-    // family with no scheduled axis in it, but one scheduled axis can cover an unscheduled
-    // sibling. `familyOf` maps every `Counter(..)` and every `Poison(..)` to "counters" (and six
-    // tags to "triggers"), so one family can hold axes with different schedules.
-    //
-    // WHAT WOULD MAKE IT REACHABLE — stated as the open question it is, because the tempting
-    // argument proves the wrong side. "One accept names several `Counter(..)` axes" gives several
-    // SCHEDULED axes, under which every row in the family is flagged and there is no over-report
-    // at all. The over-report needs a marked-but-UNSCHEDULED sibling in the same family: two loops
-    // on one controller with only one accepted, or `collapsed_counter_axis` recomputing a bearer's
-    // `ObjectClass` from live state and landing on a different axis than the one marked. Neither
-    // is asserted here to occur. U6 and U3c pin the fold's BEHAVIOUR on composed rows — if such a
-    // pair arises, one scheduled axis paints its whole family — which is the contract this comment
-    // is about; how the pair arises is not.
-    //
-    // Deliberate, and the OPPOSITE direction from the wire's KEYING LIMIT (which under-reports) —
-    // worth stating since the two are documented a few files apart. Over-reporting is preferred
-    // here because a family badge is a single glyph: under-reporting would render a bare `∞` for a
-    // collapse the table has already accepted, hiding a commitment, while over-reporting asserts
-    // "something in this family is about to be bounded", which is true. Per-axis badges are the
-    // alternative, and that is a display redesign rather than a change to this fold.
-    families.set(family, (families.get(family) ?? false) || row.scheduled === true);
-  }
-  return [...families].map(([family, s]) => ({ family, scheduled: s }));
-}
-
-const UNBOUNDED_FAMILY_GLYPH: Record<ResourceAxisFamily, string> = {
+const UNBOUNDED_FAMILY_GLYPH: Record<UnboundedFamily, string> = {
   mana: "💎",
   life: "❤",
   damage: "🔥",
@@ -491,7 +425,7 @@ const UNBOUNDED_FAMILY_GLYPH: Record<ResourceAxisFamily, string> = {
   triggers: "✴",
 };
 
-const UNBOUNDED_FAMILY_LABEL_KEY: Record<ResourceAxisFamily, string> = {
+const UNBOUNDED_FAMILY_LABEL_KEY: Record<UnboundedFamily, string> = {
   mana: "badges.unboundedMana",
   life: "badges.unboundedLife",
   damage: "badges.unboundedDamage",
@@ -507,35 +441,46 @@ const UNBOUNDED_FAMILY_LABEL_KEY: Record<ResourceAxisFamily, string> = {
 
 /**
  * CR 732.2a: an `∞` badge for one unbounded-resource display family. Rendered
- * once per distinct family per player (the HUD callers de-dup via
- * `unboundedFamilyViews`; `LoopShortcutModal` still de-dups a bare axis list
- * with a `Set`). The engine decides which families are present, which are
- * scheduled to collapse, and on which HUD; this badge only formats the family
- * to a glyph + label.
+ * once per distinct family per player. The HUD callers pass the engine's
+ * `unbounded_families` rows straight through — the engine decides which families
+ * are present, on which HUD, and what each one may promise; `LoopShortcutModal`
+ * still de-dups a bare axis list with a `Set` and passes no state. This badge only
+ * formats the family to a glyph + label.
  */
-// `scheduled` is OPTIONAL and defaults to false so a caller with no tag in hand renders today's
-// badge unchanged. `LoopShortcutModal`'s FamilyBadges is exactly that caller and stays that way on
-// purpose: it renders at OFFER time, before any player has accepted, so nothing can be scheduled.
+// `state` is OPTIONAL and defaults to `Unscheduled` so a caller with no family row in hand renders
+// today's bare-`∞` badge unchanged. `LoopShortcutModal`'s FamilyBadges is exactly that caller and
+// stays that way on purpose: it renders at OFFER time, before any player has accepted, so nothing
+// can be scheduled.
 export function UnboundedBadge({
   family,
-  scheduled = false,
+  state = { type: "Unscheduled" },
 }: {
-  family: ResourceAxisFamily;
-  scheduled?: boolean;
+  family: UnboundedFamily;
+  state?: FamilyCollapseState;
 }) {
   const { t } = useTranslation("game");
   const resource = t(UNBOUNDED_FAMILY_LABEL_KEY[family]);
-  // A scheduled collapse is an accepted-but-unapplied bound, and N is named at the next step/phase
-  // end by the loop's CONTROLLER — who is not necessarily the seat this badge sits on. The row is
+  // A `Committed` scheduled collapse is an accepted-but-unapplied bound, and N is named at the
+  // next step/phase end by the loop's CONTROLLER — who is not necessarily the seat this badge sits
+  // on. `Conditional` promises no bound at all, which is why it gets its own copy. The row is
   // keyed by the engine's attribution player, which for `Life`/`DamageDealt`/`LibraryDelta`/
   // `Poison` axes is the victim, and the badge also renders on opponent HUDs. So the copy stays in
   // the passive voice: a second-person promise here would be addressed to the wrong seat in both
   // cases. Emitting the prompted seat is the engine's to add, and is owned by the follow-on PR.
   // The window itself is an engine deviation, not a rules state — this only reports what the
   // engine says is pending.
-  const title = scheduled
-    ? t("badges.unboundedScheduledTooltip", { resource })
-    : t("badges.unboundedTooltip", { resource });
+  const title = ((): string => {
+    switch (state.type) {
+      case "Unscheduled":
+        return t("badges.unboundedTooltip", { resource });
+      case "Mixed":
+        return t("badges.unboundedMixedTooltip", { resource });
+      case "Scheduled":
+        return state.data === "Committed"
+          ? t("badges.unboundedScheduledTooltip", { resource })
+          : t("badges.unboundedConditionalTooltip", { resource });
+    }
+  })();
   return (
     <BadgeTip text={title}>
       <span
@@ -551,7 +496,19 @@ export function UnboundedBadge({
             "N" is a letter standing for "some number", which is language-dependent. Localized for
             the same reason its tooltip is. */}
         <span className="relative drop-shadow-[0_1px_1px_rgba(0,0,0,0.5)]">
-          {scheduled ? t("badges.unboundedScheduledGlyph") : "∞"}
+          {((): string => {
+            switch (state.type) {
+              // `Mixed` renders a BARE `∞`: part of this family has a pending collapse and part
+              // does not, and one glyph cannot say two things, so it says the weaker true one.
+              case "Unscheduled":
+              case "Mixed":
+                return "∞";
+              case "Scheduled":
+                return state.data === "Committed"
+                  ? t("badges.unboundedScheduledGlyph")
+                  : t("badges.unboundedConditionalGlyph");
+            }
+          })()}
         </span>
         <span aria-hidden className="relative text-[10px] leading-none drop-shadow-[0_1px_1px_rgba(0,0,0,0.5)]">
           {UNBOUNDED_FAMILY_GLYPH[family]}
