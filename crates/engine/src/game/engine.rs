@@ -4760,6 +4760,17 @@ fn try_offer_object_growth_shortcut(
     // boundary, not of the proposal's unconditionality — `FamilyCollapseState` has no `Committed`
     // variant of its own; `Committed` belongs to `CollapseCertainty`.
     //
+    // THAT DISTINCTION STRENGTHENS L2, IT DOES NOT QUALIFY IT. A proposal that passes here and can
+    // still be declined at its boundary is routes (b)/(c) of the fidelity invariant WORKING, not a
+    // conditional action leaking past this gate. CR 732.2a's clause governs whether the SEQUENCE's
+    // next action is determined by the outcome of a game event — and none of it is, because the
+    // pins fixed every free choice BEFORE the offer existed. What a boundary may still do is
+    // decline the ELISION and hand those same iterations back to manual play, which is exactly how
+    // ELISION ≡ PERFORMANCE is preserved once an observer appears mid-window. Declining an elision
+    // can never be rules-incorrect: the elision is what needs a license, its absence never does.
+    // The invariant in full, with all three materialization routes, is at `types::game_state`'s
+    // `scheduled_collapse_axes` doc.
+    //
     // A driving ability whose body bears an auto-resolved
     // coin flip (CR 705.1) / die roll (CR 706.1a) / random selection (CR 701.9a/b) has more
     // than one equally-likely outcome ⇒ not a legal shortcut. Reject it STATICALLY, before

@@ -891,7 +891,11 @@ pub enum GameAction {
     /// `template.owner` to the engine-issued `offer.proposer` (CR 603.5 — a proposer may pin only
     /// their own choices) and, for a non-empty schema, requires
     /// `decision_template::{predictability_gate, validate_pins}` to pass before the pins drive the
-    /// cycle; any failure rejects the declaration and hands back to manual play.
+    /// cycle; any failure rejects the declaration and hands back to manual play. That owner binding
+    /// plus pin validation IS L2 (unconditionality by construction) enforced AT THE WIRE: an
+    /// accepted template cannot carry a choice its proposer never pinned or was not entitled to
+    /// pin, so the sequence the table accepts is the sequence that runs — which is why accepting
+    /// `Some` costs the CR 732.2a argument nothing.
     ///
     /// The CURRENT FRONTEND always sends `null` (`LoopShortcutModal`, pinned by that modal's T2
     /// test) — that is a client-side policy, NOT this action's contract. Engine-side per-iteration
